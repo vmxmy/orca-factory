@@ -311,16 +311,19 @@ async function tick($: any) {
 }
 
 export const register: Register = on => {
+  // The plugin loads in every Claude session on the machine, unattended coordinators included.
+  // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
+  // calls per open PR, and one timer per session exhausted the 5000/h quota.
+  let polling = false
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board' })
-    void tick($)
-    $.clock.every(REFRESH_MS, () => tick($))
     return next(e)
   })
 
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     void tick($)
+    if (!polling) { polling = true; $.clock.every(REFRESH_MS, () => tick($)) }
     return { text: '蜂群看板已打开。' }
   })
 
