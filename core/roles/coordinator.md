@@ -5,7 +5,7 @@
 ## Owns
 
 - 领票、解析档位（`workflow.md §6`：标签 > estimate 映射 > default，correction 按 `AGENT_TIER_ESCALATE` 升档）、拆分、写 gate spec 与简报、拼 task spec。
-- 派工、等待、ack。
+- 派工、等待、ack。等待 CI 或 worker 超过 30 分钟，每个整 30 分钟给本票写一行进度评论（例：`心跳：等 CI，已排队 40 分钟`）。precheck 以票的 Linear 更新时间判断陈旧，安静等待与崩溃无法区分，评论就是心跳。
 - 复核：独立复跑 gate、读 diff、核追溯块。
 - 打回：写 VERDICT 块、开 `--parent` 子任务、数次数。
 - lane 1 开 PR、等 CI、squash 合并、等部署、冒烟。
