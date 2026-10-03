@@ -17,7 +17,7 @@
 | Linear 已连接 | `orca linear team list --json \| jq -e '.result.teams \| length > 0'` | 退出 0 | Orca Settings → Integrations 连接 Linear |
 | 远端与 main | `git -C $REPO remote get-url origin`；`git -C $REPO fetch origin main` | 是 GitHub 仓库，`origin/main` 存在 | 默认分支不是 main 时告诉用户：core 脚本固定用 `origin/main`（gate.sh 的 `GATE_BASE`、install.sh 的 precheck），需要用户先改默认分支或接受这一限制 |
 
-另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖。
+另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker / reviewer 的模型在 `agent-graph.env` 的 `AGENT_ROLE_*` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖。
 
 ## 1. 调研目标仓库（只读）
 

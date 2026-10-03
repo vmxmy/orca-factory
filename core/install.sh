@@ -14,7 +14,7 @@ orca status --json | jq -e '.ok == true' >/dev/null || fail "Orca app is not run
 
 set -a; . "$dir/agent-graph.env"; set +a
 for v in AGENT_GH_REPO AGENT_LINEAR_TEAM AGENT_LINEAR_PROJECT AGENT_LABEL_READY AGENT_LABEL_CLAIMED \
-         AGENT_LABEL_FAILED AGENT_MAX_IN_FLIGHT AGENT_RUN_WORKTREE_PREFIX AGENT_INSTALL_CMD; do
+         AGENT_LABEL_FAILED AGENT_MAX_IN_FLIGHT AGENT_RUN_WORKTREE_PREFIX AGENT_INSTALL_CMD AGENT_ROLE_WORKER_AGENT; do
   [[ -n "${!v:-}" ]] || fail "agent-graph.env: $v is empty"
 done
 for f in COORDINATOR.md COORDINATOR.project.md gate.sh linear-precheck.sh prune-run-worktrees.sh; do

@@ -30,7 +30,8 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 
 - 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`），Linear 已连接（`orca linear team list`）。
 - `gh`、`jq`、`codex`、`claude` 已安装并登录。
-- Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，不带模型会用默认模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 里装好依赖。
+- Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，这是唯一在 Orca 里设的模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 装依赖。
+- 角色模型在 `agent-graph.env` 里管（`AGENT_ROLE_WORKER_AGENT/MODEL`、`AGENT_ROLE_REVIEWER_CMD`，随仓库进 git）。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
 - Linear 里有与仓库同名的 project，以及 `ready-for-agent` / `auto-impl` / `auto-failed` 三个标签（接入时 agent 会带你建）。
 
 ## 安全须知
