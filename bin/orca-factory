@@ -59,6 +59,9 @@ install_mod_settings() {
     || fail "cannot update $f"
   mv "$tmp" "$f"
   echo "init: .claude/settings.json -> marketplace orca-factory + $MOD_ID enabled (Claude Code installs it on next start)"
+  if git -C "$repo" check-ignore -q .claude/settings.json 2>/dev/null; then
+    echo "init: note: .claude/settings.json is gitignored in this repo, so the registration stays on this machine; add '!.claude/settings.json' to .gitignore to share it"
+  fi
 }
 mod_enabled() { jq -e --arg m "$MOD_ID" '.enabledPlugins[$m] == true' "$1/.claude/settings.json" >/dev/null 2>&1; }
 

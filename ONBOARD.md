@@ -92,6 +92,7 @@ $FACTORY/bin/orca-factory init $REPO
 # 产出 $REPO/scripts/agent-gates/：core 文件原样复制（含 constitution/ 与 roles/ 两个子目录）+ 三份由模板生成、带 {{占位}} 的项目文件
 # 同时在 $REPO/.claude/settings.json 合并两个键（extraKnownMarketplaces.orca-factory、enabledPlugins["swarm-board@orca-factory"]），
 # 其余键原样保留；这让 Claude Code 在该仓库启动时自动安装 /swarm 看板。文件已存在只加键，不要手改。
+# 若目标仓库 .gitignore 忽略了 .claude/，init 会提示：登记只在本机生效；要随仓库分发需在 .gitignore 加 `!.claude/settings.json`（第 3 步问用户）。
 ```
 
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
