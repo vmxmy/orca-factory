@@ -17,7 +17,8 @@
 - PR 用 REST 开（GraphQL 常 EOF）：
   `gh api -X POST repos/$AGENT_GH_REPO/pulls -f title=… -f head=… -f base=main -F body=@<wt>/.omc/tmp/<ID>-pr.md -q .number`
 - PR body 首行 `Fixes <票号>`。
-- 合并：`mergeable_state == clean` 后 `gh api -X PUT repos/…/pulls/<n>/merge -f merge_method=squash`，回读 `.merged == true`。`behind_by > 0` 先 rebase 重跑 CI。
+- 合并：`mergeable_state == clean` 后 `gh api -X PUT repos/…/pulls/<n>/merge -f merge_method=squash`，回读 `.merged == true`。
+- 落后 main（`behind_by > 0`）不是阻塞：取 `gh api repos/…/compare/<head_sha>...main --jq '.files[].filename'` 与本 PR 改动文件求交集；**交集为空且 CI 在当前 head 绿 → 直接合**（GitHub 已在 clean 判定里做过合并测试）。有重叠才 rebase 重跑 CI，最多 2 轮；第 2 轮后仍有重叠转人工。原因：并发合并时「behind_by=0 才合」会活锁，每轮 10 分钟 CI 追不上前进的 main（ZII-762 四轮）。
 
 ## 3. 暂存文件
 
