@@ -59,9 +59,9 @@ verdict() {
 # run <step> <dir> <cmd>: logs output, returns command status, output in $OUT
 run() {
   local step="$1" dir="$2" cmd="$3" rc=0
-  log "--- [$step] (cd $dir && $cmd)"
+  log "--- [$step] $(date -u +%FT%TZ) (cd $dir && $cmd)"
   OUT="$( (cd "$dir" && bash -c "$cmd") 2>&1 )" || rc=$?
-  log "$OUT" "--- [$step] exit $rc"
+  log "$OUT" "--- [$step] exit $rc $(date -u +%FT%TZ)"
   return $rc
 }
 tail20() { printf '%s' "$OUT" | tail -n 20; }
