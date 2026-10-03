@@ -1,0 +1,19 @@
+# 项目工程条款：{{repo-name}}
+
+<!-- 填法：本文件与 constitution/engineering.md 并列读取，只能追加条目，不能覆盖共享条款。
+     engineering.md / workflow.md / handoffs.md 三个文件名为共享条款保留，项目目录里不得出现改过的版本（orca-factory check 会报 overridden）。
+     每条注明依据。用不到的段删掉。 -->
+
+## 模块大小上限
+
+- source 文件上限 {{30 个导出 / 800 行}}，test 文件 {{1500 行}}；检查器：{{functions/test/dependency-direction.js 的 SIZE_THRESHOLDS}}。新导出先查落点导出数；超限只能拆文件。依据：{{…}}
+- 冻结清单只能缩不能加：{{清单文件}}。依据：{{…}}
+
+## 生成物
+
+- {{spec/}} 由 {{scripts/generate-api-specs.mjs}} 生成；冲突或改动时重生成，不手改。依据：{{…}}
+- {{docs/generated/}} 由 {{各自生成器}} 生成。依据：{{…}}
+
+## 必读
+
+- 改 {{functions/}} 下模块先读 {{functions/AGENTS.md}}。依据：{{…}}

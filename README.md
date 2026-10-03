@@ -19,10 +19,12 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 | 路径 | 内容 |
 | --- | --- |
 | `ONBOARD.md` | 给 agent 读的接入手册（核心交付） |
-| `core/` | 通用脚本与手册，原样复制到目标仓库：`gate.sh`（确定性检查门）、`gate.test.sh`、`linear-precheck.sh`（定时任务前置扫描）、`prune-run-worktrees.sh`、`ledger.sh`、`agent-graph.sh`（入口）、`install.sh`（创建定时任务）、`COORDINATOR.md`（coordinator 通用流程） |
-| `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`），带 `{{占位}}` |
-| `examples/zhiyun-ai-dashboard/` | 一个真实项目的三份配置，照着填 |
-| `bin/orca-factory` | `init` / `update`（只刷新 core）/ `check`（core 是否漂移）/ `selftest` |
+| `core/` | 通用脚本与手册，原样复制到目标仓库：`gate.sh`（确定性检查门）、`gate.test.sh`、`linear-precheck.sh`（定时任务前置扫描）、`prune-run-worktrees.sh`、`ledger.sh`、`agent-graph.sh`（入口）、`install.sh`（创建定时任务）、`COORDINATOR.md`（coordinator 流程，只引用条款） |
+| `core/constitution/` | 宪法：`constitution.md`（入口与优先级）+ 共享条款 `engineering.md` / `workflow.md` / `handoffs.md`（项目不得覆盖，只能加 `local-*.md`） |
+| `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
+| `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
+| `examples/zhiyun-ai-dashboard/` | 一个真实项目的配置（三份项目文件 + `roles/local-worker.md` + `constitution/local-engineering.md`），照着填 |
+| `bin/orca-factory` | `init` / `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖）/ `selftest` |
 
 ## 前置条件
 

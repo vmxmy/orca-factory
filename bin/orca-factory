@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # orca-factory: install / refresh / verify the agent-gates pipeline files in a target repo.
 #
-#   orca-factory init <repo-path>      copy core/* and the three project files (from templates/, .example stripped)
-#                                      into <repo>/scripts/agent-gates/. Existing project files are never overwritten.
-#   orca-factory update <repo-path>    overwrite only the core files in <repo>/scripts/agent-gates/, print a diff summary.
-#   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). Exit 1 on any drift.
-#   orca-factory selftest              init into a temporary git repo and run gate.test.sh there.
+#   orca-factory init <repo-path>      copy core/ (incl. constitution/ and roles/) and the three project files
+#                                      (from templates/, .example stripped) into <repo>/scripts/agent-gates/.
+#                                      Existing project files are never overwritten.
+#   orca-factory update <repo-path>    overwrite only the core files (incl. constitution/ roles/) in
+#                                      <repo>/scripts/agent-gates/, print a diff summary. local-*.md untouched.
+#   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
+#                                      clauses constitution/{engineering,workflow,handoffs}.md must be byte-identical
+#                                      (reported as OVERRIDDEN otherwise). Exit 1 on any drift.
+#   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
+#                                      an edited shared clause is reported as overridden.
 set -Eeuo pipefail
 
 FACTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -13,11 +18,15 @@ CORE="$FACTORY/core"
 TEMPLATES="$FACTORY/templates"
 DEST_REL="scripts/agent-gates"
 PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
+PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitution/handoffs.md)
 
-usage() { sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
-core_files() { (cd "$CORE" && find . -maxdepth 1 -type f | sed 's#^\./##' | sort); }
+# Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
+core_files() { (cd "$CORE" && find . -type f | sed 's#^\./##' | sort); }
+
+is_protected() { local f="$1" p; for p in "${PROTECTED_CLAUSES[@]}"; do [[ "$f" == "$p" ]] && return 0; done; return 1; }
 
 resolve_repo() {
   local p="${1:-}"
@@ -30,8 +39,9 @@ copy_core() {  # copy_core <dest-dir> ; overwrites
   local dest="$1" f
   mkdir -p "$dest"
   while IFS= read -r f; do
+    mkdir -p "$dest/$(dirname "$f")"
     cp "$CORE/$f" "$dest/$f"
-    [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+    if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
   done < <(core_files)
 }
 
@@ -48,7 +58,7 @@ cmd_init() {
       echo "init: keep existing $DEST_REL/$f"
     else
       cp "$src" "$dest/$f"
-      [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+      if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
       echo "init: template -> $DEST_REL/$f (fill the {{placeholders}})"
     fi
   done
@@ -68,13 +78,15 @@ cmd_update() {
     else
       changed=$((changed + 1))
       n="$(diff "$dest/$f" "$CORE/$f" | grep -c '^[<>]' || true)"
-      echo "update: ~ $f ($n lines differ)"
+      if is_protected "$f"; then echo "update: ~ $f ($n lines differ; was OVERRIDDEN, restoring core version)"
+      else echo "update: ~ $f ($n lines differ)"; fi
       { diff -u "$dest/$f" "$CORE/$f" || true; } | sed -n '3,40p' | sed 's/^/    /'
     fi
+    mkdir -p "$dest/$(dirname "$f")"
     cp "$CORE/$f" "$dest/$f"
-    [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+    if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
   done < <(core_files)
-  echo "update: changed=$changed added=$added unchanged=$same; project files untouched (${PROJECT_FILES[*]})"
+  echo "update: changed=$changed added=$added unchanged=$same; project files and local-*.md untouched (${PROJECT_FILES[*]})"
 }
 
 cmd_check() {
@@ -87,6 +99,10 @@ cmd_check() {
       echo "check: MISSING  $f"; rc=1
     elif cmp -s "$CORE/$f" "$dest/$f"; then
       echo "check: ok       $f"
+    elif is_protected "$f"; then
+      # The three shared clauses are reserved names: a project may add constitution/local-*.md but never
+      # ship its own engineering.md / workflow.md / handoffs.md.
+      echo "check: OVERRIDDEN $f (shared clause must match core; put project rules in constitution/local-*.md)"; rc=1
     else
       echo "check: DIFFERS  $f"; rc=1
     fi
@@ -98,6 +114,10 @@ cmd_check() {
       echo "check: project file still has {{placeholders}}: $f"; rc=1
     fi
   done
+  # Optional project overlays: constitution/local-*.md and roles/local-*.md. Only checked for leftover placeholders.
+  while IFS= read -r f; do
+    if grep -q '{{' "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
+  done < <(find "$dest/constitution" "$dest/roles" -maxdepth 1 -type f -name 'local-*.md' 2>/dev/null | sort)
   (( rc == 0 )) && echo "check: core files match $FACTORY/core"
   return $rc
 }
@@ -109,7 +129,21 @@ cmd_selftest() {
   git init -q "$SELFTEST_TMP"
   cmd_init "$SELFTEST_TMP"
   find "$SELFTEST_TMP/$DEST_REL" -type f | sed "s#^$SELFTEST_TMP/##" | sort
+  for f in constitution/constitution.md "${PROTECTED_CLAUSES[@]}" roles/coordinator.md roles/worker.md roles/reviewer.md roles/README.md; do
+    [[ -f "$SELFTEST_TMP/$DEST_REL/$f" ]] || fail "selftest: init did not produce $f"
+  done
   bash "$SELFTEST_TMP/$DEST_REL/gate.test.sh"
+  # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
+  cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
+  grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }
+  # check: editing a shared clause must be reported as OVERRIDDEN, and update must restore it.
+  printf '\n- project override attempt\n' >> "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md"
+  cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
+  grep -q '^check: OVERRIDDEN constitution/engineering.md' "$SELFTEST_TMP/check.out" || { cat "$SELFTEST_TMP/check.out"; fail "selftest: overridden clause not detected"; }
+  echo "selftest: overridden shared clause detected"
+  cmd_update "$SELFTEST_TMP" > /dev/null
+  cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
+  echo "selftest: update restored shared clause"
   echo "selftest: PASS"
 }
 

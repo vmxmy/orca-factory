@@ -1,6 +1,6 @@
 # {{repo-name}} 的项目规则
 
-通用流程见 `COORDINATOR.md`；本文件只写本仓库特有的判据与规矩，冲突时以本文件为准。参数在 `agent-graph.env`，重型检查在 `gate.project.sh`。
+通用流程见 `COORDINATOR.md`；本文件只写本仓库特有的 lane 判据与合并上线规矩。参数在 `agent-graph.env`，重型检查在 `gate.project.sh`，拆分注意（大小上限、生成物、必读）写 `constitution/local-engineering.md`，工人约束写 `roles/local-worker.md`（模板在 orca-factory `templates/`）。
 
 <!-- 填法：每一条判据后用「依据：<文件/命令/用户答复>」注明来源，让人能复核。拿不准的宁可归 lane 2。 -->
 
@@ -13,19 +13,6 @@
 | 1 可逆·局部 | {{业务源码目录（如 src/ 下的页面、组件、lib）、文案、文档；几十行、有可写的定向测试断言。依据：…}} |
 | 2 可逆·宽（`AGENT_LANE2_GLOBS`） | {{CI/基础设施（.github/）、契约/类型/路由、权限/会话、迁移、依赖清单、agent 配置、scripts/agent-gates/、UI 原语。依据：…}} |
 | 3 不可逆（`AGENT_LANE3_GLOBS` + 操作） | 文件：{{密钥/环境文件、部署工作流}}。操作（不经文件，靠流程禁止）：{{执行迁移/DDL、deploy、secret 写入、远程删除、push main / force push}} |
-
-## 拆分注意
-
-- {{文件大小/导出数上限及其检查器；没有就删。依据：…}}
-- 生成物：{{目录 → 生成命令；冲突或改动时重生成，不手改。没有就写「无」。依据：…}}
-- {{改某类模块前必读的文档（如子目录 AGENTS.md）。依据：…}}
-
-## 工人约束（拼进每份 task spec）
-
-- 类型检查用 `{{npx tsc -b}}`，{{禁用的错误跑法，如「绝不用 --noEmit」}}。
-- 测试用 `{{npx vitest}}`；只跑定向测试，禁止全量。
-- {{i18n / 文案 / 代码风格等项目特有规矩；依据：…}}
-- 新增 `@ts-ignore` / `@ts-nocheck` / `as any` 一律不许（检查门会拦）。
 
 ## 合并与上线
 

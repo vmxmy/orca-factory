@@ -1,0 +1,23 @@
+# 项目 worker 附加约束：{{repo-name}}
+
+<!-- 填法：本文件追加在 roles/worker.md 之后进入每份 task spec。只能加约束，不能改写 worker.md 的四段；
+     不得写「以本文件为准」。每条注明依据（文件 / 命令 / 用户答复）。用不到的行删掉。 -->
+
+## Owns（追加）
+
+- 类型检查只用 `{{cd web && npx tsc -b}}`。依据：{{tsconfig references}}
+- 测试只用 `{{npx vitest related <file>}}`，只跑定向。依据：{{CI 工作流}}
+
+## Does Not Own（追加）
+
+- {{禁用的错误跑法，如「`tsc --noEmit` 什么都不查，不许用」}}。依据：{{…}}
+- {{只能改的文案/i18n 文件；其余语言由 coordinator 生成}}。依据：{{…}}
+- {{其他项目禁区：生成物目录、冻结清单、某类文件}}。依据：{{…}}
+
+## Verification（追加）
+
+- {{项目守卫测试命令，如 `node functions/test/dependency-direction.js`}}。依据：{{…}}
+
+## Handoff（追加）
+
+- {{项目要求 worker_done body 额外附带的东西；没有就删本段}}

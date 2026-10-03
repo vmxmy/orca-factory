@@ -3,6 +3,9 @@
 # and fewer than MAX_IN_FLIGHT tickets are in flight. Linear projects map 1:1 to repos, so the
 # project id is the repo fence. A ticket is claimable when every issue it is "blocked by" is
 # completed or canceled. The coordinator claims the first id printed on `claimable=` (oldest first).
+# Within one label/state scan the ids are ordered by Linear priority ascending (1=urgent, 2=high,
+# 3=medium, 4=low; 0=none sorts last as 9), then createdAt ascending, so an urgent ticket created
+# today is claimed before a no-priority ticket from last week.
 # Every orca call must succeed: the CLI talks to the local Orca app and drops connections under
 # concurrent load (runtime_unavailable), so a failed read aborts the scan instead of reading as "none".
 # Stale in-flight tickets (claimed + started, no Linear update for AGENT_STALE_HOURS) are a crashed
@@ -32,7 +35,11 @@ ocall() {
 ids() {
   local out
   out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --label "$1" --order-by createdAt)" || exit 3
-  jq -r --arg type "$2" '.result.issues | sort_by(.createdAt)[] | select(.state.type == $type) | .identifier' <<<"$out"
+  # priority: 1 urgent … 4 low; 0/null = none -> 9 so it sorts after every explicit priority.
+  jq -r --arg type "$2" '
+    .result.issues
+    | sort_by(((.priority // 0) | if . == 0 then 9 else . end), .createdAt)[]
+    | select(.state.type == $type) | .identifier' <<<"$out"
 }
 
 unblocked() {
