@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# {{repo-name}}'s heavy gate checks, run by gate.sh from the unit worktree root.
+# GATE_CHANGED = changed paths, one per line. Print "== <step>" before each step.
+# 填法：每一步替换为 ONBOARD.md 第 1 步推导出的真实命令；用不到的步骤整段删掉。
+# 规则：每步前必须 echo "== <step>"（gate.sh 用最后一个标记定位失败步骤）；任一命令非 0 即红（set -e）；
+# 脚本从 origin/main 读取执行，工人改不动它。重型/全量检查放这里，定向测试走 spec 的 CHECK。
+set -Eeuo pipefail
+
+echo "== typecheck"      # {{依据：README/tsconfig；注意仓库的坑，如 project references 必须 tsc -b 而非 --noEmit}}
+{{npx tsc -b}}
+
+echo "== lint"           # {{依据：package.json scripts.lint / CI 工作流里的 lint 步骤}}
+{{npx eslint .}}
+
+echo "== guards"         # {{依据：仓库自带的守卫测试（依赖方向、文件大小等）；没有就删掉本段}}
+{{npx vitest run test/guards/}}
+
+# 只跑与改动相关的测试；路径映射按仓库布局改（monorepo 子目录要去掉前缀）。
+related=()
+while IFS= read -r f; do
+  case "$f" in {{*.test.ts|*.test.js|src/*}}) ;; *) continue ;; esac
+  [[ -f "$f" ]] || continue
+  related+=("$f")
+done <<< "${GATE_CHANGED:-}"
+if (( ${#related[@]} )); then
+  echo "== test"
+  {{npx vitest related --run "${related[@]}"}}
+fi

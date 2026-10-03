@@ -1,0 +1,5 @@
+.omc/
+*.log
+# override the user's global gitignore so the distributable files are tracked
+!.gitignore
+!bin/

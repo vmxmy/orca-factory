@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# orca-factory: install / refresh / verify the agent-gates pipeline files in a target repo.
+#
+#   orca-factory init <repo-path>      copy core/* and the three project files (from templates/, .example stripped)
+#                                      into <repo>/scripts/agent-gates/. Existing project files are never overwritten.
+#   orca-factory update <repo-path>    overwrite only the core files in <repo>/scripts/agent-gates/, print a diff summary.
+#   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). Exit 1 on any drift.
+#   orca-factory selftest              init into a temporary git repo and run gate.test.sh there.
+set -Eeuo pipefail
+
+FACTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+CORE="$FACTORY/core"
+TEMPLATES="$FACTORY/templates"
+DEST_REL="scripts/agent-gates"
+PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
+
+usage() { sed -n '2,8p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+fail() { echo "orca-factory: $*" >&2; exit 1; }
+
+core_files() { (cd "$CORE" && find . -maxdepth 1 -type f | sed 's#^\./##' | sort); }
+
+resolve_repo() {
+  local p="${1:-}"
+  [[ -n "$p" ]] || usage
+  [[ -d "$p" ]] || fail "not a directory: $p"
+  cd "$p" && pwd -P
+}
+
+copy_core() {  # copy_core <dest-dir> ; overwrites
+  local dest="$1" f
+  mkdir -p "$dest"
+  while IFS= read -r f; do
+    cp "$CORE/$f" "$dest/$f"
+    [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+  done < <(core_files)
+}
+
+cmd_init() {
+  local repo dest f src
+  repo="$(resolve_repo "${1:-}")"
+  dest="$repo/$DEST_REL"
+  copy_core "$dest"
+  echo "init: core -> $dest ($(core_files | wc -l | tr -d ' ') files)"
+  for f in "${PROJECT_FILES[@]}"; do
+    src="$TEMPLATES/$f.example"
+    [[ -f "$src" ]] || fail "missing template $src"
+    if [[ -e "$dest/$f" ]]; then
+      echo "init: keep existing $DEST_REL/$f"
+    else
+      cp "$src" "$dest/$f"
+      [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+      echo "init: template -> $DEST_REL/$f (fill the {{placeholders}})"
+    fi
+  done
+  echo "init: next, follow ONBOARD.md steps 1-5 to fill the project files in $DEST_REL/"
+}
+
+cmd_update() {
+  local repo dest f changed=0 added=0 same=0 n
+  repo="$(resolve_repo "${1:-}")"
+  dest="$repo/$DEST_REL"
+  [[ -d "$dest" ]] || fail "$dest does not exist; run: orca-factory init $repo"
+  while IFS= read -r f; do
+    if [[ ! -e "$dest/$f" ]]; then
+      added=$((added + 1)); echo "update: + $f (new)"
+    elif cmp -s "$CORE/$f" "$dest/$f"; then
+      same=$((same + 1))
+    else
+      changed=$((changed + 1))
+      n="$(diff "$dest/$f" "$CORE/$f" | grep -c '^[<>]' || true)"
+      echo "update: ~ $f ($n lines differ)"
+      { diff -u "$dest/$f" "$CORE/$f" || true; } | sed -n '3,40p' | sed 's/^/    /'
+    fi
+    cp "$CORE/$f" "$dest/$f"
+    [[ "$f" == *.sh ]] && chmod +x "$dest/$f"
+  done < <(core_files)
+  echo "update: changed=$changed added=$added unchanged=$same; project files untouched (${PROJECT_FILES[*]})"
+}
+
+cmd_check() {
+  local repo dest f rc=0
+  repo="$(resolve_repo "${1:-}")"
+  dest="$repo/$DEST_REL"
+  [[ -d "$dest" ]] || fail "$dest does not exist"
+  while IFS= read -r f; do
+    if [[ ! -e "$dest/$f" ]]; then
+      echo "check: MISSING  $f"; rc=1
+    elif cmp -s "$CORE/$f" "$dest/$f"; then
+      echo "check: ok       $f"
+    else
+      echo "check: DIFFERS  $f"; rc=1
+    fi
+  done < <(core_files)
+  for f in "${PROJECT_FILES[@]}"; do
+    if [[ ! -e "$dest/$f" ]]; then
+      echo "check: project file missing: $f"; rc=1
+    elif grep -q '{{' "$dest/$f"; then
+      echo "check: project file still has {{placeholders}}: $f"; rc=1
+    fi
+  done
+  (( rc == 0 )) && echo "check: core files match $FACTORY/core"
+  return $rc
+}
+
+SELFTEST_TMP=""
+cmd_selftest() {
+  SELFTEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/orca-factory-selftest.XXXXXX")"
+  trap '[[ -n "$SELFTEST_TMP" ]] && rm -rf "$SELFTEST_TMP"' EXIT
+  git init -q "$SELFTEST_TMP"
+  cmd_init "$SELFTEST_TMP"
+  find "$SELFTEST_TMP/$DEST_REL" -type f | sed "s#^$SELFTEST_TMP/##" | sort
+  bash "$SELFTEST_TMP/$DEST_REL/gate.test.sh"
+  echo "selftest: PASS"
+}
+
+case "${1:-}" in
+  init)     cmd_init "${2:-}" ;;
+  update)   cmd_update "${2:-}" ;;
+  check)    cmd_check "${2:-}" ;;
+  selftest) cmd_selftest ;;
+  *)        usage ;;
+esac
