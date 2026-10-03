@@ -3,7 +3,8 @@
 #
 #   orca-factory init <repo-path>      copy core/ (incl. constitution/ and roles/) and the three project files
 #                                      (from templates/, .example stripped) into <repo>/scripts/agent-gates/.
-#                                      Existing project files are never overwritten.
+#                                      Existing project files are never overwritten. Also merges two keys into
+#                                      <repo>/.claude/settings.json so Claude Code auto-installs the swarm-board mod.
 #   orca-factory update <repo-path>    overwrite only the core files (incl. constitution/ roles/) in
 #                                      <repo>/scripts/agent-gates/, print a diff summary. local-*.md untouched.
 #   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
@@ -19,6 +20,8 @@ TEMPLATES="$FACTORY/templates"
 DEST_REL="scripts/agent-gates"
 PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
 PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitution/handoffs.md)
+MARKETPLACE_REPO="vmxmy/orca-factory"   # .claude-plugin/marketplace.json of this repo; the mod lives in mods/swarm-board
+MOD_ID="swarm-board@orca-factory"
 
 usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
@@ -45,11 +48,26 @@ copy_core() {  # copy_core <dest-dir> ; overwrites
   done < <(core_files)
 }
 
+# Merge the marketplace + enabled-plugin keys into <repo>/.claude/settings.json (created if absent, other keys kept).
+install_mod_settings() {
+  local repo="$1" f="$1/.claude/settings.json" tmp
+  mkdir -p "$repo/.claude"
+  [[ -f "$f" ]] || echo '{}' > "$f"
+  tmp="$(mktemp)"
+  jq --arg r "$MARKETPLACE_REPO" --arg m "$MOD_ID" \
+    '.extraKnownMarketplaces["orca-factory"] = {source: {source: "github", repo: $r}} | .enabledPlugins[$m] = true' "$f" > "$tmp" \
+    || fail "cannot update $f"
+  mv "$tmp" "$f"
+  echo "init: .claude/settings.json -> marketplace orca-factory + $MOD_ID enabled (Claude Code installs it on next start)"
+}
+mod_enabled() { jq -e --arg m "$MOD_ID" '.enabledPlugins[$m] == true' "$1/.claude/settings.json" >/dev/null 2>&1; }
+
 cmd_init() {
   local repo dest f src
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
   copy_core "$dest"
+  install_mod_settings "$repo"
   echo "init: core -> $dest ($(core_files | wc -l | tr -d ' ') files)"
   for f in "${PROJECT_FILES[@]}"; do
     src="$TEMPLATES/$f.example"
@@ -118,6 +136,8 @@ cmd_check() {
   while IFS= read -r f; do
     if grep -q '{{' "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
   done < <(find "$dest/constitution" "$dest/roles" -maxdepth 1 -type f -name 'local-*.md' 2>/dev/null | sort)
+  if mod_enabled "$repo"; then echo "check: ok       .claude/settings.json enables $MOD_ID"
+  else echo "check: MOD      $MOD_ID not enabled in .claude/settings.json (run: orca-factory init $repo)"; rc=1; fi
   (( rc == 0 )) && echo "check: core files match $FACTORY/core"
   return $rc
 }
@@ -150,6 +170,12 @@ cmd_selftest() {
   cmd_update "$SELFTEST_TMP" > /dev/null
   cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
   echo "selftest: update restored shared clause"
+  mod_enabled "$SELFTEST_TMP" || fail "selftest: init did not enable $MOD_ID in .claude/settings.json"
+  if command -v claude >/dev/null; then
+    claude plugin validate "$FACTORY/mods/swarm-board" >/dev/null || fail "selftest: mod validate failed"
+    (cd "$SELFTEST_TMP" && claude plugin test "$FACTORY/mods/swarm-board" >/dev/null) || fail "selftest: mod tests failed"
+    echo "selftest: mod validate + test PASS"
+  fi
   echo "selftest: PASS"
 }
 

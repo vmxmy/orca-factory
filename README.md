@@ -16,6 +16,8 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
+看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。
+
 ## 目录
 
 | 路径 | 内容 |
@@ -26,7 +28,9 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 | `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`intake.md`（用户手动开的建票会话）、`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
 | `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
 | `examples/zhiyun-ai-dashboard/` | 一个真实项目的配置（三份项目文件 + `roles/local-worker.md` + `constitution/local-engineering.md`），照着填 |
-| `bin/orca-factory` | `init` / `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖）/ `selftest` |
+| `bin/orca-factory` | `init`（装 core + 项目模板，并在 `<repo>/.claude/settings.json` 登记 marketplace 与 swarm-board）/ `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖、mod 是否登记）/ `selftest` |
+| `mods/swarm-board/` | Claude Code mod：`/swarm` 看板。泳道视角（待领 / 实现中 / gate·评审 / CI·合并 / 需要人 / 今日完成）与 agent 视角（时长、token、估算成本、最后活动），数据来自 Linear、Orca、gh、ledger |
+| `.claude-plugin/marketplace.json` | 本仓库即插件 marketplace；目标仓库 `.claude/settings.json` 的 `extraKnownMarketplaces` + `enabledPlugins` 指向它，Claude Code 启动时自动安装 |
 
 ## 前置条件
 

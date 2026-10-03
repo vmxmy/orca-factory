@@ -1,0 +1,11 @@
+{
+  "name": "orca-factory",
+  "owner": { "name": "vmxmy" },
+  "plugins": [
+    {
+      "name": "swarm-board",
+      "source": "./mods/swarm-board",
+      "description": "Agent 蜂群看板（/swarm）：泳道视角的票状态、agent 时长/token/成本、PR 与 CI 进度、ledger 统计"
+    }
+  ]
+}
