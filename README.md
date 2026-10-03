@@ -12,6 +12,8 @@
 
 agent 会调研目标仓库、向你确认几个无法推导的决定、生成三份项目配置装进 `<repo>/scripts/agent-gates/`、创建一个**禁用**的 Orca 定时任务，并跑一次验收后开 PR。合并后你用一张小票试跑，满意再启用。
 
+建票推荐用 intake：在 Orca 里对该仓库开一个 claude 标签页，prompt `按 scripts/agent-gates/roles/intake.md 工作`。它是你与流水线之间唯一的对话面：只读仓库、只写 Linear，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
+
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
 ## 目录
@@ -21,7 +23,7 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 | `ONBOARD.md` | 给 agent 读的接入手册（核心交付） |
 | `core/` | 通用脚本与手册，原样复制到目标仓库：`gate.sh`（确定性检查门）、`gate.test.sh`、`linear-precheck.sh`（定时任务前置扫描）、`prune-run-worktrees.sh`、`ledger.sh`、`agent-graph.sh`（入口）、`install.sh`（创建定时任务）、`COORDINATOR.md`（coordinator 流程，只引用条款） |
 | `core/constitution/` | 宪法：`constitution.md`（入口与优先级）+ 共享条款 `engineering.md` / `workflow.md` / `handoffs.md`（项目不得覆盖，只能加 `local-*.md`） |
-| `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
+| `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`intake.md`（用户手动开的建票会话）、`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
 | `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
 | `examples/zhiyun-ai-dashboard/` | 一个真实项目的配置（三份项目文件 + `roles/local-worker.md` + `constitution/local-engineering.md`），照着填 |
 | `bin/orca-factory` | `init` / `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖）/ `selftest` |
@@ -31,7 +33,7 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 - 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`），Linear 已连接（`orca linear team list`）。
 - `gh`、`jq`、`codex`、`claude` 已安装并登录。
 - Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，这是唯一在 Orca 里设的模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 装依赖。
-- 角色模型在 `agent-graph.env` 里管（`AGENT_ROLE_WORKER_AGENT/MODEL`、`AGENT_ROLE_REVIEWER_CMD`，随仓库进 git）。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
+- 角色模型在 `agent-graph.env` 里管：worker 分三档 `AGENT_TIER_FAST/DEFAULT/STRONG`（`agent:model:effort`），由票标签 `tier:*` > estimate 映射 `AGENT_TIER_BY_ESTIMATE` > default 选档，`AGENT_TIER_ESCALATE=1` 时被打回后自动升一档；reviewer 在 `AGENT_ROLE_REVIEWER_CMD`。都随仓库进 git。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
 - Linear 里有与仓库同名的 project，以及 `ready-for-agent` / `auto-impl` / `auto-failed` 三个标签（接入时 agent 会带你建）。
 
 ## 安全须知
@@ -45,4 +47,4 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试在 base 上必红、项目检查（类型/lint/守卫/定向测试）、CHECK。
 4. 红了打回工人修，最多 3 次；3 次不过视为 plan 错，转人。
 5. lane 1 绿 → 开 PR、等 CI、squash 自合、等部署、冒烟、票置 Done；lane 2 → 开 PR 等人批；lane 3 → gate 直接判红，转人。
-6. 每轮记账到 `.omc/agent-graph/runs.jsonl`，首跑通过率低就先改拆分与 spec，再谈加守卫。
+6. 每轮记账到 `.omc/agent-graph/runs.jsonl`（含 lane 与 tier），首跑通过率低就先改拆分与 spec，再谈加守卫；某档通过率低就调映射或升档。

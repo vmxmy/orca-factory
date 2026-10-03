@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Local run ledger: one JSON object per coordinator run, appended to
 # $AGENT_REPO_PATH/.omc/agent-graph/runs.jsonl (.omc is gitignored; this is machine-local data).
-# Row fields: ticket, lane, outcome(merged|escalated|no_ticket), first_gate(green|red), corrections,
-# ci_reds, pr, minutes, started_at, finished_at. Run via agent-graph.sh, which exports AGENT_REPO_PATH.
+# Row fields: ticket, lane, tier(fast|default|strong; the tier resolved at claim time), outcome(merged|escalated|no_ticket),
+# first_gate(green|red), corrections, ci_reds, pr, minutes, started_at, finished_at. Rows without tier (older runs)
+# are reported as tier=unknown. Run via agent-graph.sh, which exports AGENT_REPO_PATH.
 # Usage: ledger.sh append '<json>' | ledger.sh stats
 set -Eeuo pipefail
 
@@ -22,7 +23,9 @@ case "${1:-}" in
       "runs=\(length) merged=\(map(select(.outcome == "merged")) | length) escalated=\(map(select(.outcome == "escalated")) | length) no_ticket=\(map(select(.outcome == "no_ticket")) | length)",
       "avg_corrections=\(map(.corrections // empty) | avg) ci_reds=\(map(.ci_reds // 0) | add // 0) avg_minutes=\(map(.minutes // empty) | avg)",
       (map(select(.lane != null)) | group_by(.lane)[]
-        | "lane=\(.[0].lane) runs=\(length) first_gate_green_pct=\(map(.first_gate // empty) | pct)")
+        | "lane=\(.[0].lane) runs=\(length) first_gate_green_pct=\(map(.first_gate // empty) | pct)"),
+      (map(select(.outcome != "no_ticket")) | group_by(.tier // "unknown")[]
+        | "tier=\(.[0].tier // "unknown") runs=\(length) first_gate_green_pct=\(map(.first_gate // empty) | pct)")
     ' "$LEDGER"
     ;;
   *)

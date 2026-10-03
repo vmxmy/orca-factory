@@ -129,10 +129,16 @@ cmd_selftest() {
   git init -q "$SELFTEST_TMP"
   cmd_init "$SELFTEST_TMP"
   find "$SELFTEST_TMP/$DEST_REL" -type f | sed "s#^$SELFTEST_TMP/##" | sort
-  for f in constitution/constitution.md "${PROTECTED_CLAUSES[@]}" roles/coordinator.md roles/worker.md roles/reviewer.md roles/README.md; do
+  for f in constitution/constitution.md "${PROTECTED_CLAUSES[@]}" roles/intake.md roles/coordinator.md roles/worker.md roles/reviewer.md roles/README.md; do
     [[ -f "$SELFTEST_TMP/$DEST_REL/$f" ]] || fail "selftest: init did not produce $f"
   done
   bash "$SELFTEST_TMP/$DEST_REL/gate.test.sh"
+  # ledger: a row carrying tier must show up on a tier= line in stats (rows without tier report as unknown).
+  AGENT_REPO_PATH="$SELFTEST_TMP" bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" append \
+    '{"ticket":"T-1","lane":1,"tier":"fast","outcome":"merged","first_gate":"green","corrections":0}'
+  AGENT_REPO_PATH="$SELFTEST_TMP" bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats > "$SELFTEST_TMP/stats.out"
+  grep -q '^tier=fast runs=1 first_gate_green_pct=100$' "$SELFTEST_TMP/stats.out" || { cat "$SELFTEST_TMP/stats.out"; fail "selftest: ledger stats has no tier= line"; }
+  echo "selftest: ledger stats reports tier"
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }

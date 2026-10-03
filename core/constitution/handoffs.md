@@ -44,7 +44,7 @@ LANE      <1|2|3>
 - `--retry-of` 只接受失败的 dispatch。worker 自报 succeeded 被驳回 → 走 `--parent` 子任务：
   1. `orca orchestration task-update --id <task> --status failed --result '{"verdict":"<VERDICT 块>"}'`
   2. `orca orchestration task-create --run <run> --parent <task> --task-title "correction n/3: <unit>" --spec "<correction n/3 + VERDICT 块 + 修复步骤 + 原简报>"`
-  3. `orca orchestration worker-start --run <run> --task <child> --worktree path:<原 wt> --agent $AGENT_ROLE_WORKER_AGENT`
+  3. `orca orchestration worker-start --run <run> --task <child> --worktree path:<原 wt> --agent <agent> [--model <model> --effort <effort>]`，agent/model/effort 来自本轮档位（`workflow.md §6`：`AGENT_TIER_ESCALATE=1` 则比上一轮升一档，并评论 `correction n → 升至 <t>`）
   4. 通过后 `task-update --id <task> --status completed`
 - 只打回出错的单元，不打回整批。
 - 每单元 3 次封顶。追溯块缺失计一次，CI 红计一次，review 打回计一次。第 4 次 = plan 错，停，转人。

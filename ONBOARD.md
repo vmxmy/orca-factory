@@ -17,7 +17,7 @@
 | Linear 已连接 | `orca linear team list --json \| jq -e '.result.teams \| length > 0'` | 退出 0 | Orca Settings → Integrations 连接 Linear |
 | 远端与 main | `git -C $REPO remote get-url origin`；`git -C $REPO fetch origin main` | 是 GitHub 仓库，`origin/main` 存在 | 默认分支不是 main 时告诉用户：core 脚本固定用 `origin/main`（gate.sh 的 `GATE_BASE`、install.sh 的 precheck），需要用户先改默认分支或接受这一限制 |
 
-另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker / reviewer 的模型在 `agent-graph.env` 的 `AGENT_ROLE_*` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖。
+另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker 的模型按档位在 `agent-graph.env` 的 `AGENT_TIER_*` 里设，reviewer 在 `AGENT_ROLE_REVIEWER_CMD` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖。
 
 ## 1. 调研目标仓库（只读）
 
@@ -50,7 +50,7 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 | 部署工作流名 | `.github/workflows` 里 push main 触发部署的那个文件的 `name:`，原样（含空格） | `AGENT_DEPLOY_WORKFLOW` |
 | 冒烟 URL | README/部署工作流里的线上域名；一个 200 页面 + 一个未登录应 401 的 API 最稳 | `AGENT_SMOKE_CMD` |
 | 是否 monorepo / 子目录 | 命令要 `cd` 到哪；gate.project.sh 里相关测试路径要去前缀 | gate.project.sh 路径映射 |
-| 角色后端 | worker 用哪个 Orca agent（默认 `codex`；`orca agent-context` 或 Orca Settings → Agents 看已启用的 id）、是否指定模型（默认空）、lane 2 异构审查命令（默认 `codex exec review --base origin/main --json`，不要审查就留空） | `AGENT_ROLE_WORKER_AGENT`、`AGENT_ROLE_WORKER_MODEL`、`AGENT_ROLE_REVIEWER_CMD` |
+| 角色后端 | worker 三档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、estimate→档位映射（默认 `1-2:fast 3-5:default 8-:strong`）、lane 2 异构审查命令（默认 `codex exec review --base origin/main --json`，不要审查就留空） | `AGENT_TIER_FAST/DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_BY_ESTIMATE`、`AGENT_ROLE_REVIEWER_CMD` |
 
 glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，`*` 可跨 `/`，所以 `spec/*` 覆盖整棵子树。
 
@@ -81,6 +81,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 4. lane 2 / lane 3 路径增补：把你推导的两组 glob 列出来，问有没有要加的（例如他们心里的「不能让机器碰的目录」）。
 5. 没有自动部署时冒烟怎么做：可留空（`AGENT_DEPLOY_WORKFLOW` / `AGENT_SMOKE_CMD` 都为空，coordinator 跳过上线步）；有自动部署就确认工作流名与冒烟 URL。
 6. 工人安装命令是否正确：把你推导的 `AGENT_INSTALL_CMD` 原样给用户看。
+7. 模型档位：三档（fast / default / strong）各用什么 `agent:model:effort`（列出模板默认值 `codex:gpt-6-astra:low` / `codex:gpt-6-astra:medium` / `codex:gpt-6.1-sol:high`，问要不要改）；是否开自动升档（`AGENT_TIER_ESCALATE`，默认 1：被打回一次后下一轮 correction 升一档）。
 
 把答复记下，后续每条写入配置时注明「依据：用户答复」。
 
@@ -93,7 +94,7 @@ $FACTORY/bin/orca-factory init $REPO
 
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
 
-- `agent-graph.env`：11 个 `AGENT_*` 变量 + 3 个 `AGENT_ROLE_*` 变量 + 两组 glob。UUID 行尾注释写上人类可读名字。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。
+- `agent-graph.env`：11 个 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。UUID 行尾注释写上人类可读名字。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。
 - `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。
 - `COORDINATOR.project.md`：lane 判据表、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 
@@ -155,10 +156,11 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 
 1. 审阅并合并 PR（这是 lane 2 改动，必须人批）。
 2. 合并后在主检出跑 `scripts/agent-gates/install.sh`：创建**禁用**的定时任务 `agent-linear-scan (<repo>)`（每 5 分钟，precheck 180s，provider claude），并打印 automation id。
-3. 建一张小票试跑：在该 project 里，Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动。`orca linear save-issue --team <KEY> --project <project-id> --state Todo --label ready-for-agent --title "..." --body-file -`。
-4. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
-5. 满意后 `orca automations edit <id> --enabled`。
-6. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。
+3. 推荐用 intake 建票：在 Orca 里对该仓库开一个 claude 标签页，prompt `按 scripts/agent-gates/roles/intake.md 工作`，把需求说给它；它只读仓库、只写 Linear，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
+4. 建一张小票试跑：在该 project 里，Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动（用 intake 建，或手动 `orca linear save-issue --team <KEY> --project <project-id> --state Todo --label ready-for-agent --title "..." --body-file -`）。
+5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
+6. 满意后 `orca automations edit <id> --enabled`。
+7. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。
 
 ## 7. 禁止事项
 

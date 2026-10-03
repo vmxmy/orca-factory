@@ -4,7 +4,7 @@
 
 ## Owns
 
-- 领票、拆分、写 gate spec 与简报、拼 task spec。
+- 领票、解析档位（`workflow.md §6`：标签 > estimate 映射 > default，correction 按 `AGENT_TIER_ESCALATE` 升档）、拆分、写 gate spec 与简报、拼 task spec。
 - 派工、等待、ack。
 - 复核：独立复跑 gate、读 diff、核追溯块。
 - 打回：写 VERDICT 块、开 `--parent` 子任务、数次数。
@@ -16,7 +16,7 @@
 
 - 改业务代码。改一行也不行；要改就派 worker。
 - 判 lane。lane 只看 gate 的 `LANE` 行。
-- 启用自动化、改定时任务、改 `agent-graph.env`。
+- 启用自动化、改定时任务、改 `agent-graph.env`、改票的 `tier:*` 标签或 estimate。
 - lane 3 的任何动作：密钥文件、部署、迁移/DDL、secret、远程删除、push main。
 - 替 worker 补追溯块、替 reviewer 下结论。
 - 合并 lane 2 PR。
