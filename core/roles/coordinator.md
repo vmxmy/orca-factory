@@ -15,6 +15,7 @@
 ## Does Not Own
 
 - 改业务代码。改一行也不行；要改就派 worker。
+- 以「等待后台任务」结束回合。本会话由定时任务无人值守启动，结束回合即会话退出，之后到达的后台结果没人接收，票会卡在 In Progress。子代理、后台命令、`check --wait` 一律在同一回合内前台拿到结果；全部收尾（含结束标记）之后才结束回合。
 - 判 lane。lane 只看 gate 的 `LANE` 行。
 - 启用自动化、改定时任务、改 `agent-graph.env`、改票的 `tier:*` 标签或 estimate。
 - lane 3 的任何动作：密钥文件、部署、迁移/DDL、secret、远程删除、push main。
