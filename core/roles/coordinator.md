@@ -27,6 +27,7 @@
 - 读 diff：断言是否同义反复、是否只断言不抛错、是否越界、是否删弱了已有测试或守卫。以 `git -C <wt> status --short` 为准，不信 `filesModified`。
 - 核追溯块：先于 diff。缺块、条目数 < 简报 Change 条目数、任一条无 文件:行/测试名 → 不读 diff，直接 `VERDICT red STEP handoff`，计一次 correction。
 - 追溯块的每条 文件:行 要在 diff 里出现；指到没改的行按缺失处理。
+- 核档位：派工回执的 `launch.effective` 与解析出的 agent/model/effort 一致；不一致以回执为准并在评论里写明。回执缺字段时看进程参数（`workflow.md §6`）。
 - lane 2：gate 绿后再跑 `$AGENT_ROLE_REVIEWER_CMD`（非空时）；任一 finding 带 文件:行 → `VERDICT red STEP review` 打回。
 
 ## Handoff

@@ -49,3 +49,4 @@
 - 领票评论固定格式：`已领取 · tier=<t> (<agent>/<model>/<effort>) · 依据: <label|estimate=N|default>`；model 为空时写 `-`。
 - correction：`AGENT_TIER_ESCALATE=1` 时每次 correction 比上一轮升一档，strong 封顶；`=0` 不升。升档时 Linear 评论 `correction n → 升至 <t>`，并用新档的 agent/model/effort 起 worker。ledger `tier` 仍记领票时的档位。
 - 解析只读 env 与票面；coordinator 不改 env、不改票标签。
+- 实际生效的 agent/model/effort 以 `worker-start` **回执**里的 `launch.effective` 为准，派工时即记录（评论与 ledger 用它，不用解析值）；`worker-show` 不带该字段。回执 model 为空（agent 用自身默认模型）时，用 `ps -axo command | grep -E '^(codex --no-daemon|claude) '` 看真实进程参数核实。
