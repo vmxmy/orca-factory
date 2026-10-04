@@ -50,6 +50,6 @@ export type View = 'swarm' | 'task'
 
 declare module 'claude-code' {
   interface PluginState {
-    'swarm-board': { board: Board; view: View; showQueue: boolean; detail: boolean }
+    'swarm-board': { board: Board; view: View; showQueue: boolean; detail: boolean; now: number; lastTickAt: number }
   }
 }
