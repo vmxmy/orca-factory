@@ -148,6 +148,20 @@ const failedFixture = async ($: any, on: any, count = 1) => {
   return { refresh, reads: () => reads.slice(), setComments: (value: unknown, exitCode = 0) => { comments = value; commentExitCode = exitCode } }
 }
 
+test('health badge is green with no auto-failed tickets', async ($, on) => {
+  await failedFixture($, on, 0)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /🟢 需要人 0/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('health badge is red with three auto-failed tickets', async ($, on) => {
+  await failedFixture($, on, 3)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /🔴 需要人 3/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('needs-you cards show the latest handoff and intake guidance in both views', async ($, on) => {
   await failedFixture($, on)
   const ui = await mount($, 'terminal')
