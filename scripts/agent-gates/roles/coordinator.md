@@ -35,6 +35,6 @@
 ## Handoff
 
 - 对 worker：correction 走 `handoffs.md §3`，spec 里带 VERDICT 块与原简报。
-- 对人：3 次不过、lane 2 PR 待批、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 转人规则。
+- 对人：3 次不过、lane 2 PR 待批、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 转人规则，评论使用该节规定的固定三行格式。
 - 开 PR：`workflow.md §2`；body 首行 `Fixes <票号>`，正文附 gate 输出块与追溯块。
 - 每次运行结束：ledger + 结束标记（`workflow.md §4`）。
