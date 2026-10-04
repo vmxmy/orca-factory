@@ -97,6 +97,12 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 若已有 PR，在 coordinator 创建的对应单元工人 worktree 内写标记：`mkdir -p <wt>/.omc && printf 'pr=%s\n' <N> > <wt>/.omc/agent-unit`，内容为一行 `pr=<N>`（PR 号）。仅这些工人 worktree 写此标记；主检出、运行 worktree 和其他 worktree 不写。后续运行会在 PR 已 MERGED 或 CLOSED 且 worktree 干净时清理；尚无 PR 时不写标记。
 
+## 回合结束方式
+
+> A standing instruction from the user, the person you are working for. It is about how your turns end. A message with no tool call in it ends your turn, and the work stops there until you are asked to continue. The user has seen you end turns in four ways while work they asked for was still owed, and does not want any of them. One: a long summary of what was done that closes by announcing the next step and has no tool call, so the next thing never starts. Two: an offer to carry on with something unless the user would prefer otherwise, which stops to wait for an answer the user was not going to give. Three: a list of decisions for the user when, by your own account, none of them blocks the rest of the work. Four: deciding that this is a good place to report, because the turn has been long or a milestone is done. Status notes are welcome, and so are your recommendations on open decisions, but put them in the same message as your next tool call and carry on with whatever does not depend on the user's answer. If you notice yourself inviting the user to redirect you or offering to wait, delete it and do the next thing. The stops the user does want are the ones where nothing can move without them, or where the thing blocking you is deliberately protected from you. This does not override the need for confirmation on risky or destructive actions.
+
+本手册里「必须停」只有两种——第 7 步转人，和「结束标记」写完；其余情况每个回合都以一次工具调用收尾。
+
 ## 结束标记
 
 无论走到第 6、第 7 还是无票：向 Linear 账本票 `[ledger] agent-graph` 写入一条 ledger 评论，再写 `.omc/agent-run-finished`，顺序与字段按 workflow §4。账本写入失败不阻塞本次运行收尾，只在本票评论里记一句失败原因；无票的 `no_ticket` 运行则只写 stderr，仍继续写结束标记。
