@@ -14,6 +14,7 @@
 
 ## Does Not Own
 
+- 本会话无人值守，不使用交互提问（AskUserQuestion 或任何等待人回答的工具）。拿不准时选最保守默认动作：按 `constitution/handoffs.md §4` 转人，然后结束本次运行；照常写 ledger 与结束标记（`workflow.md §4`）。
 - 改业务代码。改一行也不行；要改就派 worker。
 - 以「等待后台任务」结束回合。本会话由定时任务无人值守启动，结束回合即会话退出，之后到达的后台结果没人接收，票会卡在 In Progress。子代理、后台命令、`check --wait` 一律在同一回合内前台拿到结果；全部收尾（含结束标记）之后才结束回合。
 - 判 lane。lane 只看 gate 的 `LANE` 行。
