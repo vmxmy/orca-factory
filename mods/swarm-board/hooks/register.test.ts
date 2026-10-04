@@ -27,3 +27,10 @@ test('queue disclosure toggles in swarm view', async $ => {
   expect(await ui.find({ type: 'Button', text: /queued/ })).toBeDefined()
   await ui.unmount()
 })
+test('automation button remains available after toggle', async $ => {
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Button', text: /auto/ })).toBeDefined()
+  await ui.press({ key: 'toggle-auto' })
+  expect(await ui.find({ type: 'Button', text: /auto/ })).toBeDefined()
+  await ui.unmount()
+})
