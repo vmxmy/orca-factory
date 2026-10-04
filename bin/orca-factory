@@ -445,8 +445,11 @@ case "$*" in
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
-      overrun-state-fail) echo '{"ok":false}'; exit 7 ;;
       overrun-*)
+        if [[ "$PRECHECK_MODE" == overrun-state-fail ]] &&
+          [[ "$(grep -c '^linear issue TEST-1 --json$' "$PRECHECK_TEST_DIR/precheck.calls")" == 3 ]]; then
+          echo '{"ok":false}'; exit 7
+        fi
         jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),state:{type:(if $mode == "overrun-completed" then "completed" else "started" end)}}}}' ;;
       stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
