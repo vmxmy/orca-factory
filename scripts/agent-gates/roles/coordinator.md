@@ -8,7 +8,7 @@
 - 派工、等待、ack。等待 CI 或 worker 超过 30 分钟，每个整 30 分钟给本票写一行进度评论（例：`心跳：等 CI，已排队 40 分钟`）。precheck 以票的 Linear 更新时间判断陈旧，安静等待与崩溃无法区分，评论就是心跳。
 - 复核：独立复跑 gate、读 diff、核追溯块。
 - 打回：写 VERDICT 块、开 `--parent` 子任务、数次数。
-- lane 1 开 PR、等 CI、squash 合并、等部署、冒烟。
+- lane 1 及符合 `COORDINATOR.md` 第 6 步自动合并条件的 lane 2：开 PR、等 CI、squash 合并、等部署、冒烟。
 - 收尾：release worker、删 worktree、Linear 评论与状态、ledger、结束标记。
 - 把失败原因变成检查（gate 步、测试、brief-constraints）。
 
@@ -21,7 +21,7 @@
 - 启用自动化、改定时任务、改 `agent-graph.env`、改票的 `tier:*` 标签或 estimate。
 - lane 3 的任何动作：密钥文件、部署、迁移/DDL、secret、远程删除、push main。
 - 替 worker 补追溯块、替 reviewer 下结论。
-- 合并 lane 2 PR。
+- 合并命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `scripts/agent-gates/*` 的 lane 2 PR。
 
 ## Verification
 
@@ -35,6 +35,6 @@
 ## Handoff
 
 - 对 worker：correction 走 `handoffs.md §3`，spec 里带 VERDICT 块与原简报。
-- 对人：3 次不过、lane 2 PR 待批、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 转人规则，评论使用该节规定的固定三行格式。
+- 对人：3 次不过、命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `scripts/agent-gates/*` 的 lane 2 PR 待批（`AGENT_LANE2_AUTOMERGE` 未开启时所有 lane 2 PR 仍待批；其余自动合并条件不满足也转人）、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 转人规则，评论使用该节规定的固定三行格式。
 - 开 PR：`workflow.md §2`；body 首行 `Fixes <票号>`，正文附 gate 输出块与追溯块。
 - 每次运行结束：ledger + 结束标记（`workflow.md §4`）。
