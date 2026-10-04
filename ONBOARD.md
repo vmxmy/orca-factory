@@ -50,7 +50,7 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 | 部署工作流名 | `.github/workflows` 里 push main 触发部署的那个文件的 `name:`，原样（含空格） | `AGENT_DEPLOY_WORKFLOW` |
 | 冒烟 URL | README/部署工作流里的线上域名；一个 200 页面 + 一个未登录应 401 的 API 最稳 | `AGENT_SMOKE_CMD` |
 | 是否 monorepo / 子目录 | 命令要 `cd` 到哪；gate.project.sh 里相关测试路径要去前缀 | gate.project.sh 路径映射 |
-| 角色后端 | worker 三档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、estimate→档位映射（默认 `1-2:fast 3-5:default 8-:strong`）、lane 2 异构审查命令（默认 `codex exec review --base origin/main --json`，不要审查就留空） | `AGENT_TIER_FAST/DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_BY_ESTIMATE`、`AGENT_ROLE_REVIEWER_CMD` |
+| 角色后端 | worker 三档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、estimate→档位映射（默认 `1-2:fast 3-5:default 8-:strong`）、lane 2 异构审查命令（默认 `codex exec --json`，不要审查就留空） | `AGENT_TIER_FAST/DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_BY_ESTIMATE`、`AGENT_ROLE_REVIEWER_CMD` |
 
 glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，`*` 可跨 `/`，所以 `spec/*` 覆盖整棵子树。
 

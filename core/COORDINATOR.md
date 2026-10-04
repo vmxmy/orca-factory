@@ -40,7 +40,7 @@ orca orchestration worker-start --run <run> --task <task> --worktree new-top-lev
 1. 追溯块（handoffs §1）：body 缺 `TRACE` 块、或条目数 < 简报 Change 条目数、或任一条没有 文件:行/测试名 → 不读 diff，直接 `VERDICT red STEP handoff REASON 追溯块缺失`，计一次 correction，进第 4 步。
 2. 独立复跑 gate（engineering §4）：`git -C <wt> fetch origin && scripts/agent-gates/gate.sh <wt> .omc/tmp/<ID>/<unit>.gate.spec`。第一次结果记为 ledger `first_gate`。
 3. 读 diff（roles/coordinator.md Verification）：追溯块每条 文件:行 必须在 diff 里；同义反复断言、越界、削弱守卫 → 红。
-4. `LANE 2` 且 `$AGENT_ROLE_REVIEWER_CMD` 非空：`cat roles/reviewer.md .omc/tmp/<ID>/<unit>.brief.md | (cd <wt> && bash -c "$AGENT_ROLE_REVIEWER_CMD -")`（末尾 `-` 让 codex 从 stdin 读审查指令），输出 JSON `verdict == red` → `STEP review` 打回。
+4. `LANE 2` 且 `$AGENT_ROLE_REVIEWER_CMD` 非空：`cat roles/reviewer.md .omc/tmp/<ID>/<unit>.brief.md | (cd <wt> && bash -c "$AGENT_ROLE_REVIEWER_CMD -")`（末尾 `-` 让 codex 从 stdin 读审查指令），输出 JSON `verdict == red` → `STEP review` 打回。审查员在 worktree 里自行执行 `git diff origin/main...HEAD`。
 
 ## 4. 打回
 
