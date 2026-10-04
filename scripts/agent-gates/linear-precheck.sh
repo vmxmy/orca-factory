@@ -87,38 +87,38 @@ claim_uncertain() {
   return 1
 }
 
-# Success means positively expired; a live or uncertain claim returns false.
+# Return 0 for expired, 1 for live, 2 for uncertain (do not attempt further recovery).
 expired_claim() {
   local claim_id="$1" out age runs run tasks cards cursor="" matches=""
   claim_reason=""
   claim_failures=0
-  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 2; fi
   if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
-    claim_uncertain 'comments truncated'; return 1
+    claim_uncertain 'comments truncated'; return 2
   fi
   if ! age="$(jq -r '
     .result.comments | if type != "array" then error("comments missing") else . end
     | map(select((.body // "") | startswith("已领取"))
       | .createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
     | if length == 0 then false else (now - max) > 1200 end' <<<"$out" 2>/dev/null)"; then
-    claim_uncertain 'cannot parse claim comments'; return 1
+    claim_uncertain 'cannot parse claim comments'; return 2
   fi
   [[ "$age" == true ]] || return 1
   claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out")" || {
-    claim_uncertain 'cannot count claim failures'; return 1;
+    claim_uncertain 'cannot count claim failures'; return 2;
   }
   # Follow pagination so a run on a later page is never treated as absent.
   while :; do
     if [[ -n "$cursor" ]]; then
-      if ! out="$(claim_read orchestration run-list --cursor "$cursor")"; then return 1; fi
+      if ! out="$(claim_read orchestration run-list --cursor "$cursor")"; then return 2; fi
     else
-      if ! out="$(claim_read orchestration run-list)"; then return 1; fi
+      if ! out="$(claim_read orchestration run-list)"; then return 2; fi
     fi
     if ! runs="$(jq -r --arg id "$claim_id" '
       .result.runs | if type != "array" then error("runs missing") else . end
       | .[] | select(.objective | startswith($id)) | .id
       | if type != "string" or length == 0 then error("run id missing") else . end' <<<"$out" 2>/dev/null)"; then
-      claim_uncertain 'cannot parse runs'; return 1
+      claim_uncertain 'cannot parse runs'; return 2
     fi
     matches="${matches}${matches:+ }$runs"
     cursor="$(jq -r '.result.nextCursor // empty' <<<"$out")"
@@ -129,24 +129,72 @@ expired_claim() {
     return 0
   fi
   for run in $matches; do
-    if ! out="$(claim_read orchestration task-list --run "$run")"; then return 1; fi
+    if ! out="$(claim_read orchestration task-list --run "$run")"; then return 2; fi
     if ! tasks="$(jq -r '.result.tasks | if type == "array" then length else error("tasks missing") end' <<<"$out" 2>/dev/null)"; then
-      claim_uncertain 'cannot parse tasks'; return 1
+      claim_uncertain 'cannot parse tasks'; return 2
     fi
     [[ "$tasks" == 0 ]] || return 1
   done
-  if ! out="$(claim_read worktree ps)"; then return 1; fi
+  if ! out="$(claim_read worktree ps)"; then return 2; fi
   if jq -e '.result.hostScope.omittedHostIds | type == "array" and length > 0' <<<"$out" >/dev/null; then
-    claim_uncertain 'worktree hosts omitted'; return 1
+    claim_uncertain 'worktree hosts omitted'; return 2
   fi
   if ! cards="$(jq -r --arg id "$claim_id" '
     if .result.truncated == true then error("worktrees truncated") else .result.worktrees end
     | if type != "array" then error("worktrees missing") else . end
     | map(select(.linkedLinearIssue == $id)) | length' <<<"$out" 2>/dev/null)"; then
-    claim_uncertain 'cannot parse complete worktree list'; return 1
+    claim_uncertain 'cannot parse complete worktree list'; return 2
   fi
   [[ "$cards" == 0 ]] || return 1
   claim_reason='编排运行无任务且没有关联卡片'
+}
+
+# Read the whole snapshot before deciding: partial/invalid evidence must never mutate a ticket.
+stuck_worker() {
+  local claim_id="$1" out worktrees
+  worker_evidence=""
+  if ! out="$(claim_read worktree ps)"; then return 1; fi
+  if ! worktrees="$(jq -ce --arg id "$claim_id" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete worktree list") else .worktrees end
+    | if type != "array" then error("worktrees missing") else . end
+    | map(select(.linkedLinearIssue == $id) | .worktreeId
+      | if type != "string" or length == 0 then error("worktree id missing") else . end)
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete worker worktree list'; return 1
+  fi
+  [[ "$worktrees" != '[]' ]] || return 1
+  if ! out="$(claim_read terminal list)"; then return 1; fi
+  if ! worker_evidence="$(jq -r --argjson worktrees "$worktrees" \
+    --argjson minutes "${AGENT_WORKER_IDLE_MINUTES:-15}" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete terminal list") else . end
+    | if (.terminals | type) != "array" then error("terminals missing") else . end
+    | if .totalCount != null and .totalCount != (.terminals | length)
+      then error("terminal count mismatch") else .terminals end
+    | map(
+        if (.worktreeId | type) != "string" then error("terminal worktree id missing") else . end
+        | select(.worktreeId as $id | $worktrees | index($id))
+        | if (.lastOutputAt | type) != "number" or (.preview | type) != "string"
+          then error("terminal output missing") else . end
+        | . + {idle: ((now - (.lastOutputAt / 1000)) / 60)})
+    | map(select(.idle > $minutes and (.preview | test("Sign in|ask timeout|worker_done|failed|登录"))))
+    | if length == 0 then empty else .[0]
+      | "空闲 \(.idle | floor) 分钟，preview 末尾: \(.preview[-300:] | gsub("[\\r\\n]"; " "))" end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete terminal list/worker output'; return 1
+  fi
+  [[ -n "$worker_evidence" ]]
+}
+
+mark_stuck_worker() {
+  ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
+  ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
+  ocall linear comment add "$1" --body "转人: 工人长时间无输出且命中卡点特征（worktree/PR 若存在均保留）
+证据: 票据 $1 的终端${worker_evidence}
+需要你: 检查票据 $1 对应工人的登录或运行状态" >/dev/null || exit 3
 }
 
 release_claim() {
@@ -173,7 +221,12 @@ for id in $in_flight_ids; do
   elif expired_claim "$id"; then
     release_claim "$id"
   else
-    live+=("$id")
+    claim_status=$?
+    if [[ "$claim_status" == 1 ]] && stuck_worker "$id"; then
+      mark_stuck_worker "$id"; stale_ids+=("$id")
+    else
+      live+=("$id")
+    fi
   fi
 done
 in_flight=${#live[@]}
