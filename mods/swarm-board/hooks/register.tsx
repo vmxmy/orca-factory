@@ -41,6 +41,8 @@ const board = atom({ plugin: 'swarm-board', key: 'board' } as const, empty)
 const view = atom({ plugin: 'swarm-board', key: 'view' } as const, 'task' as View)
 const showQueue = atom({ plugin: 'swarm-board', key: 'showQueue' } as const, false)
 const detail = atom({ plugin: 'swarm-board', key: 'detail' } as const, false)
+const nowAtom = atom({ plugin: 'swarm-board', key: 'now' } as const, 0)
+const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0)
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -364,6 +366,7 @@ async function tick($: any, handoffs: Map<string, string>) {
   const b = await refresh($, handoffs)
   if (b.error && b.inFlight.length === 0) { const old = await read($, board); b.inFlight = old.inFlight; b.queue = old.queue; b.prs = old.prs; b.agents = old.agents; b.todayCost = old.todayCost }
   await update($, board, () => b)
+  await update($, lastTickAt, () => Date.now())
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
 }
 
@@ -402,15 +405,22 @@ export const register: Register = on => {
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     void tick($, handoffs)
-    if (!polling) { polling = true; $.clock.every(REFRESH_MS, () => tick($, handoffs)) }
+    if (!polling) {
+      polling = true
+      await update($, nowAtom, () => Date.now())
+      $.clock.every(REFRESH_MS, () => tick($, handoffs))
+      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
+    }
     return { text: '蜂群看板已打开。' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [b, v, q, d] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail)])
+    const [b, v, q, d, nowMs, tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
     const automation = (b as Board).automation
     const now = Date.now()
+    const remainingSec = tickMs > 0 ? Math.max(0, Math.ceil((tickMs + REFRESH_MS - nowMs) / 1000)) : 0
+    const countdown = tickMs > 0 ? (remainingSec > 0 ? '下次刷新 ' + remainingSec + 's' : '刷新中') : ''
     const cols = Math.max(44, (e.props?.bodyColumns ?? e.viewport?.columns ?? 100) - 4)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
@@ -530,7 +540,7 @@ export const register: Register = on => {
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
           {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} /> : <Text dimColor>auto: 未安装</Text>}
-          <Text dimColor>{b.at ? 'updated ' + b.at : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
+          <Text dimColor>{b.at ? 'updated ' + b.at + (countdown ? ' · ' + countdown : '') : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 

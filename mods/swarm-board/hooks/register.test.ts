@@ -85,6 +85,13 @@ test('missing automation shows an uninstalled notice without a toggle', async ($
   await ui.unmount()
 })
 
+test('refresh countdown shows after the first tick', async ($, on) => {
+  await automationFixture($, on)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /下次刷新/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('ticket with no worker lives in the implement lane', async () => {
   const t: Ticket = { id: 'ZII-999', title: '', state: 'started', labels: [], priority: 0, updatedAt: '', claimedAt: '' }
   expect(laneStage(t, [])).toBe(1)
