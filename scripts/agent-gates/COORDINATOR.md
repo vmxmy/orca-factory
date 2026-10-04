@@ -112,6 +112,9 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 ## 结束标记
 
+- 除无票的 `no_ticket` 运行外，所有结局无论成败，coordinator 在写 ledger 前，先给当前票写一行评论 `结束: <原因>`。
+- `<原因>` 只取固定词之一：`merged`、`escalated`、`pr-opened`、`corrections-exhausted`、`error: <一句话>`；`no_ticket` 运行不写这条评论。
+- 写这条评论失败时，只在 stderr 记一句，不阻塞写 ledger 与结束标记。
 - 每张已领票走到第 6 或第 7 时各写一条 ledger 评论（按 workflow §4 的字段，一张票一行）。账本写入失败不阻塞本票收尾，只在本票评论里记一句失败原因。
 - 整个会话只在**所有已领票**都走完第 6 或第 7 之后，才写一次 `.omc/agent-run-finished`；无票的 `no_ticket` 运行照旧只写 stderr 后写结束标记。
 - 等待期间不得因为某一张票先完成就提前结束会话；同一会话里只要还有未完结的已领票，就按第 2 步末尾的等待循环继续前台轮询，直到全部收尾（本会话由定时任务无人值守启动，提前结束 = 后续 worker_done 没人接收，详见 `roles/coordinator.md` 的 "Does Not Own" 第二条「不以等待后台任务结束回合」）。
