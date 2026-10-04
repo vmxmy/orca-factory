@@ -17,6 +17,20 @@ test('lanes draw by default', async $ => {
   expect(await ui.find({ type: 'Button', text: /lanes/ })).toBeDefined()
   await ui.unmount()
 })
+test('default lane view shows 实现中 head with its emoji', async $ => {
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /🔨 实现中/ })).toBeDefined()
+  await ui.unmount()
+})
+test('wide lane view shows every lane head with its emoji', async $ => {
+  const ui = await $.ui.mount({
+    plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board',
+    props: { title: 'Swarm', bodyColumns: 160 },
+  })
+  expect(await ui.find({ type: 'Text', text: /🙋 需要人/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✅ 今日完成/ })).toBeDefined()
+  await ui.unmount()
+})
 test('view toggle shows agents card', async $ => {
   const ui = await mount($, 'terminal')
   await ui.press({ key: 'view-swarm' })
