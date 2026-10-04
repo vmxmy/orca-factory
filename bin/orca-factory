@@ -431,6 +431,12 @@ LEDGER_SLEEP
 set -eu
 printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
 case "$*" in
+  'linear list-issues '*--label\ auto-failed*)
+    case "$PRECHECK_MODE" in
+      scope-overlap|scope-separate) echo '{"ok":false,"error":{"code":"backlog_unavailable"}}'; exit 7 ;;
+      scope-missing) echo '{"ok":true,"result":{}}' ;;
+      *) echo '{"ok":true,"result":{"issues":[{"state":{"type":"started"}},{"state":{"type":"unstarted"}},{"state":{"type":"completed"}},{"state":{"type":"canceled"}}]}}' ;;
+    esac ;;
   'linear list-issues '*--label\ auto-impl*)
     echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
   'linear list-issues '*--label\ ready-for-agent*)
@@ -438,6 +444,7 @@ case "$*" in
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
+      stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
       scope-overlap)
@@ -521,7 +528,7 @@ case "${PRECHECK_MODE:-}" in
 esac
 PRECHECK_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
-    for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
+    for PRECHECK_MODE in stale missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
                          orphan orphan-pr orphan-fresh orphan-limit orphan-fail \
                          worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated \
                          scope-overlap scope-separate scope-missing scope-fail; do
@@ -531,10 +538,22 @@ PRECHECK_GH
       bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
         || precheck_status=$?
       case "$PRECHECK_MODE" in
-        scope-overlap) ;;
+        scope-overlap) [[ "$precheck_status" == 1 ]] || fail "selftest: health changed blocked exit status" ;;
         *) [[ "$precheck_status" == 0 ]] || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; } ;;
       esac
+      grep -Eq '^health=live=[0-9]+ max=[0-9]+ released=[0-9]+ escalated=[0-9]+ failed_backlog=([0-9]+|[?])$' "$SELFTEST_TMP/precheck.out" || fail "selftest: precheck health summary missing or malformed ($PRECHECK_MODE)"
+      health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2'
       case "$PRECHECK_MODE" in
+        missing|empty|orphan|worker-stuck) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
+        stale|limit|orphan-limit|worker-stuck-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
+        scope-overlap|scope-separate|scope-missing) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=?' ;;
+      esac
+      grep -Fxq "health=$health_expected" "$SELFTEST_TMP/precheck.out" || fail "selftest: incorrect health counts ($PRECHECK_MODE)"
+      grep -q '^linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: backlog read missing project fence"
+      case "$PRECHECK_MODE" in
+        stale)
+          grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: old claim not stale"
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: old claim not escalated" ;;
         missing|empty)
           grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim did not reset Todo ($PRECHECK_MODE)"
           grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim kept auto-impl"
@@ -602,6 +621,7 @@ PRECHECK_GH
       esac
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
+    echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
     echo "selftest: precheck releases orphaned claims"
     echo "selftest: precheck handles stuck workers"

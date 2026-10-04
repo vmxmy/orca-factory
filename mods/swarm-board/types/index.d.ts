@@ -45,6 +45,10 @@ export type Board = {
   stats: string[]
   /** Sum of est. cost of today's in-flight and done tickets; 0 when nothing is known. */
   todayCost: number
+  /** True once an `orca automations list` call confirmed presence/absence; sticky across failures. */
+  automationKnown: boolean
+  /** ms epoch of the last refresh whose Linear read succeeded; 0 before the first one. */
+  lastSuccessAt: number
 }
 export type View = 'swarm' | 'task'
 

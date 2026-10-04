@@ -60,7 +60,10 @@ const automationFixture = async ($: any, on: any, installed = true, failure = ''
       expect(argv[4]).toBe(enabled ? '--disabled' : '--enabled')
       enabled = !enabled
     }
-    return { value: { stdout: JSON.stringify({ ok: true, result: { automations: installed ? [{ id: 'auto-1', name: 'agent-linear-scan (test-repo)', enabled }] : [] } }), stderr: '', exitCode: 0 } }
+    const automations = installed
+      ? [{ id: 'auto-1', name: 'agent-linear-scan (test-repo)', enabled }]
+      : [{ id: 'other-1', name: 'unrelated-automation', enabled: true }]
+    return { value: { stdout: JSON.stringify({ ok: true, result: { automations } }), stderr: '', exitCode: 0 } }
   })
   await $.command.run({ command: 'swarm', args: '' })
   await ready
@@ -223,6 +226,50 @@ test('incomplete handoff comments fall back to their first line in both views', 
     await ui.press({ key })
     expect(await ui.find({ type: 'Text', text: /^转人: 等待人工确认$/ })).toBeDefined()
   }
+  await ui.unmount()
+})
+
+test('refresh countdown stays within one refresh window', async ($, on) => {
+  await automationFixture($, on)
+  const ui = await mount($, 'terminal')
+  // Guards against the old bug that printed epoch seconds (10+ digits).
+  expect(await ui.find({ type: 'Text', text: /下次刷新 ([1-9]?\d|60)s/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('linear rate-limit response keeps the last-good ticket list and warns in the header', async ($, on) => {
+  let linearOk = true
+  let refreshed: () => void = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
+  on('process.run', (_: any, e: any) => {
+    if (e.argv[1] === 'linear' && e.argv[2] === 'list-issues') {
+      if (!linearOk) return { value: { stdout: JSON.stringify({ ok: false, error: 'Rate limit exceeded' }), stderr: '', exitCode: 0 } }
+      return { value: { stdout: JSON.stringify({ ok: true, result: { issues: [
+        { identifier: 'ZII-900', title: '限流前的在途', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], updatedAt: '2026-10-01T00:00:00Z' },
+      ] } }), stderr: '', exitCode: 0 } }
+    }
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  const refresh = async () => { const ready = new Promise<void>(resolve => { refreshed = resolve }); await $.command.run({ command: 'swarm', args: '' }); await ready }
+  await refresh()
+  const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
+  expect(await ui.find({ type: 'Text', text: /ZII-900/ })).toBeDefined()
+  linearOk = false
+  await refresh()
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /ZII-900/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Linear 限流，沿用旧数据/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('ticket in both failed and inflight shows only in the 需要人 lane', async ($, on) => {
+  await failedFixture($, on)
+  const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
+  expect(await ui.find({ type: 'Text', text: /🔨 实现中 \(0\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🙋 需要人 \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
 
