@@ -16,6 +16,8 @@ intake 与 coordinator 永不同会话：intake 只写 Linear、只读仓库，�
 
 ## task spec 拼装
 
+先在简报头部填写票号、unit 名与备份分支，再拼装 task spec；三者须与本单元一致，不留占位符。
+
 ```bash
 R=scripts/agent-gates/roles
 cat "$R/worker.md" $( [ -f "$R/local-worker.md" ] && echo "$R/local-worker.md" ) .omc/tmp/<ID>/<unit>.brief.md > .omc/tmp/<ID>/<unit>.spec.md
@@ -26,6 +28,8 @@ orca orchestration task-create --run <run> --task-title "<ID>: <unit>" --display
 
 ```
 # 简报 <ID> / <unit>
+
+票号: <ID>　unit 名: <unit>　备份分支: agent/<ID>/<unit>
 
 Target: <一句话：改哪里、达成什么>
 
@@ -50,7 +54,7 @@ Constraints:
 1. 先加断言跑 CHECK，确认红
 2. 实现到绿
 3. GATE_PROJECT_SRC=worktree scripts/agent-gates/gate.sh . <gate spec 绝对路径>；红了按 VERDICT 修，只改 SCOPE
-4. worker_done：--outcome、追溯块、gate 输出块、--files-modified（见 roles/worker.md Handoff）
+4. 按 worker.md 完成最后一次提交与推送，再发 worker_done：--outcome、追溯块、gate 输出块、--files-modified（见 roles/worker.md Handoff）
 ```
 
 gate spec 与简报分开放：`.omc/tmp/<ID>/<unit>.gate.spec` 只含 `UNIT / SCOPE / CHECK / CHECK_IS_NEW_TEST / CHECK_TEST_FILES`。

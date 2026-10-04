@@ -18,12 +18,17 @@
 - GitHub 远端分支：`git ls-remote --heads origin "*<票号>*"`。
 - Orca worktree：`orca worktree ps --json`，筛选 `linkedLinearIssue` 等于本票的卡片；只读检查其 worktree 是否含未提交改动或未推送提交。无法确认状态时视为「不确定」。
 
-全部不提问，走最保守默认动作；转人按第 7 步 / `constitution/handoffs.md §4`，然后照常写 ledger 与结束标记，结束本次运行。
+对匹配 `agent/<票号>/<unit>` 的分支，先 `git fetch origin`，再用 `git log -1 --format=%B origin/agent/<票号>/<unit>` 核对最后提交的 trailer；不凭分支名判断完成。多个单元逐个核对；开放 PR、陌生分支或本地未备份工作优先转人，不接管覆盖。
+
+全部不提问，按表接管或转人；转人按第 7 步 / `constitution/handoffs.md §4`，然后照常写 ledger 与结束标记，结束本次运行。
 
 | 发现 | 动作 |
 | --- | --- |
 | 有开放 PR | 转人，评论附 PR 链接 |
-| 远端已有该票的分支，无 PR | 转人，评论附分支名 |
+| 远端存在 `agent/<票号>/<unit>`，最后提交带 `agent-status: complete`，无 PR | 接管：以该分支为基础建 worktree，按第 1 步从票面（票据正文的 CHECK、SCOPE、「要做」）重新生成 gate spec 与简报；追溯块只存在于原 worker_done 消息，接管不核追溯块，从第 3 步第 2 项（独立复跑 gate）开始继续；只有票面缺 CHECK 或 SCOPE 时才转人。接管时没有工人追溯块，第 3 步第 3 项与第 6 步第 1 项里的追溯块要求不适用，PR body 注明「接管，无追溯块」，复核以独立 gate 与 diff 为准。 |
+| 远端存在 `agent/<票号>/<unit>`，最后提交带 `agent-status: wip`，无 PR | 重新派工：按第 2 步执行，`worker-start` 改用 `--base-branch origin/agent/<票号>/<unit>`，在此基础上继续 |
+| 远端存在非 `agent/` 前缀的陌生分支，无 PR | 转人，评论附分支名 |
+| 远端 `agent/` 分支命名不匹配本单元，或最后提交状态缺失、矛盾、无法识别 | 转人，评论附分支名与状态 |
 | 有关联本票的 Orca worktree 且含未提交改动或未推送提交 | 转人，评论附 worktree 路径，不删除、不覆盖它 |
 | 什么都没有 | 照常拆分与派工 |
 
@@ -66,7 +71,7 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 1. 追溯块（handoffs §1）：body 缺 `TRACE` 块、或条目数 < 简报 Change 条目数、或任一条没有 文件:行/测试名 → 不读 diff，直接 `VERDICT red STEP handoff REASON 追溯块缺失`，计一次 correction，进第 4 步。
 2. 独立复跑 gate（engineering §4）：`git -C <wt> fetch origin && scripts/agent-gates/gate.sh <wt> .omc/tmp/<ID>/<unit>.gate.spec`。第一次结果记为 ledger `first_gate`。
 3. 读 diff（roles/coordinator.md Verification）：追溯块每条 文件:行 必须在 diff 里；同义反复断言、越界、削弱守卫 → 红。
-4. `LANE 2` 且 `$AGENT_ROLE_REVIEWER_CMD` 非空：`cat roles/reviewer.md .omc/tmp/<ID>/<unit>.brief.md | (cd <wt> && bash -c "$AGENT_ROLE_REVIEWER_CMD -")`（末尾 `-` 让 codex 从 stdin 读审查指令），输出 JSON `verdict == red` → `STEP review` 打回。审查员在 worktree 里自行执行 `git diff origin/main`（此时改动尚未提交，`HEAD` 等于 `origin/main`，三点 diff 为空；新增的未跟踪文件用 `git status --short` 查看）。
+4. `LANE 2` 且 `$AGENT_ROLE_REVIEWER_CMD` 非空：`cat roles/reviewer.md .omc/tmp/<ID>/<unit>.brief.md | (cd <wt> && bash -c "$AGENT_ROLE_REVIEWER_CMD -")`（末尾 `-` 让 codex 从 stdin 读审查指令），输出 JSON `verdict == red` → `STEP review` 打回。审查员在 worktree 里自行执行 `git diff origin/main`（同时核对已提交与未提交改动；新增的未跟踪文件用 `git status --short` 查看）。
 
 ## 4. 打回
 
@@ -80,11 +85,11 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 ## 6. 提交、合并、上线
 
-1. 在单元 worktree：`git add <SCOPE 内文件>` → commit → push → 开 PR（workflow §2）。PR body 附 gate 输出块与追溯块；开 PR 且 gate 绿后：`orca worktree set --worktree path:<wt> --comment "<unit>: PR #<N> gate green" --workspace-status in-review`。
+1. 先用 `git -C <wt> status --short` 与在单元 worktree 内运行的 `git log origin/main..HEAD` 核对实际产出，不信工人自报。工人已提交且工作区干净时不重复提交；有剩余改动时只 `git add <SCOPE 内文件>` 并提交（workflow §2）。核对备份分支已包含当前提交，未推送则补推，再开 PR；PR 描述注明产出来自 `agent/<票号>/<unit>`，附 gate 输出块与追溯块；开 PR 且 gate 绿后：`orca worktree set --worktree path:<wt> --comment "<unit>: PR #<N> gate green" --workspace-status in-review`。
 2. 等 CI：轮询 `commits/<sha>/check-runs` 全部 completed 且无 failure。CI 红 = 一次 correction，`STEP ci`。
 3. `LANE 2` 不自合 → 第 7 步。`LANE 1` 自合（workflow §2）。rebase 冲突：生成物重生成（清单在 `constitution/local-engineering.md`），源码冲突只在 SCOPE 内合并后重跑 gate；跨 SCOPE 或拿不准 → 第 7 步。
 4. 等 `$AGENT_DEPLOY_WORKFLOW` 成功（`actions/runs?head_sha=<merge sha>`），再 `bash -c "$AGENT_SMOKE_CMD"` 退出 0；两者为空则跳过。
-5. 收尾：`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
+5. 收尾：lane 1 回读合并成功后，列出并逐一核对该票的 `agent/<票号>/*` 远端分支，再用 `git push origin --delete agent/<票号>/<unit>` 逐一删除；不删除其他票分支。lane 2 保留备份分支到人合并后，由人或后续清理处理。`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
 
 ## 7. 需要人
 
