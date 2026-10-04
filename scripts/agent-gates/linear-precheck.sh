@@ -23,6 +23,7 @@ MAX_IN_FLIGHT="${AGENT_MAX_IN_FLIGHT:?set in agent-graph.env}"
 STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
 GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
 ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
+WORKER_IDLE_MINUTES="${AGENT_WORKER_IDLE_MINUTES:-15}"
 
 ocall() {
   local out attempt
@@ -193,6 +194,59 @@ release_claim() {
   fi
 }
 
+# Worker health check: judge the whole worktree, not a single terminal. Idle minutes come from the
+# most recent agent terminal in the worktree, and the stuck pattern is matched only against that
+# newest terminal's preview, so a live worker alongside an idle old terminal is never escalated.
+# Any read failure, truncation, parsing error, or partial snapshot keeps the ticket live.
+stuck_worker() {
+  local claim_id="$1" out worktrees
+  worker_evidence=""
+  if ! out="$(claim_read worktree ps)"; then return 1; fi
+  if ! worktrees="$(jq -ce --arg id "$claim_id" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete worktree list") else .worktrees end
+    | if type != "array" then error("worktrees missing") else . end
+    | map(select(.linkedLinearIssue == $id) | .worktreeId
+      | if type != "string" or length == 0 then error("worktree id missing") else . end)
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete worker worktree list'; return 1
+  fi
+  [[ "$worktrees" != '[]' ]] || return 1
+  if ! out="$(claim_read terminal list)"; then return 1; fi
+  if ! worker_evidence="$(jq -r --argjson worktrees "$worktrees" \
+    --argjson minutes "$WORKER_IDLE_MINUTES" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete terminal list") else . end
+    | if (.terminals | type) != "array" then error("terminals missing") else . end
+    | if .totalCount != null and .totalCount != (.terminals | length)
+      then error("terminal count mismatch") else .terminals end
+    | map(
+        if (.worktreeId | type) != "string" then error("terminal worktree id missing") else . end
+        | select(.worktreeId as $id | $worktrees | index($id))
+        | if (.lastOutputAt | type) != "number" or (.preview | type) != "string"
+          then error("terminal output missing") else . end)
+    | if length == 0 then empty
+      else max_by(.lastOutputAt)
+        | . + {idle: ((now - (.lastOutputAt / 1000)) / 60)}
+        | select(.idle > $minutes and (.preview | test("Sign in|ask timeout|worker_done|failed|登录")))
+        | "空闲 \(.idle | floor) 分钟，preview 末尾: \(.preview[-300:] | gsub("[\\r\\n]"; " "))"
+      end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete terminal list/worker output'; return 1
+  fi
+  [[ -n "$worker_evidence" ]]
+}
+
+mark_stuck_worker() {
+  ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
+  ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
+  ocall linear comment add "$1" --body "转人: 工人长时间无输出且命中卡点特征（worktree/PR 若存在均保留）
+证据: 票据 $1 的终端${worker_evidence}
+需要你: 检查票据 $1 对应工人的登录或运行状态" >/dev/null || exit 3
+}
+
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
 ready_ids="$(ids "$LABEL_READY" unstarted)"
 live=()
@@ -204,6 +258,8 @@ for id in $in_flight_ids; do
     release_claim "$id"
   elif orphan_claim "$id"; then
     release_claim "$id"
+  elif stuck_worker "$id"; then
+    mark_stuck_worker "$id"; stale_ids+=("$id")
   else
     live+=("$id")
   fi
