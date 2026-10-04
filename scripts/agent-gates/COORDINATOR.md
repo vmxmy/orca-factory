@@ -87,9 +87,9 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 1. 先用 `git -C <wt> status --short` 与在单元 worktree 内运行的 `git log origin/main..HEAD` 核对实际产出，不信工人自报。工人已提交且工作区干净时不重复提交；有剩余改动时只 `git add <SCOPE 内文件>` 并提交（workflow §2）。核对备份分支已包含当前提交，未推送则补推，再开 PR；PR 描述注明产出来自 `agent/<票号>/<unit>`，附 gate 输出块与追溯块；开 PR 且 gate 绿后：`orca worktree set --worktree path:<wt> --comment "<unit>: PR #<N> gate green" --workspace-status in-review`。
 2. 等 CI：轮询 `commits/<sha>/check-runs` 全部 completed 且无 failure。CI 红 = 一次 correction，`STEP ci`。
-3. `LANE 2` 不自合 → 第 7 步。`LANE 1` 自合（workflow §2）。rebase 冲突：生成物重生成（清单在 `constitution/local-engineering.md`），源码冲突只在 SCOPE 内合并后重跑 gate；跨 SCOPE 或拿不准 → 第 7 步。
+3. `LANE 2`：`AGENT_LANE2_AUTOMERGE` 未设或为 `0` 时不自合 → 第 7 步；仅为 `1` 且同时满足以下条件才按 lane 1 同样流程 squash 自合：(a) coordinator 独立复跑 gate 绿；(b) `AGENT_ROLE_REVIEWER_CMD` 非空时审查员明确给出 green；(c) PR CI 全绿；(d) 用 `gh api --paginate repos/$AGENT_GH_REPO/pulls/<n>/files` 取得完整文件列表，每个文件均不匹配 `AGENT_LANE2_MANUAL_GLOBS`，也不匹配硬编码的 `scripts/agent-gates/*`。手动 glob 未设或为空时无额外匹配，语法与 `gate.sh` 的 `match_any` 一致（空格分隔 bash glob，`*` 跨 `/`）；文件列表获取失败或任一条件不满足 → 第 7 步。`LANE 1` 自合（workflow §2）。rebase 冲突：生成物重生成（清单在 `constitution/local-engineering.md`），源码冲突只在 SCOPE 内合并后重跑 gate；跨 SCOPE 或拿不准 → 第 7 步。
 4. 等 `$AGENT_DEPLOY_WORKFLOW` 成功（`actions/runs?head_sha=<merge sha>`），再 `bash -c "$AGENT_SMOKE_CMD"` 退出 0；两者为空则跳过。
-5. 收尾：lane 1 回读合并成功后，列出并逐一核对该票的 `agent/<票号>/*` 远端分支，再用 `git push origin --delete agent/<票号>/<unit>` 逐一删除；不删除其他票分支。lane 2 保留备份分支到人合并后，由人或后续清理处理。`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
+5. 收尾：lane 1 或已自合的 lane 2 回读合并成功后，列出并逐一核对该票的 `agent/<票号>/*` 远端分支，再用 `git push origin --delete agent/<票号>/<unit>` 逐一删除；不删除其他票分支。未自合的 lane 2 保留备份分支到人合并后，由人或后续清理处理。`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
 
 ## 7. 需要人
 
