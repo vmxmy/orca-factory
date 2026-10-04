@@ -424,7 +424,7 @@ LEDGER_SLEEP
     export PATH="$SELFTEST_TMP/precheck-bin:$PATH" PRECHECK_TEST_DIR="$SELFTEST_TMP"
     export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=precheck-test
     export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
-    export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8
+    export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/precheck-test AGENT_ORPHAN_MINUTES=45
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
 #!/usr/bin/env bash
 set -eu
@@ -436,13 +436,21 @@ case "$*" in
     echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
-    jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+    case "$PRECHECK_MODE" in
+      orphan|orphan-pr|orphan-limit|orphan-fail)
+        jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
+      *) jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+    esac ;;
   'linear issue TEST-1 --comments --json')
-    jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{comments:
-      ([{body:"已领取 · tier=default",createdAt:((now-1800)|todateiso8601|sub("Z$";".123Z"))}]
-       + (if $mode == "recent" then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
-       + (if $mode == "limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
-      meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
+    jq -nc --arg mode "$PRECHECK_MODE" '
+      def is_orphan: $mode | test("^orphan");
+      {ok:true,result:{comments:
+        ([{body:"已领取 · tier=default",
+           createdAt:(if is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
+                     else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
+         + (if $mode == "recent" then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "limit" or $mode == "orphan-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
+        meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
     case "$PRECHECK_MODE" in
       fail) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}'; exit 7 ;;
@@ -462,8 +470,19 @@ case "$*" in
   *) echo "unexpected fake orca call: $*" >&2; exit 1 ;;
 esac
 PRECHECK_ORCA
-    chmod +x "$SELFTEST_TMP/precheck-bin/orca"
-    for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted; do
+    cat > "$SELFTEST_TMP/precheck-bin/gh" <<'PRECHECK_GH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+case "${PRECHECK_MODE:-}" in
+  orphan-pr) echo '[{"number":1}]' ;;
+  orphan-fail) exit 2 ;;
+  *) echo '[]' ;;
+esac
+PRECHECK_GH
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
+    for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
+                         orphan orphan-pr orphan-fresh orphan-limit orphan-fail; do
       export PRECHECK_MODE
       : > "$SELFTEST_TMP/precheck.calls"
       bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
@@ -480,6 +499,21 @@ PRECHECK_ORCA
           grep -q '^linear comment add TEST-1 --body .*多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: escalation comment missing"
           grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: repeated failure not stale"
           if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: repeated failure reset Todo"; fi ;;
+        orphan)
+          grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: orphan did not reset Todo"
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: orphan kept auto-impl"
+          grep -q '^linear comment add TEST-1 --body .*coordinator 疑似已结束.*已释放' "$SELFTEST_TMP/precheck.calls" || fail "selftest: orphan release comment missing"
+          if grep -q '^linear label add TEST-1 --label auto-failed ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: orphan wrongly added auto-failed"; fi
+          grep -q 'in_flight=0 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: orphan release counted live" ;;
+        orphan-limit)
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: orphan-limit not escalated"
+          grep -q '^linear comment add TEST-1 --body .*多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: orphan-limit escalation comment missing"
+          grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: orphan-limit not stale"
+          if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: orphan-limit reset Todo"; fi ;;
+        orphan-pr|orphan-fresh|orphan-fail)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: orphan guard mutated in $PRECHECK_MODE"; fi
+          grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: orphan guard dropped live claim ($PRECHECK_MODE)"
+          [[ "$PRECHECK_MODE" != orphan-fail ]] || grep -q '不确定.*gh pr list' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: orphan read failure uncertainty missing"; } ;;
         *)
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: live/uncertain claim mutated ($PRECHECK_MODE)"; fi
           grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: live/uncertain claim lost"
@@ -492,6 +526,7 @@ PRECHECK_ORCA
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
+    echo "selftest: precheck releases orphaned claims"
   )
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true

@@ -21,6 +21,8 @@ LABEL_CLAIMED="${AGENT_LABEL_CLAIMED:?set in agent-graph.env}"
 LABEL_FAILED="${AGENT_LABEL_FAILED:?set in agent-graph.env}"
 MAX_IN_FLIGHT="${AGENT_MAX_IN_FLIGHT:?set in agent-graph.env}"
 STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
+GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
+ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
 
 ocall() {
   local out attempt
@@ -149,6 +151,34 @@ expired_claim() {
   claim_reason='编排运行无任务且没有关联卡片'
 }
 
+# Catches an in-flight ticket whose coordinator ended without PR: Linear update older than
+# ORPHAN_MINUTES and no open PR with the ticket id in its title. Any read failure or unparsable
+# response is uncertain and keeps the ticket live. Sets claim_reason/claim_failures for release_claim.
+orphan_claim() {
+  local claim_id="$1" out verdict pr_out pr_count
+  claim_reason=""
+  claim_failures=0
+  if ! out="$(claim_read linear issue "$claim_id")"; then return 1; fi
+  if ! verdict="$(jq -r --argjson m "$ORPHAN_MINUTES" \
+    '.result.issue.updatedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | (now - .) >= ($m * 60)' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse updatedAt for orphan check'; return 1
+  fi
+  [[ "$verdict" == true ]] || return 1
+  if ! pr_out="$(perl -e 'alarm 20; exec @ARGV' -- \
+    gh pr list --repo "$GH_REPO" --state open --search "$claim_id in:title" --json number 2>/dev/null)"; then
+    claim_uncertain "gh pr list failed for $claim_id"; return 1
+  fi
+  if ! pr_count="$(jq 'if type == "array" then length else error("pr list not array") end' <<<"$pr_out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse gh pr list output'; return 1
+  fi
+  (( pr_count == 0 )) || return 1
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot count claim failures for orphan check'; return 1
+  fi
+  claim_reason="在途超过 ${ORPHAN_MINUTES} 分钟无更新且无 PR，coordinator 疑似已结束"
+}
+
 release_claim() {
   ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
   if (( claim_failures >= 2 )); then
@@ -171,6 +201,8 @@ for id in $in_flight_ids; do
   if stale "$id"; then
     mark_stale "$id"; stale_ids+=("$id")
   elif expired_claim "$id"; then
+    release_claim "$id"
+  elif orphan_claim "$id"; then
     release_claim "$id"
   else
     live+=("$id")
