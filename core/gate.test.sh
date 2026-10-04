@@ -65,6 +65,36 @@ out="$(AGENT_LANE2_GLOBS='src/lane2/*' "$GATE" "$R" "$(spec 'UNIT: u6' 'SCOPE: s
 [[ "$(field "$out" VERDICT)" == green ]]
 grep -q '^LANE      2$' <<< "$out"
 
+# Unset lane globs load from the base profile, including trailing comments.
+R="$(mkrepo laneenv)"; mkdir -p "$R/scripts/agent-gates" "$R/x"
+cat > "$R/scripts/agent-gates/agent-graph.env" <<'ENV'
+AGENT_LANE2_GLOBS='x/*' # project lane 2
+AGENT_LANE3_GLOBS='private/*' # project lane 3
+AGENT_GH_REPO='profile-only'
+LANE_GLOBS_HARD='x/*' # must not leak into the gate
+ENV
+echo 'base' > "$R/x/a"
+git -C "$R" add -A && git -C "$R" -c commit.gpgsign=false commit -qm profile && git -C "$R" update-ref refs/remotes/origin/main HEAD
+echo 'changed' > "$R/x/a"
+out="$("$GATE" "$R" "$(spec 'UNIT: env-ref' 'SCOPE: x/*' 'CHECK: true')")"
+[[ "$(field "$out" VERDICT)" == green ]]
+grep -q '^LANE      2$' <<< "$out"
+
+# Explicit empty caller values win, while the other unset glob still loads.
+out="$(AGENT_LANE2_GLOBS='' "$GATE" "$R" "$(spec 'UNIT: env-empty' 'SCOPE: x/*' 'CHECK: true')")"
+grep -q '^LANE      1$' <<< "$out"
+out="$(AGENT_LANE3_GLOBS='x/*' "$GATE" "$R" "$(spec 'UNIT: env-override' 'SCOPE: x/*' 'CHECK: true')")" && rc=0 || rc=$?
+[[ $rc == 1 && "$(field "$out" STEP)" == lane ]]
+grep -q '^LANE      3$' <<< "$out"
+
+# Default source ignores edits to the profile; worktree mode uses them.
+printf "AGENT_LANE2_GLOBS='elsewhere/*' # changed\nAGENT_LANE3_GLOBS='x/*' # protected\n" > "$R/scripts/agent-gates/agent-graph.env"
+out="$("$GATE" "$R" "$(spec 'UNIT: env-source' 'SCOPE: x/* scripts/*' 'CHECK: true')")"
+grep -q '^LANE      2$' <<< "$out"
+out="$(GATE_PROJECT_SRC=worktree "$GATE" "$R" "$(spec 'UNIT: env-worktree' 'SCOPE: x/* scripts/*' 'CHECK: true')")" && rc=0 || rc=$?
+[[ $rc == 1 && "$(field "$out" STEP)" == lane ]]
+grep -q '^LANE      3$' <<< "$out"
+
 # AGENT_LANE3_GLOBS hit -> red lane, LANE 3
 R="$(mkrepo lane3)"; mkdir -p "$R/src/secret"; echo 'k' > "$R/src/secret/k"
 out="$(AGENT_LANE3_GLOBS='src/secret/*' "$GATE" "$R" "$(spec 'UNIT: u7' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?

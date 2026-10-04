@@ -11,8 +11,27 @@ SPEC="$2"
 BASE="${GATE_BASE:-origin/main}"
 PROJECT_SRC="${GATE_PROJECT_SRC:-origin/main}"   # ref to read gate.project.sh from; 'worktree' = $WT copy
 LANE_GLOBS_HARD='scripts/agent-gates/*'           # always lane 2, regardless of env
+# Read profile defaults in a subshell so unrelated assignments stay isolated.
+# As with gate.project.sh, only explicit worktree mode reads the checkout.
+lane_profile_glob() (
+  local profile
+  if [[ "$PROJECT_SRC" == worktree ]]; then
+    [[ -f "$WT/scripts/agent-gates/agent-graph.env" ]] || return 0
+    profile="$(cat "$WT/scripts/agent-gates/agent-graph.env")"
+  else
+    profile="$(git -C "$WT" show "$PROJECT_SRC:scripts/agent-gates/agent-graph.env" 2>/dev/null)" || return 0
+  fi
+  source /dev/stdin <<< "$profile" > /dev/null
+  case "$1" in
+    2) printf '%s' "${AGENT_LANE2_GLOBS:-}" ;;
+    3) printf '%s' "${AGENT_LANE3_GLOBS:-}" ;;
+  esac
+)
 LANE2_GLOBS="${AGENT_LANE2_GLOBS:-}"
 LANE3_GLOBS="${AGENT_LANE3_GLOBS:-}"
+# An explicitly set empty value also takes precedence over the profile.
+[[ ${AGENT_LANE2_GLOBS+x} ]] || LANE2_GLOBS="$(lane_profile_glob 2)"
+[[ ${AGENT_LANE3_GLOBS+x} ]] || LANE3_GLOBS="$(lane_profile_glob 3)"
 LANE=1
 [[ -f "$SPEC" ]] || { echo "spec not found: $SPEC" >&2; exit 2; }
 
