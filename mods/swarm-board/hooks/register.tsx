@@ -1,8 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Agent, Board, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
+import type { Agent as BaseAgent, Board, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
 
+type Agent = BaseAgent & { requiresAction?: boolean }
+type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
 type WorktreeCard = { path: string; workspaceStatus: string; comment: string }
 
 const PANE = 'swarm-board'
@@ -273,16 +275,20 @@ async function refresh($: any): Promise<Board> {
       agents.push({ ticket: t.id, role: 'coordinator', name: r.id, phase: 'supervise', since: c.at, path: c.path, durationMin: minutes(c.at, now), model: '', lastActive: lastOut[c.path] ?? '' })
     }
     const workers = r ? await workersOf(r.id) : []
+    const workerRows = r ? (await runJson(['orca', 'orchestration', 'worker-list', '--run', r.id, '--json']))?.result?.workers ?? [] : []
+    const projectionByTask = new Map<string, WorkerProjection>()
+    for (const w of workerRows) { if (w?.taskId && w.projection) projectionByTask.set(w.taskId, w.projection) }
     const card = cardByIssue.get(t.id)
     if (!workers.some(k => k.path) && card?.path) {
       paths.push(card.path)
     }
     for (const k of workers) {
+      const projection = projectionByTask.get(k.id)
       const phase = k.status === 'dispatched' ? 'implement' : k.status === 'completed' ? 'done' : k.status === 'failed' ? 'returned' : k.status
       const since = k.dispatched_at ?? k.started_at ?? k.updated_at ?? k.created_at ?? ''
       const until = phase === 'done' ? ts(k.completed_at ?? k.updated_at) || now : now
       paths.push(k.path)
-      agents.push({ ticket: t.id, role: 'worker', name: k.display_name ?? k.id, phase, since, path: k.path, durationMin: minutes(since, until), model: '', lastActive: lastOut[k.path] ?? '', ...(card?.comment ? { comment: card.comment } : {}) })
+      agents.push({ ticket: t.id, role: 'worker', name: k.display_name ?? k.id, phase, since, path: k.path, durationMin: minutes(since, until), model: projection?.provider?.model ?? '', lastActive: lastOut[k.path] ?? '', ...(projection?.attention?.requiresAction === true ? { requiresAction: true } : {}), ...(card?.comment ? { comment: card.comment } : {}) })
       // Gate logs of every unit under the worker worktree.
       try {
         for (const e of await $.fs.list(k.path + '/.omc/gates')) {
@@ -301,7 +307,12 @@ async function refresh($: any): Promise<Board> {
 
   // Tokens and est. cost per worktree path, summed per agent and per ticket.
   const rows = await loadUsage($, [...new Set(Object.values(ticketPaths).flat())])
-  for (const a of agents) { if (a.path) Object.assign(a, usageFor(rows, a.path)) }
+  for (const a of agents) {
+    if (a.path) {
+      const usage = usageFor(rows, a.path)
+      Object.assign(a, usage, { model: a.model || usage.model })
+    }
+  }
   let todayCost = 0
   const costOf = (id: string) => (ticketPaths[id] ?? []).reduce<{ tokens?: Tokens; cost?: Cost }>((acc, p) => { const u = usageFor(rows, p); return { tokens: addTok(acc.tokens, u.tokens), cost: addCost(acc.cost, u.cost) } }, {})
   for (const t of [...inFlight, ...doneToday]) {
@@ -417,15 +428,16 @@ export const register: Register = on => {
     }
     // Swarm view: one agent is one line; workers indent under their coordinator.
     const agentRow = (a: Agent) => {
+      const requiresAction = a.role === 'worker' && a.requiresAction === true
       const glyph = a.phase === 'done' ? G.done : a.phase === 'returned' ? G.human : G.work
-      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + cut(a.name, 18)
+      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ 等人 ' : '') + cut(a.name, 18)
       const tokens = a.tokens ? tok(a.tokens.out) + ' out · ' + tok(a.tokens.cache) + ' cache' : ''
       const last = a.lastActive ? 'last ' + age(a.lastActive, now) : ''
       const line = name.padEnd(24) + ' ' + a.phase.padEnd(10) + ' ' + mins(a.durationMin).padStart(9)
         + (wide ? '   ' + cut(shortModel(a.model), 12).padEnd(12) + ' ' + tokens.padStart(22) + ' ' + usd(a.cost).padStart(11) + ' ' + last.padStart(14) : ' ' + usd(a.cost).padStart(11) + ' ' + last.padStart(14))
       return (
         <Box key={'a-' + a.ticket + '-' + a.name} flexDirection="column">
-          <Text dimColor={a.phase === 'done'} color={a.phase === 'returned' ? 'yellow' : undefined}>{cut(line, cols)}</Text>
+          <Text dimColor={a.phase === 'done' && !requiresAction} color={requiresAction || a.phase === 'returned' ? 'yellow' : undefined}>{cut(line, cols)}</Text>
           {a.role === 'worker' && a.comment?.trim() ? <Text dimColor>{'    ' + cut(a.comment.replace(/\s+/g, ' ').trim(), cols - 4)}</Text> : null}
         </Box>
       )
