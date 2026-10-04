@@ -30,8 +30,10 @@
 ## 4. 结束标记与 ledger
 
 - 每次运行结束（收尾、转人、无票）固定两步，顺序不变：
-  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`
+  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入 `AGENT_LINEAR_PROJECT` 内标题精确为 `[ledger] agent-graph` 的 Linear 账本票评论（`ledger <JSON>`）。
   2. `mkdir -p .omc && touch .omc/agent-run-finished`（在运行 worktree）
+- 账本写入失败不阻塞本次运行收尾：只在本票评论里记一句失败原因（无票的 `no_ticket` 运行则只写 stderr），然后继续写结束标记。
+- `ledger stats` 从 Linear 账本票评论读取并按 `(ticket, started_at)` 去重；无账本票时输出 `runs=0`，不创建票。
 - ledger 行字段：`ticket, lane, tier(fast|default|strong), outcome(merged|escalated|no_ticket), first_gate(green|red), corrections, ci_reds, pr, minutes, started_at, finished_at`。`first_gate` 是 coordinator 第一次独立复跑的结果；`tier` 是领票时解析出的档位（首跑所用，升档不改写）；`corrections` 含 CI 红与追溯块缺失；无票时 `outcome=no_ticket`，票字段省略。
 - 不写结束标记 → 下次运行按 24 小时崩溃规则清理。
 
