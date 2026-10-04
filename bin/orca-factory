@@ -437,12 +437,8 @@ case "$*" in
       scope-missing) echo '{"ok":true,"result":{}}' ;;
       *) echo '{"ok":true,"result":{"issues":[{"state":{"type":"started"}},{"state":{"type":"unstarted"}},{"state":{"type":"completed"}},{"state":{"type":"canceled"}}]}}' ;;
     esac ;;
-  'linear list-issues '*--label\ auto-impl*)
-    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
-  'linear list-issues '*--label\ ready-for-agent*)
-    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
   'linear list-issues --team TEST --project precheck-test --order-by createdAt --json')
-    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","labels":[{"name":"auto-impl"}],"state":{"type":"started"}},{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}}]}}' ;;
+    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","labels":[{"name":"auto-impl"}],"state":{"type":"started"}},{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}},{"identifier":"TEST-IGNORED","labels":[{"name":"other"}],"state":{"type":"unstarted"}},{"identifier":"TEST-DONE","labels":[{"name":"ready-for-agent"}],"state":{"type":"completed"}}]}}' ;;
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
@@ -630,8 +626,17 @@ PRECHECK_GH
 set -eu
 if [[ "${PRECHECK_RATE_AT:-}" == "$*" ]]; then
   printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+  if [[ "$*" == *'--comments --json' ]]; then
+    echo '{"ok":false,"error":{"message":"Rate limit exceeded"}}'
+    exit 0
+  fi
   echo 'Rate limit exceeded' >&2
   exit 7
+fi
+if [[ "$*" == 'linear issue TEST-1 --json' ]]; then
+  printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+  jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"Investigate Rate limit errors"}}}'
+  exit 0
 fi
 exec "$(dirname "$0")/orca-fixture" "$@"
 PRECHECK_READS
@@ -642,9 +647,16 @@ PRECHECK_READS
     [[ "$(grep -c '^linear issue TEST-1 --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated issue read"
     [[ "$(grep -c '^linear list-issues .*--order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls")" == 2 ]] || fail "selftest: ids must share one list read plus advisory backlog"
     grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: incorrect Linear call count"
+    export PRECHECK_MODE=worker-stuck
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: comment reuse scan failed"
+    [[ "$(grep -c '^linear issue TEST-1 --comments --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated comment read"
+    grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: mutations missing from Linear call count"
+    export PRECHECK_MODE=recent
     for PRECHECK_RATE_AT in 'linear list-issues --team TEST --project precheck-test --order-by createdAt --json' \
                             'linear issue TEST-1 --json' 'linear issue TEST-1 --comments --json' \
-                            'linear issue TEST-2 --relations --json' 'linear issue TEST-2 --json'; do
+                            'linear issue TEST-2 --relations --json' 'linear issue TEST-2 --json' \
+                            'linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json'; do
       export PRECHECK_RATE_AT
       : > "$SELFTEST_TMP/precheck.calls"
       precheck_status=0
