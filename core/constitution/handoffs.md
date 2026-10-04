@@ -56,7 +56,12 @@ LANE      <1|2|3>
   `orca orchestration send --from <handle> --dispatch-capability <cap> --type escalation --subject "Blocked: <原因>" --body "<证据>" --task-id <task> --dispatch-id <dispatch>`
 - 单一事实问题（符号名、落点、二选一）用 `ask`，阻塞等 `reply`；超时按简报默认值做并在 worker_done body 里注明。
 - coordinator 收到 escalation：能改 plan 就改 plan 新建 task 重派；否则转人。
-- 转人（coordinator 对人的 handoff）：Linear `label remove --label ready-for-agent`、`label add --label auto-failed`，评论写卡点、证据、需要人做什么；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
+- 转人（coordinator 对人的 handoff）：Linear `label remove --label ready-for-agent`、`label add --label auto-failed`，评论固定三行，顺序不变；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
+  ```text
+  转人: <一句话卡点>
+  证据: <文件:行 / PR / worktree 路径 / 命令输出摘录>
+  需要你: <一个具体动作>
+  ```
 
 ## 5. 等待
 
