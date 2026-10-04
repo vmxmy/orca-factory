@@ -356,6 +356,11 @@ async function toggleAutomation($: any) {
   await tick($)
 }
 
+export const laneStage = (t: Ticket, agents: readonly BaseAgent[]): 1 | 2 | 3 => {
+  if (t.pr) return 3
+  return agents.some(a => a.ticket === t.id && a.role === 'worker' && a.phase === 'done') ? 2 : 1
+}
+
 export const register: Register = on => {
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
@@ -394,10 +399,7 @@ export const register: Register = on => {
     }
     // Tasks view: swim lanes. One column per stage; a ticket is a small card that moves right.
     type Lane = { title: string; glyph: string; color?: string; items: Ticket[] }
-    const stage = (t: Ticket): 1 | 2 | 3 => {
-      if (t.pr) return 3
-      return b.agents.some(a => a.ticket === t.id && a.role === 'worker' && a.phase !== 'done' && a.phase !== 'returned') ? 1 : 2
-    }
+    const stage = (t: Ticket): 1 | 2 | 3 => laneStage(t, b.agents)
     const lanes: Lane[] = [
       { title: '待领', glyph: G.queued, items: b.queue },
       { title: '实现中', glyph: G.work, items: b.inFlight.filter(t => stage(t) === 1) },
