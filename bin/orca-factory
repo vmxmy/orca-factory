@@ -10,6 +10,7 @@
 #   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
 #                                      clauses constitution/{engineering,workflow,handoffs}.md must be byte-identical
 #                                      (reported as OVERRIDDEN otherwise). Exit 1 on any drift.
+#   orca-factory doctor [--json]       read-only environment checks and recommended setup profile (A or B).
 #   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
 #                                      an edited shared clause is reported as overridden.
 set -Eeuo pipefail
@@ -23,7 +24,7 @@ PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitu
 MARKETPLACE_REPO="vmxmy/orca-factory"   # .claude-plugin/marketplace.json of this repo; the mod lives in mods/swarm-board
 MOD_ID="swarm-board@orca-factory"
 
-usage() { sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
@@ -153,6 +154,178 @@ cmd_check() {
   return $rc
 }
 
+# JSON output uses only bash printf; jq is itself an optional diagnostic target.
+doctor_string() {
+  local value="$1" char i code LC_ALL=C
+  printf '"'
+  for ((i=0; i<${#value}; i++)); do
+    char="${value:i:1}"
+    case "$char" in
+      '"') printf '\\"' ;;
+      '\') printf '\\\\' ;;
+      *) printf -v code '%d' "'$char"
+         # Bash 3.2 reports high-bit bytes as signed; only ASCII controls need escaping.
+         code=$((code & 255))
+         if ((code < 32)); then printf '\\u%04x' "$code"; else printf '%s' "$char"; fi ;;
+    esac
+  done
+  printf '"'
+}
+
+# Bound every subprocess, including failures, without GNU timeout or temporary files.
+# Never print raw diagnostic output: even failure messages can contain credentials.
+doctor_probe() {
+  if ! command -v perl >/dev/null 2>&1; then
+    probe_error='perl unavailable; probe not run'; probe_output=''; return 1
+  fi
+  local rc=0 merge_stderr=false
+  if [[ "${1:-}" == --merge-stderr ]]; then merge_stderr=true; shift; fi
+  if [[ "$merge_stderr" == true ]]; then
+    probe_output="$(perl -e 'alarm 8; exec @ARGV; exit 127' -- "$@" </dev/null 2>&1)" || rc=$?
+  else
+    probe_output="$(perl -e 'alarm 8; exec @ARGV; exit 127' -- "$@" </dev/null 2>/dev/null)" || rc=$?
+  fi
+  probe_error="exit $rc (failure or deadline exceeded)"
+  ((rc == 0))
+}
+
+# Parse only allowlisted fields. NUL-delimited records preserve quotes/newlines in names.
+# JSON::PP ships with system Perl; absence or malformed input becomes a reported failure.
+doctor_parse() {
+  perl -MJSON::PP -e '
+    binmode STDOUT, ":encoding(UTF-8)";
+    my $mode = shift; local $/; my $d = decode_json(<STDIN>);
+    sub string { defined($_[0]) && !ref($_[0]) ? $_[0] : die "invalid string" }
+    if ($mode eq "ready") {
+      die "invalid status" unless ref($d) eq "HASH" && exists $d->{ok};
+      print $d->{ok} ? "true" : "false";
+    } elsif ($mode eq "teams") {
+      die "request failed" if exists($d->{ok}) && !$d->{ok};
+      my $teams = $d->{result}{teams};
+      die "invalid teams" unless ref($teams) eq "ARRAY";
+      for (@$teams) { print string($_->{key}), "\0"; }
+    } elsif ($mode eq "profiles") {
+      die "invalid profiles" unless ref($d) eq "ARRAY";
+      for (@$d) {
+        print string($_->{name}), "\0", string($_->{appId}), "\0",
+          ($_->{active} ? "true" : "false"), "\0";
+      }
+    } elsif ($mode eq "user") {
+      die "invalid auth status" unless ref($d->{identities}{user}) eq "HASH";
+      print $d->{identities}{user}{available} ? "true" : "false";
+    } else { die "unknown parser"; }
+  ' "$1" 2>/dev/null
+}
+
+cmd_doctor() {
+  local tool present tools='' sep='' details raw version='' ready=false logged_in=false scopes=''
+  local probe_output='' probe_error='' errors='' missing='' key_present=false teams='' profiles=''
+  local name app_id active user=false profile=A reason='No lark-cli profile detected; use profile A'
+  local orca_present=false lark_present=false profile_count=0 value result rows=''
+  local detail_text scopes_text='' profiles_text='' display_name display_app_id
+  # These helpers append safe, generated diagnostics, never raw command responses.
+  for tool in orca gh jq git codex claude lark-cli; do
+    present=false; details=''; detail_text=''
+    if command -v "$tool" >/dev/null 2>&1; then present=true
+    else missing="${missing}${missing:+,}$(doctor_string "$tool")"; fi
+    case "$tool" in
+      orca)
+        orca_present="$present"
+        if [[ "$present" == true ]]; then
+          if doctor_probe orca --version; then
+            # Accept version syntax only, not arbitrary CLI output.
+            if [[ "$probe_output" =~ ^(orca[[:space:]]+)?v?([0-9]+\.[0-9]+\.[0-9]+([-+][a-zA-Z0-9.-]+)?)$ ]]; then
+              version="${BASH_REMATCH[2]}"
+            else errors="${errors}${errors:+,}$(doctor_string 'orca version: unrecognized response')"; fi
+          else errors="${errors}${errors:+,}$(doctor_string "orca version: $probe_error")"; fi
+          if doctor_probe orca status --json; then
+            if result="$(doctor_parse ready <<< "$probe_output")"; then ready="$result"
+            else errors="${errors}${errors:+,}$(doctor_string 'orca status: invalid JSON or parser unavailable')"; fi
+          else errors="${errors}${errors:+,}$(doctor_string "orca status: $probe_error")"; fi
+        fi
+        [[ "$ready" == true ]] || missing="${missing}${missing:+,}$(doctor_string 'orca ready runtime')"
+        details=",\"version\":$(doctor_string "$version"),\"ready\":$ready"
+        if [[ "$present" == true ]]; then
+          [[ -z "$version" ]] || detail_text="version $version, "
+          if [[ "$ready" == true ]]; then detail_text="${detail_text}ready"
+          else detail_text="${detail_text}not ready"; fi
+        fi
+        ;;
+      gh)
+        if [[ "$present" == true ]]; then
+          if doctor_probe --merge-stderr gh auth status --active; then logged_in=true
+          else errors="${errors}${errors:+,}$(doctor_string "gh auth status: $probe_error")"; fi
+          # Read only scope labels, never Token lines or the raw auth status response.
+          while IFS= read -r value; do
+            [[ -n "$value" ]] || continue
+            scopes="${scopes}${scopes:+,}$(doctor_string "$value")"
+            scopes_text="${scopes_text}${scopes_text:+,}$value"
+          done < <(printf '%s\n' "$probe_output" | sed -n "s/.*Token scopes: *//p" | tr ",'" '\n ' | tr -d ' ')
+        fi
+        [[ "$logged_in" == true ]] || missing="${missing}${missing:+,}$(doctor_string 'gh authenticated account')"
+        details=",\"logged_in\":$logged_in,\"scopes\":[$scopes]"
+        if [[ "$present" == true ]]; then
+          if [[ "$logged_in" == true ]]; then detail_text='logged in'
+          else detail_text='not logged in'; fi
+          [[ -z "$scopes_text" ]] || detail_text="$detail_text, scopes: $scopes_text"
+        fi
+        ;;
+      lark-cli) lark_present="$present" ;;
+    esac
+    tools="$tools$sep$(doctor_string "$tool"):{\"present\":$present$details}"; sep=','
+    rows="$rows$(printf '%-18s %-7s %s' "$tool" "$present" "$detail_text")"$'\n'
+  done
+  [[ -z "${LINEAR_API_KEY:-}" ]] || key_present=true
+  [[ "$key_present" == true ]] || missing="${missing}${missing:+,}$(doctor_string 'LINEAR_API_KEY')"
+  if [[ "$orca_present" == true ]]; then
+    if doctor_probe orca linear team list --json; then
+      raw="$probe_output"
+      if doctor_parse teams <<< "$raw" >/dev/null; then
+        while IFS= read -r -d '' value; do
+          teams="${teams}${teams:+,}$(doctor_string "$value")"
+        done < <(doctor_parse teams <<< "$raw")
+      else errors="${errors}${errors:+,}$(doctor_string 'Linear teams: invalid response or parser unavailable')"; fi
+    else errors="${errors}${errors:+,}$(doctor_string "Linear teams: $probe_error")"; fi
+  fi
+  [[ -n "$teams" ]] || missing="${missing}${missing:+,}$(doctor_string 'Linear team access')"
+  if [[ "$lark_present" == true ]]; then
+    if doctor_probe lark-cli profile list; then
+      raw="$probe_output"
+      if doctor_parse profiles <<< "$raw" >/dev/null; then
+        while IFS= read -r -d '' name && IFS= read -r -d '' app_id && IFS= read -r -d '' active; do
+          profile_count=$((profile_count + 1))
+          profiles="${profiles}${profiles:+,}{\"name\":$(doctor_string "$name"),\"appId\":$(doctor_string "$app_id"),\"active\":$active}"
+          # Keep profile labels on one display line without serializing them as JSON.
+          display_name="${name//$'\n'/ }"; display_name="${display_name//$'\r'/ }"; display_name="${display_name//$'\t'/ }"
+          display_app_id="${app_id//$'\n'/ }"; display_app_id="${display_app_id//$'\r'/ }"; display_app_id="${display_app_id//$'\t'/ }"
+          profiles_text="${profiles_text}${profiles_text:+, }$display_name ($display_app_id)"
+          [[ "$active" != true ]] || profiles_text="$profiles_text [active]"
+          if doctor_probe lark-cli --profile "$name" auth status --json; then
+            if result="$(doctor_parse user <<< "$probe_output")"; then
+              [[ "$result" != true ]] || user=true
+            else errors="${errors}${errors:+,}$(doctor_string 'lark-cli auth: invalid response or parser unavailable')"; fi
+          else errors="${errors}${errors:+,}$(doctor_string "lark-cli auth: $probe_error")"; fi
+        done < <(doctor_parse profiles <<< "$raw")
+      else errors="${errors}${errors:+,}$(doctor_string 'lark-cli profiles: invalid response or parser unavailable')"; fi
+    else errors="${errors}${errors:+,}$(doctor_string "lark-cli profiles: $probe_error")"; fi
+  fi
+  if ((profile_count > 0)); then
+    profile=B; reason='lark-cli is installed and at least one profile exists; use profile B'
+  else missing="${missing}${missing:+,}$(doctor_string 'Feishu profile')"; fi
+  [[ "$user" == true ]] || missing="${missing}${missing:+,}$(doctor_string 'Feishu logged-in user')"
+  if [[ "${1:-}" == --json ]]; then
+    printf '{"tools":{%s},"linear":{"api_key_present":%s,"team_keys":[%s]},"feishu":{"profiles":[%s],"logged_in":%s},"recommendation":{"profile":"%s","reasons":[%s],"missing":[%s]},"errors":[%s]}\n' \
+      "$tools" "$key_present" "$teams" "$profiles" "$user" "$profile" "$(doctor_string "$reason")" "$missing" "$errors"
+  else
+    printf '%-18s %-7s %s\n' 'TOOL' 'PRESENT' 'DETAIL' '------------------' '-------' '------'
+    printf '%s' "$rows"
+    printf '%-18s %s\n' 'LINEAR_API_KEY' "$key_present" 'Linear teams' "[$teams]" \
+      'Feishu profiles' "$profiles_text" 'Feishu user' "$user" 'Recommendation' "$profile" \
+      'Reason' "$reason" 'Missing' "[$missing]" 'Errors' "[$errors]"
+  fi
+  return 0
+}
+
 SELFTEST_TMP=""
 cmd_selftest() {
   SELFTEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/orca-factory-selftest.XXXXXX")"
@@ -192,6 +365,97 @@ cmd_selftest() {
     (cd "$SELFTEST_TMP" && claude plugin test "$FACTORY/mods/swarm-board" >/dev/null) || fail "selftest: mod tests failed"
     echo "selftest: mod validate + test PASS"
   fi
+  PATH=/usr/bin:/bin "$FACTORY/bin/orca-factory" doctor --json | \
+    jq -e '.recommendation.profile == "A" and (.tools|length) > 0' >/dev/null \
+    || fail "selftest: doctor must report profile A and tools with restricted PATH"
+  echo "selftest: doctor reports profile A and tools with restricted PATH"
+  # Exercise discovery without contacting real services or exposing local credentials.
+  mkdir -p "$SELFTEST_TMP/doctor-bin"
+  cat > "$SELFTEST_TMP/doctor-bin/orca" <<'DOCTOR_ORCA'
+#!/usr/bin/env bash
+case "$*" in
+  --version) echo 'orca 1.2.3' ;;
+  'status --json') echo '{"ok":true}' ;;
+  'linear team list --json') echo '{"ok":true,"result":{"teams":[{"key":"TEST"}]}}' ;;
+  *) exit 1 ;;
+esac
+DOCTOR_ORCA
+  cat > "$SELFTEST_TMP/doctor-bin/gh" <<'DOCTOR_GH'
+#!/usr/bin/env bash
+echo "Token: DOCTOR_SECRET" >&2
+echo "Token scopes: 'repo', 'read:org'" >&2
+DOCTOR_GH
+  cat > "$SELFTEST_TMP/doctor-bin/lark-cli" <<'DOCTOR_LARK'
+#!/usr/bin/env bash
+case "$*" in
+  'profile list')
+    echo '[{"name":"test\"\\\nprofile","appId":"cli_test","active":true,"appSecret":"DOCTOR_SECRET"}]' ;;
+  *) echo '{"identities":{"user":{"available":true,"token":"DOCTOR_SECRET"}}}' ;;
+esac
+DOCTOR_LARK
+  chmod +x "$SELFTEST_TMP/doctor-bin/"*
+  PATH="$SELFTEST_TMP/doctor-bin:/usr/bin:/bin" LINEAR_API_KEY=DOCTOR_SECRET \
+    "$FACTORY/bin/orca-factory" doctor --json > "$SELFTEST_TMP/doctor.json"
+  jq -e '.recommendation.profile == "B" and .tools.orca.ready == true and
+    .tools.orca.version == "1.2.3" and .tools.gh.logged_in == true and
+    .tools.gh.scopes == ["repo", "read:org"] and .linear.api_key_present == true and
+    .linear.team_keys == ["TEST"] and .feishu.logged_in == true and
+    .feishu.profiles == [{name: "test\"\\\nprofile", appId: "cli_test", active: true}] and
+    .errors == [] and (tostring | contains("DOCTOR_SECRET") | not)' \
+    "$SELFTEST_TMP/doctor.json" >/dev/null || fail "selftest: doctor discovery, escaping or credential filtering failed"
+  PATH="$SELFTEST_TMP/doctor-bin:/usr/bin:/bin" LINEAR_API_KEY=DOCTOR_SECRET \
+    "$FACTORY/bin/orca-factory" doctor > "$SELFTEST_TMP/doctor.out"
+  grep -Eq '^TOOL[[:space:]]+PRESENT[[:space:]]+DETAIL$' "$SELFTEST_TMP/doctor.out" &&
+    ! grep -Eq ',"version"|\{"name"' "$SELFTEST_TMP/doctor.out" \
+    || { cat "$SELFTEST_TMP/doctor.out"; fail "selftest: doctor must render a human-readable table"; }
+  echo "selftest: doctor human-readable table PASS"
+  # Successful stdout must remain parseable when CLIs also emit stderr warnings.
+  printf '\necho "warning: DOCTOR_STDERR" >&2\n' >> "$SELFTEST_TMP/doctor-bin/orca"
+  printf '\necho "warning: DOCTOR_STDERR" >&2\n' >> "$SELFTEST_TMP/doctor-bin/lark-cli"
+  PATH="$SELFTEST_TMP/doctor-bin:/usr/bin:/bin" LINEAR_API_KEY=DOCTOR_SECRET \
+    "$FACTORY/bin/orca-factory" doctor --json > "$SELFTEST_TMP/doctor.json" 2>&1
+  jq -e '.tools.orca.version == "1.2.3" and .tools.orca.ready == true and
+    .linear.team_keys == ["TEST"] and .recommendation.profile == "B" and
+    .feishu.logged_in == true and .errors == [] and
+    (tostring | contains("DOCTOR_STDERR") | not)' \
+    "$SELFTEST_TMP/doctor.json" >/dev/null || fail "selftest: doctor must ignore stderr warnings from successful probes"
+  echo "selftest: doctor ignores stderr warnings from successful probes PASS"
+  # UTF-8 labels must survive parsing, JSON output and the profile auth argument.
+  cat > "$SELFTEST_TMP/doctor-bin/orca" <<'DOCTOR_ORCA_UTF8'
+#!/usr/bin/env bash
+case "$*" in
+  --version) echo 'orca 1.2.3' ;;
+  'status --json') echo '{"ok":true}' ;;
+  'linear team list --json') echo '{"ok":true,"result":{"teams":[{"key":"ÉQUIPE"}]}}' ;;
+  *) exit 1 ;;
+esac
+DOCTOR_ORCA_UTF8
+  cat > "$SELFTEST_TMP/doctor-bin/lark-cli" <<'DOCTOR_LARK_UTF8'
+#!/usr/bin/env bash
+if [[ "$#" == 2 && "$1" == profile && "$2" == list ]]; then
+  echo '[{"name":"café 测试","appId":"cli_café","active":true}]'
+elif [[ "$#" == 5 && "$1" == --profile && "$2" == 'café 测试' &&
+        "$3" == auth && "$4" == status && "$5" == --json ]]; then
+  echo '{"identities":{"user":{"available":true}}}'
+else
+  echo '{"identities":{"user":{"available":false}}}'
+fi
+DOCTOR_LARK_UTF8
+  LC_ALL=C PATH="$SELFTEST_TMP/doctor-bin:/usr/bin:/bin" \
+    "$FACTORY/bin/orca-factory" doctor --json > "$SELFTEST_TMP/doctor.json"
+  jq -e '.feishu.profiles[0].name == "café 测试" and .feishu.logged_in == true and
+    .feishu.profiles[0].appId == "cli_café" and .linear.team_keys == ["ÉQUIPE"] and
+    .tools.orca.ready == true and .errors == []' "$SELFTEST_TMP/doctor.json" >/dev/null \
+    || { cat "$SELFTEST_TMP/doctor.json"; fail "selftest: doctor must preserve UTF-8 labels and profile auth arguments"; }
+  echo "selftest: doctor preserves UTF-8 labels and profile auth arguments PASS"
+  # Every failed probe must remain data, including malformed JSON and nonzero exits.
+  printf '#!/usr/bin/env bash\necho DOCTOR_SECRET\nexit 9\n' > "$SELFTEST_TMP/doctor-bin/orca"
+  printf '#!/usr/bin/env bash\necho invalid-json\n' > "$SELFTEST_TMP/doctor-bin/lark-cli"
+  PATH="$SELFTEST_TMP/doctor-bin:/usr/bin:/bin" "$FACTORY/bin/orca-factory" doctor --json > "$SELFTEST_TMP/doctor.json"
+  jq -e '.recommendation.profile == "A" and .tools.orca.ready == false and
+    (.errors | length) == 4 and (tostring | contains("DOCTOR_SECRET") | not)' \
+    "$SELFTEST_TMP/doctor.json" >/dev/null || fail "selftest: doctor must report probe failures safely"
+  echo "selftest: doctor discovery, JSON escaping, credential filtering and probe failures PASS"
   echo "selftest: PASS"
 }
 
@@ -199,6 +463,7 @@ case "${1:-}" in
   init)     cmd_init "${2:-}" ;;
   update)   cmd_update "${2:-}" ;;
   check)    cmd_check "${2:-}" ;;
+  doctor)   cmd_doctor "${2:-}" ;;
   selftest) cmd_selftest ;;
   *)        usage ;;
 esac
