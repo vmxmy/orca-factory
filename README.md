@@ -16,7 +16,7 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
-看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。
+看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）会显示 coordinator 写回的进度，状态列为 `in-progress` / `in-review` / `completed`。
 
 本仓库自己也接入了流水线（自接入），`core/` 是源、`scripts/agent-gates/` 是安装副本，改 `core/` 后要跑 `bin/orca-factory update .`，详见 `ONBOARD.md` 的「附：自接入」。
 
