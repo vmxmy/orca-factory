@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "orca-factory": {
+      "source": {
+        "source": "github",
+        "repo": "vmxmy/orca-factory"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "swarm-board@orca-factory": true
+  }
+}
