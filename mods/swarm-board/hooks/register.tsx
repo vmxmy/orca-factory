@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Agent as BaseAgent, Board, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
+
+type Board = BaseBoard & { automation?: { id: string; enabled: boolean } }
 
 type Agent = BaseAgent & { requiresAction?: boolean }
 type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
@@ -219,7 +221,9 @@ async function refresh($: any): Promise<Board> {
 
   // Automation runs: last run for the header, and each run's coordinator worktree + dispatch time.
   const autos: any[] = (await runJson(['orca', 'automations', 'list', '--json']))?.result?.automations ?? []
-  const autoId: string = autos.find(a => a.name === AUTOMATION_NAME(base(env.AGENT_GH_REPO ?? '')))?.id ?? ''
+  const auto = autos.find(a => a.name === AUTOMATION_NAME(base(env.AGENT_GH_REPO ?? '')))
+  const automation = auto?.id ? { id: String(auto.id), enabled: Boolean(auto.enabled) } : undefined
+  const autoId = automation?.id ?? ''
   const runs = autoId ? await runJson(['orca', 'automations', 'runs', '--id', autoId, '--json']) : null
   const autoRuns: any[] = runs?.result?.runs ?? []
   const r0 = autoRuns[0]
@@ -327,7 +331,7 @@ async function refresh($: any): Promise<Board> {
     at, error, maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0), inFlight,
     queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
     failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled'),
-    doneToday, prs, agents, lastRun, stats, todayCost,
+    doneToday, prs, agents, lastRun, stats, todayCost, automation,
   }
 }
 
@@ -336,6 +340,20 @@ async function tick($: any) {
   if (b.error && b.inFlight.length === 0) { const old = await read($, board); b.inFlight = old.inFlight; b.queue = old.queue; b.prs = old.prs; b.agents = old.agents; b.todayCost = old.todayCost }
   await update($, board, () => b)
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+}
+
+async function toggleAutomation($: any) {
+  const b: Board = await read($, board)
+  if (!b.automation) return
+  try {
+    const result = await $.process.run(['orca', 'automations', 'edit', b.automation.id, b.automation.enabled ? '--disabled' : '--enabled'], { timeoutMs: TIMEOUT_MS })
+    if (result.exitCode !== 0) throw new Error(result.stderr || result.stdout || 'Automation edit failed')
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error)
+    await update($, board, current => ({ ...current, error: message }))
+    return
+  }
+  await tick($)
 }
 
 export const register: Register = on => {
@@ -358,6 +376,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const [b, v, q, d] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail)])
+    const automation = (b as Board).automation
     const now = Date.now()
     const cols = Math.max(44, (e.props?.bodyColumns ?? e.viewport?.columns ?? 100) - 4)
     const wide = cols >= 96
@@ -466,6 +485,7 @@ export const register: Register = on => {
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[swarm]' : ' swarm '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
+          {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($)} /> : <Text dimColor>auto: 未安装</Text>}
           <Text dimColor>{b.at ? 'updated ' + b.at : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
