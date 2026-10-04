@@ -29,6 +29,7 @@ export type Agent = {
   cost?: Cost
   /** ISO of the agent terminal's last output; empty when no terminal matched. */
   lastActive: string
+  comment?: string
 }
 export type Board = {
   at: string

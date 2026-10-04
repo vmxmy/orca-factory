@@ -3,6 +3,8 @@ import type { Register } from 'claude-code'
 
 import type { Agent, Board, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
 
+type WorktreeCard = { path: string; workspaceStatus: string; comment: string }
+
 const PANE = 'swarm-board'
 const ENV = 'scripts/agent-gates/agent-graph.env'
 const REFRESH_MS = 60_000
@@ -233,6 +235,13 @@ async function refresh($: any): Promise<Board> {
   }
 
   const orcaRuns: any[] = (await runJson(['orca', 'orchestration', 'run-list', '--json']))?.result?.runs ?? []
+  const worktreePs = await runJson(['orca', 'worktree', 'ps', '--json'])
+  const cardByIssue = new Map<string, WorktreeCard>()
+  for (const w of worktreePs?.result?.worktrees ?? []) {
+    if (!w.linkedLinearIssue || !w.path) continue
+    const card: WorktreeCard = { path: w.path, workspaceStatus: w.workspaceStatus ?? '', comment: w.comment ?? '' }
+    if (!cardByIssue.has(w.linkedLinearIssue)) cardByIssue.set(w.linkedLinearIssue, card)
+  }
   const runFor = (id: string) => orcaRuns.filter(x => (x.objective ?? '').includes(id)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
 
   // Agent terminals: last output per worktree path.
@@ -256,16 +265,24 @@ async function refresh($: any): Promise<Board> {
     // When the coordinator posted "已领取".
     const comments = deepComments(await runJson(['orca', 'linear', 'issue', t.id, '--comments', '--json']))
     t.claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取')).map(c => c.createdAt).sort().pop() ?? ''
-    if (!r) { agents.push({ ticket: t.id, role: 'coordinator', name: 'claiming', phase: 'split', since: t.updatedAt, path: '', durationMin: minutes(t.updatedAt, now), model: '', lastActive: '' }); ticketPaths[t.id] = paths; continue }
-    const c = coordinatorOf(r)
-    if (c.path) paths.push(c.path)
-    agents.push({ ticket: t.id, role: 'coordinator', name: r.id, phase: 'supervise', since: c.at, path: c.path, durationMin: minutes(c.at, now), model: '', lastActive: lastOut[c.path] ?? '' })
-    for (const k of await workersOf(r.id)) {
+    if (!r) {
+      agents.push({ ticket: t.id, role: 'coordinator', name: 'claiming', phase: 'split', since: t.updatedAt, path: '', durationMin: minutes(t.updatedAt, now), model: '', lastActive: '' })
+    } else {
+      const c = coordinatorOf(r)
+      if (c.path) paths.push(c.path)
+      agents.push({ ticket: t.id, role: 'coordinator', name: r.id, phase: 'supervise', since: c.at, path: c.path, durationMin: minutes(c.at, now), model: '', lastActive: lastOut[c.path] ?? '' })
+    }
+    const workers = r ? await workersOf(r.id) : []
+    const card = cardByIssue.get(t.id)
+    if (!workers.some(k => k.path) && card?.path) {
+      paths.push(card.path)
+    }
+    for (const k of workers) {
       const phase = k.status === 'dispatched' ? 'implement' : k.status === 'completed' ? 'done' : k.status === 'failed' ? 'returned' : k.status
       const since = k.dispatched_at ?? k.started_at ?? k.updated_at ?? k.created_at ?? ''
       const until = phase === 'done' ? ts(k.completed_at ?? k.updated_at) || now : now
       paths.push(k.path)
-      agents.push({ ticket: t.id, role: 'worker', name: k.display_name ?? k.id, phase, since, path: k.path, durationMin: minutes(since, until), model: '', lastActive: lastOut[k.path] ?? '' })
+      agents.push({ ticket: t.id, role: 'worker', name: k.display_name ?? k.id, phase, since, path: k.path, durationMin: minutes(since, until), model: '', lastActive: lastOut[k.path] ?? '', ...(card?.comment ? { comment: card.comment } : {}) })
       // Gate logs of every unit under the worker worktree.
       try {
         for (const e of await $.fs.list(k.path + '/.omc/gates')) {
@@ -406,7 +423,12 @@ export const register: Register = on => {
       const last = a.lastActive ? 'last ' + age(a.lastActive, now) : ''
       const line = name.padEnd(24) + ' ' + a.phase.padEnd(10) + ' ' + mins(a.durationMin).padStart(9)
         + (wide ? '   ' + cut(shortModel(a.model), 12).padEnd(12) + ' ' + tokens.padStart(22) + ' ' + usd(a.cost).padStart(11) + ' ' + last.padStart(14) : ' ' + usd(a.cost).padStart(11) + ' ' + last.padStart(14))
-      return <Text key={'a-' + a.ticket + '-' + a.name} dimColor={a.phase === 'done'} color={a.phase === 'returned' ? 'yellow' : undefined}>{cut(line, cols)}</Text>
+      return (
+        <Box key={'a-' + a.ticket + '-' + a.name} flexDirection="column">
+          <Text dimColor={a.phase === 'done'} color={a.phase === 'returned' ? 'yellow' : undefined}>{cut(line, cols)}</Text>
+          {a.role === 'worker' && a.comment?.trim() ? <Text dimColor>{'    ' + cut(a.comment.replace(/\s+/g, ' ').trim(), cols - 4)}</Text> : null}
+        </Box>
+      )
     }
     const prRow = (p: Pr) => {
       const ci = ciText(p.ci)
