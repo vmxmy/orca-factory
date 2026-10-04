@@ -35,6 +35,32 @@ const priceOf = (model: string) => PRICE[model] ?? (/(^|\/)gpt-/.test(model) ? G
 // One glyph per state, everywhere: ● working  ◐ waiting  ▲ needs a person  ✓ done  · queued
 const G = { work: '●', wait: '◐', human: '▲', done: '✓', queued: '·' }
 const SYM: Record<string, string> = { green: G.done, red: G.human, running: G.wait, none: '' }
+// Lane emoji — one per lane, used in heads and as the card's status-emoji fallback.
+const LANE_EMOJI = { queue: '📥', impl: '🔨', gate: '🔍', ci: '🚦', human: '🙋', done: '✅' }
+// Card status emoji, taken from gate/CI result; falls back to the lane emoji when nothing ran.
+const STATUS_EMOJI: Record<string, string> = { green: '🟢', red: '🔴', running: '🟡' }
+// Display width where an emoji code point counts as 2 columns.
+const dw = (s: string): number => {
+  let w = 0
+  for (const c of [...s]) w += /\p{Extended_Pictographic}/u.test(c) ? 2 : 1
+  return w
+}
+// Truncate by display columns; appends '…' when it had to drop code points.
+const cutW = (s: string, n: number): string => {
+  if (n <= 0) return ''
+  if (dw(s) <= n) return s
+  let w = 0
+  let out = ''
+  for (const c of [...s]) {
+    const cw = /\p{Extended_Pictographic}/u.test(c) ? 2 : 1
+    if (w + cw > n - 1) break
+    w += cw
+    out += c
+  }
+  return out + '…'
+}
+// Right-pad a possibly-emoji string to n display columns.
+const padW = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - dw(s)))
 
 const empty: Board = { at: '', error: '', maxInFlight: 0, inFlight: [], queue: [], failed: [], doneToday: [], prs: [], agents: [], lastRun: '', stats: [], todayCost: 0 }
 const board = atom({ plugin: 'swarm-board', key: 'board' } as const, empty)
@@ -414,9 +440,9 @@ export const register: Register = on => {
     const cols = Math.max(44, (e.props?.bodyColumns ?? e.viewport?.columns ?? 100) - 4)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
-    const card = (key: string, title: string, children: any, color?: string) => (
-      <Box key={key} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!color} paddingX={1} marginBottom={1}>
-        <Text bold color={color}>{title}</Text>
+    const card = (key: string, title: string, children: any, color?: string, dim?: boolean) => (
+      <Box key={key} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!color || dim} paddingX={1} marginBottom={1}>
+        <Text bold color={color} dimColor={dim}>{title}</Text>
         {children}
       </Box>
     )
@@ -426,7 +452,7 @@ export const register: Register = on => {
       return <Text color={color}>{glyph} {t.id.padEnd(8)} {cut(t.title, w).padEnd(w)} {age(t.updatedAt, now).padStart(9)}</Text>
     }
     // Tasks view: swim lanes. One column per stage; a ticket is a small card that moves right.
-    type Lane = { title: string; glyph: string; color?: string; items: Ticket[] }
+    type Lane = { title: string; emoji: string; color?: string; items: Ticket[] }
     const stage = (t: Ticket): 1 | 2 | 3 => laneStage(t, b.agents)
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
@@ -441,34 +467,40 @@ export const register: Register = on => {
     }
     const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
     const lanes: Lane[] = [
-      { title: '待领', glyph: G.queued, items: b.queue },
-      { title: '实现中', glyph: G.work, items: b.inFlight.filter(t => stage(t) === 1) },
-      { title: 'gate/评审', glyph: G.wait, items: b.inFlight.filter(t => stage(t) === 2) },
-      { title: 'CI/合并', glyph: G.wait, items: b.inFlight.filter(t => stage(t) === 3) },
-      { title: '需要人', glyph: G.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
-      { title: '今日完成', glyph: G.done, items: b.doneToday },
+      { title: '待领', emoji: LANE_EMOJI.queue, items: b.queue },
+      { title: '实现中', emoji: LANE_EMOJI.impl, items: b.inFlight.filter(t => stage(t) === 1) },
+      { title: 'gate/评审', emoji: LANE_EMOJI.gate, items: b.inFlight.filter(t => stage(t) === 2) },
+      { title: 'CI/合并', emoji: LANE_EMOJI.ci, items: b.inFlight.filter(t => stage(t) === 3) },
+      { title: '需要人', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
+      { title: '今日完成', emoji: LANE_EMOJI.done, items: b.doneToday },
     ]
+    // Status emoji on the card head: prefer CI, then gate, then the lane emoji.
+    const statusEmojiOf = (l: Lane, t: Ticket, pr?: Pr) => {
+      if (pr && pr.ci.state !== 'none' && STATUS_EMOJI[pr.ci.state]) return STATUS_EMOJI[pr.ci.state]
+      if (t.gate && t.gate.state !== 'none' && STATUS_EMOJI[t.gate.state]) return STATUS_EMOJI[t.gate.state]
+      return l.emoji
+    }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
       const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
       const facts: string[] = []
-      if (pr && pr.ci.state !== 'none') facts.push(ciText(pr.ci))
-      else if (t.gate && t.gate.state !== 'none') facts.push('gate ' + SYM[t.gate.state] + (t.gate.sec ? ' ' + secs(t.gate.sec) : ''))
-      if (d && pr && (pr.adds || pr.dels)) facts.push('+' + pr.adds + '/−' + pr.dels + ' behind ' + pr.behind)
-      if (d && t.tokens) facts.push(tok(t.tokens.out) + ' out')
-      if (t.cost) facts.push(usd(t.cost))
-      const head = l.glyph + ' ' + t.id + (pr ? ' #' + pr.number : '')
+      if (t.gate && t.gate.sec) facts.push('🧪 ' + secs(t.gate.sec))
+      if (pr && pr.ci.state !== 'none' && pr.ci.total > 0) facts.push('🚦 ' + pr.ci.done + '/' + pr.ci.total + (pr.ci.min ? ' ' + mins(pr.ci.min) : ''))
+      if (d && pr && (pr.adds || pr.dels)) facts.push('📝 +' + pr.adds + '/−' + pr.dels)
+      if (t.cost) facts.push('💲 ' + usd(t.cost))
+      const head = statusEmojiOf(l, t, pr) + ' ' + t.id + (pr ? ' #' + pr.number : '')
+      const headRoom = Math.max(0, w - (dur ? dur.length + 1 : 0))
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
-          <Text color={l.color}>{cut(head, w - dur.length - 1).padEnd(w - dur.length - 1)} {dur}</Text>
-          <Text dimColor>{cut(t.title, w)}</Text>
+          <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
+          <Text>{cutW(t.title, w)}</Text>
           {l.title === '需要人' ? handoffText(t) : null}
-          {facts.length > 0 ? <Text dimColor>{cut(facts.join(' · '), w)}</Text> : null}
+          {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
           {l.title === '需要人' ? intakeText(t) : null}
         </Box>
       )
     }
-    const laneHead = (l: Lane) => <Text bold color={l.color} dimColor={!l.color && l.items.length === 0}>{l.glyph} {l.title} ({l.items.length})</Text>
+    const laneHead = (l: Lane) => <Text bold color={l.color} dimColor={l.items.length === 0}>{l.emoji} {l.title} ({l.items.length})</Text>
     const laneView = () => {
       if (cols >= 120) {
         const w = Math.floor(cols / lanes.length) - 2
@@ -485,9 +517,9 @@ export const register: Register = on => {
         )
       }
       return lanes.filter(l => l.items.length > 0 || l.title === '实现中').map(l =>
-        card('lane-' + l.title, l.glyph + ' ' + l.title + ' (' + l.items.length + ')', (
+        card('lane-' + l.title, l.emoji + ' ' + l.title + ' (' + l.items.length + ')', (
           l.items.length === 0 ? <Text dimColor>None.</Text> : l.items.map(t => laneCard(l, t, cols - 4))
-        ), l.color))
+        ), l.color, l.items.length === 0))
     }
     // Swarm view: one agent is one line; workers indent under their coordinator.
     const agentRow = (a: Agent) => {
