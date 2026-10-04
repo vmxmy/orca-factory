@@ -17,7 +17,7 @@
 | Linear 已连接 | `orca linear team list --json \| jq -e '.result.teams \| length > 0'` | 退出 0 | Orca Settings → Integrations 连接 Linear |
 | 远端与 main | `git -C $REPO remote get-url origin`；`git -C $REPO fetch origin main` | 是 GitHub 仓库，`origin/main` 存在 | 默认分支不是 main 时告诉用户：core 脚本固定用 `origin/main`（gate.sh 的 `GATE_BASE`、install.sh 的 precheck），需要用户先改默认分支或接受这一限制 |
 
-另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker 的模型按档位在 `agent-graph.env` 的 `AGENT_TIER_*` 里设，reviewer 在 `AGENT_ROLE_REVIEWER_CMD` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖。
+另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker 的模型按档位在 `agent-graph.env` 的 `AGENT_TIER_*` 里设，reviewer 在 `AGENT_ROLE_REVIEWER_CMD` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖（`orca` CLI 不能设置它，见第 6 步第 8 条）。
 
 ## 1. 调研目标仓库（只读）
 
@@ -54,6 +54,8 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 
 glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，`*` 可跨 `/`，所以 `spec/*` 覆盖整棵子树。
 
+无工具链的仓库（没有 package.json / 锁文件 / CI，例如纯 shell 或文档仓库）：`AGENT_INSTALL_CMD='true'`，`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD` 留空；`gate.project.sh` 只放仓库自带的轻量静态检查（如 `bash -n`、`orca-factory check`）；仓库真正的验证命令写进每张票的 `CHECK`。每项依据写「无 X」并附 `ls` 结果。
+
 验收：一张完整的推导表（后面写进 PR body），每行有依据；类型/lint/测试命令在 `$REPO` 里实际跑过一次并通过（装过依赖的前提下）。
 
 ## 2. Linear
@@ -65,7 +67,7 @@ orca linear team labels --team <TEAM_KEY> --json | jq '.result.labels[] | {id, n
 orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name, type}'
 ```
 
-- project：找与仓库同名（或用户指定）的 project，取 `id`。它是仓库围栏：precheck 只扫这个 project 的票。没有就问用户要不要建；`orca linear project` 只有 `list`，没有创建能力，请用户在 Linear 网页建好后你再 `list` 取 ID。
+- project：找与仓库同名（或用户指定）的 project，取 `id`。它是仓库围栏：precheck 只扫这个 project 的票。没有就在第 3 步问用户：由你建，还是用户在 Linear 网页建。`orca linear project` 只有 `list`，没有创建能力。由你建且环境里有 `LINEAR_API_KEY` 时，用 GraphQL：先查 `{ teams { nodes { id key } } }`，确认 key 所在 workspace 的团队 ID 与 `orca linear team list` 一致，并查无同名 project；再 `projectCreate(input:{name:"<仓库名>", teamIds:["<team-id>"]})`；最后 `orca linear project list` 回查取 ID。key 不得打印或写入任何文件。没有 key，或用户要自己建，就请用户建好后你再 `list` 取 ID。
 - 标签：`ready-for-agent`、`auto-impl`、`auto-failed` 三个都要存在于该 team。orca CLI 没有建标签命令，缺的请用户在 Linear → Settings → Teams → <team> → Labels 创建（名字必须完全一致），建好后重新 `team labels` 取 ID。
 - 工作流状态：确认 team 有 type 为 `unstarted` 的 `Todo`、type 为 `started` 的 `In Progress`、以及 `Done`（core 脚本按 state type 过滤，但 `status set --to "In Progress"` / `Done` 按名字）。名字不同就在第 3 步告诉用户 coordinator 手册里写死了这两个名字。
 
@@ -75,7 +77,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 
 只问调研定不了的。有 AskUserQuestion / request_user_input 这类工具就用它，一次把所有问题列出；没有就在一条消息里全部列出再等答复。每题附上你的推荐值与理由，让用户只需确认。
 
-1. Linear team / project 确认：「team <key> + project <name>（<id>），对吗？」
+1. Linear team / project 确认：「team <key> + project <name>（<id>），对吗？」project 不存在时改问：「由我创建，还是你在 Linear 网页建？」
 2. lane 1 合并策略：coordinator 自合（squash，默认，手册 §6）还是全部人批（lane 1 也开 PR 后转人）。
 3. 并发上限 `AGENT_MAX_IN_FLIGHT`：默认 2。
 4. lane 2 / lane 3 路径增补：把你推导的两组 glob 列出来，问有没有要加的（例如他们心里的「不能让机器碰的目录」）。
@@ -98,7 +100,7 @@ $FACTORY/bin/orca-factory init $REPO
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
 
 - `agent-graph.env`：11 个 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。UUID 行尾注释写上人类可读名字。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。
-- `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。
+- `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.lock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
 - `COORDINATOR.project.md`：lane 判据表、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 
 如需项目特化（工人跑法、大小上限、生成物、必读文档），不要改 `constitution/` 与 `roles/` 里由 core 分发的文件，而是新增两份覆盖层（模板在 `$FACTORY/templates/`，对照 `examples/zhiyun-ai-dashboard/`）：
@@ -164,7 +166,14 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 满意后 `orca automations edit <id> --enabled`。
 7. 看板：在该仓库启动 Claude Code 会提示安装 `swarm-board` 插件（来自本仓库 marketplace），`/swarm` 打开；`t` 泳道、`s` agent、`d` 明细。
-8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。
+8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。`orca repo` 没有设置 hooks 的子命令，Settings → Repository → Hooks 只能在 UI 里配，留给用户。能进 git 的两项只在 PR body 里建议，不自己提交（超出第 7 步允许的改动范围）：仓库根 `orca.yaml` 的 `worktree.sharedDirectories`（共享被 gitignore 的大目录，如 `node_modules`）、`.worktreeinclude`（复制 `.env` 等被 gitignore 的文件，每行一个字面路径）。
+
+## 附：自接入（`$REPO` 就是 `$FACTORY`）
+
+- `core/` 是源，`scripts/agent-gates/` 是它的安装副本，两者必须一致。`gate.project.sh` 加 `drift` 步：`bin/orca-factory check .`。`roles/local-worker.md` 写明：改了 `core/` 必须再跑 `bin/orca-factory update .`，不手改 `scripts/agent-gates/` 里由 core 分发的文件。
+- 验证命令 `bin/orca-factory selftest` 写进票的 `CHECK`，不放进 `gate.project.sh`（嵌套抢锁）。
+- 范例：本仓库自己的 `scripts/agent-gates/`。
+- `core/`、`bin/`、`templates/`、`ONBOARD.md`、`.claude-plugin/`、`mods/` 是流水线本体，按 lane 2 走 PR。
 
 ## 7. 禁止事项
 
