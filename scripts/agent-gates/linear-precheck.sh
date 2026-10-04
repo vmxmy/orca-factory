@@ -6,7 +6,7 @@
 # Within one label/state scan the ids are ordered by Linear priority ascending (1=urgent, 2=high,
 # 3=medium, 4=low; 0=none sorts last as 9), then createdAt ascending, so an urgent ticket created
 # today is claimed before a no-priority ticket from last week.
-# Every orca call must succeed: the CLI talks to the local Orca app and drops connections under
+# Existing scan calls must succeed: the CLI talks to the local Orca app and drops connections under
 # concurrent load (runtime_unavailable), so a failed read aborts the scan instead of reading as "none".
 # Stale in-flight tickets (claimed + started, no Linear update for AGENT_STALE_HOURS) are a crashed
 # coordinator: they are flipped to auto-failed, commented, and dropped from the in-flight count so they
@@ -68,12 +68,109 @@ mark_stale() {
   ocall linear comment add "$1" --body "precheck: 在途超过 ${STALE_HOURS} 小时无更新，疑似 coordinator 中断，已转人工（worktree/PR 若存在均保留）" >/dev/null || exit 3
 }
 
+# Recovery reads are bounded and fail closed without aborting the existing scan.
+claim_read() {
+  local out
+  if out="$(perl -e 'alarm 20; exec @ARGV' -- orca "$@" --json 2>/dev/null)" &&
+    jq -e '.ok == true' <<<"$out" >/dev/null 2>&1; then
+    printf '%s' "$out"
+  else
+    echo "precheck: $claim_id 认领判定不确定：orca $* failed ($(jq -r '.error.code // "command error/timeout/invalid response"' <<<"$out" 2>/dev/null))" >&2
+    return 1
+  fi
+}
+
+claim_uncertain() {
+  echo "precheck: $claim_id 认领判定不确定：$*" >&2
+  return 1
+}
+
+# Success means positively expired; a live or uncertain claim returns false.
+expired_claim() {
+  local claim_id="$1" out age runs run tasks cards cursor="" matches=""
+  claim_reason=""
+  claim_failures=0
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
+    claim_uncertain 'comments truncated'; return 1
+  fi
+  if ! age="$(jq -r '
+    .result.comments | if type != "array" then error("comments missing") else . end
+    | map(select((.body // "") | startswith("已领取"))
+      | .createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+    | if length == 0 then false else (now - max) > 1200 end' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse claim comments'; return 1
+  fi
+  [[ "$age" == true ]] || return 1
+  claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out")" || {
+    claim_uncertain 'cannot count claim failures'; return 1;
+  }
+  # Follow pagination so a run on a later page is never treated as absent.
+  while :; do
+    if [[ -n "$cursor" ]]; then
+      if ! out="$(claim_read orchestration run-list --cursor "$cursor")"; then return 1; fi
+    else
+      if ! out="$(claim_read orchestration run-list)"; then return 1; fi
+    fi
+    if ! runs="$(jq -r --arg id "$claim_id" '
+      .result.runs | if type != "array" then error("runs missing") else . end
+      | .[] | select(.objective | startswith($id)) | .id
+      | if type != "string" or length == 0 then error("run id missing") else . end' <<<"$out" 2>/dev/null)"; then
+      claim_uncertain 'cannot parse runs'; return 1
+    fi
+    matches="${matches}${matches:+ }$runs"
+    cursor="$(jq -r '.result.nextCursor // empty' <<<"$out")"
+    [[ -n "$cursor" ]] || break
+  done
+  if [[ -z "$matches" ]]; then
+    claim_reason='没有匹配的编排运行'
+    return 0
+  fi
+  for run in $matches; do
+    if ! out="$(claim_read orchestration task-list --run "$run")"; then return 1; fi
+    if ! tasks="$(jq -r '.result.tasks | if type == "array" then length else error("tasks missing") end' <<<"$out" 2>/dev/null)"; then
+      claim_uncertain 'cannot parse tasks'; return 1
+    fi
+    [[ "$tasks" == 0 ]] || return 1
+  done
+  if ! out="$(claim_read worktree ps)"; then return 1; fi
+  if jq -e '.result.hostScope.omittedHostIds | type == "array" and length > 0' <<<"$out" >/dev/null; then
+    claim_uncertain 'worktree hosts omitted'; return 1
+  fi
+  if ! cards="$(jq -r --arg id "$claim_id" '
+    if .result.truncated == true then error("worktrees truncated") else .result.worktrees end
+    | if type != "array" then error("worktrees missing") else . end
+    | map(select(.linkedLinearIssue == $id)) | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete worktree list'; return 1
+  fi
+  [[ "$cards" == 0 ]] || return 1
+  claim_reason='编排运行无任务且没有关联卡片'
+}
+
+release_claim() {
+  ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
+  if (( claim_failures >= 2 )); then
+    ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
+    ocall linear comment add "$1" --body "precheck: 已多次认领失效（${claim_reason}），已转人工（worktree/PR 若存在均保留）" >/dev/null || exit 3
+    stale_ids+=("$1")
+  else
+    ocall linear status set "$1" --to Todo >/dev/null || exit 3
+    ocall linear comment add "$1" --body "precheck: 认领失效（${claim_reason}），已释放，下一轮重新领取" >/dev/null || exit 3
+  fi
+}
+
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
 ready_ids="$(ids "$LABEL_READY" unstarted)"
 live=()
 stale_ids=()
 for id in $in_flight_ids; do
-  if stale "$id"; then mark_stale "$id"; stale_ids+=("$id"); else live+=("$id"); fi
+  if stale "$id"; then
+    mark_stale "$id"; stale_ids+=("$id")
+  elif expired_claim "$id"; then
+    release_claim "$id"
+  else
+    live+=("$id")
+  fi
 done
 in_flight=${#live[@]}
 claimable=()

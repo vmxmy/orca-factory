@@ -418,6 +418,81 @@ LEDGER_SLEEP
     [[ "$(grep -c '^linear list-issues ' "$SELFTEST_TMP/ledger.calls")" == 3 ]] || fail "selftest: ledger exit failure retry count"
     echo "selftest: Linear ledger reports tier, deduplicates, warns, handles empty stats and retries failures"
   )
+  # Exercise claim recovery through the installed precheck and recorded Orca writes.
+  (
+    mkdir -p "$SELFTEST_TMP/precheck-bin"
+    export PATH="$SELFTEST_TMP/precheck-bin:$PATH" PRECHECK_TEST_DIR="$SELFTEST_TMP"
+    export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=precheck-test
+    export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
+    export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8
+    cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+case "$*" in
+  'linear list-issues '*--label\ auto-impl*)
+    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
+  'linear list-issues '*--label\ ready-for-agent*)
+    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
+  'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
+  'linear issue TEST-1 --json')
+    jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+  'linear issue TEST-1 --comments --json')
+    jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{comments:
+      ([{body:"已领取 · tier=default",createdAt:((now-1800)|todateiso8601|sub("Z$";".123Z"))}]
+       + (if $mode == "recent" then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+       + (if $mode == "limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
+      meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
+  'orchestration run-list --json')
+    case "$PRECHECK_MODE" in
+      fail) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}'; exit 7 ;;
+      notok) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}' ;;
+      empty|busy|card|hosts-omitted) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
+      *) echo '{"ok":true,"result":{"runs":[]}}' ;;
+    esac ;;
+  'orchestration task-list --run run-test --json')
+    if [[ "$PRECHECK_MODE" == busy ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
+    else echo '{"ok":true,"result":{"tasks":[]}}'; fi ;;
+  'worktree ps --json')
+    if [[ "$PRECHECK_MODE" == card ]]; then echo '{"ok":true,"result":{"worktrees":[{"linkedLinearIssue":"TEST-1"}]}}'
+    elif [[ "$PRECHECK_MODE" == hosts-omitted ]]; then echo '{"ok":true,"result":{"worktrees":[],"hostScope":{"omittedHostIds":["runtime:remote"]}}}'
+    else echo '{"ok":true,"result":{"worktrees":[]}}'; fi ;;
+  'linear label remove TEST-1 --label auto-impl --json'|'linear label add TEST-1 --label auto-failed --json'|'linear status set TEST-1 --to Todo --json'|'linear comment add TEST-1 --body '*)
+    echo '{"ok":true}' ;;
+  *) echo "unexpected fake orca call: $*" >&2; exit 1 ;;
+esac
+PRECHECK_ORCA
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca"
+    for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted; do
+      export PRECHECK_MODE
+      : > "$SELFTEST_TMP/precheck.calls"
+      bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
+        || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; }
+      case "$PRECHECK_MODE" in
+        missing|empty)
+          grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim did not reset Todo ($PRECHECK_MODE)"
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim kept auto-impl"
+          grep -q '^linear comment add TEST-1 --body .*认领失效.*已释放' "$SELFTEST_TMP/precheck.calls" || fail "selftest: missing release comment"
+          grep -q 'in_flight=0 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: released claim counted live"
+          grep -q '^stale=$' "$SELFTEST_TMP/precheck.out" || fail "selftest: released claim counted stale" ;;
+        limit)
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: repeated claim failure not escalated"
+          grep -q '^linear comment add TEST-1 --body .*多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: escalation comment missing"
+          grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: repeated failure not stale"
+          if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: repeated failure reset Todo"; fi ;;
+        *)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: live/uncertain claim mutated ($PRECHECK_MODE)"; fi
+          grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: live/uncertain claim lost"
+          if [[ "$PRECHECK_MODE" == fail || "$PRECHECK_MODE" == notok ]]; then
+            grep -q '不确定.*simulated_read_failure' "$SELFTEST_TMP/precheck.err" || fail "selftest: uncertain read reason missing"
+          elif [[ "$PRECHECK_MODE" == comments-more || "$PRECHECK_MODE" == comments-cap || "$PRECHECK_MODE" == hosts-omitted ]]; then
+            grep -q '不确定' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: incomplete read uncertainty missing ($PRECHECK_MODE)"; }
+          fi ;;
+      esac
+      if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
+    done
+    echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
+  )
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }
