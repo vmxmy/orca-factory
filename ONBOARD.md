@@ -166,7 +166,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 满意后 `orca automations edit <id> --enabled`。
 7. 看板：在该仓库启动 Claude Code 会提示安装 `swarm-board` 插件（来自本仓库 marketplace），`/swarm` 打开；`t` 泳道、`s` agent、`d` 明细。
-8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。`orca repo` 没有设置 hooks 的子命令，Settings → Repository → Hooks 只能在 UI 里配，留给用户。能进 git 的两项只在 PR body 里建议，不自己提交（超出第 7 步允许的改动范围）：仓库根 `orca.yaml` 的 `worktree.sharedDirectories`（共享被 gitignore 的大目录，如 `node_modules`）、`.worktreeinclude`（复制 `.env` 等被 gitignore 的文件，每行一个字面路径）。
+8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。`orca repo` 没有设置 hooks 的子命令，Settings → Repository → Hooks 只能在 UI 里配，留给用户。源码显示 `orca.yaml` 还支持 `scripts.setup`、`scripts.archive`、`setupAgentStartupPolicy`（官网未写）；提交进 git 的 setup 脚本是否触发信任确认、无人值守时是否卡住**未核实**，因此仍以 UI 设置为已验证路径，`orca.yaml` 这几项只在 PR body 里建议，不自己提交。能进 git 的两项只在 PR body 里建议，不自己提交（超出第 7 步允许的改动范围）：仓库根 `orca.yaml` 的 `worktree.sharedDirectories`（共享被 gitignore 的大目录，如 `node_modules`）、`.worktreeinclude`（复制 `.env` 等被 gitignore 的文件，每行一个字面路径）。
 
 ## 附：自接入（`$REPO` 就是 `$FACTORY`）
 
