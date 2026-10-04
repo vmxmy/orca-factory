@@ -71,6 +71,7 @@ mark_stale() {
   ocall linear comment add "$1" --body "转人: 在途超过 ${STALE_HOURS} 小时无更新，疑似 coordinator 中断（worktree/PR 若存在均保留）
 证据: ${BASH_SOURCE[0]}:61 的 stale 判定为 true，票据 $1 已至少 ${STALE_HOURS} 小时无更新
 需要你: 检查票据 $1 对应的 coordinator 运行状态" >/dev/null || exit 3
+  escalated=$((escalated + 1))
 }
 
 # Recovery reads are bounded and fail closed without aborting the existing scan.
@@ -188,9 +189,11 @@ release_claim() {
 证据: orca linear issue $1 --comments 的评论中已有 ${claim_failures} 次认领失效；${claim_reason}
 需要你: 排查票据 $1 的认领失效原因" >/dev/null || exit 3
     stale_ids+=("$1")
+    escalated=$((escalated + 1))
   else
     ocall linear status set "$1" --to Todo >/dev/null || exit 3
     ocall linear comment add "$1" --body "precheck: 认领失效（${claim_reason}），已释放，下一轮重新领取" >/dev/null || exit 3
+    released=$((released + 1))
   fi
 }
 
@@ -277,6 +280,8 @@ scope_overlap() {
 
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
 ready_ids="$(ids "$LABEL_READY" unstarted)"
+released=0
+escalated=0
 live=()
 stale_ids=()
 for id in $in_flight_ids; do
@@ -318,6 +323,15 @@ for id in $ready_ids; do
     claimable+=("$id")
   fi
 done
+# This advisory read must never change claimability or abort the scan.
+failed_backlog='?'
+if failed_out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --label "$LABEL_FAILED" --order-by createdAt)"; then
+  failed_backlog="$(jq -er '
+    .result.issues | if type != "array" then error("issues missing") else . end
+    | map(select(.state.type != "completed" and .state.type != "canceled")) | length
+  ' <<<"$failed_out" 2>/dev/null)" || failed_backlog='?'
+fi
 echo "claimable=$(IFS=,; echo "${claimable[*]-}") in_flight=$in_flight max=$MAX_IN_FLIGHT"
 echo "stale=$(IFS=,; echo "${stale_ids[*]-}")"
+echo "health=live=$in_flight max=$MAX_IN_FLIGHT released=$released escalated=$escalated failed_backlog=$failed_backlog"
 (( ${#claimable[@]} > 0 && in_flight < MAX_IN_FLIGHT ))
