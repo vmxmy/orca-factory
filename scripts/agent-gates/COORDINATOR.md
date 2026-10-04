@@ -71,6 +71,8 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 触发条件与转人动作按 handoffs §4 和 `roles/coordinator.md` Handoff。转人时：`orca worktree set --worktree path:<wt> --comment "转人: <一句话原因>" --workspace-status in-review`；保留 worktree、分支、PR。
 
+若已有 PR，在 coordinator 创建的对应单元工人 worktree 内写标记：`mkdir -p <wt>/.omc && printf 'pr=%s\n' <N> > <wt>/.omc/agent-unit`，内容为一行 `pr=<N>`（PR 号）。仅这些工人 worktree 写此标记；主检出、运行 worktree 和其他 worktree 不写。后续运行会在 PR 已 MERGED 或 CLOSED 且 worktree 干净时清理；尚无 PR 时不写标记。
+
 ## 结束标记
 
 无论走到第 6、第 7 还是无票：ledger 一行 + `.omc/agent-run-finished`，顺序与字段按 workflow §4。
