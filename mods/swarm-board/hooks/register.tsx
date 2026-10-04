@@ -69,6 +69,7 @@ const showQueue = atom({ plugin: 'swarm-board', key: 'showQueue' } as const, fal
 const detail = atom({ plugin: 'swarm-board', key: 'detail' } as const, false)
 const nowAtom = atom({ plugin: 'swarm-board', key: 'now' } as const, 0)
 const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0)
+let refreshing = false
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -396,6 +397,12 @@ async function tick($: any, handoffs: Map<string, string>) {
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
 }
 
+async function manualRefresh($: any, handoffs: Map<string, string>) {
+  if (refreshing) return
+  refreshing = true
+  try { await tick($, handoffs) } finally { refreshing = false }
+}
+
 async function toggleAutomation($: any, handoffs: Map<string, string>) {
   const b: Board = await read($, board)
   if (!b.automation) return
@@ -572,6 +579,7 @@ export const register: Register = on => {
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
           {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} /> : <Text dimColor>auto: 未安装</Text>}
+          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => manualRefresh($, handoffs)} />
           <Text dimColor>{b.at ? 'updated ' + b.at + (countdown ? ' · ' + countdown : '') : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
