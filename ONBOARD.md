@@ -6,7 +6,20 @@
 
 ## 0. 前置检查
 
-逐条执行，任一失败就停下并告诉用户补法。
+先在 `$FACTORY` 运行 `bin/orca-factory doctor --json`，把实际输出整理成下面的检测表展示给用户，再展示推荐方案；不要输出密钥或读取密钥文件。
+
+| 检测项 | JSON 字段 | 展示内容 |
+| --- | --- | --- |
+| 工具 | `tools` 中各工具的 `present` | orca、gh、jq、git、codex、claude、lark-cli 是否安装 |
+| Orca | `tools.orca.version`、`tools.orca.ready` | 版本、运行状态 |
+| GitHub | `tools.gh.logged_in`、`tools.gh.scopes` | 登录状态、权限范围 |
+| Linear | `linear.api_key_present`、`linear.team_keys` | key 是否存在（仅布尔值）、可访问的 team |
+| 飞书 | `feishu.profiles`、`feishu.logged_in` | 每个 profile 的 `name`、`appId`、`active`，以及是否检测到已登录用户 |
+| 推荐与缺项 | `recommendation.profile`、`recommendation.reasons`、`recommendation.missing`、`errors` | A/B 推荐、理由、缺项与探测错误 |
+
+把 `recommendation.profile` 映射为 `A 全部用 Linear` 或 `B Linear + 飞书`，在第 3 步标为推荐值。doctor 当前在检测到任意飞书 profile 时推荐 B，否则推荐 A；这不代表固定名 `orca-factory` 已存在，也不代表它已登录。`feishu.logged_in` 是所有 profile 的汇总，B 的身份状态要单独核实。探测有错误时先说明不确定项，不把失败当作「没有配置」而重复创建。
+
+doctor 只检测，不代替下表验收；退出 0 也不代表前置条件全部满足。飞书缺项只在选择 B 时补齐，不阻塞 A。保留并逐条执行以下前置检查，任一失败就停下并告诉用户补法。
 
 | 检查 | 命令 | 验收 | 不满足时告诉用户 |
 | --- | --- | --- | --- |
@@ -85,6 +98,38 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 6. 工人安装命令是否正确：把你推导的 `AGENT_INSTALL_CMD` 原样给用户看。
 7. 模型档位：三档（fast / default / strong）各用什么 `agent:model:effort`（列出模板默认值 `codex:gpt-6-astra:low` / `codex:gpt-6-astra:medium` / `codex:gpt-6.1-sol:high`，问要不要改）；是否开自动升档（`AGENT_TIER_ESCALATE`，默认 1：被打回一次后下一轮 correction 升一档）。
 
+8. 存储与通知方案：`A 全部用 Linear` / `B Linear + 飞书`，把第 0 步 doctor 的推荐标为推荐值并给出理由。A 将任务记录和通知都放在 Linear；B 仍用 Linear 存储任务记录，飞书承接「需要人」通知。提醒：Linear 收件箱不会可靠通知「用户本人的 key 所做的操作」，因此需要手机提醒的「需要人」通知默认推荐飞书；**该判断未验证，演练时实测**，不要当成已验证的产品保证，也不要静默改写 doctor 的推荐。
+
+选 B 后，用一张合并的确认卡一次确认本项目的操作，不把建机器人、建群、测试消息拆成多个问题。所有项目默认共用机器级 profile `orca-factory` 的一个机器人，每个项目单独一个通知群。按 `feishu.profiles[].name` 判断该 profile 是否存在，复用时从同一项取 `appId`；其他 profile 的存在不算命中。只有用户飞书租户不同或受众不同、需要隔离时，才另用 `--name` 建新 profile，并在卡片列明隔离理由与名称。
+
+确认卡按实际检测结果填好再给用户：
+
+| 项 | 本次确认内容 |
+| --- | --- |
+| 方案与机器人 | B；复用机器级 `orca-factory`（展示对应 appId）；仅不存在时增加「创建专用机器人，追加命名 profile，不替换已有配置、不切换默认 profile」 |
+| 为本项目新建通知群 | 展示项目名、拟定群名（统一规则：`流水线通知 | <仓库目录名>`，仓库目录名即 Linear project 名与定时任务名括号里的名字；飞书可能自动加租户前缀，属平台行为）、建群所用已登录用户的 profile、通知受众；用户身份建群并邀请上述机器人 |
+| 测试消息 | 展示拟发送的测试文字；由机器人发到新群，随后请用户确认手机收到推送 |
+| 保存配置 | 本项目 `agent-graph.env` 记录机器人 profile 和群 ID；当前只记录配置，自动通知由后续票完成 |
+
+已存在 `orca-factory` 时，卡片不再列创建机器人，待执行动作只列「为本项目新建通知群」和测试消息。用户确认整张卡后按顺序执行：
+
+1. 仅在 profile 不存在时运行 `lark-cli config init --new --name orca-factory`。它追加命名 profile，不替换已有配置、不切换默认 profile；命令等待用户在浏览器完成设置，向用户展示命令返回的验证链接。已有 profile 直接复用，后续机器人调用都加 `--profile orca-factory`；隔离场景统一替换为已确认的新名称。初始化后重新运行 doctor，取得该 profile 对应的 `appId`。
+2. 核实建群用的用户身份：`lark-cli --profile '{{已登录用户的profile}}' auth status --json`。优先复用同租户已有用户登录的 profile，不要求用户登录新机器人应用。需要用户授权时按本机 `lark-cli auth --help` 处理用户身份；**不要对机器人执行 `auth login`**。机器人权限只在开发者后台开通，权限报错中的 `console_url` 展示给用户，由用户开通后重试。
+3. 用已确认的用户身份建群，并通过 `--bots` 邀请机器人的 appId。用户 `open_id` 在每个应用下不同，这样不必查询用户在新应用里的 ID。下列命令和参数已通过本机帮助核实；执行前再读 `lark-cli im +chat-create --help` 与 `lark-cli im +messages-send --help`，如版本不一致按实际帮助调整，不编造参数。花括号占位换成卡片确认的实际值。
+
+   ```bash
+   lark-cli --profile '{{已登录用户的profile}}' im +chat-create --as user --name '流水线通知 | {{仓库目录名}}' --bots '{{机器人appId}}' --json
+   ```
+
+   从建群响应取得真实群 ID；每个项目一个群，不复用其他项目群，也不凭群名猜 ID。建群成功而测试失败时保留该 ID，修复后只重试测试，不重复建群。
+4. 用机器人身份向新群发确认卡中的测试消息：
+
+   ```bash
+   lark-cli --profile orca-factory im +messages-send --as bot --chat-id '{{本项目群ID}}' --text '{{已确认的测试文字}}' --json
+   ```
+
+   API 成功后请用户确认手机收到推送；未收到则排查群免打扰、手机通知设置与权限，不把发送成功当作推送验收通过。演练时也实测 Linear 本人 key 操作的收件箱通知表现，记录结果。
+
 把答复记下，后续每条写入配置时注明「依据：用户答复」。
 
 ## 4. 生成三份文件
@@ -99,7 +144,7 @@ $FACTORY/bin/orca-factory init $REPO
 
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
 
-- `agent-graph.env`：11 个 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。UUID 行尾注释写上人类可读名字。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。
+- `agent-graph.env`：11 个 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。UUID 行尾注释写上人类可读名字。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。另有两个可选通知变量：A 保持 `AGENT_NOTIFY_FEISHU_PROFILE=''`、`AGENT_NOTIFY_FEISHU_CHAT=''`；B 在用户确认后把机器人 profile（默认 `orca-factory`，隔离时为确认的新名称）和本项目新群的真实 ID 写进这两个变量。它们暂时只记录配置，coordinator 发通知由后续票完成；不改 install.sh 前 9 个变量非空的校验。
 - `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.lock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
 - `COORDINATOR.project.md`：lane 判据表、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 
