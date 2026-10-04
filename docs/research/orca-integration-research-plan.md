@@ -197,6 +197,19 @@
 - **失败**：`ps` 缺字段；并发写入丢失或崩溃。
 - **风险与回滚**：只改沙箱 worktree 元数据；`orca worktree set --comment "" ...` 后 `orca worktree rm --worktree name:exp-ckpt --force`。
 
+### E1 实测结果（2026-10-04，Orca 1.4.218，本机）
+证据强度：本机实测。沙箱为临时 worktree `exp-ckpt` 加一张沙箱票，实验后已删除和取消，无残留。
+
+| 判据 | 结果 | 说明 |
+| --- | --- | --- |
+| `comment`、`workspaceStatus`、`linkedLinearIssue` 出现在 `worktree show` 与 `worktree ps` | 通过 | 两处字段一致；`linkedPR` 无 PR 时为 `null` |
+| 并发两次 `--comment` | 通过 | 最后写入者胜出（A、B 同时写，读到 A），无损坏、无报错 |
+| 未知状态 id（`custom-x`）给出明确错误 | **未通过** | 命令返回 `ok:true`，状态被存成 `custom-x`。写入方必须自己限定在 `todo / in-progress / in-review / completed` |
+| Linear 无意外变化 | 通过 | 关联、写评论、改状态（in-progress、in-review、completed）后，Linear 票仍为 Backlog、无评论、无附件：没有观察到双向同步 |
+| `liveTerminalCount` | 差异 | `show` 返回 `null`，`ps` 返回 `1`；终端计数只能从 `ps` 取 |
+
+对候选 C1 的影响：写回可行且无副作用；风险项「`--linear-issue` 是否反向同步 Linear」可关闭（本版本未观察到）；新增一条约束：状态 id 由调用方校验。
+
 ### E2 编排幂等、correction 与结算（验证 C2、C3、I2、I3；P1）
 - **前置**：沙箱仓库；Orca 已启用 `codex` 与 `claude`。
 - **步骤**：
