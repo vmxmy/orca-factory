@@ -628,6 +628,79 @@ PRECHECK_GH
     echo "selftest: precheck retries stuck workers before escalating"
     echo "selftest: precheck skips scope-overlapping tickets"
   )
+  # Prune compensation uses real Git worktrees and a local bare origin; services are isolated.
+  (
+    export PRUNE_TEST_ROOT="$SELFTEST_TMP/prune"
+    mkdir -p "$PRUNE_TEST_ROOT/bin"
+    cat > "$PRUNE_TEST_ROOT/bin/orca" <<'PRUNE_ORCA'
+#!/usr/bin/env bash
+set -eu
+case "$1 $2" in
+  'worktree list')
+    if [[ -d "$AGENT_REPO_PATH/worker" ]]; then
+      jq -nc --arg path "$AGENT_REPO_PATH/worker" '{ok:true,result:{worktrees:[{path:$path,linkedLinearIssue:"TEST-1",createdAt:9999999999999}]}}'
+    else
+      echo '{"ok":true,"result":{"worktrees":[]}}'
+    fi ;;
+  'linear issue')
+    jq -nc --arg state "$([[ "$PRUNE_MODE" == started ]] && echo started || echo completed)" \
+      '{ok:true,result:{issue:{state:{type:$state},labels:[{name:"auto-impl"}]}}}' ;;
+  'worktree rm')
+    [[ "$#" == 4 && "$3" == --worktree ]] || exit 9
+    git -C "$AGENT_REPO_PATH" worktree remove "${4#path:}"
+    echo '{"ok":true}' ;;
+  *) exit 8 ;;
+esac
+PRUNE_ORCA
+    cat > "$PRUNE_TEST_ROOT/bin/gh" <<'PRUNE_GH'
+#!/usr/bin/env bash
+set -eu
+[[ "$PRUNE_MODE" != pr-failure ]] || { echo 'PR query unavailable' >&2; exit 7; }
+jq -nc --arg sha "$PRUNE_MERGED_SHA" --arg repo "$AGENT_GH_REPO" \
+  '["worker","git","local","remote"] | map({merged_at:"2026-01-01T00:00:00Z",head:{sha:$sha,ref:("agent/TEST-1/"+.),repo:{full_name:$repo}}})'
+PRUNE_GH
+    chmod +x "$PRUNE_TEST_ROOT/bin/"*
+    export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
+    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure; do
+      export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
+      git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
+      git init -q "$AGENT_REPO_PATH"
+      git -C "$AGENT_REPO_PATH" config user.name selftest
+      git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+      git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+      export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+      git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
+      git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+      git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+      git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+      git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote HEAD:refs/heads/agent/TEST-1/backup
+      case "$PRUNE_MODE" in
+        dirty) touch "$AGENT_REPO_PATH/worker/untracked" "$AGENT_REPO_PATH/.claude/worktrees/agent-test/untracked" ;;
+        mismatch) PRUNE_MERGED_SHA=0000000000000000000000000000000000000000 ;;
+        locked) git -C "$AGENT_REPO_PATH" worktree lock "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ;;
+      esac
+      (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/out" 2> "$PRUNE_TEST_ROOT/err"
+      case "$PRUNE_MODE" in
+        reclaim|locked) [[ ! -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune kept eligible worker ($PRUNE_MODE)" ;;
+        *) [[ -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune removed protected worker ($PRUNE_MODE)" ;;
+      esac
+      case "$PRUNE_MODE" in
+        reclaim) [[ ! -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: prune kept eligible Git-only worktree' ;;
+        *) [[ -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail "selftest: prune removed protected Git-only worktree ($PRUNE_MODE)" ;;
+      esac
+      case "$PRUNE_MODE" in
+        reclaim|dirty|locked)
+          ! git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune kept merged local branch'
+          [[ -z "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune kept merged remote branch' ;;
+        *)
+          git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune removed protected local branch'
+          [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune removed protected remote branch' ;;
+      esac
+      [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/backup)" ]] || fail 'selftest: prune removed unmatched backup'
+      [[ "$PRUNE_MODE" == reclaim || -s "$PRUNE_TEST_ROOT/err" ]] || fail 'selftest: prune did not explain retention'
+    done
+  )
+  echo 'selftest: prune reclaims merged worktrees and branches'
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }
