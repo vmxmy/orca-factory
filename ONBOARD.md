@@ -107,7 +107,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 | 项 | 本次确认内容 |
 | --- | --- |
 | 方案与机器人 | B；复用机器级 `orca-factory`（展示对应 appId）；仅不存在时增加「创建专用机器人，追加命名 profile，不替换已有配置、不切换默认 profile」 |
-| 为本项目新建通知群 | 展示项目名、拟定群名、建群所用已登录用户的 profile、通知受众；用户身份建群并邀请上述机器人 |
+| 为本项目新建通知群 | 展示项目名、拟定群名（统一规则：`流水线通知 | <仓库目录名>`，仓库目录名即 Linear project 名与定时任务名括号里的名字；飞书可能自动加租户前缀，属平台行为）、建群所用已登录用户的 profile、通知受众；用户身份建群并邀请上述机器人 |
 | 测试消息 | 展示拟发送的测试文字；由机器人发到新群，随后请用户确认手机收到推送 |
 | 保存配置 | 本项目 `agent-graph.env` 记录机器人 profile 和群 ID；当前只记录配置，自动通知由后续票完成 |
 
@@ -118,7 +118,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 3. 用已确认的用户身份建群，并通过 `--bots` 邀请机器人的 appId。用户 `open_id` 在每个应用下不同，这样不必查询用户在新应用里的 ID。下列命令和参数已通过本机帮助核实；执行前再读 `lark-cli im +chat-create --help` 与 `lark-cli im +messages-send --help`，如版本不一致按实际帮助调整，不编造参数。花括号占位换成卡片确认的实际值。
 
    ```bash
-   lark-cli --profile '{{已登录用户的profile}}' im +chat-create --as user --name '{{项目名}} 通知' --bots '{{机器人appId}}' --json
+   lark-cli --profile '{{已登录用户的profile}}' im +chat-create --as user --name '流水线通知 | {{仓库目录名}}' --bots '{{机器人appId}}' --json
    ```
 
    从建群响应取得真实群 ID；每个项目一个群，不复用其他项目群，也不凭群名猜 ID。建群成功而测试失败时保留该 ID，修复后只重试测试，不重复建群。
