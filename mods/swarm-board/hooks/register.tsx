@@ -14,7 +14,7 @@ const PANE = 'swarm-board'
 const ENV = 'scripts/agent-gates/agent-graph.env'
 const REFRESH_MS = 60_000
 const TIMEOUT_MS = 20_000
-const MAX_TICKETS = 6 // in-flight tickets that get per-ticket calls (task-list + comments)
+const MAX_TICKETS = 10 // in-flight tickets that get per-ticket calls (task-list + comments)
 const MAX_PRS = 6 // open PRs that get the three gh detail calls
 const MAX_DONE = 4 // done-today tickets that get one task-list call (for today's cost)
 // Resolved once per module load from the shell, since the module has no process.env.
@@ -565,6 +565,7 @@ export const register: Register = on => {
         <Box flexDirection="row" alignItems="center" gap={2} marginBottom={1}>
           <Text bold inverse>{focal}</Text>
           <Text bold>in flight</Text>
+          <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>
           <Text dimColor>{G.queued} queued {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} needs you {b.failed.length} · {G.done} today {b.doneToday.length}{b.todayCost > 0 ? ' · today est. $' + b.todayCost.toFixed(2) : ''}</Text>
         </Box>
         <Box flexDirection="row" gap={2} marginBottom={1}>
