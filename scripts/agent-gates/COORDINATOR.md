@@ -28,10 +28,17 @@ MODEL_ARGS=(); [[ -n "$T_MODEL" ]] && MODEL_ARGS=(--model "$T_MODEL" ${T_EFFORT:
 orca orchestration worker-start --run <run> --task <task> --worktree new-top-level \
   --repo path:<主检出> --base-branch origin/main --name <unit> \
   --agent "$T_AGENT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --json
+orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: 实现中" --workspace-status in-progress
 ```
 
 - `--deps` JSON 原样单引号包住。同时最多 3 个 worker。同一张票的所有单元用同一档位。
 - 等待与 ack 按 handoffs §5。
+
+## 进度检查点
+
+- `--workspace-status` 只用 `todo`、`in-progress`、`in-review`、`completed`，由调用方保证；Orca 会静默接受未知 id，不依赖它报错。
+- `--comment` 是整体替换；每次写前先 `orca worktree show --worktree path:<wt> --json`，把旧值中的 `goal:` 行原样保留到新评论中。各步命令的评论模板都须先补上这些行。
+- 检查点只是辅助信息；读写命令失败只记一句，不阻塞流程、不转人。
 
 ## 3. 复核
 
@@ -54,15 +61,15 @@ orca orchestration worker-start --run <run> --task <task> --worktree new-top-lev
 
 ## 6. 提交、合并、上线
 
-1. 在单元 worktree：`git add <SCOPE 内文件>` → commit → push → 开 PR（workflow §2）。PR body 附 gate 输出块与追溯块。
+1. 在单元 worktree：`git add <SCOPE 内文件>` → commit → push → 开 PR（workflow §2）。PR body 附 gate 输出块与追溯块；开 PR 且 gate 绿后：`orca worktree set --worktree path:<wt> --comment "<unit>: PR #<N> gate green" --workspace-status in-review`。
 2. 等 CI：轮询 `commits/<sha>/check-runs` 全部 completed 且无 failure。CI 红 = 一次 correction，`STEP ci`。
 3. `LANE 2` 不自合 → 第 7 步。`LANE 1` 自合（workflow §2）。rebase 冲突：生成物重生成（清单在 `constitution/local-engineering.md`），源码冲突只在 SCOPE 内合并后重跑 gate；跨 SCOPE 或拿不准 → 第 7 步。
 4. 等 `$AGENT_DEPLOY_WORKFLOW` 成功（`actions/runs?head_sha=<merge sha>`），再 `bash -c "$AGENT_SMOKE_CMD"` 退出 0；两者为空则跳过。
-5. 收尾：`worker-release --dispatch <id>`；回读 merged 后 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
+5. 收尾：`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
 
 ## 7. 需要人
 
-触发条件与转人动作按 handoffs §4 和 `roles/coordinator.md` Handoff。保留 worktree、分支、PR。
+触发条件与转人动作按 handoffs §4 和 `roles/coordinator.md` Handoff。转人时：`orca worktree set --worktree path:<wt> --comment "转人: <一句话原因>" --workspace-status in-review`；保留 worktree、分支、PR。
 
 ## 结束标记
 
