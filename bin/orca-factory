@@ -29,6 +29,14 @@ fail() { echo "orca-factory: $*" >&2; exit 1; }
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
 core_files() { (cd "$CORE" && find . -type f | sed 's#^\./##' | sort); }
 
+# True if <file> still has a {{placeholder}}. Full-line comments in env/sh files are guidance text, not values.
+has_placeholder() {
+  case "$1" in
+    *.md) grep -q '{{' "$1" ;;
+    *) awk '!/^[[:space:]]*#/ && /\{\{/ { found = 1 } END { exit !found }' "$1" ;;
+  esac
+}
+
 is_protected() { local f="$1" p; for p in "${PROTECTED_CLAUSES[@]}"; do [[ "$f" == "$p" ]] && return 0; done; return 1; }
 
 resolve_repo() {
@@ -131,7 +139,7 @@ cmd_check() {
   for f in "${PROJECT_FILES[@]}"; do
     if [[ ! -e "$dest/$f" ]]; then
       echo "check: project file missing: $f"; rc=1
-    elif grep -q '{{' "$dest/$f"; then
+    elif has_placeholder "$dest/$f"; then
       echo "check: project file still has {{placeholders}}: $f"; rc=1
     fi
   done
@@ -170,6 +178,11 @@ cmd_selftest() {
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -q '^check: OVERRIDDEN constitution/engineering.md' "$SELFTEST_TMP/check.out" || { cat "$SELFTEST_TMP/check.out"; fail "selftest: overridden clause not detected"; }
   echo "selftest: overridden shared clause detected"
+  printf '# {{only in a comment}}\nA=1\n' > "$SELFTEST_TMP/comment.env"
+  printf 'A={{value}}\n' > "$SELFTEST_TMP/value.env"
+  has_placeholder "$SELFTEST_TMP/comment.env" && fail "selftest: placeholder in a full-line comment was flagged"
+  has_placeholder "$SELFTEST_TMP/value.env" || fail "selftest: placeholder in a value was missed"
+  echo "selftest: placeholder check ignores comment lines only"
   cmd_update "$SELFTEST_TMP" > /dev/null
   cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
   echo "selftest: update restored shared clause"
