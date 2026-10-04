@@ -298,7 +298,7 @@ async function refresh($: any): Promise<Board> {
   return {
     at, error, maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0), inFlight,
     queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
-    failed: all.filter(t => has(t, 'auto-failed')),
+    failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled'),
     doneToday, prs, agents, lastRun, stats, todayCost,
   }
 }
