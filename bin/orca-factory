@@ -637,7 +637,9 @@ PRECHECK_GH
 set -eu
 case "$1 $2" in
   'worktree list')
-    if [[ -d "$AGENT_REPO_PATH/worker" ]]; then
+    if [[ "$PRUNE_MODE" == started ]]; then
+      jq -nc --arg root "$AGENT_REPO_PATH" '{ok:true,result:{worktrees:[{path:($root+"/worker"),linkedLinearIssue:"TEST-1",createdAt:9999999999999},{path:($root+"/legacy"),createdAt:9999999999999}]}}'
+    elif [[ -d "$AGENT_REPO_PATH/worker" ]]; then
       jq -nc --arg path "$AGENT_REPO_PATH/worker" '{ok:true,result:{worktrees:[{path:$path,linkedLinearIssue:"TEST-1",createdAt:9999999999999}]}}'
     else
       echo '{"ok":true,"result":{"worktrees":[]}}'
@@ -655,13 +657,14 @@ PRUNE_ORCA
     cat > "$PRUNE_TEST_ROOT/bin/gh" <<'PRUNE_GH'
 #!/usr/bin/env bash
 set -eu
-[[ "$PRUNE_MODE" != pr-failure ]] || { echo 'PR query unavailable' >&2; exit 7; }
+[[ "$PRUNE_MODE" != pr-failure && "$PRUNE_MODE" != pushed ]] || { echo 'PR query unavailable' >&2; exit 7; }
+if [[ "$1 $2" == "pr view" ]]; then echo MERGED; exit 0; fi
 jq -nc --arg sha "$PRUNE_MERGED_SHA" --arg repo "$AGENT_GH_REPO" \
   '["worker","git","local","remote"] | map({merged_at:"2026-01-01T00:00:00Z",head:{sha:$sha,ref:("agent/TEST-1/"+.),repo:{full_name:$repo}}})'
 PRUNE_GH
     chmod +x "$PRUNE_TEST_ROOT/bin/"*
     export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
-    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure; do
+    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed; do
       export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
       git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
       git init -q "$AGENT_REPO_PATH"
@@ -676,12 +679,22 @@ PRUNE_GH
       git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote HEAD:refs/heads/agent/TEST-1/backup
       case "$PRUNE_MODE" in
         dirty) touch "$AGENT_REPO_PATH/worker/untracked" "$AGENT_REPO_PATH/.claude/worktrees/agent-test/untracked" ;;
-        mismatch) PRUNE_MERGED_SHA=0000000000000000000000000000000000000000 ;;
+        mismatch)
+          PRUNE_MERGED_SHA=0000000000000000000000000000000000000000
+          mkdir -p "$AGENT_REPO_PATH/worker/.omc"
+          printf 'pr=1\n' > "$AGENT_REPO_PATH/worker/.omc/agent-unit"
+          printf '.omc/\n' >> "$AGENT_REPO_PATH/.git/info/exclude" ;;
+        pushed) git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/worker ;;
+        started)
+          git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/legacy "$AGENT_REPO_PATH/legacy"
+          mkdir -p "$AGENT_REPO_PATH/legacy/.omc"
+          printf 'pr=1\n' > "$AGENT_REPO_PATH/legacy/.omc/agent-unit"
+          printf '.omc/\n' >> "$AGENT_REPO_PATH/.git/info/exclude" ;;
         locked) git -C "$AGENT_REPO_PATH" worktree lock "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ;;
       esac
       (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/out" 2> "$PRUNE_TEST_ROOT/err"
       case "$PRUNE_MODE" in
-        reclaim|locked) [[ ! -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune kept eligible worker ($PRUNE_MODE)" ;;
+        reclaim|locked|pushed) [[ ! -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune kept eligible worker ($PRUNE_MODE)" ;;
         *) [[ -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune removed protected worker ($PRUNE_MODE)" ;;
       esac
       case "$PRUNE_MODE" in
@@ -697,6 +710,7 @@ PRUNE_GH
           [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune removed protected remote branch' ;;
       esac
       [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/backup)" ]] || fail 'selftest: prune removed unmatched backup'
+      [[ "$PRUNE_MODE" != started || -d "$AGENT_REPO_PATH/legacy" ]] || fail 'selftest: prune removed in-flight legacy worktree'
       [[ "$PRUNE_MODE" == reclaim || -s "$PRUNE_TEST_ROOT/err" ]] || fail 'selftest: prune did not explain retention'
     done
   )
