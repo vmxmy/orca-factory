@@ -54,7 +54,7 @@ if [[ -n "$id" ]]; then
   fi
   echo "install: updated automation $id (enabled state unchanged)"
 else
-  id="$(orca automations create --name "$name" --trigger '*/5 * * * *' --timezone Asia/Shanghai --provider claude \
+  id="$(orca automations create --name "$name" --trigger '* * * * *' --timezone Asia/Shanghai --provider claude \
     --repo "path:$repo" --precheck "$precheck" --prompt "$prompt" --disabled --json | jq -r '.result.automation.id // .result.id')"
   if ! edit_result="$(orca automations edit "$id" --precheck-timeout 180 --missed-run-grace-minutes 10 --json)" \
     || ! printf '%s\n' "$edit_result" | jq -e '.ok == true' >/dev/null; then
