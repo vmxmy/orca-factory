@@ -250,6 +250,31 @@ stuck_worker() {
   claim_reason="工人卡死：${worker_evidence}"
 }
 
+# Parse the ticket's `## SCOPE` section: the first non-empty line after the heading, split by whitespace
+# into globs. A missing/empty section prints nothing (unknown); any read failure returns 1 (uncertain).
+# Both outcomes make the caller not block the candidate.
+scope_of() {
+  local out
+  if ! out="$(ocall linear issue "$1")"; then return 1; fi
+  jq -r '.result.issue.description // ""' <<<"$out" | awk '
+    found && NF > 0 { print; exit }
+    /^## SCOPE([[:space:]]|$)/ { found = 1 }
+  '
+}
+
+# True iff any glob in A matches any token in B, either direction, same pattern rule as gate.sh match_any
+# (`*` crosses `/`). A literal pair also matches.
+scope_overlap() {
+  local a="$1" b="$2" x y
+  for x in $a; do
+    for y in $b; do
+      # shellcheck disable=SC2053
+      [[ "$x" == $y || "$y" == $x ]] && return 0
+    done
+  done
+  return 1
+}
+
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
 ready_ids="$(ids "$LABEL_READY" unstarted)"
 live=()
@@ -268,9 +293,30 @@ for id in $in_flight_ids; do
   fi
 done
 in_flight=${#live[@]}
+# Cache every live ticket's SCOPE once; a ticket whose SCOPE is unknown or unreadable contributes nothing
+# and never blocks a candidate.
+declare -A live_scope=()
+if (( ${#live[@]} > 0 )); then
+  for id in "${live[@]}"; do
+    if s="$(scope_of "$id")" && [[ -n "$s" ]]; then live_scope["$id"]="$s"; fi
+  done
+fi
 claimable=()
 for id in $ready_ids; do
-  if unblocked "$id"; then claimable+=("$id"); fi
+  if ! unblocked "$id"; then continue; fi
+  cand_scope=""
+  if ! cand_scope="$(scope_of "$id")"; then cand_scope=""; fi
+  overlap=""
+  if [[ -n "$cand_scope" && ${#live_scope[@]} -gt 0 ]]; then
+    for lid in "${!live_scope[@]}"; do
+      if scope_overlap "$cand_scope" "${live_scope[$lid]}"; then overlap="$lid"; break; fi
+    done
+  fi
+  if [[ -n "$overlap" ]]; then
+    echo "skip $id: scope overlaps $overlap" >&2
+  else
+    claimable+=("$id")
+  fi
 done
 echo "claimable=$(IFS=,; echo "${claimable[*]-}") in_flight=$in_flight max=$MAX_IN_FLIGHT"
 echo "stale=$(IFS=,; echo "${stale_ids[*]-}")"

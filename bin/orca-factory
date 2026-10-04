@@ -440,7 +440,19 @@ case "$*" in
     case "$PRECHECK_MODE" in
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
+      scope-overlap)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/foo.sh core/bar.sh\n"}}}' ;;
+      scope-separate|scope-missing|scope-fail)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/foo.sh\n"}}}' ;;
       *) jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+    esac ;;
+  'linear issue TEST-2 --json')
+    case "$PRECHECK_MODE" in
+      scope-overlap) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/bar.sh core/qux.sh\n"}}}' ;;
+      scope-separate) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/qux.sh\n"}}}' ;;
+      scope-missing) jq -nc '{ok:true,result:{issue:{description:"## 其他小节\n\n无 SCOPE\n"}}}' ;;
+      scope-fail) echo '{"ok":false,"error":{"code":"simulated_scope_failure"}}' ;;
+      *) jq -nc '{ok:true,result:{issue:{}}}' ;;
     esac ;;
   'linear issue TEST-1 --comments --json')
     jq -nc --arg mode "$PRECHECK_MODE" '
@@ -449,7 +461,7 @@ case "$*" in
         ([{body:"已领取 · tier=default",
            createdAt:(if is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
                      else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
-         + (if $mode == "recent" then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "recent" or ($mode | test("^scope-")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
          + (if $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
         meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
@@ -511,11 +523,17 @@ PRECHECK_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
     for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
                          orphan orphan-pr orphan-fresh orphan-limit orphan-fail \
-                         worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated; do
+                         worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated \
+                         scope-overlap scope-separate scope-missing scope-fail; do
       export PRECHECK_MODE
       : > "$SELFTEST_TMP/precheck.calls"
+      precheck_status=0
       bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
-        || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; }
+        || precheck_status=$?
+      case "$PRECHECK_MODE" in
+        scope-overlap) ;;
+        *) [[ "$precheck_status" == 0 ]] || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; } ;;
+      esac
       case "$PRECHECK_MODE" in
         missing|empty)
           grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim did not reset Todo ($PRECHECK_MODE)"
@@ -565,6 +583,14 @@ PRECHECK_GH
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: worker health check mutated on uncertain read ($PRECHECK_MODE)"; fi
           grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: worker health check dropped live claim on uncertain read ($PRECHECK_MODE)"
           grep -q '不确定' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: worker health uncertainty missing ($PRECHECK_MODE)"; } ;;
+        scope-overlap)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: scope overlap mutated live claim"; fi
+          grep -q '^claimable= in_flight=1 ' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: scope overlap kept candidate in claimable"; }
+          grep -q '^skip TEST-2: scope overlaps TEST-1$' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: scope overlap skip message missing"; } ;;
+        scope-separate|scope-missing|scope-fail)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: scope check mutated live claim ($PRECHECK_MODE)"; fi
+          grep -q '^claimable=TEST-2 in_flight=1 ' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: scope check dropped candidate ($PRECHECK_MODE)"; }
+          if grep -q '^skip TEST-2:' "$SELFTEST_TMP/precheck.err"; then cat "$SELFTEST_TMP/precheck.err"; fail "selftest: scope check skipped candidate ($PRECHECK_MODE)"; fi ;;
         *)
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: live/uncertain claim mutated ($PRECHECK_MODE)"; fi
           grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: live/uncertain claim lost"
@@ -580,6 +606,7 @@ PRECHECK_GH
     echo "selftest: precheck releases orphaned claims"
     echo "selftest: precheck handles stuck workers"
     echo "selftest: precheck retries stuck workers before escalating"
+    echo "selftest: precheck skips scope-overlapping tickets"
   )
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
