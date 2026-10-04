@@ -82,7 +82,9 @@ test('missing automation shows an uninstalled notice without a toggle', async ($
   await ui.unmount()
 })
 
-const failedFixture = async ($: any, on: any) => {
+const failedFixture = async ($: any, on: any, count = 1) => {
+  let commentExitCode = 0
+  let commentReads = 0
   let comments: unknown = { result: { comments: [
     { body: '转人: 旧卡点\n需要你: 旧动作', createdAt: '2026-10-01T00:00:00Z' },
     { body: '转人: 缺少凭据\n证据: gate red\n需要你: 配置凭据后重试', createdAt: '2026-10-02T00:00:00Z' },
@@ -92,13 +94,17 @@ const failedFixture = async ($: any, on: any) => {
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
-  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo' }))
+  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
   on('process.run', (_: any, e: any) => {
     let result: unknown = { ok: true, result: {} }
-    if (e.argv[1] === 'linear' && e.argv[2] === 'list-issues') result = { ok: true, result: { issues: [
-      { identifier: 'ZII-807', title: '需要处理的票', state: { type: 'started' }, labels: [{ name: 'auto-failed' }, { name: 'auto-impl' }] },
-    ] } }
-    if (e.argv[1] === 'linear' && e.argv[2] === 'issue') result = comments
+    if (e.argv[1] === 'linear' && e.argv[2] === 'list-issues') result = { ok: true, result: { issues: Array.from({ length: count }, (_, i) => (
+      { identifier: 'ZII-' + (807 + i), title: '需要处理的票', state: { type: 'started' }, labels: [{ name: 'auto-failed' }, { name: 'auto-impl' }] }
+    )) } }
+    if (e.argv[1] === 'linear' && e.argv[2] === 'issue') {
+      commentReads++
+      expect(e.argv.slice(4)).toEqual(['--comments', '--json'])
+      return { value: { stdout: JSON.stringify(comments), stderr: commentExitCode ? 'Linear read failed' : '', exitCode: commentExitCode } }
+    }
     return { value: { stdout: JSON.stringify(result), stderr: '', exitCode: 0 } }
   })
   const refresh = async () => {
@@ -107,7 +113,7 @@ const failedFixture = async ($: any, on: any) => {
     await ready
   }
   await refresh()
-  return { refresh, setComments: (value: unknown) => { comments = value } }
+  return { refresh, reads: () => commentReads, setComments: (value: unknown, exitCode = 0) => { comments = value; commentExitCode = exitCode } }
 }
 
 test('needs-you cards show the latest handoff and intake guidance in both views', async ($, on) => {
@@ -119,5 +125,55 @@ test('needs-you cards show the latest handoff and intake guidance in both views'
     expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /处理好后，开 intake 会话：按 scripts\/agent-gates\/roles\/intake.md 工作，处理 ZII-807/ })).toBeDefined()
   }
+  await ui.unmount()
+})
+
+test('empty comment reads keep the last successful handoff in both views', async ($, on) => {
+  const fixture = await failedFixture($, on)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
+  fixture.setComments({ result: { comments: [] } })
+  await fixture.refresh()
+  await ui.redraw()
+  for (const key of ['view-task', 'view-swarm']) {
+    await ui.press({ key })
+    expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
+  }
+  await ui.unmount()
+})
+
+test('failed comment commands preserve the last successful handoff', async ($, on) => {
+  const fixture = await failedFixture($, on)
+  const ui = await mount($, 'terminal')
+  fixture.setComments({ result: { comments: [
+    { body: '转人: 不完整响应\n需要你: 不应显示', createdAt: '2026-10-04T00:00:00Z' },
+  ] } }, 1)
+  await fixture.refresh()
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('incomplete handoff comments fall back to their first line in both views', async ($, on) => {
+  const fixture = await failedFixture($, on)
+  fixture.setComments({ result: { comments: [
+    { body: '转人: 等待人工确认\n证据: gate red', createdAt: '2026-10-04T00:00:00Z' },
+  ] } })
+  await fixture.refresh()
+  const ui = await mount($, 'terminal')
+  for (const key of ['view-task', 'view-swarm']) {
+    await ui.press({ key })
+    expect(await ui.find({ type: 'Text', text: /^转人: 等待人工确认$/ })).toBeDefined()
+  }
+  await ui.unmount()
+})
+
+test('refresh reads comments for at most three failed tickets even when in flight', async ($, on) => {
+  const fixture = await failedFixture($, on, 5)
+  expect(fixture.reads()).toBe(3)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /处理 ZII-811/ })).toBeDefined()
   await ui.unmount()
 })

@@ -3,7 +3,8 @@ import type { Register } from 'claude-code'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
 
-type Board = BaseBoard & { automation?: { id: string; enabled: boolean } }
+type FailedTicket = Ticket & { handoff?: string }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean } }
 
 type Agent = BaseAgent & { requiresAction?: boolean }
 type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
@@ -185,7 +186,7 @@ const deepComments = (o: any, depth = 0): any[] => {
   return []
 }
 
-async function refresh($: any): Promise<Board> {
+async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
   let text = ''
@@ -193,7 +194,12 @@ async function refresh($: any): Promise<Board> {
   const env = parseEnv(text)
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS, and a failure leaves that item empty.
-  const run = async (argv: string[]): Promise<string> => { try { return (await $.process.run(argv, { timeoutMs: TIMEOUT_MS })).stdout } catch { return '' } }
+  const run = async (argv: string[]): Promise<string> => {
+    try {
+      const result = await $.process.run(argv, { timeoutMs: TIMEOUT_MS })
+      return result.exitCode === 0 ? result.stdout : ''
+    } catch { return '' }
+  }
   const runJson = async (argv: string[]) => json(await run(argv))
   if (!HOME) HOME = (await run(['sh', '-c', 'printf %s "$HOME"'])).trim()
   const has = (t: Ticket, l: string) => t.labels.includes(l)
@@ -202,6 +208,16 @@ async function refresh($: any): Promise<Board> {
   const all: Ticket[] = (issues?.result?.issues ?? []).map(ticket)
   const error = issues?.ok ? '' : 'Linear read failed. Showing last good data.'
   const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
+  const failed: FailedTicket[] = all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
+    .map(t => ({ ...t, handoff: handoffs.get(t.id) }))
+  const failedComments = new Map<string, ReturnType<typeof deepComments>>()
+  for (const t of failed.slice(0, 3)) {
+    const comments = deepComments(await runJson(['orca', 'linear', 'issue', t.id, '--comments', '--json']))
+    failedComments.set(t.id, comments)
+    const handoff = comments.filter(c => c.body.trim().startsWith('转人:'))
+      .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
+    if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
+  }
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   const doneToday = all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime())
 
@@ -269,7 +285,7 @@ async function refresh($: any): Promise<Board> {
     const r = runFor(t.id)
     const paths: string[] = []
     // When the coordinator posted "已领取".
-    const comments = deepComments(await runJson(['orca', 'linear', 'issue', t.id, '--comments', '--json']))
+    const comments = has(t, 'auto-failed') ? failedComments.get(t.id) ?? [] : deepComments(await runJson(['orca', 'linear', 'issue', t.id, '--comments', '--json']))
     t.claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取')).map(c => c.createdAt).sort().pop() ?? ''
     if (!r) {
       agents.push({ ticket: t.id, role: 'coordinator', name: 'claiming', phase: 'split', since: t.updatedAt, path: '', durationMin: minutes(t.updatedAt, now), model: '', lastActive: '' })
@@ -330,19 +346,19 @@ async function refresh($: any): Promise<Board> {
   return {
     at, error, maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0), inFlight,
     queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
-    failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled'),
+    failed,
     doneToday, prs, agents, lastRun, stats, todayCost, automation,
   }
 }
 
-async function tick($: any) {
-  const b = await refresh($)
+async function tick($: any, handoffs: Map<string, string>) {
+  const b = await refresh($, handoffs)
   if (b.error && b.inFlight.length === 0) { const old = await read($, board); b.inFlight = old.inFlight; b.queue = old.queue; b.prs = old.prs; b.agents = old.agents; b.todayCost = old.todayCost }
   await update($, board, () => b)
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
 }
 
-async function toggleAutomation($: any) {
+async function toggleAutomation($: any, handoffs: Map<string, string>) {
   const b: Board = await read($, board)
   if (!b.automation) return
   try {
@@ -353,10 +369,11 @@ async function toggleAutomation($: any) {
     await update($, board, current => ({ ...current, error: message }))
     return
   }
-  await tick($)
+  await tick($, handoffs)
 }
 
 export const register: Register = on => {
+  const handoffs = new Map<string, string>()
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
@@ -368,8 +385,8 @@ export const register: Register = on => {
 
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
-    void tick($)
-    if (!polling) { polling = true; $.clock.every(REFRESH_MS, () => tick($)) }
+    void tick($, handoffs)
+    if (!polling) { polling = true; $.clock.every(REFRESH_MS, () => tick($, handoffs)) }
     return { text: '蜂群看板已打开。' }
   })
 
@@ -406,6 +423,16 @@ export const register: Register = on => {
       { title: '需要人', glyph: G.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
       { title: '今日完成', glyph: G.done, items: b.doneToday },
     ]
+    const handoffText = (t: FailedTicket) => {
+      const lines = t.handoff?.trim().split(/\r?\n/) ?? []
+      const reason = lines[0]?.match(/^转人:\s*(.*)/)?.[1]
+      const action = lines.find(line => line.startsWith('需要你:'))?.slice('需要你:'.length).trim()
+      return reason && action ? <Box flexDirection="column">
+        <Text color="yellow">卡点：{reason}</Text>
+        <Text color="yellow">需要你：{action}</Text>
+      </Box> : lines[0] ? <Text color="yellow">{lines[0]}</Text> : null
+    }
+    const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
       const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
@@ -420,7 +447,9 @@ export const register: Register = on => {
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text color={l.color}>{cut(head, w - dur.length - 1).padEnd(w - dur.length - 1)} {dur}</Text>
           <Text dimColor>{cut(t.title, w)}</Text>
+          {l.title === '需要人' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cut(facts.join(' · '), w)}</Text> : null}
+          {l.title === '需要人' ? intakeText(t) : null}
         </Box>
       )
     }
@@ -485,7 +514,7 @@ export const register: Register = on => {
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[swarm]' : ' swarm '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
-          {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($)} /> : <Text dimColor>auto: 未安装</Text>}
+          {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} /> : <Text dimColor>auto: 未安装</Text>}
           <Text dimColor>{b.at ? 'updated ' + b.at : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
@@ -496,7 +525,13 @@ export const register: Register = on => {
 
         {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>None.</Text> : b.prs.map(prRow)) : null}
 
-        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' Needs you', b.failed.map(t => tRow(G.human, t, 'yellow')), 'yellow') : null}
+        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' Needs you', b.failed.map(t => (
+          <Box key={'failed-' + t.id} flexDirection="column" marginBottom={1}>
+            {tRow(G.human, t, 'yellow')}
+            {handoffText(t)}
+            {intakeText(t)}
+          </Box>
+        )), 'yellow') : null}
 
         {v === 'swarm' ? (
           <Box flexDirection="row" gap={1}>
