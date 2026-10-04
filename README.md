@@ -18,6 +18,8 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 
 看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。
 
+本仓库自己也接入了流水线（自接入），`core/` 是源、`scripts/agent-gates/` 是安装副本，改 `core/` 后要跑 `bin/orca-factory update .`，详见 `ONBOARD.md` 的「附：自接入」。
+
 ## 目录
 
 | 路径 | 内容 |
