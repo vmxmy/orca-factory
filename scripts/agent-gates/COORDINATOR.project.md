@@ -17,6 +17,6 @@
 ## 合并与上线
 
 - lane 1 合并策略：coordinator 自合（squash）。依据：用户答复。
-- lane 2 合并策略：本仓库 `AGENT_LANE2_AUTOMERGE=1`，默认按通用流程第 6 步自合（squash），须独立 gate 绿、审查员 green（命令非空时）及 PR CI 全绿；命中 `AGENT_LANE2_MANUAL_GLOBS`（当前 `core/* .github/* .claude/*`）或硬编码的 `scripts/agent-gates/*` 转人，其他前提不满足也转人。开关未设或为 0 时所有 lane 2 PR 转人。
+- lane 2 合并策略：本仓库 `AGENT_LANE2_AUTOMERGE=1`，默认按通用流程第 6 步自合（squash），须独立 gate 绿、审查员 green（命令非空时）及 PR CI 全绿；命中 `AGENT_LANE2_MANUAL_GLOBS`（当前 `core/gate.sh scripts/agent-gates/gate.sh scripts/agent-gates/agent-graph.env .github/* .claude/*`，只保留 gate 与项目配置人审）转人，其他前提不满足也转人。开关未设或为 0 时所有 lane 2 PR 转人。
 - 无自动部署：`AGENT_DEPLOY_WORKFLOW`/`AGENT_SMOKE_CMD` 留空，跳过上线步。合并前 `behind_by > 0` 必须 rebase 并重跑检查。无 CI：「等 CI」一步以 gate 绿为准，不等远端检查。
 - 本仓库的验证命令是 `bin/orca-factory selftest`（约 7 秒）。写 spec 时把它放进 `CHECK`，不要放进 `gate.project.sh`（嵌套抢重型锁，见该文件头注释）。
