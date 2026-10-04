@@ -22,16 +22,20 @@ prune_git_worktrees() {
     branch:([.[] | select(startswith("branch ")) | ltrimstr("branch refs/heads/")][0] // ""),
     locked:any(.[]; . == "locked" or startswith("locked "))})' <<<"$out"
 }
-prune_ticket_completed() {
+prune_ticket_check() {
   local out
   if ! out=$(orca linear issue "$1" --json 2>/dev/null) ||
-    ! jq -e '.ok == true and .result.issue.state.type == "completed"' <<<"$out" >/dev/null 2>&1; then
-    prune_keep "$2" "ticket $1 is not confirmed completed (in flight or lookup failed)"
+    ! jq -e --arg mode "${3:-completed}" '.ok == true and
+      (.result.issue.state.type | type == "string") and
+      (if $mode == "completed" then .result.issue.state.type == "completed"
+       else .result.issue.state.type != "started" end)' <<<"$out" >/dev/null 2>&1; then
+    prune_keep "$2" "ticket $1 is not confirmed ${3:-completed} (in flight or lookup failed)"
     return 1
   fi
 }
 # Check both explicit Orca links and identifiers embedded in branch/path names.
-# Requiring completed for linked objects also protects every started auto-impl issue.
+# Keep started issues (including auto-impl) and failed lookups out of every path.
+# Only Orca workers and remote backups additionally require completed tickets.
 prune_issue_safe() {
   local wt="$1" branch="$2" ids id
   [[ "$prune_inventory_ok" == true ]] || { prune_keep "${wt:-$branch}" 'Orca inventory unavailable'; return 1; }
@@ -44,17 +48,19 @@ prune_issue_safe() {
   fi
   while IFS= read -r id; do
     [[ -n "$id" ]] || continue
-    prune_ticket_completed "$id" "${wt:-$branch}" || return 1
+    prune_ticket_check "$id" "${wt:-$branch}" inactive || return 1
   done <<<"$ids"
 }
 # Linked workers were already evaluated above; legacy marker/age rules must not
 # bypass a failed compensation check (dirty checkout, unmerged head, or API error).
 prune_legacy_safe() {
+  local branch
   [[ "$prune_inventory_ok" == true ]] || { prune_keep "$1" 'Orca inventory unavailable'; return 1; }
   if jq -e --arg wt "$1" 'any(.result.worktrees[]; .path == $wt and (.linkedLinearIssue // "") != "")' <<<"$prune_orca" >/dev/null; then
     return 1
   fi
-  prune_issue_safe "$1" ""
+  branch=$(jq -r --arg wt "$1" '.[] | select(.path == $wt) | .branch' <<<"$prune_worktrees") || return 1
+  prune_issue_safe "$1" "$branch"
 }
 prune_clean() {
   local status
@@ -98,7 +104,7 @@ prune_compensate() {
     [[ "$wt" != "$self" && "$wt" != "$main" ]] || continue
     branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD) || { prune_keep "$wt" 'branch unavailable'; continue; }
     prune_issue_safe "$wt" "$branch" || continue
-    prune_ticket_completed "$ticket" "$wt" || continue
+    prune_ticket_check "$ticket" "$wt" || continue
     prune_clean "$wt" || continue
     sha=$(git -C "$wt" rev-parse --verify HEAD) || { prune_keep "$wt" 'head unavailable'; continue; }
     remote_sha=$(git -C "$AGENT_REPO_PATH" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null) || remote_sha=''
@@ -106,7 +112,7 @@ prune_compensate() {
     if [[ "$sha" != "$remote_sha" ]] && ! prune_merged "$sha"; then
       prune_keep "$wt" 'head is neither confirmed pushed nor merged'; continue
     fi
-    if ! result=$(orca worktree rm --worktree "path:$wt" 2>&1) ||
+    if ! result=$(orca worktree rm --worktree "path:$wt" --json 2>&1) ||
       ! jq -e '.ok == true' <<<"$result" >/dev/null 2>&1; then
       prune_keep "$wt" "Orca removal failed: $result"
     fi
@@ -144,7 +150,7 @@ prune_compensate() {
       ticket=${BASH_REMATCH[1]}
       branch=${branch#refs/heads/}
       prune_issue_safe '' "$branch" || continue
-      prune_ticket_completed "$ticket" "$branch" || continue
+      prune_ticket_check "$ticket" "$branch" || continue
       prune_merged "$sha" "$branch" || { prune_keep "$branch" 'remote head has no matching merged PR'; continue; }
       git -C "$AGENT_REPO_PATH" push origin --delete "$branch" || prune_keep "$branch" 'remote removal failed'
     done <<<"$result"

@@ -645,10 +645,10 @@ case "$1 $2" in
       echo '{"ok":true,"result":{"worktrees":[]}}'
     fi ;;
   'linear issue')
-    jq -nc --arg state "$([[ "$PRUNE_MODE" == started ]] && echo started || echo completed)" \
+    jq -nc --arg state "$(case "$PRUNE_MODE" in started|canceled) echo "$PRUNE_MODE" ;; *) echo completed ;; esac)" \
       '{ok:true,result:{issue:{state:{type:$state},labels:[{name:"auto-impl"}]}}}' ;;
   'worktree rm')
-    [[ "$#" == 4 && "$3" == --worktree ]] || exit 9
+    [[ "$3" == --worktree && ( "$#" == 4 || ( "$#" == 5 && "$5" == --json ) ) ]] || exit 9
     git -C "$AGENT_REPO_PATH" worktree remove "${4#path:}"
     echo '{"ok":true}' ;;
   *) exit 8 ;;
@@ -664,7 +664,7 @@ jq -nc --arg sha "$PRUNE_MERGED_SHA" --arg repo "$AGENT_GH_REPO" \
 PRUNE_GH
     chmod +x "$PRUNE_TEST_ROOT/bin/"*
     export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
-    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed; do
+    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed canceled; do
       export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
       git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
       git init -q "$AGENT_REPO_PATH"
@@ -698,10 +698,13 @@ PRUNE_GH
         *) [[ -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune removed protected worker ($PRUNE_MODE)" ;;
       esac
       case "$PRUNE_MODE" in
-        reclaim) [[ ! -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: prune kept eligible Git-only worktree' ;;
+        reclaim|canceled) [[ ! -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: prune kept eligible Git-only worktree' ;;
         *) [[ -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail "selftest: prune removed protected Git-only worktree ($PRUNE_MODE)" ;;
       esac
       case "$PRUNE_MODE" in
+        canceled)
+          ! git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune kept merged canceled local branch'
+          [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune removed canceled remote branch' ;;
         reclaim|dirty|locked)
           ! git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune kept merged local branch'
           [[ -z "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune kept merged remote branch' ;;
