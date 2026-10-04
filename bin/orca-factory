@@ -337,12 +337,87 @@ cmd_selftest() {
     [[ -f "$SELFTEST_TMP/$DEST_REL/$f" ]] || fail "selftest: init did not produce $f"
   done
   bash "$SELFTEST_TMP/$DEST_REL/gate.test.sh"
-  # ledger: a row carrying tier must show up on a tier= line in stats (rows without tier report as unknown).
-  AGENT_REPO_PATH="$SELFTEST_TMP" bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" append \
-    '{"ticket":"T-1","lane":1,"tier":"fast","outcome":"merged","first_gate":"green","corrections":0}'
-  AGENT_REPO_PATH="$SELFTEST_TMP" bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats > "$SELFTEST_TMP/stats.out"
-  grep -q '^tier=fast runs=1 first_gate_green_pct=100$' "$SELFTEST_TMP/stats.out" || { cat "$SELFTEST_TMP/stats.out"; fail "selftest: ledger stats has no tier= line"; }
-  echo "selftest: ledger stats reports tier"
+  # Isolate ledger from real Linear; retain the tier regression assertion.
+  (
+    mkdir -p "$SELFTEST_TMP/ledger-bin"
+    export PATH="$SELFTEST_TMP/ledger-bin:$PATH"
+    export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=ledger-test
+    export LEDGER_TEST_DIR="$SELFTEST_TMP"
+    cat > "$SELFTEST_TMP/ledger-bin/orca" <<'LEDGER_ORCA'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$LEDGER_TEST_DIR/ledger.calls"
+if [[ "${LEDGER_TEST_FAIL:-}" == "$2" ]]; then
+  echo '{"ok":false,"error":{"message":"simulated Linear failure"}}'
+  exit "${LEDGER_TEST_EXIT:-0}"
+fi
+case "$*" in
+  'linear list-issues --team TEST --project ledger-test --query [ledger] agent-graph --json')
+    if [[ -f "$LEDGER_TEST_DIR/ledger.created" ]]; then
+      echo '{"ok":true,"result":{"issues":[{"identifier":"WRONG-1","title":"mentions [ledger] agent-graph"},{"identifier":"TEST-1","title":"[ledger] agent-graph"}]}}'
+    else
+      echo '{"ok":true,"result":{"issues":[{"identifier":"WRONG-1","title":"mentions [ledger] agent-graph"}]}}'
+    fi ;;
+  'linear save-issue --team TEST --project ledger-test --title [ledger] agent-graph --state Backlog --json')
+    touch "$LEDGER_TEST_DIR/ledger.created"
+    echo '{"ok":true,"result":{"issue":{"identifier":"TEST-1"}}}' ;;
+  'linear comment add TEST-1 --body '*)
+    [[ "$5" == --body && "$7" == --json ]]
+    jq -nc --arg body "$6" '{body:$body}' >> "$LEDGER_TEST_DIR/ledger.comments"
+    echo '{"ok":true,"result":{"comment":{"id":"comment-1"}}}' ;;
+  'linear issue TEST-1 --comments --json')
+    jq -s '{ok:true,result:{comments:.,meta:{sections:{comments:{cap:500,capReached:true,hasMore:false}}}}}' \
+      "$LEDGER_TEST_DIR/ledger.comments" ;;
+  *) echo "unexpected fake orca call: $*" >&2; exit 1 ;;
+esac
+LEDGER_ORCA
+    cat > "$SELFTEST_TMP/ledger-bin/sleep" <<'LEDGER_SLEEP'
+#!/usr/bin/env bash
+[[ "$1" == 2 ]] || exit 1
+printf '%s\n' "$1" >> "$LEDGER_TEST_DIR/ledger.sleeps"
+LEDGER_SLEEP
+    chmod +x "$SELFTEST_TMP/ledger-bin/orca" "$SELFTEST_TMP/ledger-bin/sleep"
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats > "$SELFTEST_TMP/stats.out"
+    [[ "$(cat "$SELFTEST_TMP/stats.out")" == runs=0 ]] || fail "selftest: missing ledger must report runs=0"
+    [[ ! -f "$SELFTEST_TMP/ledger.created" ]] || fail "selftest: stats created a ledger issue"
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" append \
+      '{"ticket":"T-1","lane":1,"tier":"fast","outcome":"merged","first_gate":"green","corrections":0}'
+    # Duplicate delivery, non-ledger discussion, and malformed ledger comments.
+    cat "$SELFTEST_TMP/ledger.comments" > "$SELFTEST_TMP/ledger.duplicate"
+    cat "$SELFTEST_TMP/ledger.duplicate" >> "$SELFTEST_TMP/ledger.comments"
+    printf '%s\n' '{"body":"discussion"}' '{"body":"ledger {bad"}' >> "$SELFTEST_TMP/ledger.comments"
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats > "$SELFTEST_TMP/stats.out" 2> "$SELFTEST_TMP/ledger.err"
+    grep -q '^tier=fast runs=1 first_gate_green_pct=100$' "$SELFTEST_TMP/stats.out" || { cat "$SELFTEST_TMP/stats.out"; fail "selftest: ledger stats has no tier= line"; }
+    grep -q 'warning.*invalid' "$SELFTEST_TMP/ledger.err" || fail "selftest: malformed ledger comment did not warn"
+    grep -q 'warning.*500' "$SELFTEST_TMP/ledger.err" || fail "selftest: capped ledger comments did not warn"
+    : > "$SELFTEST_TMP/ledger.comments"
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats > "$SELFTEST_TMP/stats.out" 2> "$SELFTEST_TMP/ledger.err"
+    [[ "$(cat "$SELFTEST_TMP/stats.out")" == runs=0 ]] || fail "selftest: empty ledger must report runs=0"
+    ledger_status=0
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" append '{bad' 2> "$SELFTEST_TMP/ledger.err" || ledger_status=$?
+    [[ "$ledger_status" == 2 ]] || fail "selftest: invalid ledger JSON must exit 2"
+    # All four API operations must retry .ok=false, even with a zero exit status.
+    for ledger_operation in list-issues issue comment save-issue; do
+      [[ "$ledger_operation" != save-issue ]] || rm "$SELFTEST_TMP/ledger.created"
+      : > "$SELFTEST_TMP/ledger.calls"
+      : > "$SELFTEST_TMP/ledger.sleeps"
+      ledger_status=0
+      LEDGER_TEST_FAIL="$ledger_operation" bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" \
+        "$([[ "$ledger_operation" == issue ]] && echo stats || echo append)" '{}' \
+        > "$SELFTEST_TMP/ledger.out" 2> "$SELFTEST_TMP/ledger.err" || ledger_status=$?
+      [[ "$ledger_status" != 0 ]] || fail "selftest: ledger silently accepted $ledger_operation failure"
+      [[ "$(grep -c "^linear $ledger_operation " "$SELFTEST_TMP/ledger.calls")" == 3 ]] || fail "selftest: ledger $ledger_operation retry count"
+      [[ "$(wc -l < "$SELFTEST_TMP/ledger.sleeps" | tr -d ' ')" == 2 ]] || fail "selftest: ledger retry intervals"
+      grep -q 'simulated Linear failure' "$SELFTEST_TMP/ledger.err" || fail "selftest: ledger failure reason missing"
+    done
+    : > "$SELFTEST_TMP/ledger.calls"
+    ledger_status=0
+    LEDGER_TEST_FAIL=list-issues LEDGER_TEST_EXIT=7 bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" stats \
+      > "$SELFTEST_TMP/ledger.out" 2> "$SELFTEST_TMP/ledger.err" || ledger_status=$?
+    [[ "$ledger_status" != 0 ]] || fail "selftest: ledger silently accepted nonzero exit"
+    [[ "$(grep -c '^linear list-issues ' "$SELFTEST_TMP/ledger.calls")" == 3 ]] || fail "selftest: ledger exit failure retry count"
+    echo "selftest: Linear ledger reports tier, deduplicates, warns, handles empty stats and retries failures"
+  )
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }

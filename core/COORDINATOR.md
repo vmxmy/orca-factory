@@ -75,9 +75,9 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 ## 结束标记
 
-无论走到第 6、第 7 还是无票：ledger 一行 + `.omc/agent-run-finished`，顺序与字段按 workflow §4。
+无论走到第 6、第 7 还是无票：向 Linear 账本票 `[ledger] agent-graph` 写入一条 ledger 评论，再写 `.omc/agent-run-finished`，顺序与字段按 workflow §4。账本写入失败不阻塞本次运行收尾，只在本票评论里记一句失败原因；无票的 `no_ticket` 运行则只写 stderr，仍继续写结束标记。
 
 ## 8. 学习
 
-- 先看 `scripts/agent-gates/agent-graph.sh ledger stats`：某 lane `first_gate_green_pct` 持续偏低 → 先改第 1 步的拆分与简报，再谈加守卫。`tier=` 行：某档首跑通过率明显低于高一档 → 由 intake 调 `AGENT_TIER_BY_ESTIMATE` 或票的 `tier:*` 标签，coordinator 不改。
+- 先看 `scripts/agent-gates/agent-graph.sh ledger stats`（读取 Linear 账本票评论）：某 lane `first_gate_green_pct` 持续偏低 → 先改第 1 步的拆分与简报，再谈加守卫。`tier=` 行：某档首跑通过率明显低于高一档 → 由 intake 调 `AGENT_TIER_BY_ESTIMATE` 或票的 `tier:*` 标签，coordinator 不改。
 - 合并后问一句：这次失败原因能不能变成永久检查（engineering §6）？能 → 小 PR 改 `gate.project.sh` / `gate.sh` 或加测试；只能写字 → 追加 `docs/agent-graph/brief-constraints.md`（`- [C-nnn] (paths: …) 约束 — 来源 PR#`），同一条被违反两次就升级成测试。
