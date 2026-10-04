@@ -441,6 +441,8 @@ case "$*" in
     echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
   'linear list-issues '*--label\ ready-for-agent*)
     echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
+  'linear list-issues --team TEST --project precheck-test --order-by createdAt --json')
+    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","labels":[{"name":"auto-impl"}],"state":{"type":"started"}},{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}}]}}' ;;
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
@@ -621,6 +623,41 @@ PRECHECK_GH
       esac
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
+    # Read reuse and rate limiting have their own fixture, independent of recovery cases.
+    mv "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/orca-fixture"
+    cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_READS'
+#!/usr/bin/env bash
+set -eu
+if [[ "${PRECHECK_RATE_AT:-}" == "$*" ]]; then
+  printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+  echo 'Rate limit exceeded' >&2
+  exit 7
+fi
+exec "$(dirname "$0")/orca-fixture" "$@"
+PRECHECK_READS
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca"
+    export PRECHECK_MODE=recent
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: reuse scan failed"
+    [[ "$(grep -c '^linear issue TEST-1 --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated issue read"
+    [[ "$(grep -c '^linear list-issues .*--order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls")" == 2 ]] || fail "selftest: ids must share one list read plus advisory backlog"
+    grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: incorrect Linear call count"
+    for PRECHECK_RATE_AT in 'linear list-issues --team TEST --project precheck-test --order-by createdAt --json' \
+                            'linear issue TEST-1 --json' 'linear issue TEST-1 --comments --json' \
+                            'linear issue TEST-2 --relations --json' 'linear issue TEST-2 --json'; do
+      export PRECHECK_RATE_AT
+      : > "$SELFTEST_TMP/precheck.calls"
+      precheck_status=0
+      bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || precheck_status=$?
+      [[ "$precheck_status" == 3 ]] || fail "selftest: rate limit must exit uncertain"
+      [[ "$(tail -n 1 "$SELFTEST_TMP/precheck.calls")" == "$PRECHECK_RATE_AT" ]] || fail "selftest: calls continued after rate limit"
+      [[ "$(grep -Fxc "$PRECHECK_RATE_AT" "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: rate limit retried"
+      if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: rate limit mutated ticket"; fi
+      grep -Fxq '不确定: linear rate limited' "$SELFTEST_TMP/precheck.err" || fail "selftest: rate limit reason missing"
+      grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: rate limit call count missing"
+    done
+    unset PRECHECK_RATE_AT
+    echo "selftest: precheck reuses linear reads and stops on rate limit"
     echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
     echo "selftest: precheck releases orphaned claims"
