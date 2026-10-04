@@ -1,5 +1,8 @@
 import { test, expect, mock } from 'claude-code/testing'
 
+import type { Ticket } from '../types'
+import { laneStage } from './register'
+
 const mount = ($: any, surface: 'terminal' | 'desktop') =>
   $.ui.mount({ plugin: 'swarm-board', surface, component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm' } })
 
@@ -80,4 +83,9 @@ test('missing automation shows an uninstalled notice without a toggle', async ($
   expect(await ui.find({ type: 'Text', text: /auto: 未安装/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: /auto/ })).toBeUndefined()
   await ui.unmount()
+})
+
+test('ticket with no worker lives in the implement lane', async () => {
+  const t: Ticket = { id: 'ZII-999', title: '', state: 'started', labels: [], priority: 0, updatedAt: '', claimedAt: '' }
+  expect(laneStage(t, [])).toBe(1)
 })
