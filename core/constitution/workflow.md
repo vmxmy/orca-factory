@@ -19,6 +19,7 @@
 - PR body 首行 `Fixes <票号>`。
 - 合并：`mergeable_state == clean` 后 `gh api -X PUT repos/…/pulls/<n>/merge -f merge_method=squash`，回读 `.merged == true`。
 - 落后 main（`behind_by > 0`）不是阻塞：取 `gh api repos/…/compare/<head_sha>...main --jq '.files[].filename'` 与本 PR 改动文件求交集；**交集为空且 CI 在当前 head 绿 → 直接合**（GitHub 已在 clean 判定里做过合并测试）。有重叠才 rebase 重跑 CI，最多 2 轮；第 2 轮后仍有重叠转人工。原因：并发合并时「behind_by=0 才合」会活锁，每轮 10 分钟 CI 追不上前进的 main（ZII-762 四轮）。
+- 有重叠但**文本无冲突**时的第二条出路（典型：多个 PR 都改 i18n 三语资源与 translation-lock.json，互相追赶，一轮 CI 追不上）：本机对「PR head + 当前 origin/main」做合并验证——`git merge-tree --write-tree` 得 0 冲突；用该合并结果建临时 worktree（`git commit-tree`、`git worktree add --detach`、`pnpm --dir web install --frozen-lockfile --offline`），在其中跑 `src/i18n` 全部测试与 `tsc -b`，均无错误；此时 head 上的 CI 已绿即可直接合，不再 rebase 重跑整套 CI。验证结果写进关票评论。涉及 lane 2 路径、迁移、后端契约的重叠不适用，仍转人工。本机没有 `timeout`，限时用 `perl -e 'alarm N; exec @ARGV' --`。
 
 ## 3. 暂存文件
 
