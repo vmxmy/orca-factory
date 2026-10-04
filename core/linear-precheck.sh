@@ -197,10 +197,13 @@ release_claim() {
 # Worker health check: judge the whole worktree, not a single terminal. Idle minutes come from the
 # most recent agent terminal in the worktree, and the stuck pattern is matched only against that
 # newest terminal's preview, so a live worker alongside an idle old terminal is never escalated.
-# Any read failure, truncation, parsing error, or partial snapshot keeps the ticket live.
+# Any read failure, truncation, parsing error, or partial snapshot keeps the ticket live. On a
+# positive match, populates claim_reason/claim_failures so release_claim decides between retry and
+# escalation on the shared 认领失效 count.
 stuck_worker() {
-  local claim_id="$1" out worktrees
-  worker_evidence=""
+  local claim_id="$1" out worktrees worker_evidence=""
+  claim_reason=""
+  claim_failures=0
   if ! out="$(claim_read worktree ps)"; then return 1; fi
   if ! worktrees="$(jq -ce --arg id "$claim_id" '
     .result
@@ -236,15 +239,15 @@ stuck_worker() {
     ' <<<"$out" 2>/dev/null)"; then
     claim_uncertain 'cannot parse complete terminal list/worker output'; return 1
   fi
-  [[ -n "$worker_evidence" ]]
-}
-
-mark_stuck_worker() {
-  ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
-  ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
-  ocall linear comment add "$1" --body "转人: 工人长时间无输出且命中卡点特征（worktree/PR 若存在均保留）
-证据: 票据 $1 的终端${worker_evidence}
-需要你: 检查票据 $1 对应工人的登录或运行状态" >/dev/null || exit 3
+  [[ -n "$worker_evidence" ]] || return 1
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
+    claim_uncertain 'comments truncated'; return 1
+  fi
+  if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot count claim failures for stuck worker'; return 1
+  fi
+  claim_reason="工人卡死：${worker_evidence}"
 }
 
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
@@ -259,7 +262,7 @@ for id in $in_flight_ids; do
   elif orphan_claim "$id"; then
     release_claim "$id"
   elif stuck_worker "$id"; then
-    mark_stuck_worker "$id"; stale_ids+=("$id")
+    release_claim "$id"
   else
     live+=("$id")
   fi
