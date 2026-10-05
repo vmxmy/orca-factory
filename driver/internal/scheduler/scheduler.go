@@ -16,6 +16,7 @@ import (
 
 type Ticket struct {
 	ID, Identifier, Repo, Terminal, Run string
+	Scope                               []string
 	Priority                            int
 	CreatedAt, UpdatedAt                time.Time
 	Owner                               machine.Owner
@@ -151,6 +152,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			count[t.Repo]++
 		}
 	}
+	conflicts := s.scopeConflicts(ctx, tickets, repos)
 	for _, t := range tickets {
 		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) {
 			continue
@@ -249,6 +251,9 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if count[t.Repo] >= repos[t.Repo].MaxInFlight {
 			continue
 		}
+		if repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(t.Scope, conflicts[t.Repo]) {
+			continue
+		}
 		if !s.token(now) {
 			break
 		}
@@ -258,6 +263,8 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		}
 		total++
 		count[t.Repo]++
+		// An uncertain claim still reserves its scope for this tick.
+		conflicts[t.Repo] = append(conflicts[t.Repo], t.Scope...)
 		if err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase}); err != nil {
 			problems = append(problems, errors.New("ticket claim failed"))
 			continue
