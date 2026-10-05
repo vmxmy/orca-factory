@@ -437,6 +437,16 @@ test('dispatched task is implementing', async () => {
   expect(ticketPhase(phaseTicket, { tasks: [{ status: 'completed' }], gate: { state: 'green', sec: 0, steps: [] }, lane: 2 })).toBe('🔍 审查（推断）')
   expect(ticketPhase(phaseTicket, { tasks: [{ status: 'completed' }], gate: { state: 'running', sec: 0, steps: [] } })).toBe('🧪 gate')
 })
+test('driver phase on the worktree card wins over task inference', async () => {
+  const done = [{ status: 'completed' }]
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: worker 运行中' })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: 写 correction' })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: 分支检查' })).toBe('🧪 gate')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: gate' })).toBe('🧪 gate')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: 审查' })).toBe('🔍 审查（推断）')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: 'driver: 排队合并' })).toBe('🚦 CI/合并')
+  expect(ticketPhase(phaseTicket, { tasks: done, driver: '人工备注' })).toBe('📬 待收尾')
+})
 test('completed workers without gate or PR await wrap-up', async () => {
   expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'completed' }] })).toBe('📬 待收尾')
   expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }, { status: 'completed' }], previous: '🔨 实现' })).toBe('📬 待收尾')
@@ -548,6 +558,9 @@ test('wrap-up older than ten minutes warns only without a coordinator', async ($
   emptyTasks = true
   await refresh(); await ui.redraw()
   expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeDefined()
+  ps = '   235 S /home/u/.local/bin/orca-factory-driver serve'
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeUndefined()
   ps = '   234 S node scripts/agent-gates/COORDINATOR.md'
   await refresh(); await ui.redraw()
   expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeUndefined()
