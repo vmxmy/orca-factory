@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,6 +98,7 @@ func (f *followupOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 }
 
 func TestFollowupDrafts(t *testing.T) {
+	t.Run("real main checkout and glob semantics", testFollowupCommands)
 	t.Run("parse section and fields", func(t *testing.T) {
 		got := parseFollowupDrafts("- 标题：ignore\n" + followupBody + "## Other\n- 标题：ignore\n")
 		want := []followupDraft{{Title: "修复检查", Evidence: "unit/a.go:12；检查缺失", Todo: "补充检查", Check: "go test ./unit", Scope: "unit/a.go", Estimate: "2"}}
@@ -234,4 +238,78 @@ type checkResult struct {
 
 func (f *checkResult) FollowupCheckFails(context.Context, string, string) (bool, error) {
 	return false, f.err
+}
+
+func testFollowupCommands(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		c := exec.Command("git", args...)
+		c.Dir = repo
+		b, err := c.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %s %v", args, b, err)
+		}
+		return string(b)
+	}
+	git("init", "-q")
+	git("config", "user.name", "Test")
+	git("config", "user.email", "test@example.invalid")
+	for _, path := range []string{"unit/a.go", "secret/deep/key.txt", "safe.txt"} {
+		name := filepath.Join(repo, path)
+		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte("main"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("add", ".")
+	git("commit", "-qm", "main")
+	git("update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "safe.txt"), []byte("worker"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c := &Commands{}
+	for _, tc := range []struct {
+		scope  string
+		globs  []string
+		reject bool
+	}{
+		{"unit/a.go/new.go", nil, true}, {"unit/a.go", nil, false}, {"unit/new.go", nil, false}, {"missing/new.go", nil, true}, {"../safe.txt", nil, true},
+		{"secret/deep/key.txt", []string{"secret/*"}, true}, {"secret/deep/key.txt", []string{"secret/[a-z]*/k?y.txt"}, true},
+		{"unit/*.go", []string{"secret/*"}, false}, {"secret/*", []string{"*/key.txt"}, true}, {"secret", []string{"*/key.txt"}, true},
+	} {
+		t.Run(tc.scope+strings.Join(tc.globs, ","), func(t *testing.T) {
+			reason, err := c.ValidateFollowupScope(context.Background(), repo, tc.scope, tc.globs)
+			if err != nil || (reason != "") != tc.reject {
+				t.Fatalf("reason=%q err=%v", reason, err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		check  string
+		failed bool
+	}{{"test $(cat safe.txt) = main", false}, {"test $(cat safe.txt) = worker", true}, {"exit 3", true}} {
+		failed, err := c.FollowupCheckFails(context.Background(), repo, tc.check)
+		if err != nil || failed != tc.failed {
+			t.Fatalf("check %q failed=%v err=%v", tc.check, failed, err)
+		}
+		dirs, err := os.ReadDir(filepath.Join(repo, ".omc", "tmp"))
+		if err != nil || len(dirs) != 0 {
+			t.Fatalf("leftover dirs=%v err=%v", dirs, err)
+		}
+		if strings.Count(git("worktree", "list", "--porcelain"), "worktree ") != 1 {
+			t.Fatal("worktree registration leaked")
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	failed, err := c.FollowupCheckFails(ctx, repo, "sleep 5")
+	if failed || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("timeout: failed=%v err=%v", failed, err)
+	}
+	if strings.Count(git("worktree", "list", "--porcelain"), "worktree ") != 1 {
+		t.Fatal("timeout leaked worktree")
+	}
 }

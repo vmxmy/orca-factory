@@ -115,11 +115,23 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string) (string,
 // ValidateFollowupScope uses bash's pattern matcher, just like gate match_any:
 // notably '*' crosses directory separators. Patterns remain positional data.
 func (c *Commands) ValidateFollowupScope(ctx context.Context, repo, scope string, globs []string) (string, error) {
-	tree, err := c.run(ctx, repo, "git", "ls-tree", "-r", "-t", "--name-only", "-z", "origin/main")
+	tree, err := c.run(ctx, repo, "git", "ls-tree", "-r", "-t", "-z", "origin/main")
 	if err != nil {
 		return "", errors.New("main tree lookup failed")
 	}
-	entries := strings.Split(strings.TrimSuffix(string(tree), "\x00"), "\x00")
+	var entries []string
+	directories := map[string]bool{".": true}
+	for _, record := range strings.Split(strings.TrimSuffix(string(tree), "\x00"), "\x00") {
+		metadata, name, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 3 {
+			return "", errors.New("invalid main tree entry")
+		}
+		entries = append(entries, name)
+		if fields[1] == "tree" {
+			directories[name] = true
+		}
+	}
 	match := func(value, pattern string) (bool, error) {
 		b, err := c.run(ctx, repo, "/bin/bash", "-c", `if [[ $1 == $2 ]]; then printf yes; fi`, "followup-match", value, pattern)
 		return string(b) == "yes", err
@@ -140,7 +152,7 @@ func (c *Commands) ValidateFollowupScope(ctx context.Context, repo, scope string
 				exists = true
 				candidates = append(candidates, entry)
 			}
-			if entry == parent || parent == "." {
+			if directories[parent] {
 				exists = true
 			}
 			if strings.HasPrefix(entry, scopePath+"/") {
