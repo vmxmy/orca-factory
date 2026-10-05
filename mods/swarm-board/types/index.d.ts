@@ -91,6 +91,8 @@ export type Board = {
   lastRunAt?: number
   /** Linear API hourly usage reported in the header; undefined before the first refresh. */
   linearUsage?: LinearUsage
+  /** Highest version of this mod recorded in `~/.claude/plugins/installed_plugins.json`; '' when the file is missing. */
+  installedVersion?: string
 }
 export type View = 'swarm' | 'task'
 
