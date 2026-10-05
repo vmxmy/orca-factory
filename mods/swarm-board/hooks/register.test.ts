@@ -851,3 +851,58 @@ test('reopening the swarm pane triggers an immediate refresh', async ($, on) => 
   const f = closeFixture($, on); await f.open(); const before = f.runs()
   await f.close(); await f.open(); expect(f.runs()).toBeGreaterThan(before)
 })
+
+const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, missing = false) => {
+  let refreshed = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-calls')) throw new Error('ENOENT')
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[]; init: { timeoutMs: number } }) => {
+    if (e.argv[0] === 'orca-factory-driver') {
+      expect(e.argv).toEqual(['orca-factory-driver', 'status', '--json'])
+      expect(e.init.timeoutMs).toBe(20_000)
+      if (missing) throw new Error('command not found')
+      return { value: { stdout, stderr: '', exitCode } }
+    }
+    return { value: { stdout: '{"ok":true,"result":{}}', stderr: '', exitCode: 0 } }
+  })
+  await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' })
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+}
+
+test('driver global pause and hourly Linear usage appear on the board', async ($, on) => {
+  await driverFixture($, on, '{"state":"ok","globalPause":{"active":true,"durationSeconds":180},"linear":{"requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"remaining":966,"reset":"2026-10-05T09:30:00Z"}}]}}')
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /⏸ 全局暂停 180 秒/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /驱动器 Linear 本小时 请求 12 · 复杂度 34/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\/repo 请求剩余 88 · 重置 2026-10-05T09:00:00Z · 复杂度剩余 966 · 重置 2026-10-05T09:30:00Z/ })).toBeDefined()
+  await ui.unmount()
+})
+
+for (const failure of ['missing', 'nonzero', 'invalid', 'wrong shape']) {
+  test('driver ' + failure + ' preserves the original board output', async ($, on) => {
+    await driverFixture($, on, failure === 'wrong shape' ? '{}' : 'invalid', failure === 'nonzero' ? 1 : 0, failure === 'missing')
+    const ui = await mount($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: /🟢 需要人 0/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Linear 用量未知/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /驱动器 Linear/ })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /全局暂停/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+for (const state of ['unknown', 'stale']) {
+  test('driver ' + state + ' is explicitly labelled', async ($, on) => {
+    await driverFixture($, on, JSON.stringify({ state, globalPause: { active: true, durationSeconds: 180 }, linear: { requests: 12, complexity: 34, limits: [] } }))
+    const ui = await mount($, 'terminal')
+    expect(await ui.find({ type: 'Text', text: state === 'unknown' ? /驱动器 Linear 未知/ : /驱动器 Linear 状态过期/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /全局暂停/ })).toBeUndefined()
+    await ui.unmount()
+  })
+}

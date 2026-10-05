@@ -4,7 +4,37 @@ import type { Register } from 'claude-code'
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus }
+
+type DriverLimit = { remaining: number; reset: string }
+type DriverStatus = { state: 'unknown' | 'stale' } | {
+  state: 'ok'
+  globalPause: { active: boolean; durationSeconds: number }
+  linear: { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
+}
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object'
+const driverLimit = (value: unknown): value is DriverLimit =>
+  record(value) && typeof value.remaining === 'number' && Number.isFinite(value.remaining) && typeof value.reset === 'string'
+const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
+  if (!record(value)) return undefined
+  if (value.state === 'unknown' || value.state === 'stale') return { state: value.state }
+  if (value.state !== 'ok' || !record(value.globalPause) || !record(value.linear)) return undefined
+  const pause = value.globalPause, usage = value.linear
+  if (typeof pause.active !== 'boolean' || typeof pause.durationSeconds !== 'number'
+      || !Number.isFinite(pause.durationSeconds) || pause.durationSeconds < 0
+      || typeof usage.requests !== 'number' || !Number.isFinite(usage.requests)
+      || typeof usage.complexity !== 'number' || !Number.isFinite(usage.complexity)
+      || !Array.isArray(usage.limits)) return undefined
+  const limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] = []
+  for (const limit of usage.limits) {
+    if (!record(limit) || typeof limit.repo !== 'string' || !driverLimit(limit.requests) || !driverLimit(limit.complexity)) return undefined
+    limits.push({ repo: limit.repo, requests: limit.requests, complexity: limit.complexity })
+  }
+  return {
+    state: 'ok', globalPause: { active: pause.active, durationSeconds: pause.durationSeconds },
+    linear: { requests: usage.requests, complexity: usage.complexity, limits },
+  }
+}
 
 type Agent = BaseAgent & { requiresAction?: boolean }
 type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
@@ -500,6 +530,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
+  const driver = parseDriverStatus(await runJson(['orca-factory-driver', 'status', '--json']))
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
@@ -790,7 +821,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
   if (!linearOk) {
     return {
-      at, error, maxInFlight, phases: old.phases, coordinatorAlive,
+      at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -798,7 +829,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
   return {
-    at, error, maxInFlight, phases, coordinatorAlive, inFlight, queue, failed, doneToday, prs,
+    at, error, maxInFlight, phases, coordinatorAlive, driver, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -1258,6 +1289,16 @@ export const register: Register = on => {
         </Text>
       )
     }
+    const driverBadge = () => {
+      const driver = b.driver
+      if (!driver) return null
+      if (driver.state !== 'ok') return <Text dimColor>驱动器 Linear {driver.state === 'unknown' ? '未知' : '状态过期'}</Text>
+      const usage = driver.linear
+      const limits = usage.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
+        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset)
+      return <Text dimColor>{'驱动器 Linear 本小时 请求 ' + usage.requests + ' · 复杂度 ' + usage.complexity
+        + (limits.length ? ' · ' + limits.join(' · ') : ' · 剩余额度/重置时间未知')}</Text>
+    }
     const focal = '  ' + b.inFlight.length + ' / ' + (b.maxInFlight || '?') + '  '
     const linearBadge = () => {
       const u = (b as Board).linearUsage
@@ -1278,10 +1319,13 @@ export const register: Register = on => {
         <Box flexDirection="row" alignItems="center" gap={2} marginBottom={1}>
           <Text bold inverse>{focal}</Text>
           <Text bold>在做</Text>
-          <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>
+          {b.driver?.state === 'ok' && b.driver.globalPause.active
+            ? <Text color="yellow">{'⏸ 全局暂停 ' + b.driver.globalPause.durationSeconds + ' 秒'}</Text>
+            : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>}
           <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日 est. $' + b.todayCost.toFixed(2) : ''}</Text>
           {linearBadge()}
         </Box>
+        {driverBadge()}
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
