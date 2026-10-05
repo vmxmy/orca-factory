@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 // Client may be used with its zero value. Path, when provided, must be absolute;
 // otherwise runx.OrcaPath resolves it. Timeout defaults to 30 seconds.
 type Client struct {
+	Logger  *slog.Logger // Optional; nil disables logging.
 	Path    string
 	Timeout time.Duration
 }
@@ -49,7 +51,24 @@ func RequestID(ticket, unit, step string, attempt int) string {
 
 func invalid(message string) error { return &infra.Ticket{Err: errors.New(message)} }
 
-func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
+func (c *Client) call(ctx context.Context, args []string) (receipt Receipt, resultErr error) {
+	started := time.Now()
+	requestID := ""
+	for i, arg := range args {
+		if (arg == "--retry-request" || arg == "--request") && i+1 < len(args) {
+			requestID = args[i+1]
+		}
+	}
+	defer func() {
+		if c.Logger == nil {
+			return
+		}
+		command := args
+		if len(command) > 2 {
+			command = command[:2]
+		}
+		c.Logger.InfoContext(ctx, "external call", "component", "orca", "command", strings.Join(runx.SafeArgs(command), " "), "success", resultErr == nil, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "request_id", runx.SafeText(requestID))
+	}()
 	path := c.Path
 	if path == "" {
 		var err error
@@ -68,7 +87,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
-	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
+	output, runErr := runx.Run(ctx, runx.Spec{Logger: c.Logger, Path: path, Args: append(args, "--json"), Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
 	}
@@ -76,6 +95,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
+		ID     string  `json:"id"`
 		OK     *bool   `json:"ok"`
 		Result Receipt `json:"result"`
 		Error  *struct {
@@ -86,6 +106,9 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if err := json.Unmarshal(output, &envelope); err != nil || envelope.OK == nil {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
+	}
+	if requestID == "" {
+		requestID = envelope.ID
 	}
 	if !*envelope.OK {
 		if envelope.Error != nil {

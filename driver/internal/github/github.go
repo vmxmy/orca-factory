@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -20,6 +21,7 @@ import (
 // Options injects transport, credentials, and timing. BaseURL defaults to
 // https://api.github.com; an override is a trusted origin (usually httptest).
 type Options struct {
+	Logger     *slog.Logger // Optional; nil disables logging.
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      func(context.Context) (string, error)
@@ -35,6 +37,7 @@ type cachedResponse struct {
 // Client is safe for concurrent use. Each client owns a capacity-one write
 // token bucket, refilled once per second, and an ETag cache.
 type Client struct {
+	logger     *slog.Logger
 	base       string
 	http       *http.Client
 	token      func(context.Context) (string, error)
@@ -72,7 +75,7 @@ func New(o Options) (*Client, error) {
 	if o.Sleep == nil {
 		o.Sleep = sleep
 	}
-	return &Client{base: strings.TrimRight(o.BaseURL, "/"), http: &hc, token: o.Token, now: o.Now, sleep: o.Sleep, cache: make(map[string]cachedResponse)}, nil
+	return &Client{logger: o.Logger, base: strings.TrimRight(o.BaseURL, "/"), http: &hc, token: o.Token, now: o.Now, sleep: o.Sleep, cache: make(map[string]cachedResponse)}, nil
 }
 
 func authToken(ctx context.Context) (string, error) {
@@ -110,7 +113,21 @@ func safeError(err error) error {
 	return infra.Classify(errors.New("GitHub request failed"))
 }
 
-func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
+func (c *Client) request(ctx context.Context, method, path string, input, output any) (resultErr error) {
+	started := time.Now()
+	var resp *http.Response
+	defer func() {
+		if c.logger == nil {
+			return
+		}
+		status, requestID := 0, ""
+		if resp != nil {
+			status = resp.StatusCode
+			requestID = resp.Header.Get("X-GitHub-Request-Id")
+		}
+		endpoint, _, _ := strings.Cut(path, "?")
+		c.logger.InfoContext(ctx, "external call", "component", "github", "method", method, "endpoint", runx.SafeText(endpoint), "http_status", status, "success", resultErr == nil, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "request_id", runx.SafeText(requestID))
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	token, err := c.token(ctx)
@@ -163,7 +180,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		c.invalidate()
 		defer c.invalidate()
 	}
-	resp, err := c.http.Do(req)
+	resp, err = c.http.Do(req)
 	if err != nil {
 		return safeError(err)
 	}

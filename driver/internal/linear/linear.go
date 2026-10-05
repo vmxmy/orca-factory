@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,9 +21,12 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 )
 
+var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z_0-9]*)`)
+
 const endpoint = "https://api.linear.app/graphql"
 
 type Options struct {
+	Logger *slog.Logger // Optional; nil disables logging.
 	TeamID string
 	// BaseURL overrides the GraphQL endpoint for tests. Redirects are forbidden.
 	BaseURL    string
@@ -118,6 +122,7 @@ type Usage struct {
 	ComplexityLimit RateLimit
 }
 type Client struct {
+	logger                   *slog.Logger
 	key, endpoint            string
 	http                     *http.Client
 	states, labels, projects map[string]string
@@ -149,7 +154,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		hc = *options.HTTPClient
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c := &Client{key: key, endpoint: target, http: &hc, now: time.Now}
+	c := &Client{logger: options.Logger, key: key, endpoint: target, http: &hc, now: time.Now}
 	for _, item := range []struct {
 		field string
 		dest  *map[string]string
@@ -445,7 +450,31 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 	}
 }
 
-func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) error {
+func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (resultErr error) {
+	started := time.Now()
+	var response *http.Response
+	limited := false
+	defer func() {
+		if c.logger == nil {
+			return
+		}
+		status := 0
+		complexity, remaining := "", ""
+		if response != nil {
+			status = response.StatusCode
+			complexity = response.Header.Get("X-Complexity")
+			remaining = response.Header.Get("X-RateLimit-Requests-Remaining")
+		}
+		operation := "unknown"
+		if match := operationName.FindStringSubmatch(query); len(match) > 1 {
+			operation = match[1]
+		}
+		level := slog.LevelInfo
+		if limited || status == 429 {
+			level = slog.LevelWarn
+		}
+		c.logger.Log(ctx, level, "external call", "component", "linear", "operation", operation, "http_status", status, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "complexity", complexity, "requests_remaining", remaining, "success", resultErr == nil)
+	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return protocolError()
@@ -456,7 +485,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	}
 	req.Header.Set("Authorization", c.key)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := c.http.Do(req)
+	response, err = c.http.Do(req)
 	c.record(response)
 	if err != nil {
 		// Classify before discarding transport errors, which can contain URLs or keys.
@@ -487,6 +516,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	decodeErr := json.Unmarshal(raw, &envelope)
 	for _, e := range envelope.Errors {
 		if e.Extensions.Code == "RATELIMITED" {
+			limited = true
 			return &infra.Global{Dep: infra.Linear, Err: errors.New("Linear rate limited")}
 		}
 	}
