@@ -36,17 +36,21 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 9 {
+	if len(values) != 11 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
 	if !ok || !component.MatchString(owner) || !component.MatchString(name) || values[1] == "" || values[2] == "" || strings.TrimSpace(values[3]) == "" {
 		return Result{}, errors.New("repository profile requires GitHub repository, Linear team/project and reviewer")
+	}
+	maximum, err := strconv.ParseFloat(values[9], 64)
+	if err != nil {
+		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
 	ticket, err := readTicket(ctx, identifier, values[1], values[2])
 	if err != nil {
@@ -61,7 +65,7 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{}
-	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
+	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[7]
@@ -84,7 +88,7 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 	if key == "" {
 		return Ticket{}, errors.New("LINEAR_API_KEY is required")
 	}
-	body, _ := json.Marshal(map[string]any{"query": `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description team { id } project { id } } }`, "variables": map[string]string{"id": identifier}})
+	body, _ := json.Marshal(map[string]any{"query": `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description estimate team { id } project { id } } }`, "variables": map[string]string{"id": identifier}})
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(body))
@@ -106,6 +110,7 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 		Data struct {
 			Issue *struct {
 				ID, Identifier, Title, Description string
+				Estimate                           *float64
 				Team, Project                      struct{ ID string }
 			}
 		}
@@ -118,7 +123,9 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 	if issue.Identifier != identifier || issue.Team.ID != team || issue.Project.ID != project {
 		return Ticket{}, errors.New("ticket outside configured repository project")
 	}
-	return ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
+	ticket, err := ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
+	ticket.Estimate = issue.Estimate
+	return ticket, err
 }
 
 func workerIdleTimeout(value string) time.Duration {

@@ -15,8 +15,10 @@ import (
 // Commands runs all subprocesses through runx. ReviewerCommand is trusted local
 // configuration, never ticket text. Run may be replaced by a fake in tests.
 type Commands struct {
-	ReviewerCommand string
-	Run             func(context.Context, runx.Spec) ([]byte, error)
+	ReviewerCommand          string
+	ReviewerSmallCommand     string
+	ReviewerSmallMaxEstimate *float64
+	Run                      func(context.Context, runx.Spec) ([]byte, error)
 }
 
 func (c *Commands) run(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
@@ -84,32 +86,40 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
 	return string(b), err
 }
-func (c *Commands) Review(ctx context.Context, repo, base, head string) (string, error) {
-	if strings.TrimSpace(c.ReviewerCommand) == "" {
-		return "", errors.New("reviewer command is required")
+func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate *float64) (string, string, error) {
+	command, tier := c.ReviewerCommand, "default"
+	maximum := 2.0
+	if c.ReviewerSmallMaxEstimate != nil {
+		maximum = *c.ReviewerSmallMaxEstimate
+	}
+	if estimate != nil && *estimate <= maximum && strings.TrimSpace(c.ReviewerSmallCommand) != "" {
+		command, tier = c.ReviewerSmallCommand, "small"
+	}
+	if strings.TrimSpace(command) == "" {
+		return "", tier, errors.New("reviewer command is required")
 	}
 	diff, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", base+"..."+head, "--")
 	if err != nil {
-		return "", errors.New("review diff failed")
+		return "", tier, errors.New("review diff failed")
 	}
 	// runx intentionally has no stdin field. A private temporary file supplies
 	// stdin through a fixed shell wrapper; no diff bytes become shell source.
 	f, err := os.CreateTemp(repo, ".driver-review-*")
 	if err != nil {
-		return "", errors.New("review input creation failed")
+		return "", tier, errors.New("review input creation failed")
 	}
 	name := f.Name()
 	defer os.Remove(name)
 	if _, err = f.Write(diff); err != nil {
 		_ = f.Close()
-		return "", errors.New("review input write failed")
+		return "", tier, errors.New("review input write failed")
 	}
 	if err = f.Close(); err != nil {
-		return "", errors.New("review input close failed")
+		return "", tier, errors.New("review input close failed")
 	}
 	prompt := "Review the diff on stdin against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
-	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", c.ReviewerCommand+` "$1"`, name, prompt)
-	return string(b), err
+	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", command+` "$1"`, name, prompt)
+	return string(b), tier, err
 }
 
 // ValidateFollowupScope uses bash's pattern matcher, just like gate match_any:

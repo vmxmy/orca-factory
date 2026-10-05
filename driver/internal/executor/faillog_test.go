@@ -58,13 +58,13 @@ func (f *failLogTools) Gate(ctx context.Context, repo, head, spec string) (strin
 	}
 	return output, err
 }
-func (f *failLogTools) Review(ctx context.Context, repo, base, head string) (string, error) {
+func (f *failLogTools) Review(ctx context.Context, repo, base, head string, estimate *float64) (string, string, error) {
 	red := f.reviewReds > 0
-	output, err := f.recoveryTools.Review(ctx, repo, base, head)
+	output, tier, err := f.recoveryTools.Review(ctx, repo, base, head, estimate)
 	if red {
-		return `review notes\n{"verdict":"red","step":"review","reason":"external-secret","evidence":[{"file":"` + f.reviewFile + `","line":381,"note":"external-secret"}]}`, err
+		return `review notes\n{"verdict":"red","step":"review","reason":"external-secret","evidence":[{"file":"` + f.reviewFile + `","line":381,"note":"external-secret"}]}`, tier, err
 	}
-	return output, err
+	return output, tier, err
 }
 func failLogToolFixture(e *Executor, tools *recoveryTools) *failLogTools {
 	tools.head = "abc1234567890"

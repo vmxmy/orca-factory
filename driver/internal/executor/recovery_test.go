@@ -71,18 +71,18 @@ func (f *recoveryTools) Gate(ctx context.Context, repo, head, spec string) (stri
 	}
 	return f.fakeTools.Gate(ctx, repo, head, spec)
 }
-func (f *recoveryTools) Review(ctx context.Context, repo, base, head string) (string, error) {
+func (f *recoveryTools) Review(ctx context.Context, repo, base, head string, estimate *float64) (string, string, error) {
 	if f.emptyReviews > 0 {
 		f.emptyReviews--
 		f.reviewCalls++
-		return "", nil
+		return "", "default", nil
 	}
 	if f.reviewReds > 0 {
 		f.reviewReds--
 		f.reviewCalls++
-		return `{"verdict":"red","step":"review"}`, nil
+		return `{"verdict":"red","step":"review"}`, "default", nil
 	}
-	return f.fakeTools.Review(ctx, repo, base, head)
+	return f.fakeTools.Review(ctx, repo, base, head, estimate)
 }
 
 type recoveryService struct {
