@@ -34,6 +34,7 @@ func TestCollect(t *testing.T) {
 		duplicate, large bool
 		invalid          string
 		noReviewer       bool
+		noWorktrees      bool
 	}{
 		{name: "Claude accumulates usage", files: []string{"claude-session"}, want: base[:2]},
 		{name: "Codex takes final cumulative usage", files: []string{"codex-session"}, want: base[4:5]},
@@ -46,7 +47,7 @@ func TestCollect(t *testing.T) {
 		{name: "duplicate Claude message", files: []string{"duplicate-message"}, want: base[:1]},
 		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{300, 80, 100, 0, 0}, 0, true, false}}},
 		{name: "large record", files: []string{"claude-session"}, want: base[:2], large: true},
-		{name: "missing unit worktrees", invalid: "worktrees"},
+		{name: "no matching unit worktrees", files: []string{"claude-session", "codex-session"}, noWorktrees: true, noReviewer: true},
 		{name: "invalid ticket", invalid: "ticket"},
 		{name: "missing coordinator session binding", invalid: "binding", run: true},
 	}
@@ -97,10 +98,10 @@ func TestCollect(t *testing.T) {
 					opts.CoordinatorSession = "coordinator-one"
 				}
 			}
-			switch tc.invalid {
-			case "worktrees":
+			if tc.noWorktrees {
 				opts.Worktrees = nil
-			case "ticket":
+			}
+			if tc.invalid == "ticket" {
 				opts.Ticket = "../ZII-894"
 			}
 			paths := []string{}
@@ -186,8 +187,8 @@ func TestCollectFillsTicketUsage(t *testing.T) {
 	if got.ByModel["gpt-5"].Output != 80 || got.ByModel["claude-sonnet-4-6"].Input != 300 || got.ByModel["mystery-model"].CostUSD != 0 {
 		t.Fatalf("by_model=%+v", got.ByModel)
 	}
-	if _, err := Collect(context.Background(), "ZII-894", nil); err == nil {
-		t.Fatal("no worktrees must be reported, not returned as empty usage")
+	if empty, err := Collect(context.Background(), "ZII-894", nil); err != nil || empty.Ticket != "ZII-894" || empty.PriceVersion != "2026-10-06-standard-v2" || len(empty.Items) != 0 || len(empty.Skipped) != 0 || empty.Totals != (Totals{}) {
+		t.Fatalf("no worktrees: usage = %+v, error = %v; want empty usage", empty, err)
 	}
 }
 

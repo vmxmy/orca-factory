@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
@@ -18,10 +19,20 @@ func init() { Register("usage", runUsage) }
 
 var usageTicket = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
 
-// Ticket discovery must enumerate linked worktrees, including those without a terminal.
-// The existing Orca client only exposes worker and terminal observations.
-var discoverUsageWorktrees = func(context.Context, string) ([]usage.Worktree, error) {
-	return nil, errors.New("usage: ticket worktree discovery requires a worktree-list API in driver/internal/orca/orca.go; the existing worker and terminal lists do not enumerate ticket-linked worktrees")
+// Unit worktrees follow Orca's <ticket>-<unit> directory naming convention.
+var discoverUsageWorktrees = func(ctx context.Context, ticket string) ([]usage.Worktree, error) {
+	out, err := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("usage: list git worktrees: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	worktrees := []usage.Worktree{}
+	for _, line := range strings.Split(string(out), "\n") {
+		path, ok := strings.CutPrefix(line, "worktree ")
+		if ok && strings.HasPrefix(filepath.Base(path), ticket+"-") {
+			worktrees = append(worktrees, usage.Worktree{Path: path})
+		}
+	}
+	return worktrees, nil
 }
 
 func runUsage(args []string) int {

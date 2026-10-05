@@ -90,4 +90,4 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `usage.Collect(ctx, ticket, worktrees, attribution...)` 保留既有调用签名与账本契约，最后一个可选 `Options` 仅补充 reviewer/coordinator 归属和会话根目录；不再保留旧 `CollectItems` 路径。
 
-当前分支缺少 `internal/orca` 的票关联 worktree 枚举 API，命令的生产发现入口返回明确错误和退出码 1；JSON 命令测试注入 worktree 列表，仅验证输出协议，不证明发现已完成。补齐发现需要扩展 SCOPE 至 `driver/internal/orca/orca.go` 及其测试，禁止通过自行拼接 Orca 命令或推断终端名绕过该依赖。
+命令在当前仓库执行 `git worktree list --porcelain`，读取 `worktree <路径>` 行，仅选目录名以 `<票号>-` 开头的单元 worktree（例如 `ZII-894-executor`）；沿用命令的 30 秒 context 超时，不依赖 Orca API。Git 枚举失败时保留错误原因并退出 1；没有匹配且未显式指定 reviewer/coordinator 时返回带票号、价格版本和空分项的结果。`TestDiscoverUsageWorktrees` 使用临时 Git 仓库及两个不同票号的 worktree 验证筛选，JSON 命令测试继续注入 worktree 列表验证输出协议。

@@ -61,8 +61,8 @@ var ticketPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
 
 func collectItems(o Options) (Result, error) {
 	result := Result{Ticket: o.Ticket, PriceVersion: prices.Version, Items: []Item{}, Skipped: []FileError{}}
-	if !ticketPattern.MatchString(o.Ticket) || len(o.Worktrees) == 0 {
-		return result, errors.New("usage: valid ticket and associated unit worktrees required")
+	if !ticketPattern.MatchString(o.Ticket) {
+		return result, errors.New("usage: valid ticket required")
 	}
 	roles := map[string]string{}
 	for _, w := range o.Worktrees {
@@ -86,6 +86,9 @@ func collectItems(o Options) (Result, error) {
 			return result, errors.New("usage: run and unit worktrees overlap")
 		}
 		roles[path] = "coordinator"
+	}
+	if len(roles) == 0 {
+		return result, nil
 	}
 	if o.ClaudeDir == "" || o.CodexDir == "" {
 		home, err := os.UserHomeDir()

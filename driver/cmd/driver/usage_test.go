@@ -4,11 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
+
+func TestDiscoverUsageWorktrees(t *testing.T) {
+	root := t.TempDir()
+	repo := filepath.Join(root, "repo")
+	if err := os.Mkdir(repo, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "--quiet"},
+		{"-c", "user.name=Usage Test", "-c", "user.email=usage@example.invalid", "commit", "--quiet", "--allow-empty", "-m", "initial"},
+		{"worktree", "add", "-b", "executor", root + "/ZII-894-executor"},
+		{"worktree", "add", "-b", "other", root + "/OTHER-1-executor"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repo
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	t.Chdir(repo)
+	got, err := discoverUsageWorktrees(context.Background(), "ZII-894")
+	want := []usage.Worktree{{Path: root + "/ZII-894-executor"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("worktrees = %+v, error = %v; want %+v", got, err, want)
+	}
+}
 
 func TestUsageInvalidArguments(t *testing.T) {
 	if code := runUsage([]string{"ZII-894", "--unknown"}); code != 2 {
