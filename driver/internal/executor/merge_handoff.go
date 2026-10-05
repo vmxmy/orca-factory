@@ -118,6 +118,13 @@ func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, p
 	state.Phase = machine.PhaseMergeQueue
 	state.Attempt = max(state.Attempt, h.Attempt)
 	state.Corrections = max(state.Corrections, h.Corrections)
-	state.Infra += h.Infra
+	// Start already restored current.Infra; both receipts describe overlapping
+	// history. Add only the missing historical portion, preserving this Start's
+	// read failures already included in state.Infra.
+	restoredInfra := 0
+	if current != nil {
+		restoredInfra = current.Infra
+	}
+	state.Infra += max(0, h.Infra-restoredInfra)
 	return Result{State: state, PR: pr, RunID: h.Run, DispatchID: h.Dispatch}, nil
 }

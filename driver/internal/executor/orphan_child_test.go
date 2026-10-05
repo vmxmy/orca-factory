@@ -84,8 +84,13 @@ func TestLostCorrectionChildStartsOnceAfterTerminalReplacement(t *testing.T) {
 		t.Fatalf("lost worktree/budget/validation: result=%+v opts=%+v gates=%d reviews=%d", result, o.starts[1], tools.gateCalls, tools.reviewCalls)
 	}
 	e.Config.Terminal = "third_terminal"
-	if _, err := e.Start(context.Background(), ticket); err != nil {
-		t.Fatal(err)
+	e.GitHub.(*fakeGitHub).existing = &result.PR
+	e.GitHub.(*fakeGitHub).existing.Head.SHA = tools.head
+	for restart := 0; restart < 2; restart++ {
+		resumed, err := e.Start(context.Background(), ticket)
+		if err != nil || resumed.State.Infra != 1 {
+			t.Fatalf("third/later Start double-counted historical budget: %+v err=%v", resumed.State, err)
+		}
 	}
 	if len(o.starts) != 2 || s.children != 1 {
 		t.Fatalf("mutation replayed: starts=%d children=%d", len(o.starts), s.children)
