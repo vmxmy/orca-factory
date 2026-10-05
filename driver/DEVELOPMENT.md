@@ -81,6 +81,24 @@ make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
 
 合并到 main 要求上述五项检查通过。远端分支保护使用上表名称并绑定 GitHub Actions app，要求分支更新至最新主线，管理员也受约束；通过 GitHub API 回读确认配置，检查启动本身不能证明保护已生效。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
 
+### Runner 选择与本地隔离
+
+五个 job 使用仓库变量 `GO_RUNNER_LABELS_JSON` 选择 runner。变量未设置或为空时，默认标签为 `["ubuntu-24.04"]`，使用 GitHub 托管云端 runner。本地 runner 就绪后，维护者可将变量设置为 JSON 字符串数组，例如：
+
+```json
+["self-hosted", "linux", "x64", "orca-go-isolated"]
+```
+
+示例标签需要与已注册 runner 的标签完全对应，所有标签必须同时匹配。变量是调度选择，**不是自动 failover**：选择本地标签后，runner 离线或忙碌会使 job 等待；不会因为不可用自动转到云端。需要云端时清空/删除变量或显式设置 `["ubuntu-24.04"]`，再发起新运行。值必须是非空字符串数组；无效 JSON 会使表达式报错，不会回退。
+
+本地方案使用每个 job 独立的一次性（ephemeral）容器，任务完成后退出并销毁容器及其工作目录。主机侧启动器负责创建容器、注册 runner、补充下一实例和清理；工作流本身不会创建或部署 runner。 安装与维护步骤见[本地 runner 启动器说明](../scripts/local-runner/README.md)。
+
+- 容器启动时明确限制 CPU、内存和进程数，并限制并发实例总量，为主机上的生产服务保留资源。
+- 禁止挂载宿主 home、Docker socket 或生产凭据；使用独立临时工作目录，不让 job 接触生产配置和持久状态。
+- 长期 GitHub 授权仅保留在宿主。JIT 短期配置经 stdin 进入 runner 进程，用于注册自身，不会继承给 job 环境；PR job 保持现有最小权限。不要用常驻生产执行器充当 CI runner。
+
+设置变量、部署启动器和调整实际资源上限由维护者执行；只有真实 job 完成才能证明本地 runner 已接通。job 名称和所调用的 Make 入口保持不变。
+
 [Dependabot](../.github/dependabot.yml) 每周检查 `/driver` 的 Go module 与根目录的 GitHub Actions，依赖变更仍经 PR 门禁。
 
 ## 官方接口依据

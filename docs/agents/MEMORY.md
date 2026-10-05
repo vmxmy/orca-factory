@@ -11,6 +11,11 @@
 - synctest 通过公开 `infra.Retry`、未注入的默认 `Sleep` 检验退避与取消；在隔离副本用受控 mutation 验证断言能失败，避免共享 worktree 暂时改坏生产代码。恢复后运行原始测试，保留已有录制契约。
 - `make check` 只覆盖 Go 质量检查；project gate 的 scope、固定基线、契约和部署判定仍须单独满足。
 
+## 本地 CI runner
+
+- `GO_RUNNER_LABELS_JSON` 是 runner 标签选择；未设置/为空使用云端，选本地后不因离线自动 failover。配置格式与恢复云端步骤见 [Runner 选择与本地隔离](../../driver/DEVELOPMENT.md#runner-选择与本地隔离)。
+- 本地 runner 按 job 使用限 CPU、内存、进程数和总并发的 ephemeral 容器，完成后销毁；不挂宿主 home、Docker socket 或生产凭据。维护者负责实际部署与仓库变量，五个必需检查名称保持稳定。
+
 ## 部署
 
 部署保留配置、持久状态、正在运行的执行器与 quota 暂停/配额保护；健康检查遇到配额暂停，按既有恢复机制处理，不能清空状态或强行解除保护来制造成功。部署前保留可回滚旧程序。
