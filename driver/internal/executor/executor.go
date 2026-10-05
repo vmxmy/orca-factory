@@ -662,7 +662,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 		}
 		workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: run, IncludeRemote: true})
 		if err != nil {
-			return nil, err
+			return nil, safeDependencyError(err)
 		}
 		var worker *orca.Worker
 		for i := range workers {
@@ -697,7 +697,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 					_, watch.stopErr = e.Orca.WorkerStop(ctx, watch.stopRequest, dispatch)
 				}
 				if watch.stopErr != nil {
-					return nil, watch.stopErr
+					return nil, safeDependencyError(watch.stopErr)
 				}
 				return livenessFailure("worker never started its turn"), nil
 			}

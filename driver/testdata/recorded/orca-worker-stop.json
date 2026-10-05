@@ -1,0 +1,18 @@
+{
+ "id": "6feed371-b4d2-41e2-bedb-ddb0634f93ab",
+ "ok": true,
+ "result": {
+  "dispatchId": "ctx_probe",
+  "state": "stopped",
+  "alreadySettled": false,
+  "processAction": "closed_agent_terminal",
+  "close": {
+   "handle": "term_probe",
+   "ptyKilled": true
+  },
+  "mutation": {
+   "requestId": "probe-request",
+   "replayed": false
+  }
+ }
+}
