@@ -1,14 +1,36 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Precheck, Ticket, Tokens, View } from '../types'
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean } }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean }
 
 type Agent = BaseAgent & { requiresAction?: boolean }
 type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
 type WorktreeCard = { path: string; workspaceStatus: string; comment: string }
+
+type PhaseTask = { status: string }
+type PhaseData = {
+  run?: { id: string } | null
+  tasks?: readonly PhaseTask[]
+  gate?: Gate
+  lane?: number
+  pr?: number
+  previous?: TicketPhase
+}
+
+export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
+  if (data.pr || ticket.pr) return '🚦 CI/合并'
+  const gate = data.gate ?? ticket.gate
+  if (gate?.state === 'green' && data.lane === 2) return '🔍 审查（推断）'
+  if (gate && gate.state !== 'none') return '🧪 gate'
+  const tasks = data.tasks ?? []
+  if (tasks.some(t => t.status === 'dispatched')) return '🔨 实现'
+  if (tasks.some(t => t.status === 'pending' || t.status === 'ready')) return '📤 派工'
+  if (tasks.length && tasks.every(t => t.status === 'completed')) return '📬 待收尾'
+  return data.previous ?? (data.run ? '📤 派工' : '📋 拆分')
+}
 
 const PANE = 'swarm-board'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -215,7 +237,7 @@ const parseGate = (text: string): Gate => {
       delete open[m[1]]
     }
   }
-  const v = /^VERDICT (\w+)/m.exec(seg)
+  const v = /^VERDICT\s+(\w+)/m.exec(seg)
   return { state: v ? (v[1] === 'green' ? 'green' : 'red') : 'running', sec: steps.reduce((a, s) => a + s.sec, 0), steps }
 }
 const mergeGate = (a: Gate | undefined, b: Gate): Gate => {
@@ -257,7 +279,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
   let text = ''
-  try { text = await $.fs.read(ENV) } catch { return { ...empty, at, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' } }
+  try { text = await $.fs.read(ENV) } catch { return { ...old, at, coordinatorAlive: undefined, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' } }
   const env = parseEnv(text)
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
@@ -407,6 +429,18 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       if (!lastOut[t.worktreePath] || lastOut[t.worktreePath] < t.lastOutputAt) lastOut[t.worktreePath] = t.lastOutputAt
     }
   }
+  // Failed ps is unknown, never evidence that no coordinator is alive.
+  let coordinatorAlive: boolean | undefined
+  try {
+    const ps = await $.process.run(['ps', '-axo', 'pid=,stat=,command='], { timeoutMs: TIMEOUT_MS })
+    if (ps.exitCode === 0 && ps.stdout.trim()) {
+      coordinatorAlive = ps.stdout.split('\n').some((line: string) => {
+        const row = /^\s*\d+\s+(\S+)\s+(.+)$/.exec(line)
+        return !!row && !row[1].includes('Z') && row[2].includes('scripts/agent-gates/COORDINATOR')
+      })
+    }
+  } catch { coordinatorAlive = undefined }
+  const phases: Record<string, PhaseObservation> = { ...old.phases }
   const agentsOk = orcaRunsResp.ok && worktreeResp.ok
 
   // Agents: one coordinator per Orca run whose objective names an in-flight ticket, plus its worker tasks.
@@ -438,6 +472,8 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (!workers.some(k => k.path) && card?.path) {
       paths.push(card.path)
     }
+    let gateLane: number | undefined
+    let gateAt = ''
     for (const k of workers) {
       const projection = projectionByTask.get(k.id)
       const phase = k.status === 'dispatched' ? 'implement' : k.status === 'completed' ? 'done' : k.status === 'failed' ? 'returned' : k.status
@@ -448,11 +484,37 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       // Gate logs of every unit under the worker worktree.
       try {
         for (const e of await $.fs.list(k.path + '/.omc/gates')) {
-          try { gates[t.id] = mergeGate(gates[t.id], parseGate(await $.fs.read(k.path + '/.omc/gates/' + e.name + '/gate.log'))) } catch { /* no log */ }
+          try {
+            const log = await $.fs.read(k.path + '/.omc/gates/' + e.name + '/gate.log')
+            if (!log.trim()) continue
+            gates[t.id] = mergeGate(gates[t.id], parseGate(log))
+            const segment = log.slice(Math.max(0, log.lastIndexOf('=== gate ')))
+            const lane = /^LANE\s+(\d+)/m.exec(segment)
+            if (lane) gateLane = Math.max(gateLane ?? 0, Number(lane[1]))
+            const stamps = segment.match(/\d{4}-\d\d-\d\dT[\d:.]+Z/g) ?? []
+            gateAt = [...stamps, gateAt].sort().pop() ?? ''
+          } catch { /* no readable log: preserve the previous phase below */ }
         }
       } catch { /* no gates dir */ }
     }
+    const previous = old.phases?.[t.id]
+    let phase = ticketPhase(t, { run: r, tasks: workers, gate: gates[t.id], lane: gateLane, pr: prOf(t.id)?.number, previous: previous?.phase })
+    // Missing gate/PR reads must not regress a previously observed downstream phase.
+    if (previous && !prOf(t.id) && !gates[t.id] && ['🧪 gate', '🔍 审查（推断）', '🚦 CI/合并'].includes(previous.phase)) phase = previous.phase
+    if (previous?.phase === '🚦 CI/合并' && !prOf(t.id)) phase = previous.phase
+    if (previous?.phase === '🔍 审查（推断）' && gates[t.id]?.state === 'green' && !gateLane && !prOf(t.id)) phase = previous.phase
+    const matching = workers.filter(k => phase === '📬 待收尾' ? k.status === 'completed' : phase === '🔨 实现' ? k.status === 'dispatched' : k.status === 'pending' || k.status === 'ready')
+    const taskAt = matching.map(k => phase === '📬 待收尾' ? k.completed_at ?? k.updated_at : phase === '🔨 实现' ? k.dispatched_at ?? k.updated_at : k.updated_at ?? k.created_at).filter(Boolean).sort().pop()
+    const observedAt = phase === '🚦 CI/合并' ? prOf(t.id)?.updatedAt : phase === '🧪 gate' || phase === '🔍 审查（推断）' ? gateAt : taskAt
+    const lastActive = workers.map(k => lastOut[k.path]).filter(Boolean).sort().pop() || previous?.lastActive
+    phases[t.id] = { phase, since: previous?.phase === phase ? previous.since : observedAt || (phase === '📋 拆分' ? t.claimedAt || t.updatedAt : new Date(now).toISOString()), lastActive }
     ticketPaths[t.id] = paths
+  }
+  // Tickets beyond the per-ticket read budget still show a phase using existing run/PR data.
+  for (const t of inFlight.slice(MAX_TICKETS)) {
+    const previous = old.phases?.[t.id]
+    const phase = ticketPhase(t, { run: runFor(t.id), pr: prOf(t.id)?.number, previous: previous?.phase })
+    phases[t.id] = previous?.phase === phase ? previous : { phase, since: new Date(now).toISOString() }
   }
   for (const t of doneToday.slice(0, MAX_DONE)) {
     const r = runFor(t.id)
@@ -487,14 +549,14 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
   if (!linearOk) {
     return {
-      at, error, maxInFlight,
+      at, error, maxInFlight, phases: old.phases, coordinatorAlive,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt,
     }
   }
   return {
-    at, error, maxInFlight, inFlight, queue, failed, doneToday, prs,
+    at, error, maxInFlight, phases, coordinatorAlive, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt,
@@ -571,7 +633,8 @@ export const register: Register = on => {
     const countdown = tickMs > 0 && remainingSec > 0 ? '下次刷新 ' + remainingSec + 's' : '刷新中'
     const staleMin = lastSuccessAt > 0 ? Math.max(0, Math.floor((now - lastSuccessAt) / 60_000)) : 0
     const stale = lastSuccessAt > 0 && now - lastSuccessAt > STALE_MS
-    const cols = Math.max(44, (e.props?.bodyColumns ?? e.viewport?.columns ?? 100) - 4)
+    const bodyColumns = e.props?.bodyColumns ?? e.viewport?.columns ?? 100
+    const cols = Math.max(44, bodyColumns - 4)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
     const card = (key: string, title: string, children: any, color?: string, dim?: boolean) => (
@@ -625,6 +688,17 @@ export const register: Register = on => {
       if (lp.skips[t.id]) return '未入选：' + lp.skips[t.id]
       return 'precheck 未选中（原因未知）'
     }
+    const phaseLine = (t: Ticket) => {
+      if (!inFlightNoHuman.some(x => x.id === t.id)) return null
+      const observation = (b as Board).phases?.[t.id]
+      if (!observation) return null
+      const elapsedMs = Number.isFinite(ts(observation.since)) ? now - ts(observation.since) : 0
+      const duration = Math.max(0, Math.floor(elapsedMs / 60_000))
+      const stranded = observation.phase === '📬 待收尾' && elapsedMs > 10 * 60_000 && (b as Board).coordinatorAlive === false
+      const label = stranded ? '⚠ 待收尾 ' + Math.floor(duration) + ' 分钟，无 coordinator 在跑'
+        : observation.phase + ' · ' + mins(duration) + (observation.phase === '🔨 实现' && observation.lastActive ? ' · 最后输出 ' + age(observation.lastActive, now) + '前' : '')
+      return <Text color={stranded ? 'yellow' : undefined}>{label}</Text>
+    }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
       const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
@@ -639,6 +713,7 @@ export const register: Register = on => {
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
+          {phaseLine(t)}
           <Text>{cutW(t.title, w)}</Text>
           {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
           {l.title === '需要人' ? handoffText(t) : null}
@@ -691,13 +766,14 @@ export const register: Register = on => {
       )
     }
     const laneView = () => {
-      if (cols >= 120) {
+      if (bodyColumns >= 120) {
         const w = Math.floor(cols / lanes.length) - 2
         return (
           <Box flexDirection="row" marginBottom={1}>
             {lanes.map(l => (
               <Box key={'lane-' + l.title} flexDirection="column" width={w + 2} paddingX={1}>
                 {laneHead(l)}
+                {l.title === '实现中' ? <Text dimColor>{(['📋 拆分', '📤 派工', '🔨 实现', '📬 待收尾'] as const).map(phase => phase + '(' + inFlightNoHuman.filter(t => (b as Board).phases?.[t.id]?.phase === phase).length + ')').join(' ')}</Text> : null}
                 <Text dimColor>{'─'.repeat(w)}</Text>
                 {l.title === '待领' ? queueExtras(w) : null}
                 {l.items.length === 0 ? <Text dimColor>·</Text> : l.items.map(t => laneCard(l, t, w))}

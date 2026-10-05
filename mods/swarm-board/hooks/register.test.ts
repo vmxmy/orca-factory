@@ -367,10 +367,7 @@ test('wrap-up older than ten minutes warns only without a coordinator', async ($
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
-  on('fs.read', (_: unknown, e: { path: string }) => {
-    if (e.path.endsWith('agent-graph.env')) return { value: 'AGENT_GH_REPO=owner/test-repo' }
-    throw new Error('No file')
-  })
+  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
   on('fs.list', () => ({ value: [] }))
   on('process.run', (_: unknown, e: { argv: string[] }) => {
     if (e.argv[0] === 'ps') return { value: { stdout: ps, stderr: '', exitCode: psExit } }

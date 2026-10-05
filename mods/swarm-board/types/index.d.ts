@@ -83,3 +83,7 @@ declare module 'claude-code' {
     'swarm-board': { board: Board; view: View; showQueue: boolean; detail: boolean; now: number; lastTickAt: number }
   }
 }
+
+/** Last-good phase observations live only in the board atom. */
+export type TicketPhase = '📋 拆分' | '📤 派工' | '🔨 实现' | '📬 待收尾' | '🧪 gate' | '🔍 审查（推断）' | '🚦 CI/合并'
+export type PhaseObservation = { phase: TicketPhase; since: string; lastActive?: string }
