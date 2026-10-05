@@ -21,7 +21,13 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-func RunTicket(ctx context.Context, identifier string) (Result, error) {
+func RunTicket(ctx context.Context, identifier string) (result Result, err error) {
+	delegated := false
+	defer func() {
+		if !delegated {
+			(&Executor{}).logError("initialization", err)
+		}
+	}()
 	if !component.MatchString(identifier) {
 		return Result{}, errors.New("invalid ticket identifier")
 	}
@@ -78,6 +84,7 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	if e.Config.Model == "" {
 		e.Config.Effort = ""
 	}
+	delegated = true
 	return e.Start(ctx, ticket)
 }
 

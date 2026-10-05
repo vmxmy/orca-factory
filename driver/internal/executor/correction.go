@@ -167,7 +167,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if err = saveCheckpoint(c, t, *cp); err != nil {
 				return err
 			}
-			receipt, err := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
+			receipt, err := e.workerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
 			if err != nil {
 				return fmt.Errorf("correction worker start uncertain; reconcile request before retry: %w", err)
 			}

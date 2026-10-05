@@ -60,7 +60,14 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 
 // Start reconciles remote evidence before Execute. Execute remains the explicit
 // new-claim entry point for callers that already performed reconciliation.
-func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
+func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
+	phase := machine.Phase("recovery")
+	delegated := false
+	defer func() {
+		if !delegated {
+			e.logError(phase, err)
+		}
+	}()
 	c := e.Config
 	if c.Unit == "" {
 		c.Unit = "executor"
@@ -75,6 +82,8 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
+	cp, checkpointErr := readCheckpoint(c, t)
+	e.recoverySnapshot(ctx, t, cp, checkpointErr)
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	head, err := e.Tools.Head(ctx, c.Repo, branch)
 	if err != nil {
@@ -85,25 +94,26 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		return Result{}, errors.New("resume PR lookup failed")
 	}
 	if pr != nil {
+		e.logger().Info("recovery.path", "path", "existing-pr")
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return Result{}, errors.New("invalid existing PR")
 		}
 		state := machine.Initial()
 		for _, ev := range []machine.Event{machine.EvClaim, machine.EvWorkerOK, machine.EvBranchOK, machine.EvGateGreen, machine.EvReviewGreen, machine.EvOpenPR} {
-			state, _, err = machine.Step(state, ev, machine.DefaultLimits)
+			state, _, err = e.step(state, ev)
 			if err != nil {
 				return Result{}, err
 			}
 		}
-		result := Result{State: state, PR: *pr}
+		result = Result{State: state, PR: *pr}
+		phase = state.Phase
 		if err = e.comment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
 			return result, errors.New("resume handoff comment failed")
 		}
 		return result, nil
 	}
-	cp, err := readCheckpoint(c, t)
-	if err != nil {
-		return Result{}, err
+	if checkpointErr != nil {
+		return Result{}, checkpointErr
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
@@ -118,7 +128,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		if run == "" {
 			return Result{}, errors.New("resume run receipt missing ID")
 		}
-		tasks, callErr := e.Orca.TaskList(ctx, run)
+		tasks, callErr := e.taskList(ctx, run)
 		if callErr != nil {
 			return Result{}, errors.New("resume old task lookup failed")
 		}
@@ -146,7 +156,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		}
 	}
 	if cp != nil && cp.Run != "" && cp.Task != "" {
-		tasks, err := e.Orca.TaskList(ctx, cp.Run)
+		tasks, err := e.taskList(ctx, cp.Run)
 		if err != nil {
 			return Result{}, errors.New("resume task lookup failed")
 		}
@@ -179,19 +189,30 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 				return Result{}, err
 			}
 			if !found {
+				e.logger().Info("recovery.path", "path", "new-worker")
+				delegated = true
 				return e.Execute(ctx, t)
 			}
 			cp.Task, cp.Dispatch, cp.Pending = task.ID, task.DispatchID, false
 		}
 		if cp.Pending && !cp.Completed {
+			e.logger().Info("recovery.path", "path", "unresolved-worker")
 			return Result{}, errors.New("unresolved worker start; reconcile request before retry")
 		}
 		// task-list carries no dispatch_id, so an adopted task may lack one.
 		if !cp.Completed && cp.Task == "" {
 			return Result{}, errors.New("incomplete worker recovery state")
 		}
+		path := "active-worker"
+		if cp.Completed {
+			path = "completed-worker"
+		}
+		e.logger().Info("recovery.path", "path", path)
+		delegated = true
 		return e.execute(ctx, t, cp)
 	}
+	e.logger().Info("recovery.path", "path", "new-worker")
+	delegated = true
 	return e.Execute(ctx, t)
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {
@@ -240,7 +261,7 @@ func (e *Executor) pendingWorker(ctx context.Context, run, branch string) (orca.
 	if run == "" {
 		return orca.Task{}, false, nil
 	}
-	tasks, err := e.Orca.TaskList(ctx, run)
+	tasks, err := e.taskList(ctx, run)
 	if err != nil {
 		return orca.Task{}, false, fmt.Errorf("pending worker lookup failed: %w", err)
 	}

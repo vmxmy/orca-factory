@@ -116,6 +116,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if errors.Is(err, errBudgetExhausted) {
 			err = nil
 		}
+		e.logError(result.State.Phase, err)
 	}()
 	c := e.Config
 	if c.Unit == "" {
@@ -178,7 +179,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
-		next, fx, stepErr := machine.Step(previous, ev, machine.DefaultLimits)
+		next, fx, stepErr := e.step(previous, ev)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -221,6 +222,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			if err != nil {
 				return err
 			}
+			e.logger().Info("correction", "reason", ev, "fail_summary", summary)
 			if summary != "" {
 				if err := appendFailLog(c, t, summary); err != nil {
 					return err
@@ -301,7 +303,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if err := saveCheckpoint(c, t, cp); err != nil {
 			return err
 		}
-		receipt, callErr = e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		receipt, callErr = e.workerStart(ctx, scopedRequest(t, c, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
 		if callErr != nil {
@@ -413,7 +415,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		var output, verdict string
 		var gateErr, parseErr error
 		err = e.retryRead(ctx, t, &result, "gate output", func() error {
+			done := e.external("gate")
 			output, gateErr = e.Tools.Gate(ctx, c.Repo, head, spec)
+			gateResult, _ := gateVerdict(output)
+			done(gateErr, "verdict", gateResult)
 			if stop := dependencyStop(ctx, gateErr); stop != nil {
 				if gateErr != nil {
 					return gateErr
@@ -458,7 +463,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		for result.State.Phase == machine.PhaseReview {
 			var reviewErr error
+			done := e.external("reviewer")
 			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
+			reviewResult, _ := reviewVerdict(output)
+			done(reviewErr, "verdict", reviewResult, "tier", reviewerTier)
 			if stop := dependencyStop(ctx, reviewErr); stop != nil {
 				return result, stop
 			}
@@ -494,7 +502,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		break
 	}
-	err = transition(machine.EvOpenPR, func(fx []machine.Effect) error {
+	err = transition(machine.EvOpenPR, func(fx []machine.Effect) (err error) {
+		done := e.external("open-pr")
+		defer func() { done(err, "number", result.PR.Number) }()
 		if !hasEffect(fx, "open-pr-rest-idempotent-by-branch") {
 			return errors.New("missing PR effect")
 		}
@@ -540,7 +550,7 @@ func nestedString(r orca.Receipt, key, field string) string {
 }
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, observeIdle func() error) (*orca.WorkerReport, error) {
 	for {
-		tasks, err := e.Orca.TaskList(ctx, run)
+		tasks, err := e.taskList(ctx, run)
 		if err != nil {
 			return nil, errors.New("task polling failed")
 		}
