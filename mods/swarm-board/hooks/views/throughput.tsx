@@ -1,7 +1,7 @@
 import type { ComponentType, ReactElement } from 'react'
 import type { ThroughputData } from '../../types'
 
-// Claude Code supplies the same h factory used by its JSX transform.
+// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
 declare function h(
   component: ComponentType<{ dimColor?: boolean; children?: string }>,
   props: { dimColor?: boolean },
@@ -19,7 +19,7 @@ type Reason = '无可领票' | 'SCOPE 冲突' | '达到上限' | '限流'
 export type ThroughputViewData = ThroughputData & {
   stages: Record<Stage, StageStats | null> | null
   reasons: Record<Reason, number>
-  inFlight: { mean: number; max: number }
+  inFlight: { mean: number; max: number } | null
 }
 const HOUR = 3600000
 const stageNames: Record<Stage, string> = {
@@ -37,7 +37,6 @@ const stageStats = (ledger: LedgerRow[], stage: Stage): StageStats | null => {
   const middle = Math.floor(samples.length / 2)
   return {
     median: samples.length % 2 ? samples[middle] : (samples[middle - 1] + samples[middle]) / 2,
-    // Nearest-rank p90; the median averages the two central values for even sample counts.
     p90: samples[Math.ceil(samples.length * 0.9) - 1],
   }
 }
@@ -63,7 +62,7 @@ export const buildThroughput = (input: {
   const reasons: Record<Reason, number> = { '无可领票': 0, 'SCOPE 冲突': 0, '达到上限': 0, '限流': 0 }
   let total = 0
   let count = 0
-  let latestMax = 0
+  let latestMax: number | undefined
   let latestAt = -Infinity
   for (const raw of input.runs) {
     const run = record(raw)
@@ -84,15 +83,24 @@ export const buildThroughput = (input: {
     if (flightMatch) { total += inFlight; count++ }
     if (maxMatch && at > latestAt) { latestAt = at; latestMax = max }
     const empty = claim !== null && !claim[1].split(',').filter(Boolean).length
+    const exitCode = Number(precheck.exitCode ?? 0)
+    const uncertain = exitCode === 3 || precheck.timedOut === true
+      || String(precheck.error ?? '') !== '' || /^\s*不确定:/m.test(stderr)
+      || (exitCode !== 0 && claim === null)
+    if ((claim === null || empty) && /rate limit|限流/i.test(stderr)) {
+      reasons['限流']++
+      continue
+    }
+    if (uncertain) continue
     if (empty && max > 0 && inFlight >= max) reasons['达到上限']++
-    else if (/限流|(?:^|[^a-z])rate(?:[^a-z]|$)/i.test(stderr)) reasons['限流']++
-    else if (empty && stderr.split('\n').some(line => /^skip [A-Z]+-\d+: .*SCOPE/i.test(line.trim()))) {
+    else if (stderr.split('\n').some(line => /^skip [A-Z]+-\d+: scope overlaps\b/.test(line.trim()))) {
       reasons['SCOPE 冲突']++
     } else if (empty) reasons['无可领票']++
   }
+  const max = input.maxInFlight ?? latestMax
   return {
     hourly, stages: Object.values(stages).some(Boolean) ? stages : null, reasons,
-    inFlight: { mean: count ? total / count : 0, max: input.maxInFlight ?? latestMax },
+    inFlight: count && max !== undefined ? { mean: total / count, max } : null,
   }
 }
 
@@ -110,7 +118,8 @@ export const renderThroughput = (
     ...stageLines,
     '无票原因（最近 24 小时）',
     ...Object.entries(data.reasons).map(([reason, count]) => reason + '：' + count),
-    '在途均值：' + Number(data.inFlight.mean.toFixed(2)) + ' / ' + data.inFlight.max,
+    '在途均值：' + (data.inFlight
+      ? Number(data.inFlight.mean.toFixed(2)) + ' / ' + data.inFlight.max : '数据未就绪'),
   ]
   return h(Text, {}, lines.join('\n'))
 }
