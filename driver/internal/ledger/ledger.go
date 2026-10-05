@@ -105,6 +105,17 @@ func parseRow(raw string) (map[string]any, error) {
 			}
 		}
 	}
+	if value := row["stage_secs"]; value != nil {
+		stages, ok := value.(map[string]any)
+		if !ok {
+			return nil, errors.New("ledger: invalid numeric field")
+		}
+		for _, seconds := range stages {
+			if _, ok := seconds.(float64); !ok {
+				return nil, errors.New("ledger: invalid numeric field")
+			}
+		}
+	}
 	return row, nil
 }
 
