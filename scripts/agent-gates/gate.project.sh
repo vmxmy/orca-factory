@@ -28,8 +28,10 @@ if [ -f driver/go.mod ]; then
 fi
 
 echo "== driver-contracts"   # 依据：外部接口解析须用录制的真实样本测试（2026-10-05 驱动器上线复盘）
-CONTRACT_BASELINE=10 # 只允许调高，不允许调低
 if [ -f driver/go.mod ]; then
+  # 基线取分支与 origin/main 的分叉点：分支不得删减契约测试，main 之后新增的契约测试不让旧底座的分支变红
+  base=$(git merge-base HEAD origin/main) || { echo "契约基线：找不到与 origin/main 的分叉点" >&2; exit 1; }
+  CONTRACT_BASELINE=$(git grep -h '^func TestRecorded' "$base" -- 'driver/*_test.go' | wc -l)
   contract_passed=$( { (cd driver && go test -count=1 -v -run '^TestRecorded' ./...) || true; } | grep -c '^--- PASS: TestRecorded' || true)
   if [ "$contract_passed" -lt "$CONTRACT_BASELINE" ]; then
     echo "契约测试通过 ${contract_passed} 个，低于基线 ${CONTRACT_BASELINE}；解析外部输出的代码要用 driver/testdata/recorded/ 的真实样本测试（见 driver/CONTRACTS.md）" >&2
