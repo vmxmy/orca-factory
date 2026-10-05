@@ -1,3 +1,7 @@
+import type { ComponentType } from 'react'
+import type { GraphData } from '../../types'
+import { readGraphSnapshot } from '../linear-cache'
+
 /** The view consumes readGraphSnapshot's issues; it never fetches live data. */
 export type GraphIssue = {
   id: string
@@ -7,12 +11,9 @@ export type GraphIssue = {
 }
 export type GraphInput = { issues: readonly GraphIssue[] }
 export type GraphRow = GraphIssue & { depth: number; blockers: string[] }
-export type GraphData = {
+export type GraphView = GraphData & {
   ready: boolean
   rows: GraphRow[]
-  criticalPath: string[]
-  /** Immediate unlocks, then downstream reach as a tie-breaker. */
-  unlockRank: { id: string; count: number; downstream: number }[]
   /** Cycles and their dependents cannot be assigned a DAG critical path. */
   unresolved: string[]
   summary: string
@@ -20,7 +21,7 @@ export type GraphData = {
 const finished = (state: string) => state === 'completed' || state === 'canceled'
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 
-export function buildGraph(input?: GraphInput | null): GraphData {
+export function buildGraph(input?: GraphInput | null): GraphView {
   if (!input || !Array.isArray(input.issues)) return {
     ready: false, rows: [], criticalPath: [], unlockRank: [], unresolved: [], summary: '数据未就绪',
   }
@@ -108,33 +109,27 @@ export function buildGraph(input?: GraphInput | null): GraphData {
   return { ready: true, rows, criticalPath, unlockRank, unresolved, summary }
 }
 
-/** Truncate terminal cells without splitting Unicode code points. */
-const truncate = (line: string, width: number): string => {
-  const limit = Math.max(0, Math.floor(width))
-  let result = ''
-  let used = 0
-  for (const char of line) {
-    const cells = /[\p{Mark}\u200d]/u.test(char) ? 0
-      : /[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6\p{Emoji_Presentation}\u{20000}-\u{3fffd}]/u.test(char) ? 2 : 1
-    if (used + cells > limit) break
-    result += char
-    used += cells
-  }
-  return result
-}
-
-export function renderGraph(data: GraphData, width?: number): string[] {
-  if (!data.ready) return ['数据未就绪']
-  const lines = [data.summary]
-  lines.push(`关键路径：${data.criticalPath.join(' → ') || '无'}`)
+export function renderGraph(
+  Text: ComponentType<{ dimColor?: boolean; children?: string }>,
+  data: GraphData | GraphView | null = readGraphSnapshot(Date.now()),
+) {
+  if (data === null || ('ready' in data && !data.ready)) return <Text dimColor>数据未就绪</Text>
+  const path = data.criticalPath.join(' → ') || '无'
   const leaders = data.unlockRank.filter(item => item.count > 0).slice(0, 3)
-  lines.push(`解锁排行：${leaders.map(item => `先做 ${item.id}（放出 ${item.count} 张）`).join('；') || '无'}`)
-  if (data.unresolved.length) lines.push(`依赖成环：${data.unresolved.join('、')}`)
-  for (const row of data.rows) {
-    const symbol = finished(row.state) ? '✓' : row.state === 'started' ? '🔨'
-      : row.blockers.length ? '⛓' : '📥'
-    const blocked = row.blockers.length ? ` ⛓ ${row.blockers.join('、')}` : ''
-    lines.push(`${'  '.repeat(row.depth)}${symbol} ${row.id}${blocked}`)
-  }
-  return width === undefined ? lines : lines.map(line => truncate(line, width))
+  const summary = 'summary' in data ? data.summary
+    : `领取受依赖与并发限制，关键路径为 ${path}`
+      + (leaders.length ? `，先完成 ${leaders[0].id} 可放出 ${leaders[0].count} 张下游票。` : '，没有可直接解锁的下游票。')
+  return <>
+    <Text>{summary}</Text>
+    <Text>{`关键路径：${path}`}</Text>
+    <Text>{`解锁排行：${leaders.map(item => `先做 ${item.id}（放出 ${item.count} 张）`).join('；') || '无'}`}</Text>
+    {'unresolved' in data && data.unresolved.length > 0
+      ? <Text>{`依赖成环：${data.unresolved.join('、')}`}</Text> : null}
+    {'rows' in data ? data.rows.map(row => {
+      const symbol = finished(row.state) ? '✓' : row.state === 'started' ? '🔨'
+        : row.blockers.length ? '⛓' : '📥'
+      const blocked = row.blockers.length ? ` ⛓ ${row.blockers.join('、')}` : ''
+      return <Text key={row.id}>{`${'  '.repeat(row.depth)}${symbol} ${row.id} [${row.state}]${blocked}`}</Text>
+    }) : null}
+  </>
 }
