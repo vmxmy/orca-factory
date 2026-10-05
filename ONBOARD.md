@@ -65,6 +65,8 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 | 是否 monorepo / 子目录 | 命令要 `cd` 到哪；gate.project.sh 里相关测试路径要去前缀 | gate.project.sh 路径映射 |
 | 角色后端 | worker 三档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、estimate→档位映射（默认 `1-2:fast 3-5:default 8-:strong`）、lane 2 异构审查命令（默认 `codex exec --json`，不要审查就留空） | `AGENT_TIER_FAST/DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_BY_ESTIMATE`、`AGENT_ROLE_REVIEWER_CMD` |
 
+注意：`AGENT_ROLE_REVIEWER_CMD` 使用嵌套的 `claude -p` 审查员时，命令必须以 `env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN` 开头，清掉继承的 Orca 钩子变量；否则审查员结束时的 Stop 事件会以 coordinator 的终端标识上报，Orca 会在审查结束时结束 coordinator，导致票停在 In Progress、无 PR。
+
 glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，`*` 可跨 `/`，所以 `spec/*` 覆盖整棵子树。
 
 无工具链的仓库（没有 package.json / 锁文件 / CI，例如纯 shell 或文档仓库）：`AGENT_INSTALL_CMD='true'`，`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD` 留空；`gate.project.sh` 只放仓库自带的轻量静态检查（如 `bash -n`、`orca-factory check`）；仓库真正的验证命令写进每张票的 `CHECK`。每项依据写「无 X」并附 `ls` 结果。
