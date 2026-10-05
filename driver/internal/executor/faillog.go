@@ -24,6 +24,9 @@ func (e *Executor) failSummary(ctx context.Context, c Config, baseline, branch, 
 	switch ev {
 	case machine.EvWorkerFail:
 		reason, evidence = "worker failed", "worker_done outcome=failed"
+		if output == "worker exited without worker_done" || output == "worker never started its turn" {
+			reason, evidence = output, "worker-list projection"
+		}
 	case machine.EvGateRed:
 		reason, evidence = "gate red", gateFailEvidence(output)
 	case machine.EvReviewRed:

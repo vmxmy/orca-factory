@@ -1,0 +1,98 @@
+{
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_f9e3c9ac102a",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_7acbe42d-9151-4fcc-8360-e87907f74698",
+        "resource": {
+          "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor"
+        },
+        "projection": {
+          "liveness": {
+            "verdict": "exited",
+            "source": "resource_release"
+          },
+          "stage": {
+            "worker": "failed",
+            "dispatch": "failed",
+            "detail": "settled",
+            "activity": "unknown"
+          }
+        }
+      },
+      {
+        "dispatchId": "ctx_6d1316722a7c",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_a0c5dcc7-4983-4e55-8aa1-080ca933e85d",
+        "resource": {
+          "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor"
+        },
+        "projection": {
+          "liveness": {
+            "verdict": "exited",
+            "source": "resource_release"
+          },
+          "stage": {
+            "worker": "failed",
+            "dispatch": "failed",
+            "detail": "settled",
+            "activity": "unknown"
+          }
+        }
+      },
+      {
+        "dispatchId": "ctx_a93f6b74d60d",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_2cefea4e-20cc-4d36-9234-4cc6f3270b26",
+        "resource": {
+          "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor"
+        },
+        "projection": {
+          "liveness": {
+            "verdict": "exited",
+            "source": "resource_release"
+          },
+          "stage": {
+            "worker": "failed",
+            "dispatch": "failed",
+            "detail": "settled",
+            "activity": "unknown"
+          }
+        }
+      },
+      {
+        "dispatchId": "ctx_2ec61f77c499",
+        "dispatchStatus": "completed",
+        "agentTerminalHandle": "term_8d26a5e7-7490-424c-9369-ad478e72ccbd",
+        "resource": {
+          "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor-2"
+        },
+        "projection": {
+          "liveness": {
+            "verdict": "unverifiable",
+            "reason": "stale_status",
+            "observedAt": 1791211890387
+          },
+          "stage": {
+            "worker": "succeeded",
+            "dispatch": "completed",
+            "detail": "settled",
+            "activity": "unknown"
+          }
+        }
+      }
+    ],
+    "page": {
+      "limit": 100,
+      "total": 4,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_9714ea9b8576",
+      "source": "flag"
+    }
+  }
+}

@@ -70,7 +70,7 @@ func TestRecordedTaskList(t *testing.T) {
 	task := envelope.Result.Tasks[0]
 	o := &recordedTasks{tasks: envelope.Result.Tasks}
 	e := &Executor{Orca: o, Sleep: func(context.Context, time.Duration) error { t.Fatal("settled task was not recognised"); return nil }}
-	report, err := e.wait(context.Background(), task.RunID, task.ID, "ctx_unknown_to_task_list", time.Millisecond, func() error { return nil })
+	report, err := e.wait(context.Background(), task.RunID, task.ID, "ctx_unknown_to_task_list", time.Millisecond, &workerWatch{}, func() error { return nil })
 	if err != nil || report == nil {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}

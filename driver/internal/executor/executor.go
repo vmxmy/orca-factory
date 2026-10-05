@@ -25,6 +25,8 @@ type Orca interface {
 	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
+	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
+	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
@@ -325,6 +327,21 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
+		watch := workerWatch{observe: func(w orca.Worker) error {
+			if cp.Worktree != "" || w.WorktreePath() == "" {
+				return nil
+			}
+			next := cp
+			next.Worktree = w.WorktreePath()
+			if err := saveCheckpoint(c, t, next); err != nil {
+				return err
+			}
+			cp = next
+			if _, err := e.Orca.WorktreeSet(ctx, cp.Worktree, t.Identifier, boardStatus(result.State.Phase), "driver: "+string(result.State.Phase)); err != nil {
+				e.warn("%s Orca board status update failed: %v", t.Identifier, err)
+			}
+			return nil
+		}}
 		observeIdle := func() error {
 			if !idle.observe(ctx, e, cp.Worktree, c.WorkerIdleTimeout, result.State) {
 				return nil
@@ -339,7 +356,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		if !cp.Completed {
 			err = e.retryRead(ctx, t, &result, "task polling", func() error {
-				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, observeIdle)
+				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, &watch, observeIdle)
 				// The stall transition already accounts for exhaustion and handoff.
 				if result.State.Owner == machine.OwnerHuman {
 					return nil
@@ -352,7 +369,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			if result.State.Owner == machine.OwnerHuman {
 				return result, waitErr
 			}
-			releaseAllowed = true
+			releaseAllowed = report.Provenance != "executor_liveness"
 		}
 		if cp.Completed {
 			releaseAllowed = cp.Settled
@@ -360,6 +377,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		cp.Completed = false
 		if waitErr != nil {
 			return result, waitErr
+		}
+		failureCause := "worker failed"
+		if report.Provenance == "executor_liveness" {
+			failureCause = report.Body
+			failureOutput = report.Body
 		}
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
@@ -375,7 +397,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "worker failed", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -537,44 +559,6 @@ func nestedString(r orca.Receipt, key, field string) string {
 	var inner orca.Receipt
 	_ = json.Unmarshal(r[key], &inner)
 	return receiptString(inner, field)
-}
-func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, observeIdle func() error) (*orca.WorkerReport, error) {
-	for {
-		tasks, err := e.Orca.TaskList(ctx, run)
-		if err != nil {
-			return nil, errors.New("task polling failed")
-		}
-		completed := false
-		for _, t := range tasks {
-			// task-list rows carry no dispatch_id; match on it only when Orca supplies it.
-			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
-				continue
-			}
-			completed = completed || t.Status == "completed"
-			report, err := t.WorkerReport()
-			if err != nil {
-				return nil, errors.New("invalid worker report")
-			}
-			if report != nil {
-				if report.Outcome != "succeeded" && report.Outcome != "failed" {
-					return nil, errors.New("invalid worker outcome")
-				}
-				return report, nil
-			}
-		}
-		if !completed {
-			if err := observeIdle(); err != nil {
-				return nil, err
-			}
-		}
-		sleep := e.Sleep
-		if sleep == nil {
-			sleep = pause
-		}
-		if err := sleep(ctx, interval); err != nil {
-			return nil, err
-		}
-	}
 }
 func pause(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
