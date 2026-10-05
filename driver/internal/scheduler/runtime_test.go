@@ -98,7 +98,9 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 					}
 				}
 				lc := &fakeLinear{issues: []linear.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: linear.NamedID{ID: "p-a"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
-				r := &Runtime{Orca: oc, DriverPath: "/driver"}
+				r := &Runtime{Orca: oc, DriverPath: "/driver", Run: func(context.Context, runx.Spec) ([]byte, error) {
+					return []byte(`{"ok":true,"result":{"issue":{"description":""}}}`), nil
+				}}
 				var initialized []string
 				err := r.initialize(context.Background(), cfg, func(_ context.Context, team string) (LinearClient, error) {
 					initialized = append(initialized, team)
@@ -185,12 +187,14 @@ func TestOwnershipPreservesSchedulerAttempt(t *testing.T) {
 }
 func TestRuntimeSnapshotAllProjects(t *testing.T) {
 	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: linear.NamedID{ID: "p2"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
-	r := &Runtime{Reader: lc, Clients: map[string]LinearClient{"a": lc, "b": lc}}
+	r := &Runtime{Reader: lc, Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
+		return []byte(`{"ok":true,"result":{"issue":{"description":"## SCOPE\nsrc/*"}}}`), nil
+	}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}, {Path: "b", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p2"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(lc.projects, []string{"p1", "p2"}) || len(tickets) != 1 || tickets[0].Repo != "b" || !tickets[0].Candidate || tickets[0].Priority != 2 {
+	if !reflect.DeepEqual(lc.projects, []string{"p1", "p2"}) || len(tickets) != 1 || tickets[0].Repo != "b" || !tickets[0].Candidate || tickets[0].Priority != 2 || !reflect.DeepEqual(tickets[0].Scope, []string{"src/*"}) {
 		t.Fatalf("tickets=%v projects=%v", tickets, lc.projects)
 	}
 }

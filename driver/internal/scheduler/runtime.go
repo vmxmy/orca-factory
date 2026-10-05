@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -109,6 +110,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	}
 	projects := []string{}
 	paths := map[string]string{}
+	scopeEnabled := map[string]bool{}
 	for _, repo := range repos {
 		if r.refused[repo.Path] != nil {
 			continue
@@ -116,6 +118,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		project := repo.Env["AGENT_LINEAR_PROJECT"]
 		projects = append(projects, project)
 		paths[project] = repo.Path
+		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
 	issues, err := r.Reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
@@ -157,6 +160,12 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
 		if ticket.Legacy || ticket.Candidate || owned(ticket) {
+			if scopeEnabled[path] {
+				ticket.Scope, err = r.ticketScope(ctx, ticket)
+				if err != nil {
+					return nil, err
+				}
+			}
 			tickets = append(tickets, ticket)
 		}
 	}
@@ -294,4 +303,68 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 		run = runx.Run
 	}
 	return run(ctx, runx.Spec{Path: path, Args: args, Dir: dir, Timeout: 30 * time.Second})
+}
+
+// ticketScope stays local to the scheduler because the shared Linear snapshot
+// deliberately carries only scheduling metadata, not issue descriptions.
+func (r *Runtime) ticketScope(ctx context.Context, t Ticket) ([]string, error) {
+	raw, err := r.command(ctx, t.Repo, r.OrcaPath, "linear", "issue", t.Identifier, "--json")
+	if err != nil {
+		return nil, errors.New("ticket scope read failed")
+	}
+	var envelope struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Issue *struct {
+				Description string `json:"description"`
+			} `json:"issue"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || !envelope.OK || envelope.Result.Issue == nil {
+		return nil, errors.New("invalid ticket scope response")
+	}
+	return declaredScope(envelope.Result.Issue.Description), nil
+}
+
+// ActualChanges replaces declared scope only after every remote unit diff was
+// read successfully. Pruning prevents a deleted branch from blocking admission.
+func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, error) {
+	if !identifier.MatchString(t.Identifier) {
+		return nil, false, errors.New("invalid ticket identifier")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := r.command(ctx, t.Repo, "git", "fetch", "--quiet", "--prune", "origin", "+refs/heads/agent/*:refs/remotes/origin/agent/*"); err != nil {
+		return nil, false, errors.New("scope fetch failed")
+	}
+	prefix := "refs/remotes/origin/agent/" + t.Identifier + "/"
+	raw, err := r.command(ctx, t.Repo, "git", "for-each-ref", "--format=%(refname)", prefix)
+	if err != nil {
+		return nil, false, errors.New("scope refs read failed")
+	}
+	refs := strings.Fields(string(raw))
+	if len(refs) == 0 {
+		return nil, false, nil
+	}
+	seen := map[string]bool{}
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref, prefix) {
+			return nil, false, errors.New("unexpected scope ref")
+		}
+		raw, err = r.command(ctx, t.Repo, "git", "diff", "--name-only", "--no-renames", "-z", "origin/main..."+ref, "--")
+		if err != nil {
+			return nil, false, errors.New("scope diff failed")
+		}
+		for _, file := range strings.Split(string(raw), "\x00") {
+			if file != "" {
+				seen[file] = true
+			}
+		}
+	}
+	files := make([]string, 0, len(seen))
+	for file := range seen {
+		files = append(files, file)
+	}
+	sort.Strings(files)
+	return files, true, nil
 }
