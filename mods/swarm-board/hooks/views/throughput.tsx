@@ -45,14 +45,14 @@ const stageStats = (ledger: LedgerRow[], stage: Stage): StageStats | null => {
 export const buildThroughput = (input: {
   now: number; ledger: LedgerRow[]; runs: unknown[]; maxInFlight?: number
 }): ThroughputViewData => {
-  const end = (Math.floor(input.now / HOUR) + 1) * HOUR
+  const end = Math.ceil(input.now / HOUR) * HOUR
   const start = end - 24 * HOUR
   const hourly = Array<number>(24).fill(0)
   for (const row of input.ledger) {
     if (row.outcome !== 'merged' || !row.finished_at) continue
     const finished = Date.parse(row.finished_at)
-    if (Number.isFinite(finished) && finished >= start && finished <= input.now && finished < end) {
-      hourly[Math.floor((finished - start) / HOUR)]++
+    if (Number.isFinite(finished) && finished >= start && finished <= input.now) {
+      hourly[Math.min(23, Math.floor((finished - start) / HOUR))]++
     }
   }
   const stages: Record<Stage, StageStats | null> = {
