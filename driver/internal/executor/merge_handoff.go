@@ -35,7 +35,7 @@ func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, r
 	h.QueueID = hex.EncodeToString(key[:])
 	rows, err := e.Linear.ListComments(ctx, t.ID)
 	if err != nil {
-		return "", errors.New("merge handoff reconciliation unavailable")
+		return "", safeDependencyError(err)
 	}
 	for _, row := range rows {
 		for _, line := range strings.Split(row.Body, "\n") {
@@ -68,10 +68,11 @@ var errMissingMergeHandoff = errors.New("existing PR has no frozen handoff")
 
 // resumeMergeHandoff preserves the original FIFO identity and budgets. An open
 // PR alone cannot prove gate/reviewer success, or authorize a fresh handoff.
-func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, pr github.PullRequest, head string, current *checkpoint) (Result, error) {
+func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, pr github.PullRequest, head string, current *checkpoint, prior Result) (Result, error) {
+	result := prior
 	rows, err := e.Linear.ListComments(ctx, t.ID)
 	if err != nil {
-		return Result{}, errors.New("existing PR handoff read failed")
+		return result, safeDependencyError(err)
 	}
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
 	var h *merge.Handoff
@@ -91,32 +92,32 @@ func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, p
 			raw := strings.TrimPrefix(line, merge.HandoffPrefix)
 			var value merge.Handoff
 			if json.Unmarshal([]byte(raw), &value) != nil {
-				return Result{}, errors.New("invalid existing PR handoff")
+				return result, errors.New("invalid existing PR handoff")
 			}
 			if old, ok := seen[value.QueueID]; ok && old != raw {
-				return Result{}, errors.New("conflicting existing PR handoff")
+				return result, errors.New("conflicting existing PR handoff")
 			}
 			seen[value.QueueID] = raw
 			h = &value
 		}
 	}
 	if h == nil {
-		return Result{}, errMissingMergeHandoff
+		return result, errMissingMergeHandoff
 	}
 	if current != nil && (h.Run != current.Run || h.Task != current.Task || h.Dispatch != current.Dispatch || h.Corrections != current.Corrections) {
-		return Result{}, errors.New("frozen handoff does not match current dispatch")
+		return result, errors.New("frozen handoff does not match current dispatch")
 	}
-	if owner != string(machine.OwnerMerge) || h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != c.Owner+"/"+c.Repository || h.Unit != c.Unit || h.PR != pr.Number || h.Head != head || pr.Head.SHA != head || head == "" || h.Baseline == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" || h.Worktree == "" || h.QueueID == "" || h.EnqueuedAt.IsZero() || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 {
-		return Result{}, errors.New("existing PR lacks matching frozen validation; retain ownership for reconciliation")
+	if owner != string(machine.OwnerMerge) || h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != c.Owner+"/"+c.Repository || h.Unit != c.Unit || h.PR != pr.Number || h.Head != head || pr.Head.SHA != head || head == "" || h.Baseline == "" || h.Run == "" || h.Task == "" || h.Worktree == "" || h.QueueID == "" || h.EnqueuedAt.IsZero() || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 {
+		return result, errors.New("existing PR lacks matching frozen validation; retain ownership for reconciliation")
 	}
 	if err := h.Validated(); err != nil {
-		return Result{}, err
+		return result, err
 	}
-	state := machine.Initial()
+	state := result.State
 	state.Owner = machine.OwnerMerge
 	state.Phase = machine.PhaseMergeQueue
-	state.Attempt = h.Attempt
-	state.Corrections = h.Corrections
-	state.Infra = h.Infra
+	state.Attempt = max(state.Attempt, h.Attempt)
+	state.Corrections = max(state.Corrections, h.Corrections)
+	state.Infra += h.Infra
 	return Result{State: state, PR: pr, RunID: h.Run, DispatchID: h.Dispatch}, nil
 }

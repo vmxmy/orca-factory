@@ -115,7 +115,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return result, errors.New("invalid existing PR")
 		}
-		return e.resumeMergeHandoff(ctx, c, t, *pr, head, nil)
+		return e.resumeMergeHandoff(ctx, c, t, *pr, head, nil, result)
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
@@ -188,7 +188,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			// Preserve a validated frozen handoff only after current task
 			// reconciliation. A crash before its first write requires fresh
 			// gate/reviewer evidence through execute, not an endless wait.
-			resumed, resumeErr := e.resumeMergeHandoff(ctx, c, t, *pr, head, cp)
+			resumed, resumeErr := e.resumeMergeHandoff(ctx, c, t, *pr, head, cp, result)
 			if !errors.Is(resumeErr, errMissingMergeHandoff) {
 				return resumed, resumeErr
 			}

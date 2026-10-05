@@ -95,7 +95,7 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 	h := t.Handoff
 	env := r.Repositories[t.Repo].Env
-	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" || !filepath.IsAbs(h.Worktree) || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 || h.CatchupRounds < 0 {
+	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || !filepath.IsAbs(h.Worktree) || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 || h.CatchupRounds < 0 {
 		return errors.New("incomplete validation identity")
 	}
 	if err := h.Validated(); err != nil {
