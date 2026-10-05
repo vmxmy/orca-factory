@@ -261,15 +261,50 @@ func TestResumeExistingPR(t *testing.T) {
 	}
 }
 func TestCorrectionCommands(t *testing.T) {
-	root := t.TempDir()
-	target := filepath.Join(root, "correction.md")
+	repo := t.TempDir()
+	state := filepath.Join(t.TempDir(), "ticket state")
+	target := filepath.Join(state, "correction.md")
+	for _, key := range []string{"ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN"} {
+		t.Setenv(key, "test-hook-value")
+	}
+	t.Setenv("CORRECTION_TEST_ENV", "preserved")
 	c := Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
-		if s.Path != "claude" || len(s.Args) != 2 || s.Args[0] != "-p" || !strings.Contains(s.Args[1], target) || s.Timeout <= 0 {
-			t.Fatalf("session=%+v", s)
+		if s.Path != "claude" || len(s.Args) != 10 || s.Args[0] != "-p" || !strings.Contains(s.Args[1], target) || s.Timeout <= 0 || s.Dir != repo {
+			t.Fatalf("invalid correction invocation: path=%q args=%q dir=%q timeout=%v", s.Path, s.Args, s.Dir, s.Timeout)
+		}
+		flags := map[string]string{}
+		for i := 2; i < len(s.Args); i += 2 {
+			flags[s.Args[i]] = s.Args[i+1]
+		}
+		if flags["--permission-mode"] != "acceptEdits" || flags["--add-dir"] != state {
+			t.Fatalf("missing correction write authorization: %v", flags)
+		}
+		for _, flag := range []string{"--allowedTools", "--tools"} {
+			tools := strings.Split(flags[flag], ",")
+			if !reflect.DeepEqual(tools, []string{"Read", "Grep", "Glob", "Write", "Edit"}) {
+				t.Fatalf("%s tools=%q", flag, tools)
+			}
+		}
+		if s.Env == nil {
+			t.Fatal("correction inherits Orca hook environment")
+		}
+		preserved := false
+		for _, entry := range s.Env {
+			key, _, _ := strings.Cut(entry, "=")
+			switch key {
+			case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
+				t.Fatalf("correction environment contains %s", key)
+			}
+			if entry == "CORRECTION_TEST_ENV=preserved" {
+				preserved = true
+			}
+		}
+		if !preserved {
+			t.Fatal("correction dropped unrelated environment")
 		}
 		return nil, nil
 	}}
-	if err := c.Correction(context.Background(), CorrectionRequest{Repo: root, Path: target, Cause: "gate red"}); err != nil {
+	if err := c.Correction(context.Background(), CorrectionRequest{Repo: repo, Path: target, Cause: "gate red"}); err != nil {
 		t.Fatal(err)
 	}
 }
