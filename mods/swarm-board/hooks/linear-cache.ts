@@ -29,10 +29,35 @@ type LinearIssue = {
 type LinearRelation = { relationship: string; relatedIssue: { identifier: string } }
 type LinearResult = { issues?: LinearIssue[]; issue?: LinearIssue; relations?: LinearRelation[]; truncated?: boolean }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isLinearRelation(value: unknown): value is LinearRelation {
+  return isRecord(value) && typeof value.relationship === 'string'
+    && isRecord(value.relatedIssue) && typeof value.relatedIssue.identifier === 'string'
+}
+
+function isLinearIssue(value: unknown): value is LinearIssue {
+  return isRecord(value) && typeof value.identifier === 'string'
+    && isRecord(value.state) && typeof value.state.type === 'string'
+    && typeof value.updatedAt === 'string'
+    && (value.parent === undefined || value.parent === null
+      || (isRecord(value.parent) && typeof value.parent.identifier === 'string'))
+    && (value.relations === undefined || (Array.isArray(value.relations) && value.relations.every(isLinearRelation)))
+}
+
+function isLinearResult(value: unknown): value is LinearResult {
+  return isRecord(value)
+    && (value.issues === undefined || (Array.isArray(value.issues) && value.issues.every(isLinearIssue)))
+    && (value.issue === undefined || isLinearIssue(value.issue))
+    && (value.relations === undefined || (Array.isArray(value.relations) && value.relations.every(isLinearRelation)))
+    && (value.truncated === undefined || typeof value.truncated === 'boolean')
+}
+
 let cache: GraphSnapshot | null = null
 let lastSuccessAt: number | null = null
 let window: { start: number; calls: number } | null = null
-let countPath: Promise<string> | null = null
 
 // Verified 2026-10-05: orca linear list-issues --team <T> --project <P> --json and orca linear issue <id> --relations --json omit parent; detail relations are result.relations.
 export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphSnapshot | null> {
@@ -43,20 +68,23 @@ export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphS
   const read = async (args: string[]): Promise<LinearResult | null> => {
     if (!window || window.calls >= GRAPH_MAX_CALLS) return null
     window = { start: window.start, calls: window.calls + 1 }
-    if (!countPath) {
-      countPath = $.process.run(['sh', '-c', 'printf %s "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"'], { timeoutMs: 20_000 })
-        .then(result => {
-          if (result.exitCode !== 0) throw new Error('Cannot resolve Linear count file')
-          return result.stdout.trim()
-        })
-    }
-    await $.process.run(['sh', '-c', '{ printf %s "$1" >> "$2"; } 2>/dev/null || true', 'board', `${Math.floor(now / 1000)} board\n`, await countPath], { timeoutMs: 20_000 })
+    // Counting is best effort, including when the runtime cannot launch the shell.
+    await $.process.run(['sh', '-c', '{ printf "%s board\\n" "$1" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true', 'sh', String(Math.floor(now / 1000))], { timeoutMs: 20_000 })
+      .then(() => undefined, () => undefined)
     const response = await $.process.run(['orca', 'linear', ...args, '--json'], { timeoutMs: 20_000 })
     if (response.exitCode !== 0) throw new Error(`Linear ${args[0]} failed with exit code ${response.exitCode}`)
-    const envelope = JSON.parse(response.stdout)
-    if (envelope === null || envelope.ok === false || envelope.result == null) {
-      throw new Error(typeof envelope?.error === 'string' ? envelope.error : `Linear ${args[0]} returned a failed response`)
+    let envelope: unknown
+    try {
+      envelope = JSON.parse(response.stdout)
+    } catch {
+      throw new Error(`Linear ${args[0]} returned non-JSON output`)
     }
+    if (!isRecord(envelope) || envelope.ok !== true || !isRecord(envelope.result)) {
+      const error = isRecord(envelope) ? envelope.error : undefined
+      throw new Error(isRecord(error) && typeof error.code === 'string' ? error.code
+        : typeof error === 'string' ? error : `Linear ${args[0]} returned a failed response`)
+    }
+    if (!isLinearResult(envelope.result)) throw new Error(`Linear ${args[0]} returned an unexpected shape`)
     return envelope.result
   }
 
