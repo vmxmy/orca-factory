@@ -24,19 +24,35 @@ func putLogFixture(t *testing.T, path, data string) {
 	}
 }
 
+// logRecord renders one slog-style JSON line like logx writes.
+func logRecord(at, component, level, event, ticket string) string {
+	record := `{"time":"` + at + `","level":"` + level + `","msg":"` + event + `","component":"` + component + `","event":"` + event + `"`
+	if ticket != "" {
+		record += `,"ticket":"` + ticket + `"`
+	}
+	return record + "}\n"
+}
+
 func TestLogsCommand(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "orca-factory")
 	dir := filepath.Join(root, "test-repo", "ZII-901")
-	putLogFixture(t, filepath.Join(dir, "scheduler.log"),
-		"2026-10-05T10:10:00Z component=scheduler level=info event=finished ticket=ZII-901\n"+
-			"2026-10-05T10:07:00Z component=scheduler level=info event=other ticket=ZII-902\n"+
-			"2026-10-05T10:05:00Z component=scheduler level=warn event=review ticket=ZII-901\n"+
-			"2026-10-05T10:00:00Z component=scheduler level=info event=start ticket=ZII-901\n")
+	putLogFixture(t, filepath.Join(root, "scheduler.log"),
+		logRecord("2026-10-05T10:10:00Z", "scheduler", "INFO", "finished", "ZII-901")+
+			logRecord("2026-10-05T10:07:00Z", "scheduler", "INFO", "other", "ZII-902")+
+			`{"time":"2026-10-05T10:08:00Z","level":"INFO","msg":"skip","component":"scheduler","event":"skip","ticket":"ZII-902","blockers":["ZII-901"]}`+"\n"+
+			`{"time":"2026-10-05T10:09:00Z","level":"INFO","msg":"summary","component":"scheduler","event":"summary","err":"merge waiting ZII-901: receipt unconfirmed"}`+"\n"+
+			logRecord("2026-10-05T10:05:00Z", "scheduler", "WARN", "review", "ZII-901")+
+			logRecord("2026-10-05T10:00:00Z", "scheduler", "INFO", "start", "ZII-901"))
+	putLogFixture(t, filepath.Join(root, "scheduler.log.1"),
+		logRecord("2026-10-05T09:30:00Z", "scheduler", "INFO", "rotated-claim", "ZII-901")+
+			logRecord("2026-10-05T09:31:00Z", "scheduler", "INFO", "rotated-other", "ZII-902"))
+	putLogFixture(t, filepath.Join(root, "scheduler.log.old"), logRecord("2026-10-05T07:00:00Z", "scheduler", "INFO", "not-rotation", "ZII-901"))
+	// executor.log is per ticket: records without a ticket field (such as the exit record) still belong to it.
 	putLogFixture(t, filepath.Join(dir, "executor.log"),
-		"2026-10-05T10:12:00Z component=executor level=info event=done ticket=ZII-901\n"+
-			"2026-10-05T10:02:00Z component=executor level=info event=work ticket=ZII-901\n")
-	putLogFixture(t, filepath.Join(dir, "executor.log.1"), "2026-10-05T09:00:00Z component=executor level=info event=rotated ticket=ZII-901\n")
-	putLogFixture(t, filepath.Join(dir, "executor.log.backup"), "2026-10-05T08:00:00Z ticket=ZII-901 event=backup\n")
+		logRecord("2026-10-05T10:12:00Z", "executor", "INFO", "exit", "")+
+			logRecord("2026-10-05T10:02:00Z", "executor", "INFO", "work", "ZII-901"))
+	putLogFixture(t, filepath.Join(dir, "executor.log.1"), logRecord("2026-10-05T09:00:00Z", "executor", "INFO", "rotated", "ZII-901"))
+	putLogFixture(t, filepath.Join(dir, "executor.log.backup"), logRecord("2026-10-05T08:00:00Z", "executor", "INFO", "backup", "ZII-901"))
 	now := time.Date(2026, 10, 5, 10, 15, 0, 0, time.UTC)
 	invoke := func(args []string, at time.Time) (int, string, string) {
 		var out, stderr bytes.Buffer
@@ -52,7 +68,7 @@ func TestLogsCommand(t *testing.T) {
 		}
 		return result
 	}
-	allTimes := []string{"2026-10-05T09:00:00Z", "2026-10-05T10:00:00Z", "2026-10-05T10:02:00Z", "2026-10-05T10:05:00Z", "2026-10-05T10:10:00Z", "2026-10-05T10:12:00Z"}
+	allTimes := []string{"2026-10-05T09:00:00Z", "2026-10-05T09:30:00Z", "2026-10-05T10:00:00Z", "2026-10-05T10:02:00Z", "2026-10-05T10:05:00Z", "2026-10-05T10:09:00Z", "2026-10-05T10:10:00Z", "2026-10-05T10:12:00Z"}
 	t.Run("merge rotations and filter ticket", func(t *testing.T) {
 		code, output, stderr := invoke([]string{"ZII-901"}, now)
 		if code != 0 || !reflect.DeepEqual(times(output), allTimes) {
@@ -61,8 +77,11 @@ func TestLogsCommand(t *testing.T) {
 		if strings.Contains(output, "ZII-902") || strings.Contains(output, "event=backup") {
 			t.Fatalf("unrelated records leaked: %s", output)
 		}
-		if !strings.Contains(output, "component=scheduler  level=warn  event=review  ticket=ZII-901") {
+		if !strings.Contains(output, "component=scheduler  level=WARN  event=review  msg=review  ticket=ZII-901") {
 			t.Fatalf("missing readable fields: %s", output)
+		}
+		if !strings.Contains(output, "event=exit") {
+			t.Fatalf("executor record without a ticket field was dropped: %s", output)
 		}
 	})
 	t.Run("since strict cutoff and zero means all", func(t *testing.T) {
@@ -71,9 +90,9 @@ func TestLogsCommand(t *testing.T) {
 			at   time.Time
 			want []string
 		}{
-			{[]string{"ZII-901", "--since", "30m"}, now, allTimes[1:]},
-			{[]string{"ZII-901", "--since=30m"}, now.Add(19*time.Minute + 59*time.Second), allTimes[3:]},
-			{[]string{"--since", "10m", "ZII-901"}, now, allTimes[4:]},
+			{[]string{"ZII-901", "--since", "30m"}, now, allTimes[2:]},
+			{[]string{"ZII-901", "--since=30m"}, now.Add(19*time.Minute + 59*time.Second), allTimes[4:]},
+			{[]string{"--since", "10m", "ZII-901"}, now, allTimes[5:]},
 			{[]string{"ZII-901", "--since", "0s"}, now, allTimes},
 		} {
 			code, output, stderr := invoke(tc.args, tc.at)
@@ -82,27 +101,16 @@ func TestLogsCommand(t *testing.T) {
 			}
 		}
 	})
-	t.Run("json array retains raw lines and fields", func(t *testing.T) {
+	t.Run("json prints original lines in time order", func(t *testing.T) {
 		code, output, stderr := invoke([]string{"ZII-901", "--json"}, now)
-		var entries []map[string]json.RawMessage
-		if code != 0 || json.Unmarshal([]byte(output), &entries) != nil || len(entries) != 6 {
+		lines := strings.Split(strings.TrimSpace(output), "\n")
+		if code != 0 || len(lines) != len(allTimes) {
 			t.Fatalf("code=%d stderr=%s output=%s", code, stderr, output)
 		}
-		for i, entry := range entries {
-			for _, key := range []string{"time", "component", "level", "event", "fields", "raw"} {
-				if _, ok := entry[key]; !ok {
-					t.Fatalf("entry missing %s: %s", key, output)
-				}
-			}
-			var at, raw string
-			if err := json.Unmarshal(entry["time"], &at); err != nil {
-				t.Fatal(err)
-			}
-			if err := json.Unmarshal(entry["raw"], &raw); err != nil {
-				t.Fatal(err)
-			}
-			if at != allTimes[i] || !strings.HasPrefix(raw, at) {
-				t.Fatalf("incorrect ordering or raw line: %s", output)
+		for i, line := range lines {
+			var entry struct{ Time string }
+			if json.Unmarshal([]byte(line), &entry) != nil || entry.Time != allTimes[i] {
+				t.Fatalf("line %d is not the original record in order: %s", i, line)
 			}
 		}
 	})
@@ -114,12 +122,8 @@ func TestLogsCommand(t *testing.T) {
 		putLogFixture(t, filepath.Join(isolated, "test-repo", "ZII-901", "executor.log"), executor+"\ninvalid ZII-901\n")
 		var output, stderr bytes.Buffer
 		code := runLogsWithContext(context.Background(), []string{"ZII-901", "--json"}, isolated, now, &output, &stderr)
-		var records []json.RawMessage
-		if code != 0 || json.Unmarshal(output.Bytes(), &records) != nil || len(records) != 2 {
-			t.Fatalf("code=%d stderr=%s output=%s", code, &stderr, &output)
-		}
-		if string(records[0]) != scheduler || string(records[1]) != executor {
-			t.Fatalf("JSON changed: %s", &output)
+		if code != 0 || output.String() != scheduler+"\n"+executor+"\n" {
+			t.Fatalf("code=%d stderr=%s JSON changed: %s", code, &stderr, &output)
 		}
 	})
 	t.Run("registered command discovers home without repo config", func(t *testing.T) {
@@ -127,7 +131,7 @@ func TestLogsCommand(t *testing.T) {
 		t.Setenv("HOME", home)
 		t.Setenv("AGENT_DRIVER_STATE_ROOT", "")
 		t.Setenv("AGENT_GH_REPO", "")
-		putLogFixture(t, filepath.Join(home, ".local", "state", "orca-factory", "test-repo", "ZII-901", "executor.log"), "2026-10-05T10:00:00Z ticket=ZII-901 event=discovered\n")
+		putLogFixture(t, filepath.Join(home, ".local", "state", "orca-factory", "test-repo", "ZII-901", "executor.log"), logRecord("2026-10-05T10:00:00Z", "executor", "INFO", "discovered", "ZII-901"))
 		reader, writer, err := os.Pipe()
 		if err != nil {
 			t.Fatal(err)
@@ -158,7 +162,7 @@ func TestLogsCommand(t *testing.T) {
 	t.Run("empty logs and output errors", func(t *testing.T) {
 		var output, stderr bytes.Buffer
 		code := runLogsWithContext(context.Background(), []string{"ZII-903", "--json"}, root, now, &output, &stderr)
-		if code != 0 || strings.TrimSpace(output.String()) != "[]" {
+		if code != 0 || output.String() != "" {
 			t.Fatalf("code=%d output=%s stderr=%s", code, &output, &stderr)
 		}
 		if code := runLogsWithContext(context.Background(), []string{"ZII-901"}, root, now, logFailWriter{}, &stderr); code != 1 {
@@ -168,7 +172,7 @@ func TestLogsCommand(t *testing.T) {
 	t.Run("follow new rows rotation partial writes and cancellation", func(t *testing.T) {
 		isolated := filepath.Join(t.TempDir(), "orca-factory")
 		path := filepath.Join(isolated, "test-repo", "ZII-901", "executor.log")
-		putLogFixture(t, path, "2026-10-05T10:12:00Z component=executor ticket=ZII-901 event=initial\n")
+		putLogFixture(t, path, logRecord("2026-10-05T10:12:00Z", "executor", "INFO", "initial", "ZII-901"))
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		rows := make(chan string, 20)
@@ -202,15 +206,15 @@ func TestLogsCommand(t *testing.T) {
 			}
 		}
 		read("initial")
-		appendLine("2026-10-05T10:12:00Z ticket=ZII-901 event=same-time\n2026-10-05T10:02:00Z ticket=ZII-901 event=late\n")
+		appendLine(logRecord("2026-10-05T10:12:00Z", "executor", "INFO", "same-time", "ZII-901") + logRecord("2026-10-05T10:02:00Z", "executor", "INFO", "late", "ZII-901"))
 		read("late")
 		read("same-time")
 		if err := os.Rename(path, path+".1"); err != nil {
 			t.Fatal(err)
 		}
-		putLogFixture(t, path, "2026-10-05T10:13:00Z ticket=ZII-901 event=after-rotation\n")
+		putLogFixture(t, path, logRecord("2026-10-05T10:13:00Z", "executor", "INFO", "after-rotation", "ZII-901"))
 		read("after-rotation")
-		appendLine("2026-10-05T10:14:00Z ticket=ZII-901 event=partial")
+		appendLine(strings.TrimSuffix(logRecord("2026-10-05T10:14:00Z", "executor", "INFO", "partial", "ZII-901"), "\n"))
 		select {
 		case line := <-rows:
 			t.Fatalf("replayed or incomplete line: %s", line)

@@ -97,7 +97,7 @@ func runLogsWithContext(ctx context.Context, args []string, root string, now tim
 		entries := make([]logEntry, 0)
 		var next []*logCursor
 		for _, path := range paths {
-			rows, cursor, err := readLogRows(path, cursors, *follow, match, cutoff)
+			rows, cursor, err := readLogRows(path, ticket, cursors, *follow, match, cutoff)
 			if err != nil {
 				fmt.Fprintln(stderr, "logs:", err)
 				return 1
@@ -109,18 +109,14 @@ func runLogsWithContext(ctx context.Context, args []string, root string, now tim
 		}
 		cursors = next
 		sort.SliceStable(entries, func(i, j int) bool { return entries[i].Time.Before(entries[j].Time) })
-		if *asJSON && !*follow {
-			err = encoder.Encode(entries)
-		} else {
-			for _, entry := range entries {
-				if *asJSON {
-					err = encoder.Encode(entry)
-				} else {
-					_, err = fmt.Fprintln(out, formatHuman(entry))
-				}
-				if err != nil {
-					break
-				}
+		for _, entry := range entries {
+			if *asJSON {
+				err = encoder.Encode(entry)
+			} else {
+				_, err = fmt.Fprintln(out, formatHuman(entry))
+			}
+			if err != nil {
+				break
 			}
 		}
 		if err != nil {
@@ -138,10 +134,10 @@ func runLogsWithContext(ctx context.Context, args []string, root string, now tim
 	}
 }
 
-// serve writes the shared scheduler.log at the state root; ticket-local
-// scheduler.log is also accepted. Repository discovery needs no Git or config.
+// serve writes the shared scheduler.log at the state root; each ticket directory holds its
+// own executor.log and rotations. Repository discovery needs no Git or config.
 func logPaths(root, ticket string) ([]string, error) {
-	paths := []string{filepath.Join(root, "scheduler.log")}
+	var paths []string
 	repositories, err := os.ReadDir(root)
 	if os.IsNotExist(err) {
 		return paths, nil
@@ -151,6 +147,9 @@ func logPaths(root, ticket string) ([]string, error) {
 	}
 	for _, repository := range repositories {
 		if !repository.IsDir() {
+			if isLogFile(repository.Name(), "scheduler.log") {
+				paths = append(paths, filepath.Join(root, repository.Name()))
+			}
 			continue
 		}
 		dir := filepath.Join(root, repository.Name(), ticket)
@@ -162,17 +161,21 @@ func logPaths(root, ticket string) ([]string, error) {
 			return nil, err
 		}
 		for _, file := range files {
-			name := file.Name()
-			if name != "scheduler.log" && name != "executor.log" {
-				suffix, ok := strings.CutPrefix(name, "executor.log.")
-				if !ok || suffix == "" || strings.Trim(suffix, "0123456789") != "" {
-					continue
-				}
+			if isLogFile(file.Name(), "executor.log") {
+				paths = append(paths, filepath.Join(dir, file.Name()))
 			}
-			paths = append(paths, filepath.Join(dir, name))
 		}
 	}
 	return paths, nil
+}
+
+// isLogFile accepts the live log and its numbered rotations (logx names them <base>.1..N).
+func isLogFile(name, base string) bool {
+	if name == base {
+		return true
+	}
+	suffix, ok := strings.CutPrefix(name, base+".")
+	return ok && suffix != "" && strings.Trim(suffix, "0123456789") == ""
 }
 
 type logCursor struct {
@@ -182,7 +185,7 @@ type logCursor struct {
 
 // Track file identity as well as offset so renaming executor.log to .1 does
 // not replay it, and a new executor.log starts at byte zero.
-func readLogRows(path string, cursors []*logCursor, follow bool, match *regexp.Regexp, cutoff time.Time) ([]logEntry, *logCursor, error) {
+func readLogRows(path, ticket string, cursors []*logCursor, follow bool, match *regexp.Regexp, cutoff time.Time) ([]logEntry, *logCursor, error) {
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil, nil, nil
@@ -221,12 +224,18 @@ func readLogRows(path string, cursors []*logCursor, follow bool, match *regexp.R
 		}
 		cursor.offset += int64(len(line))
 		line = strings.TrimRight(line, "\r\n")
-		if match.MatchString(line) {
-			component := "executor"
-			if filepath.Base(path) == "scheduler.log" {
-				component = "scheduler"
+		// executor.log belongs to one ticket; the shared scheduler.log covers all of them.
+		shared := strings.HasPrefix(filepath.Base(path), "scheduler.log")
+		component := "executor"
+		if shared {
+			component = "scheduler"
+		}
+		if !shared || match.MatchString(line) {
+			entry, ok := parseLogLine(line, component)
+			if ok && shared && !belongsToTicket(entry, ticket) {
+				ok = false
 			}
-			if entry, ok := parseLogLine(line, component); ok && (cutoff.IsZero() || entry.Time.After(cutoff)) {
+			if ok && (cutoff.IsZero() || entry.Time.After(cutoff)) {
 				entries = append(entries, entry)
 			}
 		}
@@ -237,56 +246,43 @@ func readLogRows(path string, cursors []*logCursor, follow bool, match *regexp.R
 	return entries, cursor, nil
 }
 
-var logField = regexp.MustCompile(`([a-zA-Z0-9_.-]+)=("(?:\\.|[^"\\])*"|[^\s]+)`)
+// parseLogLine reads one slog JSON record; any other line is skipped.
+// belongsToTicket trusts an explicit ticket field, so a record about another ticket that
+// merely names this one (blockers, for example) is not shown. A record with no ticket
+// field is kept because the raw-line match already found the ticket in it.
+func belongsToTicket(entry logEntry, ticket string) bool {
+	raw, ok := entry.Fields["ticket"]
+	if !ok {
+		return true
+	}
+	var value string
+	return json.Unmarshal(raw.(json.RawMessage), &value) == nil && strings.EqualFold(value, ticket)
+}
 
 func parseLogLine(line, component string) (logEntry, bool) {
 	entry := logEntry{Raw: line, Component: component, Fields: make(map[string]any)}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(line), &fields) != nil {
+		return entry, false
+	}
+	entry.original = json.RawMessage(line)
 	var timestamp string
-	if strings.HasPrefix(strings.TrimSpace(line), "{") {
-		var fields map[string]json.RawMessage
-		if json.Unmarshal([]byte(line), &fields) != nil {
-			return entry, false
-		}
-		entry.original = json.RawMessage(line)
-		for key, value := range fields {
-			var text string
-			_ = json.Unmarshal(value, &text) // Non-string values stay raw in Fields.
-			switch key {
-			case "time":
-				timestamp = text
-			case "component":
-				if text != "" {
-					entry.Component = text
-				}
-			case "level":
-				entry.Level = text
-			case "event":
-				entry.Event = text
-			default:
-				entry.Fields[key] = value
+	for key, value := range fields {
+		var text string
+		_ = json.Unmarshal(value, &text) // Non-string values stay raw in Fields.
+		switch key {
+		case "time":
+			timestamp = text
+		case "component":
+			if text != "" {
+				entry.Component = text
 			}
-		}
-	} else {
-		parts := strings.Fields(line)
-		if len(parts) == 0 {
-			return entry, false
-		}
-		timestamp = parts[0]
-		for _, pair := range logField.FindAllStringSubmatch(line, -1) {
-			key, value := pair[1], pair[2]
-			if unquoted, err := strconv.Unquote(value); err == nil {
-				value = unquoted
-			}
-			switch key {
-			case "component":
-				entry.Component = value
-			case "level":
-				entry.Level = value
-			case "event":
-				entry.Event = value
-			default:
-				entry.Fields[key] = value
-			}
+		case "level":
+			entry.Level = text
+		case "event":
+			entry.Event = text
+		default:
+			entry.Fields[key] = value
 		}
 	}
 	at, err := time.Parse(time.RFC3339Nano, timestamp)
