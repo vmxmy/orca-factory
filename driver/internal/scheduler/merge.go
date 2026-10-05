@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -94,7 +95,7 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 	h := t.Handoff
 	env := r.Repositories[t.Repo].Env
-	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" {
+	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" || !filepath.IsAbs(h.Worktree) || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 || h.CatchupRounds < 0 {
 		return errors.New("incomplete validation identity")
 	}
 	if err := h.Validated(); err != nil {
@@ -115,6 +116,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 		return errors.New("invalid repository")
 	}
 	a := &mergeAdapter{runtime: r, ticket: t, owner: owner, repo: repo}
+	if p := t.Progress; p != nil && p.QueueID == h.QueueID && p.Phase != "merge-intent" && p.Phase != "merged" {
+		return errors.New("unknown merge progress")
+	}
 	pr, err := a.readPR(ctx)
 	if err != nil {
 		return err
@@ -123,7 +127,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 	if pr.Merged {
 		sha = pr.MergeSHA
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
-			if p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || (!commitID(p.Main) && !(p.MainUnknown && p.Main == "" && p.Phase == "merged")) || (p.MainUnknown && p.Main != "") || (p.MergeSHA != "" && p.MergeSHA != sha) {
+			if (p.Phase != "merge-intent" && p.Phase != "merged") || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || (!commitID(p.Main) && !(p.MainUnknown && p.Main == "" && p.Phase == "merged")) || (p.MainUnknown && p.Main != "") || (p.MergeSHA != "" && p.MergeSHA != sha) {
 				return errors.New("conflicting merge progress")
 			}
 			a.main = p.Main
@@ -142,6 +146,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 			return errors.New(result.Reason)
 		}
 		sha = result.MergeSHA
+	}
+	if err := r.GitHub.UniqueTicketPR(ctx, owner, repo, t.Identifier, h.PR, true); err != nil {
+		return err
 	}
 	if !commitID(sha) {
 		return errors.New("merged SHA missing")
@@ -209,7 +216,7 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if p.Merged || p.State != "open" || p.Draft == nil || *p.Draft || p.Mergeable == nil || !*p.Mergeable {
 		return merge.Snapshot{}, errors.New("PR not explicitly mergeable")
 	}
-	if err := a.runtime.GitHub.UniqueTicketPR(ctx, a.owner, a.repo, a.ticket.Identifier, a.ticket.Handoff.PR); err != nil {
+	if err := a.runtime.GitHub.UniqueTicketPR(ctx, a.owner, a.repo, a.ticket.Identifier, a.ticket.Handoff.PR, false); err != nil {
 		return merge.Snapshot{}, err
 	}
 	main, err := a.runtime.GitHub.MainSHA(ctx, a.owner, a.repo)

@@ -146,6 +146,8 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			if f.duplicatePR {
 				json.NewEncoder(w).Encode([]any{f.prBody, f.prBody})
+			} else if f.merged {
+				json.NewEncoder(w).Encode([]any{})
 			} else {
 				json.NewEncoder(w).Encode([]any{f.prBody})
 			}
@@ -495,7 +497,11 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
 			json.NewEncoder(w).Encode(pr)
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
-			json.NewEncoder(w).Encode([]any{pr})
+			if bMerged {
+				json.NewEncoder(w).Encode([]any{})
+			} else {
+				json.NewEncoder(w).Encode([]any{pr})
+			}
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
 			fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head)
 		default:
@@ -566,5 +572,68 @@ func TestRuntimeMergeLostResponseAndReadbackRetainsIntent(t *testing.T) {
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
 		t.Fatalf("uncertain write replayed: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
+	}
+}
+
+func TestRuntimeMergeUsesGateLaneRatherThanBriefEstimate(t *testing.T) {
+	f := newMergeFixture(t)
+	// Executor briefs default to lane 2; gate computes the actual lane from paths.
+	rewriteHandoff(t, f, func(h map[string]any) {
+		h["gate_spec"] = strings.ReplaceAll(h["gate_spec"].(string), "LANE: 1", "LANE: 2")
+	})
+	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	if err != nil || f.puts != 1 {
+		t.Fatalf("gate lane 1 was overridden by brief estimate: err=%v puts=%d", err, f.puts)
+	}
+}
+
+func TestRuntimeMergeRejectsRepeatedCIPages(t *testing.T) {
+	f := newMergeFixture(t)
+	f.checksBody = fmt.Sprintf(`{"total_count":2,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head)
+	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	if err == nil || f.puts != 0 {
+		t.Fatalf("repeated pages treated as complete: %v puts=%d", err, f.puts)
+	}
+}
+func TestRuntimeMergeIncompleteHandoffAndUnknownProgressWait(t *testing.T) {
+	for _, kind := range []string{"worktree", "budget", "progress"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newMergeFixture(t)
+			switch kind {
+			case "worktree":
+				rewriteHandoff(t, f, func(h map[string]any) { delete(h, "worktree") })
+			case "budget":
+				rewriteHandoff(t, f, func(h map[string]any) { h["corrections"] = -1 })
+			case "progress":
+				f.merged = true
+				raw := fmt.Sprintf(`{"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"unknown"}`, f.head, f.main, strings.Repeat("a", 40))
+				f.linear.rows = append(f.linear.rows, linear.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
+			}
+			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			if err == nil || f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
+				t.Fatalf("invalid evidence accepted: %v puts=%d state=%s", err, f.puts, f.linear.issue.State.Name)
+			}
+		})
+	}
+}
+
+func TestRuntimeMergedPRWithAnotherCandidateDoesNotCompleteTicket(t *testing.T) {
+	f := newMergeFixture(t)
+	f.merged = true
+	f.duplicatePR = true
+	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	if err == nil || f.linear.issue.State.Name != "In Progress" {
+		t.Fatalf("ambiguous ticket completed after first PR: %v state=%s", err, f.linear.issue.State.Name)
+	}
+}
+
+func TestRuntimeMergeCanceledTicketIsNotAdvanced(t *testing.T) {
+	f := newMergeFixture(t)
+	f.linear.issue.State.Name = "Canceled"
+	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.puts != 0 || f.linear.issue.State.Name != "Canceled" {
+		t.Fatalf("canceled ticket advanced: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
 	}
 }

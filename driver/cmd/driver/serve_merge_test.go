@@ -80,7 +80,11 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 					json.NewEncoder(w).Encode(pr())
 				case strings.HasSuffix(r.URL.Path, "/pulls"):
-					json.NewEncoder(w).Encode([]any{pr()})
+					if merged {
+						json.NewEncoder(w).Encode([]any{})
+					} else {
+						json.NewEncoder(w).Encode([]any{pr()})
+					}
 				case strings.HasSuffix(r.URL.Path, "/git/ref/heads/main"):
 					fmt.Fprintf(w, `{"object":{"sha":%q}}`, main)
 				case strings.HasSuffix(r.URL.Path, "/check-runs"):

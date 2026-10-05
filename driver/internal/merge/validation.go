@@ -45,7 +45,7 @@ func (h Handoff) Validated() error {
 	if _, ok := gate["EVIDENCE"]; !ok {
 		return errors.New("missing gate evidence field")
 	}
-	if spec["UNIT"] != h.Unit || spec["CHECK"] == "" || spec["SCOPE"] == "" || spec["LANE"] != strconv.Itoa(h.Lane) || gate["UNIT"] != h.Unit || gate["VERDICT"] != "green" || gate["STEP"] != "all" || gate["REASON"] == "" || gate["SCOPE"] != strings.Join(strings.Fields(spec["SCOPE"]), " ") || gate["LANE"] != strconv.Itoa(h.Lane) {
+	if spec["UNIT"] != h.Unit || spec["CHECK"] == "" || spec["SCOPE"] == "" || gate["UNIT"] != h.Unit || gate["VERDICT"] != "green" || gate["STEP"] != "all" || gate["REASON"] == "" || gate["SCOPE"] != strings.Join(strings.Fields(spec["SCOPE"]), " ") || gate["LANE"] != strconv.Itoa(h.Lane) {
 		return errors.New("gate evidence does not validate frozen spec")
 	}
 	output := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(h.ReviewOutput), "```"))

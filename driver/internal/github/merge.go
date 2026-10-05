@@ -23,6 +23,8 @@ func (c *Client) MainSHA(ctx context.Context, owner, repo string) (string, error
 // successful checks/statuses, all read at the pinned head. Unknown is not green.
 func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (bool, error) {
 	count := 0
+	expectedChecks := -1
+	seenChecks := map[int64]bool{}
 	for page := 1; ; page++ {
 		var v struct {
 			Total *int        `json:"total_count"`
@@ -35,7 +37,17 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 		if v.Total == nil || v.Runs == nil {
 			return false, errors.New("incomplete check runs")
 		}
+		if expectedChecks < 0 {
+			expectedChecks = *v.Total
+		}
+		if expectedChecks != *v.Total || *v.Total < 0 {
+			return false, errors.New("check collection changed")
+		}
 		for _, r := range *v.Runs {
+			if r.ID <= 0 || seenChecks[r.ID] {
+				return false, errors.New("invalid or repeated check identity")
+			}
+			seenChecks[r.ID] = true
 			if r.HeadSHA != head || r.Status != "completed" || r.Conclusion != "success" {
 				return false, nil
 			}
@@ -49,6 +61,8 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 		}
 	}
 	statuses := 0
+	expectedStatuses := -1
+	seenStatuses := map[string]bool{}
 	for page := 1; ; page++ {
 		var v struct {
 			Total    *int `json:"total_count"`
@@ -64,7 +78,17 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 		if v.Total == nil || v.Statuses == nil {
 			return false, errors.New("incomplete commit statuses")
 		}
+		if expectedStatuses < 0 {
+			expectedStatuses = *v.Total
+		}
+		if expectedStatuses != *v.Total || *v.Total < 0 {
+			return false, errors.New("status collection changed")
+		}
 		for _, s := range *v.Statuses {
+			if seenStatuses[s.Context] {
+				return false, errors.New("repeated status context")
+			}
+			seenStatuses[s.Context] = true
 			if s.State != "success" || s.Context == "" {
 				return false, nil
 			}
@@ -82,7 +106,8 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 
 // UniqueTicketPR refuses multiple units or candidates. #141 supports only the
 // directly mergeable single-PR ticket; other shapes retain merge ownership.
-func (c *Client) UniqueTicketPR(ctx context.Context, owner, repo, identifier string, number int) error {
+// After merge, require no remaining open candidate before completing the ticket.
+func (c *Client) UniqueTicketPR(ctx context.Context, owner, repo, identifier string, number int, merged bool) error {
 	found := 0
 	for page := 1; page <= 1000; page++ {
 		var rows []PullRequest
@@ -99,13 +124,17 @@ func (c *Client) UniqueTicketPR(ctx context.Context, owner, repo, identifier str
 			}
 			if strings.HasPrefix(p.Head.Ref, "agent/"+identifier+"/") {
 				found++
-				if p.Number != number {
+				if merged || p.Number != number {
 					return errors.New("multiple ticket PRs")
 				}
 			}
 		}
 		if len(rows) < 100 {
-			if found != 1 {
+			want := 1
+			if merged {
+				want = 0
+			}
+			if found != want {
 				return errors.New("ambiguous ticket PR")
 			}
 			return nil
