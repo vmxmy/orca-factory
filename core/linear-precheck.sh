@@ -36,6 +36,12 @@ SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 # The two lines live in-script because this file may be run from stdin via `git show | bash`.
 _linear_count_file() { printf '%s' "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; }
 _count_linear_call() { { printf '%s precheck\n' "$(date +%s)" >> "$(_linear_count_file)"; } 2>/dev/null || true; }
+
+# One Linear reader per run: precheck writes a snapshot that prune, the swarm board and other
+# consumers read instead of hitting Linear themselves. The file is a cache, not state: a failed
+# write or a stale/missing snapshot is harmless, so writes never change the precheck exit code.
+SNAPSHOT_FILE="${AGENT_SNAPSHOT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json}"
+SNAPSHOT_COMMENT_TTL_SECONDS="${AGENT_SNAPSHOT_COMMENT_TTL_SECONDS:-600}"
 # Cheap tally rotation: keep the tail so the file never grows without bound.
 {
   _lcf="$(_linear_count_file)"
@@ -54,6 +60,7 @@ finish_precheck() {
     echo '不确定: linear rate limited' >&2
     status=3
   fi
+  { write_linear_snapshot; } 2>/dev/null || true
   echo "linear_calls=$(wc -l < "$precheck_tmp/calls" | tr -d ' ')" >&2
   rm -rf "$precheck_tmp"
   exit "$status"
@@ -131,13 +138,16 @@ ids() {
 PRECHECK_CACHE_DIR="${AGENT_PRECHECK_CACHE_DIR:-${TMPDIR:-/tmp}/orca-factory-precheck-cache}"
 RELATION_TTL_SECONDS="${AGENT_RELATION_TTL_SECONDS:-600}"
 mkdir -p "$PRECHECK_CACHE_DIR" 2>/dev/null || true
+mkdir -p "$precheck_tmp/relations-ok" 2>/dev/null || true
 
 relations_cache_file() {
   printf '%s/relations-%s' "$PRECHECK_CACHE_DIR" "$(jq -rn --arg id "$1" '$id | @uri')"
 }
 
 # Prints a space-separated list of blocker identifiers (empty when there are none, which is the
-# common case and still worth caching). Returns 1 only when the live read failed.
+# common case and still worth caching). Returns 1 only when the live read failed. On every success
+# path (cache hit or fresh fetch) touches `relations-ok/<id>` so the snapshot writer knows the
+# relations for that candidate are good this run; a failed read leaves the flag absent.
 relations_of() {
   local id="$1" cache now ts="" rel blockers
   cache="$(relations_cache_file "$id")"
@@ -145,6 +155,7 @@ relations_of() {
   if [[ -f "$cache" ]]; then
     IFS= read -r ts < "$cache" 2>/dev/null || ts=""
     if [[ -n "$ts" && "$ts" =~ ^[0-9]+$ ]] && (( now - ts < RELATION_TTL_SECONDS )); then
+      { : > "$precheck_tmp/relations-ok/$id"; } 2>/dev/null || true
       sed -n '2p' "$cache"
       return 0
     fi
@@ -154,6 +165,7 @@ relations_of() {
     [(.result.relations // [])[] | select(.relationship == "blockedBy") | .relatedIssue.identifier]
     | join(" ")' <<<"$rel")"
   { printf '%s\n%s\n' "$now" "$blockers" > "$cache"; } 2>/dev/null || true
+  { : > "$precheck_tmp/relations-ok/$id"; } 2>/dev/null || true
   printf '%s\n' "$blockers"
 }
 
@@ -171,13 +183,157 @@ blocker_state() {
   jq -r '.result.issue.state.type' <<<"$out"
 }
 
+# Candidate-local tolerance for a transient relations read failure: skip just that candidate,
+# keep evaluating the rest, and only stop the whole scan once three candidates have failed in one
+# run or the error names a rate limit. Blocker-state failures still abort because they decide
+# claimability and have their own retry inside ocall.
 unblocked() {
-  local blockers blocker state
-  blockers="$(relations_of "$1")" || exit 3
+  local blockers blocker state err_cache err_msg
+  if ! blockers="$(relations_of "$1")"; then
+    err_cache="$precheck_tmp/issue-$(jq -rn --arg id "$1" '$id | @uri')---relations"
+    err_msg=""
+    if [[ -f "$err_cache" ]]; then
+      err_msg="$(jq -r '.error.message // .error.code // "unknown"' "$err_cache" 2>/dev/null)" || err_msg=""
+    fi
+    [[ -n "$err_msg" ]] || err_msg="unknown"
+    if [[ -f "$precheck_tmp/rate-limited" ]] || printf '%s' "$err_msg" | grep -iq 'rate limit'; then
+      touch "$precheck_tmp/rate-limited" 2>/dev/null || true
+      exit 3
+    fi
+    echo "不确定: $1 依赖读取失败（$err_msg），本轮跳过该票" >&2
+    rel_fail_count=$((rel_fail_count + 1))
+    (( rel_fail_count >= 3 )) && exit 3
+    return 2
+  fi
   for blocker in $blockers; do
     state="$(blocker_state "$blocker")" || exit 3
     case "$state" in completed|canceled) ;; *) return 1 ;; esac
   done
+}
+
+# Snapshot comment cache: lives on disk under `${AGENT_PRECHECK_CACHE_DIR}/comments-<id>` with the
+# epoch seconds on line 1 and the trimmed JSON array on the rest. A fresh (<10 min by default)
+# cache replays without a Linear call. On a miss we prefer the in-run ocall cache (populated by
+# the stale/orphan/overrun/stuck checks when the ticket is in-flight), and only fall back to a
+# direct `orca linear issue --comments` call when neither cache helps. A failed or rate-limited
+# fetch sticks with the previous cached body — or an empty array — so a snapshot read never aborts
+# the scan nor changes the precheck exit code.
+snapshot_comments_of() {
+  local id="$1" uri cache now ts out comments run_cache run_status
+  uri="$(jq -rn --arg id "$id" '$id | @uri' 2>/dev/null)" || uri="$id"
+  cache="$PRECHECK_CACHE_DIR/comments-$uri"
+  now="$(date +%s)"
+  if [[ -f "$cache" ]]; then
+    IFS= read -r ts < "$cache" 2>/dev/null || ts=""
+    if [[ -n "$ts" && "$ts" =~ ^[0-9]+$ ]] && (( now - ts < SNAPSHOT_COMMENT_TTL_SECONDS )); then
+      tail -n +2 "$cache"
+      return 0
+    fi
+  fi
+  out=""
+  run_cache="$precheck_tmp/issue-$uri---comments"
+  if [[ -f "$run_cache.status" && -f "$run_cache" ]]; then
+    run_status="$(cat "$run_cache.status" 2>/dev/null)" || run_status=""
+    if [[ "$run_status" == 0 ]]; then
+      out="$(cat "$run_cache")"
+    fi
+  fi
+  # Rate-limited runs still write a snapshot, but strictly from already-cached bodies: a direct
+  # read here would land another Linear call after the main loop decided to stop.
+  if [[ -z "$out" && ! -f "$precheck_tmp/rate-limited" ]]; then
+    { echo call >> "$precheck_tmp/calls"; } 2>/dev/null || true
+    _count_linear_call
+    out="$(perl -e 'alarm 20; exec @ARGV' -- orca linear issue "$id" --comments --json 2>/dev/null)" || out=""
+  fi
+  if [[ -n "$out" ]] && comments="$(jq -ce '
+    if .ok != true then error("not ok") else . end
+    | (.result.comments // [])
+    | sort_by(.createdAt // "") | reverse | .[0:20]
+    | map({createdAt: (.createdAt // ""), body: ((.body // "")[0:2000])})
+  ' <<<"$out" 2>/dev/null)"; then
+    { printf '%s\n%s\n' "$now" "$comments" > "$cache"; } 2>/dev/null || true
+    printf '%s\n' "$comments"
+    return 0
+  fi
+  if [[ -f "$cache" ]]; then
+    tail -n +2 "$cache"
+    return 0
+  fi
+  printf '[]\n'
+}
+
+# Write a single-run snapshot that consumers (prune, swarm board) read instead of hitting Linear.
+# Only runs when this run's project-wide list-issues call succeeded (precheck_tmp/issues exists);
+# a failed list leaves the previous snapshot in place. Atomic via tempfile + rename in the same
+# directory so partial writes never surface. The whole function is best effort: any error returns
+# without writing.
+write_linear_snapshot() {
+  [[ -f "$precheck_tmp/issues" ]] || return 0
+  local snapshot_dir snapshot_tmp ids_to_fetch id comments_obj new_obj entry \
+        candidate_ids blocked_by_obj cache blockers_line blockers_json
+  snapshot_dir="$(dirname "$SNAPSHOT_FILE")"
+  mkdir -p "$snapshot_dir" 2>/dev/null || return 0
+  snapshot_tmp="$(mktemp "$snapshot_dir/.linear-snapshot.XXXXXX" 2>/dev/null)" || return 0
+  if ! ids_to_fetch="$(jq -r --arg lbl "$LABEL_FAILED" '
+    .result.issues
+    | map(select(.identifier != null))
+    | map(select(
+        (.state.type // "") == "started"
+        or (any(.labels[]?; .id == $lbl or .name == $lbl)
+            and (.state.type // "") != "completed"
+            and (.state.type // "") != "canceled")
+      ))
+    | .[].identifier
+  ' "$precheck_tmp/issues" 2>/dev/null)"; then
+    ids_to_fetch=""
+  fi
+  comments_obj="{}"
+  for id in $ids_to_fetch; do
+    [[ -n "$id" ]] || continue
+    entry="$(snapshot_comments_of "$id" 2>/dev/null)" || entry="[]"
+    [[ -n "$entry" ]] || entry="[]"
+    if new_obj="$(jq -c --arg id "$id" --argjson entry "$entry" '. + {($id): $entry}' <<<"$comments_obj" 2>/dev/null)"; then
+      comments_obj="$new_obj"
+    fi
+  done
+  # blockedBy: only ready candidates whose relations_of succeeded this run and whose blocker list
+  # is non-empty. A failed/rate-limited read leaves no entry — never write an empty array that
+  # would misrepresent an unknown state as "no blockers". No new Linear call: reuse the cache that
+  # relations_of already populated.
+  blocked_by_obj="{}"
+  if ! candidate_ids="$(jq -r --arg lbl "$LABEL_READY" '
+    .result.issues
+    | map(select((.state.type // "") == "unstarted"
+      and any(.labels[]?; .id == $lbl or .name == $lbl)))
+    | .[].identifier // empty
+  ' "$precheck_tmp/issues" 2>/dev/null)"; then
+    candidate_ids=""
+  fi
+  for id in $candidate_ids; do
+    [[ -n "$id" ]] || continue
+    [[ -e "$precheck_tmp/relations-ok/$id" ]] || continue
+    cache="$(relations_cache_file "$id")"
+    [[ -f "$cache" ]] || continue
+    blockers_line="$(sed -n '2p' "$cache" 2>/dev/null)" || continue
+    [[ -n "$blockers_line" ]] || continue
+    if ! blockers_json="$(printf '%s\n' "$blockers_line" | jq -Rc 'split(" ") | map(select(length > 0))' 2>/dev/null)"; then
+      continue
+    fi
+    [[ "$blockers_json" != '[]' && -n "$blockers_json" ]] || continue
+    if new_obj="$(jq -c --arg id "$id" --argjson arr "$blockers_json" '. + {($id): $arr}' <<<"$blocked_by_obj" 2>/dev/null)"; then
+      blocked_by_obj="$new_obj"
+    fi
+  done
+  if jq -nc --slurpfile src "$precheck_tmp/issues" \
+    --argjson comments "$comments_obj" --argjson blockedBy "$blocked_by_obj" \
+    --argjson gen "$(date +%s)" '
+    {generatedAt: $gen, issues: ($src[0].result.issues // []),
+     comments: $comments, blockedBy: $blockedBy}
+  ' > "$snapshot_tmp" 2>/dev/null; then
+    mv "$snapshot_tmp" "$SNAPSHOT_FILE" 2>/dev/null || rm -f "$snapshot_tmp" 2>/dev/null || true
+  else
+    rm -f "$snapshot_tmp" 2>/dev/null || true
+  fi
 }
 
 # Parse Linear's ISO timestamp with jq (not `date -j -f`, which differs between macOS and Linux);
@@ -499,6 +655,7 @@ cand_avoid=0
 if (( SCOPE_AVOID == 1 )) && (( BATCH_SIZE != 1 )); then cand_avoid=1; fi
 claimable=()
 declare -A accepted_scope=()
+rel_fail_count=0
 for id in $ready_ids; do
   (( ${#claimable[@]} >= slots )) && break
   if ! unblocked "$id"; then continue; fi
