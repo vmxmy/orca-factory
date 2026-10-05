@@ -46,11 +46,14 @@ func (i *workerIdle) observe(ctx context.Context, e *Executor, worktree string, 
 		return false
 	}
 	if !i.nudged {
-		// Even an uncertain send consumes the only nudge; never replay it.
+		// Even an uncertain send consumes the only nudge; never replay it. Only a
+		// nudge that observably started a turn earns a fresh grace interval.
 		i.nudged = true
-		_, _ = e.Orca.TerminalSend(ctx, terminal.Handle, workerIdleNudge)
-		i.nudgedAt = e.Now()
-		return false
+		receipt, err := e.Orca.TerminalSend(ctx, terminal.Handle, workerIdleNudge)
+		if err == nil && orca.TurnStarted(receipt) {
+			i.nudgedAt = e.Now()
+			return false
+		}
 	}
 	i.stalled = true
 	return true

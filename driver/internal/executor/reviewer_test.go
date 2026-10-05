@@ -26,14 +26,14 @@ func TestReviewerByEstimate(t *testing.T) {
 		maximum              *float64
 		small, command, tier string
 	}{
-		{"at default threshold", &two, nil, "small-review", `small-review "$1"`, "small"},
-		{"above threshold", &three, nil, "small-review", `main-review "$1"`, "default"},
-		{"empty small low", &zero, nil, "", `main-review "$1"`, "default"},
-		{"empty small high", &three, nil, "", `main-review "$1"`, "default"},
-		{"missing estimate", nil, nil, "small-review", `main-review "$1"`, "default"},
-		{"custom threshold", &three, &three, "small-review", `small-review "$1"`, "small"},
-		{"zero threshold", &two, &zero, "small-review", `main-review "$1"`, "default"},
-		{"zero estimate", &zero, &zero, "small-review", `small-review "$1"`, "small"},
+		{"at default threshold", &two, nil, "small-review", `small-review`, "small"},
+		{"above threshold", &three, nil, "small-review", `main-review`, "default"},
+		{"empty small low", &zero, nil, "", `main-review`, "default"},
+		{"empty small high", &three, nil, "", `main-review`, "default"},
+		{"missing estimate", nil, nil, "small-review", `main-review`, "default"},
+		{"custom threshold", &three, &three, "small-review", `small-review`, "small"},
+		{"zero threshold", &two, &zero, "small-review", `main-review`, "default"},
+		{"zero estimate", &zero, &zero, "small-review", `small-review`, "small"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _, comments, _, baseTools, ticket := fixture(t, "new-sha")
@@ -46,7 +46,7 @@ func TestReviewerByEstimate(t *testing.T) {
 					return []byte("diff"), nil
 				}
 				calls++
-				if spec.Path != "/bin/sh" || len(spec.Args) != 6 || spec.Args[3] != tc.command {
+				if spec.Path != "/bin/sh" || len(spec.Args) != 5 || spec.Args[3] != tc.command {
 					t.Fatalf("review command = %+v; want %q", spec, tc.command)
 				}
 				return []byte(`{"verdict":"green","step":"review"}`), nil

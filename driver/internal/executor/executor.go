@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,7 @@ type Orca interface {
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
+	WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error)
 }
 type Linear interface {
 	ListComments(context.Context, string) ([]linear.Comment, error)
@@ -72,11 +74,32 @@ type Executor struct {
 	Now           func() time.Time
 	Recovery      Recovery
 	Sleep         func(context.Context, time.Duration) error
+	// Stderr receives best-effort warnings; nil means os.Stderr.
+	Stderr io.Writer
 }
 type Result struct {
 	State             machine.State
 	RunID, DispatchID string
 	PR                github.PullRequest
+}
+
+// boardStatus maps a phase to an Orca board column so the desktop shows executor progress.
+func boardStatus(p machine.Phase) string {
+	switch p {
+	case machine.PhaseWorker, machine.PhaseCorrection:
+		return "in-progress"
+	case machine.PhaseMerged:
+		return "completed"
+	}
+	return "in-review"
+}
+
+func (e *Executor) warn(format string, args ...any) {
+	w := e.Stderr
+	if w == nil {
+		w = os.Stderr
+	}
+	fmt.Fprintf(w, "warning: "+format+"\n", args...)
 }
 
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
@@ -135,14 +158,19 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		releaseAttempted = true
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		_, releaseErr := e.Orca.WorkerRelease(cleanup, request("release"), result.DispatchID)
-		if releaseErr != nil {
-			return errors.New("worker release failed; reconcile dispatch before retry")
+		// A settled dispatch no longer needs its worker; a failed release only leaks
+		// an idle worker and must not fail the ticket.
+		if _, releaseErr := e.Orca.WorkerRelease(cleanup, request("release"), result.DispatchID); releaseErr != nil {
+			e.warn("%s worker release failed for dispatch %s: %v", t.Identifier, result.DispatchID, releaseErr)
 		}
 		return nil
 	}
 	defer func() { err = errors.Join(err, release()) }()
 	var baseline, taskID, spec, brief, head, failureOutput, reviewerTier string
+	cp := checkpoint{}
+	if restored != nil {
+		cp = *restored
+	}
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
@@ -199,11 +227,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if commentErr := e.comment(ctx, t.ID, body); commentErr != nil {
 			return errors.New("Linear transition comment failed")
 		}
+		if cp.Worktree != "" {
+			if _, boardErr := e.Orca.WorktreeSet(ctx, cp.Worktree, t.Identifier, boardStatus(next.Phase), "driver: "+string(next.Phase)); boardErr != nil {
+				e.warn("%s Orca board status update failed: %v", t.Identifier, boardErr)
+			}
+		}
 		return nil
-	}
-	cp := checkpoint{}
-	if restored != nil {
-		cp = *restored
 	}
 
 	err = transition(machine.EvClaim, func(fx []machine.Effect) error {
@@ -272,7 +301,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
 		if callErr != nil {
-			return errors.New("worker start failed; reconcile dispatch before retry")
+			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", callErr)
 		}
 		if result.DispatchID == "" || taskID == "" {
 			return errors.New("worker receipt missing task or dispatch")

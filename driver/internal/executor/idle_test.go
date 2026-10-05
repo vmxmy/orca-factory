@@ -18,6 +18,7 @@ type idleOrca struct {
 	worktree            string
 	sends               [][2]string
 	sendErr             error
+	unconfirmed         bool
 	tasks               func(int) []orca.Task
 	terminals           func(int) ([]orca.Terminal, error)
 }
@@ -165,7 +166,10 @@ func TestIdleTimeoutConfig(t *testing.T) {
 
 func (f *idleOrca) TerminalSend(_ context.Context, terminal, text string) (orca.Receipt, error) {
 	f.sends = append(f.sends, [2]string{terminal, text})
-	return nil, f.sendErr
+	if f.sendErr != nil || f.unconfirmed {
+		return orca.Receipt{"send": json.RawMessage(`{"prompt":{"stages":["input_accepted"]}}`)}, f.sendErr
+	}
+	return orca.Receipt{"send": json.RawMessage(`{"prompt":{"stages":["input_accepted","turn_started"]}}`)}, nil
 }
 
 func TestIdleNudge(t *testing.T) {
@@ -193,6 +197,24 @@ func TestIdleNudge(t *testing.T) {
 		}
 		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
 			t.Fatal("same idle counted twice")
+		}
+		if len(o.sends) != 1 {
+			t.Fatalf("sends=%v", o.sends)
+		}
+	})
+
+	t.Run("unconfirmed nudge", func(t *testing.T) {
+		e, _, _, _, _, _ := fixture(t, "new-sha")
+		now := e.Now()
+		e.Now = func() time.Time { return now }
+		o := &idleOrca{worktree: "/worker", unconfirmed: true}
+		o.terminals = func(int) ([]orca.Terminal, error) {
+			return []orca.Terminal{{Handle: "term_worker", WorktreePath: "/worker", LastOutputAt: 1}}, nil
+		}
+		e.Orca = o
+		var idle workerIdle
+		if !idle.observe(context.Background(), e, "/worker", time.Minute, machine.Initial()) {
+			t.Fatal("unconfirmed nudge granted a grace interval")
 		}
 		if len(o.sends) != 1 {
 			t.Fatalf("sends=%v", o.sends)
