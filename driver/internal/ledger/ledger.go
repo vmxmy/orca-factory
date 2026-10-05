@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
 
 const Title = "[ledger] agent-graph"
@@ -116,7 +118,30 @@ func parseRow(raw string) (map[string]any, error) {
 			}
 		}
 	}
+	if value, present := row["usage"]; present {
+		encoded, err := json.Marshal(value)
+		var parsed usage.TicketUsage
+		if err != nil || hasNullUsage(value) || json.Unmarshal(encoded, &parsed) != nil {
+			return nil, errors.New("ledger: invalid usage field")
+		}
+	}
 	return row, nil
+}
+
+// JSON null cannot represent a typed usage field, even though encoding/json
+// otherwise accepts null for scalar Go fields and leaves their zero values.
+func hasNullUsage(value any) bool {
+	if value == nil {
+		return true
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, field := range object {
+			if hasNullUsage(field) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (l *Ledger) Append(raw string) error {

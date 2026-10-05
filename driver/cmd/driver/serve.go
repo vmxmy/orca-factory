@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -11,23 +12,29 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/mergelane"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 func init() { Register("serve", serve) }
 func serve(args []string) int {
+	return loggedCommand("scheduler", filepath.Join(logStateRoot(), "scheduler.log"), os.Stdout, args, func(logger *slog.Logger) (int, error) {
+		return serveLogged(args, logger)
+	})
+}
+func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	dry := len(args) == 1 && args[0] == "--dry-run"
 	if len(args) != 0 && !dry {
-		fmt.Fprintln(os.Stderr, "Usage: driver serve [--dry-run]")
-		return 2
+		return 2, fmt.Errorf("Usage: driver serve [--dry-run]")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot resolve home directory")
-		return 1
+		return 1, fmt.Errorf("cannot resolve home directory")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -40,10 +47,9 @@ func serve(args []string) int {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return 1, err
 		}
-		return 0
+		return 0, nil
 	}
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
@@ -54,7 +60,15 @@ func serve(args []string) int {
 		if err != nil {
 			return nil, nil, err
 		}
-		return &scheduler.Scheduler{Config: cfg, Backend: runtime}, runtime, nil
+		gh, err := github.New(github.Options{})
+		if err != nil {
+			return nil, nil, err
+		}
+		lane := &mergelane.Lane{
+			Repositories: runtime.Repositories, GitHub: gh, Orca: &orca.Client{Path: runtime.OrcaPath}, Tickets: runtime, Root: logStateRoot(),
+			Warn: func(format string, args ...any) { logger.Warn(fmt.Sprintf(format, args...), "component", "merge-lane") },
+		}
+		return &scheduler.Scheduler{Config: cfg, Backend: runtime, Merger: lane}, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
@@ -64,12 +78,11 @@ func serve(args []string) int {
 		case <-timer.C:
 			return nil
 		}
-	}, func(err error) { fmt.Fprintln(os.Stderr, err) })
+	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 1, err
 	}
-	return 0
+	return 0, nil
 }
 
 // statusBackend observes existing reads without issuing additional requests.
