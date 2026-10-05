@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -20,7 +21,10 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 		return err
 	}
 	script, err := a.runtime.command(ctx, req.Path, "git", "show", a.main+":scripts/agent-gates/gate.sh")
-	if err != nil || len(script) == 0 {
+	if err != nil {
+		return safeMergeGateError(err)
+	}
+	if len(script) == 0 {
 		return errors.New("original merge gate unavailable")
 	}
 	parent := filepath.Dir(wt)
@@ -69,4 +73,28 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 		return merge.ErrGateRed
 	}
 	return errors.New("merge gate execution unavailable")
+}
+
+// Preserve recognized dependency identities without leaking command output from
+// adapter errors. This is also safe when callers inspect the unwrapped chain.
+func safeMergeGateError(err error) error {
+	var global *infra.Global
+	if errors.As(err, &global) {
+		return &infra.Global{Dep: global.Dep, Err: safeMergeGateError(global.Err)}
+	}
+	var ticket *infra.Ticket
+	if errors.As(err, &ticket) {
+		return &infra.Ticket{Err: safeMergeGateError(ticket.Err)}
+	}
+	var transient *infra.Transient
+	if errors.As(err, &transient) {
+		return &infra.Transient{Err: safeMergeGateError(transient.Err)}
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return errors.New("original merge gate unavailable")
 }

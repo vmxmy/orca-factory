@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 )
 
@@ -387,6 +388,41 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 			}
 			if f.puts != 1 || p.Phase != "merged" || p.CatchupRounds != 1 {
 				t.Fatalf("catchup history lost: puts=%d progress=%+v", f.puts, p)
+			}
+		})
+	}
+}
+
+func TestRuntimeMergeGateScriptReadRetainsSafeFailure(t *testing.T) {
+	for _, kind := range []string{"cancel", "deadline", "global"} {
+		t.Run(kind, func(t *testing.T) {
+			f := overlapFixture(t, false)
+			want := context.Canceled
+			if kind == "deadline" || kind == "global" {
+				want = context.DeadlineExceeded
+			}
+			failure := error(fmt.Errorf("secret-read-token: %w", want))
+			if kind == "global" {
+				failure = &infra.Global{Dep: infra.GitHub, Err: failure}
+			}
+			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if len(s.Args) == 2 && s.Args[0] == "show" && strings.HasSuffix(s.Args[1], ":scripts/agent-gates/gate.sh") {
+					return nil, failure
+				}
+				return runx.Run(ctx, s)
+			}
+			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			if !errors.Is(err, want) {
+				t.Fatalf("lost read context identity: %v", err)
+			}
+			if kind == "global" {
+				var global *infra.Global
+				if !errors.As(err, &global) || global.Dep != infra.GitHub || strings.Contains(global.Error(), "secret-read-token") {
+					t.Fatalf("lost safe global classification: %v", err)
+				}
+			}
+			if strings.Contains(err.Error(), "secret-read-token") || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 {
+				t.Fatalf("unsafe failure/correction: %v", err)
 			}
 		})
 	}
