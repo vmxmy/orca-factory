@@ -1,0 +1,18 @@
+[Unit]
+Description=Orca isolated ephemeral GitHub runner slot %i
+After=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/python3 %h/.local/lib/orca-go-isolated-runner/supervisor.py --image-file %h/.local/lib/orca-go-isolated-runner/image-id.txt --state-dir %h/.local/state/orca-go-isolated-runner --slot %i
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=90s
+KillMode=process
+UMask=0077
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

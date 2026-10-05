@@ -1,0 +1,7 @@
+# executable   Go package                                      pinned version
+# These are development tools, never driver runtime dependencies.
+gotestsum      gotest.tools/gotestsum                           v1.13.0
+golangci-lint  github.com/golangci/golangci-lint/v2/cmd/golangci-lint v2.14.0
+govulncheck    golang.org/x/vuln/cmd/govulncheck                  v1.8.0
+gopls         golang.org/x/tools/gopls                         v0.23.0
+dlv           github.com/go-delve/delve/cmd/dlv                 v1.27.2
