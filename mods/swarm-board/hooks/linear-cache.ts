@@ -59,7 +59,7 @@ let cache: GraphSnapshot | null = null
 let lastSuccessAt: number | null = null
 let window: { start: number; calls: number } | null = null
 
-// Verified 2026-10-05: orca linear list-issues --team <T> --project <P> --json and orca linear issue <id> --relations --json omit parent; detail relations are result.relations.
+// Verified 2026-10-06: orca linear list-issues --team <T> --project <P> --json and orca linear issue <id> --relations --json omit parent; detail relations are result.relations.
 export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphSnapshot | null> {
   if (cache && lastSuccessAt !== null && now - lastSuccessAt < GRAPH_TTL_MS) return cache
   if (!window || now - window.start >= GRAPH_TTL_MS) window = { start: now, calls: 0 }
@@ -68,9 +68,7 @@ export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphS
   const read = async (args: string[]): Promise<LinearResult | null> => {
     if (!window || window.calls >= GRAPH_MAX_CALLS) return null
     window = { start: window.start, calls: window.calls + 1 }
-    // Counting is best effort, including when the runtime cannot launch the shell.
     await $.process.run(['sh', '-c', '{ printf "%s board\\n" "$1" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true', 'sh', String(Math.floor(now / 1000))], { timeoutMs: 20_000 })
-      .then(() => undefined, () => undefined)
     const response = await $.process.run(['orca', 'linear', ...args, '--json'], { timeoutMs: 20_000 })
     if (response.exitCode !== 0) throw new Error(`Linear ${args[0]} failed with exit code ${response.exitCode}`)
     let envelope: unknown
