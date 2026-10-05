@@ -514,7 +514,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		for result.State.Phase == machine.PhaseReview {
 			var reviewErr error
 			done := e.external("reviewer")
-			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
+			output, reviewerTier, reviewErr = e.Tools.Review(WithReviewBrief(ctx, ReviewBrief{Text: brief, Lane3Globs: strings.Join(c.Lane3Globs, " ")}), c.Repo, diffBase, head, t.Estimate)
 			verdict, parseErr = reviewVerdict(output)
 			event = machine.EvReviewEmpty
 			if reviewErr == nil && parseErr == nil {

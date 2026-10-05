@@ -44,12 +44,12 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 11 {
+	if len(values) != 12 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -92,6 +92,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	}
 	delegated = true
 	e.Config.Merging = merging
+	e.Config.Lane3Globs = strings.Fields(values[10])
 	return e.Start(ctx, ticket)
 }
 
