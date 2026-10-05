@@ -167,9 +167,9 @@ func TestWriteSpacingAndEndpoints(t *testing.T) {
 	if len(writes) != 2 || writes[1].Sub(writes[0]) < time.Second {
 		t.Fatalf("writes=%v", writes)
 	}
-	files, err := c.CompareFiles(ctx, "acme", "app", "main", "topic")
-	if err != nil || len(files) != 1 || files[0].Filename != "a.go" {
-		t.Fatalf("files=%v err=%v", files, err)
+	cmp, err := c.Compare(ctx, "acme", "app", "main", "topic")
+	if err != nil || len(cmp.Files) != 1 || cmp.Files[0].Filename != "a.go" {
+		t.Fatalf("compare=%v err=%v", cmp, err)
 	}
 	checks, err := c.CheckRuns(ctx, "acme", "app", "abc")
 	if err != nil || len(checks) != 1 || checks[0].Conclusion != "success" {

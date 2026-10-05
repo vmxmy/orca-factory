@@ -1,0 +1,17 @@
+{
+ "number": 133,
+ "state": "closed",
+ "merged": true,
+ "mergeable": null,
+ "mergeable_state": "unknown",
+ "merge_commit_sha": "0ab0047178cd32132001eef0682d50a77a6f2622",
+ "html_url": "https://github.com/vmxmy/orca-factory/pull/133",
+ "head": {
+  "ref": "agent/ZII-897/executor",
+  "sha": "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a"
+ },
+ "base": {
+  "ref": "main",
+  "sha": "e09d48f204833c5912395d438602dbe7c2ce4071"
+ }
+}

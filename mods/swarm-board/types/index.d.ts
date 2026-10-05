@@ -129,3 +129,29 @@ declare module 'claude-code' {
 /** Last-good phase observations live only in the board atom. */
 export type TicketPhase = '📋 拆分' | '📤 派工' | '🔨 实现' | '📬 待收尾' | '🧪 gate' | '🔍 审查（推断）' | '🚦 CI/合并'
 export type PhaseObservation = { phase: TicketPhase; since: string; lastActive?: string }
+
+/** Token counts and estimated cost at API prices in USD; shared with driver/internal/usage. */
+export type UsageTotals = {
+  input: number
+  output: number
+  cache_read: number
+  cache_write: number
+  reasoning: number
+  cost_usd: number
+}
+export type RoleUsage = {
+  worker: UsageTotals
+  reviewer: UsageTotals
+  coordinator: UsageTotals
+  session: UsageTotals
+}
+/** Ticket totals and two independent breakdowns of the same usage. */
+export type TicketUsage = UsageTotals & {
+  ticket: string
+  by_role: RoleUsage
+  by_model?: Record<string, UsageTotals>
+  /** API price table version used for every cost in this record. */
+  price_version: string
+  /** True when totals include allocated coordinator usage. */
+  apportioned: boolean
+}

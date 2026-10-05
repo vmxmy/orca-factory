@@ -21,7 +21,7 @@ import (
 
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
-func RunTicket(ctx context.Context, identifier string) (Result, error) {
+func RunTicket(ctx context.Context, identifier string, merging bool) (Result, error) {
 	if !component.MatchString(identifier) {
 		return Result{}, errors.New("invalid ticket identifier")
 	}
@@ -65,7 +65,14 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{}
-	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
+	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
+	if e.Config.Root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return Result{}, errors.New("cannot resolve state root")
+		}
+		e.Config.Root = filepath.Join(home, ".local", "state", "orca-factory")
+	}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[7]
@@ -78,6 +85,7 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	if e.Config.Model == "" {
 		e.Config.Effort = ""
 	}
+	e.Config.Merging = merging
 	return e.Start(ctx, ticket)
 }
 
