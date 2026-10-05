@@ -3,8 +3,7 @@ import type { Register } from 'claude-code'
 import { renderGraph } from './views/graph'
 import { renderThroughput } from './views/throughput'
 import { renderFailures } from './views/failures'
-import { shouldReload, WATCH_POLL_MS } from './snapshot-watch'
-import type { SnapshotStat } from './snapshot-watch'
+import { WATCH_POLL_MS, shouldReload, type FileStamp } from './snapshot-watch'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -166,6 +165,8 @@ const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0
 // that cost is local).
 let paneOpen = false
 let refreshing = false
+let snapshotStamp: FileStamp | null = null
+let snapshotReloading = false
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -232,6 +233,8 @@ export const __resetSwarmBoardCachesForTests = () => {
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
+  snapshotStamp = null
+  snapshotReloading = false
 }
 
 // Test-only command dispatched by fixtures that trigger several refreshes in a row,
@@ -493,9 +496,8 @@ async function readSnapshot($: Parameters<typeof read>[0]): Promise<Snapshot | n
   return null
 }
 
-function ticketSlices(issues: Snapshot['issues'], now: number, handoffs: Map<string, string>):
-  Pick<Board, 'inFlight' | 'queue' | 'failed' | 'doneToday'> & { issueStates: Record<string, string> } {
-  const all: Ticket[] = issues.map(ticket)
+function splitTickets(all: Ticket[], now: number, handoffs: Map<string, string>):
+  Pick<Board, 'inFlight' | 'queue' | 'failed' | 'doneToday'> {
   const has = (t: Ticket, label: string): boolean => t.labels.includes(label)
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   return {
@@ -504,7 +506,6 @@ function ticketSlices(issues: Snapshot['issues'], now: number, handoffs: Map<str
     failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
       .map(t => ({ ...t, handoff: handoffs.get(t.id) })),
     doneToday: all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime()),
-    issueStates: Object.fromEntries(all.map(t => [t.id, t.state])),
   }
 }
 
@@ -513,30 +514,46 @@ function latestHandoff(comments: Snapshot['comments'][string]): string | undefin
     .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
 }
 
-async function reloadFromSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>): Promise<void> {
+async function reloadSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>, old: Board): Promise<Board> {
   const snapshot = await readSnapshot($)
-  if (snapshot === null) return
+  if (snapshot === null) return old
   const now = Date.now()
+  const at = new Date(now).toTimeString().slice(0, 5)
   const snapshotAgeMs = Math.max(0, now - snapshot.generatedAt * 1000)
-  if (snapshotAgeMs > SNAPSHOT_FRESH_MS) return
-  await update($, board, current => {
-    const { inFlight, queue, failed, doneToday, issueStates } = ticketSlices(snapshot.issues, now, handoffs)
-    for (const t of failed) {
-      const handoff = latestHandoff(snapshot.comments[t.id] ?? [])
-      if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
+  if (snapshotAgeMs > SNAPSHOT_FRESH_MS) return old
+  const all: Ticket[] = snapshot.issues.map(ticket)
+  const { inFlight, queue, failed, doneToday } = splitTickets(all, now, handoffs)
+  const previous = new Map([...old.inFlight, ...old.doneToday].map(t => [t.id, t]))
+  for (const t of [...inFlight, ...doneToday]) {
+    const cached = previous.get(t.id)
+    if (cached) {
+      t.claimedAt = cached.claimedAt
+      t.tokens = cached.tokens
+      t.cost = cached.cost
+      t.gate = cached.gate
+      t.pr = cached.pr
     }
-    const previous = new Map(current.inFlight.map(t => [t.id, t]))
-    return {
-      ...current,
-      inFlight: inFlight.map(t => {
-        const old = previous.get(t.id)
-        return old ? { ...t, gate: old.gate, pr: old.pr, tokens: old.tokens, cost: old.cost, claimedAt: old.claimedAt } : t
-      }),
-      queue, failed, doneToday, issueStates, blockedBy: snapshot.blockedBy,
-      snapshotAgeMs, lastSuccessAt: now, at: new Date(now).toTimeString().slice(0, 5),
-      error: '', linearThrottled: undefined,
-    }
-  })
+  }
+  for (const t of failed.slice(0, 3)) {
+    const handoff = latestHandoff(snapshot.comments[t.id] ?? [])
+    if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
+  }
+  const issueStates = Object.fromEntries(all.map(t => [t.id, t.state]))
+  return {
+    ...old, at, error: '', inFlight, queue, failed, doneToday, blockedBy: snapshot.blockedBy,
+    issueStates, snapshotAgeMs, linearThrottled: undefined, lastSuccessAt: now,
+  }
+}
+
+async function watchSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>) {
+  if (!paneOpen || !SNAPSHOT_FILE || snapshotReloading) return
+  const stat = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
+  const next = stat && { mtimeMs: stat.mtimeMs, size: stat.size }
+  if (shouldReload(snapshotStamp, next)) {
+    snapshotReloading = true
+    try { await update($, board, old => reloadSnapshot($, handoffs, old)) } finally { snapshotReloading = false }
+  }
+  if (next) snapshotStamp = next
 }
 
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
@@ -564,6 +581,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
+  try { const stat = await $.fs.stat(SNAPSHOT_FILE); snapshotStamp = { mtimeMs: stat.mtimeMs, size: stat.size } } catch { snapshotStamp = null }
   const snapshot = await readSnapshot($)
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
@@ -611,9 +629,8 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     issuesResp = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
   }
   const linearOk = issuesResp.ok
-  const { inFlight, queue, failed, doneToday, issueStates: states } = ticketSlices(
-    linearOk ? (issuesResp.data?.result?.issues ?? []) : [], now, handoffs,
-  )
+  const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
+  const { inFlight, queue, failed, doneToday } = splitTickets(all, now, handoffs)
   const error = linearOk || linearThrottled ? '' : 'Linear 限流，沿用旧数据'
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
@@ -870,7 +887,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // state.type per identifier, used to badge dependency-chain nodes. Only populate on a
   // successful Linear read; a failed refresh carries forward the previous map.
   const issueStates: Record<string, string> = linearOk
-    ? states
+    ? Object.fromEntries(all.map(t => [t.id, t.state]))
     : ((old as Board).issueStates ?? {})
 
   // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
@@ -939,7 +956,6 @@ export const register: Register = on => {
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
   let polling = false
-  let watched: SnapshotStat | null | undefined
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board' })
     return next(e)
@@ -953,15 +969,7 @@ export const register: Register = on => {
       polling = true
       await update($, nowAtom, () => Date.now())
       $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      $.clock.every(WATCH_POLL_MS, async () => {
-        if (!paneOpen || !SNAPSHOT_FILE) return
-        const stat = await $.fs.stat(SNAPSHOT_FILE).then(s => ({ mtimeMs: s.mtimeMs, size: s.size }), () => null)
-        if (watched === undefined) { watched = stat; return }
-        if (!shouldReload(watched, stat)) return
-        if (refreshing) return
-        refreshing = true
-        try { await reloadFromSnapshot($, handoffs); watched = stat } finally { refreshing = false }
-      })
+      $.clock.every(WATCH_POLL_MS, () => { if (paneOpen) return watchSnapshot($, handoffs) })
       $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
     return { text: '蜂群看板已打开。' }
