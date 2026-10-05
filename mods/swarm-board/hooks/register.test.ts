@@ -14,13 +14,13 @@ const mount = ($: any, surface: 'terminal' | 'desktop') =>
 
 test('focal header draws', async $ => {
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /in flight/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /在做/ })).toBeDefined()
   await ui.unmount()
 })
 test('lanes draw by default', async $ => {
   const ui = await mount($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /实现中/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /lanes/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /泳道/ })).toBeDefined()
   await ui.unmount()
 })
 test('default lane view shows 实现中 head with its emoji', async $ => {
@@ -47,7 +47,7 @@ test('queue disclosure toggles in swarm view', async $ => {
   const ui = await mount($, 'terminal')
   await ui.press({ key: 'view-swarm' })
   await ui.press({ key: 'toggle-queue' })
-  expect(await ui.find({ type: 'Button', text: /queued/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /待领/ })).toBeDefined()
   await ui.unmount()
 })
 const automationFixture = async ($: any, on: any, installed = true, failure = '') => {
@@ -78,15 +78,15 @@ const automationFixture = async ($: any, on: any, installed = true, failure = ''
 test('automation button remains available after toggle', async ($, on) => {
   await automationFixture($, on)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Button', text: /auto/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /● auto on/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /定时/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /● 定时 开/ })).toBeDefined()
   await ui.press({ key: 'toggle-auto' })
   await ui.redraw()
-  expect(await ui.find({ type: 'Button', text: /auto/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /○ auto off/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /定时/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /○ 定时 关/ })).toBeDefined()
   await ui.press({ key: 'toggle-auto' })
   await ui.redraw()
-  expect(await ui.find({ type: 'Button', text: /● auto on/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /● 定时 开/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -95,7 +95,7 @@ test('failed automation edit preserves state and shows the reason', async ($, on
   const ui = await mount($, 'terminal')
   await ui.press({ key: 'toggle-auto' })
   await ui.redraw()
-  expect(await ui.find({ type: 'Button', text: /● auto on/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /● 定时 开/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /Automation unavailable/ })).toBeDefined()
   await ui.unmount()
 })
@@ -103,8 +103,8 @@ test('failed automation edit preserves state and shows the reason', async ($, on
 test('missing automation shows an uninstalled notice without a toggle', async ($, on) => {
   await automationFixture($, on, false)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /auto: 未安装/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /auto/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /定时：未安装/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /定时/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -347,7 +347,7 @@ test('queue warning fires when precheck declares 0 claimable', async ($, on) => 
     stdout: 'claimable= in_flight=0 max=10\nstale=\nhealth=live=0 max=10 released=0 escalated=0 failed_backlog=0',
     stderr: 'linear_calls=5' })
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /待领 2 张但 precheck 判定可领 0 张/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /待领 2 张。precheck 判定可领 0 张。/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -374,7 +374,7 @@ test('queue status becomes uncertain when precheck stdout is empty on a non-zero
   await queueFixture($, on, 2, { exitCode: 3, runNumber: 184,
     stdout: '', stderr: '不确定: linear rate limited\nlinear_calls=1' })
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /无法判断可领票数/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /读取失败/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /linear rate limited/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /可领 0 张/ })).toBeUndefined()
   await ui.unmount()
@@ -384,7 +384,7 @@ test('queue card falls back to the uncertain explanation when precheck could not
   await queueFixture($, on, 1, { exitCode: 3, runNumber: 184,
     stdout: '', stderr: '不确定: linear rate limited\nlinear_calls=1' })
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /原因见上方/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /读取失败：linear rate limited/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -392,9 +392,9 @@ test('uncertain fires on exit 3 even when stdout carries prune output', async ($
   await queueFixture($, on, 1, { exitCode: 3, runNumber: 195,
     stdout: '已删除分支 feat/x（原为 abc）。', stderr: '不确定: linear rate limited\nlinear_calls=2' })
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /无法判断可领票数/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /读取失败/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /linear rate limited/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /precheck 未能读取数据/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /⚠ 读取失败：/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /未选中/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -403,7 +403,7 @@ test('exit 1 with claimable line below prune output stays a normal no-ticket res
   await queueFixture($, on, 1, { exitCode: 1, runNumber: 196,
     stdout: '已删除分支 feat/x。\nclaimable= in_flight=0 max=10', stderr: '' })
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /无法判断/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /读取失败/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /可领 0 张/ })).toBeDefined()
   await ui.unmount()
 })
@@ -648,13 +648,13 @@ test('missing snapshot falls back to live Linear without error', async ($, on) =
   expect(fixture.orcaLinearCalls()).toBeGreaterThan(0)
 })
 
-test('blockedBy renders 等待依赖 reason on a queue card', async ($, on) => {
+test('blockedBy renders 等依赖 reason on a queue card', async ($, on) => {
   await snapshotFixture($, on, {
     issues: [{ identifier: 'ZII-855', title: '等依赖的票', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-04T00:00:00Z', priority: 2 }],
     blockedBy: { 'ZII-855': ['ZII-853'] },
   })
   const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
-  expect(await ui.find({ type: 'Text', text: /等待依赖：ZII-853/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /等 853/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -701,7 +701,7 @@ test('blockedBy suppresses the 0-claimable warning when every queue ticket is bl
   const ui = await mount($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /全部待领票都在等依赖/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /最先放行的阻塞者：ZII-853/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /但 precheck 判定可领 0 张/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /precheck 判定可领 0 张/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -714,6 +714,113 @@ test('precheck failed line surfaces as the uncertain reason without duplicating 
   expect(await ui.find({ type: 'Text', text: /linear_network_error/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /网络波动/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /退出码 3（退出码 3）/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+const chainFixture = async (
+  $: any,
+  on: any,
+  opts: { issues?: unknown[]; blockedBy?: Record<string, string[]> },
+) => {
+  __resetSwarmBoardCachesForTests()
+  let refreshed: () => void = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
+      return { value: JSON.stringify({
+        generatedAt: Math.floor(Date.now() / 1000),
+        issues: opts.issues ?? [],
+        comments: {},
+        blockedBy: opts.blockedBy ?? {},
+      }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+}
+const queueIssue = (id: string) => ({
+  identifier: id, title: 'q-' + id, state: { type: 'unstarted' },
+  labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-04T00:00:00Z', priority: 2,
+})
+const extIssue = (id: string, state: string) => ({
+  identifier: id, title: 'x-' + id, state: { type: state },
+  labels: [], updatedAt: '2026-10-04T00:00:00Z',
+})
+const mountWide = ($: any, bodyColumns = 108) =>
+  $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns } })
+
+test('queue stats line counts tickets per group', async ($, on) => {
+  await chainFixture($, on, {
+    issues: [queueIssue('ZII-855'), queueIssue('ZII-860')],
+    blockedBy: { 'ZII-855': ['ZII-853'] },
+  })
+  const ui = await mount($, 'terminal')
+  // #then — one blocked (ZII-855), one unknown (ZII-860, no precheck); none claimable or warn.
+  expect(await ui.find({ type: 'Text', text: /待领 2 · 🟢 可放行 0 · ⛓ 等依赖 1 · ⚠ 异常 0 · 未知 1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('chain line shows external completed, started and queued badges', async ($, on) => {
+  await chainFixture($, on, {
+    issues: [extIssue('ZII-853', 'completed'), extIssue('ZII-854', 'started'), queueIssue('ZII-855'), queueIssue('ZII-856')],
+    blockedBy: { 'ZII-855': ['ZII-853'], 'ZII-856': ['ZII-854'] },
+  })
+  const ui = await mountWide($)
+  expect(await ui.find({ type: 'Text', text: /链：/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /853✓/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /854🔨/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /855📥/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('blocked card lists blockers with short id and badge', async ($, on) => {
+  await chainFixture($, on, {
+    issues: [extIssue('ZII-855', 'started'), queueIssue('ZII-857')],
+    blockedBy: { 'ZII-857': ['ZII-855'] },
+  })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /等 855🔨/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('warn group sits above the other groups when any ticket is warn', async ($, on) => {
+  await queueFixture($, on, 2, { exitCode: 3, runNumber: 220,
+    stdout: '', stderr: '不确定: linear rate limited\nlinear_calls=1' })
+  const ui = await mount($, 'terminal')
+  // #then — the warn heading appears, and the ⚠ card badge for one queue ticket precedes any 🟢/⛓ heading.
+  const warnHead = await ui.find({ type: 'Text', text: /⚠ 异常 \(2\)/ })
+  expect(warnHead).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /⚠ ZII-1/ })).toBeDefined()
+})
+
+test('each group folds into +N when it holds more than five tickets', async ($, on) => {
+  await chainFixture($, on, {
+    issues: Array.from({ length: 7 }, (_, i) => queueIssue('ZII-' + (900 + i))),
+    blockedBy: {}, // every ticket is unknown
+  })
+  const ui = await mount($, 'terminal')
+  // #then — stats show seven in unknown, and only five cards render under the group.
+  expect(await ui.find({ type: 'Text', text: /未知 7/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^\+2$/ })).toBeDefined()
+})
+
+test('narrow lane skips the dependency chain line', async ($, on) => {
+  await chainFixture($, on, {
+    issues: [extIssue('ZII-853', 'completed'), queueIssue('ZII-855')],
+    blockedBy: { 'ZII-855': ['ZII-853'] },
+  })
+  const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 60 } })
+  expect(await ui.find({ type: 'Text', text: /链：/ })).toBeUndefined()
   await ui.unmount()
 })
 
