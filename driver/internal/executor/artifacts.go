@@ -19,7 +19,7 @@ CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
 LANE: {{.Ticket.Lane}}
 Gate spec: {{.Spec}}
-Constraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. Do not merge or open a PR.
+Constraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. Do not merge or open a PR. Do not use orca orchestration ask: no coordinator will answer. If you cannot finish (for example CHECK, SCOPE or the gate spec looks wrong), commit and push what you have, then report worker_done --outcome failed with the exact reason in the body.
 Delivery: Commit the completed changes and push only with git push origin HEAD:refs/heads/{{.Branch}}. Report the outcome through the injected Orca worker_done protocol.
 `
 const specTemplate = `UNIT: {{.Unit}}
@@ -109,6 +109,8 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		return false
 	}
 	clean := func(s string) string { return strings.Trim(strings.TrimSpace(s), "` ") }
+	// Single-line fields end at their own line; the following 断言 line belongs to the ticket text.
+	singleLine := func(s string) bool { return s == "CHECK" || s == "CHECK_TEST_FILES" || s == "CHECK_IS_NEW_TEST" }
 	for _, line := range strings.Split(description, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
@@ -118,6 +120,12 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		text := strings.TrimPrefix(clean(strings.TrimLeft(trimmed, "#")), "**")
 		if strings.HasSuffix(text, "**") {
 			text = strings.TrimSuffix(text, "**")
+		}
+		if heading {
+			// A heading may carry a note, e.g. 「## 要做（接口票）」 or 「## SCOPE (新建)」.
+			if i := strings.IndexAny(text, "（("); i > 0 {
+				text = strings.TrimSpace(text[:i])
+			}
 		}
 		if known(text) {
 			section = text
@@ -132,7 +140,14 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 			section = key
 			if value = clean(strings.TrimPrefix(value, "**")); value != "" {
 				fields[key] = append(fields[key], value)
+				if singleLine(key) {
+					section = ""
+				}
 			}
+			continue
+		}
+		if ok && key == "断言" {
+			section = ""
 			continue
 		}
 		if heading {
@@ -143,12 +158,25 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		}
 	}
 	t.Todo = strings.TrimSpace(strings.Join(fields["要做"], "\n"))
-	t.Check = strings.TrimSpace(strings.Join(fields["CHECK"], " "))
-	t.Scope = strings.TrimSpace(strings.Join(fields["SCOPE"], " "))
-	t.TestFiles = strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " "))
+	t.Check = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["CHECK"], " ")))
+	t.Scope = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["SCOPE"], " ")))
+	t.TestFiles = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " ")))
 	t.NewTest = strings.TrimSpace(strings.Join(fields["CHECK_IS_NEW_TEST"], " ")) == "yes"
 	if t.Todo == "" || t.Check == "" || t.Scope == "" {
 		return Ticket{}, fmt.Errorf("ticket requires 要做, CHECK and SCOPE")
 	}
 	return t, nil
+}
+
+// unescapeMarkdown reverses the CommonMark backslash escapes Linear adds when it
+// stores a description (`\*` for `*`, `\\` for `\`); other backslashes stay.
+func unescapeMarkdown(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+1 < len(s) && strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", s[i+1]) >= 0 {
+			i++
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
 }
