@@ -857,11 +857,14 @@ const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, miss
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
-  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
-  on('process.run', (_: unknown, e: { argv: string[]; timeoutMs: number }) => {
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-calls')) throw new Error('ENOENT')
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[]; init: { timeoutMs: number } }) => {
     if (e.argv[0] === 'orca-factory-driver') {
       expect(e.argv).toEqual(['orca-factory-driver', 'status', '--json'])
-      expect(e.timeoutMs).toBe(20_000)
+      expect(e.init.timeoutMs).toBe(20_000)
       if (missing) throw new Error('command not found')
       return { value: { stdout, stderr: '', exitCode } }
     }
