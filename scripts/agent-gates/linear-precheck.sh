@@ -604,7 +604,9 @@ scope_of() {
 
 # True iff any glob in A matches any token in B, either direction, same pattern rule as gate.sh match_any
 # (`*` crosses `/`). A literal pair also matches.
-scope_overlap() {
+scope_overlap() (
+  # Split scope tokens without expanding globs against this checkout.
+  set -f
   local a="$1" b="$2" x y
   for x in $a; do
     for y in $b; do
@@ -613,6 +615,19 @@ scope_overlap() {
     done
   done
   return 1
+)
+
+# Only a complete, freshly fetched set of unit diffs can replace the declared scope.
+branch_scope_of() {
+  local refs ref files
+  refs="$(git for-each-ref --format='%(refname)' "refs/remotes/origin/agent/$1/")" || return 1
+  [[ -n "$refs" ]] || return 1
+  : > "$precheck_tmp/branch-scope"
+  while IFS= read -r ref; do
+    files="$(git diff --name-only --no-renames "origin/main...$ref" --)" || return 1
+    [[ -z "$files" ]] || printf '%s\n' "$files" >> "$precheck_tmp/branch-scope"
+  done <<<"$refs"
+  sort -u "$precheck_tmp/branch-scope"
 }
 
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
@@ -637,12 +652,22 @@ for id in $in_flight_ids; do
   fi
 done
 in_flight=${#live[@]}
-# Cache every live ticket's SCOPE once; a ticket whose SCOPE is unknown or unreadable contributes nothing
-# and never blocks a candidate. When AGENT_SCOPE_AVOID=0 the cache stays empty so no candidate is blocked.
+# Fetch once per scan, pruning deleted unit refs. Failures retain declared SCOPE;
+# AGENT_SCOPE_AVOID=0 neither fetches nor populates the conflict cache.
 mkdir "$precheck_tmp/live-scope"
 if (( SCOPE_AVOID == 1 && ${#live[@]} > 0 )); then
+  branch_fetch_ok=0
+  if command -v timeout >/dev/null 2>&1; then
+    if timeout 20 git fetch --quiet --prune origin '+refs/heads/agent/*:refs/remotes/origin/agent/*' 2>/dev/null; then branch_fetch_ok=1; fi
+  else
+    if perl -e 'alarm 20; exec @ARGV' -- git fetch --quiet --prune origin '+refs/heads/agent/*:refs/remotes/origin/agent/*' 2>/dev/null; then branch_fetch_ok=1; fi
+  fi
   for id in "${live[@]}"; do
-    if s="$(scope_of "$id")" && [[ -n "$s" ]]; then printf '%s' "$s" > "$precheck_tmp/live-scope/$id"; fi
+    if (( branch_fetch_ok == 1 )) && s="$(branch_scope_of "$id" 2>/dev/null)"; then
+      printf '%s' "$s" > "$precheck_tmp/live-scope/$id"
+    elif s="$(scope_of "$id")" && [[ -n "$s" ]]; then
+      printf '%s' "$s" > "$precheck_tmp/live-scope/$id"
+    fi
   done
 fi
 # How many candidates this run may accept: capped by free MAX_IN_FLIGHT slots, then by AGENT_BATCH_SIZE

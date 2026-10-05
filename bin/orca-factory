@@ -422,6 +422,15 @@ LEDGER_SLEEP
   )
   # Exercise claim recovery through the installed precheck and recorded Orca writes.
   (
+    git init -q --bare "$SELFTEST_TMP/precheck-origin.git"
+    git init -q "$SELFTEST_TMP/precheck-repo"
+    cd "$SELFTEST_TMP/precheck-repo"
+    git config user.name selftest
+    git config user.email selftest@example.invalid
+    git checkout -qb main
+    git commit -qm base --allow-empty
+    git remote add origin "$SELFTEST_TMP/precheck-origin.git"
+    git push -q origin main
     mkdir -p "$SELFTEST_TMP/precheck-bin"
     export PATH="$SELFTEST_TMP/precheck-bin:$PATH" PRECHECK_TEST_DIR="$SELFTEST_TMP"
     export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=precheck-test
@@ -466,6 +475,8 @@ case "$*" in
       stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
+      branch-*)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\nmods/x/*\n"}}}' ;;
       scope-overlap)
         jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/foo.sh core/bar.sh\n"}}}' ;;
       scope-separate|scope-missing|scope-fail)
@@ -478,6 +489,7 @@ case "$*" in
     esac ;;
   'linear issue TEST-2 --json')
     case "$PRECHECK_MODE" in
+      branch-*) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\nmods/x/b.txt\n"}}}' ;;
       scope-overlap) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/bar.sh core/qux.sh\n"}}}' ;;
       scope-separate) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/qux.sh\n"}}}' ;;
       scope-missing) jq -nc '{ok:true,result:{issue:{description:"## 其他小节\n\n无 SCOPE\n"}}}' ;;
@@ -509,7 +521,7 @@ case "$*" in
            createdAt:(if ($mode | test("^overrun-")) then ((now-7200)|todateiso8601)
                      elif is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
                      else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
-         + (if $mode == "recent" or $mode == "overrun-recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "recent" or $mode == "overrun-recent" or ($mode | test("^scope-|^branch-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
          + (if $mode == "overrun-limit" or $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
         meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
@@ -714,6 +726,48 @@ PRECHECK_GH
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
     echo "selftest: precheck caps worker run time"
+    # Real remote refs: fetch must discover updates, prune deleted units, and fail conservatively.
+    (
+      export AGENT_SCOPE_AVOID=1 AGENT_BATCH_SIZE=1 AGENT_MAX_IN_FLIGHT=2
+      git checkout -qb branch-fixture
+      mkdir -p mods/x
+      echo a > mods/x/a.txt
+      git add mods/x/a.txt
+      git commit -qm 'unit a'
+      git push -q origin HEAD:refs/heads/agent/TEST-1/a
+      for PRECHECK_MODE in branch-separate branch-overlap branch-missing branch-fetch-fail; do
+        export PRECHECK_MODE
+        case "$PRECHECK_MODE" in
+          branch-overlap)
+            git checkout -q main
+            mkdir -p mods/x
+            echo b > mods/x/b.txt
+            git add mods/x/b.txt
+            git commit -qm 'unit b'
+            git push -q origin HEAD:refs/heads/agent/TEST-1/b ;;
+          branch-missing)
+            git push -q origin :refs/heads/agent/TEST-1/a :refs/heads/agent/TEST-1/b ;;
+          branch-fetch-fail)
+            git push -q origin branch-fixture:refs/heads/agent/TEST-1/a
+            git fetch -q origin
+            git remote set-url origin "$SELFTEST_TMP/missing-origin" ;;
+        esac
+        git checkout -q --detach origin/main
+        rm -rf "$AGENT_PRECHECK_CACHE_DIR"
+        precheck_status=0
+        bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || precheck_status=$?
+        if [[ "$PRECHECK_MODE" == branch-separate ]]; then
+          [[ "$precheck_status" == 0 ]] && grep -q '^claimable=TEST-2 in_flight=1 ' "$SELFTEST_TMP/precheck.out" \
+            || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail 'selftest: actual branch changes should allow disjoint candidate'; }
+        else
+          [[ "$precheck_status" == 1 ]] && grep -q '^claimable= in_flight=1 ' "$SELFTEST_TMP/precheck.out" \
+            && grep -q '^skip TEST-2: scope overlaps TEST-1$' "$SELFTEST_TMP/precheck.err" \
+            || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: branch scope must block ($PRECHECK_MODE)"; }
+        fi
+      done
+      git remote set-url origin "$SELFTEST_TMP/precheck-origin.git"
+    )
+    echo "selftest: precheck scope uses actual branch changes"
     # Read reuse and rate limiting have their own fixture, independent of recovery cases.
     mv "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/orca-fixture"
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_READS'
