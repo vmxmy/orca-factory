@@ -1,5 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
+import { driverHeadText } from './driver-head'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -980,6 +981,7 @@ export const register: Register = on => {
     }
     // Why each queued ticket is still waiting. `null` means no reason text; the row is skipped.
     const lp = (b as Board).lastPrecheck
+    const driverOnline = b.driver?.state === 'ok'
     const blockedBy = (b as Board).blockedBy
     const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
@@ -987,10 +989,11 @@ export const register: Register = on => {
       const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed') : []
       return open.length > 0 ? open : undefined
     }
-    // Group-aware ticket classification: 等依赖 wins over claimable; precheck signals follow.
+    // Dependencies take precedence over the online driver and precheck signals.
     type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
     const queueGroupOf = (t: Ticket): QueueGroup => {
       if (blockersOf(t.id)) return 'blocked'
+      if (driverOnline) return 'claimable'
       if (!lp) return 'unknown'
       if (lp.claimable.includes(t.id)) return 'claimable'
       if (lp.uncertain) return 'warn'
@@ -1117,7 +1120,7 @@ export const register: Register = on => {
         const shown = blockers.slice(0, 3).map(id => shortId(id) + stateBadge(id)).join(' ')
         return '等 ' + shown + (blockers.length > 3 ? ' +' + (blockers.length - 3) : '')
       }
-      if (group === 'claimable') return '已入选，等 coordinator 领取'
+      if (group === 'claimable') return driverOnline ? '驱动器下一轮巡检领取' : '已入选，等 coordinator 领取'
       if (group === 'warn') {
         if (lp?.uncertain) return '读取失败：' + (lp.uncertainReason || '退出码 ' + lp.exitCode)
         const skip = lp?.skips[t.id]
@@ -1145,6 +1148,8 @@ export const register: Register = on => {
     const nextRunText = nextRunAtMs > 0 ? (nextRunRemainSec > 0 ? secs(nextRunRemainSec) : '即将') : '—'
     const resultText = (code: number) => (code === 0 ? '✓' : '跳过')
     const buildQueueStatus = (): string | null => {
+      const driverHead = driverHeadText(b.driver, now)
+      if (driverHead !== null) return driverHead
       if (!lp) return null
       const head = '⏳ 下次扫描 ' + nextRunText
         + ' · 上次扫描 run ' + lp.runNumber + ' ' + resultText(lp.exitCode)
