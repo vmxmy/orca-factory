@@ -36,3 +36,22 @@ func TestReviewSendsPromptAndDiffOnStdin(t *testing.T) {
 }
 
 func fileBase(path string) string { return path[strings.LastIndex(path, "/")+1:] }
+
+func TestMergeBaseAgainstFreshMain(t *testing.T) {
+	var calls []string
+	c := &Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		calls = append(calls, strings.Join(s.Args, " "))
+		if s.Args[0] == "merge-base" {
+			return []byte("rebased-onto\n"), nil
+		}
+		return nil, nil
+	}}
+	base, err := c.MergeBase(context.Background(), t.TempDir(), "rebased-head")
+	if err != nil || base != "rebased-onto" {
+		t.Fatalf("base=%q err=%v", base, err)
+	}
+	want := []string{"fetch --no-tags origin main", "merge-base FETCH_HEAD rebased-head"}
+	if strings.Join(calls, "|") != strings.Join(want, "|") {
+		t.Fatalf("calls=%q", calls)
+	}
+}

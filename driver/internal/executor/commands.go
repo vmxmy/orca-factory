@@ -59,6 +59,23 @@ func (c *Commands) Head(ctx context.Context, repo, branch string) (string, error
 	}
 	return sha, nil
 }
+
+// MergeBase fetches main and returns its merge-base with head.
+func (c *Commands) MergeBase(ctx context.Context, repo, head string) (string, error) {
+	err := infra.Retry(ctx, infra.Options{Idempotent: true}, func(ctx context.Context) error {
+		_, runErr := c.run(ctx, repo, "git", "fetch", "--no-tags", "origin", "main")
+		return runErr
+	})
+	if err != nil {
+		return "", fmt.Errorf("main fetch failed: %w", err)
+	}
+	b, err := c.run(ctx, repo, "git", "merge-base", "FETCH_HEAD", head)
+	base := strings.TrimSpace(string(b))
+	if err != nil || base == "" {
+		return "", fmt.Errorf("merge-base lookup failed: %w", err)
+	}
+	return base, nil
+}
 func (c *Commands) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
 	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--name-only", "-z", base+".."+head, "--")
 	if err != nil {

@@ -2,6 +2,7 @@
 package executor
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,7 @@ type Tools interface {
 	Baseline(context.Context, string) (string, error)
 	Head(context.Context, string, string) (string, error)
 	ChangedFiles(context.Context, string, string, string) ([]string, error)
+	MergeBase(context.Context, string, string) (string, error)
 	Gate(context.Context, string, string, string) (string, error)
 	Review(context.Context, string, string, string, *float64) (string, string, error)
 }
@@ -166,7 +168,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		return nil
 	}
 	defer func() { err = errors.Join(err, release()) }()
-	var baseline, taskID, spec, brief, head, failureOutput, reviewerTier string
+	// diffBase is the head's merge-base with current main: a worker that rebased
+	// must not be charged for main's commits since the claim baseline.
+	var baseline, diffBase, taskID, spec, brief, head, failureOutput, reviewerTier string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -213,7 +217,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
 		}
 		if next.Phase == machine.PhaseCorrection {
-			summary, err := e.failSummary(ctx, c, baseline, branch, head, failureOutput, ev)
+			summary, err := e.failSummary(ctx, c, cmp.Or(diffBase, baseline), branch, head, failureOutput, ev)
 			if err != nil {
 				return err
 			}
@@ -393,6 +397,15 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		event = machine.EvBranchOK
 		if head == "" || head == baseline {
 			event = machine.EvBranchNo
+		} else {
+			err = e.retryRead(ctx, t, &result, "merge-base lookup", func() error {
+				var readErr error
+				diffBase, readErr = e.Tools.MergeBase(ctx, c.Repo, head)
+				return readErr
+			})
+			if err != nil {
+				return result, err
+			}
 		}
 		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerHuman {
 			return result, err
@@ -445,7 +458,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		for result.State.Phase == machine.PhaseReview {
 			var reviewErr error
-			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, baseline, head, t.Estimate)
+			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
 			if stop := dependencyStop(ctx, reviewErr); stop != nil {
 				return result, stop
 			}
