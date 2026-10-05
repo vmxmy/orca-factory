@@ -86,10 +86,7 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 	if err != nil {
 		return "", err
 	}
-	id := receiptString(receipt, "taskId")
-	if id == "" {
-		id = nestedString(receipt, "task", "id")
-	}
+	id := receiptID(receipt, "task")
 	if id == "" {
 		return "", errors.New("child task receipt missing ID")
 	}
@@ -155,33 +152,13 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if !hasEffect(fx, "worker-start-child-task-reuse-worktree") {
 				return errors.New("missing correction worker effect")
 			}
-			n := result.State.Corrections + 1
-			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), scopedRequest(t, c, "child", n))
-			if err != nil {
-				return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", err)
-			}
-			cp.Task = child
-			cp.Dispatch = ""
-			cp.Pending = true
 			cp.Corrections = result.State.Corrections
-			if err = saveCheckpoint(c, t, *cp); err != nil {
+			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
+			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
 				return err
 			}
-			receipt, err := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
-			if err != nil {
-				return fmt.Errorf("correction worker start uncertain; reconcile request before retry: %w", err)
-			}
-			cp.Dispatch = receiptString(receipt, "dispatchId")
-			// The CLI receipt is authoritative if it supplies a task ID.
-			if task := receiptString(receipt, "taskId"); task != "" {
-				cp.Task = task
-			}
-			if cp.Dispatch == "" {
-				return errors.New("correction receipt missing dispatch")
-			}
 			result.DispatchID = cp.Dispatch
-			cp.Pending = false
-			return saveCheckpoint(c, t, *cp)
+			return nil
 		})
 		return err == nil, err
 	}

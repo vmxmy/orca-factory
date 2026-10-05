@@ -21,6 +21,7 @@ type checkpoint struct {
 	Corrections                             int
 	Pending                                 bool
 	Completed                               bool
+	PendingParent                           string `json:",omitempty"`
 }
 
 func checkpointPath(c Config, t Ticket) string {
@@ -84,7 +85,11 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	if err != nil {
 		return Result{}, errors.New("resume PR lookup failed")
 	}
-	if pr != nil {
+	cp, err := readCheckpoint(c, t)
+	if err != nil {
+		return Result{}, err
+	}
+	if pr != nil && (cp == nil || !cp.Pending) {
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return Result{}, errors.New("invalid existing PR")
 		}
@@ -101,20 +106,13 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		}
 		return result, nil
 	}
-	cp, err := readCheckpoint(c, t)
-	if err != nil {
-		return Result{}, err
-	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
 		receipt, callErr := e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 		if callErr != nil {
 			return Result{}, errors.New("resume run reconciliation failed")
 		}
-		run := receiptString(receipt, "runId")
-		if run == "" {
-			run = nestedString(receipt, "run", "id")
-		}
+		run := receiptID(receipt, "run")
 		if run == "" {
 			return Result{}, errors.New("resume run receipt missing ID")
 		}
@@ -122,18 +120,16 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		if callErr != nil {
 			return Result{}, errors.New("resume old task lookup failed")
 		}
-		for _, task := range tasks {
-			if (task.RunID != "" && task.RunID != run) || !strings.Contains(task.Spec, branch) {
-				continue
-			}
-			if cp != nil {
-				return Result{}, errors.New("ambiguous old tasks; reconcile active dispatch")
-			}
-			cp = &checkpoint{Run: run, Task: task.ID, Dispatch: task.DispatchID}
+		cp, err = recoverDispatch(tasks, &checkpoint{Run: run}, branch)
+		if err != nil {
+			return Result{}, err
 		}
 	}
+	if cp != nil && cp.Pending {
+		cp.Completed, cp.Settled = false, false
+	}
 	r := e.recovery()
-	if head != "" && r != nil {
+	if head != "" && r != nil && (cp == nil || (!cp.Pending && cp.Task == "")) {
 		complete, err := r.Complete(ctx, c.Repo, head)
 		if err != nil {
 			return Result{}, errors.New("resume commit lookup failed")
@@ -145,50 +141,25 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 			cp.Completed = true
 		}
 	}
-	if cp != nil && cp.Run != "" && cp.Task != "" {
-		tasks, err := e.Orca.TaskList(ctx, cp.Run)
-		if err != nil {
-			return Result{}, errors.New("resume task lookup failed")
-		}
-		for _, task := range tasks {
-			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != "" && task.DispatchID != cp.Dispatch) {
-				continue
-			}
-			report, err := task.WorkerReport()
-			if err != nil {
-				return Result{}, errors.New("resume task result invalid")
-			}
-			if report != nil {
-				if task.DispatchID != "" {
-					cp.Dispatch = task.DispatchID
-				}
-				cp.Pending = false
-				cp.Settled = true
-				if report.Outcome == "succeeded" {
-					cp.Completed = true
-				}
-			}
-		}
-	}
 	if cp != nil {
-		if cp.Pending && !cp.Completed && cp.Task == "" {
-			// The previous executor's request ID belongs to its terminal and cannot be
-			// replayed here; reconcile by the run's tasks instead.
-			task, found, err := e.pendingWorker(ctx, cp.Run, branch)
+		if cp.Run != "" && (cp.Task != "" || cp.Pending) {
+			tasks, err := e.Orca.TaskList(ctx, cp.Run)
+			if err != nil {
+				return Result{}, fmt.Errorf("resume task lookup failed: %w", err)
+			}
+			cp, err = recoverDispatch(tasks, cp, branch)
 			if err != nil {
 				return Result{}, err
 			}
-			if !found {
-				return e.Execute(ctx, t)
-			}
-			cp.Task, cp.Dispatch, cp.Pending = task.ID, task.DispatchID, false
 		}
-		if cp.Pending && !cp.Completed {
+		if cp.Pending {
 			return Result{}, errors.New("unresolved worker start; reconcile request before retry")
 		}
-		// task-list carries no dispatch_id, so an adopted task may lack one.
 		if !cp.Completed && cp.Task == "" {
 			return Result{}, errors.New("incomplete worker recovery state")
+		}
+		if err := saveCheckpoint(c, t, *cp); err != nil {
+			return Result{}, err
 		}
 		return e.execute(ctx, t, cp)
 	}
@@ -233,28 +204,4 @@ func worktreeReceipt(r orca.Receipt) string {
 		}
 	}
 	return ""
-}
-
-// pendingWorker finds the task an unconfirmed worker-start may have created.
-func (e *Executor) pendingWorker(ctx context.Context, run, branch string) (orca.Task, bool, error) {
-	if run == "" {
-		return orca.Task{}, false, nil
-	}
-	tasks, err := e.Orca.TaskList(ctx, run)
-	if err != nil {
-		return orca.Task{}, false, fmt.Errorf("pending worker lookup failed: %w", err)
-	}
-	var found []orca.Task
-	for _, task := range tasks {
-		if (task.RunID == "" || task.RunID == run) && strings.Contains(task.Spec, branch) {
-			found = append(found, task)
-		}
-	}
-	switch len(found) {
-	case 0:
-		return orca.Task{}, false, nil
-	case 1:
-		return found[0], true, nil
-	}
-	return orca.Task{}, false, errors.New("ambiguous pending worker tasks; reconcile active dispatch")
 }

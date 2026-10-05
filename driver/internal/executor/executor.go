@@ -256,10 +256,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			if callErr != nil {
 				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", callErr)
 			}
-			result.RunID = receiptString(receipt, "runId")
-			if result.RunID == "" {
-				result.RunID = nestedString(receipt, "run", "id")
-			}
+			result.RunID = receiptID(receipt, "run")
 			if result.RunID == "" {
 				return errors.New("Orca run receipt missing ID")
 			}
@@ -297,24 +294,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			result.DispatchID = cp.Dispatch
 			return nil
 		}
-		cp.Pending = true
-		if err := saveCheckpoint(c, t, cp); err != nil {
+		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
 			return err
 		}
-		receipt, callErr = e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
-		result.DispatchID = receiptString(receipt, "dispatchId")
-		taskID = receiptString(receipt, "taskId")
-		if callErr != nil {
-			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", callErr)
-		}
-		if result.DispatchID == "" || taskID == "" {
-			return errors.New("worker receipt missing task or dispatch")
-		}
-		cp.Task = taskID
-		cp.Dispatch = result.DispatchID
-		cp.Worktree = worktreeReceipt(receipt)
-		cp.Pending = false
-		return saveCheckpoint(c, t, cp)
+		taskID, result.DispatchID = cp.Task, cp.Dispatch
+		return nil
 	})
 	if err != nil {
 		return result, err
@@ -585,15 +569,4 @@ func pause(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// runRequest scopes Run mutations to the executor terminal: Orca rejects a reused
-// request ID whose input differs (request_mismatch), and the caller is part of
-// that input, so each executor terminal needs its own request while a retry in
-// the same terminal stays an idempotent replay.
-func runRequest(t Ticket, c Config, step string) string { return scopedRequest(t, c, step, 1) }
-
-// scopedRequest applies the same terminal scope to every Orca mutation.
-func scopedRequest(t Ticket, c Config, step string, n int) string {
-	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, n)
 }
