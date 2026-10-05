@@ -97,6 +97,7 @@ func (f *fakeGitHub) CreatePR(_ context.Context, owner, repo string, r github.Cr
 type fakeTools struct {
 	head                   string
 	gateCalls, reviewCalls int
+	reviewBase             string
 }
 
 func (*fakeTools) Baseline(context.Context, string) (string, error)       { return "base-sha", nil }
@@ -112,7 +113,11 @@ func (f *fakeTools) Gate(_ context.Context, repo, head, spec string) (string, er
 	}
 	return "UNIT      executor\nVERDICT   green\nSTEP      all\nREASON    all gates passed\nEVIDENCE  \nSCOPE     unit/*\nLANE      2\n", nil
 }
-func (f *fakeTools) Review(context.Context, string, string, string, *float64) (string, string, error) {
+func (*fakeTools) MergeBase(context.Context, string, string) (string, error) {
+	return "merge-base-sha", nil
+}
+func (f *fakeTools) Review(_ context.Context, _, base, _ string, _ *float64) (string, string, error) {
+	f.reviewBase = base
 	f.reviewCalls++
 	return "review notes\n{\"verdict\":\"green\",\"step\":\"review\"}", "default", nil
 }
@@ -141,6 +146,9 @@ func TestMainPath(t *testing.T) {
 	}
 	if o.releases != 1 || tools.gateCalls != 1 || tools.reviewCalls != 1 {
 		t.Fatalf("release=%d gate=%d review=%d", o.releases, tools.gateCalls, tools.reviewCalls)
+	}
+	if tools.reviewBase != "merge-base-sha" {
+		t.Fatalf("review base=%q; review must diff against the head's merge-base with current main, not the claim baseline", tools.reviewBase)
 	}
 	board := []string{"in-progress driver: worker 运行中", "in-review driver: 分支检查", "in-review driver: gate", "in-review driver: 审查", "in-review driver: 开 PR", "in-review driver: 排队合并"}
 	if !reflect.DeepEqual(o.boardUpdates, board) {
