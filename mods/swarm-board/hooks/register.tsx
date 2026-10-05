@@ -36,7 +36,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.12'
+const MOD_VERSION = '0.3.13'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -107,6 +107,12 @@ const showQueue = atom({ plugin: 'swarm-board', key: 'showQueue' } as const, fal
 const detail = atom({ plugin: 'swarm-board', key: 'detail' } as const, false)
 const nowAtom = atom({ plugin: 'swarm-board', key: 'now' } as const, 0)
 const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0)
+// Tracks whether the pane is currently open in this plugin VM. `command.run` for `/swarm`
+// flips it on; the `ui.close` hook flips it off when the person closes the pane. The 60 s
+// refresh timer skips its callback while this is false, so a closed pane stops calling
+// `orca`, `gh` or `orca linear …` (the local Linear counter file is still read because
+// that cost is local).
+let paneOpen = false
 let refreshing = false
 
 const parseEnv = (text: string): Record<string, string> =>
@@ -171,7 +177,14 @@ export const __resetSwarmBoardCachesForTests = () => {
   HOME = ''
   TMP_DIR = ''
   usageCache = null
+  paneOpen = false
 }
+
+// Command the test runner dispatches to simulate the person closing the pane: the matching
+// `command.run` handler calls `$.ui.close(...)` so the engine runs the plugin's `ui.close`
+// hook in the plugin VM, which flips `paneOpen` for the timer callback that reads it there.
+// The testing harness exposes no direct way to send a `ui.close` event.
+export const SIMULATE_CLOSE_COMMAND = 'swarm:__simulate-close-for-tests__'
 
 const rowsOf = (kind: 'claude' | 'codex', data: any, paths: string[]): Row[] => {
   const rows: Row[] = []
@@ -750,14 +763,29 @@ export const register: Register = on => {
 
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
+    paneOpen = true
     void tick($, handoffs)
     if (!polling) {
       polling = true
       await update($, nowAtom, () => Date.now())
-      $.clock.every(REFRESH_MS, () => tick($, handoffs))
+      $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
       $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
     return { text: '蜂群看板已打开。' }
+  })
+
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    paneOpen = false
+    return next(e)
+  })
+
+  // Test-only path: a test dispatches this command so the plugin's own `$.ui.close` call
+  // fires the `ui.close` hook above, which flips `paneOpen` in this plugin VM where the
+  // scheduled refresh callback also reads it. The command is never registered with the
+  // command bar, so it never shows up for the person.
+  on('command.run', { command: SIMULATE_CLOSE_COMMAND }, async $ => {
+    await $.ui.close({ id: PANE })
+    return { text: 'swarm pane closed.' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
