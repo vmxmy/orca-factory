@@ -156,7 +156,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				return errors.New("missing correction worker effect")
 			}
 			n := result.State.Corrections + 1
-			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), orca.RequestID(t.Identifier, c.Unit, "child", n))
+			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), scopedRequest(t, c, "child", n))
 			if err != nil {
 				return errors.New("child task creation uncertain; reconcile request before retry")
 			}
@@ -167,7 +167,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if err = saveCheckpoint(c, t, *cp); err != nil {
 				return err
 			}
-			receipt, err := e.Orca.WorkerStart(ctx, orca.RequestID(t.Identifier, c.Unit, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
+			receipt, err := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
 			if err != nil {
 				return errors.New("correction worker start uncertain; reconcile request before retry")
 			}
