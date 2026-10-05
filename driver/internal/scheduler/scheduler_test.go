@@ -57,10 +57,16 @@ func TestSecondInstanceCannotLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	second, err := Acquire(path)
 	if err == nil {
-		second.Close()
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
 		t.Fatal("second instance acquired lock")
 	}
 }
@@ -214,7 +220,11 @@ func TestServeContenderDoesNotInitialize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	initialized := false
 	err = Serve(context.Background(), path, func(context.Context) (*Scheduler, error) { initialized = true; return nil, nil }, nil, nil)
 	if err == nil || initialized {

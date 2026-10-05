@@ -75,7 +75,11 @@ func TestRotate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer w.Close()
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err := w.Write([]byte("eeee")); err != nil {
 		t.Fatal(err)
 	}

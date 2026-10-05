@@ -47,9 +47,15 @@ func TestCreatePRIdempotent(t *testing.T) {
 						t.Error("wrong search")
 					}
 					if exists || posts.Load() > 0 {
-						fmt.Fprint(w, `[{"number":17,"head":{"sha":"abc"}}]`)
+						if _, err := fmt.Fprint(w, `[{"number":17,"head":{"sha":"abc"}}]`); err != nil {
+							t.Error(err)
+							return
+						}
 					} else {
-						fmt.Fprint(w, `[]`)
+						if _, err := fmt.Fprint(w, `[]`); err != nil {
+							t.Error(err)
+							return
+						}
 					}
 					return
 				}
@@ -86,10 +92,16 @@ func TestMergeReadBack(t *testing.T) {
 					if r.URL.Path != "/repos/acme/app/pulls/17/merge" || body["merge_method"] != "squash" || body["sha"] != "abc" {
 						t.Error("wrong merge request")
 					}
-					fmt.Fprint(w, `{"merged":true}`)
+					if _, err := fmt.Fprint(w, `{"merged":true}`); err != nil {
+						t.Error(err)
+						return
+					}
 				} else {
 					reads++
-					fmt.Fprintf(w, `{"number":17,"merged":%t,"mergeable_state":"clean","head":{"sha":"abc"}}`, merged)
+					if _, err := fmt.Fprintf(w, `{"number":17,"merged":%t,"mergeable_state":"clean","head":{"sha":"abc"}}`, merged); err != nil {
+						t.Error(err)
+						return
+					}
 				}
 			}, Options{})
 			pr, err := c.MergePR(context.Background(), "acme", "app", 17, "abc")
@@ -112,7 +124,10 @@ func TestETag(t *testing.T) {
 		calls++
 		if calls == 1 {
 			w.Header().Set("ETag", `"v1"`)
-			fmt.Fprint(w, `{"number":17,"head":{"sha":"abc"}}`)
+			if _, err := fmt.Fprint(w, `{"number":17,"head":{"sha":"abc"}}`); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		if r.Header.Get("If-None-Match") != `"v1"` {
@@ -142,18 +157,30 @@ func TestWriteSpacingAndEndpoints(t *testing.T) {
 			if body["ref"] != "refs/tags/v1" || body["sha"] != "abc" {
 				t.Error("wrong tag")
 			}
-			fmt.Fprint(w, `{"ref":"refs/tags/v1"}`)
+			if _, err := fmt.Fprint(w, `{"ref":"refs/tags/v1"}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case "/repos/acme/app/releases":
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
 			if body["tag_name"] != "v1" || body["name"] != "First" {
 				t.Error("wrong release")
 			}
-			fmt.Fprint(w, `{"id":42,"tag_name":"v1"}`)
+			if _, err := fmt.Fprint(w, `{"id":42,"tag_name":"v1"}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case "/repos/acme/app/compare/main...topic":
-			fmt.Fprint(w, `{"files":[{"filename":"a.go","status":"modified"}]}`)
+			if _, err := fmt.Fprint(w, `{"files":[{"filename":"a.go","status":"modified"}]}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case "/repos/acme/app/commits/abc/check-runs":
-			fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":3,"name":"ci","status":"completed","conclusion":"success","head_sha":"abc"}]}`)
+			if _, err := fmt.Fprint(w, `{"total_count":1,"check_runs":[{"id":3,"name":"ci","status":"completed","conclusion":"success","head_sha":"abc"}]}`); err != nil {
+				t.Error(err)
+				return
+			}
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
@@ -184,7 +211,10 @@ func TestErrorsAndRedirectDoNotLeakToken(t *testing.T) {
 		if r.Header.Get("Authorization") != "" {
 			t.Error("credential leaked across origin")
 		}
-		fmt.Fprint(w, `{"number":17}`)
+		if _, err := fmt.Fprint(w, `{"number":17}`); err != nil {
+			t.Error(err)
+			return
+		}
 	}))
 	defer foreign.Close()
 	c := fixture(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, foreign.URL, http.StatusFound) }, Options{})
@@ -193,7 +223,13 @@ func TestErrorsAndRedirectDoNotLeakToken(t *testing.T) {
 		t.Fatal("redirect should be rejected")
 	}
 	for _, code := range []int{401, 403, 500} {
-		c = fixture(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(code); fmt.Fprint(w, "test-secret") }, Options{})
+		c = fixture(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(code)
+			if _, err := fmt.Fprint(w, "test-secret"); err != nil {
+				t.Error(err)
+				return
+			}
+		}, Options{})
 		_, err = c.GetPR(context.Background(), "acme", "app", 17)
 		if err == nil || strings.Contains(fmt.Sprintf("%+v", err), "test-secret") {
 			t.Fatal("unsafe or missing error")
@@ -217,7 +253,10 @@ func TestBareHeadIsQualified(t *testing.T) {
 		if r.URL.Query().Get("head") != "acme:topic" {
 			t.Errorf("head=%q, want acme:topic", r.URL.Query().Get("head"))
 		}
-		fmt.Fprint(w, `[{"number":17}]`)
+		if _, err := fmt.Fprint(w, `[{"number":17}]`); err != nil {
+			t.Error(err)
+			return
+		}
 	}, Options{})
 	pr, err := c.FindOpenPR(context.Background(), "acme", "app", "topic")
 	if err != nil || pr == nil || pr.Number != 17 {
@@ -238,9 +277,15 @@ func TestFailedWriteInvalidatesETag(t *testing.T) {
 		}
 		w.Header().Set("ETag", `"before"`)
 		if writes == 0 {
-			fmt.Fprint(w, `[]`)
+			if _, err := fmt.Fprint(w, `[]`); err != nil {
+				t.Error(err)
+				return
+			}
 		} else {
-			fmt.Fprint(w, `[{"number":17}]`)
+			if _, err := fmt.Fprint(w, `[{"number":17}]`); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	}, Options{})
 	pr, err := c.CreatePR(context.Background(), "acme", "app", CreatePRRequest{Head: "acme:topic", Base: "main", Title: "change"})

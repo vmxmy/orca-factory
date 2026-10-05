@@ -204,7 +204,9 @@ type uncertainBudgetOrca struct {
 }
 
 func (o *uncertainBudgetOrca) WorkerStart(ctx context.Context, id string, opts orca.StartOptions) (orca.Receipt, error) {
-	o.recoveryOrca.WorkerStart(ctx, id, opts)
+	if _, err := o.recoveryOrca.WorkerStart(ctx, id, opts); err != nil {
+		return nil, err
+	}
 	return nil, o.failure
 }
 func TestBudgetUnconfirmedWritePreservesSafeClassification(t *testing.T) {

@@ -93,7 +93,7 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 			client, err = newClient(bounded, team)
 			cancel()
 			if err != nil {
-				return errors.New("Linear initialization failed")
+				return errors.New("linear initialization failed")
 			}
 			teams[team] = client
 		}
@@ -126,7 +126,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	}
 	issues, err := r.Reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
-		return nil, errors.New("Linear snapshot failed")
+		return nil, errors.New("linear snapshot failed")
 	}
 	tickets := []Ticket{}
 	for _, issue := range issues {
@@ -273,7 +273,7 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	case Claim:
 		issue, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if err != nil {
-			return errors.New("Linear claim failed")
+			return errors.New("linear claim failed")
 		}
 		claimed := false
 		for _, label := range issue.Labels.Nodes {
@@ -282,19 +282,19 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 			}
 		}
 		if !claimed {
-			return errors.New("Linear claim not confirmed")
+			return errors.New("linear claim not confirmed")
 		}
 	case Resume:
 	case Merge:
 		owner = machine.OwnerMerge
 	case Release:
 		if _, err := client.UpdateIssue(ctx, t.ID, "Todo", nil, []string{"auto-impl"}); err != nil {
-			return errors.New("Linear release failed")
+			return errors.New("linear release failed")
 		}
 		owner = machine.OwnerNone
 	case Human:
 		if _, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
-			return errors.New("Linear escalation failed")
+			return errors.New("linear escalation failed")
 		}
 		owner = machine.OwnerHuman
 	default:

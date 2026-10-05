@@ -29,11 +29,18 @@ type recoveryOrca struct {
 func (o *recoveryOrca) WorkerStart(ctx context.Context, id string, opts orca.StartOptions) (orca.Receipt, error) {
 	o.starts = append(o.starts, opts)
 	r, err := o.fakeOrca.WorkerStart(ctx, id, opts)
+	var marshalErr error
 	if opts.Task != "" {
-		r["taskId"], _ = json.Marshal(opts.Task)
+		r["taskId"], marshalErr = json.Marshal(opts.Task)
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
 	}
 	if len(o.starts) > 1 {
-		r["dispatchId"], _ = json.Marshal(fmt.Sprintf("ctx_%d", len(o.starts)))
+		r["dispatchId"], marshalErr = json.Marshal(fmt.Sprintf("ctx_%d", len(o.starts)))
+		if marshalErr != nil {
+			return nil, marshalErr
+		}
 	}
 	r["worktreePath"] = json.RawMessage(`"/original/worktree"`)
 	return r, err

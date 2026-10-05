@@ -30,12 +30,17 @@ func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	for _, body := range l.comments {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, merge.HandoffPrefix) {
-				json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &h)
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &h); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
 	// External receipt is authoritative even when this executor has an old checkpoint.
-	raw, _ := json.Marshal(map[string]any{"version": 1, "queue_id": h.QueueID, "ticket_id": h.TicketID, "repository": h.Repository, "pr": h.PR, "head": h.Head, "main": "main-sha", "phase": "correction", "corrections": 2, "catchup_rounds": 1, "infra": 1, "attempt": 2, "reason": "merged-result gate red"})
+	raw, rawMarshalErr := json.Marshal(map[string]any{"version": 1, "queue_id": h.QueueID, "ticket_id": h.TicketID, "repository": h.Repository, "pr": h.PR, "head": h.Head, "main": "main-sha", "phase": "correction", "corrections": 2, "catchup_rounds": 1, "infra": 1, "attempt": 2, "reason": "merged-result gate red"})
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	l.comments = append(l.comments, "阶段: correction\n归属: 执行器\n"+merge.ProgressPrefix+string(raw))
 	tools.head = "repaired-sha"
 	g.existing.Head.SHA = "repaired-sha"
@@ -52,7 +57,9 @@ func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	for _, body := range l.comments {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, merge.HandoffPrefix) {
-				json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &next)
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &next); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
@@ -74,7 +81,10 @@ func correctionReceipt(t *testing.T, e *Executor, l *budgetLinear, ticket Ticket
 		}
 	}
 	p := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: "main-sha", Phase: "correction", Corrections: h.Corrections + 1, CatchupRounds: 1, Infra: infra, Attempt: 2, Reason: "text conflict"}
-	raw, _ := json.Marshal(p)
+	raw, rawMarshalErr := json.Marshal(p)
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	l.comments = append(l.comments, "阶段: 写 correction\n归属: 执行器\n"+merge.ProgressPrefix+string(raw))
 	e.GitHub.(*fakeGitHub).existing = &github.PullRequest{Number: h.PR, HTMLURL: "https://example.test/pr/42"}
 	e.GitHub.(*fakeGitHub).existing.Head.SHA = "repaired-sha"
@@ -169,7 +179,10 @@ func TestStartMergeCorrectionRejectsChangedFrozenSpec(t *testing.T) {
 					t.Fatal(err)
 				}
 				h.GateSpec = strings.ReplaceAll(h.GateSpec, "go test ./unit", "go test ./unit && true")
-				raw, _ := json.Marshal(h)
+				raw, rawMarshalErr := json.Marshal(h)
+				if rawMarshalErr != nil {
+					t.Fatal(rawMarshalErr)
+				}
 				l.comments = append(l.comments, merge.HandoffPrefix+string(raw))
 			}
 		}
@@ -190,9 +203,14 @@ func TestStartMergeCorrectionWithTaskButNoHistoricalDispatch(t *testing.T) {
 		for j, line := range lines {
 			if strings.HasPrefix(line, merge.HandoffPrefix) {
 				var h merge.Handoff
-				json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &h)
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.HandoffPrefix)), &h); err != nil {
+					t.Fatal(err)
+				}
 				h.Dispatch = ""
-				raw, _ := json.Marshal(h)
+				raw, rawMarshalErr := json.Marshal(h)
+				if rawMarshalErr != nil {
+					t.Fatal(rawMarshalErr)
+				}
 				lines[j] = merge.HandoffPrefix + string(raw)
 			}
 		}

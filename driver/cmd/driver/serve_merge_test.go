@@ -77,27 +77,51 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 				switch {
 				case strings.HasSuffix(r.URL.Path, "/pulls/7/merge"):
 					var b map[string]string
-					json.NewDecoder(r.Body).Decode(&b)
+					if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+						t.Error(err)
+						return
+					}
 					if r.Method != "PUT" || b["sha"] != head || b["merge_method"] != "squash" {
 						t.Errorf("wrong squash request %v", b)
 					}
 					puts++
 					merged = true
-					fmt.Fprint(w, `{}`)
+					if _, err := fmt.Fprint(w, `{}`); err != nil {
+						t.Error(err)
+						return
+					}
 				case strings.HasSuffix(r.URL.Path, "/pulls/7"):
-					json.NewEncoder(w).Encode(pr())
+					if err := json.NewEncoder(w).Encode(pr()); err != nil {
+						t.Error(err)
+						return
+					}
 				case strings.HasSuffix(r.URL.Path, "/pulls"):
 					if merged {
-						json.NewEncoder(w).Encode([]any{})
+						if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+							t.Error(err)
+							return
+						}
 					} else {
-						json.NewEncoder(w).Encode([]any{pr()})
+						if err := json.NewEncoder(w).Encode([]any{pr()}); err != nil {
+							t.Error(err)
+							return
+						}
 					}
 				case strings.HasSuffix(r.URL.Path, "/git/ref/heads/main"):
-					fmt.Fprintf(w, `{"object":{"sha":%q}}`, main)
+					if _, err := fmt.Fprintf(w, `{"object":{"sha":%q}}`, main); err != nil {
+						t.Error(err)
+						return
+					}
 				case strings.HasSuffix(r.URL.Path, "/check-runs"):
-					fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, head)
+					if _, err := fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, head); err != nil {
+						t.Error(err)
+						return
+					}
 				case strings.HasSuffix(r.URL.Path, "/status"):
-					fmt.Fprint(w, `{"total_count":0,"statuses":[]}`)
+					if _, err := fmt.Fprint(w, `{"total_count":0,"statuses":[]}`); err != nil {
+						t.Error(err)
+						return
+					}
 				default:
 					t.Errorf("unexpected endpoint %s", r.URL)
 					http.NotFound(w, r)
@@ -109,7 +133,10 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			evidence := map[string]any{"version": 1, "ticket_id": "id", "identifier": "ENG-1", "repository": "o/r", "unit": "executor", "pr": 7, "head": head, "baseline": main, "gate_spec": "UNIT: executor\nCHECK: true\nSCOPE: feature\nLANE: 1", "gate_output": "UNIT executor\nVERDICT green\nSTEP all\nREASON passed\nEVIDENCE\nSCOPE feature\nLANE 1", "review_output": `{"verdict":"green","step":"review"}`, "lane": 1, "run": "run1", "task": "task1", "dispatch": "dispatch1", "worktree": dir, "attempt": 1, "queue_id": "q1", "enqueued_at": "2026-10-06T00:00:00Z"}
-			raw, _ := json.Marshal(evidence)
+			raw, rawMarshalErr := json.Marshal(evidence)
+			if rawMarshalErr != nil {
+				t.Fatal(rawMarshalErr)
+			}
 			l := &serveMergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", State: linear.NamedID{Name: "In Progress"}, Project: linear.NamedID{ID: "p"}}, comments: []linear.Comment{{ID: "handoff", Body: "归属: 合并通道\nmerge-handoff-v1: " + string(raw)}}}
 			repo := config.Repository{Path: dir, MaxInFlight: 2, StaleHours: 8, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 			cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{repo}}

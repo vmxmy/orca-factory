@@ -25,7 +25,11 @@ type idleOrca struct {
 
 func (f *idleOrca) WorkerStart(ctx context.Context, request string, opts orca.StartOptions) (orca.Receipt, error) {
 	r, err := f.fakeOrca.WorkerStart(ctx, request, opts)
-	r["worktreePath"], _ = json.Marshal(f.worktree)
+	var marshalErr error
+	r["worktreePath"], marshalErr = json.Marshal(f.worktree)
+	if marshalErr != nil {
+		return nil, marshalErr
+	}
 	return r, err
 }
 func (f *idleOrca) TaskList(context.Context, string) ([]orca.Task, error) {

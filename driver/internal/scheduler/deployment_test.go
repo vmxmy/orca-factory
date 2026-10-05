@@ -51,16 +51,26 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 			if r.URL.Query().Get("head_sha") != strings.Repeat("a", 40) || !strings.HasSuffix(r.URL.Path, "/deploy.yml/runs") {
 				t.Errorf("wrong deployment identity: %s", r.URL)
 			}
-			fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":%q,"conclusion":"success"}]}`, strings.Repeat("a", 40), deployState)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":%q,"conclusion":"success"}]}`, strings.Repeat("a", 40), deployState); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		if !strings.HasPrefix(r.URL.Path, "/repos/o/s/") {
 			original.ServeHTTP(w, r)
 			return
 		}
-		raw, _ := json.Marshal(f.prBody)
+		raw, rawMarshalErr := json.Marshal(f.prBody)
+		if rawMarshalErr != nil {
+			t.Error(rawMarshalErr)
+			return
+		}
 		var pr map[string]any
-		json.Unmarshal(raw, &pr)
+		if err := json.Unmarshal(raw, &pr); err != nil {
+			t.Error(err)
+			return
+		}
 		pr["head"].(map[string]any)["repo"] = map[string]any{"full_name": "o/s"}
 		pr["base"].(map[string]any)["repo"] = map[string]any{"full_name": "o/s"}
 		pr["merged"] = bMerged
@@ -68,17 +78,32 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 		case strings.HasSuffix(r.URL.Path, "/pulls/1/merge"):
 			bPuts++
 			bMerged = true
-			fmt.Fprint(w, `{}`)
+			if _, err := fmt.Fprint(w, `{}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
-			json.NewEncoder(w).Encode(pr)
+			if err := json.NewEncoder(w).Encode(pr); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			if bMerged {
-				json.NewEncoder(w).Encode([]any{})
+				if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+					t.Error(err)
+					return
+				}
 			} else {
-				json.NewEncoder(w).Encode([]any{pr})
+				if err := json.NewEncoder(w).Encode([]any{pr}); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
-			fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head); err != nil {
+				t.Error(err)
+				return
+			}
 		default:
 			original.ServeHTTP(w, r)
 		}
@@ -119,7 +144,10 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 	original := f.server.Config.Handler
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/actions/") {
-			fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":%q}]}`, strings.Repeat("a", 40), conclusion)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":%q}]}`, strings.Repeat("a", 40), conclusion); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		original.ServeHTTP(w, r)
@@ -232,14 +260,19 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			original := f.server.Config.Handler
 			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/actions/") {
-					fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`)
+					if _, err := fmt.Fprint(w, `{"total_count":0,"workflow_runs":[]}`); err != nil {
+						t.Error(err)
+						return
+					}
 					return
 				}
 				original.ServeHTTP(w, r)
 			})
 			_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
 			var p map[string]any
-			json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p)
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
+				t.Fatal(err)
+			}
 			switch damage {
 			case "wrong-queue":
 				p["queue_id"] = "wrong"
@@ -250,7 +283,10 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			case "missing-sha":
 				p["merge_sha"] = ""
 			}
-			raw, _ := json.Marshal(p)
+			raw, rawMarshalErr := json.Marshal(p)
+			if rawMarshalErr != nil {
+				t.Fatal(rawMarshalErr)
+			}
 			if damage == "invalid-json" {
 				raw = []byte("{")
 			}
@@ -302,9 +338,16 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	nextMerged := false
 	original := f.server.Config.Handler
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw, _ := json.Marshal(f.prBody)
+		raw, rawMarshalErr := json.Marshal(f.prBody)
+		if rawMarshalErr != nil {
+			t.Error(rawMarshalErr)
+			return
+		}
 		var pr map[string]any
-		json.Unmarshal(raw, &pr)
+		if err := json.Unmarshal(raw, &pr); err != nil {
+			t.Error(err)
+			return
+		}
 		pr["number"] = 2
 		pr["merged"] = nextMerged
 		pr["head"].(map[string]any)["ref"] = "agent/ENG-2/executor"
@@ -312,14 +355,26 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/pulls/2/merge"):
 			nextPuts++
 			nextMerged = true
-			fmt.Fprint(w, `{}`)
+			if _, err := fmt.Fprint(w, `{}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls/2"):
-			json.NewEncoder(w).Encode(pr)
+			if err := json.NewEncoder(w).Encode(pr); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			if nextMerged {
-				json.NewEncoder(w).Encode([]any{})
+				if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+					t.Error(err)
+					return
+				}
 			} else {
-				json.NewEncoder(w).Encode([]any{pr})
+				if err := json.NewEncoder(w).Encode([]any{pr}); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		default:
 			original.ServeHTTP(w, r)
@@ -380,7 +435,10 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 					if failed {
 						conclusion = "failure"
 					}
-					fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":%q}]}`, strings.Repeat("a", 40), conclusion)
+					if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":%q}]}`, strings.Repeat("a", 40), conclusion); err != nil {
+						t.Error(err)
+						return
+					}
 					return
 				}
 				original.ServeHTTP(w, r)
@@ -428,9 +486,14 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	}
 	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
 	var p map[string]any
-	json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p)
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
+		t.Fatal(err)
+	}
 	p["deployment"].(map[string]any)["state"] = "pending"
-	raw, _ := json.Marshal(p)
+	raw, rawMarshalErr := json.Marshal(p)
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{ID: "reset", CreatedAt: time.Now(), Body: "merge-progress-v1: " + string(raw)})
 	l.loseResult = false
 	rebuilt := *f.runtime

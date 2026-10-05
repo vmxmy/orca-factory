@@ -33,7 +33,10 @@ func TestDeploymentStatusAndDryRunObserveHumanBarrier(t *testing.T) {
 	if err := status.Write(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := json.Marshal(status.Read(time.Now()))
+	raw, rawMarshalErr := json.Marshal(status.Read(time.Now()))
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	if !strings.Contains(string(raw), "smoke uncertain") || !strings.Contains(string(raw), "q1") || strings.Contains(string(raw), "secret-command") {
 		t.Fatalf("status invisible or leaking: %s", raw)
 	}

@@ -148,7 +148,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if pr.Merged {
 		sha = pr.MergeSHA
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
-			if (p.Phase != "merge-intent" && p.Phase != "merged") || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || (!commitID(p.Main) && !(p.MainUnknown && p.Main == "" && p.Phase == "merged")) || (p.MainUnknown && p.Main != "") || (p.MergeSHA != "" && p.MergeSHA != sha) {
+			if (p.Phase != "merge-intent" && p.Phase != "merged") || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || (!commitID(p.Main) && (!p.MainUnknown || p.Main != "" || p.Phase != "merged")) || (p.MainUnknown && p.Main != "") || (p.MergeSHA != "" && p.MergeSHA != sha) {
 				return errors.New("conflicting merge progress")
 			}
 			a.main = p.Main
@@ -163,7 +163,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 		if errors.Is(err, merge.ErrWorktreeCleanup) {
 			cleanupErr = merge.ErrWorktreeCleanup
 		}
-		if err != nil && !(errors.Is(err, merge.ErrWorktreeCleanup) && (result.Status == merge.Merged || result.Status == merge.Correction || result.Status == merge.Human || result.Status == merge.Waiting)) {
+		if err != nil && (!errors.Is(err, merge.ErrWorktreeCleanup) || (result.Status != merge.Merged && result.Status != merge.Correction && result.Status != merge.Human && result.Status != merge.Waiting)) {
 			return err
 		}
 		if result.Status != merge.Merged {

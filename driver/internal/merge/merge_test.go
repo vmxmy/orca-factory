@@ -89,7 +89,9 @@ func next(t *testing.T, c *Channel, repo string) Result {
 }
 func TestDisjointDirectSquash(t *testing.T) {
 	c, h, g, gate, _ := fixture(ready())
-	c.Enqueue(req(1))
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
 	r := next(t, c, "owner/repo")
 	if r.Status != Merged || r.MergeSHA != "merged" || h.merges != 1 || g.trees != 0 || len(gate.paths) != 0 {
 		t.Fatalf("result=%+v merges=%d trees=%d gate=%v", r, h.merges, g.trees, gate.paths)
@@ -99,7 +101,9 @@ func TestOverlapGatesMergedTree(t *testing.T) {
 	s := ready()
 	s.MainFiles = []string{"feature"}
 	c, h, g, gate, _ := fixture(s)
-	c.Enqueue(req(1))
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
 	r := next(t, c, "owner/repo")
 	if r.Status != Merged || h.merges != 1 || !reflect.DeepEqual(g.worktrees, []string{"tree"}) || !reflect.DeepEqual(gate.paths, []string{"isolated-result"}) || g.head != "head" || g.main != "main" {
 		t.Fatalf("result=%+v git=%+v gate=%+v", r, g, gate)
@@ -111,7 +115,9 @@ func TestConflictReturnsSchedulerCorrection(t *testing.T) {
 	s.MergeableState = "dirty"
 	c, h, g, _, _ := fixture(s)
 	g.conflict = true
-	c.Enqueue(req(1))
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
 	r := next(t, c, "owner/repo")
 	if r.Status != Correction || r.Corrections != 1 || h.merges != 0 {
 		t.Fatalf("%+v merges=%d", r, h.merges)
@@ -123,7 +129,9 @@ func TestConflictReturnsSchedulerCorrection(t *testing.T) {
 func TestTwoMovingMainRoundsEscalate(t *testing.T) {
 	c, h, _, _, _ := fixture(ready())
 	h.mergeErr = ErrMainAdvanced
-	c.Enqueue(req(1))
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
 	a := next(t, c, "owner/repo")
 	b := next(t, c, "owner/repo")
 	if a.Status != Waiting || b.Status != Human || b.Rounds != 2 || h.merges != 2 {
@@ -135,8 +143,12 @@ func TestDeploymentWaitAndSmokeFailurePause(t *testing.T) {
 	a := req(1)
 	a.DeployWorkflow = "deploy.yml"
 	a.SmokeCommand = "smoke"
-	c.Enqueue(a)
-	c.Enqueue(req(2))
+	if err := c.Enqueue(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Enqueue(req(2)); err != nil {
+		t.Fatal(err)
+	}
 	if next(t, c, a.Repository).Status != Merged {
 		t.Fatal("first merge")
 	}
@@ -148,7 +160,9 @@ func TestDeploymentWaitAndSmokeFailurePause(t *testing.T) {
 	if next(t, c, a.Repository).Status != Human || next(t, c, a.Repository).Status != Paused || h.merges != 1 {
 		t.Fatal("smoke failure did not pause")
 	}
-	c.Enqueue(Request{Repository: "other/repo", Number: 3})
+	if err := c.Enqueue(Request{Repository: "other/repo", Number: 3}); err != nil {
+		t.Fatal(err)
+	}
 	if next(t, c, "other/repo").Status != Merged {
 		t.Fatal("other repository paused")
 	}
@@ -161,8 +175,12 @@ func TestDeploymentPassReleasesFIFO(t *testing.T) {
 	a := req(1)
 	a.DeployWorkflow = "deploy"
 	a.SmokeCommand = "smoke"
-	c.Enqueue(a)
-	c.Enqueue(req(2))
+	if err := c.Enqueue(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Enqueue(req(2)); err != nil {
+		t.Fatal(err)
+	}
 	next(t, c, a.Repository)
 	if next(t, c, a.Repository).Status != Merged || !reflect.DeepEqual(h.order, []int{1, 2}) {
 		t.Fatal(h.order)
@@ -186,7 +204,9 @@ func TestFailClosed(t *testing.T) {
 			if kind == "gate" {
 				gate.err = ErrGateRed
 			}
-			c.Enqueue(req(1))
+			if err := c.Enqueue(req(1)); err != nil {
+				t.Fatal(err)
+			}
 			r := next(t, c, "owner/repo")
 			wantStatus, wantCorrections := Waiting, 0
 			if kind == "gate" {
@@ -346,7 +366,9 @@ func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
 	moved.Main = "new-main"
 	c, h, g, _, _ := fixture(s)
 	h.snapshots = []Snapshot{s, moved, s, moved}
-	c.Enqueue(req(1))
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
 	a := next(t, c, "owner/repo")
 	b := next(t, c, "owner/repo")
 	if a.Status != Waiting || b.Status != Human || h.merges != 0 || g.trees != 2 {
@@ -359,9 +381,15 @@ func TestDeploymentPolicyBelongsToRepository(t *testing.T) {
 	first := req(1)
 	first.DeployWorkflow = "deploy"
 	first.SmokeCommand = "smoke"
-	c.Enqueue(first)
-	c.Enqueue(req(2))
-	c.Enqueue(req(3))
+	if err := c.Enqueue(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Enqueue(req(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Enqueue(req(3)); err != nil {
+		t.Fatal(err)
+	}
 	next(t, c, first.Repository)
 	next(t, c, first.Repository)
 	d.state = DeploymentPending

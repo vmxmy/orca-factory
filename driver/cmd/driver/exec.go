@@ -33,7 +33,7 @@ func execTicket(args []string) int {
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
 		if !valid {
-			return 2, fmt.Errorf("Usage: driver exec [--merging] <票号>")
+			return 2, fmt.Errorf("usage: driver exec [--merging] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()

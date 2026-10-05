@@ -28,7 +28,7 @@ func resumeDeployment(args []string) int {
 			if err != nil {
 				return fmt.Errorf("stop driver serve before deployment recovery: %w", err)
 			}
-			defer lock.Close()
+			defer func() { _ = lock.Close() }() // Cleanup releases the descriptor even if explicit unlock fails.
 		}
 		cfg, err := config.Load(home)
 		if err != nil {
@@ -56,19 +56,25 @@ func runDeploymentRecovery(args []string, out io.Writer, apply func(context.Cont
 	}
 	validSHA := len(*sha) == 40 && strings.Trim(*sha, "0123456789abcdefABCDEF") == ""
 	if fs.NArg() != 0 || *issue == "" || *queue == "" || !validSHA || strings.TrimSpace(*operator) == "" || strings.TrimSpace(*reason) == "" || strings.ContainsAny(*operator+*reason, "\r\n") || (*action != "retry-workflow" && *action != "retry-smoke" && *action != "confirm-passed") {
-		fmt.Fprintln(out, "Usage: driver resume-deployment --issue ID --queue QUEUE --sha SQUASH_SHA --action retry-workflow|retry-smoke|confirm-passed --operator NAME --reason RECONCILIATION [--dry-run]")
+		// Usage failure already determines the exit status.
+		_, _ = fmt.Fprintln(out, "Usage: driver resume-deployment --issue ID --queue QUEUE --sha SQUASH_SHA --action retry-workflow|retry-smoke|confirm-passed --operator NAME --reason RECONCILIATION [--dry-run]")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 	if err := apply(ctx, *issue, *queue, *sha, *action, *operator, *reason, *dry); err != nil {
-		fmt.Fprintln(out, err)
+		// Preserve the failed recovery status even if its diagnostic cannot be written.
+		_, _ = fmt.Fprintln(out, err)
 		return 1
 	}
 	if *dry {
-		fmt.Fprintln(out, "Recovery validated; no changes made")
+		if _, err := fmt.Fprintln(out, "Recovery validated; no changes made"); err != nil {
+			return 1
+		}
 	} else {
-		fmt.Fprintln(out, "Human recovery recorded; restart driver serve")
+		if _, err := fmt.Fprintln(out, "Human recovery recorded; restart driver serve"); err != nil {
+			return 1
+		}
 	}
 	return 0
 }

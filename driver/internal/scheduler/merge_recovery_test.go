@@ -85,13 +85,21 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	cp := map[string]any{"Run": "run_1", "Task": "task_1", "Worktree": f.config.Repositories[0].Path, "Baseline": f.main}
-	b, _ := json.Marshal(cp)
+	b, bMarshalErr := json.Marshal(cp)
+	if bMarshalErr != nil {
+		t.Fatal(bMarshalErr)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "executor.json"), b, 0600); err != nil {
 		t.Fatal(err)
 	}
 	var pr github.PullRequest
-	b, _ = json.Marshal(f.prBody)
-	json.Unmarshal(b, &pr)
+	b, bMarshalErr = json.Marshal(f.prBody)
+	if bMarshalErr != nil {
+		t.Fatal(bMarshalErr)
+	}
+	if err := json.Unmarshal(b, &pr); err != nil {
+		t.Fatal(err)
+	}
 	pr.HTMLURL = "https://example.test/pr/1"
 	l := &recoveredMergeLinear{f.linear}
 	e := &executor.Executor{Orca: &recoveredMergeOrca{t: t}, Linear: l, GitHub: &recoveredMergePR{pr: pr}, Tools: &recoveredMergeTools{head: f.head, base: f.main}, Config: executor.Config{Repo: f.config.Repositories[0].Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: root}, Now: time.Now}

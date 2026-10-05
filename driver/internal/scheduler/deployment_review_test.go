@@ -254,7 +254,10 @@ func TestDeploymentHistoryRequiresHumanRecovery(t *testing.T) {
 							p.Deployment.Recovery.Action = "retry-workflow"
 						}
 					}
-					raw, _ := json.Marshal(p)
+					raw, rawMarshalErr := json.Marshal(p)
+					if rawMarshalErr != nil {
+						t.Fatal(rawMarshalErr)
+					}
 					f.linear.rows = append(f.linear.rows, linear.Comment{ID: "unauthorized", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 					rebuilt := *f.runtime
 					rebuilt.GitHub = nil
@@ -289,7 +292,10 @@ func TestDeploymentOldRecoveryCannotAuthorizeAnotherSmoke(t *testing.T) {
 	}
 	p.Deployment.State = "pending"
 	p.Deployment.SmokeStarted = false
-	raw, _ := json.Marshal(p)
+	raw, rawMarshalErr := json.Marshal(p)
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{ID: "replayed-proof", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil

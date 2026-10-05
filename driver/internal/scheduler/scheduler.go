@@ -349,7 +349,7 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 	if err != nil {
 		return errors.New("driver serve singleton lock unavailable")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }() // Cleanup releases the descriptor even if explicit unlock fails.
 	s, err := initialize(ctx)
 	if err != nil {
 		return err

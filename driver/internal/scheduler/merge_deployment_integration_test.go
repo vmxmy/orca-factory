@@ -71,9 +71,14 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 	f := newMergeFixture(t)
 	var h merge.Handoff
-	json.Unmarshal([]byte(strings.Split(f.linear.rows[0].Body, merge.HandoffPrefix)[1]), &h)
+	if err := json.Unmarshal([]byte(strings.Split(f.linear.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
+		t.Fatal(err)
+	}
 	p := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: f.main, Phase: "correction", Corrections: 1, Deployment: &merge.DeploymentProgress{State: "pending", Smoke: "test-smoke"}}
-	raw, _ := json.Marshal(p)
+	raw, rawMarshalErr := json.Marshal(p)
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: "归属: 执行器 term=-\n" + merge.ProgressPrefix + string(raw)})
 	rows, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {
@@ -82,7 +87,10 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 	h.QueueID = "repaired-head"
 	h.Head = strings.Repeat("b", 40)
 	h.Corrections = 1
-	raw, _ = json.Marshal(h)
+	raw, rawMarshalErr = json.Marshal(h)
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(2 * time.Second), Body: "归属: 合并通道\n" + merge.HandoffPrefix + string(raw)})
 	rows, err = f.runtime.Snapshot(context.Background(), f.config.Repositories)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {

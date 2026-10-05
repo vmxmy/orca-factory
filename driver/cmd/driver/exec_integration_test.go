@@ -37,10 +37,10 @@ func TestExecCompatibility(t *testing.T) {
 			if code != tc.code {
 				t.Fatalf("exit=%d want=%d output=%s", code, tc.code, out)
 			}
-			if tc.code == 2 && !strings.Contains(string(out), "Usage:") {
+			if tc.code == 2 && !strings.Contains(string(out), "usage:") {
 				t.Fatalf("missing usage: %s", out)
 			}
-			if tc.code == 1 && strings.Contains(string(out), "Usage:") {
+			if tc.code == 1 && strings.Contains(string(out), "usage:") {
 				t.Fatalf("valid args rejected: %s", out)
 			}
 			path := filepath.Join(home, ".local", "state", "orca-factory", "unknown", tc.ticket, "executor.log")

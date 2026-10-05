@@ -123,13 +123,14 @@ func TestLostCorrectionChildRejectsUnprovenIdentity(t *testing.T) {
 			}
 			if kind == "missing-worktree" || kind == "worker-intent" || kind == "changed-child" || kind == "missing-after-adoption" {
 				cp, _ := readCheckpoint(e.Config, ticket)
-				if kind == "missing-worktree" {
+				switch kind {
+				case "missing-worktree":
 					cp.Worktree = ""
-				} else if kind == "missing-after-adoption" {
+				case "missing-after-adoption":
 					cp.Task, cp.Pending = "child_task", false
-				} else if kind == "changed-child" {
+				case "changed-child":
 					cp.Task = "previously_adopted_child"
-				} else {
+				default:
 					cp.PendingParent = ""
 					cp.Task = "child_task"
 				}

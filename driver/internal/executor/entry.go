@@ -107,7 +107,7 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 	if err != nil {
 		return Ticket{}, errors.New("Linear brief transport failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	if resp.StatusCode != http.StatusOK {
 		return Ticket{}, errors.New("Linear brief request rejected")
 	}

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -104,7 +105,10 @@ func (e *Executor) warn(format string, args ...any) {
 	if w == nil {
 		w = os.Stderr
 	}
-	fmt.Fprintf(w, "warning: "+format+"\n", args...)
+	if _, err := fmt.Fprintf(w, "warning: "+format+"\n", args...); err != nil {
+		// Warning delivery must not undo a committed transaction. Do not expose sink errors.
+		slog.Error("executor warning output failed")
+	}
 }
 
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately

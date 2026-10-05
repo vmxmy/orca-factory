@@ -24,22 +24,26 @@ func (b *dryBackend) Snapshot(ctx context.Context, repos []config.Repository) ([
 	for _, t := range tickets {
 		note := ""
 		if p := t.Progress; p != nil && p.Deployment != nil {
-			fmt.Fprintf(b.out, "deployment %s queue=%q sha=%q workflow=%q state=%q reason=%q\n", t.Identifier, p.QueueID, p.MergeSHA, p.Deployment.Workflow, p.Deployment.State, p.Deployment.Reason)
+			if _, writeErr := fmt.Fprintf(b.out, "deployment %s queue=%q sha=%q workflow=%q state=%q reason=%q\n", t.Identifier, p.QueueID, p.MergeSHA, p.Deployment.Workflow, p.Deployment.State, p.Deployment.Reason); writeErr != nil {
+				return tickets, errors.Join(err, writeErr)
+			}
 		}
 		if t.Blocked {
 			note = " blocked"
 		}
-		fmt.Fprintf(b.out, "ticket %s%s owner=%q phase=%q candidate=%v term=%q run=%q attempt=%d updated=%s\n", t.Identifier, note, t.Owner, t.Phase, t.Candidate, t.Terminal, t.Run, t.Attempt, t.UpdatedAt.Format(time.RFC3339))
+		if _, writeErr := fmt.Fprintf(b.out, "ticket %s%s owner=%q phase=%q candidate=%v term=%q run=%q attempt=%d updated=%s\n", t.Identifier, note, t.Owner, t.Phase, t.Candidate, t.Terminal, t.Run, t.Attempt, t.UpdatedAt.Format(time.RFC3339)); writeErr != nil {
+			return tickets, errors.Join(err, writeErr)
+		}
 	}
 	return tickets, err
 }
 func (b *dryBackend) Apply(_ context.Context, t scheduler.Ticket, a scheduler.Action) error {
-	fmt.Fprintf(b.out, "would %s %s attempt=%d phase=%q reason=%q\n", a.Kind, t.Identifier, a.Attempt, a.Phase, a.Reason)
-	return nil
+	_, err := fmt.Fprintf(b.out, "would %s %s attempt=%d phase=%q reason=%q\n", a.Kind, t.Identifier, a.Attempt, a.Phase, a.Reason)
+	return err
 }
 func (b *dryBackend) Launch(_ context.Context, t scheduler.Ticket) error {
-	fmt.Fprintf(b.out, "would launch %s\n", t.Identifier)
-	return nil
+	_, err := fmt.Fprintf(b.out, "would launch %s\n", t.Identifier)
+	return err
 }
 func (b *dryBackend) LinearLimits() []linear.RateLimit {
 	if source, ok := b.Backend.(interface{ LinearLimits() []linear.RateLimit }); ok {
@@ -59,7 +63,9 @@ func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backen
 	s := &scheduler.Scheduler{Config: cfg, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
 	err := s.Tick(ctx)
 	for _, t := range s.MergeQueue {
-		fmt.Fprintf(out, "would merge-lane %s\n", t.Identifier)
+		if _, writeErr := fmt.Fprintf(out, "would merge-lane %s\n", t.Identifier); writeErr != nil {
+			return errors.Join(err, writeErr)
+		}
 	}
 	return err
 }
@@ -67,6 +73,6 @@ func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backen
 // Legacy branch verification fetches objects. Do not simulate a release or
 // restart from missing evidence when dry-run deliberately omits that mutation.
 func (b *dryBackend) InspectLegacy(_ context.Context, t scheduler.Ticket) (scheduler.Legacy, error) {
-	fmt.Fprintf(b.out, "would reconcile legacy %s (git fetch omitted in dry-run)\n", t.Identifier)
-	return scheduler.Legacy{}, errors.New("legacy verification requires git fetch")
+	_, err := fmt.Fprintf(b.out, "would reconcile legacy %s (git fetch omitted in dry-run)\n", t.Identifier)
+	return scheduler.Legacy{}, errors.Join(errors.New("legacy verification requires git fetch"), err)
 }

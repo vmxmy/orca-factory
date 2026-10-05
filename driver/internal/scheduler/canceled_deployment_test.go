@@ -29,7 +29,10 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 						return
 					}
 					if strings.Contains(r.URL.Path, "/actions/") {
-						fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":"failure"}]}`, strings.Repeat("a", 40))
+						if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":"failure"}]}`, strings.Repeat("a", 40)); err != nil {
+							t.Error(err)
+							return
+						}
 						return
 					}
 					original.ServeHTTP(w, r)

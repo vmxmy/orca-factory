@@ -25,15 +25,23 @@ func overlapFixture(t *testing.T, conflict bool) *mergeFixture {
 	dir := f.config.Repositories[0].Path
 	gitMergeTest(t, dir, "checkout", "main")
 	text := "first\n" + strings.Repeat("middle\n", 20) + "last\n"
-	os.WriteFile(filepath.Join(dir, "shared"), []byte(text), 0600)
-	os.MkdirAll(filepath.Join(dir, "scripts/agent-gates"), 0700)
-	os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.sh"), []byte("#!/bin/sh\nexit 2\n"), 0700)
+	if err := os.WriteFile(filepath.Join(dir, "shared"), []byte(text), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "scripts/agent-gates"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.sh"), []byte("#!/bin/sh\nexit 2\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "common")
 	base := gitMergeTest(t, dir, "rev-parse", "HEAD")
 	gitMergeTest(t, dir, "checkout", "agent/ENG-1/executor")
 	gitMergeTest(t, dir, "merge", "--no-edit", "main")
-	os.WriteFile(filepath.Join(dir, "shared"), []byte(strings.Replace(text, "first", "worker", 1)), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "shared"), []byte(strings.Replace(text, "first", "worker", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "worker")
 	f.head = gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -42,7 +50,9 @@ func overlapFixture(t *testing.T, conflict bool) *mergeFixture {
 	if conflict {
 		from = "first"
 	}
-	os.WriteFile(filepath.Join(dir, "shared"), []byte(strings.Replace(text, from, "main", 1)), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "shared"), []byte(strings.Replace(text, from, "main", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "advance")
 	f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -77,7 +87,9 @@ func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 		for _, line := range strings.Split(row.Body, "\n") {
 			if strings.HasPrefix(line, merge.ProgressPrefix) {
 				p = merge.Progress{}
-				json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p)
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p); err != nil {
+					t.Fatal(err)
+				}
 			}
 		}
 	}
@@ -248,9 +260,13 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	if err = os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.sh"), script, 0700); err != nil {
 		t.Fatal(err)
 	}
-	os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".omc/\n.merge-validation-*/\n"), 0600)
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".omc/\n.merge-validation-*/\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	// The real gate's project hook and CHECK both inspect the merged contents.
-	os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.project.sh"), []byte("#!/bin/sh\nset -e\necho '== merged-project'\ntest \"$(head -1 shared)\" = worker\ntest \"$(tail -1 shared)\" = main\n"), 0700)
+	if err := os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.project.sh"), []byte("#!/bin/sh\nset -e\necho '== merged-project'\ntest \"$(head -1 shared)\" = worker\ntest \"$(tail -1 shared)\" = main\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "trusted gate")
 	f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -350,7 +366,10 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 
 func TestRuntimeUnknownProgressWaitsWithoutOverwriting(t *testing.T) {
 	f := newMergeFixture(t)
-	raw, _ := json.Marshal(merge.Progress{Version: 1, QueueID: "q1", TicketID: "id", Repository: "o/r", PR: 1, Head: f.head, Main: f.main, Phase: "future-phase"})
+	raw, rawMarshalErr := json.Marshal(merge.Progress{Version: 1, QueueID: "q1", TicketID: "id", Repository: "o/r", PR: 1, Head: f.head, Main: f.main, Phase: "future-phase"})
+	if rawMarshalErr != nil {
+		t.Fatal(rawMarshalErr)
+	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
 	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 || len(f.linear.bodies) != 0 {
@@ -390,7 +409,9 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 				for _, line := range strings.Split(row.Body, "\n") {
 					if strings.HasPrefix(line, merge.ProgressPrefix) {
 						p = merge.Progress{}
-						json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p)
+						if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p); err != nil {
+							t.Fatal(err)
+						}
 					}
 				}
 			}

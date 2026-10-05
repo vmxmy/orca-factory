@@ -24,7 +24,10 @@ func recordedServer(t *testing.T, routes map[string]string, status map[string]in
 				if code := status[suffix]; code != 0 {
 					w.WriteHeader(code)
 				}
-				w.Write(b)
+				if _, err := w.Write(b); err != nil {
+					t.Error(err)
+					return
+				}
 				return
 			}
 		}

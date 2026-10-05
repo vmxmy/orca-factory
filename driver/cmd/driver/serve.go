@@ -34,7 +34,7 @@ func serve(args []string) int {
 func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	dry := len(args) == 1 && args[0] == "--dry-run"
 	if len(args) != 0 && !dry {
-		return 2, fmt.Errorf("Usage: driver serve [--dry-run]")
+		return 2, fmt.Errorf("usage: driver serve [--dry-run]")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

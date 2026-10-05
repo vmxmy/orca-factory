@@ -93,12 +93,16 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	gitMergeTest(t, dir, "init", "-b", "main")
 	gitMergeTest(t, dir, "config", "user.email", "test@example.test")
 	gitMergeTest(t, dir, "config", "user.name", "Test")
-	os.WriteFile(filepath.Join(dir, "base"), []byte("base"), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "base"), []byte("base"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "base")
 	main := gitMergeTest(t, dir, "rev-parse", "HEAD")
 	gitMergeTest(t, dir, "checkout", "-b", "agent/ENG-1/executor")
-	os.WriteFile(filepath.Join(dir, "feature"), []byte("feature"), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "feature"), []byte("feature"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "feature")
 	head := gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -110,7 +114,10 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/pulls/1/merge"):
 			var b map[string]string
-			json.NewDecoder(r.Body).Decode(&b)
+			if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+				t.Error(err)
+				return
+			}
 			if r.Method != "PUT" || b["sha"] != f.head || b["merge_method"] != "squash" {
 				t.Errorf("unsafe merge %s %v", r.Method, b)
 			}
@@ -123,33 +130,60 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 				return
 			}
 			f.prBody["merged"] = f.merged
-			json.NewEncoder(w).Encode(f.prBody)
+			if err := json.NewEncoder(w).Encode(f.prBody); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/git/ref/heads/main"):
 			f.mainReads++
 			main := f.main
 			if f.moveMain && f.mainReads >= 3 {
 				main = strings.Repeat("c", 40)
 			}
-			fmt.Fprintf(w, `{"object":{"sha":%q}}`, main)
+			if _, err := fmt.Fprintf(w, `{"object":{"sha":%q}}`, main); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
 			if f.checksBody != "" {
-				fmt.Fprint(w, f.checksBody)
+				if _, err := fmt.Fprint(w, f.checksBody); err != nil {
+					t.Error(err)
+					return
+				}
 				return
 			}
-			fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"name":"ci","status":"completed","conclusion":%q,"head_sha":%q}]}`, f.checkState, f.head)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"name":"ci","status":"completed","conclusion":%q,"head_sha":%q}]}`, f.checkState, f.head); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/status"):
 			if f.statusesBody != "" {
-				fmt.Fprint(w, f.statusesBody)
+				if _, err := fmt.Fprint(w, f.statusesBody); err != nil {
+					t.Error(err)
+					return
+				}
 				return
 			}
-			fmt.Fprint(w, `{"total_count":0,"statuses":[],"state":"pending"}`)
+			if _, err := fmt.Fprint(w, `{"total_count":0,"statuses":[],"state":"pending"}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			if f.duplicatePR {
-				json.NewEncoder(w).Encode([]any{f.prBody, f.prBody})
+				if err := json.NewEncoder(w).Encode([]any{f.prBody, f.prBody}); err != nil {
+					t.Error(err)
+					return
+				}
 			} else if f.merged {
-				json.NewEncoder(w).Encode([]any{})
+				if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+					t.Error(err)
+					return
+				}
 			} else {
-				json.NewEncoder(w).Encode([]any{f.prBody})
+				if err := json.NewEncoder(w).Encode([]any{f.prBody}); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		default:
 			t.Errorf("unexpected HTTP %s", r.URL)
@@ -161,10 +195,15 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	http.DefaultTransport = mergeTransport{f.server.URL}
 	t.Cleanup(func() { http.DefaultTransport = old })
 	bin := t.TempDir()
-	os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token"), 0700)
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
 	evidence := map[string]any{"version": 1, "ticket_id": "id", "identifier": "ENG-1", "repository": "o/r", "unit": "executor", "pr": 1, "head": head, "baseline": main, "gate_spec": "UNIT: executor\nSCOPE: feature\nCHECK: true\nLANE: 1\n", "gate_output": "UNIT executor\nVERDICT green\nSTEP all\nREASON passed\nEVIDENCE test\nSCOPE feature\nLANE 1", "review_output": `{"verdict":"green","step":"review"}`, "lane": 1, "run": "run_1", "task": "task_1", "dispatch": "dispatch_1", "worktree": dir, "attempt": 1, "enqueued_at": "2026-10-06T01:00:00Z", "queue_id": "q1"}
-	b, _ := json.Marshal(evidence)
+	b, bMarshalErr := json.Marshal(evidence)
+	if bMarshalErr != nil {
+		t.Fatal(bMarshalErr)
+	}
 	f.linear = &mergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
 	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 	f.config = config.Config{Repositories: []config.Repository{repo}, MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
@@ -193,7 +232,10 @@ func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 		t.Fatal(err)
 	}
 	edit(h)
-	b, _ := json.Marshal(h)
+	b, bMarshalErr := json.Marshal(h)
+	if bMarshalErr != nil {
+		t.Fatal(bMarshalErr)
+	}
 	f.linear.rows[0].Body = parts[0] + "merge-handoff-v1: " + string(b)
 }
 func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
@@ -341,7 +383,9 @@ func TestRuntimeMergeReadsAllPathsAndRenameSides(t *testing.T) {
 			if overlap {
 				name = "z-shared"
 			}
-			os.WriteFile(filepath.Join(dir, name), []byte("main"), 0600)
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("main"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			gitMergeTest(t, dir, "add", ".")
 			gitMergeTest(t, dir, "commit", "-m", "main moved")
 			f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -371,7 +415,9 @@ func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "merge-progress-v1: ") {
 				var p map[string]any
-				json.Unmarshal([]byte(strings.TrimPrefix(line, "merge-progress-v1: ")), &p)
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "merge-progress-v1: ")), &p); err != nil {
+					t.Fatal(err)
+				}
 				if p["main"] != f.main {
 					t.Fatalf("recovery lost fixed main: %s", line)
 				}
@@ -483,9 +529,16 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 			original.ServeHTTP(w, r)
 			return
 		}
-		raw, _ := json.Marshal(f.prBody)
+		raw, rawMarshalErr := json.Marshal(f.prBody)
+		if rawMarshalErr != nil {
+			t.Error(rawMarshalErr)
+			return
+		}
 		var pr map[string]any
-		json.Unmarshal(raw, &pr)
+		if err := json.Unmarshal(raw, &pr); err != nil {
+			t.Error(err)
+			return
+		}
 		pr["head"].(map[string]any)["repo"] = map[string]any{"full_name": "o/s"}
 		pr["base"].(map[string]any)["repo"] = map[string]any{"full_name": "o/s"}
 		pr["merged"] = bMerged
@@ -493,17 +546,32 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 		case strings.HasSuffix(r.URL.Path, "/pulls/1/merge"):
 			bPuts++
 			bMerged = true
-			fmt.Fprint(w, `{}`)
+			if _, err := fmt.Fprint(w, `{}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
-			json.NewEncoder(w).Encode(pr)
+			if err := json.NewEncoder(w).Encode(pr); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.HasSuffix(r.URL.Path, "/pulls"):
 			if bMerged {
-				json.NewEncoder(w).Encode([]any{})
+				if err := json.NewEncoder(w).Encode([]any{}); err != nil {
+					t.Error(err)
+					return
+				}
 			} else {
-				json.NewEncoder(w).Encode([]any{pr})
+				if err := json.NewEncoder(w).Encode([]any{pr}); err != nil {
+					t.Error(err)
+					return
+				}
 			}
 		case strings.HasSuffix(r.URL.Path, "/check-runs"):
-			fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head); err != nil {
+				t.Error(err)
+				return
+			}
 		default:
 			original.ServeHTTP(w, r)
 		}
@@ -517,7 +585,9 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 func TestRuntimeMergeRenameOldPathStillOverlaps(t *testing.T) {
 	f := newMergeFixture(t)
 	dir := f.config.Repositories[0].Path
-	os.WriteFile(filepath.Join(dir, "base"), []byte("pr change"), 0600)
+	if err := os.WriteFile(filepath.Join(dir, "base"), []byte("pr change"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "edit old name")
 	f.head = gitMergeTest(t, dir, "rev-parse", "HEAD")

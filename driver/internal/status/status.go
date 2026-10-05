@@ -76,7 +76,7 @@ func Write(snapshot Snapshot) error {
 	if err != nil {
 		return errors.New("cannot create driver status snapshot")
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }() // Cleanup only; successful rename removes this path.
 	if snapshot.Tickets == nil {
 		snapshot.Tickets = []Ticket{}
 	}

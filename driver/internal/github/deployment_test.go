@@ -17,19 +17,28 @@ func TestDeploymentResolvesExistingWorkflowDisplayName(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/repos/o/r/actions/workflows":
-			fmt.Fprint(w, `{"total_count":2,"workflows":[{"id":7,"name":"Deploy to Cloudflare","path":".github/workflows/deploy.yml"},{"id":8,"name":"Other","path":".github/workflows/other.yml"}]}`)
+			if _, err := fmt.Fprint(w, `{"total_count":2,"workflows":[{"id":7,"name":"Deploy to Cloudflare","path":".github/workflows/deploy.yml"},{"id":8,"name":"Other","path":".github/workflows/other.yml"}]}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case "/repos/o/r/actions/workflows/7/runs":
 			if r.URL.Query().Get("head_sha") != sha {
 				t.Errorf("wrong SHA %s", r.URL)
 			}
-			fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":10,"workflow_id":7,"path":".github/workflows/deploy.yml@main","head_sha":%q,"status":"completed","conclusion":"success"}]}`, sha)
+			if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":10,"workflow_id":7,"path":".github/workflows/deploy.yml@main","head_sha":%q,"status":"completed","conclusion":"success"}]}`, sha); err != nil {
+				t.Error(err)
+				return
+			}
 		default:
 			t.Errorf("wrong workflow endpoint %s", r.URL)
 			http.NotFound(w, r)
 		}
 	}))
 	defer server.Close()
-	c, _ := New(Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	c, err := New(Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
 	state, err := c.Deployment(context.Background(), "o", "r", "Deploy to Cloudflare", sha)
 	if err != nil || state != "passed" {
 		t.Fatalf("existing workflow name rejected: %s %v", state, err)
@@ -53,9 +62,17 @@ func TestDeploymentConservativeReceipts(t *testing.T) {
 		{"successful rerun", `{"total_count":2,"workflow_runs":[` + row(2, "completed", "success", sha) + `,` + row(1, "completed", "failure", sha) + `]}`, "passed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, tc.body) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := fmt.Fprint(w, tc.body); err != nil {
+					t.Error(err)
+					return
+				}
+			}))
 			defer server.Close()
-			c, _ := New(Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+			c, err := New(Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
 			state, err := c.Deployment(context.Background(), "o", "r", "deploy.yml", sha)
 			if err != nil || state != tc.want {
 				t.Fatalf("state=%s err=%v want=%s", state, err, tc.want)
