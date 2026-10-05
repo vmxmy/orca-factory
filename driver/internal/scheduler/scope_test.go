@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -25,6 +27,38 @@ func (f *scopeBackend) ActualChanges(context.Context, Ticket) ([]string, bool, e
 }
 
 func TestScopeActualChanges(t *testing.T) {
+	t.Run("snapshot scope read failures", func(t *testing.T) {
+		for _, failure := range []string{"orca failure", "invalid JSON", "ok false"} {
+			t.Run(failure, func(t *testing.T) {
+				lc := &fakeLinear{}
+				for _, id := range []string{"bad", "healthy"} {
+					lc.issues = append(lc.issues, linear.Issue{ID: id, Identifier: id, Project: linear.NamedID{ID: id}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}})
+				}
+				reads := 0
+				r := &Runtime{Reader: lc, Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
+					reads++
+					if reads == 1 {
+						switch failure {
+						case "orca failure":
+							return nil, errors.New("orca unavailable")
+						case "invalid JSON":
+							return []byte(`{`), nil
+						case "ok false":
+							return []byte(`{"ok":false,"result":{"issue":{"description":"## SCOPE\nsrc/*"}}}`), nil
+						}
+					}
+					return []byte(`{"ok":true,"result":{"issue":{"description":"## SCOPE\ndocs/*"}}}`), nil
+				}}
+				tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_LINEAR_PROJECT": "bad"}}, {Path: "b", Env: map[string]string{"AGENT_LINEAR_PROJECT": "healthy"}}})
+				if err != nil {
+					t.Fatalf("scope failure aborted snapshot: %v", err)
+				}
+				if len(tickets) != 2 || tickets[0].ID != "bad" || tickets[1].ID != "healthy" || len(tickets[0].Scope) != 0 || !reflect.DeepEqual(tickets[1].Scope, []string{"docs/*"}) || !tickets[0].Candidate || !tickets[1].Candidate {
+					t.Fatalf("snapshot lost tickets or scope: %+v", tickets)
+				}
+			})
+		}
+	})
 	for _, tc := range []struct {
 		name     string
 		files    []string

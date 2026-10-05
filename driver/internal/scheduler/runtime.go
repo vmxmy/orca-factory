@@ -163,7 +163,9 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
 				if err != nil {
-					return nil, err
+					// Match precheck: unavailable scope is unknown and must not
+					// prevent this ticket or other repositories from scheduling.
+					ticket.Scope = nil
 				}
 			}
 			tickets = append(tickets, ticket)
