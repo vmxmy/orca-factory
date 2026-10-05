@@ -36,7 +36,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.14'
+const MOD_VERSION = '0.3.15'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -775,6 +775,11 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
 
   const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
+  // state.type per identifier, used to badge dependency-chain nodes. Only populate on a
+  // successful Linear read; a failed refresh carries forward the previous map.
+  const issueStates: Record<string, string> = linearOk
+    ? Object.fromEntries(all.map(t => [t.id, t.state]))
+    : ((old as Board).issueStates ?? {})
 
   // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
   const lastSuccessAt = linearOk ? now : old.lastSuccessAt
@@ -789,7 +794,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy,
+      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates,
     }
   }
   return {
@@ -797,7 +802,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy,
+    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates,
   }
 }
 
@@ -931,7 +936,7 @@ export const register: Register = on => {
     const lanes: Lane[] = [
       { title: '待领', emoji: LANE_EMOJI.queue, items: b.queue },
       { title: '实现中', emoji: LANE_EMOJI.impl, items: inFlightNoHuman.filter(t => stage(t) === 1) },
-      { title: 'gate/评审', emoji: LANE_EMOJI.gate, items: inFlightNoHuman.filter(t => stage(t) === 2) },
+      { title: 'gate/审查', emoji: LANE_EMOJI.gate, items: inFlightNoHuman.filter(t => stage(t) === 2) },
       { title: 'CI/合并', emoji: LANE_EMOJI.ci, items: inFlightNoHuman.filter(t => stage(t) === 3) },
       { title: '需要人', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
       { title: '今日完成', emoji: LANE_EMOJI.done, items: b.doneToday },
@@ -942,24 +947,97 @@ export const register: Register = on => {
       if (t.gate && t.gate.state !== 'none' && STATUS_EMOJI[t.gate.state]) return STATUS_EMOJI[t.gate.state]
       return l.emoji
     }
-    // Why each queued ticket is still waiting. `null` means no precheck data yet; the row is skipped.
+    // Why each queued ticket is still waiting. `null` means no reason text; the row is skipped.
     const lp = (b as Board).lastPrecheck
     const blockedBy = (b as Board).blockedBy
+    const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
       const v = blockedBy?.[id]
       return Array.isArray(v) && v.length > 0 ? v : undefined
     }
-    const queueReason = (t: Ticket): string | null => {
-      const blockers = blockersOf(t.id)
-      if (blockers) {
-        const shown = blockers.slice(0, 3).join('、')
-        return '等待依赖：' + shown + (blockers.length > 3 ? ' 等 ' + blockers.length + ' 张' : '')
+    // Group-aware ticket classification: 等依赖 wins over claimable; precheck signals follow.
+    type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
+    const queueGroupOf = (t: Ticket): QueueGroup => {
+      if (blockersOf(t.id)) return 'blocked'
+      if (!lp) return 'unknown'
+      if (lp.claimable.includes(t.id)) return 'claimable'
+      if (lp.uncertain) return 'warn'
+      if (lp.skips[t.id]) return 'warn'
+      return 'unknown'
+    }
+    const stateBadge = (id: string): string => {
+      const s = issueStates?.[id]
+      if (s === 'completed') return '✓'
+      if (s === 'started') return '🔨'
+      if (s === 'unstarted') return '📥'
+      return s ? '⛓' : '?'
+    }
+    const shortId = (id: string): string => {
+      const m = /(\d+)$/.exec(id)
+      return m ? m[1] : id
+    }
+    const idNum = (id: string): number => parseInt(shortId(id), 10) || 0
+    // Topological level per queue ticket; external blockers count as 0. Returns null on a cycle.
+    const computeChainLevels = (): Record<string, number> | null => {
+      if (!blockedBy || Object.keys(blockedBy).length === 0) return null
+      const queueIds = new Set(b.queue.map(t => t.id))
+      const levels: Record<string, number> = {}
+      const visiting = new Set<string>()
+      let cycle = false
+      const dfs = (id: string): number => {
+        if (id in levels) return levels[id]
+        if (!queueIds.has(id)) return 0
+        if (visiting.has(id)) { cycle = true; return 0 }
+        visiting.add(id)
+        const bs = blockedBy[id] ?? []
+        let max = -1
+        for (const bk of bs) {
+          const lvl = dfs(bk)
+          if (lvl > max) max = lvl
+        }
+        visiting.delete(id)
+        const level = max < 0 ? 0 : max + 1
+        levels[id] = level
+        return level
       }
-      if (!lp) return null
-      if (lp.uncertain) return 'precheck 未能读取数据，原因见上方'
-      if (lp.claimable.includes(t.id)) return '已入选，等 coordinator 领取'
-      if (lp.skips[t.id]) return '未入选：' + lp.skips[t.id]
-      return 'precheck 未选中（原因未知）'
+      for (const t of b.queue) dfs(t.id)
+      return cycle ? null : levels
+    }
+    const chainLevels = computeChainLevels()
+    const buildChainLine = (): string | null => {
+      if (!chainLevels) return null
+      const queueIds = new Set(b.queue.map(t => t.id))
+      const byLevel = new Map<number, Set<string>>()
+      const addToLevel = (id: string, lvl: number) => {
+        if (!byLevel.has(lvl)) byLevel.set(lvl, new Set())
+        byLevel.get(lvl)!.add(id)
+      }
+      for (const t of b.queue) addToLevel(t.id, chainLevels[t.id] ?? 0)
+      for (const ids of Object.values(blockedBy ?? {})) {
+        for (const id of ids) if (!queueIds.has(id)) addToLevel(id, 0)
+      }
+      const sortedLevels = [...byLevel.keys()].sort((a, b) => a - b)
+      if (sortedLevels.length === 0) return null
+      const display = sortedLevels.slice(0, 3)
+      const remaining = sortedLevels.length - display.length
+      const parts = display.map(lvl =>
+        [...byLevel.get(lvl)!]
+          .sort((a, b) => idNum(a) - idNum(b))
+          .map(id => shortId(id) + stateBadge(id))
+          .join(' '),
+      )
+      return '链：' + parts.join(' → ') + (remaining > 0 ? ' → … +' + remaining + ' 层' : '')
+    }
+    const classifyQueue = (): Record<QueueGroup, Ticket[]> => {
+      const groups: Record<QueueGroup, Ticket[]> = { warn: [], claimable: [], blocked: [], unknown: [] }
+      for (const t of b.queue) groups[queueGroupOf(t)].push(t)
+      const sortGroup = (xs: Ticket[]) => xs.sort((a, b) => {
+        const la = chainLevels?.[a.id] ?? 0
+        const lb = chainLevels?.[b.id] ?? 0
+        return la !== lb ? la - lb : idNum(a.id) - idNum(b.id)
+      })
+      sortGroup(groups.warn); sortGroup(groups.claimable); sortGroup(groups.blocked); sortGroup(groups.unknown)
+      return groups
     }
     const allQueueBlocked = b.queue.length > 0 && b.queue.every(t => blockersOf(t.id) !== undefined)
     const earliestBlocker = (): string => {
@@ -979,7 +1057,7 @@ export const register: Register = on => {
     }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
-      const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
+      const dur = mins(minutes(t.claimedAt || t.updatedAt, now))
       const facts: string[] = []
       if (t.gate && t.gate.sec) facts.push('🧪 ' + secs(t.gate.sec))
       if (pr && pr.ci.state !== 'none' && pr.ci.total > 0) facts.push('🚦 ' + pr.ci.done + '/' + pr.ci.total + (pr.ci.min ? ' ' + mins(pr.ci.min) : ''))
@@ -987,16 +1065,43 @@ export const register: Register = on => {
       if (t.cost) facts.push('💲 ' + usd(t.cost))
       const head = statusEmojiOf(l, t, pr) + ' ' + t.id + (pr ? ' #' + pr.number : '')
       const headRoom = Math.max(0, w - (dur ? dur.length + 1 : 0))
-      const reason = l.title === '待领' ? queueReason(t) : null
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
           {phaseLine(t)}
           <Text>{cutW(t.title, w)}</Text>
-          {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
           {l.title === '需要人' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
           {l.title === '需要人' ? intakeText(t) : null}
+        </Box>
+      )
+    }
+    // Queue-only card: specialised reason line keyed by the ticket's group.
+    const GROUP_EMOJI: Record<QueueGroup, string> = { warn: '⚠', claimable: '🟢', blocked: '⛓', unknown: '?' }
+    const queueCardReason = (t: Ticket, group: QueueGroup): string | null => {
+      if (group === 'blocked') {
+        const blockers = blockedBy?.[t.id] ?? []
+        if (blockers.length === 0) return null
+        const shown = blockers.slice(0, 3).map(id => shortId(id) + stateBadge(id)).join(' ')
+        return '等 ' + shown + (blockers.length > 3 ? ' +' + (blockers.length - 3) : '')
+      }
+      if (group === 'claimable') return '已入选，等 coordinator 领取'
+      if (group === 'warn') {
+        if (lp?.uncertain) return '读取失败：' + (lp.uncertainReason || '退出码 ' + lp.exitCode)
+        const skip = lp?.skips[t.id]
+        if (skip) return '未入选：' + skip
+        return null
+      }
+      return null
+    }
+    const queueCard = (t: Ticket, w: number, group: QueueGroup, color?: string) => {
+      const head = GROUP_EMOJI[group] + ' ' + t.id
+      const reason = queueCardReason(t, group)
+      return (
+        <Box key={'ql-' + group + '-' + t.id} flexDirection="column" marginBottom={1}>
+          <Text bold color={color}>{padW(cutW(head, w), w)}</Text>
+          <Text>{cutW(t.title, w)}</Text>
+          {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
         </Box>
       )
     }
@@ -1011,33 +1116,29 @@ export const register: Register = on => {
       if (!lp) return null
       const head = '⏳ 下次扫描 ' + nextRunText
         + ' · 上次扫描 run ' + lp.runNumber + ' ' + resultText(lp.exitCode)
-      if (lp.uncertain) return head + ' · 无法判断可领票数'
+      if (lp.uncertain) return head + ' · 读取失败'
       return head
         + ' · 可领 ' + lp.claimable.length + ' 张'
-        + ' · 在途 ' + lp.inFlight + '/' + lp.max
+        + ' · 在做 ' + lp.inFlight + '/' + lp.max
     }
     const buildQueueWarnings = (): string[] => {
       const out: string[] = []
       if (lp) {
         if (lp.uncertain) {
-          const reason = lp.uncertainReason
-          const code = '退出码 ' + lp.exitCode
-          const base = '⚠ precheck 未能读取数据'
-          const isPlainCode = !reason || reason === code
-          out.push(isPlainCode ? base + '（' + code + '）' : base + '：' + reason + '（' + code + '）')
+          const reason = lp.uncertainReason || '退出码 ' + lp.exitCode
+          out.push('⚠ 读取失败：' + reason)
           if (/rate limit/i.test(reason)) out.push('Linear 限流，稍后自动恢复')
           else if (/network/i.test(reason)) out.push('Linear 网络波动，下一轮自动重试')
         } else if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max && !allQueueBlocked) {
-          let line = '⚠ 待领 ' + b.queue.length + ' 张但 precheck 判定可领 0 张（run ' + lp.runNumber + '，退出码 ' + lp.exitCode + '）'
-          if (lp.firstStderrLine) line += '：' + lp.firstStderrLine
-          out.push(line)
+          out.push('⚠ 待领 ' + b.queue.length + ' 张。precheck 判定可领 0 张。')
+          if (lp.firstStderrLine) out.push('⚠ 原因：' + lp.firstStderrLine)
         }
         if (lp.timedOut || lp.error) out.push('⚠ precheck 失败：' + (lp.error || '超时'))
       }
       const lastAt = (b as Board).lastRunAt ?? 0
       if (lastAt > 0) {
         const minsSince = Math.floor((now - lastAt) / 60_000)
-        if (minsSince > 10) out.push('⚠ 定时任务超过 ' + minsSince + ' 分钟没有新运行')
+        if (minsSince > 10) out.push('⚠ 定时任务超过 ' + minsSince + ' 分钟没有新扫描')
       }
       return out
     }
@@ -1046,17 +1147,60 @@ export const register: Register = on => {
       const first = earliestBlocker()
       return '全部待领票都在等依赖' + (first ? '（最先放行的阻塞者：' + first + '）' : '')
     }
-    const queueExtras = (w: number) => {
-      if (b.queue.length === 0) return null
+    const GROUP_HEAD: Record<QueueGroup, string> = {
+      warn: '⚠ 异常',
+      claimable: '🟢 可放行',
+      blocked: '⛓ 等依赖',
+      unknown: '? 未知',
+    }
+    const LEGEND = '✓完成 🔨在做 📥待领 ⛓等依赖 ⚠异常'
+    const buildStatsLine = (groups: Record<QueueGroup, Ticket[]>): string => {
+      const unknownTail = groups.unknown.length > 0 ? ' · 未知 ' + groups.unknown.length : ''
+      return '待领 ' + b.queue.length
+        + ' · 🟢 可放行 ' + groups.claimable.length
+        + ' · ⛓ 等依赖 ' + groups.blocked.length
+        + ' · ⚠ 异常 ' + groups.warn.length
+        + unknownTail
+    }
+    // Full body of the 待领 lane. The old queueExtras + simple card loop is replaced by
+    // a stats line, optional chain line, status, warnings and three grouped sections
+    // (异常 lifted to the top when non-empty).
+    const queueLaneBody = (w: number) => {
+      const empty = b.queue.length === 0
+      const groups = classifyQueue()
+      const stats = empty ? null : buildStatsLine(groups)
+      const chain = empty || w < 100 ? null : buildChainLine()
       const status = buildQueueStatus()
       const warns = buildQueueWarnings()
       const blockedLine = buildBlockedLine()
-      if (!status && warns.length === 0 && !blockedLine) return null
+      const order: QueueGroup[] = groups.warn.length > 0
+        ? ['warn', 'claimable', 'blocked', 'unknown']
+        : ['claimable', 'blocked', 'unknown']
+      const legend = !empty && w >= 100 ? LEGEND : null
+      const renderGroup = (g: QueueGroup) => {
+        const items = groups[g]
+        if (items.length === 0) return null
+        const color = g === 'warn' ? 'yellow' : undefined
+        const head = GROUP_HEAD[g] + ' (' + items.length + ')'
+        const shown = items.slice(0, 5)
+        const extra = items.length - shown.length
+        return (
+          <Box key={'qg-' + g} flexDirection="column">
+            <Text dimColor color={color}>{cutW(head, w)}</Text>
+            {shown.map(t => queueCard(t, w, g, color))}
+            {extra > 0 ? <Text dimColor color={color}>{'+' + extra}</Text> : null}
+          </Box>
+        )
+      }
       return (
-        <Box key="queue-extras" flexDirection="column">
+        <Box key="queue-body" flexDirection="column">
+          {stats ? <Text dimColor>{cutW(stats, w)}</Text> : null}
+          {chain ? <Text dimColor>{cutW(chain, w)}</Text> : null}
           {status ? <Text dimColor>{cutW(status, w)}</Text> : null}
           {blockedLine ? <Text dimColor>{cutW(blockedLine, w)}</Text> : null}
           {warns.map((text, i) => <Text key={'qw-' + i} color="yellow">{cutW(text, w)}</Text>)}
+          {order.map(renderGroup)}
+          {legend ? <Text dimColor>{cutW(legend, w)}</Text> : null}
         </Box>
       )
     }
@@ -1070,8 +1214,9 @@ export const register: Register = on => {
                 {laneHead(l)}
                 {l.title === '实现中' ? <Text dimColor>{(['📋 拆分', '📤 派工', '🔨 实现', '📬 待收尾'] as const).map(phase => phase + '(' + inFlightNoHuman.filter(t => (b as Board).phases?.[t.id]?.phase === phase).length + ')').join(' ')}</Text> : null}
                 <Text dimColor>{'─'.repeat(w)}</Text>
-                {l.title === '待领' ? queueExtras(w) : null}
-                {l.items.length === 0 ? <Text dimColor>·</Text> : l.items.map(t => laneCard(l, t, w))}
+                {l.title === '待领'
+                  ? queueLaneBody(w)
+                  : l.items.length === 0 ? <Text dimColor>·</Text> : l.items.map(t => laneCard(l, t, w))}
               </Box>
             ))}
           </Box>
@@ -1080,8 +1225,9 @@ export const register: Register = on => {
       return lanes.filter(l => l.items.length > 0 || l.title === '实现中').map(l =>
         card('lane-' + l.title, l.emoji + ' ' + l.title + ' (' + l.items.length + ')', (
           <Box flexDirection="column">
-            {l.title === '待领' ? queueExtras(cols - 4) : null}
-            {l.items.length === 0 ? <Text dimColor>None.</Text> : l.items.map(t => laneCard(l, t, cols - 4))}
+            {l.title === '待领'
+              ? queueLaneBody(cols - 4)
+              : l.items.length === 0 ? <Text dimColor>无</Text> : l.items.map(t => laneCard(l, t, cols - 4))}
           </Box>
         ), l.color, l.items.length === 0))
     }
@@ -1089,7 +1235,7 @@ export const register: Register = on => {
     const agentRow = (a: Agent) => {
       const requiresAction = a.role === 'worker' && a.requiresAction === true
       const glyph = a.phase === 'done' ? G.done : a.phase === 'returned' ? G.human : G.work
-      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ 等人 ' : '') + cut(a.name, 18)
+      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ 需要人 ' : '') + cut(a.name, 18)
       const tokens = a.tokens ? tok(a.tokens.out) + ' out · ' + tok(a.tokens.cache) + ' cache' : ''
       const last = a.lastActive ? 'last ' + age(a.lastActive, now) : ''
       const line = name.padEnd(24) + ' ' + a.phase.padEnd(10) + ' ' + mins(a.durationMin).padStart(9)
@@ -1131,22 +1277,22 @@ export const register: Register = on => {
       <Box flexDirection="column">
         <Box flexDirection="row" alignItems="center" gap={2} marginBottom={1}>
           <Text bold inverse>{focal}</Text>
-          <Text bold>in flight</Text>
+          <Text bold>在做</Text>
           <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>
-          <Text dimColor>{G.queued} queued {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} needs you {b.failed.length} · {G.done} today {b.doneToday.length}{b.todayCost > 0 ? ' · today est. $' + b.todayCost.toFixed(2) : ''}</Text>
+          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日 est. $' + b.todayCost.toFixed(2) : ''}</Text>
           {linearBadge()}
         </Box>
         <Box flexDirection="row" gap={2} marginBottom={1}>
-          <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[swarm]' : ' swarm '} onPress={() => update($, view, () => 'swarm')} />
-          <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
-          <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
+          <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
+          <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
+          <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
           {automation
-            ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} />
-            : <Text dimColor>auto: {automationKnown ? '未安装' : '?'}</Text>}
+            ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
+            : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
           <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => manualRefresh($, handoffs)} />
           <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
-            ? 'updated ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
-            : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
+            ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
+            : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
           {(() => {
             const snapshotAgeMs = (b as Board).snapshotAgeMs
             const throttled = (b as Board).linearThrottled === true
@@ -1168,12 +1314,12 @@ export const register: Register = on => {
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
         {v === 'swarm' ? card('agents', G.work + ' Agents', (
-          b.agents.length === 0 ? <Text dimColor>No agent is working.</Text> : b.agents.map(agentRow)
+          b.agents.length === 0 ? <Text dimColor>无</Text> : b.agents.map(agentRow)
         )) : laneView()}
 
-        {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>None.</Text> : b.prs.map(prRow)) : null}
+        {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>无</Text> : b.prs.map(prRow)) : null}
 
-        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' Needs you', b.failed.map(t => (
+        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' 需要人', b.failed.map(t => (
           <Box key={'f-' + t.id} flexDirection="column" marginBottom={1}>
             {tRow(G.human, t, 'yellow')}
             {handoffText(t)}
@@ -1183,7 +1329,7 @@ export const register: Register = on => {
 
         {v === 'swarm' ? (
           <Box flexDirection="row" gap={1}>
-            <Button key="toggle-queue" hotkey="q" plain label={(q ? '▾' : '▸') + ' queued ' + b.queue.length} onPress={() => update($, showQueue, x => !x)} />
+            <Button key="toggle-queue" hotkey="q" plain label={(q ? '▾' : '▸') + ' 待领 ' + b.queue.length} onPress={() => update($, showQueue, x => !x)} />
           </Box>
         ) : null}
         {v === 'swarm' && q ? b.queue.map(t => <Text key={'q-' + t.id} dimColor>{G.queued} P{t.priority || '-'} {t.id.padEnd(8)} {cut(t.title, cols - 18)}</Text>) : null}

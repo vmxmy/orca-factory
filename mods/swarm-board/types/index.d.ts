@@ -105,6 +105,8 @@ export type Board = {
   linearThrottled?: boolean
   /** Snapshot's `blockedBy`: pending ticket id → blocker ids. Only tickets that have at least one blocker appear. */
   blockedBy?: Record<string, string[]>
+  /** state.type keyed by identifier for every ticket seen on the latest refresh; feeds the dependency chain badges. */
+  issueStates?: Record<string, string>
 }
 export type View = 'swarm' | 'task'
 
