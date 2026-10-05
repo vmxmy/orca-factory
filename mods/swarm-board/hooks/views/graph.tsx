@@ -1,5 +1,12 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactElement } from 'react'
 import type { GraphData } from '../../types'
+
+// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
+declare function h(
+  component: ComponentType<{ dimColor?: boolean; children?: string }>,
+  props: { dimColor?: boolean; key?: number },
+  ...children: string[]
+): ReactElement
 import { readGraphSnapshot } from '../linear-cache'
 
 /** The view consumes readGraphSnapshot's issues; it never fetches live data. */
@@ -113,23 +120,27 @@ export function renderGraph(
   Text: ComponentType<{ dimColor?: boolean; children?: string }>,
   data: GraphData | GraphView | null = readGraphSnapshot(Date.now()),
 ) {
-  if (data === null || ('ready' in data && !data.ready)) return <Text dimColor>数据未就绪</Text>
+  if (data === null || ('ready' in data && !data.ready)) return h(Text, { dimColor: true }, '数据未就绪')
   const path = data.criticalPath.join(' → ') || '无'
   const leaders = data.unlockRank.filter(item => item.count > 0).slice(0, 3)
   const summary = 'summary' in data ? data.summary
     : `领取受依赖与并发限制，关键路径为 ${path}`
       + (leaders.length ? `，先完成 ${leaders[0].id} 可放出 ${leaders[0].count} 张下游票。` : '，没有可直接解锁的下游票。')
-  return <>
-    <Text>{summary}</Text>
-    <Text>{`关键路径：${path}`}</Text>
-    <Text>{`解锁排行：${leaders.map(item => `先做 ${item.id}（放出 ${item.count} 张）`).join('；') || '无'}`}</Text>
-    {'unresolved' in data && data.unresolved.length > 0
-      ? <Text>{`依赖成环：${data.unresolved.join('、')}`}</Text> : null}
-    {'rows' in data ? data.rows.map(row => {
+  const out: ReactElement[] = [
+    h(Text, {}, summary),
+    h(Text, {}, `关键路径：${path}`),
+    h(Text, {}, `解锁排行：${leaders.map(item => `先做 ${item.id}（放出 ${item.count} 张）`).join('；') || '无'}`),
+  ]
+  if ('unresolved' in data && data.unresolved.length > 0) {
+    out.push(h(Text, {}, `依赖成环：${data.unresolved.join('、')}`))
+  }
+  if ('rows' in data) {
+    for (const row of data.rows) {
       const symbol = finished(row.state) ? '✓' : row.state === 'started' ? '🔨'
         : row.blockers.length ? '⛓' : '📥'
       const blocked = row.blockers.length ? ` ⛓ ${row.blockers.join('、')}` : ''
-      return <Text key={row.id}>{`${'  '.repeat(row.depth)}${symbol} ${row.id} [${row.state}]${blocked}`}</Text>
-    }) : null}
-  </>
+      out.push(h(Text, { key: row.id }, `${'  '.repeat(row.depth)}${symbol} ${row.id} [${row.state}]${blocked}`))
+    }
+  }
+  return out
 }
