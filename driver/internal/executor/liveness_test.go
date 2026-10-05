@@ -110,7 +110,7 @@ func TestWaitFailsExitedWorker(t *testing.T) {
 		t.Fatalf("task-list read %d times before exited failure, want at least two", o.taskCalls)
 	}
 	cp, err := readCheckpoint(e.Config, ticket)
-	if err != nil || cp == nil || cp.Worktree != "/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor" {
+	if err != nil || cp == nil || cp.Worktree != "/worktrees/ZII-886-executor" {
 		t.Fatalf("checkpoint=%+v err=%v", cp, err)
 	}
 }

@@ -64,8 +64,8 @@ func TestRecordedWorkerListLiveness(t *testing.T) {
 	for _, want := range []struct {
 		dispatch, verdict, reason, status, stage, detail, path, terminal string
 	}{
-		{"ctx_f9e3c9ac102a", "exited", "", "failed", "failed", "settled", "/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor", "term_7acbe42d-9151-4fcc-8360-e87907f74698"},
-		{"ctx_2ec61f77c499", "unverifiable", "stale_status", "completed", "succeeded", "settled", "/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor-2", "term_8d26a5e7-7490-424c-9369-ad478e72ccbd"},
+		{"ctx_f9e3c9ac102a", "exited", "", "failed", "failed", "settled", "/worktrees/ZII-886-executor", "term_7acbe42d-9151-4fcc-8360-e87907f74698"},
+		{"ctx_2ec61f77c499", "unverifiable", "stale_status", "completed", "succeeded", "settled", "/worktrees/ZII-886-executor-2", "term_8d26a5e7-7490-424c-9369-ad478e72ccbd"},
 	} {
 		t.Run(want.verdict, func(t *testing.T) {
 			for _, w := range workers {
