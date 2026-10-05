@@ -1,5 +1,12 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactElement } from 'react'
 import type { FailureData } from '../../types'
+
+// The hook host installs h before loading modules; no React runtime import is needed.
+declare function h(
+  type: ComponentType<{ dimColor?: boolean; children?: string }>,
+  props: { dimColor?: boolean; key?: number },
+  ...children: string[]
+): ReactElement
 
 export type FailureLedgerRow = {
   ticket?: string
@@ -87,7 +94,7 @@ export function renderFailures(
   Text: ComponentType<{ dimColor?: boolean; children?: string }>,
   data?: FailureView,
 ) {
-  if (!data || data.message) return <Text dimColor>数据未就绪</Text>
+  if (!data || data.message) return h(Text, { dimColor: true }, '数据未就绪')
   const gateLine = (label: string, gate: GateRate) =>
     `${label}: ${gate.passed}/${gate.total} (${Math.round(gate.rate * 100)}%)`
   const lines = [
@@ -105,5 +112,5 @@ export function renderFailures(
     ...data.topCorrections.map(row => `${row.ticket}: ${row.corrections}`),
     ...(data.topCorrections.length ? [] : ['无']),
   ]
-  return <>{lines.map((line, index) => <Text key={index}>{line}</Text>)}</>
+  return lines.map((line, index) => h(Text, { key: index }, line))
 }
