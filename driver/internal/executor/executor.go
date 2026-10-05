@@ -46,16 +46,21 @@ type Ticket struct {
 	NewTest                                              bool
 }
 type Config struct {
+	TierSettings                                                        map[string]string
+	Escalate                                                            string
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
 	PollInterval                                                        time.Duration
+	Tier                                                                string
 }
 type Executor struct {
-	Orca   Orca
-	Linear Linear
-	GitHub GitHub
-	Tools  Tools
-	Config Config
-	Now    func() time.Time
+	Orca     Orca
+	Linear   Linear
+	GitHub   GitHub
+	Tools    Tools
+	Config   Config
+	Now      func() time.Time
+	Recovery Recovery
+	Sleep    func(context.Context, time.Duration) error
 }
 type Result struct {
 	State             machine.State
@@ -65,8 +70,17 @@ type Result struct {
 
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
-func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err error) {
+func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
+	return e.execute(ctx, t, nil)
+}
+
+func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) (result Result, err error) {
 	result.State = machine.Initial()
+	defer func() {
+		if errors.Is(err, errBudgetExhausted) {
+			err = nil
+		}
+	}()
 	c := e.Config
 	if c.Unit == "" {
 		c.Unit = "executor"
@@ -94,10 +108,11 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step, result.State.Attempt) }
+	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step+"-"+result.DispatchID, 1) }
 	releaseAttempted := false
+	releaseAllowed := false
 	release := func() error {
-		if result.DispatchID == "" || releaseAttempted {
+		if result.DispatchID == "" || releaseAttempted || !releaseAllowed {
 			return nil
 		}
 		releaseAttempted = true
@@ -123,6 +138,14 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 			}
 		}
 		result.State = next
+		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
+			return e.handoff(ctx, t, next, string(previous.Phase))
+		}
+		if next.Infra > previous.Infra {
+			if err := e.backoff(ctx, next.Infra); err != nil {
+				return err
+			}
+		}
 		if previous.Phase == next.Phase && previous.Owner == next.Owner {
 			return nil
 		}
@@ -141,7 +164,12 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 		}
 		return nil
 	}
-	var baseline, taskID, spec string
+	var baseline, taskID, spec, brief string
+	cp := checkpoint{}
+	if restored != nil {
+		cp = *restored
+	}
+
 	err = transition(machine.EvClaim, func(fx []machine.Effect) error {
 		if !hasEffect(fx, "worker-start-with-request-id") {
 			return errors.New("claim lacks worker effect")
@@ -156,6 +184,9 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 		}
 		if result.RunID == "" {
 			return errors.New("Orca run receipt missing ID")
+		}
+		if cp.Run != "" {
+			result.RunID = cp.Run
 		}
 		baseline, callErr = e.Tools.Baseline(ctx, c.Repo)
 		if callErr != nil || baseline == "" {
@@ -174,11 +205,26 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 		if !claimed {
 			return errors.New("Linear claim was not confirmed")
 		}
-		brief, gate, writeErr := writeArtifacts(c, t, branch)
+		rendered, gate, writeErr := writeArtifacts(c, t, branch)
 		if writeErr != nil {
 			return writeErr
 		}
 		spec = gate
+		brief = rendered
+		if cp.Baseline != "" {
+			baseline = cp.Baseline
+		}
+		cp.Run = result.RunID
+		cp.Baseline = baseline
+		if restored != nil {
+			taskID = cp.Task
+			result.DispatchID = cp.Dispatch
+			return nil
+		}
+		cp.Pending = true
+		if err := saveCheckpoint(c, t, cp); err != nil {
+			return err
+		}
 		receipt, callErr = e.Orca.WorkerStart(ctx, orca.RequestID(t.Identifier, c.Unit, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
@@ -188,80 +234,155 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 		if result.DispatchID == "" || taskID == "" {
 			return errors.New("worker receipt missing task or dispatch")
 		}
-		return nil
+		cp.Task = taskID
+		cp.Dispatch = result.DispatchID
+		cp.Worktree = worktreeReceipt(receipt)
+		cp.Pending = false
+		return saveCheckpoint(c, t, cp)
 	})
 	if err != nil {
 		return result, err
 	}
-	report, waitErr := e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval)
-	if waitErr != nil {
-		return result, waitErr
-	}
-	event := machine.EvWorkerOK
-	if report.Outcome != "succeeded" {
-		event = machine.EvWorkerFail
-	}
-	if err = transition(event, nil); err != nil {
-		return result, err
-	}
-	// A settled report authorizes cleanup, including before a correction handoff.
-	if err = release(); err != nil {
-		return result, err
-	}
-	if result.State.Phase == machine.PhaseCorrection {
-		return result, errors.New("worker failed; correction requires coordinator")
-	}
-	head, headErr := e.Tools.Head(ctx, c.Repo, branch)
-	if headErr != nil {
-		return result, errors.New("branch lookup failed")
-	}
-	event = machine.EvBranchOK
-	if head == "" || head == baseline {
-		event = machine.EvBranchNo
-	}
-	if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerHuman {
-		return result, err
-	}
-	output, gateErr := e.Tools.Gate(ctx, c.Repo, head, spec)
-	verdict, parseErr := gateVerdict(output)
-	if parseErr != nil {
-		return result, parseErr
-	}
-	event = machine.EvGateRed
-	if gateErr == nil && verdict == "green" {
-		event = machine.EvGateGreen
-	}
-	if err = transition(event, nil); err != nil {
-		return result, err
-	}
-	if result.State.Phase == machine.PhaseCorrection {
-		return result, errors.New("gate red; correction requires coordinator")
-	}
-	for result.State.Phase == machine.PhaseReview {
-		output, reviewErr := e.Tools.Review(ctx, c.Repo, baseline, head)
-		verdict, parseErr = reviewVerdict(output)
-		event = machine.EvReviewEmpty
-		if reviewErr == nil && parseErr == nil {
-			if verdict == "green" {
-				event = machine.EvReviewGreen
-			} else {
-				event = machine.EvReviewRed
+	result.State.Corrections = cp.Corrections
+	for {
+		report := &orca.WorkerReport{Outcome: "succeeded"}
+		var waitErr error
+		if !cp.Completed {
+			err = e.retryRead(ctx, t, &result, "task polling", func() error {
+				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval)
+				return waitErr
+			})
+			if err != nil {
+				return result, err
 			}
+			releaseAllowed = true
+		}
+		if cp.Completed {
+			releaseAllowed = cp.Settled
+		}
+		cp.Completed = false
+		if waitErr != nil {
+			return result, waitErr
+		}
+		event := machine.EvWorkerOK
+		if report.Outcome != "succeeded" {
+			event = machine.EvWorkerFail
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err
 		}
-		if result.State.Phase == machine.PhaseReview {
-			if err = pause(ctx, c.PollInterval); err != nil {
+		// A settled report authorizes cleanup, including before a correction handoff.
+		if err = release(); err != nil {
+			return result, err
+		}
+		if result.State.Phase == machine.PhaseCorrection {
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "worker failed", transition)
+			if correctionErr != nil {
+				return result, correctionErr
+			}
+			if !again {
+				return result, nil
+			}
+			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
+			continue
+		}
+		if result.State.Owner == machine.OwnerHuman {
+			return result, nil
+		}
+		var head string
+		err = e.retryRead(ctx, t, &result, "branch lookup", func() error { var readErr error; head, readErr = e.Tools.Head(ctx, c.Repo, branch); return readErr })
+		if err != nil {
+			return result, err
+		}
+		event = machine.EvBranchOK
+		if head == "" || head == baseline {
+			event = machine.EvBranchNo
+		}
+		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerHuman {
+			return result, err
+		}
+		var output, verdict string
+		var gateErr, parseErr error
+		err = e.retryRead(ctx, t, &result, "gate output", func() error {
+			output, gateErr = e.Tools.Gate(ctx, c.Repo, head, spec)
+			if stop := dependencyStop(ctx, gateErr); stop != nil {
+				if gateErr != nil {
+					return gateErr
+				}
+				return stop
+			}
+			verdict, parseErr = gateVerdict(output)
+			if parseErr != nil {
+				if gateErr != nil {
+					return gateErr
+				}
+				return parseErr
+			}
+			return nil
+		})
+		if err != nil {
+			return result, err
+		}
+		event = machine.EvGateRed
+		if gateErr == nil && verdict == "green" {
+			event = machine.EvGateGreen
+		}
+		if err = transition(event, nil); err != nil {
+			return result, err
+		}
+		if result.State.Phase == machine.PhaseCorrection {
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", transition)
+			if correctionErr != nil {
+				return result, correctionErr
+			}
+			if !again {
+				return result, nil
+			}
+			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
+			continue
+		}
+		if result.State.Owner == machine.OwnerHuman {
+			return result, nil
+		}
+		for result.State.Phase == machine.PhaseReview {
+			output, reviewErr := e.Tools.Review(ctx, c.Repo, baseline, head)
+			if stop := dependencyStop(ctx, reviewErr); stop != nil {
+				return result, stop
+			}
+			verdict, parseErr = reviewVerdict(output)
+			event = machine.EvReviewEmpty
+			if reviewErr == nil && parseErr == nil {
+				if verdict == "green" {
+					event = machine.EvReviewGreen
+				} else {
+					event = machine.EvReviewRed
+				}
+			}
+			if err = transition(event, nil); err != nil {
 				return result, err
 			}
 		}
-	}
-	if result.State.Owner == machine.OwnerHuman {
-		return result, nil
-	}
-	if result.State.Phase == machine.PhaseCorrection {
-		return result, errors.New("review red; correction requires coordinator")
+		if result.State.Owner == machine.OwnerHuman {
+			return result, nil
+		}
+		if result.State.Phase == machine.PhaseCorrection {
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", transition)
+			if correctionErr != nil {
+				return result, correctionErr
+			}
+			if !again {
+				return result, nil
+			}
+			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
+			continue
+		}
+		break
 	}
 	err = transition(machine.EvOpenPR, func(fx []machine.Effect) error {
 		if !hasEffect(fx, "open-pr-rest-idempotent-by-branch") {

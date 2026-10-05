@@ -35,12 +35,12 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 5 {
+	if len(values) != 9 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -61,7 +61,18 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	}
 	oc := &orca.Client{}
 	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
-	return e.Execute(ctx, ticket)
+	e.Config.Tier = "default"
+	e.Config.Escalate = values[7]
+	e.Config.TierSettings = map[string]string{"fast": values[4], "default": values[5], "strong": values[6]}
+	parts := strings.Split(values[5], ":")
+	if len(parts) != 3 || parts[0] == "" {
+		return Result{}, errors.New("repository profile requires default worker tier")
+	}
+	e.Config.Agent, e.Config.Model, e.Config.Effort = parts[0], parts[1], parts[2]
+	if e.Config.Model == "" {
+		e.Config.Effort = ""
+	}
+	return e.Start(ctx, ticket)
 }
 
 // linear.Snapshot deliberately omits description. This executor-local read
