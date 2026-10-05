@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 func recorded(t *testing.T, name string) []byte {
@@ -80,3 +82,12 @@ type recordedTasks struct {
 }
 
 func (r *recordedTasks) TaskList(context.Context, string) ([]orca.Task, error) { return r.tasks, nil }
+
+func TestRecordedWorkerWorktree(t *testing.T) {
+	raw := recorded(t, "git-worktree-list-porcelain.bin")
+	c := &Commands{Run: func(context.Context, runx.Spec) ([]byte, error) { return raw, nil }}
+	path, err := c.Worktree(context.Background(), "/repo", "agent/ZII-893/executor")
+	if err != nil || !strings.HasSuffix(path, "/ZII-893-executor") {
+		t.Fatalf("worker worktree for agent/ZII-893/executor: path=%q err=%v", path, err)
+	}
+}
