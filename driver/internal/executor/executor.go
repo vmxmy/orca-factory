@@ -180,7 +180,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	defer func() { err = errors.Join(err, release()) }()
 	// diffBase is the head's merge-base with current main: a worker that rebased
 	// must not be charged for main's commits since the claim baseline.
-	var baseline, diffBase, taskID, spec, brief, head, failureOutput, reviewerTier string
+	var baseline, diffBase, taskID, spec, brief, head, failureOutput, failureSummary, reviewerTier string
 	var mergeGateOutput, mergeReviewOutput string
 	cp := checkpoint{}
 	if restored != nil {
@@ -242,7 +242,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if err != nil {
 				return err
 			}
-			e.logger().Info("correction", "reason", ev, "fail_summary", summary)
+			failureSummary = summary
 			if summary != "" {
 				if err := appendFailLog(c, t, summary); err != nil {
 					return err
@@ -358,7 +358,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
 	if cp.MergeCause != "" {
 		result.State.Phase = machine.PhaseCorrection
-		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, transition)
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, transition)
 		if correctionErr != nil || !again {
 			return result, correctionErr
 		}
@@ -419,7 +419,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "worker failed", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "worker failed", failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -496,7 +496,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -539,7 +539,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, nil
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}

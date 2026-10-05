@@ -142,6 +142,26 @@ func TestExecutorTransitionLog(t *testing.T) {
 		if failures != 1 || gateEnds != 1 || strings.Contains(logs.String(), "private remote error") || strings.Contains(logs.String(), "ghp_secretvalue") {
 			t.Fatalf("failures=%d ends=%d logs=%s", failures, gateEnds, logs.String())
 		}
+		e, _, tools, _, _, ticket = recoveryFixture(t)
+		tools.gateReds = 1
+		logs.Reset()
+		e.Stderr = &logs
+		result, err = e.Execute(context.Background(), ticket)
+		if err != nil || result.State.Phase != machine.PhaseMergeQueue {
+			t.Fatalf("correction result=%+v err=%v", result, err)
+		}
+		corrections := 0
+		for _, r := range transitionLogRecords(t, &logs) {
+			if r["msg"] == "correction" {
+				corrections++
+				if r["level"] != "INFO" || r["reason"] != "gate red" || r["fail_summary"] != "FAIL: approach=head=new-sha files=unit/change.go | reason=gate red | evidence=gate" {
+					t.Fatalf("correction: %v", r)
+				}
+			}
+		}
+		if corrections != 1 {
+			t.Fatalf("corrections=%d logs=%s", corrections, logs.String())
+		}
 	})
 }
 
