@@ -8,8 +8,46 @@ set -Eeuo pipefail
 REPO="path:${AGENT_REPO_PATH:?main checkout path}"
 PREFIX="${AGENT_RUN_WORKTREE_PREFIX:?set in agent-graph.env}"
 MAX_AGE_HOURS="${AGENT_RUN_MAX_AGE_HOURS:-24}"
+PRUNE_BUDGET_SECONDS="${AGENT_PRUNE_BUDGET_SECONDS:-60}"
+PRUNE_MAX_PER_RUN="${AGENT_PRUNE_MAX_PER_RUN:-5}"
 self="$(pwd -P)"
 cutoff_ms=$(( ($(date +%s) - MAX_AGE_HOURS * 3600) * 1000 ))
+prune_started_at=$(date +%s)
+prune_removed_count=0
+prune_budget_tripped=0
+prune_quota_tripped=0
+prune_budget_exceeded() {
+  (( prune_budget_tripped == 1 )) && return 0
+  local now=$(date +%s)
+  if (( now - prune_started_at >= PRUNE_BUDGET_SECONDS )); then
+    echo 'prune: 超过时间预算，剩余对象留到下次' >&2
+    prune_budget_tripped=1
+    return 0
+  fi
+  return 1
+}
+prune_quota_reached() {
+  (( prune_quota_tripped == 1 )) && return 0
+  if (( prune_removed_count >= PRUNE_MAX_PER_RUN )); then
+    echo 'prune: 达到单次回收上限，剩余对象留到下次' >&2
+    prune_quota_tripped=1
+    return 0
+  fi
+  return 1
+}
+prune_remote_heads=''
+prune_remote_heads_ok=false
+prune_load_remote_heads() {
+  [[ "$prune_remote_heads_ok" == false ]] || return 0
+  if prune_remote_heads=$(git -C "$AGENT_REPO_PATH" ls-remote --heads origin 2>/dev/null); then
+    prune_remote_heads_ok=true
+  fi
+}
+# Lookup a cached remote head sha for a given short branch name.
+prune_remote_sha_of() {
+  [[ "$prune_remote_heads_ok" == true ]] || return 1
+  awk -v ref="refs/heads/$1" '$2 == ref { print $1; found=1; exit } END { if (!found) exit 1 }' <<<"$prune_remote_heads"
+}
 
 # Compensate for merged workers that never received a coordinator marker. Keep the
 # original inventories for issue associations even after a worktree is removed.
@@ -71,7 +109,17 @@ prune_clean() {
 }
 prune_merged() {
   [[ "$prune_pr_ok" == true ]] && jq -e --arg sha "$1" --arg branch "${2:-}" '
-    any(.[]; .head.sha == $sha and ($branch == "" or .head.ref == $branch))' <<<"$prune_prs" >/dev/null
+    any(.[]; .merged_at != null and .head.sha == $sha and ($branch == "" or .head.ref == $branch))' <<<"$prune_prs" >/dev/null
+}
+# Return cached MERGED/CLOSED state for a PR number, or 1 when not found in the cache.
+prune_pr_state_of() {
+  [[ "$prune_pr_ok" == true ]] || return 1
+  local state
+  state=$(jq -r --arg pr "$1" '
+    (.[] | select(.number == ($pr | tonumber)) |
+      if .merged_at != null then "MERGED" else "CLOSED" end) // empty' <<<"$prune_prs") || return 1
+  [[ -n "$state" ]] || return 1
+  printf '%s' "$state"
 }
 prune_compensate() {
   local wt branch sha remote_sha result row ticket occupied current
@@ -91,14 +139,17 @@ prune_compensate() {
   if [[ -n "${AGENT_GH_REPO:-}" ]] &&
     result=$(gh api --paginate "repos/$AGENT_GH_REPO/pulls?state=closed&per_page=100" 2>/dev/null) &&
     prune_prs=$(jq -se --arg repo "$AGENT_GH_REPO" '
-      if all(.[]; type == "array") then add | map(select(.merged_at != null and .head.repo.full_name == $repo))
+      if all(.[]; type == "array") then add | map(select(.head.repo.full_name == $repo))
       else error("invalid PR pages") end' <<<"$result" 2>/dev/null); then
     prune_pr_ok=true
   else
-    prune_keep compensation 'merged PR query failed; PR-dependent objects retained'
+    prune_keep compensation 'closed PR query failed; PR-dependent objects retained'
   fi
+  prune_load_remote_heads
   # Orca workers need a completed linked issue and either a pushed head or a merged head.
   while IFS= read -r row; do
+    prune_budget_exceeded && break
+    prune_quota_reached && break
     wt=$(jq -r '.path' <<<"$row")
     ticket=$(jq -r '.linkedLinearIssue' <<<"$row")
     [[ "$wt" != "$self" && "$wt" != "$main" ]] || continue
@@ -107,18 +158,21 @@ prune_compensate() {
     prune_ticket_check "$ticket" "$wt" || continue
     prune_clean "$wt" || continue
     sha=$(git -C "$wt" rev-parse --verify HEAD) || { prune_keep "$wt" 'head unavailable'; continue; }
-    remote_sha=$(git -C "$AGENT_REPO_PATH" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null) || remote_sha=''
-    remote_sha=${remote_sha%%$'\t'*}
+    remote_sha=$(prune_remote_sha_of "$branch") || remote_sha=''
     if [[ "$sha" != "$remote_sha" ]] && ! prune_merged "$sha"; then
       prune_keep "$wt" 'head is neither confirmed pushed nor merged'; continue
     fi
     if ! result=$(orca worktree rm --worktree "path:$wt" --json 2>&1) ||
       ! jq -e '.ok == true' <<<"$result" >/dev/null 2>&1; then
       prune_keep "$wt" "Orca removal failed: $result"
+    else
+      prune_removed_count=$((prune_removed_count + 1))
     fi
   done < <(jq -c '.result.worktrees[] | select((.linkedLinearIssue // "") != "")' <<<"$prune_orca")
   # Git-only Claude worktrees; never hand Orca-managed paths to Git removal.
   while IFS= read -r row; do
+    prune_budget_exceeded && break
+    prune_quota_reached && break
     wt=$(jq -r '.path' <<<"$row")
     branch=$(jq -r '.branch' <<<"$row")
     case "$wt" in "$main"/.claude/worktrees/agent-*) ;; *) continue ;; esac
@@ -129,31 +183,48 @@ prune_compensate() {
     prune_clean "$wt" || continue
     sha=$(git -C "$wt" rev-parse --verify HEAD) || { prune_keep "$wt" 'head unavailable'; continue; }
     prune_merged "$sha" || { prune_keep "$wt" 'head has no matching merged PR'; continue; }
-    git -C "$AGENT_REPO_PATH" worktree remove "$wt" || prune_keep "$wt" 'Git removal failed'
+    if git -C "$AGENT_REPO_PATH" worktree remove "$wt"; then
+      prune_removed_count=$((prune_removed_count + 1))
+    else
+      prune_keep "$wt" 'Git removal failed'
+    fi
   done < <(jq -c '.[]' <<<"$prune_worktrees")
   # Refresh occupancy after removals, including locked worktrees and the main checkout.
   if current=$(prune_git_worktrees) && result=$(git -C "$AGENT_REPO_PATH" for-each-ref --format='%(objectname) %(refname:short)' refs/heads/); then
     while read -r sha branch; do
+      prune_budget_exceeded && break
+      prune_quota_reached && break
       [[ -n "$branch" ]] || continue
       occupied=$(jq -r --arg branch "$branch" 'any(.[]; .branch == $branch)' <<<"$current")
       [[ "$occupied" == false ]] || continue
       prune_issue_safe '' "$branch" || continue
       prune_merged "$sha" || { prune_keep "$branch" 'head has no matching merged PR'; continue; }
-      git -C "$AGENT_REPO_PATH" branch -D -- "$branch" || prune_keep "$branch" 'branch removal failed'
+      if git -C "$AGENT_REPO_PATH" branch -D -- "$branch"; then
+        prune_removed_count=$((prune_removed_count + 1))
+      else
+        prune_keep "$branch" 'branch removal failed'
+      fi
     done <<<"$result"
   else
     prune_keep 'local branches' 'cannot verify branch occupancy'
   fi
-  if result=$(git -C "$AGENT_REPO_PATH" ls-remote --heads origin 'refs/heads/agent/*' 2>/dev/null); then
+  # Reuse the cached remote heads to find agent/* branches without another network call.
+  if [[ "$prune_remote_heads_ok" == true ]]; then
     while read -r sha branch; do
+      prune_budget_exceeded && break
+      prune_quota_reached && break
       [[ "$branch" =~ ^refs/heads/agent/([A-Z][A-Z0-9]*-[0-9]+)/[^/]+$ ]] || continue
       ticket=${BASH_REMATCH[1]}
       branch=${branch#refs/heads/}
       prune_issue_safe '' "$branch" || continue
       prune_ticket_check "$ticket" "$branch" || continue
       prune_merged "$sha" "$branch" || { prune_keep "$branch" 'remote head has no matching merged PR'; continue; }
-      git -C "$AGENT_REPO_PATH" push origin --delete "$branch" || prune_keep "$branch" 'remote removal failed'
-    done <<<"$result"
+      if git -C "$AGENT_REPO_PATH" push origin --delete "$branch"; then
+        prune_removed_count=$((prune_removed_count + 1))
+      else
+        prune_keep "$branch" 'remote removal failed'
+      fi
+    done < <(awk '$2 ~ "^refs/heads/agent/" { print }' <<<"$prune_remote_heads")
   else
     prune_keep 'remote branches' 'remote heads query failed'
   fi
@@ -163,60 +234,66 @@ prune_inventory_ok=false
 prune_worktrees='[]'
 prune_compensate
 
-orca worktree list --repo "$REPO" --json \
-  | jq -r --arg p "$PREFIX" '.result.worktrees[] | select(.path | split("/") | last | startswith($p)) | "\(.createdAt) \(.path)"' \
-  | while read -r created wt; do
-      [[ "$wt" == "$self" ]] && continue
-      prune_legacy_safe "$wt" || continue
-      [[ -f "$wt/.omc/agent-run-finished" ]] || (( created < cutoff_ms )) || continue
-      orca worktree rm --worktree "path:$wt" --force --json | jq -r --arg wt "$wt" '"pruned \($wt) ok=\(.ok)"'
-    done
+while read -r created wt; do
+  prune_quota_reached && break
+  [[ "$wt" == "$self" ]] && continue
+  prune_legacy_safe "$wt" || continue
+  [[ -f "$wt/.omc/agent-run-finished" ]] || (( created < cutoff_ms )) || continue
+  orca worktree rm --worktree "path:$wt" --force --json | jq -r --arg wt "$wt" '"pruned \($wt) ok=\(.ok)"'
+  prune_removed_count=$((prune_removed_count + 1))
+done < <(orca worktree list --repo "$REPO" --json \
+  | jq -r --arg p "$PREFIX" '.result.worktrees[] | select(.path | split("/") | last | startswith($p)) | "\(.createdAt) \(.path)"')
 
 # Only coordinator-marked units with a finished PR and a clean checkout are eligible.
 main="$(cd "$AGENT_REPO_PATH" && pwd -P)"
-orca worktree list --repo "$REPO" --json \
-  | jq -r '.result.worktrees[].path' \
-  | while IFS= read -r wt; do
-      [[ "$wt" == "$self" || "$wt" == "$main" || "$wt" == "$AGENT_REPO_PATH" ]] && continue
-      prune_legacy_safe "$wt" || continue
-      marker="$wt/.omc/agent-unit"
-      [[ -e "$marker" || -L "$marker" ]] || continue
-      if ! record=$(cat "$marker" 2>&1); then
-        printf 'skip %s: cannot read agent-unit: %s\n' "$wt" "${record//$'\n'/ }" >&2
-        continue
-      fi
-      if [[ ! "$record" =~ ^pr=([1-9][0-9]*)$ ]]; then
-        printf 'skip %s: invalid agent-unit (expected pr=<N>)\n' "$wt" >&2
-        continue
-      fi
-      pr="${BASH_REMATCH[1]}"
-      if [[ -z "${AGENT_GH_REPO:-}" ]]; then
-        printf 'skip %s: AGENT_GH_REPO is not set\n' "$wt" >&2
-        continue
-      fi
-      if ! gh_error_file=$(mktemp 2>&1); then
-        printf 'skip %s: cannot capture gh stderr: %s\n' "$wt" "${gh_error_file//$'\n'/ }" >&2
-        continue
-      fi
-      trap 'rm "$gh_error_file"' EXIT
-      if ! state=$(gh pr view "$pr" --repo "$AGENT_GH_REPO" --json state -q .state 2>"$gh_error_file"); then
-        gh_error=$(cat "$gh_error_file")
-        printf 'skip %s: gh pr view %s failed: %s\n' "$wt" "$pr" "${gh_error//$'\n'/ }" >&2
-        rm "$gh_error_file"
-        trap - EXIT
-        continue
-      fi
+while IFS= read -r wt; do
+  prune_quota_reached && break
+  [[ "$wt" == "$self" || "$wt" == "$main" || "$wt" == "$AGENT_REPO_PATH" ]] && continue
+  prune_legacy_safe "$wt" || continue
+  marker="$wt/.omc/agent-unit"
+  [[ -e "$marker" || -L "$marker" ]] || continue
+  if ! record=$(cat "$marker" 2>&1); then
+    printf 'skip %s: cannot read agent-unit: %s\n' "$wt" "${record//$'\n'/ }" >&2
+    continue
+  fi
+  if [[ ! "$record" =~ ^pr=([1-9][0-9]*)$ ]]; then
+    printf 'skip %s: invalid agent-unit (expected pr=<N>)\n' "$wt" >&2
+    continue
+  fi
+  pr="${BASH_REMATCH[1]}"
+  if [[ -z "${AGENT_GH_REPO:-}" ]]; then
+    printf 'skip %s: AGENT_GH_REPO is not set\n' "$wt" >&2
+    continue
+  fi
+  state=''
+  if state=$(prune_pr_state_of "$pr"); then
+    :
+  else
+    if ! gh_error_file=$(mktemp 2>&1); then
+      printf 'skip %s: cannot capture gh stderr: %s\n' "$wt" "${gh_error_file//$'\n'/ }" >&2
+      continue
+    fi
+    trap 'rm "$gh_error_file"' EXIT
+    if ! state=$(gh pr view "$pr" --repo "$AGENT_GH_REPO" --json state -q .state 2>"$gh_error_file"); then
+      gh_error=$(cat "$gh_error_file")
+      printf 'skip %s: gh pr view %s failed: %s\n' "$wt" "$pr" "${gh_error//$'\n'/ }" >&2
       rm "$gh_error_file"
       trap - EXIT
-      [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
-      if ! status=$(git -C "$wt" status --porcelain 2>&1); then
-        printf 'skip %s: git status failed: %s\n' "$wt" "${status//$'\n'/ }" >&2
-        continue
-      fi
-      [[ -z "$status" ]] || continue
-      if ! result=$(orca worktree rm --worktree "path:$wt" 2>&1); then
-        printf 'skip %s: orca worktree rm failed: %s\n' "$wt" "${result//$'\n'/ }" >&2
-        continue
-      fi
-      printf 'pruned %s (PR %s %s)\n' "$wt" "$pr" "$state"
-    done
+      continue
+    fi
+    rm "$gh_error_file"
+    trap - EXIT
+  fi
+  [[ "$state" == MERGED || "$state" == CLOSED ]] || continue
+  if ! status=$(git -C "$wt" status --porcelain 2>&1); then
+    printf 'skip %s: git status failed: %s\n' "$wt" "${status//$'\n'/ }" >&2
+    continue
+  fi
+  [[ -z "$status" ]] || continue
+  if ! result=$(orca worktree rm --worktree "path:$wt" 2>&1); then
+    printf 'skip %s: orca worktree rm failed: %s\n' "$wt" "${result//$'\n'/ }" >&2
+    continue
+  fi
+  printf 'pruned %s (PR %s %s)\n' "$wt" "$pr" "$state"
+  prune_removed_count=$((prune_removed_count + 1))
+done < <(orca worktree list --repo "$REPO" --json | jq -r '.result.worktrees[].path')

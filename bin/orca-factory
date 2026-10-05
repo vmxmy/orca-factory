@@ -558,7 +558,7 @@ PRECHECK_ORCA
 set -eu
 printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
 case "${PRECHECK_MODE:-}" in
-  orphan-pr|overrun-pr) echo '[{"number":1}]' ;;
+  orphan-pr|overrun-pr) echo '[{"number":1,"title":"TEST-1 implementation"}]' ;;
   orphan-fail|overrun-gh-fail) exit 2 ;;
   overrun-gh-invalid) echo '{}'  ;;
   *) echo '[]' ;;
@@ -761,6 +761,47 @@ PRECHECK_READS
       grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: rate limit call count missing"
     done
     unset PRECHECK_RATE_AT
+    # Three in-flight tickets must share one gh pr list call: cache once per run, filter locally.
+    rm -f "$SELFTEST_TMP/precheck-bin/orca"
+    cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_MULTI'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+case "$*" in
+  'linear list-issues --team TEST --project precheck-test --order-by createdAt --json')
+    jq -nc '{ok:true,result:{issues:[
+      {identifier:"TEST-1",labels:[{name:"auto-impl"}],state:{type:"started"}},
+      {identifier:"TEST-5",labels:[{name:"auto-impl"}],state:{type:"started"}},
+      {identifier:"TEST-6",labels:[{name:"auto-impl"}],state:{type:"started"}}
+    ]}}' ;;
+  'linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json')
+    echo '{"ok":true,"result":{"issues":[]}}' ;;
+  'linear issue TEST-'*' --json')
+    jq -nc '{ok:true,result:{issue:{updatedAt:((now-7200)|todateiso8601),state:{type:"started"}}}}' ;;
+  'linear issue TEST-'*' --comments --json')
+    # Each ticket has a stale 已领取 comment and no 认领失效 so overrun_claim reaches the PR check.
+    jq -nc '{ok:true,result:{comments:[{body:"已领取 · tier=default",createdAt:((now-7200)|todateiso8601)}],
+      meta:{sections:{comments:{cap:500,capReached:false,hasMore:false}}}}}' ;;
+  'orchestration run-list --json') echo '{"ok":true,"result":{"runs":[]}}' ;;
+  'worktree ps --json') echo '{"ok":true,"result":{"worktrees":[]}}' ;;
+  *) echo "unexpected multi fixture call: $*" >&2; exit 1 ;;
+esac
+PRECHECK_MULTI
+    rm -f "$SELFTEST_TMP/precheck-bin/gh"
+    cat > "$SELFTEST_TMP/precheck-bin/gh" <<'PRECHECK_MULTI_GH'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+# No open PR with any of the test ids in title.
+echo '[]'
+PRECHECK_MULTI_GH
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
+    export PRECHECK_MODE=multi AGENT_MAX_IN_FLIGHT=5
+    : > "$SELFTEST_TMP/precheck.calls"
+    multi_status=0
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || multi_status=$?
+    gh_prlist_count="$(grep -c '^pr list --repo example/precheck-test ' "$SELFTEST_TMP/precheck.calls" || true)"
+    [[ "$gh_prlist_count" == 1 ]] || { cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: precheck called gh pr list $gh_prlist_count times for 3 in-flight tickets"; }
     echo "selftest: precheck reuses linear reads and stops on rate limit"
     echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
@@ -769,6 +810,7 @@ PRECHECK_READS
     echo "selftest: precheck retries stuck workers before escalating"
     echo "selftest: precheck skips scope-overlapping tickets"
     echo "selftest: precheck claims multiple non-overlapping tickets"
+    echo "selftest: precheck shares one gh pr list across in-flight tickets"
   )
   # Prune compensation uses real Git worktrees and a local bare origin; services are isolated.
   (
@@ -799,15 +841,32 @@ PRUNE_ORCA
     cat > "$PRUNE_TEST_ROOT/bin/gh" <<'PRUNE_GH'
 #!/usr/bin/env bash
 set -eu
+printf '%s\n' "$*" >> "$PRUNE_TEST_ROOT/gh.calls"
 [[ "$PRUNE_MODE" != pr-failure && "$PRUNE_MODE" != pushed ]] || { echo 'PR query unavailable' >&2; exit 7; }
 if [[ "$1 $2" == "pr view" ]]; then echo MERGED; exit 0; fi
 jq -nc --arg sha "$PRUNE_MERGED_SHA" --arg repo "$AGENT_GH_REPO" \
   '["worker","git","local","remote"] | map({merged_at:"2026-01-01T00:00:00Z",head:{sha:$sha,ref:("agent/TEST-1/"+.),repo:{full_name:$repo}}})'
 PRUNE_GH
+    # Shim git only to count ls-remote and (optionally) throttle it; the real git handles everything else.
+    PRUNE_REAL_GIT="$(command -v git)"
+    cat > "$PRUNE_TEST_ROOT/bin/git" <<PRUNE_GIT
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  if [[ "\$arg" == ls-remote ]]; then
+    printf '%s\n' "\$*" >> "\$PRUNE_TEST_ROOT/git-lsremote.calls"
+    [[ -z "\${PRUNE_SLOW_LSREMOTE:-}" ]] || sleep "\$PRUNE_SLOW_LSREMOTE"
+    break
+  fi
+done
+exec "$PRUNE_REAL_GIT" "\$@"
+PRUNE_GIT
     chmod +x "$PRUNE_TEST_ROOT/bin/"*
     export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
+    export AGENT_PRUNE_MAX_PER_RUN=100 AGENT_PRUNE_BUDGET_SECONDS=600
     for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed canceled; do
       export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
+      : > "$PRUNE_TEST_ROOT/gh.calls"
+      : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
       git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
       git init -q "$AGENT_REPO_PATH"
       git -C "$AGENT_REPO_PATH" config user.name selftest
@@ -857,7 +916,59 @@ PRUNE_GH
       [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/backup)" ]] || fail 'selftest: prune removed unmatched backup'
       [[ "$PRUNE_MODE" != started || -d "$AGENT_REPO_PATH/legacy" ]] || fail 'selftest: prune removed in-flight legacy worktree'
       [[ "$PRUNE_MODE" == reclaim || -s "$PRUNE_TEST_ROOT/err" ]] || fail 'selftest: prune did not explain retention'
+      # Within one run the compensation stage must call gh api --paginate pulls at most once and
+      # git ls-remote --heads at most once, regardless of how many worktrees or branches it touches.
+      gh_pulls_count="$(grep -c '^api --paginate repos/.*/pulls?state=closed' "$PRUNE_TEST_ROOT/gh.calls" || true)"
+      (( gh_pulls_count <= 1 )) || fail "selftest: prune called gh pulls api $gh_pulls_count times ($PRUNE_MODE)"
+      git_lsremote_count="$(grep -c '^-C .* ls-remote --heads origin$' "$PRUNE_TEST_ROOT/git-lsremote.calls" || true)"
+      (( git_lsremote_count <= 1 )) || fail "selftest: prune called git ls-remote --heads origin $git_lsremote_count times ($PRUNE_MODE)"
     done
+    # Budget: slow ls-remote wrapped by alarm hits the budget and prune reports it, exit 0.
+    export PRUNE_MODE=reclaim AGENT_REPO_PATH="$PRUNE_TEST_ROOT/budget"
+    : > "$PRUNE_TEST_ROOT/gh.calls"
+    : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+    git init -q --bare "$PRUNE_TEST_ROOT/budget.git"
+    git init -q "$AGENT_REPO_PATH"
+    git -C "$AGENT_REPO_PATH" config user.name selftest
+    git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+    git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+    export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+    git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/budget.git"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+    git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+    git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote
+    budget_status=0
+    AGENT_PRUNE_BUDGET_SECONDS=1 PRUNE_SLOW_LSREMOTE=3 \
+      perl -e 'alarm 15; exec @ARGV' -- bash -c '(cd "$1" && bash "$2")' -- \
+      "$SELFTEST_TMP" "$CORE/prune-run-worktrees.sh" \
+      > "$PRUNE_TEST_ROOT/budget.out" 2> "$PRUNE_TEST_ROOT/budget.err" || budget_status=$?
+    [[ "$budget_status" == 0 ]] || { cat "$PRUNE_TEST_ROOT/budget.err"; fail "selftest: prune budget run should exit 0 ($budget_status)"; }
+    grep -Fq 'prune: 超过时间预算，剩余对象留到下次' "$PRUNE_TEST_ROOT/budget.err" \
+      || { cat "$PRUNE_TEST_ROOT/budget.err"; fail 'selftest: prune budget message missing'; }
+    # Quota: cap removals per run so backlog never blocks the pipeline.
+    export PRUNE_MODE=reclaim AGENT_REPO_PATH="$PRUNE_TEST_ROOT/quota"
+    unset PRUNE_SLOW_LSREMOTE
+    : > "$PRUNE_TEST_ROOT/gh.calls"
+    : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+    git init -q --bare "$PRUNE_TEST_ROOT/quota.git"
+    git init -q "$AGENT_REPO_PATH"
+    git -C "$AGENT_REPO_PATH" config user.name selftest
+    git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+    git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+    export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+    git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/quota.git"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+    git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+    git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote
+    quota_status=0
+    AGENT_PRUNE_MAX_PER_RUN=1 AGENT_PRUNE_BUDGET_SECONDS=600 \
+      bash -c '(cd "$1" && bash "$2")' -- "$SELFTEST_TMP" "$CORE/prune-run-worktrees.sh" \
+      > "$PRUNE_TEST_ROOT/quota.out" 2> "$PRUNE_TEST_ROOT/quota.err" || quota_status=$?
+    [[ "$quota_status" == 0 ]] || { cat "$PRUNE_TEST_ROOT/quota.err"; fail "selftest: prune quota run should exit 0 ($quota_status)"; }
+    grep -Fq 'prune: 达到单次回收上限，剩余对象留到下次' "$PRUNE_TEST_ROOT/quota.err" \
+      || { cat "$PRUNE_TEST_ROOT/quota.err"; fail 'selftest: prune quota message missing'; }
   )
   echo 'selftest: prune reclaims merged worktrees and branches'
   # wait-runs.sh: a fake orca binds a run with run-use and prints keepalive objects before a pretty-printed result.
@@ -899,6 +1010,8 @@ FAKE
   rc=0; bash "$FACTORY/core/wait-runs.sh" "$WR/missing" "$WR/state" 1 >/dev/null 2>&1 || rc=$?
   [[ "$rc" == 64 ]] || fail "selftest: wait-runs must exit 64 on bad usage (got $rc)"
   echo 'selftest: wait-runs collects worker messages across runs'
+  echo 'selftest: prune bounds github calls per run'
+  echo 'selftest: prune honors time budget and per-run quota'
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }
@@ -1012,6 +1125,7 @@ DOCTOR_LARK_UTF8
     (.errors | length) == 4 and (tostring | contains("DOCTOR_SECRET") | not)' \
     "$SELFTEST_TMP/doctor.json" >/dev/null || fail "selftest: doctor must report probe failures safely"
   echo "selftest: doctor discovery, JSON escaping, credential filtering and probe failures PASS"
+  echo "selftest: github calls are bounded per run"
   echo "selftest: PASS"
 }
 
