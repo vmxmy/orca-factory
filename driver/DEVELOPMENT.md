@@ -1,6 +1,6 @@
 # Driver 开发检查
 
-在仓库根目录运行以下命令，人和 Agent 使用同一入口。需要 Go 1.27.1（`driver/go.mod` 的 toolchain）、GNU Make、Bash、Git；race 还需要 CGO 支持和 C 编译器。语言最低版本仍为 `go 1.25`。
+在仓库根目录运行以下命令，人和 Agent 使用同一入口。需要 [driver/go.mod](go.mod) 指定的 Go toolchain、GNU Make、Bash、Git；race 还需要 CGO 支持和 C 编译器。语言最低版本以同一文件的 `go` 指令为准。
 
 | 入口 | 行为 |
 | --- | --- |
@@ -30,9 +30,33 @@ make race PACKAGES=./internal/executor
 
 同一入口下次执行会覆盖报告。JSON 是 Go test2json 事件流，一行一个 JSON 对象；JUnit 包含测试结果及失败。命令保持真实失败退出，不能仅以报告文件存在判断通过。不同入口的报告互不覆盖；避免在同一工作树并发运行两个 `make test` 或两个 `make race`。
 
+## Goroutine 泄漏：goleak
+
+[executor/main_test.go](internal/executor/main_test.go) 和 [scheduler/main_test.go](internal/scheduler/main_test.go) 在 `TestMain` 中调用 `goleak.VerifyTestMain(m)`，检查整包测试结束后的残留 goroutine。依赖由 go.mod 管理，仅用于测试。
+
+```sh
+make test PACKAGES='./internal/executor ./internal/scheduler'
+make race PACKAGES='./internal/executor ./internal/scheduler'
+```
+
+定位失败可以用 `TEST_ARGS='-run TestName'` 聚焦已有测试；验收泄漏修复仍要运行整包，让生命周期相互作用得到检查。先确保 context 取消、资源关闭和 goroutine 退出已被等待，再判断泄漏。保持无宽泛忽略；确有第三方常驻 goroutine 时，先证明所有权与生命周期，再评审最窄例外及原因。
+
+## 虚拟时间：synctest
+
+[infra/synctest_test.go](internal/infra/synctest_test.go) 从外部测试包调用公开 `infra.Retry`。在 `synctest.Test` 中保持 `Options.Sleep` 未设置，固定 `Random` 返回 `0.5` 消除 jitter，覆盖真实默认计时器路径。调用时点应为 0、2、6、14 秒，分别验证 2/4/8 秒退避。
+
+取消测试在第一次、第二次、第三次等待期间取消 context，断言返回 `context.Canceled`；再跨过原有重试截止时间，断言操作没有再次调用。bubble 中的 `time.Sleep` 推进虚拟时间；`synctest.Wait` 等待其他 goroutine 稳定阻塞并同步观察，不用真实等待或轮询来同步共享变量。
+
+```sh
+make test PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
+make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
+```
+
+验证新断言敏感性时，在隔离临时副本中改变退避时长、屏蔽默认 Sleep 的取消或允许取消后再调用；逐项确认测试变红，恢复后变绿。不要把 mutation 留入提交或在共享 worktree 中修改他人正在验证的代码。保留现有录制契约测试。
+
 ## 本地语言服务与调试
 
-`make dev-tools` 还安装 gopls v0.23.0 和 Delve v1.27.2，它们已由本地工具验证使用 Go 1.27.1 编译、执行静态诊断及断点调试。使用工作树工具时可以直接调用：
+`make dev-tools` 还安装锁文件指定的 gopls 和 Delve。使用工作树工具时可以直接调用：
 
 ```sh
 .omc/tools/bin/gopls version
@@ -55,13 +79,13 @@ make race PACKAGES=./internal/executor
 
 工作流仅声明 `contents: read`，checkout 不持久化凭证，Actions 引用固定完整 commit SHA。setup-go 从 `driver/go.mod` 优先读取 toolchain。race 成功或失败后都尝试上传两份报告，artifact 名 `race-reports`，保留 14 天；若工具安装阶段失败，没有报告时不掩盖原失败。
 
-required checks 由维护者在 GitHub 上配置，使用上表名称并绑定 GitHub Actions app。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
+合并到 main 要求上述五项检查通过。远端分支保护使用上表名称并绑定 GitHub Actions app，要求分支更新至最新主线，管理员也受约束；通过 GitHub API 回读确认配置，检查启动本身不能证明保护已生效。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
 
 [Dependabot](../.github/dependabot.yml) 每周检查 `/driver` 的 Go module 与根目录的 GitHub Actions，依赖变更仍经 PR 门禁。
 
 ## 官方接口依据
 
-- [gotestsum v1.13.0](https://github.com/gotestyourself/gotestsum/tree/v1.13.0)：`--jsonfile`、`--junitfile` 和退出状态。
+- [gotestsum](https://github.com/gotestyourself/gotestsum)：`--jsonfile`、`--junitfile` 和退出状态。
 - [setup-go v6.0.0](https://github.com/actions/setup-go/tree/v6.0.0)：`go-version-file` 优先读取 toolchain，`cache-dependency-path` 指向 driver/go.sum。
 - [upload-artifact v4.6.2](https://github.com/actions/upload-artifact/tree/v4.6.2)：`.omc` 下报告需要 `include-hidden-files: true`，只上传明确列出的报告文件。
 - [GitHub workflow 语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)：路径/分支过滤可使被跳过的必需检查保持 pending。
