@@ -133,7 +133,7 @@ func TestExecErrorLogged(t *testing.T) {
 			cmd.Dir = repo
 			output, err := cmd.CombinedOutput()
 			exitErr, ok := err.(*exec.ExitError)
-			if !ok || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "Usage: driver "+command) {
+			if !ok || exitErr.ExitCode() != 2 || !strings.Contains(string(output), "usage: driver "+command) {
 				t.Fatalf("%s must retain usage failure: err=%v output=%s", command, err, output)
 			}
 			if !strings.Contains(string(output), `"event":"log_open_error"`) {
