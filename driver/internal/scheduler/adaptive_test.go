@@ -216,10 +216,13 @@ func TestPauseQuotaResetRespectsOtherLimits(t *testing.T) {
 				snapshots int
 			}{{0, 0}, {2 * time.Minute, 0}, {5*time.Minute - time.Nanosecond, 0}, {5 * time.Minute, 1}, {5 * time.Minute, 1}, {10*time.Minute - time.Nanosecond, 1}, {10 * time.Minute, 2}}
 			if knownReset {
+				// Even with a known reset time the pause must still probe after the
+				// backoff; a known reset alone never unlatches a paused quota, and the
+				// paused branch otherwise never reaches Snapshot to observe recovery.
 				steps = []struct {
 					elapsed   time.Duration
 					snapshots int
-				}{{0, 0}, {2 * time.Minute, 0}, {32 * time.Minute, 0}}
+				}{{0, 0}, {2 * time.Minute, 0}, {5 * time.Minute, 1}, {10 * time.Minute, 2}}
 			}
 			for _, step := range steps {
 				now = start.Add(step.elapsed)
