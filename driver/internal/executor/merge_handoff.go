@@ -64,9 +64,11 @@ func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, r
 	return merge.HandoffPrefix + string(b), nil
 }
 
+var errMissingMergeHandoff = errors.New("existing PR has no frozen handoff")
+
 // resumeMergeHandoff preserves the original FIFO identity and budgets. An open
 // PR alone cannot prove gate/reviewer success, or authorize a fresh handoff.
-func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, pr github.PullRequest, head string) (Result, error) {
+func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, pr github.PullRequest, head string, current *checkpoint) (Result, error) {
 	rows, err := e.Linear.ListComments(ctx, t.ID)
 	if err != nil {
 		return Result{}, errors.New("existing PR handoff read failed")
@@ -98,7 +100,13 @@ func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, p
 			h = &value
 		}
 	}
-	if h == nil || owner != string(machine.OwnerMerge) || h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != c.Owner+"/"+c.Repository || h.Unit != c.Unit || h.PR != pr.Number || h.Head != head || pr.Head.SHA != head || head == "" || h.Baseline == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" || h.Worktree == "" || h.QueueID == "" || h.EnqueuedAt.IsZero() || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 {
+	if h == nil {
+		return Result{}, errMissingMergeHandoff
+	}
+	if current != nil && (h.Run != current.Run || h.Task != current.Task || h.Dispatch != current.Dispatch || h.Corrections != current.Corrections) {
+		return Result{}, errors.New("frozen handoff does not match current dispatch")
+	}
+	if owner != string(machine.OwnerMerge) || h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != c.Owner+"/"+c.Repository || h.Unit != c.Unit || h.PR != pr.Number || h.Head != head || pr.Head.SHA != head || head == "" || h.Baseline == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" || h.Worktree == "" || h.QueueID == "" || h.EnqueuedAt.IsZero() || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 {
 		return Result{}, errors.New("existing PR lacks matching frozen validation; retain ownership for reconciliation")
 	}
 	if err := h.Validated(); err != nil {
