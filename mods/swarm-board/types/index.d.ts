@@ -108,7 +108,17 @@ export type Board = {
   /** state.type keyed by identifier for every ticket seen on the latest refresh; feeds the dependency chain badges. */
   issueStates?: Record<string, string>
 }
-export type View = 'swarm' | 'task'
+export type View = 'swarm' | 'task' | 'graph' | 'throughput' | 'failures'
+
+export type GraphData = {
+  criticalPath: string[]
+  unlockRank: { id: string; count: number }[]
+}
+export type ThroughputData = { hourly: number[] }
+export type FailureData = {
+  topCorrections: { ticket: string; corrections: number }[]
+  repeatedFails: { reason: string; count: number }[]
+}
 
 declare module 'claude-code' {
   interface PluginState {

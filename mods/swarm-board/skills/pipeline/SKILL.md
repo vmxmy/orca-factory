@@ -14,6 +14,6 @@ description: 仅用于 Linear 票、orca-factory 流水线与 /swarm 看板场�
 ## 按场景指路
 
 - 建票或处理 `auto-failed` 票：读 `scripts/agent-gates/roles/intake.md`，按该角色流程处理。
-- 看板：使用 `/swarm`；键位 `t` 泳道 / `s` agent / `d` 明细 / `q` 队列。
+- 看板：使用 `/swarm`；键位 `t` 泳道 / `s` agent / `g` 依赖 / `p` 吞吐 / `f` 失败 / `d` 明细 / `q` 队列。
 - 统计：运行 `scripts/agent-gates/agent-graph.sh ledger stats`。
 - 其余 orca-factory 流水线问题：读 `ONBOARD.md`。
