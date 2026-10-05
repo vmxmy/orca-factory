@@ -25,4 +25,4 @@
 
 - 只回给 coordinator：stdout 末尾一个 JSON 对象，`step` 固定 `review`。
 - `red` → coordinator 打回 worker（计一次 correction）；`green` → coordinator 继续开 PR 转人批。
-- 发现 lane 3 迹象（密钥、部署、迁移执行）→ `red`，`reason` 以 `lane3:` 开头，coordinator 直接转人。
+- 改动文件命中本仓库 `AGENT_LANE3_GLOBS`（由 coordinator 在简报前一行以 `本仓库 AGENT_LANE3_GLOBS=<值>` 给出），或 diff 中出现密钥、token、私钥等明文 → `red`，`reason` 以 `lane3:` 开头，coordinator 直接转人。
