@@ -1,6 +1,6 @@
 {
   "name": "swarm-board",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Agent 蜂群看板（/swarm）：泳道视角的票状态、agent 时长/token/成本、PR 与 CI 进度、ledger 统计",
   "types": "./types/index.d.ts",
   "author": {
