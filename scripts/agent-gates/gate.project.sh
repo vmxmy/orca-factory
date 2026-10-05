@@ -21,3 +21,8 @@ if [ "$omc_count" -gt "$OMC_BASELINE" ]; then
   echo "请把产物放进 Linear/GitHub/Orca，或先降低基线再提交（当前次数：${omc_count}，基线：${OMC_BASELINE}）" >&2
   exit 1
 fi
+
+echo "== driver"
+if [ -f driver/go.mod ]; then
+  (cd driver && go vet ./... && go test -count=1 ./...)
+fi
