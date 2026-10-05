@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -56,5 +57,42 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+// ActualChanges refreshes local git refs in the production Runtime.
+func (b *writeTrapBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error) {
+	b.writes++
+	return []string{"file"}, true, nil
+}
+func (b *writeTrapBackend) AdvanceMerges(context.Context, []scheduler.Ticket) error {
+	b.writes++
+	return nil
+}
+func TestDryRunMergeOwnershipDoesNotFetchOrWrite(t *testing.T) {
+	trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ENG-1", Repo: "r", Owner: machine.OwnerMerge}}}
+	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
+	var out bytes.Buffer
+	if err := dryRunTick(context.Background(), cfg, trap, &out, time.Now); err != nil {
+		t.Fatal(err)
+	}
+	if trap.writes != 0 {
+		t.Fatalf("dry-run performed %d mutating operations", trap.writes)
+	}
+}
+
+type legacyWriteTrap struct{ *writeTrapBackend }
+
+func (b *legacyWriteTrap) InspectLegacy(context.Context, scheduler.Ticket) (scheduler.Legacy, error) {
+	b.writes++
+	return scheduler.Legacy{Complete: true}, nil
+}
+func TestDryRunLegacyDoesNotFetch(t *testing.T) {
+	trap := &legacyWriteTrap{&writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ENG-1", Repo: "r", Legacy: true}}}}
+	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
+	var out bytes.Buffer
+	_ = dryRunTick(context.Background(), cfg, trap, &out, time.Now)
+	if trap.writes != 0 {
+		t.Fatalf("dry-run legacy reconciliation mutated git: %d", trap.writes)
 	}
 }

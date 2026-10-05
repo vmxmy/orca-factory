@@ -44,7 +44,7 @@ func (w *rotatingFile) open() error {
 	}
 	info, err := f.Stat()
 	if err != nil {
-		f.Close()
+		_ = f.Close() // No writes occurred; preserve the Stat error.
 		return err
 	}
 	w.file, w.size = f, info.Size()

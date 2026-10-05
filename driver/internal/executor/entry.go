@@ -66,12 +66,9 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (Result, er
 	}
 	oc := &orca.Client{}
 	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
-	if e.Config.Root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return Result{}, errors.New("cannot resolve state root")
-		}
-		e.Config.Root = filepath.Join(home, ".local", "state", "orca-factory")
+	e.Config.Root, err = executorStateRoot()
+	if err != nil {
+		return Result{}, err
 	}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
@@ -110,7 +107,7 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 	if err != nil {
 		return Ticket{}, errors.New("Linear brief transport failed")
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	if resp.StatusCode != http.StatusOK {
 		return Ticket{}, errors.New("Linear brief request rejected")
 	}
@@ -142,4 +139,16 @@ func workerIdleTimeout(value string) time.Duration {
 		return 15 * time.Minute
 	}
 	return time.Duration(minutes) * time.Minute
+}
+
+// executorStateRoot is shared by all entrypoint recovery and artifact writes.
+func executorStateRoot() (string, error) {
+	if root := os.Getenv("AGENT_DRIVER_STATE_ROOT"); root != "" {
+		return root, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", errors.New("cannot resolve state root")
+	}
+	return filepath.Join(home, ".local", "state", "orca-factory"), nil
 }

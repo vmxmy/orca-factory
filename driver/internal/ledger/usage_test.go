@@ -32,7 +32,11 @@ func TestUsageFields(t *testing.T) {
 		}
 		f := newFake()
 		l := openTest(f)
-		defer l.Close(context.Background())
+		defer func() {
+			if err := l.Close(context.Background()); err != nil {
+				t.Error(err)
+			}
+		}()
 		if err := l.Append(raw); err != nil {
 			t.Fatal(err)
 		}

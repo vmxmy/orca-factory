@@ -19,18 +19,21 @@ import (
 func init() { Register("exec", execTicket) }
 func execTicket(args []string) int {
 	repo := executorLogRepository()
-	ticket := "unknown"
-	if len(args) == 1 && logComponent.MatchString(args[0]) {
-		ticket = args[0]
+	id, merging, valid := "", false, false
+	switch {
+	case len(args) == 1 && logComponent.MatchString(args[0]):
+		id, valid = args[0], true
+	case len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]):
+		id, merging, valid = args[1], true, true
+	}
+	ticket := id
+	if !valid {
+		ticket = "unknown"
 	}
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
-		merging := false
-		id := args[0]
-		if len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]) {
-			merging, id = true, args[1]
-		} else if len(args) != 1 || !logComponent.MatchString(id) {
-			return 2, fmt.Errorf("Usage: driver exec [--merging] <票号>")
+		if !valid {
+			return 2, fmt.Errorf("usage: driver exec [--merging] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()

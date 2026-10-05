@@ -5,7 +5,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sort"
 	"time"
@@ -13,10 +12,17 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 )
 
 type Ticket struct {
+	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
+	// reserved by an earlier squash intent for this queue.
+	deploymentReservedQueue             string
+	Progress                            *merge.Progress
+	Handoff                             *merge.Handoff
+	MergeProblem                        string
 	ID, Identifier, Repo, Terminal, Run string
 	Scope                               []string
 	Blockers                            []string
@@ -58,16 +64,10 @@ type Backend interface {
 	Launch(context.Context, Ticket) error
 }
 
-// Merger consumes the merge queue a tick reconstructs. It is optional so that
-// dry runs and tests can observe the queue without merging.
-type Merger interface {
-	Process(context.Context, []Ticket) error
-}
 type Scheduler struct {
 	Logger           *slog.Logger
 	Config           config.Config
 	Backend          Backend
-	Merger           Merger
 	Now              func() time.Time
 	MergeQueue       []Ticket
 	Pauses           *pause.Manager
@@ -182,9 +182,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		r := repos[t.Repo]
 		action := Action{}
-		if owned(t) && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+		if t.Owner == machine.OwnerExecutor && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 			action = Action{Kind: Human, Attempt: t.Attempt, Reason: "in-flight ticket exceeded stale limit"}
-		} else if t.Owner == machine.OwnerMerge {
+		} else if t.Owner == machine.OwnerMerge || DeploymentBarrier(t) {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
 		} else if t.Owner == machine.OwnerExecutor {
@@ -268,6 +268,13 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 	}
+	if merger, ok := s.Backend.(interface {
+		AdvanceMerges(context.Context, []Ticket) error
+	}); ok {
+		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
+			problems = append(problems, err)
+		}
+	}
 	sort.SliceStable(tickets, func(i, j int) bool {
 		a, b := tickets[i], tickets[j]
 		if priority(a.Priority) != priority(b.Priority) {
@@ -332,11 +339,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
 		}
 	}
-	if s.Merger != nil && len(s.MergeQueue) > 0 {
-		if err := s.Merger.Process(ctx, s.MergeQueue); err != nil {
-			problems = append(problems, fmt.Errorf("merge lane: %w", err))
-		}
-	}
 	return errors.Join(problems...)
 }
 
@@ -347,7 +349,7 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 	if err != nil {
 		return errors.New("driver serve singleton lock unavailable")
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }() // Cleanup releases the descriptor even if explicit unlock fails.
 	s, err := initialize(ctx)
 	if err != nil {
 		return err

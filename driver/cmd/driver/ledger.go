@@ -38,7 +38,7 @@ func runLedger(args []string) int {
 	l := ledger.New(store, ledger.Options{})
 	if appendRow {
 		if err = l.Append(args[1]); err != nil {
-			l.Close(ctx)
+			_ = l.Close(ctx) // Invalid input was never buffered; preserve the validation error.
 			fmt.Fprintln(os.Stderr, "ledger: invalid json row")
 			return 2
 		}

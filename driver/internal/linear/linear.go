@@ -139,7 +139,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		return nil, errors.New("LINEAR_API_KEY is required")
 	}
 	if options.TeamID == "" {
-		return nil, errors.New("Linear team ID is required")
+		return nil, errors.New("linear team ID is required")
 	}
 	target := options.BaseURL
 	if target == "" {
@@ -490,7 +490,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	if err != nil {
 		// Classify before discarding transport errors, which can contain URLs or keys.
 		classified := infra.Classify(err)
-		safe := errors.New("Linear transport failed")
+		safe := errors.New("linear transport failed")
 		var transient *infra.Transient
 		if errors.As(classified, &transient) {
 			return &infra.Transient{Err: safe}
@@ -500,10 +500,10 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 		}
 		return &infra.Ticket{Err: safe}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }() // Read-only response; read errors are handled below.
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
 	if err != nil {
-		return &infra.Transient{Err: errors.New("Linear response read failed")}
+		return &infra.Transient{Err: errors.New("linear response read failed")}
 	}
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
@@ -517,7 +517,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	for _, e := range envelope.Errors {
 		if e.Extensions.Code == "RATELIMITED" {
 			limited = true
-			return &infra.Global{Dep: infra.Linear, Err: errors.New("Linear rate limited")}
+			return &infra.Global{Dep: infra.Linear, Err: errors.New("linear rate limited")}
 		}
 	}
 	if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {
