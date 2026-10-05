@@ -125,7 +125,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		return result, err
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step+"-"+result.DispatchID, 1) }
+	request := func(step string) string { return scopedRequest(t, c, step+"-"+result.DispatchID, 1) }
 	releaseAttempted := false
 	releaseAllowed := false
 	release := func() error {
@@ -268,7 +268,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if err := saveCheckpoint(c, t, cp); err != nil {
 			return err
 		}
-		receipt, callErr = e.Orca.WorkerStart(ctx, orca.RequestID(t.Identifier, c.Unit, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		receipt, callErr = e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
 		if callErr != nil {
@@ -549,6 +549,9 @@ func pause(ctx context.Context, d time.Duration) error {
 // request ID whose input differs (request_mismatch), and the caller is part of
 // that input, so each executor terminal needs its own request while a retry in
 // the same terminal stays an idempotent replay.
-func runRequest(t Ticket, c Config, step string) string {
-	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, 1)
+func runRequest(t Ticket, c Config, step string) string { return scopedRequest(t, c, step, 1) }
+
+// scopedRequest applies the same terminal scope to every Orca mutation.
+func scopedRequest(t Ticket, c Config, step string, n int) string {
+	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, n)
 }

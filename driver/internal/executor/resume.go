@@ -171,10 +171,23 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		}
 	}
 	if cp != nil {
+		if cp.Pending && !cp.Completed && cp.Task == "" {
+			// The previous executor's request ID belongs to its terminal and cannot be
+			// replayed here; reconcile by the run's tasks instead.
+			task, found, err := e.pendingWorker(ctx, cp.Run, branch)
+			if err != nil {
+				return Result{}, err
+			}
+			if !found {
+				return e.Execute(ctx, t)
+			}
+			cp.Task, cp.Dispatch, cp.Pending = task.ID, task.DispatchID, false
+		}
 		if cp.Pending && !cp.Completed {
 			return Result{}, errors.New("unresolved worker start; reconcile request before retry")
 		}
-		if !cp.Completed && (cp.Task == "" || cp.Dispatch == "") {
+		// task-list carries no dispatch_id, so an adopted task may lack one.
+		if !cp.Completed && cp.Task == "" {
 			return Result{}, errors.New("incomplete worker recovery state")
 		}
 		return e.execute(ctx, t, cp)
@@ -211,4 +224,28 @@ func worktreeReceipt(r orca.Receipt) string {
 		}
 	}
 	return ""
+}
+
+// pendingWorker finds the task an unconfirmed worker-start may have created.
+func (e *Executor) pendingWorker(ctx context.Context, run, branch string) (orca.Task, bool, error) {
+	if run == "" {
+		return orca.Task{}, false, nil
+	}
+	tasks, err := e.Orca.TaskList(ctx, run)
+	if err != nil {
+		return orca.Task{}, false, fmt.Errorf("pending worker lookup failed: %w", err)
+	}
+	var found []orca.Task
+	for _, task := range tasks {
+		if (task.RunID == "" || task.RunID == run) && strings.Contains(task.Spec, branch) {
+			found = append(found, task)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return orca.Task{}, false, nil
+	case 1:
+		return found[0], true, nil
+	}
+	return orca.Task{}, false, errors.New("ambiguous pending worker tasks; reconcile active dispatch")
 }
