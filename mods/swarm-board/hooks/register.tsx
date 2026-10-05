@@ -227,11 +227,12 @@ const usageFields = (usage?: TicketUsage) => usage ? {
 } : {}
 
 async function loadUsage($: any, paths: string[]): Promise<UsageRecord[]> {
+  if (paths.length === 0) return []
   return readUsage({
     files: async () => {
       const r = await $.process.run(['bash', '-c',
         'for dir in "$@"; do if [ -d "$dir" ]; then find "$dir" -type f -name "*.jsonl" || exit; fi; done',
-        'usage', HOME + '/.claude/projects', HOME + '/.codex/sessions'], { timeoutMs: TIMEOUT_MS })
+        'usage', ...paths.map(p => HOME + '/.claude/projects/' + p.replace(/[^a-zA-Z0-9]/g, '-')), HOME + '/.codex/sessions'], { timeoutMs: TIMEOUT_MS })
       if (r.exitCode !== 0) throw new Error(r.stderr || '会话目录读取失败')
       return r.stdout.split('\n').filter((p: string) => p && (p.includes('/.claude/projects/') || /\/rollout-[^/]+\.jsonl$/.test(p)))
     },
@@ -753,7 +754,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     Object.assign(a, usageFields(usage), { model: a.model || usage?.model || '' })
   }
   // Ledger accounting shares the ten-minute refresh budget, including failed attempts.
-  if (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS) {
+  if ((doneToday.length > 0 || failed.length > 0) && (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS)) {
     let ledger = all.find(t => t.title === '[ledger] agent-graph')?.id
     if (!ledger) {
       const found = await runJson(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
@@ -765,7 +766,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   let todayCost = 0
   for (const t of [...all, ...failed]) {
-    const ledger = ticketLedgerCache.rows[t.id]
+    const ledger = ticketLedgerCache?.rows[t.id]
     const usage = t.state === 'completed' ? ledger?.usage ?? byTicket[t.id] : byTicket[t.id]
     Object.assign(t, usageFields(usage))
     t.durationMin = t.state === 'started' ? undefined : ledger?.minutes
