@@ -23,17 +23,17 @@ type LinearIssue = {
   state: { type: string }
   updatedAt: string
   parent?: { identifier: string } | null
-  inverseRelations?: { nodes: { type: string; issue: { identifier: string } }[]; pageInfo?: { hasNextPage: boolean } }
+  relations?: LinearRelation[]
 }
-type LinearResult = { issues?: LinearIssue[]; issue?: LinearIssue; truncated?: boolean }
+type LinearRelation = { relationship: string; relatedIssue: { identifier: string } }
+type LinearResult = { issues?: LinearIssue[]; issue?: LinearIssue; relations?: LinearRelation[]; truncated?: boolean }
 
 let cache: GraphSnapshot | null = null
 let lastSuccessAt: number | null = null
 let window: { start: number; calls: number } | null = null
 let countPath: Promise<string> | null = null
 
-// Live verification (2026-10-05): list-issues returned 120 issues, none with parent.
-// issue --relations also omitted parent/inverseRelations; missing fields stay incomplete.
+// Verified 2026-10-05: orca linear list-issues --team <T> --project <P> --json and orca linear issue <id> --relations --json omit parent; detail relations are result.relations.
 export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphSnapshot | null> {
   if (cache && lastSuccessAt !== null && now - lastSuccessAt < GRAPH_TTL_MS) return cache
   if (!window || now - window.start >= GRAPH_TTL_MS) window = { start: now, calls: 0 }
@@ -50,11 +50,7 @@ export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphS
             return result.stdout.trim()
           })
       }
-      await $.process.run(['sh', '-c', 'printf %s "$1" >> "$2"', 'board', `${Math.floor(now / 1000)} board\n`, await countPath], { timeoutMs: 20_000 })
-    } catch {
-      // Accounting is best effort: an unwritable counter must not prevent Linear reads.
-    }
-    try {
+      await $.process.run(['sh', '-c', '{ printf %s "$1" >> "$2"; } 2>/dev/null || true', 'board', `${Math.floor(now / 1000)} board\n`, await countPath], { timeoutMs: 20_000 })
       const response = await $.process.run(['orca', 'linear', ...args, '--json'], { timeoutMs: 20_000 })
       if (response.exitCode !== 0) return null
       const envelope = JSON.parse(response.stdout)
@@ -88,22 +84,17 @@ export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphS
   for (const issue of selected) {
     let full = issue
     let incomplete = false
-    if (issue.parent === undefined || !Array.isArray(issue.inverseRelations?.nodes)) {
-      // One detail call supplies parent and inverse relations when the CLI exposes them.
+    if (!Array.isArray(issue.relations)) {
       const detail = await read(['issue', issue.identifier, '--relations'])
-      if (detail?.issue) full = { ...issue, ...detail.issue }
+      if (detail?.issue && Array.isArray(detail.relations)) full = { ...issue, ...detail.issue, relations: detail.relations }
       else incomplete = true
     }
-    const relations = full.inverseRelations
-    incomplete ||= full.parent === undefined || !Array.isArray(relations?.nodes)
-      || relations?.pageInfo?.hasNextPage === true
     issues.push({
       id: issue.identifier,
       state: full.state.type,
       parent: full.parent?.identifier ?? null,
-      // A blocked by B is stored on B: A.inverseRelations[*].issue identifies B.
-      blockedBy: (relations?.nodes ?? []).filter(relation => relation.type === 'blocks')
-        .map(relation => relation.issue.identifier),
+      blockedBy: (full.relations ?? []).filter(relation => relation.relationship === 'blockedBy')
+        .map(relation => relation.relatedIssue.identifier),
       incomplete,
     })
   }
