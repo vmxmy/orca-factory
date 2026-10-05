@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
 type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean }
@@ -39,8 +39,17 @@ const TIMEOUT_MS = 20_000
 const MAX_TICKETS = 10 // in-flight tickets that get per-ticket calls (task-list + comments)
 const MAX_PRS = 6 // open PRs that get the three gh detail calls
 const MAX_DONE = 4 // done-today tickets that get one task-list call (for today's cost)
+// Ledger stats is slow and depends on comment reads; cache the output for ten minutes.
+const LEDGER_TTL_MS = 600_000
+// Linear API hourly limit the badge is measured against (see #45 rate-limit handling).
+const LINEAR_HOURLY_LIMIT = 2500
+const LINEAR_HOURLY_WARN = 1750 // 70% → yellow
+const LINEAR_HOURLY_DANGER = 2250 // 90% → red
+// Shared counter file the pipeline writes; swarm board only reads it.
+const LINEAR_COUNTER_FILE = 'orca-factory-linear-calls'
 // Resolved once per module load from the shell, since the module has no process.env.
 let HOME = ''
+let TMP_DIR = ''
 const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
 const workspaces = () => HOME + '/orca/workspaces'
 const AUTOMATION_NAME = (repo: string) => 'agent-linear-scan (' + repo + ')' // install.sh names it so
@@ -127,10 +136,26 @@ const addTok = (a: Tokens | undefined, b: Tokens | undefined): Tokens | undefine
 const addCost = (a: Cost | undefined, b: Cost | undefined): Cost | undefined =>
   !a ? b : !b ? a : { usd: a.usd + b.usd, known: a.known || b.known, partial: a.partial || b.partial || a.known !== b.known }
 
+// ---- ledger stats cache + Linear hourly usage ----------------------------------------------------
+// Ledger stats triggers Linear reads (list-issues + per-ticket comments). Caching it for ten minutes
+// keeps the open board under the Linear hourly budget; the refresh button never busts this cache.
+let ledgerCache: { at: number; stats: string[] } | null = null
+// Timestamps (ms) of every `orca linear …` call the board itself just made, trimmed to the last hour.
+const boardLinearCalls: number[] = []
+
 // ---- token usage (Orca cache files) -------------------------------------------------------------
 // One row per session × location that lies inside one of the asked worktree paths.
 type Row = { path: string; model: string; in: number; out: number; cache: number }
 let usageCache: { key: string; rows: Row[] } | null = null
+
+// Test-only reset for module-level caches so each test case starts clean.
+export const __resetSwarmBoardCachesForTests = () => {
+  ledgerCache = null
+  boardLinearCalls.length = 0
+  HOME = ''
+  TMP_DIR = ''
+  usageCache = null
+}
 
 const rowsOf = (kind: 'claude' | 'codex', data: any, paths: string[]): Row[] => {
   const rows: Row[] = []
@@ -283,17 +308,60 @@ const deepComments = (o: any, depth = 0): any[] => {
 
 type OrcaResult = { ok: boolean; data: any }
 
+// Read the shared `${TMPDIR:-/tmp}/orca-factory-linear-calls` counter: one line per Linear call
+// written by the pipeline (precheck / prune / ledger / coordinator). Keeps only lines inside the
+// last 3600 seconds; a missing or unreadable file surfaces as `known: false`.
+async function readLinearUsage($: any, now: number): Promise<LinearUsage> {
+  if (!TMP_DIR) {
+    try {
+      const r = await $.process.run(['sh', '-c', 'printf %s "${TMPDIR:-/tmp}"'], { timeoutMs: TIMEOUT_MS })
+      TMP_DIR = (r?.exitCode === 0 ? String(r.stdout ?? '') : '').trim() || '/tmp'
+    } catch { TMP_DIR = '/tmp' }
+  }
+  const cutoffMs = now - 3600_000
+  while (boardLinearCalls.length && boardLinearCalls[0] < cutoffMs) boardLinearCalls.shift()
+  const board = boardLinearCalls.length
+  const bySource: Record<string, number> = {}
+  let known = false
+  try {
+    const text = await $.fs.read(TMP_DIR + '/' + LINEAR_COUNTER_FILE)
+    known = true
+    const cutoffSec = Math.floor(now / 1000) - 3600
+    for (const raw of String(text ?? '').split('\n')) {
+      const line = raw.trim()
+      if (!line) continue
+      const m = /^(\d+)\s+(\S+)/.exec(line)
+      if (!m) continue
+      const sec = Number(m[1])
+      if (!Number.isFinite(sec) || sec < cutoffSec) continue
+      bySource[m[2]] = (bySource[m[2]] ?? 0) + 1
+    }
+  } catch { known = false }
+  const fromFile = Object.values(bySource).reduce((a, b) => a + b, 0)
+  return { known, total: fromFile + board, bySource, board }
+}
+
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
   let text = ''
-  try { text = await $.fs.read(ENV) } catch { return { ...old, at, coordinatorAlive: undefined, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' } }
+  try { text = await $.fs.read(ENV) } catch {
+    const linearUsage = await readLinearUsage($, now)
+    return { ...old, at, coordinatorAlive: undefined, linearUsage, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
+  }
   const env = parseEnv(text)
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
   // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
   // leaves ok=false so the caller can preserve the last-good slice instead of blanking the board.
+  // Count every `orca linear …` call the board makes, regardless of which wrapper fires it:
+  // `list-issues` is by far the biggest contributor and it rides on runOrca, so excluding it
+  // would understate the 看板 column and defeat the purpose of this badge.
+  const trackLinear = (argv: string[]) => {
+    if (argv[0] === 'orca' && argv[1] === 'linear') boardLinearCalls.push(Date.now())
+  }
   const run = async (argv: string[]): Promise<string> => {
+    trackLinear(argv)
     try {
       const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS })
       return r.exitCode === 0 ? r.stdout : ''
@@ -301,6 +369,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const runJson = async (argv: string[]) => json(await run(argv))
   const runOrca = async (argv: string[]): Promise<OrcaResult> => {
+    trackLinear(argv)
     let r: { stdout: string; exitCode: number } | null = null
     try { r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS }) } catch { return { ok: false, data: null } }
     if (!r || r.exitCode !== 0) return { ok: false, data: null }
@@ -549,27 +618,40 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (u.cost?.known) todayCost += u.cost.usd
   }
 
-  const statsOut = (await run(['bash', 'scripts/agent-gates/agent-graph.sh', 'ledger', 'stats'])).trim().split('\n').filter(Boolean)
-  const stats = statsOut.length ? statsOut : old.stats
+  // Ledger stats triggers Linear reads indirectly; cache for ten minutes and never bust from the
+  // refresh button. On a failed read fall back to the last successful output (per the #45 rule).
+  let stats: string[]
+  if (ledgerCache && now - ledgerCache.at < LEDGER_TTL_MS) {
+    stats = ledgerCache.stats
+  } else {
+    const statsOut = (await run(['bash', 'scripts/agent-gates/agent-graph.sh', 'ledger', 'stats'])).trim().split('\n').filter(Boolean)
+    if (statsOut.length) {
+      ledgerCache = { at: now, stats: statsOut }
+      stats = statsOut
+    } else {
+      stats = ledgerCache?.stats ?? old.stats
+    }
+  }
 
   const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
 
   // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
   const lastSuccessAt = linearOk ? now : old.lastSuccessAt
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
+  const linearUsage = await readLinearUsage($, now)
   if (!linearOk) {
     return {
       at, error, maxInFlight, phases: old.phases, coordinatorAlive,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
-      lastPrecheck, nextRunAt, lastRunAt,
+      lastPrecheck, nextRunAt, lastRunAt, linearUsage,
     }
   }
   return {
     at, error, maxInFlight, phases, coordinatorAlive, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
-    lastPrecheck, nextRunAt, lastRunAt,
+    lastPrecheck, nextRunAt, lastRunAt, linearUsage,
   }
 }
 
@@ -837,6 +919,19 @@ export const register: Register = on => {
       )
     }
     const focal = '  ' + b.inFlight.length + ' / ' + (b.maxInFlight || '?') + '  '
+    const linearBadge = () => {
+      const u = (b as Board).linearUsage
+      if (!u) return null
+      if (!u.known) return <Text dimColor>Linear 用量未知</Text>
+      const color = u.total >= LINEAR_HOURLY_DANGER ? 'red' : u.total >= LINEAR_HOURLY_WARN ? 'yellow' : undefined
+      const main = 'Linear 本小时 ' + u.total + '/' + LINEAR_HOURLY_LIMIT
+      if (d) {
+        const parts = (['precheck', 'prune', 'ledger', 'coordinator'] as const).map(s => s + ' ' + (u.bySource[s] ?? 0))
+        parts.push('看板 ' + u.board)
+        return <Text color={color}>{main} · {parts.join(' · ')}</Text>
+      }
+      return <Text color={color}>{main}</Text>
+    }
 
     return (
       <Box flexDirection="column">
@@ -845,6 +940,7 @@ export const register: Register = on => {
           <Text bold>in flight</Text>
           <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>
           <Text dimColor>{G.queued} queued {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} needs you {b.failed.length} · {G.done} today {b.doneToday.length}{b.todayCost > 0 ? ' · today est. $' + b.todayCost.toFixed(2) : ''}</Text>
+          {linearBadge()}
         </Box>
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[swarm]' : ' swarm '} onPress={() => update($, view, () => 'swarm')} />
