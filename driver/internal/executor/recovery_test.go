@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,13 +21,20 @@ import (
 
 type recoveryOrca struct {
 	fakeOrca
-	starts    []orca.StartOptions
-	failFirst bool
+	starts          []orca.StartOptions
+	failFirst       bool
+	releaseRequests []string
 }
 
 func (o *recoveryOrca) WorkerStart(ctx context.Context, id string, opts orca.StartOptions) (orca.Receipt, error) {
 	o.starts = append(o.starts, opts)
 	r, err := o.fakeOrca.WorkerStart(ctx, id, opts)
+	if opts.Task != "" {
+		r["taskId"], _ = json.Marshal(opts.Task)
+	}
+	if len(o.starts) > 1 {
+		r["dispatchId"], _ = json.Marshal(fmt.Sprintf("ctx_%d", len(o.starts)))
+	}
 	r["worktreePath"] = json.RawMessage(`"/original/worktree"`)
 	return r, err
 }
@@ -35,7 +43,15 @@ func (o *recoveryOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	if o.failFirst && len(o.starts) == 1 {
 		outcome = "failed"
 	}
-	return []orca.Task{{ID: "task_one", RunID: "run_one", DispatchID: "ctx_one", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"` + outcome + `"}`)}}, nil
+	task := "task_one"
+	if len(o.starts) > 0 && o.starts[len(o.starts)-1].Task != "" {
+		task = o.starts[len(o.starts)-1].Task
+	}
+	dispatch := "ctx_one"
+	if len(o.starts) > 1 {
+		dispatch = fmt.Sprintf("ctx_%d", len(o.starts))
+	}
+	return []orca.Task{{ID: task, RunID: "run_one", DispatchID: dispatch, Result: json.RawMessage(`{"provenance":"worker_report","outcome":"` + outcome + `"}`)}}, nil
 }
 
 type recoveryTools struct {
@@ -85,7 +101,7 @@ func (r *recoveryService) Correction(_ context.Context, req CorrectionRequest) e
 	return os.WriteFile(req.Path, []byte("Repair the failing assertion"), 0600)
 }
 func (r *recoveryService) ChildTask(_ context.Context, run, parent, spec, request string) (string, error) {
-	if run != "run_one" || parent != "task_one" || !strings.Contains(spec, "Repair the failing assertion") {
+	if run != "run_one" || (parent != "task_one" && parent != "child_task") || !strings.Contains(spec, "Repair the failing assertion") {
 		return "", errors.New("bad child task")
 	}
 	r.children++
@@ -308,4 +324,29 @@ func (o *legacyRunOrca) TaskList(ctx context.Context, run string) ([]orca.Task, 
 	tasks, err := o.recoveryOrca.TaskList(ctx, run)
 	tasks[0].Spec = "Original brief: agent/ZII-861/executor"
 	return tasks, err
+}
+
+func TestCorrectionReleaseEachDispatch(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.gateReds = 2
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(o.releaseRequests) != 3 {
+		t.Fatalf("release requests=%v", o.releaseRequests)
+	}
+	seen := map[string]bool{}
+	for _, id := range o.releaseRequests {
+		if seen[id] {
+			t.Fatalf("release request reused across dispatches: %s", id)
+		}
+		seen[id] = true
+	}
+}
+
+func (o *recoveryOrca) WorkerRelease(ctx context.Context, id, dispatch string) (orca.Receipt, error) {
+	o.releaseRequests = append(o.releaseRequests, id)
+	o.releases++
+	return orca.Receipt{}, o.releaseErr
 }

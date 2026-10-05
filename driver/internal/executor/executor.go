@@ -108,7 +108,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step, result.State.Attempt) }
+	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step+"-"+result.DispatchID, 1) }
 	releaseAttempted := false
 	releaseAllowed := false
 	release := func() error {
