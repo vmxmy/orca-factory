@@ -97,6 +97,9 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 				return envelope.Result, &infra.Global{Dep: infra.Orca, Err: errors.New("orca dependency unavailable")}
 			}
 		}
+		if envelope.Error != nil && validCode(envelope.Error.Code) {
+			return envelope.Result, invalid("orca command rejected: " + envelope.Error.Code)
+		}
 		return envelope.Result, invalid("orca command rejected")
 	}
 	// worker-start can emit a valid receipt but exit nonzero (failed or unknown).
@@ -393,4 +396,17 @@ func TerminalForWorktree(terminals []Terminal, path string) (Terminal, bool) {
 		}
 	}
 	return latest, found
+}
+
+// validCode admits only identifier-shaped error codes into error text.
+func validCode(code string) bool {
+	if code == "" || len(code) > 64 {
+		return false
+	}
+	for _, r := range code {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
 }

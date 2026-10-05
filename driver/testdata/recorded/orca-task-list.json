@@ -1,0 +1,31 @@
+{
+  "id": "049f52d7-dd35-4588-9da9-1e631fa29cbb",
+  "ok": true,
+  "result": {
+    "runId": "run_c2d32709f17c",
+    "legacyReadOnly": false,
+    "tasks": [
+      {
+        "id": "task_984317b058ca",
+        "run_id": "run_c2d32709f17c",
+        "parent_id": null,
+        "created_by_terminal_handle": "term_5b071477-9fe7-49ec-80dd-3392ace26010",
+        "created_by_pane_key": "77cc4e63-a9ec-4aee-bbc3-334fb447da47:3686131e-bad3-48d9-bf8d-144b45403deb",
+        "created_by_process_incarnation": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory@@0e97f5e5:cca8e8f7-4be1-4808-9fdd-ca6943d8b002",
+        "created_by_run_generation": 1,
+        "task_title": "# ZII-893 / executor",
+        "display_name": "# ZII-893 / executor",
+        "spec": "# ZII-893 / executor\nTarget: feat(driver): 每票用量的数据结构与 ledger 字段（接口票）\nChange:\n1. 新建 `driver/internal/usage`：类型 `TicketUsage`（票号；按角色 worker、reviewer、coordinator、session 与按模型的分项；input、output、cache_read、cache_write、reasoning token；按 API 价折算的 `cost_usd`；`price_version`；`apportioned` 标记表示含分摊的 coordinator 用量），以及函数签名 `Collect(ctx, ticket, worktrees) (TicketUsage, error)` 的桩实现（返回零值）。\n2. `driver/internal/ledger`：行解析接受可选的 `usage` 对象（上述字段）；旧行没有该字段时正常读取；字段类型错误时报 `invalid usage field`。stats 输出格式不变。\n3. `mods/swarm-board/types/index.d.ts`：增加与 Go 一致的 `TicketUsage` 类型。\n4. 不改插件版本号。\n5. 测试 `TestUsageFields`：带 usage 的行能解析、旧行兼容、类型错误报错。\nCHECK: cd driver && go vet ./... && out=$(go test -count=1 -v -run TestUsageFields ./internal/ledger/... ./internal/usage/...) && grep -q -- '--- PASS: TestUsageFields' <<<\"$out\" && grep -q 'TicketUsage' ../mods/swarm-board/types/index.d.ts && test -z \"$(git -C .. diff origin/main -- mods/swarm-board/.claude-plugin/plugin.json)\"\nSCOPE: driver/internal/usage/* driver/internal/ledger/* mods/swarm-board/types/index.d.ts\nLANE: 2\nGate spec: /home/laoxu/.local/state/orca-factory/orca-factory/ZII-893/gate.spec\nConstraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. Do not merge or open a PR. Do not use orca orchestration ask: no coordinator will answer. If you cannot finish (for example CHECK, SCOPE or the gate spec looks wrong), commit and push what you have, then report worker_done --outcome failed with the exact reason in the body.\nDelivery: Commit the completed changes and push only with git push origin HEAD:refs/heads/agent/ZII-893/executor. Report the outcome through the injected Orca worker_done protocol.\n",
+        "status": "completed",
+        "deps": "[]",
+        "result": "{\"provenance\":\"worker_report\",\"outcome\":\"succeeded\",\"messageId\":\"msg_ee7166ce7a43\",\"reportedBy\":\"term_ed010d87-e0db-47eb-b26a-2176c116290c\",\"subject\":\"ZII-893 complete: 194a70b pushed, gate green\",\"body\":\"Implemented the shared Go and TypeScript TicketUsage contract, zero-value Collect stub, ledger usage validation, and TestUsageFields, committed as 194a70b and pushed to agent/ZII-893/executor.\\nCHECK failed before implementation and passed afterward, and the repository gate returned green at lane 2 with legacy rows and stats unchanged.\\nNo requested work remains, no paths were deleted, and the plugin version was unchanged.\\n\\nTRACE\\nREQ 1 → driver/internal/usage/usage.go:25 → CHECK\\nREQ 2 → driver/internal/ledger/ledger.go:121 → CHECK\\nREQ 3 → mods/swarm-board/types/index.d.ts:149 → CHECK\\nREQ 4 → mods/swarm-board/.claude-plugin/plugin.json (unchanged; git diff verified) → CHECK\\nREQ 5 → driver/internal/ledger/usage_test.go:11 TestUsageFields → CHECK\\n\\nUNIT      executor\\nVERDICT   green\\nSTEP      all\\nREASON    all gates passed\\nEVIDENCE  \\nSCOPE     driver/internal/usage/* driver/internal/ledger/* mods/swarm-board/types/index.d.ts\\nLANE      2\",\"completedBy\":\"term_ed010d87-e0db-47eb-b26a-2176c116290c\",\"filesModified\":[\"driver/internal/ledger/ledger.go\",\"driver/internal/ledger/usage_test.go\",\"driver/internal/usage/usage.go\",\"mods/swarm-board/types/index.d.ts\"],\"reportPath\":null,\"completedAt\":\"2026-10-05T13:30:01.544Z\"}",
+        "created_at": "2026-10-05 13:27:21",
+        "completed_at": "2026-10-05T13:30:01.545Z"
+      }
+    ],
+    "count": 1
+  },
+  "_meta": {
+    "runtimeId": "c9405aea-70aa-430a-8004-873dc9d9bef1"
+  }
+}

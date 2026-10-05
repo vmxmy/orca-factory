@@ -28,7 +28,7 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 		return errors.New("human handoff labels failed")
 	}
 	body := "转人: " + state.HumanReason + "\n证据: " + evidence + "\n需要你: 检查保留的 worker 分支并重新排队"
-	if _, err := e.Linear.CreateComment(ctx, t.ID, body); err != nil {
+	if err := e.comment(ctx, t.ID, body); err != nil {
 		return errors.New("human handoff comment failed")
 	}
 	return nil

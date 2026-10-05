@@ -6,6 +6,7 @@
 
 - 对照简报 `Change` 逐条审 diff：每条是否实现、是否只做了这条、断言是否真的能分辨对错。
 - 找 gate 查不到的问题：契约破坏、权限/会话逻辑、迁移副作用、同义反复断言、SCOPE 内但简报没要的改动。
+- 外部契约：改动解析外部系统输出（CLI 的 JSON、工单正文与评论、模型输出）或依赖其字段的代码时，必须有读取录制真实样本的测试（本仓库为 `driver/testdata/recorded/`，见 `driver/CONTRACTS.md`）。只用手写假数据的，判 `red`，note 写明缺哪份样本。
 - 输出一个 VERDICT JSON（格式见 `handoffs.md §2`）。
 
 ## Does Not Own

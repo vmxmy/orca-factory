@@ -26,3 +26,13 @@ echo "== driver"
 if [ -f driver/go.mod ]; then
   (cd driver && go vet ./... && go test -count=1 ./...)
 fi
+
+echo "== driver-contracts"   # 依据：外部接口解析须用录制的真实样本测试（2026-10-05 驱动器上线复盘）
+CONTRACT_BASELINE=7 # 只允许调高，不允许调低
+if [ -f driver/go.mod ]; then
+  contract_passed=$( { (cd driver && go test -count=1 -v -run '^TestRecorded' ./...) || true; } | grep -c '^--- PASS: TestRecorded' || true)
+  if [ "$contract_passed" -lt "$CONTRACT_BASELINE" ]; then
+    echo "契约测试通过 ${contract_passed} 个，低于基线 ${CONTRACT_BASELINE}；解析外部输出的代码要用 driver/testdata/recorded/ 的真实样本测试（见 driver/CONTRACTS.md）" >&2
+    exit 1
+  fi
+fi

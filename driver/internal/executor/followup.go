@@ -121,7 +121,7 @@ func (e *Executor) processFollowups(ctx context.Context, t Ticket, body string) 
 	}
 	comment := func(reason string) {
 		if e.Linear != nil {
-			_, _ = e.Linear.CreateComment(ctx, t.ID, "后续工作丢弃: "+reason)
+			_ = e.comment(ctx, t.ID, "后续工作丢弃: "+reason)
 		}
 	}
 	project, err := e.Followups.FollowupProject(ctx, t.ID)

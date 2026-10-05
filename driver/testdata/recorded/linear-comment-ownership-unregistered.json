@@ -1,0 +1,16 @@
+{
+  "data": {
+    "issue": {
+      "comments": {
+        "nodes": [
+          {
+            "id": "b8319afe-1048-4d50-9392-a818eb9e2b88",
+            "body": "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-10-05T13:44:54Z",
+            "createdAt": "2026-10-05T13:44:55.446Z",
+            "updatedAt": "2026-10-05T13:44:55.424Z"
+          }
+        ]
+      }
+    }
+  }
+}

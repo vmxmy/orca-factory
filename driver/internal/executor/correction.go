@@ -147,7 +147,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			return false, err
 		}
 		if tierEscalation(c) {
-			if _, err = e.Linear.CreateComment(ctx, t.ID, fmt.Sprintf("correction %d → 升至 %s", result.State.Corrections, tier)); err != nil {
+			if err = e.comment(ctx, t.ID, fmt.Sprintf("correction %d → 升至 %s", result.State.Corrections, tier)); err != nil {
 				return false, errors.New("tier comment failed")
 			}
 		}
