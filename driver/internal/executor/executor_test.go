@@ -46,6 +46,14 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 
 type fakeLinear struct{ comments []string }
 
+func (f *fakeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+	var comments []linear.Comment
+	for _, body := range f.comments {
+		comments = append(comments, linear.Comment{Body: body})
+	}
+	return comments, nil
+}
+
 func (f *fakeLinear) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
 	if id != "issue_one" {
 		panic("wrong issue")
@@ -83,6 +91,9 @@ type fakeTools struct {
 
 func (*fakeTools) Baseline(context.Context, string) (string, error)       { return "base-sha", nil }
 func (f *fakeTools) Head(context.Context, string, string) (string, error) { return f.head, nil }
+func (*fakeTools) ChangedFiles(context.Context, string, string, string) ([]string, error) {
+	return []string{"unit/change.go"}, nil
+}
 func (f *fakeTools) Gate(_ context.Context, repo, head, spec string) (string, error) {
 	f.gateCalls++
 	b, e := os.ReadFile(spec)

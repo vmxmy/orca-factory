@@ -49,6 +49,16 @@ func (c *Commands) Head(ctx context.Context, repo, branch string) (string, error
 	}
 	return sha, nil
 }
+func (c *Commands) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
+	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--name-only", "-z", base+".."+head, "--")
+	if err != nil {
+		return nil, errors.New("failed revision diff failed")
+	}
+	if len(b) == 0 {
+		return nil, nil
+	}
+	return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), nil
+}
 func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out string, err error) {
 	// Validate the exact pushed commit in an isolated checkout. Never run the gate
 	// against the executor's own checkout or a worker's uncommitted modifications.
