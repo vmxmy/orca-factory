@@ -124,12 +124,59 @@ ids() {
     | select(.state.type == $type) | .identifier' "$precheck_tmp/issues"
 }
 
+# Cross-run cache of a candidate ticket's blocked-by identifiers. Relations only change when
+# tickets are created or merged, so a short TTL is safe and skips one Linear call per candidate
+# per run. The cache is a pure optimization: write failures are ignored, failed reads never
+# populate it, and nothing downstream reads it except the relations fetch itself.
+PRECHECK_CACHE_DIR="${AGENT_PRECHECK_CACHE_DIR:-${TMPDIR:-/tmp}/orca-factory-precheck-cache}"
+RELATION_TTL_SECONDS="${AGENT_RELATION_TTL_SECONDS:-600}"
+mkdir -p "$PRECHECK_CACHE_DIR" 2>/dev/null || true
+
+relations_cache_file() {
+  printf '%s/relations-%s' "$PRECHECK_CACHE_DIR" "$(jq -rn --arg id "$1" '$id | @uri')"
+}
+
+# Prints a space-separated list of blocker identifiers (empty when there are none, which is the
+# common case and still worth caching). Returns 1 only when the live read failed.
+relations_of() {
+  local id="$1" cache now ts="" rel blockers
+  cache="$(relations_cache_file "$id")"
+  now="$(date +%s)"
+  if [[ -f "$cache" ]]; then
+    IFS= read -r ts < "$cache" 2>/dev/null || ts=""
+    if [[ -n "$ts" && "$ts" =~ ^[0-9]+$ ]] && (( now - ts < RELATION_TTL_SECONDS )); then
+      sed -n '2p' "$cache"
+      return 0
+    fi
+  fi
+  rel="$(ocall linear issue "$id" --relations)" || return 1
+  blockers="$(jq -r '
+    [(.result.relations // [])[] | select(.relationship == "blockedBy") | .relatedIssue.identifier]
+    | join(" ")' <<<"$rel")"
+  { printf '%s\n%s\n' "$now" "$blockers" > "$cache"; } 2>/dev/null || true
+  printf '%s\n' "$blockers"
+}
+
+# Reads a blocker's state.type from the full-project snapshot already fetched by ids(); only
+# falls back to a per-ticket Linear call if the blocker is missing from the snapshot (eg. it
+# belongs to a different project). Blocker state itself is never cached across runs: it decides
+# whether a candidate can be claimed and must stay fresh.
+blocker_state() {
+  local id="$1" out state
+  state="$(jq -r --arg id "$id" '
+    .result.issues | map(select(.identifier == $id)) | .[0] | .state.type // empty
+  ' "$precheck_tmp/issues" 2>/dev/null)"
+  if [[ -n "$state" ]]; then printf '%s' "$state"; return 0; fi
+  out="$(ocall linear issue "$id")" || return 1
+  jq -r '.result.issue.state.type' <<<"$out"
+}
+
 unblocked() {
-  local rel blocker state
-  rel="$(ocall linear issue "$1" --relations)" || exit 3
-  for blocker in $(jq -r '(.result.relations // [])[] | select(.relationship == "blockedBy") | .relatedIssue.identifier' <<<"$rel"); do
-    state="$(ocall linear issue "$blocker")" || exit 3
-    case "$(jq -r '.result.issue.state.type' <<<"$state")" in completed|canceled) ;; *) return 1 ;; esac
+  local blockers blocker state
+  blockers="$(relations_of "$1")" || exit 3
+  for blocker in $blockers; do
+    state="$(blocker_state "$blocker")" || exit 3
+    case "$state" in completed|canceled) ;; *) return 1 ;; esac
   done
 }
 

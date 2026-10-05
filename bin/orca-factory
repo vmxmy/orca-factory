@@ -427,6 +427,9 @@ LEDGER_SLEEP
     export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
     export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/precheck-test AGENT_ORPHAN_MINUTES=45
     export AGENT_WORKER_IDLE_MINUTES=15
+    # Isolate the cross-run relations cache from the real /tmp default so one iteration's cached
+    # relations don't skip a later iteration's call. Each test clears it before running precheck.
+    export AGENT_PRECHECK_CACHE_DIR="$SELFTEST_TMP/precheck-cache"
     unset AGENT_WORKER_MAX_MINUTES
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
 #!/usr/bin/env bash
@@ -584,6 +587,7 @@ PRECHECK_GH
         batch-cap) export AGENT_BATCH_SIZE=0 ;;
         scope-avoid-off) export AGENT_MAX_IN_FLIGHT=5 AGENT_BATCH_SIZE=0 AGENT_SCOPE_AVOID=0 ;;
       esac
+      rm -rf "$AGENT_PRECHECK_CACHE_DIR"
       : > "$SELFTEST_TMP/precheck.calls"
       precheck_status=0
       bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
@@ -735,12 +739,14 @@ PRECHECK_READS
     export AGENT_MAX_IN_FLIGHT=2
     unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
     export PRECHECK_MODE=recent
+    rm -rf "$AGENT_PRECHECK_CACHE_DIR"
     : > "$SELFTEST_TMP/precheck.calls"
     bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: reuse scan failed"
     [[ "$(grep -c '^linear issue TEST-1 --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated issue read"
     [[ "$(grep -c '^linear list-issues .*--order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls")" == 2 ]] || fail "selftest: ids must share one list read plus advisory backlog"
     grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: incorrect Linear call count"
     export PRECHECK_MODE=worker-stuck
+    rm -rf "$AGENT_PRECHECK_CACHE_DIR"
     : > "$SELFTEST_TMP/precheck.calls"
     bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: comment reuse scan failed"
     [[ "$(grep -c '^linear issue TEST-1 --comments --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated comment read"
@@ -751,6 +757,7 @@ PRECHECK_READS
                             'linear issue TEST-2 --relations --json' 'linear issue TEST-2 --json' \
                             'linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json'; do
       export PRECHECK_RATE_AT
+      rm -rf "$AGENT_PRECHECK_CACHE_DIR"
       : > "$SELFTEST_TMP/precheck.calls"
       precheck_status=0
       bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || precheck_status=$?
@@ -798,11 +805,101 @@ echo '[]'
 PRECHECK_MULTI_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
     export PRECHECK_MODE=multi AGENT_MAX_IN_FLIGHT=5
+    rm -rf "$AGENT_PRECHECK_CACHE_DIR"
     : > "$SELFTEST_TMP/precheck.calls"
     multi_status=0
     bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || multi_status=$?
     gh_prlist_count="$(grep -c '^pr list --repo example/precheck-test ' "$SELFTEST_TMP/precheck.calls" || true)"
     [[ "$gh_prlist_count" == 1 ]] || { cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: precheck called gh pr list $gh_prlist_count times for 3 in-flight tickets"; }
+    # Relations cache: candidate blocked-by reads persist across runs under an isolated cache dir.
+    # Fixture serves 5 ready candidates; TEST-10 is blocked by TEST-20 which lives in the project
+    # snapshot, so the blocker-state lookup must stay local.
+    rm -f "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
+    cat > "$SELFTEST_TMP/precheck-bin/orca" <<'RELCACHE_ORCA'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+case "$*" in
+  'linear list-issues --team TEST --project precheck-test --order-by createdAt --json')
+    jq -nc '{ok:true,result:{issues:[
+      {identifier:"TEST-10",labels:[{name:"ready-for-agent"}],state:{type:"unstarted"}},
+      {identifier:"TEST-11",labels:[{name:"ready-for-agent"}],state:{type:"unstarted"}},
+      {identifier:"TEST-12",labels:[{name:"ready-for-agent"}],state:{type:"unstarted"}},
+      {identifier:"TEST-13",labels:[{name:"ready-for-agent"}],state:{type:"unstarted"}},
+      {identifier:"TEST-14",labels:[{name:"ready-for-agent"}],state:{type:"unstarted"}},
+      {identifier:"TEST-20",state:{type:"completed"}}
+    ]}}' ;;
+  'linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json')
+    echo '{"ok":true,"result":{"issues":[]}}' ;;
+  'linear issue '*' --relations --json')
+    rel_id="$3"
+    if [[ "${RELCACHE_FAIL_FOR:-}" == "$rel_id" ]]; then
+      echo '{"ok":false,"error":{"code":"simulated"}}'; exit 7
+    fi
+    if [[ "$rel_id" == TEST-10 ]]; then
+      jq -nc '{ok:true,result:{relations:[{relationship:"blockedBy",relatedIssue:{identifier:"TEST-20"}}]}}'
+    else
+      jq -nc '{ok:true,result:{relations:[]}}'
+    fi ;;
+  'linear issue TEST-20 --json')
+    jq -nc '{ok:true,result:{issue:{state:{type:"completed"}}}}' ;;
+  *) echo "unexpected relcache orca call: $*" >&2; exit 1 ;;
+esac
+RELCACHE_ORCA
+    cat > "$SELFTEST_TMP/precheck-bin/gh" <<'RELCACHE_GH'
+#!/usr/bin/env bash
+echo '[]'
+RELCACHE_GH
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
+    export PRECHECK_MODE=relcache AGENT_MAX_IN_FLIGHT=10 AGENT_BATCH_SIZE=0 AGENT_SCOPE_AVOID=0
+    export AGENT_PRECHECK_CACHE_DIR="$SELFTEST_TMP/relcache-dir"
+    export AGENT_RELATION_TTL_SECONDS=600
+    rm -rf "$AGENT_PRECHECK_CACHE_DIR"
+    # First run with a cold cache: one relations call per candidate; the snapshot carries TEST-20
+    # so no per-blocker `linear issue` call is made.
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/relcache.out" 2> "$SELFTEST_TMP/relcache.err" \
+      || { cat "$SELFTEST_TMP/relcache.err"; fail "selftest: relations cache first run failed"; }
+    first_rel_calls="$(grep -Ec '^linear issue TEST-1[0-4] --relations --json$' "$SELFTEST_TMP/precheck.calls" || true)"
+    [[ "$first_rel_calls" == 5 ]] || { cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: relations first run calls=$first_rel_calls (want 5)"; }
+    if grep -Fxq 'linear issue TEST-20 --json' "$SELFTEST_TMP/precheck.calls"; then
+      cat "$SELFTEST_TMP/precheck.calls"
+      fail "selftest: blocker in snapshot must not trigger a per-id linear issue call"
+    fi
+    for rel_id in TEST-10 TEST-11 TEST-12 TEST-13 TEST-14; do
+      [[ -s "$AGENT_PRECHECK_CACHE_DIR/relations-$rel_id" ]] || fail "selftest: relations cache missing for $rel_id"
+    done
+    # Second run with a fresh cache: zero relations calls, and the whole scan hits Linear twice
+    # (one project snapshot + one advisory backlog).
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/relcache.out" 2> "$SELFTEST_TMP/relcache.err" \
+      || { cat "$SELFTEST_TMP/relcache.err"; fail "selftest: relations cache second run failed"; }
+    second_rel_calls="$(grep -Ec '^linear issue .* --relations --json$' "$SELFTEST_TMP/precheck.calls" || true)"
+    [[ "$second_rel_calls" == 0 ]] || { cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: relations second run calls=$second_rel_calls (want 0)"; }
+    grep -Fxq 'linear_calls=2' "$SELFTEST_TMP/relcache.err" \
+      || { cat "$SELFTEST_TMP/relcache.err"; fail "selftest: cached run should hit Linear only twice"; }
+    # Age the cache files past TTL by rewriting the epoch header; the next run must refetch.
+    for f in "$AGENT_PRECHECK_CACHE_DIR"/relations-*; do
+      blockers="$(sed -n '2p' "$f")"
+      printf '0\n%s\n' "$blockers" > "$f"
+    done
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/relcache.out" 2> "$SELFTEST_TMP/relcache.err" \
+      || { cat "$SELFTEST_TMP/relcache.err"; fail "selftest: relations cache expired run failed"; }
+    expired_rel_calls="$(grep -Ec '^linear issue TEST-1[0-4] --relations --json$' "$SELFTEST_TMP/precheck.calls" || true)"
+    [[ "$expired_rel_calls" == 5 ]] || { cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: relations expired run calls=$expired_rel_calls (want 5)"; }
+    # Failed read must not populate the cache: start cold, break TEST-11 and verify no cache file.
+    rm -rf "$AGENT_PRECHECK_CACHE_DIR"
+    export RELCACHE_FAIL_FOR=TEST-11
+    : > "$SELFTEST_TMP/precheck.calls"
+    fail_status=0
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/relcache.out" 2> "$SELFTEST_TMP/relcache.err" \
+      || fail_status=$?
+    (( fail_status != 0 )) || fail "selftest: failed relations read should exit uncertain"
+    [[ ! -e "$AGENT_PRECHECK_CACHE_DIR/relations-TEST-11" ]] || fail "selftest: failed relations read must not populate cache"
+    unset RELCACHE_FAIL_FOR AGENT_PRECHECK_CACHE_DIR AGENT_RELATION_TTL_SECONDS
+    unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
+    export AGENT_MAX_IN_FLIGHT=2
     echo "selftest: precheck reuses linear reads and stops on rate limit"
     echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
@@ -812,6 +909,7 @@ PRECHECK_MULTI_GH
     echo "selftest: precheck skips scope-overlapping tickets"
     echo "selftest: precheck claims multiple non-overlapping tickets"
     echo "selftest: precheck shares one gh pr list across in-flight tickets"
+    echo "selftest: precheck caches relations between runs"
   )
   # Prune compensation uses real Git worktrees and a local bare origin; services are isolated.
   (
