@@ -1,6 +1,6 @@
 export const WATCH_POLL_MS = 5_000
 
-export type FileStamp = { mtimeMs: number; size: number }
-
-export const shouldReload = (prev: FileStamp | null, stat: FileStamp | null): boolean =>
-  prev !== null && stat !== null && (prev.mtimeMs !== stat.mtimeMs || prev.size !== stat.size)
+export const shouldReload = (
+  prev: { mtimeMs: number; size: number } | null,
+  stat: { mtimeMs: number; size: number } | null,
+): boolean => stat !== null && (prev === null || prev.mtimeMs !== stat.mtimeMs || prev.size !== stat.size)

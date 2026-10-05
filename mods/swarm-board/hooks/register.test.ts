@@ -648,6 +648,62 @@ test('fresh snapshot refresh avoids live Linear calls and uses snapshot data', a
   await ui.unmount()
 })
 
+test('snapshot polling redraws changed data without live Linear calls', async ($, on) => {
+  __resetSwarmBoardCachesForTests()
+  const clock = mock.clock(on)
+  let mtimeMs = 1, statCalls = 0, snapshotReads = 0, linearCalls = 0
+  let missing = false
+  let title = '快照原值'
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.status', () => ({ value: undefined }))
+  on('fs.stat', () => {
+    statCalls++
+    if (missing) throw new Error('ENOENT')
+    return { value: { kind: 'file', mtimeMs, size: 100, isLink: false } }
+  })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
+      snapshotReads++
+      return { value: JSON.stringify({
+        generatedAt: Math.floor(Date.now() / 1000),
+        issues: [{ identifier: 'ZII-900', title, state: { type: 'unstarted' },
+          labels: [{ name: 'ready-for-agent' }], priority: 1 }], comments: {},
+      }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear') linearCalls++
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  await $.command.run({ command: 'swarm', args: '' })
+  await clock.settle()
+  const ui = await mount($, 'terminal')
+  const initialReads = snapshotReads
+  await clock.advance(5000)
+  expect(statCalls).toBe(1)
+  expect(snapshotReads).toBe(initialReads)
+  title = '快照已更新'
+  mtimeMs++
+  await clock.advance(5000)
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /快照已更新/ })).toBeDefined()
+  expect(snapshotReads).toBe(initialReads + 1)
+  expect(linearCalls).toBe(0)
+  missing = true
+  await clock.advance(5000)
+  expect(snapshotReads).toBe(initialReads + 1)
+  await $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' })
+  const beforeClose = statCalls
+  await clock.advance(5000)
+  expect(statCalls).toBe(beforeClose)
+  await ui.unmount()
+})
+
 test('stale snapshot falls back to live Linear and throttles the second refresh', async ($, on) => {
   const fixture = await snapshotFixture($, on, { generatedAtOffsetMs: -11 * 60_000, issues: [], comments: {} })
   const after1 = fixture.orcaLinearCalls()

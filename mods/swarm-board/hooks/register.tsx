@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 import { renderGraph } from './views/graph'
 import { renderThroughput } from './views/throughput'
 import { renderFailures } from './views/failures'
-import { WATCH_POLL_MS, shouldReload, type FileStamp } from './snapshot-watch'
+import { WATCH_POLL_MS, shouldReload } from './snapshot-watch'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -165,8 +165,6 @@ const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0
 // that cost is local).
 let paneOpen = false
 let refreshing = false
-let snapshotStamp: FileStamp | null = null
-let snapshotReloading = false
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -233,8 +231,6 @@ export const __resetSwarmBoardCachesForTests = () => {
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
-  snapshotStamp = null
-  snapshotReloading = false
 }
 
 // Test-only command dispatched by fixtures that trigger several refreshes in a row,
@@ -483,79 +479,6 @@ type Snapshot = {
   blockedBy?: Record<string, string[]>
 }
 
-async function readSnapshot($: Parameters<typeof read>[0]): Promise<Snapshot | null> {
-  try {
-    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
-    if (parsed && typeof parsed === 'object'
-        && Number.isFinite(parsed.generatedAt)
-        && Array.isArray(parsed.issues)
-        && parsed.comments && typeof parsed.comments === 'object') {
-      return parsed as Snapshot
-    }
-  } catch { return null }
-  return null
-}
-
-function splitTickets(all: Ticket[], now: number, handoffs: Map<string, string>):
-  Pick<Board, 'inFlight' | 'queue' | 'failed' | 'doneToday'> {
-  const has = (t: Ticket, label: string): boolean => t.labels.includes(label)
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
-  return {
-    inFlight: all.filter(t => has(t, 'auto-impl') && t.state === 'started'),
-    queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
-    failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
-      .map(t => ({ ...t, handoff: handoffs.get(t.id) })),
-    doneToday: all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime()),
-  }
-}
-
-function latestHandoff(comments: Snapshot['comments'][string]): string | undefined {
-  return comments.filter(c => String(c.body).trim().startsWith('转人:'))
-    .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
-}
-
-async function reloadSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>, old: Board): Promise<Board> {
-  const snapshot = await readSnapshot($)
-  if (snapshot === null) return old
-  const now = Date.now()
-  const at = new Date(now).toTimeString().slice(0, 5)
-  const snapshotAgeMs = Math.max(0, now - snapshot.generatedAt * 1000)
-  if (snapshotAgeMs > SNAPSHOT_FRESH_MS) return old
-  const all: Ticket[] = snapshot.issues.map(ticket)
-  const { inFlight, queue, failed, doneToday } = splitTickets(all, now, handoffs)
-  const previous = new Map([...old.inFlight, ...old.doneToday].map(t => [t.id, t]))
-  for (const t of [...inFlight, ...doneToday]) {
-    const cached = previous.get(t.id)
-    if (cached) {
-      t.claimedAt = cached.claimedAt
-      t.tokens = cached.tokens
-      t.cost = cached.cost
-      t.gate = cached.gate
-      t.pr = cached.pr
-    }
-  }
-  for (const t of failed.slice(0, 3)) {
-    const handoff = latestHandoff(snapshot.comments[t.id] ?? [])
-    if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
-  }
-  const issueStates = Object.fromEntries(all.map(t => [t.id, t.state]))
-  return {
-    ...old, at, error: '', inFlight, queue, failed, doneToday, blockedBy: snapshot.blockedBy,
-    issueStates, snapshotAgeMs, linearThrottled: undefined, lastSuccessAt: now,
-  }
-}
-
-async function watchSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>) {
-  if (!paneOpen || !SNAPSHOT_FILE || snapshotReloading) return
-  const stat = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
-  const next = stat && { mtimeMs: stat.mtimeMs, size: stat.size }
-  if (shouldReload(snapshotStamp, next)) {
-    snapshotReloading = true
-    try { await update($, board, old => reloadSnapshot($, handoffs, old)) } finally { snapshotReloading = false }
-  }
-  if (next) snapshotStamp = next
-}
-
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
@@ -581,8 +504,16 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
-  try { const stat = await $.fs.stat(SNAPSHOT_FILE); snapshotStamp = { mtimeMs: stat.mtimeMs, size: stat.size } } catch { snapshotStamp = null }
-  const snapshot = await readSnapshot($)
+  let snapshot: Snapshot | null = null
+  try {
+    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
+    if (parsed && typeof parsed === 'object'
+        && Number.isFinite((parsed as any).generatedAt)
+        && Array.isArray((parsed as any).issues)
+        && (parsed as any).comments && typeof (parsed as any).comments === 'object') {
+      snapshot = parsed as Snapshot
+    }
+  } catch { /* missing or unreadable snapshot */ }
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
   const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
@@ -615,6 +546,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     return { ok: true, data: d }
   }
   const driver = parseDriverStatus(await runJson(['orca-factory-driver', 'status', '--json']))
+  const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
   // (b) throttled — skip Linear, treat as a soft failure so the old board carries over;
@@ -630,8 +562,8 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const linearOk = issuesResp.ok
   const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
-  const { inFlight, queue, failed, doneToday } = splitTickets(all, now, handoffs)
   const error = linearOk || linearThrottled ? '' : 'Linear 限流，沿用旧数据'
+  const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
   const commentsByTicket = new Map<string, ReturnType<typeof deepComments>>()
@@ -651,11 +583,16 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     commentsByTicket.set(id, fetched)
     return fetched
   }
+  const failed: FailedTicket[] = all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
+    .map(t => ({ ...t, handoff: handoffs.get(t.id) }))
   for (const t of failed.slice(0, 3)) {
     const comments = await readComments(t.id)
-    const handoff = latestHandoff(comments)
+    const handoff = comments.filter(c => String(c.body).trim().startsWith('转人:'))
+      .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
     if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
   }
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+  const doneToday = all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime())
 
   // Open PRs with their size, drift from main and CI state. On failure keep the last-good list.
   const prsResp = await runOrca(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls?state=open&per_page=30'])
@@ -884,6 +821,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
 
+  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
   // state.type per identifier, used to badge dependency-chain nodes. Only populate on a
   // successful Linear read; a failed refresh carries forward the previous map.
   const issueStates: Record<string, string> = linearOk
@@ -940,7 +878,7 @@ async function toggleAutomation($: any, handoffs: Map<string, string>) {
     await update($, board, current => ({ ...current, error: message }))
     return
   }
-  await tick($, handoffs)
+  await manualRefresh($, handoffs)
 }
 
 export const laneStage = (t: Ticket, agents: readonly BaseAgent[]): 1 | 2 | 3 => {
@@ -952,6 +890,7 @@ export const register: Register = on => {
   // Last-good handoff per failed ticket. An empty comment read or a stale handoff
   // comment falls back to this cache instead of blanking the "需要人" card.
   const handoffs = new Map<string, string>()
+  let lastStat: { mtimeMs: number; size: number } | null = null
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
@@ -964,12 +903,19 @@ export const register: Register = on => {
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     paneOpen = true
-    void tick($, handoffs)
+    void manualRefresh($, handoffs)
     if (!polling) {
       polling = true
       await update($, nowAtom, () => Date.now())
-      $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      $.clock.every(WATCH_POLL_MS, () => { if (paneOpen) return watchSnapshot($, handoffs) })
+      $.clock.every(REFRESH_MS, () => { if (paneOpen) return manualRefresh($, handoffs) })
+      $.clock.every(WATCH_POLL_MS, async () => {
+        if (!paneOpen || !SNAPSHOT_FILE || refreshing) return
+        const stat = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
+        if (!stat || !paneOpen || refreshing) return
+        const changed = lastStat !== null && shouldReload(lastStat, stat)
+        lastStat = { mtimeMs: stat.mtimeMs, size: stat.size }
+        if (changed) await manualRefresh($, handoffs)
+      })
       $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
     return { text: '蜂群看板已打开。' }
