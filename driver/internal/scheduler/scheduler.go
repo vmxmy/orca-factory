@@ -173,6 +173,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if action.Kind == Resume && !s.token(now) {
 			continue
 		}
+		// Reserve before an external write: a failed response may already have
+		// persisted ownership. Do not oversubscribe on an uncertain result.
+		if !owned(t) && (action.Kind == Resume || action.Kind == Merge) {
+			total++
+			count[t.Repo]++
+		}
 		if err := s.Backend.Apply(ctx, t, action); err != nil {
 			problems = append(problems, errors.New("ownership update failed"))
 			continue
@@ -186,13 +192,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		case Merge:
 			t.Owner = machine.OwnerMerge
 			s.MergeQueue = append(s.MergeQueue, t)
-			total++
-			count[t.Repo]++
 		case Resume:
-			if !owned(t) {
-				total++
-				count[t.Repo]++
-			}
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
@@ -228,12 +228,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		total++
+		count[t.Repo]++
 		if err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase}); err != nil {
 			problems = append(problems, errors.New("ticket claim failed"))
 			continue
 		}
-		total++
-		count[t.Repo]++
 		t.Attempt = state.Attempt
 		t.Phase = state.Phase
 		t.Owner = state.Owner

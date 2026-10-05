@@ -381,3 +381,18 @@ func TestSchedulerSnapshotFields(t *testing.T) {
 		t.Fatalf("issues=%+v", issues)
 	}
 }
+
+func TestSnapshotAcceptsProjectUUIDAlongsideName(t *testing.T) {
+	project := "480a07e8-8b39-4b8f-92b9-dbf1997cbd8c"
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		filter := q.Variables["filter"].(map[string]any)
+		want := map[string]any{"id": map[string]any{"in": []any{project, "p1"}}}
+		if !reflect.DeepEqual(filter["project"], want) {
+			t.Errorf("project filter=%v", filter)
+		}
+		fmt.Fprint(w, `{"data":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}`)
+	})
+	if _, err := c.Snapshot(context.Background(), []string{project, "Alpha"}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+}

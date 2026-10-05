@@ -18,6 +18,7 @@ type fakeBackend struct {
 	enabled                  map[string]bool
 	absent, inactive         bool
 	terminalErr, dispatchErr error
+	applyErr                 error
 	actions                  []Action
 	launched                 []Ticket
 	legacy                   map[string]Legacy
@@ -41,7 +42,7 @@ func (f *fakeBackend) InspectLegacy(_ context.Context, t Ticket) (Legacy, error)
 }
 func (f *fakeBackend) Apply(_ context.Context, _ Ticket, a Action) error {
 	f.actions = append(f.actions, a)
-	return nil
+	return f.applyErr
 }
 func (f *fakeBackend) Launch(_ context.Context, t Ticket) error {
 	f.launched = append(f.launched, t)
@@ -241,5 +242,17 @@ func TestUnprioritizedTicketSortsLast(t *testing.T) {
 	}
 	if len(f.launched) != 1 || f.launched[0].ID != "low" {
 		t.Fatalf("launch=%v", f.launched)
+	}
+}
+
+func TestUncertainClaimReservesAdmissionSlot(t *testing.T) {
+	f := &fakeBackend{applyErr: errors.New("write outcome unknown"), tickets: []Ticket{{ID: "one", Repo: "b", Candidate: true}, {ID: "two", Repo: "b", Candidate: true}}}
+	s := setup(f)
+	s.Config.MaxInFlight = 1
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("lost write failure")
+	}
+	if len(f.actions) != 1 || len(f.launched) != 0 {
+		t.Fatalf("actions=%v launched=%v", f.actions, f.launched)
 	}
 }
