@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 import { renderGraph } from './views/graph'
 import { renderThroughput } from './views/throughput'
 import { renderFailures } from './views/failures'
-import { shouldReload, WATCH_POLL_MS } from './snapshot-watch'
+import { WATCH_POLL_MS, shouldReload } from './snapshot-watch'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -105,7 +105,6 @@ const LINEAR_FALLBACK_THROTTLE_MS = 300_000
 let HOME = ''
 let TMP_DIR = ''
 let SNAPSHOT_FILE = ''
-let snapshotStat: { mtimeMs: number; size: number } | null = null
 // ms epoch of the last live `orca linear list-issues` dispatched by refresh(); 0 before the first one.
 let lastLinearFallbackAt = 0
 const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
@@ -229,7 +228,6 @@ export const __resetSwarmBoardCachesForTests = () => {
   HOME = ''
   TMP_DIR = ''
   SNAPSHOT_FILE = ''
-  snapshotStat = null
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
@@ -501,27 +499,35 @@ async function refreshSnapshot($: any, handoffs: Map<string, string>) {
   const snapshotAgeMs = Math.max(0, now - snapshot.generatedAt * 1000)
   if (snapshotAgeMs > SNAPSHOT_FRESH_MS) return
   const old = await read($, board)
-  const all: Ticket[] = snapshot.issues.map(ticket)
   const previous = new Map([...old.inFlight, ...old.doneToday].map(t => [t.id, t]))
-  const enrich = (t: Ticket): Ticket => {
-    const p = previous.get(t.id)
-    return p ? { ...t, tokens: p.tokens, cost: p.cost, gate: p.gate, pr: p.pr, claimedAt: p.claimedAt } : t
-  }
+  const all: Ticket[] = snapshot.issues.map(ticket).map(t => {
+    const cached = previous.get(t.id)
+    const comments = snapshot.comments[t.id] ?? []
+    const claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取'))
+      .map(c => c.createdAt).sort().pop() ?? ''
+    return { ...t, tokens: cached?.tokens, cost: cached?.cost, gate: cached?.gate, pr: cached?.pr, claimedAt }
+  })
+  const failed = all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
+    .map(t => {
+      const handoff = (snapshot.comments[t.id] ?? []).filter(c => String(c.body).trim().startsWith('转人:'))
+        .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
+      if (handoff) handoffs.set(t.id, handoff)
+      return { ...t, handoff: handoffs.get(t.id) }
+    })
+  const inFlight = all.filter(t => t.labels.includes('auto-impl') && t.state === 'started')
+  const phases = Object.fromEntries(inFlight.map(t => [t.id, old.phases?.[t.id] ?? {
+    phase: ticketPhase(t, { pr: t.pr }), since: t.claimedAt || t.updatedAt,
+  }]))
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   const b: Board = {
-    ...old,
+    ...old, inFlight, failed, phases,
     queue: all.filter(t => t.labels.includes('ready-for-agent') && t.state === 'unstarted')
       .sort((a, b) => (a.priority || 9) - (b.priority || 9)),
-    failed: all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
-      .map(t => ({ ...t, handoff: handoffs.get(t.id) })),
-    doneToday: all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime()).map(enrich),
-    inFlight: all.filter(t => t.labels.includes('auto-impl') && t.state === 'started').map(enrich),
+    doneToday: all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime()),
     issueStates: Object.fromEntries(all.map(t => [t.id, t.state])),
     blockedBy: snapshot.blockedBy,
     snapshotAgeMs,
-    at: new Date(now).toTimeString().slice(0, 5),
     lastSuccessAt: now,
-    error: '',
   }
   await update($, board, () => b)
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
@@ -552,7 +558,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
-  try { snapshotStat = await $.fs.stat(SNAPSHOT_FILE) } catch { snapshotStat = null }
   const snapshot = await readSnapshot($)
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
@@ -894,17 +899,15 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
 }
 
 async function tick($: any, handoffs: Map<string, string>) {
-  const old = await read($, board)
-  const b = await refresh($, handoffs, old)
-  await update($, board, () => b)
-  await update($, lastTickAt, () => Date.now())
-  $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
-}
-
-async function manualRefresh($: any, handoffs: Map<string, string>) {
   if (refreshing) return
   refreshing = true
-  try { await tick($, handoffs) } finally { refreshing = false }
+  try {
+    const old = await read($, board)
+    const b = await refresh($, handoffs, old)
+    await update($, board, () => b)
+    await update($, lastTickAt, () => Date.now())
+    $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+  } finally { refreshing = false }
 }
 
 async function toggleAutomation($: any, handoffs: Map<string, string>) {
@@ -918,7 +921,7 @@ async function toggleAutomation($: any, handoffs: Map<string, string>) {
     await update($, board, current => ({ ...current, error: message }))
     return
   }
-  await manualRefresh($, handoffs)
+  await tick($, handoffs)
 }
 
 export const laneStage = (t: Ticket, agents: readonly BaseAgent[]): 1 | 2 | 3 => {
@@ -934,6 +937,7 @@ export const register: Register = on => {
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
   let polling = false
+  let prevStat: { mtimeMs: number; size: number } | null = null
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board' })
     return next(e)
@@ -942,24 +946,24 @@ export const register: Register = on => {
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     paneOpen = true
-    void manualRefresh($, handoffs)
+    void tick($, handoffs)
     if (!polling) {
       polling = true
       await update($, nowAtom, () => Date.now())
-      $.clock.every(REFRESH_MS, () => { if (paneOpen) return manualRefresh($, handoffs) })
-      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
+      $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
       $.clock.every(WATCH_POLL_MS, async () => {
         if (!paneOpen) return
-        if (refreshing) return
+        if (!SNAPSHOT_FILE || refreshing) return
         refreshing = true
         try {
           let stat: { mtimeMs: number; size: number } | null
           try { stat = await $.fs.stat(SNAPSHOT_FILE) } catch { stat = null }
-          if (!shouldReload(snapshotStat, stat)) return
-          await refreshSnapshot($, handoffs)
-          snapshotStat = stat
+          const reload = shouldReload(prevStat, stat)
+          prevStat = stat
+          if (reload) await refreshSnapshot($, handoffs)
         } finally { refreshing = false }
       })
+      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
     return { text: '蜂群看板已打开。' }
   })
@@ -1405,7 +1409,7 @@ export const register: Register = on => {
           {automation
             ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
             : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
-          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => manualRefresh($, handoffs)} />
+          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => tick($, handoffs)} />
           <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
             ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
             : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>

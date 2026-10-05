@@ -1,7 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
-import { WATCH_POLL_MS } from './snapshot-watch'
 import {
   __resetSwarmBoardCachesForTests,
   RESET_LINEAR_THROTTLE_COMMAND,
@@ -868,30 +867,25 @@ test('reopening the swarm pane triggers an immediate refresh', async ($, on) => 
 
 const snapshotWatchFixture = async ($: any, on: any) => {
   __resetSwarmBoardCachesForTests()
-  const clock = mock.clock(on)
-  const stats: string[] = []
-  const reads: string[] = []
-  const external: string[][] = []
-  const statuses: string[] = []
-  let mtimeMs = 1
-  let issues: unknown[] = []
-  let refreshed = () => {}
+  let fire5s = () => {}, scheduled = () => {}
+  const intervals: number[] = []
+  on('clock.every', (_: unknown, e: { ms: number }) => {
+    intervals.push(e.ms); if (e.ms === 5_000) scheduled()
+    return new Promise<{ value: undefined }>(resolve => {
+      if (e.ms === 5_000) fire5s = () => resolve({ value: undefined })
+    })
+  })
+  const stats: string[] = [], reads: string[] = []
+  const external: string[][] = [], statuses: string[] = []
+  let mtimeMs = 1, issues: unknown[] = [], refreshed = () => {}
   const ready = new Promise<void>(resolve => { refreshed = resolve })
-  on('ui.open', () => ({ value: undefined }))
-  on('ui.close', () => ({ value: undefined }))
-  on('ui.status', (_: unknown, e: { text: string }) => {
-    statuses.push(e.text)
-    refreshed()
-    return { value: undefined }
-  })
-  on('fs.stat', (_: unknown, e: { path: string }) => {
-    stats.push(e.path)
-    return { value: { mtimeMs, size: 100 } }
-  })
+  on('ui.open', () => ({ value: undefined })); on('ui.close', () => ({ value: undefined }))
+  on('ui.status', (_: unknown, e: { text: string }) => { statuses.push(e.text); refreshed(); return { value: undefined } })
+  on('fs.stat', (_: unknown, e: { path: string }) => { stats.push(e.path); return { value: { mtimeMs, size: 1 } } })
   on('fs.read', (_: unknown, e: { path: string }) => {
     if (e.path === '/tmp/orca-factory-linear-snapshot.json') {
       reads.push(e.path)
-      return { value: JSON.stringify({ generatedAt: Math.floor(Date.now() / 1000), issues, comments: {}, blockedBy: { 'ZII-891': ['ZII-890'] } }) }
+      return { value: JSON.stringify({ generatedAt: Math.floor(Date.now() / 1000), issues, comments: { 'ZII-892': [{ body: '转人: 快照新原因', createdAt: '2026-10-05T00:00:00Z' }] }, blockedBy: { 'ZII-891': ['ZII-890'] } }) }
     }
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
   })
@@ -902,17 +896,17 @@ const snapshotWatchFixture = async ($: any, on: any) => {
     if (e.argv[0] === 'gh' || e.argv[0] === 'orca') external.push(e.argv)
     return { value: { stdout: '{"ok":true,"result":{}}', stderr: '', exitCode: 0 } }
   })
-  await $.command.run({ command: 'swarm', args: '' })
-  await ready
-  external.length = 0
-  statuses.length = 0
+  await $.command.run({ command: 'swarm', args: '' }); await ready
+  external.length = 0; statuses.length = 0
   return {
-    clock, stats, reads, external, statuses,
+    intervals, stats, reads, external, statuses, fire: () => fire5s(),
+    tick: async () => { const done = new Promise<void>(resolve => { scheduled = resolve }); fire5s(); await done },
     change: () => {
       mtimeMs = 2
       issues = [
         { identifier: 'ZII-890', title: '新快照在途票', state: { type: 'started' }, labels: [{ name: 'auto-impl' }] },
         { identifier: 'ZII-891', title: '新快照待领票', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }] },
+        { identifier: 'ZII-892', title: '新快照转人票', state: { type: 'started' }, labels: [{ name: 'auto-failed' }] },
       ]
     },
   }
@@ -921,27 +915,26 @@ const snapshotWatchFixture = async ($: any, on: any) => {
 test('snapshot polling redraws changed tickets without gh or orca calls', async ($, on) => {
   const f = await snapshotWatchFixture($, on)
   expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
-  await f.clock.advance(WATCH_POLL_MS)
-  expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
-  f.change()
-  await f.clock.advance(WATCH_POLL_MS)
+  expect(f.intervals).toEqual([60_000, 5_000, 1_000])
+  await f.tick()
   expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json', '/tmp/orca-factory-linear-snapshot.json'])
+  f.change()
+  await f.tick()
+  expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json', '/tmp/orca-factory-linear-snapshot.json', '/tmp/orca-factory-linear-snapshot.json'])
   expect(f.external).toEqual([])
-  expect(f.statuses).toEqual(['● 1/10 · ◐ 0 · · 1'])
+  expect(f.statuses).toEqual(['● 0/10 · ◐ 0 · · 0', '● 1/10 · ◐ 0 · ▲ 1 · · 1'])
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /新快照在途票/ }), 'snapshot ticket is rendered').toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /下次刷新 60s/ }), 'mocked timer advancement leaves the wall clock countdown unchanged').toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /新快照在途票/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /快照新原因/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /下次刷新 60s/ })).toBeDefined()
   await ui.unmount()
 })
 
 test('closing the swarm pane stops snapshot stats and reads', async ($, on) => {
-  const f = await snapshotWatchFixture($, on)
-  expect(f.stats).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
+  const f = await snapshotWatchFixture($, on); expect(f.stats).toEqual([])
   await $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' })
-  f.stats.length = 0
-  f.reads.length = 0
-  f.change()
-  await f.clock.advance(WATCH_POLL_MS)
+  f.stats.length = 0; f.reads.length = 0
+  f.change(); f.fire(); await new Promise(resolve => setTimeout(resolve, 30))
   expect(f.stats).toEqual([])
   expect(f.reads).toEqual([])
 })
