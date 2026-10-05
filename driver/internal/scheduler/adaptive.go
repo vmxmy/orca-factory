@@ -46,6 +46,9 @@ func (s *Scheduler) clock() time.Time {
 func (s *Scheduler) plan(now time.Time, busy bool, remaining float64) {
 	p := s.adaptive.Next(now, busy, remaining)
 	s.NextInterval = p.Interval
+	if s.linearQuotaRetry.After(now) {
+		s.NextInterval = min(s.NextInterval, s.linearQuotaRetry.Sub(now))
+	}
 	if s.Pauses != nil {
 		if next := s.Pauses.NextProbe(); next.After(now) {
 			s.NextInterval = min(s.NextInterval, next.Sub(now))
@@ -62,6 +65,10 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 	if s.Pauses == nil {
 		s.Pauses = pause.New(s.clock, nil, nil)
 	}
+	return s.checkLinearQuota(now), s.Pauses.Poll(ctx)
+}
+
+func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 	remaining := 1.0
 	var reset time.Time
 	source, ok := s.Backend.(quotaSource)
@@ -76,6 +83,19 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 				continue
 			}
 			fraction := float64(limit.Remaining) / float64(limit.Limit)
+			if fraction < .05 && limit.Reset.IsZero() {
+				if s.linearQuotaRetry.IsZero() {
+					s.linearQuotaRetry = now.Add(5 * time.Minute)
+				}
+				// Keep the expired deadline until Snapshot actually refreshes
+				// the headers, including when another dependency blocks Tick.
+				if !now.Before(s.linearQuotaRetry) {
+					continue
+				}
+				if s.linearQuotaRetry.After(reset) {
+					reset = s.linearQuotaRetry
+				}
+			}
 			remaining = min(remaining, fraction)
 			if fraction < .05 && limit.Reset.After(reset) {
 				reset = limit.Reset
@@ -88,7 +108,7 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 			s.Pauses.Resume(key)
 		}
 	}
-	return remaining, s.Pauses.Poll(ctx)
+	return remaining
 }
 func (r *Runtime) LinearLimits() []linear.RateLimit {
 	var limits []linear.RateLimit

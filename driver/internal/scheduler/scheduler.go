@@ -53,17 +53,18 @@ type Backend interface {
 	Launch(context.Context, Ticket) error
 }
 type Scheduler struct {
-	Config        config.Config
-	Backend       Backend
-	Now           func() time.Time
-	MergeQueue    []Ticket
-	Pauses        *pause.Manager
-	NextInterval  time.Duration
-	FullReconcile bool
-	adaptive      Adaptive
-	tokens        float64
-	refill        time.Time
-	initialized   bool
+	Config           config.Config
+	Backend          Backend
+	Now              func() time.Time
+	MergeQueue       []Ticket
+	Pauses           *pause.Manager
+	NextInterval     time.Duration
+	FullReconcile    bool
+	adaptive         Adaptive
+	linearQuotaRetry time.Time
+	tokens           float64
+	refill           time.Time
+	initialized      bool
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -124,6 +125,15 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	tickets, err := s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
 		return errors.New("scheduler snapshot failed")
+	}
+	// A successful snapshot replaces the stale quota observation. If the
+	// refreshed budget is still critical, start its new recovery window before
+	// allowing dispatch, even when no dependency probe is installed.
+	s.linearQuotaRetry = time.Time{}
+	remaining = s.checkLinearQuota(now)
+	if s.Pauses.Paused("") {
+		s.plan(now, false, remaining)
+		return errors.Join(problems...)
 	}
 	busy := false
 	for _, t := range tickets {

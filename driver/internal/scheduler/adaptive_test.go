@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
@@ -40,10 +41,18 @@ func TestAdaptiveIntervalPolicy(t *testing.T) {
 
 type quotaBackend struct {
 	*fakeBackend
-	limits []linear.RateLimit
+	limits  []linear.RateLimit
+	refresh func()
 }
 
 func (b *quotaBackend) LinearLimits() []linear.RateLimit { return b.limits }
+func (b *quotaBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	tickets, err := b.fakeBackend.Snapshot(ctx, repos)
+	if b.refresh != nil {
+		b.refresh()
+	}
+	return tickets, err
+}
 func TestPauseSchedulerScopeAndStale(t *testing.T) {
 	f := &fakeBackend{tickets: []Ticket{{ID: "a", Repo: "a", Owner: machine.OwnerExecutor, UpdatedAt: time.Date(2026, 1, 1, 23, 0, 0, 0, time.UTC)}, {ID: "b", Repo: "b", Candidate: true}}}
 	s := setup(f)
@@ -201,14 +210,86 @@ func TestPauseQuotaResetRespectsOtherLimits(t *testing.T) {
 				{Limit: 100, Remaining: 4, Reset: now.Add(time.Minute)},
 				{Limit: 100, Remaining: 4, Reset: otherReset},
 			}}
-			for _, advance := range []time.Duration{0, 2 * time.Minute, 30 * time.Minute} {
-				now = now.Add(advance)
+			start := now
+			steps := []struct {
+				elapsed   time.Duration
+				snapshots int
+			}{{0, 0}, {2 * time.Minute, 0}, {5*time.Minute - time.Nanosecond, 0}, {5 * time.Minute, 1}, {5 * time.Minute, 1}, {10*time.Minute - time.Nanosecond, 1}, {10 * time.Minute, 2}}
+			if knownReset {
+				steps = []struct {
+					elapsed   time.Duration
+					snapshots int
+				}{{0, 0}, {2 * time.Minute, 0}, {32 * time.Minute, 0}}
+			}
+			for _, step := range steps {
+				now = start.Add(step.elapsed)
 				if err := s.Tick(context.Background()); err != nil {
 					t.Fatal(err)
 				}
-				if !s.Pauses.Paused("") || f.snapshots != 0 {
-					t.Fatal("one expired quota cleared another critical quota")
+				if !s.Pauses.Paused("") || f.snapshots != step.snapshots {
+					t.Fatalf("elapsed=%v paused=%v snapshots=%d, want paused with %d snapshots", step.elapsed, s.Pauses.Paused(""), f.snapshots, step.snapshots)
 				}
+			}
+		})
+	}
+}
+
+func TestPauseUnknownQuotaRefreshesHeaders(t *testing.T) {
+	for _, healthy := range []bool{false, true} {
+		name := "new reset"
+		if healthy {
+			name = "healthy quota"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := &fakeBackend{tickets: []Ticket{{ID: "a", Repo: "a", Candidate: true}}}
+			s := setup(f)
+			now := s.Now()
+			s.Now = func() time.Time { return now }
+			start := now
+			b := &quotaBackend{fakeBackend: f, limits: []linear.RateLimit{{Limit: 100, Remaining: 4}}}
+			b.refresh = func() {
+				if healthy {
+					b.limits[0].Remaining = 100
+				} else {
+					b.limits[0].Reset = start.Add(20 * time.Minute)
+				}
+			}
+			s.Backend = b
+			for _, elapsed := range []time.Duration{0, 3 * time.Minute, 5 * time.Minute} {
+				now = start.Add(elapsed)
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if elapsed == 3*time.Minute && s.NextInterval != 2*time.Minute {
+					t.Fatalf("next=%v misses five-minute quota refresh", s.NextInterval)
+				}
+			}
+			if f.snapshots != 1 || s.Pauses.Paused("") == healthy {
+				t.Fatalf("refreshed headers ignored: snapshots=%d paused=%v", f.snapshots, s.Pauses.Paused(""))
+			}
+			if healthy {
+				if len(f.launched) != 1 {
+					t.Fatal("healthy response did not restore dispatch")
+				}
+				return
+			}
+			if len(f.launched) != 0 {
+				t.Fatal("critical response allowed dispatch")
+			}
+			b.refresh = nil
+			now = start.Add(10 * time.Minute)
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if f.snapshots != 1 {
+				t.Fatal("new known reset did not defer refresh")
+			}
+			now = start.Add(20 * time.Minute)
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if f.snapshots != 2 {
+				t.Fatal("new known reset did not restore snapshot")
 			}
 		})
 	}
