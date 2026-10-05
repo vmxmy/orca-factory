@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -23,7 +24,6 @@ import (
 // Client may be used with its zero value. Path, when provided, must be absolute;
 // otherwise runx.OrcaPath resolves it. Timeout defaults to 30 seconds.
 type Client struct {
-	Logger  func(string) // Optional; nil disables logging.
 	Path    string
 	Timeout time.Duration
 }
@@ -50,34 +50,20 @@ func invalid(message string) error { return &infra.Ticket{Err: errors.New(messag
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
-	logger := runx.LoggerFrom(ctx)
-	retryID, responseID := "", ""
-	result := "error"
-	for i, arg := range args {
-		if arg == "--retry-request" && i+1 < len(args) {
-			retryID = args[i+1]
+	command := strings.Join(args[:min(2, len(args))], " ")
+	request, result := "", "runtime_error"
+	for i := 2; i+1 < len(args); i++ {
+		if args[i] == "--retry-request" {
+			request = args[i+1]
 		}
 	}
 	defer func() {
-		if c.Logger == nil && logger == nil {
-			return
+		level := slog.LevelInfo
+		if result != "ok" {
+			level = slog.LevelWarn
 		}
-		command := args
-		if len(command) > 2 {
-			command = command[:2]
-		}
-		requestID := responseID
-		if requestID == "" {
-			requestID = retryID
-		}
-		elapsed := time.Since(started).Milliseconds()
-		if c.Logger != nil {
-			c.Logger(fmt.Sprintf("orca command=%q result=%s duration_ms=%d request_id=%q retry_request_id=%q", runx.SafeText(strings.Join(command, " ")), result, elapsed, runx.SafeText(requestID), runx.SafeText(retryID)))
-		}
-		if logger != nil {
-			logger.Info("orca external call", "command", runx.SafeText(strings.Join(command, " ")),
-				"result", result, "duration", time.Since(started), "request_id", runx.SafeText(retryID))
-		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "Orca call", "command", command, "result", result,
+			"duration", time.Since(started), "request_id", request)
 	}()
 	path := c.Path
 	if path == "" {
@@ -97,7 +83,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
-	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
+	// The Orca receipt log above omits free text and replaces the raw argv log.
+	output, runErr := runx.Run(runx.WithLogger(ctx, nil), runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
 	}
@@ -105,9 +92,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
-		ID     json.RawMessage `json:"id"` // Metadata for logging only.
-		OK     *bool           `json:"ok"`
-		Result Receipt         `json:"result"`
+		OK     *bool   `json:"ok"`
+		Result Receipt `json:"result"`
 		Error  *struct {
 			Code string  `json:"code"`
 			Data Receipt `json:"data"`
@@ -117,11 +103,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
 	}
-	// An absent or non-string log ID must not change the response contract.
-	_ = json.Unmarshal(envelope.ID, &responseID)
-	result = "ok"
 	if !*envelope.OK {
-		result = "error"
 		if envelope.Error != nil {
 			if validCode(envelope.Error.Code) {
 				result = envelope.Error.Code
@@ -141,13 +123,12 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	}
 	// worker-start can emit a valid receipt but exit nonzero (failed or unknown).
 	if runErr != nil {
-		result = "error"
 		return envelope.Result, infra.Classify(runErr)
 	}
 	if envelope.Result == nil {
-		result = "error"
 		return nil, invalid("missing orca result")
 	}
+	result = "ok"
 	return envelope.Result, nil
 }
 

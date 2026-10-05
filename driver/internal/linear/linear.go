@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -20,8 +21,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
-
-var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z_0-9]*)`)
 
 const endpoint = "https://api.linear.app/graphql"
 
@@ -448,36 +447,33 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 	}
 }
 
-func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) error {
+var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
+func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (err error) {
 	started := time.Now()
-	logger := runx.LoggerFrom(ctx)
+	operation := ""
+	if match := operationName.FindStringSubmatch(query); len(match) > 1 {
+		operation = match[1]
+	}
 	var response *http.Response
-	limited, transportFailed := false, false
+	rateLimited, transportFailed := false, false
 	defer func() {
-		if logger == nil {
-			return
-		}
-		status := 0
-		complexity, remaining := "", ""
+		status, complexity, remaining := 0, "", ""
 		if response != nil {
 			status = response.StatusCode
-			complexity = logQuota(response.Header.Get("X-Complexity"))
-			remaining = logQuota(response.Header.Get("X-RateLimit-Requests-Remaining"))
+			complexity = response.Header.Get("X-Complexity")
+			remaining = response.Header.Get("X-RateLimit-Requests-Remaining")
 		}
-		operation := "unknown"
-		if match := operationName.FindStringSubmatch(query); len(match) > 1 {
-			operation = match[1]
+		attrs := []any{"operation", operation, "status", status, "duration", time.Since(started),
+			"X-Complexity", complexity, "X-RateLimit-Requests-Remaining", remaining, "rate_limited", rateLimited}
+		if transportFailed {
+			attrs = append(attrs, "error", "transport failed")
 		}
-		fields := []any{"operation", operation, "status", status, "duration", time.Since(started),
-			"X-Complexity", complexity, "X-RateLimit-Requests-Remaining", remaining}
-		switch {
-		case transportFailed:
-			logger.Error("linear external call", fields...)
-		case limited || status == http.StatusTooManyRequests:
-			logger.Warn("linear external call", fields...)
-		default:
-			logger.Info("linear external call", fields...)
+		level := slog.LevelInfo
+		if err != nil || rateLimited {
+			level = slog.LevelWarn
 		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "Linear request", attrs...)
 	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
@@ -521,7 +517,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	decodeErr := json.Unmarshal(raw, &envelope)
 	for _, e := range envelope.Errors {
 		if e.Extensions.Code == "RATELIMITED" {
-			limited = true
+			rateLimited = true
 			return &infra.Global{Dep: infra.Linear, Err: errors.New("linear rate limited")}
 		}
 	}
@@ -547,16 +543,6 @@ func (c *Client) rotateHour() {
 		c.usage.Complexity = 0
 	}
 }
-
-// Log only canonical non-negative integers, using the accounting parser's
-// rules; absent and invalid server values have an explicit empty representation.
-func logQuota(value string) string {
-	if n, err := strconv.ParseInt(value, 10, 64); err == nil && n >= 0 {
-		return strconv.FormatInt(n, 10)
-	}
-	return ""
-}
-
 func (c *Client) record(response *http.Response) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

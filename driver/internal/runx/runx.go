@@ -4,6 +4,7 @@ package runx
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -28,7 +29,21 @@ func (e *commandError) Unwrap() error { return e.cause }
 
 // Run returns stdout and kills the command's process group on cancellation.
 // The parent's deadline takes precedence over a longer spec timeout.
-func Run(ctx context.Context, spec Spec) ([]byte, error) {
+func Run(ctx context.Context, spec Spec) (output []byte, err error) {
+	started := time.Now()
+	var exit *exec.ExitError
+	defer func() {
+		code, stderr, level := 0, "", slog.LevelInfo
+		if err != nil {
+			code, level = -1, slog.LevelWarn
+			if exit != nil {
+				code, stderr = exit.ExitCode(), string(exit.Stderr)
+			}
+		}
+		LoggerFrom(ctx).Log(ctx, level, "external command", "executable", filepath.Base(spec.Path),
+			"args", redactArgs(spec.Args), "exit_code", code, "duration", time.Since(started),
+			"stderr", redactStderr(stderr, spec.Args), "timed_out", errors.Is(ctx.Err(), context.DeadlineExceeded))
+	}()
 	if spec.Timeout <= 0 {
 		return nil, errors.New("command requires a positive timeout")
 	}
@@ -46,26 +61,8 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
-	started := time.Now()
-	output, err := cmd.Output()
-	if logger := LoggerFrom(ctx); logger != nil {
-		code := 0
-		stderr := ""
-		if err != nil {
-			code = -1
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				code = exit.ExitCode()
-				stderr = redactText(string(exit.Stderr), sensitiveValues(spec.Args))
-			}
-		}
-		if len(stderr) > stderrLimit {
-			stderr = stderr[:stderrLimit]
-		}
-		logger.Info("runx external call", "exe", filepath.Base(spec.Path), "args", redactArgs(spec.Args),
-			"exit_code", code, "duration", time.Since(started), "stderr", stderr,
-			"timeout", ctx.Err() == context.DeadlineExceeded)
-	}
+	output, err = cmd.Output()
+	errors.As(err, &exit)
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}

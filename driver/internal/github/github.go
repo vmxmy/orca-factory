@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -110,26 +111,17 @@ func safeError(err error) error {
 	return infra.Classify(errors.New("GitHub request failed"))
 }
 
-func (c *Client) request(ctx context.Context, method, path string, input, output any) (resultErr error) {
+func (c *Client) request(ctx context.Context, method, path string, input, output any) (err error) {
 	started := time.Now()
-	logger := runx.LoggerFrom(ctx)
-	var resp *http.Response
+	status, requestID := 0, ""
+	logPath, _, _ := strings.Cut(path, "?")
 	defer func() {
-		if logger == nil {
-			return
+		level := slog.LevelInfo
+		if err != nil {
+			level = slog.LevelWarn
 		}
-		status, requestID := 0, ""
-		if resp != nil {
-			status = resp.StatusCode
-			requestID = resp.Header.Get("X-GitHub-Request-Id")
-		}
-		endpoint, _, _ := strings.Cut(path, "?")
-		result := "success"
-		if resultErr != nil {
-			result = "failure"
-		}
-		logger.Info("github external call", "method", method, "path", runx.SafeText(endpoint),
-			"status", status, "result", result, "duration", time.Since(started), "request_id", runx.SafeText(requestID))
+		runx.LoggerFrom(ctx).Log(ctx, level, "GitHub request", "method", method, "path", logPath,
+			"status", status, "duration", time.Since(started), "X-GitHub-Request-Id", requestID)
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -183,10 +175,11 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		c.invalidate()
 		defer c.invalidate()
 	}
-	resp, err = c.http.Do(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return safeError(err)
 	}
+	status, requestID = resp.StatusCode, resp.Header.Get("X-GitHub-Request-Id")
 	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	var body []byte
 	if resp.StatusCode == http.StatusNotModified && method == http.MethodGet && hasCache {

@@ -2,96 +2,96 @@ package runx
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"regexp"
-	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
-const stderrLimit = 2 << 10
+type loggerKey struct{}
 
-type loggerContextKey struct{}
+var discardLogger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 
-// WithLogger attaches the optional external-call logger. A nil logger disables
-// an inherited logger without changing command or request behavior.
+// WithLogger attaches the logger used by external calls. Nil disables logging.
 func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, loggerContextKey{}, logger)
+	return context.WithValue(ctx, loggerKey{}, logger)
 }
 
-// LoggerFrom returns nil when the context has no external-call logger.
+// LoggerFrom returns a silent logger when none was supplied.
 func LoggerFrom(ctx context.Context) *slog.Logger {
-	logger, _ := ctx.Value(loggerContextKey{}).(*slog.Logger)
-	return logger
+	if logger, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok && logger != nil {
+		return logger
+	}
+	return discardLogger
 }
 
-var credential = regexp.MustCompile(`(?i)(?:ghp_|gho_|github_pat_|lin_api_)[a-z0-9_-]*|Bearer\s+[^\s"',}\]]+`)
-var userinfo = regexp.MustCompile(`://[^/\s@]+@`)
-var credentialField = regexp.MustCompile(`(?i)(\b(?:token|key|password|secret|authorization)\b["']?\s*(?:[=:]|\s)\s*)("(?:\\.|[^"\\])*"|'[^']*'|(?:Bearer\s+)?[^\s,}\]]+)`)
+var credentialText = regexp.MustCompile(`(?i)\b(?:ghp_|github_pat_|lin_api_)[^\s"'<>]+|Bearer\s+[^\s"'<>]+`)
+var credentialFlag = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s]+)`)
+var urlCredentials = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
 
 func sensitiveFlag(flag string) bool {
-	switch strings.ToLower(flag) {
-	case "--token", "--key", "--password", "--secret", "--authorization",
-		"--objective", "--comment", "--body", "--text", "--spec", "--command":
-		// Orca may send private prose as command arguments. Hide it from runx too.
-		return true
+	if !strings.HasPrefix(flag, "-") {
+		return false
+	}
+	flag = strings.ToLower(flag)
+	for _, word := range []string{"token", "key", "secret", "password", "authorization"} {
+		if strings.Contains(flag, word) {
+			return true
+		}
 	}
 	return false
 }
 
-func sensitiveValues(args []string) []string {
-	var values []string
-	for i := 0; i < len(args); i++ {
-		flag, value, assigned := strings.Cut(args[i], "=")
+func redactText(text string) string {
+	text = credentialFlag.ReplaceAllString(text, "${1}=[REDACTED]")
+	text = credentialText.ReplaceAllString(text, "[REDACTED]")
+	return urlCredentials.ReplaceAllString(text, "${1}")
+}
+
+func redactArgs(args []string) []string {
+	redacted := make([]string, len(args))
+	hideNext := false
+	for i, arg := range args {
+		flag, _, assigned := strings.Cut(arg, "=")
+		switch {
+		case hideNext:
+			redacted[i], hideNext = "[REDACTED]", false
+		case sensitiveFlag(flag):
+			if assigned {
+				redacted[i] = flag + "=[REDACTED]"
+			} else {
+				redacted[i], hideNext = arg, true
+			}
+		case strings.HasPrefix(arg, "ghp_"), strings.HasPrefix(arg, "github_pat_"), strings.HasPrefix(arg, "lin_api_"), strings.HasPrefix(arg, "Bearer "):
+			redacted[i] = "[REDACTED]"
+		default:
+			redacted[i] = redactText(arg)
+		}
+	}
+	return redacted
+}
+
+func redactStderr(stderr string, args []string) string {
+	for i, arg := range args {
+		flag, value, assigned := strings.Cut(arg, "=")
 		if !sensitiveFlag(flag) {
 			continue
 		}
 		if !assigned && i+1 < len(args) {
-			i++
-			value = args[i]
+			value = args[i+1]
 		}
 		if value != "" {
-			values = append(values, value)
+			stderr = strings.ReplaceAll(stderr, value, "[REDACTED]")
 		}
 	}
-	// Replace longer overlapping values before shorter ones.
-	sort.Slice(values, func(i, j int) bool { return len(values[i]) > len(values[j]) })
-	return values
-}
-
-func redactArgs(args []string) []string {
-	result := make([]string, len(args))
-	secrets := sensitiveValues(args)
-	for i := 0; i < len(args); i++ {
-		flag, _, assigned := strings.Cut(args[i], "=")
-		switch {
-		case sensitiveFlag(flag) && assigned:
-			result[i] = flag + "=[REDACTED]"
-		case sensitiveFlag(flag):
-			result[i] = flag
-			if i+1 < len(args) {
-				i++
-				result[i] = "[REDACTED]"
-			}
-		default:
-			result[i] = redactText(args[i], secrets)
+	stderr = strings.ToValidUTF8(redactText(stderr), "")
+	if len(stderr) > 2048 {
+		end := 2048
+		for !utf8.RuneStart(stderr[end]) {
+			end--
 		}
+		stderr = stderr[:end]
 	}
-	return result
-}
-
-// SafeText redacts credential syntax in HTTP paths and diagnostic identifiers.
-func SafeText(text string) string { return redactText(text, nil) }
-
-func redactText(text string, secrets []string) string {
-	for _, secret := range secrets {
-		text = strings.ReplaceAll(text, secret, "[REDACTED]")
-		// Output retains only a diagnostic head/tail for very large stderr. A
-		// credential longer than the log can be split by that diagnostic boundary.
-		if len(secret) > stderrLimit {
-			text = strings.ReplaceAll(text, secret[:stderrLimit], "[REDACTED]")
-		}
-	}
-	text = credentialField.ReplaceAllString(text, "${1}[REDACTED]")
-	text = credential.ReplaceAllString(text, "[REDACTED]")
-	return userinfo.ReplaceAllString(text, "://")
+	return stderr
 }
