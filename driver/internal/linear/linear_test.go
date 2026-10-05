@@ -363,3 +363,36 @@ func TestTransportErrorDoesNotLeakKey(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerSnapshotFields(t *testing.T) {
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		for _, field := range []string{"priority", "createdAt", "project { id name }"} {
+			if !strings.Contains(q.Query, field) {
+				t.Errorf("missing %s", field)
+			}
+		}
+		fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","priority":2,"createdAt":"2026-01-01T00:00:00Z","project":{"id":"p1","name":"Alpha"}}],"pageInfo":{"hasNextPage":false}}}}`)
+	})
+	issues, err := c.Snapshot(context.Background(), []string{"Alpha"}, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 1 || issues[0].Priority != 2 || issues[0].CreatedAt.Format(time.RFC3339) != "2026-01-01T00:00:00Z" || issues[0].Project.ID != "p1" {
+		t.Fatalf("issues=%+v", issues)
+	}
+}
+
+func TestSnapshotAcceptsProjectUUIDAlongsideName(t *testing.T) {
+	project := "480a07e8-8b39-4b8f-92b9-dbf1997cbd8c"
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		filter := q.Variables["filter"].(map[string]any)
+		want := map[string]any{"id": map[string]any{"in": []any{project, "p1"}}}
+		if !reflect.DeepEqual(filter["project"], want) {
+			t.Errorf("project filter=%v", filter)
+		}
+		fmt.Fprint(w, `{"data":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}`)
+	})
+	if _, err := c.Snapshot(context.Background(), []string{project, "Alpha"}, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+}

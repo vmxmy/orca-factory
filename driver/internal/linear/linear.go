@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type Connection[T any] struct {
 	PageInfo PageInfo `json:"pageInfo"`
 }
 type Issue struct {
+	Priority   int                  `json:"priority"`
+	CreatedAt  time.Time            `json:"createdAt"`
+	Project    NamedID              `json:"project"`
 	ID         string               `json:"id"`
 	Identifier string               `json:"identifier"`
 	State      NamedID              `json:"state"`
@@ -184,14 +188,24 @@ func resolve(names []string, cache map[string]string) ([]string, error) {
 	return ids, nil
 }
 
-const issueFields = `id identifier updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } }`
+const issueFields = `id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } }`
 
-// Snapshot queries all requested project names together, paging the issue
+var projectUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// Snapshot queries all requested project names or UUIDs together, paging the issue
 // connection. A zero updatedSince omits the updatedAt filter entirely.
 func (c *Client) Snapshot(ctx context.Context, projects []string, updatedSince time.Time) ([]Issue, error) {
-	ids, err := resolve(projects, c.projects)
-	if err != nil {
-		return nil, err
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if projectUUID.MatchString(project) {
+			ids = append(ids, project)
+			continue
+		}
+		resolved, err := resolve([]string{project}, c.projects)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, resolved[0])
 	}
 	issues := []Issue{}
 	if len(ids) == 0 {
