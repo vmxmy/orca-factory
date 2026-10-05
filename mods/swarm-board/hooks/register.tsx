@@ -28,7 +28,7 @@ export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
   if (tasks.some(t => t.status === 'dispatched')) return '🔨 实现'
   if (tasks.some(t => t.status === 'pending' || t.status === 'ready')) return '📤 派工'
   if (gate?.state === 'green' && data.lane === 2) return '🔍 审查（推断）'
-  if (tasks.length && tasks.every(t => t.status === 'completed')) return '📬 待收尾'
+  if (tasks.some(t => t.status === 'completed')) return '📬 待收尾'
   return data.previous ?? (data.run ? '📤 派工' : '📋 拆分')
 }
 

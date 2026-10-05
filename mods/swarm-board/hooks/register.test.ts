@@ -364,6 +364,9 @@ test('dispatched task is implementing', async () => {
 })
 test('completed workers without gate or PR await wrap-up', async () => {
   expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'completed' }] })).toBe('📬 待收尾')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }, { status: 'completed' }], previous: '🔨 实现' })).toBe('📬 待收尾')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }], previous: '🔨 实现' })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }] })).toBe('📤 派工')
 })
 test('wrap-up older than ten minutes warns only without a coordinator', async ($, on) => {
   const completedAt = new Date(Date.now() - 11 * 60_000).toISOString()
