@@ -407,7 +407,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.State.Owner == machine.OwnerHuman {
 				return result, waitErr
 			}
-			releaseAllowed = report.Provenance != "executor_liveness"
+			releaseAllowed = report.Provenance != provenanceExecutorLiveness
 		}
 		if cp.Completed {
 			releaseAllowed = cp.Settled
@@ -417,7 +417,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, waitErr
 		}
 		failureCause := "worker failed"
-		if report.Provenance == "executor_liveness" {
+		if report.Provenance == provenanceExecutorLiveness {
 			failureCause = report.Body
 			failureOutput = report.Body
 		}
@@ -614,6 +614,7 @@ func nestedString(r orca.Receipt, key, field string) string {
 }
 
 const workerTurnStartTimeout = 5 * time.Minute
+const provenanceExecutorLiveness = "executor_liveness"
 
 // One watch per dispatch, retained across read retries; restart begins a fresh
 // observation period. An uncertain stop is never issued a second time.
@@ -720,7 +721,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 }
 
 func livenessFailure(reason string) *orca.WorkerReport {
-	return &orca.WorkerReport{Provenance: "executor_liveness", Outcome: "failed", Body: reason}
+	return &orca.WorkerReport{Provenance: provenanceExecutorLiveness, Outcome: "failed", Body: reason}
 }
 
 func pause(ctx context.Context, d time.Duration) error {

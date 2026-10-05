@@ -19,6 +19,7 @@ type livenessOrca struct {
 	polls, stops, terminalCalls, taskCalls int
 	report                                 bool
 	reportAt                               int
+	stopErr                                error
 }
 
 func (o *livenessOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
@@ -50,7 +51,7 @@ func (o *livenessOrca) WorkerStop(_ context.Context, request, dispatch string) (
 		panic("wrong stop request or target")
 	}
 	o.stops++
-	return nil, nil
+	return nil, o.stopErr
 }
 
 // Use the Client's typed parsing path, then change dispatchId to match the executor.
@@ -197,13 +198,23 @@ func TestWaitIgnoresUnverifiable(t *testing.T) {
 	}
 }
 
-func TestWaitReportOverridesExited(t *testing.T) {
+func TestWaitStopFailureIsNotRetried(t *testing.T) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
-	o := livenessFixture(t, "exited", "")
-	o.report = true
+	o := livenessFixture(t, "unverifiable", "")
+	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
+	o.stopErr = errors.New("worker-stop failed")
 	e.Orca = o
+	now := e.Now()
+	e.Now = func() time.Time { return now }
+	e.Sleep = func(context.Context, time.Duration) error {
+		now = now.Add(6 * time.Minute)
+		return nil
+	}
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Phase != machine.PhaseMergeQueue || o.stops != 0 || o.releases != 1 || o.polls != 0 {
-		t.Fatalf("state=%+v err=%v stops=%d releases=%d polls=%d", result.State, err, o.stops, o.releases, o.polls)
+	if err != nil || result.State.Owner != machine.OwnerHuman || o.polls < 3 {
+		t.Fatalf("read retries were not exercised: state=%+v err=%v polls=%d", result.State, err, o.polls)
+	}
+	if o.stops != 1 || result.State.Phase == machine.PhaseCorrection || result.State.Corrections != 0 {
+		t.Fatalf("state=%+v stops=%d; failed stop must not be replayed or cause correction", result.State, o.stops)
 	}
 }
