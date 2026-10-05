@@ -95,18 +95,18 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (result Result, err er
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step, result.State.Attempt) }
-	released := false
+	releaseAttempted := false
 	release := func() error {
-		if result.DispatchID == "" || released {
+		if result.DispatchID == "" || releaseAttempted {
 			return nil
 		}
+		releaseAttempted = true
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		_, releaseErr := e.Orca.WorkerRelease(cleanup, request("release"), result.DispatchID)
 		if releaseErr != nil {
 			return errors.New("worker release failed; reconcile dispatch before retry")
 		}
-		released = true
 		return nil
 	}
 	defer func() { err = errors.Join(err, release()) }()

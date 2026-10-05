@@ -97,6 +97,6 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string) (string,
 		return "", errors.New("review input close failed")
 	}
 	prompt := "Review the diff on stdin against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
-	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", c.ReviewerCommand, name, prompt)
+	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", c.ReviewerCommand+` "$1"`, name, prompt)
 	return string(b), err
 }

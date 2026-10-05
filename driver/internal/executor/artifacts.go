@@ -99,56 +99,54 @@ func reviewVerdict(output string) (string, error) {
 // shell commands during parsing. CHECK is executed only later by the repo gate.
 func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 	t := Ticket{ID: id, Identifier: identifier, Title: title, Lane: 2}
-	var todo []string
-	inTodo := false
+	fields := map[string][]string{}
+	section := ""
+	known := func(s string) bool {
+		switch s {
+		case "要做", "CHECK", "SCOPE", "CHECK_TEST_FILES", "CHECK_IS_NEW_TEST":
+			return true
+		}
+		return false
+	}
+	clean := func(s string) string { return strings.Trim(strings.TrimSpace(s), "` ") }
 	for _, line := range strings.Split(description, "\n") {
 		trimmed := strings.TrimSpace(line)
-		heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-		heading = strings.Trim(heading, "*")
-		if heading == "要做" || heading == "要做:" || heading == "要做：" {
-			inTodo = true
+		if strings.HasPrefix(trimmed, "```") {
 			continue
 		}
-		if strings.HasPrefix(trimmed, "#") {
-			inTodo = false
+		heading := strings.HasPrefix(trimmed, "#")
+		text := strings.TrimPrefix(clean(strings.TrimLeft(trimmed, "#")), "**")
+		if strings.HasSuffix(text, "**") {
+			text = strings.TrimSuffix(text, "**")
 		}
-		key, value, ok := strings.Cut(heading, ":")
+		if known(text) {
+			section = text
+			continue
+		}
+		key, value, ok := strings.Cut(text, ":")
 		if !ok {
-			key, value, ok = strings.Cut(heading, "：")
+			key, value, ok = strings.Cut(text, "：")
 		}
-		if ok {
-			key = strings.Trim(strings.TrimSpace(key), "*")
-			value = strings.TrimSpace(value)
-			switch key {
-			case "要做":
-				inTodo = true
-				if value != "" {
-					todo = append(todo, value)
-				}
-				continue
-			case "CHECK":
-				t.Check = strings.Trim(value, "`")
-				inTodo = false
-				continue
-			case "SCOPE":
-				t.Scope = strings.Trim(value, "`")
-				inTodo = false
-				continue
-			case "CHECK_TEST_FILES":
-				t.TestFiles = strings.Trim(value, "`")
-				inTodo = false
-				continue
-			case "CHECK_IS_NEW_TEST":
-				t.NewTest = value == "yes"
-				inTodo = false
-				continue
+		key = strings.TrimSuffix(clean(key), "**")
+		if ok && known(key) {
+			section = key
+			if value = clean(strings.TrimPrefix(value, "**")); value != "" {
+				fields[key] = append(fields[key], value)
 			}
+			continue
 		}
-		if inTodo {
-			todo = append(todo, line)
+		if heading {
+			section = ""
+		}
+		if section != "" {
+			fields[section] = append(fields[section], clean(line))
 		}
 	}
-	t.Todo = strings.TrimSpace(strings.Join(todo, "\n"))
+	t.Todo = strings.TrimSpace(strings.Join(fields["要做"], "\n"))
+	t.Check = strings.TrimSpace(strings.Join(fields["CHECK"], " "))
+	t.Scope = strings.TrimSpace(strings.Join(fields["SCOPE"], " "))
+	t.TestFiles = strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " "))
+	t.NewTest = strings.TrimSpace(strings.Join(fields["CHECK_IS_NEW_TEST"], " ")) == "yes"
 	if t.Todo == "" || t.Check == "" || t.Scope == "" {
 		return Ticket{}, fmt.Errorf("ticket requires 要做, CHECK and SCOPE")
 	}

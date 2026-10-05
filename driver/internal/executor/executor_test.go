@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,12 +15,14 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 type fakeOrca struct {
-	start     orca.StartOptions
-	objective string
-	releases  int
+	start      orca.StartOptions
+	objective  string
+	releases   int
+	releaseErr error
 }
 
 func (f *fakeOrca) RunCreate(_ context.Context, _, objective string) (orca.Receipt, error) {
@@ -38,7 +41,7 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 		panic("wrong dispatch")
 	}
 	f.releases++
-	return orca.Receipt{}, nil
+	return orca.Receipt{}, f.releaseErr
 }
 
 type fakeLinear struct{ comments []string }
@@ -145,5 +148,72 @@ func TestFakeSuccess(t *testing.T) {
 				t.Fatalf("comments: %q", l.comments)
 			}
 		})
+	}
+}
+
+func TestMainPathReviewerStdin(t *testing.T) {
+	repo := t.TempDir()
+	c := Commands{ReviewerCommand: "reviewer --quiet"}
+	calls := 0
+	c.Run = func(_ context.Context, s runx.Spec) ([]byte, error) {
+		calls++
+		if s.Timeout <= 0 || s.Dir != repo {
+			t.Fatalf("unbounded or misplaced command: %+v", s)
+		}
+		if s.Path == "git" {
+			return []byte("diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n"), nil
+		}
+		if s.Path != "/bin/sh" || len(s.Args) != 6 {
+			t.Fatalf("review invocation: %+v", s)
+		}
+		if s.Args[3] != `reviewer --quiet "$1"` {
+			t.Fatalf("review instruction is not passed to command: %q", s.Args[3])
+		}
+		b, err := os.ReadFile(s.Args[4])
+		if err != nil || string(b) != "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n" {
+			t.Fatalf("stdin = %q, %v", b, err)
+		}
+		if !strings.Contains(s.Args[5], "End stdout with JSON") {
+			t.Fatalf("reviewer lacks verdict contract")
+		}
+		return []byte(`{"verdict":"green","step":"review"}`), nil
+	}
+	out, err := c.Review(context.Background(), repo, "base-sha", "new-sha")
+	if err != nil || out != `{"verdict":"green","step":"review"}` || calls != 2 {
+		t.Fatalf("review=%q calls=%d err=%v", out, calls, err)
+	}
+	files, err := os.ReadDir(repo)
+	if err != nil || len(files) != 0 {
+		t.Fatalf("stdin file leaked: %v, %v", files, err)
+	}
+}
+func TestMainPathReusesPR(t *testing.T) {
+	e, o, _, g, _, ticket := fixture(t, "new-sha")
+	g.existing = &github.PullRequest{Number: 7, HTMLURL: "https://example.test/pr/7"}
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.PR.Number != 7 || len(g.created) != 0 || o.releases != 1 {
+		t.Fatalf("result=%+v created=%v releases=%d err=%v", result, g.created, o.releases, err)
+	}
+}
+
+func TestMainPathReleaseFailure(t *testing.T) {
+	e, o, _, g, tools, ticket := fixture(t, "new-sha")
+	o.releaseErr = errors.New("secret release detail")
+	_, err := e.Execute(context.Background(), ticket)
+	if err == nil || strings.Contains(err.Error(), "secret") || o.releases != 1 || len(g.created) != 0 || tools.gateCalls != 0 {
+		t.Fatalf("release must not be replayed after uncertainty: err=%v calls=%d PR=%v gate=%d", err, o.releases, g.created, tools.gateCalls)
+	}
+}
+
+func TestMainPathTicketFields(t *testing.T) {
+	for _, description := range []string{
+		"## 要做\n实现主路径\n**CHECK:** `go test ./unit`\n**SCOPE:** `unit/*`",
+		"## 要做\n实现主路径\n## CHECK\n```sh\ngo test ./unit\n```\n## SCOPE\nunit/*",
+	} {
+		ticket, err := ParseTicket("issue_one", "ZII-861", "执行器", description)
+		want := Ticket{ID: "issue_one", Identifier: "ZII-861", Title: "执行器", Todo: "实现主路径", Check: "go test ./unit", Scope: "unit/*", Lane: 2}
+		if err != nil || ticket != want {
+			t.Fatalf("ticket=%+v err=%v", ticket, err)
+		}
 	}
 }
