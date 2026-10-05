@@ -268,3 +268,30 @@ func (m *Manager) NextProbe() time.Time {
 	}
 	return next
 }
+
+// Episode is a read-only observation of a currently active pause.
+type Episode struct {
+	Key   Key
+	Start time.Time
+}
+
+// Active returns independent copies ordered by dependency, repository and kind.
+func (m *Manager) Active() []Episode {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	episodes := make([]Episode, 0, len(m.active))
+	for key, e := range m.active {
+		episodes = append(episodes, Episode{Key: key, Start: e.start})
+	}
+	sort.Slice(episodes, func(i, j int) bool {
+		a, b := episodes[i].Key, episodes[j].Key
+		if a.Dependency != b.Dependency {
+			return a.Dependency < b.Dependency
+		}
+		if a.Repo != b.Repo {
+			return a.Repo < b.Repo
+		}
+		return a.Kind < b.Kind
+	})
+	return episodes
+}
