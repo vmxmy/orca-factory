@@ -9,6 +9,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -130,8 +131,8 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 				if err != nil || string(spec) != "UNIT: executor\nSCOPE: feature shared\nCHECK: test merged\nLANE: 1\n" {
 					t.Fatalf("lost spec: %s %v", spec, err)
 				}
-				if !strings.Contains(strings.Join(s.Env, "\n"), "GATE_BASE="+f.main+"\n") || !strings.Contains(strings.Join(s.Env, "\n"), "GATE_PROJECT_SRC="+f.main) {
-					t.Fatalf("mutable gate refs: %v", s.Env)
+				if !slices.Contains(s.Env, "GATE_BASE="+f.main) || !slices.Contains(s.Env, "GATE_PROJECT_SRC="+f.main) {
+					t.Fatal("gate environment must contain the exact frozen base and project source")
 				}
 				if verdict == "infra" {
 					return nil, fmt.Errorf("cannot launch gate")
