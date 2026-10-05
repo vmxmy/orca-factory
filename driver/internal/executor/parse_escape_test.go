@@ -35,3 +35,14 @@ func TestParseTicketHeadingWithNote(t *testing.T) {
 		t.Fatalf("Todo=%q Scope=%q", got.Todo, got.Scope)
 	}
 }
+
+// A worker that sees `declare function h` without an implementation "fixes" it back to
+// JSX, which cannot build in the clean checkout the gate uses (no react). The brief must
+// say that h is injected by the host and that .tsx views take no JSX.
+func TestBriefExplainsInjectedHAndNoJSX(t *testing.T) {
+	for _, want := range []string{"declare function h", "injected by the host", "JSX"} {
+		if !strings.Contains(briefTemplate, want) {
+			t.Fatalf("brief template lacks %q", want)
+		}
+	}
+}
