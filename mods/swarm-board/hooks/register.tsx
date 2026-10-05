@@ -883,6 +883,11 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
   }
 }
 
+async function renderStatus($: any) {
+  const latest = await read($, board)
+  $.ui.status(G.work + ' ' + latest.inFlight.length + '/' + latest.maxInFlight + ' · ' + G.wait + ' ' + latest.prs.length + (latest.failed.length ? ' · ' + G.human + ' ' + latest.failed.length : '') + ' · ' + G.queued + ' ' + latest.queue.length)
+}
+
 async function tick($: any, handoffs: Map<string, string>) {
   const old = await read($, board)
   const reloads = snapshotReloads
@@ -902,8 +907,7 @@ async function tick($: any, handoffs: Map<string, string>) {
     return b
   })
   await update($, lastTickAt, () => Date.now())
-  const latest = await read($, board)
-  $.ui.status(G.work + ' ' + latest.inFlight.length + '/' + latest.maxInFlight + ' · ' + G.wait + ' ' + latest.prs.length + (latest.failed.length ? ' · ' + G.human + ' ' + latest.failed.length : '') + ' · ' + G.queued + ' ' + latest.queue.length)
+  await renderStatus($)
 }
 
 async function manualRefresh($: any, handoffs: Map<string, string>) {
@@ -951,6 +955,7 @@ async function pollSnapshot($: any, handoffs: Map<string, string>, watcher: Snap
       linearThrottled: next.linearThrottled, blockedBy: next.blockedBy, issueStates: next.issueStates,
     }))
     snapshotReloads++
+    await renderStatus($)
   } finally { watcher.polling = false }
 }
 

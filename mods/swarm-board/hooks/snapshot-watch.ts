@@ -5,4 +5,4 @@ export type SnapshotStat = { mtimeMs: number; size: number }
 export const shouldReload = (
   prev: SnapshotStat | null | undefined,
   stat: SnapshotStat | null | undefined,
-): boolean => !!stat && (!prev || prev.mtimeMs !== stat.mtimeMs || prev.size !== stat.size)
+): boolean => !!prev && !!stat && (prev.mtimeMs !== stat.mtimeMs || prev.size !== stat.size)
