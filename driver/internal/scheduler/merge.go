@@ -32,10 +32,11 @@ func readMergeHandoff(t *Ticket, comments []linear.Comment) {
 				if json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p) != nil {
 					t.MergeProblem = "invalid merge progress"
 				} else {
-					if old := t.Progress; old != nil && old.Deployment != nil {
-						if p.QueueID != old.QueueID || p.Deployment == nil || p.Deployment.Workflow != old.Deployment.Workflow || p.Deployment.Smoke != old.Deployment.Smoke {
-							t.MergeProblem = "conflicting deployment progress"
-						}
+					if !deploymentTransition(t.Progress, &p) || (t.deploymentReservedQueue == p.QueueID && t.Progress != nil && t.Progress.Deployment == nil && p.Deployment != nil) {
+						t.MergeProblem = "conflicting deployment progress"
+					}
+					if p.Phase == "merge-intent" || p.Phase == "merged" {
+						t.deploymentReservedQueue = p.QueueID
 					}
 					t.Progress = &p
 				}
@@ -180,9 +181,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
 		retainMergeProgress(&progress, a.ticket.Progress)
 	}
-	if progress.Deployment == nil {
-		progress.Deployment = newDeployment(env)
-	}
+	progress.Deployment = deploymentFor(a.ticket, env)
 	if progress.Deployment != nil {
 		if err := r.advanceDeployment(ctx, t, &progress); err != nil {
 			return err
@@ -313,9 +312,7 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
 		retainMergeProgress(&intent, a.ticket.Progress)
 	}
-	if intent.Deployment == nil {
-		intent.Deployment = newDeployment(a.runtime.Repositories[a.ticket.Repo].Env)
-	}
+	intent.Deployment = deploymentFor(a.ticket, a.runtime.Repositories[a.ticket.Repo].Env)
 	raw, _ := json.Marshal(intent)
 	if err := a.runtime.mergeComment(ctx, a.ticket, merge.ProgressPrefix+string(raw)); err != nil {
 		return "", err

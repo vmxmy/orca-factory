@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -32,6 +34,18 @@ func newDeployment(env map[string]string) *merge.DeploymentProgress {
 	}
 	return &merge.DeploymentProgress{Workflow: w, Smoke: s, State: "pending"}
 }
+
+// A same-queue intent freezes even the absence of deployment configuration.
+// Environment changes apply to new queues, never an in-progress squash retry.
+func deploymentFor(t Ticket, env map[string]string) *merge.DeploymentProgress {
+	if t.Progress != nil && t.Handoff != nil && t.Progress.QueueID == t.Handoff.QueueID {
+		if t.Progress.Deployment != nil || t.deploymentReservedQueue == t.Handoff.QueueID || t.Progress.Phase == "merge-intent" || t.Progress.Phase == "merged" {
+			return t.Progress.Deployment
+		}
+	}
+	return newDeployment(env)
+}
+
 func (r *Runtime) deploymentReceipt(ctx context.Context, t Ticket, p *merge.Progress) error {
 	b, _ := json.Marshal(p)
 	return r.mergeComment(ctx, t, merge.ProgressPrefix+string(b))
@@ -51,7 +65,7 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 	if d.Workflow != "" {
 		state, err := r.GitHub.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
 		if err != nil {
-			return errors.New("deployment query unavailable")
+			return fmt.Errorf("deployment query unavailable: %w", err)
 		}
 		if state == "failed" {
 			return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
@@ -67,8 +81,13 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 			return err
 		}
 		if _, err := r.runSmoke(ctx, t, p); err != nil {
-			return r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery")
+			safe := safeDeploymentFailure(err)
+			if ctx.Err() != nil {
+				return errors.Join(safe, ctx.Err())
+			}
+			return errors.Join(safe, r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery"))
 		}
+		d.SmokePassed = true
 	}
 	d.State = "passed"
 	return r.deploymentReceipt(ctx, t, p)
@@ -137,6 +156,10 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	if t.MergeProblem != "" || p == nil || h == nil || p.Deployment == nil || p.QueueID != queue || p.QueueID != h.QueueID || p.MergeSHA != sha || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || p.Phase != "merged" {
 		return errors.New("recovery identity mismatch")
 	}
+	next := *p
+	deployment := *p.Deployment
+	next.Deployment = &deployment
+	p = &next
 	d := p.Deployment
 	if d.State != "paused" && d.State != "smoke-intent" {
 		return errors.New("deployment is not awaiting human recovery")
@@ -155,6 +178,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 		}
 		d.State = "pending"
 		d.SmokeStarted = false
+		d.SmokePassed = false
 	default:
 		return errors.New("invalid deployment recovery action")
 	}
@@ -164,6 +188,9 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	}
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""
+	if !deploymentTransition(t.Progress, p) {
+		return errors.New("invalid or stale deployment recovery")
+	}
 	if dry {
 		return nil
 	}
@@ -189,4 +216,30 @@ func deploymentIdentity(t Ticket) error {
 // It is not evidence that deployment or smoke has started.
 func unmergedDeploymentDecision(p *merge.Progress) bool {
 	return p != nil && (p.Phase == "waiting" || p.Phase == "correction" || p.Phase == "human") && p.MergeSHA == "" && p.Deployment != nil && p.Deployment.State == "pending" && !p.Deployment.SmokeStarted
+}
+
+// Retain safe control-flow facts, not subprocess messages or credential-bearing
+// underlying errors. Even errors.As callers receive a sanitized cause.
+func safeDeploymentFailure(err error) error {
+	cause := errors.New("smoke execution failed")
+	if errors.Is(err, context.Canceled) {
+		cause = context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		cause = errors.Join(cause, context.DeadlineExceeded)
+	}
+	var global *infra.Global
+	var transient *infra.Transient
+	var ticket *infra.Ticket
+	classified := infra.Classify(err)
+	switch {
+	case errors.As(classified, &global):
+		return &infra.Global{Dep: global.Dep, Err: cause}
+	case errors.As(classified, &transient):
+		return &infra.Transient{Err: cause}
+	case errors.As(classified, &ticket):
+		return &infra.Ticket{Err: cause}
+	default:
+		return cause
+	}
 }

@@ -60,6 +60,7 @@ type Progress struct {
 type DeploymentProgress struct {
 	Recovery     *DeploymentRecovery `json:"recovery,omitempty"`
 	SmokeStarted bool                `json:"smoke_started,omitempty"`
+	SmokePassed  bool                `json:"smoke_passed,omitempty"`
 	Workflow     string              `json:"workflow,omitempty"`
 	Smoke        string              `json:"smoke,omitempty"`
 	State        string              `json:"state"`

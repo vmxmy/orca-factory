@@ -16,6 +16,9 @@ import (
 )
 
 type Ticket struct {
+	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
+	// reserved by an earlier squash intent for this queue.
+	deploymentReservedQueue             string
 	Progress                            *merge.Progress
 	Handoff                             *merge.Handoff
 	MergeProblem                        string

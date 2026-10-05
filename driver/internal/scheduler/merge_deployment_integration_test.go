@@ -89,3 +89,29 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 		t.Fatalf("old unmerged intent blocks repaired head: %+v %v", rows, err)
 	}
 }
+
+func TestDeploymentConfigReservedAtFirstIntentAfterWaiting(t *testing.T) {
+	f := newMergeFixture(t)
+	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "integration-smoke"
+	f.checkState = "pending"
+	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil || f.puts != 0 {
+		t.Fatalf("expected pre-intent wait: %v", err)
+	}
+	smokes := 0
+	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path == "bash" {
+			smokes++
+			return nil, nil
+		}
+		return runx.Run(ctx, s)
+	}
+	f.checkState = "success"
+	rebuilt := *f.runtime
+	rebuilt.GitHub = nil
+	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if smokes != 1 || f.puts != 1 {
+		t.Fatalf("waiting without intent lost deployment: smoke=%d merges=%d", smokes, f.puts)
+	}
+}
