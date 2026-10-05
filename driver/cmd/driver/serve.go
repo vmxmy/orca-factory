@@ -91,22 +91,39 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 // Preserve optional scheduler capabilities as well as the required Backend.
 type statusBackend struct {
 	scheduler.Backend
-	tickets   []scheduler.Ticket
-	inspected bool
+	tickets    []scheduler.Ticket
+	inspected  bool
+	snapshotOK bool
+	allowed    map[string]bool
+	begin      func()
 }
 
 func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]scheduler.Ticket, error) {
 	tickets, err := b.Backend.Snapshot(ctx, repos)
+	b.snapshotOK = err == nil
 	if err == nil {
 		b.tickets = append([]scheduler.Ticket(nil), tickets...)
 	}
 	return tickets, err
 }
 
+func (b *statusBackend) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
+	ok, err := b.Backend.AutomationDisabled(ctx, repo)
+	b.allowed[repo.Path] = err == nil && ok
+	return ok, err
+}
+
 func (b *statusBackend) LinearLimits() []linear.RateLimit {
 	// Tick checks quota even when a global pause prevents Snapshot. Wait-only
 	// iterations never call this method, so they must not refresh generatedAt.
-	b.inspected = true
+	if !b.inspected {
+		b.snapshotOK = false
+		b.allowed = map[string]bool{}
+		if b.begin != nil {
+			b.begin()
+		}
+		b.inspected = true
+	}
 	if source, ok := b.Backend.(interface{ LinearLimits() []linear.RateLimit }); ok {
 		return source.LinearLimits()
 	}
@@ -133,6 +150,10 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 			return nil, err
 		}
 		backend = &statusBackend{Backend: s.Backend}
+		if releases, ok := s.Merger.(*serveReleases); ok {
+			releases.backend = backend
+			backend.begin = releases.BeginTick
+		}
 		s.Backend = backend
 		return s, nil
 	}, func(ctx context.Context) error {

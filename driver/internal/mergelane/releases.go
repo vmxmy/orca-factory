@@ -13,10 +13,14 @@ import (
 )
 
 type laneEntry struct {
-	Request merge.Request
-	Ticket  *scheduler.Ticket
-	Release *release.Pending
-	Blocked string
+	Request         merge.Request
+	Ticket          *scheduler.Ticket
+	Release         *release.Pending
+	Blocked         string
+	BlockedHead     string
+	Escalated       bool
+	MergeSHA        string
+	DeploymentReady bool
 }
 
 func (l *Lane) load() error {
@@ -38,13 +42,16 @@ func (l *Lane) load() error {
 	return nil
 }
 func (l *Lane) save() error {
+	return l.saveEntries(l.entries)
+}
+func (l *Lane) saveEntries(entries []laneEntry) error {
 	if l.Root == "" {
 		return nil
 	}
 	if err := os.MkdirAll(l.Root, 0700); err != nil {
 		return err
 	}
-	b, err := json.Marshal(l.entries)
+	b, err := json.Marshal(entries)
 	if err != nil {
 		return err
 	}
@@ -71,9 +78,7 @@ func (l *Lane) Enqueue(r merge.Request) error {
 		return err
 	}
 	env := l.Repositories[r.Path].Env
-	if env["AGENT_DEPLOY_WORKFLOW"] != "" || env["AGENT_SMOKE_CMD"] != "" {
-		return errors.New("deployment-gated merges are not implemented; repository lane refused")
-	}
+	r.DeployWorkflow, r.SmokeCommand = env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
 	if r.Repository == "" || r.Number <= 0 {
 		return errors.New("invalid merge request")
 	}
@@ -82,8 +87,39 @@ func (l *Lane) Enqueue(r merge.Request) error {
 			return nil
 		}
 	}
-	l.entries = append(l.entries, laneEntry{Request: r})
+	return l.accept(append(append([]laneEntry(nil), l.entries...), laneEntry{Request: r}))
+}
+
+// accept commits the durable queue before making its entries consumable.
+func (l *Lane) accept(entries []laneEntry) error {
+	if err := l.saveEntries(entries); err != nil {
+		return err
+	}
+	l.entries = entries
 	return nil
+}
+
+func (l *Lane) flushPending() error {
+	if len(l.pending) == 0 {
+		return nil
+	}
+	if err := l.accept(append(append([]laneEntry(nil), l.entries...), l.pending...)); err != nil {
+		return err
+	}
+	l.pending = nil
+	return nil
+}
+
+func (l *Lane) RepositoryPaused(path string) (bool, error) {
+	if err := l.load(); err != nil {
+		return false, err
+	}
+	for _, e := range l.entries {
+		if e.Request.Path == path && e.MergeSHA != "" && e.Blocked != "" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 func (l *Lane) HasRelease(repo, plugin string) (bool, error) {
 	if err := l.load(); err != nil {
@@ -94,22 +130,37 @@ func (l *Lane) HasRelease(repo, plugin string) (bool, error) {
 			return true, nil
 		}
 	}
+	for _, e := range l.pending {
+		if e.Release != nil && e.Request.Repository == repo && e.Release.Plan.Plugin == plugin {
+			return true, nil
+		}
+	}
 	return false, nil
 }
+
+type stagedQueue struct{}
+
+func (stagedQueue) Enqueue(merge.Request) error { return nil }
+
 func (l *Lane) SubmitRelease(ctx context.Context, writer release.PRWriter, r merge.Request, p release.Plan) error {
+	if err := l.load(); err != nil {
+		return err
+	}
+	if err := l.flushPending(); err != nil {
+		return err
+	}
 	if found, err := l.HasRelease(r.Repository, p.Plugin); err != nil {
 		return err
 	} else if found {
 		return nil
 	}
-	pending, err := release.Submit(ctx, writer, l, r, p)
+	env := l.Repositories[r.Path].Env
+	r.DeployWorkflow, r.SmokeCommand = env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
+	// Submit produces a complete Pending before the shared queue accepts it.
+	pending, err := release.Submit(ctx, writer, stagedQueue{}, r, p)
 	if err != nil {
 		return err
 	}
-	for i := range l.entries {
-		if l.entries[i].Request.Repository == pending.Request.Repository && l.entries[i].Request.Number == pending.Request.Number {
-			l.entries[i].Release = &pending
-		}
-	}
-	return l.save()
+	l.pending = append(l.pending, laneEntry{Request: pending.Request, Release: &pending})
+	return l.flushPending()
 }

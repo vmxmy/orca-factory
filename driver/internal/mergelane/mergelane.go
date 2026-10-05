@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/release"
@@ -56,6 +57,8 @@ type Lane struct {
 	entries      []laneEntry
 	loaded       bool
 	current      map[string]scheduler.Ticket
+	pending      []laneEntry
+	channels     map[string]*merge.Channel
 }
 
 // compareFileLimit is GitHub's silent cap on compare file lists.
@@ -63,12 +66,25 @@ const compareFileLimit = 300
 
 // Admit records new feature PRs without advancing the lane. Existing entries
 // retain their position even when Linear changes snapshot order.
+func eligible(t scheduler.Ticket) bool {
+	return t.Owner == machine.OwnerMerge && t.Phase == machine.PhaseMergeQueue && !t.Blocked
+}
+
 func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
+	l.current = map[string]scheduler.Ticket{}
 	if err := l.load(); err != nil {
 		return err
 	}
+	if err := l.flushPending(); err != nil {
+		return err
+	}
+	entries := append([]laneEntry(nil), l.entries...)
+	current := map[string]scheduler.Ticket{}
 	var problems []error
 	for _, t := range queue {
+		if !eligible(t) {
+			continue
+		}
 		full, owner, name, err := l.repository(t)
 		if err != nil {
 			problems = append(problems, err)
@@ -79,36 +95,72 @@ func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
 			problems = append(problems, err)
 			continue
 		}
-		if pr == nil {
-			problems = append(problems, l.escalate(ctx, t, "合并通道: 找不到 agent/"+t.Identifier+"/executor 的 PR"))
+		if pr == nil || (!pr.Merged && pr.State != "open") {
+			reason := "合并通道: 找不到 agent/" + t.Identifier + "/executor 的 PR"
+			if pr != nil {
+				reason = fmt.Sprintf("合并通道: PR #%d 未合并即关闭", pr.Number)
+			}
+			if err := l.escalate(ctx, t, reason); err != nil {
+				problems = append(problems, err)
+			}
+			// An existing feature remains a barrier, but has no current authority.
 			continue
 		}
-		if !pr.Merged && pr.State != "open" {
-			problems = append(problems, l.escalate(ctx, t, fmt.Sprintf("合并通道: PR #%d 未合并即关闭", pr.Number)))
-			continue
-		}
-		r := merge.Request{Repository: full, Path: t.Repo, Number: pr.Number}
-		if err := l.Enqueue(r); err != nil {
-			problems = append(problems, err)
-			continue
-		}
-		for i := range l.entries {
-			if requestKey(full, pr.Number) == requestKey(l.entries[i].Request.Repository, l.entries[i].Request.Number) {
-				l.entries[i].Ticket = &t
+		env := l.Repositories[t.Repo].Env
+		r := merge.Request{Repository: full, Path: t.Repo, Number: pr.Number, DeployWorkflow: env["AGENT_DEPLOY_WORKFLOW"], SmokeCommand: env["AGENT_SMOKE_CMD"]}
+		found := false
+		for i := range entries {
+			e := &entries[i]
+			if e.Ticket != nil && e.Ticket.ID == t.ID && e.Request.Path == t.Repo {
+				// Recovery must retain its arrival position and catch-up budget.
+				r.CatchupRounds = e.Request.CatchupRounds
+				if e.Blocked == "" {
+					e.Ticket = &t
+				}
+				e.Request = r
+				found = true
+				break
 			}
 		}
+		if !found {
+			entries = append(entries, laneEntry{Request: r, Ticket: &t})
+		}
+		current[requestKey(full, pr.Number)] = t
 	}
-	return errors.Join(append(problems, l.save())...)
+	if err := l.accept(entries); err != nil {
+		return errors.Join(append(problems, err)...)
+	}
+	l.current = current
+	return errors.Join(problems...)
 }
 func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 	if err := l.Admit(ctx, queue); err != nil {
 		return err
 	}
-	l.current = map[string]scheduler.Ticket{}
-	for _, e := range l.entries {
-		if e.Ticket != nil {
-			l.current[requestKey(e.Request.Repository, e.Request.Number)] = *e.Ticket
-		}
+	return l.Advance(ctx)
+}
+
+func (l *Lane) channel(repo string) *merge.Channel {
+	if l.channels == nil {
+		l.channels = map[string]*merge.Channel{}
+	}
+	if l.channels[repo] == nil {
+		l.channels[repo] = merge.New(l, merge.CommandGit{Run: l.Exec}, l, l)
+	}
+	return l.channels[repo]
+}
+
+// Advance uses only the current successful admission and the durable FIFO.
+// Restoring entries alone never restores a feature ticket's write authority.
+func (l *Lane) Advance(ctx context.Context) error {
+	if err := l.load(); err != nil {
+		return err
+	}
+	if err := l.flushPending(); err != nil {
+		return err
+	}
+	if err := l.save(); err != nil {
+		return err
 	}
 	seen := map[string]bool{}
 	var problems []error
@@ -120,8 +172,8 @@ func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 			continue
 		}
 		seen[r.Repository] = true
-		if e.Blocked != "" {
-			problems = append(problems, errors.New(e.Blocked))
+		t, authorized := l.current[requestKey(r.Repository, r.Number)]
+		if e.Ticket != nil && (!authorized || !eligible(t)) {
 			i++
 			continue
 		}
@@ -132,54 +184,157 @@ func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 			i++
 			continue
 		}
-		result := merge.Result{Request: r, Status: merge.Merged, MergeSHA: pr.MergeCommitSHA}
-		if !pr.Merged {
-			if pr.State != "open" {
-				problems = append(problems, fmt.Errorf("PR #%d closed without merge", r.Number))
+		if e.Blocked != "" {
+			// A fresh handoff plus a changed head can resume a correction. Human
+			// deployment recovery stays paused until an operator repairs its record.
+			fresh := e.Ticket != nil && (t.Attempt > e.Ticket.Attempt || t.UpdatedAt.After(e.Ticket.UpdatedAt))
+			if e.MergeSHA == "" && fresh && pr.Head.SHA != "" && pr.Head.SHA != e.BlockedHead && r.CatchupRounds < 2 {
+				e.Blocked, e.BlockedHead, e.Escalated = "", "", false
+				e.Ticket = &t
+				if err := l.save(); err != nil {
+					return errors.Join(append(problems, err)...)
+				}
+			} else {
+				if err := l.notifyBlocked(ctx, e); err != nil {
+					problems = append(problems, err)
+				}
 				i++
 				continue
 			}
-			channel := merge.New(l, merge.CommandGit{Run: l.Exec}, l, l)
-			if err = channel.Enqueue(r); err == nil {
-				result, err = channel.Next(ctx, r.Repository)
-			}
 		}
-		if err != nil {
-			problems = append(problems, err)
-			if result.Status != merge.Merged {
+		if e.Ticket == nil && e.Release == nil {
+			problems = append(problems, errors.New("merge entry has no owner"))
+			i++
+			continue
+		}
+		channel := l.channel(r.Repository)
+		result := merge.Result{Request: r, Status: merge.Merged, MergeSHA: e.MergeSHA}
+		if e.MergeSHA == "" {
+			if pr.Merged {
+				result.MergeSHA = pr.MergeCommitSHA
+				// An externally confirmed merge supersedes a queued attempt, but
+				// its deployment barrier remains in the durable head below.
+				l.channels[r.Repository] = merge.New(l, merge.CommandGit{Run: l.Exec}, l, l)
+			} else {
+				if pr.State != "open" {
+					problems = append(problems, fmt.Errorf("PR #%d closed without merge", r.Number))
+					i++
+					continue
+				}
+				if err = channel.Enqueue(r); err == nil {
+					result, err = channel.Next(ctx, r.Repository)
+				}
+			}
+			if err != nil {
+				problems = append(problems, err)
+				if result.Status != merge.Merged {
+					i++
+					continue
+				}
+			}
+			e.Request.CatchupRounds = result.Rounds
+			switch result.Status {
+			case merge.Correction, merge.Human:
+				e.Blocked, e.BlockedHead = "合并通道: "+result.Reason, pr.Head.SHA
+				if err := l.save(); err != nil {
+					return errors.Join(append(problems, err)...)
+				}
+				if err := l.notifyBlocked(ctx, e); err != nil {
+					problems = append(problems, err)
+				}
+				i++
+				continue
+			case merge.Merged:
+				if result.MergeSHA == "" {
+					problems = append(problems, errors.New("squash commit missing"))
+					i++
+					continue
+				}
+				e.MergeSHA = result.MergeSHA
+				if err := l.save(); err != nil {
+					return errors.Join(append(problems, err)...)
+				}
+				if r.DeployWorkflow != "" || r.SmokeCommand != "" {
+					i++
+					continue
+				}
+			default:
+				if err := l.save(); err != nil {
+					return errors.Join(append(problems, err)...)
+				}
 				i++
 				continue
 			}
 		}
-		e.Request.CatchupRounds = result.Rounds
-		switch result.Status {
-		case merge.Merged:
-			if e.Release != nil {
-				err = release.Publish(ctx, l.Publisher, *e.Release, result)
-			} else if e.Ticket != nil {
-				err = l.finish(ctx, *e.Ticket, owner, name, r.Number, result.MergeSHA)
-			} else {
-				err = errors.New("merge entry has no owner")
+		if (r.DeployWorkflow != "" || r.SmokeCommand != "") && !e.DeploymentReady {
+			// The lifetime Channel owns normal waits. After restart it has no
+			// previous squash, so recover that wait from the durable head.
+			waiting, err := channel.Next(ctx, r.Repository)
+			if err != nil {
+				problems = append(problems, err)
+				i++
+				continue
 			}
-		case merge.Correction, merge.Human:
-			if e.Ticket != nil {
-				err = l.escalate(ctx, *e.Ticket, "合并通道: "+result.Reason)
-			} else {
-				e.Blocked = "release needs human recovery: " + result.Reason
-				err = errors.New(e.Blocked)
+			state := merge.DeploymentPending
+			switch waiting.Status {
+			case merge.Empty:
+				state, err = l.Check(ctx, r, e.MergeSHA)
+			case merge.Human, merge.Paused:
+				state = merge.DeploymentFailed
 			}
-		default:
-			i++
-			continue
+			if err != nil {
+				problems = append(problems, err)
+				i++
+				continue
+			}
+			if state == merge.DeploymentFailed || state == merge.SmokeFailed {
+				e.Blocked = "合并通道: deployment requires human recovery: " + string(state)
+				if err := l.save(); err != nil {
+					return errors.Join(append(problems, err)...)
+				}
+				if err := l.notifyBlocked(ctx, e); err != nil {
+					problems = append(problems, err)
+				}
+				i++
+				continue
+			}
+			if state != merge.DeploymentPassed {
+				i++
+				continue
+			}
+			e.DeploymentReady = true
+			if err := l.save(); err != nil {
+				return errors.Join(append(problems, err)...)
+			}
+		}
+		result = merge.Result{Request: r, Status: merge.Merged, MergeSHA: e.MergeSHA}
+		if e.Release != nil {
+			err = release.Publish(ctx, l.Publisher, *e.Release, result)
+		} else {
+			err = l.finish(ctx, t, owner, name, r.Number, e.MergeSHA)
 		}
 		if err != nil {
 			problems = append(problems, err)
 			i++
 			continue
 		}
-		l.entries = append(l.entries[:i], l.entries[i+1:]...)
+		entries := append(append([]laneEntry(nil), l.entries[:i]...), l.entries[i+1:]...)
+		if err := l.accept(entries); err != nil {
+			return errors.Join(append(problems, err)...)
+		}
 	}
-	return errors.Join(append(problems, l.save())...)
+	return errors.Join(problems...)
+}
+
+func (l *Lane) notifyBlocked(ctx context.Context, e *laneEntry) error {
+	if e.Escalated || e.Ticket == nil {
+		return nil
+	}
+	if err := l.escalate(ctx, *e.Ticket, e.Blocked); err != nil {
+		return err
+	}
+	e.Escalated = true
+	return l.save()
 }
 
 func requestKey(full string, number int) string { return fmt.Sprintf("%s#%d", full, number) }
@@ -459,10 +614,4 @@ func (l *Lane) Run(ctx context.Context, r merge.Request, path string) error {
 	}
 	_, err := run(ctx, runx.Spec{Path: filepath.Join(r.Path, "scripts", "agent-gates", "gate.sh"), Args: []string{path, spec}, Dir: r.Path, Timeout: 45 * time.Minute})
 	return err
-}
-
-// Check implements merge.Deployment. Deployment-gated repositories are refused
-// before enqueue, so reaching this is a configuration error.
-func (l *Lane) Check(context.Context, merge.Request, string) (merge.DeploymentState, error) {
-	return "", errors.New("deployment checks are not implemented")
 }

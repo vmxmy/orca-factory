@@ -28,9 +28,12 @@ func (p *publisher) CreateRelease(context.Context, string, string, github.Releas
 	return github.Release{}, nil
 }
 
-type writer struct{}
+type writer struct{ calls *int }
 
-func (writer) CreateReleasePR(context.Context, merge.Request, release.Plan) (int, error) {
+func (w writer) CreateReleasePR(context.Context, merge.Request, release.Plan) (int, error) {
+	if w.calls != nil {
+		*w.calls++
+	}
 	return 8, nil
 }
 func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
@@ -51,6 +54,7 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 	// Restore FIFO, then supply authoritative current merge ownership.
 	restored := *l
 	restored.entries = nil
+	restored.channels = nil
 	restored.loaded = false
 	l = &restored
 	if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
@@ -121,7 +125,7 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 			t.Fatalf("deployment barrier lost: merges=%v smoke=%d", gh.merges, smoke)
 		}
 		restored := *l
-		restored.entries, restored.loaded = nil, false
+		restored.entries, restored.loaded, restored.channels = nil, false, nil
 		l = &restored
 		if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
 			t.Fatal(err)
@@ -140,6 +144,70 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 			t.Fatalf("did not resume after deployment: merges=%v smoke=%d", gh.merges, smoke)
 		}
 	})
+	for _, failure := range []string{"workflow failed", "smoke failed", "workflow unavailable", "wrong SHA"} {
+		t.Run(failure+" isolates repository", func(t *testing.T) {
+			gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green()}
+			l, _, tk, _, ticket := lane(t, gh)
+			repo := l.Repositories["/repo"]
+			repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "deploy.yml", "./smoke"
+			l.Repositories["/repo"] = repo
+			pub := &publisher{}
+			l.Publisher = pub
+			previousExec := l.Exec
+			l.Exec = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path == "gh" {
+					if failure == "workflow unavailable" {
+						return nil, errors.New("workflow read unavailable")
+					}
+					conclusion, commit := "success", sha
+					if failure == "workflow failed" {
+						conclusion = "failure"
+					}
+					if failure == "wrong SHA" {
+						commit = head
+					}
+					return []byte(`{"workflow_runs":[{"id":9,"head_sha":"` + commit + `","status":"completed","conclusion":"` + conclusion + `"}]}`), nil
+				}
+				if s.Path == "bash" {
+					return nil, errors.New("smoke failed")
+				}
+				return previousExec(ctx, s)
+			}
+			if err := l.Admit(ctx, []scheduler.Ticket{ticket}); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 3; i++ {
+				_ = l.Process(ctx, []scheduler.Ticket{ticket})
+			}
+			wantEscalations := 1
+			if failure == "workflow unavailable" || failure == "wrong SHA" {
+				wantEscalations = 0
+			}
+			if len(gh.merges) != 1 || len(l.entries) != 2 || len(tk.escalated) != wantEscalations || pub.tags != 0 {
+				t.Fatalf("failed deployment lost barrier: merges=%v entries=%d escalations=%v tags=%d", gh.merges, len(l.entries), tk.escalated, pub.tags)
+			}
+			// A paused deployment must not freeze a different repository's lane.
+			if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "owner/other", Path: "/other"}, release.Plan{Plugin: "other", Version: "1.0.1"}); err != nil {
+				t.Fatal(err)
+			}
+			_ = l.Process(ctx, []scheduler.Ticket{ticket})
+			if len(gh.merges) != 2 || pub.tags != 1 || pub.releases != 1 {
+				t.Fatalf("other repository stopped: merges=%v publication=%+v", gh.merges, pub)
+			}
+			restored := *l
+			restored.entries, restored.loaded, restored.channels = nil, false, nil
+			_ = restored.Process(ctx, []scheduler.Ticket{ticket})
+			if len(gh.merges) != 2 || len(tk.escalated) != wantEscalations {
+				t.Fatal("restart repeated escalation or bypassed wait")
+			}
+		})
+	}
 	for _, state := range []string{"missing", "human", "wrong phase", "blocked"} {
 		t.Run("restored "+state, func(t *testing.T) {
 			gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}}
@@ -153,7 +221,7 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 				t.Fatal(err)
 			}
 			restored := *l
-			restored.entries, restored.loaded = nil, false
+			restored.entries, restored.loaded, restored.channels = nil, false, nil
 			l = &restored
 			gh.runs = green()
 			current := []scheduler.Ticket{ticket}
@@ -261,13 +329,14 @@ func TestReleasePublicationRecovery(t *testing.T) {
 		l, _, _, _, _ := lane(t, gh)
 		pub := &publisher{}
 		l.Publisher = pub
+		creates := 0
 		if err := l.load(); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Mkdir(filepath.Join(l.Root, "merge-queue.json"), 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err == nil {
+		if err := l.SubmitRelease(ctx, writer{&creates}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err == nil {
 			t.Fatal("save failure hidden")
 		}
 		_ = l.Process(ctx, nil)
@@ -276,6 +345,24 @@ func TestReleasePublicationRecovery(t *testing.T) {
 		}
 		if len(l.entries) != 0 {
 			t.Fatal("save failure accepted an unsaved queue entry")
+		}
+		if len(l.pending) != 1 || l.pending[0].Release.Request.Number != 8 {
+			t.Fatal("created PR recovery Pending lost")
+		}
+		if err := os.Remove(filepath.Join(l.Root, "merge-queue.json")); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.SubmitRelease(ctx, writer{&creates}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+			t.Fatal(err)
+		}
+		if creates != 1 {
+			t.Fatal("recreated PR instead of saving Pending")
+		}
+		if err := l.Process(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(gh.merges) != 1 || pub.tags != 1 || pub.releases != 1 {
+			t.Fatal("saved Pending did not resume")
 		}
 	})
 	ctx := context.Background()
@@ -297,6 +384,7 @@ func TestReleasePublicationRecovery(t *testing.T) {
 	gh.prs = []github.PullRequest{pr}
 	restored := *l
 	restored.entries = nil
+	restored.channels = nil
 	restored.loaded = false
 	l = &restored
 	if err := l.Process(ctx, nil); err != nil {

@@ -26,7 +26,7 @@
 
 | GitHub tags 是数组（未发过 tag 时为 `[]`），版本须按数值比较；compare 的提交正文在 `commits[].commit.message`，分页须核对 `total_commits` 并按插件路径筛选 | `github-release-tags.json`（vmxmy/orca-factory）、`github-release-version-tags.json`（anthropics/claude-code）、`github-release-commits.json` | `release.TestRecordedReleaseReads` |
 
-发布读取样本录于 2026-10-06：`GET /repos/vmxmy/orca-factory/tags?per_page=100`（空列表）；`GET /repos/anthropics/claude-code/tags?per_page=100`；`GET /repos/anthropics/claude-code/compare/v2.1.288...2bfb629dfaff0c8318047a4beb93cf1dc5b58b18?per_page=100&page=1`。目标仓库尚无 tag，非空格式使用公开仓库的原始回执验证，未改写 tag 名称。
+发布读取样本录于 2026-10-06：`GET /repos/vmxmy/orca-factory/tags?per_page=100`（空列表）；`GET /repos/anthropics/claude-code/tags?per_page=100`；`GET /repos/anthropics/claude-code/compare/v2.1.288...2bfb629dfaff0c8318047a4beb93cf1dc5b58b18?per_page=100&page=1`。目标仓库尚无 tag，非空格式使用公开仓库的原始回执验证，未改写 tag 名称。测试通过生产 `RepositorySource.LatestTag` 的 `page=1` 请求回放目标仓库空列表并断言空 tag；公开仓库的 `v2.x` 标签仅验证数值版本排序，不冒充 `swarm-board-v<version>`。生产 `CommitsSince` 回放 compare，断言 CHANGELOG 提交正文，并验证不相关插件路径得到空提交列表。
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
