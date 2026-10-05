@@ -106,6 +106,20 @@ type GlobalPause struct {
 
 // Read observes only the disposable snapshot. Missing or damaged caches are unknown.
 func Read(now time.Time) View {
+	// The pushed view has exactly the public JSON shape. Legacy observation
+	// caches remain readable for callers that explicitly select their old path.
+	if os.Getenv("DRIVER_STATUS_FILE") == "" {
+		if data, err := os.ReadFile(PushPath()); err == nil {
+			var view View
+			if json.Unmarshal(data, &view) == nil && !view.GeneratedAt.IsZero() {
+				normalize(&view, now)
+				if now.Sub(view.GeneratedAt) > staleAfter {
+					view.State = "stale"
+				}
+				return view
+			}
+		}
+	}
 	hour := now.UTC().Truncate(time.Hour)
 	view := View{State: "unknown", Tickets: []Ticket{}, Linear: Usage{Hour: hour, Limits: []ClientLimits{}}}
 	data, err := os.ReadFile(Path())

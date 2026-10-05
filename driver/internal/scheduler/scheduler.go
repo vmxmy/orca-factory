@@ -12,6 +12,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 type Ticket struct {
@@ -102,6 +103,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
+	defer s.pushStatus()
 	now := s.clock()
 	remaining, pauseErr := s.checkPauses(ctx, now)
 	s.MergeQueue = nil
@@ -127,6 +129,14 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if err != nil {
 		return errors.New("scheduler snapshot failed")
 	}
+	status.Push(s.clock(), func(view *status.View) {
+		view.Tickets = nil
+		for _, t := range tickets {
+			if owned(t) {
+				view.Tickets = append(view.Tickets, status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase)})
+			}
+		}
+	})
 	// A successful snapshot replaces the stale quota observation. If the
 	// refreshed budget is still critical, start its new recovery window before
 	// allowing dispatch, even when no dependency probe is installed.
@@ -213,6 +223,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			problems = append(problems, errors.New("ownership update failed"))
 			continue
 		}
+		s.pushTicket(t, action)
 		switch action.Kind {
 		case Human:
 			if owned(t) {
@@ -269,6 +280,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			problems = append(problems, errors.New("ticket claim failed"))
 			continue
 		}
+		s.pushTicket(t, Action{Kind: Claim, Phase: state.Phase})
 		t.Attempt = state.Attempt
 		t.Phase = state.Phase
 		t.Owner = state.Owner

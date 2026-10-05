@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 type Orca interface {
@@ -155,6 +156,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			}
 		}
 		result.State = next
+		status.Push(e.Now(), func(view *status.View) {
+			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
+		})
 		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
