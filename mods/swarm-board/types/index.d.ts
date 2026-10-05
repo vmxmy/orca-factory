@@ -99,6 +99,12 @@ export type Board = {
   linearUsage?: LinearUsage
   /** Highest version of this mod recorded in `~/.claude/plugins/installed_plugins.json`; '' when the file is missing. */
   installedVersion?: string
+  /** Age in ms of the Linear snapshot that fed this refresh; undefined when the snapshot was missing or unreadable. */
+  snapshotAgeMs?: number
+  /** True when this refresh skipped a live Linear read because the snapshot was stale and the 5-min throttle was still active. */
+  linearThrottled?: boolean
+  /** Snapshot's `blockedBy`: pending ticket id → blocker ids. Only tickets that have at least one blocker appear. */
+  blockedBy?: Record<string, string[]>
 }
 export type View = 'swarm' | 'task'
 

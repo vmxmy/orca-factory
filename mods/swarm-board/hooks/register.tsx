@@ -36,7 +36,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.13'
+const MOD_VERSION = '0.3.14'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -53,9 +53,15 @@ const LINEAR_HOURLY_WARN = 1750 // 70% → yellow
 const LINEAR_HOURLY_DANGER = 2250 // 90% → red
 // Shared counter file the pipeline writes; swarm board only reads it.
 const LINEAR_COUNTER_FILE = 'orca-factory-linear-calls'
+// Snapshot the precheck pipeline writes; the board reads it to skip its own `orca linear …` reads.
+const SNAPSHOT_FRESH_MS = 600_000
+const LINEAR_FALLBACK_THROTTLE_MS = 300_000
 // Resolved once per module load from the shell, since the module has no process.env.
 let HOME = ''
 let TMP_DIR = ''
+let SNAPSHOT_FILE = ''
+// ms epoch of the last live `orca linear list-issues` dispatched by refresh(); 0 before the first one.
+let lastLinearFallbackAt = 0
 const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
 const workspaces = () => HOME + '/orca/workspaces'
 const AUTOMATION_NAME = (repo: string) => 'agent-linear-scan (' + repo + ')' // install.sh names it so
@@ -176,9 +182,17 @@ export const __resetSwarmBoardCachesForTests = () => {
   boardLinearCalls.length = 0
   HOME = ''
   TMP_DIR = ''
+  SNAPSHOT_FILE = ''
+  lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
 }
+
+// Test-only command dispatched by fixtures that trigger several refreshes in a row,
+// so each test's throttle starts clean inside the plugin VM (test imports and the
+// plugin VM have separate module instances; module-level resets from the test file
+// do not reach the VM, but a dispatched command runs in the VM itself).
+export const RESET_LINEAR_THROTTLE_COMMAND = 'swarm:__reset-linear-throttle-for-tests__'
 
 // Command the test runner dispatches to simulate the person closing the pane: the matching
 // `command.run` handler calls `$.ui.close(...)` so the engine runs the plugin's `ui.close`
@@ -243,12 +257,14 @@ const usageFor = (rows: Row[], path: string): { tokens?: Tokens; cost?: Cost; mo
 // ---- precheck -------------------------------------------------------------------------------
 // Scheduled runs attach a precheckResult; a manual run may not, so this returns null for those.
 // A `claimable=<csv> in_flight=<n> max=<n>` line anywhere in stdout drives queue status (prune
-// output may sit above it on the same stdout); stderr "skip <id>: <reason>" drives per-card
-// reasons. `linear_calls=` noise lines are excluded from the first-stderr-line surface. The run
-// is `uncertain` when the precheck could not read data: exit code 3, a `不确定: <reason>` stderr
-// line, timeout, non-empty error, or any non-zero exit without a `claimable=` line. Exit code 1
-// with a `claimable=` line is a normal "no eligible tickets" result. `uncertainReason` carries
-// the stderr reason or falls back to `退出码 <code>`.
+// output may sit above it on the same stdout); stderr "skip ZII-<n>: <reason>" drives per-card
+// reasons. The run is `uncertain` when the precheck could not read data: exit code 3, a
+// `不确定: <reason>` stderr line, timeout, non-empty error, or any non-zero exit without a
+// `claimable=` line. Exit code 1 with a `claimable=` line is a normal "no eligible tickets"
+// result. Only lines emitted by precheck itself feed `firstStderrLine` and `uncertainReason`:
+// `不确定: …`, `skip ZII-<n>: …`, or a token after ` failed: ` (e.g. `linear_network_error`);
+// prune output, `skip <path>`, and `linear_calls=` lines are ignored. The reason priority is
+// stderr `不确定:` text, then the first ` failed: ` token, then `退出码 <code>` when uncertain.
 const parsePrecheck = (r: any): Precheck | null => {
   const pr = r?.precheckResult
   if (!pr || typeof pr !== 'object') return null
@@ -264,20 +280,36 @@ const parsePrecheck = (r: any): Precheck | null => {
   const inFlight = Number(/\bin_flight=(\d+)/.exec(stdout)?.[1] ?? 0)
   const max = Number(/\bmax=(\d+)/.exec(stdout)?.[1] ?? 0)
   const skips: Record<string, string> = {}
-  const noisy: string[] = []
+  const precheckLines: string[] = []
   let stderrUncertain = ''
+  let failedReason = ''
   for (const raw of stderr.split('\n')) {
     const line = raw.trim()
-    if (!line || /^linear_calls=/.test(line)) continue
-    const skipMatch = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
-    if (skipMatch) skips[skipMatch[1]] = skipMatch[2]
+    if (!line) continue
     const uncertainMatch = /^不确定:\s*(.*)$/.exec(line)
-    if (uncertainMatch && !stderrUncertain) stderrUncertain = uncertainMatch[1]
-    noisy.push(line)
+    if (uncertainMatch) {
+      if (!stderrUncertain) stderrUncertain = uncertainMatch[1]
+      precheckLines.push(line)
+      continue
+    }
+    const skipMatch = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
+    if (skipMatch) {
+      skips[skipMatch[1]] = skipMatch[2]
+      precheckLines.push(line)
+      continue
+    }
+    const failedMatch = / failed:\s*(\S+)/.exec(line)
+    if (failedMatch) {
+      if (!failedReason) failedReason = failedMatch[1]
+      precheckLines.push(line)
+      continue
+    }
+    // Everything else — `linear_calls=`, `prune_linear_calls=`, `skip <path>…`, `prune: …`,
+    // and any other noise — is ignored so the surfaced reason only comes from precheck itself.
   }
   const uncertain = timedOut || error !== '' || exitCode === 3 || stderrUncertain !== ''
     || (exitCode !== 0 && !hasClaimable)
-  const uncertainReason = stderrUncertain || (uncertain ? '退出码 ' + exitCode : '')
+  const uncertainReason = stderrUncertain || failedReason || (uncertain ? '退出码 ' + exitCode : '')
   return {
     runNumber: Number(r.runNumber ?? 0),
     exitCode,
@@ -287,7 +319,7 @@ const parsePrecheck = (r: any): Precheck | null => {
     inFlight,
     max,
     skips,
-    firstStderrLine: noisy[0] ?? '',
+    firstStderrLine: precheckLines[0] ?? '',
     uncertain,
     uncertainReason,
   }
@@ -395,6 +427,13 @@ async function readInstalledVersion($: any, home: string): Promise<string> {
   } catch { return '' }
 }
 
+type Snapshot = {
+  generatedAt: number
+  issues: any[]
+  comments: Record<string, any[]>
+  blockedBy?: Record<string, string[]>
+}
+
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
@@ -404,6 +443,12 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       HOME = r?.exitCode === 0 ? String(r.stdout ?? '').trim() : ''
     } catch { HOME = '' }
   }
+  if (!SNAPSHOT_FILE) {
+    try {
+      const r = await $.process.run(['sh', '-c', 'printf %s "${AGENT_SNAPSHOT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json}"'], { timeoutMs: TIMEOUT_MS })
+      SNAPSHOT_FILE = (r?.exitCode === 0 ? String(r.stdout ?? '') : '').trim() || '/tmp/orca-factory-linear-snapshot.json'
+    } catch { SNAPSHOT_FILE = '/tmp/orca-factory-linear-snapshot.json' }
+  }
   const installedVersion = await readInstalledVersion($, HOME)
   let text = ''
   try { text = await $.fs.read(ENV) } catch {
@@ -411,6 +456,22 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
   const env = parseEnv(text)
+  // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
+  // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
+  // to the live path, but the module throttles that path to one actual read per 5 min.
+  let snapshot: Snapshot | null = null
+  try {
+    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
+    if (parsed && typeof parsed === 'object'
+        && Number.isFinite((parsed as any).generatedAt)
+        && Array.isArray((parsed as any).issues)
+        && (parsed as any).comments && typeof (parsed as any).comments === 'object') {
+      snapshot = parsed as Snapshot
+    }
+  } catch { /* missing or unreadable snapshot */ }
+  const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
+  const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
+  const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
   // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
@@ -441,10 +502,21 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
-  const issuesResp = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
+  // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
+  // (b) throttled — skip Linear, treat as a soft failure so the old board carries over;
+  // (c) live — call list-issues, remember the attempt timestamp so later refreshes throttle.
+  let issuesResp: OrcaResult
+  if (useSnapshot) {
+    issuesResp = { ok: true, data: { result: { issues: snapshot!.issues } } }
+  } else if (linearThrottled) {
+    issuesResp = { ok: false, data: null }
+  } else {
+    lastLinearFallbackAt = now
+    issuesResp = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
+  }
   const linearOk = issuesResp.ok
   const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
-  const error = linearOk ? '' : 'Linear 限流，沿用旧数据'
+  const error = linearOk || linearThrottled ? '' : 'Linear 限流，沿用旧数据'
   const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
@@ -452,6 +524,15 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const readComments = async (id: string) => {
     const cached = commentsByTicket.get(id)
     if (cached) return cached
+    if (useSnapshot) {
+      const fetched = snapshot!.comments[id] ?? []
+      commentsByTicket.set(id, fetched)
+      return fetched
+    }
+    if (linearThrottled) {
+      commentsByTicket.set(id, [])
+      return []
+    }
     const fetched = deepComments(await runJson(['orca', 'linear', 'issue', id, '--comments', '--json']))
     commentsByTicket.set(id, fetched)
     return fetched
@@ -699,12 +780,16 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const lastSuccessAt = linearOk ? now : old.lastSuccessAt
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
   const linearUsage = await readLinearUsage($, now)
+  // Snapshot-fed refreshes carry the snapshot's blockedBy map; live refreshes keep the last
+  // one we saw so the queue cards do not blink into an "unknown" state between snapshots.
+  const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
   if (!linearOk) {
     return {
       at, error, maxInFlight, phases: old.phases, coordinatorAlive,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
+      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy,
     }
   }
   return {
@@ -712,6 +797,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
+    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy,
   }
 }
 
@@ -788,6 +874,15 @@ export const register: Register = on => {
     return { text: 'swarm pane closed.' }
   })
 
+  // Test-only path: fixtures that fire multiple refreshes in a row dispatch this to clear
+  // the 5-min Linear-fallback throttle (which lives on `lastLinearFallbackAt` in the plugin
+  // VM). Test imports and the VM have separate module instances, so the test file cannot
+  // mutate `lastLinearFallbackAt` directly; it has to run inside the VM.
+  on('command.run', { command: RESET_LINEAR_THROTTLE_COMMAND }, async () => {
+    lastLinearFallbackAt = 0
+    return { text: 'swarm throttle reset.' }
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const [b, v, q, d, , tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
@@ -849,12 +944,27 @@ export const register: Register = on => {
     }
     // Why each queued ticket is still waiting. `null` means no precheck data yet; the row is skipped.
     const lp = (b as Board).lastPrecheck
+    const blockedBy = (b as Board).blockedBy
+    const blockersOf = (id: string): string[] | undefined => {
+      const v = blockedBy?.[id]
+      return Array.isArray(v) && v.length > 0 ? v : undefined
+    }
     const queueReason = (t: Ticket): string | null => {
+      const blockers = blockersOf(t.id)
+      if (blockers) {
+        const shown = blockers.slice(0, 3).join('、')
+        return '等待依赖：' + shown + (blockers.length > 3 ? ' 等 ' + blockers.length + ' 张' : '')
+      }
       if (!lp) return null
       if (lp.uncertain) return 'precheck 未能读取数据，原因见上方'
       if (lp.claimable.includes(t.id)) return '已入选，等 coordinator 领取'
       if (lp.skips[t.id]) return '未入选：' + lp.skips[t.id]
       return 'precheck 未选中（原因未知）'
+    }
+    const allQueueBlocked = b.queue.length > 0 && b.queue.every(t => blockersOf(t.id) !== undefined)
+    const earliestBlocker = (): string => {
+      if (b.queue.length === 0) return ''
+      return blockersOf(b.queue[0].id)?.[0] ?? ''
     }
     const phaseLine = (t: Ticket) => {
       if (!inFlightNoHuman.some(x => x.id === t.id)) return null
@@ -911,11 +1021,13 @@ export const register: Register = on => {
       if (lp) {
         if (lp.uncertain) {
           const reason = lp.uncertainReason
+          const code = '退出码 ' + lp.exitCode
           const base = '⚠ precheck 未能读取数据'
-          out.push(reason ? base + '：' + reason + '（退出码 ' + lp.exitCode + '）'
-            : base + '（退出码 ' + lp.exitCode + '）')
+          const isPlainCode = !reason || reason === code
+          out.push(isPlainCode ? base + '（' + code + '）' : base + '：' + reason + '（' + code + '）')
           if (/rate limit/i.test(reason)) out.push('Linear 限流，稍后自动恢复')
-        } else if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max) {
+          else if (/network/i.test(reason)) out.push('Linear 网络波动，下一轮自动重试')
+        } else if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max && !allQueueBlocked) {
           let line = '⚠ 待领 ' + b.queue.length + ' 张但 precheck 判定可领 0 张（run ' + lp.runNumber + '，退出码 ' + lp.exitCode + '）'
           if (lp.firstStderrLine) line += '：' + lp.firstStderrLine
           out.push(line)
@@ -929,14 +1041,21 @@ export const register: Register = on => {
       }
       return out
     }
+    const buildBlockedLine = (): string | null => {
+      if (!allQueueBlocked) return null
+      const first = earliestBlocker()
+      return '全部待领票都在等依赖' + (first ? '（最先放行的阻塞者：' + first + '）' : '')
+    }
     const queueExtras = (w: number) => {
       if (b.queue.length === 0) return null
       const status = buildQueueStatus()
       const warns = buildQueueWarnings()
-      if (!status && warns.length === 0) return null
+      const blockedLine = buildBlockedLine()
+      if (!status && warns.length === 0 && !blockedLine) return null
       return (
         <Box key="queue-extras" flexDirection="column">
           {status ? <Text dimColor>{cutW(status, w)}</Text> : null}
+          {blockedLine ? <Text dimColor>{cutW(blockedLine, w)}</Text> : null}
           {warns.map((text, i) => <Text key={'qw-' + i} color="yellow">{cutW(text, w)}</Text>)}
         </Box>
       )
@@ -1028,6 +1147,16 @@ export const register: Register = on => {
           <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
             ? 'updated ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
             : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
+          {(() => {
+            const snapshotAgeMs = (b as Board).snapshotAgeMs
+            const throttled = (b as Board).linearThrottled === true
+            if (snapshotAgeMs !== undefined) {
+              const snapshotMin = Math.max(0, Math.floor(snapshotAgeMs / 60_000))
+              return <Text dimColor>· 数据来自快照 {snapshotMin} 分钟前</Text>
+            }
+            if (throttled) return <Text dimColor>· 快照缺失，Linear 读取已节流</Text>
+            return null
+          })()}
           {(() => {
             const installed = (b as Board).installedVersion
             const needsRestart = !!installed && verGT(installed, MOD_VERSION)
