@@ -36,6 +36,20 @@ type IssueRef struct {
 	ID         string `json:"id"`
 	Identifier string `json:"identifier"`
 }
+
+// InverseRelation is a relation whose source is another issue; a `blocks`
+// inverse relation means that issue blocks this one.
+type InverseRelation struct {
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Issue struct {
+		ID         string `json:"id"`
+		Identifier string `json:"identifier"`
+		State      struct {
+			Type string `json:"type"`
+		} `json:"state"`
+	} `json:"issue"`
+}
 type Relation struct {
 	ID           string   `json:"id"`
 	Type         string   `json:"type"`
@@ -59,7 +73,29 @@ type Issue struct {
 	Labels     Connection[NamedID]  `json:"labels"`
 	Relations  Connection[Relation] `json:"relations"`
 	UpdatedAt  time.Time            `json:"updatedAt"`
+
+	InverseRelations Connection[InverseRelation] `json:"inverseRelations"`
 }
+
+// Blocked reports whether any blocker is unresolved. A truncated blocker list
+// counts as blocked so that a partial read can never admit a blocked ticket.
+func (i Issue) Blocked() bool {
+	if i.InverseRelations.PageInfo.HasNextPage {
+		return true
+	}
+	for _, r := range i.InverseRelations.Nodes {
+		if r.Type != "blocks" {
+			continue
+		}
+		switch r.Issue.State.Type {
+		case "completed", "canceled", "duplicate":
+		default:
+			return true
+		}
+	}
+	return false
+}
+
 type Comment struct {
 	ID        string    `json:"id"`
 	Body      string    `json:"body"`
@@ -188,7 +224,7 @@ func resolve(names []string, cache map[string]string) ([]string, error) {
 	return ids, nil
 }
 
-const issueFields = `id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } }`
+const issueFields = `id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } } inverseRelations(first: 50) { nodes { id type issue { id identifier state { type } } } pageInfo { hasNextPage endCursor } }`
 
 var projectUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 

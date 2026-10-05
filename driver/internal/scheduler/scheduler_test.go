@@ -256,3 +256,18 @@ func TestUncertainClaimReservesAdmissionSlot(t *testing.T) {
 		t.Fatalf("actions=%v launched=%v", f.actions, f.launched)
 	}
 }
+
+func TestBlockedCandidateNotClaimed(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	f := &fakeBackend{tickets: []Ticket{
+		{ID: "blocked", Repo: "b", Candidate: true, Blocked: true, Priority: 1, CreatedAt: now.Add(-time.Hour)},
+		{ID: "free", Repo: "b", Candidate: true, Priority: 1, CreatedAt: now},
+	}}
+	s := setup(f)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 1 || f.launched[0].ID != "free" {
+		t.Fatalf("launches=%v", f.launched)
+	}
+}

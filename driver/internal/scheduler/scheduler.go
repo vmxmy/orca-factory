@@ -22,7 +22,7 @@ type Ticket struct {
 	Owner                               machine.Owner
 	Phase                               machine.Phase
 	Attempt                             int
-	Candidate, Legacy                   bool
+	Candidate, Legacy, Blocked          bool
 }
 type Legacy struct{ HasPR, Complete bool }
 type ActionKind string
@@ -242,7 +242,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
-		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) || !t.Candidate || t.Legacy || owned(t) || t.Owner == machine.OwnerHuman {
+		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) || !t.Candidate || t.Blocked || t.Legacy || owned(t) || t.Owner == machine.OwnerHuman {
 			continue
 		}
 		if total >= s.Config.MaxInFlight {
