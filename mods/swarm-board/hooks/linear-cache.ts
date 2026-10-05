@@ -1,126 +1,159 @@
+import type { GraphData } from '../types'
+
 export const GRAPH_TTL_MS = 300_000
 export const GRAPH_MAX_CALLS = 40
+// The CLI exposes updatedAt, not completedAt: recent means updated in the last week.
+const RECENT_MS = 7 * 24 * 60 * 60 * 1000
+const TIMEOUT_MS = 20_000
 
-export type GraphSnapshot = {
-  fetchedAt: number
+export type GraphIssue = {
+  id: string
+  title: string
+  state: { name: string; type: string }
+  /** undefined means unknown; null means confirmed root. */
+  parent?: string | null
+  blockedBy: string[]
+  detailsRead: boolean
+}
+export type GraphSnapshot = GraphData & {
+  issues: GraphIssue[]
+  lastSuccessAt: number | null
   stale: boolean
-  error?: string
-  partial: boolean
-  issues: {
-    id: string
-    state: string
-    parent: string | null
-    blockedBy: string[]
-    incomplete: boolean
-  }[]
+  incomplete: boolean
+  error: string
 }
-
-type Runtime = {
+/** Pass the hook's $ capability object; no Node modules or installed packages required. */
+export type GraphRuntime = {
   process: { run(argv: string[], options: { timeoutMs: number }): Promise<{ exitCode: number; stdout: string }> }
-  fs: { read(path: string): Promise<string> }
 }
-type LinearIssue = {
-  identifier: string
-  state: { type: string }
-  updatedAt: string
-  parent?: { identifier: string } | null
-  relations?: LinearRelation[]
+type Row = Record<string, unknown>
+const record = (v: unknown): v is Row => v !== null && typeof v === 'object' && !Array.isArray(v)
+const ref = (v: unknown): string | undefined => record(v) && typeof v.identifier === 'string' ? v.identifier : undefined
+const rows = (v: unknown): Row[] => {
+  if (!Array.isArray(v) || !v.every(record)) throw new Error('Invalid Linear array')
+  return v
 }
-type LinearRelation = { relationship: string; relatedIssue: { identifier: string } }
-type LinearResult = { issues?: LinearIssue[]; issue?: LinearIssue; relations?: LinearRelation[]; truncated?: boolean }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+const issue = (v: Row): GraphIssue => {
+  if (typeof v.identifier !== 'string' || typeof v.title !== 'string' || !record(v.state)
+      || typeof v.state.name !== 'string' || typeof v.state.type !== 'string') throw new Error('Invalid Linear issue')
+  return { id: v.identifier, title: v.title, state: { name: v.state.name, type: v.state.type },
+    parent: v.parent === null ? null : ref(v.parent), blockedBy: [], detailsRead: false }
 }
-
-function isLinearRelation(value: unknown): value is LinearRelation {
-  return isRecord(value) && typeof value.relationship === 'string'
-    && isRecord(value.relatedIssue) && typeof value.relatedIssue.identifier === 'string'
-}
-
-function isLinearIssue(value: unknown): value is LinearIssue {
-  return isRecord(value) && typeof value.identifier === 'string'
-    && isRecord(value.state) && typeof value.state.type === 'string'
-    && typeof value.updatedAt === 'string'
-    && (value.parent === undefined || value.parent === null
-      || (isRecord(value.parent) && typeof value.parent.identifier === 'string'))
-    && (value.relations === undefined || (Array.isArray(value.relations) && value.relations.every(isLinearRelation)))
+const partial = (result: Row): boolean => {
+  const meta = record(result.meta) ? result.meta : {}
+  const sections = record(meta.sections) ? Object.values(meta.sections) : []
+  return result.truncated === true || meta.partial === true || meta.hasMore === true
+    || sections.some(s => record(s) && (s.hasMore === true || s.mayHaveMore === true || s.capReached === true))
 }
 
-function isLinearResult(value: unknown): value is LinearResult {
-  return isRecord(value)
-    && (value.issues === undefined || (Array.isArray(value.issues) && value.issues.every(isLinearIssue)))
-    && (value.issue === undefined || isLinearIssue(value.issue))
-    && (value.relations === undefined || (Array.isArray(value.relations) && value.relations.every(isLinearRelation)))
-    && (value.truncated === undefined || typeof value.truncated === 'boolean')
-}
+/** One instance per project. Refresh from an effect/timer; render only peekGraphSnapshot. */
+export const createGraphCache = (runtime: GraphRuntime, project: string) => {
+  let snapshot: GraphSnapshot | null = null
+  let pending: Promise<GraphSnapshot | null> | null = null
+  let windowAt: number | null = null
+  let calls = 0
+  const empty = (): GraphSnapshot => ({ criticalPath: [], unlockRank: [], issues: [], lastSuccessAt: null,
+    stale: true, incomplete: true, error: '' })
 
-let cache: GraphSnapshot | null = null
-let lastSuccessAt: number | null = null
-let window: { start: number; calls: number } | null = null
-
-// Verified 2026-10-06: orca linear list-issues --team <T> --project <P> --json and orca linear issue <id> --relations --json omit parent; detail relations are result.relations.
-export async function readGraphSnapshot(now: number, $: Runtime): Promise<GraphSnapshot | null> {
-  if (cache && lastSuccessAt !== null && now - lastSuccessAt < GRAPH_TTL_MS) return cache
-  if (!window || now - window.start >= GRAPH_TTL_MS) window = { start: now, calls: 0 }
-  const stale = () => cache ? { ...cache, stale: true } : null
-
-  const read = async (args: string[]): Promise<LinearResult | null> => {
-    if (!window || window.calls >= GRAPH_MAX_CALLS) return null
-    window = { start: window.start, calls: window.calls + 1 }
-    await $.process.run(['sh', '-c', '{ printf "%s board\\n" "$1" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true', 'sh', String(Math.floor(now / 1000))], { timeoutMs: 20_000 })
-    const response = await $.process.run(['orca', 'linear', ...args, '--json'], { timeoutMs: 20_000 })
-    if (response.exitCode !== 0) throw new Error(`Linear ${args[0]} failed with exit code ${response.exitCode}`)
-    let envelope: unknown
-    try {
-      envelope = JSON.parse(response.stdout)
-    } catch {
-      throw new Error(`Linear ${args[0]} returned non-JSON output`)
-    }
-    if (!isRecord(envelope) || envelope.ok !== true || !isRecord(envelope.result)) {
-      const error = isRecord(envelope) ? envelope.error : undefined
-      throw new Error(isRecord(error) && typeof error.code === 'string' ? error.code
-        : typeof error === 'string' ? error : `Linear ${args[0]} returned a failed response`)
-    }
-    if (!isLinearResult(envelope.result)) throw new Error(`Linear ${args[0]} returned an unexpected shape`)
+  const read = async (args: string[], now: number): Promise<Row | null> => {
+    if (calls >= GRAPH_MAX_CALLS) return null
+    calls++ // Failed commands spend quota too; no hidden retries.
+    // Append in the shell because the hook sandbox has no fs append API or process.env.
+    // Positional parameters keep the timestamp out of shell syntax. Count before dispatch.
+    const counted = await runtime.process.run(['sh', '-c',
+      'printf "%s board\\n" "$1" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"',
+      'graph-counter', String(Math.floor(now / 1000))], { timeoutMs: TIMEOUT_MS })
+    if (counted.exitCode !== 0) throw new Error('Cannot record Linear call')
+    const response = await runtime.process.run(['orca', 'linear', ...args, '--json'], { timeoutMs: TIMEOUT_MS })
+    if (response.exitCode !== 0) throw new Error('Linear read failed')
+    const envelope: unknown = JSON.parse(response.stdout)
+    if (!record(envelope) || envelope.ok !== true || !record(envelope.result)) throw new Error('Invalid Linear response')
     return envelope.result
   }
 
-  if (window.calls >= GRAPH_MAX_CALLS) return stale()
-  try {
-    const text = await $.fs.read('scripts/agent-gates/agent-graph.env')
-    const team = /^AGENT_LINEAR_TEAM=([^\s#]+)/m.exec(text)?.[1]
-    const project = /^AGENT_LINEAR_PROJECT=([^\s#]+)/m.exec(text)?.[1]
-    if (!team || !project) throw new Error('Missing Linear team or project in agent profile')
-    const result = await read(['list-issues', '--team', team, '--project', project])
-    if (!result || !Array.isArray(result.issues)) throw new Error('Linear list-issues returned no issue list')
-
-    const dayStart = new Date(now)
-    dayStart.setHours(0, 0, 0, 0)
-    const selected = result.issues.filter(issue => issue.state.type !== 'canceled'
-      && (issue.state.type !== 'completed' || Date.parse(issue.updatedAt) >= dayStart.getTime()))
-    const issues: GraphSnapshot['issues'] = []
-    for (const issue of selected) {
-      let full = issue
-      let incomplete = false
-      if (!Array.isArray(issue.relations)) {
-        const detail = await read(['issue', issue.identifier, '--relations'])
-        if (detail?.issue && Array.isArray(detail.relations)) full = { ...issue, ...detail.issue, relations: detail.relations }
-        else incomplete = true
+  const refresh = async (now: number): Promise<GraphSnapshot | null> => {
+    try {
+      if (!project.trim()) throw new Error('Linear project is required')
+      if (windowAt === null || now - windowAt >= GRAPH_TTL_MS) { windowAt = now; calls = 0 }
+      // No limit means the CLI returns every project match, including older parents.
+      const listed = await read(['list-issues', '--project', project], now)
+      if (!listed) {
+        snapshot = { ...(snapshot ?? empty()), stale: true, incomplete: true, error: '数据不全：读取预算已用完' }
+        return snapshot
       }
-      issues.push({
-        id: issue.identifier,
-        state: full.state.type,
-        parent: full.parent?.identifier ?? null,
-        blockedBy: (full.relations ?? []).filter(relation => relation.relationship === 'blockedBy')
-          .map(relation => relation.relatedIssue.identifier),
-        incomplete,
-      })
+      // A missing inbound edge does not prove a root: its parent may be outside this project.
+      const roots = await read(['list-issues', '--project', project, '--parent-id', 'null'], now)
+      const rootIds = new Set(roots ? rows(roots.issues).map(r => issue(r).id) : [])
+      let incomplete = partial(listed) || !roots || partial(roots)
+      const all = rows(listed.issues).map(raw => ({ raw, node: issue(raw) }))
+      const selected = all.filter(({ raw, node }) => !['completed', 'canceled'].includes(node.state.type)
+        || (node.state.type === 'completed' && typeof raw.updatedAt === 'string' && Date.parse(raw.updatedAt) >= now - RECENT_MS))
+      const wanted = new Set(selected.map(x => x.node.id))
+      // Prioritize visible tickets; older parents still need child reads to resolve ancestry.
+      const ordered = [...selected, ...all.filter(x => !wanted.has(x.node.id))]
+      const parents = new Map<string, string>()
+      for (const { raw, node } of ordered) {
+        const workspace = record(raw.workspace) && typeof raw.workspace.id === 'string' ? ['--workspace', raw.workspace.id] : []
+        // Verified CLI list/issue summaries omit parent. children gives authoritative inverse edges.
+        const detail = await read(['issue', node.id, '--relations', '--children', '--depth', '1', ...workspace], now)
+        if (!detail) { incomplete = true; continue }
+        if (partial(detail)) { incomplete = true }
+        if (!record(detail.issue) || ref(detail.issue) !== node.id) throw new Error('Invalid Linear detail')
+        const current = issue(detail.issue)
+        node.state = current.state
+        node.title = current.title
+        node.parent = current.parent ?? node.parent
+        if (detail.issue.parent === null) node.parent = null
+        node.blockedBy = rows(detail.relations).filter(r => r.relationship === 'blockedBy'
+          || r.type === 'blocked-by' || (r.type === 'blocks' && r.direction === 'inbound')).map(r => {
+            const id = ref(r.relatedIssue)
+            if (!id) throw new Error('Invalid Linear blocker')
+            return id
+          })
+        for (const child of rows(detail.children)) {
+          const id = ref(child)
+          if (!id) throw new Error('Invalid Linear child')
+          parents.set(id, node.id)
+        }
+        node.detailsRead = !partial(detail)
+      }
+      for (const { node } of selected) {
+        node.parent = parents.get(node.id) ?? node.parent
+        if (node.parent === undefined && rootIds.has(node.id)) node.parent = null
+        if (node.parent === undefined) incomplete = true
+      }
+      snapshot = { criticalPath: [], unlockRank: [], issues: selected.map(x => x.node), lastSuccessAt: now,
+        stale: false, incomplete, error: incomplete ? '数据不全' : '' }
+    } catch (error) {
+      // A failed batch never replaces last-good issues, including failures during enrichment.
+      snapshot = { ...(snapshot ?? empty()), stale: true,
+        error: error instanceof Error ? error.message : String(error) }
     }
-    cache = { fetchedAt: now, stale: false, partial: result.truncated === true || issues.some(issue => issue.incomplete), issues }
-    lastSuccessAt = now
-    return cache
-  } catch (error) {
-    return cache ? { ...cache, stale: true, error: error instanceof Error ? error.message : String(error) } : null
+    return snapshot
+  }
+
+  return {
+    readGraphSnapshot(now: number): Promise<GraphSnapshot | null> {
+      if (!Number.isFinite(now)) return Promise.reject(new Error('Invalid graph timestamp'))
+      if (pending) return pending
+      if (snapshot?.lastSuccessAt !== null && snapshot?.lastSuccessAt !== undefined
+          && now >= snapshot.lastSuccessAt && now - snapshot.lastSuccessAt < GRAPH_TTL_MS) return Promise.resolve(snapshot)
+      pending = refresh(now).finally(() => { pending = null })
+      return pending
+    },
+    /** Pure: even an expired snapshot never triggers a Linear call during redraw. */
+    peekGraphSnapshot(now: number): GraphSnapshot | null {
+      if (!snapshot || snapshot.stale || snapshot.lastSuccessAt === null || now - snapshot.lastSuccessAt < GRAPH_TTL_MS) return snapshot
+      return { ...snapshot, stale: true }
+    },
   }
 }
+
+let cache: ReturnType<typeof createGraphCache> | undefined
+/** Bind once in the refresh hook, after reading AGENT_LINEAR_PROJECT; rebind on project change. */
+export const configureGraphCache = (runtime: GraphRuntime, project: string): void => {
+  cache = createGraphCache(runtime, project)
+}
+export const readGraphSnapshot = (now: number): Promise<GraphSnapshot | null> =>
+  cache ? cache.readGraphSnapshot(now) : Promise.resolve(null)
+export const peekGraphSnapshot = (now: number): GraphSnapshot | null => cache?.peekGraphSnapshot(now) ?? null
