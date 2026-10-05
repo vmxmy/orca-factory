@@ -27,6 +27,7 @@ type Orca interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 }
 type Linear interface {
+	ListComments(context.Context, string) ([]linear.Comment, error)
 	CreateComment(context.Context, string, string) (linear.Comment, error)
 	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
 }
@@ -113,6 +114,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
+	if err := e.restoreFailLog(ctx, c, t); err != nil {
+		return result, err
+	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	request := func(step string) string { return orca.RequestID(t.Identifier, c.Unit, step+"-"+result.DispatchID, 1) }
 	releaseAttempted := false
@@ -164,6 +168,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		if previous.Owner != next.Owner {
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
+		}
+		if next.Phase == machine.PhaseCorrection {
+			if summary := failSummary(t, c, previous.Corrections, ev); summary != "" {
+				if err := appendFailLog(c, t, summary); err != nil {
+					return err
+				}
+				body += "\n" + summary
+			}
 		}
 		if _, commentErr := e.Linear.CreateComment(ctx, t.ID, body); commentErr != nil {
 			return errors.New("Linear transition comment failed")

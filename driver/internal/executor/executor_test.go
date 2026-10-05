@@ -46,6 +46,14 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 
 type fakeLinear struct{ comments []string }
 
+func (f *fakeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+	var comments []linear.Comment
+	for _, body := range f.comments {
+		comments = append(comments, linear.Comment{Body: body})
+	}
+	return comments, nil
+}
+
 func (f *fakeLinear) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
 	if id != "issue_one" {
 		panic("wrong issue")
