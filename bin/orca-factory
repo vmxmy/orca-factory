@@ -819,6 +819,7 @@ PRECHECK_MULTI_GH
     cat > "$PRUNE_TEST_ROOT/bin/orca" <<'PRUNE_ORCA'
 #!/usr/bin/env bash
 set -eu
+printf '%s\n' "$*" >> "$PRUNE_TEST_ROOT/orca.calls"
 case "$1 $2" in
   'worktree list')
     if [[ "$PRUNE_MODE" == started ]]; then
@@ -828,6 +829,18 @@ case "$1 $2" in
     else
       echo '{"ok":true,"result":{"worktrees":[]}}'
     fi ;;
+  'linear list-issues')
+    case "$PRUNE_MODE" in
+      rate-limited) echo 'Rate limit exceeded' >&2; echo '{"ok":false,"error":{"message":"Rate limit"}}'; exit 1 ;;
+      no-ticket) echo '{"ok":true,"result":{"issues":[]}}' ;;
+      *)
+        state="$(case "$PRUNE_MODE" in started|canceled) echo "$PRUNE_MODE" ;; *) echo completed ;; esac)"
+        jq -nc --arg state "$state" '{ok:true,result:{issues:[
+          {identifier:"TEST-1",state:{type:$state},labels:[{name:"auto-impl"}]},
+          {identifier:"TEST-2",state:{type:"completed"},labels:[{name:"auto-impl"}]},
+          {identifier:"TEST-3",state:{type:"completed"},labels:[{name:"auto-impl"}]}
+        ]}}' ;;
+    esac ;;
   'linear issue')
     jq -nc --arg state "$(case "$PRUNE_MODE" in started|canceled) echo "$PRUNE_MODE" ;; *) echo completed ;; esac)" \
       '{ok:true,result:{issue:{state:{type:$state},labels:[{name:"auto-impl"}]}}}' ;;
@@ -862,11 +875,13 @@ exec "$PRUNE_REAL_GIT" "\$@"
 PRUNE_GIT
     chmod +x "$PRUNE_TEST_ROOT/bin/"*
     export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
+    export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=prune-test
     export AGENT_PRUNE_MAX_PER_RUN=100 AGENT_PRUNE_BUDGET_SECONDS=600
     for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed canceled; do
       export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
       : > "$PRUNE_TEST_ROOT/gh.calls"
       : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+      : > "$PRUNE_TEST_ROOT/orca.calls"
       git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
       git init -q "$AGENT_REPO_PATH"
       git -C "$AGENT_REPO_PATH" config user.name selftest
@@ -922,7 +937,94 @@ PRUNE_GIT
       (( gh_pulls_count <= 1 )) || fail "selftest: prune called gh pulls api $gh_pulls_count times ($PRUNE_MODE)"
       git_lsremote_count="$(grep -c '^-C .* ls-remote --heads origin$' "$PRUNE_TEST_ROOT/git-lsremote.calls" || true)"
       (( git_lsremote_count <= 1 )) || fail "selftest: prune called git ls-remote --heads origin $git_lsremote_count times ($PRUNE_MODE)"
+      # One linear snapshot covers every ticket: zero per-object linear issue calls, at most one list-issues.
+      linear_list_count="$(grep -c '^linear list-issues ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+      (( linear_list_count <= 1 )) || fail "selftest: prune called linear list-issues $linear_list_count times ($PRUNE_MODE)"
+      linear_issue_count="$(grep -c '^linear issue ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+      (( linear_issue_count == 0 )) || fail "selftest: prune called linear issue $linear_issue_count times ($PRUNE_MODE)"
+      grep -Eq "^prune_linear_calls=[01]$" "$PRUNE_TEST_ROOT/err" || { cat "$PRUNE_TEST_ROOT/err"; fail "selftest: prune_linear_calls counter missing ($PRUNE_MODE)"; }
     done
+    # Multiple distinct ticket IDs still trigger a single list-issues call: no per-object fallback.
+    export PRUNE_MODE=multi-ticket AGENT_REPO_PATH="$PRUNE_TEST_ROOT/multi"
+    : > "$PRUNE_TEST_ROOT/gh.calls"
+    : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+    : > "$PRUNE_TEST_ROOT/orca.calls"
+    git init -q --bare "$PRUNE_TEST_ROOT/multi.git"
+    git init -q "$AGENT_REPO_PATH"
+    git -C "$AGENT_REPO_PATH" config user.name selftest
+    git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+    git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+    export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+    git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/multi.git"
+    for ticket in TEST-1 TEST-2 TEST-3; do
+      git -C "$AGENT_REPO_PATH" branch "agent/$ticket/local"
+      git -C "$AGENT_REPO_PATH" push -q origin "HEAD:refs/heads/agent/$ticket/remote"
+    done
+    (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/multi.out" 2> "$PRUNE_TEST_ROOT/multi.err"
+    linear_list_count="$(grep -c '^linear list-issues ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+    (( linear_list_count == 1 )) || { cat "$PRUNE_TEST_ROOT/orca.calls"; fail "selftest: multi-ticket called list-issues $linear_list_count times"; }
+    linear_issue_count="$(grep -c '^linear issue ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+    (( linear_issue_count == 0 )) || { cat "$PRUNE_TEST_ROOT/orca.calls"; fail "selftest: multi-ticket called linear issue $linear_issue_count times"; }
+    grep -Fxq 'prune_linear_calls=1' "$PRUNE_TEST_ROOT/multi.err" || { cat "$PRUNE_TEST_ROOT/multi.err"; fail 'selftest: multi-ticket missing prune_linear_calls=1'; }
+    # Rate-limited snapshot: compensation stops, nothing is removed, exit 0, counter reports 1.
+    export PRUNE_MODE=rate-limited AGENT_REPO_PATH="$PRUNE_TEST_ROOT/rate-limited"
+    : > "$PRUNE_TEST_ROOT/gh.calls"
+    : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+    : > "$PRUNE_TEST_ROOT/orca.calls"
+    git init -q --bare "$PRUNE_TEST_ROOT/rate-limited.git"
+    git init -q "$AGENT_REPO_PATH"
+    git -C "$AGENT_REPO_PATH" config user.name selftest
+    git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+    git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+    export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+    git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/rate-limited.git"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+    git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+    git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote
+    rl_status=0
+    (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/rl.out" 2> "$PRUNE_TEST_ROOT/rl.err" || rl_status=$?
+    [[ "$rl_status" == 0 ]] || { cat "$PRUNE_TEST_ROOT/rl.err"; fail "selftest: rate-limited run should exit 0 ($rl_status)"; }
+    grep -Fq 'prune: 不确定: linear unavailable，跳过补偿' "$PRUNE_TEST_ROOT/rl.err" \
+      || { cat "$PRUNE_TEST_ROOT/rl.err"; fail 'selftest: rate-limited skip message missing'; }
+    grep -Fq 'prune: 不确定: linear rate limited' "$PRUNE_TEST_ROOT/rl.err" \
+      || { cat "$PRUNE_TEST_ROOT/rl.err"; fail 'selftest: rate-limited reason missing'; }
+    grep -Fxq 'prune_linear_calls=1' "$PRUNE_TEST_ROOT/rl.err" \
+      || { cat "$PRUNE_TEST_ROOT/rl.err"; fail 'selftest: rate-limited missing prune_linear_calls=1'; }
+    [[ -d "$AGENT_REPO_PATH/worker" ]] || fail 'selftest: rate-limited removed worker'
+    [[ -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: rate-limited removed git-only worktree'
+    git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: rate-limited removed local branch'
+    [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: rate-limited removed remote branch'
+    linear_list_count="$(grep -c '^linear list-issues ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+    (( linear_list_count == 1 )) || fail "selftest: rate-limited called list-issues $linear_list_count times"
+    linear_issue_count="$(grep -c '^linear issue ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+    (( linear_issue_count == 0 )) || fail "selftest: rate-limited called linear issue $linear_issue_count times"
+    # Ticket missing from the snapshot: compensation keeps every object pointing at it.
+    export PRUNE_MODE=no-ticket AGENT_REPO_PATH="$PRUNE_TEST_ROOT/no-ticket"
+    : > "$PRUNE_TEST_ROOT/gh.calls"
+    : > "$PRUNE_TEST_ROOT/git-lsremote.calls"
+    : > "$PRUNE_TEST_ROOT/orca.calls"
+    git init -q --bare "$PRUNE_TEST_ROOT/no-ticket.git"
+    git init -q "$AGENT_REPO_PATH"
+    git -C "$AGENT_REPO_PATH" config user.name selftest
+    git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+    git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+    export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+    git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/no-ticket.git"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+    git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+    git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+    git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote
+    nt_status=0
+    (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/nt.out" 2> "$PRUNE_TEST_ROOT/nt.err" || nt_status=$?
+    [[ "$nt_status" == 0 ]] || { cat "$PRUNE_TEST_ROOT/nt.err"; fail "selftest: no-ticket run should exit 0 ($nt_status)"; }
+    [[ -d "$AGENT_REPO_PATH/worker" ]] || fail 'selftest: no-ticket removed worker with unknown ticket'
+    [[ -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: no-ticket removed git-only worktree with unknown ticket'
+    git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: no-ticket removed local branch with unknown ticket'
+    [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: no-ticket removed remote branch with unknown ticket'
+    linear_issue_count="$(grep -c '^linear issue ' "$PRUNE_TEST_ROOT/orca.calls" || true)"
+    (( linear_issue_count == 0 )) || fail "selftest: no-ticket called linear issue $linear_issue_count times"
+    grep -Fxq 'prune_linear_calls=1' "$PRUNE_TEST_ROOT/nt.err" || { cat "$PRUNE_TEST_ROOT/nt.err"; fail 'selftest: no-ticket missing prune_linear_calls=1'; }
     # Budget: slow ls-remote wrapped by alarm hits the budget and prune reports it, exit 0.
     export PRUNE_MODE=reclaim AGENT_REPO_PATH="$PRUNE_TEST_ROOT/budget"
     : > "$PRUNE_TEST_ROOT/gh.calls"
@@ -971,6 +1073,7 @@ PRUNE_GIT
       || { cat "$PRUNE_TEST_ROOT/quota.err"; fail 'selftest: prune quota message missing'; }
   )
   echo 'selftest: prune reclaims merged worktrees and branches'
+  echo 'selftest: prune reads linear once per run'
   # wait-runs.sh: a fake orca binds a run with run-use and prints keepalive objects before a pretty-printed result.
   WR="$SELFTEST_TMP/wr"; mkdir -p "$WR/bin" "$WR/state/T1" "$WR/state/T2" "$WR/state/T3"
   cat > "$WR/bin/orca" <<'FAKE'
