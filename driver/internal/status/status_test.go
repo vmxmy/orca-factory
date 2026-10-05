@@ -113,3 +113,61 @@ func TestStatusSnapshot(t *testing.T) {
 		}
 	})
 }
+
+func TestReadViewJSON(t *testing.T) {
+	now := time.Date(2026, 10, 5, 8, 2, 0, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "status.json")
+	t.Setenv("DRIVER_STATUS_FILE", path)
+	input := `{"generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"pauses":[{"repo":"","dependency":"Linear","kind":"credentials","start":"2026-10-05T07:59:00Z","duration":60000000000},{"repo":"/repo","start":"2026-10-05T07:00:00Z"}],"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+	for _, tc := range []struct {
+		name, data, state string
+		missing           bool
+	}{
+		{"missing", "", "unknown", true},
+		{"corrupt", "{broken", "unknown", false},
+		{"normal", input, "ok", false},
+		{"stale", `{"generatedAt":"2026-10-05T07:56:59Z"}`, "stale", false},
+		{"five minute boundary", `{"generatedAt":"2026-10-05T07:57:00Z"}`, "ok", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if !tc.missing {
+				if err := os.WriteFile(path, []byte(tc.data), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			data, err := json.Marshal(Read(now))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got["state"] != tc.state {
+				t.Fatalf("view = %s", data)
+			}
+			if tc.name == "normal" {
+				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"globalPause":{"active":true,"durationSeconds":180},"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+				var expected map[string]any
+				if err := json.Unmarshal([]byte(want), &expected); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(got, expected) {
+					t.Fatalf("got %s; want %s", data, want)
+				}
+			}
+		})
+	}
+}
+
+func TestReadCurrentHourAndRepoPause(t *testing.T) {
+	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","pauses":[{"repo":"/repo","start":"2026-10-05T08:00:00Z"}],"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88}}]}}`), 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := Read(time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC))
+	if view.GlobalPause.Active || view.GlobalPause.DurationSeconds != 0 || view.Linear.Requests != 0 || view.Linear.Complexity != 0 || view.Linear.Limits[0].Requests.Remaining != 88 {
+		t.Fatalf("view = %+v", view)
+	}
+}
