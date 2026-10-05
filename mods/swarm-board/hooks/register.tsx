@@ -66,7 +66,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.15'
+const MOD_VERSION = '0.3.16'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -984,7 +984,8 @@ export const register: Register = on => {
     const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
       const v = blockedBy?.[id]
-      return Array.isArray(v) && v.length > 0 ? v : undefined
+      const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed') : []
+      return open.length > 0 ? open : undefined
     }
     // Group-aware ticket classification: 等依赖 wins over claimable; precheck signals follow.
     type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
