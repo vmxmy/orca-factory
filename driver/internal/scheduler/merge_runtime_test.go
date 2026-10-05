@@ -274,7 +274,7 @@ func TestRuntimeMergeMissingDraftIsUnknown(t *testing.T) {
 }
 
 func TestRuntimeMergeConservativeEvidence(t *testing.T) {
-	for _, kind := range []string{"empty-ci", "unknown-ci", "wrong-ci-head", "missing-ci-count", "truncated-ci", "status-red", "read-failure", "moving-main", "deployment", "smoke", "changed-head", "missing-handoff", "malformed-handoff", "missing-main", "unknown-mergeability"} {
+	for _, kind := range []string{"empty-ci", "unknown-ci", "wrong-ci-head", "missing-ci-count", "truncated-ci", "status-red", "read-failure", "moving-main", "invalid-deployment", "invalid-smoke", "changed-head", "missing-handoff", "malformed-handoff", "missing-main", "unknown-mergeability"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newMergeFixture(t)
 			switch kind {
@@ -294,10 +294,10 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 				f.runtime.Run = func(context.Context, runx.Spec) ([]byte, error) { return nil, fmt.Errorf("git unavailable") }
 			case "moving-main":
 				f.moveMain = true
-			case "deployment":
-				f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
-			case "smoke":
-				f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "touch forbidden"
+			case "invalid-deployment":
+				f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = " "
+			case "invalid-smoke":
+				f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = " "
 			case "changed-head":
 				f.prBody["head"].(map[string]any)["sha"] = strings.Repeat("f", 40)
 			case "missing-handoff":

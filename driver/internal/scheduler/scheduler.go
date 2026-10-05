@@ -165,7 +165,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		action := Action{}
 		if t.Owner == machine.OwnerExecutor && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 			action = Action{Kind: Human, Attempt: t.Attempt, Reason: "in-flight ticket exceeded stale limit"}
-		} else if t.Owner == machine.OwnerMerge {
+		} else if t.Owner == machine.OwnerMerge || DeploymentBarrier(t) {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
 		} else if t.Owner == machine.OwnerExecutor {

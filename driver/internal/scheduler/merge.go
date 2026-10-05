@@ -32,6 +32,11 @@ func readMergeHandoff(t *Ticket, comments []linear.Comment) {
 				if json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p) != nil {
 					t.MergeProblem = "invalid merge progress"
 				} else {
+					if old := t.Progress; old != nil && old.Deployment != nil {
+						if p.QueueID != old.QueueID || p.Deployment == nil || p.Deployment.Workflow != old.Deployment.Workflow || p.Deployment.Smoke != old.Deployment.Smoke {
+							t.MergeProblem = "conflicting deployment progress"
+						}
+					}
 					t.Progress = &p
 				}
 			}
@@ -48,6 +53,11 @@ func readMergeHandoff(t *Ticket, comments []linear.Comment) {
 				seen[h.QueueID] = raw
 				t.Handoff = &h
 			}
+		}
+	}
+	if t.Progress != nil && t.Progress.Deployment != nil {
+		if err := deploymentIdentity(*t); err != nil {
+			t.MergeProblem = err.Error()
 		}
 	}
 }
@@ -101,8 +111,8 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 	if err := h.Validated(); err != nil {
 		return err
 	}
-	if env["AGENT_DEPLOY_WORKFLOW"] != "" || env["AGENT_SMOKE_CMD"] != "" {
-		return errors.New("deployment recovery not implemented")
+	if err := deploymentConfig(env); err != nil {
+		return err
 	}
 	if r.GitHub == nil {
 		var err error
@@ -154,6 +164,17 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 		return errors.New("merged SHA missing")
 	}
 	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged"}
+	if t.Progress != nil && t.Progress.QueueID == h.QueueID {
+		progress.Deployment = t.Progress.Deployment
+	}
+	if progress.Deployment == nil {
+		progress.Deployment = newDeployment(env)
+	}
+	if progress.Deployment != nil {
+		if err := r.advanceDeployment(ctx, t, &progress); err != nil {
+			return err
+		}
+	}
 	// Persist the result while retaining merge ownership. A failed Done write
 	// leaves the same FIFO head to reconcile from GitHub on the next tick.
 	b, _ := json.Marshal(progress)
@@ -273,6 +294,7 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 	}
 	h := a.ticket.Handoff
 	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent"}
+	intent.Deployment = newDeployment(a.runtime.Repositories[a.ticket.Repo].Env)
 	raw, _ := json.Marshal(intent)
 	if err := a.runtime.mergeComment(ctx, a.ticket, merge.ProgressPrefix+string(raw)); err != nil {
 		return "", err

@@ -23,6 +23,9 @@ func (b *dryBackend) Snapshot(ctx context.Context, repos []config.Repository) ([
 	tickets, err := b.Backend.Snapshot(ctx, repos)
 	for _, t := range tickets {
 		note := ""
+		if p := t.Progress; p != nil && p.Deployment != nil {
+			fmt.Fprintf(b.out, "deployment %s queue=%q sha=%q workflow=%q state=%q reason=%q\n", t.Identifier, p.QueueID, p.MergeSHA, p.Deployment.Workflow, p.Deployment.State, p.Deployment.Reason)
+		}
 		if t.Blocked {
 			note = " blocked"
 		}

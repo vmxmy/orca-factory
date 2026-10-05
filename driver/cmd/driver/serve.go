@@ -20,6 +20,13 @@ import (
 
 func init() { Register("serve", serve) }
 func serve(args []string) int {
+	if len(args) == 1 && args[0] == "--dry-run" {
+		code, err := serveLogged(args, slog.Default())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return code
+	}
 	return loggedCommand("scheduler", filepath.Join(logStateRoot(), "scheduler.log"), os.Stdout, args, func(logger *slog.Logger) (int, error) {
 		return serveLogged(args, logger)
 	})
@@ -140,8 +147,12 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}, Linear: status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}}
 	for _, ticket := range backend.tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge {
-			snapshot.Tickets = append(snapshot.Tickets, status.Ticket{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase)})
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
+			row := status.Ticket{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase)}
+			if p := ticket.Progress; p != nil && p.Deployment != nil {
+				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
+			}
+			snapshot.Tickets = append(snapshot.Tickets, row)
 		}
 	}
 	sort.Slice(snapshot.Tickets, func(i, j int) bool {

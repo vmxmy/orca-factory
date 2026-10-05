@@ -36,6 +36,7 @@ type Handoff struct {
 // needing deployment recovery must scan these comments independently of active
 // issue filtering. #141 emits merge-intent and merged; no deployment is inferred.
 type Progress struct {
+	Deployment *DeploymentProgress `json:"deployment,omitempty"`
 	// MainUnknown is allowed only for a merged PR observed without a prior intent.
 	MainUnknown bool   `json:"main_unknown,omitempty"`
 	Version     int    `json:"version"`
@@ -47,4 +48,23 @@ type Progress struct {
 	Main        string `json:"main"`
 	MergeSHA    string `json:"merge_sha"`
 	Phase       string `json:"phase"`
+}
+
+// DeploymentProgress extends v1 receipts without changing the frozen Handoff.
+// Smoke is stored only in durable evidence; observation views omit the command.
+type DeploymentProgress struct {
+	Recovery     *DeploymentRecovery `json:"recovery,omitempty"`
+	SmokeStarted bool                `json:"smoke_started,omitempty"`
+	Workflow     string              `json:"workflow,omitempty"`
+	Smoke        string              `json:"smoke,omitempty"`
+	State        string              `json:"state"`
+	Reason       string              `json:"reason,omitempty"`
+}
+
+// Recovery records the operator's reconciliation, not inferred credential health.
+type DeploymentRecovery struct {
+	Action   string    `json:"action"`
+	Operator string    `json:"operator"`
+	Reason   string    `json:"reason"`
+	At       time.Time `json:"at"`
 }
