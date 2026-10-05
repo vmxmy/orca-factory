@@ -36,7 +36,7 @@
 
 - 完成最后一次提交与推送后再交接；未推送时写明原因、分支名与最后提交状态。
 - 一次 `worker_done`，`--outcome succeeded|failed` 必写。
-- body 顺序：三句摘要 → 追溯块 → gate 输出块。
+- body 顺序：三句摘要 → 追溯块 → gate 输出块 → `## 后续工作`（可选）。
 - 追溯块格式，每条一行，编号对应简报 `Change` 条目：
   ```
   TRACE
@@ -44,5 +44,18 @@
   REQ 2 → <文件:行 或 测试名> → <gate 步 或 CHECK>
   ```
 - gate 输出块：gate.sh 的七行原样粘贴（UNIT…LANE）。
+- 可在 worker_done 正文附带 `## 后续工作`，最多 2 条草案；没有就省略该小节。
+- 只写本次工作中发现的具体后续事项，不得凭空提需求；不得包含 lane 3 文件（密钥、`AGENT_LANE3_GLOBS` 命中的文件）。
+- 每条固定字段：`标题`、`证据`、`要做`、`CHECK`、`SCOPE`、`estimate`。`证据` 必须含 文件:行 或检查名，并说明为什么需要；`CHECK` 写在 main 上可执行且应当失败的一行命令；`estimate` 取 1–3。
+- 格式示例（占位内容须换成本次发现）：
+  ```markdown
+  ## 后续工作
+  - 标题：<具体后续事项>
+    证据：<文件:行 或检查名>；<为什么需要>
+    要做：<具体改动>
+    CHECK：<在 main 上可执行且应当失败的一行命令>
+    SCOPE：<文件路径>
+    estimate：1
+  ```
 - `--files-modified`：`{ git diff --name-only HEAD; git ls-files --others --exclude-standard; } | sort -u | paste -sd, -`。
 - 发完即停：不再改文件，不再跑命令。
