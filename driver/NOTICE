@@ -1,0 +1,7 @@
+The implementation in internal/flock/flock.go is adapted from
+junhoyeo/contrabass, internal/tracker/flock.go:
+https://github.com/junhoyeo/contrabass/blob/main/internal/tracker/flock.go
+
+That source is licensed under the Apache License, Version 2.0.
+The complete license is included at third_party/contrabass/LICENSE.
+Modifications are described in the header of internal/flock/flock.go.
