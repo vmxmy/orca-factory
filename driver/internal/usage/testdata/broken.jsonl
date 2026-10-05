@@ -1,0 +1,2 @@
+{"type": "assistant", "cwd": "/unit", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 9999, "output_tokens": 9999}}}
+{broken
