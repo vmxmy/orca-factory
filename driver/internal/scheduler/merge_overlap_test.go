@@ -238,6 +238,7 @@ func TestRuntimeMergeExplicitUnmergeableCannotSquash(t *testing.T) {
 }
 
 func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	f := overlapFixture(t, false)
 	dir := f.config.Repositories[0].Path
 	script, err := os.ReadFile("../../../scripts/agent-gates/gate.sh")
@@ -256,7 +257,9 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	rewriteHandoff(t, f, func(h map[string]any) {
 		h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nCHECK_IS_NEW_TEST: no\nLANE: 1\n"
 	})
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
@@ -436,6 +439,7 @@ func TestRuntimeMergeGateScriptReadRetainsSafeFailure(t *testing.T) {
 func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 	for _, policy := range []string{"approved", "manual", "lane3"} {
 		t.Run(policy, func(t *testing.T) {
+			t.Setenv("TMPDIR", t.TempDir())
 			f := overlapFixture(t, false)
 			dir := f.config.Repositories[0].Path
 			env := f.config.Repositories[0].Env
@@ -477,7 +481,9 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 				h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared absorbed\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nLANE: 2\n"
 				h["gate_output"] = "UNIT executor\nVERDICT green\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature shared absorbed\nLANE 2"
 			})
-			err = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			err = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx)
 			if policy == "approved" {
 				if err != nil || f.puts != 1 || f.linear.issue.State.Name != "Done" {
 					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)

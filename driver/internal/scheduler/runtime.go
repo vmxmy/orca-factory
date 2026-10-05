@@ -159,9 +159,10 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 			return nil, err
 		}
 		readMergeHandoff(&ticket, comments)
-		// Done can precede the final ownership receipt. Keep that merge-owned
-		// ticket visible until the receipt is confirmed, including after restart.
-		if issue.State.Name == "Canceled" || issue.State.Name == "Cancelled" || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && !DeploymentBarrier(ticket)) {
+		// Cancellation cannot erase an already durable deployment barrier.
+		// Done may also precede the final merge ownership receipt.
+		canceled := issue.State.Name == "Canceled" || issue.State.Name == "Cancelled"
+		if (canceled && !DeploymentBarrier(ticket)) || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && !DeploymentBarrier(ticket)) {
 			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
