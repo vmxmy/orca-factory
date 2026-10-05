@@ -1229,6 +1229,82 @@ DOCTOR_LARK_UTF8
     "$SELFTEST_TMP/doctor.json" >/dev/null || fail "selftest: doctor must report probe failures safely"
   echo "selftest: doctor discovery, JSON escaping, credential filtering and probe failures PASS"
   echo "selftest: github calls are bounded per run"
+  # Linear call tally: every real-script source and the agent-graph linear entry must land in one file.
+  (
+    LCF_ROOT="$SELFTEST_TMP/linear-tally"
+    mkdir -p "$LCF_ROOT/bin"
+    export AGENT_LINEAR_COUNT_FILE="$LCF_ROOT/count"
+    export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=count-test
+    export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
+    export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/count-test
+    export AGENT_ORPHAN_MINUTES=45 AGENT_WORKER_IDLE_MINUTES=15
+    cat > "$LCF_ROOT/bin/orca" <<'LCF_ORCA'
+#!/usr/bin/env bash
+set -eu
+case "$*" in
+  'linear '*)
+    echo '{"ok":true,"result":{"issues":[]}}' ;;
+  'worktree list '*)
+    echo '{"ok":true,"result":{"worktrees":[]}}' ;;
+  *) echo '{"ok":true,"result":{}}' ;;
+esac
+LCF_ORCA
+    cat > "$LCF_ROOT/bin/gh" <<'LCF_GH'
+#!/usr/bin/env bash
+echo '[]'
+LCF_GH
+    chmod +x "$LCF_ROOT/bin/"*
+    export PATH="$LCF_ROOT/bin:$PATH"
+    # precheck source
+    : > "$AGENT_LINEAR_COUNT_FILE"
+    pc_err=0
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$LCF_ROOT/pc.out" 2> "$LCF_ROOT/pc.err" || pc_err=$?
+    linear_calls="$(sed -n 's/^linear_calls=//p' "$LCF_ROOT/pc.err")"
+    precheck_rows="$(awk '$2=="precheck"{c++} END{print c+0}' "$AGENT_LINEAR_COUNT_FILE")"
+    [[ -n "$linear_calls" ]] || fail "selftest: precheck missing linear_calls= line"
+    [[ "$precheck_rows" == "$linear_calls" ]] || { cat "$AGENT_LINEAR_COUNT_FILE" "$LCF_ROOT/pc.err"; fail "selftest: precheck rows=$precheck_rows != linear_calls=$linear_calls"; }
+    # prune source: a bare pipeline using the fake orca registers exactly one prune row.
+    : > "$AGENT_LINEAR_COUNT_FILE"
+    (
+      export AGENT_REPO_PATH="$LCF_ROOT/prune-repo"
+      export AGENT_RUN_WORKTREE_PREFIX=run- AGENT_PRUNE_BUDGET_SECONDS=10 AGENT_PRUNE_MAX_PER_RUN=1
+      git init -q "$AGENT_REPO_PATH"
+      git -C "$AGENT_REPO_PATH" config user.name selftest
+      git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+      git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+      bash "$SELFTEST_TMP/$DEST_REL/prune-run-worktrees.sh" > "$LCF_ROOT/prune.out" 2> "$LCF_ROOT/prune.err" || true
+    )
+    prune_rows="$(awk '$2=="prune"{c++} END{print c+0}' "$AGENT_LINEAR_COUNT_FILE")"
+    [[ "$prune_rows" == 1 ]] || { cat "$AGENT_LINEAR_COUNT_FILE" "$LCF_ROOT/prune.err"; fail "selftest: prune rows=$prune_rows (want 1)"; }
+    # ledger source
+    : > "$AGENT_LINEAR_COUNT_FILE"
+    bash "$SELFTEST_TMP/$DEST_REL/ledger.sh" append '{"ticket":"T-1","outcome":"merged"}' > "$LCF_ROOT/ledger.out" 2> "$LCF_ROOT/ledger.err" || true
+    ledger_rows="$(awk '$2=="ledger"{c++} END{print c+0}' "$AGENT_LINEAR_COUNT_FILE")"
+    (( ledger_rows >= 1 )) || { cat "$AGENT_LINEAR_COUNT_FILE" "$LCF_ROOT/ledger.err"; fail "selftest: ledger rows=$ledger_rows (want >=1)"; }
+    # agent-graph.sh linear entry: appends coordinator, passes args and exit code through.
+    : > "$AGENT_LINEAR_COUNT_FILE"
+    cat > "$LCF_ROOT/bin/orca" <<'LCF_ECHO_ORCA'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$LCF_ROOT/echo-args"
+exit 17
+LCF_ECHO_ORCA
+    chmod +x "$LCF_ROOT/bin/orca"
+    export LCF_ROOT
+    ag_status=0
+    bash "$SELFTEST_TMP/$DEST_REL/agent-graph.sh" linear foo bar --flag > "$LCF_ROOT/ag.out" 2> "$LCF_ROOT/ag.err" || ag_status=$?
+    [[ "$ag_status" == 17 ]] || fail "selftest: agent-graph.sh linear exit=$ag_status (want 17)"
+    [[ "$(cat "$LCF_ROOT/echo-args")" == 'linear foo bar --flag' ]] || { cat "$LCF_ROOT/echo-args"; fail "selftest: agent-graph.sh linear did not forward args"; }
+    coord_rows="$(awk '$2=="coordinator"{c++} END{print c+0}' "$AGENT_LINEAR_COUNT_FILE")"
+    [[ "$coord_rows" == 1 ]] || { cat "$AGENT_LINEAR_COUNT_FILE"; fail "selftest: coordinator rows=$coord_rows (want 1)"; }
+    # Unwritable count file dir must not change the real exit code or stdout.
+    unwritable="$LCF_ROOT/ro"; mkdir -p "$unwritable"; chmod 500 "$unwritable"
+    export AGENT_LINEAR_COUNT_FILE="$unwritable/count"
+    ag_status=0
+    bash "$SELFTEST_TMP/$DEST_REL/agent-graph.sh" linear a b > "$LCF_ROOT/ro.out" 2> "$LCF_ROOT/ro.err" || ag_status=$?
+    [[ "$ag_status" == 17 ]] || fail "selftest: unwritable tally changed exit code to $ag_status"
+    chmod 700 "$unwritable"
+  )
+  echo "selftest: linear calls are counted per source"
   echo "selftest: PASS"
 }
 

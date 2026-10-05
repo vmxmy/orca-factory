@@ -14,6 +14,9 @@ linear() {
   local attempt response status reason
   for attempt in 1 2 3; do
     status=0
+    # Lossy, out-of-band tally shared with the swarm board (writes ignored on failure).
+    { printf '%s ledger\n' "$(date +%s)" \
+      >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true
     response="$(orca linear "$@")" || status=$?
     if [[ "$status" == 0 ]] && jq -e '.ok == true' <<<"$response" >/dev/null 2>&1; then
       printf '%s\n' "$response"

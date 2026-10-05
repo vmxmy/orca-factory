@@ -31,6 +31,20 @@ BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
 # 0 = skip every SCOPE check (worktree + merge rebase resolve conflicts instead).
 SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 
+# Lossy, out-of-band tally that lets the swarm board see who spends Linear quota.
+# Writes are append-only, one line per call: "<epoch> <source>". Failures ignored.
+# The two lines live in-script because this file may be run from stdin via `git show | bash`.
+_linear_count_file() { printf '%s' "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; }
+_count_linear_call() { { printf '%s precheck\n' "$(date +%s)" >> "$(_linear_count_file)"; } 2>/dev/null || true; }
+# Cheap tally rotation: keep the tail so the file never grows without bound.
+{
+  _lcf="$(_linear_count_file)"
+  if [[ -f "$_lcf" ]] && (( $(wc -l < "$_lcf" 2>/dev/null || echo 0) > 5000 )); then
+    tail -n 3000 "$_lcf" > "$_lcf.tmp" && mv "$_lcf.tmp" "$_lcf"
+  fi
+  unset _lcf
+} 2>/dev/null || true
+
 # Files survive command substitutions and work with macOS bash 3.2.
 precheck_tmp="$(mktemp -d "${TMPDIR:-/tmp}/linear-precheck.XXXXXX")"
 : > "$precheck_tmp/calls"
@@ -66,7 +80,7 @@ ocall() {
   [[ "${claim_bounded:-0}" != 1 ]] || attempts=1
   for ((attempt=1; attempt<=attempts; attempt++)); do
     rate_guard
-    [[ "$1" != linear ]] || echo call >> "$precheck_tmp/calls"
+    [[ "$1" != linear ]] || { echo call >> "$precheck_tmp/calls"; _count_linear_call; }
     status=0
     if [[ "${claim_bounded:-0}" == 1 ]]; then
       out="$(perl -e 'alarm 20; exec @ARGV' -- orca "$@" --json 2> "$precheck_tmp/stderr")" || status=$?
