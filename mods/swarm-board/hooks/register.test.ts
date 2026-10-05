@@ -1,7 +1,13 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
-import { __resetSwarmBoardCachesForTests, SIMULATE_CLOSE_COMMAND, laneStage, ticketPhase } from './register'
+import {
+  __resetSwarmBoardCachesForTests,
+  RESET_LINEAR_THROTTLE_COMMAND,
+  SIMULATE_CLOSE_COMMAND,
+  laneStage,
+  ticketPhase,
+} from './register'
 
 const mount = ($: any, surface: 'terminal' | 'desktop') =>
   $.ui.mount({ plugin: 'swarm-board', surface, component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm' } })
@@ -152,6 +158,7 @@ test('ticket with no worker lives in the implement lane', async () => {
 })
 
 const failedFixture = async ($: any, on: any, count = 1) => {
+  __resetSwarmBoardCachesForTests()
   let commentExitCode = 0
   const reads: string[] = []
   let comments: unknown = { result: { comments: [
@@ -180,6 +187,9 @@ const failedFixture = async ($: any, on: any, count = 1) => {
     return { value: { stdout: JSON.stringify(result), stderr: '', exitCode: 0 } }
   })
   const refresh = async () => {
+    // Clear the plugin VM's 5-min Linear throttle so each refresh exercises its intended
+    // live-Linear path (test imports and the VM have separate module instances).
+    await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' })
     const ready = new Promise<void>(resolve => { refreshed = resolve })
     await $.command.run({ command: 'swarm', args: '' })
     await ready
@@ -280,7 +290,7 @@ test('linear rate-limit response keeps the last-good ticket list and warns in th
     }
     return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
   })
-  const refresh = async () => { const ready = new Promise<void>(resolve => { refreshed = resolve }); await $.command.run({ command: 'swarm', args: '' }); await ready }
+  const refresh = async () => { await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' }); const ready = new Promise<void>(resolve => { refreshed = resolve }); await $.command.run({ command: 'swarm', args: '' }); await ready }
   await refresh()
   const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
   expect(await ui.find({ type: 'Text', text: /ZII-900/ })).toBeDefined()
@@ -527,6 +537,7 @@ test('wrap-up older than ten minutes warns only without a coordinator', async ($
     return { value: { stdout: JSON.stringify(result), stderr: '', exitCode: 0 } }
   })
   const refresh = async () => {
+    await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' })
     const ready = new Promise<void>(resolve => { refreshed = resolve })
     await $.command.run({ command: 'swarm', args: '' })
     await ready
@@ -560,6 +571,149 @@ test('wrap-up older than ten minutes warns only without a coordinator', async ($
   gateLog = 'VERDICT green'
   await refresh(); await ui.redraw()
   expect(await ui.find({ type: 'Text', text: /📤 派工 ·/ })).toBeDefined()
+  await ui.unmount()
+})
+
+const snapshotFixture = async (
+  $: any,
+  on: any,
+  opts: {
+    generatedAtOffsetMs?: number
+    issues?: unknown[]
+    comments?: Record<string, unknown[]>
+    blockedBy?: Record<string, string[]>
+    missing?: boolean
+  },
+) => {
+  __resetSwarmBoardCachesForTests()
+  let orcaLinearCalls = 0
+  let refreshed: () => void = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
+      if (opts.missing) throw new Error('ENOENT')
+      const generatedAt = Math.floor((Date.now() + (opts.generatedAtOffsetMs ?? 0)) / 1000)
+      return { value: JSON.stringify({ generatedAt, issues: opts.issues ?? [], comments: opts.comments ?? {}, blockedBy: opts.blockedBy }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear') orcaLinearCalls++
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear' && e.argv[2] === 'list-issues') {
+      return { value: { stdout: JSON.stringify({ ok: true, result: { issues: opts.issues ?? [] } }), stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear' && e.argv[2] === 'issue') {
+      const id = e.argv[3]
+      return { value: { stdout: JSON.stringify({ result: { comments: opts.comments?.[id] ?? [] } }), stderr: '', exitCode: 0 } }
+    }
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  const refresh = async () => {
+    const ready = new Promise<void>(resolve => { refreshed = resolve })
+    await $.command.run({ command: 'swarm', args: '' })
+    await ready
+  }
+  await refresh()
+  return { refresh, orcaLinearCalls: () => orcaLinearCalls }
+}
+
+test('fresh snapshot refresh avoids live Linear calls and uses snapshot data', async ($, on) => {
+  const updatedAt = new Date(Date.now() - 2 * 60_000).toISOString()
+  const fixture = await snapshotFixture($, on, {
+    issues: [{ identifier: 'ZII-900', title: '快照票', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], updatedAt, priority: 0 }],
+    comments: { 'ZII-900': [{ body: '已领取 ZII-900', createdAt: new Date(Date.now() - 60_000).toISOString() }] },
+  })
+  expect(fixture.orcaLinearCalls()).toBe(0)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /ZII-900/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /数据来自快照/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('stale snapshot falls back to live Linear and throttles the second refresh', async ($, on) => {
+  const fixture = await snapshotFixture($, on, { generatedAtOffsetMs: -11 * 60_000, issues: [], comments: {} })
+  const after1 = fixture.orcaLinearCalls()
+  expect(after1).toBeGreaterThan(0)
+  await fixture.refresh()
+  expect(fixture.orcaLinearCalls()).toBe(after1)
+})
+
+test('missing snapshot falls back to live Linear without error', async ($, on) => {
+  const fixture = await snapshotFixture($, on, { missing: true })
+  expect(fixture.orcaLinearCalls()).toBeGreaterThan(0)
+})
+
+test('blockedBy renders 等待依赖 reason on a queue card', async ($, on) => {
+  await snapshotFixture($, on, {
+    issues: [{ identifier: 'ZII-855', title: '等依赖的票', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-04T00:00:00Z', priority: 2 }],
+    blockedBy: { 'ZII-855': ['ZII-853'] },
+  })
+  const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
+  expect(await ui.find({ type: 'Text', text: /等待依赖：ZII-853/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('blockedBy suppresses the 0-claimable warning when every queue ticket is blocked', async ($, on) => {
+  __resetSwarmBoardCachesForTests()
+  let refreshed: () => void = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
+      return { value: JSON.stringify({
+        generatedAt: Math.floor(Date.now() / 1000),
+        issues: [
+          { identifier: 'ZII-855', title: '等依赖', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-04T00:00:00Z', priority: 2 },
+          { identifier: 'ZII-861', title: '等依赖2', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-04T00:00:00Z', priority: 2 },
+        ],
+        comments: {},
+        blockedBy: { 'ZII-855': ['ZII-853'], 'ZII-861': ['ZII-857', 'ZII-855'] },
+      }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[1] === 'automations' && e.argv[2] === 'runs') {
+      return { value: { stdout: JSON.stringify({ ok: true, result: { runs: [
+        { runNumber: 1, status: 'succeeded', scheduledFor: new Date().toISOString(),
+          precheckResult: { exitCode: 0, timedOut: false, error: '', stdout: 'claimable= in_flight=0 max=10\n', stderr: '' } },
+      ] } }), stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[1] === 'automations' && e.argv[2] === 'list') {
+      return { value: { stdout: JSON.stringify({ ok: true, result: { automations: [
+        { id: 'a1', name: 'agent-linear-scan (test-repo)', enabled: true },
+      ] } }), stderr: '', exitCode: 0 } }
+    }
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /全部待领票都在等依赖/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /最先放行的阻塞者：ZII-853/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /但 precheck 判定可领 0 张/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('precheck failed line surfaces as the uncertain reason without duplicating the exit code', async ($, on) => {
+  await queueFixture($, on, 1, {
+    exitCode: 3, runNumber: 202, stdout: '',
+    stderr: 'orca linear issue ZII-855 --relations failed: linear_network_error\nlinear_calls=1',
+  })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /linear_network_error/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /网络波动/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /退出码 3（退出码 3）/ })).toBeUndefined()
   await ui.unmount()
 })
 
