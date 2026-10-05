@@ -425,21 +425,70 @@ LEDGER_SLEEP
     export AGENT_LINEAR_TEAM=TEST AGENT_LINEAR_PROJECT=precheck-test
     export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
     export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/precheck-test AGENT_ORPHAN_MINUTES=45
+    export AGENT_WORKER_IDLE_MINUTES=15
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
 #!/usr/bin/env bash
 set -eu
 printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
 case "$*" in
+  'linear list-issues '*--label\ auto-failed*)
+    case "$PRECHECK_MODE" in
+      scope-overlap|scope-separate) echo '{"ok":false,"error":{"code":"backlog_unavailable"}}'; exit 7 ;;
+      scope-missing) echo '{"ok":true,"result":{}}' ;;
+      *) echo '{"ok":true,"result":{"issues":[{"state":{"type":"started"}},{"state":{"type":"unstarted"}},{"state":{"type":"completed"}},{"state":{"type":"canceled"}}]}}' ;;
+    esac ;;
   'linear list-issues '*--label\ auto-impl*)
-    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
+    case "$PRECHECK_MODE" in
+      batch-three|batch-cand-overlap|batch-default) echo '{"ok":true,"result":{"issues":[]}}' ;;
+      *) echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
+    esac ;;
   'linear list-issues '*--label\ ready-for-agent*)
-    echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
+    case "$PRECHECK_MODE" in
+      batch-three|batch-cand-overlap|batch-default|batch-cap|scope-avoid-off)
+        echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}},{"identifier":"TEST-3","state":{"type":"unstarted"}},{"identifier":"TEST-4","state":{"type":"unstarted"}}]}}' ;;
+      *) echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
+    esac ;;
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
+  'linear issue TEST-3 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
+  'linear issue TEST-4 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
+      stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
+      scope-overlap)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/foo.sh core/bar.sh\n"}}}' ;;
+      scope-separate|scope-missing|scope-fail)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/foo.sh\n"}}}' ;;
+      batch-cap)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/z.sh\n"}}}' ;;
+      scope-avoid-off)
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"## SCOPE\n\ncore/a.sh\n"}}}' ;;
       *) jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+    esac ;;
+  'linear issue TEST-2 --json')
+    case "$PRECHECK_MODE" in
+      scope-overlap) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/bar.sh core/qux.sh\n"}}}' ;;
+      scope-separate) jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/qux.sh\n"}}}' ;;
+      scope-missing) jq -nc '{ok:true,result:{issue:{description:"## 其他小节\n\n无 SCOPE\n"}}}' ;;
+      scope-fail) echo '{"ok":false,"error":{"code":"simulated_scope_failure"}}' ;;
+      batch-three|batch-cand-overlap|batch-default|batch-cap)
+        jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/a.sh\n"}}}' ;;
+      *) jq -nc '{ok:true,result:{issue:{}}}' ;;
+    esac ;;
+  'linear issue TEST-3 --json')
+    case "$PRECHECK_MODE" in
+      batch-three|batch-default)
+        jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/b.sh\n"}}}' ;;
+      batch-cand-overlap)
+        jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/a.sh\n"}}}' ;;
+      *) jq -nc '{ok:true,result:{issue:{}}}' ;;
+    esac ;;
+  'linear issue TEST-4 --json')
+    case "$PRECHECK_MODE" in
+      batch-three|batch-cand-overlap|batch-default)
+        jq -nc '{ok:true,result:{issue:{description:"## SCOPE\n\ncore/c.sh\n"}}}' ;;
+      *) jq -nc '{ok:true,result:{issue:{}}}' ;;
     esac ;;
   'linear issue TEST-1 --comments --json')
     jq -nc --arg mode "$PRECHECK_MODE" '
@@ -448,23 +497,50 @@ case "$*" in
         ([{body:"已领取 · tier=default",
            createdAt:(if is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
                      else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
-         + (if $mode == "recent" then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
-         + (if $mode == "limit" or $mode == "orphan-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
+         + (if $mode == "recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
         meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
     case "$PRECHECK_MODE" in
       fail) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}'; exit 7 ;;
       notok) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}' ;;
-      empty|busy|card|hosts-omitted) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
+      empty|busy|card|hosts-omitted|worker-*) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
       *) echo '{"ok":true,"result":{"runs":[]}}' ;;
     esac ;;
   'orchestration task-list --run run-test --json')
-    if [[ "$PRECHECK_MODE" == busy ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
+    if [[ "$PRECHECK_MODE" == busy || "$PRECHECK_MODE" == worker-* ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
     else echo '{"ok":true,"result":{"tasks":[]}}'; fi ;;
   'worktree ps --json')
-    if [[ "$PRECHECK_MODE" == card ]]; then echo '{"ok":true,"result":{"worktrees":[{"linkedLinearIssue":"TEST-1"}]}}'
-    elif [[ "$PRECHECK_MODE" == hosts-omitted ]]; then echo '{"ok":true,"result":{"worktrees":[],"hostScope":{"omittedHostIds":["runtime:remote"]}}}'
-    else echo '{"ok":true,"result":{"worktrees":[]}}'; fi ;;
+    case "$PRECHECK_MODE" in
+      card) echo '{"ok":true,"result":{"worktrees":[{"linkedLinearIssue":"TEST-1"}]}}' ;;
+      hosts-omitted) echo '{"ok":true,"result":{"worktrees":[],"hostScope":{"omittedHostIds":["runtime:remote"]}}}' ;;
+      worker-*) echo '{"ok":true,"result":{"worktrees":[{"linkedLinearIssue":"TEST-1","worktreeId":"wt-test"}]}}' ;;
+      *) echo '{"ok":true,"result":{"worktrees":[]}}' ;;
+    esac ;;
+  'terminal list --json')
+    case "$PRECHECK_MODE" in
+      worker-fail)
+        echo '{"ok":false,"error":{"code":"simulated_terminal_failure"}}'; exit 7 ;;
+      worker-invalid)
+        echo '{broken' ;;
+      *)
+        jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{
+          truncated:($mode == "worker-truncated"),
+          terminals:(
+            [{worktreeId:"wt-other",lastOutputAt:((now-3600)*1000),preview:"Sign in failed"}]
+            + (if $mode == "worker-mixed" then
+                [{worktreeId:"wt-test",lastOutputAt:((now-1800)*1000),preview:"登录 failed"},
+                 {worktreeId:"wt-test",lastOutputAt:((now-10)*1000),preview:"working"}]
+              elif $mode == "worker-idle" then
+                [{worktreeId:"wt-test",lastOutputAt:((now-1800)*1000),preview:"working"}]
+              elif $mode == "worker-feature" then
+                [{worktreeId:"wt-test",lastOutputAt:((now-60)*1000),preview:"登录 failed"}]
+              elif ($mode | test("^worker-")) then
+                [{worktreeId:"wt-test",lastOutputAt:((now-1800)*1000),preview:"登录 failed"}]
+              else [] end)
+          )
+        }}' ;;
+    esac ;;
   'linear label remove TEST-1 --label auto-impl --json'|'linear label add TEST-1 --label auto-failed --json'|'linear status set TEST-1 --to Todo --json'|'linear comment add TEST-1 --body '*)
     echo '{"ok":true}' ;;
   *) echo "unexpected fake orca call: $*" >&2; exit 1 ;;
@@ -481,13 +557,44 @@ case "${PRECHECK_MODE:-}" in
 esac
 PRECHECK_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
-    for PRECHECK_MODE in missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
-                         orphan orphan-pr orphan-fresh orphan-limit orphan-fail; do
+    for PRECHECK_MODE in stale missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
+                         orphan orphan-pr orphan-fresh orphan-limit orphan-fail \
+                         worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated \
+                         scope-overlap scope-separate scope-missing scope-fail \
+                         batch-three batch-cand-overlap batch-default batch-cap scope-avoid-off; do
       export PRECHECK_MODE
-      : > "$SELFTEST_TMP/precheck.calls"
-      bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
-        || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; }
+      unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
+      export AGENT_MAX_IN_FLIGHT=2
       case "$PRECHECK_MODE" in
+        batch-three|batch-cand-overlap) export AGENT_MAX_IN_FLIGHT=5 AGENT_BATCH_SIZE=0 ;;
+        batch-default) export AGENT_MAX_IN_FLIGHT=5 ;;
+        batch-cap) export AGENT_BATCH_SIZE=0 ;;
+        scope-avoid-off) export AGENT_MAX_IN_FLIGHT=5 AGENT_BATCH_SIZE=0 AGENT_SCOPE_AVOID=0 ;;
+      esac
+      : > "$SELFTEST_TMP/precheck.calls"
+      precheck_status=0
+      bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" \
+        || precheck_status=$?
+      case "$PRECHECK_MODE" in
+        scope-overlap) [[ "$precheck_status" == 1 ]] || fail "selftest: health changed blocked exit status" ;;
+        *) [[ "$precheck_status" == 0 ]] || { cat "$SELFTEST_TMP/precheck.out" "$SELFTEST_TMP/precheck.err"; fail "selftest: precheck aborted in $PRECHECK_MODE"; } ;;
+      esac
+      grep -Eq '^health=live=[0-9]+ max=[0-9]+ released=[0-9]+ escalated=[0-9]+ failed_backlog=([0-9]+|[?])$' "$SELFTEST_TMP/precheck.out" || fail "selftest: precheck health summary missing or malformed ($PRECHECK_MODE)"
+      health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2'
+      case "$PRECHECK_MODE" in
+        missing|empty|orphan|worker-stuck) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
+        stale|limit|orphan-limit|worker-stuck-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
+        scope-overlap|scope-separate|scope-missing) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=?' ;;
+        batch-three|batch-cand-overlap|batch-default) health_expected='live=0 max=5 released=0 escalated=0 failed_backlog=2' ;;
+        batch-cap) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2' ;;
+        scope-avoid-off) health_expected='live=1 max=5 released=0 escalated=0 failed_backlog=2' ;;
+      esac
+      grep -Fxq "health=$health_expected" "$SELFTEST_TMP/precheck.out" || fail "selftest: incorrect health counts ($PRECHECK_MODE)"
+      grep -q '^linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: backlog read missing project fence"
+      case "$PRECHECK_MODE" in
+        stale)
+          grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: old claim not stale"
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: old claim not escalated" ;;
         missing|empty)
           grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim did not reset Todo ($PRECHECK_MODE)"
           grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: expired claim kept auto-impl"
@@ -514,6 +621,54 @@ PRECHECK_GH
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: orphan guard mutated in $PRECHECK_MODE"; fi
           grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: orphan guard dropped live claim ($PRECHECK_MODE)"
           [[ "$PRECHECK_MODE" != orphan-fail ]] || grep -q '不确定.*gh pr list' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: orphan read failure uncertainty missing"; } ;;
+        worker-stuck)
+          grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker did not reset Todo"
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker kept auto-impl"
+          grep -q '^linear comment add TEST-1 --body precheck: 认领失效（工人卡死：空闲 30 分钟.*登录 failed.*已释放，下一轮重新领取 --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker release comment missing"
+          if grep -q '^linear label add TEST-1 --label auto-failed ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: stuck worker wrongly escalated on first failure"; fi
+          grep -q 'in_flight=0 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: stuck worker release counted live"
+          grep -q '^stale=$' "$SELFTEST_TMP/precheck.out" || fail "selftest: stuck worker release counted stale" ;;
+        worker-stuck-limit)
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit kept auto-impl"
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit not escalated"
+          grep -q '^linear comment add TEST-1 --body 转人: 已多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit escalation comment missing"
+          grep -q '^证据: .*工人卡死：空闲 30 分钟.*登录 failed' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit evidence missing"
+          grep -q '^需要你:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit action missing"
+          grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: stuck worker limit not stale"
+          if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: stuck worker limit reset Todo"; fi ;;
+        worker-idle|worker-feature|worker-mixed)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: worker health check mutated ($PRECHECK_MODE)"; fi
+          grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: worker health check dropped live claim ($PRECHECK_MODE)" ;;
+        worker-fail|worker-invalid|worker-truncated)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: worker health check mutated on uncertain read ($PRECHECK_MODE)"; fi
+          grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: worker health check dropped live claim on uncertain read ($PRECHECK_MODE)"
+          grep -q '不确定' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: worker health uncertainty missing ($PRECHECK_MODE)"; } ;;
+        scope-overlap)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: scope overlap mutated live claim"; fi
+          grep -q '^claimable= in_flight=1 ' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: scope overlap kept candidate in claimable"; }
+          grep -q '^skip TEST-2: scope overlaps TEST-1$' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: scope overlap skip message missing"; } ;;
+        scope-separate|scope-missing|scope-fail)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: scope check mutated live claim ($PRECHECK_MODE)"; fi
+          grep -q '^claimable=TEST-2 in_flight=1 ' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: scope check dropped candidate ($PRECHECK_MODE)"; }
+          if grep -q '^skip TEST-2:' "$SELFTEST_TMP/precheck.err"; then cat "$SELFTEST_TMP/precheck.err"; fail "selftest: scope check skipped candidate ($PRECHECK_MODE)"; fi ;;
+        batch-three)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: batch-three mutated"; fi
+          grep -q '^claimable=TEST-2,TEST-3,TEST-4 in_flight=0 max=5$' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: batch-three must claim all three"; }
+          if grep -q '^skip ' "$SELFTEST_TMP/precheck.err"; then cat "$SELFTEST_TMP/precheck.err"; fail "selftest: batch-three must not skip any candidate"; fi ;;
+        batch-cand-overlap)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: batch-cand-overlap mutated"; fi
+          grep -q '^claimable=TEST-2,TEST-4 in_flight=0 max=5$' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: batch-cand-overlap claimable wrong"; }
+          grep -q '^skip TEST-3: scope overlaps TEST-2$' "$SELFTEST_TMP/precheck.err" || { cat "$SELFTEST_TMP/precheck.err"; fail "selftest: batch-cand-overlap must skip TEST-3"; } ;;
+        batch-default)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: batch-default mutated"; fi
+          grep -q '^claimable=TEST-2 in_flight=0 max=5$' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: batch-default must claim only the first candidate"; } ;;
+        batch-cap)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: batch-cap mutated"; fi
+          grep -q '^claimable=TEST-2 in_flight=1 max=2$' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: batch-cap must cap at free MAX_IN_FLIGHT slots"; } ;;
+        scope-avoid-off)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: scope-avoid-off mutated"; fi
+          grep -q '^claimable=TEST-2,TEST-3,TEST-4 in_flight=1 max=5$' "$SELFTEST_TMP/precheck.out" || { cat "$SELFTEST_TMP/precheck.out"; fail "selftest: scope-avoid-off must claim every candidate"; }
+          if grep -q '^skip ' "$SELFTEST_TMP/precheck.err"; then cat "$SELFTEST_TMP/precheck.err"; fail "selftest: scope-avoid-off must not emit skip lines"; fi ;;
         *)
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then cat "$SELFTEST_TMP/precheck.calls"; fail "selftest: live/uncertain claim mutated ($PRECHECK_MODE)"; fi
           grep -q 'in_flight=1 ' "$SELFTEST_TMP/precheck.out" || fail "selftest: live/uncertain claim lost"
@@ -525,8 +680,13 @@ PRECHECK_GH
       esac
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
+    echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
     echo "selftest: precheck releases orphaned claims"
+    echo "selftest: precheck handles stuck workers"
+    echo "selftest: precheck retries stuck workers before escalating"
+    echo "selftest: precheck skips scope-overlapping tickets"
+    echo "selftest: precheck claims multiple non-overlapping tickets"
   )
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true

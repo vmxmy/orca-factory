@@ -35,12 +35,42 @@ const priceOf = (model: string) => PRICE[model] ?? (/(^|\/)gpt-/.test(model) ? G
 // One glyph per state, everywhere: ● working  ◐ waiting  ▲ needs a person  ✓ done  · queued
 const G = { work: '●', wait: '◐', human: '▲', done: '✓', queued: '·' }
 const SYM: Record<string, string> = { green: G.done, red: G.human, running: G.wait, none: '' }
+// Lane emoji — one per lane, used in heads and as the card's status-emoji fallback.
+const LANE_EMOJI = { queue: '📥', impl: '🔨', gate: '🔍', ci: '🚦', human: '🙋', done: '✅' }
+// Card status emoji, taken from gate/CI result; falls back to the lane emoji when nothing ran.
+const STATUS_EMOJI: Record<string, string> = { green: '🟢', red: '🔴', running: '🟡' }
+// Display width where an emoji code point counts as 2 columns.
+const dw = (s: string): number => {
+  let w = 0
+  for (const c of [...s]) w += /\p{Extended_Pictographic}/u.test(c) ? 2 : 1
+  return w
+}
+// Truncate by display columns; appends '…' when it had to drop code points.
+const cutW = (s: string, n: number): string => {
+  if (n <= 0) return ''
+  if (dw(s) <= n) return s
+  let w = 0
+  let out = ''
+  for (const c of [...s]) {
+    const cw = /\p{Extended_Pictographic}/u.test(c) ? 2 : 1
+    if (w + cw > n - 1) break
+    w += cw
+    out += c
+  }
+  return out + '…'
+}
+// Right-pad a possibly-emoji string to n display columns.
+const padW = (s: string, n: number): string => s + ' '.repeat(Math.max(0, n - dw(s)))
 
-const empty: Board = { at: '', error: '', maxInFlight: 0, inFlight: [], queue: [], failed: [], doneToday: [], prs: [], agents: [], lastRun: '', stats: [], todayCost: 0 }
+const STALE_MS = 3 * 60_000 // header turns yellow when the last successful Linear read is older than this
+const empty: Board = { at: '', error: '', maxInFlight: 0, inFlight: [], queue: [], failed: [], doneToday: [], prs: [], agents: [], lastRun: '', stats: [], todayCost: 0, automationKnown: false, lastSuccessAt: 0 }
 const board = atom({ plugin: 'swarm-board', key: 'board' } as const, empty)
 const view = atom({ plugin: 'swarm-board', key: 'view' } as const, 'task' as View)
 const showQueue = atom({ plugin: 'swarm-board', key: 'showQueue' } as const, false)
 const detail = atom({ plugin: 'swarm-board', key: 'detail' } as const, false)
+const nowAtom = atom({ plugin: 'swarm-board', key: 'now' } as const, 0)
+const lastTickAt = atom({ plugin: 'swarm-board', key: 'lastTickAt' } as const, 0)
+let refreshing = false
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -186,15 +216,18 @@ const deepComments = (o: any, depth = 0): any[] => {
   return []
 }
 
-async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
+type OrcaResult = { ok: boolean; data: any }
+
+async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
   let text = ''
   try { text = await $.fs.read(ENV) } catch { return { ...empty, at, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' } }
   const env = parseEnv(text)
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
-  // Every external call is serial, bounded by TIMEOUT_MS, and a failure leaves that item empty.
-  // A non-zero exit also returns empty, so a failed Linear read never clobbers cached handoffs.
+  // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
+  // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
+  // leaves ok=false so the caller can preserve the last-good slice instead of blanking the board.
   const run = async (argv: string[]): Promise<string> => {
     try {
       const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS })
@@ -202,12 +235,22 @@ async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
     } catch { return '' }
   }
   const runJson = async (argv: string[]) => json(await run(argv))
+  const runOrca = async (argv: string[]): Promise<OrcaResult> => {
+    let r: { stdout: string; exitCode: number } | null = null
+    try { r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS }) } catch { return { ok: false, data: null } }
+    if (!r || r.exitCode !== 0) return { ok: false, data: null }
+    const d = json(r.stdout)
+    if (d === null) return { ok: false, data: null }
+    if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
+    return { ok: true, data: d }
+  }
   if (!HOME) HOME = (await run(['sh', '-c', 'printf %s "$HOME"'])).trim()
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
-  const issues = await runJson(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
-  const all: Ticket[] = (issues?.result?.issues ?? []).map(ticket)
-  const error = issues?.ok ? '' : 'Linear read failed. Showing last good data.'
+  const issuesResp = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
+  const linearOk = issuesResp.ok
+  const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
+  const error = linearOk ? '' : 'Linear 限流，沿用旧数据'
   const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
@@ -230,29 +273,49 @@ async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   const doneToday = all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime())
 
-  // Open PRs with their size, drift from main and CI state.
-  const prsRaw = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls?state=open&per_page=30'])
-  const prs: Pr[] = Array.isArray(prsRaw) ? prsRaw.filter((p: any) => /\b[A-Z]+-\d+\b/.test(p.title)).map((p: any): Pr => ({
-    number: p.number, title: p.title, updatedAt: p.updated_at, branch: p.head?.ref ?? '', sha: p.head?.sha ?? '',
-    adds: 0, dels: 0, files: 0, behind: 0, ci: { done: 0, total: 0, state: 'none', min: 0 },
-  })) : []
-  for (const p of prs.slice(0, MAX_PRS)) {
-    const d = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls/' + p.number])
-    if (d) { p.adds = d.additions ?? 0; p.dels = d.deletions ?? 0; p.files = d.changed_files ?? 0; p.sha = d.head?.sha ?? p.sha; p.branch = d.head?.ref ?? p.branch }
-    if (p.branch) { const c = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/compare/main...' + p.branch]); p.behind = c?.behind_by ?? 0 }
-    if (p.sha) { const c = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/commits/' + p.sha + '/check-runs?per_page=50']); p.ci = ciOf(c?.check_runs, now) }
+  // Open PRs with their size, drift from main and CI state. On failure keep the last-good list.
+  const prsResp = await runOrca(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls?state=open&per_page=30'])
+  let prs: Pr[]
+  if (prsResp.ok && Array.isArray(prsResp.data)) {
+    prs = prsResp.data.filter((p: any) => /\b[A-Z]+-\d+\b/.test(p.title)).map((p: any): Pr => ({
+      number: p.number, title: p.title, updatedAt: p.updated_at, branch: p.head?.ref ?? '', sha: p.head?.sha ?? '',
+      adds: 0, dels: 0, files: 0, behind: 0, ci: { done: 0, total: 0, state: 'none', min: 0 },
+    }))
+    for (const p of prs.slice(0, MAX_PRS)) {
+      const d = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls/' + p.number])
+      if (d) { p.adds = d.additions ?? 0; p.dels = d.deletions ?? 0; p.files = d.changed_files ?? 0; p.sha = d.head?.sha ?? p.sha; p.branch = d.head?.ref ?? p.branch }
+      if (p.branch) { const c = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/compare/main...' + p.branch]); p.behind = c?.behind_by ?? 0 }
+      if (p.sha) { const c = await runJson(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/commits/' + p.sha + '/check-runs?per_page=50']); p.ci = ciOf(c?.check_runs, now) }
+    }
+  } else {
+    prs = old.prs
   }
   const prOf = (id: string) => prs.find(p => new RegExp('\\b' + id + '\\b').test(p.title))
 
+  // Automation lookup. Only a successful + non-empty list distinguishes "not installed" from "unknown".
+  const autosResp = await runOrca(['orca', 'automations', 'list', '--json'])
+  const autosArr: any[] = autosResp.ok ? (autosResp.data?.result?.automations ?? []) : []
+  const listTrustworthy = autosResp.ok && autosArr.length > 0
+  let automation: Board['automation']
+  let automationKnown: boolean
+  if (autosResp.ok) {
+    const auto = autosArr.find(a => a.name === AUTOMATION_NAME(base(env.AGENT_GH_REPO ?? '')))
+    if (auto?.id) { automation = { id: String(auto.id), enabled: Boolean(auto.enabled) }; automationKnown = true }
+    else if (listTrustworthy) { automation = undefined; automationKnown = true }
+    else { automation = old.automation; automationKnown = old.automationKnown }
+  } else {
+    automation = old.automation
+    automationKnown = old.automationKnown
+  }
+
   // Automation runs: last run for the header, and each run's coordinator worktree + dispatch time.
-  const autos: any[] = (await runJson(['orca', 'automations', 'list', '--json']))?.result?.automations ?? []
-  const auto = autos.find(a => a.name === AUTOMATION_NAME(base(env.AGENT_GH_REPO ?? '')))
-  const automation = auto?.id ? { id: String(auto.id), enabled: Boolean(auto.enabled) } : undefined
   const autoId = automation?.id ?? ''
-  const runs = autoId ? await runJson(['orca', 'automations', 'runs', '--id', autoId, '--json']) : null
-  const autoRuns: any[] = runs?.result?.runs ?? []
+  const runsResp = autoId ? await runOrca(['orca', 'automations', 'runs', '--id', autoId, '--json']) : { ok: false, data: null }
+  const autoRuns: any[] = runsResp.ok ? (runsResp.data?.result?.runs ?? []) : []
   const r0 = autoRuns[0]
-  const lastRun = r0 ? 'run ' + r0.runNumber + ' · ' + String(r0.status ?? '').replace('_', ' ') + ' · ' + new Date(r0.scheduledFor ?? r0.dispatchedAt ?? now).toTimeString().slice(0, 5) : ''
+  const lastRun = runsResp.ok
+    ? (r0 ? 'run ' + r0.runNumber + ' · ' + String(r0.status ?? '').replace('_', ' ') + ' · ' + new Date(r0.scheduledFor ?? r0.dispatchedAt ?? now).toTimeString().slice(0, 5) : '')
+    : old.lastRun
   const autoByTime = autoRuns
     .map(a => ({ path: String(a.workspaceId ?? '').replace(/^[^:]*::/, ''), at: String(a.dispatchedAt ?? a.startedAt ?? a.scheduledFor ?? '') }))
     .filter(a => a.path.includes('/') && a.at).sort((a, b) => b.at.localeCompare(a.at))
@@ -265,22 +328,29 @@ async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
     return { path: a?.path ?? '', at: a?.at ?? created }
   }
 
-  const orcaRuns: any[] = (await runJson(['orca', 'orchestration', 'run-list', '--json']))?.result?.runs ?? []
-  const worktreePs = await runJson(['orca', 'worktree', 'ps', '--json'])
+  const orcaRunsResp = await runOrca(['orca', 'orchestration', 'run-list', '--json'])
+  const orcaRuns: any[] = orcaRunsResp.ok ? (orcaRunsResp.data?.result?.runs ?? []) : []
+  const worktreeResp = await runOrca(['orca', 'worktree', 'ps', '--json'])
   const cardByIssue = new Map<string, WorktreeCard>()
-  for (const w of worktreePs?.result?.worktrees ?? []) {
-    if (!w.linkedLinearIssue || !w.path) continue
-    const card: WorktreeCard = { path: w.path, workspaceStatus: w.workspaceStatus ?? '', comment: w.comment ?? '' }
-    if (!cardByIssue.has(w.linkedLinearIssue)) cardByIssue.set(w.linkedLinearIssue, card)
+  if (worktreeResp.ok) {
+    for (const w of worktreeResp.data?.result?.worktrees ?? []) {
+      if (!w.linkedLinearIssue || !w.path) continue
+      const card: WorktreeCard = { path: w.path, workspaceStatus: w.workspaceStatus ?? '', comment: w.comment ?? '' }
+      if (!cardByIssue.has(w.linkedLinearIssue)) cardByIssue.set(w.linkedLinearIssue, card)
+    }
   }
   const runFor = (id: string) => orcaRuns.filter(x => (x.objective ?? '').includes(id)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
 
   // Agent terminals: last output per worktree path.
+  const terminalsResp = await runOrca(['orca', 'terminal', 'list', '--json'])
   const lastOut: Record<string, string> = {}
-  for (const t of (await runJson(['orca', 'terminal', 'list', '--json']))?.result?.terminals ?? []) {
-    if (!t.agentIdentity || !t.worktreePath || !t.lastOutputAt) continue
-    if (!lastOut[t.worktreePath] || lastOut[t.worktreePath] < t.lastOutputAt) lastOut[t.worktreePath] = t.lastOutputAt
+  if (terminalsResp.ok) {
+    for (const t of terminalsResp.data?.result?.terminals ?? []) {
+      if (!t.agentIdentity || !t.worktreePath || !t.lastOutputAt) continue
+      if (!lastOut[t.worktreePath] || lastOut[t.worktreePath] < t.lastOutputAt) lastOut[t.worktreePath] = t.lastOutputAt
+    }
   }
+  const agentsOk = orcaRunsResp.ok && worktreeResp.ok
 
   // Agents: one coordinator per Orca run whose objective names an in-flight ticket, plus its worker tasks.
   const agents: Agent[] = []
@@ -350,21 +420,40 @@ async function refresh($: any, handoffs: Map<string, string>): Promise<Board> {
     if (u.cost?.known) todayCost += u.cost.usd
   }
 
-  const stats = (await run(['bash', 'scripts/agent-gates/agent-graph.sh', 'ledger', 'stats'])).trim().split('\n').filter(Boolean)
+  const statsOut = (await run(['bash', 'scripts/agent-gates/agent-graph.sh', 'ledger', 'stats'])).trim().split('\n').filter(Boolean)
+  const stats = statsOut.length ? statsOut : old.stats
 
+  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
+
+  // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
+  const lastSuccessAt = linearOk ? now : old.lastSuccessAt
+  const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
+  if (!linearOk) {
+    return {
+      at, error, maxInFlight,
+      inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
+      prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
+    }
+  }
   return {
-    at, error, maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0), inFlight,
-    queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
-    failed,
-    doneToday, prs, agents, lastRun, stats, todayCost, automation,
+    at, error, maxInFlight, inFlight, queue, failed, doneToday, prs,
+    agents: agentsOk ? agents : old.agents,
+    lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
   }
 }
 
 async function tick($: any, handoffs: Map<string, string>) {
-  const b = await refresh($, handoffs)
-  if (b.error && b.inFlight.length === 0) { const old = await read($, board); b.inFlight = old.inFlight; b.queue = old.queue; b.prs = old.prs; b.agents = old.agents; b.todayCost = old.todayCost }
+  const old = await read($, board)
+  const b = await refresh($, handoffs, old)
   await update($, board, () => b)
+  await update($, lastTickAt, () => Date.now())
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+}
+
+async function manualRefresh($: any, handoffs: Map<string, string>) {
+  if (refreshing) return
+  refreshing = true
+  try { await tick($, handoffs) } finally { refreshing = false }
 }
 
 async function toggleAutomation($: any, handoffs: Map<string, string>) {
@@ -402,21 +491,33 @@ export const register: Register = on => {
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     void tick($, handoffs)
-    if (!polling) { polling = true; $.clock.every(REFRESH_MS, () => tick($, handoffs)) }
+    if (!polling) {
+      polling = true
+      await update($, nowAtom, () => Date.now())
+      $.clock.every(REFRESH_MS, () => tick($, handoffs))
+      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
+    }
     return { text: '蜂群看板已打开。' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [b, v, q, d] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail)])
+    const [b, v, q, d, , tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
     const automation = (b as Board).automation
+    const automationKnown = (b as Board).automationKnown
+    const lastSuccessAt = (b as Board).lastSuccessAt
     const now = Date.now()
+    // Countdown uses the wall clock, not the throttled `nowAtom` (which starts at 0 and could race the first tick).
+    const remainingSec = tickMs > 0 ? Math.min(60, Math.max(0, Math.ceil((tickMs + REFRESH_MS - now) / 1000))) : 0
+    const countdown = tickMs > 0 && remainingSec > 0 ? '下次刷新 ' + remainingSec + 's' : '刷新中'
+    const staleMin = lastSuccessAt > 0 ? Math.max(0, Math.floor((now - lastSuccessAt) / 60_000)) : 0
+    const stale = lastSuccessAt > 0 && now - lastSuccessAt > STALE_MS
     const cols = Math.max(44, (e.props?.bodyColumns ?? e.viewport?.columns ?? 100) - 4)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
-    const card = (key: string, title: string, children: any, color?: string) => (
-      <Box key={key} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!color} paddingX={1} marginBottom={1}>
-        <Text bold color={color}>{title}</Text>
+    const card = (key: string, title: string, children: any, color?: string, dim?: boolean) => (
+      <Box key={key} flexDirection="column" borderStyle="round" borderColor={color} borderDimColor={!color || dim} paddingX={1} marginBottom={1}>
+        <Text bold color={color} dimColor={dim}>{title}</Text>
         {children}
       </Box>
     )
@@ -426,7 +527,7 @@ export const register: Register = on => {
       return <Text color={color}>{glyph} {t.id.padEnd(8)} {cut(t.title, w).padEnd(w)} {age(t.updatedAt, now).padStart(9)}</Text>
     }
     // Tasks view: swim lanes. One column per stage; a ticket is a small card that moves right.
-    type Lane = { title: string; glyph: string; color?: string; items: Ticket[] }
+    type Lane = { title: string; emoji: string; color?: string; items: Ticket[] }
     const stage = (t: Ticket): 1 | 2 | 3 => laneStage(t, b.agents)
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
@@ -440,35 +541,44 @@ export const register: Register = on => {
       ) : lines[0] ? <Text color="yellow">{lines[0]}</Text> : null
     }
     const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
+    // A ticket that already lives in 需要人 does not also appear in the in-flight lanes; lane counts match that dedup.
+    const failedIds = new Set(b.failed.map(t => t.id))
+    const inFlightNoHuman = b.inFlight.filter(t => !failedIds.has(t.id))
     const lanes: Lane[] = [
-      { title: '待领', glyph: G.queued, items: b.queue },
-      { title: '实现中', glyph: G.work, items: b.inFlight.filter(t => stage(t) === 1) },
-      { title: 'gate/评审', glyph: G.wait, items: b.inFlight.filter(t => stage(t) === 2) },
-      { title: 'CI/合并', glyph: G.wait, items: b.inFlight.filter(t => stage(t) === 3) },
-      { title: '需要人', glyph: G.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
-      { title: '今日完成', glyph: G.done, items: b.doneToday },
+      { title: '待领', emoji: LANE_EMOJI.queue, items: b.queue },
+      { title: '实现中', emoji: LANE_EMOJI.impl, items: inFlightNoHuman.filter(t => stage(t) === 1) },
+      { title: 'gate/评审', emoji: LANE_EMOJI.gate, items: inFlightNoHuman.filter(t => stage(t) === 2) },
+      { title: 'CI/合并', emoji: LANE_EMOJI.ci, items: inFlightNoHuman.filter(t => stage(t) === 3) },
+      { title: '需要人', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
+      { title: '今日完成', emoji: LANE_EMOJI.done, items: b.doneToday },
     ]
+    // Status emoji on the card head: prefer CI, then gate, then the lane emoji.
+    const statusEmojiOf = (l: Lane, t: Ticket, pr?: Pr) => {
+      if (pr && pr.ci.state !== 'none' && STATUS_EMOJI[pr.ci.state]) return STATUS_EMOJI[pr.ci.state]
+      if (t.gate && t.gate.state !== 'none' && STATUS_EMOJI[t.gate.state]) return STATUS_EMOJI[t.gate.state]
+      return l.emoji
+    }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
       const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
       const facts: string[] = []
-      if (pr && pr.ci.state !== 'none') facts.push(ciText(pr.ci))
-      else if (t.gate && t.gate.state !== 'none') facts.push('gate ' + SYM[t.gate.state] + (t.gate.sec ? ' ' + secs(t.gate.sec) : ''))
-      if (d && pr && (pr.adds || pr.dels)) facts.push('+' + pr.adds + '/−' + pr.dels + ' behind ' + pr.behind)
-      if (d && t.tokens) facts.push(tok(t.tokens.out) + ' out')
-      if (t.cost) facts.push(usd(t.cost))
-      const head = l.glyph + ' ' + t.id + (pr ? ' #' + pr.number : '')
+      if (t.gate && t.gate.sec) facts.push('🧪 ' + secs(t.gate.sec))
+      if (pr && pr.ci.state !== 'none' && pr.ci.total > 0) facts.push('🚦 ' + pr.ci.done + '/' + pr.ci.total + (pr.ci.min ? ' ' + mins(pr.ci.min) : ''))
+      if (d && pr && (pr.adds || pr.dels)) facts.push('📝 +' + pr.adds + '/−' + pr.dels)
+      if (t.cost) facts.push('💲 ' + usd(t.cost))
+      const head = statusEmojiOf(l, t, pr) + ' ' + t.id + (pr ? ' #' + pr.number : '')
+      const headRoom = Math.max(0, w - (dur ? dur.length + 1 : 0))
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
-          <Text color={l.color}>{cut(head, w - dur.length - 1).padEnd(w - dur.length - 1)} {dur}</Text>
-          <Text dimColor>{cut(t.title, w)}</Text>
+          <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
+          <Text>{cutW(t.title, w)}</Text>
           {l.title === '需要人' ? handoffText(t) : null}
-          {facts.length > 0 ? <Text dimColor>{cut(facts.join(' · '), w)}</Text> : null}
+          {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
           {l.title === '需要人' ? intakeText(t) : null}
         </Box>
       )
     }
-    const laneHead = (l: Lane) => <Text bold color={l.color} dimColor={!l.color && l.items.length === 0}>{l.glyph} {l.title} ({l.items.length})</Text>
+    const laneHead = (l: Lane) => <Text bold color={l.color} dimColor={l.items.length === 0}>{l.emoji} {l.title} ({l.items.length})</Text>
     const laneView = () => {
       if (cols >= 120) {
         const w = Math.floor(cols / lanes.length) - 2
@@ -485,9 +595,9 @@ export const register: Register = on => {
         )
       }
       return lanes.filter(l => l.items.length > 0 || l.title === '实现中').map(l =>
-        card('lane-' + l.title, l.glyph + ' ' + l.title + ' (' + l.items.length + ')', (
+        card('lane-' + l.title, l.emoji + ' ' + l.title + ' (' + l.items.length + ')', (
           l.items.length === 0 ? <Text dimColor>None.</Text> : l.items.map(t => laneCard(l, t, cols - 4))
-        ), l.color))
+        ), l.color, l.items.length === 0))
     }
     // Swarm view: one agent is one line; workers indent under their coordinator.
     const agentRow = (a: Agent) => {
@@ -529,8 +639,13 @@ export const register: Register = on => {
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[swarm]' : ' swarm '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[lanes]' : ' lanes '} onPress={() => update($, view, () => 'task')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[detail]' : ' detail '} onPress={() => update($, detail, x => !x)} />
-          {automation ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} /> : <Text dimColor>auto: 未安装</Text>}
-          <Text dimColor>{b.at ? 'updated ' + b.at : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
+          {automation
+            ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● auto on' : '○ auto off'} onPress={() => toggleAutomation($, handoffs)} />
+            : <Text dimColor>auto: {automationKnown ? '未安装' : '?'}</Text>}
+          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => manualRefresh($, handoffs)} />
+          <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
+            ? 'updated ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
+            : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 

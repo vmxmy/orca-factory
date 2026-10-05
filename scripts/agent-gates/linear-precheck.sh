@@ -23,6 +23,12 @@ MAX_IN_FLIGHT="${AGENT_MAX_IN_FLIGHT:?set in agent-graph.env}"
 STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
 GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
 ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
+WORKER_IDLE_MINUTES="${AGENT_WORKER_IDLE_MINUTES:-15}"
+# Batch claim: 1 = legacy single claim; >1 = per-run cap; 0 = no per-run cap (only MAX_IN_FLIGHT caps).
+BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
+# SCOPE avoidance switch: 1 = enforce candidate↔in-flight overlap and (when batching) candidate↔candidate;
+# 0 = skip every SCOPE check (worktree + merge rebase resolve conflicts instead).
+SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 
 ocall() {
   local out attempt
@@ -70,6 +76,7 @@ mark_stale() {
   ocall linear comment add "$1" --body "转人: 在途超过 ${STALE_HOURS} 小时无更新，疑似 coordinator 中断（worktree/PR 若存在均保留）
 证据: ${BASH_SOURCE[0]}:61 的 stale 判定为 true，票据 $1 已至少 ${STALE_HOURS} 小时无更新
 需要你: 检查票据 $1 对应的 coordinator 运行状态" >/dev/null || exit 3
+  escalated=$((escalated + 1))
 }
 
 # Recovery reads are bounded and fail closed without aborting the existing scan.
@@ -187,14 +194,99 @@ release_claim() {
 证据: orca linear issue $1 --comments 的评论中已有 ${claim_failures} 次认领失效；${claim_reason}
 需要你: 排查票据 $1 的认领失效原因" >/dev/null || exit 3
     stale_ids+=("$1")
+    escalated=$((escalated + 1))
   else
     ocall linear status set "$1" --to Todo >/dev/null || exit 3
     ocall linear comment add "$1" --body "precheck: 认领失效（${claim_reason}），已释放，下一轮重新领取" >/dev/null || exit 3
+    released=$((released + 1))
   fi
+}
+
+# Worker health check: judge the whole worktree, not a single terminal. Idle minutes come from the
+# most recent agent terminal in the worktree, and the stuck pattern is matched only against that
+# newest terminal's preview, so a live worker alongside an idle old terminal is never escalated.
+# Any read failure, truncation, parsing error, or partial snapshot keeps the ticket live. On a
+# positive match, populates claim_reason/claim_failures so release_claim decides between retry and
+# escalation on the shared 认领失效 count.
+stuck_worker() {
+  local claim_id="$1" out worktrees worker_evidence=""
+  claim_reason=""
+  claim_failures=0
+  if ! out="$(claim_read worktree ps)"; then return 1; fi
+  if ! worktrees="$(jq -ce --arg id "$claim_id" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete worktree list") else .worktrees end
+    | if type != "array" then error("worktrees missing") else . end
+    | map(select(.linkedLinearIssue == $id) | .worktreeId
+      | if type != "string" or length == 0 then error("worktree id missing") else . end)
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete worker worktree list'; return 1
+  fi
+  [[ "$worktrees" != '[]' ]] || return 1
+  if ! out="$(claim_read terminal list)"; then return 1; fi
+  if ! worker_evidence="$(jq -r --argjson worktrees "$worktrees" \
+    --argjson minutes "$WORKER_IDLE_MINUTES" '
+    .result
+    | if .truncated == true or ((.hostScope.omittedHostIds // []) | length > 0)
+      then error("incomplete terminal list") else . end
+    | if (.terminals | type) != "array" then error("terminals missing") else . end
+    | if .totalCount != null and .totalCount != (.terminals | length)
+      then error("terminal count mismatch") else .terminals end
+    | map(
+        if (.worktreeId | type) != "string" then error("terminal worktree id missing") else . end
+        | select(.worktreeId as $id | $worktrees | index($id))
+        | if (.lastOutputAt | type) != "number" or (.preview | type) != "string"
+          then error("terminal output missing") else . end)
+    | if length == 0 then empty
+      else max_by(.lastOutputAt)
+        | . + {idle: ((now - (.lastOutputAt / 1000)) / 60)}
+        | select(.idle > $minutes and (.preview | test("Sign in|ask timeout|worker_done|failed|登录")))
+        | "空闲 \(.idle | floor) 分钟，preview 末尾: \(.preview[-300:] | gsub("[\\r\\n]"; " "))"
+      end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse complete terminal list/worker output'; return 1
+  fi
+  [[ -n "$worker_evidence" ]] || return 1
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
+    claim_uncertain 'comments truncated'; return 1
+  fi
+  if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot count claim failures for stuck worker'; return 1
+  fi
+  claim_reason="工人卡死：${worker_evidence}"
+}
+
+# Parse the ticket's `## SCOPE` section: the first non-empty line after the heading, split by whitespace
+# into globs. A missing/empty section prints nothing (unknown); any read failure returns 1 (uncertain).
+# Both outcomes make the caller not block the candidate.
+scope_of() {
+  local out
+  if ! out="$(ocall linear issue "$1")"; then return 1; fi
+  jq -r '.result.issue.description // ""' <<<"$out" | awk '
+    found && NF > 0 { print; exit }
+    /^## SCOPE([[:space:]]|$)/ { found = 1 }
+  '
+}
+
+# True iff any glob in A matches any token in B, either direction, same pattern rule as gate.sh match_any
+# (`*` crosses `/`). A literal pair also matches.
+scope_overlap() {
+  local a="$1" b="$2" x y
+  for x in $a; do
+    for y in $b; do
+      # shellcheck disable=SC2053
+      [[ "$x" == $y || "$y" == $x ]] && return 0
+    done
+  done
+  return 1
 }
 
 in_flight_ids="$(ids "$LABEL_CLAIMED" started)"
 ready_ids="$(ids "$LABEL_READY" unstarted)"
+released=0
+escalated=0
 live=()
 stale_ids=()
 for id in $in_flight_ids; do
@@ -204,15 +296,67 @@ for id in $in_flight_ids; do
     release_claim "$id"
   elif orphan_claim "$id"; then
     release_claim "$id"
+  elif stuck_worker "$id"; then
+    release_claim "$id"
   else
     live+=("$id")
   fi
 done
 in_flight=${#live[@]}
+# Cache every live ticket's SCOPE once; a ticket whose SCOPE is unknown or unreadable contributes nothing
+# and never blocks a candidate. When AGENT_SCOPE_AVOID=0 the cache stays empty so no candidate is blocked.
+declare -A live_scope=()
+if (( SCOPE_AVOID == 1 && ${#live[@]} > 0 )); then
+  for id in "${live[@]}"; do
+    if s="$(scope_of "$id")" && [[ -n "$s" ]]; then live_scope["$id"]="$s"; fi
+  done
+fi
+# How many candidates this run may accept: capped by free MAX_IN_FLIGHT slots, then by AGENT_BATCH_SIZE
+# (0 means no per-run cap). BATCH_SIZE=1 preserves the legacy single-claim behavior.
+slots=$(( MAX_IN_FLIGHT - in_flight ))
+(( slots < 0 )) && slots=0
+(( BATCH_SIZE > 0 && slots > BATCH_SIZE )) && slots=$BATCH_SIZE
+# Candidate↔candidate SCOPE avoidance kicks in only when SCOPE_AVOID=1 and this run may accept more than one.
+cand_avoid=0
+if (( SCOPE_AVOID == 1 )) && (( BATCH_SIZE != 1 )); then cand_avoid=1; fi
 claimable=()
+declare -A accepted_scope=()
 for id in $ready_ids; do
-  if unblocked "$id"; then claimable+=("$id"); fi
+  (( ${#claimable[@]} >= slots )) && break
+  if ! unblocked "$id"; then continue; fi
+  cand_scope=""
+  if (( SCOPE_AVOID == 1 )); then
+    if ! cand_scope="$(scope_of "$id")"; then cand_scope=""; fi
+  fi
+  overlap=""
+  if (( SCOPE_AVOID == 1 )) && [[ -n "$cand_scope" ]]; then
+    if (( ${#live_scope[@]} > 0 )); then
+      for lid in "${!live_scope[@]}"; do
+        if scope_overlap "$cand_scope" "${live_scope[$lid]}"; then overlap="$lid"; break; fi
+      done
+    fi
+    if [[ -z "$overlap" ]] && (( cand_avoid == 1 && ${#accepted_scope[@]} > 0 )); then
+      for aid in "${!accepted_scope[@]}"; do
+        if scope_overlap "$cand_scope" "${accepted_scope[$aid]}"; then overlap="$aid"; break; fi
+      done
+    fi
+  fi
+  if [[ -n "$overlap" ]]; then
+    echo "skip $id: scope overlaps $overlap" >&2
+  else
+    claimable+=("$id")
+    if (( cand_avoid == 1 )) && [[ -n "$cand_scope" ]]; then accepted_scope["$id"]="$cand_scope"; fi
+  fi
 done
+# This advisory read must never change claimability or abort the scan.
+failed_backlog='?'
+if failed_out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --label "$LABEL_FAILED" --order-by createdAt)"; then
+  failed_backlog="$(jq -er '
+    .result.issues | if type != "array" then error("issues missing") else . end
+    | map(select(.state.type != "completed" and .state.type != "canceled")) | length
+  ' <<<"$failed_out" 2>/dev/null)" || failed_backlog='?'
+fi
 echo "claimable=$(IFS=,; echo "${claimable[*]-}") in_flight=$in_flight max=$MAX_IN_FLIGHT"
 echo "stale=$(IFS=,; echo "${stale_ids[*]-}")"
+echo "health=live=$in_flight max=$MAX_IN_FLIGHT released=$released escalated=$escalated failed_backlog=$failed_backlog"
 (( ${#claimable[@]} > 0 && in_flight < MAX_IN_FLIGHT ))
