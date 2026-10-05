@@ -68,6 +68,17 @@ func TestCommands(t *testing.T) {
 		{"list", func(c *Client) (any, error) {
 			return c.WorkerList(ctx, ListOptions{Run: "run_one", TerminalState: "reclaimable", Cursor: "old", Limit: 5, IncludeRemote: true})
 		}, []string{"orchestration", "worker-list", "--run", "run_one", "--terminal-state", "reclaimable", "--cursor", "old", "--limit", "5", "--include-remote", "--json"}, `{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}`},
+		{"workers-two-pages", func(c *Client) (any, error) {
+			workers, err := c.Workers(ctx, ListOptions{Run: "run_one", IncludeRemote: true})
+			if err != nil {
+				return nil, err
+			}
+			var dispatches []string
+			for _, worker := range workers {
+				dispatches = append(dispatches, worker.DispatchID)
+			}
+			return dispatches, nil
+		}, nil, `["ctx_one","ctx_two"]`},
 		{"release", func(c *Client) (any, error) { return c.WorkerRelease(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-release", "--dispatch", "ctx_one", "--retry-request", firstID, "--json"}, `{"dispatchId":"ctx_one","status":"released"}`},
 		{"terminal-create", func(c *Client) (any, error) {
 			return c.TerminalCreate(ctx, TerminalOptions{Worktree: "current", Title: "runner", Command: "codex"})
@@ -96,7 +107,9 @@ func TestCommands(t *testing.T) {
 			if !reflect.DeepEqual(actual, want) {
 				t.Fatalf("result %s, want %s", b, tc.want)
 			}
-			argv(t, log, append(tc.args, "END"))
+			if tc.args != nil {
+				argv(t, log, append(tc.args, "END"))
+			}
 		})
 	}
 }

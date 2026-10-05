@@ -15,9 +15,10 @@ import (
 
 type livenessOrca struct {
 	fakeOrca
-	worker                      orca.Worker
-	polls, stops, terminalCalls int
-	report                      bool
+	worker                                 orca.Worker
+	polls, stops, terminalCalls, taskCalls int
+	report                                 bool
+	reportAt                               int
 }
 
 func (o *livenessOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
@@ -26,6 +27,10 @@ func (o *livenessOrca) WorkerStart(ctx context.Context, req string, opts orca.St
 	return r, err
 }
 func (o *livenessOrca) TaskList(context.Context, string) ([]orca.Task, error) {
+	o.taskCalls++
+	if o.reportAt > 0 && o.taskCalls >= o.reportAt {
+		o.report = true
+	}
 	return idleTask(o.report), nil
 }
 func (o *livenessOrca) Workers(_ context.Context, opts orca.ListOptions) ([]orca.Worker, error) {
@@ -101,6 +106,9 @@ func TestWaitFailsExitedWorker(t *testing.T) {
 	if o.stops != 0 || o.releases != 0 {
 		t.Fatalf("stop=%d release=%d without worker report", o.stops, o.releases)
 	}
+	if o.taskCalls < 2 {
+		t.Fatalf("task-list read %d times before exited failure, want at least two", o.taskCalls)
+	}
 	cp, err := readCheckpoint(e.Config, ticket)
 	if err != nil || cp == nil || cp.Worktree != "/home/laoxu/orca/workspaces/orca-factory/ZII-886-executor" {
 		t.Fatalf("checkpoint=%+v err=%v", cp, err)
@@ -110,10 +118,7 @@ func TestWaitFailsExitedWorker(t *testing.T) {
 func TestWaitStopsWorkerThatNeverStarted(t *testing.T) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
 	o := livenessFixture(t, "unverifiable", "")
-	// The recorded Run has no turn_start_unobserved state; these fields are synthetic.
-	o.worker.DispatchID = "ctx_one"
-	o.worker.Projection.Liveness.Verdict = ""
-	o.worker.Projection.Liveness.Reason = ""
+	// 录制 Run 没有 turn_start_unobserved，detail 为合成值
 	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
 	e.Orca = o
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,11 +136,13 @@ func TestWaitStopsWorkerThatNeverStarted(t *testing.T) {
 				t.Fatalf("stop before 4m59s: %d", o.stops)
 			}
 			now = now.Add(4*time.Minute + 59*time.Second)
+			o.worker.Projection.Liveness.Verdict = ""
 		case 2:
 			if o.stops != 0 {
 				t.Fatalf("stop at 4m59s: %d", o.stops)
 			}
 			now = now.Add(time.Second)
+			o.worker.Projection.Liveness.Verdict = "unverifiable"
 		default:
 			t.Fatal("worker did not stop after five minutes")
 		}
@@ -147,6 +154,21 @@ func TestWaitStopsWorkerThatNeverStarted(t *testing.T) {
 	}
 	if o.releases != 0 {
 		t.Fatalf("release without report: %d", o.releases)
+	}
+}
+
+func TestWaitExitedAfterLateReport(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	o := livenessFixture(t, "exited", "")
+	o.reportAt = 2
+	e.Orca = o
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &livenessRecovery{cancel: cancel}
+	e.Recovery = r
+	result, err := e.Execute(ctx, ticket)
+	if err != nil || result.State.Phase != machine.PhaseMergeQueue || result.State.Corrections != 0 || len(r.requests) != 0 || o.stops != 0 || o.taskCalls != 2 || o.polls != 1 {
+		t.Fatalf("state=%+v err=%v corrections=%+v stops=%d task-list=%d worker-list=%d", result.State, err, r.requests, o.stops, o.taskCalls, o.polls)
 	}
 }
 

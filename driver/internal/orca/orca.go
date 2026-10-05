@@ -287,15 +287,31 @@ func (w Worker) WorktreePath() string {
 
 // Workers decodes fleet rows while preserving WorkerList receipts for scheduler callers.
 func (c *Client) Workers(ctx context.Context, o ListOptions) ([]Worker, error) {
-	receipt, err := c.WorkerList(ctx, o)
-	if err != nil {
-		return nil, err
-	}
 	var workers []Worker
-	if json.Unmarshal(receipt["workers"], &workers) != nil {
-		return nil, invalid("invalid worker list")
+	seen := map[string]bool{o.Cursor: true}
+	for {
+		receipt, err := c.WorkerList(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		var rows []Worker
+		var page struct {
+			HasMore    bool   `json:"hasMore"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if json.Unmarshal(receipt["workers"], &rows) != nil || json.Unmarshal(receipt["page"], &page) != nil {
+			return nil, invalid("invalid worker list")
+		}
+		workers = append(workers, rows...)
+		if !page.HasMore {
+			return workers, nil
+		}
+		if page.NextCursor == "" || seen[page.NextCursor] {
+			return nil, invalid("invalid worker cursor")
+		}
+		o.Cursor = page.NextCursor
+		seen[o.Cursor] = true
 	}
-	return workers, nil
 }
 
 func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error) {

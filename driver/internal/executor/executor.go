@@ -571,10 +571,10 @@ type workerWatch struct {
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
-	for {
+	readReport := func() (*orca.WorkerReport, bool, error) {
 		tasks, err := e.Orca.TaskList(ctx, run)
 		if err != nil {
-			return nil, errors.New("task polling failed")
+			return nil, false, errors.New("task polling failed")
 		}
 		completed := false
 		var report *orca.WorkerReport
@@ -586,14 +586,21 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			completed = completed || t.Status == "completed"
 			report, err = t.WorkerReport()
 			if err != nil {
-				return nil, errors.New("invalid worker report")
+				return nil, false, errors.New("invalid worker report")
 			}
 			if report != nil {
 				if report.Outcome != "succeeded" && report.Outcome != "failed" {
-					return nil, errors.New("invalid worker outcome")
+					return nil, false, errors.New("invalid worker outcome")
 				}
 				break
 			}
+		}
+		return report, completed, nil
+	}
+	for {
+		report, completed, err := readReport()
+		if err != nil {
+			return nil, err
 		}
 		if report != nil {
 			return report, nil
@@ -614,11 +621,17 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return nil, err
 			}
 		}
-		unverifiable := worker != nil && worker.Projection.Liveness.Verdict == "unverifiable"
 		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
+			report, _, err := readReport()
+			if err != nil {
+				return nil, err
+			}
+			if report != nil {
+				return report, nil
+			}
 			return livenessFailure("worker exited without worker_done"), nil
 		}
-		if worker != nil && !unverifiable && worker.Projection.Stage.Detail == "turn_start_unobserved" {
+		if worker != nil && worker.Projection.Stage.Detail == "turn_start_unobserved" {
 			now := e.Now()
 			if watch.unobservedSince.IsZero() {
 				watch.unobservedSince = now

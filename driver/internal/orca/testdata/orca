@@ -12,7 +12,11 @@ case "${ORCA_TEST_SCENARIO:-}:$1:$2" in
   *:orchestration:worker-start) result='{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}' ;;
   *:orchestration:task-list) result='{"tasks":[{"id":"task_one","run_id":"run_one","dispatch_id":"ctx_one","status":"completed","result":"{\"provenance\":\"worker_report\",\"outcome\":\"succeeded\",\"body\":\"done\",\"filesModified\":[\"a.go\"]}"}]}' ;;
   *:orchestration:worker-read) result='{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}' ;;
-  *:orchestration:worker-list) result='{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}' ;;
+  *:orchestration:worker-list)
+    case " $* " in
+      *" --cursor page2 "*) result='{"workers":[{"dispatchId":"ctx_two"}],"page":{"hasMore":false,"nextCursor":null}}' ;;
+      *) result='{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}' ;;
+    esac ;;
   *:orchestration:worker-release) result='{"dispatchId":"ctx_one","status":"released"}' ;;
   *:terminal:create) result='{"terminal":{"handle":"term_one"}}' ;;
   *:terminal:send) result='{"sent":true}' ;;
