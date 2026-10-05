@@ -212,6 +212,36 @@ func TestEmptyAndInvalidAppend(t *testing.T) {
 	}
 }
 
+func TestStageSecsAppend(t *testing.T) {
+	l := openTest(newFake())
+	defer l.Close(context.Background())
+	for _, tc := range []struct {
+		row, want string
+	}{
+		{`{"stage_secs":{"queue":1,"worker":2,"gate":3,"review":4,"merge":5}}`, ""},
+		{`{"stage_secs":{"queue":1,"worker":"2"}}`, "ledger: invalid numeric field"},
+		{`{"stage_secs":5}`, "ledger: invalid numeric field"},
+		{`{"ticket":"A","minutes":2}`, ""},
+		{`{"stage_secs":null}`, ""},
+		{`{"stage_secs":{}}`, ""},
+		{`{"stage_secs":{"queue":0.5}}`, ""},
+		{`{"stage_secs":[]}`, "ledger: invalid numeric field"},
+		{`{"stage_secs":false}`, "ledger: invalid numeric field"},
+		{`{"stage_secs":{"queue":null}}`, "ledger: invalid numeric field"},
+		{`{"stage_secs":{"queue":false}}`, "ledger: invalid numeric field"},
+		{`{"stage_secs":{"queue":{}}}`, "ledger: invalid numeric field"},
+	} {
+		err := l.Append(tc.row)
+		got := ""
+		if err != nil {
+			got = err.Error()
+		}
+		if got != tc.want {
+			t.Errorf("Append(%s) error = %q, want %q", tc.row, got, tc.want)
+		}
+	}
+}
+
 func TestRotationRetriesRetirementBeforeWriting(t *testing.T) {
 	f := newFake()
 	f.comments["old"] = make([]Comment, 400)
