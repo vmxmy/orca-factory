@@ -24,30 +24,90 @@ STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
 GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
 ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
 WORKER_IDLE_MINUTES="${AGENT_WORKER_IDLE_MINUTES:-15}"
+WORKER_MAX_MINUTES="${AGENT_WORKER_MAX_MINUTES:-90}"
 # Batch claim: 1 = legacy single claim; >1 = per-run cap; 0 = no per-run cap (only MAX_IN_FLIGHT caps).
 BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
 # SCOPE avoidance switch: 1 = enforce candidate↔in-flight overlap and (when batching) candidate↔candidate;
 # 0 = skip every SCOPE check (worktree + merge rebase resolve conflicts instead).
 SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 
+# Files survive command substitutions and work with macOS bash 3.2.
+precheck_tmp="$(mktemp -d "${TMPDIR:-/tmp}/linear-precheck.XXXXXX")"
+: > "$precheck_tmp/calls"
+finish_precheck() {
+  local status=$?
+  if [[ -f "$precheck_tmp/rate-limited" ]]; then
+    echo '不确定: linear rate limited' >&2
+    status=3
+  fi
+  echo "linear_calls=$(wc -l < "$precheck_tmp/calls" | tr -d ' ')" >&2
+  rm -rf "$precheck_tmp"
+  exit "$status"
+}
+trap finish_precheck EXIT
+
+rate_guard() {
+  [[ ! -f "$precheck_tmp/rate-limited" ]] || exit 3
+}
+
 ocall() {
-  local out attempt
-  for attempt in 1 2 3; do
-    out="$(orca "$@" --json 2>/dev/null)" && jq -e '.ok == true' <<<"$out" >/dev/null && { printf '%s' "$out"; return 0; }
-    sleep 2
+  local out attempt attempts=3 cache="" status
+  rate_guard
+  if [[ "$1 $2" == 'linear issue' ]]; then
+    cache="$precheck_tmp/issue-$(jq -rn --arg id "$3" '$id | @uri')-${4:-detail}"
+    if [[ -f "$cache.status" ]]; then
+      status="$(cat "$cache.status")"
+      cat "$cache"
+      return "$status"
+    fi
+    # Even failed issue reads are cached: each section is requested at most once.
+    attempts=1
+  fi
+  [[ "${claim_bounded:-0}" != 1 ]] || attempts=1
+  for ((attempt=1; attempt<=attempts; attempt++)); do
+    rate_guard
+    [[ "$1" != linear ]] || echo call >> "$precheck_tmp/calls"
+    status=0
+    if [[ "${claim_bounded:-0}" == 1 ]]; then
+      out="$(perl -e 'alarm 20; exec @ARGV' -- orca "$@" --json 2> "$precheck_tmp/stderr")" || status=$?
+    else
+      out="$(orca "$@" --json 2> "$precheck_tmp/stderr")" || status=$?
+    fi
+    if [[ "$status" == 0 ]] && jq -e '.ok == true' <<<"$out" >/dev/null 2>&1; then
+      if [[ -n "$cache" ]]; then
+        printf '%s' "$out" > "$cache"
+        echo 0 > "$cache.status"
+      fi
+      printf '%s' "$out"
+      return 0
+    fi
+    if [[ "$1" == linear ]] && { [[ "$out" == *'Rate limit'* ]] || grep -q 'Rate limit' "$precheck_tmp/stderr"; }; then
+      touch "$precheck_tmp/rate-limited"
+      return 3
+    fi
+    (( attempt >= attempts )) || sleep 2
   done
+  if [[ -n "$cache" ]]; then
+    printf '%s' "$out" > "$cache"
+    echo 1 > "$cache.status"
+  fi
   echo "orca $* failed: $(jq -r '.error.code // "unknown"' <<<"$out" 2>/dev/null)" >&2
+  printf '%s' "$out"
   return 1
 }
 
 ids() {
   local out
-  out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --label "$1" --order-by createdAt)" || exit 3
+  if [[ ! -f "$precheck_tmp/issues" ]]; then
+    out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --order-by createdAt)" || exit 3
+    printf '%s' "$out" > "$precheck_tmp/issues"
+  fi
   # priority: 1 urgent … 4 low; 0/null = none -> 9 so it sorts after every explicit priority.
-  jq -r --arg type "$2" '
+  jq -r --arg label "$1" --arg type "$2" '
     .result.issues
     | sort_by(((.priority // 0) | if . == 0 then 9 else . end), .createdAt)[]
-    | select(.state.type == $type) | .identifier' <<<"$out"
+    | select(any(.labels[]?; .name == $label))
+    | select(.state.type == $type) | .identifier' "$precheck_tmp/issues"
 }
 
 unblocked() {
@@ -82,8 +142,7 @@ mark_stale() {
 # Recovery reads are bounded and fail closed without aborting the existing scan.
 claim_read() {
   local out
-  if out="$(perl -e 'alarm 20; exec @ARGV' -- orca "$@" --json 2>/dev/null)" &&
-    jq -e '.ok == true' <<<"$out" >/dev/null 2>&1; then
+  if out="$(claim_bounded=1 ocall "$@")"; then
     printf '%s' "$out"
   else
     echo "precheck: $claim_id 认领判定不确定：orca $* failed ($(jq -r '.error.code // "command error/timeout/invalid response"' <<<"$out" 2>/dev/null))" >&2
@@ -184,6 +243,49 @@ orphan_claim() {
     claim_uncertain 'cannot count claim failures for orphan check'; return 1
   fi
   claim_reason="在途超过 ${ORPHAN_MINUTES} 分钟无更新且无 PR，coordinator 疑似已结束"
+}
+
+# Bound total time since the newest claim even when worker activity refreshes updatedAt.
+# Require a complete comment snapshot, a still-started issue and no open PR; uncertain
+# reads keep the ticket live, using the same bounded reads as orphan_claim.
+overrun_claim() {
+  local claim_id="$1" out verdict pr_out pr_count
+  claim_reason=""
+  claim_failures=0
+  if ! out="$(claim_read linear issue "$claim_id")"; then return 1; fi
+  if ! verdict="$(jq -er '
+    .result.issue.state.type
+    | if type == "string" and length > 0 then . else error("state missing") end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse state for overrun check'; return 1
+  fi
+  [[ "$verdict" == started ]] || return 1
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
+    claim_uncertain 'comments truncated for overrun check'; return 1
+  fi
+  if ! verdict="$(jq -er --argjson m "$WORKER_MAX_MINUTES" '
+    .result.comments | if type != "array" then error("comments missing") else . end
+    | map(select((.body // "") | startswith("已领取"))
+      | .createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+    | if length == 0 then "live"
+      elif (now - max) > ($m * 60) then "overrun" else "live" end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse claim comments for overrun check'; return 1
+  fi
+  [[ "$verdict" == overrun ]] || return 1
+  if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot count claim failures for overrun check'; return 1
+  fi
+  if ! pr_out="$(perl -e 'alarm 20; exec @ARGV' -- \
+    gh pr list --repo "$GH_REPO" --state open --search "$claim_id in:title" --json number 2>/dev/null)"; then
+    claim_uncertain "gh pr list failed for $claim_id"; return 1
+  fi
+  if ! pr_count="$(jq -er 'if type == "array" then length else error("pr list not array") end' <<<"$pr_out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse gh pr list output for overrun check'; return 1
+  fi
+  (( pr_count == 0 )) || return 1
+  claim_reason="认领后超过 ${WORKER_MAX_MINUTES} 分钟未产出 PR"
 }
 
 release_claim() {
@@ -296,6 +398,8 @@ for id in $in_flight_ids; do
     release_claim "$id"
   elif orphan_claim "$id"; then
     release_claim "$id"
+  elif overrun_claim "$id"; then
+    release_claim "$id"
   elif stuck_worker "$id"; then
     release_claim "$id"
   else
@@ -305,10 +409,10 @@ done
 in_flight=${#live[@]}
 # Cache every live ticket's SCOPE once; a ticket whose SCOPE is unknown or unreadable contributes nothing
 # and never blocks a candidate. When AGENT_SCOPE_AVOID=0 the cache stays empty so no candidate is blocked.
-declare -A live_scope=()
+mkdir "$precheck_tmp/live-scope"
 if (( SCOPE_AVOID == 1 && ${#live[@]} > 0 )); then
   for id in "${live[@]}"; do
-    if s="$(scope_of "$id")" && [[ -n "$s" ]]; then live_scope["$id"]="$s"; fi
+    if s="$(scope_of "$id")" && [[ -n "$s" ]]; then printf '%s' "$s" > "$precheck_tmp/live-scope/$id"; fi
   done
 fi
 # How many candidates this run may accept: capped by free MAX_IN_FLIGHT slots, then by AGENT_BATCH_SIZE
@@ -330,9 +434,10 @@ for id in $ready_ids; do
   fi
   overlap=""
   if (( SCOPE_AVOID == 1 )) && [[ -n "$cand_scope" ]]; then
-    if (( ${#live_scope[@]} > 0 )); then
-      for lid in "${!live_scope[@]}"; do
-        if scope_overlap "$cand_scope" "${live_scope[$lid]}"; then overlap="$lid"; break; fi
+    if (( ${#live[@]} > 0 )); then
+      for lid in "${live[@]}"; do
+        [[ -f "$precheck_tmp/live-scope/$lid" ]] || continue
+        if scope_overlap "$cand_scope" "$(cat "$precheck_tmp/live-scope/$lid")"; then overlap="$lid"; break; fi
       done
     fi
     if [[ -z "$overlap" ]] && (( cand_avoid == 1 && ${#accepted_scope[@]} > 0 )); then
@@ -356,6 +461,7 @@ if failed_out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --
     | map(select(.state.type != "completed" and .state.type != "canceled")) | length
   ' <<<"$failed_out" 2>/dev/null)" || failed_backlog='?'
 fi
+rate_guard
 echo "claimable=$(IFS=,; echo "${claimable[*]-}") in_flight=$in_flight max=$MAX_IN_FLIGHT"
 echo "stale=$(IFS=,; echo "${stale_ids[*]-}")"
 echo "health=live=$in_flight max=$MAX_IN_FLIGHT released=$released escalated=$escalated failed_backlog=$failed_backlog"

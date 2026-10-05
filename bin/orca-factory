@@ -426,6 +426,7 @@ LEDGER_SLEEP
     export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
     export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/precheck-test AGENT_ORPHAN_MINUTES=45
     export AGENT_WORKER_IDLE_MINUTES=15
+    unset AGENT_WORKER_MAX_MINUTES
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
 #!/usr/bin/env bash
 set -eu
@@ -437,22 +438,26 @@ case "$*" in
       scope-missing) echo '{"ok":true,"result":{}}' ;;
       *) echo '{"ok":true,"result":{"issues":[{"state":{"type":"started"}},{"state":{"type":"unstarted"}},{"state":{"type":"completed"}},{"state":{"type":"canceled"}}]}}' ;;
     esac ;;
-  'linear list-issues '*--label\ auto-impl*)
+  'linear list-issues --team TEST --project precheck-test --order-by createdAt --json')
     case "$PRECHECK_MODE" in
-      batch-three|batch-cand-overlap|batch-default) echo '{"ok":true,"result":{"issues":[]}}' ;;
-      *) echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
-    esac ;;
-  'linear list-issues '*--label\ ready-for-agent*)
-    case "$PRECHECK_MODE" in
-      batch-three|batch-cand-overlap|batch-default|batch-cap|scope-avoid-off)
-        echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}},{"identifier":"TEST-3","state":{"type":"unstarted"}},{"identifier":"TEST-4","state":{"type":"unstarted"}}]}}' ;;
-      *) echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","state":{"type":"unstarted"}}]}}' ;;
+      batch-three|batch-cand-overlap|batch-default)
+        echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}},{"identifier":"TEST-3","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}},{"identifier":"TEST-4","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}}]}}' ;;
+      batch-cap|scope-avoid-off)
+        echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","labels":[{"name":"auto-impl"}],"state":{"type":"started"}},{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}},{"identifier":"TEST-3","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}},{"identifier":"TEST-4","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}}]}}' ;;
+      *)
+        echo '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","labels":[{"name":"auto-impl"}],"state":{"type":"started"}},{"identifier":"TEST-2","labels":[{"name":"ready-for-agent"}],"state":{"type":"unstarted"}}]}}' ;;
     esac ;;
   'linear issue TEST-2 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-3 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-4 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
+      overrun-state-fail)
+        # Cached response parses for stale and orphan checks but omits state.type,
+        # so overrun_claim's state parse hits the uncertain path and leaves TEST-1 live.
+        jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601)}}}' ;;
+      overrun-*)
+        jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),state:{type:(if $mode == "overrun-completed" then "completed" else "started" end)}}}}' ;;
       stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
@@ -491,24 +496,26 @@ case "$*" in
       *) jq -nc '{ok:true,result:{issue:{}}}' ;;
     esac ;;
   'linear issue TEST-1 --comments --json')
+    if [[ "$PRECHECK_MODE" == overrun-comments-fail ]]; then echo '{"ok":false}'; exit 7; fi
     jq -nc --arg mode "$PRECHECK_MODE" '
       def is_orphan: $mode | test("^orphan");
       {ok:true,result:{comments:
         ([{body:"已领取 · tier=default",
-           createdAt:(if is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
+           createdAt:(if ($mode | test("^overrun-")) then ((now-7200)|todateiso8601)
+                     elif is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
                      else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
-         + (if $mode == "recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
-         + (if $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
+         + (if $mode == "recent" or $mode == "overrun-recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "overrun-limit" or $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
         meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
     case "$PRECHECK_MODE" in
       fail) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}'; exit 7 ;;
       notok) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}' ;;
-      empty|busy|card|hosts-omitted|worker-*) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
+      empty|busy|card|hosts-omitted|worker-*|overrun-*) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
       *) echo '{"ok":true,"result":{"runs":[]}}' ;;
     esac ;;
   'orchestration task-list --run run-test --json')
-    if [[ "$PRECHECK_MODE" == busy || "$PRECHECK_MODE" == worker-* ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
+    if [[ "$PRECHECK_MODE" == busy || "$PRECHECK_MODE" == worker-* || "$PRECHECK_MODE" == overrun-* ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
     else echo '{"ok":true,"result":{"tasks":[]}}'; fi ;;
   'worktree ps --json')
     case "$PRECHECK_MODE" in
@@ -551,18 +558,23 @@ PRECHECK_ORCA
 set -eu
 printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
 case "${PRECHECK_MODE:-}" in
-  orphan-pr) echo '[{"number":1}]' ;;
-  orphan-fail) exit 2 ;;
+  orphan-pr|overrun-pr) echo '[{"number":1}]' ;;
+  orphan-fail|overrun-gh-fail) exit 2 ;;
+  overrun-gh-invalid) echo '{}'  ;;
   *) echo '[]' ;;
 esac
 PRECHECK_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
     for PRECHECK_MODE in stale missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
+                         overrun-expired overrun-pr overrun-recent overrun-limit overrun-gh-fail overrun-gh-invalid \
+                         overrun-state-fail overrun-comments-fail overrun-completed overrun-custom \
                          orphan orphan-pr orphan-fresh orphan-limit orphan-fail \
                          worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated \
                          scope-overlap scope-separate scope-missing scope-fail \
                          batch-three batch-cand-overlap batch-default batch-cap scope-avoid-off; do
       export PRECHECK_MODE
+      unset AGENT_WORKER_MAX_MINUTES
+      [[ "$PRECHECK_MODE" != overrun-custom ]] || export AGENT_WORKER_MAX_MINUTES=150
       unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
       export AGENT_MAX_IN_FLIGHT=2
       case "$PRECHECK_MODE" in
@@ -582,8 +594,8 @@ PRECHECK_GH
       grep -Eq '^health=live=[0-9]+ max=[0-9]+ released=[0-9]+ escalated=[0-9]+ failed_backlog=([0-9]+|[?])$' "$SELFTEST_TMP/precheck.out" || fail "selftest: precheck health summary missing or malformed ($PRECHECK_MODE)"
       health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2'
       case "$PRECHECK_MODE" in
-        missing|empty|orphan|worker-stuck) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
-        stale|limit|orphan-limit|worker-stuck-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
+        missing|empty|orphan|worker-stuck|overrun-expired) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
+        stale|limit|orphan-limit|worker-stuck-limit|overrun-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
         scope-overlap|scope-separate|scope-missing) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=?' ;;
         batch-three|batch-cand-overlap|batch-default) health_expected='live=0 max=5 released=0 escalated=0 failed_backlog=2' ;;
         batch-cap) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2' ;;
@@ -592,6 +604,21 @@ PRECHECK_GH
       grep -Fxq "health=$health_expected" "$SELFTEST_TMP/precheck.out" || fail "selftest: incorrect health counts ($PRECHECK_MODE)"
       grep -q '^linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: backlog read missing project fence"
       case "$PRECHECK_MODE" in
+        overrun-expired)
+          grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun did not reset Todo"
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun kept claim"
+          grep -q '认领失效（认领后超过 90 分钟未产出 PR），已释放' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun reason missing" ;;
+        overrun-limit)
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun not escalated"
+          grep -q '^linear comment add TEST-1 --body 转人:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun handoff missing"
+          grep -q '^证据: .*认领后超过 90 分钟未产出 PR$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun evidence missing"
+          grep -q '^需要你:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun action missing"
+          if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun limit reset Todo"; fi ;;
+        overrun-*)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun guard mutated ($PRECHECK_MODE)"; fi
+          case "$PRECHECK_MODE" in
+            *-fail|*-invalid) grep -q '不确定' "$SELFTEST_TMP/precheck.err" || fail "selftest: overrun uncertainty missing" ;;
+          esac ;;
         stale)
           grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: old claim not stale"
           grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: old claim not escalated" ;;
@@ -680,6 +707,61 @@ PRECHECK_GH
       esac
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
+    echo "selftest: precheck caps worker run time"
+    # Read reuse and rate limiting have their own fixture, independent of recovery cases.
+    mv "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/orca-fixture"
+    cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_READS'
+#!/usr/bin/env bash
+set -eu
+if [[ "${PRECHECK_RATE_AT:-}" == "$*" ]]; then
+  printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+  if [[ "$*" == *'--comments --json' ]]; then
+    echo '{"ok":false,"error":{"message":"Rate limit exceeded"}}'
+    exit 0
+  fi
+  echo 'Rate limit exceeded' >&2
+  exit 7
+fi
+if [[ "$*" == 'linear issue TEST-1 --json' ]]; then
+  printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
+  jq -nc '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),description:"Investigate Rate limit errors"}}}'
+  exit 0
+fi
+exec "$(dirname "$0")/orca-fixture" "$@"
+PRECHECK_READS
+    chmod +x "$SELFTEST_TMP/precheck-bin/orca"
+    # Reset per-mode env from the recovery loop so reuse/rate-limit cases run with default knobs.
+    export AGENT_MAX_IN_FLIGHT=2
+    unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
+    export PRECHECK_MODE=recent
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: reuse scan failed"
+    [[ "$(grep -c '^linear issue TEST-1 --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated issue read"
+    [[ "$(grep -c '^linear list-issues .*--order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls")" == 2 ]] || fail "selftest: ids must share one list read plus advisory backlog"
+    grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: incorrect Linear call count"
+    export PRECHECK_MODE=worker-stuck
+    : > "$SELFTEST_TMP/precheck.calls"
+    bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || fail "selftest: comment reuse scan failed"
+    [[ "$(grep -c '^linear issue TEST-1 --comments --json$' "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: repeated comment read"
+    grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: mutations missing from Linear call count"
+    export PRECHECK_MODE=recent
+    for PRECHECK_RATE_AT in 'linear list-issues --team TEST --project precheck-test --order-by createdAt --json' \
+                            'linear issue TEST-1 --json' 'linear issue TEST-1 --comments --json' \
+                            'linear issue TEST-2 --relations --json' 'linear issue TEST-2 --json' \
+                            'linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json'; do
+      export PRECHECK_RATE_AT
+      : > "$SELFTEST_TMP/precheck.calls"
+      precheck_status=0
+      bash "$SELFTEST_TMP/$DEST_REL/linear-precheck.sh" > "$SELFTEST_TMP/precheck.out" 2> "$SELFTEST_TMP/precheck.err" || precheck_status=$?
+      [[ "$precheck_status" == 3 ]] || fail "selftest: rate limit must exit uncertain"
+      [[ "$(tail -n 1 "$SELFTEST_TMP/precheck.calls")" == "$PRECHECK_RATE_AT" ]] || fail "selftest: calls continued after rate limit"
+      [[ "$(grep -Fxc "$PRECHECK_RATE_AT" "$SELFTEST_TMP/precheck.calls")" == 1 ]] || fail "selftest: rate limit retried"
+      if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: rate limit mutated ticket"; fi
+      grep -Fxq '不确定: linear rate limited' "$SELFTEST_TMP/precheck.err" || fail "selftest: rate limit reason missing"
+      grep -Fxq "linear_calls=$(grep -c '^linear ' "$SELFTEST_TMP/precheck.calls")" "$SELFTEST_TMP/precheck.err" || fail "selftest: rate limit call count missing"
+    done
+    unset PRECHECK_RATE_AT
+    echo "selftest: precheck reuses linear reads and stops on rate limit"
     echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
     echo "selftest: precheck releases orphaned claims"
@@ -688,6 +770,96 @@ PRECHECK_GH
     echo "selftest: precheck skips scope-overlapping tickets"
     echo "selftest: precheck claims multiple non-overlapping tickets"
   )
+  # Prune compensation uses real Git worktrees and a local bare origin; services are isolated.
+  (
+    export PRUNE_TEST_ROOT="$SELFTEST_TMP/prune"
+    mkdir -p "$PRUNE_TEST_ROOT/bin"
+    cat > "$PRUNE_TEST_ROOT/bin/orca" <<'PRUNE_ORCA'
+#!/usr/bin/env bash
+set -eu
+case "$1 $2" in
+  'worktree list')
+    if [[ "$PRUNE_MODE" == started ]]; then
+      jq -nc --arg root "$AGENT_REPO_PATH" '{ok:true,result:{worktrees:[{path:($root+"/worker"),linkedLinearIssue:"TEST-1",createdAt:9999999999999},{path:($root+"/legacy"),createdAt:9999999999999}]}}'
+    elif [[ -d "$AGENT_REPO_PATH/worker" ]]; then
+      jq -nc --arg path "$AGENT_REPO_PATH/worker" '{ok:true,result:{worktrees:[{path:$path,linkedLinearIssue:"TEST-1",createdAt:9999999999999}]}}'
+    else
+      echo '{"ok":true,"result":{"worktrees":[]}}'
+    fi ;;
+  'linear issue')
+    jq -nc --arg state "$(case "$PRUNE_MODE" in started|canceled) echo "$PRUNE_MODE" ;; *) echo completed ;; esac)" \
+      '{ok:true,result:{issue:{state:{type:$state},labels:[{name:"auto-impl"}]}}}' ;;
+  'worktree rm')
+    [[ "$3" == --worktree && ( "$#" == 4 || ( "$#" == 5 && "$5" == --json ) ) ]] || exit 9
+    git -C "$AGENT_REPO_PATH" worktree remove "${4#path:}"
+    echo '{"ok":true}' ;;
+  *) exit 8 ;;
+esac
+PRUNE_ORCA
+    cat > "$PRUNE_TEST_ROOT/bin/gh" <<'PRUNE_GH'
+#!/usr/bin/env bash
+set -eu
+[[ "$PRUNE_MODE" != pr-failure && "$PRUNE_MODE" != pushed ]] || { echo 'PR query unavailable' >&2; exit 7; }
+if [[ "$1 $2" == "pr view" ]]; then echo MERGED; exit 0; fi
+jq -nc --arg sha "$PRUNE_MERGED_SHA" --arg repo "$AGENT_GH_REPO" \
+  '["worker","git","local","remote"] | map({merged_at:"2026-01-01T00:00:00Z",head:{sha:$sha,ref:("agent/TEST-1/"+.),repo:{full_name:$repo}}})'
+PRUNE_GH
+    chmod +x "$PRUNE_TEST_ROOT/bin/"*
+    export PATH="$PRUNE_TEST_ROOT/bin:$PATH" AGENT_GH_REPO=test/repo AGENT_RUN_WORKTREE_PREFIX=run-
+    for PRUNE_MODE in reclaim dirty mismatch locked started pr-failure pushed canceled; do
+      export PRUNE_MODE AGENT_REPO_PATH="$PRUNE_TEST_ROOT/$PRUNE_MODE"
+      git init -q --bare "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
+      git init -q "$AGENT_REPO_PATH"
+      git -C "$AGENT_REPO_PATH" config user.name selftest
+      git -C "$AGENT_REPO_PATH" config user.email selftest@example.test
+      git -C "$AGENT_REPO_PATH" commit -qm seed --allow-empty
+      export PRUNE_MERGED_SHA="$(git -C "$AGENT_REPO_PATH" rev-parse HEAD)"
+      git -C "$AGENT_REPO_PATH" remote add origin "$PRUNE_TEST_ROOT/$PRUNE_MODE.git"
+      git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/worker "$AGENT_REPO_PATH/worker"
+      git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/git "$AGENT_REPO_PATH/.claude/worktrees/agent-test"
+      git -C "$AGENT_REPO_PATH" branch agent/TEST-1/local
+      git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/remote HEAD:refs/heads/agent/TEST-1/backup
+      case "$PRUNE_MODE" in
+        dirty) touch "$AGENT_REPO_PATH/worker/untracked" "$AGENT_REPO_PATH/.claude/worktrees/agent-test/untracked" ;;
+        mismatch)
+          PRUNE_MERGED_SHA=0000000000000000000000000000000000000000
+          mkdir -p "$AGENT_REPO_PATH/worker/.omc"
+          printf 'pr=1\n' > "$AGENT_REPO_PATH/worker/.omc/agent-unit"
+          printf '.omc/\n' >> "$AGENT_REPO_PATH/.git/info/exclude" ;;
+        pushed) git -C "$AGENT_REPO_PATH" push -q origin HEAD:refs/heads/agent/TEST-1/worker ;;
+        started)
+          git -C "$AGENT_REPO_PATH" worktree add -qb agent/TEST-1/legacy "$AGENT_REPO_PATH/legacy"
+          mkdir -p "$AGENT_REPO_PATH/legacy/.omc"
+          printf 'pr=1\n' > "$AGENT_REPO_PATH/legacy/.omc/agent-unit"
+          printf '.omc/\n' >> "$AGENT_REPO_PATH/.git/info/exclude" ;;
+        locked) git -C "$AGENT_REPO_PATH" worktree lock "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ;;
+      esac
+      (cd "$SELFTEST_TMP" && bash "$CORE/prune-run-worktrees.sh") > "$PRUNE_TEST_ROOT/out" 2> "$PRUNE_TEST_ROOT/err"
+      case "$PRUNE_MODE" in
+        reclaim|locked|pushed) [[ ! -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune kept eligible worker ($PRUNE_MODE)" ;;
+        *) [[ -d "$AGENT_REPO_PATH/worker" ]] || fail "selftest: prune removed protected worker ($PRUNE_MODE)" ;;
+      esac
+      case "$PRUNE_MODE" in
+        reclaim|canceled) [[ ! -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail 'selftest: prune kept eligible Git-only worktree' ;;
+        *) [[ -d "$AGENT_REPO_PATH/.claude/worktrees/agent-test" ]] || fail "selftest: prune removed protected Git-only worktree ($PRUNE_MODE)" ;;
+      esac
+      case "$PRUNE_MODE" in
+        canceled)
+          ! git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune kept merged canceled local branch'
+          [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune removed canceled remote branch' ;;
+        reclaim|dirty|locked)
+          ! git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune kept merged local branch'
+          [[ -z "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune kept merged remote branch' ;;
+        *)
+          git -C "$AGENT_REPO_PATH" show-ref --verify --quiet refs/heads/agent/TEST-1/local || fail 'selftest: prune removed protected local branch'
+          [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/remote)" ]] || fail 'selftest: prune removed protected remote branch' ;;
+      esac
+      [[ -n "$(git -C "$AGENT_REPO_PATH" ls-remote origin refs/heads/agent/TEST-1/backup)" ]] || fail 'selftest: prune removed unmatched backup'
+      [[ "$PRUNE_MODE" != started || -d "$AGENT_REPO_PATH/legacy" ]] || fail 'selftest: prune removed in-flight legacy worktree'
+      [[ "$PRUNE_MODE" == reclaim || -s "$PRUNE_TEST_ROOT/err" ]] || fail 'selftest: prune did not explain retention'
+    done
+  )
+  echo 'selftest: prune reclaims merged worktrees and branches'
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }
