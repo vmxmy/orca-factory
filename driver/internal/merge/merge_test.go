@@ -260,3 +260,20 @@ func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
 		t.Fatalf("%+v %+v merges=%d trees=%d", a, b, h.merges, g.trees)
 	}
 }
+
+func TestDeploymentPolicyBelongsToRepository(t *testing.T) {
+	c, h, _, _, d := fixture(ready())
+	first := req(1)
+	first.DeployWorkflow = "deploy"
+	first.SmokeCommand = "smoke"
+	c.Enqueue(first)
+	c.Enqueue(req(2))
+	c.Enqueue(req(3))
+	next(t, c, first.Repository)
+	next(t, c, first.Repository)
+	d.state = DeploymentPending
+	r := next(t, c, first.Repository)
+	if r.Status != Waiting || h.merges != 2 {
+		t.Fatalf("repository deployment barrier lost: %+v merges=%d", r, h.merges)
+	}
+}

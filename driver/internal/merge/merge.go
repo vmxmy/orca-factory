@@ -90,11 +90,12 @@ type deployed struct {
 	sha     string
 }
 type lane struct {
-	mu       sync.Mutex
-	busy     bool
-	queue    []*entry
-	previous *deployed
-	paused   bool
+	mu                           sync.Mutex
+	busy                         bool
+	queue                        []*entry
+	previous                     *deployed
+	paused                       bool
+	deployWorkflow, smokeCommand string
 }
 type Channel struct {
 	mu     sync.Mutex
@@ -128,6 +129,16 @@ func (c *Channel) Enqueue(r Request) error {
 	l := c.lane(r.Repository)
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// Deployment policy is repository-wide and survives requests that omit it.
+	if (l.deployWorkflow != "" && r.DeployWorkflow != "" && l.deployWorkflow != r.DeployWorkflow) || (l.smokeCommand != "" && r.SmokeCommand != "" && l.smokeCommand != r.SmokeCommand) {
+		return errors.New("conflicting repository deployment policy")
+	}
+	if r.DeployWorkflow != "" {
+		l.deployWorkflow = r.DeployWorkflow
+	}
+	if r.SmokeCommand != "" {
+		l.smokeCommand = r.SmokeCommand
+	}
 	for _, e := range l.queue {
 		if e.request.Number == r.Number {
 			return nil
@@ -156,6 +167,8 @@ func (c *Channel) Next(ctx context.Context, repo string) (Result, error) {
 	var e *entry
 	if len(l.queue) > 0 {
 		e = l.queue[0]
+		e.request.DeployWorkflow = l.deployWorkflow
+		e.request.SmokeCommand = l.smokeCommand
 	}
 	previous := l.previous
 	l.mu.Unlock()
