@@ -1,0 +1,15 @@
+{
+ "id": "07a77606-cef4-4541-a451-76c90fe19226",
+ "ok": true,
+ "result": {
+  "worktree": {
+   "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory/.claude/worktrees/fix-blockers",
+   "path": "/home/laoxu/github/orca-factory/.claude/worktrees/fix-blockers",
+   "branch": "refs/heads/feat/orca-envelope",
+   "displayName": "feat/orca-envelope",
+   "comment": "driver: 录制回执",
+   "workspaceStatus": "in-progress",
+   "linkedLinearIssue": null
+  }
+ }
+}

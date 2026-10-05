@@ -278,12 +278,43 @@ func (c *Client) TerminalCreate(ctx context.Context, o TerminalOptions) (Receipt
 	return c.call(ctx, args)
 }
 
-// TerminalSend has no retry-request support and is never retried automatically.
+// TerminalSend is never retried automatically. It waits for the agent to start
+// a turn; TurnStarted tells whether the receipt proves that.
 func (c *Client) TerminalSend(ctx context.Context, terminal, text string) (Receipt, error) {
 	if terminal == "" || text == "" {
 		return nil, invalid("terminal send requires handle and text")
 	}
-	return c.call(ctx, []string{"terminal", "send", "--terminal", terminal, "--text", text, "--enter"})
+	return c.call(ctx, []string{"terminal", "send", "--terminal", terminal, "--text", text, "--enter", "--wait-submit", "30"})
+}
+
+// TurnStarted reports whether a terminal send receipt observed the agent start a turn.
+// Providers that cannot observe delivery never prove it.
+func TurnStarted(r Receipt) bool {
+	var send struct {
+		Prompt struct {
+			Stages []string `json:"stages"`
+		} `json:"prompt"`
+	}
+	if json.Unmarshal(r["send"], &send) != nil {
+		return false
+	}
+	for _, stage := range send.Prompt.Stages {
+		if stage == "turn_started" {
+			return true
+		}
+	}
+	return false
+}
+
+// WorktreeSet updates the Orca board metadata of the worktree at an absolute path.
+func (c *Client) WorktreeSet(ctx context.Context, path, linearIssue, status, comment string) (Receipt, error) {
+	if !filepath.IsAbs(path) || status == "" {
+		return nil, invalid("worktree set requires absolute path and status")
+	}
+	args := []string{"worktree", "set", "--worktree", "path:" + path, "--workspace-status", status}
+	args = add(args, "--linear-issue", linearIssue)
+	args = add(args, "--comment", comment)
+	return c.call(ctx, args)
 }
 func (c *Client) TerminalShow(ctx context.Context, terminal string) (Receipt, error) {
 	return c.call(ctx, []string{"terminal", "show", "--terminal", terminal})

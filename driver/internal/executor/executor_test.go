@@ -25,6 +25,7 @@ type fakeOrca struct {
 	start          orca.StartOptions
 	objective      string
 	releases       int
+	boardUpdates   []string
 	releaseErr     error
 }
 
@@ -40,7 +41,7 @@ func (f *fakeOrca) RunUse(_ context.Context, _, run string) (orca.Receipt, error
 func (f *fakeOrca) WorkerStart(_ context.Context, request string, o orca.StartOptions) (orca.Receipt, error) {
 	f.workerRequests = append(f.workerRequests, request)
 	f.start = o
-	return orca.Receipt{"taskId": json.RawMessage(`"task_one"`), "dispatchId": json.RawMessage(`"ctx_one"`)}, nil
+	return orca.Receipt{"taskId": json.RawMessage(`"task_one"`), "dispatchId": json.RawMessage(`"ctx_one"`), "worktreePath": json.RawMessage(`"/worktrees/ZII-861-executor"`)}, nil
 }
 func (f *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	return []orca.Task{{ID: "task_one", RunID: "run_one", DispatchID: "ctx_one", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"succeeded"}`)}}, nil
@@ -141,6 +142,10 @@ func TestMainPath(t *testing.T) {
 	if o.releases != 1 || tools.gateCalls != 1 || tools.reviewCalls != 1 {
 		t.Fatalf("release=%d gate=%d review=%d", o.releases, tools.gateCalls, tools.reviewCalls)
 	}
+	board := []string{"in-progress driver: worker 运行中", "in-review driver: 分支检查", "in-review driver: gate", "in-review driver: 审查", "in-review driver: 开 PR", "in-review driver: 排队合并"}
+	if !reflect.DeepEqual(o.boardUpdates, board) {
+		t.Fatalf("board updates=%q", o.boardUpdates)
+	}
 	if o.objective != "ZII-861 执行器" || o.start.Run != "run_one" || o.start.Worktree != "new-top-level" || o.start.Repo != "path:/repo/demo" {
 		t.Fatalf("dispatch: %+v %s", o.start, o.objective)
 	}
@@ -215,10 +220,15 @@ func TestMainPathReusesPR(t *testing.T) {
 
 func TestMainPathReleaseFailure(t *testing.T) {
 	e, o, _, g, tools, ticket := fixture(t, "new-sha")
-	o.releaseErr = errors.New("secret release detail")
-	_, err := e.Execute(context.Background(), ticket)
-	if err == nil || strings.Contains(err.Error(), "secret") || o.releases != 1 || len(g.created) != 0 || tools.gateCalls != 0 {
-		t.Fatalf("release must not be replayed after uncertainty: err=%v calls=%d PR=%v gate=%d", err, o.releases, g.created, tools.gateCalls)
+	o.releaseErr = errors.New("release_unknown")
+	var warnings strings.Builder
+	e.Stderr = &warnings
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge || o.releases != 1 || len(g.created) != 1 || tools.gateCalls != 1 {
+		t.Fatalf("release failure must not fail or replay: err=%v owner=%s calls=%d PR=%v gate=%d", err, result.State.Owner, o.releases, g.created, tools.gateCalls)
+	}
+	if !strings.Contains(warnings.String(), "worker release failed for dispatch ctx_one: release_unknown") {
+		t.Fatalf("warnings=%q", warnings.String())
 	}
 }
 
@@ -233,6 +243,11 @@ func TestMainPathTicketFields(t *testing.T) {
 			t.Fatalf("ticket=%+v err=%v", ticket, err)
 		}
 	}
+}
+
+func (f *fakeOrca) WorktreeSet(_ context.Context, branch, issue, status, comment string) (orca.Receipt, error) {
+	f.boardUpdates = append(f.boardUpdates, status+" "+comment)
+	return orca.Receipt{}, nil
 }
 
 func (*fakeOrca) TerminalList(context.Context) ([]orca.Terminal, error) { return nil, nil }

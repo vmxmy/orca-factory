@@ -297,7 +297,7 @@ func TestTerminalSend(t *testing.T) {
 	if err != nil || string(receipt["sent"]) != "true" {
 		t.Fatalf("receipt=%v err=%v", receipt, err)
 	}
-	argv(t, log, []string{"terminal", "send", "--terminal", "term_one", "--text", "continue work", "--enter", "--json", "END"})
+	argv(t, log, []string{"terminal", "send", "--terminal", "term_one", "--text", "continue work", "--enter", "--wait-submit", "30", "--json", "END"})
 	for _, args := range [][2]string{{"", "text"}, {"term_one", ""}} {
 		c := &Client{Path: "must-not-run"}
 		_, err := c.TerminalSend(context.Background(), args[0], args[1])

@@ -1,0 +1,23 @@
+{
+ "ok": true,
+ "result": {
+  "send": {
+   "handle": "term_recorded",
+   "accepted": true,
+   "prompt": {
+    "requestId": "f74c9fec-59de-44d1-b1b1-a97e42acbfaf",
+    "stages": [
+     "input_accepted",
+     "turn_started"
+    ],
+    "provider": "codex",
+    "observation": "supported",
+    "processIncarnation": "230533c0-3e0f-486d-8fde-b6d9ed72f58e",
+    "generation": 176,
+    "baselineWorkingSequence": 1,
+    "baselineExplicitWorkingStartedAt": null,
+    "baselinePermissionSequence": 0
+   }
+  }
+ }
+}
