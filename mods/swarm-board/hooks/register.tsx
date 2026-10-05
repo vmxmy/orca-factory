@@ -10,6 +10,8 @@ type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: 
 type DriverLimit = { remaining: number; reset: string }
 type DriverStatus = { state: 'unknown' | 'stale' } | {
   state: 'ok'
+  generatedAt: string
+  tickets: number
   globalPause: { active: boolean; durationSeconds: number }
   linear: { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
 }
@@ -20,6 +22,8 @@ const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
   if (!record(value)) return undefined
   if (value.state === 'unknown' || value.state === 'stale') return { state: value.state }
   if (value.state !== 'ok' || !record(value.globalPause) || !record(value.linear)) return undefined
+  if ((value.generatedAt !== undefined && typeof value.generatedAt !== 'string')
+      || (value.tickets !== undefined && !Array.isArray(value.tickets))) return undefined
   const pause = value.globalPause, usage = value.linear
   if (typeof pause.active !== 'boolean' || typeof pause.durationSeconds !== 'number'
       || !Number.isFinite(pause.durationSeconds) || pause.durationSeconds < 0
@@ -33,6 +37,8 @@ const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
   }
   return {
     state: 'ok', globalPause: { active: pause.active, durationSeconds: pause.durationSeconds },
+    generatedAt: typeof value.generatedAt === 'string' ? value.generatedAt : '',
+    tickets: Array.isArray(value.tickets) ? value.tickets.length : 0,
     linear: { requests: usage.requests, complexity: usage.complexity, limits },
   }
 }
