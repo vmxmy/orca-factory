@@ -42,22 +42,20 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 			return err
 		}
 		err := read()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err == nil {
 			return nil
 		}
 		if stop := dependencyStop(ctx, err); stop != nil {
 			return stop
 		}
-		// The machine exposes infra accounting through worker/session/review events.
-		// Use its worker infra transition, restoring the observed phase unless exhausted.
-		phase := result.State.Phase
-		shadow := result.State
-		shadow.Phase = machine.PhaseWorker
-		shadow.ExecAlive = true
-		next, _, stepErr := machine.Step(shadow, machine.EvWorkerStall, machine.DefaultLimits)
+		next, _, stepErr := machine.Step(result.State, machine.EvInfraFailure, machine.DefaultLimits)
 		if stepErr != nil {
 			return stepErr
 		}
+
 		if next.Owner == machine.OwnerHuman {
 			next.HumanReason = "infra budget exhausted: " + step
 			result.State = next
@@ -66,8 +64,7 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 			}
 			return errBudgetExhausted
 		}
-		result.State.Infra = next.Infra
-		result.State.Phase = phase
+		result.State = next
 		if err := e.backoff(ctx, next.Infra); err != nil {
 			return err
 		}
@@ -82,10 +79,48 @@ func dependencyStop(ctx context.Context, err error) error {
 	}
 	var global *infra.Global
 	if errors.As(err, &global) {
-		return errors.New("global dependency unavailable")
+		return safeDependencyError(err)
 	}
 	if errors.Is(err, context.Canceled) {
 		return context.Canceled
 	}
 	return nil
+}
+
+// safeDependencyError retains only classifications callers can safely inspect.
+// External messages and arbitrary error payloads never cross this boundary.
+func safeDependencyError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var global *infra.Global
+	if errors.As(err, &global) {
+		return &infra.Global{Dep: global.Dep, Err: safeDependencyError(global.Err)}
+	}
+	var ticket *infra.Ticket
+	if errors.As(err, &ticket) {
+		return &infra.Ticket{Err: safeDependencyError(ticket.Err)}
+	}
+	var transient *infra.Transient
+	if errors.As(err, &transient) {
+		return &infra.Transient{Err: safeDependencyError(transient.Err)}
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	if errors.Is(err, infra.ErrWriteUnconfirmed) {
+		return infra.ErrWriteUnconfirmed
+	}
+	var http infra.HTTPError
+	if errors.As(err, &http) {
+		return http
+	}
+	var httpPtr *infra.HTTPError
+	if errors.As(err, &httpPtr) {
+		return &infra.HTTPError{StatusCode: httpPtr.StatusCode}
+	}
+	return errors.New("dependency operation failed")
 }

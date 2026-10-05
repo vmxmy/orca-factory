@@ -4,7 +4,7 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
-| `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList` |
+| `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
 | Linear 存储正文时转义 CommonMark 字符（`*` 存为 `\*`，`\` 存为 `\\`） | `linear-description-escaped.md` | `executor.TestRecordedTicketDescriptions` |
@@ -20,7 +20,55 @@
 | `terminal send --wait-submit` 的回执 `send.prompt.stages` 含 `turn_started` 才证明 agent 开始了一轮；shell 等提供方只给 `input_accepted`（`observation: unsupported`） | `orca-prompt-receipt-codex-turn-started.json`、`orca-terminal-send-wait-submit-shell.json` | `orca.TestRecordedTerminalSendTurnStarted` |
 | `orca worktree set` 成功回执带 `result.worktree`；选择器不匹配时拒绝码为 `selector_not_found` | `orca-worktree-set.json`、`orca-worktree-set-not-found.json` | `orca.TestRecordedWorktreeSet` |
 | 在已有 worktree 上 `worker-start` 等 agent 就绪可超过 30 秒（实测 38 秒）；驱动器的调用超时必须长于传给 Orca 的 `--timeout-ms` | `request-show` 实测（ZII-897 第 3 次 correction） | `orca.TestCommands`、`orca.TestFailedStartRetry` 断言 `--timeout-ms` |
+| Linear `issueUpdate` 移除票上没有的标签时拒绝整个更新（`Label not on issue`，INPUT_ERROR）；`UpdateIssue` 先读当前标签，只加缺少的、只删存在的 | `linear-remove-absent-label.json` | `linear.TestRecordedRemoveAbsentLabel` |
+| GitHub PR：`state`、`merged`、`mergeable_state`（合并后为 `unknown`）、`merge_commit_sha`（squash 后即 main 上的提交）；`compare/<base>...<head>` 的 `behind_by`、`merge_base_commit.sha` 与 `files`（最多 300，不标截断）；本仓库 CI 只有 GitGuardian 一个 check-run，旧式 commit status 为空且显示 `pending`，CI 只看 check-runs | `github-pr-open-clean.json`、`github-pr-merged.json`、`github-compare-*.json`、`github-commit-main.json`、`github-check-runs-gitguardian.json` | `github.TestRecordedMergeLaneReads`，`driver selftest --live` |
+| squash 时 `sha` 与 PR head 不符返回 409 `Head branch was modified`，不合并；草稿 PR 返回 405 | `github-merge-head-modified-409.json` | `github.TestRecordedMergeHeadModified` |
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
 录制样本前删掉终端预览等可能含他人会话内容的字段，并确认不含任何凭据。
+
+执行器派工恢复保留旧 `executor.json` 字段及请求 UUID 的终端作用域；新增可选 `PendingParent` 记录未确认的 correction 子任务创建。首轮与 correction 都在变更前写入 pending，每次新 dispatch 清除上一轮的完成与释放资格；回执伴随错误返回时仍保留可用的 task、dispatch 和 worktree 身份。
+
+当前 task 的权威报告优先于旧提交的 `agent-status: complete`。pending 派工不能由旧 complete 或已有 PR 放行；缺失、歧义或显式截断的任务证据只允许停止对账，不授权重放旧终端请求。`task-list` 缺失 `dispatch_id` 时仍可根据 task 报告恢复，但不会臆造 dispatch 来释放 worker。子任务通过真实 `parent_id` 与 pending parent 对账；尚无权威报告的未确认派工保持 pending，待后续重新启动对账。
+
+## 合并交接（#141）
+
+持久事实保存在已有 Linear 票评论与 GitHub PR；本地没有新增合并数据库。类型定义见 `internal/merge/evidence.go`。
+
+- `merge-handoff-v1: <JSON>` 与 `归属: 合并通道` 写在同一评论。`version=1`，冻结 `ticket_id/identifier/repository/unit/pr/head/baseline`、完整 `gate_spec/gate_output/review_output/lane`、`run/task/dispatch/worktree`、`attempt/corrections/infra/catchup_rounds`、`enqueued_at/queue_id`。`baseline` 是本轮验证的 merge-base；`head` 是实际验证提交。`queue_id` 由仓库、票、单元、head 和 Orca 派工关联生成，重放使用原记录；correction 的新派工产生新身份，排到队尾。
+- `merge-progress-v1: <JSON>` 关联 `version/queue_id/ticket_id/repository/pr/head/main/merge_sha/phase`。`phase=merge-intent` 在 PUT 前持久记录固定 main，写完再核对远端证据；`phase=merged` 只在 GitHub 回读 merged 后记录真实 squash SHA。若恢复时 PR 已合并且没有 intent，`main_unknown=true`、`main=""` 明确表示历史 main 未知，不能用当前 main 伪造；该记录可反复对账并完成票面写回。
+- FIFO 按冻结 `enqueued_at`、`queue_id` 排序，不依赖 issue UpdatedAt。缺失、冲突或不可解析交接阻塞该仓库；同仓库每 Tick 只处理队首。完成评论或 Done 写入失败保留归属；Done 但仍属合并通道的票继续参与对账。已确认完成后的名额在下一快照释放。
+- 合并前读完整分页 PR 候选、固定 head 的 checks/statuses 与 Git 提交对象。用固定 merge-base 的 `git diff --no-renames -z` 读取全部路径（重命名表现为删除与新增），不使用 GitHub compare 的 300 文件截断列表。空/未知/缺字段 CI 均不绿。lane 2 需显式 `AGENT_LANE2_AUTOMERGE=1`；manual、lane 3 路径等待。旧 PR 或旧三行归属不能替代验证证据。
+- 合并结果验证由 `Runtime.advanceMerge` 组装真实 `merge.CommandGit` 和冻结 gate adapter。#143 部署屏障见下节，读取 Linear 原始项目快照/评论后保留 Done/转人票的未完成屏障。
+- `Executor.Start` 对已有 PR 仅复用匹配的完整冻结交接，保留原 FIFO 与预算，不新写旧三行归属。恢复/correction 实现应在该短路前处理待恢复派工；独立 helper 位于 `executor/merge_handoff.go`。
+
+验证：`TestExecuteFreezesMergeHandoff`、`TestStartExistingPR*`、`TestRuntimeMerge*`、`TestServeRuntimeActuallyMergesAndDryRunIsReadOnly` 使用外部替身、HTTP 和临时 Git 仓库；这些是合成行为测试，不冒充线上录制样本。
+
+
+## 部署进度增量（#143）
+
+冻结 `merge-handoff-v1` 格式不变；`merge-progress-v1` 仅增加可选 `deployment` 对象，外层 `phase` 仍为 `merge-intent` / `merged`。不占用 #142 的 catchup/correction 阶段，也不修改 #144/#145 的派工恢复或预算。
+
+- `deployment.workflow/smoke` 是 intent 时冻结的配置。`state` 为 `pending`、`smoke-intent`、`paused`、`passed`；`reason` 为暂停原因；`smoke_started=true` 表示已持久预留执行，不能凭重启推断安全重试；`smoke_passed=true` 仅在命令确认成功后写入，自动通过回执必须承接同身份的 smoke-intent。
+- `deployment.recovery` 的 `action/operator/reason/at` 是人工决定，动作仅为 `retry-workflow`、`retry-smoke`、`confirm-passed`。恢复时精确匹配票、queue、squash SHA，追加完整 Progress，不覆写旧评论。恢复记录随后续状态一同保留。
+- 每条历史 Progress 都校验状态转换。清除执行标记、从暂停恢复或人工确认通过必须有新的 `recovery`，操作者/理由/动作/时间均有效且时间晚于上次恢复；旧授权不能再次放行。无授权的 pending/passed 记录会保留冲突屏障，后续记录不能掩盖它。
+- 同 queue 的重试复用既存冻结配置（包括无配置），不从更新后的 env 重建 intent；合法配置变更仅影响新 queue。
+- 新部署字段在 squash intent 之前持久；实际 SHA 只来自 GitHub 已合并 PR 回读。smoke 必须在其 intent 写回确认后执行，执行成功但通过回执无法确认时保留屏障，重建调度器要求人工对账。
+- 从项目全量分页 Snapshot 及 ListComments 重建屏障，先读取持久证据再筛选活动票。Done、auto-failed、归属为人或无的票，只要仍有未完成/冲突的部署证据便继续参与该仓库 FIFO。部署字段消失、配置不一致或身份冲突不会静默放行。
+- GitHub 使用 [workflow runs REST API](https://docs.github.com/en/rest/actions/workflow-runs)：固定 workflow 与 `head_sha=<实际 squash SHA>`，显式核对响应身份和完整分页。显示名从 workflows 集合唯一解析。空/缺失/未知/仍运行的回执等待，已完成的明确失败转人；成功才 smoke。多个历史 run 以最新 run 的完成结论为准，但仍运行的旧 run 保守等待。
+- status 与 dry-run 仅展示 queue/SHA/workflow/state/reason，不暴露 smoke 命令。status 是观察缓存，不是恢复授权；人工恢复命令与 serve 共用锁，dry-run 不取锁、不写日志或评论、不执行 smoke。
+
+合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和 Linear 替身，无真实部署或票面变更。
+
+## 重叠验证与 correction（#142）
+
+- 保留 `merge-handoff-v1` / `merge-progress-v1` 格式。Progress 增加可选 `corrections/catchup_rounds/infra/attempt/reason`，增加 `waiting`、`correction`、`human` phase。`waiting` 包含移动 main 后的 catchup；写入的 correction 数是累计值（Channel.Result.Corrections 仍是增量）。`merge-intent` 和 `merged` 同样保留累计预算。未知 phase 停止处理，不覆盖为 legacy；部署状态保持 #143 的嵌套 `deployment` 对象；后续 Progress 写入保留它。
+- 对固定 head/main 执行真实 `merge-tree --write-tree`，以两者为 parent 建立临时提交，在隔离 worktree 调用完整 gate。gate.sh 与项目 hook 从固定 main 读取，`GATE_BASE/GATE_PROJECT_SRC` 都固定该 main；spec 使用交接冻结字节，不从 PR 描述猜测，也不只跑 CHECK。spec 和脚本位于 worktree 旁，不进入验证 diff。
+- 文本冲突即使 GitHub `mergeable=false` 仍可验证并交回 correction；这个 false 不授权 squash。完整 gate 红才计 correction，非完整输出、启动/读取/提交/worktree 失败及取消不计。绿 gate 的清理错误通过 `ErrWorktreeCleanup` 报告，同时保留合并、等待或 correction 决策；取消会使用独立清理上下文；读取 gate 脚本失败保留安全取消/超时与基础设施分类链。
+- 每次 main 变化后保存 catchup 轮数，再次启动从外部 Progress 恢复；两轮转人。correction 沿用状态机三次上限，第四次失败转人。返回 correction 的 Progress 与执行器归属同一评论写入并确认，然后调度器启动终端；不确定启动保留归属，由既有巡检恢复。
+- `Executor.Start` 在既有 PR 短路前消费当前 handoff 的 correction。重用原 run/task/worktree 和累计预算，旧 task 没有 dispatch 时不虚构它；修复 worker 的新 dispatch 正常保存。旧 checkpoint 增加可选 `MergeQueue/MergeHead/MergeCause/MergeSpec/CatchupRounds/Attempt/Infra`，仅用于已有派工恢复，不成为新的合并事实数据库。开始子任务前清除 MergeCause 并持久 pending，重启不能重复创建修复任务；缺 checkpoint 时从外部 handoff/progress 重建，并先沿 Orca task-list 的 parent_id 对账 correction 子任务；运行中、缺失或歧义证据停止，不能以新终端 UUID 重派。
+- 合并结果 gate 使用本次实际 lane 验证，允许 main 已吸收 lane 2 改动后降至 lane 1；旧交接不改写，lane 3、lane 升级和未批准的仓库策略仍不放行。
+- 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
+
+验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。

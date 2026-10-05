@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
 
 const Title = "[ledger] agent-graph"
@@ -85,7 +88,10 @@ func New(store Store, options Options) *Ledger {
 				err := l.Flush(ctx)
 				cancel()
 				if err != nil {
-					fmt.Fprintln(options.Warnings, "ledger: warning: flush failed; buffered rows retained")
+					if _, writeErr := fmt.Fprintln(options.Warnings, "ledger: warning: flush failed; buffered rows retained"); writeErr != nil {
+						// Keep the buffer retryable and report without leaking writer errors.
+						slog.Error("ledger warning output failed; flush failed; buffered rows retained")
+					}
 				}
 			}
 		}
@@ -116,7 +122,30 @@ func parseRow(raw string) (map[string]any, error) {
 			}
 		}
 	}
+	if value, present := row["usage"]; present {
+		encoded, err := json.Marshal(value)
+		var parsed usage.TicketUsage
+		if err != nil || hasNullUsage(value) || json.Unmarshal(encoded, &parsed) != nil {
+			return nil, errors.New("ledger: invalid usage field")
+		}
+	}
 	return row, nil
+}
+
+// JSON null cannot represent a typed usage field, even though encoding/json
+// otherwise accepts null for scalar Go fields and leaves their zero values.
+func hasNullUsage(value any) bool {
+	if value == nil {
+		return true
+	}
+	if object, ok := value.(map[string]any); ok {
+		for _, field := range object {
+			if hasNullUsage(field) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (l *Ledger) Append(raw string) error {

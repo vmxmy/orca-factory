@@ -167,7 +167,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	if err != nil {
 		return safeError(err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	var body []byte
 	if resp.StatusCode == http.StatusNotModified && method == http.MethodGet && hasCache {
 		body = cached.body

@@ -11,12 +11,27 @@ import (
 )
 
 type PullRequest struct {
-	Number         int    `json:"number"`
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Draft     *bool  `json:"draft"`
+	Mergeable *bool  `json:"mergeable"`
+	MergeSHA  string `json:"merge_commit_sha"`
+	Body      string `json:"body"`
+	Base      struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"base"`
 	HTMLURL        string `json:"html_url"`
 	Merged         bool   `json:"merged"`
 	MergeableState string `json:"mergeable_state"`
 	Head           struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 }
 type CreatePRRequest struct {
@@ -42,6 +57,15 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, head string) (*Pul
 		return nil, nil
 	}
 	return &prs[0], nil
+}
+
+// BranchSHA returns the commit a branch currently points at.
+func (c *Client) BranchSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(branch), nil, &commit)
+	return commit.SHA, err
 }
 
 // CreatePR serializes find/create in this client and recovers uncertain writes
@@ -100,13 +124,20 @@ type File struct {
 	PreviousFilename string `json:"previous_filename,omitempty"`
 }
 
-// CompareFiles returns GitHub's comparison file list (at most 300 files).
-func (c *Client) CompareFiles(ctx context.Context, owner, repo, base, head string) ([]File, error) {
-	var result struct {
-		Files []File `json:"files"`
-	}
+type Comparison struct {
+	BehindBy        int    `json:"behind_by"`
+	Files           []File `json:"files"`
+	MergeBaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"merge_base_commit"`
+}
+
+// Compare returns base...head: head's changes since the merge base and how far
+// head is behind base. GitHub lists at most 300 files and does not flag the cut.
+func (c *Client) Compare(ctx context.Context, owner, repo, base, head string) (Comparison, error) {
+	var result Comparison
 	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head), nil, &result)
-	return result.Files, err
+	return result, err
 }
 
 type CheckRun struct {

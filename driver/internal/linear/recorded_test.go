@@ -1,8 +1,13 @@
 package linear
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -19,5 +24,44 @@ func TestRecordedInverseRelations(t *testing.T) {
 	}
 	if !resp.Data.Issue.Blocked() {
 		t.Fatalf("ZII-894 was blocked by an unfinished ZII-893: %+v", resp.Data.Issue.InverseRelations)
+	}
+}
+
+// Linear rejects the whole issueUpdate when it removes a label the issue does not carry.
+func TestRecordedRemoveAbsentLabel(t *testing.T) {
+	rejection, err := os.ReadFile("../../testdata/recorded/linear-remove-absent-label.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]any
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		if strings.Contains(q.Query, "IssueLabels") {
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2","name":"old"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
+			return
+		}
+		sent = q.Variables["input"].(map[string]any)
+		for _, id := range sent["removedLabelIds"].([]any) {
+			if id != "l2" {
+				if _, err := w.Write(rejection); err != nil {
+					t.Error(err)
+					return
+				}
+				return
+			}
+		}
+		if _, err := fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1","identifier":"ENG-1"}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
+	})
+	// "bug" (l1) is absent and must not be removed; "old" (l2) is present and must not be re-added.
+	if _, err := c.UpdateIssue(context.Background(), "i1", "", []string{"old"}, []string{"bug", "old"}); err != nil {
+		t.Fatalf("update err=%v", err)
+	}
+	if !reflect.DeepEqual(sent["removedLabelIds"], []any{"l2"}) || !reflect.DeepEqual(sent["addedLabelIds"], []any{}) {
+		t.Fatalf("sent=%v", sent)
 	}
 }
