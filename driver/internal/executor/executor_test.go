@@ -91,6 +91,9 @@ type fakeTools struct {
 
 func (*fakeTools) Baseline(context.Context, string) (string, error)       { return "base-sha", nil }
 func (f *fakeTools) Head(context.Context, string, string) (string, error) { return f.head, nil }
+func (*fakeTools) ChangedFiles(context.Context, string, string, string) ([]string, error) {
+	return []string{"unit/change.go"}, nil
+}
 func (f *fakeTools) Gate(_ context.Context, repo, head, spec string) (string, error) {
 	f.gateCalls++
 	b, e := os.ReadFile(spec)

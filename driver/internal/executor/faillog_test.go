@@ -136,6 +136,9 @@ func TestFailLogStageComments(t *testing.T) {
 			if len(f.diffs) != 1 || f.diffs[0] != [2]string{"base-sha", "abc1234567890"} {
 				t.Fatalf("diff queries=%v", f.diffs)
 			}
+			if tc.cause == "worker failed" && !strings.HasSuffix(line, " | evidence=worker_done outcome=failed") {
+				t.Fatalf("worker evidence: %q", line)
+			}
 			if tc.cause == "gate red" && !strings.HasSuffix(line, " | evidence=check_shell") {
 				t.Fatalf("gate evidence: %q", line)
 			}

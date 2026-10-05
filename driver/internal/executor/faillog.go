@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -16,24 +17,99 @@ func failLogPath(c Config, t Ticket) string {
 	return filepath.Join(c.Root, c.Repository, t.Identifier, "fail.log")
 }
 
-// Bound individual fields so truncation cannot remove the reason or evidence.
-// Only local brief metadata and fixed failure categories enter new summaries;
-// raw worker, gate, reviewer and transport errors may contain credentials.
-func failSummary(t Ticket, c Config, n int, ev machine.Event) string {
+// Summaries describe the actual failed revision. External fields are reduced to
+// identifiers; raw worker, gate, reviewer and transport errors never enter them.
+func (e *Executor) failSummary(ctx context.Context, c Config, baseline, branch, head, output string, ev machine.Event) (string, error) {
 	var reason, evidence string
 	switch ev {
 	case machine.EvWorkerFail:
-		reason, evidence = "worker failed", "worker outcome"
+		reason, evidence = "worker failed", "worker_done outcome=failed"
 	case machine.EvGateRed:
-		reason, evidence = "gate red", "gate"
+		reason, evidence = "gate red", gateFailEvidence(output)
 	case machine.EvReviewRed:
-		reason, evidence = "reviewer red", "review"
+		reason, evidence = "reviewer red", reviewFailEvidence(output)
 	default:
-		return ""
+		return "", nil
 	}
-	approach := fmt.Sprintf("%s correction=%d: %s", c.Unit, n, t.Todo)
-	approach = strings.ReplaceAll(strings.Join(strings.Fields(approach), " "), "|", "/")
-	return truncateFail("FAIL: approach="+truncateFail(approach, 220)+" | reason="+reason+" | evidence="+evidence, 300)
+	if head == "" {
+		var err error
+		head, err = e.Tools.Head(ctx, c.Repo, branch)
+		if err != nil {
+			return "", errors.New("failed revision lookup failed")
+		}
+	}
+	files := []string{}
+	if head != "" {
+		var err error
+		files, err = e.Tools.ChangedFiles(ctx, c.Repo, baseline, head)
+		if err != nil {
+			return "", errors.New("failed revision diff failed")
+		}
+	}
+	shortHead := truncateFail(failIdentifier(head), 7)
+	if shortHead == "" {
+		shortHead = "unavailable"
+	}
+	for i, file := range files {
+		files[i] = failIdentifier(file)
+	}
+	changed := strings.Join(files, ",")
+	if changed == "" {
+		changed = "none"
+	}
+	approach := "head=" + shortHead + " files=" + changed
+	// Reserve the complete suffix before bounding approach, so long file lists
+	// cannot erase the failure reason or the check identifier.
+	suffix := " | reason=" + reason + " | evidence=" + truncateFail(evidence, 120)
+	const prefix = "FAIL: approach="
+	return prefix + truncateFail(approach, 300-len(prefix)-len(suffix)) + suffix, nil
+}
+
+func failIdentifier(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || strings.ContainsRune("_./:-", r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+func gateFailEvidence(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		key, value, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if key == "STEP" {
+			if evidence := failIdentifier(value); evidence != "" {
+				return evidence
+			}
+		}
+	}
+	return "gate"
+}
+func reviewFailEvidence(output string) string {
+	output = strings.TrimSpace(output)
+	for i := 0; i < len(output); i++ {
+		if output[i] != '{' {
+			continue
+		}
+		var result struct {
+			Verdict  string `json:"verdict"`
+			Step     string `json:"step"`
+			Evidence []struct {
+				File string `json:"file"`
+				Line int    `json:"line"`
+			} `json:"evidence"`
+		}
+		if json.Unmarshal([]byte(output[i:]), &result) != nil || result.Step != "review" || result.Verdict != "red" {
+			continue
+		}
+		if len(result.Evidence) > 0 && result.Evidence[0].File != "" && result.Evidence[0].Line > 0 {
+			file := failIdentifier(result.Evidence[0].File)
+			if file != "" {
+				return fmt.Sprintf("%s:%d", file, result.Evidence[0].Line)
+			}
+		}
+		return failIdentifier(result.Step)
+	}
+	return "review"
 }
 
 func truncateFail(s string, limit int) string {

@@ -40,6 +40,7 @@ type GitHub interface {
 type Tools interface {
 	Baseline(context.Context, string) (string, error)
 	Head(context.Context, string, string) (string, error)
+	ChangedFiles(context.Context, string, string, string) ([]string, error)
 	Gate(context.Context, string, string, string) (string, error)
 	Review(context.Context, string, string, string) (string, error)
 }
@@ -135,6 +136,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		return nil
 	}
 	defer func() { err = errors.Join(err, release()) }()
+	var baseline, taskID, spec, brief, head, failureOutput string
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
@@ -170,7 +172,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
 		}
 		if next.Phase == machine.PhaseCorrection {
-			if summary := failSummary(t, c, previous.Corrections, ev); summary != "" {
+			summary, err := e.failSummary(ctx, c, baseline, branch, head, failureOutput, ev)
+			if err != nil {
+				return err
+			}
+			if summary != "" {
 				if err := appendFailLog(c, t, summary); err != nil {
 					return err
 				}
@@ -182,7 +188,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		return nil
 	}
-	var baseline, taskID, spec, brief string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -263,6 +268,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	}
 	result.State.Corrections = cp.Corrections
 	for {
+		head, failureOutput = "", ""
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
@@ -329,7 +335,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if result.State.Owner == machine.OwnerHuman {
 			return result, nil
 		}
-		var head string
 		err = e.retryRead(ctx, t, &result, "branch lookup", func() error { var readErr error; head, readErr = e.Tools.Head(ctx, c.Repo, branch); return readErr })
 		if err != nil {
 			return result, err
@@ -363,6 +368,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if err != nil {
 			return result, err
 		}
+		failureOutput = output
 		event = machine.EvGateRed
 		if gateErr == nil && verdict == "green" {
 			event = machine.EvGateGreen
@@ -400,6 +406,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 					event = machine.EvReviewRed
 				}
 			}
+			failureOutput = output
 			if err = transition(event, nil); err != nil {
 				return result, err
 			}
