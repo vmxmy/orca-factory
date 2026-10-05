@@ -4,6 +4,7 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
+| GitHub tags 返回数组（name、commit.sha）；compare 返回 base_commit.sha、total_commits 与 commits[].commit.message。2026-10-06 通过 `gh api repos/vmxmy/orca-factory/tags` 和 `gh api repos/vmxmy/orca-factory/compare/swarm-board-v0.3.17...main` 原样录制，基线 b912a73，后续包含 eeb82fd；compare 提交是全仓库历史，Source 仍需按插件路径筛选 | `github-release-tags.json`、`github-release-compare.json` | `release.TestRecordedReleaseReads` |
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
