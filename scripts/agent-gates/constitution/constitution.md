@@ -13,14 +13,14 @@
 
 ## 读取清单
 
-按序读，存在的都读，缺共享条款即停并转人：
+按序读，存在的都读，缺共享条款即停并转人。路径都从仓库根打开。运行时只读 `scripts/agent-gates/`，不读 `core/`，不对两份做 diff。
 
-- `constitution/engineering.md`
-- `constitution/workflow.md`
-- `constitution/handoffs.md`
-- `constitution/local-*.md`（项目特化，字典序）
-- `roles/<你的角色>.md`
-- `roles/local-<你的角色>.md`（若存在）
+- `scripts/agent-gates/constitution/engineering.md`
+- `scripts/agent-gates/constitution/workflow.md`
+- `scripts/agent-gates/constitution/handoffs.md`
+- `scripts/agent-gates/constitution/local-*.md`（项目特化，字典序）
+- `scripts/agent-gates/roles/<你的角色>.md`
+- `scripts/agent-gates/roles/local-<你的角色>.md`（若存在）
 
 ## 不可覆盖
 
