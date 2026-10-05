@@ -7,6 +7,8 @@ set -Eeuo pipefail
 
 REPO="path:${AGENT_REPO_PATH:?main checkout path}"
 PREFIX="${AGENT_RUN_WORKTREE_PREFIX:?set in agent-graph.env}"
+LINEAR_TEAM="${AGENT_LINEAR_TEAM:?set in agent-graph.env}"
+LINEAR_PROJECT="${AGENT_LINEAR_PROJECT:?set in agent-graph.env}"
 MAX_AGE_HOURS="${AGENT_RUN_MAX_AGE_HOURS:-24}"
 PRUNE_BUDGET_SECONDS="${AGENT_PRUNE_BUDGET_SECONDS:-60}"
 PRUNE_MAX_PER_RUN="${AGENT_PRUNE_MAX_PER_RUN:-5}"
@@ -16,6 +18,11 @@ prune_started_at=$(date +%s)
 prune_removed_count=0
 prune_budget_tripped=0
 prune_quota_tripped=0
+prune_linear_calls=0
+prune_linear_ok=false
+prune_linear_data='[]'
+prune_report_linear_calls() { echo "prune_linear_calls=$prune_linear_calls" >&2; }
+trap prune_report_linear_calls EXIT
 prune_budget_exceeded() {
   (( prune_budget_tripped == 1 )) && return 0
   local now=$(date +%s)
@@ -60,14 +67,41 @@ prune_git_worktrees() {
     branch:([.[] | select(startswith("branch ")) | ltrimstr("branch refs/heads/")][0] // ""),
     locked:any(.[]; . == "locked" or startswith("locked "))})' <<<"$out"
 }
+# One Linear snapshot per run replaces the per-object `orca linear issue` calls:
+# a single `linear list-issues` covers every ticket we inspect, so prune_linear_calls
+# is 0 (snapshot never attempted) or 1 (attempted, success or failure).
+prune_load_linear_issues() {
+  [[ "$prune_linear_ok" == true ]] && return 0
+  local out stderr status=0
+  stderr=$(mktemp)
+  prune_linear_calls=$((prune_linear_calls + 1))
+  out=$(orca linear list-issues --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" --json 2>"$stderr") || status=$?
+  if (( status == 0 )) && jq -e '.ok == true and (.result.issues | type == "array")' <<<"$out" >/dev/null 2>&1; then
+    prune_linear_data=$(jq -c '.result.issues' <<<"$out")
+    prune_linear_ok=true
+    rm -f "$stderr"
+    return 0
+  fi
+  if [[ "$out" == *'Rate limit'* ]] || grep -q 'Rate limit' "$stderr" 2>/dev/null; then
+    echo 'prune: 不确定: linear rate limited' >&2
+  fi
+  rm -f "$stderr"
+  return 1
+}
 prune_ticket_check() {
-  local out
-  if ! out=$(orca linear issue "$1" --json 2>/dev/null) ||
-    ! jq -e --arg mode "${3:-completed}" '.ok == true and
-      (.result.issue.state.type | type == "string") and
-      (if $mode == "completed" then .result.issue.state.type == "completed"
-       else .result.issue.state.type != "started" end)' <<<"$out" >/dev/null 2>&1; then
-    prune_keep "$2" "ticket $1 is not confirmed ${3:-completed} (in flight or lookup failed)"
+  local mode="${3:-completed}"
+  [[ "$prune_linear_ok" == true ]] || {
+    prune_keep "$2" "linear snapshot unavailable, cannot verify ticket $1"
+    return 1
+  }
+  if ! jq -e --arg id "$1" --arg mode "$mode" '
+    map(select(.identifier == $id)) | .[0] as $issue |
+    if $issue == null then false
+    elif ($issue.state.type | type != "string") then false
+    elif $mode == "completed" then $issue.state.type == "completed"
+    else $issue.state.type != "started"
+    end' <<<"$prune_linear_data" >/dev/null 2>&1; then
+    prune_keep "$2" "ticket $1 is not confirmed $mode (in flight or missing from Linear snapshot)"
     return 1
   fi
 }
@@ -133,6 +167,12 @@ prune_compensate() {
     prune_inventory_ok=true
   else
     prune_keep compensation 'Orca worktree inventory unavailable'; return 0
+  fi
+  # One list-issues call replaces per-object `linear issue` lookups; a failure (rate limit or
+  # otherwise) stops compensation so we never remove a worktree with an unknown ticket state.
+  if ! prune_load_linear_issues; then
+    echo 'prune: 不确定: linear unavailable，跳过补偿' >&2
+    return 0
   fi
   prune_pr_ok=false
   prune_prs='[]'
