@@ -1,0 +1,29 @@
+{
+  "id": "a762ae7d-d797-4af8-848e-23926fbce193",
+  "ok": true,
+  "result": {
+    "send": {
+      "handle": "term_c2c56a84-a8cc-4ace-b538-986f5b38e5c2",
+      "accepted": true,
+      "bytesWritten": 6,
+      "prompt": {
+        "requestId": "7b758918-1687-49b3-a238-8dc23fbfa7f1",
+        "stages": [
+          "input_accepted"
+        ],
+        "provider": "unsupported",
+        "observation": "unsupported",
+        "processIncarnation": "6a164b3a-d819-4eee-ac7b-e8b998f71dd1",
+        "generation": 594,
+        "baselineWorkingSequence": 0
+      }
+    },
+    "mutation": {
+      "requestId": "7b758918-1687-49b3-a238-8dc23fbfa7f1",
+      "replayed": false
+    },
+    "warnings": [
+      "input was accepted, but this provider cannot report delivery. Inspect the terminal before retrying."
+    ]
+  }
+}
