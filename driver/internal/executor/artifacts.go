@@ -19,7 +19,7 @@ CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
 LANE: {{.Ticket.Lane}}
 Gate spec: {{.Spec}}
-Constraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. Do not merge or open a PR. Do not use orca orchestration ask: no coordinator will answer. If you cannot finish (for example CHECK, SCOPE or the gate spec looks wrong), commit and push what you have, then report worker_done --outcome failed with the exact reason in the body.
+Constraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. The executor reruns the gate in a clean checkout of your pushed commit with no node_modules, build output or other untracked files: make CHECK pass without packages you installed locally. Do not merge or open a PR. Do not use orca orchestration ask: no coordinator will answer. If you cannot finish (for example CHECK, SCOPE or the gate spec looks wrong), commit and push what you have, then report worker_done --outcome failed with the exact reason in the body.
 Delivery: Commit the completed changes and push only with git push origin HEAD:refs/heads/{{.Branch}}. Report the outcome through the injected Orca worker_done protocol.
 `
 const specTemplate = `UNIT: {{.Unit}}
