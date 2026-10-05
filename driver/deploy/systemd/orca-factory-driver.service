@@ -1,0 +1,13 @@
+[Unit]
+Description=Orca Factory Driver
+After=orca-serve.service network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/orca-factory-driver serve
+Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
