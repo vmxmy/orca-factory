@@ -57,7 +57,11 @@ func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string,
 // it neither competes with the running service nor writes probes or alerts.
 func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
-	return s.Tick(ctx)
+	err := s.Tick(ctx)
+	for _, t := range s.MergeQueue {
+		fmt.Fprintf(out, "would merge-lane %s\n", t.Identifier)
+	}
+	return err
 }
 
 // Legacy branch verification fetches objects. Do not simulate a release or

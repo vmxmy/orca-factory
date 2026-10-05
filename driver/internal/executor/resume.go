@@ -115,6 +115,11 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if repairErr != nil {
 		return result, repairErr
 	}
+	// The compatibility flag requests recovery, never a new claim. Existing
+	// PRs still reconcile tasks before proving a completed frozen handoff.
+	if c.Merging && !mergeRepair && pr == nil {
+		return result, errors.New("merge correction evidence required")
+	}
 	// Reconcile checkpointed tasks before ordinary PR handoff.
 	if pr != nil && !mergeRepair && cp == nil {
 		if pr.Number <= 0 || pr.HTMLURL == "" {
@@ -200,6 +205,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			if !errors.Is(resumeErr, errMissingMergeHandoff) {
 				return resumed, resumeErr
 			}
+		}
+		if c.Merging && !mergeRepair {
+			return result, errors.New("merge correction evidence required")
 		}
 		if err := saveCheckpoint(c, t, *cp); err != nil {
 			return result, err

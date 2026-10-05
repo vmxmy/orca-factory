@@ -59,6 +59,15 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, head string) (*Pul
 	return &prs[0], nil
 }
 
+// BranchSHA returns the commit a branch currently points at.
+func (c *Client) BranchSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(branch), nil, &commit)
+	return commit.SHA, err
+}
+
 // CreatePR serializes find/create in this client and recovers uncertain writes
 // by reading before returning an error. It never blindly replays a POST.
 func (c *Client) CreatePR(ctx context.Context, owner, repo string, input CreatePRRequest) (PullRequest, error) {
@@ -115,13 +124,20 @@ type File struct {
 	PreviousFilename string `json:"previous_filename,omitempty"`
 }
 
-// CompareFiles returns GitHub's comparison file list (at most 300 files).
-func (c *Client) CompareFiles(ctx context.Context, owner, repo, base, head string) ([]File, error) {
-	var result struct {
-		Files []File `json:"files"`
-	}
+type Comparison struct {
+	BehindBy        int    `json:"behind_by"`
+	Files           []File `json:"files"`
+	MergeBaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"merge_base_commit"`
+}
+
+// Compare returns base...head: head's changes since the merge base and how far
+// head is behind base. GitHub lists at most 300 files and does not flag the cut.
+func (c *Client) Compare(ctx context.Context, owner, repo, base, head string) (Comparison, error) {
+	var result Comparison
 	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head), nil, &result)
-	return result.Files, err
+	return result, err
 }
 
 type CheckRun struct {

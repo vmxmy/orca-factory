@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"os"
 	"strings"
@@ -275,5 +276,47 @@ func TestStartMergeCorrectionLostCheckpointReconcilesChild(t *testing.T) {
 				t.Fatalf("unconfirmed child accepted: %+v %v", result, err)
 			}
 		})
+	}
+}
+
+func TestMergingFlagRequiresEvidence(t *testing.T) {
+	for _, prior := range []bool{false, true} {
+		t.Run(fmt.Sprint(prior), func(t *testing.T) {
+			e, o, tools, _, l, ticket := recoveryFixture(t)
+			if prior {
+				if _, err := e.Execute(context.Background(), ticket); err != nil {
+					t.Fatal(err)
+				}
+			}
+			l.comments = nil
+			before, _ := os.ReadFile(checkpointPath(e.Config, ticket))
+			starts, gates := len(o.starts), tools.gateCalls
+			e.Config.Merging = true
+			_, err := e.Start(context.Background(), ticket)
+			after, _ := os.ReadFile(checkpointPath(e.Config, ticket))
+			if err == nil || len(o.starts) != starts || tools.gateCalls != gates || string(before) != string(after) {
+				t.Fatalf("flag authorized work: err=%v starts=%d/%d gates=%d/%d checkpoint=%s -> %s", err, len(o.starts), starts, tools.gateCalls, gates, before, after)
+			}
+		})
+	}
+}
+
+func TestMergingFlagRepairsAndRevalidates(t *testing.T) {
+	e, o, tools, recovery, l, ticket := recoveryFixture(t)
+	if _, err := e.Execute(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	correctionReceipt(t, e, l, ticket, 1)
+	tools.head = "repaired-sha"
+	e.Config.Merging = true
+	result, err := e.Start(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Infra != 1 || result.State.Corrections != 1 || result.State.Attempt != 2 || len(o.starts) != 2 || tools.gateCalls != 2 || tools.reviewCalls != 2 || recovery.children != 1 {
+		t.Fatalf("lost correction validation: result=%+v err=%v starts=%d gates=%d reviews=%d children=%d", result, err, len(o.starts), tools.gateCalls, tools.reviewCalls, recovery.children)
+	}
+	before, _ := os.ReadFile(checkpointPath(e.Config, ticket))
+	result, err = e.Start(context.Background(), ticket)
+	after, _ := os.ReadFile(checkpointPath(e.Config, ticket))
+	if err != nil || result.State.Owner != machine.OwnerMerge || len(o.starts) != 2 || recovery.children != 1 || string(before) != string(after) {
+		t.Fatalf("replayed correction: %+v err=%v starts=%d children=%d", result, err, len(o.starts), recovery.children)
 	}
 }

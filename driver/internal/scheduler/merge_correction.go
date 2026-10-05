@@ -45,6 +45,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		t.Owner = machine.OwnerExecutor
 		t.Phase = machine.PhaseCorrection
 		t.Attempt = p.Attempt
+		t.Progress = &p
 		return r.Launch(ctx, t)
 	}
 	return errors.New(result.Reason)

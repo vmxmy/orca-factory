@@ -51,6 +51,13 @@ func (*serveMergeOrca) AutomationsList(context.Context) (orca.Receipt, error) {
 	return orca.Receipt{"automations": json.RawMessage(`[]`)}, nil
 }
 
+func (*serveMergeOrca) WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error) {
+	return orca.Receipt{"workers": json.RawMessage(`[]`)}, nil
+}
+func (*serveMergeOrca) WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error) {
+	return orca.Receipt{}, nil
+}
+
 // Exercise the same status wrapper and Runtime that serve assembles. Only HTTP
 // and subprocess boundaries are replaced; no Channel or Backend is mocked.
 func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
@@ -111,6 +118,8 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 					t.Fatalf("unsafe command: %+v", s)
 				}
 				switch s.Args[0] {
+				case "ls-remote":
+					return nil, nil
 				case "fetch":
 					fetches++
 					if strings.Join(s.Args, " ") != "fetch --no-tags origin "+head+" "+main {

@@ -57,6 +57,11 @@ func overlapFixture(t *testing.T, conflict bool) *mergeFixture {
 		h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared\nCHECK: test merged\nLANE: 1\n"
 		h["gate_output"] = "UNIT executor\nVERDICT green\nSTEP all\nREASON passed\nEVIDENCE test\nSCOPE feature shared\nLANE 1"
 	})
+	// A separate remote keeps postmerge branch deletion distinct from the
+	// local worker branch whose immutability this fixture verifies.
+	remote := t.TempDir()
+	gitMergeTest(t, dir, "clone", "--bare", dir, remote)
+	gitMergeTest(t, dir, "remote", "set-url", "origin", remote)
 	f.runtime.DriverPath = "/test/driver"
 	return f
 }
@@ -76,7 +81,7 @@ func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 			}
 		}
 	}
-	if f.puts != 0 || len(o.launches) != 1 || p.Phase != "correction" || p.Corrections != 1 || p.CatchupRounds != 1 || p.Head != f.head || p.Main != f.main || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 执行器") {
+	if f.puts != 0 || len(o.launches) != 1 || !strings.Contains(o.launches[0].Command, " exec --merging ") || p.Phase != "correction" || p.Corrections != 1 || p.CatchupRounds != 1 || p.Head != f.head || p.Main != f.main || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 执行器") {
 		t.Fatalf("not repaired: puts=%d launch=%v receipt=%+v", f.puts, o.launches, p)
 	}
 	// New scheduler sees executor ownership, not the old merge handoff.

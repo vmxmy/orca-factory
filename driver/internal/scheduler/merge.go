@@ -197,7 +197,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if err != nil || issue.State.Name != "Done" {
 		return errors.New("completion write unconfirmed")
 	}
-	return r.mergeComment(ctx, t, "阶段: "+string(machine.PhaseMerged)+"\n归属: "+string(machine.OwnerNone)+"\n"+merge.ProgressPrefix+string(b))
+	// A failed final comment must not suppress cleanup after confirmed Done.
+	defer r.cleanupMerged(ctx, t)
+	return r.mergeComment(ctx, t, fmt.Sprintf("已合并: PR #%d squash %s\n阶段: %s\n归属: %s\n%s%s", h.PR, sha, machine.PhaseMerged, machine.OwnerNone, merge.ProgressPrefix, b))
 }
 func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error {
 	client := r.Clients[t.Repo]
