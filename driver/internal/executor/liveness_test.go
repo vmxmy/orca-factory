@@ -48,7 +48,8 @@ func (o *livenessOrca) WorkerStop(_ context.Context, request, dispatch string) (
 	return nil, nil
 }
 
-// Use the Client's typed parsing path, then change only dispatchId to match the executor.
+// Use the Client's typed parsing path, then change dispatchId to match the executor.
+// Recorded liveness tests keep all other fields; the turn-start timeout test overrides them explicitly.
 func livenessFixture(t *testing.T, verdict, detail string) *livenessOrca {
 	t.Helper()
 	path, err := filepath.Abs("../../testdata/recorded/orca-worker-list-liveness.json")
@@ -70,7 +71,7 @@ func livenessFixture(t *testing.T, verdict, detail string) *livenessOrca {
 			return &livenessOrca{worker: worker}
 		}
 	}
-	t.Fatalf("recorded Run run_9714ea9b8576 has no worker with verdict=%q detail=%q; only dispatchId may be changed", verdict, detail)
+	t.Fatalf("recorded Run run_9714ea9b8576 has no worker with verdict=%q detail=%q", verdict, detail)
 	return nil
 }
 
@@ -108,7 +109,12 @@ func TestWaitFailsExitedWorker(t *testing.T) {
 
 func TestWaitStopsWorkerThatNeverStarted(t *testing.T) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
-	o := livenessFixture(t, "live", "turn_start_unobserved")
+	o := livenessFixture(t, "unverifiable", "")
+	// The recorded Run has no turn_start_unobserved state; these fields are synthetic.
+	o.worker.DispatchID = "ctx_one"
+	o.worker.Projection.Liveness.Verdict = ""
+	o.worker.Projection.Liveness.Reason = ""
+	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
 	e.Orca = o
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
