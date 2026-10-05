@@ -301,7 +301,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
 		if callErr != nil {
-			return errors.New("worker start failed; reconcile dispatch before retry")
+			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", callErr)
 		}
 		if result.DispatchID == "" || taskID == "" {
 			return errors.New("worker receipt missing task or dispatch")
