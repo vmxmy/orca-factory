@@ -24,6 +24,10 @@
 | GitHub PR：`state`、`merged`、`mergeable_state`（合并后为 `unknown`）、`merge_commit_sha`（squash 后即 main 上的提交）；`compare/<base>...<head>` 的 `behind_by`、`merge_base_commit.sha` 与 `files`（最多 300，不标截断）；本仓库 CI 只有 GitGuardian 一个 check-run，旧式 commit status 为空且显示 `pending`，CI 只看 check-runs | `github-pr-open-clean.json`、`github-pr-merged.json`、`github-compare-*.json`、`github-commit-main.json`、`github-check-runs-gitguardian.json` | `github.TestRecordedMergeLaneReads`，`driver selftest --live` |
 | squash 时 `sha` 与 PR head 不符返回 409 `Head branch was modified`，不合并；草稿 PR 返回 405 | `github-merge-head-modified-409.json` | `github.TestRecordedMergeHeadModified` |
 
+| GitHub tags 是数组（未发过 tag 时为 `[]`），版本须按数值比较；compare 的提交正文在 `commits[].commit.message`，分页须核对 `total_commits` 并按插件路径筛选 | `github-release-tags.json`（vmxmy/orca-factory）、`github-release-version-tags.json`（anthropics/claude-code）、`github-release-commits.json` | `release.TestRecordedReleaseReads` |
+
+发布读取样本录于 2026-10-06：`GET /repos/vmxmy/orca-factory/tags?per_page=100`（空列表）；`GET /repos/anthropics/claude-code/tags?per_page=100`；`GET /repos/anthropics/claude-code/compare/v2.1.288...2bfb629dfaff0c8318047a4beb93cf1dc5b58b18?per_page=100&page=1`。目标仓库尚无 tag，非空格式使用公开仓库的原始回执验证，未改写 tag 名称。
+
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
 录制样本前删掉终端预览等可能含他人会话内容的字段，并确认不含任何凭据。

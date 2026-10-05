@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/release"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
@@ -40,8 +41,7 @@ type Tickets interface {
 	Finish(ctx context.Context, t scheduler.Ticket, body string) error
 }
 
-// Lane rebuilds a fresh FIFO channel from every tick's queue: ownership lives in
-// Linear, so the queue order is the snapshot order and only catch-up rounds carry over.
+// Lane persists the shared arrival order and retries its head until completion.
 type Lane struct {
 	Repositories map[string]config.Repository
 	GitHub       GitHub
@@ -51,21 +51,22 @@ type Lane struct {
 	Root         string
 	Now          func() time.Time
 	Warn         func(format string, args ...any)
-	rounds       map[string]int
+	Publisher    release.Publisher
+	entries      []laneEntry
+	loaded       bool
 	current      map[string]scheduler.Ticket
 }
 
 // compareFileLimit is GitHub's silent cap on compare file lists.
 const compareFileLimit = 300
 
-func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
-	if l.rounds == nil {
-		l.rounds = map[string]int{}
+// Admit records new feature PRs without advancing the lane. Existing entries
+// retain their position even when Linear changes snapshot order.
+func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
+	if err := l.load(); err != nil {
+		return err
 	}
-	l.current = map[string]scheduler.Ticket{}
-	channel := merge.New(l, merge.CommandGit{Run: l.Exec}, l, l)
 	var problems []error
-	var repos []string
 	for _, t := range queue {
 		full, owner, name, err := l.repository(t)
 		if err != nil {
@@ -74,71 +75,113 @@ func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 		}
 		pr, err := l.pullRequest(ctx, owner, name, t.Identifier)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("%s PR lookup: %w", t.Identifier, err))
-			continue
-		}
-		switch {
-		case pr == nil:
-			problems = append(problems, l.escalate(ctx, t, "合并通道: 找不到 agent/"+t.Identifier+"/executor 的 PR"))
-			continue
-		case pr.Merged:
-			problems = append(problems, l.finish(ctx, t, owner, name, pr.Number, pr.MergeCommitSHA))
-			continue
-		case pr.State != "open":
-			problems = append(problems, l.escalate(ctx, t, fmt.Sprintf("合并通道: PR #%d 未合并即关闭", pr.Number)))
-			continue
-		}
-		env := l.Repositories[t.Repo].Env
-		if env["AGENT_DEPLOY_WORKFLOW"] != "" || env["AGENT_SMOKE_CMD"] != "" {
-			problems = append(problems, fmt.Errorf("%s: deployment-gated merges are not implemented; repository lane refused", t.Identifier))
-			continue
-		}
-		key := requestKey(full, pr.Number)
-		l.current[key] = t
-		if err := channel.Enqueue(merge.Request{Repository: full, Path: t.Repo, Number: pr.Number, CatchupRounds: l.rounds[key]}); err != nil {
 			problems = append(problems, err)
 			continue
 		}
-		if !contains(repos, full) {
-			repos = append(repos, full)
+		if pr == nil {
+			problems = append(problems, l.escalate(ctx, t, "合并通道: 找不到 agent/"+t.Identifier+"/executor 的 PR"))
+			continue
+		}
+		if !pr.Merged && pr.State != "open" {
+			problems = append(problems, l.escalate(ctx, t, fmt.Sprintf("合并通道: PR #%d 未合并即关闭", pr.Number)))
+			continue
+		}
+		r := merge.Request{Repository: full, Path: t.Repo, Number: pr.Number}
+		if err := l.Enqueue(r); err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		for i := range l.entries {
+			if requestKey(full, pr.Number) == requestKey(l.entries[i].Request.Repository, l.entries[i].Request.Number) {
+				l.entries[i].Ticket = &t
+			}
 		}
 	}
-	for _, full := range repos {
-		result, err := channel.Next(ctx, full)
-		if err != nil && result.Status != merge.Merged {
-			problems = append(problems, fmt.Errorf("%s merge: %w", full, err))
+	return errors.Join(append(problems, l.save())...)
+}
+func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
+	if err := l.Admit(ctx, queue); err != nil {
+		return err
+	}
+	l.current = map[string]scheduler.Ticket{}
+	for _, e := range l.entries {
+		if e.Ticket != nil {
+			l.current[requestKey(e.Request.Repository, e.Request.Number)] = *e.Ticket
+		}
+	}
+	seen := map[string]bool{}
+	var problems []error
+	for i := 0; i < len(l.entries); {
+		e := &l.entries[i]
+		r := e.Request
+		if seen[r.Repository] {
+			i++
 			continue
 		}
-		key := requestKey(full, result.Request.Number)
-		t, ok := l.current[key]
-		if !ok {
+		seen[r.Repository] = true
+		if e.Blocked != "" {
+			problems = append(problems, errors.New(e.Blocked))
+			i++
 			continue
 		}
-		l.rounds[key] = result.Rounds
-		_, owner, name, _ := l.repository(t)
+		owner, name, _ := strings.Cut(r.Repository, "/")
+		pr, err := l.GitHub.GetPR(ctx, owner, name, r.Number)
+		if err != nil {
+			problems = append(problems, err)
+			i++
+			continue
+		}
+		result := merge.Result{Request: r, Status: merge.Merged, MergeSHA: pr.MergeCommitSHA}
+		if !pr.Merged {
+			if pr.State != "open" {
+				problems = append(problems, fmt.Errorf("PR #%d closed without merge", r.Number))
+				i++
+				continue
+			}
+			channel := merge.New(l, merge.CommandGit{Run: l.Exec}, l, l)
+			if err = channel.Enqueue(r); err == nil {
+				result, err = channel.Next(ctx, r.Repository)
+			}
+		}
+		if err != nil {
+			problems = append(problems, err)
+			if result.Status != merge.Merged {
+				i++
+				continue
+			}
+		}
+		e.Request.CatchupRounds = result.Rounds
 		switch result.Status {
 		case merge.Merged:
-			delete(l.rounds, key)
-			problems = append(problems, l.finish(ctx, t, owner, name, result.Request.Number, result.MergeSHA))
+			if e.Release != nil {
+				err = release.Publish(ctx, l.Publisher, *e.Release, result)
+			} else if e.Ticket != nil {
+				err = l.finish(ctx, *e.Ticket, owner, name, r.Number, result.MergeSHA)
+			} else {
+				err = errors.New("merge entry has no owner")
+			}
 		case merge.Correction, merge.Human:
-			// The executor has no conflict-resolution path yet, so a correction goes to a person.
-			delete(l.rounds, key)
-			problems = append(problems, l.escalate(ctx, t, "合并通道: "+result.Reason))
+			if e.Ticket != nil {
+				err = l.escalate(ctx, *e.Ticket, "合并通道: "+result.Reason)
+			} else {
+				e.Blocked = "release needs human recovery: " + result.Reason
+				err = errors.New(e.Blocked)
+			}
+		default:
+			i++
+			continue
 		}
+		if err != nil {
+			problems = append(problems, err)
+			i++
+			continue
+		}
+		l.entries = append(l.entries[:i], l.entries[i+1:]...)
 	}
-	return errors.Join(problems...)
+	return errors.Join(append(problems, l.save())...)
 }
 
 func requestKey(full string, number int) string { return fmt.Sprintf("%s#%d", full, number) }
-func contains(list []string, v string) bool {
-	for _, x := range list {
-		if x == v {
-			return true
-		}
-	}
-	return false
-}
-
 func (l *Lane) repository(t scheduler.Ticket) (full, owner, name string, err error) {
 	full = l.Repositories[t.Repo].Env["AGENT_GH_REPO"]
 	owner, name, ok := strings.Cut(full, "/")

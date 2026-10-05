@@ -29,8 +29,8 @@ fi
 
 echo "== driver-wired"   # 依据：合并通道写完未接线，上线后一次都没合并（2026-10-06）
 if [ -f driver/go.mod ]; then
-  # 每个 internal 包都必须能从 cmd/ 到达；release 待接线（另有票）
-  unwired=$(cd driver && LC_ALL=C comm -23 <(go list ./internal/... | LC_ALL=C sort) <(go list -deps ./cmd/... | LC_ALL=C sort) | grep -v '/internal/release$' || true)
+  # 每个 internal 包都必须能从 cmd/ 到达
+  unwired=$(cd driver && LC_ALL=C comm -23 <(go list ./internal/... | LC_ALL=C sort) <(go list -deps ./cmd/... | LC_ALL=C sort) || true)
   if [ -n "$unwired" ]; then
     echo "以下包没有从 driver/cmd 接线，写完的功能不会运行：${unwired}" >&2
     exit 1

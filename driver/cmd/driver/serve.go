@@ -68,7 +68,9 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			Repositories: runtime.Repositories, GitHub: gh, Orca: &orca.Client{Path: runtime.OrcaPath}, Tickets: runtime, Root: logStateRoot(),
 			Warn: func(format string, args ...any) { logger.Warn(fmt.Sprintf(format, args...), "component", "merge-lane") },
 		}
-		return &scheduler.Scheduler{Config: cfg, Backend: runtime, Merger: lane}, runtime, nil
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime}
+		wireReleases(s, lane, gh)
+		return s, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
@@ -136,6 +138,11 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 	}, func(ctx context.Context) error {
 		if backend.inspected {
 			backend.inspected = false
+			if hook, ok := s.Merger.(interface{ AfterTick(context.Context) error }); ok {
+				if err := hook.AfterTick(ctx); err != nil && report != nil {
+					report(err)
+				}
+			}
 			now := time.Now()
 			if s.Now != nil {
 				now = s.Now()
