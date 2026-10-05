@@ -16,6 +16,8 @@ type idleOrca struct {
 	fakeOrca
 	poll, terminalCalls int
 	worktree            string
+	sends               [][2]string
+	sendErr             error
 	tasks               func(int) []orca.Task
 	terminals           func(int) ([]orca.Terminal, error)
 }
@@ -47,7 +49,7 @@ func TestIdleDetection(t *testing.T) {
 			now := e.Now()
 			initial := now
 			e.Now = func() time.Time { return now }
-			e.Config.PollInterval = time.Minute
+			e.Config.PollInterval = 6 * time.Minute
 			e.Sleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
 			o := &idleOrca{worktree: "/worker"}
 			o.tasks = func(n int) []orca.Task {
@@ -98,6 +100,7 @@ func TestIdleBudgetExhaustion(t *testing.T) {
 	now := e.Now()
 	e.Now = func() time.Time { return now }
 	e.Config.WorkerIdleTimeout = time.Minute
+	e.Config.PollInterval = time.Minute
 	e.Sleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
 	o := &idleOrca{worktree: "/worker"}
 	o.tasks = func(n int) []orca.Task {
@@ -157,5 +160,113 @@ func TestIdleTimeoutConfig(t *testing.T) {
 		if got := workerIdleTimeout(tc.value); got != tc.want {
 			t.Fatalf("value=%q got=%v want=%v", tc.value, got, tc.want)
 		}
+	}
+}
+
+func (f *idleOrca) TerminalSend(_ context.Context, terminal, text string) (orca.Receipt, error) {
+	f.sends = append(f.sends, [2]string{terminal, text})
+	return nil, f.sendErr
+}
+
+func TestIdleNudge(t *testing.T) {
+	t.Run("full grace interval", func(t *testing.T) {
+		e, _, _, _, _, _ := fixture(t, "new-sha")
+		now := e.Now()
+		e.Now = func() time.Time { return now }
+		o := &idleOrca{worktree: "/worker"}
+		o.terminals = func(int) ([]orca.Terminal, error) {
+			return []orca.Terminal{{Handle: "term_worker", WorktreePath: "/worker", LastOutputAt: 1}}, nil
+		}
+		e.Orca = o
+		state := machine.Initial()
+		var idle workerIdle
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("first idle counted before nudge grace")
+		}
+		now = now.Add(time.Minute)
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("grace interval did not restart at nudge")
+		}
+		now = now.Add(time.Millisecond)
+		if !idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("idle beyond grace not counted")
+		}
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("same idle counted twice")
+		}
+		if len(o.sends) != 1 {
+			t.Fatalf("sends=%v", o.sends)
+		}
+	})
+
+	t.Run("paused", func(t *testing.T) {
+		e, _, _, _, _, _ := fixture(t, "new-sha")
+		o := &idleOrca{worktree: "/worker"}
+		o.terminals = func(int) ([]orca.Terminal, error) {
+			return []orca.Terminal{{Handle: "term_worker", WorktreePath: "/worker", LastOutputAt: 1}}, nil
+		}
+		e.Orca = o
+		state := machine.Initial()
+		state.Paused[machine.DepLinear] = false
+		state.Paused[machine.DepGitHub] = true
+		var idle workerIdle
+		for i := 0; i < 3; i++ {
+			if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+				t.Fatal("paused worker counted as stalled")
+			}
+		}
+		if len(o.sends) != 0 {
+			t.Fatalf("paused sends=%v", o.sends)
+		}
+	})
+	for _, scenario := range []string{"output recovery", "worker_done recovery", "still idle", "idle again", "send failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			e, _, _, _, _, ticket := fixture(t, "new-sha")
+			now := e.Now()
+			initial := now
+			e.Now = func() time.Time { return now }
+			e.Config.WorkerIdleTimeout = 2 * time.Minute
+			e.Config.PollInterval = time.Minute
+			e.Sleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
+			o := &idleOrca{worktree: "/worker"}
+			if scenario == "send failure" {
+				o.sendErr = errors.New("send failed")
+			}
+			doneAt := 6
+			if scenario == "worker_done recovery" {
+				doneAt = 2
+			}
+			o.tasks = func(n int) []orca.Task {
+				if n > doneAt {
+					t.Fatal("polling did not finish")
+				}
+				if n == 2 && len(o.sends) != 1 {
+					t.Fatalf("first idle sent %d nudges, want 1", len(o.sends))
+				}
+				return idleTask(n == doneAt)
+			}
+			o.terminals = func(n int) ([]orca.Terminal, error) {
+				last := initial.Add(-3 * time.Minute)
+				if n > 1 && scenario == "output recovery" {
+					last = now
+				}
+				if n > 1 && scenario == "idle again" {
+					last = initial.Add(time.Minute)
+				}
+				return []orca.Terminal{{Handle: "term_worker", WorktreePath: "/worker", LastOutputAt: last.UnixMilli()}}, nil
+			}
+			e.Orca = o
+			result, err := e.Execute(context.Background(), ticket)
+			want := 1
+			if scenario == "output recovery" || scenario == "worker_done recovery" {
+				want = 0
+			}
+			if err != nil || result.State.Infra != want || result.State.Owner != machine.OwnerMerge {
+				t.Fatalf("result=%+v err=%v want infra=%d", result, err, want)
+			}
+			if len(o.sends) != 1 || o.sends[0] != [2]string{"term_worker", "请按任务继续；完成时用 worker_done 回报"} {
+				t.Fatalf("sends=%v", o.sends)
+			}
+		})
 	}
 }

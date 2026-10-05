@@ -23,6 +23,7 @@ type Orca interface {
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
+	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 }
 type Linear interface {
@@ -252,27 +253,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	for {
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
-		var lastOutput int64
-		observed, stalled := false, false
+		var idle workerIdle
 		observeIdle := func() error {
-			if cp.Worktree == "" {
+			if !idle.observe(ctx, e, cp.Worktree, c.WorkerIdleTimeout, result.State) {
 				return nil
 			}
-			terminals, readErr := e.Orca.TerminalList(ctx)
-			if readErr != nil {
-				return nil
-			}
-			terminal, found := orca.TerminalForWorktree(terminals, cp.Worktree)
-			if !found {
-				return nil
-			}
-			if !observed || terminal.LastOutputAt > lastOutput {
-				lastOutput, observed, stalled = terminal.LastOutputAt, true, false
-			}
-			if stalled || e.Now().Sub(time.UnixMilli(lastOutput)) <= c.WorkerIdleTimeout {
-				return nil
-			}
-			stalled = true
 			if err := transition(machine.EvWorkerStall, nil); err != nil {
 				return err
 			}

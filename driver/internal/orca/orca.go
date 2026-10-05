@@ -269,6 +269,14 @@ func (c *Client) TerminalCreate(ctx context.Context, o TerminalOptions) (Receipt
 	args = add(args, "--command", o.Command)
 	return c.call(ctx, args)
 }
+
+// TerminalSend has no retry-request support and is never retried automatically.
+func (c *Client) TerminalSend(ctx context.Context, terminal, text string) (Receipt, error) {
+	if terminal == "" || text == "" {
+		return nil, invalid("terminal send requires handle and text")
+	}
+	return c.call(ctx, []string{"terminal", "send", "--terminal", terminal, "--text", text, "--enter"})
+}
 func (c *Client) TerminalShow(ctx context.Context, terminal string) (Receipt, error) {
 	return c.call(ctx, []string{"terminal", "show", "--terminal", terminal})
 }

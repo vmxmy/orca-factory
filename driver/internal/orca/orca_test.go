@@ -290,3 +290,20 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalSend(t *testing.T) {
+	c, log := fake(t)
+	receipt, err := c.TerminalSend(context.Background(), "term_one", "continue work")
+	if err != nil || string(receipt["sent"]) != "true" {
+		t.Fatalf("receipt=%v err=%v", receipt, err)
+	}
+	argv(t, log, []string{"terminal", "send", "--terminal", "term_one", "--text", "continue work", "--enter", "--json", "END"})
+	for _, args := range [][2]string{{"", "text"}, {"term_one", ""}} {
+		c := &Client{Path: "must-not-run"}
+		_, err := c.TerminalSend(context.Background(), args[0], args[1])
+		var ticket *infra.Ticket
+		if !errors.As(err, &ticket) || ticket.Err.Error() != "terminal send requires handle and text" {
+			t.Fatalf("invalid arguments error=%v", err)
+		}
+	}
+}
