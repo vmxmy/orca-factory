@@ -1,0 +1,109 @@
+package executor
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
+)
+
+// RunTicket binds a Run to the calling Orca terminal. The repository profile is
+// trusted local configuration; ticket bodies are fetched separately as data.
+func RunTicket(ctx context.Context, identifier string) (Result, error) {
+	if !component.MatchString(identifier) {
+		return Result{}, errors.New("invalid ticket identifier")
+	}
+	terminal := os.Getenv("ORCA_TERMINAL_HANDLE")
+	if terminal == "" {
+		return Result{}, errors.New("driver exec requires a current Orca terminal")
+	}
+	b, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"rev-parse", "--show-toplevel"}, Timeout: 10 * time.Second})
+	if err != nil {
+		return Result{}, errors.New("cannot locate repository")
+	}
+	repo := strings.TrimSpace(string(b))
+	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+	// Only selected, noncredential fields leave this subprocess.
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	if err != nil {
+		return Result{}, errors.New("repository profile could not be loaded")
+	}
+	values := strings.Split(string(b), "\x00")
+	if len(values) != 5 {
+		return Result{}, errors.New("invalid repository profile")
+	}
+	owner, name, ok := strings.Cut(values[0], "/")
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) || values[1] == "" || values[2] == "" || strings.TrimSpace(values[3]) == "" {
+		return Result{}, errors.New("repository profile requires GitHub repository, Linear team/project and reviewer")
+	}
+	ticket, err := readTicket(ctx, identifier, values[1], values[2])
+	if err != nil {
+		return Result{}, err
+	}
+	lc, err := linear.New(ctx, linear.Options{TeamID: values[1]})
+	if err != nil {
+		return Result{}, errors.New("Linear initialization failed")
+	}
+	gc, err := github.New(github.Options{})
+	if err != nil {
+		return Result{}, errors.New("GitHub initialization failed")
+	}
+	oc := &orca.Client{}
+	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
+	return e.Execute(ctx, ticket)
+}
+
+// linear.Snapshot deliberately omits description. This executor-local read
+// adapter asks only for the brief and fences it to the configured team/project.
+func readTicket(ctx context.Context, identifier, team, project string) (Ticket, error) {
+	key := os.Getenv("LINEAR_API_KEY")
+	if key == "" {
+		return Ticket{}, errors.New("LINEAR_API_KEY is required")
+	}
+	body, _ := json.Marshal(map[string]any{"query": `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description team { id } project { id } } }`, "variables": map[string]string{"id": identifier}})
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(body))
+	if err != nil {
+		return Ticket{}, errors.New("Linear brief request failed")
+	}
+	req.Header.Set("Authorization", key)
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return Ticket{}, errors.New("Linear brief transport failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Ticket{}, errors.New("Linear brief request rejected")
+	}
+	var envelope struct {
+		Data struct {
+			Issue *struct {
+				ID, Identifier, Title, Description string
+				Team, Project                      struct{ ID string }
+			}
+		}
+		Errors []json.RawMessage
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&envelope) != nil || len(envelope.Errors) > 0 || envelope.Data.Issue == nil {
+		return Ticket{}, errors.New("invalid Linear brief response")
+	}
+	issue := envelope.Data.Issue
+	if issue.Identifier != identifier || issue.Team.ID != team || issue.Project.ID != project {
+		return Ticket{}, errors.New("ticket outside configured repository project")
+	}
+	return ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
+}
