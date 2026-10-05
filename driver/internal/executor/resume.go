@@ -206,14 +206,23 @@ func (c *Commands) Worktree(ctx context.Context, repo, branch string) (string, e
 	if err != nil {
 		return "", err
 	}
-	path := ""
+	// Orca names the worker worktree <ticket>-<unit> and checks out a local branch
+	// of its own; agent/<ticket>/<unit> is only the push target, so match either.
+	name := strings.ReplaceAll(strings.TrimPrefix(branch, "agent/"), "/", "-")
+	path, byName := "", ""
 	for _, field := range strings.Split(string(b), "\x00") {
 		if strings.HasPrefix(field, "worktree ") {
 			path = strings.TrimPrefix(field, "worktree ")
+			if filepath.IsAbs(path) && filepath.Base(path) == name {
+				byName = path
+			}
 		}
 		if field == "branch refs/heads/"+branch && filepath.IsAbs(path) {
 			return path, nil
 		}
+	}
+	if byName != "" {
+		return byName, nil
 	}
 	return "", errors.New("original worktree not found")
 }

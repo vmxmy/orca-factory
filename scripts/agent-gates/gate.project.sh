@@ -28,7 +28,7 @@ if [ -f driver/go.mod ]; then
 fi
 
 echo "== driver-contracts"   # 依据：外部接口解析须用录制的真实样本测试（2026-10-05 驱动器上线复盘）
-CONTRACT_BASELINE=9 # 只允许调高，不允许调低
+CONTRACT_BASELINE=10 # 只允许调高，不允许调低
 if [ -f driver/go.mod ]; then
   contract_passed=$( { (cd driver && go test -count=1 -v -run '^TestRecorded' ./...) || true; } | grep -c '^--- PASS: TestRecorded' || true)
   if [ "$contract_passed" -lt "$CONTRACT_BASELINE" ]; then
