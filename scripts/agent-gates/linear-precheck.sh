@@ -106,7 +106,7 @@ ids() {
   jq -r --arg label "$1" --arg type "$2" '
     .result.issues
     | sort_by(((.priority // 0) | if . == 0 then 9 else . end), .createdAt)[]
-    | select(any(.labels[]?; .name == $label))
+    | select(any(.labels[]?; .id == $label or .name == $label))
     | select(.state.type == $type) | .identifier' "$precheck_tmp/issues"
 }
 
