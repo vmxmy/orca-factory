@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -19,15 +20,18 @@ import (
 
 func init() { Register("serve", serve) }
 func serve(args []string) int {
+	return loggedCommand("scheduler", filepath.Join(logStateRoot(), "scheduler.log"), os.Stdout, args, func(logger *slog.Logger) (int, error) {
+		return serveLogged(args, logger)
+	})
+}
+func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	dry := len(args) == 1 && args[0] == "--dry-run"
 	if len(args) != 0 && !dry {
-		fmt.Fprintln(os.Stderr, "Usage: driver serve [--dry-run]")
-		return 2
+		return 2, fmt.Errorf("Usage: driver serve [--dry-run]")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cannot resolve home directory")
-		return 1
+		return 1, fmt.Errorf("cannot resolve home directory")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -40,10 +44,9 @@ func serve(args []string) int {
 			}
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
+			return 1, err
 		}
-		return 0
+		return 0, nil
 	}
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
@@ -64,12 +67,11 @@ func serve(args []string) int {
 		case <-timer.C:
 			return nil
 		}
-	}, func(err error) { fmt.Fprintln(os.Stderr, err) })
+	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
+		return 1, err
 	}
-	return 0
+	return 0, nil
 }
 
 // statusBackend observes existing reads without issuing additional requests.
