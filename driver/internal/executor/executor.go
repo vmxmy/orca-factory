@@ -280,6 +280,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if callErr != nil || baseline == "" {
 			return errors.New("baseline lookup failed")
 		}
+		if restored != nil && cp.Corrections > 0 && baseline != cp.Baseline {
+			// A correction may span main advancing: the new worker must branch from
+			// current main, or the gate runs against a stale base and fails driver-wired.
+			cp.Baseline = baseline
+		}
 		issue, callErr := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if callErr != nil {
 			return errors.New("Linear claim failed")
