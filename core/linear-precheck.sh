@@ -155,6 +155,27 @@ claim_uncertain() {
   return 1
 }
 
+# One-shot cache of open PRs for the whole run. State lives on disk so a
+# subshell (command substitution) that calls open_pr_count_for sees the same
+# cache the parent populated. Failure or timeout means "uncertain": every
+# per-ticket PR check that depends on this returns 1 (claim stays live).
+load_open_prs() {
+  [[ ! -e "$precheck_tmp/open-prs.json" && ! -e "$precheck_tmp/open-prs.failed" ]] || return 0
+  local out
+  if out="$(perl -e 'alarm 30; exec @ARGV' -- gh pr list --repo "$GH_REPO" --state open --json number,title --limit 100 2>/dev/null)" \
+    && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s' "$out" > "$precheck_tmp/open-prs.json"
+  else
+    : > "$precheck_tmp/open-prs.failed"
+    echo 'precheck: 开放 PR 列表获取失败，相关认领保留' >&2
+  fi
+}
+open_pr_count_for() {
+  load_open_prs
+  [[ -f "$precheck_tmp/open-prs.json" ]] || return 1
+  jq --arg id "$1" '[.[] | select((.title // "") | contains($id))] | length' "$precheck_tmp/open-prs.json"
+}
+
 # Success means positively expired; a live or uncertain claim returns false.
 expired_claim() {
   local claim_id="$1" out age runs run tasks cards cursor="" matches=""
@@ -221,7 +242,7 @@ expired_claim() {
 # ORPHAN_MINUTES and no open PR with the ticket id in its title. Any read failure or unparsable
 # response is uncertain and keeps the ticket live. Sets claim_reason/claim_failures for release_claim.
 orphan_claim() {
-  local claim_id="$1" out verdict pr_out pr_count
+  local claim_id="$1" out verdict pr_count
   claim_reason=""
   claim_failures=0
   if ! out="$(claim_read linear issue "$claim_id")"; then return 1; fi
@@ -230,12 +251,8 @@ orphan_claim() {
     claim_uncertain 'cannot parse updatedAt for orphan check'; return 1
   fi
   [[ "$verdict" == true ]] || return 1
-  if ! pr_out="$(perl -e 'alarm 20; exec @ARGV' -- \
-    gh pr list --repo "$GH_REPO" --state open --search "$claim_id in:title" --json number 2>/dev/null)"; then
-    claim_uncertain "gh pr list failed for $claim_id"; return 1
-  fi
-  if ! pr_count="$(jq 'if type == "array" then length else error("pr list not array") end' <<<"$pr_out" 2>/dev/null)"; then
-    claim_uncertain 'cannot parse gh pr list output'; return 1
+  if ! pr_count="$(open_pr_count_for "$claim_id")"; then
+    claim_uncertain "gh pr list cache unavailable for $claim_id"; return 1
   fi
   (( pr_count == 0 )) || return 1
   if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
@@ -249,7 +266,7 @@ orphan_claim() {
 # Require a complete comment snapshot, a still-started issue and no open PR; uncertain
 # reads keep the ticket live, using the same bounded reads as orphan_claim.
 overrun_claim() {
-  local claim_id="$1" out verdict pr_out pr_count
+  local claim_id="$1" out verdict pr_count
   claim_reason=""
   claim_failures=0
   if ! out="$(claim_read linear issue "$claim_id")"; then return 1; fi
@@ -277,12 +294,8 @@ overrun_claim() {
   if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
     claim_uncertain 'cannot count claim failures for overrun check'; return 1
   fi
-  if ! pr_out="$(perl -e 'alarm 20; exec @ARGV' -- \
-    gh pr list --repo "$GH_REPO" --state open --search "$claim_id in:title" --json number 2>/dev/null)"; then
-    claim_uncertain "gh pr list failed for $claim_id"; return 1
-  fi
-  if ! pr_count="$(jq -er 'if type == "array" then length else error("pr list not array") end' <<<"$pr_out" 2>/dev/null)"; then
-    claim_uncertain 'cannot parse gh pr list output for overrun check'; return 1
+  if ! pr_count="$(open_pr_count_for "$claim_id")"; then
+    claim_uncertain "gh pr list cache unavailable for $claim_id"; return 1
   fi
   (( pr_count == 0 )) || return 1
   claim_reason="认领后超过 ${WORKER_MAX_MINUTES} 分钟未产出 PR"
