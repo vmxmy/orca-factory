@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
@@ -322,4 +323,61 @@ func (c *Client) Reconcile(ctx context.Context, request, run string) (Reconcilia
 		err = invalid("unknown request state")
 	}
 	return result, err
+}
+
+// Terminal is a terminal output observation; timestamps are epoch milliseconds.
+type Terminal struct {
+	Handle       string `json:"handle"`
+	WorktreeID   string `json:"worktreeId"`
+	WorktreePath string `json:"worktreePath"`
+	LastOutputAt int64  `json:"lastOutputAt"`
+}
+
+func (c *Client) TerminalList(ctx context.Context) ([]Terminal, error) {
+	receipt, err := c.call(ctx, []string{"terminal", "list"})
+	if err != nil {
+		return nil, err
+	}
+	var truncated bool
+	if raw, ok := receipt["truncated"]; ok {
+		if json.Unmarshal(raw, &truncated) != nil || truncated {
+			return nil, invalid("invalid terminal list")
+		}
+	}
+	var rows []json.RawMessage
+	raw := receipt["terminals"]
+	if json.Unmarshal(raw, &rows) != nil || rows == nil {
+		return nil, invalid("invalid terminal list")
+	}
+	terminals := make([]Terminal, 0, len(rows))
+	for _, row := range rows {
+		var terminal Terminal
+		var timestamp struct {
+			LastOutputAt *int64 `json:"lastOutputAt"`
+		}
+		if json.Unmarshal(row, &terminal) != nil || json.Unmarshal(row, &timestamp) != nil || timestamp.LastOutputAt == nil {
+			return nil, invalid("invalid terminal timestamp")
+		}
+		terminals = append(terminals, terminal)
+	}
+	return terminals, nil
+}
+
+// TerminalForWorktree selects the most recent output for an absolute worktree path.
+func TerminalForWorktree(terminals []Terminal, path string) (Terminal, bool) {
+	var latest Terminal
+	found := false
+	if !filepath.IsAbs(path) {
+		return latest, false
+	}
+	for _, terminal := range terminals {
+		_, idPath, _ := strings.Cut(terminal.WorktreeID, "::")
+		if terminal.WorktreePath != path && idPath != path {
+			continue
+		}
+		if !found || terminal.LastOutputAt > latest.LastOutputAt {
+			latest, found = terminal, true
+		}
+	}
+	return latest, found
 }

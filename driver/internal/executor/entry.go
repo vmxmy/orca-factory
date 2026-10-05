@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +62,7 @@ func RunTicket(ctx context.Context, identifier string) (Result, error) {
 	}
 	oc := &orca.Client{}
 	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor", Root: os.Getenv("AGENT_DRIVER_STATE_ROOT")}}
+	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[7]
 	e.Config.TierSettings = map[string]string{"fast": values[4], "default": values[5], "strong": values[6]}
@@ -117,4 +119,12 @@ func readTicket(ctx context.Context, identifier, team, project string) (Ticket, 
 		return Ticket{}, errors.New("ticket outside configured repository project")
 	}
 	return ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
+}
+
+func workerIdleTimeout(value string) time.Duration {
+	minutes, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || minutes <= 0 || minutes > int64((1<<63-1)/time.Minute) {
+		return 15 * time.Minute
+	}
+	return time.Duration(minutes) * time.Minute
 }

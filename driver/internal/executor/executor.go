@@ -22,6 +22,7 @@ type Orca interface {
 	RunCreate(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
+	TerminalList(context.Context) ([]orca.Terminal, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 }
 type Linear interface {
@@ -50,6 +51,7 @@ type Config struct {
 	Escalate                                                            string
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
 	PollInterval                                                        time.Duration
+	WorkerIdleTimeout                                                   time.Duration
 	Tier                                                                string
 }
 type Executor struct {
@@ -90,6 +92,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = time.Second
+	}
+	if c.WorkerIdleTimeout <= 0 {
+		c.WorkerIdleTimeout = 15 * time.Minute
 	}
 	if e.Now == nil {
 		e.Now = time.Now
@@ -247,13 +252,49 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	for {
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
+		var lastOutput int64
+		observed, stalled := false, false
+		observeIdle := func() error {
+			if cp.Worktree == "" {
+				return nil
+			}
+			terminals, readErr := e.Orca.TerminalList(ctx)
+			if readErr != nil {
+				return nil
+			}
+			terminal, found := orca.TerminalForWorktree(terminals, cp.Worktree)
+			if !found {
+				return nil
+			}
+			if !observed || terminal.LastOutputAt > lastOutput {
+				lastOutput, observed, stalled = terminal.LastOutputAt, true, false
+			}
+			if stalled || e.Now().Sub(time.UnixMilli(lastOutput)) <= c.WorkerIdleTimeout {
+				return nil
+			}
+			stalled = true
+			if err := transition(machine.EvWorkerStall, nil); err != nil {
+				return err
+			}
+			if result.State.Owner == machine.OwnerHuman {
+				return errBudgetExhausted
+			}
+			return nil
+		}
 		if !cp.Completed {
 			err = e.retryRead(ctx, t, &result, "task polling", func() error {
-				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval)
+				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, observeIdle)
+				// The stall transition already accounts for exhaustion and handoff.
+				if result.State.Owner == machine.OwnerHuman {
+					return nil
+				}
 				return waitErr
 			})
 			if err != nil {
 				return result, err
+			}
+			if result.State.Owner == machine.OwnerHuman {
+				return result, waitErr
 			}
 			releaseAllowed = true
 		}
@@ -428,16 +469,18 @@ func nestedString(r orca.Receipt, key, field string) string {
 	_ = json.Unmarshal(r[key], &inner)
 	return receiptString(inner, field)
 }
-func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration) (*orca.WorkerReport, error) {
+func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, observeIdle func() error) (*orca.WorkerReport, error) {
 	for {
 		tasks, err := e.Orca.TaskList(ctx, run)
 		if err != nil {
 			return nil, errors.New("task polling failed")
 		}
+		completed := false
 		for _, t := range tasks {
 			if t.ID != task || t.DispatchID != dispatch || (t.RunID != "" && t.RunID != run) {
 				continue
 			}
+			completed = completed || t.Status == "completed"
 			report, err := t.WorkerReport()
 			if err != nil {
 				return nil, errors.New("invalid worker report")
@@ -449,7 +492,16 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return report, nil
 			}
 		}
-		if err := pause(ctx, interval); err != nil {
+		if !completed {
+			if err := observeIdle(); err != nil {
+				return nil, err
+			}
+		}
+		sleep := e.Sleep
+		if sleep == nil {
+			sleep = pause
+		}
+		if err := sleep(ctx, interval); err != nil {
 			return nil, err
 		}
 	}
