@@ -57,7 +57,10 @@ func fixture(t *testing.T, handle func(http.ResponseWriter, request)) (*Client, 
 				field = "projects"
 				nodes = `[{"id":"p1","name":"Alpha"},{"id":"p2","name":"Beta"}]`
 			}
-			fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":%s,"pageInfo":{"hasNextPage":false}}}}}`, field, nodes)
+			if _, err := fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":%s,"pageInfo":{"hasNextPage":false}}}}}`, field, nodes); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		handle(w, q)
@@ -94,12 +97,18 @@ func TestSnapshot(t *testing.T) {
 					t.Errorf("time filter: %v", filter)
 				}
 				if pages == 1 {
-					fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","identifier":"ENG-1","updatedAt":"2026-01-03T00:00:00Z","state":{"id":"s1","name":"Done"},"labels":{"nodes":[{"id":"l1","name":"bug"}]},"relations":{"nodes":[{"id":"r1","type":"blocks","relatedIssue":{"id":"i2","identifier":"ENG-2"}}]}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}`)
+					if _, err := fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","identifier":"ENG-1","updatedAt":"2026-01-03T00:00:00Z","state":{"id":"s1","name":"Done"},"labels":{"nodes":[{"id":"l1","name":"bug"}]},"relations":{"nodes":[{"id":"r1","type":"blocks","relatedIssue":{"id":"i2","identifier":"ENG-2"}}]}}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}`); err != nil {
+						t.Error(err)
+						return
+					}
 				} else {
 					if q.Variables["after"] != "next" {
 						t.Error("missing cursor")
 					}
-					fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i2","identifier":"ENG-2"}],"pageInfo":{"hasNextPage":false}}}}`)
+					if _, err := fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i2","identifier":"ENG-2"}],"pageInfo":{"hasNextPage":false}}}}`); err != nil {
+						t.Error(err)
+						return
+					}
 				}
 			})
 			issues, err := c.Snapshot(context.Background(), []string{"Alpha", "Beta"}, since)
@@ -117,25 +126,35 @@ func TestSnapshot(t *testing.T) {
 }
 func TestUpdateAndUsage(t *testing.T) {
 	c, calls := fixture(t, func(w http.ResponseWriter, q request) {
+		if strings.Contains(q.Query, "IssueLabels") {
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
+			return
+		}
 		want := map[string]any{"stateId": "s1", "addedLabelIds": []any{"l1"}, "removedLabelIds": []any{"l2"}}
 		if !strings.Contains(q.Query, "issueUpdate") || q.Variables["id"] != "i1" || !reflect.DeepEqual(q.Variables["input"], want) {
 			t.Errorf("mutation: %+v", q)
 		}
-		fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1","identifier":"ENG-1","state":{"id":"s1","name":"Done"}}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1","identifier":"ENG-1","state":{"id":"s1","name":"Done"}}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	issue, err := c.UpdateIssue(context.Background(), "i1", "Done", []string{"bug"}, []string{"old"})
 	if err != nil || issue.Identifier != "ENG-1" {
 		t.Fatalf("update: %+v %v", issue, err)
 	}
-	if *calls != 4 {
-		t.Errorf("update must make one request, total=%d", *calls)
+	if *calls != 5 {
+		t.Errorf("update must read labels once and mutate once, total=%d", *calls)
 	}
 	u := c.Usage()
-	if u.Requests != 4 || u.Complexity != 28 || u.RequestLimit.Limit != 2500 || u.RequestLimit.Remaining != 2490 || u.RequestLimit.Reset.UnixMilli() != 1800000000000 || u.ComplexityLimit.Limit != 3000000 || u.ComplexityLimit.Remaining != 2999990 || u.ComplexityLimit.Reset.UnixMilli() != 1800000000001 {
+	if u.Requests != 5 || u.Complexity != 35 || u.RequestLimit.Limit != 2500 || u.RequestLimit.Remaining != 2490 || u.RequestLimit.Reset.UnixMilli() != 1800000000000 || u.ComplexityLimit.Limit != 3000000 || u.ComplexityLimit.Remaining != 2999990 || u.ComplexityLimit.Reset.UnixMilli() != 1800000000001 {
 		t.Fatalf("usage: %+v", u)
 	}
 	_, err = c.UpdateIssue(context.Background(), "i1", "unknown", nil, nil)
-	if err == nil || *calls != 4 {
+	if err == nil || *calls != 5 {
 		t.Error("unknown name must fail locally")
 	}
 }
@@ -146,7 +165,10 @@ func TestComments(t *testing.T) {
 			if !reflect.DeepEqual(q.Variables["input"], map[string]any{"issueId": "i1", "body": "hello"}) {
 				t.Error("comment input")
 			}
-			fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1","body":"hello"}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1","body":"hello"}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		pages++
@@ -154,12 +176,18 @@ func TestComments(t *testing.T) {
 			t.Error("issue id")
 		}
 		if pages == 1 {
-			fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello"}],"pageInfo":{"hasNextPage":true,"endCursor":"c-next"}}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello"}],"pageInfo":{"hasNextPage":true,"endCursor":"c-next"}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 		} else {
 			if q.Variables["after"] != "c-next" {
 				t.Error("comments cursor")
 			}
-			fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c2","body":"world"}],"pageInfo":{"hasNextPage":false}}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c2","body":"world"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	})
 	comment, err := c.CreateComment(context.Background(), "i1", "hello")
@@ -185,7 +213,13 @@ func TestErrorsAreSanitized(t *testing.T) {
 		{200, `{"data":{"issueUpdate":{"success":false}}}`, false, false},
 	} {
 		t.Run(fmt.Sprint(tc.status, tc.global, tc.transient, tc.body[:1]), func(t *testing.T) {
-			c, _ := fixture(t, func(w http.ResponseWriter, q request) { w.WriteHeader(tc.status); fmt.Fprint(w, tc.body) })
+			c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+				w.WriteHeader(tc.status)
+				if _, err := fmt.Fprint(w, tc.body); err != nil {
+					t.Error(err)
+					return
+				}
+			})
 			_, err := c.UpdateIssue(context.Background(), "i1", "Done", nil, nil)
 			if err == nil {
 				t.Fatal("expected error")
@@ -226,11 +260,21 @@ func TestMetadataPaginationAndCache(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 			t.Error(err)
 		}
+		if strings.Contains(q.Query, "IssueLabels") {
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
+			return
+		}
 		if strings.Contains(q.Query, "issueUpdate") {
 			if !reflect.DeepEqual(q.Variables["input"], map[string]any{"stateId": "s2", "addedLabelIds": []any{"l2"}, "removedLabelIds": []any{}}) {
 				t.Error("second page not cached")
 			}
-			fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1"}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1"}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		field, prefix := "states", "s"
@@ -241,12 +285,18 @@ func TestMetadataPaginationAndCache(t *testing.T) {
 			field, prefix = "projects", "p"
 		}
 		if q.Variables["after"] == nil {
-			fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":[{"id":"%s1","name":"first"}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`, field, prefix)
+			if _, err := fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":[{"id":"%s1","name":"first"}],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}}`, field, prefix); err != nil {
+				t.Error(err)
+				return
+			}
 		} else {
 			if q.Variables["after"] != "next" {
 				t.Error("metadata cursor")
 			}
-			fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":[{"id":"%s2","name":"second"}],"pageInfo":{"hasNextPage":false}}}}}`, field, prefix)
+			if _, err := fmt.Fprintf(w, `{"data":{"team":{"%s":{"nodes":[{"id":"%s2","name":"second"}],"pageInfo":{"hasNextPage":false}}}}}`, field, prefix); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	}))
 	defer server.Close()
@@ -262,14 +312,17 @@ func TestMetadataPaginationAndCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if requests != 8 {
+	if requests != 10 {
 		t.Fatalf("metadata refetched: %d", requests)
 	}
 }
 
 func TestUsageHourRollover(t *testing.T) {
 	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
-		fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1"}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1"}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	now := time.Date(2026, 1, 2, 3, 0, 0, 0, time.UTC)
 	c.now = func() time.Time { return now }
@@ -311,17 +364,26 @@ func TestSnapshotNestedPagination(t *testing.T) {
 	c, calls := fixture(t, func(w http.ResponseWriter, q request) {
 		switch {
 		case strings.Contains(q.Query, "Snapshot"):
-			fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","labels":{"nodes":[{"id":"l1","name":"first"}],"pageInfo":{"hasNextPage":true,"endCursor":"labels-next"}},"relations":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"relations-next"}}}],"pageInfo":{"hasNextPage":false}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","labels":{"nodes":[{"id":"l1","name":"first"}],"pageInfo":{"hasNextPage":true,"endCursor":"labels-next"}},"relations":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"relations-next"}}}],"pageInfo":{"hasNextPage":false}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 		case strings.Contains(q.Query, "labels("):
 			if q.Variables["after"] != "labels-next" || q.Variables["id"] != "i1" {
 				t.Error("nested label cursor")
 			}
-			fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2","name":"second"}],"pageInfo":{"hasNextPage":false}}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2","name":"second"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 		default:
 			if q.Variables["after"] != "relations-next" || q.Variables["id"] != "i1" {
 				t.Error("nested relation cursor")
 			}
-			fmt.Fprint(w, `{"data":{"issue":{"relations":{"nodes":[{"id":"r2","type":"blocks","relatedIssue":{"id":"i2","identifier":"ENG-2"}}],"pageInfo":{"hasNextPage":false}}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"relations":{"nodes":[{"id":"r2","type":"blocks","relatedIssue":{"id":"i2","identifier":"ENG-2"}}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 		}
 	})
 	issues, err := c.Snapshot(context.Background(), []string{"Alpha"}, time.Time{})
@@ -335,7 +397,10 @@ func TestSnapshotNestedPagination(t *testing.T) {
 
 func TestRepeatedCursorFails(t *testing.T) {
 	c, calls := fixture(t, func(w http.ResponseWriter, q request) {
-		fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"same"}}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"same"}}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	if _, err := c.ListComments(context.Background(), "i1"); err == nil {
 		t.Error("repeated cursor accepted")
@@ -371,7 +436,10 @@ func TestSchedulerSnapshotFields(t *testing.T) {
 				t.Errorf("missing %s", field)
 			}
 		}
-		fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","priority":2,"createdAt":"2026-01-01T00:00:00Z","project":{"id":"p1","name":"Alpha"}}],"pageInfo":{"hasNextPage":false}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"issues":{"nodes":[{"id":"i1","priority":2,"createdAt":"2026-01-01T00:00:00Z","project":{"id":"p1","name":"Alpha"}}],"pageInfo":{"hasNextPage":false}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	issues, err := c.Snapshot(context.Background(), []string{"Alpha"}, time.Time{})
 	if err != nil {
@@ -390,7 +458,10 @@ func TestSnapshotAcceptsProjectUUIDAlongsideName(t *testing.T) {
 		if !reflect.DeepEqual(filter["project"], want) {
 			t.Errorf("project filter=%v", filter)
 		}
-		fmt.Fprint(w, `{"data":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"issues":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	if _, err := c.Snapshot(context.Background(), []string{project, "Alpha"}, time.Time{}); err != nil {
 		t.Fatal(err)

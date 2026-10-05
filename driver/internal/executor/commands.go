@@ -140,7 +140,7 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		return "", tier, errors.New("review input creation failed")
 	}
 	name := f.Name()
-	defer os.Remove(name)
+	defer func() { _ = os.Remove(name) }() // Best-effort cleanup of the consumed review input.
 	if _, err = f.WriteString(input); err != nil {
 		_ = f.Close()
 		return "", tier, errors.New("review input write failed")
@@ -232,7 +232,7 @@ func (c *Commands) FollowupCheckFails(ctx context.Context, repo, check string) (
 	if err != nil {
 		return false, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { _ = os.RemoveAll(dir) }() // Temporary directory cleanup; worktree removal is checked separately.
 	worktree := filepath.Join(dir, "main")
 	if _, err = c.run(ctx, repo, "git", "worktree", "add", "--detach", worktree, "origin/main"); err != nil {
 		return false, errors.New("followup checkout failed")

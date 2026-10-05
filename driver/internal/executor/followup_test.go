@@ -93,7 +93,10 @@ type followupOrca struct {
 }
 
 func (f *followupOrca) TaskList(context.Context, string) ([]orca.Task, error) {
-	b, _ := json.Marshal(map[string]string{"provenance": "worker_report", "outcome": "succeeded", "body": f.body})
+	b, err := json.Marshal(map[string]string{"provenance": "worker_report", "outcome": "succeeded", "body": f.body})
+	if err != nil {
+		return nil, err
+	}
 	return []orca.Task{{ID: "task_one", RunID: "run_one", DispatchID: "ctx_one", Result: b}}, nil
 }
 
@@ -172,7 +175,7 @@ func TestFollowupDrafts(t *testing.T) {
 	})
 	t.Run("source cap in report", func(t *testing.T) {
 		e, s, _, l, ticket := followupFixture(t)
-		body := followupBody + strings.Replace(strings.TrimPrefix(followupBody, "## 后续工作\n"), "unit/a.go", "unit/b.go", -1) + strings.Replace(strings.TrimPrefix(followupBody, "## 后续工作\n"), "unit/a.go", "unit/c.go", -1)
+		body := followupBody + strings.ReplaceAll(strings.TrimPrefix(followupBody, "## 后续工作\n"), "unit/a.go", "unit/b.go") + strings.ReplaceAll(strings.TrimPrefix(followupBody, "## 后续工作\n"), "unit/a.go", "unit/c.go")
 		e.processFollowups(context.Background(), ticket, body)
 		if len(s.created) != 2 || len(l.comments) != 1 {
 			t.Fatalf("%v %v", s.created, l.comments)

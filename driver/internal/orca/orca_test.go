@@ -80,6 +80,7 @@ func TestCommands(t *testing.T) {
 			return dispatches, nil
 		}, nil, `["ctx_one","ctx_two"]`},
 		{"release", func(c *Client) (any, error) { return c.WorkerRelease(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-release", "--dispatch", "ctx_one", "--retry-request", firstID, "--json"}, `{"dispatchId":"ctx_one","status":"released"}`},
+		{"stop", func(c *Client) (any, error) { return c.WorkerStop(ctx, firstID, "ctx_one") }, []string{"orchestration", "worker-stop", "--dispatch", "ctx_one", "--retry-request", firstID, "--json"}, `{"dispatchId":"ctx_one","state":"stopped"}`},
 		{"terminal-create", func(c *Client) (any, error) {
 			return c.TerminalCreate(ctx, TerminalOptions{Worktree: "current", Title: "runner", Command: "codex"})
 		}, []string{"terminal", "create", "--worktree", "current", "--title", "runner", "--command", "codex", "--json"}, `{"terminal":{"handle":"term_one"}}`},

@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -68,6 +70,7 @@ func selftest(args []string) int {
 		_, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"ls-remote", "--heads", "origin", "main"}, Dir: repo.Path, Timeout: time.Minute})
 		return err
 	})
+	check("github merge-lane reads parse", func() error { return liveMergeReads(ctx, repo) })
 	check("reviewer output yields a verdict", func() error { return liveReviewer(ctx, repo) })
 	if failed > 0 {
 		fmt.Printf("selftest: %d check(s) failed\n", failed)
@@ -123,4 +126,34 @@ func liveReviewer(ctx context.Context, repo config.Repository) error {
 	}
 	_, err = executor.ParseReviewVerdict(out)
 	return err
+}
+
+// liveMergeReads reads the latest merged agent PR the way the merge lane does.
+func liveMergeReads(ctx context.Context, repo config.Repository) error {
+	owner, name, ok := strings.Cut(repo.Env["AGENT_GH_REPO"], "/")
+	if !ok {
+		return fmt.Errorf("invalid AGENT_GH_REPO")
+	}
+	gh, err := github.New(github.Options{})
+	if err != nil {
+		return err
+	}
+	main, err := gh.BranchSHA(ctx, owner, name, "main")
+	if err != nil || len(main) != 40 {
+		return fmt.Errorf("main sha %q: %v", main, err)
+	}
+	runs, err := gh.CheckRuns(ctx, owner, name, main)
+	if err != nil {
+		return err
+	}
+	for _, r := range runs {
+		if r.HeadSHA != main || r.Status == "" {
+			return fmt.Errorf("check run %q lacks head or status", r.Name)
+		}
+	}
+	cmp, err := gh.Compare(ctx, owner, name, main+"~1", main)
+	if err != nil || len(cmp.Files) == 0 || len(cmp.MergeBaseCommit.SHA) != 40 {
+		return fmt.Errorf("compare main~1...main: files=%d base=%q err=%v", len(cmp.Files), cmp.MergeBaseCommit.SHA, err)
+	}
+	return nil
 }
