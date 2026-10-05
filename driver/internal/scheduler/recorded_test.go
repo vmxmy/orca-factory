@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -49,5 +50,25 @@ func TestRecordedTerminalList(t *testing.T) {
 	}
 	if absent, err := r.TerminalAbsent(context.Background(), Ticket{Terminal: "term_gone"}); err != nil || !absent {
 		t.Fatalf("missing terminal: absent=%v err=%v", absent, err)
+	}
+}
+
+func TestRecordedExecutorHandoff(t *testing.T) {
+	var resp struct {
+		Data struct {
+			Issue struct {
+				Comments struct{ Nodes []linear.Comment } `json:"comments"`
+			} `json:"issue"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &resp); err != nil {
+		t.Fatal(err)
+	}
+	ticket := Ticket{}
+	if err := readOwnership(&ticket, resp.Data.Issue.Comments.Nodes); err != nil {
+		t.Fatal(err)
+	}
+	if ticket.Owner != machine.OwnerHuman {
+		t.Fatalf("a 转人 comment hands the ticket to a human, got owner %q", ticket.Owner)
 	}
 }
