@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$@" >> "$ORCA_TEST_LOG"
+printf '%s\n' END >> "$ORCA_TEST_LOG"
+case "${ORCA_TEST_SCENARIO:-}:$1:$2" in
+  malformed:*) printf '{broken'; exit 0 ;;
+  unavailable:*) printf '%s\n' '{"ok":false,"error":{"code":"runtime_unavailable","message":"private-value"}}'; exit 1 ;;
+  failure:*) printf '%s\n' '{"ok":false,"error":{"code":"invalid_argument","message":"private-value"}}'; exit 1 ;;
+  timeout:*) sleep 3; exit 0 ;;
+  *:orchestration:run-create) result='{"run":{"id":"run_one","objective":"build it"}}' ;;
+  failed:orchestration:worker-start) printf '%s\n' '{"ok":true,"result":{"taskId":"task_one","dispatchId":"ctx_failed","status":"failed","failedStage":"launch","residualResources":{"terminalHandle":"term_one"}}}'; exit 1 ;;
+  *:orchestration:worker-start) result='{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}' ;;
+  *:orchestration:task-list) result='{"tasks":[{"id":"task_one","run_id":"run_one","dispatch_id":"ctx_one","status":"completed","result":"{\"provenance\":\"worker_report\",\"outcome\":\"succeeded\",\"body\":\"done\",\"filesModified\":[\"a.go\"]}"}]}' ;;
+  *:orchestration:worker-read) result='{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}' ;;
+  *:orchestration:worker-list) result='{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}' ;;
+  *:orchestration:worker-release) result='{"dispatchId":"ctx_one","status":"released"}' ;;
+  *:terminal:create) result='{"terminal":{"handle":"term_one"}}' ;;
+  *:terminal:show) result='{"terminal":{"handle":"term_one","preview":"hello"}}' ;;
+  *:automations:list) result='{"automations":[{"id":"auto_one","name":"nightly","enabled":true}]}' ;;
+  pending:orchestration:request-show) result='{"requestId":"request_one","state":"pending"}' ;;
+  absent:orchestration:request-show) result='{"requestId":"request_one","state":"absent"}' ;;
+  unknown:orchestration:request-show) result='{"requestId":"request_one","state":"other"}' ;;
+  empty:orchestration:request-show) result='{"requestId":"request_one","state":"completed","receipt":null}' ;;
+  *:orchestration:request-show) result='{"requestId":"request_one","state":"completed","receipt":{"taskId":"task_one","dispatchId":"ctx_one","status":"ready"}}' ;;
+  *) exit 2 ;;
+esac
+printf '{"ok":true,"result":%s}\n' "$result"
