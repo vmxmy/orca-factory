@@ -29,6 +29,9 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 	}
 	cp.Pending = callErr != nil || cp.Task == "" || cp.Dispatch == ""
 	if err := saveCheckpoint(c, t, *cp); err != nil {
+		if callErr != nil {
+			return errors.Join(err, &unconfirmedDispatchError{cause: callErr})
+		}
 		return err
 	}
 	if callErr != nil {
@@ -135,3 +138,12 @@ func runRequest(t Ticket, c Config, step string) string { return scopedRequest(t
 func scopedRequest(t Ticket, c Config, step string, n int) string {
 	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, n)
 }
+
+// Keep the original error reachable by Is/As without displaying adapter output
+// when checkpoint persistence and worker-start fail together.
+type unconfirmedDispatchError struct{ cause error }
+
+func (*unconfirmedDispatchError) Error() string {
+	return "worker start uncertain; reconcile dispatch before retry"
+}
+func (e *unconfirmedDispatchError) Unwrap() error { return e.cause }

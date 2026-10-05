@@ -109,7 +109,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if cp != nil {
 		result.State.Corrections = cp.Corrections
 	}
-	if pr != nil && (cp == nil || !cp.Pending) {
+	// A checkpointed dispatch must be reconciled before an existing PR can
+	// authorize handoff, even when worker-start was confirmed.
+	if pr != nil && cp == nil {
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return result, errors.New("invalid existing PR")
 		}
