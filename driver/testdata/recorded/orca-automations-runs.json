@@ -77,6 +77,34 @@
      "stdout": "",
      "timedOut": false
     }
+   },
+   {
+    "_note": "scope conflict: candidate overlaps an in-flight ticket",
+    "id": "zii888-scope-conflict",
+    "status": "skipped_precheck",
+    "trigger": "scheduled",
+    "createdAt": 1791203751800,
+    "startedAt": 1791203751810,
+    "precheckResult": {
+     "stdout": "claimable= in_flight=1 max=10\n",
+     "stderr": "skip ZII-900: scope overlaps mods/swarm-board/hooks/views/throughput.tsx\n",
+     "exitCode": 1,
+     "timedOut": false
+    }
+   },
+   {
+    "_note": "at cap: all ten in-flight slots are occupied",
+    "id": "zii888-at-cap",
+    "status": "skipped_precheck",
+    "trigger": "scheduled",
+    "createdAt": 1791203751820,
+    "startedAt": 1791203751830,
+    "precheckResult": {
+     "stdout": "claimable= in_flight=10 max=10\n",
+     "stderr": "",
+     "exitCode": 1,
+     "timedOut": false
+    }
    }
   ]
  }
