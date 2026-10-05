@@ -42,6 +42,9 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 			return err
 		}
 		err := read()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err == nil {
 			return nil
 		}

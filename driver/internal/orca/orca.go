@@ -185,6 +185,7 @@ const workerStartWait = 5 * time.Minute
 
 type Task struct {
 	ID         string          `json:"id"`
+	ParentID   string          `json:"parent_id"`
 	RunID      string          `json:"run_id"`
 	DispatchID string          `json:"dispatch_id"`
 	Status     string          `json:"status"`
@@ -229,8 +230,33 @@ func (c *Client) TaskList(ctx context.Context, run string) ([]Task, error) {
 		return nil, err
 	}
 	var tasks []Task
-	if json.Unmarshal(receipt["tasks"], &tasks) != nil {
+	if json.Unmarshal(receipt["tasks"], &tasks) != nil || tasks == nil {
 		return nil, invalid("invalid task list")
+	}
+	// A partial enumeration cannot authorize dispatch recovery. Older CLI
+	// versions omit metadata; retain that contract while checking any supplied.
+	if raw, ok := receipt["truncated"]; ok {
+		var truncated bool
+		if json.Unmarshal(raw, &truncated) != nil || truncated {
+			return nil, invalid("incomplete task list")
+		}
+	}
+	for _, key := range []string{"count", "totalCount"} {
+		if raw, ok := receipt[key]; ok {
+			var count int
+			if json.Unmarshal(raw, &count) != nil || count != len(tasks) {
+				return nil, invalid("incomplete task list")
+			}
+		}
+	}
+	if raw, ok := receipt["page"]; ok {
+		var page struct {
+			HasMore    bool   `json:"hasMore"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if json.Unmarshal(raw, &page) != nil || page.HasMore || page.NextCursor != "" {
+			return nil, invalid("incomplete task list")
+		}
 	}
 	return tasks, nil
 }
