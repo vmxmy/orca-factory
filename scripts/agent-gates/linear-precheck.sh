@@ -24,6 +24,11 @@ STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
 GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
 ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
 WORKER_IDLE_MINUTES="${AGENT_WORKER_IDLE_MINUTES:-15}"
+# Batch claim: 1 = legacy single claim; >1 = per-run cap; 0 = no per-run cap (only MAX_IN_FLIGHT caps).
+BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
+# SCOPE avoidance switch: 1 = enforce candidate↔in-flight overlap and (when batching) candidate↔candidate;
+# 0 = skip every SCOPE check (worktree + merge rebase resolve conflicts instead).
+SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 
 ocall() {
   local out attempt
@@ -299,28 +304,48 @@ for id in $in_flight_ids; do
 done
 in_flight=${#live[@]}
 # Cache every live ticket's SCOPE once; a ticket whose SCOPE is unknown or unreadable contributes nothing
-# and never blocks a candidate.
+# and never blocks a candidate. When AGENT_SCOPE_AVOID=0 the cache stays empty so no candidate is blocked.
 declare -A live_scope=()
-if (( ${#live[@]} > 0 )); then
+if (( SCOPE_AVOID == 1 && ${#live[@]} > 0 )); then
   for id in "${live[@]}"; do
     if s="$(scope_of "$id")" && [[ -n "$s" ]]; then live_scope["$id"]="$s"; fi
   done
 fi
+# How many candidates this run may accept: capped by free MAX_IN_FLIGHT slots, then by AGENT_BATCH_SIZE
+# (0 means no per-run cap). BATCH_SIZE=1 preserves the legacy single-claim behavior.
+slots=$(( MAX_IN_FLIGHT - in_flight ))
+(( slots < 0 )) && slots=0
+(( BATCH_SIZE > 0 && slots > BATCH_SIZE )) && slots=$BATCH_SIZE
+# Candidate↔candidate SCOPE avoidance kicks in only when SCOPE_AVOID=1 and this run may accept more than one.
+cand_avoid=0
+if (( SCOPE_AVOID == 1 )) && (( BATCH_SIZE != 1 )); then cand_avoid=1; fi
 claimable=()
+declare -A accepted_scope=()
 for id in $ready_ids; do
+  (( ${#claimable[@]} >= slots )) && break
   if ! unblocked "$id"; then continue; fi
   cand_scope=""
-  if ! cand_scope="$(scope_of "$id")"; then cand_scope=""; fi
+  if (( SCOPE_AVOID == 1 )); then
+    if ! cand_scope="$(scope_of "$id")"; then cand_scope=""; fi
+  fi
   overlap=""
-  if [[ -n "$cand_scope" && ${#live_scope[@]} -gt 0 ]]; then
-    for lid in "${!live_scope[@]}"; do
-      if scope_overlap "$cand_scope" "${live_scope[$lid]}"; then overlap="$lid"; break; fi
-    done
+  if (( SCOPE_AVOID == 1 )) && [[ -n "$cand_scope" ]]; then
+    if (( ${#live_scope[@]} > 0 )); then
+      for lid in "${!live_scope[@]}"; do
+        if scope_overlap "$cand_scope" "${live_scope[$lid]}"; then overlap="$lid"; break; fi
+      done
+    fi
+    if [[ -z "$overlap" ]] && (( cand_avoid == 1 && ${#accepted_scope[@]} > 0 )); then
+      for aid in "${!accepted_scope[@]}"; do
+        if scope_overlap "$cand_scope" "${accepted_scope[$aid]}"; then overlap="$aid"; break; fi
+      done
+    fi
   fi
   if [[ -n "$overlap" ]]; then
     echo "skip $id: scope overlaps $overlap" >&2
   else
     claimable+=("$id")
+    if (( cand_avoid == 1 )) && [[ -n "$cand_scope" ]]; then accepted_scope["$id"]="$cand_scope"; fi
   fi
 done
 # This advisory read must never change claimability or abort the scan.
