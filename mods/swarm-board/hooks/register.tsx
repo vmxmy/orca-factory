@@ -106,6 +106,7 @@ const LINEAR_FALLBACK_THROTTLE_MS = 300_000
 let HOME = ''
 let TMP_DIR = ''
 let SNAPSHOT_FILE = ''
+let snapshotReloads = 0
 // ms epoch of the last live `orca linear list-issues` dispatched by refresh(); 0 before the first one.
 let lastLinearFallbackAt = 0
 const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
@@ -229,6 +230,7 @@ export const __resetSwarmBoardCachesForTests = () => {
   HOME = ''
   TMP_DIR = ''
   SNAPSHOT_FILE = ''
+  snapshotReloads = 0
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
@@ -609,7 +611,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
       return { ...prior, ...t, claimedAt }
     }
     return {
-      ...old, at, error: '', lastSuccessAt: now,
+      ...old, at,
       maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight,
       inFlight: inFlight.map(enrich), doneToday: doneToday.map(enrich),
       failed: failed.map(t => ({ ...enrich(t), handoff: t.handoff })),
@@ -883,11 +885,24 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
 
 async function tick($: any, handoffs: Map<string, string>) {
   const old = await read($, board)
+  const reloads = snapshotReloads
   const b = await refresh($, handoffs, old)
-  // Network work may outlive a snapshot poll; publish the latest file with its enrichment.
-  const latest = await refresh($, handoffs, b, true)
-  await update($, board, () => latest)
+  await update($, board, current => {
+    // A snapshot poll can finish while this refresh is waiting on Orca/GitHub.
+    if (snapshotReloads !== reloads && current.snapshotAgeMs !== undefined
+        && (b.snapshotAgeMs === undefined || current.snapshotAgeMs < b.snapshotAgeMs)) {
+      return {
+        ...b, at: current.at, maxInFlight: current.maxInFlight,
+        inFlight: current.inFlight, queue: current.queue, failed: current.failed,
+        doneToday: current.doneToday, snapshotAgeMs: current.snapshotAgeMs,
+        linearThrottled: current.linearThrottled, blockedBy: current.blockedBy,
+        issueStates: current.issueStates,
+      }
+    }
+    return b
+  })
   await update($, lastTickAt, () => Date.now())
+  const latest = await read($, board)
   $.ui.status(G.work + ' ' + latest.inFlight.length + '/' + latest.maxInFlight + ' · ' + G.wait + ' ' + latest.prs.length + (latest.failed.length ? ' · ' + G.human + ' ' + latest.failed.length : '') + ' · ' + G.queued + ' ' + latest.queue.length)
 }
 
@@ -923,17 +938,19 @@ async function pollSnapshot($: any, handoffs: Map<string, string>, watcher: Snap
   watcher.polling = true
   try {
     const stat: SnapshotStat | null = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
-    if (!shouldReload(watcher.stat, stat)) return
+    const changed = shouldReload(watcher.stat, stat)
+    if (stat) watcher.stat = stat
+    if (!changed) return
     const old = await read($, board)
     const next = await refresh($, handoffs, old, true)
-    watcher.stat = stat
     if (next === old || !paneOpen) return
     await update($, board, current => ({
-      ...current, at: next.at, error: next.error, lastSuccessAt: next.lastSuccessAt,
+      ...current, at: next.at,
       maxInFlight: next.maxInFlight, inFlight: next.inFlight, queue: next.queue,
       failed: next.failed, doneToday: next.doneToday, snapshotAgeMs: next.snapshotAgeMs,
       linearThrottled: next.linearThrottled, blockedBy: next.blockedBy, issueStates: next.issueStates,
     }))
+    snapshotReloads++
   } finally { watcher.polling = false }
 }
 
@@ -959,7 +976,7 @@ export const register: Register = on => {
       polling = true
       await update($, nowAtom, () => Date.now())
       $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      // Claude 2.1.289's plugin-authoring Fs API has stat, but no watch method.
+      // Host Fs has stat, no watch: Claude 2.1.289 plugin-authoring types/claude-code.d.ts:3120-3240 (stat:3218).
       $.clock.every(WATCH_POLL_MS, () => pollSnapshot($, handoffs, watcher))
       $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
