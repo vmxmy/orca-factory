@@ -183,18 +183,15 @@ func TestMainPathReviewerStdin(t *testing.T) {
 		if s.Path == "git" {
 			return []byte("diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n"), nil
 		}
-		if s.Path != "/bin/sh" || len(s.Args) != 6 {
+		if s.Path != "/bin/sh" || len(s.Args) != 5 {
 			t.Fatalf("review invocation: %+v", s)
 		}
-		if s.Args[3] != `reviewer --quiet "$1"` {
-			t.Fatalf("review instruction is not passed to command: %q", s.Args[3])
+		if s.Args[3] != `reviewer --quiet` {
+			t.Fatalf("review command is not passed unchanged: %q", s.Args[3])
 		}
 		b, err := os.ReadFile(s.Args[4])
-		if err != nil || string(b) != "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n" {
+		if err != nil || !strings.Contains(string(b), "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n") || !strings.Contains(string(b), "End stdout with JSON") {
 			t.Fatalf("stdin = %q, %v", b, err)
-		}
-		if !strings.Contains(s.Args[5], "End stdout with JSON") {
-			t.Fatalf("reviewer lacks verdict contract")
 		}
 		return []byte(`{"verdict":"green","step":"review"}`), nil
 	}
