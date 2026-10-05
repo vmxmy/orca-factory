@@ -102,7 +102,7 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 2. 等 CI：轮询 `commits/<sha>/check-runs` 全部 completed 且无 failure。CI 红 = 一次 correction，`STEP ci`。
 3. `LANE 2`：`AGENT_LANE2_AUTOMERGE` 未设或为 `0` 时不自合 → 第 7 步；仅为 `1` 且同时满足以下条件才按 lane 1 同样流程 squash 自合：(a) coordinator 独立复跑 gate 绿；(b) `AGENT_ROLE_REVIEWER_CMD` 非空时审查员明确给出 green；(c) PR CI 全绿；(d) 用 `gh api --paginate repos/$AGENT_GH_REPO/pulls/<n>/files` 取得完整文件列表，每个文件均不匹配 `AGENT_LANE2_MANUAL_GLOBS`。手动 glob 未设或为空时无额外匹配，语法与 `gate.sh` 的 `match_any` 一致（空格分隔 bash glob，`*` 跨 `/`）；仓库若要让某些路径强制转人审，写进 `AGENT_LANE2_MANUAL_GLOBS`。文件列表获取失败或任一条件不满足 → 第 7 步。`LANE 1` 自合（workflow §2）。rebase 冲突：生成物重生成（清单在 `constitution/local-engineering.md`），源码冲突只在 SCOPE 内合并后重跑 gate；跨 SCOPE 或拿不准 → 第 7 步。
 4. 等 `$AGENT_DEPLOY_WORKFLOW` 成功（`actions/runs?head_sha=<merge sha>`），再 `bash -c "$AGENT_SMOKE_CMD"` 退出 0；两者为空则跳过。
-5. 收尾：lane 1 或已自合的 lane 2 回读合并成功后，列出并逐一核对该票的 `agent/<票号>/*` 远端分支，再用 `git push origin --delete agent/<票号>/<unit>` 逐一删除；不删除其他票分支。未自合的 lane 2 保留备份分支到人合并后，由人或后续清理处理。`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`，再 `orca worktree rm --worktree path:<wt>`；Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
+5. 收尾：lane 1 或已自合的 lane 2 回读 PR `merged == true`，核对 PR `head.sha` 与本地单元分支当前头一致、工作区干净且无开放的同票 PR 后，列出并逐一核对该票的 `agent/<票号>/*` 远端分支，再用 `git push origin --delete agent/<票号>/<unit>` 逐一删除；不删除其他票分支。未自合的 lane 2 保留备份分支到人合并后，由人或后续清理处理。`worker-release --dispatch <id>`；回读 merged 后 `orca worktree set --worktree path:<wt> --workspace-status completed`。本地收尾用以下两步替代 `orca worktree rm --worktree path:<wt>`：在单元 worktree 外先 `git worktree remove <wt>`（不加 `--force`），成功后再核对本地单元分支当前头等于已合并 PR 的 `head.sha`，才用 `git branch -D <branch>` 删除该分支。任一核对失败（含 PR 查询失败、未合并、头 SHA 不一致、工作区不干净、有开放的同票 PR）就保留 worktree 与分支；移除 worktree 失败则保留分支，移除后头 SHA 核对失败也保留分支；均在票评论里写一句原因，不重试、不强删。Linear 评论（PR、合并 sha、gate 结果）、`status set --to Done`、`label remove --label ready-for-agent --label auto-impl`。
 
 ## 7. 需要人
 
@@ -112,6 +112,9 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 ## 结束标记
 
+- 除无票的 `no_ticket` 运行外，所有结局无论成败，coordinator 在写 ledger 前，先给当前票写一行评论 `结束: <原因>`。
+- `<原因>` 只取固定词之一：`merged`、`escalated`、`pr-opened`、`corrections-exhausted`、`error: <一句话>`；`no_ticket` 运行不写这条评论。
+- 写这条评论失败时，只在 stderr 记一句，不阻塞写 ledger 与结束标记。
 - 每张已领票走到第 6 或第 7 时各写一条 ledger 评论（按 workflow §4 的字段，一张票一行）。账本写入失败不阻塞本票收尾，只在本票评论里记一句失败原因。
 - 整个会话只在**所有已领票**都走完第 6 或第 7 之后，才写一次 `.omc/agent-run-finished`；无票的 `no_ticket` 运行照旧只写 stderr 后写结束标记。
 - 等待期间不得因为某一张票先完成就提前结束会话；同一会话里只要还有未完结的已领票，就按第 2 步末尾的等待循环继续前台轮询，直到全部收尾（本会话由定时任务无人值守启动，提前结束 = 后续 worker_done 没人接收，详见 `roles/coordinator.md` 的 "Does Not Own" 第二条「不以等待后台任务结束回合」）。

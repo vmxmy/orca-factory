@@ -206,7 +206,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 
 1. 审阅并合并 PR（这是 lane 2 改动，必须人批）。
 2. 合并后在主检出跑 `scripts/agent-gates/install.sh`：创建**禁用**的定时任务 `agent-linear-scan (<repo>)`（每 5 分钟，precheck 180s，provider claude），并打印 automation id。
-3. 推荐用 intake 建票：在 Orca 里对该仓库开一个 claude 标签页，prompt `按 scripts/agent-gates/roles/intake.md 工作`，把需求说给它；它只读仓库、只写 Linear，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
+3. 推荐用 intake 建票：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`，把需求说给它；它只读仓库、只写 Linear，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
 4. 建一张小票试跑：在该 project 里，Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动（用 intake 建，或手动 `orca linear save-issue --team <KEY> --project <project-id> --state Todo --label ready-for-agent --title "..." --body-file -`）。
 5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 满意后 `orca automations edit <id> --enabled`。

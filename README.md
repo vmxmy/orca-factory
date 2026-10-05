@@ -12,7 +12,7 @@
 
 agent 会调研目标仓库、向你确认几个无法推导的决定、生成三份项目配置装进 `<repo>/scripts/agent-gates/`、创建一个**禁用**的 Orca 定时任务，并跑一次验收后开 PR。合并后你用一张小票试跑，满意再启用。
 
-建票推荐用 intake：在 Orca 里对该仓库开一个 claude 标签页，prompt `按 scripts/agent-gates/roles/intake.md 工作`。它是你与流水线之间唯一的对话面：只读仓库、只写 Linear，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
+建票推荐用 intake：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、只写 Linear，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
