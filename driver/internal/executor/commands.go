@@ -130,6 +130,16 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	// The role, the instructions and the diff all travel on stdin: claude's
 	// --allowedTools is variadic and swallows a trailing positional prompt.
 	input := prompt + "\n\n```diff\n" + string(diff) + "```\n"
+	if brief, ok := reviewBriefFrom(ctx); ok && strings.TrimSpace(brief.Text) != "" {
+		// reviewer.md judges the diff against the ticket brief, and expects the
+		// lane-3 globs on the line before it. Without them every change outside the
+		// ticket's SCOPE (wiring, central types) is flagged as a defect.
+		header := ""
+		if brief.Lane3Globs != "" {
+			header = "本仓库 AGENT_LANE3_GLOBS=" + brief.Lane3Globs + "\n"
+		}
+		input = header + brief.Text + "\n\n" + input
+	}
 	if role, readErr := os.ReadFile(filepath.Join(repo, "scripts", "agent-gates", "roles", "reviewer.md")); readErr == nil {
 		input = string(role) + "\n\n" + input
 	}
@@ -262,4 +272,19 @@ func (c *Commands) FollowupCheckFails(ctx context.Context, repo, check string) (
 		return true, nil
 	}
 	return false, err
+}
+
+// ReviewBrief is the ticket brief the reviewer judges the diff against.
+type ReviewBrief struct{ Text, Lane3Globs string }
+
+type reviewBriefKey struct{}
+
+// WithReviewBrief carries the brief to Commands.Review without widening the Tools
+// interface that every test double implements.
+func WithReviewBrief(ctx context.Context, b ReviewBrief) context.Context {
+	return context.WithValue(ctx, reviewBriefKey{}, b)
+}
+func reviewBriefFrom(ctx context.Context) (ReviewBrief, bool) {
+	b, ok := ctx.Value(reviewBriefKey{}).(ReviewBrief)
+	return b, ok
 }
