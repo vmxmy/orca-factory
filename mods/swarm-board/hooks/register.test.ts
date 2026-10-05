@@ -393,6 +393,7 @@ const linearUsageFixture = async (
 ) => {
   __resetSwarmBoardCachesForTests()
   let ledgerCalls = 0
+  let linearListCalls = 0
   let refreshed: () => void = () => {}
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
@@ -406,6 +407,7 @@ const linearUsageFixture = async (
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
     const argv = e.argv
+    if (argv[0] === 'orca' && argv[1] === 'linear' && argv[2] === 'list-issues') linearListCalls++
     if (argv[0] === 'bash' && argv[2] === 'ledger' && argv[3] === 'stats') {
       ledgerCalls++
       return { value: { stdout: 'ledger stat line\n', stderr: '', exitCode: 0 } }
@@ -417,7 +419,7 @@ const linearUsageFixture = async (
     await $.command.run({ command: 'swarm', args: '' })
     await ready
   }
-  return { refresh, ledgerCalls: () => ledgerCalls }
+  return { refresh, ledgerCalls: () => ledgerCalls, linearListCalls: () => linearListCalls }
 }
 
 test('ledger stats stays cached across refreshes within ten minutes', async ($, on) => {
@@ -427,20 +429,24 @@ test('ledger stats stays cached across refreshes within ten minutes', async ($, 
   expect(fixture.ledgerCalls()).toBe(1)
 })
 
-test('header counts counter-file entries only from the last hour', async ($, on) => {
+test('header sums counter-file entries and the board own orca linear calls', async ($, on) => {
   const nowSec = Math.floor(Date.now() / 1000)
-  const expiredSec = nowSec - 7200
   const content = [
     nowSec + ' precheck',
     (nowSec - 60) + ' precheck',
     (nowSec - 120) + ' precheck',
     (nowSec - 30) + ' prune',
-    expiredSec + ' precheck',
+    (nowSec - 7200) + ' precheck',
   ].join('\n')
   const fixture = await linearUsageFixture($, on, { content })
   await fixture.refresh()
+  const boardCount = fixture.linearListCalls()
+  expect(boardCount).toBeGreaterThan(0)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /Linear 本小时 4\/2500/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: new RegExp('Linear 本小时 ' + (4 + boardCount) + '\\/2500') })).toBeDefined()
+  await ui.press({ key: 'toggle-detail' })
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: new RegExp('看板 ' + boardCount + '(?![0-9])') })).toBeDefined()
   await ui.unmount()
 })
 

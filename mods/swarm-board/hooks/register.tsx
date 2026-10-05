@@ -354,8 +354,14 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
   // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
   // leaves ok=false so the caller can preserve the last-good slice instead of blanking the board.
-  const run = async (argv: string[]): Promise<string> => {
+  // Count every `orca linear …` call the board makes, regardless of which wrapper fires it:
+  // `list-issues` is by far the biggest contributor and it rides on runOrca, so excluding it
+  // would understate the 看板 column and defeat the purpose of this badge.
+  const trackLinear = (argv: string[]) => {
     if (argv[0] === 'orca' && argv[1] === 'linear') boardLinearCalls.push(Date.now())
+  }
+  const run = async (argv: string[]): Promise<string> => {
+    trackLinear(argv)
     try {
       const r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS })
       return r.exitCode === 0 ? r.stdout : ''
@@ -363,6 +369,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const runJson = async (argv: string[]) => json(await run(argv))
   const runOrca = async (argv: string[]): Promise<OrcaResult> => {
+    trackLinear(argv)
     let r: { stdout: string; exitCode: number } | null = null
     try { r = await $.process.run(argv, { timeoutMs: TIMEOUT_MS }) } catch { return { ok: false, data: null } }
     if (!r || r.exitCode !== 0) return { ok: false, data: null }
