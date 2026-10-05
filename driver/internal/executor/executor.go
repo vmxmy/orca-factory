@@ -81,7 +81,8 @@ type Executor struct {
 	Recovery      Recovery
 	Sleep         func(context.Context, time.Duration) error
 	// Stderr receives best-effort warnings; nil means os.Stderr.
-	Stderr io.Writer
+	Stderr     io.Writer
+	logContext *slog.Logger
 }
 type Result struct {
 	State             machine.State
@@ -114,7 +115,7 @@ func (e *Executor) warn(format string, args ...any) {
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
-	return e.execute(ctx, t, nil, 0)
+	return e.withLog().execute(ctx, t, nil, 0)
 }
 
 func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, infraUsed int) (result Result, err error) {
@@ -124,6 +125,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if errors.Is(err, errBudgetExhausted) {
 			err = nil
 		}
+		e.logError(result.State.Phase, err)
 	}()
 	c := e.Config
 	if c.Unit == "" {
@@ -187,7 +189,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
-		next, fx, stepErr := machine.Step(previous, ev, machine.DefaultLimits)
+		next, fx, stepErr := e.step(previous, ev)
 		if stepErr != nil {
 			return stepErr
 		}
@@ -240,6 +242,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if err != nil {
 				return err
 			}
+			e.logger().Info("correction", "reason", ev, "fail_summary", summary)
 			if summary != "" {
 				if err := appendFailLog(c, t, summary); err != nil {
 					return err
@@ -456,8 +459,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		var output, verdict string
 		var gateErr, parseErr error
 		err = e.retryRead(ctx, t, &result, "gate output", func() error {
+			done := e.external("gate")
 			output, gateErr = e.Tools.Gate(ctx, c.Repo, head, spec)
-			if stop := dependencyStop(ctx, gateErr); stop != nil {
+			verdict, parseErr = gateVerdict(output)
+			done(errors.Join(gateErr, parseErr), "verdict", verdict)
+			stop := dependencyStop(ctx, gateErr)
+			if stop != nil {
 				if gateErr != nil {
 					return gateErr
 				}
@@ -468,7 +475,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if errors.As(gateErr, &ticketErr) || errors.As(gateErr, &transientErr) {
 				return gateErr
 			}
-			verdict, parseErr = gateVerdict(output)
 			if parseErr != nil {
 				if gateErr != nil {
 					return gateErr
@@ -507,10 +513,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		for result.State.Phase == machine.PhaseReview {
 			var reviewErr error
+			done := e.external("reviewer")
 			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
-			if stop := dependencyStop(ctx, reviewErr); stop != nil {
-				return result, stop
-			}
 			verdict, parseErr = reviewVerdict(output)
 			event = machine.EvReviewEmpty
 			if reviewErr == nil && parseErr == nil {
@@ -520,6 +524,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				} else {
 					event = machine.EvReviewRed
 				}
+			}
+			done(errors.Join(reviewErr, parseErr), "verdict", verdict)
+			stop := dependencyStop(ctx, reviewErr)
+			if stop != nil {
+				return result, stop
 			}
 			failureOutput = output
 			if err = transition(event, nil); err != nil {
@@ -544,7 +553,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		break
 	}
-	err = transition(machine.EvOpenPR, func(fx []machine.Effect) error {
+	err = transition(machine.EvOpenPR, func(fx []machine.Effect) (err error) {
+		done := e.external("open-pr")
+		defer func() { done(err) }()
 		if !hasEffect(fx, "open-pr-rest-idempotent-by-branch") {
 			return errors.New("missing PR effect")
 		}
@@ -595,7 +606,7 @@ func nestedString(r orca.Receipt, key, field string) string {
 }
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, observeIdle func() error) (*orca.WorkerReport, error) {
 	for {
-		tasks, err := e.Orca.TaskList(ctx, run)
+		tasks, err := e.taskList(ctx, run)
 		if err != nil {
 			return nil, safeDependencyError(err)
 		}

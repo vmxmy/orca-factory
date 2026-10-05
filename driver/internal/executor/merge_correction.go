@@ -95,7 +95,7 @@ func (e *Executor) restoreMergeCorrection(ctx context.Context, c Config, t Ticke
 // evidence never authorizes replaying a mutation with a new request UUID.
 func (e *Executor) recoverMergeChildren(ctx context.Context, t Ticket, cp *checkpoint, result *Result) error {
 	var tasks []orca.Task
-	if err := e.retryRead(ctx, t, result, "merge correction child lookup", func() error { var err error; tasks, err = e.Orca.TaskList(ctx, cp.Run); return err }); err != nil {
+	if err := e.retryRead(ctx, t, result, "merge correction child lookup", func() error { var err error; tasks, err = e.taskList(ctx, cp.Run); return err }); err != nil {
 		return err
 	}
 	seen := map[string]bool{}

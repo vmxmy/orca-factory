@@ -51,7 +51,7 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 		if stop := dependencyStop(ctx, err); stop != nil {
 			return stop
 		}
-		next, _, stepErr := machine.Step(result.State, machine.EvInfraFailure, machine.DefaultLimits)
+		next, _, stepErr := e.step(result.State, machine.EvInfraFailure)
 		if stepErr != nil {
 			return stepErr
 		}
