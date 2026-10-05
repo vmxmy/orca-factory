@@ -1,85 +1,101 @@
-import type { ComponentType, ReactElement } from 'react'
+import type { ComponentType } from 'react'
 import type { FailureData } from '../../types'
-
-// The mod runtime injects h; avoiding JSX keeps snapshot checks package-free.
-declare function h(
-  component: ComponentType<{ dimColor?: boolean; children?: string }>,
-  props: { dimColor?: boolean },
-  ...children: string[]
-): ReactElement
 
 export type LedgerRow = {
   ticket?: string
   tier?: string
   lane?: number
-  first_gate?: 'green' | 'red'
+  first_gate?: string
   corrections?: number
-  finished_at?: string
 }
-export type FailuresInput = {
-  ledger?: LedgerRow[]
-  comments?: Record<string, string[]>
+export type CommentInput = string | { body: string; createdAt?: string }
+export type FailureInput = {
+  ledger?: readonly LedgerRow[]
+  comments?: Readonly<Record<string, readonly CommentInput[]>>
   now?: number
 }
-export type FailuresView = FailureData & {
+export type FailureView = FailureData & {
   handoffReasons: { reason: string; count: number }[]
-  firstPass: { key: string; runs: number; greenPct: number }[]
+  firstGate: { key: string; green: number; total: number }[]
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const rankedReasons = (counts: Map<string, number>) =>
   [...counts].map(([reason, count]) => ({ reason, count }))
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason))
 
-export function buildFailures(input: FailuresInput = {}): FailuresView {
-  const ledger = input.ledger ?? []
+export function buildFailures(input: FailureInput = {}): FailureView {
+  const ledger: readonly LedgerRow[] = Array.isArray(input.ledger) ? input.ledger : []
   const topCorrections = ledger
-    .filter(row => (row.corrections ?? 0) > 0)
+    .filter(row => row.ticket && (row.corrections ?? 0) > 0)
     .map(row => ({ ticket: row.ticket ?? '', corrections: row.corrections ?? 0 }))
     .sort((a, b) => b.corrections - a.corrections || a.ticket.localeCompare(b.ticket))
     .slice(0, 5)
-  const finishes = new Map(ledger.map(row => [row.ticket, row.finished_at]))
-  const fails = new Map<string, number>()
-  const handoffs = new Map<string, number>()
-  for (const [ticket, comments] of Object.entries(input.comments ?? {})) {
-    const finishedAt = finishes.get(ticket)
-    const at = finishedAt ? Date.parse(finishedAt) : undefined
-    const recent = input.now === undefined || at === undefined
-      || (at >= input.now - WEEK_MS && at <= input.now)
-    for (const comment of comments) {
-      for (const line of comment.split(/\r?\n/)) {
-        const reason = line.match(/^FAIL: approach=.*? \| reason=(.*?) \| evidence=/)?.[1]
-        if (reason !== undefined) fails.set(reason, (fails.get(reason) ?? 0) + 1)
-        if (recent && line.startsWith('转人: ')) {
-          const handoff = line.slice('转人: '.length)
-          handoffs.set(handoff, (handoffs.get(handoff) ?? 0) + 1)
-        }
-      }
-    }
-  }
 
-  const gates = new Map<string, { runs: number; green: number }>()
+  const gates = new Map<string, { green: number; total: number }>()
   for (const row of ledger) {
-    if (row.first_gate === undefined) continue
-    for (const key of [`tier=${row.tier ?? 'unknown'}`, `lane=${row.lane}`]) {
-      const group = gates.get(key) ?? { runs: 0, green: 0 }
+    if (row.first_gate !== 'green' && row.first_gate !== 'red') continue
+    // 缺 tier 归 unknown，与 ledger.sh 一致。
+    const keys = [`tier=${row.tier ?? 'unknown'}`]
+    if (row.lane !== undefined) keys.push(`lane=${row.lane}`)
+    for (const key of keys) {
+      const group = gates.get(key) ?? { green: 0, total: 0 }
       gates.set(key, {
-        runs: group.runs + 1,
         green: group.green + Number(row.first_gate === 'green'),
+        total: group.total + 1,
       })
     }
   }
-  const firstPass = [...gates].map(([key, group]) => ({
-    key, runs: group.runs, greenPct: Math.round(100 * group.green / group.runs),
-  })).sort((a, b) => a.key.localeCompare(b.key))
+  const firstGate = [...gates].map(([key, group]) => ({ key, ...group }))
+    .sort((a, b) => a.key.localeCompare(b.key))
+
+  const fails = new Map<string, number>()
+  const handoffs = new Map<string, number>()
+  for (const comments of Object.values(input.comments ?? {})) {
+    const ticketComments: readonly CommentInput[] = Array.isArray(comments) ? comments : []
+    for (const comment of ticketComments) {
+      const body = typeof comment === 'string' ? comment : comment.body
+      const lines = body.split(/\r?\n/)
+      for (const line of lines) {
+        const reason = line.match(/^FAIL: approach=.* \| reason=(.+?) \| evidence=/)?.[1]
+        if (reason !== undefined) fails.set(reason, (fails.get(reason) ?? 0) + 1)
+      }
+      const createdAt = typeof comment === 'string' ? undefined : comment.createdAt
+      if (input.now !== undefined && createdAt !== undefined) {
+        const at = Date.parse(createdAt)
+        if (Number.isFinite(at) && at < input.now - 7 * 86400000) continue
+      }
+      const handoff = lines.find(line => line.startsWith('转人:'))
+      if (handoff !== undefined) {
+        const reason = handoff.slice('转人:'.length).trim().split(': ', 1)[0]
+        handoffs.set(reason, (handoffs.get(reason) ?? 0) + 1)
+      }
+    }
+  }
 
   return {
     topCorrections,
     repeatedFails: rankedReasons(fails).filter(row => row.count >= 2),
     handoffReasons: rankedReasons(handoffs),
-    firstPass,
+    firstGate,
   }
 }
 
-export const renderFailures = (Text: ComponentType<{ dimColor?: boolean; children?: string }>) =>
-  h(Text, { dimColor: true }, '数据未就绪')
+export const renderFailures = (
+  Text: ComponentType<{ dimColor?: boolean; children?: string }>,
+  data?: FailureView,
+) => {
+  if (!data || [data.handoffReasons, data.firstGate, data.repeatedFails, data.topCorrections]
+    .every(rows => rows.length === 0)) {
+    return <Text dimColor>数据未就绪</Text>
+  }
+  return [
+    <Text key="handoffs">{'转人原因\n' + (data.handoffReasons
+      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')}</Text>,
+    <Text key="first-gate">{'首跑通过率\n' + (data.firstGate
+      .map(row => `${row.key}: ${row.green}/${row.total}`).join('\n') || '无')}</Text>,
+    <Text key="fails">{'重复 FAIL\n' + (data.repeatedFails
+      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')}</Text>,
+    <Text key="corrections">{'correction 最多\n' + (data.topCorrections
+      .map(row => `${row.ticket}: ${row.corrections}`).join('\n') || '无')}</Text>,
+  ]
+}
