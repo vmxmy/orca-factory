@@ -860,6 +860,45 @@ PRUNE_GH
     done
   )
   echo 'selftest: prune reclaims merged worktrees and branches'
+  # wait-runs.sh: a fake orca binds a run with run-use and prints keepalive objects before a pretty-printed result.
+  WR="$SELFTEST_TMP/wr"; mkdir -p "$WR/bin" "$WR/state/T1" "$WR/state/T2" "$WR/state/T3"
+  cat > "$WR/bin/orca" <<'FAKE'
+#!/usr/bin/env bash
+echo "$*" >> "$WR_LOG"
+if [[ "$1 $2" == "orchestration run-use" ]]; then
+  [[ "$4" == run_bad ]] && { echo '{"ok":false}'; exit 1; }
+  echo '{"ok":true}'; exit 0
+fi
+if [[ "$1 $2" == "orchestration check" ]]; then
+  run="$4"
+  echo '{"_keepalive":true}'
+  if [[ "$run" == run_msg ]]; then
+    printf '{\n  "ok": true,\n  "result": {\n    "count": 1,\n    "deliveryId": "d1",\n    "messages": [\n      {"id":"m1","type":"worker_done","subject":"done","taskId":"t1","dispatchId":"x1","outcome":"succeeded"}\n    ]\n  }\n}\n'
+  else
+    printf '{\n  "ok": true,\n  "result": {\n    "count": 0,\n    "messages": []\n  }\n}\n'
+  fi
+  exit 0
+fi
+exit 0
+FAKE
+  chmod +x "$WR/bin/orca"
+  export WR_LOG="$WR/calls"; : > "$WR_LOG"
+  printf 'T1 run_empty\nT2 run_msg\n' > "$WR/units"
+  PATH="$WR/bin:$PATH" bash "$FACTORY/core/wait-runs.sh" "$WR/units" "$WR/state" 20 > "$WR/out1" 2>/dev/null || fail "selftest: wait-runs did not exit 0 with a message"
+  grep -Fxq '### T2 run_msg delivery=d1' "$WR/out1" || fail "selftest: wait-runs did not report the run with messages"
+  grep -q '"type":"worker_done"' "$WR/out1" || fail "selftest: wait-runs did not print the message line"
+  [[ -s "$WR/state/T2/msg.json" ]] || fail "selftest: wait-runs did not store the raw result"
+  grep -Fq 'orchestration run-use --id run_empty' "$WR_LOG" || fail "selftest: wait-runs did not bind the run before checking"
+  : > "$WR/state/T2/settled"; : > "$WR_LOG"
+  printf 'T1 run_empty\nT2 run_msg\nT3 run_bad\n' > "$WR/units"
+  rc=0; PATH="$WR/bin:$PATH" bash "$FACTORY/core/wait-runs.sh" "$WR/units" "$WR/state" 1 > "$WR/out2" 2>"$WR/err2" || rc=$?
+  [[ "$rc" == 2 ]] || fail "selftest: wait-runs must exit 2 when no run has messages (got $rc)"
+  grep -Fxq TIMEOUT "$WR/out2" || fail "selftest: wait-runs did not print TIMEOUT"
+  ! grep -Fq 'run_msg' "$WR_LOG" || fail "selftest: wait-runs checked a settled ticket"
+  grep -Fq 'T3 run_bad run-use failed' "$WR/err2" || fail "selftest: wait-runs did not report a failed run-use"
+  rc=0; bash "$FACTORY/core/wait-runs.sh" "$WR/missing" "$WR/state" 1 >/dev/null 2>&1 || rc=$?
+  [[ "$rc" == 64 ]] || fail "selftest: wait-runs must exit 64 on bad usage (got $rc)"
+  echo 'selftest: wait-runs collects worker messages across runs'
   # check: fresh init must have no core drift (project files still carry placeholders, so only inspect core lines).
   cmd_check "$SELFTEST_TMP" > "$SELFTEST_TMP/check.out" || true
   grep -Eq '^check: (MISSING|DIFFERS|OVERRIDDEN)' "$SELFTEST_TMP/check.out" && { cat "$SELFTEST_TMP/check.out"; fail "selftest: core drift right after init"; }

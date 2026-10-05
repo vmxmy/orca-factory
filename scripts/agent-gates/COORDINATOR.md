@@ -65,8 +65,7 @@ orca worktree set --worktree path:<wt> --linear-issue <ID> --comment "<unit>: �
 
 - `--deps` JSON 原样单引号包住。同一张票的所有单元用同一档位。
 - Worker 上限：每张票同时最多 3 个 worker；本次运行所有已领票合计不超过 `3 × 已领票数`。
-- 全部派工完成后进入单个合并的等待循环：依次对每个 run 调用 `orca orchestration check --run <run> --types worker_done,escalation,question --wait --timeout-ms 20000 --json`（短超时轮询，先收到 `worker_done` 的票先进入第 3 步）。某个 run 本轮无消息视为未就绪，继续下一张的轮询；所有 run 都未就绪则下一轮再轮询，不以此结束会话。某张票单独完成或打回不打断其他票的等待。
-- `--run` 若无法按本约束逐 run 轮询，退路：所有 run 共享的默认 FIFO 可用 `orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 20000 --json` 轮询，收到后按消息里的 run 字段分发给对应票。本仓库经 `--help` 核实 `check` 支持 `--run <run_id>` 参数，首选逐 run 轮询。
+- 全部派工完成后进入单个合并的等待循环，只用固定脚本，不要自己写轮询脚本：把每张已领票的一行 `<票号> <run id>` 写入单元清单文件，然后前台运行 `scripts/agent-gates/wait-runs.sh <单元清单文件> <暂存根目录> [秒数，默认 540]`。暂存根目录下每张票一个子目录（workflow §3）；该票的子目录里存在名为 `settled` 的文件就表示已收尾，脚本跳过它。脚本对每个 run 先 `orca orchestration run-use --id <run>` 再 `check --run <run>`（终端同一时间只绑定一个 run，不绑定就被拒绝），并从 `--json` 的 keepalive 行中取出真正的结果。有消息的 run 输出 `### <票号> <run> delivery=<id>` 加每条消息一行 JSON，退出码 0；整轮无消息输出 `TIMEOUT`，退出码 2，此时再运行一次，不以此结束会话。处理完一个 delivery 后用 `orca orchestration check --run <run> --ack <delivery>` 确认，否则下次还会返回同一批；某张票单独完成或打回不打断其他票的等待。
 - 等待与 ack 按 handoffs §5。
 
 ## 进度检查点
