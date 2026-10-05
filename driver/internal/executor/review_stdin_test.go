@@ -55,3 +55,36 @@ func TestMergeBaseAgainstFreshMain(t *testing.T) {
 		t.Fatalf("calls=%q", calls)
 	}
 }
+
+// The reviewer judges the diff against the ticket brief. Without it, work that is
+// out of the ticket's SCOPE (wiring, central types) is flagged as a defect.
+func TestReviewStdinCarriesBriefAndLane3Globs(t *testing.T) {
+	repo := t.TempDir()
+	var stdin string
+	c := &Commands{ReviewerCommand: "review", Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path == "git" {
+			return []byte("diff --git a/x b/x\n+added\n"), nil
+		}
+		b, err := os.ReadFile(s.Args[len(s.Args)-1])
+		stdin = string(b)
+		return []byte(`{"verdict":"green","step":"review"}`), err
+	}}
+	ctx := WithReviewBrief(context.Background(), ReviewBrief{Text: "# ZII-9 / executor\nSCOPE: mods/a.tsx\nDo not edit register.tsx", Lane3Globs: ".env* *secrets*"})
+	if _, _, err := c.Review(ctx, repo, "origin/main", "HEAD", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SCOPE: mods/a.tsx", "Do not edit register.tsx", "AGENT_LANE3_GLOBS=.env* *secrets*", "+added"} {
+		if !strings.Contains(stdin, want) {
+			t.Fatalf("reviewer stdin lacks %q:\n%s", want, stdin)
+		}
+	}
+	// The lane3 line must come immediately before the brief, as reviewer.md specifies.
+	if i, j := strings.Index(stdin, "AGENT_LANE3_GLOBS="), strings.Index(stdin, "# ZII-9"); i < 0 || j < i {
+		t.Fatalf("lane3 line must precede the brief (i=%d j=%d)", i, j)
+	}
+	// Without a brief nothing extra is added and the review still runs.
+	stdin = ""
+	if _, _, err := c.Review(context.Background(), repo, "origin/main", "HEAD", nil); err != nil || strings.Contains(stdin, "AGENT_LANE3_GLOBS") {
+		t.Fatalf("no brief: err=%v stdin has lane3=%v", err, strings.Contains(stdin, "AGENT_LANE3_GLOBS"))
+	}
+}
