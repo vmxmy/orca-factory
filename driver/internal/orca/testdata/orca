@@ -18,6 +18,7 @@ case "${ORCA_TEST_SCENARIO:-}:$1:$2" in
       *) result='{"workers":[{"dispatchId":"ctx_one","taskId":"task_one","terminalState":"reclaimable"}],"page":{"hasMore":true,"nextCursor":"page2"}}' ;;
     esac ;;
   *:orchestration:worker-release) result='{"dispatchId":"ctx_one","status":"released"}' ;;
+  *:orchestration:worker-stop) result='{"dispatchId":"ctx_one","state":"stopped"}' ;;
   *:terminal:create) result='{"terminal":{"handle":"term_one"}}' ;;
   *:terminal:send) result='{"sent":true}' ;;
   *:terminal:show) result='{"terminal":{"handle":"term_one","preview":"hello"}}' ;;

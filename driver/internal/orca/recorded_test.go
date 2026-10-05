@@ -2,6 +2,7 @@ package orca
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -79,5 +80,19 @@ func TestRecordedWorkerListLiveness(t *testing.T) {
 			}
 			t.Fatalf("missing recorded dispatch %s", want.dispatch)
 		})
+	}
+}
+
+// worker-stop fences the dispatch and closes its agent terminal. The receipt below
+// is a real one (a probe codex worker stopped right after start-ready).
+func TestRecordedWorkerStop(t *testing.T) {
+	receipt, err := recordedClient(t, "orca-worker-stop.json").WorkerStop(context.Background(), "c9a47146-5e87-470f-89ef-4fac6b8fec2e", "ctx_142789068719")
+	if err != nil {
+		t.Fatalf("recorded worker-stop err=%v", err)
+	}
+	var state string
+	var settled bool
+	if json.Unmarshal(receipt["state"], &state) != nil || state != "stopped" || json.Unmarshal(receipt["alreadySettled"], &settled) != nil || settled {
+		t.Fatalf("state=%q alreadySettled=%v; want a freshly stopped dispatch", state, settled)
 	}
 }
