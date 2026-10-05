@@ -8,12 +8,56 @@
     "https://developers.openai.com/api/docs/models/gpt-5"
   ],
   "models": {
-    "claude-sonnet-4-6": {"input":3,"output":15,"read":0.3,"write":3.75,"write_hour":6},
-    "claude-sonnet-4-5": {"input":3,"output":15,"read":0.3,"write":3.75,"write_hour":6},
-    "claude-sonnet-4": {"input":3,"output":15,"read":0.3,"write":3.75,"write_hour":6},
-    "claude-opus-4-6": {"input":5,"output":25,"read":0.5,"write":6.25,"write_hour":10},
-    "claude-opus-4-5": {"input":5,"output":25,"read":0.5,"write":6.25,"write_hour":10},
-    "claude-haiku-4-5": {"input":1,"output":5,"read":0.1,"write":1.25,"write_hour":2},
-    "gpt-5": {"input":1.25,"output":10,"read":0.125,"write":0,"write_hour":0}
-  }
+    "claude-sonnet-4-6": {
+      "input": 3,
+      "output": 15,
+      "read": 0.3,
+      "write": 3.75,
+      "write_hour": 6
+    },
+    "claude-sonnet-4-5": {
+      "input": 3,
+      "output": 15,
+      "read": 0.3,
+      "write": 3.75,
+      "write_hour": 6
+    },
+    "claude-sonnet-4": {
+      "input": 3,
+      "output": 15,
+      "read": 0.3,
+      "write": 3.75,
+      "write_hour": 6
+    },
+    "claude-opus-4-6": {
+      "input": 5,
+      "output": 25,
+      "read": 0.5,
+      "write": 6.25,
+      "write_hour": 10
+    },
+    "claude-opus-4-5": {
+      "input": 5,
+      "output": 25,
+      "read": 0.5,
+      "write": 6.25,
+      "write_hour": 10
+    },
+    "claude-haiku-4-5": {
+      "input": 1,
+      "output": 5,
+      "read": 0.1,
+      "write": 1.25,
+      "write_hour": 2
+    },
+    "gpt-5": {
+      "input": 1.25,
+      "output": 10,
+      "read": 0.125,
+      "write": 0,
+      "write_hour": 0
+    }
+  },
+  "verified_at": "2026-10-06",
+  "token_categories": "input excludes cache reads and writes; Claude creation tokens split into 5m and 1h writes; Codex cached_input_tokens are subtracted from gross input"
 }

@@ -4,9 +4,11 @@ package usage
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 )
 
@@ -17,10 +19,12 @@ type Worktree struct {
 }
 
 type Options struct {
-	Ticket         string
-	Worktrees      []Worktree
-	RunWorktree    string
-	ClaimedTickets int
+	Ticket              string
+	Worktrees           []Worktree
+	RunWorktree         string
+	ClaimedTickets      []string
+	RunID               string
+	CoordinatorSessions []string
 	// Empty directories use the standard agent homes. Explicit directories help
 	// callers collect archived transcripts and keep tests independent of $HOME.
 	ClaudeDir, CodexDir string
@@ -55,11 +59,16 @@ type Result struct {
 	Errors       []FileError `json:"errors"`
 }
 
-// Collect matches exact session working directories to the ticket's worktrees.
+var ticketPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
+
+// Collect matches normalized session working directories to the ticket's worktrees.
 // A corrupt file contributes nothing; other files are still collected. Run
 // worktrees must belong to this run and ClaimedTickets counts distinct tickets.
 func Collect(o Options) (Result, error) {
 	result := Result{Ticket: o.Ticket, PriceVersion: prices.Version, Items: []Item{}, Errors: []FileError{}}
+	if !ticketPattern.MatchString(o.Ticket) || len(o.Worktrees) == 0 {
+		return result, errors.New("usage: valid ticket and associated unit worktrees required")
+	}
 	roles := map[string]string{}
 	for _, w := range o.Worktrees {
 		if !filepath.IsAbs(w.Path) || (w.Role != "" && w.Role != "session" && w.Role != "reviewer") {
@@ -69,21 +78,43 @@ func Collect(o Options) (Result, error) {
 		if role == "" {
 			role = "session"
 		}
-		path := filepath.Clean(w.Path)
+		path := normalizePath(w.Path)
 		if old, ok := roles[path]; ok && old != role {
 			return result, errors.New("usage: conflicting worktree roles")
 		}
 		roles[path] = role
 	}
 	if o.RunWorktree != "" {
-		if !filepath.IsAbs(o.RunWorktree) || o.ClaimedTickets < 1 {
-			return result, errors.New("usage: run worktree requires positive claimed ticket count")
+		if !filepath.IsAbs(o.RunWorktree) || o.RunID == "" || len(o.CoordinatorSessions) == 0 {
+			return result, errors.New("usage: coordinator attribution requires run ID, run worktree and coordinator session IDs")
 		}
-		path := filepath.Clean(o.RunWorktree)
+		claims := map[string]bool{}
+		for _, ticket := range o.ClaimedTickets {
+			if !ticketPattern.MatchString(ticket) {
+				return result, errors.New("usage: invalid claimed ticket")
+			}
+			claims[ticket] = true
+		}
+		if !claims[o.Ticket] {
+			return result, errors.New("usage: current run claimed ticket identifiers missing or omit this ticket")
+		}
+		o.ClaimedTickets = nil
+		for ticket := range claims {
+			o.ClaimedTickets = append(o.ClaimedTickets, ticket)
+		}
+		for _, id := range o.CoordinatorSessions {
+			if id == "" {
+				return result, errors.New("usage: empty coordinator session ID")
+			}
+		}
+		path := normalizePath(o.RunWorktree)
 		if _, ok := roles[path]; ok {
 			return result, errors.New("usage: run and unit worktrees overlap")
 		}
 		roles[path] = "coordinator"
+	}
+	if o.RunWorktree == "" && (o.RunID != "" || len(o.CoordinatorSessions) > 0 || len(o.ClaimedTickets) > 0) {
+		return result, errors.New("usage: coordinator attribution requires run worktree")
 	}
 	if o.ClaudeDir == "" || o.CodexDir == "" {
 		home, err := os.UserHomeDir()
@@ -106,26 +137,39 @@ func Collect(o Options) (Result, error) {
 		}
 	}
 	totals := map[string]Item{}
+	seen := map[string]bool{}
+	coordinatorIDs := map[string]bool{}
+	for _, id := range o.CoordinatorSessions {
+		coordinatorIDs[id] = true
+	}
 	for _, source := range []struct{ root, provider string }{{o.ClaudeDir, "claude"}, {o.CodexDir, "codex"}} {
 		err := filepath.WalkDir(source.root, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
-				result.Errors = append(result.Errors, FileError{path, "cannot read session path"})
+				result.Errors = append(result.Errors, FileError{path, fmt.Sprintf("cannot read session path: %v", walkErr)})
 				return nil
 			}
 			if !d.Type().IsRegular() || filepath.Ext(path) != ".jsonl" {
 				return nil
 			}
-			records, err := readSession(path, source.provider, roles)
+			records, err := readSession(path, source.provider, roles, coordinatorIDs)
 			if err != nil {
 				result.Errors = append(result.Errors, FileError{path, err.Error()})
 				return nil
 			}
-			for _, item := range records {
+			if len(records.Items) == 0 {
+				return nil
+			}
+			key := source.provider + "\x00" + records.ID
+			if seen[key] {
+				return nil
+			}
+			seen[key] = true
+			for _, item := range records.Items {
 				if item.Role == "coordinator" {
 					item.Apportioned = true
-					item.Tokens = scale(item.Tokens, 1/float64(o.ClaimedTickets))
+					item.Tokens = scale(item.Tokens, 1/float64(len(o.ClaimedTickets)))
 				}
-				key := item.Role + "\x00" + item.Model
+				key := fmt.Sprintf("%s\x00%s\x00%t", item.Role, item.Model, item.Apportioned)
 				prev := totals[key]
 				prev.Role = item.Role
 				prev.Model = item.Model
@@ -159,7 +203,16 @@ func scale(a Tokens, n float64) Tokens {
 	return Tokens{a.InputTokens * n, a.OutputTokens * n, a.CacheReadTokens * n, a.CacheWriteTokens * n, a.CacheWriteHourTokens * n}
 }
 
-// Embedded JSON is validated during initialization; a bad table is a build error.
+// normalizePath resolves symlink aliases when the directory is available.
+func normalizePath(path string) string {
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
+// Embedded JSON is validated during initialization.
 func decodePrices(data []byte) priceTable {
 	var p priceTable
 	if err := json.Unmarshal(data, &p); err != nil {

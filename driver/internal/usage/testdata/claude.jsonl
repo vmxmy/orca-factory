@@ -1,3 +1,3 @@
-{"type": "assistant", "cwd": "/unit", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 8}}}
-{"type": "assistant", "cwd": "/unit", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 200, "output_tokens": 30}}}
-{"type": "assistant", "cwd": "/unit", "message": {"model": "mystery-model", "usage": {"input_tokens": 17, "output_tokens": 3}}}
+{"type": "assistant", "cwd": "/unit", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 100, "output_tokens": 20, "cache_read_input_tokens": 10, "cache_creation_input_tokens": 8}, "id": "claude-message-0"}, "sessionId": "claude-one"}
+{"type": "assistant", "cwd": "/unit", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 200, "output_tokens": 30}, "id": "claude-message-1"}, "sessionId": "claude-one"}
+{"type": "assistant", "cwd": "/unit", "message": {"model": "mystery-model", "usage": {"input_tokens": 17, "output_tokens": 3}, "id": "claude-message-2"}, "sessionId": "claude-one"}
