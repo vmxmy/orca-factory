@@ -51,10 +51,21 @@ type PhaseData = {
   lane?: number
   pr?: number
   previous?: TicketPhase
+  driver?: string
 }
+
+// The driver's executor writes "driver: <阶段>" onto the worker worktree at every transition.
+const DRIVER_PHASES: Record<string, TicketPhase> = {
+  'worker 运行中': '🔨 实现', '写 correction': '🔨 实现', '分支检查': '🧪 gate', 'gate': '🧪 gate',
+  '审查': '🔍 审查（推断）', '开 PR': '🚦 CI/合并', '排队合并': '🚦 CI/合并',
+}
+const driverPhase = (comment?: string): TicketPhase | undefined =>
+  comment?.startsWith('driver: ') ? DRIVER_PHASES[comment.slice('driver: '.length).trim()] : undefined
 
 export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
   if (data.pr || ticket.pr) return '🚦 CI/合并'
+  const reported = driverPhase(data.driver)
+  if (reported) return reported
   const gate = data.gate ?? ticket.gate
   if (gate?.state === 'running') return '🧪 gate'
   const tasks = data.tasks ?? []
@@ -69,7 +80,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.16'
+const MOD_VERSION = '0.3.17'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -688,7 +699,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (ps.exitCode === 0 && ps.stdout.trim()) {
       coordinatorAlive = ps.stdout.split('\n').some((line: string) => {
         const row = /^\s*\d+\s+(\S+)\s+(.+)$/.exec(line)
-        return !!row && !row[1].includes('Z') && row[2].includes('scripts/agent-gates/COORDINATOR')
+        return !!row && !row[1].includes('Z') && (row[2].includes('scripts/agent-gates/COORDINATOR') || row[2].includes('orca-factory-driver serve'))
       })
     }
   } catch { coordinatorAlive = undefined }
@@ -750,9 +761,10 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       } catch { /* no gates dir */ }
     }
     const previous = old.phases?.[t.id]
-    let phase = ticketPhase(t, { run: r, tasks: workers, gate: gates[t.id], lane: gateLane, pr: prOf(t.id)?.number, previous: previous?.phase })
+    const driver = cardByIssue.get(t.id)?.comment
+    let phase = ticketPhase(t, { run: r, tasks: workers, gate: gates[t.id], lane: gateLane, pr: prOf(t.id)?.number, previous: previous?.phase, driver })
     // Preserve downstream phases on missing reads, unless fresh tasks show correction work.
-    if (previous && !workers.some(k => ['dispatched', 'pending', 'ready'].includes(k.status))) {
+    if (previous && !driverPhase(driver) && !workers.some(k => ['dispatched', 'pending', 'ready'].includes(k.status))) {
       if (!prOf(t.id) && !gates[t.id] && ['🧪 gate', '🔍 审查（推断）', '🚦 CI/合并'].includes(previous.phase)) phase = previous.phase
       if (previous.phase === '🚦 CI/合并' && !prOf(t.id)) phase = previous.phase
       if (previous.phase === '🔍 审查（推断）' && gates[t.id]?.state === 'green' && !gateLane && !prOf(t.id)) phase = previous.phase

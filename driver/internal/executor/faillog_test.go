@@ -133,7 +133,12 @@ func TestFailLogStageComments(t *testing.T) {
 			if !strings.HasPrefix(line, "FAIL: approach=") || !strings.Contains(line, "head=abc1234") || !strings.Contains(line, "driver/internal/executor/faillog.go") || strings.Contains(line, ticket.Todo) || !strings.Contains(line, " | reason="+tc.cause+" | evidence=") {
 				t.Fatalf("invalid summary: %q", line)
 			}
-			if len(f.diffs) != 1 || f.diffs[0] != [2]string{"base-sha", "abc1234567890"} {
+			// Before the branch check no merge-base exists yet; afterwards the summary uses it.
+			base := "merge-base-sha"
+			if tc.cause == "worker failed" {
+				base = "base-sha"
+			}
+			if len(f.diffs) != 1 || f.diffs[0] != [2]string{base, "abc1234567890"} {
 				t.Fatalf("diff queries=%v", f.diffs)
 			}
 			if tc.cause == "worker failed" && !strings.HasSuffix(line, " | evidence=worker_done outcome=failed") {
