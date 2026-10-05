@@ -19,8 +19,9 @@ import (
 
 func init() { Register("serve", serve) }
 func serve(args []string) int {
-	if len(args) != 0 {
-		fmt.Fprintln(os.Stderr, "Usage: driver serve")
+	dry := len(args) == 1 && args[0] == "--dry-run"
+	if len(args) != 0 && !dry {
+		fmt.Fprintln(os.Stderr, "Usage: driver serve [--dry-run]")
 		return 2
 	}
 	home, err := os.UserHomeDir()
@@ -30,6 +31,20 @@ func serve(args []string) int {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if dry {
+		cfg, err := config.Load(home)
+		if err == nil {
+			var runtime *scheduler.Runtime
+			if runtime, err = scheduler.NewRuntime(ctx, cfg); err == nil {
+				err = dryRunTick(ctx, cfg, runtime, os.Stdout, time.Now)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		return 0
+	}
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
 		if err != nil {

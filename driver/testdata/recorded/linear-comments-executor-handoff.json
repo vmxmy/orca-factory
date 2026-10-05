@@ -1,0 +1,28 @@
+{
+  "data": {
+    "issue": {
+      "comments": {
+        "nodes": [
+          {
+            "id": "e6d3cc16-fc1a-4625-8332-dac131d57e00",
+            "body": "转人: infra budget exhausted: reviewer empty output\n证据: 审查；审查命令档位: small\n需要你: 检查保留的 worker 分支并重新排队",
+            "createdAt": "2026-10-05T14:16:01.646Z",
+            "updatedAt": "2026-10-05T14:16:01.626Z"
+          },
+          {
+            "id": "4c00df2c-21df-4ecd-addd-bfedfc5ab97c",
+            "body": "阶段: worker 运行中\n归属: 执行器 term=term_fdf45555-3378-4ca8-99b1-6200fc3106fc run=run_c2d32709f17c attempt=1 since=2026-10-05T14:08:40Z",
+            "createdAt": "2026-10-05T14:08:41.052Z",
+            "updatedAt": "2026-10-05T14:08:41.035Z"
+          },
+          {
+            "id": "956a83c7-7ebc-4768-871b-ca5c96225316",
+            "body": "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-10-05T14:08:34Z",
+            "createdAt": "2026-10-05T14:08:35.794Z",
+            "updatedAt": "2026-10-05T14:08:35.471Z"
+          }
+        ]
+      }
+    }
+  }
+}

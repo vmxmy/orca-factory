@@ -180,6 +180,11 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 	schedulerAttempt := 0
 	for _, comment := range comments {
+		// A handoff hands the ticket to a human even when an older executor omitted the ownership line.
+		if strings.HasPrefix(comment.Body, "转人: ") {
+			t.Owner = machine.OwnerHuman
+			t.Phase = machine.PhaseHuman
+		}
 		for _, line := range strings.Split(comment.Body, "\n") {
 			if strings.HasPrefix(line, "阶段: ") {
 				t.Phase = machine.Phase(strings.TrimPrefix(line, "阶段: "))
