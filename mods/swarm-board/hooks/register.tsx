@@ -1,5 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
+import { renderGraph } from './views/graph'
+import { renderThroughput } from './views/throughput'
+import { renderFailures } from './views/failures'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -1330,6 +1333,9 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
+          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={() => update($, view, () => 'graph')} />
+          <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={() => update($, view, () => 'throughput')} />
+          <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={() => update($, view, () => 'failures')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
           {automation
             ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
@@ -1360,7 +1366,10 @@ export const register: Register = on => {
 
         {v === 'swarm' ? card('agents', G.work + ' Agents', (
           b.agents.length === 0 ? <Text dimColor>无</Text> : b.agents.map(agentRow)
-        )) : laneView()}
+        )) : v === 'graph' ? renderGraph(Text)
+          : v === 'throughput' ? renderThroughput(Text)
+          : v === 'failures' ? renderFailures(Text)
+          : laneView()}
 
         {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>无</Text> : b.prs.map(prRow)) : null}
 
