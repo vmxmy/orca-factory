@@ -13,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -246,5 +247,34 @@ func TestNoActiveDispatchChecksEveryPage(t *testing.T) {
 	ok, err := r.NoActiveDispatch(context.Background(), Ticket{Run: "run_one"})
 	if err != nil || ok || oc.page != 2 {
 		t.Fatalf("absent=%v err=%v pages=%d", ok, err, oc.page)
+	}
+}
+
+func TestLaunchMergingArgumentOrder(t *testing.T) {
+	o := &fakeOrca{}
+	r := &Runtime{Orca: o, DriverPath: "/driver path/bin"}
+	if err := r.Launch(context.Background(), Ticket{Identifier: "ENG-1", Repo: "/repo", Phase: machine.PhaseCorrection, Handoff: &merge.Handoff{QueueID: "q1"}, Progress: &merge.Progress{QueueID: "q1", Phase: "correction"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver path/bin' exec --merging 'ENG-1'") {
+		t.Fatalf("wrong launch: %+v", o.launches)
+	}
+}
+
+func (f *fakeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{}, nil
+}
+func (f *fakeOrca) WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error) {
+	return orca.Receipt{}, nil
+}
+
+func TestLaunchOrdinaryCorrectionKeepsRecoveryRoute(t *testing.T) {
+	o := &fakeOrca{}
+	r := &Runtime{Orca: o, DriverPath: "/driver"}
+	if err := r.Launch(context.Background(), Ticket{Identifier: "ENG-1", Repo: "/repo", Phase: machine.PhaseCorrection}); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver' exec 'ENG-1'") {
+		t.Fatalf("ordinary correction wrongly requires merge evidence: %+v", o.launches)
 	}
 }

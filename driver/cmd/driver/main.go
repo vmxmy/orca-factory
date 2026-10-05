@@ -48,7 +48,7 @@ func loggedCommand(component, path string, console io.Writer, args []string, exe
 	logger := logx.New(component, console)
 	file, openErr := logx.RotatingFile(path, 0, 0)
 	if openErr == nil {
-		defer file.Close()
+		defer func() { _ = file.Close() }() // Descriptor cleanup; log writes are synchronous and unbuffered.
 		logger = logx.New(component, io.MultiWriter(file, console))
 	}
 	started := time.Now()

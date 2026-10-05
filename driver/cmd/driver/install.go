@@ -77,7 +77,7 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	if err != nil {
 		return fmt.Errorf("open current binary: %w", err)
 	}
-	defer source.Close()
+	defer func() { _ = source.Close() }() // Read-only source; copy errors are handled below.
 	if err := os.MkdirAll(filepath.Dir(binary), 0755); err != nil {
 		return err
 	}
@@ -87,13 +87,13 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(temp.Name())
+	defer func() { _ = os.Remove(temp.Name()) }() // Cleanup only; successful rename removes this path.
 	if _, err := io.Copy(temp, source); err != nil {
-		temp.Close()
+		_ = temp.Close() // Preserve the copy/chmod error; temporary output is discarded.
 		return fmt.Errorf("copy current binary: %w", err)
 	}
 	if err := temp.Chmod(0755); err != nil {
-		temp.Close()
+		_ = temp.Close() // Preserve the copy/chmod error; temporary output is discarded.
 		return err
 	}
 	if err := temp.Close(); err != nil {

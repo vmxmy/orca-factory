@@ -158,7 +158,11 @@ ledger bad
 ledger []
 ledger {"corrections":"bad"}`}}
 	l := openTest(f)
-	defer l.Close(context.Background())
+	defer func() {
+		if err := l.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	var out, warnings bytes.Buffer
 	if err := l.Stats(context.Background(), false, &out, &warnings); err != nil {
 		t.Fatal(err)
@@ -179,7 +183,11 @@ func TestStatsWindow(t *testing.T) {
 	f.comments["new"] = []Comment{{Body: `ledger {"ticket":"recent"}`, CreatedAt: now.Add(-7 * 24 * time.Hour)}}
 	f.comments["ignore"] = []Comment{{Body: `ledger {"ticket":"ignored"}`, CreatedAt: now}}
 	l := openTest(f)
-	defer l.Close(context.Background())
+	defer func() {
+		if err := l.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, all := range []bool{false, true} {
 		var out bytes.Buffer
 		if err := l.Stats(context.Background(), all, &out, &out); err != nil {
@@ -197,7 +205,11 @@ func TestStatsWindow(t *testing.T) {
 func TestEmptyAndInvalidAppend(t *testing.T) {
 	f := newFake()
 	l := openTest(f)
-	defer l.Close(context.Background())
+	defer func() {
+		if err := l.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	var out bytes.Buffer
 	if err := l.Stats(context.Background(), false, &out, &out); err != nil {
 		t.Fatal(err)
@@ -214,7 +226,11 @@ func TestEmptyAndInvalidAppend(t *testing.T) {
 
 func TestStageSecsAppend(t *testing.T) {
 	l := openTest(newFake())
-	defer l.Close(context.Background())
+	defer func() {
+		if err := l.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	for _, tc := range []struct {
 		row, want string
 	}{

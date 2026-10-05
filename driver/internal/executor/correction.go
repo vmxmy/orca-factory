@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -86,10 +85,7 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 	if err != nil {
 		return "", err
 	}
-	id := receiptString(receipt, "taskId")
-	if id == "" {
-		id = nestedString(receipt, "task", "id")
-	}
+	id := receiptID(receipt, "task")
 	if id == "" {
 		return "", errors.New("child task receipt missing ID")
 	}
@@ -115,12 +111,8 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			return false, errors.New("cannot prepare correction artifact")
 		}
 		sessionErr := r.Correction(ctx, CorrectionRequest{Repo: c.Repo, Path: path, Cause: cause, Brief: brief, Number: result.State.Corrections})
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		var global *infra.Global
-		if errors.As(sessionErr, &global) {
-			return false, errors.New("coordinator dependency unavailable")
+		if stop := dependencyStop(ctx, sessionErr); stop != nil {
+			return false, stop
 		}
 		info, statErr := os.Lstat(path)
 		if sessionErr != nil || statErr != nil || !info.Mode().IsRegular() {
@@ -130,13 +122,20 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			continue
 		}
 		correction, err := os.ReadFile(path)
-		if err != nil {
-			return false, errors.New("cannot read correction artifact")
+		if err != nil || strings.TrimSpace(string(correction)) == "" {
+			if err := transition(machine.EvSessionEmpty, nil); err != nil {
+				return false, err
+			}
+			continue
 		}
 		if cp.Worktree == "" {
-			cp.Worktree, err = r.Worktree(ctx, c.Repo, "agent/"+t.Identifier+"/"+c.Unit)
+			err = e.retryRead(ctx, t, result, "correction worktree lookup", func() error {
+				var readErr error
+				cp.Worktree, readErr = r.Worktree(ctx, c.Repo, "agent/"+t.Identifier+"/"+c.Unit)
+				return readErr
+			})
 			if err != nil {
-				return false, errors.New("correction worktree lookup failed")
+				return false, err
 			}
 		}
 		if !filepath.IsAbs(cp.Worktree) {
@@ -155,49 +154,13 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if !hasEffect(fx, "worker-start-child-task-reuse-worktree") {
 				return errors.New("missing correction worker effect")
 			}
-			n := result.State.Corrections + 1
-			if c.Merging {
-				// The merge lane reported a text conflict. Resolve it here in the
-				// executor: the coordinator writes repair steps, then we merge
-				// origin/main, apply each resolution, commit, and fast-forward push.
-				if err := e.resolveMergeConflict(ctx, c, t, cp.Worktree, "origin/main", ""); err != nil {
-					return fmt.Errorf("merge conflict resolution failed: %w", err)
-				}
-				cp.Pending = false
-				return saveCheckpoint(c, t, *cp)
-			}
-			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), scopedRequest(t, c, "child", n))
-			if err != nil {
-				var ticketErr *infra.Ticket
-				if errors.As(err, &ticketErr) && strings.Contains(ticketErr.Err.Error(), "rejected: request_mismatch") {
-					child, err = e.adoptCorrectionChild(ctx, result.RunID)
-				}
-				if err != nil {
-					return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", err)
-				}
-			}
-			cp.Task = child
-			cp.Dispatch = ""
-			cp.Pending = true
 			cp.Corrections = result.State.Corrections
-			if err = saveCheckpoint(c, t, *cp); err != nil {
+			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
+			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
 				return err
 			}
-			receipt, err := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
-			if err != nil {
-				return fmt.Errorf("correction worker start uncertain; reconcile request before retry: %w", err)
-			}
-			cp.Dispatch = receiptString(receipt, "dispatchId")
-			// The CLI receipt is authoritative if it supplies a task ID.
-			if task := receiptString(receipt, "taskId"); task != "" {
-				cp.Task = task
-			}
-			if cp.Dispatch == "" {
-				return errors.New("correction receipt missing dispatch")
-			}
 			result.DispatchID = cp.Dispatch
-			cp.Pending = false
-			return saveCheckpoint(c, t, *cp)
+			return nil
 		})
 		return err == nil, err
 	}
@@ -244,25 +207,4 @@ func tierEscalation(c Config) bool {
 		value = os.Getenv("AGENT_TIER_ESCALATE")
 	}
 	return value == "1"
-}
-
-// adoptCorrectionChild recovers a correction child Task whose creation receipt was lost.
-func (e *Executor) adoptCorrectionChild(ctx context.Context, run string) (string, error) {
-	tasks, err := e.Orca.TaskList(ctx, run)
-	if err != nil {
-		return "", fmt.Errorf("adopt task list: %w", err)
-	}
-	var blocked []string
-	for _, task := range tasks {
-		if task.Status == "blocked" && (task.RunID == "" || task.RunID == run) {
-			blocked = append(blocked, task.ID)
-		}
-	}
-	switch len(blocked) {
-	case 0:
-		return "", errors.New("no blocked child to adopt")
-	case 1:
-		return blocked[0], nil
-	}
-	return "", fmt.Errorf("ambiguous blocked children: %v", blocked)
 }
