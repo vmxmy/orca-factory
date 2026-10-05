@@ -291,6 +291,22 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	return nil
 }
 
+// Finish marks a merged ticket Done, then records the merge. Done comes first:
+// a Done ticket leaves the snapshot, so a later comment failure cannot requeue it.
+func (r *Runtime) Finish(ctx context.Context, t Ticket, body string) error {
+	client := r.Clients[t.Repo]
+	if client == nil {
+		return errors.New("repository has no Linear client")
+	}
+	if _, err := client.UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"}); err != nil {
+		return errors.New("Linear done failed")
+	}
+	if _, err := client.CreateComment(ctx, t.ID, body); err != nil {
+		return errors.New("merge comment failed")
+	}
+	return nil
+}
+
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }

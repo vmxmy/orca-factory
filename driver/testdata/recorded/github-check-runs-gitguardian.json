@@ -1,0 +1,12 @@
+{
+ "total_count": 1,
+ "check_runs": [
+  {
+   "id": 111870003318,
+   "name": "GitGuardian Security Checks",
+   "status": "completed",
+   "conclusion": "success",
+   "head_sha": "c4e86ec5465d1e2d1f6aea45053e663b54a1350b"
+  }
+ ]
+}

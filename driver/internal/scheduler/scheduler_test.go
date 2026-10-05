@@ -294,3 +294,25 @@ func TestUnregisteredExecutorRelaunchedAfterGrace(t *testing.T) {
 		})
 	}
 }
+
+type recordingMerger struct{ got [][]Ticket }
+
+func (m *recordingMerger) Process(_ context.Context, queue []Ticket) error {
+	m.got = append(m.got, append([]Ticket(nil), queue...))
+	return nil
+}
+
+// The merge queue is useless unless every tick hands it to the merge lane.
+func TestTickHandsMergeQueueToMerger(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	f := &fakeBackend{tickets: []Ticket{{ID: "pr-open", Repo: "b", Owner: machine.OwnerMerge, UpdatedAt: now}}}
+	s := setup(f)
+	m := &recordingMerger{}
+	s.Merger = m
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.got) != 1 || len(m.got[0]) != 1 || m.got[0][0].ID != "pr-open" {
+		t.Fatalf("merger saw %v", m.got)
+	}
+}

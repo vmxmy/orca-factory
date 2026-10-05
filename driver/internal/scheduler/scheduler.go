@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
@@ -53,9 +54,16 @@ type Backend interface {
 	Apply(context.Context, Ticket, Action) error
 	Launch(context.Context, Ticket) error
 }
+
+// Merger consumes the merge queue a tick reconstructs. It is optional so that
+// dry runs and tests can observe the queue without merging.
+type Merger interface {
+	Process(context.Context, []Ticket) error
+}
 type Scheduler struct {
 	Config           config.Config
 	Backend          Backend
+	Merger           Merger
 	Now              func() time.Time
 	MergeQueue       []Ticket
 	Pauses           *pause.Manager
@@ -282,6 +290,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		t.Owner = state.Owner
 		if err = s.Backend.Launch(ctx, t); err != nil {
 			problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
+		}
+	}
+	if s.Merger != nil && len(s.MergeQueue) > 0 {
+		if err := s.Merger.Process(ctx, s.MergeQueue); err != nil {
+			problems = append(problems, fmt.Errorf("merge lane: %w", err))
 		}
 	}
 	return errors.Join(problems...)
