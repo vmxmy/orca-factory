@@ -117,6 +117,10 @@ func TestSnapshot(t *testing.T) {
 }
 func TestUpdateAndUsage(t *testing.T) {
 	c, calls := fixture(t, func(w http.ResponseWriter, q request) {
+		if strings.Contains(q.Query, "IssueLabels") {
+			fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2"}],"pageInfo":{"hasNextPage":false}}}}}`)
+			return
+		}
 		want := map[string]any{"stateId": "s1", "addedLabelIds": []any{"l1"}, "removedLabelIds": []any{"l2"}}
 		if !strings.Contains(q.Query, "issueUpdate") || q.Variables["id"] != "i1" || !reflect.DeepEqual(q.Variables["input"], want) {
 			t.Errorf("mutation: %+v", q)
@@ -127,15 +131,15 @@ func TestUpdateAndUsage(t *testing.T) {
 	if err != nil || issue.Identifier != "ENG-1" {
 		t.Fatalf("update: %+v %v", issue, err)
 	}
-	if *calls != 4 {
-		t.Errorf("update must make one request, total=%d", *calls)
+	if *calls != 5 {
+		t.Errorf("update must read labels once and mutate once, total=%d", *calls)
 	}
 	u := c.Usage()
-	if u.Requests != 4 || u.Complexity != 28 || u.RequestLimit.Limit != 2500 || u.RequestLimit.Remaining != 2490 || u.RequestLimit.Reset.UnixMilli() != 1800000000000 || u.ComplexityLimit.Limit != 3000000 || u.ComplexityLimit.Remaining != 2999990 || u.ComplexityLimit.Reset.UnixMilli() != 1800000000001 {
+	if u.Requests != 5 || u.Complexity != 35 || u.RequestLimit.Limit != 2500 || u.RequestLimit.Remaining != 2490 || u.RequestLimit.Reset.UnixMilli() != 1800000000000 || u.ComplexityLimit.Limit != 3000000 || u.ComplexityLimit.Remaining != 2999990 || u.ComplexityLimit.Reset.UnixMilli() != 1800000000001 {
 		t.Fatalf("usage: %+v", u)
 	}
 	_, err = c.UpdateIssue(context.Background(), "i1", "unknown", nil, nil)
-	if err == nil || *calls != 4 {
+	if err == nil || *calls != 5 {
 		t.Error("unknown name must fail locally")
 	}
 }
@@ -226,6 +230,10 @@ func TestMetadataPaginationAndCache(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 			t.Error(err)
 		}
+		if strings.Contains(q.Query, "IssueLabels") {
+			fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`)
+			return
+		}
 		if strings.Contains(q.Query, "issueUpdate") {
 			if !reflect.DeepEqual(q.Variables["input"], map[string]any{"stateId": "s2", "addedLabelIds": []any{"l2"}, "removedLabelIds": []any{}}) {
 				t.Error("second page not cached")
@@ -262,7 +270,7 @@ func TestMetadataPaginationAndCache(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if requests != 8 {
+	if requests != 10 {
 		t.Fatalf("metadata refetched: %d", requests)
 	}
 }
