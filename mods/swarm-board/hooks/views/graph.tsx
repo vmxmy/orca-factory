@@ -1,132 +1,140 @@
-import { createRequire } from 'node:module'
-import type { ComponentType } from 'react'
-import type { GraphData as SnapshotGraphData } from '../../types'
-import { readGraphSnapshot } from '../linear-cache'
-
+/** The view consumes readGraphSnapshot's issues; it never fetches live data. */
 export type GraphIssue = {
   id: string
   state: string
   parent?: string | null
-  blockedBy: readonly string[]
+  blockedBy?: readonly string[]
 }
 export type GraphInput = { issues: readonly GraphIssue[] }
-export type GraphData = SnapshotGraphData & {
-  issues: GraphIssue[]
-  rows: (GraphIssue & { depth: number; waitingOn: string[] })[]
+export type GraphRow = GraphIssue & { depth: number; blockers: string[] }
+export type GraphData = {
+  ready: boolean
+  rows: GraphRow[]
+  criticalPath: string[]
+  /** Immediate unlocks, then downstream reach as a tie-breaker. */
+  unlockRank: { id: string; count: number; downstream: number }[]
+  /** Cycles and their dependents cannot be assigned a DAG critical path. */
+  unresolved: string[]
   summary: string
 }
-
 const finished = (state: string) => state === 'completed' || state === 'canceled'
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 
-/** Snapshot-independent calculation; unknown blockers remain unresolved. */
-export const buildGraph = (input?: GraphInput | null): GraphData => {
-  const issues = (input?.issues ?? []).map(issue => ({ ...issue, blockedBy: [...new Set(issue.blockedBy)] }))
-    .sort((a, b) => compare(a.id, b.id))
+export function buildGraph(input?: GraphInput | null): GraphData {
+  if (!input || !Array.isArray(input.issues)) return {
+    ready: false, rows: [], criticalPath: [], unlockRank: [], unresolved: [], summary: '数据未就绪',
+  }
+  const issues = [...input.issues].sort((a, b) => compare(a.id, b.id))
   const byId = new Map(issues.map(issue => [issue.id, issue]))
-  const pending = issues.filter(issue => !finished(issue.state))
-  const waitingOn = (issue: GraphIssue) => issue.blockedBy.filter(id => !finished(byId.get(id)?.state ?? 'unknown'))
-  const children = new Map<string, GraphIssue[]>()
-  for (const issue of pending) {
-    for (const blocker of waitingOn(issue)) {
-      const list = children.get(blocker) ?? []
-      list.push(issue)
-      children.set(blocker, list)
+  const active = issues.filter(issue => !finished(issue.state))
+  const blockers = new Map(issues.map(issue => [issue.id,
+    [...new Set(issue.blockedBy ?? [])].filter(id => byId.has(id) && !finished(byId.get(id)!.state)).sort(compare),
+  ]))
+  const children = new Map<string, string[]>()
+  for (const issue of active) {
+    for (const id of blockers.get(issue.id) ?? []) {
+      const list = children.get(id) ?? []
+      list.push(issue.id)
+      children.set(id, list)
     }
   }
 
-  // Topological dynamic programming: completed tickets split unfinished chains.
-  // Cycles cannot be scheduled, so do not present them as an executable path.
-  const degrees = new Map(pending.map(issue => [issue.id, waitingOn(issue).filter(id => byId.has(id)).length]))
-  const queue = pending.filter(issue => degrees.get(issue.id) === 0)
-  const paths = new Map<string, string[]>()
+  // Kahn traversal gives the longest unfinished dependency chain without recursion.
+  const pending = new Map(active.map(issue => [issue.id,
+    (blockers.get(issue.id) ?? []).length,
+  ]))
+  const queue = active.filter(issue => pending.get(issue.id) === 0).map(issue => issue.id)
+  const paths = new Map(active.map(issue => [issue.id, [issue.id]]))
   let criticalPath: string[] = []
-  for (let index = 0; index < queue.length; index++) {
-    const issue = queue[index]
-    const path = paths.get(issue.id) ?? [issue.id]
-    if (path.length > criticalPath.length) criticalPath = path
-    for (const child of children.get(issue.id) ?? []) {
-      const candidate = [...path, child.id]
-      if (candidate.length > (paths.get(child.id)?.length ?? 0)) paths.set(child.id, candidate)
-      const remaining = degrees.get(child.id)! - 1
-      degrees.set(child.id, remaining)
+  const better = (a: string[], b: string[]) => a.length > b.length
+    || (a.length === b.length && compare(a.join('\0'), b.join('\0')) < 0)
+  const visited = new Set<string>()
+  for (let i = 0; i < queue.length; i++) {
+    const id = queue[i]
+    visited.add(id)
+    const path = paths.get(id)!
+    if (better(path, criticalPath)) criticalPath = path
+    for (const child of children.get(id) ?? []) {
+      const next = [...path, child]
+      if (better(next, paths.get(child)!)) paths.set(child, next)
+      const remaining = pending.get(child)! - 1
+      pending.set(child, remaining)
       if (remaining === 0) queue.push(child)
     }
   }
-
-  // Count downstream work that becomes possible in sequence, not just immediate
-  // children; a separate unresolved prerequisite prevents that branch unlocking.
-  const unlockRank = pending.map(issue => {
-    const released = new Set([issue.id])
-    const frontier = [issue.id]
-    for (let index = 0; index < frontier.length; index++) {
-      for (const child of children.get(frontier[index]) ?? []) {
-        if (!released.has(child.id) && waitingOn(child).every(id => released.has(id))) {
-          released.add(child.id)
-          frontier.push(child.id)
-        }
+  const unresolved = active.filter(issue => !visited.has(issue.id)).map(issue => issue.id)
+  const unlockRank = active.map(issue => {
+    const reachable = new Set<string>([issue.id])
+    const next = [issue.id]
+    for (let i = 0; i < next.length; i++) {
+      for (const child of children.get(next[i]) ?? []) {
+        if (!reachable.has(child)) { reachable.add(child); next.push(child) }
       }
     }
-    return { id: issue.id, count: released.size - 1 }
-  }).sort((a, b) => b.count - a.count || compare(a.id, b.id))
+    const count = (children.get(issue.id) ?? []).filter(id => id !== issue.id
+      && blockers.get(id)?.length === 1).length
+    return { id: issue.id, count, downstream: reachable.size - 1 }
+  }).sort((a, b) => b.count - a.count || b.downstream - a.downstream || compare(a.id, b.id))
 
-  const groups = new Map<string | null, GraphIssue[]>()
+  // Parent hierarchy is independent of dependency edges: group siblings together.
+  const families = new Map<string | null, GraphIssue[]>()
   for (const issue of issues) {
-    const parent = issue.parent ?? null
-    const group = groups.get(parent) ?? []
-    group.push(issue)
-    groups.set(parent, group)
+    const parent = issue.parent && byId.has(issue.parent) ? issue.parent : null
+    const list = families.get(parent) ?? []
+    list.push(issue)
+    families.set(parent, list)
   }
-  const rows: GraphData['rows'] = []
-  const seen = new Set<string>()
-  const visit = (issue: GraphIssue, depth: number) => {
-    if (seen.has(issue.id)) return
-    seen.add(issue.id)
-    rows.push({ ...issue, depth, waitingOn: waitingOn(issue) })
-    for (const child of groups.get(issue.id) ?? []) visit(child, depth + 1)
+  const rows: GraphRow[] = []
+  const shown = new Set<string>()
+  const append = (root: GraphIssue) => {
+    const stack = [{ issue: root, depth: 0 }]
+    while (stack.length) {
+      const { issue, depth } = stack.pop()!
+      if (shown.has(issue.id)) continue
+      shown.add(issue.id)
+      rows.push({ ...issue, blockedBy: [...(issue.blockedBy ?? [])], depth, blockers: [...(blockers.get(issue.id) ?? [])] })
+      for (const child of [...(families.get(issue.id) ?? [])].reverse()) stack.push({ issue: child, depth: depth + 1 })
+    }
   }
-  for (const [parent, group] of groups) {
-    if (parent !== null && byId.has(parent)) continue
-    for (const issue of group) visit(issue, parent === null ? 0 : 1)
-  }
-  // Keep malformed parent cycles visible, once per ticket.
-  for (const issue of issues) visit(issue, 0)
-
-  const blocked = pending.filter(issue => waitingOn(issue).length > 0)
-  const active = pending.filter(issue => issue.state === 'started').length
-  const ready = pending.filter(issue => issue.state !== 'started' && waitingOn(issue).length === 0).length
-  const blockers = [...new Set(blocked.flatMap(waitingOn))].sort(compare)
-  const cycle = queue.length < pending.length ? '，存在依赖环或被环阻塞的票' : ''
-  const summary = !input ? '数据未就绪' : issues.length === 0 ? '暂无票据'
-    : `依赖视角：进行中 ${active} 张、可领 ${ready} 张，${blocked.length} 张卡在 ${blockers.join('、') || '无阻塞票'}${cycle}（实际领取还受并发与筛选规则限制）。`
-  return { issues, rows, summary, criticalPath, unlockRank }
+  for (const root of families.get(null) ?? []) append(root)
+  // Preserve visibility even when a malformed parent relation contains a cycle.
+  for (const issue of issues) if (!shown.has(issue.id)) append(issue)
+  const waiting = active.filter(issue => issue.state !== 'started')
+  const blocked = waiting.filter(issue => (blockers.get(issue.id)?.length ?? 0) > 0)
+  const blockingIds = [...new Set(blocked.flatMap(issue => blockers.get(issue.id) ?? []))].sort(compare)
+  const summary = `未完成 ${active.length} 张，在做 ${active.length - waiting.length} 张，按依赖可开始 ${waiting.length - blocked.length} 张`
+    + (blocked.length ? `，${blocked.length} 张卡在 ${blockingIds.join('、')}` : '，没有依赖阻塞')
+    + '（实际领取还受标签与并发限制）。'
+  return { ready: true, rows, criticalPath, unlockRank, unresolved, summary }
 }
 
-const hasIssues = (snapshot: SnapshotGraphData | GraphInput): snapshot is GraphInput => 'issues' in snapshot
-
-export const renderGraph = (
-  Text: ComponentType<{ dimColor?: boolean; children?: string }>,
-  snapshot: SnapshotGraphData | GraphInput | null = readGraphSnapshot(Date.now()),
-) => {
-  // Only the host renderer needs React. Pure calculation/build checks work in a
-  // clean checkout, without installing the host application's React package.
-  const { createElement } = createRequire(import.meta.url)('react') as typeof import('react')
-  if (!snapshot) return createElement(Text, { dimColor: true }, '数据未就绪')
-  const graph = hasIssues(snapshot) ? buildGraph(snapshot) : null
-  const data = graph ?? snapshot as SnapshotGraphData
-  const lines = [graph?.summary ?? '票据明细数据未就绪，暂不能判断领取数量与阻塞原因。']
-  lines.push(`关键路径：${data.criticalPath.join(' → ') || '无'}`)
-  lines.push(`解锁排行（逐步完成后可放出的下游票）：${data.unlockRank.map(({ id, count }) => `${id} ${count}`).join('、') || '无'}`)
-  const critical = new Set(data.criticalPath)
-  let missingParent: string | null = null
-  const ids = new Set(graph?.issues.map(issue => issue.id))
-  for (const row of graph?.rows ?? []) {
-    if (row.parent && !ids.has(row.parent) && row.parent !== missingParent) {
-      missingParent = row.parent
-      lines.push(`${row.parent} [父票数据缺失]`)
-    }
-    const dependencies = row.blockedBy.map(id => `${id}${row.waitingOn.includes(id) ? '' : ' ✓'}`).join('、')
-    lines.push(`${'  '.repeat(row.depth)}${critical.has(row.id) ? '★ ' : ''}${row.id} [${row.state}]${dependencies ? ` ← ${dependencies}` : ''}`)
+/** Truncate terminal cells without splitting Unicode code points. */
+const truncate = (line: string, width: number): string => {
+  const limit = Math.max(0, Math.floor(width))
+  let result = ''
+  let used = 0
+  for (const char of line) {
+    const cells = /[\p{Mark}\u200d]/u.test(char) ? 0
+      : /[\u1100-\u115f\u2329\u232a\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe10-\ufe19\ufe30-\ufe6f\uff01-\uff60\uffe0-\uffe6\p{Emoji_Presentation}\u{20000}-\u{3fffd}]/u.test(char) ? 2 : 1
+    if (used + cells > limit) break
+    result += char
+    used += cells
   }
-  return createElement(Text, null, lines.join('\n'))
+  return result
+}
+
+export function renderGraph(data: GraphData, width?: number): string[] {
+  if (!data.ready) return ['数据未就绪']
+  const lines = [data.summary]
+  lines.push(`关键路径：${data.criticalPath.join(' → ') || '无'}`)
+  const leaders = data.unlockRank.filter(item => item.count > 0).slice(0, 3)
+  lines.push(`解锁排行：${leaders.map(item => `先做 ${item.id}（放出 ${item.count} 张）`).join('；') || '无'}`)
+  if (data.unresolved.length) lines.push(`依赖成环：${data.unresolved.join('、')}`)
+  for (const row of data.rows) {
+    const symbol = finished(row.state) ? '✓' : row.state === 'started' ? '🔨'
+      : row.blockers.length ? '⛓' : '📥'
+    const blocked = row.blockers.length ? ` ⛓ ${row.blockers.join('、')}` : ''
+    lines.push(`${'  '.repeat(row.depth)}${symbol} ${row.id}${blocked}`)
+  }
+  return width === undefined ? lines : lines.map(line => truncate(line, width))
 }
