@@ -19,9 +19,11 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z_0-9]*)`)
+var operationKind = regexp.MustCompile(`^\s*(query|mutation)\b`)
 
 const endpoint = "https://api.linear.app/graphql"
 
@@ -122,6 +124,7 @@ type Usage struct {
 	ComplexityLimit RateLimit
 }
 type Client struct {
+	contextLogger            runx.Logger
 	logger                   func(string)
 	key, endpoint            string
 	http                     *http.Client
@@ -154,7 +157,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		hc = *options.HTTPClient
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c := &Client{logger: options.Logger, key: key, endpoint: target, http: &hc, now: time.Now}
+	c := &Client{logger: options.Logger, contextLogger: runx.LoggerFromContext(ctx), key: key, endpoint: target, http: &hc, now: time.Now}
 	for _, item := range []struct {
 		field string
 		dest  *map[string]string
@@ -452,10 +455,14 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 
 func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (resultErr error) {
 	started := time.Now()
+	logger := runx.LoggerFromContext(ctx)
+	if logger == nil {
+		logger = c.contextLogger
+	}
 	var response *http.Response
 	limited := false
 	defer func() {
-		if c.logger == nil {
+		if c.logger == nil && logger == nil {
 			return
 		}
 		status := 0
@@ -473,7 +480,26 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 		if resultErr != nil || limited || status == 429 {
 			level = "[WARN] "
 		}
-		c.logger(fmt.Sprintf("%slinear operation=%s status=%d duration_ms=%d X-Complexity=%s X-RateLimit-Requests-Remaining=%s", level, operation, status, time.Since(started).Milliseconds(), complexity, remaining))
+		elapsed := time.Since(started).Milliseconds()
+		if c.logger != nil {
+			c.logger(fmt.Sprintf("%slinear operation=%s status=%d duration_ms=%d X-Complexity=%s X-RateLimit-Requests-Remaining=%s", level, operation, status, elapsed, complexity, remaining))
+		}
+		if logger != nil {
+			kind := strings.TrimSpace(operationKind.FindString(query))
+			if kind != "" {
+				if operation == "unknown" {
+					operation = kind
+				} else {
+					operation = kind + " " + operation
+				}
+			}
+			fields := []any{"operation", operation, "http_status", status, "elapsed_ms", elapsed, "X-Complexity", strings.Trim(complexity, `"`), "X-RateLimit-Requests-Remaining", strings.Trim(remaining, `"`)}
+			if level != "" {
+				logger.Warn("linear external call", fields...)
+			} else {
+				logger.Info("linear external call", fields...)
+			}
+		}
 	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {

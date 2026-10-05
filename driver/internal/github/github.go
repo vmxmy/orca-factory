@@ -115,9 +115,10 @@ func safeError(err error) error {
 
 func (c *Client) request(ctx context.Context, method, path string, input, output any) (resultErr error) {
 	started := time.Now()
+	logger := runx.LoggerFromContext(ctx)
 	var resp *http.Response
 	defer func() {
-		if c.logger == nil {
+		if c.logger == nil && logger == nil {
 			return
 		}
 		status, requestID := 0, ""
@@ -130,7 +131,13 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		if resultErr != nil {
 			result = "failure"
 		}
-		c.logger(fmt.Sprintf("github interface=%q status=%d result=%s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), status, result, time.Since(started).Milliseconds(), runx.SafeText(requestID)))
+		elapsed := time.Since(started).Milliseconds()
+		if c.logger != nil {
+			c.logger(fmt.Sprintf("github interface=%q status=%d result=%s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), status, result, elapsed, runx.SafeText(requestID)))
+		}
+		if logger != nil {
+			logger.Info("github external call", "method", method, "path", runx.SafeText(endpoint), "status", status, "result", result, "elapsed_ms", elapsed, "request_id", runx.SafeText(requestID))
+		}
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

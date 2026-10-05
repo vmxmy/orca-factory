@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -48,16 +49,17 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
+	logger := LoggerFromContext(ctx)
 	var stderr *stderrCapture
 	var args, secrets []string
-	if spec.Logger != nil {
+	if spec.Logger != nil || logger != nil {
 		args, secrets = safeArgs(spec.Args)
 		stderr = newStderrCapture(secrets)
 		cmd.Stderr = stderr
 	}
 	started := time.Now()
 	output, err := cmd.Output()
-	if spec.Logger != nil {
+	if spec.Logger != nil || logger != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			exit.Stderr = stderr.Bytes()
@@ -74,7 +76,28 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 			code = -1
 		}
 		diagnostic := stderr.logText(secrets)
-		spec.Logger(fmt.Sprintf("runx executable=%q args=%q exit=%d duration_ms=%d stderr=%q timeout=%t", SafeText(filepath.Base(spec.Path)), args, code, time.Since(started).Milliseconds(), diagnostic, timedOut))
+		elapsed := time.Since(started).Milliseconds()
+		if spec.Logger != nil {
+			spec.Logger(fmt.Sprintf("runx executable=%q args=%q exit=%d duration_ms=%d stderr=%q timeout=%t", SafeText(filepath.Base(spec.Path)), args, code, elapsed, diagnostic, timedOut))
+		}
+		if logger != nil {
+			flags := []string{}
+			for _, arg := range args {
+				if arg == "--" {
+					break
+				}
+				flag, _, _ := strings.Cut(arg, "=")
+				if strings.HasPrefix(flag, "-") && flag != "-" && flag != "--" && !strings.ContainsAny(flag, " \t\r\n") {
+					flags = append(flags, SafeText(flag))
+				}
+			}
+			fields := []any{"executable", SafeText(filepath.Base(spec.Path)), "args", flags, "arg_count", len(spec.Args), "exit_code", code, "elapsed_ms", elapsed, "stderr", diagnostic, "timeout", timedOut}
+			if timedOut {
+				logger.Warn("runx external call", fields...)
+			} else {
+				logger.Info("runx external call", fields...)
+			}
+		}
 	}
 	if ctx.Err() != nil {
 		return output, ctx.Err()
