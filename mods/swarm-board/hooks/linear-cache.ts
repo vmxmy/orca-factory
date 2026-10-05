@@ -1,181 +1,166 @@
-import type { GraphData } from '../types'
-
 const GRAPH_TTL_MS = 300_000
 const GRAPH_MAX_CALLS = 40
-export const GRAPH_COUNT_FILE = 'orca-factory-linear-calls'
-const GRAPH_COUNT_SOURCE = 'board'
-const RECENT_COMPLETED_MS = 24 * 60 * 60 * 1000
+const COUNTER_SOURCE = 'board'
+const RECENT_COMPLETED_MS = 86_400_000
 
-export type GraphDeps = {
-  /** data is the parsed JSON envelope emitted by orca --json. */
-  run(argv: string[]): Promise<{ ok: boolean; data: unknown }>
-  env: { team: string; project: string }
-  /** Append to GRAPH_COUNT_FILE under the caller's temporary directory. */
-  appendCount(line: string): Promise<void>
+export type GraphIssue = {
+  id: string
+  state: string
+  parentId: string | null
+  blockedBy: string[]
+  complete: boolean
 }
 
-export type GraphResult = { graph: GraphData; stale: boolean; incomplete: string[] }
+export type GraphSnapshot = {
+  at: number
+  issues: GraphIssue[]
+  stale: boolean
+  incomplete: string[]
+}
 
-type Parent = { identifier: string } | null
-type Issue = { identifier: string; state: { type: string }; updatedAt: string; parent?: Parent }
-type Relation = { relationship: string; relatedIssue: { identifier: string } }
-type ListResult = { issues: Issue[]; truncated?: boolean; meta?: { partial?: boolean; hasMore?: boolean } }
-type DetailResult = { issue: Issue; relations: Relation[] }
+export type RunFn = (argv: string[]) => Promise<{ exitCode: number; stdout: string }>
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+type Row = Record<string, unknown>
+type ListedIssue = Row & { identifier: string; state: { type: string } }
+
+let cache: GraphSnapshot | null = null
+let windowStart: number | null = null
+let windowCalls = 0
+let failedAt: number | null = null
+let pending: Promise<GraphSnapshot | null> | null = null
+let counterPath: string | null = null
+
+function isRecord(value: unknown): value is Row {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isParent(value: unknown): value is Parent {
-  return value === null || (isRecord(value) && typeof value.identifier === 'string')
-}
-
-function isIssue(value: unknown): value is Issue {
+function isIssue(value: unknown): value is ListedIssue {
   return isRecord(value) && typeof value.identifier === 'string' && value.identifier.length > 0
     && isRecord(value.state) && typeof value.state.type === 'string'
-    && typeof value.updatedAt === 'string' && Number.isFinite(Date.parse(value.updatedAt))
-    && (value.parent === undefined || isParent(value.parent))
 }
 
-function isRelation(value: unknown): value is Relation {
-  return isRecord(value) && typeof value.relationship === 'string'
-    && isRecord(value.relatedIssue) && typeof value.relatedIssue.identifier === 'string'
+function isPartial(result: Row): boolean {
+  const meta = isRecord(result.meta) ? result.meta : null
+  const sections = meta && isRecord(meta.sections) ? Object.values(meta.sections) : []
+  return result.truncated === true || meta?.partial === true || meta?.hasMore === true
+    || sections.some(section => isRecord(section)
+      && (section.capReached === true || section.hasMore === true || section.mayHaveMore === true))
 }
 
-function isListResult(value: unknown): value is ListResult {
-  return isRecord(value) && Array.isArray(value.issues) && value.issues.every(isIssue)
-    && (value.truncated === undefined || typeof value.truncated === 'boolean')
-    && (value.meta === undefined || (isRecord(value.meta)
-      && (value.meta.partial === undefined || typeof value.meta.partial === 'boolean')
-      && (value.meta.hasMore === undefined || typeof value.meta.hasMore === 'boolean')))
+async function safeRun(run: RunFn, argv: string[]): ReturnType<RunFn> {
+  try {
+    return await run(argv)
+  } catch {
+    // Sandbox transport rejections are read failures; counter failures must also leave reads available.
+    return { exitCode: 1, stdout: '' }
+  }
 }
 
-function isDetailResult(value: unknown): value is DetailResult {
-  return isRecord(value) && isIssue(value.issue)
-    && Array.isArray(value.relations) && value.relations.every(isRelation)
-    && isCompleteDetailMeta(value.meta)
+async function appendCount(now: number, run: RunFn): Promise<boolean> {
+  if (counterPath === null) {
+    const resolved = await safeRun(run, ['sh', '-c',
+      'printf %s "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"'])
+    if (resolved.exitCode !== 0 || !resolved.stdout) return false
+    counterPath = resolved.stdout
+  }
+  const written = await safeRun(run, ['sh', '-c',
+    `printf "%s ${COUNTER_SOURCE}\\n" "$1" >> "$2"`, 'sh', String(Math.floor(now / 1000)), counterPath])
+  return written.exitCode === 0
 }
 
-function isCompleteDetailMeta(value: unknown): boolean {
-  if (value === undefined) return true
-  if (!isRecord(value) || (value.partial !== undefined && value.partial !== false)) return false
-  if (value.sections === undefined) return true
-  if (!isRecord(value.sections)) return false
-  const relations = value.sections.relations
-  return relations === undefined || (isRecord(relations)
-    && (relations.capReached === undefined || relations.capReached === false)
-    && (relations.hasMore === undefined || relations.hasMore === false))
+async function readLinear(args: string[], now: number, run: RunFn): Promise<Row | null> {
+  if (windowCalls >= GRAPH_MAX_CALLS) return null
+  windowCalls += 1
+  const response = await safeRun(run, ['orca', 'linear', ...args, '--json'])
+  await appendCount(now, run)
+  if (response.exitCode !== 0) return null
+  let envelope: unknown
+  try {
+    envelope = JSON.parse(response.stdout)
+  } catch {
+    return null
+  }
+  return isRecord(envelope) && envelope.ok !== false && isRecord(envelope.result) ? envelope.result : null
 }
 
-// deps.run returns the parsed CLI envelope; validate its result once at this boundary.
-function resultOf(data: unknown): unknown {
-  return isRecord(data) && data.ok === true ? data.result : undefined
+function parentOf(issue: Row, identifiers: Map<string, string>): string | null | undefined {
+  if (issue.parent === null) return null
+  if (isRecord(issue.parent)) {
+    if (typeof issue.parent.identifier === 'string' && issue.parent.identifier) return issue.parent.identifier
+    if (typeof issue.parent.id === 'string' && issue.parent.id) return identifiers.get(issue.parent.id) ?? issue.parent.id
+  }
+  if (issue.parentId === null) return null
+  if (typeof issue.parentId === 'string' && issue.parentId) return identifiers.get(issue.parentId) ?? issue.parentId
+  return undefined
 }
 
-let cache: { at: number; result: GraphResult } | null = null
-let callTimes: number[] = []
+function blockersOf(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const blockers: string[] = []
+  for (const relation of value) {
+    if (!isRecord(relation) || typeof relation.relationship !== 'string') return null
+    if (relation.relationship !== 'blockedBy') continue
+    if (!isRecord(relation.relatedIssue) || typeof relation.relatedIssue.identifier !== 'string'
+      || !relation.relatedIssue.identifier) return null
+    blockers.push(relation.relatedIssue.identifier)
+  }
+  return [...new Set(blockers)]
+}
 
-function staleResult(incomplete: string[]): GraphResult {
+async function enrichIssue(issue: ListedIssue, identifiers: Map<string, string>, now: number, run: RunFn): Promise<GraphIssue> {
+  // Verified list-issues omits parent/parentId; issue --relations also currently omits them, so unknown parents stay incomplete.
+  const parent = parentOf(issue, identifiers)
+  const blockers = blockersOf(issue.relations)
+  const base: GraphIssue = {
+    id: issue.identifier, state: issue.state.type, parentId: parent ?? null,
+    blockedBy: blockers ?? [], complete: false,
+  }
+  if (parent !== undefined && blockers !== null) return { ...base, complete: true }
+  const detail = await readLinear(['issue', issue.identifier, '--relations'], now, run)
+  if (!detail || !isIssue(detail.issue) || detail.issue.identifier !== issue.identifier) return base
+  const resolvedParent = parent !== undefined ? parent : parentOf(detail.issue, identifiers)
+  const resolvedBlockers = blockersOf(detail.relations)
   return {
-    graph: cache?.result.graph ?? { criticalPath: [], unlockRank: [] },
-    stale: true,
-    incomplete: [...new Set(incomplete)].sort(),
+    id: issue.identifier,
+    state: detail.issue.state.type,
+    parentId: resolvedParent ?? null,
+    blockedBy: resolvedBlockers ?? base.blockedBy,
+    complete: resolvedParent !== undefined && resolvedBlockers !== null && !isPartial(detail),
   }
 }
 
-function buildGraph(issues: Issue[], blockers: Map<string, string[]>): GraphData {
-  const ids = issues.filter(issue => issue.state.type !== 'completed' && issue.state.type !== 'canceled')
-    .map(issue => issue.identifier).sort()
-  const pending = new Set(ids)
-  const counts = new Map(ids.map(id => [id, 0]))
-  for (const id of ids) {
-    for (const blocker of new Set(blockers.get(id) ?? [])) {
-      if (pending.has(blocker)) counts.set(blocker, (counts.get(blocker) ?? 0) + 1)
-    }
-  }
-
-  const better = (a: string[], b: string[]) => a.length > b.length
-    || (a.length === b.length && a.join('\n') < b.join('\n'))
-  // Memoize acyclic chains only: paths cut at a cycle depend on their ancestors.
-  const memo = new Map<string, string[]>()
-  const chain = (id: string, visiting: Set<string>): { path: string[]; cyclic: boolean } => {
-    if (visiting.has(id)) return { path: [], cyclic: true }
-    const saved = memo.get(id)
-    if (saved) return { path: saved, cyclic: false }
-    visiting.add(id)
-    let path: string[] = []
-    let cyclic = false
-    for (const blocker of [...new Set(blockers.get(id) ?? [])].filter(id => pending.has(id)).sort()) {
-      const upstream = chain(blocker, visiting)
-      cyclic = cyclic || upstream.cyclic
-      if (better(upstream.path, path)) path = upstream.path
-    }
-    visiting.delete(id)
-    path = [...path, id]
-    if (!cyclic) memo.set(id, path)
-    return { path, cyclic }
-  }
-  let criticalPath: string[] = []
-  for (const id of ids) {
-    const { path } = chain(id, new Set())
-    if (better(path, criticalPath)) criticalPath = path
-  }
-  return {
-    criticalPath,
-    unlockRank: ids.map(id => ({ id, count: counts.get(id) ?? 0 }))
-      .sort((a, b) => b.count - a.count || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
-  }
+function staleSnapshot(): GraphSnapshot | null {
+  return cache ? { ...cache, stale: true } : null
 }
 
-export async function readGraphSnapshot(now: number, deps: GraphDeps): Promise<GraphResult> {
-  if (cache && now - cache.at < GRAPH_TTL_MS) return cache.result
+async function refresh(now: number, run: RunFn, env: { team: string; project: string }): Promise<GraphSnapshot | null> {
+  const listed = await readLinear(['list-issues', '--team', env.team, '--project', env.project], now, run)
+  if (!listed || !Array.isArray(listed.issues) || !listed.issues.every(isIssue) || isPartial(listed)) {
+    failedAt = now
+    return staleSnapshot()
+  }
+  const identifiers = new Map<string, string>()
+  for (const issue of listed.issues) {
+    if (typeof issue.id === 'string') identifiers.set(issue.id, issue.identifier)
+  }
+  const selected = listed.issues.filter(issue => issue.state.type !== 'canceled'
+    && (issue.state.type !== 'completed' || (typeof issue.updatedAt === 'string'
+      && Date.parse(issue.updatedAt) >= now - RECENT_COMPLETED_MS)))
+  const issues: GraphIssue[] = []
+  for (const issue of selected) issues.push(await enrichIssue(issue, identifiers, now, run))
+  cache = { at: now, issues, stale: false, incomplete: issues.filter(issue => !issue.complete).map(issue => issue.id) }
+  failedAt = null
+  return cache
+}
 
-  const read = async (args: string[]): Promise<{ kind: 'budget' | 'failed' } | { kind: 'read'; data: unknown }> => {
-    callTimes = callTimes.filter(time => time >= now - GRAPH_TTL_MS)
-    if (callTimes.length >= GRAPH_MAX_CALLS) return { kind: 'budget' }
-    // Reserve before awaiting so overlapping readers cannot exceed the shared budget.
-    callTimes.push(now)
-    // Keep append errors outside the run catch so the caller observes their rejection.
-    await deps.appendCount(`${Math.floor(now / 1000)} ${GRAPH_COUNT_SOURCE}\n`)
-    try {
-      const response = await deps.run(['orca', 'linear', ...args, '--json'])
-      return response.ok ? { kind: 'read', data: resultOf(response.data) } : { kind: 'failed' }
-    } catch {
-      return { kind: 'failed' }
-    }
+export function readGraphSnapshot(now: number, run: RunFn, env: { team: string; project: string }): Promise<GraphSnapshot | null> {
+  if (cache && now - cache.at < GRAPH_TTL_MS) return Promise.resolve(cache)
+  if (pending) return pending
+  if (failedAt !== null && now - failedAt < GRAPH_TTL_MS) return Promise.resolve(staleSnapshot())
+  if (windowStart === null || now - windowStart >= GRAPH_TTL_MS) {
+    windowStart = now
+    windowCalls = 0
   }
-
-  const listed = await read(['list-issues', '--team', deps.env.team, '--project', deps.env.project])
-  if (listed.kind !== 'read' || !isListResult(listed.data)
-    || listed.data.truncated || listed.data.meta?.partial || listed.data.meta?.hasMore) {
-    return staleResult(cache?.result.graph.unlockRank.map(issue => issue.id) ?? [])
-  }
-  // Retain the last day's completed tickets as context; only pending tickets rank.
-  const issues = listed.data.issues.filter(issue => issue.state.type !== 'canceled'
-    && (issue.state.type !== 'completed' || Date.parse(issue.updatedAt) >= now - RECENT_COMPLETED_MS))
-    .sort((a, b) => Number(a.state.type === 'completed') - Number(b.state.type === 'completed')
-      || (a.identifier < b.identifier ? -1 : a.identifier > b.identifier ? 1 : 0))
-  const blockers = new Map<string, string[]>()
-  const incomplete = new Set<string>()
-  let failed = false
-  for (const issue of issues) {
-    // Verified CLI lists omit parent. The relation read also supplies issue context,
-    // avoiding a second detail call solely for parent when the list already has it.
-    const detail = await read(['issue', issue.identifier, '--relations'])
-    if (detail.kind !== 'read' || !isDetailResult(detail.data)
-      || detail.data.issue.identifier !== issue.identifier) {
-      incomplete.add(issue.identifier)
-      if (detail.kind !== 'budget') failed = true
-      continue
-    }
-    // Current CLI detail samples also omit parent; report this missing data explicitly.
-    if (issue.parent === undefined && detail.data.issue.parent === undefined) incomplete.add(issue.identifier)
-    blockers.set(issue.identifier, detail.data.relations
-      .filter(relation => relation.relationship === 'blockedBy')
-      .map(relation => relation.relatedIssue.identifier))
-  }
-  if (failed) return staleResult([...incomplete])
-  const result: GraphResult = { graph: buildGraph(issues, blockers), stale: false, incomplete: [...incomplete].sort() }
-  cache = { at: now, result }
-  return result
+  pending = refresh(now, run, env).finally(() => { pending = null })
+  return pending
 }
