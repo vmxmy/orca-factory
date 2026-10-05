@@ -1,96 +1,90 @@
-const GRAPH_TTL_MS = 300_000
-const GRAPH_MAX_CALLS = 40
-const COUNTER_SOURCE = 'board'
-const RECENT_COMPLETED_MS = 86_400_000
+export const GRAPH_TTL_MS = 300_000
+export const GRAPH_MAX_CALLS = 40
 
-export type GraphIssue = {
+export type GraphNode = {
   id: string
   state: string
-  parentId: string | null
+  parent: string | null
   blockedBy: string[]
   complete: boolean
 }
 
 export type GraphSnapshot = {
-  at: number
-  issues: GraphIssue[]
+  readAt: number
   stale: boolean
-  incomplete: string[]
+  nodes: readonly GraphNode[]
 }
 
-export type RunFn = (argv: string[]) => Promise<{ exitCode: number; stdout: string }>
+export type Runner = {
+  process: {
+    run(argv: string[], opts: { timeoutMs: number }): Promise<{ stdout: string; exitCode: number }>
+  }
+}
 
 type Row = Record<string, unknown>
-type ListedIssue = Row & { identifier: string; state: { type: string } }
+type Issue = Row & { identifier: string; state: { type: string } }
+type LinearRead = { data: Row | null; counted: boolean }
+
+const TIMEOUT_MS = 30_000
+const RECENT_COMPLETED_MS = 86_400_000
+const COUNT_COMMAND = 'printf "%s board\\n" "$(date +%s)" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"'
 
 let cache: GraphSnapshot | null = null
+let pending: Promise<GraphSnapshot | null> | null = null
 let windowStart: number | null = null
 let windowCalls = 0
-let failedAt: number | null = null
-let pending: Promise<GraphSnapshot | null> | null = null
-let counterPath: string | null = null
 
-function isRecord(value: unknown): value is Row {
+function record(value: unknown): value is Row {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isIssue(value: unknown): value is ListedIssue {
-  return isRecord(value) && typeof value.identifier === 'string' && value.identifier.length > 0
-    && isRecord(value.state) && typeof value.state.type === 'string'
+function issue(value: unknown): value is Issue {
+  return record(value) && typeof value.identifier === 'string' && value.identifier.length > 0
+    && record(value.state) && typeof value.state.type === 'string'
 }
 
-function isPartial(result: Row): boolean {
-  const meta = isRecord(result.meta) ? result.meta : null
-  const sections = meta && isRecord(meta.sections) ? Object.values(meta.sections) : []
-  return result.truncated === true || meta?.partial === true || meta?.hasMore === true
-    || sections.some(section => isRecord(section)
+function partial(data: Row): boolean {
+  const meta = record(data.meta) ? data.meta : null
+  const sections = meta && record(meta.sections) ? Object.values(meta.sections) : []
+  return data.truncated === true || meta?.partial === true || meta?.hasMore === true
+    || sections.some(section => record(section)
       && (section.capReached === true || section.hasMore === true || section.mayHaveMore === true))
 }
 
-async function safeRun(run: RunFn, argv: string[]): ReturnType<RunFn> {
+async function run($: Runner, argv: string[]): Promise<{ stdout: string; exitCode: number }> {
   try {
-    return await run(argv)
+    return await $.process.run(argv, { timeoutMs: TIMEOUT_MS })
   } catch {
-    // Sandbox transport rejections are read failures; counter failures must also leave reads available.
-    return { exitCode: 1, stdout: '' }
+    // Transport failures follow the same observable stale/incomplete path as command failures.
+    return { stdout: '', exitCode: 1 }
   }
 }
 
-async function appendCount(now: number, run: RunFn): Promise<boolean> {
-  if (counterPath === null) {
-    const resolved = await safeRun(run, ['sh', '-c',
-      'printf %s "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"'])
-    if (resolved.exitCode !== 0 || !resolved.stdout) return false
-    counterPath = resolved.stdout
-  }
-  const written = await safeRun(run, ['sh', '-c',
-    `printf "%s ${COUNTER_SOURCE}\\n" "$1" >> "$2"`, 'sh', String(Math.floor(now / 1000)), counterPath])
-  return written.exitCode === 0
-}
-
-async function readLinear(args: string[], now: number, run: RunFn): Promise<Row | null> {
-  if (windowCalls >= GRAPH_MAX_CALLS) return null
+async function readLinear($: Runner, args: string[]): Promise<LinearRead> {
+  if (windowCalls >= GRAPH_MAX_CALLS) return { data: null, counted: true }
   windowCalls += 1
-  const response = await safeRun(run, ['orca', 'linear', ...args, '--json'])
-  await appendCount(now, run)
-  if (response.exitCode !== 0) return null
-  let envelope: unknown
+  const counter = await run($, ['sh', '-c', COUNT_COMMAND])
+  const counted = counter.exitCode === 0
+  const response = await run($, ['orca', 'linear', ...args, '--json'])
+  if (response.exitCode !== 0) return { data: null, counted }
   try {
-    envelope = JSON.parse(response.stdout)
+    const envelope: unknown = JSON.parse(response.stdout)
+    return {
+      data: record(envelope) && envelope.ok !== false && record(envelope.result) ? envelope.result : null,
+      counted,
+    }
   } catch {
-    return null
+    return { data: null, counted }
   }
-  return isRecord(envelope) && envelope.ok !== false && isRecord(envelope.result) ? envelope.result : null
 }
 
-function parentOf(issue: Row, identifiers: Map<string, string>): string | null | undefined {
-  if (issue.parent === null) return null
-  if (isRecord(issue.parent)) {
-    if (typeof issue.parent.identifier === 'string' && issue.parent.identifier) return issue.parent.identifier
-    if (typeof issue.parent.id === 'string' && issue.parent.id) return identifiers.get(issue.parent.id) ?? issue.parent.id
+function parentOf(row: Row, identifiers: Map<string, string>): string | null | undefined {
+  if (row.parent === null || row.parentId === null) return null
+  if (record(row.parent)) {
+    if (typeof row.parent.identifier === 'string' && row.parent.identifier) return row.parent.identifier
+    if (typeof row.parent.id === 'string' && row.parent.id) return identifiers.get(row.parent.id) ?? row.parent.id
   }
-  if (issue.parentId === null) return null
-  if (typeof issue.parentId === 'string' && issue.parentId) return identifiers.get(issue.parentId) ?? issue.parentId
+  if (typeof row.parentId === 'string' && row.parentId) return identifiers.get(row.parentId) ?? row.parentId
   return undefined
 }
 
@@ -98,69 +92,91 @@ function blockersOf(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null
   const blockers: string[] = []
   for (const relation of value) {
-    if (!isRecord(relation) || typeof relation.relationship !== 'string') return null
+    if (!record(relation) || typeof relation.relationship !== 'string') return null
     if (relation.relationship !== 'blockedBy') continue
-    if (!isRecord(relation.relatedIssue) || typeof relation.relatedIssue.identifier !== 'string'
+    if (!record(relation.relatedIssue) || typeof relation.relatedIssue.identifier !== 'string'
       || !relation.relatedIssue.identifier) return null
     blockers.push(relation.relatedIssue.identifier)
   }
   return [...new Set(blockers)]
 }
 
-async function enrichIssue(issue: ListedIssue, identifiers: Map<string, string>, now: number, run: RunFn): Promise<GraphIssue> {
-  // Verified list-issues omits parent/parentId; issue --relations also currently omits them, so unknown parents stay incomplete.
-  const parent = parentOf(issue, identifiers)
-  const blockers = blockersOf(issue.relations)
-  const base: GraphIssue = {
-    id: issue.identifier, state: issue.state.type, parentId: parent ?? null,
-    blockedBy: blockers ?? [], complete: false,
-  }
-  if (parent !== undefined && blockers !== null) return { ...base, complete: true }
-  const detail = await readLinear(['issue', issue.identifier, '--relations'], now, run)
-  if (!detail || !isIssue(detail.issue) || detail.issue.identifier !== issue.identifier) return base
-  const resolvedParent = parent !== undefined ? parent : parentOf(detail.issue, identifiers)
-  const resolvedBlockers = blockersOf(detail.relations)
-  return {
-    id: issue.identifier,
-    state: detail.issue.state.type,
-    parentId: resolvedParent ?? null,
-    blockedBy: resolvedBlockers ?? base.blockedBy,
-    complete: resolvedParent !== undefined && resolvedBlockers !== null && !isPartial(detail),
-  }
+function completedAt(row: Issue): number {
+  const at = typeof row.completedAt === 'string' ? row.completedAt : row.updatedAt
+  return typeof at === 'string' ? Date.parse(at) : NaN
+}
+
+function priority(row: Issue): number {
+  return typeof row.priority === 'number' && row.priority > 0 ? row.priority : Infinity
 }
 
 function staleSnapshot(): GraphSnapshot | null {
-  return cache ? { ...cache, stale: true } : null
-}
-
-async function refresh(now: number, run: RunFn, env: { team: string; project: string }): Promise<GraphSnapshot | null> {
-  const listed = await readLinear(['list-issues', '--team', env.team, '--project', env.project], now, run)
-  if (!listed || !Array.isArray(listed.issues) || !listed.issues.every(isIssue) || isPartial(listed)) {
-    failedAt = now
-    return staleSnapshot()
-  }
-  const identifiers = new Map<string, string>()
-  for (const issue of listed.issues) {
-    if (typeof issue.id === 'string') identifiers.set(issue.id, issue.identifier)
-  }
-  const selected = listed.issues.filter(issue => issue.state.type !== 'canceled'
-    && (issue.state.type !== 'completed' || (typeof issue.updatedAt === 'string'
-      && Date.parse(issue.updatedAt) >= now - RECENT_COMPLETED_MS)))
-  const issues: GraphIssue[] = []
-  for (const issue of selected) issues.push(await enrichIssue(issue, identifiers, now, run))
-  cache = { at: now, issues, stale: false, incomplete: issues.filter(issue => !issue.complete).map(issue => issue.id) }
-  failedAt = null
+  if (cache) cache = { ...cache, stale: true }
   return cache
 }
 
-export function readGraphSnapshot(now: number, run: RunFn, env: { team: string; project: string }): Promise<GraphSnapshot | null> {
-  if (cache && now - cache.at < GRAPH_TTL_MS) return Promise.resolve(cache)
+export function cachedGraphSnapshot(now: number): GraphSnapshot | null {
+  if (!cache) return null
+  return now - cache.readAt >= GRAPH_TTL_MS ? { ...cache, stale: true } : cache
+}
+
+async function refresh(now: number, $: Runner): Promise<GraphSnapshot | null> {
+  // The hook sandbox exposes neither environment variables nor Node filesystem APIs.
+  const config = await run($, ['sh', '-c',
+    '. scripts/agent-gates/agent-graph.env && printf "%s\\n%s\\n" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT"'])
+  const [team, project] = config.stdout.trim().split('\n')
+  if (config.exitCode !== 0 || !team || !project) return staleSnapshot()
+  const listed = await readLinear($, ['list-issues', '--team', team, '--project', project])
+  if (!listed.data || !Array.isArray(listed.data.issues)
+    || !listed.data.issues.every(issue) || partial(listed.data)) return staleSnapshot()
+
+  const identifiers = new Map<string, string>()
+  for (const row of listed.data.issues) {
+    if (typeof row.id === 'string') identifiers.set(row.id, row.identifier)
+  }
+  const selected = listed.data.issues.filter(row => row.state.type !== 'canceled'
+    && (row.state.type !== 'completed' || completedAt(row) >= now - RECENT_COMPLETED_MS))
+    .sort((a, b) => {
+      const aDone = a.state.type === 'completed'
+      const bDone = b.state.type === 'completed'
+      if (aDone !== bDone) return aDone ? 1 : -1
+      return aDone ? completedAt(b) - completedAt(a) : priority(a) - priority(b)
+    })
+  const nodes: GraphNode[] = []
+  let stale = !listed.counted
+  for (const row of selected) {
+    const listedParent = parentOf(row, identifiers)
+    const base: GraphNode = {
+      id: row.identifier, state: row.state.type, parent: listedParent ?? null,
+      blockedBy: [], complete: false,
+    }
+    const detail = await readLinear($, ['issue', row.identifier, '--relations'])
+    stale = stale || !detail.counted
+    if (!detail.data || !issue(detail.data.issue)
+      || detail.data.issue.identifier !== row.identifier || partial(detail.data)) {
+      nodes.push(base)
+      continue
+    }
+    const parent = listedParent !== undefined ? listedParent : parentOf(detail.data.issue, identifiers)
+    const blockedBy = blockersOf(detail.data.relations)
+    // Both verified CLI payloads omit parent, so absence cannot establish a root issue.
+    nodes.push({
+      ...base, parent: parent ?? null, blockedBy: blockedBy ?? [],
+      complete: parent !== undefined && blockedBy !== null,
+    })
+  }
+  // Failed accounting remains visible while successful Linear data is still retained.
+  cache = { readAt: now, stale, nodes }
+  return cache
+}
+
+export function readGraphSnapshot(now: number, $: Runner): Promise<GraphSnapshot | null> {
   if (pending) return pending
-  if (failedAt !== null && now - failedAt < GRAPH_TTL_MS) return Promise.resolve(staleSnapshot())
+  if (cache && now - cache.readAt < GRAPH_TTL_MS) return Promise.resolve(cache)
   if (windowStart === null || now - windowStart >= GRAPH_TTL_MS) {
     windowStart = now
     windowCalls = 0
   }
-  pending = refresh(now, run, env).finally(() => { pending = null })
+  pending = refresh(now, $).finally(() => { pending = null })
   return pending
 }
