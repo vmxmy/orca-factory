@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,11 +77,11 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	head, err := e.Tools.Head(ctx, c.Repo, branch)
 	if err != nil {
-		return Result{}, fmt.Errorf("resume branch lookup failed: %w", err)
+		return Result{}, safeDependencyError(err)
 	}
 	pr, err := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
 	if err != nil {
-		return Result{}, errors.New("resume PR lookup failed")
+		return Result{}, safeDependencyError(err)
 	}
 	if pr != nil {
 		if pr.Number <= 0 || pr.HTMLURL == "" {
@@ -109,7 +108,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		// Stable run-create is a request reconciliation, not a second Run.
 		receipt, callErr := e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 		if callErr != nil {
-			return Result{}, errors.New("resume run reconciliation failed")
+			return Result{}, safeDependencyError(callErr)
 		}
 		run := receiptString(receipt, "runId")
 		if run == "" {
@@ -120,7 +119,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 		}
 		tasks, callErr := e.Orca.TaskList(ctx, run)
 		if callErr != nil {
-			return Result{}, errors.New("resume old task lookup failed")
+			return Result{}, safeDependencyError(callErr)
 		}
 		for _, task := range tasks {
 			if (task.RunID != "" && task.RunID != run) || !strings.Contains(task.Spec, branch) {
@@ -136,7 +135,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	if head != "" && r != nil {
 		complete, err := r.Complete(ctx, c.Repo, head)
 		if err != nil {
-			return Result{}, errors.New("resume commit lookup failed")
+			return Result{}, safeDependencyError(err)
 		}
 		if complete {
 			if cp == nil {
@@ -148,7 +147,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	if cp != nil && cp.Run != "" && cp.Task != "" {
 		tasks, err := e.Orca.TaskList(ctx, cp.Run)
 		if err != nil {
-			return Result{}, errors.New("resume task lookup failed")
+			return Result{}, safeDependencyError(err)
 		}
 		for _, task := range tasks {
 			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != "" && task.DispatchID != cp.Dispatch) {
@@ -242,7 +241,7 @@ func (e *Executor) pendingWorker(ctx context.Context, run, branch string) (orca.
 	}
 	tasks, err := e.Orca.TaskList(ctx, run)
 	if err != nil {
-		return orca.Task{}, false, fmt.Errorf("pending worker lookup failed: %w", err)
+		return orca.Task{}, false, safeDependencyError(err)
 	}
 	var found []orca.Task
 	for _, task := range tasks {

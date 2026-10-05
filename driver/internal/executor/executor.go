@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -182,11 +183,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if stepErr != nil {
 			return stepErr
 		}
+		charged := next.Infra > previous.Infra
 		if action != nil {
 			if actionErr := action(fx); actionErr != nil {
 				return actionErr
 			}
 		}
+		// Reads inside the authorized action may consume this same ticket budget.
+		next.Infra = result.State.Infra + (next.Infra - previous.Infra)
 		result.State = next
 		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
 			evidence := string(previous.Phase)
@@ -195,7 +199,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			}
 			return e.handoff(ctx, t, next, evidence)
 		}
-		if next.Infra > previous.Infra {
+		if charged {
 			if err := e.backoff(ctx, next.Infra); err != nil {
 				return err
 			}
@@ -248,13 +252,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if cp.Run != "" {
 			// A new executor terminal must take over the checkpointed Run, not create one.
 			if _, callErr = e.Orca.RunUse(ctx, runRequest(t, c, "run-use"), cp.Run); callErr != nil {
-				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", callErr)
+				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
 			result.RunID = cp.Run
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
-				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", callErr)
+				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
 			result.RunID = receiptString(receipt, "runId")
 			if result.RunID == "" {
@@ -264,9 +268,19 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				return errors.New("Orca run receipt missing ID")
 			}
 		}
-		baseline, callErr = e.Tools.Baseline(ctx, c.Repo)
-		if callErr != nil || baseline == "" {
-			return errors.New("baseline lookup failed")
+		callErr = e.retryRead(ctx, t, &result, "baseline lookup", func() error {
+			var readErr error
+			baseline, readErr = e.Tools.Baseline(ctx, c.Repo)
+			if readErr != nil {
+				return readErr
+			}
+			if baseline == "" {
+				return errors.New("baseline lookup failed")
+			}
+			return nil
+		})
+		if callErr != nil {
+			return callErr
 		}
 		issue, callErr := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if callErr != nil {
@@ -305,7 +319,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		result.DispatchID = receiptString(receipt, "dispatchId")
 		taskID = receiptString(receipt, "taskId")
 		if callErr != nil {
-			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", callErr)
+			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", safeDependencyError(callErr))
 		}
 		if result.DispatchID == "" || taskID == "" {
 			return errors.New("worker receipt missing task or dispatch")
@@ -420,6 +434,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				}
 				return stop
 			}
+			var ticketErr *infra.Ticket
+			var transientErr *infra.Transient
+			if errors.As(gateErr, &ticketErr) || errors.As(gateErr, &transientErr) {
+				return gateErr
+			}
 			verdict, parseErr = gateVerdict(output)
 			if parseErr != nil {
 				if gateErr != nil {
@@ -498,9 +517,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if !hasEffect(fx, "open-pr-rest-idempotent-by-branch") {
 			return errors.New("missing PR effect")
 		}
-		pr, callErr := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+		var pr *github.PullRequest
+		callErr := e.retryRead(ctx, t, &result, "PR lookup", func() error {
+			var readErr error
+			pr, readErr = e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+			return readErr
+		})
 		if callErr != nil {
-			return errors.New("PR lookup failed")
+			return callErr
 		}
 		if pr != nil {
 			result.PR = *pr
@@ -542,7 +566,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 	for {
 		tasks, err := e.Orca.TaskList(ctx, run)
 		if err != nil {
-			return nil, errors.New("task polling failed")
+			return nil, safeDependencyError(err)
 		}
 		completed := false
 		for _, t := range tasks {

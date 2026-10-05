@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -115,12 +114,8 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			return false, errors.New("cannot prepare correction artifact")
 		}
 		sessionErr := r.Correction(ctx, CorrectionRequest{Repo: c.Repo, Path: path, Cause: cause, Brief: brief, Number: result.State.Corrections})
-		if err := ctx.Err(); err != nil {
-			return false, err
-		}
-		var global *infra.Global
-		if errors.As(sessionErr, &global) {
-			return false, errors.New("coordinator dependency unavailable")
+		if stop := dependencyStop(ctx, sessionErr); stop != nil {
+			return false, stop
 		}
 		info, statErr := os.Lstat(path)
 		if sessionErr != nil || statErr != nil || !info.Mode().IsRegular() {
@@ -130,8 +125,11 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			continue
 		}
 		correction, err := os.ReadFile(path)
-		if err != nil {
-			return false, errors.New("cannot read correction artifact")
+		if err != nil || strings.TrimSpace(string(correction)) == "" {
+			if err := transition(machine.EvSessionEmpty, nil); err != nil {
+				return false, err
+			}
+			continue
 		}
 		if cp.Worktree == "" {
 			cp.Worktree, err = r.Worktree(ctx, c.Repo, "agent/"+t.Identifier+"/"+c.Unit)
@@ -158,7 +156,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			n := result.State.Corrections + 1
 			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), scopedRequest(t, c, "child", n))
 			if err != nil {
-				return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", err)
+				return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(err))
 			}
 			cp.Task = child
 			cp.Dispatch = ""
@@ -169,7 +167,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			}
 			receipt, err := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", n), orca.StartOptions{Run: result.RunID, Task: child, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort})
 			if err != nil {
-				return fmt.Errorf("correction worker start uncertain; reconcile request before retry: %w", err)
+				return fmt.Errorf("correction worker start uncertain; reconcile request before retry: %w", safeDependencyError(err))
 			}
 			cp.Dispatch = receiptString(receipt, "dispatchId")
 			// The CLI receipt is authoritative if it supplies a task ID.
