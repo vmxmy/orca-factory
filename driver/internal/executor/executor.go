@@ -320,6 +320,15 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		cp.Run = result.RunID
 		cp.Baseline = baseline
 		if restored != nil {
+			if cp.PendingParent != "" {
+				_, agent, model, effort, err := correctionTier(c, cp.Corrections)
+				if err != nil {
+					return err
+				}
+				if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Task: cp.Task, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
+					return err
+				}
+			}
 			taskID = cp.Task
 			result.DispatchID = cp.Dispatch
 			return nil

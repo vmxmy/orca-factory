@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -83,7 +84,7 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 		match = task
 	}
 	if match == nil {
-		if cp.Pending {
+		if cp.Pending || cp.PendingParent != "" {
 			return nil, errors.New("unresolved worker start; no task evidence")
 		}
 		if cp.Task == "" {
@@ -94,6 +95,14 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 	report, err := match.WorkerReport()
 	if err != nil {
 		return nil, errors.New("resume task result invalid")
+	}
+	// PendingParent was persisted before child creation and is cleared durably
+	// before WorkerStart. Only that boundary can prove we never started a worker.
+	if cp.PendingParent != "" && report == nil {
+		if cp.Run == "" || match.RunID != cp.Run || (cp.Task != "" && cp.Task != match.ID) || match.Status != "blocked" || cp.Dispatch != "" || match.DispatchID != "" || !filepath.IsAbs(cp.Worktree) || (strings.TrimSpace(string(match.Result)) != "" && strings.TrimSpace(string(match.Result)) != "null") {
+			return nil, errors.New("unconfirmed correction child; reconcile active dispatch")
+		}
+		cp.Pending = false
 	}
 	cp.Task = match.ID
 	if match.DispatchID != "" {

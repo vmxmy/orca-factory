@@ -115,6 +115,17 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if repairErr != nil {
 		return result, repairErr
 	}
+	if !mergeRepair && cp != nil {
+		result.State.Infra += cp.Infra
+		if result.State.Infra >= machine.DefaultLimits.Infra {
+			result.State.Owner, result.State.Phase = machine.OwnerHuman, machine.PhaseHuman
+			result.State.HumanReason = "infra budget exhausted: checkpoint recovery"
+			if err := e.handoff(ctx, t, result.State, "checkpoint recovery"); err != nil {
+				return result, err
+			}
+			return result, errBudgetExhausted
+		}
+	}
 	// The compatibility flag requests recovery, never a new claim. Existing
 	// PRs still reconcile tasks before proving a completed frozen handoff.
 	if c.Merging && !mergeRepair && pr == nil {
