@@ -1,4 +1,11 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactElement } from 'react'
+
+// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
+declare function h(
+  component: ComponentType<{ dimColor?: boolean; children?: string }>,
+  props: { dimColor?: boolean; key?: string },
+  ...children: string[]
+): ReactElement
 import type { FailureData } from '../../types'
 
 export type LedgerRow = {
@@ -86,16 +93,16 @@ export const renderFailures = (
 ) => {
   if (!data || [data.handoffReasons, data.firstGate, data.repeatedFails, data.topCorrections]
     .every(rows => rows.length === 0)) {
-    return <Text dimColor>数据未就绪</Text>
+    return h(Text, { dimColor: true }, '数据未就绪')
   }
   return [
-    <Text key="handoffs">{'转人原因\n' + (data.handoffReasons
-      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')}</Text>,
-    <Text key="first-gate">{'首跑通过率\n' + (data.firstGate
-      .map(row => `${row.key}: ${row.green}/${row.total}`).join('\n') || '无')}</Text>,
-    <Text key="fails">{'重复 FAIL\n' + (data.repeatedFails
-      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')}</Text>,
-    <Text key="corrections">{'correction 最多\n' + (data.topCorrections
-      .map(row => `${row.ticket}: ${row.corrections}`).join('\n') || '无')}</Text>,
+    h(Text, { key: 'handoffs' }, '转人原因\n' + (data.handoffReasons
+      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')),
+    h(Text, { key: 'first-gate' }, '首跑通过率\n' + (data.firstGate
+      .map(row => `${row.key}: ${row.green}/${row.total}`).join('\n') || '无')),
+    h(Text, { key: 'fails' }, '重复 FAIL\n' + (data.repeatedFails
+      .map(row => `${row.reason}: ${row.count}`).join('\n') || '无')),
+    h(Text, { key: 'corrections' }, 'correction 最多\n' + (data.topCorrections
+      .map(row => `${row.ticket}: ${row.corrections}`).join('\n') || '无')),
   ]
 }
