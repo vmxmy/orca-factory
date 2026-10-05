@@ -25,7 +25,7 @@ type Orca interface {
 	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
-	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
+	Workers(context.Context, orca.ListOptions) ([]orca.Worker, error)
 	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
@@ -327,7 +327,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
-		watch := workerWatch{observe: func(w orca.Worker) error {
+		watch := workerWatch{stopRequest: scopedRequest(t, c, "stop", result.State.Corrections+1), observe: func(w orca.Worker) error {
 			if cp.Worktree != "" || w.WorktreePath() == "" {
 				return nil
 			}
@@ -337,9 +337,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				return err
 			}
 			cp = next
-			if _, err := e.Orca.WorktreeSet(ctx, cp.Worktree, t.Identifier, boardStatus(result.State.Phase), "driver: "+string(result.State.Phase)); err != nil {
-				e.warn("%s Orca board status update failed: %v", t.Identifier, err)
-			}
 			return nil
 		}}
 		observeIdle := func() error {
@@ -560,6 +557,104 @@ func nestedString(r orca.Receipt, key, field string) string {
 	_ = json.Unmarshal(r[key], &inner)
 	return receiptString(inner, field)
 }
+
+const workerTurnStartTimeout = 5 * time.Minute
+
+// One watch per dispatch, retained across read retries; restart begins a fresh
+// observation period. An uncertain stop is never issued a second time.
+type workerWatch struct {
+	unobservedSince time.Time
+	stopAttempted   bool
+	stopErr         error
+	stopRequest     string
+	observe         func(orca.Worker) error
+}
+
+func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
+	for {
+		tasks, err := e.Orca.TaskList(ctx, run)
+		if err != nil {
+			return nil, errors.New("task polling failed")
+		}
+		completed := false
+		var report *orca.WorkerReport
+		for _, t := range tasks {
+			// task-list rows carry no dispatch_id; match it only when supplied.
+			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
+				continue
+			}
+			completed = completed || t.Status == "completed"
+			report, err = t.WorkerReport()
+			if err != nil {
+				return nil, errors.New("invalid worker report")
+			}
+			if report != nil {
+				if report.Outcome != "succeeded" && report.Outcome != "failed" {
+					return nil, errors.New("invalid worker outcome")
+				}
+				break
+			}
+		}
+		if report != nil {
+			return report, nil
+		}
+		workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: run, IncludeRemote: true})
+		if err != nil {
+			return nil, err
+		}
+		var worker *orca.Worker
+		for i := range workers {
+			if workers[i].DispatchID == dispatch {
+				worker = &workers[i]
+				break
+			}
+		}
+		if worker != nil && watch.observe != nil {
+			if err := watch.observe(*worker); err != nil {
+				return nil, err
+			}
+		}
+		unverifiable := worker != nil && worker.Projection.Liveness.Verdict == "unverifiable"
+		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
+			return livenessFailure("worker exited without worker_done"), nil
+		}
+		if worker != nil && !unverifiable && worker.Projection.Stage.Detail == "turn_start_unobserved" {
+			now := e.Now()
+			if watch.unobservedSince.IsZero() {
+				watch.unobservedSince = now
+			}
+			if now.Sub(watch.unobservedSince) >= workerTurnStartTimeout {
+				if !watch.stopAttempted {
+					watch.stopAttempted = true
+					_, watch.stopErr = e.Orca.WorkerStop(ctx, watch.stopRequest, dispatch)
+				}
+				if watch.stopErr != nil {
+					return nil, watch.stopErr
+				}
+				return livenessFailure("worker never started its turn"), nil
+			}
+		} else {
+			watch.unobservedSince = time.Time{}
+		}
+		if !completed {
+			if err := observeIdle(); err != nil {
+				return nil, err
+			}
+		}
+		sleep := e.Sleep
+		if sleep == nil {
+			sleep = pause
+		}
+		if err := sleep(ctx, interval); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func livenessFailure(reason string) *orca.WorkerReport {
+	return &orca.WorkerReport{Provenance: "executor_liveness", Outcome: "failed", Body: reason}
+}
+
 func pause(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

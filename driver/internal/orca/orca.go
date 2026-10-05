@@ -256,6 +256,48 @@ type ListOptions struct {
 	IncludeRemote              bool
 }
 
+// Worker is the fleet projection, not the terminal's PTY observation.
+// Unverifiable means unknown, never proof of process exit.
+type Worker struct {
+	DispatchID          string `json:"dispatchId"`
+	DispatchStatus      string `json:"dispatchStatus"`
+	AgentTerminalHandle string `json:"agentTerminalHandle"`
+	Resource            struct {
+		WorktreeID string `json:"worktreeId"`
+	} `json:"resource"`
+	Projection struct {
+		Liveness struct {
+			Verdict string `json:"verdict"`
+			Reason  string `json:"reason"`
+		} `json:"liveness"`
+		Stage struct {
+			Worker string `json:"worker"`
+			Detail string `json:"detail"`
+		} `json:"stage"`
+	} `json:"projection"`
+}
+
+func (w Worker) WorktreePath() string {
+	_, path, ok := strings.Cut(w.Resource.WorktreeID, "::")
+	if !ok || !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
+
+// Workers decodes fleet rows while preserving WorkerList receipts for scheduler callers.
+func (c *Client) Workers(ctx context.Context, o ListOptions) ([]Worker, error) {
+	receipt, err := c.WorkerList(ctx, o)
+	if err != nil {
+		return nil, err
+	}
+	var workers []Worker
+	if json.Unmarshal(receipt["workers"], &workers) != nil {
+		return nil, invalid("invalid worker list")
+	}
+	return workers, nil
+}
+
 func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error) {
 	args := []string{"orchestration", "worker-list"}
 	args = add(args, "--run", o.Run)
@@ -269,6 +311,10 @@ func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error)
 	}
 	return c.call(ctx, args)
 }
+func (c *Client) WorkerStop(ctx context.Context, request, dispatch string) (Receipt, error) {
+	return c.mutate(ctx, request, []string{"orchestration", "worker-stop", "--dispatch", dispatch})
+}
+
 func (c *Client) WorkerRelease(ctx context.Context, request, dispatch string) (Receipt, error) {
 	return c.mutate(ctx, request, []string{"orchestration", "worker-release", "--dispatch", dispatch})
 }

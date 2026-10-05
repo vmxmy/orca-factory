@@ -264,8 +264,8 @@ func (*fakeOrca) TerminalSend(context.Context, string, string) (orca.Receipt, er
 	return nil, nil
 }
 
-func (f *fakeOrca) WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error) {
-	return orca.Receipt{"workers": json.RawMessage(`[]`)}, nil
+func (f *fakeOrca) Workers(context.Context, orca.ListOptions) ([]orca.Worker, error) {
+	return nil, nil
 }
 func (f *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
 	panic("unexpected worker-stop")
