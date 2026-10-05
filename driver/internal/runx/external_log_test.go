@@ -23,6 +23,35 @@ import (
 )
 
 func TestExternalCallLog(t *testing.T) {
+	t.Run("structured credentials", func(t *testing.T) {
+		for _, tc := range []struct{ argument, secret string }{
+			{`{"token":"private-value","name":"visible-name"}`, "private-value"},
+			{`Authorization: Bearer private-value`, "private-value"},
+			{`{"token":"private=value","name":"visible-name"}`, "private=value"},
+			{`{"Authorization":"Bearer private-value","name":"visible-name"}`, "private-value"},
+		} {
+			argument := tc.argument
+			var line string
+			args := []string{"-c", `printf '%s\n%s' "$1" "$2" >&2; exit 7`, "sh", argument, tc.secret}
+			original := append([]string(nil), args...)
+			_, err := runx.Run(context.Background(), runx.Spec{Path: "/bin/sh", Args: args, Timeout: time.Second, Logger: func(s string) { line = s }})
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || string(exit.Stderr) != argument+"\n"+tc.secret {
+				t.Fatalf("diagnostics changed: %v", err)
+			}
+			if strings.Contains(line, "private") || strings.Contains(line, "value") || !strings.Contains(line, "***") {
+				t.Errorf("structured credential or its tail leaked: %s", line)
+			}
+			if strings.Contains(argument, "visible-name") && !strings.Contains(line, "visible-name") {
+				t.Error("ordinary JSON argument hidden")
+			}
+			for i := range args {
+				if args[i] != original[i] {
+					t.Fatal("arguments mutated")
+				}
+			}
+		}
+	})
 	t.Run("overlapping credentials", func(t *testing.T) {
 		var line string
 		args := []string{"-c", `printf '%s %s' "$2" "$4" >&2; exit 7`, "sh", "--token", "private-value", "--key", "private-value-extended"}
@@ -204,30 +233,45 @@ func commandLog(t *testing.T, line string) map[string]any {
 // Adapter coverage lives here so the ticket's CHECK runs it too.
 func testAdapterLogs(t *testing.T) {
 	t.Run("GitHub", func(t *testing.T) {
-		for _, status := range []int{200, 500} {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-GitHub-Request-Id", "request-123")
-				w.WriteHeader(status)
-				fmt.Fprint(w, `{"number":17}`)
-			}))
-			defer server.Close()
-			var line string
-			c, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "private-credential", nil }, Logger: func(s string) { line = s }})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, err = c.GetPR(context.Background(), "acme", "app", 17)
-			if (err == nil) != (status == 200) {
-				t.Fatal(err)
-			}
-			for _, want := range []string{"GET", "/repos/acme/app/pulls/17", fmt.Sprintf("status=%d", status), "request-123", "duration_ms="} {
-				if !strings.Contains(line, want) {
-					t.Fatalf("missing %s: %s", want, line)
+		for _, tc := range []struct {
+			status       int
+			body, result string
+		}{
+			{200, `{"number":17}`, "success"},
+			{500, `{"number":17}`, "failure"},
+			{200, `invalid-json-private-body`, "failure"},
+		} {
+			t.Run(fmt.Sprintf("%d %s", tc.status, tc.result), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.Header().Set("X-GitHub-Request-Id", "request-123")
+					w.WriteHeader(tc.status)
+					fmt.Fprint(w, tc.body)
+				}))
+				defer server.Close()
+				var line string
+				c, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "private-credential", nil }, Logger: func(s string) { line = s }})
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if strings.Contains(line, "private-credential") {
-				t.Fatal("credential logged")
-			}
+				_, err = c.GetPR(context.Background(), "acme", "app", 17)
+				if (err == nil) != (tc.result == "success") {
+					t.Fatal(err)
+				}
+				if strings.HasPrefix(tc.body, "invalid") {
+					var ticket *infra.Ticket
+					if !errors.As(err, &ticket) || ticket.Err.Error() != "GitHub request failed" {
+						t.Fatalf("JSON error classification changed: %v", err)
+					}
+				}
+				for _, want := range []string{"GET", "/repos/acme/app/pulls/17", fmt.Sprintf("status=%d", tc.status), "result=" + tc.result, "request-123", "duration_ms="} {
+					if !strings.Contains(line, want) {
+						t.Fatalf("missing %s: %s", want, line)
+					}
+				}
+				if strings.Contains(line, "private-credential") || strings.Contains(line, "private-body") || strings.Contains(line, "GitHub request failed") {
+					t.Fatal("credential, response body or raw error logged")
+				}
+			})
 		}
 	})
 	t.Run("Orca", func(t *testing.T) {
@@ -247,7 +291,7 @@ func testAdapterLogs(t *testing.T) {
 			if (err == nil) != (tc.name == "success") {
 				t.Fatalf("%s: %v", tc.name, err)
 			}
-			for _, want := range []string{"orchestration run-create", tc.result, id, "duration_ms="} {
+			for _, want := range []string{"orchestration run-create", tc.result, ` request_id="` + id + `"`, ` retry_request_id="` + id + `"`, "duration_ms="} {
 				if !strings.Contains(line, want) {
 					t.Fatalf("missing %s: %s", want, line)
 				}
@@ -265,8 +309,8 @@ func testAdapterLogs(t *testing.T) {
 		if _, err := c.WorktreeSet(context.Background(), "/worktrees/ZII-1-impl", "ZII-1", "in-progress", "gate"); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(line, `request_id=""`) {
-			t.Fatalf("request ID must be empty without retry-request: %s", line)
+		if !strings.Contains(line, `request_id="07a77606-cef4-4541-a451-76c90fe19226"`) {
+			t.Fatalf("missing response request ID: %s", line)
 		}
 	})
 }

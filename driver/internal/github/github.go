@@ -126,11 +126,11 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 			requestID = resp.Header.Get("X-GitHub-Request-Id")
 		}
 		endpoint, _, _ := strings.Cut(path, "?")
-		result := fmt.Sprintf("status=%d", status)
-		if resp == nil && resultErr != nil {
-			result = fmt.Sprintf("error=%T", resultErr)
+		result := "success"
+		if resultErr != nil {
+			result = "failure"
 		}
-		c.logger(fmt.Sprintf("github interface=%q %s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), result, time.Since(started).Milliseconds(), runx.SafeText(requestID)))
+		c.logger(fmt.Sprintf("github interface=%q status=%d result=%s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), status, result, time.Since(started).Milliseconds(), runx.SafeText(requestID)))
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

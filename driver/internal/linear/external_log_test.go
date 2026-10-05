@@ -11,6 +11,42 @@ import (
 )
 
 func TestExternalCallLog(t *testing.T) {
+	t.Run("quota header boundary", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, complexity, remaining, want string
+			complexityUsage                   int64
+		}{
+			{"injected", "7 injected=true", "2490 token=private-value", `X-Complexity="" X-RateLimit-Requests-Remaining=""`, 21},
+			{"negative", "-7", "-2490", `X-Complexity="" X-RateLimit-Requests-Remaining=""`, 21},
+			{"missing", "", "", `X-Complexity="" X-RateLimit-Requests-Remaining=""`, 21},
+			{"normalized", "+0007", "0002490", "X-Complexity=7 X-RateLimit-Requests-Remaining=2490", 28},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				c, _ := fixture(t, func(w http.ResponseWriter, r request) {
+					w.Header().Set("X-Complexity", tc.complexity)
+					w.Header().Set("X-RateLimit-Requests-Remaining", tc.remaining)
+					fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1","body":"private-body"}}}}`)
+				})
+				var logs []string
+				c.logger = func(line string) { logs = append(logs, line) }
+				_, err := c.CreateComment(context.Background(), "private-issue", "private-body")
+				if err != nil || len(logs) != 1 {
+					t.Fatalf("request/logs: err=%v logs=%v", err, logs)
+				}
+				line := logs[0]
+				if !strings.HasSuffix(line, tc.want) || strings.Contains(line, "injected") || strings.Contains(line, "token=") || strings.Contains(line, "private") {
+					t.Fatalf("untrusted quota logged: %s", line)
+				}
+				if !strings.Contains(line, "operation=CreateComment status=200 duration_ms=") {
+					t.Fatalf("request fields missing: %s", line)
+				}
+				usage := c.Usage()
+				if usage.Requests != 4 || usage.Complexity != tc.complexityUsage || usage.RequestLimit.Remaining != 2490 {
+					t.Fatalf("quota accounting changed: %+v", usage)
+				}
+			})
+		}
+	})
 	for _, tc := range []struct {
 		name, body string
 		status     int

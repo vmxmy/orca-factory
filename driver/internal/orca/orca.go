@@ -52,11 +52,11 @@ func invalid(message string) error { return &infra.Ticket{Err: errors.New(messag
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
-	requestID := ""
+	retryID, responseID := "", ""
 	result := "error"
 	for i, arg := range args {
 		if arg == "--retry-request" && i+1 < len(args) {
-			requestID = args[i+1]
+			retryID = args[i+1]
 		}
 	}
 	defer func() {
@@ -67,7 +67,11 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		if len(command) > 2 {
 			command = command[:2]
 		}
-		c.Logger(fmt.Sprintf("orca command=%q result=%s duration_ms=%d request_id=%q", strings.Join(runx.SafeArgs(command), " "), result, time.Since(started).Milliseconds(), runx.SafeText(requestID)))
+		requestID := responseID
+		if requestID == "" {
+			requestID = retryID
+		}
+		c.Logger(fmt.Sprintf("orca command=%q result=%s duration_ms=%d request_id=%q retry_request_id=%q", strings.Join(runx.SafeArgs(command), " "), result, time.Since(started).Milliseconds(), runx.SafeText(requestID), runx.SafeText(retryID)))
 	}()
 	path := c.Path
 	if path == "" {
@@ -95,8 +99,9 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
-		OK     *bool   `json:"ok"`
-		Result Receipt `json:"result"`
+		ID     json.RawMessage `json:"id"` // Metadata for logging only.
+		OK     *bool           `json:"ok"`
+		Result Receipt         `json:"result"`
 		Error  *struct {
 			Code string  `json:"code"`
 			Data Receipt `json:"data"`
@@ -106,6 +111,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
 	}
+	// An absent or non-string log ID must not change the response contract.
+	_ = json.Unmarshal(envelope.ID, &responseID)
 	result = fmt.Sprintf("ok=%t", *envelope.OK)
 	if !*envelope.OK {
 		if envelope.Error != nil {

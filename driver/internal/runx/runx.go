@@ -2,7 +2,6 @@
 package runx
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -49,16 +48,19 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
-	var stderr bytes.Buffer
+	var stderr *stderrCapture
+	var args, secrets []string
 	if spec.Logger != nil {
-		cmd.Stderr = &stderr
+		args, secrets = safeArgs(spec.Args)
+		stderr = newStderrCapture(secrets)
+		cmd.Stderr = stderr
 	}
 	started := time.Now()
 	output, err := cmd.Output()
 	if spec.Logger != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = diagnostic(stderr.Bytes())
+			exit.Stderr = stderr.Bytes()
 		}
 		code := 0
 		if err != nil {
@@ -71,11 +73,7 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		if timedOut {
 			code = -1
 		}
-		args, secrets := safeArgs(spec.Args)
-		diagnostic := hideSecrets(stderr.String(), secrets)
-		if len(diagnostic) > stderrLimit {
-			diagnostic = diagnostic[:stderrLimit]
-		}
+		diagnostic := stderr.logText(secrets)
 		spec.Logger(fmt.Sprintf("runx executable=%q args=%q exit=%d duration_ms=%d stderr=%q timeout=%t", SafeText(filepath.Base(spec.Path)), args, code, time.Since(started).Milliseconds(), diagnostic, timedOut))
 	}
 	if ctx.Err() != nil {

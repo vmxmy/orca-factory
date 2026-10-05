@@ -459,11 +459,11 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 			return
 		}
 		status := 0
-		complexity, remaining := "", ""
+		complexity, remaining := `""`, `""`
 		if response != nil {
 			status = response.StatusCode
-			complexity = response.Header.Get("X-Complexity")
-			remaining = response.Header.Get("X-RateLimit-Requests-Remaining")
+			complexity = logQuota(response.Header.Get("X-Complexity"))
+			remaining = logQuota(response.Header.Get("X-RateLimit-Requests-Remaining"))
 		}
 		operation := "unknown"
 		if match := operationName.FindStringSubmatch(query); len(match) > 1 {
@@ -542,6 +542,16 @@ func (c *Client) rotateHour() {
 		c.usage.Complexity = 0
 	}
 }
+
+// Log only canonical non-negative integers, using the accounting parser's
+// rules; absent and invalid server values have an explicit empty representation.
+func logQuota(value string) string {
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil && n >= 0 {
+		return strconv.FormatInt(n, 10)
+	}
+	return `""`
+}
+
 func (c *Client) record(response *http.Response) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
