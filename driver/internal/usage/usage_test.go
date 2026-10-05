@@ -33,13 +33,19 @@ func TestCollect(t *testing.T) {
 		run              bool
 		duplicate, large bool
 		invalid          string
+		noReviewer       bool
 	}{
-		{name: "providers roles prices and corrupt file", files: []string{"claude", "review", "coordinator", "unrelated", "broken", "codex"}, want: base, errors: 1, run: true},
+		{name: "Claude accumulates usage", files: []string{"claude-session"}, want: base[:2]},
+		{name: "Codex takes final cumulative usage", files: []string{"codex-session"}, want: base[4:5]},
+		{name: "no automatic reviewer discovery", files: []string{"claude-session", "review", "codex-session", "unrelated"}, want: []expectation{base[0], base[1], base[4]}, noReviewer: true},
+		{name: "unknown model has zero cost", files: []string{"claude-session"}, want: base[:2]},
+		{name: "corrupt file is skipped", files: []string{"claude-session", "corrupt"}, want: base[:2], errors: 1},
+		{name: "Claude and Codex roles prices and corrupt file", files: []string{"claude-session", "review", "coordinator", "unrelated", "corrupt", "codex-session"}, want: base, errors: 1, run: true},
 		{name: "second ticket receives same half", files: []string{"coordinator"}, want: base[3:4], ticket: "ZII-895", run: true},
-		{name: "duplicate session identity", files: []string{"codex"}, want: base[4:5], duplicate: true},
+		{name: "duplicate session identity", files: []string{"codex-session"}, want: base[4:5], duplicate: true},
 		{name: "duplicate Claude message", files: []string{"duplicate-message"}, want: base[:1]},
 		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{300, 80, 100, 0, 0}, 0, true, false}}},
-		{name: "large record", files: []string{"claude"}, want: base[:2], large: true},
+		{name: "large record", files: []string{"claude-session"}, want: base[:2], large: true},
 		{name: "missing unit worktrees", invalid: "worktrees"},
 		{name: "invalid ticket", invalid: "ticket"},
 		{name: "missing coordinator session binding", invalid: "binding", run: true},
@@ -55,11 +61,11 @@ func TestCollect(t *testing.T) {
 				}
 			}
 			for _, name := range tc.files {
-				data, err := os.ReadFile(filepath.Join("testdata", name+".jsonl"))
+				data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "usage-"+name+".jsonl"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				data = []byte(strings.NewReplacer("/unit-other", filepath.Join(root, "unrelated"), "/unit", unit, "/review", review, "/run", run).Replace(string(data)))
+				data = []byte(strings.NewReplacer("/unit-other", filepath.Join(root, "unit-other"), "/unit", filepath.Join(unit, "nested"), "/review", review, "/run", run).Replace(string(data)))
 				dir := claude
 				if strings.HasPrefix(name, "codex") {
 					dir = codex
@@ -80,13 +86,15 @@ func TestCollect(t *testing.T) {
 			if ticket == "" {
 				ticket = "ZII-894"
 			}
-			opts := Options{Ticket: ticket, ClaudeDir: claude, CodexDir: codex, Worktrees: []Worktree{{Path: unit}, {Path: review, Role: "reviewer"}}}
+			opts := Options{Ticket: ticket, ClaudeDir: claude, CodexDir: codex, Worktrees: []Worktree{{Path: unit}}, ReviewerWorktree: review}
+			if tc.noReviewer {
+				opts.ReviewerWorktree = ""
+			}
 			if tc.run {
 				opts.RunWorktree = run
-				opts.ClaimedTickets = []string{"ZII-894", "ZII-895", "ZII-894"}
-				opts.RunID = "run-test"
+				opts.ClaimedTicketCount = 2
 				if tc.invalid != "binding" {
-					opts.CoordinatorSessions = []string{"coordinator-one"}
+					opts.CoordinatorSession = "coordinator-one"
 				}
 			}
 			switch tc.invalid {
@@ -95,7 +103,11 @@ func TestCollect(t *testing.T) {
 			case "ticket":
 				opts.Ticket = "../ZII-894"
 			}
-			got, err := CollectItems(opts)
+			paths := []string{}
+			for _, tree := range opts.Worktrees {
+				paths = append(paths, tree.Path)
+			}
+			got, err := Collect(context.Background(), opts.Ticket, paths, opts)
 			if tc.invalid != "" {
 				if err == nil {
 					t.Fatalf("accepted missing or invalid %s: %+v", tc.invalid, got)
@@ -108,11 +120,11 @@ func TestCollect(t *testing.T) {
 			if got.Ticket != ticket || got.PriceVersion != "2026-10-06-standard-v2" {
 				t.Fatalf("provenance: %+v", got)
 			}
-			if len(got.Errors) != tc.errors {
-				t.Fatalf("file errors: %+v", got.Errors)
+			if len(got.Skipped) != tc.errors {
+				t.Fatalf("file errors: %+v", got.Skipped)
 			}
-			if tc.errors > 0 && (!strings.HasSuffix(got.Errors[0].Path, "broken.jsonl") || got.Errors[0].Error == "") {
-				t.Fatalf("error details: %+v", got.Errors)
+			if tc.errors > 0 && (!strings.HasSuffix(got.Skipped[0].Path, "corrupt.jsonl") || got.Skipped[0].Error == "") {
+				t.Fatalf("error details: %+v", got.Skipped)
 			}
 			if len(got.Items) != len(tc.want) {
 				t.Fatalf("items: %+v, want %+v", got.Items, tc.want)
@@ -135,8 +147,6 @@ func TestCollect(t *testing.T) {
 	}
 }
 
-// Collect implements the contract ZII-893 fixed (ctx, ticket, worktrees → TicketUsage)
-// on top of CollectItems: roles map to by_role, models to by_model, totals add up.
 func TestCollectFillsTicketUsage(t *testing.T) {
 	root := t.TempDir()
 	unit := filepath.Join(root, "unit")
@@ -148,7 +158,7 @@ func TestCollectFillsTicketUsage(t *testing.T) {
 		}
 	}
 	for name, dir := range map[string]string{"claude": claudeProjects, "codex": codexSessions} {
-		data, err := os.ReadFile(filepath.Join("testdata", name+".jsonl"))
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "usage-"+map[string]string{"claude": "claude-session", "codex": "codex-session"}[name]+".jsonl"))
 		if err != nil {
 			t.Fatal(err)
 		}

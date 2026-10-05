@@ -53,12 +53,12 @@ func TestRecordedSessionFormats(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "claude"))
 	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
-	got, err := CollectItems(Options{Ticket: "ZII-1", Worktrees: []Worktree{{Path: unit}}})
+	got, err := Collect(context.Background(), "ZII-1", []string{unit})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Errors) != 0 {
-		t.Fatalf("recorded files failed to parse: %v", got.Errors)
+	if len(got.Skipped) != 0 {
+		t.Fatalf("recorded files failed to parse: %v", got.Skipped)
 	}
 	type want struct {
 		role, model string

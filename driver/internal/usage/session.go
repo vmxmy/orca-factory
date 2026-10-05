@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type rawUsage struct {
@@ -49,24 +50,26 @@ type record struct {
 	} `json:"payload"`
 }
 type session struct {
-	ID    string
-	Items []Item
-	// Messages holds Claude items by API message ID. Subagent transcripts share the
-	// parent's session ID but not its message IDs, so Claude is deduplicated per message.
 	Messages map[string]Item
+	ID       string
+	Items    []Item
 }
 
-// Read one line at a time without Scanner's line cap. No temporary totals are
-// exposed until EOF, so any malformed or unreadable file contributes nothing.
-func readSession(path, provider string, roles map[string]string, coordinatorIDs map[string]bool) (session, error) {
+// Totals stay private until EOF so a malformed file contributes nothing.
+func readSession(path, provider string, roles map[string]string, coordinatorIDs map[string]bool) (result session, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return session{}, fmt.Errorf("open session: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			result = session{}
+			err = fmt.Errorf("close session: %w", closeErr)
+		}
+	}()
 	reader := bufio.NewReader(f)
 	messages := map[string]Item{}
-	result := session{}
+	result = session{}
 	cwd, model := "", "unknown"
 	var last *Item
 	lineNumber := 0
@@ -103,7 +106,7 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 					cwd = r.Payload.Cwd
 				}
 			}
-			role, belongs := roleFor(roles, cwd)
+			role, belongs := sessionRole(cwd, roles)
 			// A run directory alone cannot identify which of its historical sessions
 			// belongs to the requested run. The caller supplies verified session IDs.
 			if role == "coordinator" && !coordinatorIDs[result.ID] {
@@ -172,15 +175,21 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 	return result, nil
 }
 
-// roleFor matches a session's cwd to a unit worktree, or to a directory inside one:
-// a subagent may run in a nested worktree such as <unit>/.claude/worktrees/<name>.
-func roleFor(roles map[string]string, cwd string) (string, bool) {
-	for dir := normalizePath(cwd); ; dir = filepath.Dir(dir) {
-		if role, ok := roles[dir]; ok {
-			return role, true
+func sessionRole(cwd string, roles map[string]string) (string, bool) {
+	if !filepath.IsAbs(cwd) {
+		return "", false
+	}
+	cwd = normalizePath(cwd)
+	role, best := "", -1
+	for root, candidate := range roles {
+		rel, err := filepath.Rel(root, cwd)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
 		}
-		if parent := filepath.Dir(dir); parent == dir {
-			return "", false
+		// Prefer the closest worktree when nested unit and reviewer directories overlap.
+		if len(root) > best {
+			role, best = candidate, len(root)
 		}
 	}
+	return role, best >= 0
 }
