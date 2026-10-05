@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -21,7 +20,6 @@ import (
 // Options injects transport, credentials, and timing. BaseURL defaults to
 // https://api.github.com; an override is a trusted origin (usually httptest).
 type Options struct {
-	Logger     func(string) // Optional; nil disables logging.
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      func(context.Context) (string, error)
@@ -37,7 +35,6 @@ type cachedResponse struct {
 // Client is safe for concurrent use. Each client owns a capacity-one write
 // token bucket, refilled once per second, and an ETag cache.
 type Client struct {
-	logger     func(string)
 	base       string
 	http       *http.Client
 	token      func(context.Context) (string, error)
@@ -75,7 +72,7 @@ func New(o Options) (*Client, error) {
 	if o.Sleep == nil {
 		o.Sleep = sleep
 	}
-	return &Client{logger: o.Logger, base: strings.TrimRight(o.BaseURL, "/"), http: &hc, token: o.Token, now: o.Now, sleep: o.Sleep, cache: make(map[string]cachedResponse)}, nil
+	return &Client{base: strings.TrimRight(o.BaseURL, "/"), http: &hc, token: o.Token, now: o.Now, sleep: o.Sleep, cache: make(map[string]cachedResponse)}, nil
 }
 
 func authToken(ctx context.Context) (string, error) {
@@ -115,10 +112,10 @@ func safeError(err error) error {
 
 func (c *Client) request(ctx context.Context, method, path string, input, output any) (resultErr error) {
 	started := time.Now()
-	logger := runx.LoggerFromContext(ctx)
+	logger := runx.LoggerFrom(ctx)
 	var resp *http.Response
 	defer func() {
-		if c.logger == nil && logger == nil {
+		if logger == nil {
 			return
 		}
 		status, requestID := 0, ""
@@ -131,13 +128,8 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		if resultErr != nil {
 			result = "failure"
 		}
-		elapsed := time.Since(started).Milliseconds()
-		if c.logger != nil {
-			c.logger(fmt.Sprintf("github interface=%q status=%d result=%s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), status, result, elapsed, runx.SafeText(requestID)))
-		}
-		if logger != nil {
-			logger.Info("github external call", "method", method, "path", runx.SafeText(endpoint), "status", status, "result", result, "elapsed_ms", elapsed, "request_id", runx.SafeText(requestID))
-		}
+		logger.Info("github external call", "method", method, "path", runx.SafeText(endpoint),
+			"status", status, "result", result, "duration", time.Since(started), "request_id", runx.SafeText(requestID))
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

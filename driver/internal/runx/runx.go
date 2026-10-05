@@ -4,11 +4,9 @@ package runx
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -16,7 +14,6 @@ import (
 // Spec describes a command. Timeout must be positive. Env, when non-nil,
 // replaces the inherited environment. Args and output are never included in errors.
 type Spec struct {
-	Logger  func(string) // Optional; nil disables logging.
 	Path    string
 	Args    []string
 	Dir     string
@@ -49,55 +46,25 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
-	logger := LoggerFromContext(ctx)
-	var stderr *stderrCapture
-	var args, secrets []string
-	if spec.Logger != nil || logger != nil {
-		args, secrets = safeArgs(spec.Args)
-		stderr = newStderrCapture(secrets)
-		cmd.Stderr = stderr
-	}
 	started := time.Now()
 	output, err := cmd.Output()
-	if spec.Logger != nil || logger != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			exit.Stderr = stderr.Bytes()
-		}
+	if logger := LoggerFrom(ctx); logger != nil {
 		code := 0
+		stderr := ""
 		if err != nil {
 			code = -1
-			if exit != nil {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
 				code = exit.ExitCode()
+				stderr = redactText(string(exit.Stderr), sensitiveValues(spec.Args))
 			}
 		}
-		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
-		if timedOut {
-			code = -1
+		if len(stderr) > stderrLimit {
+			stderr = stderr[:stderrLimit]
 		}
-		diagnostic := stderr.logText(secrets)
-		elapsed := time.Since(started).Milliseconds()
-		if spec.Logger != nil {
-			spec.Logger(fmt.Sprintf("runx executable=%q args=%q exit=%d duration_ms=%d stderr=%q timeout=%t", SafeText(filepath.Base(spec.Path)), args, code, elapsed, diagnostic, timedOut))
-		}
-		if logger != nil {
-			flags := []string{}
-			for _, arg := range args {
-				if arg == "--" {
-					break
-				}
-				flag, _, _ := strings.Cut(arg, "=")
-				if strings.HasPrefix(flag, "-") && flag != "-" && flag != "--" && !strings.ContainsAny(flag, " \t\r\n") {
-					flags = append(flags, SafeText(flag))
-				}
-			}
-			fields := []any{"executable", SafeText(filepath.Base(spec.Path)), "args", flags, "arg_count", len(spec.Args), "exit_code", code, "elapsed_ms", elapsed, "stderr", diagnostic, "timeout", timedOut}
-			if timedOut {
-				logger.Warn("runx external call", fields...)
-			} else {
-				logger.Info("runx external call", fields...)
-			}
-		}
+		logger.Info("runx external call", "exe", filepath.Base(spec.Path), "args", redactArgs(spec.Args),
+			"exit_code", code, "duration", time.Since(started), "stderr", stderr,
+			"timeout", ctx.Err() == context.DeadlineExceeded)
 	}
 	if ctx.Err() != nil {
 		return output, ctx.Err()

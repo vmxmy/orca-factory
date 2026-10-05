@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -23,12 +22,10 @@ import (
 )
 
 var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z_0-9]*)`)
-var operationKind = regexp.MustCompile(`^\s*(query|mutation)\b`)
 
 const endpoint = "https://api.linear.app/graphql"
 
 type Options struct {
-	Logger func(string) // Optional; nil disables logging.
 	TeamID string
 	// BaseURL overrides the GraphQL endpoint for tests. Redirects are forbidden.
 	BaseURL    string
@@ -124,8 +121,6 @@ type Usage struct {
 	ComplexityLimit RateLimit
 }
 type Client struct {
-	contextLogger            runx.Logger
-	logger                   func(string)
 	key, endpoint            string
 	http                     *http.Client
 	states, labels, projects map[string]string
@@ -157,7 +152,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		hc = *options.HTTPClient
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c := &Client{logger: options.Logger, contextLogger: runx.LoggerFromContext(ctx), key: key, endpoint: target, http: &hc, now: time.Now}
+	c := &Client{key: key, endpoint: target, http: &hc, now: time.Now}
 	for _, item := range []struct {
 		field string
 		dest  *map[string]string
@@ -453,20 +448,17 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 	}
 }
 
-func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (resultErr error) {
+func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) error {
 	started := time.Now()
-	logger := runx.LoggerFromContext(ctx)
-	if logger == nil {
-		logger = c.contextLogger
-	}
+	logger := runx.LoggerFrom(ctx)
 	var response *http.Response
-	limited := false
+	limited, transportFailed := false, false
 	defer func() {
-		if c.logger == nil && logger == nil {
+		if logger == nil {
 			return
 		}
 		status := 0
-		complexity, remaining := `""`, `""`
+		complexity, remaining := "", ""
 		if response != nil {
 			status = response.StatusCode
 			complexity = logQuota(response.Header.Get("X-Complexity"))
@@ -476,29 +468,15 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 		if match := operationName.FindStringSubmatch(query); len(match) > 1 {
 			operation = match[1]
 		}
-		level := ""
-		if resultErr != nil || limited || status == 429 {
-			level = "[WARN] "
-		}
-		elapsed := time.Since(started).Milliseconds()
-		if c.logger != nil {
-			c.logger(fmt.Sprintf("%slinear operation=%s status=%d duration_ms=%d X-Complexity=%s X-RateLimit-Requests-Remaining=%s", level, operation, status, elapsed, complexity, remaining))
-		}
-		if logger != nil {
-			kind := strings.TrimSpace(operationKind.FindString(query))
-			if kind != "" {
-				if operation == "unknown" {
-					operation = kind
-				} else {
-					operation = kind + " " + operation
-				}
-			}
-			fields := []any{"operation", operation, "http_status", status, "elapsed_ms", elapsed, "X-Complexity", strings.Trim(complexity, `"`), "X-RateLimit-Requests-Remaining", strings.Trim(remaining, `"`)}
-			if level != "" {
-				logger.Warn("linear external call", fields...)
-			} else {
-				logger.Info("linear external call", fields...)
-			}
+		fields := []any{"operation", operation, "status", status, "duration", time.Since(started),
+			"X-Complexity", complexity, "X-RateLimit-Requests-Remaining", remaining}
+		switch {
+		case transportFailed:
+			logger.Error("linear external call", fields...)
+		case limited || status == http.StatusTooManyRequests:
+			logger.Warn("linear external call", fields...)
+		default:
+			logger.Info("linear external call", fields...)
 		}
 	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
@@ -514,6 +492,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	response, err = c.http.Do(req)
 	c.record(response)
 	if err != nil {
+		transportFailed = true
 		// Classify before discarding transport errors, which can contain URLs or keys.
 		classified := infra.Classify(err)
 		safe := errors.New("linear transport failed")
@@ -575,7 +554,7 @@ func logQuota(value string) string {
 	if n, err := strconv.ParseInt(value, 10, 64); err == nil && n >= 0 {
 		return strconv.FormatInt(n, 10)
 	}
-	return `""`
+	return ""
 }
 
 func (c *Client) record(response *http.Response) {

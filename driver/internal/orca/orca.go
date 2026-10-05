@@ -50,8 +50,7 @@ func invalid(message string) error { return &infra.Ticket{Err: errors.New(messag
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
-	logger := runx.LoggerFromContext(ctx)
-	var responseOK *bool
+	logger := runx.LoggerFrom(ctx)
 	retryID, responseID := "", ""
 	result := "error"
 	for i, arg := range args {
@@ -73,21 +72,11 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		}
 		elapsed := time.Since(started).Milliseconds()
 		if c.Logger != nil {
-			c.Logger(fmt.Sprintf("orca command=%q result=%s duration_ms=%d request_id=%q retry_request_id=%q", strings.Join(runx.SafeArgs(command), " "), result, elapsed, runx.SafeText(requestID), runx.SafeText(retryID)))
+			c.Logger(fmt.Sprintf("orca command=%q result=%s duration_ms=%d request_id=%q retry_request_id=%q", runx.SafeText(strings.Join(command, " ")), result, elapsed, runx.SafeText(requestID), runx.SafeText(retryID)))
 		}
 		if logger != nil {
-			name, subcommand := "", ""
-			if len(args) > 0 {
-				name = runx.SafeText(args[0])
-			}
-			if len(args) > 1 {
-				subcommand = runx.SafeText(args[1])
-			}
-			fields := []any{"command", name, "subcommand", subcommand, "result", result, "elapsed_ms", elapsed, "request_id", runx.SafeText(requestID)}
-			if responseOK != nil {
-				fields = append(fields, "ok", *responseOK)
-			}
-			logger.Info("orca external call", fields...)
+			logger.Info("orca external call", "command", runx.SafeText(strings.Join(command, " ")),
+				"result", result, "duration", time.Since(started), "request_id", runx.SafeText(retryID))
 		}
 	}()
 	path := c.Path
@@ -130,10 +119,13 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	}
 	// An absent or non-string log ID must not change the response contract.
 	_ = json.Unmarshal(envelope.ID, &responseID)
-	responseOK = envelope.OK
-	result = fmt.Sprintf("ok=%t", *envelope.OK)
+	result = "ok"
 	if !*envelope.OK {
+		result = "error"
 		if envelope.Error != nil {
+			if validCode(envelope.Error.Code) {
+				result = envelope.Error.Code
+			}
 			if envelope.Result == nil {
 				envelope.Result = envelope.Error.Data
 			}
