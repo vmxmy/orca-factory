@@ -160,6 +160,17 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
 		ticket.Blocked = issue.Blocked()
+		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
+		for _, relation := range issue.InverseRelations.Nodes {
+			if relation.Type != "blocks" {
+				continue
+			}
+			switch relation.Issue.State.Type {
+			case "completed", "canceled", "duplicate":
+			default:
+				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
+			}
+		}
 		if ticket.Legacy || ticket.Candidate || owned(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
@@ -314,7 +325,12 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {
 		return errors.New("invalid executor launch configuration")
 	}
-	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: "exec " + quote(r.DriverPath) + " exec " + quote(t.Identifier) + launchLog(t.Identifier)})
+	verb := "exec "
+	if t.Phase == machine.PhaseCorrection {
+		// A merge-lane conflict resume runs the executor as a merge resolver.
+		verb = "exec --merging "
+	}
+	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: verb + quote(r.DriverPath) + " exec " + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		return errors.New("executor launch uncertain")
 	}

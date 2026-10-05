@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -120,8 +121,12 @@ func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 		case merge.Merged:
 			delete(l.rounds, key)
 			problems = append(problems, l.finish(ctx, t, owner, name, result.Request.Number, result.MergeSHA))
-		case merge.Correction, merge.Human:
-			// The executor has no conflict-resolution path yet, so a correction goes to a person.
+		case merge.Correction:
+			// A text conflict (or a red gate on the merged tree) goes back to the
+			// executor as a merge-conflict resolver, not to a person.
+			delete(l.rounds, key)
+			problems = append(problems, l.resume(ctx, t, result.Rounds))
+		case merge.Human:
 			delete(l.rounds, key)
 			problems = append(problems, l.escalate(ctx, t, "合并通道: "+result.Reason))
 		}
@@ -179,6 +184,14 @@ func (l *Lane) pullRequest(ctx context.Context, owner, name, ticket string) (*gi
 		return &full, nil
 	}
 	return nil, nil
+}
+
+// resume hands a conflicted PR back to the executor as a merge resolver.
+func (l *Lane) resume(ctx context.Context, t scheduler.Ticket, rounds int) error {
+	if err := l.Tickets.Apply(ctx, t, scheduler.Action{Kind: scheduler.Resume, Attempt: t.Attempt, Phase: machine.PhaseCorrection}); err != nil {
+		return fmt.Errorf("%s merge resume: %w", t.Identifier, err)
+	}
+	return nil
 }
 
 func (l *Lane) escalate(ctx context.Context, t scheduler.Ticket, reason string) error {
