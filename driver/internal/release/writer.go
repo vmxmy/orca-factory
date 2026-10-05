@@ -1,6 +1,7 @@
 package release
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -26,10 +27,18 @@ type Writer struct {
 	GitHub PRClient
 }
 
-func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (int, error) {
+func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (number int, resultErr error) {
 	owner, repo, ok := repository(r.Repository)
 	if !ok {
 		return 0, errors.New("invalid repository")
+	}
+	if !pluginPattern.MatchString(p.Plugin) || !versionPattern.MatchString(p.Version) || len(p.Files) != 2 {
+		return 0, errors.New("invalid release plan")
+	}
+	for path := range p.Files {
+		if path != "mods/"+p.Plugin+"/.claude-plugin/plugin.json" && path != "mods/"+p.Plugin+"/CHANGELOG.md" {
+			return 0, errors.New("unexpected release path")
+		}
 	}
 	branch := "agent/release/" + p.Plugin + "-v" + p.Version
 	prs, err := w.GitHub.FindPRs(ctx, owner, repo, branch)
@@ -38,6 +47,9 @@ func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (
 	}
 	for _, pr := range prs {
 		if pr.State == "open" || pr.Merged {
+			if err := w.verify(ctx, "refs/heads/"+branch, p); err != nil {
+				return 0, err
+			}
 			return pr.Number, nil
 		}
 		return 0, errors.New("release PR closed; human recovery required")
@@ -56,14 +68,17 @@ func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (
 		if err != nil {
 			return 0, err
 		}
-		defer os.RemoveAll(dir)
+
 		if _, err = w.Source.run(ctx, "git", "worktree", "add", "--detach", dir, w.Source.Head); err != nil {
+			os.Remove(dir)
 			return 0, err
 		}
 		defer func() {
 			cleanup, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			w.Source.run(cleanup, "git", "worktree", "remove", "--force", dir)
+			if _, err := w.Source.run(cleanup, "git", "worktree", "remove", "--force", dir); err != nil {
+				resultErr = errors.Join(resultErr, errors.New("release worktree cleanup failed"))
+			}
 		}()
 		var paths []string
 		for path, b := range p.Files {
@@ -73,6 +88,11 @@ func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (
 			target := filepath.Join(dir, path)
 			if err = os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return 0, err
+			}
+			if info, e := os.Lstat(target); e == nil && !info.Mode().IsRegular() {
+				return 0, errors.New("release target is not a regular file")
+			} else if e != nil && !errors.Is(e, os.ErrNotExist) {
+				return 0, e
 			}
 			if err = os.WriteFile(target, b, 0644); err != nil {
 				return 0, err
@@ -85,15 +105,35 @@ func (w *Writer) CreateReleasePR(ctx context.Context, r merge.Request, p Plan) (
 		if _, err = local.run(ctx, "git", append([]string{"add", "--"}, paths...)...); err != nil {
 			return 0, err
 		}
-		if _, err = local.run(ctx, "git", "-c", "core.hooksPath=/dev/null", "commit", "-m", fmt.Sprintf("chore(%s): release %s", p.Plugin, p.Version)); err != nil {
+		if _, err = local.run(ctx, "git", "commit", "-m", fmt.Sprintf("chore(%s): release %s", p.Plugin, p.Version)); err != nil {
 			return 0, err
 		}
 		if _, err = local.run(ctx, "git", "push", "origin", "HEAD:"+ref); err != nil {
 			return 0, err
 		}
+	} else if err = w.verify(ctx, ref, p); err != nil {
+		return 0, err
 	}
 	pr, err := w.GitHub.CreatePR(ctx, owner, repo, github.CreatePRRequest{Head: branch, Base: "main", Title: fmt.Sprintf("chore(%s): release %s", p.Plugin, p.Version), Body: p.Section})
 	return pr.Number, err
+}
+
+// A crash between remote branch/PR creation and queue persistence may leave a
+// prior plan on GitHub. Never publish new notes for a different recovered PR.
+func (w *Writer) verify(ctx context.Context, ref string, p Plan) error {
+	if _, err := w.Source.run(ctx, "git", "fetch", "--no-tags", "origin", ref); err != nil {
+		return err
+	}
+	for path, want := range p.Files {
+		got, err := w.Source.run(ctx, "git", "show", "FETCH_HEAD:"+path)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(got, want) {
+			return errors.New("recovered release differs from plan; human recovery required")
+		}
+	}
+	return nil
 }
 
 // RecoveringPublisher reads before every write, so a tag created before a crash

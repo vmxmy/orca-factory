@@ -52,6 +52,7 @@ type Lane struct {
 	Now          func() time.Time
 	Warn         func(format string, args ...any)
 	Publisher    release.Publisher
+	Allowed      func(string) bool
 	entries      []laneEntry
 	loaded       bool
 	current      map[string]scheduler.Ticket
@@ -114,7 +115,7 @@ func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
 	for i := 0; i < len(l.entries); {
 		e := &l.entries[i]
 		r := e.Request
-		if seen[r.Repository] {
+		if (l.Allowed != nil && !l.Allowed(r.Path)) || seen[r.Repository] {
 			i++
 			continue
 		}
@@ -413,14 +414,44 @@ func (l *Lane) Squash(ctx context.Context, r merge.Request, head, main string) (
 
 // Run implements merge.Gate with the ticket's executor gate spec.
 func (l *Lane) Run(ctx context.Context, r merge.Request, path string) error {
-	t, ok := l.current[requestKey(r.Repository, r.Number)]
-	if !ok {
-		return errors.New("merge gate has no ticket")
-	}
-	_, name, _ := strings.Cut(r.Repository, "/")
-	spec := filepath.Join(l.Root, name, t.Identifier, "gate.spec")
-	if _, err := os.Stat(spec); err != nil {
-		return fmt.Errorf("gate spec unavailable: %w", err)
+	var spec string
+	if t, ok := l.current[requestKey(r.Repository, r.Number)]; ok {
+		_, name, _ := strings.Cut(r.Repository, "/")
+		spec = filepath.Join(l.Root, name, t.Identifier, "gate.spec")
+		if _, err := os.Stat(spec); err != nil {
+			return fmt.Errorf("gate spec unavailable: %w", err)
+		}
+	} else {
+		var plan *release.Plan
+		for _, e := range l.entries {
+			if e.Request.Repository == r.Repository && e.Request.Number == r.Number && e.Release != nil {
+				plan = &e.Release.Plan
+				break
+			}
+		}
+		if plan == nil {
+			return errors.New("merge gate has no owner")
+		}
+		// Run the repository's full project gate against the merged tree with the
+		// release's exact two-file scope, just as feature entries use their spec.
+		root := filepath.Join(r.Path, ".omc", "tmp")
+		if err := os.MkdirAll(root, 0700); err != nil {
+			return err
+		}
+		f, err := os.CreateTemp(root, "release-gate-*")
+		if err != nil {
+			return err
+		}
+		spec = f.Name()
+		defer os.Remove(spec)
+		body := fmt.Sprintf("UNIT: release-%s\nSCOPE: mods/%s/.claude-plugin/plugin.json mods/%s/CHANGELOG.md\nCHECK: git diff --check\nCHECK_IS_NEW_TEST: no\n", plan.Plugin, plan.Plugin, plan.Plugin)
+		if _, err = f.WriteString(body); err != nil {
+			f.Close()
+			return err
+		}
+		if err = f.Close(); err != nil {
+			return err
+		}
 	}
 	run := l.Exec
 	if run == nil {
