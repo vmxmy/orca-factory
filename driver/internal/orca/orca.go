@@ -173,8 +173,15 @@ func (c *Client) WorkerStart(ctx context.Context, request string, o StartOptions
 	for _, pair := range [][2]string{{"--run", o.Run}, {"--task", o.Task}, {"--spec", o.Spec}, {"--worktree", o.Worktree}, {"--agent", o.Agent}, {"--model", o.Model}, {"--effort", o.Effort}, {"--setup", o.Setup}, {"--name", o.Name}, {"--repo", o.Repo}, {"--base-branch", o.BaseBranch}, {"--retry-of", o.RetryOf}} {
 		args = add(args, pair[0], pair[1])
 	}
-	return c.mutate(ctx, request, args)
+	// Agent readiness on an existing worktree can exceed the default call
+	// timeout; a client-side timeout would report a started worker as uncertain.
+	args = append(args, "--timeout-ms", strconv.FormatInt(workerStartWait.Milliseconds(), 10))
+	long := *c
+	long.Timeout = workerStartWait + 30*time.Second
+	return long.mutate(ctx, request, args)
 }
+
+const workerStartWait = 5 * time.Minute
 
 type Task struct {
 	ID         string          `json:"id"`

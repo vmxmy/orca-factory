@@ -61,7 +61,7 @@ func TestCommands(t *testing.T) {
 		{"run", func(c *Client) (any, error) { return c.RunCreate(ctx, firstID, "build it") }, []string{"orchestration", "run-create", "--objective", "build it", "--retry-request", firstID, "--json"}, `{"run":{"id":"run_one","objective":"build it"}}`},
 		{"start", func(c *Client) (any, error) {
 			return c.WorkerStart(ctx, firstID, StartOptions{Run: "run_one", Spec: "do work", Worktree: "new-top-level", Agent: "codex", Model: "m", Effort: "high", Setup: "skip", Name: "impl", Repo: "path:/repo", BaseBranch: "origin/main"})
-		}, []string{"orchestration", "worker-start", "--run", "run_one", "--spec", "do work", "--worktree", "new-top-level", "--agent", "codex", "--model", "m", "--effort", "high", "--setup", "skip", "--name", "impl", "--repo", "path:/repo", "--base-branch", "origin/main", "--retry-request", firstID, "--json"}, `{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}`},
+		}, []string{"orchestration", "worker-start", "--run", "run_one", "--spec", "do work", "--worktree", "new-top-level", "--agent", "codex", "--model", "m", "--effort", "high", "--setup", "skip", "--name", "impl", "--repo", "path:/repo", "--base-branch", "origin/main", "--timeout-ms", "300000", "--retry-request", firstID, "--json"}, `{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}`},
 		{"read", func(c *Client) (any, error) {
 			return c.WorkerRead(ctx, ReadOptions{Dispatch: "ctx_one", Source: "transcript", Cursor: "old", Limit: 5})
 		}, []string{"orchestration", "worker-read", "--dispatch", "ctx_one", "--source", "transcript", "--cursor", "old", "--limit", "5", "--json"}, `{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}`},
@@ -162,7 +162,7 @@ func TestFailedStartRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	argv(t, log, []string{"orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--retry-request", firstID, "--json", "END", "orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--retry-of", "ctx_failed", "--retry-request", secondID, "--json", "END"})
+	argv(t, log, []string{"orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--timeout-ms", "300000", "--retry-request", firstID, "--json", "END", "orchestration", "worker-start", "--task", "task_one", "--worktree", "current", "--agent", "codex", "--retry-of", "ctx_failed", "--timeout-ms", "300000", "--retry-request", secondID, "--json", "END"})
 }
 func TestErrorsAndBounds(t *testing.T) {
 	for _, scenario := range []string{"malformed", "failure", "unavailable", "timeout"} {
