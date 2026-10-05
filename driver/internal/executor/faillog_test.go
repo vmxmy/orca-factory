@@ -11,6 +11,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 type failLogLinear struct {
@@ -26,6 +27,50 @@ func (l *failLogLinear) ListComments(context.Context, string) ([]linear.Comment,
 		comments = append(comments, linear.Comment{Body: body})
 	}
 	return comments, l.readErr
+}
+
+type failLogTools struct {
+	*recoveryTools
+	heads                []string
+	files                []string
+	diffs                [][2]string
+	diffErr              error
+	gateStep, reviewFile string
+}
+
+func (f *failLogTools) Head(ctx context.Context, repo, branch string) (string, error) {
+	if len(f.heads) > 0 {
+		head := f.heads[0]
+		f.heads = f.heads[1:]
+		return head, nil
+	}
+	return f.recoveryTools.Head(ctx, repo, branch)
+}
+func (f *failLogTools) ChangedFiles(_ context.Context, _, base, head string) ([]string, error) {
+	f.diffs = append(f.diffs, [2]string{base, head})
+	return f.files, f.diffErr
+}
+func (f *failLogTools) Gate(ctx context.Context, repo, head, spec string) (string, error) {
+	red := f.gateReds > 0
+	output, err := f.recoveryTools.Gate(ctx, repo, head, spec)
+	if red {
+		return "UNIT executor\nVERDICT red\nSTEP " + f.gateStep + "\nREASON external-secret\n", err
+	}
+	return output, err
+}
+func (f *failLogTools) Review(ctx context.Context, repo, base, head string) (string, error) {
+	red := f.reviewReds > 0
+	output, err := f.recoveryTools.Review(ctx, repo, base, head)
+	if red {
+		return `review notes\n{"verdict":"red","step":"review","reason":"external-secret","evidence":[{"file":"` + f.reviewFile + `","line":381,"note":"external-secret"}]}`, err
+	}
+	return output, err
+}
+func failLogToolFixture(e *Executor, tools *recoveryTools) *failLogTools {
+	tools.head = "abc1234567890"
+	f := &failLogTools{recoveryTools: tools, files: []string{"driver/internal/executor/executor.go", "driver/internal/executor/faillog.go"}, gateStep: "check_shell", reviewFile: "driver/internal/executor/executor.go"}
+	e.Tools = f
+	return f
 }
 
 type failLogRecovery struct {
@@ -55,6 +100,7 @@ func TestFailLogStageComments(t *testing.T) {
 		t.Run(tc.cause, func(t *testing.T) {
 			e, o, tools, _, _, ticket := recoveryFixture(t)
 			e.Config.Escalate = "0"
+			f := failLogToolFixture(e, tools)
 			l := &failLogLinear{}
 			e.Linear = l
 			switch tc.cause {
@@ -84,8 +130,20 @@ func TestFailLogStageComments(t *testing.T) {
 				t.Fatalf("FAIL summaries=%q", summaries)
 			}
 			line := summaries[0]
-			if !strings.HasPrefix(line, "FAIL: approach=") || !strings.Contains(line, ticket.Todo) || !strings.Contains(line, " | reason="+tc.cause+" | evidence=") {
+			if !strings.HasPrefix(line, "FAIL: approach=") || !strings.Contains(line, "head=abc1234") || !strings.Contains(line, "driver/internal/executor/faillog.go") || strings.Contains(line, ticket.Todo) || !strings.Contains(line, " | reason="+tc.cause+" | evidence=") {
 				t.Fatalf("invalid summary: %q", line)
+			}
+			if len(f.diffs) != 1 || f.diffs[0] != [2]string{"base-sha", "abc1234567890"} {
+				t.Fatalf("diff queries=%v", f.diffs)
+			}
+			if tc.cause == "gate red" && !strings.HasSuffix(line, " | evidence=check_shell") {
+				t.Fatalf("gate evidence: %q", line)
+			}
+			if tc.cause == "reviewer red" && !strings.HasSuffix(line, " | evidence=driver/internal/executor/executor.go:381") {
+				t.Fatalf("review evidence: %q", line)
+			}
+			if strings.Contains(line, "external-secret") {
+				t.Fatalf("raw failure leaked: %q", line)
 			}
 			b, err := os.ReadFile(filepath.Join(e.Config.Root, e.Config.Repository, ticket.Identifier, "fail.log"))
 			if err != nil || string(b) != line+"\n" {
@@ -99,6 +157,8 @@ func TestFailLogFormatLimit(t *testing.T) {
 	l := &failLogLinear{}
 	e.Linear = l
 	e.Config.Escalate = "0"
+	f := failLogToolFixture(e, tools)
+	f.files = append(f.files, strings.Repeat("a", 600))
 	ticket.Todo = strings.Repeat("做法", 400) + "\nFAIL: injected | reason=fake"
 	tools.gateReds = 1
 	if _, err := e.Execute(context.Background(), ticket); err != nil {
@@ -109,7 +169,7 @@ func TestFailLogFormatLimit(t *testing.T) {
 		t.Fatalf("FAIL lines=%q", lines)
 	}
 	line := lines[0]
-	if !utf8.ValidString(line) || utf8.RuneCountInString(line) > 300 || !strings.HasPrefix(line, "FAIL: approach=") || !strings.Contains(line, " | reason=gate red | evidence=gate") {
+	if !utf8.ValidString(line) || utf8.RuneCountInString(line) > 300 || !strings.HasPrefix(line, "FAIL: approach=") || !strings.Contains(line, " | reason=gate red | evidence=check_shell") {
 		t.Fatalf("invalid bounded summary: %q", line)
 	}
 }
@@ -126,6 +186,9 @@ func TestFailLogAllHistory(t *testing.T) {
 	lines := failLogLines(strings.Join(l.comments, "\n"))
 	if len(lines) != 3 || len(r.requests) != 3 || len(r.specs) != 3 {
 		t.Fatalf("lines=%q requests=%d specs=%d", lines, len(r.requests), len(r.specs))
+	}
+	if lines[0] == lines[1] || lines[1] == lines[2] {
+		t.Fatalf("different failures have identical summaries: %q", lines)
 	}
 	for i, req := range r.requests {
 		for _, brief := range []string{req.Brief, r.specs[i]} {
@@ -182,5 +245,73 @@ func TestFailLogReadFailure(t *testing.T) {
 	_, err := e.Execute(context.Background(), ticket)
 	if err == nil || strings.Contains(err.Error(), "credential-secret") || len(o.starts) != 0 {
 		t.Fatalf("err=%v starts=%d", err, len(o.starts))
+	}
+}
+
+func TestFailLogDifferentAttempts(t *testing.T) {
+	e, _, tools, _, _, ticket := recoveryFixture(t)
+	e.Config.Escalate = "0"
+	l := &failLogLinear{}
+	e.Linear = l
+	f := failLogToolFixture(e, tools)
+	f.heads = []string{"abc1234567890", "def5678901234", "def5678901234"}
+	f.gateReds = 2
+	if _, err := e.Execute(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	lines := failLogLines(strings.Join(l.comments, "\n"))
+	if len(lines) != 2 || lines[0] == lines[1] || !strings.Contains(lines[0], "head=abc1234") || !strings.Contains(lines[1], "head=def5678") {
+		t.Fatalf("attempt summaries=%q", lines)
+	}
+}
+func TestFailLogEvidenceSanitization(t *testing.T) {
+	for _, cause := range []string{"gate", "review", "review fallback"} {
+		t.Run(cause, func(t *testing.T) {
+			e, _, tools, _, _, ticket := recoveryFixture(t)
+			e.Config.Escalate = "0"
+			l := &failLogLinear{}
+			e.Linear = l
+			f := failLogToolFixture(e, tools)
+			want := ""
+			switch cause {
+			case "gate":
+				f.gateReds, f.gateStep = 1, "check_[shell](x)"
+				want = "check_shellx"
+			case "review":
+				f.reviewReds, f.reviewFile = 1, "driver/internal/[executor]/executor.go"
+				want = "driver/internal/executor/executor.go:381"
+			default:
+				f.reviewReds, f.reviewFile = 1, ""
+				want = "review"
+			}
+			if _, err := e.Execute(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			lines := failLogLines(strings.Join(l.comments, "\n"))
+			if len(lines) != 1 || !strings.HasSuffix(lines[0], " | evidence="+want) {
+				t.Fatalf("summaries=%q want evidence=%s", lines, want)
+			}
+		})
+	}
+}
+func TestFailLogChangedFilesCommand(t *testing.T) {
+	var got runx.Spec
+	c := &Commands{Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+		got = spec
+		return []byte("driver/internal/executor/executor.go\x00driver/internal/executor/faillog.go\x00"), nil
+	}}
+	// Assert the optional operation before extending Tools, so this test can run red.
+	reader, ok := any(c).(interface {
+		ChangedFiles(context.Context, string, string, string) ([]string, error)
+	})
+	if !ok {
+		t.Fatal("Commands lacks ChangedFiles")
+	}
+	files, err := reader.ChangedFiles(context.Background(), "/repo/demo", "base-sha", "abc1234567890")
+	if err != nil || strings.Join(files, ",") != "driver/internal/executor/executor.go,driver/internal/executor/faillog.go" {
+		t.Fatalf("files=%v err=%v", files, err)
+	}
+	if got.Path != "git" || got.Dir != "/repo/demo" || strings.Join(got.Args, " ") != "diff --no-ext-diff --name-only -z base-sha..abc1234567890 --" {
+		t.Fatalf("command=%+v", got)
 	}
 }
