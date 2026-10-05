@@ -7,6 +7,16 @@ export type GateStep = { name: string; sec: number; rc: number }
 export type Gate = { state: 'green' | 'red' | 'running' | 'none'; sec: number; steps: GateStep[] }
 export type Ci = { done: number; total: number; state: 'green' | 'red' | 'running' | 'none'; min: number }
 /**
+ * Linear API hourly usage. `known` is false when the counter file could not be read;
+ * `board` counts the swarm board's own `orca linear …` calls in the last 3600 seconds.
+ */
+export type LinearUsage = {
+  known: boolean
+  total: number
+  bySource: Record<string, number>
+  board: number
+}
+/**
  * Parsed precheckResult of the latest automation run that carried one. Scheduled scans
  * attach a precheckResult; a manual run may not, so this stays undefined until a scan has run.
  */
@@ -79,6 +89,8 @@ export type Board = {
   nextRunAt?: number
   /** ms epoch of the latest automation run of any kind (manual or scheduled); undefined until first read. */
   lastRunAt?: number
+  /** Linear API hourly usage reported in the header; undefined before the first refresh. */
+  linearUsage?: LinearUsage
 }
 export type View = 'swarm' | 'task'
 
