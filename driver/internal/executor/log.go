@@ -116,11 +116,13 @@ func (e *Executor) external(step string) func(error, ...any) {
 	e.logger().Info("external.start", "step", step)
 	return func(err error, attrs ...any) {
 		result := "ok"
+		level := slog.LevelInfo
 		if err != nil {
 			result = "error"
+			level = slog.LevelError
 		}
 		fields := []any{"step", step, "duration_ms", float64(time.Since(start)) / float64(time.Millisecond), "result", result, "error", safeError(err)}
-		e.logger().Info("external.end", append(fields, attrs...)...)
+		e.logger().Log(context.Background(), level, "external.end", append(fields, attrs...)...)
 	}
 }
 
@@ -160,7 +162,7 @@ func checkpointEvidence(cp *checkpoint) any {
 	if cp == nil {
 		return nil
 	}
-	return map[string]any{"Run": cp.Run, "Task": cp.Task, "Dispatch": cp.Dispatch, "Pending": cp.Pending, "Completed": cp.Completed, "Settled": cp.Settled}
+	return map[string]any{"Run": cp.Run, "Task": cp.Task, "Dispatch": cp.Dispatch, "Pending": cp.Pending, "Completed": cp.Completed, "Settled": cp.Settled, "Corrections": cp.Corrections}
 }
 func (e *Executor) recoveryPath(cp *checkpoint, path, basis string) {
 	if cp != nil {

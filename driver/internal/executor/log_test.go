@@ -165,6 +165,66 @@ func TestExecutorTransitionLog(t *testing.T) {
 			}
 		})
 	}
+	t.Run("external failure is an error record", func(t *testing.T) {
+		e, _, _, _, _, ticket := fixture(t, "new-sha")
+		e.Orca = &missingLogReceiptOrca{}
+		var logs bytes.Buffer
+		e.Stderr = &logs
+		result, err := e.Execute(context.Background(), ticket)
+		if err == nil || result.State.Phase != machine.PhaseUnclaimed {
+			t.Fatalf("result=%+v err=%v", result, err)
+		}
+		found := false
+		for _, r := range transitionLogRecords(t, &logs) {
+			if r["msg"] == "external.end" && r["step"] == "worker-start" {
+				found = true
+				if r["level"] != "ERROR" || r["result"] != "error" || r["error"] == nil {
+					t.Errorf("failed external step must be ERROR: %v", r)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("missing failed external step: %s", logs.String())
+		}
+	})
+	t.Run("recovery retains checkpoint correction count", func(t *testing.T) {
+		e, o, l, _, _, ticket := fixture(t, "new-sha")
+		l.comments = []string{"阶段: worker 运行中\n归属: 执行器 term=old run=run_one"}
+		cp := checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one", Corrections: 1}
+		if err := saveCheckpoint(e.Config, ticket, cp); err != nil {
+			t.Fatal(err)
+		}
+		var logs bytes.Buffer
+		e.Stderr = &logs
+		result, err := e.Start(context.Background(), ticket)
+		if err != nil || result.State.Owner != machine.OwnerMerge || len(o.workerRequests) != 0 {
+			t.Fatalf("result=%+v err=%v starts=%v", result, err, o.workerRequests)
+		}
+		snapshot, path := false, false
+		for _, r := range transitionLogRecords(t, &logs) {
+			if r["msg"] != "recovery.snapshot" && r["msg"] != "recovery.path" {
+				continue
+			}
+			evidence, ok := r["checkpoint"].(map[string]any)
+			if !ok || evidence["Corrections"] != float64(1) {
+				t.Errorf("missing checkpoint correction count: %v", r)
+			}
+			if r["msg"] == "recovery.snapshot" {
+				snapshot = true
+				if r["linear_phase"] != "worker 运行中" || r["linear_owner"] != "执行器 term=old run=run_one" {
+					t.Errorf("missing Linear recovery evidence: %v", r)
+				}
+			} else {
+				path = true
+				if r["path"] != "completed-worker" || r["basis"] != "worker-report-succeeded" {
+					t.Errorf("wrong recovery path: %v", r)
+				}
+			}
+		}
+		if !snapshot || !path {
+			t.Fatalf("missing recovery records: %s", logs.String())
+		}
+	})
 	t.Run("invalid reviewer output", func(t *testing.T) {
 		e, o, tools, _, _, ticket := recoveryFixture(t)
 		tools.emptyReviews = 1
