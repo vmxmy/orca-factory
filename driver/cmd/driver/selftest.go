@@ -1,0 +1,126 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
+)
+
+func init() { Register("selftest", selftest) }
+
+// selftest --live re-checks, against the real systems, the external contracts
+// recorded in driver/CONTRACTS.md. It is read-only apart from one reviewer call.
+func selftest(args []string) int {
+	if len(args) != 1 || args[0] != "--live" {
+		fmt.Fprintln(os.Stderr, "Usage: driver selftest --live")
+		return 2
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "cannot resolve home directory")
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil || len(cfg.Repositories) == 0 {
+		fmt.Fprintln(os.Stderr, "driver.toml lists no repositories")
+		return 1
+	}
+	repo := cfg.Repositories[0]
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	failed := 0
+	check := func(name string, run func() error) {
+		if err := run(); err != nil {
+			failed++
+			fmt.Printf("FAIL %s: %v\n", name, err)
+			return
+		}
+		fmt.Printf("PASS %s\n", name)
+	}
+	oc := &orca.Client{}
+	check("orca terminal list", func() error { _, err := oc.TerminalList(ctx); return err })
+	check("orca task-list carries a parseable worker report", func() error { return liveTaskReport(ctx, oc) })
+	check("linear snapshot with blockers", func() error {
+		lc, err := linear.New(ctx, linear.Options{TeamID: repo.Env["AGENT_LINEAR_TEAM"]})
+		if err != nil {
+			return err
+		}
+		issues, err := lc.Snapshot(ctx, []string{repo.Env["AGENT_LINEAR_PROJECT"]}, time.Now().Add(-24*time.Hour))
+		if err != nil {
+			return err
+		}
+		for _, i := range issues {
+			if _, err := executor.ParseTicket(i.ID, i.Identifier, "selftest", ""); err == nil {
+				return fmt.Errorf("empty description parsed for %s", i.Identifier)
+			}
+		}
+		return nil
+	})
+	check("git reaches origin", func() error {
+		_, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"ls-remote", "--heads", "origin", "main"}, Dir: repo.Path, Timeout: time.Minute})
+		return err
+	})
+	check("reviewer output yields a verdict", func() error { return liveReviewer(ctx, repo) })
+	if failed > 0 {
+		fmt.Printf("selftest: %d check(s) failed\n", failed)
+		return 1
+	}
+	fmt.Println("selftest: all live contract checks passed")
+	return 0
+}
+
+func liveTaskReport(ctx context.Context, oc *orca.Client) error {
+	path, err := runx.OrcaPath()
+	if err != nil {
+		return err
+	}
+	raw, err := runx.Run(ctx, runx.Spec{Path: path, Args: []string{"orchestration", "run-list", "--json"}, Timeout: time.Minute})
+	if err != nil {
+		return err
+	}
+	var envelope struct {
+		Result struct {
+			Runs []struct {
+				ID string `json:"id"`
+			} `json:"runs"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return fmt.Errorf("run-list: %w", err)
+	}
+	for _, run := range envelope.Result.Runs {
+		tasks, err := oc.TaskList(ctx, run.ID)
+		if err != nil {
+			return err
+		}
+		for _, t := range tasks {
+			if report, err := t.WorkerReport(); err == nil && report != nil {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("no settled task with a worker report among %d runs", len(envelope.Result.Runs))
+}
+
+func liveReviewer(ctx context.Context, repo config.Repository) error {
+	if repo.Env["AGENT_ROLE_REVIEWER_CMD"] == "" {
+		return fmt.Errorf("no reviewer command configured")
+	}
+	small := 1.0
+	tools := &executor.Commands{ReviewerCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD"], ReviewerSmallCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD_SMALL"], ReviewerSmallMaxEstimate: &small}
+	// An empty diff (origin/main against itself) drives the production reviewer path.
+	out, _, err := tools.Review(ctx, repo.Path, "origin/main", "origin/main", &small)
+	if err != nil {
+		return err
+	}
+	_, err = executor.ParseReviewVerdict(out)
+	return err
+}

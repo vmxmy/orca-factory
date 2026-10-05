@@ -182,3 +182,6 @@ func unescapeMarkdown(s string) string {
 	}
 	return b.String()
 }
+
+// ParseReviewVerdict exposes the reviewer verdict contract to the live self-test.
+func ParseReviewVerdict(output string) (string, error) { return reviewVerdict(output) }

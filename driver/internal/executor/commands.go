@@ -109,6 +109,13 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err != nil {
 		return "", tier, errors.New("review diff failed")
 	}
+	prompt := "Review the diff below against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
+	// The role, the instructions and the diff all travel on stdin: claude's
+	// --allowedTools is variadic and swallows a trailing positional prompt.
+	input := prompt + "\n\n```diff\n" + string(diff) + "```\n"
+	if role, readErr := os.ReadFile(filepath.Join(repo, "scripts", "agent-gates", "roles", "reviewer.md")); readErr == nil {
+		input = string(role) + "\n\n" + input
+	}
 	// runx intentionally has no stdin field. A private temporary file supplies
 	// stdin through a fixed shell wrapper; no diff bytes become shell source.
 	f, err := os.CreateTemp(repo, ".driver-review-*")
@@ -117,15 +124,14 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	}
 	name := f.Name()
 	defer os.Remove(name)
-	if _, err = f.Write(diff); err != nil {
+	if _, err = f.WriteString(input); err != nil {
 		_ = f.Close()
 		return "", tier, errors.New("review input write failed")
 	}
 	if err = f.Close(); err != nil {
 		return "", tier, errors.New("review input close failed")
 	}
-	prompt := "Review the diff on stdin against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
-	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", command+` "$1"`, name, prompt)
+	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name)
 	return string(b), tier, err
 }
 
