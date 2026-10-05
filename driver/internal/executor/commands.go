@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -109,4 +110,116 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string) (string,
 	prompt := "Review the diff on stdin against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
 	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer "$3" < "$2"`, "reviewer", c.ReviewerCommand+` "$1"`, name, prompt)
 	return string(b), err
+}
+
+// ValidateFollowupScope uses bash's pattern matcher, just like gate match_any:
+// notably '*' crosses directory separators. Patterns remain positional data.
+func (c *Commands) ValidateFollowupScope(ctx context.Context, repo, scope string, globs []string) (string, error) {
+	tree, err := c.run(ctx, repo, "git", "ls-tree", "-r", "-t", "-z", "origin/main")
+	if err != nil {
+		return "", errors.New("main tree lookup failed")
+	}
+	var entries []string
+	directories := map[string]bool{".": true}
+	for _, record := range strings.Split(strings.TrimSuffix(string(tree), "\x00"), "\x00") {
+		metadata, name, ok := strings.Cut(record, "\t")
+		fields := strings.Fields(metadata)
+		if !ok || len(fields) != 3 {
+			return "", errors.New("invalid main tree entry")
+		}
+		entries = append(entries, name)
+		if fields[1] == "tree" {
+			directories[name] = true
+		}
+	}
+	match := func(value, pattern string) (bool, error) {
+		b, err := c.run(ctx, repo, "/bin/bash", "-c", `if [[ $1 == $2 ]]; then printf yes; fi`, "followup-match", value, pattern)
+		return string(b) == "yes", err
+	}
+	for _, scopePath := range strings.Fields(scope) {
+		if filepath.IsAbs(scopePath) || scopePath != filepath.ToSlash(filepath.Clean(scopePath)) || scopePath == ".." || strings.HasPrefix(scopePath, "../") {
+			return "SCOPE 路径无效", nil
+		}
+		candidates := []string{scopePath}
+		exists := false
+		parent := filepath.ToSlash(filepath.Dir(scopePath))
+		for _, entry := range entries {
+			matched, err := match(entry, scopePath)
+			if err != nil {
+				return "", err
+			}
+			if matched {
+				exists = true
+				candidates = append(candidates, entry)
+			}
+			if directories[parent] {
+				exists = true
+			}
+			if strings.HasPrefix(entry, scopePath+"/") {
+				candidates = append(candidates, entry)
+			}
+		}
+		if !exists {
+			return "SCOPE 路径或所在目录在 origin/main 不存在", nil
+		}
+		for _, candidate := range candidates {
+			for _, glob := range globs {
+				matched, err := match(candidate, glob)
+				if err != nil {
+					return "", err
+				}
+				if matched {
+					return "SCOPE 命中 lane 3", nil
+				}
+			}
+		}
+	}
+	return "", nil
+}
+
+// FollowupCheckFails accepts only a normal nonzero exit. Infrastructure errors,
+// cancellation and signals are not evidence of a failing behavior check.
+func (c *Commands) FollowupCheckFails(ctx context.Context, repo, check string) (failed bool, err error) {
+	repo, err = filepath.Abs(repo)
+	if err != nil {
+		return false, err
+	}
+	root := filepath.Join(repo, ".omc", "tmp")
+	if err = os.MkdirAll(root, 0700); err != nil {
+		return false, err
+	}
+	dir, err := os.MkdirTemp(root, "followup-")
+	if err != nil {
+		return false, err
+	}
+	defer os.RemoveAll(dir)
+	worktree := filepath.Join(dir, "main")
+	if _, err = c.run(ctx, repo, "git", "worktree", "add", "--detach", worktree, "origin/main"); err != nil {
+		return false, errors.New("followup checkout failed")
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, removeErr := c.run(cleanup, repo, "git", "worktree", "remove", "--force", worktree)
+		if removeErr != nil {
+			failed = false
+			err = errors.Join(err, errors.New("followup checkout cleanup failed"))
+		}
+	}()
+	run := c.Run
+	if run == nil {
+		run = runx.Run
+	}
+	_, err = run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", check}, Dir: worktree, Timeout: 5 * time.Minute})
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err == nil {
+		return false, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() > 0 {
+		return true, nil
+	}
+	return false, err
 }

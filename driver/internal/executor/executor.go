@@ -50,6 +50,8 @@ type Ticket struct {
 	NewTest                                              bool
 }
 type Config struct {
+	Lane3Globs                                                          []string
+	Machine                                                             string
 	TierSettings                                                        map[string]string
 	Escalate                                                            string
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
@@ -58,14 +60,16 @@ type Config struct {
 	Tier                                                                string
 }
 type Executor struct {
-	Orca     Orca
-	Linear   Linear
-	GitHub   GitHub
-	Tools    Tools
-	Config   Config
-	Now      func() time.Time
-	Recovery Recovery
-	Sleep    func(context.Context, time.Duration) error
+	Followups     FollowupLinear
+	FollowupTools FollowupTools
+	Orca          Orca
+	Linear        Linear
+	GitHub        GitHub
+	Tools         Tools
+	Config        Config
+	Now           func() time.Time
+	Recovery      Recovery
+	Sleep         func(context.Context, time.Duration) error
 }
 type Result struct {
 	State             machine.State
@@ -311,6 +315,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
 			event = machine.EvWorkerFail
+		} else {
+			e.processFollowups(ctx, t, report.Body)
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err
