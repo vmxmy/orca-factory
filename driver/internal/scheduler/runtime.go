@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -32,6 +33,7 @@ type OrcaClient interface {
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
 }
 type Runtime struct {
+	GitHub               *github.Client
 	Reader               LinearClient
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository
@@ -133,9 +135,6 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		if !ok {
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
-		if issue.State.Name == "Done" || issue.State.Name == "Canceled" || issue.State.Name == "Cancelled" {
-			continue
-		}
 		ready, claimed, failed := false, false, false
 		for _, label := range issue.Labels.Nodes {
 			switch label.Name {
@@ -156,6 +155,12 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
 		if err = readOwnership(&ticket, comments); err != nil {
 			return nil, err
+		}
+		readMergeHandoff(&ticket, comments)
+		// Done can precede the final ownership receipt. Keep that merge-owned
+		// ticket visible until the receipt is confirmed, including after restart.
+		if (issue.State.Name == "Done" || issue.State.Name == "Canceled" || issue.State.Name == "Cancelled") && ticket.Owner != machine.OwnerMerge {
+			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")

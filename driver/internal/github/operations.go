@@ -11,12 +11,27 @@ import (
 )
 
 type PullRequest struct {
-	Number         int    `json:"number"`
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Draft     *bool  `json:"draft"`
+	Mergeable *bool  `json:"mergeable"`
+	MergeSHA  string `json:"merge_commit_sha"`
+	Body      string `json:"body"`
+	Base      struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"base"`
 	HTMLURL        string `json:"html_url"`
 	Merged         bool   `json:"merged"`
 	MergeableState string `json:"mergeable_state"`
 	Head           struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 }
 type CreatePRRequest struct {

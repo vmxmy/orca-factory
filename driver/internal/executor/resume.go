@@ -113,18 +113,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return result, errors.New("invalid existing PR")
 		}
-		state := result.State
-		for _, ev := range []machine.Event{machine.EvClaim, machine.EvWorkerOK, machine.EvBranchOK, machine.EvGateGreen, machine.EvReviewGreen, machine.EvOpenPR} {
-			state, _, err = machine.Step(state, ev, machine.DefaultLimits)
-			if err != nil {
-				return result, err
-			}
-		}
-		result := Result{State: state, PR: *pr}
-		if err = e.comment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
-			return result, errors.New("resume handoff comment failed")
-		}
-		return result, nil
+		return e.resumeMergeHandoff(ctx, c, t, *pr, head)
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.

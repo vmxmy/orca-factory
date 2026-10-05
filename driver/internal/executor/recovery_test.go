@@ -252,11 +252,11 @@ func TestResumeCompleteBranch(t *testing.T) {
 		t.Fatalf("result=%+v err=%v starts=%d gates=%d", result, err, len(o.starts), tools.gateCalls)
 	}
 }
-func TestResumeExistingPR(t *testing.T) {
+func TestResumeExistingPRWaitsWithoutFrozenEvidence(t *testing.T) {
 	e, o, tools, _, _, ticket := recoveryFixture(t)
 	e.GitHub.(*fakeGitHub).existing = &github.PullRequest{Number: 7, HTMLURL: "https://example.test/pr/7"}
 	result, err := e.Start(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerMerge || result.PR.Number != 7 || len(o.starts) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
+	if err == nil || result.State.Owner == machine.OwnerMerge || len(o.starts) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
 		t.Fatalf("result=%+v err=%v starts=%d gate=%d review=%d", result, err, len(o.starts), tools.gateCalls, tools.reviewCalls)
 	}
 }

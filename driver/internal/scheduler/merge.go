@@ -1,0 +1,315 @@
+package scheduler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path"
+	"sort"
+	"strings"
+
+	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
+)
+
+func readMergeHandoff(t *Ticket, comments []linear.Comment) {
+	rows := append([]linear.Comment(nil), comments...)
+	sort.SliceStable(rows, func(i, j int) bool {
+		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].ID < rows[j].ID
+		}
+		return rows[i].CreatedAt.Before(rows[j].CreatedAt)
+	})
+	seen := map[string]string{}
+	for _, c := range rows {
+		for _, line := range strings.Split(c.Body, "\n") {
+			if strings.HasPrefix(line, merge.ProgressPrefix) {
+				var p merge.Progress
+				if json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p) != nil {
+					t.MergeProblem = "invalid merge progress"
+				} else {
+					t.Progress = &p
+				}
+			}
+			if strings.HasPrefix(line, merge.HandoffPrefix) {
+				raw := strings.TrimPrefix(line, merge.HandoffPrefix)
+				var h merge.Handoff
+				if json.Unmarshal([]byte(raw), &h) != nil {
+					t.MergeProblem = "invalid handoff"
+					continue
+				}
+				if old, ok := seen[h.QueueID]; ok && old != raw {
+					t.MergeProblem = "conflicting handoff"
+				}
+				seen[h.QueueID] = raw
+				t.Handoff = &h
+			}
+		}
+	}
+}
+
+// AdvanceMerges reconstructs FIFO from external frozen evidence each tick. It
+// attempts only the oldest ticket per canonical repository, retaining ownership
+// until both the merged receipt and Done write are confirmed.
+func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
+	groups := map[string][]Ticket{}
+	for _, t := range tickets {
+		repo := r.Repositories[t.Repo].Env["AGENT_GH_REPO"]
+		groups[repo] = append(groups[repo], t)
+	}
+	var problems []error
+	names := make([]string, 0, len(groups))
+	for repo := range groups {
+		names = append(names, repo)
+	}
+	sort.Strings(names)
+	for _, repo := range names {
+		rows := groups[repo]
+		blocked := false
+		for _, t := range rows {
+			if t.Handoff == nil || t.MergeProblem != "" || t.Handoff.QueueID == "" || t.Handoff.EnqueuedAt.IsZero() {
+				problems = append(problems, fmt.Errorf("merge waiting %s: missing or conflicting durable handoff", t.Identifier))
+				blocked = true
+			}
+		}
+		if blocked {
+			continue
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			a, b := rows[i].Handoff, rows[j].Handoff
+			if a.EnqueuedAt.Equal(b.EnqueuedAt) {
+				return a.QueueID < b.QueueID
+			}
+			return a.EnqueuedAt.Before(b.EnqueuedAt)
+		})
+		if err := r.advanceMerge(ctx, rows[0]); err != nil {
+			problems = append(problems, fmt.Errorf("merge waiting %s: %w", rows[0].Identifier, err))
+		}
+	}
+	return errors.Join(problems...)
+}
+func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
+	h := t.Handoff
+	env := r.Repositories[t.Repo].Env
+	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || h.Dispatch == "" {
+		return errors.New("incomplete validation identity")
+	}
+	if err := h.Validated(); err != nil {
+		return err
+	}
+	if env["AGENT_DEPLOY_WORKFLOW"] != "" || env["AGENT_SMOKE_CMD"] != "" {
+		return errors.New("deployment recovery not implemented")
+	}
+	if r.GitHub == nil {
+		var err error
+		r.GitHub, err = github.New(github.Options{})
+		if err != nil {
+			return err
+		}
+	}
+	owner, repo, ok := strings.Cut(h.Repository, "/")
+	if !ok || owner == "" || repo == "" {
+		return errors.New("invalid repository")
+	}
+	a := &mergeAdapter{runtime: r, ticket: t, owner: owner, repo: repo}
+	pr, err := a.readPR(ctx)
+	if err != nil {
+		return err
+	}
+	sha := ""
+	if pr.Merged {
+		sha = pr.MergeSHA
+		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
+			if p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || (!commitID(p.Main) && !(p.MainUnknown && p.Main == "" && p.Phase == "merged")) || (p.MainUnknown && p.Main != "") || (p.MergeSHA != "" && p.MergeSHA != sha) {
+				return errors.New("conflicting merge progress")
+			}
+			a.main = p.Main
+		}
+	} else {
+		channel := merge.New(a, nil, nil, nil)
+		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, CatchupRounds: h.CatchupRounds}
+		if err = channel.Enqueue(req); err != nil {
+			return err
+		}
+		result, err := channel.Next(ctx, h.Repository)
+		if err != nil {
+			return err
+		}
+		if result.Status != merge.Merged {
+			return errors.New(result.Reason)
+		}
+		sha = result.MergeSHA
+	}
+	if !commitID(sha) {
+		return errors.New("merged SHA missing")
+	}
+	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged"}
+	// Persist the result while retaining merge ownership. A failed Done write
+	// leaves the same FIFO head to reconcile from GitHub on the next tick.
+	b, _ := json.Marshal(progress)
+	if err = r.mergeComment(ctx, t, merge.ProgressPrefix+string(b)); err != nil {
+		return err
+	}
+	issue, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"})
+	if err != nil || issue.State.Name != "Done" {
+		return errors.New("completion write unconfirmed")
+	}
+	return r.mergeComment(ctx, t, "阶段: "+string(machine.PhaseMerged)+"\n归属: "+string(machine.OwnerNone)+"\n"+merge.ProgressPrefix+string(b))
+}
+func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error {
+	client := r.Clients[t.Repo]
+	rows, err := client.ListComments(ctx, t.ID)
+	if err != nil {
+		return errors.New("merge receipt read failed")
+	}
+	for _, c := range rows {
+		if c.Body == body {
+			return nil
+		}
+	}
+	if _, err = client.CreateComment(ctx, t.ID, body); err == nil {
+		return nil
+	}
+	rows, readErr := client.ListComments(ctx, t.ID)
+	if readErr == nil {
+		for _, c := range rows {
+			if c.Body == body {
+				return nil
+			}
+		}
+	}
+	return errors.New("merge receipt write unconfirmed")
+}
+
+type mergeAdapter struct {
+	runtime           *Runtime
+	ticket            Ticket
+	owner, repo, main string
+}
+
+func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
+	h := a.ticket.Handoff
+	p, err := a.runtime.GitHub.GetPR(ctx, a.owner, a.repo, h.PR)
+	if err != nil {
+		return p, err
+	}
+	if p.Number != h.PR || p.Head.SHA != h.Head || p.Head.Ref != "agent/"+h.Identifier+"/"+h.Unit || p.Head.Repo.FullName != h.Repository || p.Base.Ref != "main" || p.Base.Repo.FullName != h.Repository {
+		return p, errors.New("PR identity changed")
+	}
+	return p, nil
+}
+func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Snapshot, error) {
+	p, err := a.readPR(ctx)
+	if err != nil {
+		return merge.Snapshot{}, err
+	}
+	if p.Merged || p.State != "open" || p.Draft == nil || *p.Draft || p.Mergeable == nil || !*p.Mergeable {
+		return merge.Snapshot{}, errors.New("PR not explicitly mergeable")
+	}
+	if err := a.runtime.GitHub.UniqueTicketPR(ctx, a.owner, a.repo, a.ticket.Identifier, a.ticket.Handoff.PR); err != nil {
+		return merge.Snapshot{}, err
+	}
+	main, err := a.runtime.GitHub.MainSHA(ctx, a.owner, a.repo)
+	if err != nil || !commitID(main) {
+		return merge.Snapshot{}, errors.New("main unavailable")
+	}
+	a.main = main
+	run := func(args ...string) ([]byte, error) { return a.runtime.command(ctx, a.ticket.Repo, "git", args...) }
+	if _, err = run("fetch", "--no-tags", "origin", p.Head.SHA, main); err != nil {
+		return merge.Snapshot{}, errors.New("fixed commits unavailable")
+	}
+	raw, err := run("merge-base", p.Head.SHA, main)
+	base := strings.TrimSpace(string(raw))
+	if err != nil || !commitID(base) {
+		return merge.Snapshot{}, errors.New("merge base unavailable")
+	}
+	paths := func(head string) ([]string, error) {
+		b, e := run("diff", "--name-only", "--no-renames", "-z", base, head, "--")
+		if e != nil {
+			return nil, e
+		}
+		if len(b) > 0 && b[len(b)-1] != 0 {
+			return nil, errors.New("incomplete paths")
+		}
+		return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), nil
+	}
+	prFiles, err := paths(p.Head.SHA)
+	if err != nil {
+		return merge.Snapshot{}, err
+	}
+	mainFiles, err := paths(main)
+	if err != nil {
+		return merge.Snapshot{}, err
+	}
+	if err := a.policy(prFiles); err != nil {
+		return merge.Snapshot{}, err
+	}
+	green, err := a.runtime.GitHub.MergeChecks(ctx, a.owner, a.repo, p.Head.SHA)
+	if err != nil {
+		return merge.Snapshot{}, err
+	}
+	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main, PRFiles: prFiles, MainFiles: mainFiles}, nil
+}
+func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main string) (string, error) {
+	fresh, err := a.Snapshot(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if fresh.Main != main {
+		return "", merge.ErrMainAdvanced
+	}
+	if fresh.Head != head || !fresh.CIGreen || fresh.MergeableState != "clean" {
+		return "", errors.New("validation changed")
+	}
+	h := a.ticket.Handoff
+	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent"}
+	raw, _ := json.Marshal(intent)
+	if err := a.runtime.mergeComment(ctx, a.ticket, merge.ProgressPrefix+string(raw)); err != nil {
+		return "", err
+	}
+	// The durable write can take time; reread all pinned evidence afterwards.
+	fresh, err = a.Snapshot(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if fresh.Main != main {
+		return "", merge.ErrMainAdvanced
+	}
+	if fresh.Head != head || !fresh.CIGreen || fresh.MergeableState != "clean" {
+		return "", errors.New("validation changed after intent")
+	}
+	p, err := a.runtime.GitHub.MergePR(ctx, a.owner, a.repo, req.Number, head)
+	if err != nil {
+		return "", err
+	}
+	if p.Head.SHA != head {
+		return "", errors.New("merged head changed")
+	}
+	return p.MergeSHA, nil
+}
+
+func (a *mergeAdapter) policy(files []string) error {
+	env := a.runtime.Repositories[a.ticket.Repo].Env
+	lane := a.ticket.Handoff.Lane
+	if lane == 2 && env["AGENT_LANE2_AUTOMERGE"] != "1" {
+		return errors.New("lane 2 requires manual approval")
+	}
+	for _, key := range []string{"AGENT_LANE3_GLOBS", "AGENT_LANE2_MANUAL_GLOBS", "AGENT_LANE2_GLOBS"} {
+		for _, pattern := range strings.Fields(env[key]) {
+			if _, err := path.Match(pattern, ""); err != nil {
+				return errors.New("invalid merge policy glob")
+			}
+			for _, file := range files {
+				if scopeMatch(pattern, file) {
+					if key != "AGENT_LANE2_GLOBS" || lane != 2 {
+						return errors.New("changed path requires manual approval or new lane validation")
+					}
+				}
+			}
+		}
+	}
+	return nil
+}

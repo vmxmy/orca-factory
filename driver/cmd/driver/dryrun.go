@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -43,12 +44,9 @@ func (b *dryBackend) LinearLimits() []linear.RateLimit {
 	}
 	return nil
 }
-func (b *dryBackend) ActualChanges(ctx context.Context, t scheduler.Ticket) ([]string, bool, error) {
-	if source, ok := b.Backend.(interface {
-		ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error)
-	}); ok {
-		return source.ActualChanges(ctx, t)
-	}
+
+// Runtime.ActualChanges fetches remote refs. Dry-run uses declared scope.
+func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error) {
 	return nil, false, nil
 }
 
@@ -57,4 +55,11 @@ func (b *dryBackend) ActualChanges(ctx context.Context, t scheduler.Ticket) ([]s
 func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
 	return s.Tick(ctx)
+}
+
+// Legacy branch verification fetches objects. Do not simulate a release or
+// restart from missing evidence when dry-run deliberately omits that mutation.
+func (b *dryBackend) InspectLegacy(_ context.Context, t scheduler.Ticket) (scheduler.Legacy, error) {
+	fmt.Fprintf(b.out, "would reconcile legacy %s (git fetch omitted in dry-run)\n", t.Identifier)
+	return scheduler.Legacy{}, errors.New("legacy verification requires git fetch")
 }

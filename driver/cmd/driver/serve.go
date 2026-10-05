@@ -185,3 +185,12 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 func statusLimit(limit linear.RateLimit) status.RateLimit {
 	return status.RateLimit{Limit: limit.Limit, Remaining: limit.Remaining, Reset: limit.Reset}
 }
+
+func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		AdvanceMerges(context.Context, []scheduler.Ticket) error
+	}); ok {
+		return source.AdvanceMerges(ctx, tickets)
+	}
+	return nil
+}

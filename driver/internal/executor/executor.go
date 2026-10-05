@@ -173,6 +173,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	// diffBase is the head's merge-base with current main: a worker that rebased
 	// must not be charged for main's commits since the claim baseline.
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, reviewerTier string
+	var mergeGateOutput, mergeReviewOutput string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -220,6 +221,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		if previous.Owner != next.Owner {
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
+		}
+		if ev == machine.EvOpenPR {
+			evidence, err := e.freezeMergeHandoff(ctx, c, t, result, cp, head, diffBase, spec, mergeGateOutput, mergeReviewOutput)
+			if err != nil {
+				return err
+			}
+			body += "\n" + evidence
 		}
 		if next.Phase == machine.PhaseCorrection {
 			summary, err := e.failSummary(ctx, c, cmp.Or(diffBase, baseline), branch, head, failureOutput, ev)
@@ -440,6 +448,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		event = machine.EvGateRed
 		if gateErr == nil && verdict == "green" {
 			event = machine.EvGateGreen
+			mergeGateOutput = output
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err
@@ -471,6 +480,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if reviewErr == nil && parseErr == nil {
 				if verdict == "green" {
 					event = machine.EvReviewGreen
+					mergeReviewOutput = output
 				} else {
 					event = machine.EvReviewRed
 				}

@@ -11,10 +11,14 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 )
 
 type Ticket struct {
+	Progress                            *merge.Progress
+	Handoff                             *merge.Handoff
+	MergeProblem                        string
 	ID, Identifier, Repo, Terminal, Run string
 	Scope                               []string
 	Priority                            int
@@ -159,7 +163,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		}
 		r := repos[t.Repo]
 		action := Action{}
-		if owned(t) && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+		if t.Owner == machine.OwnerExecutor && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 			action = Action{Kind: Human, Attempt: t.Attempt, Reason: "in-flight ticket exceeded stale limit"}
 		} else if t.Owner == machine.OwnerMerge {
 			s.MergeQueue = append(s.MergeQueue, t)
@@ -237,6 +241,13 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if err := s.Backend.Launch(ctx, t); err != nil {
 				problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
 			}
+		}
+	}
+	if merger, ok := s.Backend.(interface {
+		AdvanceMerges(context.Context, []Ticket) error
+	}); ok {
+		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
+			problems = append(problems, err)
 		}
 	}
 	sort.SliceStable(tickets, func(i, j int) bool {
