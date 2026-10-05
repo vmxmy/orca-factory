@@ -21,6 +21,10 @@ import (
 func init() { Register("logs", showLogs) }
 
 func showLogs(args []string) int {
+	return showLogsAt(args, time.Now())
+}
+
+func showLogsAt(args []string, now time.Time) int {
 	flags := flag.NewFlagSet("logs", flag.ContinueOnError)
 	follow := flags.Bool("follow", false, "follow new log lines until interrupted")
 	asJSON := flags.Bool("json", false, "output original JSON lines")
@@ -47,7 +51,7 @@ func showLogs(args []string) int {
 	}
 	var cutoff time.Time
 	if *since > 0 {
-		cutoff = time.Now().Add(-*since)
+		cutoff = now.Add(-*since)
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -86,7 +90,9 @@ func logSources(root, ticket string) ([]logSource, error) {
 			return err
 		}
 		for _, entry := range entries {
-			if !entry.IsDir() && (entry.Name() == base || strings.HasPrefix(entry.Name(), base+".")) {
+			suffix := strings.TrimPrefix(entry.Name(), base+".")
+			rotated := strings.HasPrefix(entry.Name(), base+".") && len(suffix) == 1 && suffix[0] >= '1' && suffix[0] <= '5'
+			if !entry.IsDir() && (entry.Name() == base || rotated) {
 				sources = append(sources, logSource{filepath.Join(dir, entry.Name()), component})
 			}
 		}
@@ -210,7 +216,7 @@ func readLogLines(f *os.File, cursor *logCursor, component, ticket string, cutof
 			return nil, fmt.Errorf("invalid JSON log line: %w", err)
 		}
 		id := logField(fields, "ticket")
-		if component == "scheduler" && id != ticket || component == "executor" && id != "" && id != ticket {
+		if component == "scheduler" && id != ticket && !strings.Contains(logField(fields, "msg"), ticket) {
 			continue
 		}
 		at, err := time.Parse(time.RFC3339Nano, logField(fields, "time"))
@@ -242,10 +248,13 @@ func formatLog(entry logEntry) string {
 		}
 		return s
 	}
-	parts := []string{entry.at.Format(time.RFC3339Nano), heading(component), heading(logField(entry.fields, "level")), heading(logField(entry.fields, "event"))}
+	parts := []string{entry.at.Format(time.RFC3339Nano), "[" + heading(component) + "]", heading(logField(entry.fields, "level")), heading(logField(entry.fields, "msg"))}
+	if event := logField(entry.fields, "event"); event != "" {
+		parts = append(parts, "event="+heading(event))
+	}
 	var keys []string
 	for key := range entry.fields {
-		if key != "time" && key != "component" && key != "level" && key != "event" {
+		if key != "time" && key != "component" && key != "level" && key != "event" && key != "msg" {
 			keys = append(keys, key)
 		}
 	}
