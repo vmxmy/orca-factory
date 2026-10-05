@@ -196,7 +196,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				body += "\n" + summary
 			}
 		}
-		if _, commentErr := e.Linear.CreateComment(ctx, t.ID, body); commentErr != nil {
+		if commentErr := e.comment(ctx, t.ID, body); commentErr != nil {
 			return errors.New("Linear transition comment failed")
 		}
 		return nil
@@ -215,13 +215,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if cp.Run != "" {
 			// A new executor terminal must take over the checkpointed Run, not create one.
 			if _, callErr = e.Orca.RunUse(ctx, runRequest(t, c, "run-use"), cp.Run); callErr != nil {
-				return errors.New("Orca run takeover failed; reconcile request before retry")
+				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", callErr)
 			}
 			result.RunID = cp.Run
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
-				return errors.New("Orca run creation failed; reconcile request before retry")
+				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", callErr)
 			}
 			result.RunID = receiptString(receipt, "runId")
 			if result.RunID == "" {

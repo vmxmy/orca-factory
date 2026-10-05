@@ -95,7 +95,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 			}
 		}
 		result := Result{State: state, PR: *pr}
-		if _, err = e.Linear.CreateComment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
+		if err = e.comment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
 			return result, errors.New("resume handoff comment failed")
 		}
 		return result, nil

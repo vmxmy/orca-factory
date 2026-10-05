@@ -207,9 +207,8 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 				}
 				switch key {
 				case "term":
-					if value != "-" {
-						t.Terminal = value
-					}
+					// "-" is the scheduler's claim marker: no executor has registered yet.
+					t.Terminal = value
 				case "run":
 					if value != "-" {
 						t.Run = value

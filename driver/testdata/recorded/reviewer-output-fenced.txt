@@ -1,0 +1,14 @@
+连通正常，但简报说 diff 为空，实际并不为空。`git diff origin/main...HEAD`（以 merge-base 为基准）显示 1 个提交（194a70b，ZII-893）、4 个文件、新增 162 行：
+
+- `driver/internal/ledger/ledger.go`
+- `driver/internal/ledger/usage_test.go`
+- `driver/internal/usage/usage.go`
+- `mods/swarm-board/types/index.d.ts`
+
+简报里没有 `Change` 条目，这些改动都无从对照，所以我给 red。没有逐行审这些文件，只核对了范围：没有文件命中 `AGENT_LANE3_GLOBS`（`.env*`、`*secrets*`）。我也没去搜 diff 里有没有明文密钥。
+
+直接对 origin/main 做 `git diff`（不带 `...`）还会多出 `runtime.go` 等文件。那是因为本地 origin/main 已前进到 cc04583（#118–#120），分支基于 0a2cfd4，这些不属于本分支改动。
+
+```json
+{"unit":"ZII-893-executor","verdict":"red","step":"review","reason":"简报声明 diff 为空，但分支相对 merge-base(0a2cfd4) 有 1 个提交（194a70b）、4 个文件、+162 行；简报无 Change 条目可对照。若这只是连通性测试，请忽略并以空分支重跑。","evidence":[{"file":"driver/internal/usage/usage.go","line":1,"note":"SCOPE 内越简报：新增 40 行，简报无对应 Change"},{"file":"driver/internal/ledger/ledger.go","line":1,"note":"SCOPE 内越简报：新增 25 行，简报无对应 Change"},{"file":"driver/internal/ledger/usage_test.go","line":1,"note":"SCOPE 内越简报：新增 71 行测试，简报无对应 Change"},{"file":"mods/swarm-board/types/index.d.ts","line":1,"note":"SCOPE 内越简报：新增 26 行，简报无对应 Change"}],"scope":"unknown（简报未给出 gate spec 的 SCOPE）","lane":2}
+```
