@@ -49,6 +49,9 @@ type Connection[T any] struct {
 	PageInfo PageInfo `json:"pageInfo"`
 }
 type Issue struct {
+	Priority   int                  `json:"priority"`
+	CreatedAt  time.Time            `json:"createdAt"`
+	Project    NamedID              `json:"project"`
 	ID         string               `json:"id"`
 	Identifier string               `json:"identifier"`
 	State      NamedID              `json:"state"`
@@ -184,7 +187,7 @@ func resolve(names []string, cache map[string]string) ([]string, error) {
 	return ids, nil
 }
 
-const issueFields = `id identifier updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } }`
+const issueFields = `id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } }`
 
 // Snapshot queries all requested project names together, paging the issue
 // connection. A zero updatedSince omits the updatedAt filter entirely.

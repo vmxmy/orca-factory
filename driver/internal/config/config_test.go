@@ -58,3 +58,21 @@ func TestMachineAndRepositoryConfig(t *testing.T) {
 		t.Fatalf("configuration: %+v", c)
 	}
 }
+
+func TestRejectNonFiniteTokenRefill(t *testing.T) {
+	for _, value := range []string{"nan", "inf", "-inf"} {
+		t.Run(value, func(t *testing.T) {
+			home := t.TempDir()
+			dir := filepath.Join(home, ".config", "orca-factory")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "driver.toml"), []byte("[token_bucket]\nrefill_per_second="+value+"\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(home); err == nil {
+				t.Fatal("accepted nonfinite refill")
+			}
+		})
+	}
+}

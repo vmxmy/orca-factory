@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -48,7 +49,7 @@ func Load(home string) (Config, error) {
 			return Config{}, errors.New("invalid machine configuration")
 		}
 	}
-	if raw.MaxInFlight < 1 || raw.TokenBucket.Capacity < 1 || raw.TokenBucket.RefillPerSecond <= 0 {
+	if raw.MaxInFlight < 1 || raw.TokenBucket.Capacity < 1 || raw.TokenBucket.RefillPerSecond <= 0 || math.IsNaN(raw.TokenBucket.RefillPerSecond) || math.IsInf(raw.TokenBucket.RefillPerSecond, 0) {
 		return Config{}, errors.New("configuration limits must be positive")
 	}
 	result := Config{MaxInFlight: raw.MaxInFlight, TokenBucket: raw.TokenBucket}
