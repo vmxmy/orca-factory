@@ -329,6 +329,7 @@ cmd_doctor() {
 SELFTEST_TMP=""
 cmd_selftest() {
   SELFTEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/orca-factory-selftest.XXXXXX")"
+  export AGENT_LINEAR_COUNT_FILE="$SELFTEST_TMP/linear-calls"   # selftest uses a fake orca; its calls must not land in the real per-hour counter
   trap '[[ -n "$SELFTEST_TMP" ]] && rm -rf "$SELFTEST_TMP"' EXIT
   git init -q "$SELFTEST_TMP"
   cmd_init "$SELFTEST_TMP"
