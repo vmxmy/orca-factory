@@ -239,3 +239,54 @@ func TestWorkerReportShapes(t *testing.T) {
 		t.Fatal("invalid result accepted")
 	}
 }
+
+func TestIdleDetectionTerminalList(t *testing.T) {
+	for _, tc := range []struct {
+		name, result string
+		invalid      bool
+	}{
+		{"valid", `{"terminals":[{"handle":"old","worktreePath":"/worker","lastOutputAt":1000},{"handle":"new","worktreeId":"repo::/worker","worktreePath":"","lastOutputAt":2000},{"handle":"other","worktreePath":"/worker-other","lastOutputAt":3000}]}`, false},
+		{"empty", `{"terminals":[]}`, false},
+		{"truncated", `{"terminals":[],"truncated":true}`, true},
+		{"object", `{"terminals":{}}`, true},
+		{"null", `{"terminals":null}`, true},
+		{"missing", `{}`, true},
+		{"string timestamp", `{"terminals":[{"lastOutputAt":"private-value"}]}`, true},
+		{"null timestamp", `{"terminals":[{"lastOutputAt":null}]}`, true},
+		{"missing timestamp", `{"terminals":[{}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, log := fake(t)
+			path := filepath.Join(t.TempDir(), "orca")
+			script := "#!/bin/sh\nprintf '%s\\n' \"$@\" END > \"$ORCA_TEST_LOG\"\nprintf '%s\\n' '{\"ok\":true,\"result\":" + tc.result + "}'\n"
+			if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+				t.Fatal(err)
+			}
+			c.Path = path
+			terminals, err := c.TerminalList(context.Background())
+			if tc.invalid {
+				var ticket *infra.Ticket
+				if !errors.As(err, &ticket) || strings.Contains(err.Error(), "private-value") {
+					t.Fatalf("error=%v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			argv(t, log, []string{"terminal", "list", "--json", "END"})
+			got, ok := TerminalForWorktree(terminals, "/worker")
+			if tc.name == "valid" && (!ok || got.Handle != "new" || got.LastOutputAt != 2000) {
+				t.Fatalf("match=%+v found=%v", got, ok)
+			}
+			if tc.name == "empty" && ok {
+				t.Fatal("matched empty terminals")
+			}
+			for _, path := range []string{"", "worker", "/work"} {
+				if _, ok := TerminalForWorktree(terminals, path); ok {
+					t.Fatalf("matched %q", path)
+				}
+			}
+		})
+	}
+}
