@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -33,7 +32,7 @@ func fixture(t *testing.T, h http.HandlerFunc, options Options) *Client {
 func TestCreatePRIdempotent(t *testing.T) {
 	for _, exists := range []bool{true, false} {
 		t.Run(fmt.Sprint(exists), func(t *testing.T) {
-			var gets, posts atomic.Int32
+			gets, posts := 0, 0
 			c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/repos/acme/app/pulls" {
 					t.Errorf("path %s", r.URL.Path)
@@ -42,18 +41,18 @@ func TestCreatePRIdempotent(t *testing.T) {
 					t.Error("missing authorization")
 				}
 				if r.Method == "GET" {
-					gets.Add(1)
+					gets++
 					if r.URL.Query().Get("head") != "acme:topic" || r.URL.Query().Get("state") != "open" {
 						t.Error("wrong search")
 					}
-					if exists || posts.Load() > 0 {
+					if exists || posts > 0 {
 						fmt.Fprint(w, `[{"number":17,"head":{"sha":"abc"}}]`)
 					} else {
 						fmt.Fprint(w, `[]`)
 					}
 					return
 				}
-				posts.Add(1)
+				posts++
 				// The server accepted the write but its response times out.
 				select {
 				case <-r.Context().Done():
@@ -64,11 +63,11 @@ func TestCreatePRIdempotent(t *testing.T) {
 			if err != nil || pr.Number != 17 {
 				t.Fatalf("pr=%+v err=%v", pr, err)
 			}
-			if exists && (posts.Load() != 0 || gets.Load() != 1) {
-				t.Fatalf("gets=%d posts=%d", gets.Load(), posts.Load())
+			if exists && (posts != 0 || gets != 1) {
+				t.Fatalf("gets=%d posts=%d", gets, posts)
 			}
-			if !exists && (posts.Load() != 1 || gets.Load() != 2) {
-				t.Fatalf("gets=%d posts=%d", gets.Load(), posts.Load())
+			if !exists && (posts != 1 || gets != 2) {
+				t.Fatalf("gets=%d posts=%d", gets, posts)
 			}
 		})
 	}

@@ -2,9 +2,10 @@
 package runx
 
 import (
+	"bytes"
 	"context"
 	"errors"
-	"log/slog"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,7 +16,7 @@ import (
 // Spec describes a command. Timeout must be positive. Env, when non-nil,
 // replaces the inherited environment. Args and output are never included in errors.
 type Spec struct {
-	Logger  *slog.Logger // Optional; nil disables logging.
+	Logger  func(string) // Optional; nil disables logging.
 	Path    string
 	Args    []string
 	Dir     string
@@ -48,7 +49,7 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
-	var stderr stderrCapture
+	var stderr bytes.Buffer
 	if spec.Logger != nil {
 		cmd.Stderr = &stderr
 	}
@@ -57,15 +58,25 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 	if spec.Logger != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = stderr.diagnostic()
+			exit.Stderr = diagnostic(stderr.Bytes())
 		}
-		code := -1
-		if cmd.ProcessState != nil {
-			code = cmd.ProcessState.ExitCode()
+		code := 0
+		if err != nil {
+			code = -1
+			if exit != nil {
+				code = exit.ExitCode()
+			}
+		}
+		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+		if timedOut {
+			code = -1
 		}
 		args, secrets := safeArgs(spec.Args)
-		diagnostic := stderr.logText(secrets)
-		spec.Logger.InfoContext(ctx, "external call", "component", "runx", "executable", SafeText(filepath.Base(spec.Path)), "args", args, "exit_code", code, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "stderr", diagnostic, "timeout", errors.Is(ctx.Err(), context.DeadlineExceeded))
+		diagnostic := hideSecrets(stderr.String(), secrets)
+		if len(diagnostic) > stderrLimit {
+			diagnostic = diagnostic[:stderrLimit]
+		}
+		spec.Logger(fmt.Sprintf("runx executable=%q args=%q exit=%d duration_ms=%d stderr=%q timeout=%t", SafeText(filepath.Base(spec.Path)), args, code, time.Since(started).Milliseconds(), diagnostic, timedOut))
 	}
 	if ctx.Err() != nil {
 		return output, ctx.Err()

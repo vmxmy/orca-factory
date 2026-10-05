@@ -7,8 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,7 +26,7 @@ var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za
 const endpoint = "https://api.linear.app/graphql"
 
 type Options struct {
-	Logger *slog.Logger // Optional; nil disables logging.
+	Logger func(string) // Optional; nil disables logging.
 	TeamID string
 	// BaseURL overrides the GraphQL endpoint for tests. Redirects are forbidden.
 	BaseURL    string
@@ -122,7 +122,7 @@ type Usage struct {
 	ComplexityLimit RateLimit
 }
 type Client struct {
-	logger                   *slog.Logger
+	logger                   func(string)
 	key, endpoint            string
 	http                     *http.Client
 	states, labels, projects map[string]string
@@ -469,11 +469,11 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 		if match := operationName.FindStringSubmatch(query); len(match) > 1 {
 			operation = match[1]
 		}
-		level := slog.LevelInfo
-		if limited || status == 429 {
-			level = slog.LevelWarn
+		level := ""
+		if resultErr != nil || limited || status == 429 {
+			level = "[WARN] "
 		}
-		c.logger.Log(ctx, level, "external call", "component", "linear", "operation", operation, "http_status", status, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "complexity", complexity, "requests_remaining", remaining, "success", resultErr == nil)
+		c.logger(fmt.Sprintf("%slinear operation=%s status=%d duration_ms=%d X-Complexity=%s X-RateLimit-Requests-Remaining=%s", level, operation, status, time.Since(started).Milliseconds(), complexity, remaining))
 	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {

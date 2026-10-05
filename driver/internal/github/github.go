@@ -6,8 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -21,7 +21,7 @@ import (
 // Options injects transport, credentials, and timing. BaseURL defaults to
 // https://api.github.com; an override is a trusted origin (usually httptest).
 type Options struct {
-	Logger     *slog.Logger // Optional; nil disables logging.
+	Logger     func(string) // Optional; nil disables logging.
 	BaseURL    string
 	HTTPClient *http.Client
 	Token      func(context.Context) (string, error)
@@ -37,7 +37,7 @@ type cachedResponse struct {
 // Client is safe for concurrent use. Each client owns a capacity-one write
 // token bucket, refilled once per second, and an ETag cache.
 type Client struct {
-	logger     *slog.Logger
+	logger     func(string)
 	base       string
 	http       *http.Client
 	token      func(context.Context) (string, error)
@@ -126,7 +126,11 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 			requestID = resp.Header.Get("X-GitHub-Request-Id")
 		}
 		endpoint, _, _ := strings.Cut(path, "?")
-		c.logger.InfoContext(ctx, "external call", "component", "github", "method", method, "endpoint", runx.SafeText(endpoint), "http_status", status, "success", resultErr == nil, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "request_id", runx.SafeText(requestID))
+		result := fmt.Sprintf("status=%d", status)
+		if resp == nil && resultErr != nil {
+			result = fmt.Sprintf("error=%T", resultErr)
+		}
+		c.logger(fmt.Sprintf("github interface=%q %s duration_ms=%d request_id=%q", method+" "+runx.SafeText(endpoint), result, time.Since(started).Milliseconds(), runx.SafeText(requestID)))
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
