@@ -187,6 +187,7 @@ export const __resetSwarmBoardCachesForTests = () => {
   TMP_DIR = ''
   SNAPSHOT_FILE = ''
   driverStatusFile = ''
+  driverCache = undefined
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
@@ -504,7 +505,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
-  const driver = undefined
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
@@ -795,7 +795,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
   if (!linearOk) {
     return {
-      at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
+      at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver: undefined,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -803,7 +803,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
   return {
-    at, error, maxInFlight, phases, coordinatorAlive, driver, inFlight, queue, failed, doneToday, prs,
+    at, error, maxInFlight, phases, coordinatorAlive, driver: undefined, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -811,22 +811,27 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
 }
 
-const driverCache = atom<DriverStatus | undefined>(undefined)
+let driverCache: DriverStatus | undefined
 let driverStatusFile = ''
 async function readDriverSnapshot($: any) {
   if (!driverStatusFile) {
-    const r = await $.process.run(['sh', '-c', 'printf %s "${XDG_RUNTIME_DIR:-/tmp}/orca-factory/status.json"'], { timeoutMs: TIMEOUT_MS })
-    if (r?.exitCode !== 0) return
-    driverStatusFile = String(r.stdout ?? '').trim()
+    try {
+      const r = await $.process.run(['sh', '-c', 'printf %s "${XDG_RUNTIME_DIR:-/tmp}/orca-factory/status.json"'], { timeoutMs: TIMEOUT_MS })
+      if (r?.exitCode !== 0) return
+      driverStatusFile = String(r.stdout ?? '').trim()
+    } catch {
+      driverCache = undefined
+      return
+    }
   }
   let status: DriverStatus | undefined
   try { status = parseDriverStatus(json(await $.fs.read(driverStatusFile))) }
   catch { status = undefined } // A missing cache immediately restores precheck.
-  await update($, driverCache, () => status)
+  driverCache = status
 }
 
 function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Board {
-  if (!driver || driver.state !== 'ok' || pickStatusSource(driver, b, now) !== 'driver') return b
+  if (!driver || driver.state !== 'ok' || pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: undefined }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
   const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
@@ -924,8 +929,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [snapshotBoard, v, q, d, , tickMs, driver] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt), read($, driverCache)])
-    const b = withDriver(snapshotBoard, driver, Date.now())
+    const [snapshotBoard, v, q, d, , tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
+    const b = withDriver(snapshotBoard, driverCache, Date.now())
     const automation = (b as Board).automation
     const automationKnown = (b as Board).automationKnown
     const lastSuccessAt = (b as Board).lastSuccessAt
@@ -952,7 +957,12 @@ export const register: Register = on => {
     }
     // Tasks view: swim lanes. One column per stage; a ticket is a small card that moves right.
     type Lane = { title: string; emoji: string; color?: string; items: Ticket[] }
-    const stage = (t: Ticket): 1 | 2 | 3 => laneStage(t, b.agents)
+    const stage = (t: Ticket): 1 | 2 | 3 => {
+      const phase = b.driver?.state === 'ok' ? b.driver.tickets.find(row => row.identifier === t.id)?.phase : undefined
+      if (phase === '排队合并' || phase === '开 PR') return 3
+      if (phase === 'gate' || phase === '审查') return 2
+      return phase ? 1 : laneStage(t, b.agents)
+    }
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
       const reason = lines[0]?.match(/^转人:\s*(.*)/)?.[1]
@@ -1346,6 +1356,7 @@ export const register: Register = on => {
             ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
             : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
           {(() => {
+            if (b.driver?.state === 'ok') return <Text dimColor>· 数据来自驱动器实时状态</Text>
             const snapshotAgeMs = (b as Board).snapshotAgeMs
             const throttled = (b as Board).linearThrottled === true
             if (snapshotAgeMs !== undefined) {

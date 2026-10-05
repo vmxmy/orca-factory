@@ -32,7 +32,6 @@ export const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
   }
 }
 
-
 // Precheck remains the fallback for absent, malformed, future, or expired cache.
 export function pickStatusSource(status: unknown, _snapshot: unknown, now: number): 'driver' | 'snapshot' {
   if (!record(status)) return 'snapshot'
