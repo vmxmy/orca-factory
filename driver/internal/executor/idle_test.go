@@ -49,7 +49,7 @@ func TestIdleDetection(t *testing.T) {
 			now := e.Now()
 			initial := now
 			e.Now = func() time.Time { return now }
-			e.Config.PollInterval = time.Minute
+			e.Config.PollInterval = 6 * time.Minute
 			e.Sleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
 			o := &idleOrca{worktree: "/worker"}
 			o.tasks = func(n int) []orca.Task {
@@ -100,6 +100,7 @@ func TestIdleBudgetExhaustion(t *testing.T) {
 	now := e.Now()
 	e.Now = func() time.Time { return now }
 	e.Config.WorkerIdleTimeout = time.Minute
+	e.Config.PollInterval = time.Minute
 	e.Sleep = func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }
 	o := &idleOrca{worktree: "/worker"}
 	o.tasks = func(n int) []orca.Task {
@@ -168,6 +169,36 @@ func (f *idleOrca) TerminalSend(_ context.Context, terminal, text string) (orca.
 }
 
 func TestIdleNudge(t *testing.T) {
+	t.Run("full grace interval", func(t *testing.T) {
+		e, _, _, _, _, _ := fixture(t, "new-sha")
+		now := e.Now()
+		e.Now = func() time.Time { return now }
+		o := &idleOrca{worktree: "/worker"}
+		o.terminals = func(int) ([]orca.Terminal, error) {
+			return []orca.Terminal{{Handle: "term_worker", WorktreePath: "/worker", LastOutputAt: 1}}, nil
+		}
+		e.Orca = o
+		state := machine.Initial()
+		var idle workerIdle
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("first idle counted before nudge grace")
+		}
+		now = now.Add(time.Minute)
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("grace interval did not restart at nudge")
+		}
+		now = now.Add(time.Millisecond)
+		if !idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("idle beyond grace not counted")
+		}
+		if idle.observe(context.Background(), e, "/worker", time.Minute, state) {
+			t.Fatal("same idle counted twice")
+		}
+		if len(o.sends) != 1 {
+			t.Fatalf("sends=%v", o.sends)
+		}
+	})
+
 	t.Run("paused", func(t *testing.T) {
 		e, _, _, _, _, _ := fixture(t, "new-sha")
 		o := &idleOrca{worktree: "/worker"}

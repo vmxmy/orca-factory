@@ -219,3 +219,7 @@ func TestMainPathTicketFields(t *testing.T) {
 }
 
 func (*fakeOrca) TerminalList(context.Context) ([]orca.Terminal, error) { return nil, nil }
+
+func (*fakeOrca) TerminalSend(context.Context, string, string) (orca.Receipt, error) {
+	return nil, nil
+}
