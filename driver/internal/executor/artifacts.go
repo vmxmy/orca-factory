@@ -120,9 +120,7 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		}
 		heading := strings.HasPrefix(trimmed, "#")
 		text := strings.TrimPrefix(clean(strings.TrimLeft(trimmed, "#")), "**")
-		if strings.HasSuffix(text, "**") {
-			text = strings.TrimSuffix(text, "**")
-		}
+		text = strings.TrimSuffix(text, "**")
 		if heading {
 			// A heading may carry a note, e.g. 「## 要做（接口票）」 or 「## SCOPE (新建)」.
 			if i := strings.IndexAny(text, "（("); i > 0 {

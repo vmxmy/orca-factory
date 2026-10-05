@@ -40,6 +40,7 @@ const (
 type Event string
 
 const (
+	EvInfraFailure Event = "infraFailure"
 	EvClaim        Event = "claim"
 	EvWorkerOK     Event = "workerOk"
 	EvWorkerFail   Event = "workerFail"
@@ -149,6 +150,16 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 	}
 
 	switch ev {
+	case EvInfraFailure:
+		switch s.Phase {
+		case PhaseUnclaimed, PhaseWorker, PhaseBranchCheck, PhaseGate, PhaseReview, PhaseCorrection, PhaseOpenPR:
+		default:
+			return reject("不在执行器业务阶段")
+		}
+		if s.frozen() {
+			return reject("依赖暂停中")
+		}
+		infra(string(s.Phase))
 	case EvClaim:
 		switch {
 		case s.Phase != PhaseUnclaimed:

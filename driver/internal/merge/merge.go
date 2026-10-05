@@ -9,6 +9,8 @@ import (
 	"sync"
 )
 
+var ErrGateRed = errors.New("merged-result gate red")
+
 var ErrMainAdvanced = errors.New("main advanced during merge validation")
 
 type Request struct {
@@ -244,7 +246,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	}
 	overlap := s.Behind && intersects(s.PRFiles, s.MainFiles)
 	if overlap {
-		if c.git == nil || c.gate == nil {
+		if c.git == nil {
 			return r, errors.New("merge validation dependencies required")
 		}
 		tree, conflict, err := c.git.MergeTree(ctx, e.request, s.Head, s.Main)
@@ -265,6 +267,9 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		if !mergeReady(s) {
 			return finish(Waiting, "head CI or mergeability not ready")
 		}
+		if c.gate == nil {
+			return r, errors.New("merge gate required")
+		}
 		gateRan := false
 		var gateErr error
 		err = c.git.WithWorktree(ctx, e.request, tree, s.Head, s.Main, func(ctx context.Context, path string) error {
@@ -282,6 +287,9 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 			return r, errors.New("validation worktree unavailable")
 		}
 		if errors.Is(gateErr, context.Canceled) || errors.Is(gateErr, context.DeadlineExceeded) {
+			return r, gateErr
+		}
+		if gateErr != nil && !errors.Is(gateErr, ErrGateRed) {
 			return r, gateErr
 		}
 		if gateErr != nil {

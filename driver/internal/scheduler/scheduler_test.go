@@ -57,10 +57,16 @@ func TestSecondInstanceCannotLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	second, err := Acquire(path)
 	if err == nil {
-		second.Close()
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
 		t.Fatal("second instance acquired lock")
 	}
 }
@@ -214,7 +220,11 @@ func TestServeContenderDoesNotInitialize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	initialized := false
 	err = Serve(context.Background(), path, func(context.Context) (*Scheduler, error) { initialized = true; return nil, nil }, nil, nil)
 	if err == nil || initialized {
@@ -292,5 +302,30 @@ func TestUnregisteredExecutorRelaunchedAfterGrace(t *testing.T) {
 				t.Fatal("attempt did not advance")
 			}
 		})
+	}
+}
+
+type recordingMerger struct {
+	*fakeBackend
+	got [][]Ticket
+}
+
+func (m *recordingMerger) AdvanceMerges(_ context.Context, queue []Ticket) error {
+	m.got = append(m.got, append([]Ticket(nil), queue...))
+	return nil
+}
+
+// The merge queue is useless unless every tick hands it to the merge lane.
+func TestTickHandsMergeQueueToMerger(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	f := &fakeBackend{tickets: []Ticket{{ID: "pr-open", Repo: "b", Owner: machine.OwnerMerge, UpdatedAt: now}}}
+	s := setup(f)
+	m := &recordingMerger{fakeBackend: f}
+	s.Backend = m
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.got) != 1 || len(m.got[0]) != 1 || m.got[0][0].ID != "pr-open" {
+		t.Fatalf("merger saw %v", m.got)
 	}
 }
