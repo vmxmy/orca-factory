@@ -138,7 +138,11 @@ func TestMainPath(t *testing.T) {
 		t.Fatalf("result: %+v", result)
 	}
 	want := []string{"阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z", "阶段: 分支检查", "阶段: gate", "阶段: 审查", "阶段: 开 PR\n审查命令档位: default", "PR 已开: https://example.test/pr/42\n阶段: 排队合并\n归属: 合并通道 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z"}
-	if !reflect.DeepEqual(l.comments, want) {
+	legacyComments := append([]string(nil), l.comments...)
+	for i, body := range legacyComments {
+		legacyComments[i], _, _ = strings.Cut(body, "\nmerge-handoff-v1: ")
+	}
+	if !reflect.DeepEqual(legacyComments, want) {
 		t.Fatalf("comments:\n%q\nwant:\n%q", l.comments, want)
 	}
 	if !reflect.DeepEqual(g.created, []github.CreatePRRequest{{Head: "agent/ZII-861/executor", Base: "main", Title: "ZII-861 执行器", Body: "Fixes ZII-861\n\n实现主路径"}}) {

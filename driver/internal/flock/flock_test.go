@@ -13,7 +13,11 @@ func TestExclusiveAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	second, err := TryLock(path)
 	if second != nil || !errors.Is(err, syscall.EWOULDBLOCK) {
 		t.Fatalf("second lock: %v %v", second, err)
@@ -25,7 +29,11 @@ func TestExclusiveAndRelease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer third.Close()
+	defer func() {
+		if err := third.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err = first.Close(); err != nil {
 		t.Fatal("close not idempotent", err)
 	}

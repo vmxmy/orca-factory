@@ -38,10 +38,8 @@ type Receipt map[string]json.RawMessage
 // outcome replay. Names and namespace form a stable on-disk/external contract.
 func RequestID(ticket, unit, step string, attempt int) string {
 	namespace := []byte{0x6b, 0xa7, 0xb8, 0x11, 0x9d, 0xad, 0x11, 0xd1, 0x80, 0xb4, 0x00, 0xc0, 0x4f, 0xd4, 0x30, 0xc8}
-	h := sha1.New()
-	h.Write(namespace)
-	h.Write([]byte(fmt.Sprintf("%s-%s-%s-%d", ticket, unit, step, attempt)))
-	sum := h.Sum(nil)[:16]
+	digest := sha1.Sum(append(namespace, fmt.Sprintf("%s-%s-%s-%d", ticket, unit, step, attempt)...))
+	sum := digest[:16]
 	sum[6] = (sum[6] & 0x0f) | 0x50
 	sum[8] = (sum[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:])
@@ -129,7 +127,7 @@ func validUUID(s string) bool {
 			}
 			continue
 		}
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {
 			return false
 		}
 	}
@@ -185,6 +183,7 @@ const workerStartWait = 5 * time.Minute
 
 type Task struct {
 	ID         string          `json:"id"`
+	ParentID   string          `json:"parent_id"`
 	RunID      string          `json:"run_id"`
 	DispatchID string          `json:"dispatch_id"`
 	Status     string          `json:"status"`
@@ -229,8 +228,33 @@ func (c *Client) TaskList(ctx context.Context, run string) ([]Task, error) {
 		return nil, err
 	}
 	var tasks []Task
-	if json.Unmarshal(receipt["tasks"], &tasks) != nil {
+	if json.Unmarshal(receipt["tasks"], &tasks) != nil || tasks == nil {
 		return nil, invalid("invalid task list")
+	}
+	// A partial enumeration cannot authorize dispatch recovery. Older CLI
+	// versions omit metadata; retain that contract while checking any supplied.
+	if raw, ok := receipt["truncated"]; ok {
+		var truncated bool
+		if json.Unmarshal(raw, &truncated) != nil || truncated {
+			return nil, invalid("incomplete task list")
+		}
+	}
+	for _, key := range []string{"count", "totalCount"} {
+		if raw, ok := receipt[key]; ok {
+			var count int
+			if json.Unmarshal(raw, &count) != nil || count != len(tasks) {
+				return nil, invalid("incomplete task list")
+			}
+		}
+	}
+	if raw, ok := receipt["page"]; ok {
+		var page struct {
+			HasMore    bool   `json:"hasMore"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if json.Unmarshal(raw, &page) != nil || page.HasMore || page.NextCursor != "" {
+			return nil, invalid("incomplete task list")
+		}
 	}
 	return tasks, nil
 }
@@ -504,7 +528,7 @@ func validCode(code string) bool {
 		return false
 	}
 	for _, r := range code {
-		if !(r == '_' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') {
+		if r != '_' && (r < 'a' || r > 'z') && (r < '0' || r > '9') {
 			return false
 		}
 	}

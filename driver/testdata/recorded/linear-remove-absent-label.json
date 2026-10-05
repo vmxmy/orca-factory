@@ -1,0 +1,1 @@
+{"errors":[{"message":"Label not on issue","path":["issueUpdate"],"locations":[{"line":1,"column":50}],"extensions":{"type":"invalid input","code":"INPUT_ERROR","statusCode":400,"userError":true,"userPresentableMessage":"Label 3ca28041-4db1-478b-a3d9-a3ab9a32bfe4 is not on issue cacda336-ff11-46e0-b6b9-15af4d360e0a and cannot be removed."}}],"data":null}

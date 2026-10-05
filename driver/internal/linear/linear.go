@@ -134,7 +134,7 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		return nil, errors.New("LINEAR_API_KEY is required")
 	}
 	if options.TeamID == "" {
-		return nil, errors.New("Linear team ID is required")
+		return nil, errors.New("linear team ID is required")
 	}
 	target := options.BaseURL
 	if target == "" {
@@ -335,6 +335,11 @@ func (c *Client) UpdateIssue(ctx context.Context, id, state string, addLabels, r
 	if err != nil {
 		return Issue{}, err
 	}
+	if len(add) > 0 || len(remove) > 0 {
+		if add, remove, err = c.labelDiff(ctx, id, add, remove); err != nil {
+			return Issue{}, err
+		}
+	}
 	input := map[string]any{"addedLabelIds": add, "removedLabelIds": remove}
 	if state != "" {
 		states, err := resolve([]string{state}, c.states)
@@ -357,6 +362,44 @@ func (c *Client) UpdateIssue(ctx context.Context, id, state string, addLabels, r
 		return Issue{}, protocolError()
 	}
 	return *data.IssueUpdate.Issue, nil
+}
+
+// labelDiff keeps only labels the issue lacks in add and carries in remove:
+// Linear rejects the whole update when it removes a label the issue does not carry.
+func (c *Client) labelDiff(ctx context.Context, id string, add, remove []string) ([]string, []string, error) {
+	var data struct {
+		Issue *struct {
+			Labels struct {
+				Nodes    []struct{ ID string } `json:"nodes"`
+				PageInfo struct {
+					HasNextPage bool `json:"hasNextPage"`
+				} `json:"pageInfo"`
+			} `json:"labels"`
+		} `json:"issue"`
+	}
+	err := c.do(ctx, `query IssueLabels($id: String!) { issue(id: $id) { labels(first: 250) { nodes { id } pageInfo { hasNextPage } } } }`, map[string]any{"id": id}, &data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if data.Issue == nil || data.Issue.Labels.PageInfo.HasNextPage {
+		return nil, nil, protocolError()
+	}
+	current := map[string]bool{}
+	for _, label := range data.Issue.Labels.Nodes {
+		current[label.ID] = true
+	}
+	added, removed := []string{}, []string{}
+	for _, label := range add {
+		if !current[label] {
+			added = append(added, label)
+		}
+	}
+	for _, label := range remove {
+		if current[label] {
+			removed = append(removed, label)
+		}
+	}
+	return added, removed, nil
 }
 func (c *Client) CreateComment(ctx context.Context, id, body string) (Comment, error) {
 	var data struct {
@@ -418,7 +461,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	if err != nil {
 		// Classify before discarding transport errors, which can contain URLs or keys.
 		classified := infra.Classify(err)
-		safe := errors.New("Linear transport failed")
+		safe := errors.New("linear transport failed")
 		var transient *infra.Transient
 		if errors.As(classified, &transient) {
 			return &infra.Transient{Err: safe}
@@ -428,10 +471,10 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 		}
 		return &infra.Ticket{Err: safe}
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }() // Read-only response; read errors are handled below.
 	raw, err := io.ReadAll(io.LimitReader(response.Body, 16<<20))
 	if err != nil {
-		return &infra.Transient{Err: errors.New("Linear response read failed")}
+		return &infra.Transient{Err: errors.New("linear response read failed")}
 	}
 	var envelope struct {
 		Data   json.RawMessage `json:"data"`
@@ -444,7 +487,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	decodeErr := json.Unmarshal(raw, &envelope)
 	for _, e := range envelope.Errors {
 		if e.Extensions.Code == "RATELIMITED" {
-			return &infra.Global{Dep: infra.Linear, Err: errors.New("Linear rate limited")}
+			return &infra.Global{Dep: infra.Linear, Err: errors.New("linear rate limited")}
 		}
 	}
 	if response.StatusCode == 401 || response.StatusCode == 403 || response.StatusCode == 429 {

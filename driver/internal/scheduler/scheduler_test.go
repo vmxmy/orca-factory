@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
 
 type fakeBackend struct {
+	limits                   []linear.RateLimit
 	tickets                  []Ticket
 	snapshots                int
 	enabled                  map[string]bool
@@ -57,10 +59,16 @@ func TestSecondInstanceCannotLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer first.Close()
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	second, err := Acquire(path)
 	if err == nil {
-		second.Close()
+		if err := second.Close(); err != nil {
+			t.Fatal(err)
+		}
 		t.Fatal("second instance acquired lock")
 	}
 }
@@ -214,7 +222,11 @@ func TestServeContenderDoesNotInitialize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer lock.Close()
+	defer func() {
+		if err := lock.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	initialized := false
 	err = Serve(context.Background(), path, func(context.Context) (*Scheduler, error) { initialized = true; return nil, nil }, nil, nil)
 	if err == nil || initialized {
@@ -294,3 +306,72 @@ func TestUnregisteredExecutorRelaunchedAfterGrace(t *testing.T) {
 		})
 	}
 }
+
+type recordingMerger struct {
+	*fakeBackend
+	got [][]Ticket
+}
+
+func (m *recordingMerger) AdvanceMerges(_ context.Context, queue []Ticket) error {
+	m.got = append(m.got, append([]Ticket(nil), queue...))
+	return nil
+}
+
+// The merge queue is useless unless every tick hands it to the merge lane.
+func TestTickHandsMergeQueueToMerger(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	f := &fakeBackend{tickets: []Ticket{{ID: "pr-open", Repo: "b", Owner: machine.OwnerMerge, UpdatedAt: now}}}
+	s := setup(f)
+	m := &recordingMerger{fakeBackend: f}
+	s.Backend = m
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.got) != 1 || len(m.got[0]) != 1 || m.got[0][0].ID != "pr-open" {
+		t.Fatalf("merger saw %v", m.got)
+	}
+}
+
+// A paused quota pause must let one Snapshot through after a backoff to refresh
+// the cached Linear budget; without it the stale low budget keeps the pause
+// latched forever (the scheduler never recovers).
+func TestQuotaPauseRefreshesBudgetAfterBackoff(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	now := base
+	f := &fakeBackend{}
+	s := setup(f)
+	s.Now = func() time.Time { return now }
+	lowReset := now.Add(30 * time.Minute)
+	f.limits = []linear.RateLimit{{Limit: 2500, Remaining: 60, Reset: lowReset}}
+
+	// First tick: low budget → pause latches, snapshot skipped.
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.snapshots != 0 {
+		t.Fatalf("paused tick must not snapshot, got %d", f.snapshots)
+	}
+	if !s.Pauses.Paused("") {
+		t.Fatal("quota pause must latch when budget is low")
+	}
+
+	// Advance past the backoff window: a later tick must probe (snapshot) once.
+	now = now.Add(6 * time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if f.snapshots != 1 {
+		t.Fatalf("paused quota must probe Snapshot once after backoff; got %d", f.snapshots)
+	}
+
+	// Simulate the probe refreshing the budget to healthy.
+	f.limits = []linear.RateLimit{{Limit: 2500, Remaining: 2000, Reset: now.Add(30 * time.Minute)}}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.Pauses.Paused("") {
+		t.Fatal("pause must resume once the refreshed budget is healthy")
+	}
+}
+
+func (f *fakeBackend) LinearLimits() []linear.RateLimit { return f.limits }
