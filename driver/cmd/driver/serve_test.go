@@ -79,7 +79,7 @@ func TestStatusSnapshotServe(t *testing.T) {
 					if !snapshot.GeneratedAt.Equal(expected) {
 						t.Fatalf("unexpected write at wait %d: %v", waits, snapshot.GeneratedAt)
 					}
-					if len(snapshot.Tickets) != 1 || snapshot.Tickets[0].Identifier != "ZII-883" || snapshot.Tickets[0].Owner != "executor" || snapshot.Tickets[0].Phase != string(machine.PhaseGate) {
+					if len(snapshot.Tickets) != 1 || snapshot.Tickets[0].Identifier != "ZII-883" || snapshot.Tickets[0].Owner != "执行器" || snapshot.Tickets[0].Phase != string(machine.PhaseGate) {
 						t.Fatalf("tickets: %+v", snapshot.Tickets)
 					}
 					if len(snapshot.Pauses) != 0 {

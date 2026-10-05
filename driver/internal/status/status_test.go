@@ -72,7 +72,11 @@ func TestStatusSnapshot(t *testing.T) {
 	})
 	t.Run("failed create and rename leave no partial files", func(t *testing.T) {
 		dir := t.TempDir()
-		for _, path := range []string{filepath.Join(dir, "missing", "status.json"), dir} {
+		blocked := filepath.Join(dir, "blocked")
+		if err := os.Mkdir(blocked, 0700); err != nil {
+			t.Fatal(err)
+		}
+		for _, path := range []string{filepath.Join(dir, "missing", "status.json"), blocked} {
 			t.Setenv("DRIVER_STATUS_FILE", path)
 			if err := Write(input); err == nil {
 				t.Fatal("expected write failure")
@@ -81,7 +85,7 @@ func TestStatusSnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(entries) != 0 {
+			if len(entries) != 1 || entries[0].Name() != "blocked" {
 				t.Fatalf("partial files: %v", entries)
 			}
 		}
