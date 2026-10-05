@@ -24,6 +24,7 @@ STALE_HOURS="${AGENT_STALE_HOURS:?set in agent-graph.env}"
 GH_REPO="${AGENT_GH_REPO:?set in agent-graph.env}"
 ORPHAN_MINUTES="${AGENT_ORPHAN_MINUTES:-45}"
 WORKER_IDLE_MINUTES="${AGENT_WORKER_IDLE_MINUTES:-15}"
+WORKER_MAX_MINUTES="${AGENT_WORKER_MAX_MINUTES:-90}"
 # Batch claim: 1 = legacy single claim; >1 = per-run cap; 0 = no per-run cap (only MAX_IN_FLIGHT caps).
 BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
 # SCOPE avoidance switch: 1 = enforce candidate↔in-flight overlap and (when batching) candidate↔candidate;
@@ -186,6 +187,49 @@ orphan_claim() {
   claim_reason="在途超过 ${ORPHAN_MINUTES} 分钟无更新且无 PR，coordinator 疑似已结束"
 }
 
+# Bound total time since the newest claim even when worker activity refreshes updatedAt.
+# Require a complete comment snapshot, a still-started issue and no open PR; uncertain
+# reads keep the ticket live, using the same bounded reads as orphan_claim.
+overrun_claim() {
+  local claim_id="$1" out verdict pr_out pr_count
+  claim_reason=""
+  claim_failures=0
+  if ! out="$(claim_read linear issue "$claim_id")"; then return 1; fi
+  if ! verdict="$(jq -er '
+    .result.issue.state.type
+    | if type == "string" and length > 0 then . else error("state missing") end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse state for overrun check'; return 1
+  fi
+  [[ "$verdict" == started ]] || return 1
+  if ! out="$(claim_read linear issue "$claim_id" --comments)"; then return 1; fi
+  if jq -e '.result.meta.sections.comments | .capReached == true or .hasMore == true' <<<"$out" >/dev/null; then
+    claim_uncertain 'comments truncated for overrun check'; return 1
+  fi
+  if ! verdict="$(jq -er --argjson m "$WORKER_MAX_MINUTES" '
+    .result.comments | if type != "array" then error("comments missing") else . end
+    | map(select((.body // "") | startswith("已领取"))
+      | .createdAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+    | if length == 0 then "live"
+      elif (now - max) > ($m * 60) then "overrun" else "live" end
+    ' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse claim comments for overrun check'; return 1
+  fi
+  [[ "$verdict" == overrun ]] || return 1
+  if ! claim_failures="$(jq '[.result.comments[] | select((.body // "") | contains("认领失效"))] | length' <<<"$out" 2>/dev/null)"; then
+    claim_uncertain 'cannot count claim failures for overrun check'; return 1
+  fi
+  if ! pr_out="$(perl -e 'alarm 20; exec @ARGV' -- \
+    gh pr list --repo "$GH_REPO" --state open --search "$claim_id in:title" --json number 2>/dev/null)"; then
+    claim_uncertain "gh pr list failed for $claim_id"; return 1
+  fi
+  if ! pr_count="$(jq -er 'if type == "array" then length else error("pr list not array") end' <<<"$pr_out" 2>/dev/null)"; then
+    claim_uncertain 'cannot parse gh pr list output for overrun check'; return 1
+  fi
+  (( pr_count == 0 )) || return 1
+  claim_reason="认领后超过 ${WORKER_MAX_MINUTES} 分钟未产出 PR"
+}
+
 release_claim() {
   ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
   if (( claim_failures >= 2 )); then
@@ -295,6 +339,8 @@ for id in $in_flight_ids; do
   elif expired_claim "$id"; then
     release_claim "$id"
   elif orphan_claim "$id"; then
+    release_claim "$id"
+  elif overrun_claim "$id"; then
     release_claim "$id"
   elif stuck_worker "$id"; then
     release_claim "$id"

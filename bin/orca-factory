@@ -426,6 +426,7 @@ LEDGER_SLEEP
     export AGENT_LABEL_READY=ready-for-agent AGENT_LABEL_CLAIMED=auto-impl AGENT_LABEL_FAILED=auto-failed
     export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_GH_REPO=example/precheck-test AGENT_ORPHAN_MINUTES=45
     export AGENT_WORKER_IDLE_MINUTES=15
+    unset AGENT_WORKER_MAX_MINUTES
     cat > "$SELFTEST_TMP/precheck-bin/orca" <<'PRECHECK_ORCA'
 #!/usr/bin/env bash
 set -eu
@@ -453,6 +454,12 @@ case "$*" in
   'linear issue TEST-4 --relations --json') echo '{"ok":true,"result":{"relations":[]}}' ;;
   'linear issue TEST-1 --json')
     case "$PRECHECK_MODE" in
+      overrun-*)
+        if [[ "$PRECHECK_MODE" == overrun-state-fail ]] &&
+          [[ "$(grep -c '^linear issue TEST-1 --json$' "$PRECHECK_TEST_DIR/precheck.calls")" == 3 ]]; then
+          echo '{"ok":false}'; exit 7
+        fi
+        jq -nc --arg mode "$PRECHECK_MODE" '{ok:true,result:{issue:{updatedAt:(now|todateiso8601),state:{type:(if $mode == "overrun-completed" then "completed" else "started" end)}}}}' ;;
       stale) jq -nc '{ok:true,result:{issue:{updatedAt:((now-32400)|todateiso8601)}}}' ;;
       orphan|orphan-pr|orphan-limit|orphan-fail)
         jq -nc '{ok:true,result:{issue:{updatedAt:((now-3600)|todateiso8601)}}}' ;;
@@ -491,24 +498,26 @@ case "$*" in
       *) jq -nc '{ok:true,result:{issue:{}}}' ;;
     esac ;;
   'linear issue TEST-1 --comments --json')
+    if [[ "$PRECHECK_MODE" == overrun-comments-fail ]]; then echo '{"ok":false}'; exit 7; fi
     jq -nc --arg mode "$PRECHECK_MODE" '
       def is_orphan: $mode | test("^orphan");
       {ok:true,result:{comments:
         ([{body:"已领取 · tier=default",
-           createdAt:(if is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
+           createdAt:(if ($mode | test("^overrun-")) then ((now-7200)|todateiso8601)
+                     elif is_orphan then (now|todateiso8601|sub("Z$";".123Z"))
                      else ((now-1800)|todateiso8601|sub("Z$";".123Z")) end)}]
-         + (if $mode == "recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
-         + (if $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
+         + (if $mode == "recent" or $mode == "overrun-recent" or ($mode | test("^scope-|^batch-cap|^scope-avoid-off")) then [{body:"已领取 again",createdAt:(now|todateiso8601)}] else [] end)
+         + (if $mode == "overrun-limit" or $mode == "limit" or $mode == "orphan-limit" or $mode == "worker-stuck-limit" then [{body:"认领失效"},{body:"认领失效"}] else [] end)),
         meta:{sections:{comments:{cap:500,capReached:($mode == "comments-cap"),hasMore:($mode == "comments-more")}}}}}' ;;
   'orchestration run-list --json')
     case "$PRECHECK_MODE" in
       fail) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}'; exit 7 ;;
       notok) echo '{"ok":false,"error":{"code":"simulated_read_failure"}}' ;;
-      empty|busy|card|hosts-omitted|worker-*) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
+      empty|busy|card|hosts-omitted|worker-*|overrun-*) echo '{"ok":true,"result":{"runs":[{"id":"run-test","objective":"TEST-1: implementation"}]}}' ;;
       *) echo '{"ok":true,"result":{"runs":[]}}' ;;
     esac ;;
   'orchestration task-list --run run-test --json')
-    if [[ "$PRECHECK_MODE" == busy || "$PRECHECK_MODE" == worker-* ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
+    if [[ "$PRECHECK_MODE" == busy || "$PRECHECK_MODE" == worker-* || "$PRECHECK_MODE" == overrun-* ]]; then echo '{"ok":true,"result":{"tasks":[{"id":"task-test"}]}}'
     else echo '{"ok":true,"result":{"tasks":[]}}'; fi ;;
   'worktree ps --json')
     case "$PRECHECK_MODE" in
@@ -551,18 +560,23 @@ PRECHECK_ORCA
 set -eu
 printf '%s\n' "$*" >> "$PRECHECK_TEST_DIR/precheck.calls"
 case "${PRECHECK_MODE:-}" in
-  orphan-pr) echo '[{"number":1}]' ;;
-  orphan-fail) exit 2 ;;
+  orphan-pr|overrun-pr) echo '[{"number":1}]' ;;
+  orphan-fail|overrun-gh-fail) exit 2 ;;
+  overrun-gh-invalid) echo '{}'  ;;
   *) echo '[]' ;;
 esac
 PRECHECK_GH
     chmod +x "$SELFTEST_TMP/precheck-bin/orca" "$SELFTEST_TMP/precheck-bin/gh"
     for PRECHECK_MODE in stale missing fail notok empty busy card recent limit comments-more comments-cap hosts-omitted \
+                         overrun-expired overrun-pr overrun-recent overrun-limit overrun-gh-fail overrun-gh-invalid \
+                         overrun-state-fail overrun-comments-fail overrun-completed overrun-custom \
                          orphan orphan-pr orphan-fresh orphan-limit orphan-fail \
                          worker-stuck worker-stuck-limit worker-idle worker-feature worker-mixed worker-fail worker-invalid worker-truncated \
                          scope-overlap scope-separate scope-missing scope-fail \
                          batch-three batch-cand-overlap batch-default batch-cap scope-avoid-off; do
       export PRECHECK_MODE
+      unset AGENT_WORKER_MAX_MINUTES
+      [[ "$PRECHECK_MODE" != overrun-custom ]] || export AGENT_WORKER_MAX_MINUTES=150
       unset AGENT_BATCH_SIZE AGENT_SCOPE_AVOID
       export AGENT_MAX_IN_FLIGHT=2
       case "$PRECHECK_MODE" in
@@ -582,8 +596,8 @@ PRECHECK_GH
       grep -Eq '^health=live=[0-9]+ max=[0-9]+ released=[0-9]+ escalated=[0-9]+ failed_backlog=([0-9]+|[?])$' "$SELFTEST_TMP/precheck.out" || fail "selftest: precheck health summary missing or malformed ($PRECHECK_MODE)"
       health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2'
       case "$PRECHECK_MODE" in
-        missing|empty|orphan|worker-stuck) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
-        stale|limit|orphan-limit|worker-stuck-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
+        missing|empty|orphan|worker-stuck|overrun-expired) health_expected='live=0 max=2 released=1 escalated=0 failed_backlog=2' ;;
+        stale|limit|orphan-limit|worker-stuck-limit|overrun-limit) health_expected='live=0 max=2 released=0 escalated=1 failed_backlog=2' ;;
         scope-overlap|scope-separate|scope-missing) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=?' ;;
         batch-three|batch-cand-overlap|batch-default) health_expected='live=0 max=5 released=0 escalated=0 failed_backlog=2' ;;
         batch-cap) health_expected='live=1 max=2 released=0 escalated=0 failed_backlog=2' ;;
@@ -592,6 +606,21 @@ PRECHECK_GH
       grep -Fxq "health=$health_expected" "$SELFTEST_TMP/precheck.out" || fail "selftest: incorrect health counts ($PRECHECK_MODE)"
       grep -q '^linear list-issues --team TEST --project precheck-test --label auto-failed --order-by createdAt --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: backlog read missing project fence"
       case "$PRECHECK_MODE" in
+        overrun-expired)
+          grep -q '^linear status set TEST-1 --to Todo --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun did not reset Todo"
+          grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun kept claim"
+          grep -q '认领失效（认领后超过 90 分钟未产出 PR），已释放' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun reason missing" ;;
+        overrun-limit)
+          grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun not escalated"
+          grep -q '^linear comment add TEST-1 --body 转人:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun handoff missing"
+          grep -q '^证据: .*认领后超过 90 分钟未产出 PR$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun evidence missing"
+          grep -q '^需要你:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun action missing"
+          if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun limit reset Todo"; fi ;;
+        overrun-*)
+          if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun guard mutated ($PRECHECK_MODE)"; fi
+          case "$PRECHECK_MODE" in
+            *-fail|*-invalid) grep -q '不确定' "$SELFTEST_TMP/precheck.err" || fail "selftest: overrun uncertainty missing" ;;
+          esac ;;
         stale)
           grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: old claim not stale"
           grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: old claim not escalated" ;;
@@ -680,6 +709,7 @@ PRECHECK_GH
       esac
       if grep -q '^linear label remove TEST-1 --label ready-for-agent' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: ready label removed"; fi
     done
+    echo "selftest: precheck caps worker run time"
     echo "selftest: precheck prints health summary"
     echo "selftest: precheck releases expired claims, preserves live/uncertain claims and caps retries"
     echo "selftest: precheck releases orphaned claims"
