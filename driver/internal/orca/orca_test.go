@@ -290,3 +290,21 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 		})
 	}
 }
+
+func TestTerminalSend(t *testing.T) {
+	c, log := fake(t)
+	t.Setenv("ORCA_TEST_SCENARIO", "failure")
+	// A rejected command still records the exact arguments.
+	if _, err := c.TerminalSend(context.Background(), "term_one", "continue work"); err == nil {
+		t.Fatal("expected rejected command")
+	}
+	argv(t, log, []string{"terminal", "send", "--terminal", "term_one", "--text", "continue work", "--enter", "--json", "END"})
+	for _, args := range [][2]string{{"", "text"}, {"term_one", ""}} {
+		c := &Client{Path: "must-not-run"}
+		_, err := c.TerminalSend(context.Background(), args[0], args[1])
+		var ticket *infra.Ticket
+		if !errors.As(err, &ticket) || err.Error() != "terminal send requires handle and text" {
+			t.Fatalf("invalid arguments error=%v", err)
+		}
+	}
+}
