@@ -11,6 +11,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/pause"
 )
 
 type Ticket struct {
@@ -52,13 +53,17 @@ type Backend interface {
 	Launch(context.Context, Ticket) error
 }
 type Scheduler struct {
-	Config      config.Config
-	Backend     Backend
-	Now         func() time.Time
-	MergeQueue  []Ticket
-	tokens      float64
-	refill      time.Time
-	initialized bool
+	Config        config.Config
+	Backend       Backend
+	Now           func() time.Time
+	MergeQueue    []Ticket
+	Pauses        *pause.Manager
+	NextInterval  time.Duration
+	FullReconcile bool
+	adaptive      Adaptive
+	tokens        float64
+	refill        time.Time
+	initialized   bool
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -95,13 +100,19 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
-	now := time.Now()
-	if s.Now != nil {
-		now = s.Now()
+	now := s.clock()
+	remaining, pauseErr := s.checkPauses(ctx, now)
+	s.MergeQueue = nil
+	if s.Pauses.Paused("") {
+		s.plan(now, false, remaining)
+		return pauseErr
 	}
 	repos := map[string]config.Repository{}
 	allowed := map[string]bool{}
 	var problems []error
+	if pauseErr != nil {
+		problems = append(problems, pauseErr)
+	}
 	for _, r := range s.Config.Repositories {
 		repos[r.Path] = r
 		ok, err := s.Backend.AutomationDisabled(ctx, r)
@@ -114,6 +125,13 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	if err != nil {
 		return errors.New("scheduler snapshot failed")
 	}
+	busy := false
+	for _, t := range tickets {
+		if owned(t) || t.Candidate {
+			busy = true
+		}
+	}
+	s.plan(now, busy, remaining)
 	s.MergeQueue = nil
 	count := map[string]int{}
 	total := 0
@@ -124,12 +142,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		}
 	}
 	for _, t := range tickets {
-		if !allowed[t.Repo] {
+		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) {
 			continue
 		}
 		r := repos[t.Repo]
 		action := Action{}
-		if owned(t) && !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+		if owned(t) && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 			action = Action{Kind: Human, Attempt: t.Attempt, Reason: "in-flight ticket exceeded stale limit"}
 		} else if t.Owner == machine.OwnerMerge {
 			s.MergeQueue = append(s.MergeQueue, t)
@@ -212,7 +230,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
-		if !allowed[t.Repo] || !t.Candidate || t.Legacy || owned(t) || t.Owner == machine.OwnerHuman {
+		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) || !t.Candidate || t.Legacy || owned(t) || t.Owner == machine.OwnerHuman {
 			continue
 		}
 		if total >= s.Config.MaxInFlight {
@@ -256,12 +274,20 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 	if err != nil {
 		return err
 	}
+	var next time.Time
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if err = s.Tick(ctx); err != nil && report != nil {
-			report(err)
+		if !s.clock().Before(next) {
+			if err = s.Tick(ctx); err != nil && report != nil {
+				report(err)
+			}
+			delay := s.NextInterval
+			if delay <= 0 {
+				delay = time.Minute
+			}
+			next = s.clock().Add(delay)
 		}
 		if err = wait(ctx); err != nil {
 			if ctx.Err() != nil {
