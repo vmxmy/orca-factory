@@ -23,6 +23,11 @@ prune_linear_ok=false
 prune_linear_data='[]'
 prune_report_linear_calls() { echo "prune_linear_calls=$prune_linear_calls" >&2; }
 trap prune_report_linear_calls EXIT
+# Lossy, out-of-band tally shared with the swarm board (writes ignored on failure).
+_prune_count_linear_call() {
+  { printf '%s prune\n' "$(date +%s)" \
+    >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true
+}
 prune_budget_exceeded() {
   (( prune_budget_tripped == 1 )) && return 0
   local now=$(date +%s)
@@ -75,6 +80,7 @@ prune_load_linear_issues() {
   local out stderr status=0
   stderr=$(mktemp)
   prune_linear_calls=$((prune_linear_calls + 1))
+  _prune_count_linear_call
   out=$(orca linear list-issues --team "$LINEAR_TEAM" --project "$LINEAR_PROJECT" --json 2>"$stderr") || status=$?
   if (( status == 0 )) && jq -e '.ok == true and (.result.issues | type == "array")' <<<"$out" >/dev/null 2>&1; then
     prune_linear_data=$(jq -c '.result.issues' <<<"$out")

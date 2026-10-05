@@ -9,14 +9,14 @@
   - 写 `CHECK`：一条在 main 上可执行的命令 + 断言描述；最好是一条实现前会红、实现后会绿的断言。
   - 按 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 预判 lane，告诉用户；命中 lane 3 的需求不建 `ready-for-agent` 票，直接告诉用户这是人做的事。
   - 定 estimate 与档位（`workflow.md §6`）：默认只填 estimate，让映射决定；要强制档位才打 `tier:fast|default|strong` 标签。
-  - 拆依赖：被依赖的先建，再 `orca linear relation add <下游> --related <上游> --type blocked-by`。
+  - 拆依赖：被依赖的先建，再 `scripts/agent-gates/agent-graph.sh linear relation add <下游> --related <上游> --type blocked-by`。
   - 挂 project（`$AGENT_LINEAR_PROJECT`）、打 `ready-for-agent`、状态 Todo：
-    `orca linear save-issue --team <KEY> --project $AGENT_LINEAR_PROJECT --state Todo --label ready-for-agent --estimate <N> --title "<标题>" --body-file -`
+    `scripts/agent-gates/agent-graph.sh linear save-issue --team <KEY> --project $AGENT_LINEAR_PROJECT --state Todo --label ready-for-agent --estimate <N> --title "<标题>" --body-file -`
 - 处理 `auto-failed` 票：读 coordinator 评论里的证据与 PR，向用户解释卡在哪，给三个选项：
   1. 改需求重开：改票面（SCOPE / CHECK / 拆分），`label remove --label auto-failed --label auto-impl`，`label add --label ready-for-agent`，`status set --to Todo`。
   2. 升档重试：`label remove --label auto-failed`，`label add --label ready-for-agent --label tier:<高一档>`，`status set --to Todo`；保留 coordinator 的评论作为下一轮的上下文。
   3. 转人做：`label remove --label auto-failed --label ready-for-agent --label auto-impl`，保留 In Progress，评论指派给谁。
-- 汇报：`scripts/agent-gates/agent-graph.sh ledger stats`（按 lane、按 tier 的首跑通过率）；`orca linear list-issues --team <KEY> --project $AGENT_LINEAR_PROJECT --json` 过滤本周 Done。
+- 汇报：`scripts/agent-gates/agent-graph.sh ledger stats`（按 lane、按 tier 的首跑通过率）；`scripts/agent-gates/agent-graph.sh linear list-issues --team <KEY> --project $AGENT_LINEAR_PROJECT --json` 过滤本周 Done。
 
 ## Does Not Own
 
@@ -34,7 +34,7 @@
 - SCOPE 的每个路径或 glob 在仓库里真实存在（新建文件写到已存在的目录下）。
 - lane 预判与 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 逐条比对一致。
 - 票挂在 `$AGENT_LINEAR_PROJECT`；状态 Todo；带 `ready-for-agent`。
-- 无阻塞，或阻塞票存在且 `relation add` 已生效（`orca linear issue <ID> --relations`）。
+- 无阻塞，或阻塞票存在且 `relation add` 已生效（`scripts/agent-gates/agent-graph.sh linear issue <ID> --relations`）。
 - estimate 已填或已打 `tier:*` 标签；告诉用户预计落到哪一档。
 
 ## Handoff
