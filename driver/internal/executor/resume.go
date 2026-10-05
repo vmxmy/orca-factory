@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +78,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	head, err := e.Tools.Head(ctx, c.Repo, branch)
 	if err != nil {
-		return Result{}, errors.New("resume branch lookup failed")
+		return Result{}, fmt.Errorf("resume branch lookup failed: %w", err)
 	}
 	pr, err := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
 	if err != nil {

@@ -8,6 +8,8 @@ import (
 	"io"
 	"math/rand"
 	"net"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -67,10 +69,23 @@ func Classify(err error) error {
 	retryable := errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrWriteUnconfirmed)
 	retryable = retryable || (errors.As(err, &network) && network.Timeout()) || errors.As(err, &record) || errors.As(err, &certificate)
 	retryable = retryable || (errors.As(err, &http) && http.StatusCode >= 500 && http.StatusCode <= 599) || (errors.As(err, &httpPtr) && httpPtr.StatusCode >= 500 && httpPtr.StatusCode <= 599)
+	var exit *exec.ExitError
+	retryable = retryable || (errors.As(err, &exit) && networkStderr(string(exit.Stderr)))
 	if retryable {
 		return &Transient{Err: err}
 	}
 	return &Ticket{Err: err}
+}
+
+// networkStderr recognises connection-level failures reported by git, gh and
+// curl on stderr. HTTP status errors (403, 404) are deliberately excluded.
+func networkStderr(stderr string) bool {
+	for _, marker := range []string{"GnuTLS", "handshake failed", "TLS connection", "Could not resolve host", "Connection timed out", "Operation timed out", "Connection reset", "Failed to connect", "early EOF", "hung up unexpectedly", "i/o timeout"} {
+		if strings.Contains(stderr, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Options injects timing and read-back behavior. Non-idempotent operations require
