@@ -1,0 +1,97 @@
+name: Go checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Driver build
+    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make build
+
+  vet:
+    name: Driver vet
+    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make vet
+
+  lint:
+    name: Driver lint
+    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make lint
+
+  race:
+    name: Driver race
+    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make race
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: race-reports
+          path: |
+            .omc/reports/race/tests.json
+            .omc/reports/race/junit.xml
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+
+  vuln:
+    name: Driver vuln
+    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make vuln
+
