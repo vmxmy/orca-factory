@@ -494,12 +494,11 @@ async function readSnapshot($: Parameters<typeof read>[0]): Promise<Snapshot | n
 }
 
 function ticketSlices(issues: Snapshot['issues'], now: number, handoffs: Map<string, string>):
-  Pick<Board, 'inFlight' | 'queue' | 'failed' | 'doneToday'> & { all: Ticket[]; issueStates: Record<string, string> } {
+  Pick<Board, 'inFlight' | 'queue' | 'failed' | 'doneToday'> & { issueStates: Record<string, string> } {
   const all: Ticket[] = issues.map(ticket)
   const has = (t: Ticket, label: string): boolean => t.labels.includes(label)
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   return {
-    all,
     inFlight: all.filter(t => has(t, 'auto-impl') && t.state === 'started'),
     queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9)),
     failed: all.filter(t => has(t, 'auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
