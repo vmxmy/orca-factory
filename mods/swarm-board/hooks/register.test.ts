@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
-import { laneStage } from './register'
+import { laneStage, ticketPhase } from './register'
 
 const mount = ($: any, surface: 'terminal' | 'desktop') =>
   $.ui.mount({ plugin: 'swarm-board', surface, component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm' } })
@@ -345,5 +345,83 @@ test('handoff parsing stops after three failed tickets while inflight claimedAt 
   const ui = await mount($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /处理 ZII-811/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
+  await ui.unmount()
+})
+
+const phaseTicket: Ticket = { id: 'ZII-848', title: '阶段卡片', state: 'started', labels: ['auto-impl'], priority: 0, updatedAt: '', claimedAt: '' }
+test('claimed ticket without a run is splitting', async () => {
+  expect(ticketPhase(phaseTicket, { run: null, tasks: [] })).toBe('📋 拆分')
+})
+test('dispatched task is implementing', async () => {
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'dispatched' }] })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'dispatched' }], gate: { state: 'red', sec: 0, steps: [] } })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'dispatched' }], gate: { state: 'green', sec: 0, steps: [] }, lane: 2 })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'pending' }], gate: { state: 'green', sec: 0, steps: [] }, lane: 2 })).toBe('📤 派工')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'ready' }], gate: { state: 'red', sec: 0, steps: [] } })).toBe('📤 派工')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'completed' }], gate: { state: 'green', sec: 0, steps: [] }, lane: 1 })).toBe('📬 待收尾')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'completed' }], gate: { state: 'green', sec: 0, steps: [] }, lane: 2 })).toBe('🔍 审查（推断）')
+  expect(ticketPhase(phaseTicket, { tasks: [{ status: 'completed' }], gate: { state: 'running', sec: 0, steps: [] } })).toBe('🧪 gate')
+})
+test('completed workers without gate or PR await wrap-up', async () => {
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'completed' }] })).toBe('📬 待收尾')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }, { status: 'completed' }], previous: '🔨 实现' })).toBe('📬 待收尾')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }], previous: '🔨 实现' })).toBe('🔨 实现')
+  expect(ticketPhase(phaseTicket, { run: { id: 'run-1' }, tasks: [{ status: 'failed' }] })).toBe('📤 派工')
+})
+test('wrap-up older than ten minutes warns only without a coordinator', async ($, on) => {
+  const completedAt = new Date(Date.now() - 11 * 60_000).toISOString()
+  let refreshed = () => {}
+  let ps = '   123 S node ordinary-worker'
+  let psExit = 0
+  let emptyTasks = false
+  let taskStatus = 'completed'
+  let gateLog = ''
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => ({ value: e.path.endsWith('/gate.log') ? gateLog : 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
+  on('fs.list', () => ({ value: gateLog ? [{ name: 'main' }] : [] }))
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'ps') return { value: { stdout: ps, stderr: '', exitCode: psExit } }
+    let result: unknown = { ok: true, result: {} }
+    if (e.argv[2] === 'list-issues') result = { ok: true, result: { issues: [{ identifier: 'ZII-848', title: '阶段卡片', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], updatedAt: completedAt }] } }
+    if (e.argv[2] === 'run-list') result = { ok: true, result: { runs: [{ id: 'run-1', objective: 'ZII-848', created_at: completedAt }] } }
+    if (e.argv[2] === 'task-list') result = { ok: true, result: { tasks: emptyTasks ? [] : [{ id: 'task-1', status: taskStatus, completed_at: completedAt }] } }
+    return { value: { stdout: JSON.stringify(result), stderr: '', exitCode: 0 } }
+  })
+  const refresh = async () => {
+    const ready = new Promise<void>(resolve => { refreshed = resolve })
+    await $.command.run({ command: 'swarm', args: '' })
+    await ready
+  }
+  await refresh()
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeDefined()
+  emptyTasks = true
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeDefined()
+  ps = '   234 S node scripts/agent-gates/COORDINATOR.md'
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /📬 待收尾/ })).toBeDefined()
+  psExit = 1
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /无 coordinator 在跑/ })).toBeUndefined()
+  emptyTasks = false
+  gateLog = '=== gate main'
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /🧪 gate ·/ })).toBeDefined()
+  taskStatus = 'dispatched'
+  gateLog = ''
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /🔨 实现 ·/ })).toBeDefined()
+  taskStatus = 'completed'
+  gateLog = 'VERDICT green\nLANE 2'
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /🔍 审查（推断） ·/ })).toBeDefined()
+  taskStatus = 'ready'
+  gateLog = 'VERDICT green'
+  await refresh(); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /📤 派工 ·/ })).toBeDefined()
   await ui.unmount()
 })
