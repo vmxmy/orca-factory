@@ -3,6 +3,7 @@ package linear
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -61,4 +62,20 @@ func TestExternalCallLog(t *testing.T) {
 			}
 		})
 	}
+	t.Run("transport failure", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Location", "/next")
+			w.WriteHeader(http.StatusFound)
+		}))
+		defer srv.Close()
+		hc := srv.Client()
+		hc.CheckRedirect = func(*http.Request, []*http.Request) error { return errors.New("lin_api_SECRET") }
+		c := &Client{key: "lin_api_SECRET", endpoint: srv.URL, http: hc, now: time.Now}
+		var buf bytes.Buffer
+		ctx := runx.WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)))
+		_, err := c.ListComments(ctx, "private-issue-id")
+		if err == nil || !strings.Contains(buf.String(), `"status":0`) || !strings.Contains(buf.String(), `"error":"transport failed"`) || strings.Contains(buf.String(), "lin_api_SECRET") {
+			t.Fatalf("err=%v log=%s", err, buf.String())
+		}
+	})
 }

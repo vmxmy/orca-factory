@@ -459,7 +459,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	rateLimited, transportFailed := false, false
 	defer func() {
 		status, complexity, remaining := 0, "", ""
-		if response != nil {
+		if response != nil && !transportFailed {
 			status = response.StatusCode
 			complexity = response.Header.Get("X-Complexity")
 			remaining = response.Header.Get("X-RateLimit-Requests-Remaining")
