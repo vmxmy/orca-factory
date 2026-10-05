@@ -215,6 +215,10 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if cp != nil {
 		recoveryStep = "reconcile-pending-worker"
 		if cp.Pending && !cp.Completed && cp.Task == "" {
+			if c.Merging {
+				// A merge-conflict resume has no worker to reconcile; start fresh.
+				return e.Execute(ctx, t)
+			}
 			// The previous executor's request ID belongs to its terminal and cannot be
 			// replayed here; reconcile by the run's tasks instead.
 			task, found, err := e.pendingWorker(ctx, cp.Run, branch)

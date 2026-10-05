@@ -25,12 +25,16 @@ func execTicket(args []string) int {
 	}
 	return loggedCommand("executor", filepath.Join(logStateRoot(), repo, ticket, "executor.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		logger = logger.With("repo", repo, "ticket", ticket)
-		if len(args) != 1 {
-			return 2, fmt.Errorf("Usage: driver exec <票号>")
+		merging := false
+		id := args[0]
+		if len(args) == 2 && args[0] == "--merging" && logComponent.MatchString(args[1]) {
+			merging, id = true, args[1]
+		} else if len(args) != 1 || !logComponent.MatchString(id) {
+			return 2, fmt.Errorf("Usage: driver exec [--merging] <票号>")
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(ctx, args[0])
+		result, err := executor.RunTicket(ctx, id, merging)
 		if err != nil {
 			return 1, err
 		}

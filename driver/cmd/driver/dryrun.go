@@ -56,5 +56,9 @@ func (b *dryBackend) ActualChanges(ctx context.Context, t scheduler.Ticket) ([]s
 // it neither competes with the running service nor writes probes or alerts.
 func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
-	return s.Tick(ctx)
+	err := s.Tick(ctx)
+	for _, t := range s.MergeQueue {
+		fmt.Fprintf(out, "would merge-lane %s\n", t.Identifier)
+	}
+	return err
 }

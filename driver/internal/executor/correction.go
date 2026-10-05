@@ -156,9 +156,25 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				return errors.New("missing correction worker effect")
 			}
 			n := result.State.Corrections + 1
+			if c.Merging {
+				// The merge lane reported a text conflict. Resolve it here in the
+				// executor: the coordinator writes repair steps, then we merge
+				// origin/main, apply each resolution, commit, and fast-forward push.
+				if err := e.resolveMergeConflict(ctx, c, t, cp.Worktree, "origin/main", ""); err != nil {
+					return fmt.Errorf("merge conflict resolution failed: %w", err)
+				}
+				cp.Pending = false
+				return saveCheckpoint(c, t, *cp)
+			}
 			child, err := r.ChildTask(ctx, result.RunID, cp.Task, fmt.Sprintf("correction %d/3\n%s\n%s", result.State.Corrections, correction, brief), scopedRequest(t, c, "child", n))
 			if err != nil {
-				return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", err)
+				var ticketErr *infra.Ticket
+				if errors.As(err, &ticketErr) && strings.Contains(ticketErr.Err.Error(), "rejected: request_mismatch") {
+					child, err = e.adoptCorrectionChild(ctx, result.RunID)
+				}
+				if err != nil {
+					return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", err)
+				}
 			}
 			cp.Task = child
 			cp.Dispatch = ""
@@ -229,4 +245,25 @@ func tierEscalation(c Config) bool {
 		value = os.Getenv("AGENT_TIER_ESCALATE")
 	}
 	return value == "1"
+}
+
+// adoptCorrectionChild recovers a correction child Task whose creation receipt was lost.
+func (e *Executor) adoptCorrectionChild(ctx context.Context, run string) (string, error) {
+	tasks, err := e.Orca.TaskList(ctx, run)
+	if err != nil {
+		return "", fmt.Errorf("adopt task list: %w", err)
+	}
+	var blocked []string
+	for _, task := range tasks {
+		if task.Status == "blocked" && (task.RunID == "" || task.RunID == run) {
+			blocked = append(blocked, task.ID)
+		}
+	}
+	switch len(blocked) {
+	case 0:
+		return "", errors.New("no blocked child to adopt")
+	case 1:
+		return blocked[0], nil
+	}
+	return "", fmt.Errorf("ambiguous blocked children: %v", blocked)
 }
