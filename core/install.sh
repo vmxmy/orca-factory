@@ -21,7 +21,7 @@ done
 for v in AGENT_TIER_FAST AGENT_TIER_DEFAULT AGENT_TIER_STRONG; do
   [[ "${!v:-}" =~ ^[^:]+:[^:]*:[^:]*$ ]] || fail "agent-graph.env: $v='${!v:-}' must be agent:model:effort (two colons, agent non-empty)"
 done
-for f in COORDINATOR.md COORDINATOR.project.md gate.sh linear-precheck.sh prune-run-worktrees.sh; do
+for f in COORDINATOR.md COORDINATOR.project.md gate.sh linear-precheck.sh prune-run-worktrees.sh wait-runs.sh; do
   [[ -f "$dir/$f" ]] || fail "missing $f"
 done
 [[ -f "$dir/gate.project.sh" ]] || echo "install: note: no gate.project.sh, the gate runs only its generic checks"
