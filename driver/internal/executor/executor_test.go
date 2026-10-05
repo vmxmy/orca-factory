@@ -102,9 +102,9 @@ func (f *fakeTools) Gate(_ context.Context, repo, head, spec string) (string, er
 	}
 	return "UNIT      executor\nVERDICT   green\nSTEP      all\nREASON    all gates passed\nEVIDENCE  \nSCOPE     unit/*\nLANE      2\n", nil
 }
-func (f *fakeTools) Review(context.Context, string, string, string) (string, error) {
+func (f *fakeTools) Review(context.Context, string, string, string, *float64) (string, string, error) {
 	f.reviewCalls++
-	return "review notes\n{\"verdict\":\"green\",\"step\":\"review\"}", nil
+	return "review notes\n{\"verdict\":\"green\",\"step\":\"review\"}", "default", nil
 }
 func fixture(t *testing.T, head string) (*Executor, *fakeOrca, *fakeLinear, *fakeGitHub, *fakeTools, Ticket) {
 	t.Helper()
@@ -122,7 +122,7 @@ func TestMainPath(t *testing.T) {
 	if result.State.Owner != machine.OwnerMerge || result.State.Phase != machine.PhaseMergeQueue || result.PR.Number != 42 {
 		t.Fatalf("result: %+v", result)
 	}
-	want := []string{"阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z", "阶段: 分支检查", "阶段: gate", "阶段: 审查", "阶段: 开 PR", "PR 已开: https://example.test/pr/42\n阶段: 排队合并\n归属: 合并通道 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z"}
+	want := []string{"阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z", "阶段: 分支检查", "阶段: gate", "阶段: 审查", "阶段: 开 PR\n审查命令档位: default", "PR 已开: https://example.test/pr/42\n阶段: 排队合并\n归属: 合并通道 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z"}
 	if !reflect.DeepEqual(l.comments, want) {
 		t.Fatalf("comments:\n%q\nwant:\n%q", l.comments, want)
 	}
@@ -189,8 +189,8 @@ func TestMainPathReviewerStdin(t *testing.T) {
 		}
 		return []byte(`{"verdict":"green","step":"review"}`), nil
 	}
-	out, err := c.Review(context.Background(), repo, "base-sha", "new-sha")
-	if err != nil || out != `{"verdict":"green","step":"review"}` || calls != 2 {
+	out, tier, err := c.Review(context.Background(), repo, "base-sha", "new-sha", nil)
+	if err != nil || tier != "default" || out != `{"verdict":"green","step":"review"}` || calls != 2 {
 		t.Fatalf("review=%q calls=%d err=%v", out, calls, err)
 	}
 	files, err := os.ReadDir(repo)

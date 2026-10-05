@@ -42,9 +42,10 @@ type Tools interface {
 	Head(context.Context, string, string) (string, error)
 	ChangedFiles(context.Context, string, string, string) ([]string, error)
 	Gate(context.Context, string, string, string) (string, error)
-	Review(context.Context, string, string, string) (string, error)
+	Review(context.Context, string, string, string, *float64) (string, string, error)
 }
 type Ticket struct {
+	Estimate                                             *float64
 	ID, Identifier, Title, Todo, Check, Scope, TestFiles string
 	Lane                                                 int
 	NewTest                                              bool
@@ -140,7 +141,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		return nil
 	}
 	defer func() { err = errors.Join(err, release()) }()
-	var baseline, taskID, spec, brief, head, failureOutput string
+	var baseline, taskID, spec, brief, head, failureOutput, reviewerTier string
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
@@ -155,7 +156,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		result.State = next
 		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
-			return e.handoff(ctx, t, next, string(previous.Phase))
+			evidence := string(previous.Phase)
+			if previous.Phase == machine.PhaseReview {
+				evidence += "；审查命令档位: " + reviewerTier
+			}
+			return e.handoff(ctx, t, next, evidence)
 		}
 		if next.Infra > previous.Infra {
 			if err := e.backoff(ctx, next.Infra); err != nil {
@@ -166,6 +171,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			return nil
 		}
 		body := "阶段: " + string(next.Phase)
+		if previous.Phase == machine.PhaseReview {
+			body += "\n审查命令档位: " + reviewerTier
+		}
 		if next.Phase == machine.PhaseHuman {
 			body = "转人: " + next.HumanReason + "\n证据: " + string(previous.Phase) + "\n需要你: 检查 worker 分支并重新排队\n" + body
 		}
@@ -399,7 +407,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			return result, nil
 		}
 		for result.State.Phase == machine.PhaseReview {
-			output, reviewErr := e.Tools.Review(ctx, c.Repo, baseline, head)
+			var reviewErr error
+			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, baseline, head, t.Estimate)
 			if stop := dependencyStop(ctx, reviewErr); stop != nil {
 				return result, stop
 			}

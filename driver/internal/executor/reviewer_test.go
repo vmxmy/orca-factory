@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -70,4 +71,21 @@ func TestReviewerByEstimate(t *testing.T) {
 			}
 		})
 	}
+	t.Run("empty review exhausts budget", func(t *testing.T) {
+		e, _, comments, _, baseTools, ticket := fixture(t, "new-sha")
+		e.Config.Repo = t.TempDir()
+		e.Sleep = func(context.Context, time.Duration) error { return nil }
+		ticket.Estimate = &two
+		commands := &Commands{ReviewerCommand: "main-review", ReviewerSmallCommand: "small-review"}
+		commands.Run = func(context.Context, runx.Spec) ([]byte, error) { return nil, nil }
+		e.Tools = &reviewerTools{fakeTools: baseTools, commands: commands}
+		if _, err := e.Execute(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		last := comments.comments[len(comments.comments)-1]
+		if !strings.Contains(last, "审查命令档位: small") {
+			t.Fatalf("review handoff lost actual tier: %q", last)
+		}
+	})
+
 }
