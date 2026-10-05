@@ -148,23 +148,69 @@ func TestAdaptiveIntervalReconcileDeadline(t *testing.T) {
 		t.Fatalf("next=%v would overshoot ten-minute reconciliation", p.Interval)
 	}
 }
-func TestPauseExpiredQuotaRequiresProbe(t *testing.T) {
-	f := &fakeBackend{}
-	s := setup(f)
-	now := s.Now()
-	s.Now = func() time.Time { return now }
-	b := &quotaBackend{fakeBackend: f, limits: []linear.RateLimit{{Limit: 100, Remaining: 4, Reset: now.Add(time.Minute)}}}
-	s.Backend = b
-	_ = s.Tick(context.Background())
-	now = now.Add(time.Minute)
-	_ = s.Tick(context.Background())
-	if !s.Pauses.Paused("a") || f.snapshots != 0 {
-		t.Fatal("expired quota resumed without a successful probe or fresh budget")
+func TestPauseExpiredQuotaResumesSnapshot(t *testing.T) {
+	for _, afterReset := range []time.Duration{0, time.Nanosecond} {
+		t.Run(afterReset.String(), func(t *testing.T) {
+			f := &fakeBackend{}
+			s := setup(f)
+			now := s.Now()
+			s.Now = func() time.Time { return now }
+			reset := now.Add(time.Minute)
+			b := &quotaBackend{fakeBackend: f, limits: []linear.RateLimit{{Limit: 100, Remaining: 4, Reset: reset}}}
+			s.Backend = b
+			for _, beforeReset := range []time.Time{now, reset.Add(-time.Nanosecond)} {
+				now = beforeReset
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if !s.Pauses.Paused("") || f.snapshots != 0 {
+					t.Fatal("critical quota did not pause snapshots before reset")
+				}
+			}
+			now = reset.Add(afterReset)
+			// No response arrived during the pause: the low Remaining stays unchanged.
+			for wantSnapshots := 1; wantSnapshots <= 2; wantSnapshots++ {
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if s.Pauses.Paused("") || f.snapshots != wantSnapshots {
+					t.Fatalf("expired quota blocked refresh: paused=%v snapshots=%d, want %d", s.Pauses.Paused(""), f.snapshots, wantSnapshots)
+				}
+				now = now.Add(time.Minute)
+			}
+		})
 	}
-	b.limits[0].Remaining = 50
-	_ = s.Tick(context.Background())
-	if s.Pauses.Paused("a") || f.snapshots != 1 {
-		t.Fatal("fresh quota did not recover")
+}
+
+func TestPauseQuotaResetRespectsOtherLimits(t *testing.T) {
+	for _, knownReset := range []bool{false, true} {
+		name := "unknown reset"
+		if knownReset {
+			name = "later reset"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := &fakeBackend{}
+			s := setup(f)
+			now := s.Now()
+			s.Now = func() time.Time { return now }
+			var otherReset time.Time
+			if knownReset {
+				otherReset = now.Add(time.Hour)
+			}
+			s.Backend = &quotaBackend{fakeBackend: f, limits: []linear.RateLimit{
+				{Limit: 100, Remaining: 4, Reset: now.Add(time.Minute)},
+				{Limit: 100, Remaining: 4, Reset: otherReset},
+			}}
+			for _, advance := range []time.Duration{0, 2 * time.Minute, 30 * time.Minute} {
+				now = now.Add(advance)
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if !s.Pauses.Paused("") || f.snapshots != 0 {
+					t.Fatal("one expired quota cleared another critical quota")
+				}
+			}
+		})
 	}
 }
 

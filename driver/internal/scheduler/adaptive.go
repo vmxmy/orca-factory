@@ -70,6 +70,11 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 			if limit.Limit <= 0 {
 				continue
 			}
+			// Paused ticks cannot refresh headers. Once reset is due, allow a
+			// snapshot to fetch the new budget instead of reusing stale usage.
+			if !limit.Reset.IsZero() && !now.Before(limit.Reset) {
+				continue
+			}
 			fraction := float64(limit.Remaining) / float64(limit.Limit)
 			remaining = min(remaining, fraction)
 			if fraction < .05 && limit.Reset.After(reset) {
