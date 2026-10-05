@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,9 +37,14 @@ func (c *Commands) Baseline(ctx context.Context, repo string) (string, error) {
 func (c *Commands) Head(ctx context.Context, repo, branch string) (string, error) {
 	// ls-remote distinguishes a missing branch from a network/read failure and
 	// fetching the exact observed SHA avoids trusting an old remote-tracking ref.
-	b, err := c.run(ctx, repo, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+	var b []byte
+	err := infra.Retry(ctx, infra.Options{Idempotent: true}, func(ctx context.Context) error {
+		var runErr error
+		b, runErr = c.run(ctx, repo, "git", "ls-remote", "--heads", "origin", "refs/heads/"+branch)
+		return runErr
+	})
 	if err != nil {
-		return "", errors.New("remote branch lookup failed")
+		return "", fmt.Errorf("remote branch lookup failed: %w", err)
 	}
 	fields := strings.Fields(string(b))
 	if len(fields) == 0 {
