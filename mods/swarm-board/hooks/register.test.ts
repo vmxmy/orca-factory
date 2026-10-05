@@ -1,6 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
+import { WATCH_POLL_MS } from './snapshot-watch'
 import {
   __resetSwarmBoardCachesForTests,
   RESET_LINEAR_THROTTLE_COMMAND,
@@ -863,6 +864,86 @@ test('closing the swarm pane halts scheduled refreshes', async ($, on) => {
 test('reopening the swarm pane triggers an immediate refresh', async ($, on) => {
   const f = closeFixture($, on); await f.open(); const before = f.runs()
   await f.close(); await f.open(); expect(f.runs()).toBeGreaterThan(before)
+})
+
+const snapshotWatchFixture = async ($: any, on: any) => {
+  __resetSwarmBoardCachesForTests()
+  const clock = mock.clock(on)
+  const stats: string[] = []
+  const reads: string[] = []
+  const external: string[][] = []
+  const statuses: string[] = []
+  let mtimeMs = 1
+  let issues: unknown[] = []
+  let refreshed = () => {}
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.close', () => ({ value: undefined }))
+  on('ui.status', (_: unknown, e: { text: string }) => {
+    statuses.push(e.text)
+    refreshed()
+    return { value: undefined }
+  })
+  on('fs.stat', (_: unknown, e: { path: string }) => {
+    stats.push(e.path)
+    return { value: { mtimeMs, size: 100 } }
+  })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path === '/tmp/orca-factory-linear-snapshot.json') {
+      reads.push(e.path)
+      return { value: JSON.stringify({ generatedAt: Math.floor(Date.now() / 1000), issues, comments: {}, blockedBy: { 'ZII-891': ['ZII-890'] } }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[0] === 'gh' || e.argv[0] === 'orca') external.push(e.argv)
+    return { value: { stdout: '{"ok":true,"result":{}}', stderr: '', exitCode: 0 } }
+  })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+  external.length = 0
+  statuses.length = 0
+  return {
+    clock, stats, reads, external, statuses,
+    change: () => {
+      mtimeMs = 2
+      issues = [
+        { identifier: 'ZII-890', title: '新快照在途票', state: { type: 'started' }, labels: [{ name: 'auto-impl' }] },
+        { identifier: 'ZII-891', title: '新快照待领票', state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }] },
+      ]
+    },
+  }
+}
+
+test('snapshot polling redraws changed tickets without gh or orca calls', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
+  await f.clock.advance(WATCH_POLL_MS)
+  expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
+  f.change()
+  await f.clock.advance(WATCH_POLL_MS)
+  expect(f.reads).toEqual(['/tmp/orca-factory-linear-snapshot.json', '/tmp/orca-factory-linear-snapshot.json'])
+  expect(f.external).toEqual([])
+  expect(f.statuses).toEqual(['● 1/10 · ◐ 0 · · 1'])
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /新快照在途票/ }), 'snapshot ticket is rendered').toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /下次刷新 60s/ }), 'mocked timer advancement leaves the wall clock countdown unchanged').toBeDefined()
+  await ui.unmount()
+})
+
+test('closing the swarm pane stops snapshot stats and reads', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  expect(f.stats).toEqual(['/tmp/orca-factory-linear-snapshot.json'])
+  await $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' })
+  f.stats.length = 0
+  f.reads.length = 0
+  f.change()
+  await f.clock.advance(WATCH_POLL_MS)
+  expect(f.stats).toEqual([])
+  expect(f.reads).toEqual([])
 })
 
 const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, missing = false) => {
