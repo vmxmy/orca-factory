@@ -36,7 +36,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.11'
+const MOD_VERSION = '0.3.12'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -229,43 +229,53 @@ const usageFor = (rows: Row[], path: string): { tokens?: Tokens; cost?: Cost; mo
 
 // ---- precheck -------------------------------------------------------------------------------
 // Scheduled runs attach a precheckResult; a manual run may not, so this returns null for those.
-// stdout line 1 "claimable=<csv> in_flight=<n> max=<n>" drives queue status; stderr "skip <id>: <reason>"
-// drives per-card reasons. `linear_calls=` noise lines are excluded from the first-stderr-line surface.
-// Empty stdout with a non-zero exit (e.g. Linear rate limit) marks the run as `uncertain`; the first
-// stderr "不确定: <reason>" line gives the reason surfaced in the status row.
+// A `claimable=<csv> in_flight=<n> max=<n>` line anywhere in stdout drives queue status (prune
+// output may sit above it on the same stdout); stderr "skip <id>: <reason>" drives per-card
+// reasons. `linear_calls=` noise lines are excluded from the first-stderr-line surface. The run
+// is `uncertain` when the precheck could not read data: exit code 3, a `不确定: <reason>` stderr
+// line, timeout, non-empty error, or any non-zero exit without a `claimable=` line. Exit code 1
+// with a `claimable=` line is a normal "no eligible tickets" result. `uncertainReason` carries
+// the stderr reason or falls back to `退出码 <code>`.
 const parsePrecheck = (r: any): Precheck | null => {
   const pr = r?.precheckResult
   if (!pr || typeof pr !== 'object') return null
   const stdout = String(pr.stdout ?? '')
   const stderr = String(pr.stderr ?? '')
   const exitCode = Number(pr.exitCode ?? 0)
-  const claimRaw = /^claimable=([^\s]*)/m.exec(stdout)?.[1] ?? ''
+  const timedOut = pr.timedOut === true
+  const error = String(pr.error ?? '')
+  const claimMatch = /^claimable=([^\s]*)/m.exec(stdout)
+  const hasClaimable = claimMatch !== null
+  const claimRaw = claimMatch?.[1] ?? ''
   const claimable = claimRaw ? claimRaw.split(',').filter(Boolean) : []
   const inFlight = Number(/\bin_flight=(\d+)/.exec(stdout)?.[1] ?? 0)
   const max = Number(/\bmax=(\d+)/.exec(stdout)?.[1] ?? 0)
   const skips: Record<string, string> = {}
   const noisy: string[] = []
-  let uncertainReason = ''
+  let stderrUncertain = ''
   for (const raw of stderr.split('\n')) {
     const line = raw.trim()
     if (!line || /^linear_calls=/.test(line)) continue
     const skipMatch = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
     if (skipMatch) skips[skipMatch[1]] = skipMatch[2]
     const uncertainMatch = /^不确定:\s*(.*)$/.exec(line)
-    if (uncertainMatch && !uncertainReason) uncertainReason = uncertainMatch[1]
+    if (uncertainMatch && !stderrUncertain) stderrUncertain = uncertainMatch[1]
     noisy.push(line)
   }
+  const uncertain = timedOut || error !== '' || exitCode === 3 || stderrUncertain !== ''
+    || (exitCode !== 0 && !hasClaimable)
+  const uncertainReason = stderrUncertain || (uncertain ? '退出码 ' + exitCode : '')
   return {
     runNumber: Number(r.runNumber ?? 0),
     exitCode,
-    timedOut: pr.timedOut === true,
-    error: String(pr.error ?? ''),
+    timedOut,
+    error,
     claimable,
     inFlight,
     max,
     skips,
     firstStderrLine: noisy[0] ?? '',
-    uncertain: stdout.trim() === '' && exitCode !== 0,
+    uncertain,
     uncertainReason,
   }
 }

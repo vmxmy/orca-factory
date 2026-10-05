@@ -378,6 +378,26 @@ test('queue card falls back to the uncertain explanation when precheck could not
   await ui.unmount()
 })
 
+test('uncertain fires on exit 3 even when stdout carries prune output', async ($, on) => {
+  await queueFixture($, on, 1, { exitCode: 3, runNumber: 195,
+    stdout: '已删除分支 feat/x（原为 abc）。', stderr: '不确定: linear rate limited\nlinear_calls=2' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /无法判断可领票数/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /linear rate limited/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /precheck 未能读取数据/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /未选中/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('exit 1 with claimable line below prune output stays a normal no-ticket result', async ($, on) => {
+  await queueFixture($, on, 1, { exitCode: 1, runNumber: 196,
+    stdout: '已删除分支 feat/x。\nclaimable= in_flight=0 max=10', stderr: '' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /无法判断/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /可领 0 张/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('handoff parsing stops after three failed tickets while inflight claimedAt still reads them', async ($, on) => {
   // Five tickets labeled auto-failed+auto-impl: all are in-flight AND failed.
   // Handoff parsing is bounded to the first three failed tickets; the in-flight loop

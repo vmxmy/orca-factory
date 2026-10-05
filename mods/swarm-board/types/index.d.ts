@@ -35,9 +35,15 @@ export type Precheck = {
   skips: Record<string, string>
   /** First stderr line that is not `linear_calls=…`; empty when stderr had nothing else. */
   firstStderrLine: string
-  /** True when stdout is empty and exit code is non-zero: precheck could not read data. */
+  /**
+   * True when precheck could not read data: exit code 3, a `不确定:` stderr line, a timeout
+   * or non-empty error, or any non-zero exit without a `claimable=` line in stdout.
+   */
   uncertain: boolean
-  /** Reason text after the first stderr `不确定:` line (e.g. `linear rate limited`); empty when absent. */
+  /**
+   * Reason text after the first stderr `不确定:` line (e.g. `linear rate limited`); when uncertain
+   * is true without such a line, falls back to `退出码 <code>`; empty when the run is not uncertain.
+   */
   uncertainReason: string
 }
 export type Ticket = {
