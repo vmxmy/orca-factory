@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -61,6 +62,82 @@ func (f *fakeOrca) TerminalCreate(_ context.Context, o orca.TerminalOptions) (or
 	return orca.Receipt{"terminal": json.RawMessage(`{"handle":"term_new"}`)}, nil
 }
 func receipt(s string) orca.Receipt { var r orca.Receipt; _ = json.Unmarshal([]byte(s), &r); return r }
+
+type startupOrca struct {
+	fakeOrca
+	reads    int
+	failRead int
+}
+
+func (f *startupOrca) AutomationsList(context.Context) (orca.Receipt, error) {
+	f.reads++
+	if f.reads == f.failRead {
+		return nil, errors.New("unavailable")
+	}
+	return f.automations, nil
+}
+
+func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
+	for _, failedRead := range []bool{false, true} {
+		for _, badFirst := range []bool{false, true} {
+			name := fmt.Sprintf("readFailure=%v/badFirst=%v", failedRead, badFirst)
+			t.Run(name, func(t *testing.T) {
+				cfg := setup(nil).Config
+				cfg.Repositories[0].Path = "/a"
+				cfg.Repositories[0].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-a", "AGENT_LINEAR_PROJECT": "p-a"}
+				cfg.Repositories[1].Path = "/b"
+				cfg.Repositories[1].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-b", "AGENT_LINEAR_PROJECT": "p-b"}
+				oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":false,"runContext":{"path":"/a"}},{"enabled":true,"runContext":{"path":"/b"}}]}`)}}
+				if failedRead {
+					oc.failRead = 2
+				}
+				if badFirst {
+					cfg.Repositories[0], cfg.Repositories[1] = cfg.Repositories[1], cfg.Repositories[0]
+					if failedRead {
+						oc.failRead = 1
+					}
+				}
+				lc := &fakeLinear{issues: []linear.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: linear.NamedID{ID: "p-a"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+				r := &Runtime{Orca: oc, DriverPath: "/driver"}
+				var initialized []string
+				err := r.initialize(context.Background(), cfg, func(_ context.Context, team string) (LinearClient, error) {
+					initialized = append(initialized, team)
+					return lc, nil
+				})
+				if err != nil {
+					t.Fatalf("startup rejected healthy repository: %v", err)
+				}
+				if !reflect.DeepEqual(initialized, []string{"team-a"}) {
+					t.Fatalf("initialized clients for refused repository: %v", initialized)
+				}
+				// Even after B's automation is disabled, it needs a restart to
+				// acquire its client; A must still be inspected and claimed.
+				oc.automations = receipt(`{"automations":[]}`)
+				s := &Scheduler{Config: cfg, Backend: r}
+				err = s.Tick(context.Background())
+				if err == nil || !strings.Contains(err.Error(), "repository refused") {
+					t.Fatalf("refusal was not reported: %v", err)
+				}
+				if !reflect.DeepEqual(lc.projects, []string{"p-a"}) || lc.updates != 1 || len(lc.comments) != 1 || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/a" {
+					t.Fatalf("healthy repository not served: projects=%v updates=%d comments=%v launches=%v", lc.projects, lc.updates, lc.comments, oc.launches)
+				}
+			})
+		}
+	}
+}
+
+func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
+	cfg := setup(nil).Config
+	oc := &fakeOrca{automations: receipt(`{"automations":[{"enabled":true,"runContext":{"path":"a"}},{"enabled":true,"runContext":{"path":"b"}}]}`)}
+	r := &Runtime{Orca: oc}
+	err := r.initialize(context.Background(), cfg, func(context.Context, string) (LinearClient, error) {
+		t.Fatal("initialized client for refused repository")
+		return nil, nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "repository refused: a") || !strings.Contains(err.Error(), "repository refused: b") {
+		t.Fatalf("all-repository refusal was not reported: %v", err)
+	}
+}
 func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 	lc := &fakeLinear{}
 	oc := &fakeOrca{}

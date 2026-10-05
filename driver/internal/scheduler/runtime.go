@@ -38,6 +38,7 @@ type Runtime struct {
 	OrcaPath, DriverPath string
 	Run                  func(context.Context, runx.Spec) ([]byte, error)
 	Now                  func() time.Time
+	refused              map[string]error
 }
 
 // NewRuntime binds existing clients. Startup exclusion runs before any Linear
@@ -52,25 +53,42 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 		return nil, errors.New("cannot locate driver binary")
 	}
 	r := &Runtime{Clients: map[string]LinearClient{}, Repositories: map[string]config.Repository{}, Orca: &orca.Client{Path: path}, OrcaPath: path, DriverPath: binary}
+	err = r.initialize(ctx, c, func(ctx context.Context, team string) (LinearClient, error) {
+		return linear.New(ctx, linear.Options{TeamID: team})
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient func(context.Context, string) (LinearClient, error)) error {
+	r.Clients = map[string]LinearClient{}
+	r.Repositories = map[string]config.Repository{}
+	r.refused = map[string]error{}
 	teams := map[string]LinearClient{}
 	projects := map[string]bool{}
+	var refusals []error
 	for _, repo := range c.Repositories {
 		ok, err := r.AutomationDisabled(ctx, repo)
 		if err != nil || !ok {
-			return nil, errors.New("repository refused: automation enabled or unverifiable")
+			refusal := fmt.Errorf("repository refused: %s: automation enabled or unverifiable; restart required", repo.Path)
+			r.refused[repo.Path] = refusal
+			refusals = append(refusals, refusal)
+			continue
 		}
 		team, project := repo.Env["AGENT_LINEAR_TEAM"], repo.Env["AGENT_LINEAR_PROJECT"]
 		if team == "" || project == "" || projects[project] {
-			return nil, errors.New("repository requires distinct Linear project and team")
+			return errors.New("repository requires distinct Linear project and team")
 		}
 		projects[project] = true
 		client := teams[team]
 		if client == nil {
 			bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-			client, err = linear.New(bounded, linear.Options{TeamID: team})
+			client, err = newClient(bounded, team)
 			cancel()
 			if err != nil {
-				return nil, errors.New("Linear initialization failed")
+				return errors.New("Linear initialization failed")
 			}
 			teams[team] = client
 		}
@@ -80,7 +98,10 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 			r.Reader = client
 		}
 	}
-	return r, nil
+	if len(r.Clients) == 0 {
+		return errors.Join(refusals...)
+	}
+	return nil
 }
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
 	if len(repos) == 0 {
@@ -89,6 +110,9 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	projects := []string{}
 	paths := map[string]string{}
 	for _, repo := range repos {
+		if r.refused[repo.Path] != nil {
+			continue
+		}
 		project := repo.Env["AGENT_LINEAR_PROJECT"]
 		projects = append(projects, project)
 		paths[project] = repo.Path

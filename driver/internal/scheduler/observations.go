@@ -12,6 +12,11 @@ import (
 )
 
 func (r *Runtime) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
+	// Startup refusals persist until restart: no client was initialized for
+	// these repositories, so a later disabled automation cannot admit them.
+	if err := r.refused[repo.Path]; err != nil {
+		return false, err
+	}
 	receipt, err := r.Orca.AutomationsList(ctx)
 	if err != nil {
 		return false, errors.New("automation read failed")
