@@ -1,0 +1,12 @@
+HTTP/2.0 200 OK
+Content-Type: application/json; charset=utf-8
+X-Github-Api-Version-Selected: 2022-11-28
+X-Github-Edge-Region: southeastasia
+X-Github-Media-Type: github.v3; format=json
+X-Github-Request-Id: 8DF6:3EC1E8:78AFFF:810CB4:6AC4133C
+X-Ratelimit-Limit: 5000
+X-Ratelimit-Remaining: 4652
+X-Ratelimit-Reset: 1791236336
+X-Ratelimit-Resource: core
+X-Ratelimit-Used: 348
+

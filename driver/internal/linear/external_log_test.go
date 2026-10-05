@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,9 +32,9 @@ func TestExternalCallLog(t *testing.T) {
 		{"http quota", `{}`, 429, true, "WARN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			var recorded http.Header
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Complexity", "42")
-				w.Header().Set("X-RateLimit-Requests-Remaining", "1234")
+				recorded = recordedHeaders(t, w, "linear-response-headers.txt")
 				w.WriteHeader(tc.status)
 				if _, err := fmt.Fprint(w, tc.body); err != nil {
 					t.Error(err)
@@ -47,7 +48,7 @@ func TestExternalCallLog(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error %v", err)
 			}
-			for _, want := range []string{`"operation":"ListComments"`, fmt.Sprintf(`"status":%d`, tc.status), `"X-Complexity":"42"`, `"X-RateLimit-Requests-Remaining":"1234"`, `"level":"` + tc.level + `"`, `"duration":`} {
+			for _, want := range []string{`"operation":"ListComments"`, fmt.Sprintf(`"status":%d`, tc.status), `"X-Complexity":` + fmt.Sprintf("%q", recorded.Get("X-Complexity")), `"X-RateLimit-Requests-Remaining":` + fmt.Sprintf("%q", recorded.Get("X-Ratelimit-Requests-Remaining")), `"level":"` + tc.level + `"`, `"duration":`} {
 				if !strings.Contains(buf.String(), want) {
 					t.Fatalf("missing %s in %s", want, buf.String())
 				}
@@ -78,4 +79,23 @@ func TestExternalCallLog(t *testing.T) {
 			t.Fatalf("err=%v log=%s", err, buf.String())
 		}
 	})
+}
+
+// recordedHeaders replays a header dump captured from the real service (see CONTRACTS.md).
+func recordedHeaders(t *testing.T, w http.ResponseWriter, name string) http.Header {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{}
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		if key, value, ok := strings.Cut(line, ":"); ok {
+			header.Set(key, strings.TrimSpace(value))
+		}
+	}
+	for key, values := range header {
+		w.Header()[key] = values
+	}
+	return header
 }

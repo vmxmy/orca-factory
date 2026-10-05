@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,8 +35,9 @@ func TestOrcaCallLogOmitsFreeText(t *testing.T) {
 
 func TestGitHubRequestLog(t *testing.T) {
 	status := 200
+	var recorded http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-GitHub-Request-Id", "GH-REQUEST-42")
+		recorded = recordedHeaders(t, w, "github-response-headers.txt")
 		w.Header().Set("ETag", `"cache"`)
 		w.WriteHeader(status)
 		if status == 200 {
@@ -56,7 +59,7 @@ func TestGitHubRequestLog(t *testing.T) {
 		if (err != nil) != (code == 403) {
 			t.Fatalf("status=%d err=%v", code, err)
 		}
-		for _, want := range []string{fmt.Sprintf(`"status":%d`, code), `"X-GitHub-Request-Id":"GH-REQUEST-42"`, `"method":"GET"`, `"path":"/repos/acme/app/pulls/17"`, `"duration":`} {
+		for _, want := range []string{fmt.Sprintf(`"status":%d`, code), `"X-GitHub-Request-Id":` + fmt.Sprintf("%q", recorded.Get("X-Github-Request-Id")), `"method":"GET"`, `"path":"/repos/acme/app/pulls/17"`, `"duration":`} {
 			if !strings.Contains(buf.String(), want) {
 				t.Fatalf("missing %s in %s", want, buf.String())
 			}
@@ -65,4 +68,23 @@ func TestGitHubRequestLog(t *testing.T) {
 			t.Fatalf("log %s", buf.String())
 		}
 	}
+}
+
+// recordedHeaders replays a header dump captured from the real service (see CONTRACTS.md).
+func recordedHeaders(t *testing.T, w http.ResponseWriter, name string) http.Header {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{}
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		if key, value, ok := strings.Cut(line, ":"); ok {
+			header.Set(key, strings.TrimSpace(value))
+		}
+	}
+	for key, values := range header {
+		w.Header()[key] = values
+	}
+	return header
 }
