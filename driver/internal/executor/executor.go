@@ -56,6 +56,9 @@ type Ticket struct {
 	NewTest                                              bool
 }
 type Config struct {
+	// Merging runs the executor as a merge-conflict resolver: the worker merges
+	// origin/main into the branch instead of editing code.
+	Merging                                                             bool
 	Lane3Globs                                                          []string
 	Machine                                                             string
 	TierSettings                                                        map[string]string
@@ -107,6 +110,11 @@ func (e *Executor) warn(format string, args ...any) {
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
+	if e.Config.Merging {
+		// A merge-conflict resolver starts from a fresh checkpoint; nothing from the
+		// interrupted run is trustworthy for a conflict.
+		return e.execute(ctx, t, &checkpoint{})
+	}
 	return e.execute(ctx, t, nil)
 }
 
@@ -245,6 +253,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		var receipt orca.Receipt
 		var callErr error
+		if c.Merging && cp.Run != "" {
+			// The old run's worker was released at the merge handoff; bind a fresh run.
+			cp.Run = ""
+		}
 		if cp.Run != "" {
 			// A new executor terminal must take over the checkpointed Run, not create one.
 			if _, callErr = e.Orca.RunUse(ctx, runRequest(t, c, "run-use"), cp.Run); callErr != nil {
@@ -292,7 +304,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		cp.Run = result.RunID
 		cp.Baseline = baseline
-		if restored != nil {
+		if restored != nil && !c.Merging {
 			taskID = cp.Task
 			result.DispatchID = cp.Dispatch
 			return nil
@@ -370,6 +382,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if err = transition(event, nil); err != nil {
 			return result, err
 		}
+		if c.Merging && report.Outcome == "succeeded" {
+			// The conflict is resolved and pushed; hand the PR back to the merge lane.
+			// Ownership is a Linear comment, so no state-machine event is needed.
+			if err = e.comment(ctx, t.ID, "冲突已解决: 已合入 origin/main 并推送，等待合并通道复验"); err != nil {
+				return result, err
+			}
+			return result, nil
+		}
 		// A settled report authorizes cleanup, including before a correction handoff.
 		if err = release(); err != nil {
 			return result, err
@@ -397,6 +417,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		event = machine.EvBranchOK
 		if head == "" || head == baseline {
 			event = machine.EvBranchNo
+		} else if c.Merging {
+			// A conflict resolver always has a branch; merge-base is irrelevant here.
+			diffBase = head
 		} else {
 			err = e.retryRead(ctx, t, &result, "merge-base lookup", func() error {
 				var readErr error
