@@ -37,7 +37,6 @@ type record struct {
 	Type      string          `json:"type"`
 	Cwd       string          `json:"cwd"`
 	SessionID string          `json:"sessionId"`
-	Role      string          `json:"role"`
 	Message   json.RawMessage `json:"message"`
 	Payload   struct {
 		Type  string `json:"type"`
@@ -52,6 +51,9 @@ type record struct {
 type session struct {
 	ID    string
 	Items []Item
+	// Messages holds Claude items by API message ID. Subagent transcripts share the
+	// parent's session ID but not its message IDs, so Claude is deduplicated per message.
+	Messages map[string]Item
 }
 
 // Read one line at a time without Scanner's line cap. No temporary totals are
@@ -101,7 +103,7 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 					cwd = r.Payload.Cwd
 				}
 			}
-			role, belongs := roles[normalizePath(cwd)]
+			role, belongs := roleFor(roles, cwd)
 			// A run directory alone cannot identify which of its historical sessions
 			// belongs to the requested run. The caller supplies verified session IDs.
 			if role == "coordinator" && !coordinatorIDs[result.ID] {
@@ -123,15 +125,6 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 					if message.Usage != nil {
 						if result.ID == "" || message.ID == "" {
 							return session{}, errors.New("usage message missing session or message ID")
-						}
-						if r.Role != "" {
-							if r.Role != "reviewer" && r.Role != "session" && r.Role != "coordinator" {
-								return session{}, errors.New("unrecognized Claude role")
-							}
-							if role == "coordinator" && r.Role != "coordinator" || role != "coordinator" && r.Role == "coordinator" {
-								return session{}, errors.New("session role conflicts with worktree attribution")
-							}
-							role = r.Role
 						}
 						tokens, err := message.Usage.tokens(false)
 						if err != nil {
@@ -175,14 +168,19 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 		}
 		return result, nil
 	}
-	items := map[string]Item{}
-	for _, item := range messages {
-		key := item.Role + "\x00" + item.Model
-		item.Tokens = add(items[key].Tokens, item.Tokens)
-		items[key] = item
-	}
-	for _, item := range items {
-		result.Items = append(result.Items, item)
-	}
+	result.Messages = messages
 	return result, nil
+}
+
+// roleFor matches a session's cwd to a unit worktree, or to a directory inside one:
+// a subagent may run in a nested worktree such as <unit>/.claude/worktrees/<name>.
+func roleFor(roles map[string]string, cwd string) (string, bool) {
+	for dir := normalizePath(cwd); ; dir = filepath.Dir(dir) {
+		if role, ok := roles[dir]; ok {
+			return role, true
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return "", false
+		}
+	}
 }

@@ -23,6 +23,11 @@
 | Linear `issueUpdate` 移除票上没有的标签时拒绝整个更新（`Label not on issue`，INPUT_ERROR）；`UpdateIssue` 先读当前标签，只加缺少的、只删存在的 | `linear-remove-absent-label.json` | `linear.TestRecordedRemoveAbsentLabel` |
 | GitHub PR：`state`、`merged`、`mergeable_state`（合并后为 `unknown`）、`merge_commit_sha`（squash 后即 main 上的提交）；`compare/<base>...<head>` 的 `behind_by`、`merge_base_commit.sha` 与 `files`（最多 300，不标截断）；本仓库 CI 只有 GitGuardian 一个 check-run，旧式 commit status 为空且显示 `pending`，CI 只看 check-runs | `github-pr-open-clean.json`、`github-pr-merged.json`、`github-compare-*.json`、`github-commit-main.json`、`github-check-runs-gitguardian.json` | `github.TestRecordedMergeLaneReads`，`driver selftest --live` |
 | squash 时 `sha` 与 PR head 不符返回 409 `Head branch was modified`，不合并；草稿 PR 返回 405 | `github-merge-head-modified-409.json` | `github.TestRecordedMergeHeadModified` |
+| Claude 会话每条 `assistant` 记录带 `sessionId`、`cwd`、`message.id`、`message.model`、`message.usage`（`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`，含 `cache_creation.ephemeral_5m/1h_input_tokens`）；同一 API 消息会在多条记录里重复出现，按 `message.id` 只计一次 | `claude-session-assistant.jsonl` | `usage.TestRecordedSessionFormats` |
+| Claude 子代理的转录在 `<session>/subagents/agent-*.jsonl`，`sessionId` 与父会话相同，`isSidechain` 为真，`cwd` 为子代理所在目录 | `claude-session-assistant.jsonl`（第 2 行） | `usage.TestRecordedSessionFormats`、`usage.TestCollectCountsSubagentTranscripts` |
+| Codex rollout 以 `session_meta`（`payload.id`、`payload.cwd`）开头，`turn_context` 给 `payload.model`，`token_count` 的 `total_token_usage` 按会话累计（含 `cached_input_tokens`、`cache_write_input_tokens`、`reasoning_output_tokens`），一个会话只计一次；`input_tokens` 含缓存读，需先减去 | `codex-session-token-count.jsonl` | `usage.TestRecordedSessionFormats` |
+| 价格表里没有的模型按 `unknown` 记录，不估价 | — | `usage.TestCollect` |
+| `orca orchestration worker-show --dispatch` 的结果有 `dispatch.runId` 与 `worker.worktreeId`（格式 `<repoId>::<绝对路径>`）；`orca worktree list` 的结果有 `truncated`、`totalCount` 与 `worktrees[].path`、`worktrees[].linkedLinearIssue`（样本裁剪为 4 个 worktree） | `orca-worker-show.json`、`orca-worktree-list.json` | `main.TestRecordedOrcaUsageMetadata` |
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 

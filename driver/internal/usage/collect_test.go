@@ -1,6 +1,8 @@
 package usage
 
 import (
+	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -93,7 +95,7 @@ func TestCollect(t *testing.T) {
 			case "ticket":
 				opts.Ticket = "../ZII-894"
 			}
-			got, err := Collect(opts)
+			got, err := CollectItems(opts)
 			if tc.invalid != "" {
 				if err == nil {
 					t.Fatalf("accepted missing or invalid %s: %+v", tc.invalid, got)
@@ -103,7 +105,7 @@ func TestCollect(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Ticket != ticket || got.PriceVersion != "2026-10-05-standard-v1" {
+			if got.Ticket != ticket || got.PriceVersion != "2026-10-06-standard-v2" {
 				t.Fatalf("provenance: %+v", got)
 			}
 			if len(got.Errors) != tc.errors {
@@ -130,5 +132,86 @@ func TestCollect(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Collect implements the contract ZII-893 fixed (ctx, ticket, worktrees → TicketUsage)
+// on top of CollectItems: roles map to by_role, models to by_model, totals add up.
+func TestCollectFillsTicketUsage(t *testing.T) {
+	root := t.TempDir()
+	unit := filepath.Join(root, "unit")
+	claudeProjects := filepath.Join(root, "claude", "projects")
+	codexSessions := filepath.Join(root, "codex", "sessions")
+	for _, dir := range []string{unit, claudeProjects, codexSessions} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, dir := range map[string]string{"claude": claudeProjects, "codex": codexSessions} {
+		data, err := os.ReadFile(filepath.Join("testdata", name+".jsonl"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		data = []byte(strings.NewReplacer("/unit", unit).Replace(string(data)))
+		if err := os.WriteFile(filepath.Join(dir, name+".jsonl"), data, 0400); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
+	got, err := Collect(context.Background(), "ZII-894", []string{unit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Ticket != "ZII-894" || got.PriceVersion == "" || got.Apportioned {
+		t.Fatalf("header=%+v", got)
+	}
+	want := Totals{Input: 617, Output: 133, CacheRead: 110, CacheWrite: 8}
+	if g := got.Totals; g.Input != want.Input || g.Output != want.Output || g.CacheRead != want.CacheRead || g.CacheWrite != want.CacheWrite || math.Abs(g.CostUSD-0.0028705) > 1e-9 {
+		t.Fatalf("totals=%+v want %+v cost 0.0028705", g, want)
+	}
+	if got.ByRole.Worker.Input != 300 || got.ByRole.Worker.CacheRead != 100 || got.ByRole.Session.Input != 317 || got.ByRole.Reviewer.Input != 0 {
+		t.Fatalf("by_role=%+v", got.ByRole)
+	}
+	if got.ByModel["gpt-5"].Output != 80 || got.ByModel["claude-sonnet-4-6"].Input != 300 || got.ByModel["mystery-model"].CostUSD != 0 {
+		t.Fatalf("by_model=%+v", got.ByModel)
+	}
+	if _, err := Collect(context.Background(), "ZII-894", nil); err == nil {
+		t.Fatal("no worktrees must be reported, not returned as empty usage")
+	}
+}
+
+// Real Claude layout: <project>/<sessionId>.jsonl plus <project>/<sessionId>/subagents/agent-*.jsonl.
+// Subagent records keep the parent's sessionId (isSidechain true) but carry their own message
+// IDs, so the usage of both files counts, while a message replayed in both counts once.
+func TestCollectCountsSubagentTranscripts(t *testing.T) {
+	root := t.TempDir()
+	unit := filepath.Join(root, "unit")
+	project := filepath.Join(root, "claude", "projects", "proj")
+	subagents := filepath.Join(project, "sess-1", "subagents")
+	for _, dir := range []string{unit, subagents} {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := func(sidechain bool, msgID string, in, out int) string {
+		return fmt.Sprintf(`{"type":"assistant","sessionId":"sess-1","isSidechain":%t,"cwd":%q,"message":{"id":%q,"model":"claude-sonnet-4-6","role":"assistant","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`+"\n", sidechain, unit, msgID, in, out)
+	}
+	parent := line(false, "msg_a", 100, 10) + line(false, "msg_shared", 50, 5)
+	sub := line(true, "msg_b", 200, 20) + line(true, "msg_shared", 50, 5)
+	if err := os.WriteFile(filepath.Join(project, "sess-1.jsonl"), []byte(parent), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subagents, "agent-x.jsonl"), []byte(sub), 0400); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "claude"))
+	t.Setenv("CODEX_HOME", filepath.Join(root, "codex"))
+	got, err := Collect(context.Background(), "ZII-894", []string{unit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Input != 350 || got.Output != 35 {
+		t.Fatalf("input=%d output=%d; want 350/35 (parent 100+50, subagent 200, replayed message once)", got.Input, got.Output)
 	}
 }

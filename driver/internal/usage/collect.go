@@ -61,10 +61,10 @@ type Result struct {
 
 var ticketPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
 
-// Collect matches normalized session working directories to the ticket's worktrees.
+// CollectItems matches normalized session working directories to the ticket's worktrees.
 // A corrupt file contributes nothing; other files are still collected. Run
 // worktrees must belong to this run and ClaimedTickets counts distinct tickets.
-func Collect(o Options) (Result, error) {
+func CollectItems(o Options) (Result, error) {
 	result := Result{Ticket: o.Ticket, PriceVersion: prices.Version, Items: []Item{}, Errors: []FileError{}}
 	if !ticketPattern.MatchString(o.Ticket) || len(o.Worktrees) == 0 {
 		return result, errors.New("usage: valid ticket and associated unit worktrees required")
@@ -138,6 +138,7 @@ func Collect(o Options) (Result, error) {
 	}
 	totals := map[string]Item{}
 	seen := map[string]bool{}
+	seenMessages := map[string]bool{}
 	coordinatorIDs := map[string]bool{}
 	for _, id := range o.CoordinatorSessions {
 		coordinatorIDs[id] = true
@@ -156,15 +157,28 @@ func Collect(o Options) (Result, error) {
 				result.Errors = append(result.Errors, FileError{path, err.Error()})
 				return nil
 			}
-			if len(records.Items) == 0 {
+			if len(records.Items) == 0 && len(records.Messages) == 0 {
 				return nil
 			}
-			key := source.provider + "\x00" + records.ID
-			if seen[key] {
-				return nil
+			items := records.Items
+			if source.provider == "claude" {
+				// Per API message: a replayed message counts once, subagent files add their own.
+				for id, item := range records.Messages {
+					if seenMessages[id] {
+						continue
+					}
+					seenMessages[id] = true
+					items = append(items, item)
+				}
+			} else {
+				// Codex total_token_usage is cumulative per session: one charge per session.
+				key := records.ID
+				if seen[key] {
+					return nil
+				}
+				seen[key] = true
 			}
-			seen[key] = true
-			for _, item := range records.Items {
+			for _, item := range items {
 				if item.Role == "coordinator" {
 					item.Apportioned = true
 					item.Tokens = scale(item.Tokens, 1/float64(len(o.ClaimedTickets)))

@@ -69,13 +69,13 @@ func runUsage(args []string) int {
 			fmt.Fprintln(os.Stderr, "usage: explicit run ID conflicts with ticket metadata")
 			return 1
 		}
-		options.RunID = discovered.RunID
+		// A discovered run ID alone is not coordinator attribution: the driver has no
+		// coordinator. Only an explicit run worktree and sessions turn it on.
+		if options.RunWorktree != "" {
+			options.RunID = discovered.RunID
+		}
 	}
-	if options.RunID == "" || options.RunWorktree == "" || len(options.CoordinatorSessions) == 0 || len(options.ClaimedTickets) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: read-only attribution metadata missing: verified run worktree, coordinator provider session IDs and current-run claimed ticket identifiers; executor.json and Orca Run/terminal metadata do not supply these associations")
-		return 1
-	}
-	result, err := usage.Collect(options)
+	result, err := usage.CollectItems(options)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -100,6 +100,9 @@ func runUsage(args []string) int {
 // Existing executor checkpoints identify ticket runs and unit worktrees. They
 // do not identify coordinator provider sessions or an actual run claim set.
 // Discovery never substitutes a directory name or all historical tickets.
+// The executor runs the reviewer in the repository root, which every ticket shares, so
+// discovery cannot attribute reviewer sessions to a ticket: callers pass a dedicated
+// directory with --reviewer-worktree.
 func usageDiscovery(ctx context.Context, ticket string) (usage.Options, error) {
 	result := usage.Options{Ticket: ticket}
 	home, err := os.UserHomeDir()
@@ -141,14 +144,7 @@ func usageDiscovery(ctx context.Context, ticket string) (usage.Options, error) {
 		if cp.Run == "" || cp.Dispatch == "" {
 			return result, errors.New("usage: checkpoint missing Run/Dispatch association")
 		}
-		var metadata struct {
-			Dispatch struct {
-				RunID string `json:"runId"`
-			} `json:"dispatch"`
-			Worker struct {
-				WorktreeID string `json:"worktreeId"`
-			} `json:"worker"`
-		}
+		var metadata orcaWorkerShow
 		if err := usageOrca(ctx, &metadata, "orchestration", "worker-show", "--dispatch", cp.Dispatch); err != nil {
 			return result, err
 		}
@@ -161,13 +157,7 @@ func usageDiscovery(ctx context.Context, ticket string) (usage.Options, error) {
 		}
 		result.RunID = cp.Run
 		result.Worktrees = append(result.Worktrees, usage.Worktree{Path: worktreePath})
-		var trees struct {
-			Truncated bool `json:"truncated"`
-			Worktrees []struct {
-				Path   string `json:"path"`
-				Ticket string `json:"linkedLinearIssue"`
-			} `json:"worktrees"`
-		}
+		var trees orcaWorktreeList
 		if err := usageOrca(ctx, &trees, "worktree", "list", "--repo", "path:"+repo.Path); err != nil {
 			return result, err
 		}
@@ -185,6 +175,24 @@ func usageDiscovery(ctx context.Context, ticket string) (usage.Options, error) {
 	}
 	return result, nil
 }
+
+type orcaWorkerShow struct {
+	Dispatch struct {
+		RunID string `json:"runId"`
+	} `json:"dispatch"`
+	Worker struct {
+		WorktreeID string `json:"worktreeId"`
+	} `json:"worker"`
+}
+
+type orcaWorktreeList struct {
+	Truncated bool `json:"truncated"`
+	Worktrees []struct {
+		Path   string `json:"path"`
+		Ticket string `json:"linkedLinearIssue"`
+	} `json:"worktrees"`
+}
+
 func usageOrca(ctx context.Context, result any, args ...string) error {
 	path, err := runx.OrcaPath()
 	if err != nil {
@@ -194,6 +202,10 @@ func usageOrca(ctx context.Context, result any, args ...string) error {
 	if err != nil {
 		return fmt.Errorf("usage: read Orca metadata: %w", err)
 	}
+	return decodeOrcaResult(output, result)
+}
+
+func decodeOrcaResult(output []byte, result any) error {
 	var envelope struct {
 		OK     bool            `json:"ok"`
 		Result json.RawMessage `json:"result"`
