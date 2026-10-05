@@ -24,7 +24,7 @@ type Run = {
   startedAt?: string | number
   finishedAt?: string | number
   createdAt?: string | number
-  precheckResult?: { stdout?: string; stderr?: string }
+  precheckResult?: { stdout?: string; stderr?: string; exitCode?: number | null }
 }
 const HOUR = 3_600_000
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -87,7 +87,12 @@ export const buildThroughput = (input: {
       latestMaxAt = at
       latestMax = max
     }
-    if (/rate limit/i.test(stderr)) reasons['限流']++
+    // The precheck command also runs prune-run-worktrees, whose own "linear rate limited"
+    // line lands in the same stderr while precheck still dispatches tickets. Only
+    // precheck's own line (starting with 不确定:) counts, and only when nothing was claimed.
+    // Exit code 3 is not a signal: linear-precheck.sh also exits 3 on other Linear failures.
+    const limited = /^不确定: linear rate limited/m.test(stderr)
+    if (limited && !claimable) reasons['限流']++
     else if (claimable === '') {
       if (inFlight !== undefined && max !== undefined && inFlight >= max && max > 0) reasons['达到上限']++
       else if (/\bskip [^\n]*?: scope overlaps\b/.test(stderr)) reasons['SCOPE 冲突']++
