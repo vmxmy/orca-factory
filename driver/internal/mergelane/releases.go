@@ -73,22 +73,6 @@ func (l *Lane) saveEntries(entries []laneEntry) error {
 	}
 	return os.Rename(f.Name(), filepath.Join(l.Root, "merge-queue.json"))
 }
-func (l *Lane) Enqueue(r merge.Request) error {
-	if err := l.load(); err != nil {
-		return err
-	}
-	env := l.Repositories[r.Path].Env
-	r.DeployWorkflow, r.SmokeCommand = env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
-	if r.Repository == "" || r.Number <= 0 {
-		return errors.New("invalid merge request")
-	}
-	for _, e := range l.entries {
-		if e.Request.Repository == r.Repository && e.Request.Number == r.Number {
-			return nil
-		}
-	}
-	return l.accept(append(append([]laneEntry(nil), l.entries...), laneEntry{Request: r}))
-}
 
 // accept commits the durable queue before making its entries consumable.
 func (l *Lane) accept(entries []laneEntry) error {
@@ -138,9 +122,20 @@ func (l *Lane) HasRelease(repo, plugin string) (bool, error) {
 	return false, nil
 }
 
-type stagedQueue struct{}
+// submissionQueue attaches the plan before the shared queue's durable accept.
+// On failure Pending remains available for saving without another PR write.
+type submissionQueue struct {
+	lane *Lane
+	plan release.Plan
+	err  error
+}
 
-func (stagedQueue) Enqueue(merge.Request) error { return nil }
+func (q *submissionQueue) Enqueue(r merge.Request) error {
+	pending := release.Pending{Request: r, Plan: q.plan}
+	q.lane.pending = append(q.lane.pending, laneEntry{Request: r, Release: &pending})
+	q.err = q.lane.flushPending()
+	return q.err
+}
 
 func (l *Lane) SubmitRelease(ctx context.Context, writer release.PRWriter, r merge.Request, p release.Plan) error {
 	if err := l.load(); err != nil {
@@ -156,11 +151,18 @@ func (l *Lane) SubmitRelease(ctx context.Context, writer release.PRWriter, r mer
 	}
 	env := l.Repositories[r.Path].Env
 	r.DeployWorkflow, r.SmokeCommand = env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
-	// Submit produces a complete Pending before the shared queue accepts it.
-	pending, err := release.Submit(ctx, writer, stagedQueue{}, r, p)
+	queue := &submissionQueue{lane: l, plan: p}
+	pending, err := release.Submit(ctx, writer, queue, r, p)
 	if err != nil {
-		return err
+		if pending.Request.Number > 0 {
+			// Preserve Submit's recovery identity even when persistence failed.
+			for i := range l.pending {
+				if l.pending[i].Request == pending.Request {
+					l.pending[i].Release = &pending
+				}
+			}
+		}
+		return errors.Join(err, queue.err)
 	}
-	l.pending = append(l.pending, laneEntry{Request: pending.Request, Release: &pending})
-	return l.flushPending()
+	return nil
 }

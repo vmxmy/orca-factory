@@ -94,6 +94,7 @@ type statusBackend struct {
 	tickets    []scheduler.Ticket
 	inspected  bool
 	snapshotOK bool
+	tickFailed bool
 	allowed    map[string]bool
 	begin      func()
 }
@@ -118,6 +119,7 @@ func (b *statusBackend) LinearLimits() []linear.RateLimit {
 	// iterations never call this method, so they must not refresh generatedAt.
 	if !b.inspected {
 		b.snapshotOK = false
+		b.tickFailed = false
 		b.allowed = map[string]bool{}
 		if b.begin != nil {
 			b.begin()
@@ -173,7 +175,14 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 			}
 		}
 		return wait(ctx)
-	}, report)
+	}, func(err error) {
+		if backend != nil {
+			backend.tickFailed = true
+		}
+		if report != nil {
+			report(err)
+		}
+	})
 }
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {

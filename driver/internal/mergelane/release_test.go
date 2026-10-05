@@ -86,19 +86,19 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 		gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green()}
 		l, _, _, _, ticket := lane(t, gh)
 		repo := l.Repositories["/repo"]
-		repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "deploy.yml", "./smoke"
+		repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "Deploy to Cloudflare", "./smoke"
 		l.Repositories["/repo"] = repo
 		status, smoke := "in_progress", 0
 		previousExec := l.Exec
 		l.Exec = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 			if s.Path == "gh" {
-				if strings.Join(s.Args, " ") != "api repos/vmxmy/orca-factory/actions/workflows/deploy.yml/runs?head_sha="+sha+"&per_page=100&page=1" || s.Timeout <= 0 {
+				if strings.Join(s.Args, " ") != "api repos/vmxmy/orca-factory/actions/runs?head_sha="+sha+"&per_page=100&page=1" || s.Timeout <= 0 {
 					t.Fatalf("deployment command=%+v", s)
 				}
-				return []byte(`{"workflow_runs":[{"id":9,"head_sha":"` + sha + `","status":"` + status + `","conclusion":"success"}]}`), nil
+				return []byte(`{"total_count":1,"workflow_runs":[{"id":9,"name":"Deploy to Cloudflare","head_sha":"` + sha + `","status":"` + status + `","conclusion":"success"}]}`), nil
 			}
 			if s.Path == "bash" {
-				if s.Dir != "/repo" || strings.Join(s.Args, " ") != "-lc ./smoke" || s.Timeout <= 0 {
+				if s.Dir != "/repo" || strings.Join(s.Args, " ") != "-c ./smoke" || s.Timeout <= 0 {
 					t.Fatalf("smoke command=%+v", s)
 				}
 				smoke++
@@ -149,7 +149,7 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 			gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green()}
 			l, _, tk, _, ticket := lane(t, gh)
 			repo := l.Repositories["/repo"]
-			repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "deploy.yml", "./smoke"
+			repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "Deploy to Cloudflare", "./smoke"
 			l.Repositories["/repo"] = repo
 			pub := &publisher{}
 			l.Publisher = pub
@@ -166,7 +166,7 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 					if failure == "wrong SHA" {
 						commit = head
 					}
-					return []byte(`{"workflow_runs":[{"id":9,"head_sha":"` + commit + `","status":"completed","conclusion":"` + conclusion + `"}]}`), nil
+					return []byte(`{"total_count":1,"workflow_runs":[{"id":9,"name":"Deploy to Cloudflare","head_sha":"` + commit + `","status":"completed","conclusion":"` + conclusion + `"}]}`), nil
 				}
 				if s.Path == "bash" {
 					return nil, errors.New("smoke failed")
@@ -275,6 +275,30 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 		}
 		if len(gh.merges) != 1 || gh.merges[0] != main {
 			t.Fatal("corrected head did not resume")
+		}
+	})
+	t.Run("human catch-up limit stays ahead of release", func(t *testing.T) {
+		gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green(), behind: 1}
+		l, _, tk, _, ticket := lane(t, gh)
+		l.Exec = func(context.Context, runx.Spec) ([]byte, error) { return nil, conflictExit{} }
+		l.Publisher = &publisher{}
+		if err := l.Admit(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		l.entries[0].Request.CatchupRounds = 1
+		if err := l.save(); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+			t.Fatal(err)
+		}
+		_ = l.Process(ctx, []scheduler.Ticket{ticket})
+		gh.behind = 0
+		for i := 0; i < 2; i++ {
+			_ = l.Process(ctx, []scheduler.Ticket{ticket})
+		}
+		if len(gh.merges) != 0 || len(l.entries) != 2 || l.entries[0].Request.CatchupRounds != 2 || !l.entries[0].Escalated || len(tk.escalated) != 1 {
+			t.Fatalf("human barrier lost: merges=%v entries=%+v escalation=%v", gh.merges, l.entries, tk.escalated)
 		}
 	})
 }

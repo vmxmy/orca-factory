@@ -170,10 +170,14 @@ func TestAlreadyMergedPRIsFinished(t *testing.T) {
 func TestMissingPRGoesToHuman(t *testing.T) {
 	gh := &fakeGitHub{}
 	l, _, tk, _, ticket := lane(t, gh)
-	if err := l.Process(context.Background(), []scheduler.Ticket{ticket}); err != nil {
-		t.Fatal(err)
+	if err := l.Process(context.Background(), []scheduler.Ticket{ticket}); err == nil {
+		t.Fatal("missing PR must fail admission")
 	}
 	if len(tk.escalated) != 1 || !strings.Contains(tk.escalated[0], "找不到 agent/ZII-1/executor 的 PR") {
 		t.Fatalf("escalated=%v", tk.escalated)
+	}
+	_ = l.Process(context.Background(), []scheduler.Ticket{ticket})
+	if len(tk.escalated) != 1 || len(l.entries) != 1 || l.entries[0].Blocked == "" {
+		t.Fatal("missing PR lost its durable barrier or repeated escalation")
 	}
 }

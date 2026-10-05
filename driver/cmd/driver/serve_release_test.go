@@ -20,6 +20,12 @@ import (
 
 type releaseSource struct{ last time.Time }
 
+type failedReleaseSource struct{ releaseSource }
+
+func (failedReleaseSource) Env(context.Context, string) (string, error) {
+	return "", errors.New("release scan read unavailable")
+}
+
 func (s releaseSource) Plugins(context.Context) ([]string, error)         { return []string{"demo"}, nil }
 func (s releaseSource) Env(context.Context, string) (string, error)       { return "30", nil }
 func (s releaseSource) LatestTag(context.Context, string) (string, error) { return "demo-v1.0.0", nil }
@@ -44,6 +50,11 @@ func (w *releaseWriter) CreateReleasePR(_ context.Context, _ merge.Request, p re
 type releaseBackend struct {
 	statusFakeBackend
 	snapshotErr error
+	applyErr    error
+}
+
+func (b *releaseBackend) Apply(context.Context, scheduler.Ticket, scheduler.Action) error {
+	return b.applyErr
 }
 
 func (b *releaseBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]scheduler.Ticket, error) {
@@ -65,6 +76,11 @@ type releaseGitHub struct {
 func (g *releaseGitHub) FindPRs(context.Context, string, string, string) ([]github.PullRequest, error) {
 	return nil, g.findErr
 }
+
+type releaseTickets struct{}
+
+func (releaseTickets) Apply(context.Context, scheduler.Ticket, scheduler.Action) error { return nil }
+func (releaseTickets) Finish(context.Context, scheduler.Ticket, string) error          { return nil }
 
 func (g *releaseGitHub) MergePR(context.Context, string, string, int, string) (github.PullRequest, error) {
 	g.merges++
@@ -139,21 +155,29 @@ func TestServeWiresRelease(t *testing.T) {
 			}
 		})
 	}
-	for _, failure := range []string{"snapshot", "admission", "paused"} {
+	for _, failure := range []string{"snapshot", "admission", "missing feature PR", "ticket update", "release snapshot", "release scan", "paused"} {
 		t.Run(failure+" blocks existing release", func(t *testing.T) {
 			dir := t.TempDir()
 			t.Setenv("DRIVER_STATUS_FILE", filepath.Join(dir, "status.json"))
 			now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
 			last := now.Add(-30 * time.Minute)
 			backend, gh, pub := &releaseBackend{}, &releaseGitHub{}, &releasePublisher{}
-			repo := config.Repository{Path: dir, StaleHours: 24, Env: map[string]string{"AGENT_GH_REPO": "owner/repo"}}
+			repo := config.Repository{Path: dir, MaxInFlight: 4, StaleHours: 24, Env: map[string]string{"AGENT_GH_REPO": "owner/repo"}}
 			s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{Repositories: []config.Repository{repo}, MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}}
-			lane := &mergelane.Lane{Root: dir, Repositories: map[string]config.Repository{dir: repo}, GitHub: gh, Publisher: pub}
+			lane := &mergelane.Lane{Root: dir, Repositories: map[string]config.Repository{dir: repo}, GitHub: gh, Publisher: pub, Tickets: releaseTickets{}}
 			if err := lane.SubmitRelease(context.Background(), &releaseWriter{}, merge.Request{Repository: "owner/repo", Path: dir}, release.Plan{Plugin: "queued", Version: "1.0.1"}); err != nil {
 				t.Fatal(err)
 			}
 			w := &releaseWriter{}
+			var openErr error
+			var scanFailed bool
 			s.Merger = &serveReleases{scheduler: s, lane: lane, open: func(context.Context, config.Repository) (release.Source, release.PRWriter, error) {
+				if openErr != nil {
+					return nil, nil, openErr
+				}
+				if scanFailed {
+					return failedReleaseSource{releaseSource{last}}, w, nil
+				}
 				return releaseSource{last}, w, nil
 			}}
 			ctx, cancel := context.WithCancel(context.Background())
@@ -170,11 +194,20 @@ func TestServeWiresRelease(t *testing.T) {
 					switch failure {
 					case "snapshot":
 						backend.snapshotErr = errors.New("snapshot unavailable")
-					case "admission":
+					case "admission", "missing feature PR":
 						backend.tickets = []scheduler.Ticket{{ID: "feature", Identifier: "ZII-1", Repo: dir, Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, UpdatedAt: now}}
-						gh.findErr = errors.New("feature PR unavailable")
+						if failure == "admission" {
+							gh.findErr = errors.New("feature PR unavailable")
+						}
 					case "paused":
 						s.Pauses.Pause(pause.Key{Dependency: pause.GitHub, Repo: dir, Kind: pause.Credentials}, time.Time{})
+					case "ticket update":
+						backend.tickets = []scheduler.Ticket{{ID: "feature", Identifier: "ZII-1", Repo: dir, Candidate: true, UpdatedAt: now}}
+						backend.applyErr = errors.New("ticket claim unavailable")
+					case "release snapshot":
+						openErr = errors.New("release snapshot unavailable")
+					case "release scan":
+						scanFailed = true
 					}
 				} else {
 					cancel()
@@ -183,11 +216,11 @@ func TestServeWiresRelease(t *testing.T) {
 			}, func(err error) { reported = append(reported, err) }); err != nil {
 				t.Fatal(err)
 			}
-			if failure != "paused" && len(reported) == 0 {
-				t.Fatal("failed tick was not reported")
-			}
 			if len(w.plans) != 0 || gh.merges != 0 || pub.tags != 0 || pub.releases != 0 {
 				t.Fatalf("failed tick wrote: PRs=%d merges=%d tags=%d releases=%d", len(w.plans), gh.merges, pub.tags, pub.releases)
+			}
+			if failure != "paused" && len(reported) == 0 {
+				t.Fatal("failed tick was not reported")
 			}
 		})
 	}

@@ -80,6 +80,7 @@ func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
 	}
 	entries := append([]laneEntry(nil), l.entries...)
 	current := map[string]scheduler.Ticket{}
+	notify := map[int]bool{}
 	var problems []error
 	for _, t := range queue {
 		if !eligible(t) {
@@ -100,9 +101,24 @@ func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
 			if pr != nil {
 				reason = fmt.Sprintf("合并通道: PR #%d 未合并即关闭", pr.Number)
 			}
-			if err := l.escalate(ctx, t, reason); err != nil {
-				problems = append(problems, err)
+			problems = append(problems, errors.New(reason))
+			index := -1
+			for i, e := range entries {
+				if e.Ticket != nil && e.Ticket.ID == t.ID && e.Request.Path == t.Repo {
+					index = i
+					break
+				}
 			}
+			if index < 0 {
+				// Even an as-yet unknown PR number owns its arrival slot until
+				// a fresh, valid handoff identifies a recoverable request.
+				entries = append(entries, laneEntry{Request: merge.Request{Repository: full, Path: t.Repo}, Ticket: &t})
+				index = len(entries) - 1
+			}
+			if entries[index].Blocked == "" {
+				entries[index].Blocked = reason
+			}
+			notify[index] = true
 			// An existing feature remains a barrier, but has no current authority.
 			continue
 		}
@@ -116,6 +132,11 @@ func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
 				r.CatchupRounds = e.Request.CatchupRounds
 				if e.Blocked == "" {
 					e.Ticket = &t
+				}
+				if e.MergeSHA != "" {
+					// A deployment already in flight retains the policy it merged
+					// with, even if the current repository environment changes.
+					r = e.Request
 				}
 				e.Request = r
 				found = true
@@ -131,6 +152,11 @@ func (l *Lane) Admit(ctx context.Context, queue []scheduler.Ticket) error {
 		return errors.Join(append(problems, err)...)
 	}
 	l.current = current
+	for index := range notify {
+		if err := l.notifyBlocked(ctx, &l.entries[index]); err != nil {
+			problems = append(problems, err)
+		}
+	}
 	return errors.Join(problems...)
 }
 func (l *Lane) Process(ctx context.Context, queue []scheduler.Ticket) error {
@@ -327,7 +353,10 @@ func (l *Lane) Advance(ctx context.Context) error {
 }
 
 func (l *Lane) notifyBlocked(ctx context.Context, e *laneEntry) error {
-	if e.Escalated || e.Ticket == nil {
+	if e.Ticket == nil {
+		return errors.New(e.Blocked)
+	}
+	if e.Escalated {
 		return nil
 	}
 	if err := l.escalate(ctx, *e.Ticket, e.Blocked); err != nil {

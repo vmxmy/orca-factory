@@ -22,40 +22,57 @@ func (l *Lane) Check(ctx context.Context, r merge.Request, sha string) (merge.De
 		return "", errors.New("deployment squash SHA missing")
 	}
 	if r.DeployWorkflow != "" {
-		var runs struct {
-			Runs []struct {
-				ID         int64  `json:"id"`
-				Head       string `json:"head_sha"`
-				Status     string `json:"status"`
-				Conclusion string `json:"conclusion"`
-			} `json:"workflow_runs"`
+		type workflowRun struct {
+			ID         int64  `json:"id"`
+			Name       string `json:"name"`
+			Head       string `json:"head_sha"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
 		}
-		endpoint := fmt.Sprintf("repos/%s/actions/workflows/%s/runs?head_sha=%s&per_page=100&page=1", r.Repository, url.PathEscape(r.DeployWorkflow), url.QueryEscape(sha))
-		b, err := l.run(ctx, r.Path, "gh", "api", endpoint)
-		if err != nil {
-			return "", errors.New("deployment workflow read unavailable")
-		}
-		if err := json.Unmarshal(b, &runs); err != nil {
-			return "", errors.New("invalid deployment workflow receipt")
-		}
-		latest := -1
-		for i, run := range runs.Runs {
-			if run.Head == sha && (latest < 0 || run.ID > runs.Runs[latest].ID) {
-				latest = i
+		var latest workflowRun
+		count := 0
+		for page := 1; ; page++ {
+			var runs struct {
+				Total *int          `json:"total_count"`
+				Runs  []workflowRun `json:"workflow_runs"`
+			}
+			endpoint := fmt.Sprintf("repos/%s/actions/runs?head_sha=%s&per_page=100&page=%d", r.Repository, url.QueryEscape(sha), page)
+			b, err := l.run(ctx, r.Path, "gh", "api", endpoint)
+			if err != nil {
+				return "", errors.New("deployment workflow read unavailable")
+			}
+			if err := json.Unmarshal(b, &runs); err != nil || runs.Total == nil {
+				return "", errors.New("invalid deployment workflow receipt")
+			}
+			for _, run := range runs.Runs {
+				if run.Head == sha && run.Name == r.DeployWorkflow && run.ID > latest.ID {
+					latest = run
+				}
+			}
+			count += len(runs.Runs)
+			if count > *runs.Total {
+				return "", errors.New("inconsistent deployment workflow receipt")
+			}
+			if len(runs.Runs) < 100 || page == 10 {
+				if count != *runs.Total {
+					return "", errors.New("incomplete deployment workflow receipt")
+				}
+				break
 			}
 		}
-		if latest < 0 || runs.Runs[latest].Status != "completed" {
+		if latest.ID == 0 || latest.Status != "completed" {
 			return merge.DeploymentPending, nil
 		}
-		if runs.Runs[latest].Conclusion == "" {
+		if latest.Conclusion == "" {
 			return "", errors.New("deployment conclusion missing")
 		}
-		if runs.Runs[latest].Conclusion != "success" {
+		if latest.Conclusion != "success" {
 			return merge.DeploymentFailed, nil
 		}
+
 	}
 	if r.SmokeCommand != "" {
-		if _, err := l.run(ctx, r.Path, "bash", "-lc", r.SmokeCommand); err != nil {
+		if _, err := l.run(ctx, r.Path, "bash", "-c", r.SmokeCommand); err != nil {
 			if ctx.Err() != nil {
 				return "", ctx.Err()
 			}

@@ -39,7 +39,7 @@ func (r *serveReleases) Process(ctx context.Context, queue []scheduler.Ticket) e
 func (r *serveReleases) AfterTick(ctx context.Context) error {
 	var problems []error
 	s := r.scheduler
-	if r.backend == nil || !r.backend.snapshotOK || r.admissionErr != nil {
+	if r.backend == nil || !r.backend.snapshotOK || r.backend.tickFailed || r.admissionErr != nil {
 		return nil
 	}
 	if !r.admitted {
@@ -70,11 +70,13 @@ func (r *serveReleases) AfterTick(ctx context.Context) error {
 		src, writer, err := r.open(ctx, repo)
 		if err != nil {
 			problems = append(problems, err)
+			allowed[repo.Path] = false
 			continue
 		}
 		plans, err := release.Scan(ctx, src, now)
 		if err != nil {
 			problems = append(problems, err)
+			allowed[repo.Path] = false
 			continue
 		}
 		for _, plan := range plans {
