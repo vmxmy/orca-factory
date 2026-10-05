@@ -61,11 +61,14 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 // Start reconciles remote evidence before Execute. Execute remains the explicit
 // new-claim entry point for callers that already performed reconciliation.
 func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
+	e = e.withLog(t)
 	phase := machine.Phase("recovery")
+	recoveryStep := "validate-configuration"
+	basis := "checkpoint-association"
 	delegated := false
 	defer func() {
 		if !delegated {
-			e.logError(phase, err)
+			e.logError(phase, err, "recovery_step", recoveryStep)
 		}
 	}()
 	c := e.Config
@@ -75,6 +78,8 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || e.Tools == nil || e.GitHub == nil || e.Orca == nil || e.Linear == nil {
 		return Result{}, errors.New("invalid recovery configuration")
 	}
+	phase = machine.PhaseUnclaimed
+	recoveryStep = "state-root"
 	if c.Root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -82,41 +87,56 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
+	recoveryStep = "read-checkpoint"
 	cp, checkpointErr := readCheckpoint(c, t)
+	if cp != nil {
+		if cp.Completed {
+			phase = machine.PhaseBranchCheck
+		} else if cp.Task != "" || cp.Pending {
+			phase = machine.PhaseWorker
+		}
+	}
 	e.recoverySnapshot(ctx, t, cp, checkpointErr)
 	branch := "agent/" + t.Identifier + "/" + c.Unit
+	recoveryStep = "branch-lookup"
 	head, err := e.Tools.Head(ctx, c.Repo, branch)
 	if err != nil {
 		return Result{}, fmt.Errorf("resume branch lookup failed: %w", err)
 	}
+	recoveryStep = "pr-lookup"
 	pr, err := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
 	if err != nil {
 		return Result{}, errors.New("resume PR lookup failed")
 	}
 	if pr != nil {
-		e.logger().Info("recovery.path", "path", "existing-pr")
+		e.recoveryPath(cp, "existing-pr", "open-pr-by-branch")
+		recoveryStep = "validate-existing-pr"
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return Result{}, errors.New("invalid existing PR")
 		}
+		recoveryStep = "reconstruct-existing-pr"
 		state := machine.Initial()
 		for _, ev := range []machine.Event{machine.EvClaim, machine.EvWorkerOK, machine.EvBranchOK, machine.EvGateGreen, machine.EvReviewGreen, machine.EvOpenPR} {
-			state, _, err = e.step(state, ev)
+			state, _, err = e.stepDecision(state, ev, "recovery-reconstruction", phase)
 			if err != nil {
 				return Result{}, err
 			}
 		}
 		result = Result{State: state, PR: *pr}
 		phase = state.Phase
+		recoveryStep = "existing-pr-handoff"
 		if err = e.comment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
 			return result, errors.New("resume handoff comment failed")
 		}
 		return result, nil
 	}
+	recoveryStep = "validate-checkpoint"
 	if checkpointErr != nil {
 		return Result{}, checkpointErr
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
+		recoveryStep = "reconcile-run"
 		receipt, callErr := e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 		if callErr != nil {
 			return Result{}, errors.New("resume run reconciliation failed")
@@ -128,6 +148,8 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if run == "" {
 			return Result{}, errors.New("resume run receipt missing ID")
 		}
+		e.association(run, "", "")
+		recoveryStep = "old-task-lookup"
 		tasks, callErr := e.taskList(ctx, run)
 		if callErr != nil {
 			return Result{}, errors.New("resume old task lookup failed")
@@ -140,10 +162,13 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 				return Result{}, errors.New("ambiguous old tasks; reconcile active dispatch")
 			}
 			cp = &checkpoint{Run: run, Task: task.ID, Dispatch: task.DispatchID}
+			e.association(cp.Run, cp.Task, cp.Dispatch)
+			phase = machine.PhaseWorker
 		}
 	}
 	r := e.recovery()
 	if head != "" && r != nil {
+		recoveryStep = "commit-lookup"
 		complete, err := r.Complete(ctx, c.Repo, head)
 		if err != nil {
 			return Result{}, errors.New("resume commit lookup failed")
@@ -153,9 +178,13 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 				cp = &checkpoint{}
 			}
 			cp.Completed = true
+			basis = "complete-commit"
+			phase = machine.PhaseBranchCheck
 		}
 	}
 	if cp != nil && cp.Run != "" && cp.Task != "" {
+		e.association(cp.Run, cp.Task, cp.Dispatch)
+		recoveryStep = "task-lookup"
 		tasks, err := e.taskList(ctx, cp.Run)
 		if err != nil {
 			return Result{}, errors.New("resume task lookup failed")
@@ -164,6 +193,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != "" && task.DispatchID != cp.Dispatch) {
 				continue
 			}
+			recoveryStep = "task-result"
 			report, err := task.WorkerReport()
 			if err != nil {
 				return Result{}, errors.New("resume task result invalid")
@@ -176,11 +206,14 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 				cp.Settled = true
 				if report.Outcome == "succeeded" {
 					cp.Completed = true
+					basis = "worker-report-succeeded"
+					phase = machine.PhaseBranchCheck
 				}
 			}
 		}
 	}
 	if cp != nil {
+		recoveryStep = "reconcile-pending-worker"
 		if cp.Pending && !cp.Completed && cp.Task == "" {
 			// The previous executor's request ID belongs to its terminal and cannot be
 			// replayed here; reconcile by the run's tasks instead.
@@ -189,16 +222,18 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 				return Result{}, err
 			}
 			if !found {
-				e.logger().Info("recovery.path", "path", "new-worker")
+				e.recoveryPath(cp, "new-worker", "no-recoverable-worker")
 				delegated = true
-				return e.Execute(ctx, t)
+				return e.execute(ctx, t, nil)
 			}
 			cp.Task, cp.Dispatch, cp.Pending = task.ID, task.DispatchID, false
+			basis = "run-task-match"
 		}
 		if cp.Pending && !cp.Completed {
-			e.logger().Info("recovery.path", "path", "unresolved-worker")
+			e.recoveryPath(cp, "unresolved-worker", "pending-start-unconfirmed")
 			return Result{}, errors.New("unresolved worker start; reconcile request before retry")
 		}
+		recoveryStep = "validate-worker-association"
 		// task-list carries no dispatch_id, so an adopted task may lack one.
 		if !cp.Completed && cp.Task == "" {
 			return Result{}, errors.New("incomplete worker recovery state")
@@ -207,13 +242,13 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if cp.Completed {
 			path = "completed-worker"
 		}
-		e.logger().Info("recovery.path", "path", path)
+		e.recoveryPath(cp, path, basis)
 		delegated = true
 		return e.execute(ctx, t, cp)
 	}
-	e.logger().Info("recovery.path", "path", "new-worker")
+	e.recoveryPath(cp, "new-worker", "no-recoverable-worker")
 	delegated = true
-	return e.Execute(ctx, t)
+	return e.execute(ctx, t, nil)
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {
 	b, err := c.run(ctx, repo, "git", "show", "-s", "--format=%(trailers:key=agent-status,valueonly)", head)

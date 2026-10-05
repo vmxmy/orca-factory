@@ -54,7 +54,7 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 		shadow := result.State
 		shadow.Phase = machine.PhaseWorker
 		shadow.ExecAlive = true
-		next, _, stepErr := e.step(shadow, machine.EvWorkerStall)
+		next, _, stepErr := e.stepDecision(shadow, machine.EvWorkerStall, "budget", phase)
 		if stepErr != nil {
 			return stepErr
 		}

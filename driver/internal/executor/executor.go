@@ -77,7 +77,8 @@ type Executor struct {
 	Recovery      Recovery
 	Sleep         func(context.Context, time.Duration) error
 	// Stderr receives best-effort warnings; nil means os.Stderr.
-	Stderr io.Writer
+	Stderr     io.Writer
+	logContext *executionLog
 }
 type Result struct {
 	State             machine.State
@@ -107,7 +108,7 @@ func (e *Executor) warn(format string, args ...any) {
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
-	return e.execute(ctx, t, nil)
+	return e.withLog(t).execute(ctx, t, nil)
 }
 
 func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) (result Result, err error) {
@@ -181,10 +182,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		previous := result.State
 		next, fx, stepErr := e.step(previous, ev)
 		if stepErr != nil {
+			e.unapplied(ev, next.Phase)
 			return stepErr
 		}
 		if action != nil {
 			if actionErr := action(fx); actionErr != nil {
+				e.unapplied(ev, next.Phase)
 				return actionErr
 			}
 		}
@@ -253,6 +256,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", callErr)
 			}
 			result.RunID = cp.Run
+			e.association(cp.Run, cp.Task, cp.Dispatch)
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
@@ -266,6 +270,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				return errors.New("Orca run receipt missing ID")
 			}
 		}
+		e.association(result.RunID, cp.Task, cp.Dispatch)
 		baseline, callErr = e.Tools.Baseline(ctx, c.Repo)
 		if callErr != nil || baseline == "" {
 			return errors.New("baseline lookup failed")
@@ -417,15 +422,28 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		err = e.retryRead(ctx, t, &result, "gate output", func() error {
 			done := e.external("gate")
 			output, gateErr = e.Tools.Gate(ctx, c.Repo, head, spec)
-			gateResult, _ := gateVerdict(output)
-			done(gateErr, "verdict", gateResult)
-			if stop := dependencyStop(ctx, gateErr); stop != nil {
+			verdict, parseErr = gateVerdict(output)
+			selected := machine.Event("")
+			stop := dependencyStop(ctx, gateErr)
+			if stop == nil && gateErr == nil && parseErr == nil {
+				selected = machine.EvGateGreen
+				if verdict == "red" {
+					selected = machine.EvGateRed
+				}
+			} else if parseErr == nil && stop == nil {
+				selected = machine.EvGateRed
+			}
+			command := "ok"
+			if gateErr != nil {
+				command = "error"
+			}
+			done(errors.Join(callError(gateErr), parseErr), "command_result", command, "call_error", safeError(callError(gateErr)), "parse_error", safeError(parseErr), "verdict", verdict, "event", selected, "stop_reason", safeError(stop))
+			if stop != nil {
 				if gateErr != nil {
 					return gateErr
 				}
 				return stop
 			}
-			verdict, parseErr = gateVerdict(output)
 			if parseErr != nil {
 				if gateErr != nil {
 					return gateErr
@@ -465,11 +483,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			var reviewErr error
 			done := e.external("reviewer")
 			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
-			reviewResult, _ := reviewVerdict(output)
-			done(reviewErr, "verdict", reviewResult, "tier", reviewerTier)
-			if stop := dependencyStop(ctx, reviewErr); stop != nil {
-				return result, stop
-			}
 			verdict, parseErr = reviewVerdict(output)
 			event = machine.EvReviewEmpty
 			if reviewErr == nil && parseErr == nil {
@@ -478,6 +491,19 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				} else {
 					event = machine.EvReviewRed
 				}
+			}
+			command := "ok"
+			if reviewErr != nil {
+				command = "error"
+			}
+			selected := event
+			stop := dependencyStop(ctx, reviewErr)
+			if stop != nil {
+				selected = ""
+			}
+			done(errors.Join(callError(reviewErr), parseErr), "command_result", command, "call_error", safeError(callError(reviewErr)), "parse_error", safeError(parseErr), "verdict", verdict, "event", selected, "tier", reviewerTier, "stop_reason", safeError(stop))
+			if stop != nil {
+				return result, stop
 			}
 			failureOutput = output
 			if err = transition(event, nil); err != nil {

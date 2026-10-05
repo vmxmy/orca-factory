@@ -22,19 +22,23 @@ import (
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
 func RunTicket(ctx context.Context, identifier string) (result Result, err error) {
+	logger := (&Executor{Config: Config{Terminal: os.Getenv("ORCA_TERMINAL_HANDLE")}}).withLog(Ticket{Identifier: identifier})
+	initializationStep := "validate-identifier"
 	delegated := false
 	defer func() {
 		if !delegated {
-			(&Executor{}).logError("initialization", err)
+			logger.logError("initialization", err, "initialization_step", initializationStep)
 		}
 	}()
 	if !component.MatchString(identifier) {
 		return Result{}, errors.New("invalid ticket identifier")
 	}
+	initializationStep = "current-terminal"
 	terminal := os.Getenv("ORCA_TERMINAL_HANDLE")
 	if terminal == "" {
 		return Result{}, errors.New("driver exec requires a current Orca terminal")
 	}
+	initializationStep = "repository-root"
 	b, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"rev-parse", "--show-toplevel"}, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("cannot locate repository")
@@ -42,10 +46,12 @@ func RunTicket(ctx context.Context, identifier string) (result Result, err error
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
+	initializationStep = "repository-profile"
 	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
+	initializationStep = "validate-profile"
 	values := strings.Split(string(b), "\x00")
 	if len(values) != 11 {
 		return Result{}, errors.New("invalid repository profile")
@@ -54,18 +60,22 @@ func RunTicket(ctx context.Context, identifier string) (result Result, err error
 	if !ok || !component.MatchString(owner) || !component.MatchString(name) || values[1] == "" || values[2] == "" || strings.TrimSpace(values[3]) == "" {
 		return Result{}, errors.New("repository profile requires GitHub repository, Linear team/project and reviewer")
 	}
+	initializationStep = "reviewer-threshold"
 	maximum, err := strconv.ParseFloat(values[9], 64)
 	if err != nil {
 		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
+	initializationStep = "read-ticket"
 	ticket, err := readTicket(ctx, identifier, values[1], values[2])
 	if err != nil {
 		return Result{}, err
 	}
+	initializationStep = "linear-client"
 	lc, err := linear.New(ctx, linear.Options{TeamID: values[1]})
 	if err != nil {
 		return Result{}, errors.New("Linear initialization failed")
 	}
+	initializationStep = "github-client"
 	gc, err := github.New(github.Options{})
 	if err != nil {
 		return Result{}, errors.New("GitHub initialization failed")
@@ -76,6 +86,7 @@ func RunTicket(ctx context.Context, identifier string) (result Result, err error
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[7]
 	e.Config.TierSettings = map[string]string{"fast": values[4], "default": values[5], "strong": values[6]}
+	initializationStep = "worker-tier"
 	parts := strings.Split(values[5], ":")
 	if len(parts) != 3 || parts[0] == "" {
 		return Result{}, errors.New("repository profile requires default worker tier")

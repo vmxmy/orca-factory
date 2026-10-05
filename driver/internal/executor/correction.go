@@ -162,6 +162,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			}
 			cp.Task = child
 			cp.Dispatch = ""
+			e.association(cp.Run, cp.Task, cp.Dispatch)
 			cp.Pending = true
 			cp.Corrections = result.State.Corrections
 			if err = saveCheckpoint(c, t, *cp); err != nil {
