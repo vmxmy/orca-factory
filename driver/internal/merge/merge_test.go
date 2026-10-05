@@ -3,7 +3,11 @@ package merge
 import (
 	"context"
 	"errors"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -40,7 +44,7 @@ func (f *fakeGit) MergeTree(_ context.Context, _ Request, head, main string) (st
 	f.head, f.main = head, main
 	return "tree", f.conflict, nil
 }
-func (f *fakeGit) WithWorktree(ctx context.Context, _ Request, tree string, run func(context.Context, string) error) error {
+func (f *fakeGit) WithWorktree(ctx context.Context, _ Request, tree, head, main string, run func(context.Context, string) error) error {
 	f.worktrees = append(f.worktrees, tree)
 	return run(ctx, "isolated-result")
 }
@@ -188,5 +192,71 @@ func TestFailClosed(t *testing.T) {
 				t.Fatalf("%+v merges=%d", r, h.merges)
 			}
 		})
+	}
+}
+
+func TestCommandGitUsesMergedTreeAndCleansAfterGateFailure(t *testing.T) {
+	root := t.TempDir()
+	head := strings.Repeat("a", 40)
+	main := strings.Repeat("b", 40)
+	tree := strings.Repeat("c", 40)
+	commit := strings.Repeat("d", 40)
+	var calls []runx.Spec
+	g := CommandGit{Run: func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Timeout <= 0 || s.Path != "git" || ctx.Err() != nil {
+			t.Fatalf("unbounded or canceled command: %+v", s)
+		}
+		calls = append(calls, s)
+		switch s.Args[0] {
+		case "merge-tree":
+			return []byte(tree + "\n"), nil
+		case "-c":
+			return []byte(commit + "\n"), nil
+		}
+		return nil, nil
+	}}
+	r := Request{Path: root}
+	got, conflict, err := g.MergeTree(context.Background(), r, head, main)
+	if err != nil || conflict || got != tree {
+		t.Fatalf("%s %v %v", got, conflict, err)
+	}
+	var path string
+	err = g.WithWorktree(context.Background(), r, tree, head, main, func(_ context.Context, p string) error { path = p; return errors.New("gate failed") })
+	if err == nil || filepath.Dir(filepath.Dir(path)) != root {
+		t.Fatalf("path=%s err=%v", path, err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatalf("temporary directory retained: %v", err)
+	}
+	if len(calls) != 4 || !reflect.DeepEqual(calls[0].Args, []string{"merge-tree", "--write-tree", head, main}) || !strings.Contains(strings.Join(calls[1].Args, " "), "commit-tree "+tree+" -p "+head+" -p "+main) || !reflect.DeepEqual(calls[2].Args, []string{"worktree", "add", "--detach", path, commit}) || !reflect.DeepEqual(calls[3].Args, []string{"worktree", "remove", "--force", path}) {
+		t.Fatalf("calls=%+v", calls)
+	}
+}
+
+type exitFailure int
+
+func (e exitFailure) Error() string { return "git failed" }
+func (e exitFailure) ExitCode() int { return int(e) }
+func TestCommandGitDistinguishesConflictFromInfrastructure(t *testing.T) {
+	for _, code := range []int{1, 128} {
+		g := CommandGit{Run: func(context.Context, runx.Spec) ([]byte, error) { return nil, exitFailure(code) }}
+		_, conflict, err := g.MergeTree(context.Background(), Request{}, strings.Repeat("a", 40), strings.Repeat("b", 40))
+		if conflict != (code == 1) || (err != nil) != (code == 128) {
+			t.Fatalf("code=%d conflict=%v err=%v", code, conflict, err)
+		}
+	}
+}
+func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
+	s := ready()
+	s.MainFiles = []string{"feature"}
+	moved := s
+	moved.Main = "new-main"
+	c, h, g, _, _ := fixture(s)
+	h.snapshots = []Snapshot{s, moved, s, moved}
+	c.Enqueue(req(1))
+	a := next(t, c, "owner/repo")
+	b := next(t, c, "owner/repo")
+	if a.Status != Waiting || b.Status != Human || h.merges != 0 || g.trees != 2 {
+		t.Fatalf("%+v %+v merges=%d trees=%d", a, b, h.merges, g.trees)
 	}
 }

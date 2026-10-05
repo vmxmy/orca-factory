@@ -43,7 +43,7 @@ type GitHub interface {
 // owns cleanup even on callback error or cancellation; it never checks out head.
 type Git interface {
 	MergeTree(context.Context, Request, string, string) (tree string, conflict bool, err error)
-	WithWorktree(context.Context, Request, string, func(context.Context, string) error) error
+	WithWorktree(context.Context, Request, string, string, string, func(context.Context, string) error) error
 }
 
 type Gate interface {
@@ -244,7 +244,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (Result, error) {
 		if !mergeReady(s) {
 			return finish(Waiting, "head CI or mergeability not ready")
 		}
-		err = c.git.WithWorktree(ctx, e.request, tree, func(ctx context.Context, path string) error { return c.gate.Run(ctx, e.request, path) })
+		err = c.git.WithWorktree(ctx, e.request, tree, s.Head, s.Main, func(ctx context.Context, path string) error { return c.gate.Run(ctx, e.request, path) })
 		if err != nil {
 			if ctx.Err() != nil {
 				return r, ctx.Err()
