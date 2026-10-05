@@ -2,285 +2,325 @@ package main
 
 import (
 	"bufio"
-	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
 func init() { Register("logs", runLogs) }
 
 type logEntry struct {
-	Time      time.Time
-	Component string
-	Level     string
-	Event     string
-	Message   string
-	Ticket    string
-	Raw       map[string]any
+	Time      time.Time      `json:"time"`
+	Component string         `json:"component"`
+	Level     string         `json:"level"`
+	Event     string         `json:"event"`
+	Fields    map[string]any `json:"fields"`
+	Raw       string         `json:"raw"`
+	original  json.RawMessage
 }
 
-// Malformed records do not prevent reading the rest of a log file.
-func parseLogLine(line []byte) (logEntry, bool) {
-	if !json.Valid(line) {
-		return logEntry{}, false
+// Existing JSON records retain every original field and number representation.
+func (e logEntry) MarshalJSON() ([]byte, error) {
+	if e.original != nil {
+		return e.original, nil
 	}
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	decoder.UseNumber()
-	var raw map[string]any
-	if err := decoder.Decode(&raw); err != nil {
-		return logEntry{}, false
-	}
-	field := func(key string) string { value, _ := raw[key].(string); return value }
-	at, err := time.Parse(time.RFC3339Nano, field("time"))
-	if err != nil {
-		return logEntry{}, false
-	}
-	ticket := field("ticket")
-	if ticket == "" {
-		ticket = field("ticket_id")
-	}
-	if ticket == "" {
-		ticket = field("issue")
-	}
-	return logEntry{Time: at, Component: field("component"), Level: field("level"), Event: field("event"), Message: field("msg"), Ticket: ticket, Raw: raw}, true
+	type plainEntry logEntry
+	return json.Marshal(plainEntry(e))
 }
 
-// Return directory errors to the caller; only missing files mean empty history.
-func logPaths(stateRoot, repo, ticket string) ([]string, error) {
-	dir := filepath.Join(stateRoot, repo, ticket)
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
+func runLogs(args []string) int {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	return runLogsWithContext(ctx, args, logStateRoot(), time.Now(), os.Stdout, os.Stderr)
+}
+
+func runLogsWithContext(ctx context.Context, args []string, root string, now time.Time, out, stderr io.Writer) int {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	follow := fs.Bool("follow", false, "follow new log records until interrupted")
+	since := fs.Duration("since", 0, "show records newer than this duration (0 means all)")
+	asJSON := fs.Bool("json", false, "output original JSON records")
+	fs.Usage = func() { fmt.Fprintln(stderr, "Usage: driver logs <ticket> [--follow] [--since duration] [--json]") }
+	// flag stops at the first positional argument. Move the leading ticket so
+	// the documented ticket-first invocation also uses standard flag parsing.
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		args = append(append([]string(nil), args[1:]...), args[0])
 	}
-	type rotation struct {
-		path   string
-		number uint64
-	}
-	var rotations []rotation
-	for _, entry := range entries {
-		suffix, ok := strings.CutPrefix(entry.Name(), "executor.log.")
-		if !ok || suffix == "" {
-			continue
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
 		}
-		digits := true
-		for _, char := range suffix {
-			if char < '0' || char > '9' {
-				digits = false
-				break
+		fs.Usage()
+		return 2
+	}
+	if fs.NArg() != 1 || !logComponent.MatchString(fs.Arg(0)) || *since < 0 {
+		fs.Usage()
+		return 2
+	}
+	ticket := fs.Arg(0)
+	// Match the identifier rather than a prefix such as ZII-9010; filter the
+	// raw line before decoding any structured data.
+	match := regexp.MustCompile(`(?i)(^|[^a-z0-9_-])` + regexp.QuoteMeta(ticket) + `([^a-z0-9_-]|$)`)
+	var cutoff time.Time
+	if *since > 0 {
+		cutoff = now.Add(-*since)
+	}
+	encoder := json.NewEncoder(out)
+	encoder.SetEscapeHTML(false)
+	var cursors []*logCursor
+	var ticker *time.Ticker
+	if *follow {
+		ticker = time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+	}
+	for {
+		if ctx.Err() != nil {
+			return 0
+		}
+		paths, err := logPaths(root, ticket)
+		if err != nil {
+			fmt.Fprintln(stderr, "logs:", err)
+			return 1
+		}
+		entries := make([]logEntry, 0)
+		var next []*logCursor
+		for _, path := range paths {
+			rows, cursor, err := readLogRows(path, cursors, *follow, match, cutoff)
+			if err != nil {
+				fmt.Fprintln(stderr, "logs:", err)
+				return 1
+			}
+			if cursor != nil {
+				next = append(next, cursor)
+			}
+			entries = append(entries, rows...)
+		}
+		cursors = next
+		sort.SliceStable(entries, func(i, j int) bool { return entries[i].Time.Before(entries[j].Time) })
+		if *asJSON && !*follow {
+			err = encoder.Encode(entries)
+		} else {
+			for _, entry := range entries {
+				if *asJSON {
+					err = encoder.Encode(entry)
+				} else {
+					_, err = fmt.Fprintln(out, formatHuman(entry))
+				}
+				if err != nil {
+					break
+				}
 			}
 		}
-		if !digits {
-			continue
+		if err != nil {
+			fmt.Fprintln(stderr, "logs:", err)
+			return 1
 		}
-		number, err := strconv.ParseUint(suffix, 10, 64)
-		if err != nil || number == 0 {
-			continue
+		if !*follow {
+			return 0
 		}
-		rotations = append(rotations, rotation{filepath.Join(dir, entry.Name()), number})
+		select {
+		case <-ctx.Done():
+			return 0
+		case <-ticker.C:
+		}
 	}
-	sort.SliceStable(rotations, func(i, j int) bool { return rotations[i].number > rotations[j].number })
-	paths := []string{filepath.Join(stateRoot, "scheduler.log")}
-	for _, rotation := range rotations {
-		paths = append(paths, rotation.path)
-	}
-	return append(paths, filepath.Join(dir, "executor.log")), nil
 }
 
-func collectLogs(stateRoot, repo, ticket string) ([]logEntry, error) {
-	paths, err := logPaths(stateRoot, repo, ticket)
+// serve writes the shared scheduler.log at the state root; ticket-local
+// scheduler.log is also accepted. Repository discovery needs no Git or config.
+func logPaths(root, ticket string) ([]string, error) {
+	paths := []string{filepath.Join(root, "scheduler.log")}
+	repositories, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return paths, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	var entries []logEntry
-	for i, path := range paths {
-		file, err := os.Open(path)
-		if errors.Is(err, os.ErrNotExist) {
+	for _, repository := range repositories {
+		if !repository.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, repository.Name(), ticket)
+		files, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			entry, ok := parseLogLine(scanner.Bytes())
-			if !ok || (i == 0 && entry.Ticket != ticket) {
-				continue
-			}
-			if entry.Component == "" {
-				if i == 0 {
-					entry.Component = "scheduler"
-				} else {
-					entry.Component = "executor"
+		for _, file := range files {
+			name := file.Name()
+			if name != "scheduler.log" && name != "executor.log" {
+				suffix, ok := strings.CutPrefix(name, "executor.log.")
+				if !ok || suffix == "" || strings.Trim(suffix, "0123456789") != "" {
+					continue
 				}
 			}
-			entries = append(entries, entry)
-		}
-		readErr := scanner.Err()
-		closeErr := file.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("%s: %w", path, readErr)
-		}
-		if closeErr != nil {
-			return nil, closeErr
+			paths = append(paths, filepath.Join(dir, name))
 		}
 	}
-	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Time.Before(entries[j].Time) })
-	return entries, nil
+	return paths, nil
 }
 
-func formatHuman(e logEntry) string {
-	heading := func(s string) string {
-		if strings.ContainsAny(s, "\n\r\t\x1b ") {
-			return strconv.Quote(s)
-		}
-		return s
+type logCursor struct {
+	info   os.FileInfo
+	offset int64
+}
+
+// Track file identity as well as offset so renaming executor.log to .1 does
+// not replay it, and a new executor.log starts at byte zero.
+func readLogRows(path string, cursors []*logCursor, follow bool, match *regexp.Regexp, cutoff time.Time) ([]logEntry, *logCursor, error) {
+	file, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, nil, nil
 	}
-	parts := []string{e.Time.Format(time.RFC3339), heading(e.Component), heading(e.Level), heading(e.Event)}
-	var keys []string
-	for key := range e.Raw {
-		if key != "time" && key != "component" && key != "level" && key != "event" {
-			keys = append(keys, key)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() { _ = file.Close() }() // Read-only descriptor cleanup.
+	info, err := file.Stat()
+	if err != nil {
+		return nil, nil, err
+	}
+	cursor := &logCursor{info: info}
+	for _, previous := range cursors {
+		if os.SameFile(info, previous.info) {
+			cursor.offset = previous.offset
+			break
 		}
+	}
+	if info.Size() < cursor.offset {
+		cursor.offset = 0
+	}
+	if _, err := file.Seek(cursor.offset, io.SeekStart); err != nil {
+		return nil, nil, err
+	}
+	// A bounded snapshot prevents an active writer from starving cancellation.
+	reader := bufio.NewReader(io.LimitReader(file, info.Size()-cursor.offset))
+	var entries []logEntry
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, nil, fmt.Errorf("%s: %w", path, err)
+		}
+		if errors.Is(err, io.EOF) && (follow || line == "") {
+			break
+		}
+		cursor.offset += int64(len(line))
+		line = strings.TrimRight(line, "\r\n")
+		if match.MatchString(line) {
+			component := "executor"
+			if filepath.Base(path) == "scheduler.log" {
+				component = "scheduler"
+			}
+			if entry, ok := parseLogLine(line, component); ok && (cutoff.IsZero() || entry.Time.After(cutoff)) {
+				entries = append(entries, entry)
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			break
+		}
+	}
+	return entries, cursor, nil
+}
+
+var logField = regexp.MustCompile(`([a-zA-Z0-9_.-]+)=("(?:\\.|[^"\\])*"|[^\s]+)`)
+
+func parseLogLine(line, component string) (logEntry, bool) {
+	entry := logEntry{Raw: line, Component: component, Fields: make(map[string]any)}
+	var timestamp string
+	if strings.HasPrefix(strings.TrimSpace(line), "{") {
+		var fields map[string]json.RawMessage
+		if json.Unmarshal([]byte(line), &fields) != nil {
+			return entry, false
+		}
+		entry.original = json.RawMessage(line)
+		for key, value := range fields {
+			var text string
+			_ = json.Unmarshal(value, &text) // Non-string values stay raw in Fields.
+			switch key {
+			case "time":
+				timestamp = text
+			case "component":
+				if text != "" {
+					entry.Component = text
+				}
+			case "level":
+				entry.Level = text
+			case "event":
+				entry.Event = text
+			default:
+				entry.Fields[key] = value
+			}
+		}
+	} else {
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			return entry, false
+		}
+		timestamp = parts[0]
+		for _, pair := range logField.FindAllStringSubmatch(line, -1) {
+			key, value := pair[1], pair[2]
+			if unquoted, err := strconv.Unquote(value); err == nil {
+				value = unquoted
+			}
+			switch key {
+			case "component":
+				entry.Component = value
+			case "level":
+				entry.Level = value
+			case "event":
+				entry.Event = value
+			default:
+				entry.Fields[key] = value
+			}
+		}
+	}
+	at, err := time.Parse(time.RFC3339Nano, timestamp)
+	entry.Time = at
+	return entry, err == nil
+}
+
+func formatHuman(entry logEntry) string {
+	quote := func(value string) string {
+		if strings.ContainsAny(value, " \t\r\n\x1b") {
+			return strconv.Quote(value)
+		}
+		return value
+	}
+	parts := []string{entry.Time.Format(time.RFC3339Nano), "component=" + quote(entry.Component), "level=" + quote(entry.Level), "event=" + quote(entry.Event)}
+	keys := make([]string, 0, len(entry.Fields))
+	for key := range entry.Fields {
+		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
-		parts = append(parts, heading(key)+"="+encodeLogValue(e.Raw[key]))
-	}
-	return strings.Join(parts, " ")
-}
-
-func formatJSON(e logEntry) string { return encodeLogValue(e.Raw) }
-
-func encodeLogValue(value any) string {
-	// Values come exclusively from valid JSON decoded with UseNumber.
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(fmt.Sprintf("invalid parsed log entry: %v", err))
-	}
-	return string(data)
-}
-
-func runLogs(args []string) int { return writeLogs(os.Stdout, args) }
-
-func writeLogs(w io.Writer, args []string) int {
-	usage := func(reason string) int {
-		if reason != "" {
-			fmt.Fprintln(os.Stderr, "logs:", reason)
-		}
-		fmt.Fprintln(os.Stderr, "Usage: driver logs <ticket> [--repo owner/name] [--follow] [--since duration] [--json]")
-		return 2
-	}
-	var ticket, repo string
-	var follow, asJSON, hasSince bool
-	var since time.Duration
-	// Accept flags before or after the ticket; the standard flag package stops
-	// at the first positional argument.
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--follow":
-			follow = true
-		case "--json":
-			asJSON = true
-		case "--repo", "--since":
-			flag := args[i]
-			i++
-			if i == len(args) {
-				return usage("missing value for " + flag)
-			}
-			if flag == "--repo" {
-				repo = args[i]
+		var value string
+		switch v := entry.Fields[key].(type) {
+		case string:
+			value = quote(v)
+		case json.RawMessage:
+			var text string
+			if json.Unmarshal(v, &text) == nil {
+				value = quote(text)
 			} else {
-				var err error
-				since, err = time.ParseDuration(args[i])
-				if err != nil || since < 0 {
-					return usage("invalid --since duration: " + args[i])
-				}
-				hasSince = true
+				value = string(v)
 			}
-		default:
-			if strings.HasPrefix(args[i], "-") || ticket != "" {
-				return usage("unexpected argument: " + args[i])
-			}
-			ticket = args[i]
 		}
+		parts = append(parts, quote(key)+"="+value)
 	}
-	if ticket == "" || ticket == "." || ticket == ".." || strings.ContainsAny(ticket, "/\\") {
-		return usage("a ticket identifier is required")
-	}
-	if repo == "" {
-		repo = os.Getenv("AGENT_GH_REPO")
-	}
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[0] == "." || parts[0] == ".." || parts[1] == "." || parts[1] == ".." || strings.Contains(repo, "\\") {
-		return usage("set AGENT_GH_REPO or pass --repo owner/name")
-	}
-	root := os.Getenv("AGENT_DRIVER_STATE_ROOT")
-	if root == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "logs:", err)
-			return 1
-		}
-		root = filepath.Join(home, ".local", "state", "orca-factory")
-	}
-	var cutoff, last time.Time
-	if hasSince {
-		cutoff = time.Now().Add(-since)
-	}
-	var interrupted chan os.Signal
-	if follow {
-		interrupted = make(chan os.Signal, 1)
-		signal.Notify(interrupted, os.Interrupt)
-		defer signal.Stop(interrupted)
-	}
-	first := true
-	var ticker *time.Ticker
-	if follow {
-		ticker = time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-	}
-	for {
-		entries, err := collectLogs(root, repo, ticket)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "logs:", err)
-			return 1
-		}
-		previous := last
-		for _, entry := range entries {
-			if hasSince && !entry.Time.After(cutoff) {
-				continue
-			}
-			if !first && !entry.Time.After(previous) {
-				continue
-			}
-			line := formatHuman(entry)
-			if asJSON {
-				line = formatJSON(entry)
-			}
-			if _, err := fmt.Fprintln(w, line); err != nil {
-				fmt.Fprintln(os.Stderr, "logs:", err)
-				return 1
-			}
-			last = entry.Time
-		}
-		if !follow {
-			return 0
-		}
-		first = false
-		select {
-		case <-interrupted:
-			return 0
-		case <-ticker.C:
-		}
-	}
+	return strings.Join(parts, "  ")
 }
