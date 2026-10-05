@@ -3,7 +3,7 @@ import type { Register } from 'claude-code'
 import { renderGraph } from './views/graph'
 import { renderThroughput } from './views/throughput'
 import { renderFailures } from './views/failures'
-import { WATCH_POLL_MS, shouldReload, type FileStamp } from './snapshot-watch'
+import { WATCH_POLL_MS, canStartReload, canStartTick, shouldReload, type FileStamp } from './snapshot-watch'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -167,6 +167,7 @@ let paneOpen = false
 let refreshing = false
 let snapshotStamp: FileStamp | null = null
 let snapshotReloading = false
+let ticking = false
 
 const parseEnv = (text: string): Record<string, string> =>
   Object.fromEntries(
@@ -235,6 +236,7 @@ export const __resetSwarmBoardCachesForTests = () => {
   paneOpen = false
   snapshotStamp = null
   snapshotReloading = false
+  ticking = false
 }
 
 // Test-only command dispatched by fixtures that trigger several refreshes in a row,
@@ -546,12 +548,17 @@ async function reloadSnapshot($: Parameters<typeof read>[0], handoffs: Map<strin
 }
 
 async function watchSnapshot($: Parameters<typeof read>[0], handoffs: Map<string, string>) {
-  if (!paneOpen || !SNAPSHOT_FILE || snapshotReloading) return
+  if (!canStartReload({ paneOpen, hasFile: !!SNAPSHOT_FILE, reloading: snapshotReloading, ticking })) return
   const stat = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
   const next = stat && { mtimeMs: stat.mtimeMs, size: stat.size }
   if (shouldReload(snapshotStamp, next)) {
     snapshotReloading = true
-    try { await update($, board, old => reloadSnapshot($, handoffs, old)) } finally { snapshotReloading = false }
+    try {
+      // update() takes a synchronous function: compute the reloaded board first, as tick does.
+      const next = await reloadSnapshot($, handoffs, await read($, board))
+      await update($, board, () => next)
+      $.ui.status(statusText(next))
+    } finally { snapshotReloading = false }
   }
   if (next) snapshotStamp = next
 }
@@ -915,12 +922,21 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
 }
 
+const statusText = (b: Board): string =>
+  G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length
+
 async function tick($: any, handoffs: Map<string, string>) {
-  const old = await read($, board)
-  const b = await refresh($, handoffs, old)
-  await update($, board, () => b)
+  // A snapshot hot reload and a tick both overwrite the whole board: never overlap them.
+  if (!canStartTick({ reloading: snapshotReloading, ticking })) return
+  ticking = true
+  let b: Board
+  try {
+    const old = await read($, board)
+    b = await refresh($, handoffs, old)
+    await update($, board, () => b)
+  } finally { ticking = false }
   await update($, lastTickAt, () => Date.now())
-  $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+  $.ui.status(statusText(b))
 }
 
 async function manualRefresh($: any, handoffs: Map<string, string>) {

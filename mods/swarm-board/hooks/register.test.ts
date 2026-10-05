@@ -648,6 +648,52 @@ test('fresh snapshot refresh avoids live Linear calls and uses snapshot data', a
   await ui.unmount()
 })
 
+test('a changed snapshot file reloads the board on the next watch poll without calling Linear', async ($, on) => {
+  __resetSwarmBoardCachesForTests()
+  const issue = (id: string) => ({ identifier: id, title: id + ' 标题', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], updatedAt: new Date(Date.now() - 60_000).toISOString(), priority: 0 })
+  let issues = [issue('ZII-900')]
+  let stamp = { mtimeMs: 1000, size: 10 }
+  let fireWatch: () => void = () => {}
+  let linearCalls = 0
+  let statusDone: () => void = () => {}
+  const statuses: string[] = []
+  on('clock.every', (_: unknown, e: { ms: number }) => e.ms === 5_000
+    ? new Promise<{ value: undefined }>(r => { fireWatch = () => r({ value: undefined }) })
+    : new Promise<never>(() => {}))
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', (_: unknown, e: { text?: string }) => { statuses.push(String(e?.text ?? '')); statusDone(); return { value: undefined } })
+  on('fs.stat', () => ({ value: stamp }))
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
+      return { value: JSON.stringify({ generatedAt: Math.floor(Date.now() / 1000), issues, comments: {} }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
+      return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    }
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear') linearCalls++
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  const firstStatus = new Promise<void>(r => { statusDone = r })
+  await $.command.run({ command: 'swarm', args: '' })
+  await firstStatus
+  expect(statuses.at(-1)).toContain('1/10')
+
+  // The pipeline rewrites the snapshot: one more ticket in flight, new mtime.
+  issues = [issue('ZII-900'), issue('ZII-901')]
+  stamp = { mtimeMs: 2000, size: 11 }
+  const reloaded = new Promise<void>(r => { statusDone = r })
+  fireWatch()
+  await reloaded
+  expect(statuses.at(-1)).toContain('2/10') // status line follows the reload, not only the tick
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /ZII-901/ })).toBeDefined()
+  expect(linearCalls).toBe(0)
+  await ui.unmount()
+})
+
 test('stale snapshot falls back to live Linear and throttles the second refresh', async ($, on) => {
   const fixture = await snapshotFixture($, on, { generatedAtOffsetMs: -11 * 60_000, issues: [], comments: {} })
   const after1 = fixture.orcaLinearCalls()
