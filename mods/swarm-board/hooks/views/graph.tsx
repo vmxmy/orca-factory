@@ -117,20 +117,25 @@ export function buildGraph(input?: GraphInput): GraphView | null {
 
 type TextProps = { dimColor?: boolean; children?: string }
 
+// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
+declare function h(component: ComponentType<TextProps>, props: { dimColor?: boolean; key?: string }, ...children: string[]): ReactElement
+
 export function renderGraph(
   Text: ComponentType<TextProps>,
   graph?: GraphView | null,
-): ReactElement {
-  if (!graph) return <Text key="unavailable" dimColor>数据未就绪</Text>
-  return <>
-    <Text key="headline">{graph.headline}</Text>
-    <Text key="critical-path">{`关键路径：${graph.criticalPath.join(' → ') || '无'}`}</Text>
-    <Text key="unlock-rank">{`解锁排行：${graph.unlockRank.map(item => `${item.id}(${item.count})`).join(' · ') || '无'}`}</Text>
-    {graph.groups.flatMap(group => [
-      <Text key={JSON.stringify(['parent', group.parent])}>{`${group.parent ?? '无父票'}`}</Text>,
-      ...group.rows.map(row => <Text key={JSON.stringify(['row', group.parent, row.id])} dimColor={finished(row.state)}>
-        {`${'  '.repeat(row.depth + 1)}${row.id} [${row.state}]${row.blockedBy.length > 0 ? ` ← ${row.blockedBy.join(', ')}` : ''}`}
-      </Text>),
-    ])}
-  </>
+): ReactElement[] {
+  if (!graph) return [h(Text, { key: 'unavailable', dimColor: true }, '数据未就绪')]
+  const out: ReactElement[] = [
+    h(Text, { key: 'headline' }, graph.headline),
+    h(Text, { key: 'critical-path' }, `关键路径：${graph.criticalPath.join(' → ') || '无'}`),
+    h(Text, { key: 'unlock-rank' }, `解锁排行：${graph.unlockRank.map(item => `${item.id}(${item.count})`).join(' · ') || '无'}`),
+  ]
+  for (const group of graph.groups) {
+    out.push(h(Text, { key: JSON.stringify(['parent', group.parent]) }, `${group.parent ?? '无父票'}`))
+    for (const row of group.rows) {
+      out.push(h(Text, { key: JSON.stringify(['row', group.parent, row.id]), dimColor: finished(row.state) },
+        `${'  '.repeat(row.depth + 1)}${row.id} [${row.state}]${row.blockedBy.length > 0 ? ` ← ${row.blockedBy.join(', ')}` : ''}`))
+    }
+  }
+  return out
 }
