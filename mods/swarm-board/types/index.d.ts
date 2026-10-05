@@ -25,6 +25,10 @@ export type Precheck = {
   skips: Record<string, string>
   /** First stderr line that is not `linear_calls=…`; empty when stderr had nothing else. */
   firstStderrLine: string
+  /** True when stdout is empty and exit code is non-zero: precheck could not read data. */
+  uncertain: boolean
+  /** Reason text after the first stderr `不确定:` line (e.g. `linear rate limited`); empty when absent. */
+  uncertainReason: string
 }
 export type Ticket = {
   id: string; title: string; state: string; labels: string[]; priority: number; updatedAt: string
