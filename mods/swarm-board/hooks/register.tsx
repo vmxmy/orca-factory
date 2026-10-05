@@ -106,7 +106,6 @@ const LINEAR_FALLBACK_THROTTLE_MS = 300_000
 let HOME = ''
 let TMP_DIR = ''
 let SNAPSHOT_FILE = ''
-let snapshotReloads = 0
 // ms epoch of the last live `orca linear list-issues` dispatched by refresh(); 0 before the first one.
 let lastLinearFallbackAt = 0
 const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
@@ -230,7 +229,6 @@ export const __resetSwarmBoardCachesForTests = () => {
   HOME = ''
   TMP_DIR = ''
   SNAPSHOT_FILE = ''
-  snapshotReloads = 0
   lastLinearFallbackAt = 0
   usageCache = null
   paneOpen = false
@@ -482,11 +480,10 @@ type Snapshot = {
   blockedBy?: Record<string, string[]>
 }
 
-async function refresh($: any, handoffs: Map<string, string>, old: Board, snapshotOnly = false): Promise<Board> {
+async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
-  if (snapshotOnly && !SNAPSHOT_FILE) return old
-  if (!HOME && !snapshotOnly) {
+  if (!HOME) {
     try {
       const r = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: TIMEOUT_MS })
       HOME = r?.exitCode === 0 ? String(r.stdout ?? '').trim() : ''
@@ -498,10 +495,9 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
       SNAPSHOT_FILE = (r?.exitCode === 0 ? String(r.stdout ?? '') : '').trim() || '/tmp/orca-factory-linear-snapshot.json'
     } catch { SNAPSHOT_FILE = '/tmp/orca-factory-linear-snapshot.json' }
   }
-  const installedVersion = snapshotOnly ? old.installedVersion : await readInstalledVersion($, HOME)
+  const installedVersion = await readInstalledVersion($, HOME)
   let text = ''
   try { text = await $.fs.read(ENV) } catch {
-    if (snapshotOnly) return old
     const linearUsage = await readLinearUsage($, now)
     return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
@@ -521,8 +517,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
   } catch { /* missing or unreadable snapshot */ }
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
-  // A file notification never falls back to network reads, even for a partial/stale write.
-  if (snapshotOnly && !useSnapshot) return old
   const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
@@ -552,6 +546,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
+  const driver = parseDriverStatus(await runJson(['orca-factory-driver', 'status', '--json']))
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
@@ -599,30 +594,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
   }
   const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
   const doneToday = all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime())
-
-  if (snapshotOnly) {
-    // Keep Orca/GitHub enrichment until their regular refresh, while replacing Linear fields.
-    const previous = new Map([...old.inFlight, ...old.queue, ...old.failed, ...old.doneToday].map(t => [t.id, t]))
-    const enrich = (t: Ticket): Ticket => {
-      const prior = previous.get(t.id)
-      const comments = snapshot!.comments[t.id] ?? []
-      const claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取'))
-        .map(c => c.createdAt).sort().pop() ?? prior?.claimedAt ?? ''
-      return { ...prior, ...t, claimedAt }
-    }
-    return {
-      ...old, at,
-      maxInFlight: Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight,
-      inFlight: inFlight.map(enrich), doneToday: doneToday.map(enrich),
-      failed: failed.map(t => ({ ...enrich(t), handoff: t.handoff })),
-      queue: all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted')
-        .sort((a, b) => (a.priority || 9) - (b.priority || 9)).map(enrich),
-      snapshotAgeMs, linearThrottled: undefined, blockedBy: snapshot!.blockedBy,
-      issueStates: Object.fromEntries(all.map(t => [t.id, t.state])),
-    }
-  }
-
-  const driver = parseDriverStatus(await runJson(['orca-factory-driver', 'status', '--json']))
 
   // Open PRs with their size, drift from main and CI state. On failure keep the last-good list.
   const prsResp = await runOrca(['gh', 'api', 'repos/' + env.AGENT_GH_REPO + '/pulls?state=open&per_page=30'])
@@ -883,31 +854,12 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board, snapsh
   }
 }
 
-async function renderStatus($: any) {
-  const latest = await read($, board)
-  $.ui.status(G.work + ' ' + latest.inFlight.length + '/' + latest.maxInFlight + ' · ' + G.wait + ' ' + latest.prs.length + (latest.failed.length ? ' · ' + G.human + ' ' + latest.failed.length : '') + ' · ' + G.queued + ' ' + latest.queue.length)
-}
-
 async function tick($: any, handoffs: Map<string, string>) {
   const old = await read($, board)
-  const reloads = snapshotReloads
   const b = await refresh($, handoffs, old)
-  await update($, board, current => {
-    // A snapshot poll can finish while this refresh is waiting on Orca/GitHub.
-    if (snapshotReloads !== reloads && current.snapshotAgeMs !== undefined
-        && (b.snapshotAgeMs === undefined || current.snapshotAgeMs < b.snapshotAgeMs)) {
-      return {
-        ...b, at: current.at, maxInFlight: current.maxInFlight,
-        inFlight: current.inFlight, queue: current.queue, failed: current.failed,
-        doneToday: current.doneToday, snapshotAgeMs: current.snapshotAgeMs,
-        linearThrottled: current.linearThrottled, blockedBy: current.blockedBy,
-        issueStates: current.issueStates,
-      }
-    }
-    return b
-  })
+  await update($, board, () => b)
   await update($, lastTickAt, () => Date.now())
-  await renderStatus($)
+  $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
 }
 
 async function manualRefresh($: any, handoffs: Map<string, string>) {
@@ -941,21 +893,17 @@ async function pollSnapshot($: any, handoffs: Map<string, string>, watcher: Snap
   if (!paneOpen || !SNAPSHOT_FILE || watcher.polling) return
   watcher.polling = true
   try {
-    const stat: SnapshotStat | null = await $.fs.stat(SNAPSHOT_FILE).catch(() => null)
-    const changed = shouldReload(watcher.stat, stat)
+    let stat: SnapshotStat | null = null
+    try {
+      stat = await $.fs.stat(SNAPSHOT_FILE)
+    } catch (error) {
+      const message = String(error instanceof Error ? error.message : error)
+      await update($, board, current => ({ ...current, error: message }))
+    }
+    const previous = watcher.stat
     if (stat) watcher.stat = stat
-    if (!changed) return
-    const old = await read($, board)
-    const next = await refresh($, handoffs, old, true)
-    if (next === old || !paneOpen) return
-    await update($, board, current => ({
-      ...current, at: next.at,
-      maxInFlight: next.maxInFlight, inFlight: next.inFlight, queue: next.queue,
-      failed: next.failed, doneToday: next.doneToday, snapshotAgeMs: next.snapshotAgeMs,
-      linearThrottled: next.linearThrottled, blockedBy: next.blockedBy, issueStates: next.issueStates,
-    }))
-    snapshotReloads++
-    await renderStatus($)
+    if (!previous || !shouldReload(previous, stat) || !paneOpen) return
+    await tick($, handoffs)
   } finally { watcher.polling = false }
 }
 
@@ -981,7 +929,7 @@ export const register: Register = on => {
       polling = true
       await update($, nowAtom, () => Date.now())
       $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      // Host Fs has stat, no watch: Claude 2.1.289 plugin-authoring types/claude-code.d.ts:3120-3240 (stat:3218).
+      // Host has no $.fs.watch; poll stat mtime/size (plugin-authoring/types/claude-code.d.ts:3120-3240).
       $.clock.every(WATCH_POLL_MS, () => pollSnapshot($, handoffs, watcher))
       $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
     }
