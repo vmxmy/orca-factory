@@ -13,11 +13,17 @@ import (
 type PullRequest struct {
 	Number         int    `json:"number"`
 	HTMLURL        string `json:"html_url"`
+	State          string `json:"state"`
 	Merged         bool   `json:"merged"`
 	MergeableState string `json:"mergeable_state"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
 	Head           struct {
+		Ref string `json:"ref"`
 		SHA string `json:"sha"`
 	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 type CreatePRRequest struct {
 	Head  string `json:"head"`
@@ -42,6 +48,26 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, head string) (*Pul
 		return nil, nil
 	}
 	return &prs[0], nil
+}
+
+// FindPRs returns every PR, open or closed, whose head is the branch.
+func (c *Client) FindPRs(ctx context.Context, owner, repo, head string) ([]PullRequest, error) {
+	if !strings.Contains(head, ":") {
+		head = owner + ":" + head
+	}
+	var prs []PullRequest
+	q := url.Values{"state": {"all"}, "head": {head}, "per_page": {"100"}}
+	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/pulls?"+q.Encode(), nil, &prs)
+	return prs, err
+}
+
+// BranchSHA returns the commit a branch currently points at.
+func (c *Client) BranchSHA(ctx context.Context, owner, repo, branch string) (string, error) {
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(branch), nil, &commit)
+	return commit.SHA, err
 }
 
 // CreatePR serializes find/create in this client and recovers uncertain writes
@@ -100,13 +126,20 @@ type File struct {
 	PreviousFilename string `json:"previous_filename,omitempty"`
 }
 
-// CompareFiles returns GitHub's comparison file list (at most 300 files).
-func (c *Client) CompareFiles(ctx context.Context, owner, repo, base, head string) ([]File, error) {
-	var result struct {
-		Files []File `json:"files"`
-	}
+type Comparison struct {
+	BehindBy        int    `json:"behind_by"`
+	Files           []File `json:"files"`
+	MergeBaseCommit struct {
+		SHA string `json:"sha"`
+	} `json:"merge_base_commit"`
+}
+
+// Compare returns base...head: head's changes since the merge base and how far
+// head is behind base. GitHub lists at most 300 files and does not flag the cut.
+func (c *Client) Compare(ctx context.Context, owner, repo, base, head string) (Comparison, error) {
+	var result Comparison
 	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/compare/"+url.PathEscape(base)+"..."+url.PathEscape(head), nil, &result)
-	return result.Files, err
+	return result, err
 }
 
 type CheckRun struct {

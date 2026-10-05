@@ -1,0 +1,17 @@
+{
+ "number": 138,
+ "state": "open",
+ "merged": false,
+ "mergeable": true,
+ "mergeable_state": "clean",
+ "merge_commit_sha": "8f7b399de12bb5177e0d02db943648169ad738da",
+ "html_url": "https://github.com/vmxmy/orca-factory/pull/138",
+ "head": {
+  "ref": "probe/merge-lane-recording",
+  "sha": "c4e86ec5465d1e2d1f6aea45053e663b54a1350b"
+ },
+ "base": {
+  "ref": "main",
+  "sha": "0ab0047178cd32132001eef0682d50a77a6f2622"
+ }
+}
