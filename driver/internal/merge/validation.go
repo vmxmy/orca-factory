@@ -100,6 +100,13 @@ func (h Handoff) MergeGateVerdict(output string) (string, error) {
 	}
 	switch fields["VERDICT"] {
 	case "green":
+		actualLane, _ := strconv.Atoi(fields["LANE"])
+		if actualLane > 2 || actualLane > h.Lane {
+			return "", errors.New("merged gate requires new lane approval")
+		}
+		// main may already contain the paths that made the original PR lane 2.
+		// Validate this result at its actual lane without changing the frozen handoff.
+		h.Lane = actualLane
 		h.GateOutput = output
 		return "green", h.Validated()
 	case "red":

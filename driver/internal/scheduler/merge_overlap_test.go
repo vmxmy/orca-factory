@@ -427,3 +427,59 @@ func TestRuntimeMergeGateScriptReadRetainsSafeFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
+	for _, policy := range []string{"approved", "manual", "lane3"} {
+		t.Run(policy, func(t *testing.T) {
+			f := overlapFixture(t, false)
+			dir := f.config.Repositories[0].Path
+			env := f.config.Repositories[0].Env
+			env["AGENT_LANE2_GLOBS"] = "absorbed"
+			if policy != "manual" {
+				env["AGENT_LANE2_AUTOMERGE"] = "1"
+			}
+			if policy == "lane3" {
+				env["AGENT_LANE3_GLOBS"] = "shared"
+			}
+			gitMergeTest(t, dir, "checkout", "agent/ENG-1/executor")
+			if err := os.WriteFile(filepath.Join(dir, "absorbed"), []byte("same lane2 change\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gitMergeTest(t, dir, "add", "absorbed")
+			gitMergeTest(t, dir, "commit", "-m", "lane2 worker change")
+			f.head = gitMergeTest(t, dir, "rev-parse", "HEAD")
+			f.prBody["head"].(map[string]any)["sha"] = f.head
+			gitMergeTest(t, dir, "checkout", "main")
+			if err := os.WriteFile(filepath.Join(dir, "absorbed"), []byte("same lane2 change\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			script, err := os.ReadFile("../../../scripts/agent-gates/gate.sh")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.sh"), script, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".omc/\n.merge-validation-*/\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			gitMergeTest(t, dir, "add", ".")
+			gitMergeTest(t, dir, "commit", "-m", "main already absorbed lane2 change")
+			f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
+			rewriteHandoff(t, f, func(h map[string]any) {
+				h["head"] = f.head
+				h["lane"] = 2
+				h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared absorbed\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nLANE: 2\n"
+				h["gate_output"] = "UNIT executor\nVERDICT green\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature shared absorbed\nLANE 2"
+			})
+			err = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			if policy == "approved" {
+				if err != nil || f.puts != 1 || f.linear.issue.State.Name != "Done" {
+					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)
+				}
+			} else if err == nil || f.puts != 0 {
+				t.Fatalf("unsafe policy accepted: %s %v puts=%d", policy, err, f.puts)
+			}
+		})
+	}
+}
