@@ -26,6 +26,11 @@ func showStatus(args []string) int {
 	} else {
 		fmt.Printf("Driver %s · tickets %d · global pause %t (%ds) · Linear requests %d complexity %d\n",
 			view.State, len(view.Tickets), view.GlobalPause.Active, view.GlobalPause.DurationSeconds, view.Linear.Requests, view.Linear.Complexity)
+		for _, t := range view.Tickets {
+			if d := t.Deployment; d != nil {
+				fmt.Printf("Deployment %s queue=%q sha=%s state=%s reason=%q\n", t.Identifier, d.QueueID, d.SHA, d.State, d.Reason)
+			}
+		}
 	}
 	return 0
 }

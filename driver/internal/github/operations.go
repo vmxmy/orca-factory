@@ -11,19 +11,28 @@ import (
 )
 
 type PullRequest struct {
-	Number         int    `json:"number"`
+	Number    int    `json:"number"`
+	State     string `json:"state"`
+	Draft     *bool  `json:"draft"`
+	Mergeable *bool  `json:"mergeable"`
+	MergeSHA  string `json:"merge_commit_sha"`
+	Body      string `json:"body"`
+	Base      struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"base"`
 	HTMLURL        string `json:"html_url"`
-	State          string `json:"state"`
 	Merged         bool   `json:"merged"`
 	MergeableState string `json:"mergeable_state"`
-	MergeCommitSHA string `json:"merge_commit_sha"`
 	Head           struct {
-		Ref string `json:"ref"`
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
-	Base struct {
-		Ref string `json:"ref"`
-	} `json:"base"`
 }
 type CreatePRRequest struct {
 	Head  string `json:"head"`
@@ -48,17 +57,6 @@ func (c *Client) FindOpenPR(ctx context.Context, owner, repo, head string) (*Pul
 		return nil, nil
 	}
 	return &prs[0], nil
-}
-
-// FindPRs returns every PR, open or closed, whose head is the branch.
-func (c *Client) FindPRs(ctx context.Context, owner, repo, head string) ([]PullRequest, error) {
-	if !strings.Contains(head, ":") {
-		head = owner + ":" + head
-	}
-	var prs []PullRequest
-	q := url.Values{"state": {"all"}, "head": {head}, "per_page": {"100"}}
-	err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/pulls?"+q.Encode(), nil, &prs)
-	return prs, err
 }
 
 // BranchSHA returns the commit a branch currently points at.

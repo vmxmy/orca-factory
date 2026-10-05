@@ -24,7 +24,10 @@ func recordedServer(t *testing.T, routes map[string]string, status map[string]in
 				if code := status[suffix]; code != 0 {
 					w.WriteHeader(code)
 				}
-				w.Write(b)
+				if _, err := w.Write(b); err != nil {
+					t.Error(err)
+					return
+				}
 				return
 			}
 		}
@@ -48,10 +51,10 @@ func TestRecordedMergeLaneReads(t *testing.T) {
 		t.Fatalf("open PR=%+v err=%v", open, err)
 	}
 	merged, err := c.GetPR(ctx, "vmxmy", "orca-factory", 133)
-	if err != nil || !merged.Merged || merged.MergeableState != "unknown" || merged.MergeCommitSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" {
+	if err != nil || !merged.Merged || merged.MergeableState != "unknown" || merged.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" {
 		t.Fatalf("merged PR=%+v err=%v", merged, err)
 	}
-	if sha, err := c.BranchSHA(ctx, "vmxmy", "orca-factory", "main"); err != nil || sha != merged.MergeCommitSHA {
+	if sha, err := c.BranchSHA(ctx, "vmxmy", "orca-factory", "main"); err != nil || sha != merged.MergeSHA {
 		t.Fatalf("main sha=%q err=%v", sha, err)
 	}
 	behind, err := c.Compare(ctx, "vmxmy", "orca-factory", "main", "e09d48f")
