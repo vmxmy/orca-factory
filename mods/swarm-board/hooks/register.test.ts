@@ -1,7 +1,7 @@
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
-import { __resetSwarmBoardCachesForTests, laneStage, ticketPhase } from './register'
+import { __resetSwarmBoardCachesForTests, SIMULATE_CLOSE_COMMAND, laneStage, ticketPhase } from './register'
 
 const mount = ($: any, surface: 'terminal' | 'desktop') =>
   $.ui.mount({ plugin: 'swarm-board', surface, component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm' } })
@@ -561,4 +561,32 @@ test('wrap-up older than ten minutes warns only without a coordinator', async ($
   await refresh(); await ui.redraw()
   expect(await ui.find({ type: 'Text', text: /📤 派工 ·/ })).toBeDefined()
   await ui.unmount()
+})
+
+const closeFixture = ($: any, on: any) => {
+  __resetSwarmBoardCachesForTests()
+  let fire60s = () => {}, done = () => {}, runs = 0
+  on('clock.every', (_: unknown, e: { ms: number }) => e.ms === 60_000
+    ? new Promise<{ value: undefined }>(r => { fire60s = () => r({ value: undefined }) })
+    : new Promise<never>(() => {}))
+  on('ui.open', () => ({ value: undefined })); on('ui.close', () => ({ value: undefined }))
+  on('ui.status', () => { done(); return { value: undefined } })
+  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }))
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'orca' || e.argv[0] === 'gh') runs++
+    return { value: { stdout: '{"ok":true,"result":{}}', stderr: '', exitCode: 0 } }
+  })
+  const open = async () => { const d = new Promise<void>(r => { done = r }); await $.command.run({ command: 'swarm', args: '' }); await d }
+  return { open, close: () => $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' }), runs: () => runs, tick60s: () => fire60s() }
+}
+
+test('closing the swarm pane halts scheduled refreshes', async ($, on) => {
+  const f = closeFixture($, on); await f.open(); const before = f.runs()
+  expect(before).toBeGreaterThan(0); await f.close(); f.tick60s()
+  await new Promise(r => setTimeout(r, 30)); expect(f.runs()).toBe(before)
+})
+
+test('reopening the swarm pane triggers an immediate refresh', async ($, on) => {
+  const f = closeFixture($, on); await f.open(); const before = f.runs()
+  await f.close(); await f.open(); expect(f.runs()).toBeGreaterThan(before)
 })
