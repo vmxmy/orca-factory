@@ -1,6 +1,8 @@
-import { createRequire } from 'node:module'
 import type { ComponentType } from 'react'
 import type { ThroughputData } from '../../types'
+
+// Claude Code supplies the same h factory used by its JSX transform.
+declare const h: typeof import('react').createElement
 
 type Stage = 'queue' | 'worker' | 'gate' | 'review' | 'merge'
 export type LedgerRow = {
@@ -93,9 +95,7 @@ export const buildThroughput = (input: {
 export const renderThroughput = (
   Text: ComponentType<{ dimColor?: boolean; children?: string }>, data?: ThroughputViewData,
 ) => {
-  // The calculation can be imported and built without the host application's React package.
-  const { createElement } = createRequire(import.meta.url)('react') as typeof import('react')
-  if (!data) return createElement(Text, { dimColor: true }, '数据未就绪')
+  if (!data) return h(Text, { dimColor: true }, '数据未就绪')
   const stageLines = data.stages
     ? Object.entries(stageNames).map(([stage, label]) => {
       const stats = data.stages?.[stage as Stage]
@@ -108,5 +108,5 @@ export const renderThroughput = (
     ...Object.entries(data.reasons).map(([reason, count]) => reason + '：' + count),
     '在途均值：' + Number(data.inFlight.mean.toFixed(2)) + ' / ' + data.inFlight.max,
   ]
-  return createElement(Text, {}, lines.join('\n'))
+  return h(Text, {}, lines.join('\n'))
 }
