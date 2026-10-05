@@ -20,6 +20,7 @@ import (
 
 type Orca interface {
 	RunCreate(context.Context, string, string) (orca.Receipt, error)
+	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
@@ -209,19 +210,26 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if !hasEffect(fx, "worker-start-with-request-id") {
 			return errors.New("claim lacks worker effect")
 		}
-		receipt, callErr := e.Orca.RunCreate(ctx, orca.RequestID(t.Identifier, c.Unit, "run", 1), t.Identifier+" "+t.Title)
-		if callErr != nil {
-			return errors.New("Orca run creation failed; reconcile request before retry")
-		}
-		result.RunID = receiptString(receipt, "runId")
-		if result.RunID == "" {
-			result.RunID = nestedString(receipt, "run", "id")
-		}
-		if result.RunID == "" {
-			return errors.New("Orca run receipt missing ID")
-		}
+		var receipt orca.Receipt
+		var callErr error
 		if cp.Run != "" {
+			// A new executor terminal must take over the checkpointed Run, not create one.
+			if _, callErr = e.Orca.RunUse(ctx, runRequest(t, c, "run-use"), cp.Run); callErr != nil {
+				return errors.New("Orca run takeover failed; reconcile request before retry")
+			}
 			result.RunID = cp.Run
+		} else {
+			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
+			if callErr != nil {
+				return errors.New("Orca run creation failed; reconcile request before retry")
+			}
+			result.RunID = receiptString(receipt, "runId")
+			if result.RunID == "" {
+				result.RunID = nestedString(receipt, "run", "id")
+			}
+			if result.RunID == "" {
+				return errors.New("Orca run receipt missing ID")
+			}
 		}
 		baseline, callErr = e.Tools.Baseline(ctx, c.Repo)
 		if callErr != nil || baseline == "" {
@@ -535,4 +543,12 @@ func pause(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// runRequest scopes Run mutations to the executor terminal: Orca rejects a reused
+// request ID whose input differs (request_mismatch), and the caller is part of
+// that input, so each executor terminal needs its own request while a retry in
+// the same terminal stays an idempotent replay.
+func runRequest(t Ticket, c Config, step string) string {
+	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, 1)
 }

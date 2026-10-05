@@ -143,6 +143,11 @@ func (c *Client) RunCreate(ctx context.Context, request, objective string) (Rece
 	return c.mutate(ctx, request, []string{"orchestration", "run-create", "--objective", objective})
 }
 
+// RunUse binds the calling terminal to an existing Run and fences its previous consumer.
+func (c *Client) RunUse(ctx context.Context, request, run string) (Receipt, error) {
+	return c.mutate(ctx, request, []string{"orchestration", "run-use", "--id", run})
+}
+
 type StartOptions struct {
 	Run, Task, Spec, Worktree, Agent, Model, Effort, Setup string
 	Name, Repo, BaseBranch, RetryOf                        string
