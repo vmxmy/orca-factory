@@ -144,3 +144,18 @@ func TestPauseAlertLifecycle(t *testing.T) {
 		t.Fatalf("close retries=%d", a.closed)
 	}
 }
+
+func TestPauseNextProbeHonorsQuotaReset(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	p := &probeFake{calls: map[Key]int{}, fail: map[Key]bool{}}
+	m := New(func() time.Time { return now }, p, nil)
+	_ = m.Poll(context.Background())
+	if got := m.NextProbe(); !got.Equal(now.Add(5 * time.Minute)) {
+		t.Fatalf("next=%v", got)
+	}
+	reset := now.Add(2 * time.Minute)
+	m.Pause(Key{Dependency: Linear, Kind: Quota}, reset)
+	if got := m.NextProbe(); !got.Equal(reset) {
+		t.Fatalf("reset probe delayed: %v", got)
+	}
+}

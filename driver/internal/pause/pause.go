@@ -250,3 +250,21 @@ func (m *Manager) Poll(ctx context.Context) error {
 	}
 	return errors.Join(problems...)
 }
+
+// NextProbe lets a scheduler wake for recovery even while normal inspections
+// back off. A zero time means there is no injected probe to schedule.
+func (m *Manager) NextProbe() time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.probe == nil {
+		return time.Time{}
+	}
+	next := m.nextCredentials
+	now := m.now()
+	for _, e := range m.active {
+		if e.next.After(now) && (next.IsZero() || e.next.Before(next)) {
+			next = e.next
+		}
+	}
+	return next
+}

@@ -136,3 +136,50 @@ func TestPauseSchedulerCredentialsBeforeDispatch(t *testing.T) {
 type denyCredentials struct{}
 
 func (denyCredentials) Check(context.Context, pause.Key) error { return context.DeadlineExceeded }
+
+func TestAdaptiveIntervalReconcileDeadline(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var a Adaptive
+	for _, minute := range []int{0, 1, 3, 6} {
+		a.Next(now.Add(time.Duration(minute)*time.Minute), false, 1)
+	}
+	p := a.Next(now.Add(9*time.Minute), false, 1)
+	if p.Interval != time.Minute {
+		t.Fatalf("next=%v would overshoot ten-minute reconciliation", p.Interval)
+	}
+}
+func TestPauseExpiredQuotaRequiresProbe(t *testing.T) {
+	f := &fakeBackend{}
+	s := setup(f)
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	b := &quotaBackend{fakeBackend: f, limits: []linear.RateLimit{{Limit: 100, Remaining: 4, Reset: now.Add(time.Minute)}}}
+	s.Backend = b
+	_ = s.Tick(context.Background())
+	now = now.Add(time.Minute)
+	_ = s.Tick(context.Background())
+	if !s.Pauses.Paused("a") || f.snapshots != 0 {
+		t.Fatal("expired quota resumed without a successful probe or fresh budget")
+	}
+	b.limits[0].Remaining = 50
+	_ = s.Tick(context.Background())
+	if s.Pauses.Paused("a") || f.snapshots != 1 {
+		t.Fatal("fresh quota did not recover")
+	}
+}
+
+func TestPauseProbeDeadlineCapsIdleBackoff(t *testing.T) {
+	f := &fakeBackend{}
+	s := setup(f)
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	s.Pauses = pause.New(s.Now, denyCredentials{}, nil)
+	_ = s.Tick(context.Background())
+	now = now.Add(time.Minute)
+	_ = s.Tick(context.Background())
+	now = now.Add(2 * time.Minute)
+	_ = s.Tick(context.Background())
+	if s.NextInterval != 2*time.Minute {
+		t.Fatalf("next=%v misses five-minute probe", s.NextInterval)
+	}
+}

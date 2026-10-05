@@ -34,6 +34,7 @@ func (a *Adaptive) Next(now time.Time, busy bool, remaining float64) Inspection 
 		a.lastFull = now
 		a.initialized = true
 	}
+	interval = min(interval, a.lastFull.Add(10*time.Minute).Sub(now))
 	return Inspection{Interval: interval, FullReconcile: full}
 }
 func (s *Scheduler) clock() time.Time {
@@ -45,6 +46,11 @@ func (s *Scheduler) clock() time.Time {
 func (s *Scheduler) plan(now time.Time, busy bool, remaining float64) {
 	p := s.adaptive.Next(now, busy, remaining)
 	s.NextInterval = p.Interval
+	if s.Pauses != nil {
+		if next := s.Pauses.NextProbe(); next.After(now) {
+			s.NextInterval = min(s.NextInterval, next.Sub(now))
+		}
+	}
 	s.FullReconcile = p.FullReconcile
 }
 
@@ -61,7 +67,7 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 	source, ok := s.Backend.(quotaSource)
 	if ok {
 		for _, limit := range source.LinearLimits() {
-			if limit.Limit <= 0 || (!limit.Reset.IsZero() && !now.Before(limit.Reset)) {
+			if limit.Limit <= 0 {
 				continue
 			}
 			fraction := float64(limit.Remaining) / float64(limit.Limit)
