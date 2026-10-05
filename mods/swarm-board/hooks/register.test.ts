@@ -333,6 +333,24 @@ test('queue card shows the skip reason when precheck lists one', async ($, on) =
   await ui.unmount()
 })
 
+test('queue status becomes uncertain when precheck stdout is empty on a non-zero exit', async ($, on) => {
+  await queueFixture($, on, 2, { exitCode: 3, runNumber: 184,
+    stdout: '', stderr: '不确定: linear rate limited\nlinear_calls=1' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /无法判断可领票数/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /linear rate limited/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /可领 0 张/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('queue card falls back to the uncertain explanation when precheck could not read data', async ($, on) => {
+  await queueFixture($, on, 1, { exitCode: 3, runNumber: 184,
+    stdout: '', stderr: '不确定: linear rate limited\nlinear_calls=1' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /原因见上方/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('handoff parsing stops after three failed tickets while inflight claimedAt still reads them', async ($, on) => {
   // Five tickets labeled auto-failed+auto-impl: all are in-flight AND failed.
   // Handoff parsing is bounded to the first three failed tickets; the in-flight loop

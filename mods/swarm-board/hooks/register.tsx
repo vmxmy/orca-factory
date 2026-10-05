@@ -190,27 +190,33 @@ const usageFor = (rows: Row[], path: string): { tokens?: Tokens; cost?: Cost; mo
 // Scheduled runs attach a precheckResult; a manual run may not, so this returns null for those.
 // stdout line 1 "claimable=<csv> in_flight=<n> max=<n>" drives queue status; stderr "skip <id>: <reason>"
 // drives per-card reasons. `linear_calls=` noise lines are excluded from the first-stderr-line surface.
+// Empty stdout with a non-zero exit (e.g. Linear rate limit) marks the run as `uncertain`; the first
+// stderr "不确定: <reason>" line gives the reason surfaced in the status row.
 const parsePrecheck = (r: any): Precheck | null => {
   const pr = r?.precheckResult
   if (!pr || typeof pr !== 'object') return null
   const stdout = String(pr.stdout ?? '')
   const stderr = String(pr.stderr ?? '')
+  const exitCode = Number(pr.exitCode ?? 0)
   const claimRaw = /^claimable=([^\s]*)/m.exec(stdout)?.[1] ?? ''
   const claimable = claimRaw ? claimRaw.split(',').filter(Boolean) : []
   const inFlight = Number(/\bin_flight=(\d+)/.exec(stdout)?.[1] ?? 0)
   const max = Number(/\bmax=(\d+)/.exec(stdout)?.[1] ?? 0)
   const skips: Record<string, string> = {}
   const noisy: string[] = []
+  let uncertainReason = ''
   for (const raw of stderr.split('\n')) {
     const line = raw.trim()
     if (!line || /^linear_calls=/.test(line)) continue
-    const m = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
-    if (m) skips[m[1]] = m[2]
+    const skipMatch = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
+    if (skipMatch) skips[skipMatch[1]] = skipMatch[2]
+    const uncertainMatch = /^不确定:\s*(.*)$/.exec(line)
+    if (uncertainMatch && !uncertainReason) uncertainReason = uncertainMatch[1]
     noisy.push(line)
   }
   return {
     runNumber: Number(r.runNumber ?? 0),
-    exitCode: Number(pr.exitCode ?? 0),
+    exitCode,
     timedOut: pr.timedOut === true,
     error: String(pr.error ?? ''),
     claimable,
@@ -218,6 +224,8 @@ const parsePrecheck = (r: any): Precheck | null => {
     max,
     skips,
     firstStderrLine: noisy[0] ?? '',
+    uncertain: stdout.trim() === '' && exitCode !== 0,
+    uncertainReason,
   }
 }
 
@@ -686,6 +694,7 @@ export const register: Register = on => {
     const lp = (b as Board).lastPrecheck
     const queueReason = (t: Ticket): string | null => {
       if (!lp) return null
+      if (lp.uncertain) return 'precheck 未能读取数据，原因见上方'
       if (lp.claimable.includes(t.id)) return '已入选，等 coordinator 领取'
       if (lp.skips[t.id]) return '未入选：' + lp.skips[t.id]
       return 'precheck 未选中（原因未知）'
@@ -733,15 +742,23 @@ export const register: Register = on => {
     const resultText = (code: number) => (code === 0 ? '✓' : '跳过')
     const buildQueueStatus = (): string | null => {
       if (!lp) return null
-      return '⏳ 下次扫描 ' + nextRunText
+      const head = '⏳ 下次扫描 ' + nextRunText
         + ' · 上次扫描 run ' + lp.runNumber + ' ' + resultText(lp.exitCode)
+      if (lp.uncertain) return head + ' · 无法判断可领票数'
+      return head
         + ' · 可领 ' + lp.claimable.length + ' 张'
         + ' · 在途 ' + lp.inFlight + '/' + lp.max
     }
     const buildQueueWarnings = (): string[] => {
       const out: string[] = []
       if (lp) {
-        if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max) {
+        if (lp.uncertain) {
+          const reason = lp.uncertainReason
+          const base = '⚠ precheck 未能读取数据'
+          out.push(reason ? base + '：' + reason + '（退出码 ' + lp.exitCode + '）'
+            : base + '（退出码 ' + lp.exitCode + '）')
+          if (/rate limit/i.test(reason)) out.push('Linear 限流，稍后自动恢复')
+        } else if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max) {
           let line = '⚠ 待领 ' + b.queue.length + ' 张但 precheck 判定可领 0 张（run ' + lp.runNumber + '，退出码 ' + lp.exitCode + '）'
           if (lp.firstStderrLine) line += '：' + lp.firstStderrLine
           out.push(line)
