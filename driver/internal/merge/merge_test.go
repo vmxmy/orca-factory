@@ -1,0 +1,192 @@
+package merge
+
+import (
+	"context"
+	"errors"
+	"reflect"
+	"testing"
+)
+
+type fakeGitHub struct {
+	snapshots     []Snapshot
+	reads, merges int
+	mergeErr      error
+	order         []int
+}
+
+func (f *fakeGitHub) Snapshot(context.Context, Request) (Snapshot, error) {
+	i := f.reads
+	f.reads++
+	if i >= len(f.snapshots) {
+		i = len(f.snapshots) - 1
+	}
+	return f.snapshots[i], nil
+}
+func (f *fakeGitHub) Squash(_ context.Context, r Request, head, main string) (string, error) {
+	f.merges++
+	f.order = append(f.order, r.Number)
+	return "merged", f.mergeErr
+}
+
+type fakeGit struct {
+	conflict   bool
+	trees      int
+	head, main string
+	worktrees  []string
+}
+
+func (f *fakeGit) MergeTree(_ context.Context, _ Request, head, main string) (string, bool, error) {
+	f.trees++
+	f.head, f.main = head, main
+	return "tree", f.conflict, nil
+}
+func (f *fakeGit) WithWorktree(ctx context.Context, _ Request, tree string, run func(context.Context, string) error) error {
+	f.worktrees = append(f.worktrees, tree)
+	return run(ctx, "isolated-result")
+}
+
+type fakeGate struct {
+	paths []string
+	err   error
+}
+
+func (f *fakeGate) Run(_ context.Context, _ Request, path string) error {
+	f.paths = append(f.paths, path)
+	return f.err
+}
+
+type fakeDeploy struct {
+	state DeploymentState
+	calls []string
+}
+
+func (f *fakeDeploy) Check(_ context.Context, _ Request, sha string) (DeploymentState, error) {
+	f.calls = append(f.calls, sha)
+	return f.state, nil
+}
+func ready() Snapshot {
+	return Snapshot{Head: "head", Main: "main", CIHead: "head", CIGreen: true, MergeableState: "clean", Behind: true, PRFiles: []string{"feature"}, MainFiles: []string{"other"}}
+}
+func fixture(s Snapshot) (*Channel, *fakeGitHub, *fakeGit, *fakeGate, *fakeDeploy) {
+	h := &fakeGitHub{snapshots: []Snapshot{s}}
+	g := &fakeGit{}
+	gate := &fakeGate{}
+	d := &fakeDeploy{state: DeploymentPassed}
+	return New(h, g, gate, d), h, g, gate, d
+}
+func req(n int) Request { return Request{Repository: "owner/repo", Number: n} }
+func next(t *testing.T, c *Channel, repo string) Result {
+	t.Helper()
+	r, e := c.Next(context.Background(), repo)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return r
+}
+func TestDisjointDirectSquash(t *testing.T) {
+	c, h, g, gate, _ := fixture(ready())
+	c.Enqueue(req(1))
+	r := next(t, c, "owner/repo")
+	if r.Status != Merged || r.MergeSHA != "merged" || h.merges != 1 || g.trees != 0 || len(gate.paths) != 0 {
+		t.Fatalf("result=%+v merges=%d trees=%d gate=%v", r, h.merges, g.trees, gate.paths)
+	}
+}
+func TestOverlapGatesMergedTree(t *testing.T) {
+	s := ready()
+	s.MainFiles = []string{"feature"}
+	c, h, g, gate, _ := fixture(s)
+	c.Enqueue(req(1))
+	r := next(t, c, "owner/repo")
+	if r.Status != Merged || h.merges != 1 || !reflect.DeepEqual(g.worktrees, []string{"tree"}) || !reflect.DeepEqual(gate.paths, []string{"isolated-result"}) || g.head != "head" || g.main != "main" {
+		t.Fatalf("result=%+v git=%+v gate=%+v", r, g, gate)
+	}
+}
+func TestConflictReturnsSchedulerCorrection(t *testing.T) {
+	s := ready()
+	s.MainFiles = []string{"feature"}
+	s.MergeableState = "dirty"
+	c, h, g, _, _ := fixture(s)
+	g.conflict = true
+	c.Enqueue(req(1))
+	r := next(t, c, "owner/repo")
+	if r.Status != Correction || r.Corrections != 1 || h.merges != 0 {
+		t.Fatalf("%+v merges=%d", r, h.merges)
+	}
+	if next(t, c, "owner/repo").Status != Empty {
+		t.Fatal("conflict retained in queue")
+	}
+}
+func TestTwoMovingMainRoundsEscalate(t *testing.T) {
+	c, h, _, _, _ := fixture(ready())
+	h.mergeErr = ErrMainAdvanced
+	c.Enqueue(req(1))
+	a := next(t, c, "owner/repo")
+	b := next(t, c, "owner/repo")
+	if a.Status != Waiting || b.Status != Human || b.Rounds != 2 || h.merges != 2 {
+		t.Fatalf("first=%+v second=%+v merges=%d", a, b, h.merges)
+	}
+}
+func TestDeploymentWaitAndSmokeFailurePause(t *testing.T) {
+	c, h, _, _, d := fixture(ready())
+	a := req(1)
+	a.DeployWorkflow = "deploy.yml"
+	a.SmokeCommand = "smoke"
+	c.Enqueue(a)
+	c.Enqueue(req(2))
+	if next(t, c, a.Repository).Status != Merged {
+		t.Fatal("first merge")
+	}
+	d.state = DeploymentPending
+	if next(t, c, a.Repository).Status != Waiting || h.merges != 1 {
+		t.Fatal("merged before deployment")
+	}
+	d.state = SmokeFailed
+	if next(t, c, a.Repository).Status != Human || next(t, c, a.Repository).Status != Paused || h.merges != 1 {
+		t.Fatal("smoke failure did not pause")
+	}
+	c.Enqueue(Request{Repository: "other/repo", Number: 3})
+	if next(t, c, "other/repo").Status != Merged {
+		t.Fatal("other repository paused")
+	}
+	if !reflect.DeepEqual(d.calls, []string{"merged", "merged"}) {
+		t.Fatal(d.calls)
+	}
+}
+func TestDeploymentPassReleasesFIFO(t *testing.T) {
+	c, h, _, _, _ := fixture(ready())
+	a := req(1)
+	a.DeployWorkflow = "deploy"
+	a.SmokeCommand = "smoke"
+	c.Enqueue(a)
+	c.Enqueue(req(2))
+	next(t, c, a.Repository)
+	if next(t, c, a.Repository).Status != Merged || !reflect.DeepEqual(h.order, []int{1, 2}) {
+		t.Fatal(h.order)
+	}
+}
+func TestFailClosed(t *testing.T) {
+	for _, kind := range []string{"ci-head", "ci-red", "unknown", "gate"} {
+		t.Run(kind, func(t *testing.T) {
+			s := ready()
+			switch kind {
+			case "ci-head":
+				s.CIHead = "old"
+			case "ci-red":
+				s.CIGreen = false
+			case "unknown":
+				s.MergeableState = "unknown"
+			case "gate":
+				s.MainFiles = []string{"feature"}
+			}
+			c, h, _, gate, _ := fixture(s)
+			if kind == "gate" {
+				gate.err = errors.New("red")
+			}
+			c.Enqueue(req(1))
+			r := next(t, c, "owner/repo")
+			if h.merges != 0 || (r.Status != Waiting && r.Status != Correction) {
+				t.Fatalf("%+v merges=%d", r, h.merges)
+			}
+		})
+	}
+}
