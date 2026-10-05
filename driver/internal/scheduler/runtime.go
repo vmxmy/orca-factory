@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -27,11 +28,14 @@ type LinearClient interface {
 	CreateComment(context.Context, string, string) (linear.Comment, error)
 }
 type OrcaClient interface {
+	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
+	WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error)
 	AutomationsList(context.Context) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
 }
 type Runtime struct {
+	GitHub               *github.Client
 	Reader               LinearClient
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository
@@ -89,7 +93,7 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 			client, err = newClient(bounded, team)
 			cancel()
 			if err != nil {
-				return errors.New("Linear initialization failed")
+				return errors.New("linear initialization failed")
 			}
 			teams[team] = client
 		}
@@ -122,7 +126,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	}
 	issues, err := r.Reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
-		return nil, errors.New("Linear snapshot failed")
+		return nil, errors.New("linear snapshot failed")
 	}
 	tickets := []Ticket{}
 	for _, issue := range issues {
@@ -132,9 +136,6 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		}
 		if !ok {
 			return nil, errors.New("snapshot project outside configured repositories")
-		}
-		if issue.State.Name == "Done" || issue.State.Name == "Canceled" || issue.State.Name == "Cancelled" {
-			continue
 		}
 		ready, claimed, failed := false, false, false
 		for _, label := range issue.Labels.Nodes {
@@ -157,6 +158,13 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		if err = readOwnership(&ticket, comments); err != nil {
 			return nil, err
 		}
+		readMergeHandoff(&ticket, comments)
+		// Cancellation cannot erase an already durable deployment barrier.
+		// Done may also precede the final merge ownership receipt.
+		canceled := issue.State.Name == "Canceled" || issue.State.Name == "Cancelled"
+		if (canceled && !DeploymentBarrier(ticket)) || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && !DeploymentBarrier(ticket)) {
+			continue
+		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
 		ticket.Blocked = issue.Blocked()
@@ -171,7 +179,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
 			}
 		}
-		if ticket.Legacy || ticket.Candidate || owned(ticket) {
+		if ticket.Legacy || ticket.Candidate || owned(ticket) || DeploymentBarrier(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
 				if err != nil {
@@ -265,7 +273,7 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	case Claim:
 		issue, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if err != nil {
-			return errors.New("Linear claim failed")
+			return errors.New("linear claim failed")
 		}
 		claimed := false
 		for _, label := range issue.Labels.Nodes {
@@ -274,19 +282,19 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 			}
 		}
 		if !claimed {
-			return errors.New("Linear claim not confirmed")
+			return errors.New("linear claim not confirmed")
 		}
 	case Resume:
 	case Merge:
 		owner = machine.OwnerMerge
 	case Release:
 		if _, err := client.UpdateIssue(ctx, t.ID, "Todo", nil, []string{"auto-impl"}); err != nil {
-			return errors.New("Linear release failed")
+			return errors.New("linear release failed")
 		}
 		owner = machine.OwnerNone
 	case Human:
 		if _, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
-			return errors.New("Linear escalation failed")
+			return errors.New("linear escalation failed")
 		}
 		owner = machine.OwnerHuman
 	default:
@@ -302,22 +310,6 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	return nil
 }
 
-// Finish marks a merged ticket Done, then records the merge. Done comes first:
-// a Done ticket leaves the snapshot, so a later comment failure cannot requeue it.
-func (r *Runtime) Finish(ctx context.Context, t Ticket, body string) error {
-	client := r.Clients[t.Repo]
-	if client == nil {
-		return errors.New("repository has no Linear client")
-	}
-	if _, err := client.UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"}); err != nil {
-		return errors.New("Linear done failed")
-	}
-	if _, err := client.CreateComment(ctx, t.ID, body); err != nil {
-		return errors.New("merge comment failed")
-	}
-	return nil
-}
-
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
@@ -325,12 +317,12 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {
 		return errors.New("invalid executor launch configuration")
 	}
-	verb := "exec "
-	if t.Phase == machine.PhaseCorrection {
+	verb := " exec "
+	if t.Phase == machine.PhaseCorrection && t.Handoff != nil && t.Progress != nil && t.Progress.Phase == "correction" && t.Progress.QueueID == t.Handoff.QueueID {
 		// A merge-lane conflict resume runs the executor as a merge resolver.
-		verb = "exec --merging "
+		verb = " exec --merging "
 	}
-	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: verb + quote(r.DriverPath) + " exec " + quote(t.Identifier) + launchLog(t.Identifier)})
+	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		return errors.New("executor launch uncertain")
 	}

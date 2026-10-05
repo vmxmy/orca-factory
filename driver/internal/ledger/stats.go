@@ -50,7 +50,9 @@ func (l *Ledger) Stats(ctx context.Context, all bool, out, warnings io.Writer) e
 				}
 				row, err := parseRow(raw)
 				if err != nil {
-					fmt.Fprintln(warnings, "ledger: warning: invalid ledger comment skipped")
+					if _, writeErr := fmt.Fprintln(warnings, "ledger: warning: invalid ledger comment skipped"); writeErr != nil {
+						return fmt.Errorf("ledger: write warning: %w", writeErr)
+					}
 					continue
 				}
 				key, _ := json.Marshal([]any{row["ticket"], row["started_at"]})

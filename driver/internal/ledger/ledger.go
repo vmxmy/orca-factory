@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -87,7 +88,10 @@ func New(store Store, options Options) *Ledger {
 				err := l.Flush(ctx)
 				cancel()
 				if err != nil {
-					fmt.Fprintln(options.Warnings, "ledger: warning: flush failed; buffered rows retained")
+					if _, writeErr := fmt.Fprintln(options.Warnings, "ledger: warning: flush failed; buffered rows retained"); writeErr != nil {
+						// Keep the buffer retryable and report without leaking writer errors.
+						slog.Error("ledger warning output failed; flush failed; buffered rows retained")
+					}
 				}
 			}
 		}

@@ -24,7 +24,12 @@ func captureDecisions(t *testing.T, s *Scheduler) []map[string]any {
 	}
 	old := os.Stderr
 	os.Stderr = file
-	defer func() { os.Stderr = old; file.Close() }()
+	defer func() {
+		os.Stderr = old
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
