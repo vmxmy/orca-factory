@@ -294,7 +294,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {
 		return errors.New("invalid executor launch configuration")
 	}
-	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: "exec " + quote(r.DriverPath) + " exec " + quote(t.Identifier)})
+	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: "exec " + quote(r.DriverPath) + " exec " + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		return errors.New("executor launch uncertain")
 	}
@@ -370,4 +370,10 @@ func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, 
 	}
 	sort.Strings(files)
 	return files, true, nil
+}
+
+// launchLog keeps an executor's stderr after its terminal closes, so a failed
+// start leaves evidence. The identifier is validated before it reaches the shell.
+func launchLog(identifier string) string {
+	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
 }

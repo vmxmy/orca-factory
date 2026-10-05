@@ -154,7 +154,7 @@ func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 	if err := r.Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
-	if len(oc.launches) != 1 || oc.launches[0].Command != "exec '/opt/driver with space' exec 'ENG-1'" {
+	if len(oc.launches) != 1 || oc.launches[0].Command != "exec '/opt/driver with space' exec 'ENG-1' 2>>\"$HOME/.local/state/orca-factory/launch-ENG-1.log\"" {
 		t.Fatalf("launch=%v", oc.launches)
 	}
 	ticket.Identifier = "ENG-1; touch secret"
