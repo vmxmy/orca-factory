@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/mergelane"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -57,7 +60,15 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		return &scheduler.Scheduler{Config: cfg, Backend: runtime}, runtime, nil
+		gh, err := github.New(github.Options{})
+		if err != nil {
+			return nil, nil, err
+		}
+		lane := &mergelane.Lane{
+			Repositories: runtime.Repositories, GitHub: gh, Orca: &orca.Client{Path: runtime.OrcaPath}, Tickets: runtime, Root: logStateRoot(),
+			Warn: func(format string, args ...any) { logger.Warn(fmt.Sprintf(format, args...), "component", "merge-lane") },
+		}
+		return &scheduler.Scheduler{Config: cfg, Backend: runtime, Merger: lane}, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
