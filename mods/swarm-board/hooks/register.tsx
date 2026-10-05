@@ -23,11 +23,11 @@ type PhaseData = {
 export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
   if (data.pr || ticket.pr) return '🚦 CI/合并'
   const gate = data.gate ?? ticket.gate
-  if (gate?.state === 'green' && data.lane === 2) return '🔍 审查（推断）'
-  if (gate && gate.state !== 'none') return '🧪 gate'
+  if (gate?.state === 'running') return '🧪 gate'
   const tasks = data.tasks ?? []
   if (tasks.some(t => t.status === 'dispatched')) return '🔨 实现'
   if (tasks.some(t => t.status === 'pending' || t.status === 'ready')) return '📤 派工'
+  if (gate?.state === 'green' && data.lane === 2) return '🔍 审查（推断）'
   if (tasks.length && tasks.every(t => t.status === 'completed')) return '📬 待收尾'
   return data.previous ?? (data.run ? '📤 派工' : '📋 拆分')
 }
@@ -499,10 +499,12 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
     const previous = old.phases?.[t.id]
     let phase = ticketPhase(t, { run: r, tasks: workers, gate: gates[t.id], lane: gateLane, pr: prOf(t.id)?.number, previous: previous?.phase })
-    // Missing gate/PR reads must not regress a previously observed downstream phase.
-    if (previous && !prOf(t.id) && !gates[t.id] && ['🧪 gate', '🔍 审查（推断）', '🚦 CI/合并'].includes(previous.phase)) phase = previous.phase
-    if (previous?.phase === '🚦 CI/合并' && !prOf(t.id)) phase = previous.phase
-    if (previous?.phase === '🔍 审查（推断）' && gates[t.id]?.state === 'green' && !gateLane && !prOf(t.id)) phase = previous.phase
+    // Preserve downstream phases on missing reads, unless fresh tasks show correction work.
+    if (previous && !workers.some(k => ['dispatched', 'pending', 'ready'].includes(k.status))) {
+      if (!prOf(t.id) && !gates[t.id] && ['🧪 gate', '🔍 审查（推断）', '🚦 CI/合并'].includes(previous.phase)) phase = previous.phase
+      if (previous.phase === '🚦 CI/合并' && !prOf(t.id)) phase = previous.phase
+      if (previous.phase === '🔍 审查（推断）' && gates[t.id]?.state === 'green' && !gateLane && !prOf(t.id)) phase = previous.phase
+    }
     const matching = workers.filter(k => phase === '📬 待收尾' ? k.status === 'completed' : phase === '🔨 实现' ? k.status === 'dispatched' : k.status === 'pending' || k.status === 'ready')
     const taskAt = matching.map(k => phase === '📬 待收尾' ? k.completed_at ?? k.updated_at : phase === '🔨 实现' ? k.dispatched_at ?? k.updated_at : k.updated_at ?? k.created_at).filter(Boolean).sort().pop()
     const observedAt = phase === '🚦 CI/合并' ? prOf(t.id)?.updatedAt : phase === '🧪 gate' || phase === '🔍 审查（推断）' ? gateAt : taskAt
