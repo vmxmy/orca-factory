@@ -1,0 +1,99 @@
+{
+ "status": "ahead",
+ "ahead_by": 5,
+ "behind_by": 0,
+ "total_commits": 5,
+ "merge_base_commit": {
+  "sha": "e09d48f204833c5912395d438602dbe7c2ce4071"
+ },
+ "files": [
+  {
+   "filename": "driver/CONTRACTS.md",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/cmd/driver/exec.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/cmd/driver/main.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/cmd/driver/serve.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/executor/commands.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/executor/executor.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/executor/executor_test.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/executor/faillog_test.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/executor/review_stdin_test.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/ledger/ledger.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/ledger/usage_test.go",
+   "status": "added"
+  },
+  {
+   "filename": "driver/internal/linear/linear.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/linear/linear_test.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/linear/recorded_test.go",
+   "status": "modified"
+  },
+  {
+   "filename": "driver/internal/logx/logx.go",
+   "status": "added"
+  },
+  {
+   "filename": "driver/internal/logx/logx_test.go",
+   "status": "added"
+  },
+  {
+   "filename": "driver/internal/logx/rotate.go",
+   "status": "added"
+  },
+  {
+   "filename": "driver/internal/usage/usage.go",
+   "status": "added"
+  },
+  {
+   "filename": "driver/testdata/recorded/linear-remove-absent-label.json",
+   "status": "added"
+  },
+  {
+   "filename": "mods/swarm-board/.claude-plugin/plugin.json",
+   "status": "modified"
+  },
+  {
+   "filename": "mods/swarm-board/hooks/register.tsx",
+   "status": "modified"
+  },
+  {
+   "filename": "mods/swarm-board/types/index.d.ts",
+   "status": "modified"
+  }
+ ]
+}
