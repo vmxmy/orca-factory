@@ -72,11 +72,24 @@ prune_git_worktrees() {
     branch:([.[] | select(startswith("branch ")) | ltrimstr("branch refs/heads/")][0] // ""),
     locked:any(.[]; . == "locked" or startswith("locked "))})' <<<"$out"
 }
-# One Linear snapshot per run replaces the per-object `orca linear issue` calls:
-# a single `linear list-issues` covers every ticket we inspect, so prune_linear_calls
-# is 0 (snapshot never attempted) or 1 (attempted, success or failure).
+# One Linear snapshot per run covers every ticket we inspect. Prefer the shared snapshot
+# precheck writes (within 900 s of now, same shape as list-issues' .result.issues); only call
+# Linear ourselves if the file is missing, stale or malformed. prune_linear_calls therefore
+# ends up 0 when the snapshot carries us, or 1 when we had to fall back to a live read.
 prune_load_linear_issues() {
   [[ "$prune_linear_ok" == true ]] && return 0
+  local snapshot now generated snapshot_issues
+  snapshot="${AGENT_SNAPSHOT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json}"
+  if [[ -f "$snapshot" ]]; then
+    now=$(date +%s)
+    if generated=$(jq -er '.generatedAt | if type == "number" then . else error("missing") end' "$snapshot" 2>/dev/null) \
+      && (( now - generated <= 900 )) \
+      && snapshot_issues=$(jq -ce '.issues | if type == "array" then . else error("missing issues") end' "$snapshot" 2>/dev/null); then
+      prune_linear_data="$snapshot_issues"
+      prune_linear_ok=true
+      return 0
+    fi
+  fi
   local out stderr status=0
   stderr=$(mktemp)
   prune_linear_calls=$((prune_linear_calls + 1))
