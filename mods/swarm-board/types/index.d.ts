@@ -6,6 +6,26 @@ export type GateStep = { name: string; sec: number; rc: number }
 /** The last gate run of one unit: sum of step seconds, verdict state, and the steps that had timestamps. */
 export type Gate = { state: 'green' | 'red' | 'running' | 'none'; sec: number; steps: GateStep[] }
 export type Ci = { done: number; total: number; state: 'green' | 'red' | 'running' | 'none'; min: number }
+/**
+ * Parsed precheckResult of the latest automation run that carried one. Scheduled scans
+ * attach a precheckResult; a manual run may not, so this stays undefined until a scan has run.
+ */
+export type Precheck = {
+  runNumber: number
+  exitCode: number
+  timedOut: boolean
+  error: string
+  /** Ticket ids on the latest `claimable=` line, in order; empty when no candidate was accepted. */
+  claimable: string[]
+  /** `in_flight=` value: tickets still holding a concurrency slot. */
+  inFlight: number
+  /** `max=` value: the pool size the pre-check enforced. */
+  max: number
+  /** `skip <id>: <reason>` lines from stderr, keyed by ticket id. */
+  skips: Record<string, string>
+  /** First stderr line that is not `linear_calls=…`; empty when stderr had nothing else. */
+  firstStderrLine: string
+}
 export type Ticket = {
   id: string; title: string; state: string; labels: string[]; priority: number; updatedAt: string
   /** When the coordinator posted the "已领取" comment; empty when not found. */
@@ -49,6 +69,12 @@ export type Board = {
   automationKnown: boolean
   /** ms epoch of the last refresh whose Linear read succeeded; 0 before the first one. */
   lastSuccessAt: number
+  /** Latest scheduled precheck we could parse; sticky across failed/empty automation reads (#45 rule). */
+  lastPrecheck?: Precheck
+  /** Automation's nextRunAt (ms epoch) for the countdown; undefined until first read. */
+  nextRunAt?: number
+  /** ms epoch of the latest automation run of any kind (manual or scheduled); undefined until first read. */
+  lastRunAt?: number
 }
 export type View = 'swarm' | 'task'
 

@@ -273,6 +273,66 @@ test('ticket in both failed and inflight shows only in the 需要人 lane', asyn
   await ui.unmount()
 })
 
+const queueFixture = async ($: any, on: any, queueCount: number, precheck: { exitCode: number; runNumber: number; stdout: string; stderr: string }) => {
+  let refreshed: () => void = () => {}
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', () => ({ value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }))
+  on('process.run', (_: any, e: any) => {
+    const argv = e.argv
+    if (argv[1] === 'linear' && argv[2] === 'list-issues') {
+      const issues = Array.from({ length: queueCount }, (_, i) => (
+        { identifier: 'ZII-' + (i + 1), title: '待领票 ' + (i + 1), state: { type: 'unstarted' }, labels: [{ name: 'ready-for-agent' }], updatedAt: '2026-10-01T00:00:00Z', priority: 2 }
+      ))
+      return { value: { stdout: JSON.stringify({ ok: true, result: { issues } }), stderr: '', exitCode: 0 } }
+    }
+    if (argv[1] === 'automations' && argv[2] === 'list') {
+      return { value: { stdout: JSON.stringify({ ok: true, result: { automations: [
+        { id: 'a1', name: 'agent-linear-scan (test-repo)', enabled: true, nextRunAt: Date.now() + 90_000 },
+      ] } }), stderr: '', exitCode: 0 } }
+    }
+    if (argv[1] === 'automations' && argv[2] === 'runs') {
+      return { value: { stdout: JSON.stringify({ ok: true, result: { runs: [
+        { runNumber: precheck.runNumber, status: 'succeeded', scheduledFor: new Date().toISOString(),
+          precheckResult: { exitCode: precheck.exitCode, timedOut: false, error: '', durationMs: 1000, stdout: precheck.stdout, stderr: precheck.stderr } },
+      ] } }), stderr: '', exitCode: 0 } }
+    }
+    return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
+  })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+}
+
+test('queue warning fires when precheck declares 0 claimable', async ($, on) => {
+  await queueFixture($, on, 2, { exitCode: 1, runNumber: 7,
+    stdout: 'claimable= in_flight=0 max=10\nstale=\nhealth=live=0 max=10 released=0 escalated=0 failed_backlog=0',
+    stderr: 'linear_calls=5' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /待领 2 张但 precheck 判定可领 0 张/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('queue status shows claimable count and tickets marked chosen', async ($, on) => {
+  await queueFixture($, on, 2, { exitCode: 0, runNumber: 8,
+    stdout: 'claimable=ZII-1,ZII-2 in_flight=0 max=10\nstale=\nhealth=live=2 max=10 released=0 escalated=0 failed_backlog=0',
+    stderr: '' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /可领 2 张/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /已入选/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('queue card shows the skip reason when precheck lists one', async ($, on) => {
+  await queueFixture($, on, 3, { exitCode: 0, runNumber: 9,
+    stdout: 'claimable=ZII-1,ZII-2 in_flight=0 max=10\nstale=\nhealth=live=2 max=10 released=0 escalated=0 failed_backlog=0',
+    stderr: 'skip ZII-3: scope overlaps ZII-9\nlinear_calls=3' })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /scope overlaps ZII-9/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('handoff parsing stops after three failed tickets while inflight claimedAt still reads them', async ($, on) => {
   // Five tickets labeled auto-failed+auto-impl: all are in-flight AND failed.
   // Handoff parsing is bounded to the first three failed tickets; the in-flight loop

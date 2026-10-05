@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Ticket, Tokens, View } from '../types'
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, Pr, Precheck, Ticket, Tokens, View } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
 type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean } }
@@ -164,6 +164,41 @@ const usageFor = (rows: Row[], path: string): { tokens?: Tokens; cost?: Cost; mo
   return { tokens, cost, model }
 }
 
+// ---- precheck -------------------------------------------------------------------------------
+// Scheduled runs attach a precheckResult; a manual run may not, so this returns null for those.
+// stdout line 1 "claimable=<csv> in_flight=<n> max=<n>" drives queue status; stderr "skip <id>: <reason>"
+// drives per-card reasons. `linear_calls=` noise lines are excluded from the first-stderr-line surface.
+const parsePrecheck = (r: any): Precheck | null => {
+  const pr = r?.precheckResult
+  if (!pr || typeof pr !== 'object') return null
+  const stdout = String(pr.stdout ?? '')
+  const stderr = String(pr.stderr ?? '')
+  const claimRaw = /^claimable=([^\s]*)/m.exec(stdout)?.[1] ?? ''
+  const claimable = claimRaw ? claimRaw.split(',').filter(Boolean) : []
+  const inFlight = Number(/\bin_flight=(\d+)/.exec(stdout)?.[1] ?? 0)
+  const max = Number(/\bmax=(\d+)/.exec(stdout)?.[1] ?? 0)
+  const skips: Record<string, string> = {}
+  const noisy: string[] = []
+  for (const raw of stderr.split('\n')) {
+    const line = raw.trim()
+    if (!line || /^linear_calls=/.test(line)) continue
+    const m = /^skip ([A-Z]+-\d+): (.*)$/.exec(line)
+    if (m) skips[m[1]] = m[2]
+    noisy.push(line)
+  }
+  return {
+    runNumber: Number(r.runNumber ?? 0),
+    exitCode: Number(pr.exitCode ?? 0),
+    timedOut: pr.timedOut === true,
+    error: String(pr.error ?? ''),
+    claimable,
+    inFlight,
+    max,
+    skips,
+    firstStderrLine: noisy[0] ?? '',
+  }
+}
+
 // ---- gate log --------------------------------------------------------------------------------
 // Lines: "--- [<step>] <ISO> (cd …)" opens a step, "--- [<step>] exit <rc> <ISO>" closes it. Old logs without ISO give no steps.
 const parseGate = (text: string): Gate => {
@@ -298,14 +333,22 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const listTrustworthy = autosResp.ok && autosArr.length > 0
   let automation: Board['automation']
   let automationKnown: boolean
+  let nextRunAt: number | undefined
   if (autosResp.ok) {
     const auto = autosArr.find(a => a.name === AUTOMATION_NAME(base(env.AGENT_GH_REPO ?? '')))
-    if (auto?.id) { automation = { id: String(auto.id), enabled: Boolean(auto.enabled) }; automationKnown = true }
-    else if (listTrustworthy) { automation = undefined; automationKnown = true }
-    else { automation = old.automation; automationKnown = old.automationKnown }
+    if (auto?.id) {
+      automation = { id: String(auto.id), enabled: Boolean(auto.enabled) }
+      automationKnown = true
+      const n = Number(auto.nextRunAt ?? NaN)
+      if (Number.isFinite(n) && n > 0) nextRunAt = n
+      else nextRunAt = old.nextRunAt
+    }
+    else if (listTrustworthy) { automation = undefined; automationKnown = true; nextRunAt = undefined }
+    else { automation = old.automation; automationKnown = old.automationKnown; nextRunAt = old.nextRunAt }
   } else {
     automation = old.automation
     automationKnown = old.automationKnown
+    nextRunAt = old.nextRunAt
   }
 
   // Automation runs: last run for the header, and each run's coordinator worktree + dispatch time.
@@ -316,6 +359,20 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const lastRun = runsResp.ok
     ? (r0 ? 'run ' + r0.runNumber + ' · ' + String(r0.status ?? '').replace('_', ' ') + ' · ' + new Date(r0.scheduledFor ?? r0.dispatchedAt ?? now).toTimeString().slice(0, 5) : '')
     : old.lastRun
+  // Latest run of any kind, for the "N 分钟没有新运行" warning. A failed/empty read keeps the old value.
+  let lastRunAt: number | undefined = old.lastRunAt
+  if (runsResp.ok && r0) {
+    const t = ts(r0.scheduledFor ?? r0.dispatchedAt ?? r0.startedAt ?? r0.created_at ?? '')
+    if (Number.isFinite(t)) lastRunAt = t
+  }
+  // Latest run that carried a precheckResult. Manual runs may not; walk forward until one is found.
+  let lastPrecheck: Precheck | undefined = old.lastPrecheck
+  if (runsResp.ok) {
+    for (const r of autoRuns) {
+      const parsed = parsePrecheck(r)
+      if (parsed) { lastPrecheck = parsed; break }
+    }
+  }
   const autoByTime = autoRuns
     .map(a => ({ path: String(a.workspaceId ?? '').replace(/^[^:]*::/, ''), at: String(a.dispatchedAt ?? a.startedAt ?? a.scheduledFor ?? '') }))
     .filter(a => a.path.includes('/') && a.at).sort((a, b) => b.at.localeCompare(a.at))
@@ -433,12 +490,14 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       at, error, maxInFlight,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
+      lastPrecheck, nextRunAt, lastRunAt,
     }
   }
   return {
     at, error, maxInFlight, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
+    lastPrecheck, nextRunAt, lastRunAt,
   }
 }
 
@@ -558,6 +617,14 @@ export const register: Register = on => {
       if (t.gate && t.gate.state !== 'none' && STATUS_EMOJI[t.gate.state]) return STATUS_EMOJI[t.gate.state]
       return l.emoji
     }
+    // Why each queued ticket is still waiting. `null` means no precheck data yet; the row is skipped.
+    const lp = (b as Board).lastPrecheck
+    const queueReason = (t: Ticket): string | null => {
+      if (!lp) return null
+      if (lp.claimable.includes(t.id)) return '已入选，等 coordinator 领取'
+      if (lp.skips[t.id]) return '未入选：' + lp.skips[t.id]
+      return 'precheck 未选中（原因未知）'
+    }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
       const dur = l.title === '待领' ? '' : mins(minutes(t.claimedAt || t.updatedAt, now))
@@ -568,10 +635,12 @@ export const register: Register = on => {
       if (t.cost) facts.push('💲 ' + usd(t.cost))
       const head = statusEmojiOf(l, t, pr) + ' ' + t.id + (pr ? ' #' + pr.number : '')
       const headRoom = Math.max(0, w - (dur ? dur.length + 1 : 0))
+      const reason = l.title === '待领' ? queueReason(t) : null
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
           <Text>{cutW(t.title, w)}</Text>
+          {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
           {l.title === '需要人' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
           {l.title === '需要人' ? intakeText(t) : null}
@@ -579,6 +648,48 @@ export const register: Register = on => {
       )
     }
     const laneHead = (l: Lane) => <Text bold color={l.color} dimColor={l.items.length === 0}>{l.emoji} {l.title} ({l.items.length})</Text>
+    // 待领 status line + warnings, shared by narrow (card) and wide (column) lane renderers.
+    // Status drops entirely when no precheck has run yet; the "N 分钟没新运行" warning stands on its own.
+    const nextRunAtMs = (b as Board).nextRunAt ?? 0
+    const nextRunRemainSec = nextRunAtMs > 0 ? Math.max(0, Math.ceil((nextRunAtMs - now) / 1000)) : 0
+    const nextRunText = nextRunAtMs > 0 ? (nextRunRemainSec > 0 ? secs(nextRunRemainSec) : '即将') : '—'
+    const resultText = (code: number) => (code === 0 ? '✓' : '跳过')
+    const buildQueueStatus = (): string | null => {
+      if (!lp) return null
+      return '⏳ 下次扫描 ' + nextRunText
+        + ' · 上次扫描 run ' + lp.runNumber + ' ' + resultText(lp.exitCode)
+        + ' · 可领 ' + lp.claimable.length + ' 张'
+        + ' · 在途 ' + lp.inFlight + '/' + lp.max
+    }
+    const buildQueueWarnings = (): string[] => {
+      const out: string[] = []
+      if (lp) {
+        if (b.queue.length > 0 && lp.claimable.length === 0 && lp.inFlight < lp.max) {
+          let line = '⚠ 待领 ' + b.queue.length + ' 张但 precheck 判定可领 0 张（run ' + lp.runNumber + '，退出码 ' + lp.exitCode + '）'
+          if (lp.firstStderrLine) line += '：' + lp.firstStderrLine
+          out.push(line)
+        }
+        if (lp.timedOut || lp.error) out.push('⚠ precheck 失败：' + (lp.error || '超时'))
+      }
+      const lastAt = (b as Board).lastRunAt ?? 0
+      if (lastAt > 0) {
+        const minsSince = Math.floor((now - lastAt) / 60_000)
+        if (minsSince > 10) out.push('⚠ 定时任务超过 ' + minsSince + ' 分钟没有新运行')
+      }
+      return out
+    }
+    const queueExtras = (w: number) => {
+      if (b.queue.length === 0) return null
+      const status = buildQueueStatus()
+      const warns = buildQueueWarnings()
+      if (!status && warns.length === 0) return null
+      return (
+        <Box key="queue-extras" flexDirection="column">
+          {status ? <Text dimColor>{cutW(status, w)}</Text> : null}
+          {warns.map((text, i) => <Text key={'qw-' + i} color="yellow">{cutW(text, w)}</Text>)}
+        </Box>
+      )
+    }
     const laneView = () => {
       if (cols >= 120) {
         const w = Math.floor(cols / lanes.length) - 2
@@ -588,6 +699,7 @@ export const register: Register = on => {
               <Box key={'lane-' + l.title} flexDirection="column" width={w + 2} paddingX={1}>
                 {laneHead(l)}
                 <Text dimColor>{'─'.repeat(w)}</Text>
+                {l.title === '待领' ? queueExtras(w) : null}
                 {l.items.length === 0 ? <Text dimColor>·</Text> : l.items.map(t => laneCard(l, t, w))}
               </Box>
             ))}
@@ -596,7 +708,10 @@ export const register: Register = on => {
       }
       return lanes.filter(l => l.items.length > 0 || l.title === '实现中').map(l =>
         card('lane-' + l.title, l.emoji + ' ' + l.title + ' (' + l.items.length + ')', (
-          l.items.length === 0 ? <Text dimColor>None.</Text> : l.items.map(t => laneCard(l, t, cols - 4))
+          <Box flexDirection="column">
+            {l.title === '待领' ? queueExtras(cols - 4) : null}
+            {l.items.length === 0 ? <Text dimColor>None.</Text> : l.items.map(t => laneCard(l, t, cols - 4))}
+          </Box>
         ), l.color, l.items.length === 0))
     }
     // Swarm view: one agent is one line; workers indent under their coordinator.
