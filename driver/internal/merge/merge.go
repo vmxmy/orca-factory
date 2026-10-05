@@ -41,6 +41,7 @@ type GitHub interface {
 // Git computes git merge-tree --write-tree for immutable head/main IDs and runs
 // a callback in a temporary worktree containing that exact result. WithWorktree
 // owns cleanup even on callback error or cancellation; it never checks out head.
+// Cleanup errors preserve the callback error and wrap ErrWorktreeCleanup.
 type Git interface {
 	MergeTree(context.Context, Request, string, string) (tree string, conflict bool, err error)
 	WithWorktree(context.Context, Request, string, string, string, func(context.Context, string) error) error
@@ -152,7 +153,14 @@ func (c *Channel) Enqueue(r Request) error {
 // overtake the head. Different repositories can be processed concurrently.
 // A smoke/deploy failure pauses until an operator creates a recovered channel;
 // reconstructing one requires restoring the outstanding deployment first.
-func (c *Channel) Next(ctx context.Context, repo string) (Result, error) {
+// A Merged result may accompany ErrWorktreeCleanup; the merge is still complete.
+func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultErr error) {
+	var cleanupErr error
+	defer func() {
+		if cleanupErr != nil {
+			resultErr = errors.Join(resultErr, cleanupErr)
+		}
+	}()
 	l := c.lane(repo)
 	l.mu.Lock()
 	if l.paused {
@@ -257,13 +265,33 @@ func (c *Channel) Next(ctx context.Context, repo string) (Result, error) {
 		if !mergeReady(s) {
 			return finish(Waiting, "head CI or mergeability not ready")
 		}
-		err = c.git.WithWorktree(ctx, e.request, tree, s.Head, s.Main, func(ctx context.Context, path string) error { return c.gate.Run(ctx, e.request, path) })
-		if err != nil {
-			if ctx.Err() != nil {
-				return r, ctx.Err()
-			}
+		gateRan := false
+		var gateErr error
+		err = c.git.WithWorktree(ctx, e.request, tree, s.Head, s.Main, func(ctx context.Context, path string) error {
+			gateRan = true
+			gateErr = c.gate.Run(ctx, e.request, path)
+			return gateErr
+		})
+		if errors.Is(err, ErrWorktreeCleanup) {
+			cleanupErr = ErrWorktreeCleanup
+		}
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
+		if !gateRan {
+			return r, errors.New("validation worktree unavailable")
+		}
+		if errors.Is(gateErr, context.Canceled) || errors.Is(gateErr, context.DeadlineExceeded) {
+			return r, gateErr
+		}
+		if gateErr != nil {
 			r.Corrections = 1
 			return finish(Correction, "merged-result gate failed; return to scheduler")
+		}
+		// After a green callback, WithWorktree can only fail during cleanup.
+		// Report that failure alongside the merge result without spending a correction.
+		if err != nil {
+			cleanupErr = ErrWorktreeCleanup
 		}
 	} else if !mergeReady(s) {
 		return finish(Waiting, "head CI or mergeability not ready")

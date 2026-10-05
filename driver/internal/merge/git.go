@@ -20,6 +20,8 @@ type CommandGit struct {
 
 var objectID = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
+var ErrWorktreeCleanup = errors.New("validation worktree cleanup failed")
+
 func (g CommandGit) run(ctx context.Context, r Request, args ...string) ([]byte, error) {
 	run := g.Run
 	if run == nil {
@@ -70,11 +72,11 @@ func (g CommandGit) WithWorktree(ctx context.Context, r Request, tree, head, mai
 		defer cancel()
 		_, removeErr := g.run(cleanupCtx, r, "worktree", "remove", "--force", path)
 		if removeErr != nil && added {
-			err = errors.New("validation worktree cleanup failed")
+			err = errors.Join(err, ErrWorktreeCleanup)
 			return
 		}
 		if removeErr = os.RemoveAll(parent); removeErr != nil {
-			err = errors.New("validation directory cleanup failed")
+			err = errors.Join(err, ErrWorktreeCleanup)
 		}
 	}()
 	if _, err = g.run(ctx, r, "worktree", "add", "--detach", path, commit); err != nil {

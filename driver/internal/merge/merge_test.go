@@ -188,8 +188,84 @@ func TestFailClosed(t *testing.T) {
 			}
 			c.Enqueue(req(1))
 			r := next(t, c, "owner/repo")
-			if h.merges != 0 || (r.Status != Waiting && r.Status != Correction) {
+			wantStatus, wantCorrections := Waiting, 0
+			if kind == "gate" {
+				wantStatus, wantCorrections = Correction, 1
+			}
+			if h.merges != 0 || r.Status != wantStatus || r.Corrections != wantCorrections {
 				t.Fatalf("%+v merges=%d", r, h.merges)
+			}
+			if kind == "gate" && next(t, c, "owner/repo").Status != Empty {
+				t.Fatal("red gate retained in queue")
+			}
+		})
+	}
+}
+
+func TestValidationInfrastructureDoesNotBecomeCorrection(t *testing.T) {
+	for _, failure := range []string{"commit", "directory", "worktree-add", "cleanup-green", "cleanup-red"} {
+		t.Run(failure, func(t *testing.T) {
+			s := ready()
+			s.Head, s.Main = strings.Repeat("a", 40), strings.Repeat("b", 40)
+			s.CIHead, s.MainFiles = s.Head, []string{"feature"}
+			root := t.TempDir()
+			r := req(1)
+			r.Path = root
+			if failure == "directory" {
+				r.Path = filepath.Join(root, "missing")
+			}
+			h := &fakeGitHub{snapshots: []Snapshot{s}}
+			gate := &fakeGate{}
+			if failure == "cleanup-red" {
+				gate.err = errors.New("red")
+			}
+			fail := true
+			g := CommandGit{Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+				switch spec.Args[0] {
+				case "merge-tree":
+					return []byte(strings.Repeat("c", 40)), nil
+				case "-c":
+					if fail && failure == "commit" {
+						return nil, errors.New("commit failed")
+					}
+					return []byte(strings.Repeat("d", 40)), nil
+				case "worktree":
+					if fail && ((spec.Args[1] == "add" && failure == "worktree-add") || (spec.Args[1] == "remove" && strings.HasPrefix(failure, "cleanup-"))) {
+						return nil, errors.New("worktree command failed")
+					}
+				}
+				return nil, nil
+			}}
+			c := New(h, g, gate, nil)
+			if err := c.Enqueue(r); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Enqueue(req(2)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := c.Next(context.Background(), r.Repository)
+			if strings.HasPrefix(failure, "cleanup-") {
+				wantStatus, wantCorrections, wantMerges := Merged, 0, 1
+				if failure == "cleanup-red" {
+					wantStatus, wantCorrections, wantMerges = Correction, 1, 0
+				}
+				if got.Status != wantStatus || got.Corrections != wantCorrections || h.merges != wantMerges || len(gate.paths) != 1 || err == nil {
+					t.Fatalf("result=%+v merges=%d gate=%v err=%v", got, h.merges, gate.paths, err)
+				}
+				return
+			}
+			if got.Corrections != 0 || got.Status == Correction || got.Status == Human || h.merges != 0 || len(gate.paths) != 0 || (err == nil && got.Status != Waiting) {
+				t.Fatalf("result=%+v merges=%d gate=%v err=%v", got, h.merges, gate.paths, err)
+			}
+			fail = false
+			if failure == "directory" {
+				if err := os.Mkdir(r.Path, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			retry := next(t, c, r.Repository)
+			if retry.Status != Merged || retry.Request.Number != 1 || retry.Corrections != 0 || retry.Rounds != 0 || !reflect.DeepEqual(h.order, []int{1}) {
+				t.Fatalf("queue head lost after infrastructure failure: %+v order=%v", retry, h.order)
 			}
 		})
 	}
@@ -234,6 +310,23 @@ func TestCommandGitUsesMergedTreeAndCleansAfterGateFailure(t *testing.T) {
 }
 
 type exitFailure int
+
+func TestCommandGitPreservesGateErrorWhenCleanupFails(t *testing.T) {
+	gateErr := errors.New("gate red")
+	g := CommandGit{Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Args[0] == "-c" {
+			return []byte(strings.Repeat("d", 40)), nil
+		}
+		if spec.Args[1] == "remove" {
+			return nil, errors.New("cleanup failed")
+		}
+		return nil, nil
+	}}
+	err := g.WithWorktree(context.Background(), Request{Path: t.TempDir()}, strings.Repeat("c", 40), strings.Repeat("a", 40), strings.Repeat("b", 40), func(context.Context, string) error { return gateErr })
+	if !errors.Is(err, gateErr) || !strings.Contains(err.Error(), "cleanup failed") {
+		t.Fatalf("gate error or cleanup error lost: %v", err)
+	}
+}
 
 func (e exitFailure) Error() string { return "git failed" }
 func (e exitFailure) ExitCode() int { return int(e) }

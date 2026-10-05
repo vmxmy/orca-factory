@@ -20,7 +20,7 @@
 - 合并通道：每个仓库一条串行 FIFO 通道，发布 PR 与功能 PR 按入队顺序共用；队首等待时后续 PR 不超车。使用 squash 合并并回读 `.merged == true`，固定已验证的 head SHA。
 - 落后 main（`behind_by > 0`）不是阻塞：取 PR 与 main 相对共同祖先的完整改动路径（含重命名前后路径）求交集。交集为空、`mergeable_state == clean` 且 CI 在当前 head 全绿 → 直接 squash 合并。
 - 有文件重叠：用固定的 PR head 与当前 main SHA 执行 `git merge-tree --write-tree`。文本无冲突时，以合并结果建立临时 worktree，在其中运行该单元 gate；gate 绿、当前 head CI 全绿且 mergeability 为 clean 才合并。合并前回读 head 与 main，任一变化则重新验证；连续 2 轮追不上 main → 转人。验证结束清理临时 worktree，不改写 PR 分支，不 rebase、不 force push。
-- 文本冲突：交回调度器启动新执行器解决，计一次 correction；携带已用追赶轮数，连续 2 轮仍追不上 main 则转人。合并结果 gate 红同样交回调度器，不放宽 gate。
+- 文本冲突：交回调度器启动新执行器解决，计一次 correction；携带已用追赶轮数，连续 2 轮仍追不上 main 则转人。合并结果 gate 本身判红同样计一次 correction 并交回调度器，不放宽 gate。验证 commit、目录或 worktree 建立失败时保留队首，报告错误或等待，不计 correction；gate 已绿后的清理失败附带报告，继续合并，不计 correction。
 - 有部署的仓库：合并后用该 squash commit 等待 `AGENT_DEPLOY_WORKFLOW` 成功，再运行 `AGENT_SMOKE_CMD`；两者通过前保持该仓库通道等待，下一 PR 不合并。部署或冒烟失败 → 转人并暂停该仓库通道，其他仓库继续；恢复由人确认。
 
 ## 3. 暂存文件
