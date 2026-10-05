@@ -28,7 +28,7 @@ func TestRunRequestScopedToTerminal(t *testing.T) {
 
 func TestRestoredRunIsBoundWithRunUse(t *testing.T) {
 	e, o, _, _, _, ticket := fixture(t, "new-sha")
-	if _, err := e.execute(context.Background(), ticket, &checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one"}); err != nil {
+	if _, err := e.execute(context.Background(), ticket, &checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(o.runRequests) != 0 || len(o.used) != 1 || o.used[0] != "run_one" {
@@ -54,16 +54,16 @@ func TestWorkerRequestScopedToTerminal(t *testing.T) {
 	}
 }
 
-func TestStartReconcilesPendingWorkerWithoutTask(t *testing.T) {
+func TestStartDoesNotReplayPendingWorkerWithoutEvidence(t *testing.T) {
 	e, o, _, _, _, ticket := fixture(t, "new-sha")
-	// A previous executor saved Pending before worker-start and died; the run has no task for this branch.
+	// An empty observation cannot prove that the previous terminal did not start a worker.
 	if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_old", Pending: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.Start(context.Background(), ticket); err != nil {
-		t.Fatalf("pending worker start without a task must restart, got %v", err)
+	if _, err := e.Start(context.Background(), ticket); err == nil {
+		t.Fatal("unconfirmed worker must remain unresolved")
 	}
-	if len(o.workerRequests) != 1 {
+	if len(o.workerRequests) != 0 {
 		t.Fatalf("worker requests=%v", o.workerRequests)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -56,6 +58,8 @@ type Ticket struct {
 	NewTest                                              bool
 }
 type Config struct {
+	// Merging requires durable correction evidence; it never authorizes a fresh run.
+	Merging                                                             bool
 	Lane3Globs                                                          []string
 	Machine                                                             string
 	TierSettings                                                        map[string]string
@@ -101,17 +105,21 @@ func (e *Executor) warn(format string, args ...any) {
 	if w == nil {
 		w = os.Stderr
 	}
-	fmt.Fprintf(w, "warning: "+format+"\n", args...)
+	if _, err := fmt.Fprintf(w, "warning: "+format+"\n", args...); err != nil {
+		// Warning delivery must not undo a committed transaction. Do not expose sink errors.
+		slog.Error("executor warning output failed")
+	}
 }
 
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
-	return e.execute(ctx, t, nil)
+	return e.execute(ctx, t, nil, 0)
 }
 
-func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) (result Result, err error) {
+func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, infraUsed int) (result Result, err error) {
 	result.State = machine.Initial()
+	result.State.Infra = infraUsed
 	defer func() {
 		if errors.Is(err, errBudgetExhausted) {
 			err = nil
@@ -171,6 +179,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 	// diffBase is the head's merge-base with current main: a worker that rebased
 	// must not be charged for main's commits since the claim baseline.
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, reviewerTier string
+	var mergeGateOutput, mergeReviewOutput string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -182,11 +191,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if stepErr != nil {
 			return stepErr
 		}
+		charged := next.Infra > previous.Infra
 		if action != nil {
 			if actionErr := action(fx); actionErr != nil {
 				return actionErr
 			}
 		}
+		// Reads inside the authorized action may consume this same ticket budget.
+		next.Infra = result.State.Infra + (next.Infra - previous.Infra)
 		result.State = next
 		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
 			evidence := string(previous.Phase)
@@ -195,7 +207,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			}
 			return e.handoff(ctx, t, next, evidence)
 		}
-		if next.Infra > previous.Infra {
+		if charged {
 			if err := e.backoff(ctx, next.Infra); err != nil {
 				return err
 			}
@@ -215,6 +227,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		}
 		if previous.Owner != next.Owner {
 			body += fmt.Sprintf("\n归属: %s term=%s run=%s attempt=%d since=%s", next.Owner, c.Terminal, result.RunID, next.Attempt, e.Now().UTC().Format(time.RFC3339))
+		}
+		if ev == machine.EvOpenPR {
+			evidence, err := e.freezeMergeHandoff(ctx, c, t, result, cp, head, diffBase, spec, mergeGateOutput, mergeReviewOutput)
+			if err != nil {
+				return err
+			}
+			body += "\n" + evidence
 		}
 		if next.Phase == machine.PhaseCorrection {
 			summary, err := e.failSummary(ctx, c, cmp.Or(diffBase, baseline), branch, head, failureOutput, ev)
@@ -248,25 +267,37 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if cp.Run != "" {
 			// A new executor terminal must take over the checkpointed Run, not create one.
 			if _, callErr = e.Orca.RunUse(ctx, runRequest(t, c, "run-use"), cp.Run); callErr != nil {
-				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", callErr)
+				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
 			result.RunID = cp.Run
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
-				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", callErr)
+				return fmt.Errorf("Orca run creation failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
-			result.RunID = receiptString(receipt, "runId")
-			if result.RunID == "" {
-				result.RunID = nestedString(receipt, "run", "id")
-			}
+			result.RunID = receiptID(receipt, "run")
 			if result.RunID == "" {
 				return errors.New("Orca run receipt missing ID")
 			}
 		}
-		baseline, callErr = e.Tools.Baseline(ctx, c.Repo)
-		if callErr != nil || baseline == "" {
-			return errors.New("baseline lookup failed")
+		callErr = e.retryRead(ctx, t, &result, "baseline lookup", func() error {
+			var readErr error
+			baseline, readErr = e.Tools.Baseline(ctx, c.Repo)
+			if readErr != nil {
+				return readErr
+			}
+			if baseline == "" {
+				return errors.New("baseline lookup failed")
+			}
+			return nil
+		})
+		if callErr != nil {
+			return callErr
+		}
+		if restored != nil && cp.Corrections > 0 && baseline != cp.Baseline {
+			// A correction may span main advancing: the new worker must branch from
+			// current main, or the gate runs against a stale base and fails driver-wired.
+			cp.Baseline = baseline
 		}
 		issue, callErr := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if callErr != nil {
@@ -286,6 +317,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			return writeErr
 		}
 		spec = gate
+		if cp.MergeSpec != "" {
+			if err := os.WriteFile(spec, []byte(cp.MergeSpec), 0600); err != nil {
+				return errors.New("cannot restore frozen gate spec")
+			}
+		}
 		brief = rendered
 		if cp.Baseline != "" {
 			baseline = cp.Baseline
@@ -293,33 +329,38 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		cp.Run = result.RunID
 		cp.Baseline = baseline
 		if restored != nil {
+			if cp.PendingParent != "" {
+				_, agent, model, effort, err := correctionTier(c, cp.Corrections)
+				if err != nil {
+					return err
+				}
+				if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Task: cp.Task, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
+					return err
+				}
+			}
 			taskID = cp.Task
 			result.DispatchID = cp.Dispatch
 			return nil
 		}
-		cp.Pending = true
-		if err := saveCheckpoint(c, t, cp); err != nil {
+		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
 			return err
 		}
-		receipt, callErr = e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", 1), orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort})
-		result.DispatchID = receiptString(receipt, "dispatchId")
-		taskID = receiptString(receipt, "taskId")
-		if callErr != nil {
-			return fmt.Errorf("worker start failed; reconcile dispatch before retry: %w", callErr)
-		}
-		if result.DispatchID == "" || taskID == "" {
-			return errors.New("worker receipt missing task or dispatch")
-		}
-		cp.Task = taskID
-		cp.Dispatch = result.DispatchID
-		cp.Worktree = worktreeReceipt(receipt)
-		cp.Pending = false
-		return saveCheckpoint(c, t, cp)
+		taskID, result.DispatchID = cp.Task, cp.Dispatch
+		return nil
 	})
 	if err != nil {
 		return result, err
 	}
 	result.State.Corrections = cp.Corrections
+	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
+	if cp.MergeCause != "" {
+		result.State.Phase = machine.PhaseCorrection
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, transition)
+		if correctionErr != nil || !again {
+			return result, correctionErr
+		}
+		taskID = cp.Task
+	}
 	for {
 		head, failureOutput = "", ""
 		report := &orca.WorkerReport{Outcome: "succeeded"}
@@ -397,6 +438,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		event = machine.EvBranchOK
 		if head == "" || head == baseline {
 			event = machine.EvBranchNo
+		} else if cp.MergeHead != "" && head == cp.MergeHead {
+			return result, errors.New("merge correction requires a new head")
 		} else {
 			err = e.retryRead(ctx, t, &result, "merge-base lookup", func() error {
 				var readErr error
@@ -420,6 +463,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 				}
 				return stop
 			}
+			var ticketErr *infra.Ticket
+			var transientErr *infra.Transient
+			if errors.As(gateErr, &ticketErr) || errors.As(gateErr, &transientErr) {
+				return gateErr
+			}
 			verdict, parseErr = gateVerdict(output)
 			if parseErr != nil {
 				if gateErr != nil {
@@ -436,6 +484,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		event = machine.EvGateRed
 		if gateErr == nil && verdict == "green" {
 			event = machine.EvGateGreen
+			mergeGateOutput = output
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err
@@ -467,6 +516,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 			if reviewErr == nil && parseErr == nil {
 				if verdict == "green" {
 					event = machine.EvReviewGreen
+					mergeReviewOutput = output
 				} else {
 					event = machine.EvReviewRed
 				}
@@ -498,9 +548,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint) 
 		if !hasEffect(fx, "open-pr-rest-idempotent-by-branch") {
 			return errors.New("missing PR effect")
 		}
-		pr, callErr := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+		var pr *github.PullRequest
+		callErr := e.retryRead(ctx, t, &result, "PR lookup", func() error {
+			var readErr error
+			pr, readErr = e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+			return readErr
+		})
 		if callErr != nil {
-			return errors.New("PR lookup failed")
+			return callErr
 		}
 		if pr != nil {
 			result.PR = *pr
@@ -542,7 +597,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 	for {
 		tasks, err := e.Orca.TaskList(ctx, run)
 		if err != nil {
-			return nil, errors.New("task polling failed")
+			return nil, safeDependencyError(err)
 		}
 		completed := false
 		for _, t := range tasks {
@@ -585,15 +640,4 @@ func pause(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
-}
-
-// runRequest scopes Run mutations to the executor terminal: Orca rejects a reused
-// request ID whose input differs (request_mismatch), and the caller is part of
-// that input, so each executor terminal needs its own request while a retry in
-// the same terminal stays an idempotent replay.
-func runRequest(t Ticket, c Config, step string) string { return scopedRequest(t, c, step, 1) }
-
-// scopedRequest applies the same terminal scope to every Orca mutation.
-func scopedRequest(t Ticket, c Config, step string, n int) string {
-	return orca.RequestID(t.Identifier, c.Unit, step+"-"+c.Terminal, n)
 }

@@ -16,11 +16,20 @@ type Snapshot struct {
 	Linear      Usage     `json:"linear"`
 }
 
+type Deployment struct {
+	QueueID  string `json:"queueId"`
+	SHA      string `json:"sha"`
+	Workflow string `json:"workflow,omitempty"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
+}
+
 type Ticket struct {
-	Repo       string `json:"repo"`
-	Identifier string `json:"identifier"`
-	Owner      string `json:"owner"`
-	Phase      string `json:"phase"`
+	Deployment *Deployment `json:"deployment,omitempty"`
+	Repo       string      `json:"repo"`
+	Identifier string      `json:"identifier"`
+	Owner      string      `json:"owner"`
+	Phase      string      `json:"phase"`
 }
 
 type Pause struct {
@@ -67,7 +76,7 @@ func Write(snapshot Snapshot) error {
 	if err != nil {
 		return errors.New("cannot create driver status snapshot")
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }() // Cleanup only; successful rename removes this path.
 	if snapshot.Tickets == nil {
 		snapshot.Tickets = []Ticket{}
 	}

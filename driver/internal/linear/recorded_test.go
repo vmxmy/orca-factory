@@ -36,17 +36,26 @@ func TestRecordedRemoveAbsentLabel(t *testing.T) {
 	var sent map[string]any
 	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
 		if strings.Contains(q.Query, "IssueLabels") {
-			fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2","name":"old"}],"pageInfo":{"hasNextPage":false}}}}}`)
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"labels":{"nodes":[{"id":"l2","name":"old"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+				t.Error(err)
+				return
+			}
 			return
 		}
 		sent = q.Variables["input"].(map[string]any)
 		for _, id := range sent["removedLabelIds"].([]any) {
 			if id != "l2" {
-				w.Write(rejection)
+				if _, err := w.Write(rejection); err != nil {
+					t.Error(err)
+					return
+				}
 				return
 			}
 		}
-		fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1","identifier":"ENG-1"}}}}`)
+		if _, err := fmt.Fprint(w, `{"data":{"issueUpdate":{"success":true,"issue":{"id":"i1","identifier":"ENG-1"}}}}`); err != nil {
+			t.Error(err)
+			return
+		}
 	})
 	// "bug" (l1) is absent and must not be removed; "old" (l2) is present and must not be re-added.
 	if _, err := c.UpdateIssue(context.Background(), "i1", "", []string{"old"}, []string{"bug", "old"}); err != nil {

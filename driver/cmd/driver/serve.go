@@ -12,17 +12,21 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
-	"github.com/vmxmy/orca-factory/driver/internal/mergelane"
-	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 func init() { Register("serve", serve) }
 func serve(args []string) int {
+	if len(args) == 1 && args[0] == "--dry-run" {
+		code, err := serveLogged(args, slog.Default())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		return code
+	}
 	return loggedCommand("scheduler", filepath.Join(logStateRoot(), "scheduler.log"), os.Stdout, args, func(logger *slog.Logger) (int, error) {
 		return serveLogged(args, logger)
 	})
@@ -30,7 +34,7 @@ func serve(args []string) int {
 func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	dry := len(args) == 1 && args[0] == "--dry-run"
 	if len(args) != 0 && !dry {
-		return 2, fmt.Errorf("Usage: driver serve [--dry-run]")
+		return 2, fmt.Errorf("usage: driver serve [--dry-run]")
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -60,15 +64,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		gh, err := github.New(github.Options{})
-		if err != nil {
-			return nil, nil, err
-		}
-		lane := &mergelane.Lane{
-			Repositories: runtime.Repositories, GitHub: gh, Orca: &orca.Client{Path: runtime.OrcaPath}, Tickets: runtime, Root: logStateRoot(),
-			Warn: func(format string, args ...any) { logger.Warn(fmt.Sprintf(format, args...), "component", "merge-lane") },
-		}
-		return &scheduler.Scheduler{Config: cfg, Backend: runtime, Merger: lane}, runtime, nil
+		return &scheduler.Scheduler{Config: cfg, Backend: runtime}, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
@@ -151,8 +147,12 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}, Linear: status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}}
 	for _, ticket := range backend.tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge {
-			snapshot.Tickets = append(snapshot.Tickets, status.Ticket{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase)})
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
+			row := status.Ticket{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase)}
+			if p := ticket.Progress; p != nil && p.Deployment != nil {
+				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
+			}
+			snapshot.Tickets = append(snapshot.Tickets, row)
 		}
 	}
 	sort.Slice(snapshot.Tickets, func(i, j int) bool {
@@ -195,4 +195,13 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 
 func statusLimit(limit linear.RateLimit) status.RateLimit {
 	return status.RateLimit{Limit: limit.Limit, Remaining: limit.Remaining, Reset: limit.Reset}
+}
+
+func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		AdvanceMerges(context.Context, []scheduler.Ticket) error
+	}); ok {
+		return source.AdvanceMerges(ctx, tickets)
+	}
+	return nil
 }

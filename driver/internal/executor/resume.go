@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -16,11 +16,14 @@ import (
 // The ticket state directory is the same durable location as brief.md/gate.spec.
 // Persist association before dispatch: an unknown mutation is never a new worker.
 type checkpoint struct {
-	Settled                                 bool
-	Run, Task, Dispatch, Worktree, Baseline string
-	Corrections                             int
-	Pending                                 bool
-	Completed                               bool
+	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
+	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
+	Settled                                      bool
+	Run, Task, Dispatch, Worktree, Baseline      string
+	Corrections                                  int
+	Pending                                      bool
+	Completed                                    bool
+	PendingParent                                string `json:",omitempty"`
 }
 
 func checkpointPath(c Config, t Ticket) string {
@@ -60,83 +63,121 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 
 // Start reconciles remote evidence before Execute. Execute remains the explicit
 // new-claim entry point for callers that already performed reconciliation.
-func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
+func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
+	result.State = machine.Initial()
+	defer func() {
+		if errors.Is(err, errBudgetExhausted) {
+			err = nil
+		}
+	}()
+
 	c := e.Config
 	if c.Unit == "" {
 		c.Unit = "executor"
 	}
 	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || e.Tools == nil || e.GitHub == nil || e.Orca == nil || e.Linear == nil {
-		return Result{}, errors.New("invalid recovery configuration")
+		return result, errors.New("invalid recovery configuration")
 	}
 	if c.Root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return Result{}, errors.New("cannot resolve state root")
+			return result, errors.New("cannot resolve state root")
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	head, err := e.Tools.Head(ctx, c.Repo, branch)
+	var head string
+	err = e.retryRead(ctx, t, &result, "resume branch lookup", func() error {
+		var readErr error
+		head, readErr = e.Tools.Head(ctx, c.Repo, branch)
+		return readErr
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("resume branch lookup failed: %w", err)
+		return result, err
 	}
-	pr, err := e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+	var pr *github.PullRequest
+	err = e.retryRead(ctx, t, &result, "resume PR lookup", func() error {
+		var readErr error
+		pr, readErr = e.GitHub.FindOpenPR(ctx, c.Owner, c.Repository, branch)
+		return readErr
+	})
 	if err != nil {
-		return Result{}, errors.New("resume PR lookup failed")
-	}
-	if pr != nil {
-		if pr.Number <= 0 || pr.HTMLURL == "" {
-			return Result{}, errors.New("invalid existing PR")
-		}
-		state := machine.Initial()
-		for _, ev := range []machine.Event{machine.EvClaim, machine.EvWorkerOK, machine.EvBranchOK, machine.EvGateGreen, machine.EvReviewGreen, machine.EvOpenPR} {
-			state, _, err = machine.Step(state, ev, machine.DefaultLimits)
-			if err != nil {
-				return Result{}, err
-			}
-		}
-		result := Result{State: state, PR: *pr}
-		if err = e.comment(ctx, t.ID, "PR 已开: "+pr.HTMLURL+"\n阶段: 排队合并\n归属: 合并通道"); err != nil {
-			return result, errors.New("resume handoff comment failed")
-		}
-		return result, nil
+		return result, err
 	}
 	cp, err := readCheckpoint(c, t)
 	if err != nil {
-		return Result{}, err
+		return result, err
+	}
+	if cp != nil {
+		result.State.Corrections = cp.Corrections
+	}
+	mergeRepair, repairErr := e.restoreMergeCorrection(ctx, c, t, &cp, &result)
+	if repairErr != nil {
+		return result, repairErr
+	}
+	if !mergeRepair && cp != nil {
+		result.State.Infra += cp.Infra
+		if result.State.Infra >= machine.DefaultLimits.Infra {
+			result.State.Owner, result.State.Phase = machine.OwnerHuman, machine.PhaseHuman
+			result.State.HumanReason = "infra budget exhausted: checkpoint recovery"
+			if err := e.handoff(ctx, t, result.State, "checkpoint recovery"); err != nil {
+				return result, err
+			}
+			return result, errBudgetExhausted
+		}
+	}
+	// The compatibility flag requests recovery, never a new claim. Existing
+	// PRs still reconcile tasks before proving a completed frozen handoff.
+	if c.Merging && !mergeRepair && pr == nil {
+		return result, errors.New("merge correction evidence required")
+	}
+	// Reconcile checkpointed tasks before ordinary PR handoff.
+	if pr != nil && !mergeRepair && cp == nil {
+		if pr.Number <= 0 || pr.HTMLURL == "" {
+			return result, errors.New("invalid existing PR")
+		}
+		return e.resumeMergeHandoff(ctx, c, t, *pr, head, nil, result)
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
 		receipt, callErr := e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 		if callErr != nil {
-			return Result{}, errors.New("resume run reconciliation failed")
+			return result, safeDependencyError(callErr)
 		}
-		run := receiptString(receipt, "runId")
+		run := receiptID(receipt, "run")
 		if run == "" {
-			run = nestedString(receipt, "run", "id")
+			return result, errors.New("resume run receipt missing ID")
 		}
-		if run == "" {
-			return Result{}, errors.New("resume run receipt missing ID")
-		}
-		tasks, callErr := e.Orca.TaskList(ctx, run)
+		var tasks []orca.Task
+		callErr = e.retryRead(ctx, t, &result, "resume old task lookup", func() error {
+			var readErr error
+			tasks, readErr = e.Orca.TaskList(ctx, run)
+			return readErr
+		})
 		if callErr != nil {
-			return Result{}, errors.New("resume old task lookup failed")
+			return result, callErr
 		}
-		for _, task := range tasks {
-			if (task.RunID != "" && task.RunID != run) || !strings.Contains(task.Spec, branch) {
-				continue
-			}
-			if cp != nil {
-				return Result{}, errors.New("ambiguous old tasks; reconcile active dispatch")
-			}
-			cp = &checkpoint{Run: run, Task: task.ID, Dispatch: task.DispatchID}
+		cp, err = recoverDispatch(tasks, &checkpoint{Run: run}, branch)
+		if err != nil {
+			return result, err
 		}
 	}
+	if mergeRepair && cp.MergeCause != "" && !cp.Pending {
+		return e.execute(ctx, t, cp, result.State.Infra)
+	}
+	if cp != nil && cp.Pending {
+		cp.Completed, cp.Settled = false, false
+	}
 	r := e.recovery()
-	if head != "" && r != nil {
-		complete, err := r.Complete(ctx, c.Repo, head)
+	if head != "" && r != nil && (cp == nil || (!cp.Pending && cp.Task == "")) {
+		var complete bool
+		err = e.retryRead(ctx, t, &result, "resume commit lookup", func() error {
+			var readErr error
+			complete, readErr = r.Complete(ctx, c.Repo, head)
+			return readErr
+		})
 		if err != nil {
-			return Result{}, errors.New("resume commit lookup failed")
+			return result, err
 		}
 		if complete {
 			if cp == nil {
@@ -145,54 +186,46 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 			cp.Completed = true
 		}
 	}
-	if cp != nil && cp.Run != "" && cp.Task != "" {
-		tasks, err := e.Orca.TaskList(ctx, cp.Run)
-		if err != nil {
-			return Result{}, errors.New("resume task lookup failed")
-		}
-		for _, task := range tasks {
-			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != "" && task.DispatchID != cp.Dispatch) {
-				continue
-			}
-			report, err := task.WorkerReport()
-			if err != nil {
-				return Result{}, errors.New("resume task result invalid")
-			}
-			if report != nil {
-				if task.DispatchID != "" {
-					cp.Dispatch = task.DispatchID
-				}
-				cp.Pending = false
-				cp.Settled = true
-				if report.Outcome == "succeeded" {
-					cp.Completed = true
-				}
-			}
-		}
-	}
 	if cp != nil {
-		if cp.Pending && !cp.Completed && cp.Task == "" {
-			// The previous executor's request ID belongs to its terminal and cannot be
-			// replayed here; reconcile by the run's tasks instead.
-			task, found, err := e.pendingWorker(ctx, cp.Run, branch)
+		if cp.Run != "" && (cp.Task != "" || cp.Pending) {
+			var tasks []orca.Task
+			err = e.retryRead(ctx, t, &result, "resume task lookup", func() error {
+				var readErr error
+				tasks, readErr = e.Orca.TaskList(ctx, cp.Run)
+				return readErr
+			})
 			if err != nil {
-				return Result{}, err
+				return result, err
 			}
-			if !found {
-				return e.Execute(ctx, t)
+			cp, err = recoverDispatch(tasks, cp, branch)
+			if err != nil {
+				return result, err
 			}
-			cp.Task, cp.Dispatch, cp.Pending = task.ID, task.DispatchID, false
 		}
-		if cp.Pending && !cp.Completed {
-			return Result{}, errors.New("unresolved worker start; reconcile request before retry")
+		if cp.Pending {
+			return result, errors.New("unresolved worker start; reconcile request before retry")
 		}
-		// task-list carries no dispatch_id, so an adopted task may lack one.
 		if !cp.Completed && cp.Task == "" {
-			return Result{}, errors.New("incomplete worker recovery state")
+			return result, errors.New("incomplete worker recovery state")
 		}
-		return e.execute(ctx, t, cp)
+		if pr != nil && !mergeRepair && cp.Completed && cp.Settled {
+			// Preserve a validated frozen handoff only after current task
+			// reconciliation. A crash before its first write requires fresh
+			// gate/reviewer evidence through execute, not an endless wait.
+			resumed, resumeErr := e.resumeMergeHandoff(ctx, c, t, *pr, head, cp, result)
+			if !errors.Is(resumeErr, errMissingMergeHandoff) {
+				return resumed, resumeErr
+			}
+		}
+		if c.Merging && !mergeRepair {
+			return result, errors.New("merge correction evidence required")
+		}
+		if err := saveCheckpoint(c, t, *cp); err != nil {
+			return result, err
+		}
+		return e.execute(ctx, t, cp, result.State.Infra)
 	}
-	return e.Execute(ctx, t)
+	return e.execute(ctx, t, nil, result.State.Infra)
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {
 	b, err := c.run(ctx, repo, "git", "show", "-s", "--format=%(trailers:key=agent-status,valueonly)", head)
@@ -233,28 +266,4 @@ func worktreeReceipt(r orca.Receipt) string {
 		}
 	}
 	return ""
-}
-
-// pendingWorker finds the task an unconfirmed worker-start may have created.
-func (e *Executor) pendingWorker(ctx context.Context, run, branch string) (orca.Task, bool, error) {
-	if run == "" {
-		return orca.Task{}, false, nil
-	}
-	tasks, err := e.Orca.TaskList(ctx, run)
-	if err != nil {
-		return orca.Task{}, false, fmt.Errorf("pending worker lookup failed: %w", err)
-	}
-	var found []orca.Task
-	for _, task := range tasks {
-		if (task.RunID == "" || task.RunID == run) && strings.Contains(task.Spec, branch) {
-			found = append(found, task)
-		}
-	}
-	switch len(found) {
-	case 0:
-		return orca.Task{}, false, nil
-	case 1:
-		return found[0], true, nil
-	}
-	return orca.Task{}, false, errors.New("ambiguous pending worker tasks; reconcile active dispatch")
 }
