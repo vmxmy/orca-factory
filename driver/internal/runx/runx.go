@@ -48,7 +48,7 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 		return err
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
-	var stderr stderrBuffer
+	var stderr stderrCapture
 	if spec.Logger != nil {
 		cmd.Stderr = &stderr
 	}
@@ -57,17 +57,14 @@ func Run(ctx context.Context, spec Spec) ([]byte, error) {
 	if spec.Logger != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
-			exit.Stderr = append([]byte(nil), stderr...)
+			exit.Stderr = stderr.diagnostic()
 		}
 		code := -1
 		if cmd.ProcessState != nil {
 			code = cmd.ProcessState.ExitCode()
 		}
 		args, secrets := safeArgs(spec.Args)
-		diagnostic := hideSecrets(string(stderr), secrets)
-		if len(diagnostic) > stderrLimit {
-			diagnostic = diagnostic[:stderrLimit]
-		}
+		diagnostic := stderr.logText(secrets)
 		spec.Logger.InfoContext(ctx, "external call", "component", "runx", "executable", SafeText(filepath.Base(spec.Path)), "args", args, "exit_code", code, "duration_ms", float64(time.Since(started))/float64(time.Millisecond), "stderr", diagnostic, "timeout", errors.Is(ctx.Err(), context.DeadlineExceeded))
 	}
 	if ctx.Err() != nil {

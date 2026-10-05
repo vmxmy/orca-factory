@@ -10,9 +10,82 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 )
 
 func TestExternalCallLog(t *testing.T) {
+	t.Run("logger preserves large error diagnostics", func(t *testing.T) {
+		args := []string{"-c", `printf 'unchanged output'; printf 'diagnostic start\n' >&2; head -c 70000 /dev/zero | tr '\000' x >&2; printf '\nTLS connection failed\n' >&2; exit 7`}
+		spec := Spec{Path: "/bin/sh", Args: args, Timeout: time.Second}
+		plainOutput, plainErr := Run(context.Background(), spec)
+		var b bytes.Buffer
+		spec.Logger = slog.New(slog.NewJSONHandler(&b, nil))
+		loggedOutput, loggedErr := Run(context.Background(), spec)
+		if string(plainOutput) != "unchanged output" || !bytes.Equal(loggedOutput, plainOutput) {
+			t.Errorf("stdout changed: plain=%q logged=%q", plainOutput, loggedOutput)
+		}
+		var plainExit, loggedExit *exec.ExitError
+		if !errors.As(plainErr, &plainExit) || !errors.As(loggedErr, &loggedExit) {
+			t.Fatalf("missing ExitError: plain=%v logged=%v", plainErr, loggedErr)
+		}
+		if plainExit.ExitCode() != 7 || loggedExit.ExitCode() != plainExit.ExitCode() {
+			t.Errorf("exit code changed: plain=%d logged=%d", plainExit.ExitCode(), loggedExit.ExitCode())
+		}
+		if !bytes.Contains(plainExit.Stderr, []byte("... omitting ")) || !bytes.HasPrefix(plainExit.Stderr, []byte("diagnostic start\n")) || !bytes.HasSuffix(plainExit.Stderr, []byte("\nTLS connection failed\n")) {
+			t.Fatal("baseline does not exercise Output prefix/suffix diagnostics")
+		}
+		if !bytes.Equal(loggedExit.Stderr, plainExit.Stderr) {
+			t.Errorf("ExitError.Stderr changed: plain=%d bytes logged=%d bytes; TLS tail retained=%v", len(plainExit.Stderr), len(loggedExit.Stderr), bytes.HasSuffix(loggedExit.Stderr, []byte("\nTLS connection failed\n")))
+		}
+		var plainTransient, loggedTransient *infra.Transient
+		if !errors.As(infra.Classify(plainErr), &plainTransient) || !errors.As(infra.Classify(loggedErr), &loggedTransient) {
+			t.Errorf("infra.Classify changed: plain=%T logged=%T", infra.Classify(plainErr), infra.Classify(loggedErr))
+		}
+		var record map[string]any
+		if err := json.Unmarshal(b.Bytes(), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record["exit_code"] != float64(7) || len(record["stderr"].(string)) > 2048 {
+			t.Errorf("unexpected log code or stderr limit: code=%v bytes=%d", record["exit_code"], len(record["stderr"].(string)))
+		}
+	})
+	for _, secret := range []string{"private-credential", "private-" + strings.Repeat("c", 70000)} {
+		name := "credential across log boundary"
+		if len(secret) > 2048 {
+			name = "credential across diagnostic capture boundary"
+		}
+		t.Run(name, func(t *testing.T) {
+			var b bytes.Buffer
+			args := []string{"-c", `printf 'unchanged output'; head -c 2040 /dev/zero | tr '\000' x >&2; printf '%s\nnon-sensitive diagnostic\n' "$2" >&2; exit 9`, "sh", "--token", secret}
+			plainOutput, plainErr := Run(context.Background(), Spec{Path: "/bin/sh", Args: args, Timeout: time.Second})
+			output, err := Run(context.Background(), Spec{Path: "/bin/sh", Args: args, Timeout: time.Second, Logger: slog.New(slog.NewJSONHandler(&b, nil))})
+			var plainExit, exit *exec.ExitError
+			if !errors.As(plainErr, &plainExit) || !errors.As(err, &exit) {
+				t.Fatalf("missing ExitError: plain=%v logged=%v", plainErr, err)
+			}
+			if string(output) != "unchanged output" || !bytes.Equal(output, plainOutput) || exit.ExitCode() != 9 || !bytes.Equal(exit.Stderr, plainExit.Stderr) {
+				t.Errorf("logger changed stdout, exit code or diagnostics: code=%d plain=%d bytes logged=%d bytes", exit.ExitCode(), len(plainExit.Stderr), len(exit.Stderr))
+			}
+			if !bytes.Contains(exit.Stderr, []byte("non-sensitive diagnostic")) {
+				t.Error("non-sensitive diagnostic lost")
+			}
+			var record map[string]any
+			if err := json.Unmarshal(b.Bytes(), &record); err != nil {
+				t.Fatal(err)
+			}
+			stderr := record["stderr"].(string)
+			if strings.Contains(b.String(), secret) || strings.Contains(b.String(), "private-") {
+				t.Error("credential fragment leaked across stderr truncation boundary: private-")
+			}
+			if record["exit_code"] != float64(9) || len(stderr) > 2048 || !strings.HasPrefix(stderr, strings.Repeat("x", 2040)) {
+				t.Errorf("log lost exit code, stderr limit or non-sensitive prefix: code=%v bytes=%d", record["exit_code"], len(stderr))
+			}
+			if args[4] != secret {
+				t.Error("arguments mutated")
+			}
+		})
+	}
 	for _, tc := range []struct {
 		name, script string
 		timeout      time.Duration
