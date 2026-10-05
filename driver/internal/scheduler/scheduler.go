@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -18,6 +19,8 @@ import (
 type Ticket struct {
 	ID, Identifier, Repo, Terminal, Run string
 	Scope                               []string
+	Blockers                            []string
+	BlockersIncomplete                  bool
 	Priority                            int
 	CreatedAt, UpdatedAt                time.Time
 	Owner                               machine.Owner
@@ -61,6 +64,7 @@ type Merger interface {
 	Process(context.Context, []Ticket) error
 }
 type Scheduler struct {
+	Logger           *slog.Logger
 	Config           config.Config
 	Backend          Backend
 	Merger           Merger
@@ -106,7 +110,11 @@ func priority(n int) int {
 
 // Tick checks automation exclusion before inspecting every repository in one
 // snapshot. Refused repositories still count toward the machine admission limit.
-func (s *Scheduler) Tick(ctx context.Context) error {
+func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
+	started := time.Now()
+	var tickets []Ticket
+	snapshot := false
+	defer func() { s.summary(started, tickets, snapshot, tickErr) }()
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
@@ -131,10 +139,12 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			problems = append(problems, errors.New("repository refused: automation enabled or unverifiable"))
 		}
 	}
-	tickets, err := s.Backend.Snapshot(ctx, s.Config.Repositories)
+	var err error
+	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
 		return errors.New("scheduler snapshot failed")
 	}
+	snapshot = true
 	// A successful snapshot replaces the stale quota observation. If the
 	// refreshed budget is still critical, start its new recovery window before
 	// allowing dispatch, even when no dependency probe is installed.
@@ -142,6 +152,11 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 	remaining = s.checkLinearQuota(now)
 	if s.Pauses.Paused("") {
 		s.plan(now, false, remaining)
+		for _, t := range tickets {
+			if t.Candidate {
+				s.decision(t, "skip", "paused")
+			}
+		}
 		return errors.Join(problems...)
 	}
 	busy := false
@@ -176,12 +191,18 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			if unregistered(t) {
 				// The claim never gained an executor terminal; after the grace period no
 				// executor exists to provide evidence, so treat the claim as a failed executor.
+				result := "dead"
+				if now.Sub(t.UpdatedAt) < unregisteredGrace {
+					result = "uncertain"
+				}
+				s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
 				if now.Sub(t.UpdatedAt) < unregisteredGrace {
 					continue
 				}
 			} else {
 				absent, e1 := s.Backend.TerminalAbsent(ctx, t)
 				inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
+				s.ownership(t, absent, inactive, e1, e2)
 				if e1 != nil || e2 != nil || !absent || !inactive {
 					continue
 				}
@@ -242,7 +263,7 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
-			if err := s.Backend.Launch(ctx, t); err != nil {
+			if err := s.launch(ctx, t); err != nil {
 				problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
 			}
 		}
@@ -258,20 +279,33 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
-		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) || !t.Candidate || t.Blocked || t.Legacy || owned(t) || t.Owner == machine.OwnerHuman {
+		if !t.Candidate {
 			continue
 		}
-		if total >= s.Config.MaxInFlight {
-			break
+		reason := ""
+		switch {
+		case !allowed[t.Repo] || s.Pauses.Paused(t.Repo):
+			reason = "paused"
+		case t.Blocked:
+			reason = "blocked"
+		case t.Legacy:
+			reason = "legacy"
+		case owned(t) || t.Owner == machine.OwnerHuman:
+			reason = "owned"
+		case total >= s.Config.MaxInFlight || count[t.Repo] >= repos[t.Repo].MaxInFlight:
+			reason = "capacity"
+		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(t.Scope, conflicts[t.Repo]):
+			reason = "scope"
+		case !s.token(now):
+			reason = "token"
 		}
-		if count[t.Repo] >= repos[t.Repo].MaxInFlight {
+		if reason != "" {
+			if reason == "blocked" {
+				s.decision(t, "skip", reason, "blockers", t.Blockers, "blockers_incomplete", t.BlockersIncomplete)
+			} else {
+				s.decision(t, "skip", reason)
+			}
 			continue
-		}
-		if repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(t.Scope, conflicts[t.Repo]) {
-			continue
-		}
-		if !s.token(now) {
-			break
 		}
 		state, _, err := machine.Step(machine.Initial(), machine.EvClaim, machine.DefaultLimits)
 		if err != nil {
@@ -281,14 +315,20 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 		count[t.Repo]++
 		// An uncertain claim still reserves its scope for this tick.
 		conflicts[t.Repo] = append(conflicts[t.Repo], t.Scope...)
-		if err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase}); err != nil {
+		err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase})
+		result := "success"
+		if err != nil {
+			result = "uncertain"
+		}
+		s.decision(t, "claim", "", "result", result, "err", err)
+		if err != nil {
 			problems = append(problems, errors.New("ticket claim failed"))
 			continue
 		}
 		t.Attempt = state.Attempt
 		t.Phase = state.Phase
 		t.Owner = state.Owner
-		if err = s.Backend.Launch(ctx, t); err != nil {
+		if err = s.launch(ctx, t); err != nil {
 			problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
 		}
 	}

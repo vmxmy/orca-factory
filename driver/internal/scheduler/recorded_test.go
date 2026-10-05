@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -70,5 +72,26 @@ func TestRecordedExecutorHandoff(t *testing.T) {
 	}
 	if ticket.Owner != machine.OwnerHuman {
 		t.Fatalf("a 转人 comment hands the ticket to a human, got owner %q", ticket.Owner)
+	}
+}
+
+func TestRecordedSchedulerBlockerIdentifiers(t *testing.T) {
+	var response struct{ Data struct{ Issue linear.Issue } }
+	if err := json.Unmarshal(recorded(t, "linear-inverse-relations.json"), &response); err != nil {
+		t.Fatal(err)
+	}
+	issue := response.Data.Issue
+	issue.Project.ID = "project"
+	issue.State.Name = "Todo"
+	issue.Labels.Nodes = []linear.NamedID{{Name: "ready-for-agent"}}
+	client := &fakeLinear{issues: []linear.Issue{issue}}
+	repo := config.Repository{Path: "repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
+	runtime := &Runtime{Reader: client, Clients: map[string]LinearClient{"repo": client}}
+	tickets, err := runtime.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 || !tickets[0].Blocked || tickets[0].BlockersIncomplete || !reflect.DeepEqual(tickets[0].Blockers, []string{"ZII-893"}) {
+		t.Fatalf("lost recorded blocker identifiers: %+v", tickets)
 	}
 }
