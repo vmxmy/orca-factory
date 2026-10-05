@@ -80,6 +80,8 @@ func gateVerdict(output string) (string, error) {
 // green object followed by prose or another result cannot approve a diff.
 func reviewVerdict(output string) (string, error) {
 	output = strings.TrimSpace(output)
+	// Reviewers often wrap the final object in a Markdown fence; only the closing fence may follow it.
+	output = strings.TrimSpace(strings.TrimSuffix(output, "```"))
 	for i := 0; i < len(output); i++ {
 		if output[i] != '{' {
 			continue
