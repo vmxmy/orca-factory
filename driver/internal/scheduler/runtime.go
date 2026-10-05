@@ -160,6 +160,17 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
 		ticket.Blocked = issue.Blocked()
+		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
+		for _, relation := range issue.InverseRelations.Nodes {
+			if relation.Type != "blocks" {
+				continue
+			}
+			switch relation.Issue.State.Type {
+			case "completed", "canceled", "duplicate":
+			default:
+				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
+			}
+		}
 		if ticket.Legacy || ticket.Candidate || owned(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
