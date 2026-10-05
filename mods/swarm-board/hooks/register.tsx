@@ -914,6 +914,7 @@ async function pollSnapshot($: any, handoffs: Map<string, string>, watcher: Snap
     if (!shouldReload(watcher.stat, stat)) return
     const old = await read($, board)
     const next = await refresh($, handoffs, old, true)
+    watcher.stat = stat
     if (next === old || !paneOpen) return
     await update($, board, current => ({
       ...current, at: next.at, error: next.error, lastSuccessAt: next.lastSuccessAt,
@@ -921,7 +922,6 @@ async function pollSnapshot($: any, handoffs: Map<string, string>, watcher: Snap
       failed: next.failed, doneToday: next.doneToday, snapshotAgeMs: next.snapshotAgeMs,
       linearThrottled: next.linearThrottled, blockedBy: next.blockedBy, issueStates: next.issueStates,
     }))
-    watcher.stat = stat
   } finally { watcher.polling = false }
 }
 
