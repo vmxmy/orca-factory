@@ -184,7 +184,7 @@ func TestFailClosed(t *testing.T) {
 			}
 			c, h, _, gate, _ := fixture(s)
 			if kind == "gate" {
-				gate.err = errors.New("red")
+				gate.err = ErrGateRed
 			}
 			c.Enqueue(req(1))
 			r := next(t, c, "owner/repo")
@@ -217,7 +217,7 @@ func TestValidationInfrastructureDoesNotBecomeCorrection(t *testing.T) {
 			h := &fakeGitHub{snapshots: []Snapshot{s}}
 			gate := &fakeGate{}
 			if failure == "cleanup-red" {
-				gate.err = errors.New("red")
+				gate.err = ErrGateRed
 			}
 			fail := true
 			g := CommandGit{Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {

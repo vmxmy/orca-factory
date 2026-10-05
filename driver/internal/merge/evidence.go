@@ -36,7 +36,12 @@ type Handoff struct {
 // needing deployment recovery must scan these comments independently of active
 // issue filtering. #141 emits merge-intent and merged; no deployment is inferred.
 type Progress struct {
-	Deployment *DeploymentProgress `json:"deployment,omitempty"`
+	Deployment    *DeploymentProgress `json:"deployment,omitempty"`
+	Corrections   int                 `json:"corrections,omitempty"`
+	CatchupRounds int                 `json:"catchup_rounds,omitempty"`
+	Infra         int                 `json:"infra,omitempty"`
+	Attempt       int                 `json:"attempt,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
 	// MainUnknown is allowed only for a merged PR observed without a prior intent.
 	MainUnknown bool   `json:"main_unknown,omitempty"`
 	Version     int    `json:"version"`

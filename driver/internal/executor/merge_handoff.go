@@ -30,7 +30,7 @@ func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, r
 			lane, _ = strconv.Atoi(fields[1])
 		}
 	}
-	h := merge.Handoff{Version: 1, TicketID: t.ID, Identifier: t.Identifier, Repository: c.Owner + "/" + c.Repository, Unit: c.Unit, PR: result.PR.Number, Head: head, Baseline: base, GateSpec: string(raw), GateOutput: gate, ReviewOutput: review, Lane: lane, Run: result.RunID, Task: cp.Task, Dispatch: result.DispatchID, Worktree: cp.Worktree, Attempt: result.State.Attempt, Corrections: result.State.Corrections, Infra: result.State.Infra, EnqueuedAt: e.Now().UTC()}
+	h := merge.Handoff{Version: 1, TicketID: t.ID, Identifier: t.Identifier, Repository: c.Owner + "/" + c.Repository, Unit: c.Unit, PR: result.PR.Number, Head: head, Baseline: base, GateSpec: string(raw), GateOutput: gate, ReviewOutput: review, Lane: lane, Run: result.RunID, Task: cp.Task, Dispatch: result.DispatchID, Worktree: cp.Worktree, Attempt: result.State.Attempt, Corrections: result.State.Corrections, Infra: result.State.Infra, CatchupRounds: cp.CatchupRounds, EnqueuedAt: e.Now().UTC()}
 	key := sha256.Sum256([]byte(strings.Join([]string{h.Repository, h.TicketID, h.Unit, h.Head, h.Run, h.Task, h.Dispatch}, "\x00")))
 	h.QueueID = hex.EncodeToString(key[:])
 	rows, err := e.Linear.ListComments(ctx, t.ID)

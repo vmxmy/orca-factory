@@ -114,6 +114,7 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 // the request so a restart cannot mistake the old successful task for this one.
 func (e *Executor) startCorrectionDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, spec string, opts orca.StartOptions) error {
 	parent := cp.Task
+	cp.MergeCause = ""
 	cp.PendingParent = parent
 	cp.Task, cp.Dispatch = "", ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false

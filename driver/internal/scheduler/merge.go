@@ -51,6 +51,10 @@ func readMergeHandoff(t *Ticket, comments []linear.Comment) {
 					t.MergeProblem = "conflicting handoff"
 				}
 				seen[h.QueueID] = raw
+				if old := t.Progress; old != nil && old.QueueID != h.QueueID && old.Phase == "correction" && unmergedDeploymentDecision(old) && deploymentIdentity(*t) == nil {
+					// The new validated handoff supersedes an unmerged correction, not a deployment.
+					t.Progress = nil
+				}
 				t.Handoff = &h
 			}
 		}
@@ -102,7 +106,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	}
 	return errors.Join(problems...)
 }
-func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
+func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) {
+	var cleanupErr error
+	defer func() { resultErr = errors.Join(resultErr, cleanupErr) }()
 	h := t.Handoff
 	env := r.Repositories[t.Repo].Env
 	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != env["AGENT_GH_REPO"] || !identifier.MatchString(h.Unit) || h.PR <= 0 || !commitID(h.Head) || !commitID(h.Baseline) || h.GateSpec == "" || h.GateOutput == "" || h.ReviewOutput == "" || h.Run == "" || h.Task == "" || !filepath.IsAbs(h.Worktree) || h.Attempt < 1 || h.Corrections < 0 || h.Infra < 0 || h.CatchupRounds < 0 {
@@ -126,7 +132,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 		return errors.New("invalid repository")
 	}
 	a := &mergeAdapter{runtime: r, ticket: t, owner: owner, repo: repo}
-	if p := t.Progress; p != nil && p.QueueID == h.QueueID && p.Phase != "merge-intent" && p.Phase != "merged" {
+	if p := t.Progress; p != nil && p.QueueID == h.QueueID && p.Phase != "merge-intent" && p.Phase != "merged" && p.Phase != "waiting" && p.Phase != "correction" && p.Phase != "human" {
 		return errors.New("unknown merge progress")
 	}
 	pr, err := a.readPR(ctx)
@@ -134,6 +140,10 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 		return err
 	}
 	sha := ""
+	rounds, progressErr := mergeRounds(t)
+	if progressErr != nil {
+		return progressErr
+	}
 	if pr.Merged {
 		sha = pr.MergeSHA
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
@@ -143,17 +153,20 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 			a.main = p.Main
 		}
 	} else {
-		channel := merge.New(a, nil, nil, nil)
-		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, CatchupRounds: h.CatchupRounds}
+		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, nil)
+		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, CatchupRounds: rounds}
 		if err = channel.Enqueue(req); err != nil {
 			return err
 		}
 		result, err := channel.Next(ctx, h.Repository)
-		if err != nil {
+		if errors.Is(err, merge.ErrWorktreeCleanup) {
+			cleanupErr = merge.ErrWorktreeCleanup
+		}
+		if err != nil && !(errors.Is(err, merge.ErrWorktreeCleanup) && (result.Status == merge.Merged || result.Status == merge.Correction || result.Status == merge.Human || result.Status == merge.Waiting)) {
 			return err
 		}
 		if result.Status != merge.Merged {
-			return errors.New(result.Reason)
+			return r.mergeDecision(ctx, a.ticket, a.main, result)
 		}
 		sha = result.MergeSHA
 	}
@@ -163,9 +176,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
 	if !commitID(sha) {
 		return errors.New("merged SHA missing")
 	}
-	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged"}
-	if t.Progress != nil && t.Progress.QueueID == h.QueueID {
-		progress.Deployment = t.Progress.Deployment
+	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged", CatchupRounds: rounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
+	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
+		retainMergeProgress(&progress, a.ticket.Progress)
 	}
 	if progress.Deployment == nil {
 		progress.Deployment = newDeployment(env)
@@ -234,7 +247,7 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
-	if p.Merged || p.State != "open" || p.Draft == nil || *p.Draft || p.Mergeable == nil || !*p.Mergeable {
+	if p.Merged || p.State != "open" || p.Draft == nil || *p.Draft || p.Mergeable == nil {
 		return merge.Snapshot{}, errors.New("PR not explicitly mergeable")
 	}
 	if err := a.runtime.GitHub.UniqueTicketPR(ctx, a.owner, a.repo, a.ticket.Identifier, a.ticket.Handoff.PR, false); err != nil {
@@ -279,6 +292,9 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
+	if !*p.Mergeable {
+		p.MergeableState = "dirty"
+	}
 	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main, PRFiles: prFiles, MainFiles: mainFiles}, nil
 }
 func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main string) (string, error) {
@@ -293,12 +309,18 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 		return "", errors.New("validation changed")
 	}
 	h := a.ticket.Handoff
-	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent"}
-	intent.Deployment = newDeployment(a.runtime.Repositories[a.ticket.Repo].Env)
+	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent", CatchupRounds: req.CatchupRounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
+	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
+		retainMergeProgress(&intent, a.ticket.Progress)
+	}
+	if intent.Deployment == nil {
+		intent.Deployment = newDeployment(a.runtime.Repositories[a.ticket.Repo].Env)
+	}
 	raw, _ := json.Marshal(intent)
 	if err := a.runtime.mergeComment(ctx, a.ticket, merge.ProgressPrefix+string(raw)); err != nil {
 		return "", err
 	}
+	a.ticket.Progress = &intent
 	// The durable write can take time; reread all pinned evidence afterwards.
 	fresh, err = a.Snapshot(ctx, req)
 	if err != nil {

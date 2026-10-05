@@ -63,3 +63,47 @@ func (h Handoff) Validated() error {
 	}
 	return errors.New("review evidence not green")
 }
+
+// MergeGateVerdict requires an unambiguous complete block for this frozen unit.
+// Missing/malformed output is infrastructure failure, never a code correction.
+func (h Handoff) MergeGateVerdict(output string) (string, error) {
+	fields := map[string]string{}
+	for _, line := range strings.Split(output, "\n") {
+		parts := strings.Fields(line)
+		if len(parts) == 0 {
+			continue
+		}
+		key := parts[0]
+		switch key {
+		case "UNIT", "VERDICT", "STEP", "REASON", "EVIDENCE", "SCOPE", "LANE":
+		default:
+			continue
+		}
+		if _, exists := fields[key]; exists {
+			return "", errors.New("ambiguous merged gate output")
+		}
+		fields[key] = strings.Join(parts[1:], " ")
+	}
+	for _, key := range []string{"UNIT", "VERDICT", "STEP", "REASON", "EVIDENCE", "SCOPE", "LANE"} {
+		if _, ok := fields[key]; !ok {
+			return "", errors.New("incomplete merged gate output")
+		}
+	}
+	if fields["UNIT"] != h.Unit || fields["STEP"] == "" || fields["REASON"] == "" || (fields["LANE"] != "1" && fields["LANE"] != "2" && fields["LANE"] != "3") {
+		return "", errors.New("merged gate identity mismatch")
+	}
+	for _, line := range strings.Split(h.GateSpec, "\n") {
+		k, v, ok := strings.Cut(line, ":")
+		if ok && strings.TrimSpace(k) == "SCOPE" && fields["SCOPE"] != strings.Join(strings.Fields(v), " ") {
+			return "", errors.New("merged gate scope mismatch")
+		}
+	}
+	switch fields["VERDICT"] {
+	case "green":
+		h.GateOutput = output
+		return "green", h.Validated()
+	case "red":
+		return "red", nil
+	}
+	return "", errors.New("unknown merged gate verdict")
+}

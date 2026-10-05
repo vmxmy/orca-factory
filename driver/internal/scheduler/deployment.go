@@ -16,7 +16,7 @@ import (
 
 // DeploymentBarrier is independent of issue state, labels and current ownership.
 func DeploymentBarrier(t Ticket) bool {
-	return (t.Handoff != nil && t.MergeProblem != "") || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State != "passed")
+	return (t.Handoff != nil && t.MergeProblem != "") || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State != "passed" && t.Progress.Phase != "correction" && t.Progress.Phase != "human")
 }
 func deploymentConfig(env map[string]string) error {
 	w, s := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
@@ -179,8 +179,14 @@ func deploymentIdentity(t Ticket) error {
 			return errors.New("invalid deployment policy or smoke intent")
 		}
 	}
-	if p == nil || h == nil || p.Version != 1 || p.QueueID != h.QueueID || p.TicketID != t.ID || p.Repository != h.Repository || p.PR != h.PR || p.Head != h.Head || (p.Phase != "merge-intent" && p.Phase != "merged") || (p.Phase == "merged" && !commitID(p.MergeSHA)) || (p.MainUnknown && (p.Main != "" || p.Phase != "merged")) || (!p.MainUnknown && !commitID(p.Main)) {
+	if p == nil || h == nil || p.Version != 1 || p.QueueID != h.QueueID || p.TicketID != t.ID || p.Repository != h.Repository || p.PR != h.PR || p.Head != h.Head || (p.Phase != "merge-intent" && p.Phase != "merged" && !unmergedDeploymentDecision(p)) || (p.Phase == "merged" && !commitID(p.MergeSHA)) || (p.MainUnknown && (p.Main != "" || p.Phase != "merged")) || (!p.MainUnknown && !commitID(p.Main)) {
 		return errors.New("conflicting deployment identity")
 	}
 	return nil
+}
+
+// A merge decision may retain a policy reserved before an unsuccessful squash.
+// It is not evidence that deployment or smoke has started.
+func unmergedDeploymentDecision(p *merge.Progress) bool {
+	return p != nil && (p.Phase == "waiting" || p.Phase == "correction" || p.Phase == "human") && p.MergeSHA == "" && p.Deployment != nil && p.Deployment.State == "pending" && !p.Deployment.SmokeStarted
 }

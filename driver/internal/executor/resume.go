@@ -16,12 +16,14 @@ import (
 // The ticket state directory is the same durable location as brief.md/gate.spec.
 // Persist association before dispatch: an unknown mutation is never a new worker.
 type checkpoint struct {
-	Settled                                 bool
-	Run, Task, Dispatch, Worktree, Baseline string
-	Corrections                             int
-	Pending                                 bool
-	Completed                               bool
-	PendingParent                           string `json:",omitempty"`
+	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
+	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
+	Settled                                      bool
+	Run, Task, Dispatch, Worktree, Baseline      string
+	Corrections                                  int
+	Pending                                      bool
+	Completed                                    bool
+	PendingParent                                string `json:",omitempty"`
 }
 
 func checkpointPath(c Config, t Ticket) string {
@@ -109,9 +111,12 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if cp != nil {
 		result.State.Corrections = cp.Corrections
 	}
-	// A checkpointed dispatch must be reconciled before an existing PR can
-	// authorize handoff, even when worker-start was confirmed.
-	if pr != nil && cp == nil {
+	mergeRepair, repairErr := e.restoreMergeCorrection(ctx, c, t, &cp, &result)
+	if repairErr != nil {
+		return result, repairErr
+	}
+	// Reconcile checkpointed tasks before ordinary PR handoff.
+	if pr != nil && !mergeRepair && cp == nil {
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return result, errors.New("invalid existing PR")
 		}
@@ -140,6 +145,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if err != nil {
 			return result, err
 		}
+	}
+	if mergeRepair && cp.MergeCause != "" && !cp.Pending {
+		return e.execute(ctx, t, cp, result.State.Infra)
 	}
 	if cp != nil && cp.Pending {
 		cp.Completed, cp.Settled = false, false
@@ -184,7 +192,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if !cp.Completed && cp.Task == "" {
 			return result, errors.New("incomplete worker recovery state")
 		}
-		if pr != nil && cp.Completed && cp.Settled {
+		if pr != nil && !mergeRepair && cp.Completed && cp.Settled {
 			// Preserve a validated frozen handoff only after current task
 			// reconciliation. A crash before its first write requires fresh
 			// gate/reviewer evidence through execute, not an endless wait.

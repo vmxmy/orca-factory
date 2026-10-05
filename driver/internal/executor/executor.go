@@ -306,6 +306,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return writeErr
 		}
 		spec = gate
+		if cp.MergeSpec != "" {
+			if err := os.WriteFile(spec, []byte(cp.MergeSpec), 0600); err != nil {
+				return errors.New("cannot restore frozen gate spec")
+			}
+		}
 		brief = rendered
 		if cp.Baseline != "" {
 			baseline = cp.Baseline
@@ -327,6 +332,15 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		return result, err
 	}
 	result.State.Corrections = cp.Corrections
+	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
+	if cp.MergeCause != "" {
+		result.State.Phase = machine.PhaseCorrection
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, transition)
+		if correctionErr != nil || !again {
+			return result, correctionErr
+		}
+		taskID = cp.Task
+	}
 	for {
 		head, failureOutput = "", ""
 		report := &orca.WorkerReport{Outcome: "succeeded"}
@@ -404,6 +418,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		event = machine.EvBranchOK
 		if head == "" || head == baseline {
 			event = machine.EvBranchNo
+		} else if cp.MergeHead != "" && head == cp.MergeHead {
+			return result, errors.New("merge correction requires a new head")
 		} else {
 			err = e.retryRead(ctx, t, &result, "merge-base lookup", func() error {
 				var readErr error
