@@ -496,7 +496,8 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 		}
 		completed := false
 		for _, t := range tasks {
-			if t.ID != task || t.DispatchID != dispatch || (t.RunID != "" && t.RunID != run) {
+			// task-list rows carry no dispatch_id; match on it only when Orca supplies it.
+			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
 				continue
 			}
 			completed = completed || t.Status == "completed"

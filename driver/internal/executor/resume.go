@@ -150,7 +150,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 			return Result{}, errors.New("resume task lookup failed")
 		}
 		for _, task := range tasks {
-			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != cp.Dispatch) {
+			if task.ID != cp.Task || (task.RunID != "" && task.RunID != cp.Run) || (cp.Dispatch != "" && task.DispatchID != "" && task.DispatchID != cp.Dispatch) {
 				continue
 			}
 			report, err := task.WorkerReport()
@@ -158,7 +158,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 				return Result{}, errors.New("resume task result invalid")
 			}
 			if report != nil {
-				cp.Dispatch = task.DispatchID
+				if task.DispatchID != "" {
+					cp.Dispatch = task.DispatchID
+				}
 				cp.Pending = false
 				cp.Settled = true
 				if report.Outcome == "succeeded" {
