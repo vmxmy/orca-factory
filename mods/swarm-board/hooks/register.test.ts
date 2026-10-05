@@ -119,6 +119,33 @@ test('manual refresh button stays available after press', async ($, on) => {
   await ui.unmount()
 })
 
+test('header shows the mod version', async ($, on) => {
+  await automationFixture($, on)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /v\d+\.\d+\.\d+/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('header warns when a newer mod version is already installed', async ($, on) => {
+  let refreshed: () => void = () => {}
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/installed_plugins.json')) {
+      return { value: JSON.stringify({ plugins: { 'swarm-board@orca-factory': [{ version: '99.0.0' }] } }) }
+    }
+    return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
+  })
+  on('process.run', () => ({ value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }))
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /→ 已安装 v99\.0\.0，请重启/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('ticket with no worker lives in the implement lane', async () => {
   const t: Ticket = { id: 'ZII-999', title: '', state: 'started', labels: [], priority: 0, updatedAt: '', claimedAt: '' }
   expect(laneStage(t, [])).toBe(1)

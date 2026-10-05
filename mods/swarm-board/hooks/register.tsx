@@ -33,6 +33,12 @@ export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
 }
 
 const PANE = 'swarm-board'
+// Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
+// path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
+// runtime; keep this literal in lockstep with the manifest when bumping the version.
+const MOD_VERSION = '0.3.11'
+const PLUGIN_ID = 'swarm-board@orca-factory'
+const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
 const REFRESH_MS = 60_000
 const TIMEOUT_MS = 20_000
@@ -130,6 +136,16 @@ const usd = (c?: Cost) => (!c ? '' : !c.known ? 'est. $?' : 'est. $' + c.usd.toF
 const shortModel = (m: string) => m.replace(/^.*\//, '').replace(/^claude-/, '')
 const json = (s: string) => { try { return JSON.parse(s) } catch { return null } }
 const base = (p: string) => p.slice(p.lastIndexOf('/') + 1)
+
+// Semver-ish compare: 0.3.11 > 0.3.9 numerically. Non-numeric tails count as 0.
+const verGT = (a: string, b: string): boolean => {
+  const pa = a.split('.'), pb = b.split('.')
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (Number(pa[i]) || 0) - (Number(pb[i]) || 0)
+    if (d) return d > 0
+  }
+  return false
+}
 
 const addTok = (a: Tokens | undefined, b: Tokens | undefined): Tokens | undefined =>
   !a ? b : !b ? a : { in: a.in + b.in, out: a.out + b.out, cache: a.cache + b.cache }
@@ -341,13 +357,35 @@ async function readLinearUsage($: any, now: number): Promise<LinearUsage> {
   return { known, total: fromFile + board, bySource, board }
 }
 
+// Highest version of this mod listed in `~/.claude/plugins/installed_plugins.json`.
+// Returns '' when the file is missing, unreadable, or has no entry for this plugin.
+async function readInstalledVersion($: any, home: string): Promise<string> {
+  if (!home) return ''
+  try {
+    const data = json(await $.fs.read(home + INSTALLED_PLUGINS_PATH))
+    let max = ''
+    for (const e of (data?.plugins?.[PLUGIN_ID] ?? []) as any[]) {
+      const v = typeof e?.version === 'string' ? e.version : ''
+      if (v && (max === '' || verGT(v, max))) max = v
+    }
+    return max
+  } catch { return '' }
+}
+
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
+  if (!HOME) {
+    try {
+      const r = await $.process.run(['sh', '-c', 'printf %s "$HOME"'], { timeoutMs: TIMEOUT_MS })
+      HOME = r?.exitCode === 0 ? String(r.stdout ?? '').trim() : ''
+    } catch { HOME = '' }
+  }
+  const installedVersion = await readInstalledVersion($, HOME)
   let text = ''
   try { text = await $.fs.read(ENV) } catch {
     const linearUsage = await readLinearUsage($, now)
-    return { ...old, at, coordinatorAlive: undefined, linearUsage, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
+    return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
   const env = parseEnv(text)
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
@@ -378,7 +416,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
-  if (!HOME) HOME = (await run(['sh', '-c', 'printf %s "$HOME"'])).trim()
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   const issuesResp = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--json'])
@@ -644,14 +681,14 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       at, error, maxInFlight, phases: old.phases, coordinatorAlive,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
-      lastPrecheck, nextRunAt, lastRunAt, linearUsage,
+      lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
     }
   }
   return {
     at, error, maxInFlight, phases, coordinatorAlive, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
-    lastPrecheck, nextRunAt, lastRunAt, linearUsage,
+    lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
   }
 }
 
@@ -953,6 +990,13 @@ export const register: Register = on => {
           <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
             ? 'updated ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
             : 'loading…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
+          {(() => {
+            const installed = (b as Board).installedVersion
+            const needsRestart = !!installed && verGT(installed, MOD_VERSION)
+            return <Text dimColor={!needsRestart} color={needsRestart ? 'yellow' : undefined}>
+              {needsRestart ? 'v' + MOD_VERSION + ' → 已安装 v' + installed + '，请重启' : 'v' + MOD_VERSION}
+            </Text>
+          })()}
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
