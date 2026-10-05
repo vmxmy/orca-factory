@@ -10,6 +10,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
@@ -101,7 +102,7 @@ func lane(t *testing.T, gh *fakeGitHub) (*Lane, *fakeOrca, *fakeTickets, *[]stri
 			return nil, nil
 		},
 	}
-	return l, o, tk, git, scheduler.Ticket{ID: "issue_1", Identifier: "ZII-1", Repo: "/repo", Attempt: 1}
+	return l, o, tk, git, scheduler.Ticket{ID: "issue_1", Identifier: "ZII-1", Repo: "/repo", Attempt: 1, Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue}
 }
 
 func openPR() github.PullRequest {

@@ -7,8 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/release"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -46,12 +48,12 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 	if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
 		t.Fatal(err)
 	}
-	// Recover the durable arrival order, even with no feature ticket in this tick.
+	// Restore FIFO, then supply authoritative current merge ownership.
 	restored := *l
 	restored.entries = nil
 	restored.loaded = false
 	l = &restored
-	if err := l.Process(ctx, nil); err != nil {
+	if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
 		t.Fatal(err)
 	}
 	if len(gh.merges) != 0 || pub.tags != 0 {
@@ -76,7 +78,143 @@ func TestReleaseSharesFIFOAndSurvivesRestart(t *testing.T) {
 	if pub.tags != 1 || pub.releases != 1 {
 		t.Fatal("publication repeated")
 	}
+	t.Run("deployment waits across ticks and restart", func(t *testing.T) {
+		gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green()}
+		l, _, _, _, ticket := lane(t, gh)
+		repo := l.Repositories["/repo"]
+		repo.Env["AGENT_DEPLOY_WORKFLOW"], repo.Env["AGENT_SMOKE_CMD"] = "deploy.yml", "./smoke"
+		l.Repositories["/repo"] = repo
+		status, smoke := "in_progress", 0
+		previousExec := l.Exec
+		l.Exec = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+			if s.Path == "gh" {
+				if strings.Join(s.Args, " ") != "api repos/vmxmy/orca-factory/actions/workflows/deploy.yml/runs?head_sha="+sha+"&per_page=100&page=1" || s.Timeout <= 0 {
+					t.Fatalf("deployment command=%+v", s)
+				}
+				return []byte(`{"workflow_runs":[{"id":9,"head_sha":"` + sha + `","status":"` + status + `","conclusion":"success"}]}`), nil
+			}
+			if s.Path == "bash" {
+				if s.Dir != "/repo" || strings.Join(s.Args, " ") != "-lc ./smoke" || s.Timeout <= 0 {
+					t.Fatalf("smoke command=%+v", s)
+				}
+				smoke++
+				return nil, nil
+			}
+			return previousExec(ctx, s)
+		}
+		l.Publisher = &publisher{}
+		if err := l.Admit(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if len(gh.merges) != 1 || smoke != 0 {
+			t.Fatalf("deployment barrier lost: merges=%v smoke=%d", gh.merges, smoke)
+		}
+		restored := *l
+		restored.entries, restored.loaded = nil, false
+		l = &restored
+		if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		if len(gh.merges) != 1 {
+			t.Fatal("restart lost deployment barrier")
+		}
+		status = "completed"
+		if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.Process(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(gh.merges) != 2 || smoke != 1 {
+			t.Fatalf("did not resume after deployment: merges=%v smoke=%d", gh.merges, smoke)
+		}
+	})
+	for _, state := range []string{"missing", "human", "wrong phase", "blocked"} {
+		t.Run("restored "+state, func(t *testing.T) {
+			gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}}
+			l, _, _, _, ticket := lane(t, gh)
+			pub := &publisher{}
+			l.Publisher = pub
+			if err := l.Admit(ctx, []scheduler.Ticket{ticket}); err != nil {
+				t.Fatal(err)
+			}
+			if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+				t.Fatal(err)
+			}
+			restored := *l
+			restored.entries, restored.loaded = nil, false
+			l = &restored
+			gh.runs = green()
+			current := []scheduler.Ticket{ticket}
+			switch state {
+			case "missing":
+				current = nil
+			case "human":
+				current[0].Owner = machine.OwnerHuman
+				current[0].Phase = machine.PhaseHuman
+			case "wrong phase":
+				current[0].Phase = machine.PhaseReview
+			case "blocked":
+				current[0].Blocked = true
+			}
+			_ = l.Process(ctx, current)
+			_ = l.Process(ctx, current)
+			if len(gh.merges) != 0 || pub.tags != 0 || pub.releases != 0 || len(l.entries) != 2 {
+				t.Fatalf("lost ownership barrier: merges=%v tags=%d releases=%d entries=%d", gh.merges, pub.tags, pub.releases, len(l.entries))
+			}
+		})
+	}
+	t.Run("correction stays ahead of release", func(t *testing.T) {
+		gh := &fakeGitHub{prs: []github.PullRequest{feature, rel}, runs: green(), behind: 1}
+		l, _, tk, _, ticket := lane(t, gh)
+		l.Exec = func(context.Context, runx.Spec) ([]byte, error) { return nil, conflictExit{} }
+		l.Publisher = &publisher{}
+		if err := l.Admit(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err != nil {
+			t.Fatal(err)
+		}
+		_ = l.Process(ctx, []scheduler.Ticket{ticket})
+		gh.behind = 0
+		for i := 0; i < 2; i++ {
+			_ = l.Process(ctx, []scheduler.Ticket{ticket})
+		}
+		if len(gh.merges) != 0 || len(l.entries) != 2 || len(tk.escalated) != 1 {
+			t.Fatalf("correction barrier lost: merges=%v entries=%d escalations=%v", gh.merges, len(l.entries), tk.escalated)
+		}
+		if l.entries[0].Request.CatchupRounds != 1 || l.entries[0].Blocked == "" {
+			t.Fatal("correction recovery evidence lost")
+		}
+		// Reaffirmed merge ownership and a corrected head release the same slot.
+		ticket.Attempt++
+		ticket.UpdatedAt = time.Now()
+		gh.prs[0].Head.SHA = main
+		gh.runs = []github.CheckRun{{HeadSHA: main, Status: "completed", Conclusion: "success"}}
+		if err := l.Process(ctx, []scheduler.Ticket{ticket}); err != nil {
+			t.Fatal(err)
+		}
+		if len(gh.merges) != 1 || gh.merges[0] != main {
+			t.Fatal("corrected head did not resume")
+		}
+	})
 }
+
+type conflictExit struct{}
+
+func (conflictExit) Error() string { return "text conflict" }
+func (conflictExit) ExitCode() int { return 1 }
 
 func TestReleaseGateUsesRepositoryGate(t *testing.T) {
 	l, _, _, _, _ := lane(t, &fakeGitHub{})
@@ -115,6 +253,31 @@ func (p *interruptedPublisher) CreateRelease(ctx context.Context, owner, repo st
 	return p.publisher.CreateRelease(ctx, owner, repo, r)
 }
 func TestReleasePublicationRecovery(t *testing.T) {
+	t.Run("save failure has no merge side effects", func(t *testing.T) {
+		ctx := context.Background()
+		pr := openPR()
+		pr.Number = 8
+		gh := &fakeGitHub{prs: []github.PullRequest{pr}, runs: green()}
+		l, _, _, _, _ := lane(t, gh)
+		pub := &publisher{}
+		l.Publisher = pub
+		if err := l.load(); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(filepath.Join(l.Root, "merge-queue.json"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := l.SubmitRelease(ctx, writer{}, merge.Request{Repository: "vmxmy/orca-factory", Path: "/repo"}, release.Plan{Plugin: "demo", Version: "1.0.1"}); err == nil {
+			t.Fatal("save failure hidden")
+		}
+		_ = l.Process(ctx, nil)
+		if len(gh.merges) != 0 || pub.tags != 0 || pub.releases != 0 {
+			t.Fatalf("unsaved release consumed: merges=%v tags=%d releases=%d", gh.merges, pub.tags, pub.releases)
+		}
+		if len(l.entries) != 0 {
+			t.Fatal("save failure accepted an unsaved queue entry")
+		}
+	})
 	ctx := context.Background()
 	pr := openPR()
 	pr.Number = 8
