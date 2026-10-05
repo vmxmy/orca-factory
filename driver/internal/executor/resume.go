@@ -106,7 +106,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (Result, error) {
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
-		receipt, callErr := e.Orca.RunCreate(ctx, orca.RequestID(t.Identifier, c.Unit, "run", 1), t.Identifier+" "+t.Title)
+		receipt, callErr := e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 		if callErr != nil {
 			return Result{}, errors.New("resume run reconciliation failed")
 		}

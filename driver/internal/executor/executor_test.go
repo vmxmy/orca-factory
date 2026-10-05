@@ -19,15 +19,22 @@ import (
 )
 
 type fakeOrca struct {
-	start      orca.StartOptions
-	objective  string
-	releases   int
-	releaseErr error
+	runRequests []string
+	used        []string
+	start       orca.StartOptions
+	objective   string
+	releases    int
+	releaseErr  error
 }
 
-func (f *fakeOrca) RunCreate(_ context.Context, _, objective string) (orca.Receipt, error) {
+func (f *fakeOrca) RunCreate(_ context.Context, request, objective string) (orca.Receipt, error) {
+	f.runRequests = append(f.runRequests, request)
 	f.objective = objective
 	return orca.Receipt{"runId": json.RawMessage(`"run_one"`)}, nil
+}
+func (f *fakeOrca) RunUse(_ context.Context, _, run string) (orca.Receipt, error) {
+	f.used = append(f.used, run)
+	return orca.Receipt{"runId": json.RawMessage(`"` + run + `"`)}, nil
 }
 func (f *fakeOrca) WorkerStart(_ context.Context, _ string, o orca.StartOptions) (orca.Receipt, error) {
 	f.start = o
