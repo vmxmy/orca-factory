@@ -165,10 +165,18 @@ func (s *Scheduler) Tick(ctx context.Context) error {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
 		} else if t.Owner == machine.OwnerExecutor {
-			absent, e1 := s.Backend.TerminalAbsent(ctx, t)
-			inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
-			if e1 != nil || e2 != nil || !absent || !inactive {
-				continue
+			if unregistered(t) {
+				// The claim never gained an executor terminal; after the grace period no
+				// executor exists to provide evidence, so treat the claim as a failed executor.
+				if now.Sub(t.UpdatedAt) < unregisteredGrace {
+					continue
+				}
+			} else {
+				absent, e1 := s.Backend.TerminalAbsent(ctx, t)
+				inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
+				if e1 != nil || e2 != nil || !absent || !inactive {
+					continue
+				}
 			}
 			state := machine.State{Owner: machine.OwnerExecutor, Phase: t.Phase, Attempt: t.Attempt, ExecFailures: max(0, t.Attempt-1)}
 			next, _, stepErr := machine.Step(state, machine.EvTick, machine.DefaultLimits)
@@ -314,3 +322,8 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 		}
 	}
 }
+
+// unregisteredGrace bounds how long a claim may wait for its executor to record a terminal.
+const unregisteredGrace = 3 * time.Minute
+
+func unregistered(t Ticket) bool { return t.Terminal == "-" }

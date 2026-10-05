@@ -271,3 +271,26 @@ func TestBlockedCandidateNotClaimed(t *testing.T) {
 		t.Fatalf("launches=%v", f.launched)
 	}
 }
+
+func TestUnregisteredExecutorRelaunchedAfterGrace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+		want int
+	}{{"within grace", time.Minute, 0}, {"past grace", 5 * time.Minute, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeBackend{terminalErr: errors.New("executor terminal unknown")}
+			s := setup(f)
+			f.tickets = []Ticket{{ID: "ticket", Repo: "a", Owner: machine.OwnerExecutor, Terminal: "-", Run: "-", Attempt: 1, UpdatedAt: s.Now().Add(-tc.age)}}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.launched) != tc.want {
+				t.Fatalf("launches=%v", f.launched)
+			}
+			if tc.want == 1 && f.launched[0].Attempt != 2 {
+				t.Fatal("attempt did not advance")
+			}
+		})
+	}
+}
