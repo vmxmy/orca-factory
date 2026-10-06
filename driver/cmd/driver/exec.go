@@ -37,7 +37,7 @@ func execTicket(args []string) int {
 		}
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		result, err := executor.RunTicket(ctx, id, merging)
+		result, err := executor.RunTicket(runx.WithLogger(ctx, logger), id, merging)
 		if err != nil {
 			return 1, err
 		}

@@ -4,6 +4,7 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
+| GitHub tags 返回数组（name、commit.sha）；compare 返回 base_commit.sha、total_commits 与 commits[].commit.message。2026-10-06 通过 `gh api repos/vmxmy/orca-factory/tags` 和 `gh api repos/vmxmy/orca-factory/compare/swarm-board-v0.3.17...main` 原样录制，基线 b912a73，后续包含 eeb82fd；compare 提交是全仓库历史，生产 Source 以固定 main SHA 的完整 git 历史按插件路径筛选，避免 compare 文件列表截断；测试复用生产 Tag/Comparison 解码结构与 LatestTag 选择 | `github-release-tags.json`、`github-release-compare.json` | `release.TestRecordedReleaseReads` |
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
@@ -20,10 +21,17 @@
 | `terminal send --wait-submit` 的回执 `send.prompt.stages` 含 `turn_started` 才证明 agent 开始了一轮；shell 等提供方只给 `input_accepted`（`observation: unsupported`） | `orca-prompt-receipt-codex-turn-started.json`、`orca-terminal-send-wait-submit-shell.json` | `orca.TestRecordedTerminalSendTurnStarted` |
 | `orca worktree set` 成功回执带 `result.worktree`；选择器不匹配时拒绝码为 `selector_not_found` | `orca-worktree-set.json`、`orca-worktree-set-not-found.json` | `orca.TestRecordedWorktreeSet` |
 | 在已有 worktree 上 `worker-start` 等 agent 就绪可超过 30 秒（实测 38 秒）；驱动器的调用超时必须长于传给 Orca 的 `--timeout-ms` | `request-show` 实测（ZII-897 第 3 次 correction） | `orca.TestCommands`、`orca.TestFailedStartRetry` 断言 `--timeout-ms` |
+| `orca orchestration worker-list` 的 `projection.liveness.verdict` 为 `exited` / `unverifiable`；`unverifiable` 不代表进程死亡；`resource.worktreeId` 形如 `<repoId>::<绝对路径>` | `orca-worker-list-liveness.json`（2026-10-06 从 Run `run_9714ea9b8576` 重录；仅保留契约字段并替换 worktree 路径） | `orca.TestRecordedWorkerListLiveness` |
+| `orca orchestration worker-stop --dispatch` 对未结算的 dispatch 返回 `state: stopped`、`alreadySettled: false`、`processAction: closed_agent_terminal`；停后该 dispatch 在 `worker-list` 里变为 `failed` / `process_stopped` | `orca-worker-stop.json`（真实回执，2026-10-06） | `orca.TestRecordedWorkerStop`、`TestCommands` |
+| Codex 启动崩溃（`account/read failed … workspace routing discovery timed out`）时 worker 的 `stage.detail` 为 `turn_start_unobserved`、`liveness.verdict` 为 `unverifiable`。**尚无录制文件**：2026-10-06 在 ZII-901 现场观察到，停掉后状态已变；下次再现时必须录下并补测试 | — | `executor.TestWaitStopsWorkerThatNeverStarted`（合成值） |
 | Linear `issueUpdate` 移除票上没有的标签时拒绝整个更新（`Label not on issue`，INPUT_ERROR）；`UpdateIssue` 先读当前标签，只加缺少的、只删存在的 | `linear-remove-absent-label.json` | `linear.TestRecordedRemoveAbsentLabel` |
 | 探测额度只需一次 `query { viewer { id } }`：响应头 `x-ratelimit-requests-limit/remaining/reset` 反映当前预算（Reset 是滑动窗口，约为现在加一小时，不是预算回满的时刻）；样本里 viewer id 已替换为全零 | `linear-viewer-probe.json`、`linear-response-headers.txt` | `linear.TestRecordedQuotaProbe`、`scheduler.TestQuotaPauseProbesWithoutSnapshotAndResumesWithHysteresis` |
 | GitHub PR：`state`、`merged`、`mergeable_state`（合并后为 `unknown`）、`merge_commit_sha`（squash 后即 main 上的提交）；`compare/<base>...<head>` 的 `behind_by`、`merge_base_commit.sha` 与 `files`（最多 300，不标截断）；本仓库 CI 只有 GitGuardian 一个 check-run，旧式 commit status 为空且显示 `pending`，CI 只看 check-runs | `github-pr-open-clean.json`、`github-pr-merged.json`、`github-compare-*.json`、`github-commit-main.json`、`github-check-runs-gitguardian.json` | `github.TestRecordedMergeLaneReads`，`driver selftest --live` |
 | squash 时 `sha` 与 PR head 不符返回 409 `Head branch was modified`，不合并；草稿 PR 返回 405 | `github-merge-head-modified-409.json` | `github.TestRecordedMergeHeadModified` |
+| Claude 会话每条 `assistant` 记录带 `sessionId`、`cwd`、`message.id`、`message.model`、`message.usage`（`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`，含 `cache_creation.ephemeral_5m/1h_input_tokens`）；同一 API 消息会在多条记录里重复出现，按 `message.id` 只计一次 | `claude-session-assistant.jsonl` | `usage.TestRecordedSessionFormats` |
+| Claude 子代理的转录在 `<session>/subagents/agent-*.jsonl`，`sessionId` 与父会话相同，`isSidechain` 为真，`cwd` 为子代理所在目录 | `claude-session-assistant.jsonl`（第 2 行） | `usage.TestRecordedSessionFormats`、`usage.TestCollectCountsSubagentTranscripts` |
+| Codex rollout 以 `session_meta`（`payload.id`、`payload.cwd`）开头，`turn_context` 给 `payload.model`，`token_count` 的 `total_token_usage` 按会话累计（含 `cached_input_tokens`、`cache_write_input_tokens`、`reasoning_output_tokens`），一个会话只计一次；`input_tokens` 含缓存读写，需先减去 | `codex-session-token-count.jsonl` | `usage.TestRecordedSessionFormats` |
+| 价格表里没有的模型按 `unknown` 记录，不估价 | — | `usage.TestCollect` |
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
@@ -73,3 +81,30 @@
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
 验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。
+
+## `driver usage` 会话用量
+
+`driver usage <票号> --json` 的 JSON 保留账本使用的 `TicketUsage` 字段（`input`、`output`、`cache_read`、`cache_write`、`reasoning`、`cost_usd`、`ticket`、`by_role`、`by_model`、`price_version`、`apportioned`），新增 `items`、`skipped`；汇总 token 为整数，分项保留均分后的小数。`items` 按角色、模型和 `apportioned` 分项；每项含 `role`、`model`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`cache_write_tokens`、`cache_write_hour_tokens`、`reasoning_tokens`、`cost_usd`、`unknown_model`、`apportioned`。金额是内嵌 `prices.json` 对应版本的标准 API 美元估算，不含订阅、工具和服务等级附加费；未知模型金额为 0，且 `unknown_model=true`。
+
+Claude 读取 assistant 的 `message.usage` 并累加不同消息；同一消息 ID 的流式快照保留最后值。Codex 对相邻有效 `event_msg.payload.type=token_count` 的 `info.total_token_usage` 累计计数求差，将每段新增用量归到当时 `turn_context.payload.model`；重复快照（含模型切换后的重放）不增加用量，同一模型的多段合并，合计仍等于最终累计值。每段缓存读写从输入中扣除后单列，reasoning 必须是该段 output 的子集且不重复计费；计数回退或分段计数无效时整文件记入 skipped，不产生负数或重复费用。会话归属固定使用 session_meta 的 cwd，后续 turn_context 不改变累计用量归属。样例为 `usage-claude-session.jsonl`、`usage-codex-session.jsonl`、`usage-corrupt.jsonl`；字段对照本机真实会话，内容已脱敏。
+
+会话 cwd 等于单元 worktree 或位于其子目录时归属该单元；使用 `filepath.Rel` 排除相似前缀目录。Codex 的单元会话记 `worker`，Claude 记 `session`。只有显式 `--reviewer-worktree <绝对路径>` 内的 Claude 会话记 `reviewer`，不自动发现 reviewer。多个目录嵌套时使用最接近 cwd 的目录。
+
+coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路径>`、`--coordinator-session <提供方会话号>`、`--claimed-ticket-count <本次运行领取票数>`，仅匹配该目录和会话号的会话按领取票数均分，且 `apportioned=true`；未指定时只统计单元和显式 reviewer。读取只用只读打开与流式读行，超过 64KB 的行照常处理；某文件打开、读取、关闭或解析失败就舍弃该文件的全部用量，在 `skipped` 中给出 `path` 和 `error`，其他文件继续。结果仅写 stdout，不落盘。
+
+`usage.Collect(ctx, ticket, worktrees, attribution...)` 保留既有调用签名与账本契约，最后一个可选 `Options` 仅补充 reviewer/coordinator 归属和会话根目录；不再保留旧 `CollectItems` 路径。
+
+命令在当前仓库执行 `git worktree list --porcelain -z`，按 NUL 分隔读取 `worktree <路径>` 字段，保留路径中的空格、换行与非 ASCII 字符，仅选目录名以 `<票号>-` 开头的单元 worktree（例如 `ZII-894-executor`）；沿用命令的 30 秒 context 超时，不依赖 Orca API。Git 枚举失败时保留错误原因并退出 1；没有匹配且未显式指定 reviewer/coordinator 时返回带票号、价格版本和空分项的结果。`TestDiscoverUsageWorktrees` 使用临时 Git 仓库及两个不同票号的 worktree 验证筛选，JSON 命令测试继续注入 worktree 列表验证输出协议。
+## 外部调用日志（ZII-900）
+
+- `runx.WithLogger(ctx, logger)` 向 runx、Linear、GitHub、Orca 传递可选 logger；所有记录经过 `logx` 脱敏处理器。未传或传 nil 时静默，日志写失败不改变调用结果。serve（非 dry-run）与 exec 将已有日志 sink 接入 context。执行器自身的初始化错误、状态转移、恢复与外部步骤事件也复用该 sink，带票号写入 executor.log，供 driver logs 读取；没有 context logger 时继续使用执行器 Stderr（默认 os.Stderr）。
+- runx 每次记录 executable、脱敏 args、exit_code、duration、stderr（脱敏后最多 2048 字节，UTF-8 完整）与 timed_out；成功也记录 stderr，启动失败为 -1。诊断采集保留最多首尾各 32 KiB，与 exec.Output 的退出错误诊断保持一致；Orca 同时记录进程诊断与业务回执。
+- 自由文本选项（含 Claude -p/--print prompt，以及 objective/spec/setup/text/comment/command/body/title）、凭据选项、Authorization 头及 URL 用户信息不写入日志。带 -p/--print prompt 的命令，其 stderr 日志整体脱敏，防止大 prompt 被截断或仅回显片段后泄漏；返回给调用方的原始诊断不变，退出码和耗时仍记录。Linear 不记录查询正文、变量或授权头；记录 operation/status/duration/X-Complexity/X-RateLimit-Requests-Remaining，RATELIMITED 为 WARN。GitHub 记录接口（去除 query）、状态、耗时及 X-GitHub-Request-Id；Orca 写操作使用重试 UUID，读操作使用回执 id。
+- 敏感参数的值在其他参数或 stderr 中重复出现时同样替换为 `[REDACTED]`；`runx.TestExternalCallLogRepeatedCredential` 重放 `git-stderr-auth-failure.txt`，验证失败退出码、录制诊断与重复凭据脱敏。
+- `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
+- 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
+## 自动发布的持久回执
+
+仅 live `driver serve` 在获得单例锁后启用发布；dry-run 不创建发布适配器。每轮已获准的仓库巡检结束后扫描，发布计划先写入 `~/.local/state/orca-factory/releases/<仓库名 SHA-256>.json`，记录入队时间、固定 main、文件字节、PR、合并 SHA 和完成状态。功能 PR 与发布 PR 在同一仓库按持久入队时间选出唯一队首，再复用 `internal/merge` 合并。
+
+重启先恢复同一发布分支与 PR，已确认的合并不重做；tag 和 release 写入失败通过读取远端回执恢复。发布只改 manifest 版本、存在时的 `MOD_VERSION` 和 CHANGELOG。等待期间插件源码变化、发布分支被改写、tag 指向冲突、追赶预算耗尽或 smoke 结果不确定时保留队首并报告错误，需要人工核对后恢复；不得删除状态来绕过这些阻塞。部署/冒烟未确认通过前不放行后续 PR。

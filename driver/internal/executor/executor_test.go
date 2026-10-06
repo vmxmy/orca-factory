@@ -267,3 +267,10 @@ func (*fakeOrca) TerminalList(context.Context) ([]orca.Terminal, error) { return
 func (*fakeOrca) TerminalSend(context.Context, string, string) (orca.Receipt, error) {
 	return nil, nil
 }
+
+func (f *fakeOrca) Workers(context.Context, orca.ListOptions) ([]orca.Worker, error) {
+	return nil, nil
+}
+func (f *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
+	panic("unexpected worker-stop")
+}

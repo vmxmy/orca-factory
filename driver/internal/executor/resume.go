@@ -64,10 +64,19 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 // Start reconciles remote evidence before Execute. Execute remains the explicit
 // new-claim entry point for callers that already performed reconciliation.
 func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
+	e = e.withLog(ctx)
+	phase := machine.PhaseUnclaimed
+	delegated := false
 	result.State = machine.Initial()
 	defer func() {
 		if errors.Is(err, errBudgetExhausted) {
 			err = nil
+		}
+		if !delegated {
+			if result.State.Phase != machine.PhaseUnclaimed {
+				phase = result.State.Phase
+			}
+			e.logError(phase, err)
 		}
 	}()
 
@@ -105,6 +114,14 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		return result, err
 	}
 	cp, err := readCheckpoint(c, t)
+	e.recoverySnapshot(ctx, t, cp)
+	if cp != nil {
+		if cp.Completed {
+			phase = machine.PhaseBranchCheck
+		} else if cp.Task != "" || cp.Pending {
+			phase = machine.PhaseWorker
+		}
+	}
 	if err != nil {
 		return result, err
 	}
@@ -136,6 +153,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if pr.Number <= 0 || pr.HTMLURL == "" {
 			return result, errors.New("invalid existing PR")
 		}
+		e.recoveryPath(cp, "existing-pr")
 		return e.resumeMergeHandoff(ctx, c, t, *pr, head, nil, result)
 	}
 	if cp == nil {
@@ -151,7 +169,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		var tasks []orca.Task
 		callErr = e.retryRead(ctx, t, &result, "resume old task lookup", func() error {
 			var readErr error
-			tasks, readErr = e.Orca.TaskList(ctx, run)
+			tasks, readErr = e.taskList(ctx, run)
 			return readErr
 		})
 		if callErr != nil {
@@ -163,6 +181,8 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		}
 	}
 	if mergeRepair && cp.MergeCause != "" && !cp.Pending {
+		e.recoveryPath(cp, recoveryWorkerPath(cp))
+		delegated = true
 		return e.execute(ctx, t, cp, result.State.Infra)
 	}
 	if cp != nil && cp.Pending {
@@ -191,7 +211,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			var tasks []orca.Task
 			err = e.retryRead(ctx, t, &result, "resume task lookup", func() error {
 				var readErr error
-				tasks, readErr = e.Orca.TaskList(ctx, cp.Run)
+				tasks, readErr = e.taskList(ctx, cp.Run)
 				return readErr
 			})
 			if err != nil {
@@ -214,6 +234,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			// gate/reviewer evidence through execute, not an endless wait.
 			resumed, resumeErr := e.resumeMergeHandoff(ctx, c, t, *pr, head, cp, result)
 			if !errors.Is(resumeErr, errMissingMergeHandoff) {
+				e.recoveryPath(cp, "existing-pr")
 				return resumed, resumeErr
 			}
 		}
@@ -223,8 +244,12 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if err := saveCheckpoint(c, t, *cp); err != nil {
 			return result, err
 		}
+		e.recoveryPath(cp, recoveryWorkerPath(cp))
+		delegated = true
 		return e.execute(ctx, t, cp, result.State.Infra)
 	}
+	e.recoveryPath(cp, "new-worker")
+	delegated = true
 	return e.execute(ctx, t, nil, result.State.Infra)
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {

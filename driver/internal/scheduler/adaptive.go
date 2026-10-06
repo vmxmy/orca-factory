@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"time"
 )
 
@@ -124,11 +125,27 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 }
 func (r *Runtime) LinearLimits() []linear.RateLimit {
 	var limits []linear.RateLimit
-	for _, client := range r.Clients {
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	usageView := status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}
+	seen := map[LinearClient]bool{}
+	for repo, client := range r.Clients {
 		if source, ok := client.(interface{ Usage() linear.Usage }); ok {
 			usage := source.Usage()
+			if !seen[client] {
+				usageView.Requests += usage.Requests
+				usageView.Complexity += usage.Complexity
+				seen[client] = true
+			}
+			convert := func(l linear.RateLimit) status.RateLimit {
+				return status.RateLimit{Limit: l.Limit, Remaining: l.Remaining, Reset: l.Reset}
+			}
+			usageView.Limits = append(usageView.Limits, status.ClientLimits{Repo: repo, Requests: convert(usage.RequestLimit), Complexity: convert(usage.ComplexityLimit)})
 			limits = append(limits, usage.RequestLimit, usage.ComplexityLimit)
 		}
 	}
+	status.Push(now, func(view *status.View) { view.Linear = usageView })
 	return limits
 }

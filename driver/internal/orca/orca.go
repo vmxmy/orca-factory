@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,22 @@ func RequestID(ticket, unit, step string, attempt int) string {
 func invalid(message string) error { return &infra.Ticket{Err: errors.New(message)} }
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
+	started := time.Now()
+	command := strings.Join(args[:min(2, len(args))], " ")
+	request, result := "", "runtime_error"
+	for i := 2; i+1 < len(args); i++ {
+		if args[i] == "--retry-request" {
+			request = args[i+1]
+		}
+	}
+	defer func() {
+		level := slog.LevelInfo
+		if result != "ok" {
+			level = slog.LevelWarn
+		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "Orca call", "command", command, "result", result,
+			"duration", time.Since(started), "request_id", request)
+	}()
 	path := c.Path
 	if path == "" {
 		var err error
@@ -67,6 +84,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
+	// runx redacts free-text arguments and records process diagnostics.
 	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
@@ -75,6 +93,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
+		ID     string  `json:"id"`
 		OK     *bool   `json:"ok"`
 		Result Receipt `json:"result"`
 		Error  *struct {
@@ -86,8 +105,14 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
 	}
+	if request == "" && validUUID(envelope.ID) {
+		request = envelope.ID
+	}
 	if !*envelope.OK {
 		if envelope.Error != nil {
+			if validCode(envelope.Error.Code) {
+				result = envelope.Error.Code
+			}
 			if envelope.Result == nil {
 				envelope.Result = envelope.Error.Data
 			}
@@ -108,6 +133,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if envelope.Result == nil {
 		return nil, invalid("missing orca result")
 	}
+	result = "ok"
 	return envelope.Result, nil
 }
 
@@ -286,6 +312,64 @@ type ListOptions struct {
 	IncludeRemote              bool
 }
 
+// Worker is the fleet projection, not the terminal's PTY observation.
+// Unverifiable means unknown, never proof of process exit.
+type Worker struct {
+	DispatchID          string `json:"dispatchId"`
+	DispatchStatus      string `json:"dispatchStatus"`
+	AgentTerminalHandle string `json:"agentTerminalHandle"`
+	Resource            struct {
+		WorktreeID string `json:"worktreeId"`
+	} `json:"resource"`
+	Projection struct {
+		Liveness struct {
+			Verdict string `json:"verdict"`
+			Reason  string `json:"reason"`
+		} `json:"liveness"`
+		Stage struct {
+			Worker string `json:"worker"`
+			Detail string `json:"detail"`
+		} `json:"stage"`
+	} `json:"projection"`
+}
+
+func (w Worker) WorktreePath() string {
+	_, path, ok := strings.Cut(w.Resource.WorktreeID, "::")
+	if !ok || !filepath.IsAbs(path) {
+		return ""
+	}
+	return path
+}
+
+// Workers decodes fleet rows while preserving WorkerList receipts for scheduler callers.
+func (c *Client) Workers(ctx context.Context, o ListOptions) ([]Worker, error) {
+	var workers []Worker
+	seen := map[string]bool{o.Cursor: true}
+	for {
+		receipt, err := c.WorkerList(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		var rows []Worker
+		var page struct {
+			HasMore    bool   `json:"hasMore"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if json.Unmarshal(receipt["workers"], &rows) != nil || json.Unmarshal(receipt["page"], &page) != nil {
+			return nil, invalid("invalid worker list")
+		}
+		workers = append(workers, rows...)
+		if !page.HasMore {
+			return workers, nil
+		}
+		if page.NextCursor == "" || seen[page.NextCursor] {
+			return nil, invalid("invalid worker cursor")
+		}
+		o.Cursor = page.NextCursor
+		seen[o.Cursor] = true
+	}
+}
+
 func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error) {
 	args := []string{"orchestration", "worker-list"}
 	args = add(args, "--run", o.Run)
@@ -299,6 +383,10 @@ func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error)
 	}
 	return c.call(ctx, args)
 }
+func (c *Client) WorkerStop(ctx context.Context, request, dispatch string) (Receipt, error) {
+	return c.mutate(ctx, request, []string{"orchestration", "worker-stop", "--dispatch", dispatch})
+}
+
 func (c *Client) WorkerRelease(ctx context.Context, request, dispatch string) (Receipt, error) {
 	return c.mutate(ctx, request, []string{"orchestration", "worker-release", "--dispatch", dispatch})
 }
