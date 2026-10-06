@@ -7,7 +7,7 @@ import { renderFailures } from './views/failures'
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; issueBackend?: string; issueRepo?: string }
 
 type DriverLimit = { remaining: number; reset: string }
 type DriverStatus = { state: 'unknown' | 'stale' } | {
@@ -173,6 +173,7 @@ const parseEnv = (text: string): Record<string, string> =>
 
 const ticket = (i: any): Ticket => ({
   id: i.identifier, title: i.title ?? '', state: i.state?.type ?? '',
+  url: i.url, number: i.number, owner: i.owner,
   labels: (i.labels ?? []).map((l: any) => l.name), priority: i.priority ?? 0, updatedAt: i.updatedAt ?? '', claimedAt: '',
 })
 
@@ -211,6 +212,8 @@ const addCost = (a: Cost | undefined, b: Cost | undefined): Cost | undefined =>
 // ---- ledger stats cache + Linear hourly usage ----------------------------------------------------
 // Ledger stats triggers Linear reads (list-issues + per-ticket comments). Caching it for ten minutes
 // keeps the open board under the Linear hourly budget; the refresh button never busts this cache.
+const githubDetails = new Map<string, { at: number; updatedAt: string; issue: any }>()
+let githubCache: { at: number; repo: string; response: OrcaResult } | null = null
 let ledgerCache: { at: number; stats: string[] } | null = null
 // Timestamps (ms) of every `orca linear …` call the board itself just made, trimmed to the last hour.
 const boardLinearCalls: number[] = []
@@ -223,6 +226,8 @@ let usageCache: { key: string; rows: Row[] } | null = null
 // Test-only reset for module-level caches so each test case starts clean.
 export const __resetSwarmBoardCachesForTests = () => {
   ledgerCache = null
+  githubCache = null
+  githubDetails.clear()
   boardLinearCalls.length = 0
   HOME = ''
   TMP_DIR = ''
@@ -500,12 +505,24 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
   const env = parseEnv(text)
+  const issueBackend = env.AGENT_ISSUE_BACKEND || 'linear'
+  const issueRepo = env.AGENT_GH_REPO || ''
+  if (issueBackend !== 'linear' && issueBackend !== 'github') {
+    return { ...empty, at, issueBackend, issueRepo, error: '未知执行账本配置' }
+  }
+  const github = issueBackend === 'github'
+  if (old.issueBackend && (old.issueBackend !== issueBackend || old.issueRepo !== issueRepo)) {
+    old = { ...empty }
+    handoffs.clear()
+    ledgerCache = null
+    lastLinearFallbackAt = 0
+  }
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
   let snapshot: Snapshot | null = null
   try {
-    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
+    const parsed = github ? null : json(await $.fs.read(SNAPSHOT_FILE))
     if (parsed && typeof parsed === 'object'
         && Number.isFinite((parsed as any).generatedAt)
         && Array.isArray((parsed as any).issues)
@@ -513,9 +530,9 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       snapshot = parsed as Snapshot
     }
   } catch { /* missing or unreadable snapshot */ }
-  const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
+  let snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
-  const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
+  const linearThrottled = !github && !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
   // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
@@ -551,7 +568,20 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // (b) throttled — skip Linear, treat as a soft failure so the old board carries over;
   // (c) live — call list-issues, remember the attempt timestamp so later refreshes throttle.
   let issuesResp: OrcaResult
-  if (useSnapshot) {
+  if (github) {
+    if (githubCache?.repo === issueRepo && now - githubCache.at < 300_000) {
+      issuesResp = githubCache.response
+    } else {
+      issuesResp = await runOrca(['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'list-issues', '--json'])
+      githubCache = { at: now, repo: issueRepo, response: issuesResp }
+    }
+    snapshotAgeMs = Math.max(0, now - githubCache.at)
+    if (issuesResp.data?.result?.complete !== true || !Array.isArray(issuesResp.data?.result?.issues)
+        || !issuesResp.data.result.issues.every((i: any) => i.complete === true && typeof i.identifier === 'string'
+          && Array.isArray(i.labels) && Array.isArray(i.comments) && Array.isArray(i.blockedBy))) {
+      issuesResp = { ok: false, data: null }
+    }
+  } else if (useSnapshot) {
     issuesResp = { ok: true, data: { result: { issues: snapshot!.issues } } }
   } else if (linearThrottled) {
     issuesResp = { ok: false, data: null }
@@ -561,7 +591,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const linearOk = issuesResp.ok
   const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
-  const error = linearOk || linearThrottled ? '' : 'Linear 限流，沿用旧数据'
+  let error = linearOk || linearThrottled ? '' : github ? 'GitHub 数据不可用或不完整，沿用旧数据' : 'Linear 限流，沿用旧数据'
   const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
@@ -569,6 +599,31 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const readComments = async (id: string) => {
     const cached = commentsByTicket.get(id)
     if (cached) return cached
+    if (github) {
+      const summary = issuesResp.data?.result?.issues?.find((i: any) => i.identifier === id)
+      const key = issueRepo + ':' + id
+      const saved = githubDetails.get(key)
+      const updatedAt = summary?.nativeUpdatedAt ?? summary?.updatedAt ?? ''
+      let detail = summary?.commentsComplete === true ? summary : undefined
+      if (!detail && saved && saved.updatedAt === updatedAt && now - saved.at < 300_000) detail = saved.issue
+      if (!detail) {
+        const response = await runOrca(['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'issue', id, '--comments', '--json'])
+        const value = response.data?.result?.issue
+        if (response.ok && value?.identifier === id && value.complete === true
+            && value.commentsComplete === true && Array.isArray(value.comments)) {
+          detail = value
+          githubDetails.set(key, { at: now, updatedAt, issue: value })
+        } else {
+          error = 'GitHub 评论不可用或不完整，沿用旧数据'
+          detail = saved?.issue
+        }
+      }
+      const row = all.find(t => t.id === id)
+      if (row && detail) row.owner = detail.owner
+      const fetched = detail?.comments ?? []
+      commentsByTicket.set(id, fetched)
+      return fetched
+    }
     if (useSnapshot) {
       const fetched = snapshot!.comments[id] ?? []
       commentsByTicket.set(id, fetched)
@@ -586,6 +641,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     .map(t => ({ ...t, handoff: handoffs.get(t.id) }))
   for (const t of failed.slice(0, 3)) {
     const comments = await readComments(t.id)
+    if (github) t.owner = all.find(row => row.id === t.id)?.owner
     const handoff = comments.filter(c => String(c.body).trim().startsWith('转人:'))
       .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
     if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
@@ -676,9 +732,13 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const cardByIssue = new Map<string, WorktreeCard>()
   if (worktreeResp.ok) {
     for (const w of worktreeResp.data?.result?.worktrees ?? []) {
-      if (!w.linkedLinearIssue || !w.path) continue
+      if (!w.path) continue
+      const identity = w.linkedLinearIssue || (github ? all.find(t =>
+        String(w.comment || '').split(/\s+/).includes('issue:' + t.id)
+        || base(w.path) === t.id || base(w.path).startsWith(t.id + '-'))?.id : undefined)
+      if (!identity) continue
       const card: WorktreeCard = { path: w.path, workspaceStatus: w.workspaceStatus ?? '', comment: w.comment ?? '' }
-      if (!cardByIssue.has(w.linkedLinearIssue)) cardByIssue.set(w.linkedLinearIssue, card)
+      if (!cardByIssue.has(identity)) cardByIssue.set(identity, card)
     }
   }
   const runFor = (id: string) => orcaRuns.filter(x => (x.objective ?? '').includes(id)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
@@ -820,7 +880,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
 
-  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
+  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted' && (!github || !has(t, 'auto-failed'))).sort((a, b) => (a.priority || 9) - (b.priority || 9))
   // state.type per identifier, used to badge dependency-chain nodes. Only populate on a
   // successful Linear read; a failed refresh carries forward the previous map.
   const issueStates: Record<string, string> = linearOk
@@ -828,15 +888,22 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     : ((old as Board).issueStates ?? {})
 
   // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
-  const lastSuccessAt = linearOk ? now : old.lastSuccessAt
+  const lastSuccessAt = linearOk ? (github ? githubCache?.at ?? now : now) : old.lastSuccessAt
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
-  const linearUsage = await readLinearUsage($, now)
+  const linearUsage = github ? undefined : await readLinearUsage($, now)
   // Snapshot-fed refreshes carry the snapshot's blockedBy map; live refreshes keep the last
   // one we saw so the queue cards do not blink into an "unknown" state between snapshots.
-  const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
+  const blockedBy = github && linearOk
+    ? Object.fromEntries(issuesResp.data.result.issues.map((i: any) => [i.identifier, i.blockedBy.map((b: any) => b.identifier)]))
+    : useSnapshot ? snapshot!.blockedBy : old.blockedBy
+  if (github && linearOk) {
+    for (const i of issuesResp.data.result.issues) for (const blocker of i.blockedBy) {
+      if (blocker.state?.type) issueStates[blocker.identifier] = blocker.state.type
+    }
+  }
   if (!linearOk) {
     return {
-      at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
+      at, error, issueBackend, issueRepo, maxInFlight, phases: old.phases, coordinatorAlive, driver,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -844,7 +911,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
   return {
-    at, error, maxInFlight, phases, coordinatorAlive, driver, inFlight, queue, failed, doneToday, prs,
+    at, error, issueBackend, issueRepo, maxInFlight, phases, coordinatorAlive, driver, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -931,6 +998,7 @@ export const register: Register = on => {
   // mutate `lastLinearFallbackAt` directly; it has to run inside the VM.
   on('command.run', { command: RESET_LINEAR_THROTTLE_COMMAND }, async () => {
     lastLinearFallbackAt = 0
+    githubCache = null
     return { text: 'swarm throttle reset.' }
   })
 
@@ -975,6 +1043,11 @@ export const register: Register = on => {
         </Box>
       ) : lines[0] ? <Text color="yellow">{lines[0]}</Text> : null
     }
+    const issueLink = (t: Ticket) => b.issueBackend === 'github' && t.number && t.url
+      ? <Button key={'issue-' + t.id} plain label={'GitHub #' + t.number} onPress={async () => {
+          const result = await $.process.run(['gh', 'issue', 'view', String(t.number), '--repo', b.issueRepo || '', '--web'], { timeoutMs: TIMEOUT_MS })
+          if (result.exitCode !== 0) await $.ui.status({ text: '无法打开 GitHub 票据' })
+        }} /> : null
     const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
     // A ticket that already lives in 需要人 does not also appear in the in-flight lanes; lane counts match that dedup.
     const failedIds = new Set(b.failed.map(t => t.id))
@@ -999,7 +1072,7 @@ export const register: Register = on => {
     const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
       const v = blockedBy?.[id]
-      const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed') : []
+      const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed' && issueStates?.[x] !== 'canceled') : []
       return open.length > 0 ? open : undefined
     }
     // Group-aware ticket classification: 等依赖 wins over claimable; precheck signals follow.
@@ -1115,6 +1188,8 @@ export const register: Register = on => {
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
+          {issueLink(t)}
+          {t.owner ? <Text dimColor>{'归属: ' + t.owner}</Text> : null}
           {phaseLine(t)}
           <Text>{cutW(t.title, w)}</Text>
           {l.title === '需要人' ? handoffText(t) : null}
@@ -1148,6 +1223,8 @@ export const register: Register = on => {
         <Box key={'ql-' + group + '-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={color}>{padW(cutW(head, w), w)}</Text>
           <Text>{cutW(t.title, w)}</Text>
+          {issueLink(t)}
+          {t.owner ? <Text dimColor>{'归属: ' + t.owner}</Text> : null}
           {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
         </Box>
       )
@@ -1307,7 +1384,7 @@ export const register: Register = on => {
     }
     const driverBadge = () => {
       const driver = b.driver
-      if (!driver) return null
+      if (!driver || b.issueBackend === 'github') return null
       if (driver.state !== 'ok') return <Text dimColor>驱动器 Linear {driver.state === 'unknown' ? '未知' : '状态过期'}</Text>
       const usage = driver.linear
       const limits = usage.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset

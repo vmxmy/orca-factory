@@ -50,6 +50,9 @@ export type Ticket = {
   id: string; title: string; state: string; labels: string[]; priority: number; updatedAt: string
   /** When the coordinator posted the "已领取" comment; empty when not found. */
   claimedAt: string
+  url?: string
+  number?: number
+  owner?: string
   pr?: number
   gate?: Gate
   tokens?: Tokens

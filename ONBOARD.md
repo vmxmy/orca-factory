@@ -6,18 +6,20 @@
 
 ## 0. 前置检查
 
-先在 `$FACTORY` 运行 `bin/orca-factory doctor --json`，把实际输出整理成下面的检测表展示给用户，再展示推荐方案；不要输出密钥或读取密钥文件。
+先确定后端：新接入用 `AGENT_ISSUE_BACKEND=github`；更新已接入仓库时从现有 profile 读取，缺省视为 `linear`。本次是账本迁移则先读 [账本选择与切换](docs/agents/ISSUE-BACKEND.md)，已有票和预算验证完成前保持原 profile。下文 Linear 步骤仅限 legacy 分支，GitHub 分支完全跳过这些探测。
+
+先在 `$FACTORY` 运行 `AGENT_ISSUE_BACKEND=<已选择后端> bin/orca-factory doctor --json`，把实际输出整理成下面的检测表展示给用户，再展示推荐方案；不要输出密钥或读取密钥文件。
 
 | 检测项 | JSON 字段 | 展示内容 |
 | --- | --- | --- |
 | 工具 | `tools` 中各工具的 `present` | orca、gh、jq、git、codex、claude、lark-cli 是否安装 |
 | Orca | `tools.orca.version`、`tools.orca.ready` | 版本、运行状态 |
 | GitHub | `tools.gh.logged_in`、`tools.gh.scopes` | 登录状态、权限范围 |
-| Linear | `linear.api_key_present`、`linear.team_keys` | key 是否存在（仅布尔值）、可访问的 team |
+| 仅 Linear 模式 | `linear.api_key_present`、`linear.team_keys` | key 是否存在（仅布尔值）、可访问的 team |
 | 飞书 | `feishu.profiles`、`feishu.logged_in` | 每个 profile 的 `name`、`appId`、`active`，以及是否检测到已登录用户 |
 | 推荐与缺项 | `recommendation.profile`、`recommendation.reasons`、`recommendation.missing`、`errors` | A/B 推荐、理由、缺项与探测错误 |
 
-把 `recommendation.profile` 映射为 `A 全部用 Linear` 或 `B Linear + 飞书`，在第 3 步标为推荐值。doctor 当前在检测到任意飞书 profile 时推荐 B，否则推荐 A；这不代表固定名 `orca-factory` 已存在，也不代表它已登录。`feishu.logged_in` 是所有 profile 的汇总，B 的身份状态要单独核实。探测有错误时先说明不确定项，不把失败当作「没有配置」而重复创建。
+把 `recommendation.profile` 映射为 `A 仅所选账本` 或 `B 所选账本 + 飞书`，在第 3 步标为推荐值。doctor 当前在检测到任意飞书 profile 时推荐 B，否则推荐 A；这不代表固定名 `orca-factory` 已存在，也不代表它已登录。`feishu.logged_in` 是所有 profile 的汇总，B 的身份状态要单独核实。探测有错误时先说明不确定项，不把失败当作「没有配置」而重复创建。
 
 doctor 只检测，不代替下表验收；退出 0 也不代表前置条件全部满足。飞书缺项只在选择 B 时补齐，不阻塞 A。保留并逐条执行以下前置检查，任一失败就停下并告诉用户补法。
 
@@ -27,7 +29,7 @@ doctor 只检测，不代替下表验收；退出 0 也不代表前置条件全�
 | gh 登录 | `gh auth status` | Logged in，且能 `gh api repos/<owner>/<repo> -q .full_name` | `gh auth login` |
 | Orca 运行 | `orca status --json \| jq -e '.ok == true'` | 退出 0 | 打开 Orca 应用，或 `orca open` |
 | 仓库已注册 | `orca repo list --json \| jq -r '.result.repos[].path'` 包含 `$REPO` | 路径出现 | `orca repo add <path>`（见 `orca repo add --help`），或在 Orca 里 Add project |
-| Linear 已连接 | `orca linear team list --json \| jq -e '.result.teams \| length > 0'` | 退出 0 | Orca Settings → Integrations 连接 Linear |
+| 仅 Linear 模式：已连接 | `orca linear team list --json \| jq -e '.result.teams \| length > 0'` | 退出 0 | Orca Settings → Integrations 连接 Linear |
 | 远端与 main | `git -C $REPO remote get-url origin`；`git -C $REPO fetch origin main` | 是 GitHub 仓库，`origin/main` 存在 | 默认分支不是 main 时告诉用户：core 脚本固定用 `origin/main`（gate.sh 的 `GATE_BASE`、install.sh 的 precheck），需要用户先改默认分支或接受这一限制 |
 
 另外提醒用户两件 CLI 查不到的事（不阻塞，第 6 步再提一次）：Orca Settings → Agents 里 claude 的默认参数要带模型（coordinator 的模型只能在这里设，且是全局的——对本机所有 claude 工人生效；worker 的模型按档位在 `agent-graph.env` 的 `AGENT_TIER_*` 里设，reviewer 在 `AGENT_ROLE_REVIEWER_CMD` 里设，不要写进 Orca）；Orca 里该仓库的 setup 脚本要能在新 worktree 装依赖（`orca` CLI 不能设置它，见第 6 步第 8 条）。
@@ -73,7 +75,12 @@ glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，
 
 验收：一张完整的推导表（后面写进 PR body），每行有依据；类型/lint/测试命令在 `$REPO` 里实际跑过一次并通过（装过依赖的前提下）。
 
-## 2. Linear
+## 2. 票据访问
+
+GitHub 模式：安装支持 `issues` CLI 的 `orca-factory-driver`，确认 `gh` 已登录，在 `AGENT_ISSUE_BACKEND=github AGENT_GH_REPO=<owner/repo>` 下运行 `orca-factory-driver issues validate --json`。输出 `.ok == true` 才继续，失败先修复权限或 Issues 配置；不探测 Linear。标签使用 `ready-for-agent`、`auto-impl`、`auto-failed` 名称，元数据由 driver 维护。
+
+### 仅 Linear 模式
+
 
 ```bash
 orca linear team list --json | jq '.result.teams[] | {id, key, name}'
@@ -92,7 +99,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 
 只问调研定不了的。有 AskUserQuestion / request_user_input 这类工具就用它，一次把所有问题列出；没有就在一条消息里全部列出再等答复。每题附上你的推荐值与理由，让用户只需确认。
 
-1. Linear team / project 确认：「team <key> + project <name>（<id>），对吗？」project 不存在时改问：「由我创建，还是你在 Linear 网页建？」
+1. GitHub 模式确认 `AGENT_GH_REPO` 与唯一账本；仅 Linear 模式确认 team / project：「team <key> + project <name>（<id>），对吗？」project 不存在时改问：「由我创建，还是你在 Linear 网页建？」
 2. lane 1 合并策略：coordinator 自合（squash，默认，手册 §6）还是全部人批（lane 1 也开 PR 后转人）。
 3. 并发上限 `AGENT_MAX_IN_FLIGHT`：默认 2。
 4. lane 2 / lane 3 路径增补：把你推导的两组 glob 列出来，问有没有要加的（例如他们心里的「不能让机器碰的目录」）。
@@ -100,7 +107,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 6. 工人安装命令是否正确：把你推导的 `AGENT_INSTALL_CMD` 原样给用户看。
 7. 模型档位：三档（fast / default / strong）各用什么 `agent:model:effort`（列出模板默认值 `codex:gpt-6-astra:low` / `codex:gpt-6-astra:medium` / `codex:gpt-6.1-sol:high`，问要不要改）；是否开自动升档（`AGENT_TIER_ESCALATE`，默认 1：被打回一次后下一轮 correction 升一档）。
 
-8. 存储与通知方案：`A 全部用 Linear` / `B Linear + 飞书`，把第 0 步 doctor 的推荐标为推荐值并给出理由。A 将任务记录和通知都放在 Linear；B 仍用 Linear 存储任务记录，飞书承接「需要人」通知。提醒：Linear 收件箱不会可靠通知「用户本人的 key 所做的操作」，因此需要手机提醒的「需要人」通知默认推荐飞书；**该判断未验证，演练时实测**，不要当成已验证的产品保证，也不要静默改写 doctor 的推荐。
+8. 通知方案：`A 仅所选账本` / `B 所选账本 + 飞书`，按 doctor 输出推荐。A 的执行记录在所选账本；B 另用飞书发送需要人通知。通知不是第二执行账本，不同步任务状态。手机推送效果在演练时实测。
 
 选 B 后，用一张合并的确认卡一次确认本项目的操作，不把建机器人、建群、测试消息拆成多个问题。所有项目默认共用机器级 profile `orca-factory` 的一个机器人，每个项目单独一个通知群。按 `feishu.profiles[].name` 判断该 profile 是否存在，复用时从同一项取 `appId`；其他 profile 的存在不算命中。只有用户飞书租户不同或受众不同、需要隔离时，才另用 `--name` 建新 profile，并在卡片列明隔离理由与名称。
 
@@ -109,7 +116,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 | 项 | 本次确认内容 |
 | --- | --- |
 | 方案与机器人 | B；复用机器级 `orca-factory`（展示对应 appId）；仅不存在时增加「创建专用机器人，追加命名 profile，不替换已有配置、不切换默认 profile」 |
-| 为本项目新建通知群 | 展示项目名、拟定群名（统一规则：`流水线通知 | <仓库目录名>`，仓库目录名即 Linear project 名与定时任务名括号里的名字；飞书可能自动加租户前缀，属平台行为）、建群所用已登录用户的 profile、通知受众；用户身份建群并邀请上述机器人 |
+| 为本项目新建通知群 | 展示项目名、拟定群名（统一规则：`流水线通知 | <仓库目录名>`，仓库目录名与定时任务名括号里的名字一致；飞书可能自动加租户前缀，属平台行为）、建群所用已登录用户的 profile、通知受众；用户身份建群并邀请上述机器人 |
 | 测试消息 | 展示拟发送的测试文字；由机器人发到新群，随后请用户确认手机收到推送 |
 | 保存配置 | 本项目 `agent-graph.env` 记录机器人 profile 和群 ID；当前只记录配置，自动通知由后续票完成 |
 
@@ -130,7 +137,7 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
    lark-cli --profile orca-factory im +messages-send --as bot --chat-id '{{本项目群ID}}' --text '{{已确认的测试文字}}' --json
    ```
 
-   API 成功后请用户确认手机收到推送；未收到则排查群免打扰、手机通知设置与权限，不把发送成功当作推送验收通过。演练时也实测 Linear 本人 key 操作的收件箱通知表现，记录结果。
+   API 成功后请用户确认手机收到推送；未收到则排查群免打扰、手机通知设置与权限，不把发送成功当作推送验收通过。演练时也实测所选账本的通知表现，记录结果。
 
 把答复记下，后续每条写入配置时注明「依据：用户答复」。
 
@@ -167,7 +174,7 @@ cd $REPO
 # 5a 通用 gate 回归（在临时仓库里测 gate.sh 本身）
 bash scripts/agent-gates/gate.test.sh            # 期望末行: agent gate regression: PASS
 
-# 5b 安装脚本干跑：工具、env 非空、Linear 标签/项目 ID 真实存在
+# 5b 安装脚本干跑：工具、env 非空、所选账本访问可用
 scripts/agent-gates/install.sh --dry-run         # 期望: install: dry run, nothing changed
 
 # 5c 对本次接入改动跑一次完整 gate（含 gate.project.sh）
@@ -208,9 +215,9 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 
 1. 审阅并合并 PR（这是 lane 2 改动，必须人批）。
 2. 合并后在主检出跑 `scripts/agent-gates/install.sh`：创建**禁用**的定时任务 `agent-linear-scan (<repo>)`（每 5 分钟，precheck 180s，provider claude），并打印 automation id。
-3. 推荐用 intake 建票：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`，把需求说给它；它只读仓库、只写 Linear，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
-4. 建一张小票试跑：在该 project 里，Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动（用 intake 建，或手动 `orca linear save-issue --team <KEY> --project <project-id> --state Todo --label ready-for-agent --title "..." --body-file -`）。
-5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
+3. 推荐用 intake 建票：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`，把需求说给它；它只读仓库、只写所选执行账本，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
+4. 建一张小票试跑：Todo、ready-for-agent，内容是几十行且只碰 lane 1 路径的改动。用 intake 按 `scripts/agent-gates/ISSUES.md` 对应后端的 create/save-issue 建票并回读；不重开已有 auto-failed 票。
+5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看所选账本评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 满意后 `orca automations edit <id> --enabled`。
 7. 看板：在该仓库启动 Claude Code 会提示安装 `swarm-board` 插件（来自本仓库 marketplace），`/swarm` 打开；`t` 泳道、`s` agent、`d` 明细。
 8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。`orca repo` 没有设置 hooks 的子命令，Settings → Repository → Hooks 只能在 UI 里配，留给用户。源码显示 `orca.yaml` 还支持 `scripts.setup`、`scripts.archive`、`setupAgentStartupPolicy`（官网未写）；提交进 git 的 setup 脚本是否触发信任确认、无人值守时是否卡住**未核实**，因此仍以 UI 设置为已验证路径，`orca.yaml` 这几项只在 PR body 里建议，不自己提交。能进 git 的两项只在 PR body 里建议，不自己提交（超出第 7 步允许的改动范围）：仓库根 `orca.yaml` 的 `worktree.sharedDirectories`（共享被 gitignore 的大目录，如 `node_modules`）、`.worktreeinclude`（复制 `.env` 等被 gitignore 的文件，每行一个字面路径）。

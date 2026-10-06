@@ -19,3 +19,10 @@
 ## 部署
 
 部署保留配置、持久状态、正在运行的执行器与 quota 暂停/配额保护；健康检查遇到配额暂停，按既有恢复机制处理，不能清空状态或强行解除保护来制造成功。部署前保留可回滚旧程序。
+
+## 执行账本（GitHub 切换）
+
+- `AGENT_ISSUE_BACKEND=github` 选择 GitHub Issues 唯一执行账本；缺省保留已发布 Linear 配置。新安装模板选择 GitHub，更新 core 不激活已有仓库的迁移。本仓已提交 GitHub profile 是发布目标，生产须在完整导入验证后连同二进制与安装副本一起部署。
+- GitHub 模式的票据、评论、归属、correction 与 ledger 经统一 driver CLI 读写；缺数据、权限失败或缓存失效时保留不确定状态。不存在 Linear 异步同步、双写或失败回退。
+- 历史 ZII identifier 与 Linear UUID 是已发布执行身份。一次性导入保留 checkpoint、Run/Task/Dispatch、worktree、PR、预算和 owner；auto-failed 继续转人，导入不是重新排队授权。
+- 旧快照可能没有全量票、评论或依赖，空字段不能证明完整。具体检查和切换顺序见 [账本选择与切换](ISSUE-BACKEND.md)。

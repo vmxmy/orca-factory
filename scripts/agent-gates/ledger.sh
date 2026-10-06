@@ -6,6 +6,11 @@
 # are reported as tier=unknown. Run via agent-graph.sh, which exports AGENT_LINEAR_TEAM / AGENT_LINEAR_PROJECT.
 # Usage: ledger.sh append '<json>' | ledger.sh stats (Linear comment storage)
 set -Eeuo pipefail
+case "${AGENT_ISSUE_BACKEND:-linear}" in
+  github) exec orca-factory-driver ledger "$@" ;;
+  linear) ;;
+  *) echo 'ledger: unsupported AGENT_ISSUE_BACKEND' >&2; exit 2 ;;
+esac
 
 : "${AGENT_LINEAR_TEAM:?run via agent-graph.sh: AGENT_LINEAR_TEAM required}"
 : "${AGENT_LINEAR_PROJECT:?run via agent-graph.sh: AGENT_LINEAR_PROJECT required}"

@@ -919,3 +919,94 @@ for (const state of ['unknown', 'stale']) {
     await ui.unmount()
   })
 }
+
+const githubFixture = async ($: any, on: any, incomplete = false, native = false) => {
+  let refreshed: () => void = () => {}
+  let reads = 0, details = 0, forbidden = 0
+  let fail = incomplete
+  const issue = () => ({
+    id: 'legacy-uuid', identifier: native ? 'GH-7' : 'ZII-900', number: 7,
+    url: 'https://github.com/owner/test-repo/issues/7', title: 'GitHub held task', owner: 'human',
+    complete: true, commentsComplete: true, nativeUpdatedAt: '2026-10-06T00:00:00Z',
+    state: { type: native ? 'started' : 'unstarted' },
+    labels: native ? [{ name: 'auto-impl' }] : [{ name: 'auto-failed' }, { name: 'ready-for-agent' }], blockedBy: [],
+    comments: [{ body: '转人: correction 已耗尽\n证据: PR #5\n需要你: 人工处理', createdAt: new Date().toISOString() }],
+  })
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('agent-graph.env')) return { value: 'AGENT_ISSUE_BACKEND=github\nAGENT_GH_REPO=owner/test-repo\nAGENT_MAX_IN_FLIGHT=2' }
+    if (e.path.endsWith('orca-factory-linear-snapshot.json')) return { value: JSON.stringify({ generatedAt: Date.now() / 1000, issues: [{ identifier: 'WRONG-1', title: 'old provider data' }], comments: {} }) }
+    throw new Error('ENOENT')
+  })
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    const a = e.argv
+    if (a[0] === 'orca' && a[1] === 'linear') { forbidden++; return { value: { stdout: '', stderr: 'forbidden Linear', exitCode: 99 } } }
+    if (a[0] === 'bash' && a[2] === 'issues' && a[3] === 'list-issues') {
+      reads++
+      const row = issue()
+      return { value: { stdout: JSON.stringify({ ok: true, result: { complete: !fail,
+        issues: [{ ...row, owner: undefined, comments: [], commentsComplete: false }],
+      } }), stderr: '', exitCode: 0 } }
+    }
+    if (a[0] === 'bash' && a[2] === 'issues' && a[3] === 'issue') {
+      details++
+      return { value: { stdout: JSON.stringify({ ok: true, result: { complete: true, issue: issue(), comments: issue().comments } }), stderr: '', exitCode: 0 } }
+    }
+    if (a[0] === 'orca' && a[1] === 'worktree') return { value: { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ path: '/repo/GH-7-executor', comment: 'driver: gate' }] } }), stderr: '', exitCode: 0 } }
+    if (a[0] === 'bash' && a[2] === 'ledger') return { value: { stdout: 'runs=7', stderr: '', exitCode: 0 } }
+    return { value: { stdout: JSON.stringify({ ok: true, result: { worktrees: [], automations: [] } }), stderr: '', exitCode: 0 } }
+  })
+  const refresh = async (expire = false) => {
+    if (expire) await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' })
+    const ready = new Promise<void>(resolve => { refreshed = resolve })
+    await $.command.run({ command: 'swarm', args: '' })
+    await ready
+  }
+  await refresh()
+  return { refresh, reads: () => reads, details: () => details, forbidden: () => forbidden, fail: () => { fail = true } }
+}
+
+test('GitHub board uses selected ledger, preserves ZII ownership and never reads Linear cache or API', async ($, on) => {
+  const fixture = await githubFixture($, on)
+  const ui = await mount($, 'terminal')
+  expect(fixture.reads()).toBe(1)
+  expect(fixture.forbidden()).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /GitHub held task/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /归属: human/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /correction 已耗尽/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /old provider data/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Linear 用量未知/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /待领 \(1\)/ })).toBeUndefined()
+  await fixture.refresh()
+  expect(fixture.reads()).toBe(1)
+  expect(fixture.details()).toBe(1)
+  fixture.fail()
+  await fixture.refresh(true)
+  await ui.redraw()
+  expect(fixture.forbidden()).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /GitHub 数据不可用或不完整/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /GitHub held task/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('GitHub incomplete first snapshot shows unknown without claiming or Linear fallback', async ($, on) => {
+  const fixture = await githubFixture($, on, true)
+  const ui = await mount($, 'terminal')
+  expect(fixture.reads()).toBe(1)
+  expect(fixture.forbidden()).toBe(0)
+  expect(await ui.find({ type: 'Text', text: /GitHub 数据不可用或不完整/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /GitHub held task/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+
+test('GitHub native issue retains worktree phase without a Linear worktree link', async ($, on) => {
+  await githubFixture($, on, false, true)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /GH-7/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🧪 gate/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /GitHub #7/ })).toBeDefined()
+  await ui.unmount()
+})

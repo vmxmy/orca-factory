@@ -7,8 +7,14 @@ set -Eeuo pipefail
 
 REPO="path:${AGENT_REPO_PATH:?main checkout path}"
 PREFIX="${AGENT_RUN_WORKTREE_PREFIX:?set in agent-graph.env}"
-LINEAR_TEAM="${AGENT_LINEAR_TEAM:?set in agent-graph.env}"
-LINEAR_PROJECT="${AGENT_LINEAR_PROJECT:?set in agent-graph.env}"
+case "${AGENT_ISSUE_BACKEND:-linear}" in
+  github)
+    issue_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issues.sh" ;;
+  linear)
+    LINEAR_TEAM="${AGENT_LINEAR_TEAM:?set in agent-graph.env}"
+    LINEAR_PROJECT="${AGENT_LINEAR_PROJECT:?set in agent-graph.env}" ;;
+  *) echo 'prune: unsupported AGENT_ISSUE_BACKEND' >&2; exit 2 ;;
+esac
 MAX_AGE_HOURS="${AGENT_RUN_MAX_AGE_HOURS:-24}"
 PRUNE_BUDGET_SECONDS="${AGENT_PRUNE_BUDGET_SECONDS:-60}"
 PRUNE_MAX_PER_RUN="${AGENT_PRUNE_MAX_PER_RUN:-5}"
@@ -79,6 +85,13 @@ prune_git_worktrees() {
 prune_load_linear_issues() {
   [[ "$prune_linear_ok" == true ]] && return 0
   local snapshot now generated snapshot_issues
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github ]]; then
+    local response
+    response=$(bash "$issue_script" list-issues --json) || return 1
+    prune_linear_data=$(jq -ce '.result.issues' <<< "$response") || return 1
+    prune_linear_ok=true
+    return 0
+  fi
   snapshot="${AGENT_SNAPSHOT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json}"
   if [[ -f "$snapshot" ]]; then
     now=$(date +%s)
@@ -117,6 +130,7 @@ prune_ticket_check() {
     map(select(.identifier == $id)) | .[0] as $issue |
     if $issue == null then false
     elif ($issue.state.type | type != "string") then false
+    elif any($issue.labels[]?; .name == "auto-failed") then false
     elif $mode == "completed" then $issue.state.type == "completed"
     else $issue.state.type != "started"
     end' <<<"$prune_linear_data" >/dev/null 2>&1; then
@@ -292,6 +306,10 @@ main="$(cd "$AGENT_REPO_PATH" && pwd -P)"
 prune_inventory_ok=false
 prune_worktrees='[]'
 prune_compensate
+if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github && "$prune_linear_ok" != true ]]; then
+  echo 'prune: 不确定: GitHub snapshot unavailable; all resources retained' >&2
+  exit 3
+fi
 
 while read -r created wt; do
   prune_quota_reached && break

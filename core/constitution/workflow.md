@@ -16,7 +16,7 @@
 - 分支：`git push -u origin <branch>`。永不 push main，永不 force push。
 - PR 用 REST 开（GraphQL 常 EOF）：
   `gh api -X POST repos/$AGENT_GH_REPO/pulls -f title=… -f head=… -f base=main -F body=@<wt>/.omc/tmp/<ID>-pr.md -q .number`
-- PR body 首行 `Fixes <票号>`。
+- PR body 首行 `Fixes <票据 URL>`（GitHub 从票据回读 url；Linear 沿用 `Fixes <票号>`），另列 canonical identifier，分支与 checkpoint 保留该身份。
 - 合并通道：每个仓库一条串行 FIFO 通道，发布 PR 与功能 PR 按入队顺序共用；队首等待时后续 PR 不超车。使用 squash 合并并回读 `.merged == true`，固定已验证的 head SHA。
 - 落后 main（`behind_by > 0`）不是阻塞：取 PR 与 main 相对共同祖先的完整改动路径（含重命名前后路径）求交集。交集为空、`mergeable_state == clean` 且 CI 在当前 head 全绿 → 直接 squash 合并。
 - 有文件重叠：用固定的 PR head 与当前 main SHA 执行 `git merge-tree --write-tree`。文本无冲突时，以合并结果建立临时 worktree，在其中运行该单元 gate；gate 绿、当前 head CI 全绿且 mergeability 为 clean 才合并。合并前回读 head 与 main，任一变化则重新验证；连续 2 轮追不上 main → 转人。验证结束清理临时 worktree，不改写 PR 分支，不 rebase、不 force push。
@@ -32,10 +32,10 @@
 ## 4. 结束标记与 ledger
 
 - 每次运行结束（收尾、转人、无票）固定两步，顺序不变：
-  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入 `AGENT_LINEAR_PROJECT` 内标题精确为 `[ledger] agent-graph` 的 Linear 账本票评论（`ledger <JSON>`）。
+  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入项目所选执行账本：GitHub 委派 driver，Linear 沿用 `AGENT_LINEAR_PROJECT` 的 `[ledger] agent-graph` 票评论。
   2. `mkdir -p .omc && touch .omc/agent-run-finished`（在运行 worktree）
 - 账本写入失败不阻塞本次运行收尾：只在本票评论里记一句失败原因（无票的 `no_ticket` 运行则只写 stderr），然后继续写结束标记。
-- `ledger stats` 从 Linear 账本票评论读取并按 `(ticket, started_at)` 去重；无账本票时输出 `runs=0`，不创建票。
+- `ledger stats` 从所选账本票评论读取并按 `(ticket, started_at)` 去重；无账本票时输出 `runs=0`，不创建票。
 - ledger 行字段：`ticket, lane, tier(fast|default|strong), outcome(merged|escalated|no_ticket), first_gate(green|red), corrections, ci_reds, pr, minutes, started_at, finished_at`。`first_gate` 是 coordinator 第一次独立复跑的结果；`tier` 是领票时解析出的档位（首跑所用，升档不改写）；`corrections` 含 CI 红与追溯块缺失；无票时 `outcome=no_ticket`，票字段省略。
 - 不写结束标记 → 下次运行按 24 小时崩溃规则清理。
 
@@ -53,6 +53,6 @@
   2. 票 `estimate` 落进 `AGENT_TIER_BY_ESTIMATE` 的某个区间：格式 `lo-hi:tier` 空格分隔，`hi` 空表示无上限（`8-:strong`）；依据写 `estimate=N`。
   3. 其余（无标签、无 estimate、estimate 不落任何区间）→ default；依据写 `default`。
 - 领票评论固定格式：`已领取 · tier=<t> (<agent>/<model>/<effort>) · 依据: <label|estimate=N|default>`；model 为空时写 `-`。
-- correction：`AGENT_TIER_ESCALATE=1` 时每次 correction 比上一轮升一档，strong 封顶；`=0` 不升。升档时 Linear 评论 `correction n → 升至 <t>`，并用新档的 agent/model/effort 起 worker。ledger `tier` 仍记领票时的档位。
+- correction：`AGENT_TIER_ESCALATE=1` 时每次 correction 比上一轮升一档，strong 封顶；`=0` 不升。升档时 票据评论 `correction n → 升至 <t>`，并用新档的 agent/model/effort 起 worker。ledger `tier` 仍记领票时的档位。
 - 解析只读 env 与票面；coordinator 不改 env、不改票标签。
 - 实际生效的 agent/model/effort 以 `worker-start` **回执**里的 `launch.effective` 为准，派工时即记录（评论与 ledger 用它，不用解析值）；`worker-show` 不带该字段。回执 model 为空（agent 用自身默认模型）时，用 `ps -axo command | grep -E '^(codex --no-daemon|claude) '` 看真实进程参数核实。

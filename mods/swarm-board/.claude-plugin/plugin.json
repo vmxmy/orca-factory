@@ -1,7 +1,7 @@
 {
   "name": "swarm-board",
   "version": "0.3.17",
-  "description": "Agent 蜂群看板（/swarm）：泳道视角的票状态、agent 时长/token/成本、PR 与 CI 进度、缓存的 ledger 统计、本小时 Linear 用量",
+  "description": "Agent 蜂群看板（/swarm）：泳道视角的票状态、agent 时长/token/成本、PR 与 CI 进度、缓存的 ledger 统计、所选执行账本状态",
   "types": "./types/index.d.ts",
   "author": {
     "name": "vmxmy"

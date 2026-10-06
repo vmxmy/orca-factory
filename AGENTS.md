@@ -13,3 +13,7 @@
 - 并发退出检查保留 goleak 整包门禁；重试计时与取消覆盖公开 Retry 的默认 Sleep 路径。具体用法与验证边界见开发文档。
 
 共享记忆由上述指令触发读取；文件名 `MEMORY.md` 本身不构成 Codex 自动加载入口。
+
+# 执行账本入口
+
+- 修改票据 CLI、安装模板、看板、角色流程或切换执行账本前，读取 [共享项目记忆](docs/agents/MEMORY.md) 的执行账本条款及 [账本选择与切换](docs/agents/ISSUE-BACKEND.md)。
