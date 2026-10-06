@@ -12,10 +12,14 @@ import { WATCH_POLL_MS, shouldReload } from './snapshot-watch'
 import { parseDriverStatus, pickStatusSource } from './driver-status'
 import type { DriverStatus } from './driver-status'
 import { driverHeadText } from './driver-head'
+import { statusBarRows } from './status-bar'
+
 import { aggregateUsage, createUsageReader, ledgerUsage } from './usage'
 import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './usage'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
+
+declare function h(type: any, props: any, ...children: any[]): any
 
 type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
@@ -74,10 +78,6 @@ const MAX_PRS = 6 // open PRs that get the three gh detail calls
 const MAX_DONE = 4 // done-today tickets that get one task-list call (for today's cost)
 // Ledger stats is slow and depends on comment reads; cache the output for ten minutes.
 const LEDGER_TTL_MS = 600_000
-// Linear API hourly limit the badge is measured against (see #45 rate-limit handling).
-const LINEAR_HOURLY_LIMIT = 2500
-const LINEAR_HOURLY_WARN = 1750 // 70% → yellow
-const LINEAR_HOURLY_DANGER = 2250 // 90% → red
 // Shared counter file the pipeline writes; swarm board only reads it.
 const LINEAR_COUNTER_FILE = 'orca-factory-linear-calls'
 // Snapshot the precheck pipeline writes; the board reads it to skip its own `orca linear …` reads.
@@ -1046,11 +1046,23 @@ export const register: Register = on => {
     const now = Date.now()
     // Countdown uses the wall clock, not the throttled `nowAtom` (which starts at 0 and could race the first tick).
     const remainingSec = tickMs > 0 ? Math.min(60, Math.max(0, Math.ceil((tickMs + REFRESH_MS - now) / 1000))) : 0
-    const countdown = tickMs > 0 && remainingSec > 0 ? '下次刷新 ' + remainingSec + 's' : '刷新中'
-    const staleMin = lastSuccessAt > 0 ? Math.max(0, Math.floor((now - lastSuccessAt) / 60_000)) : 0
     const stale = lastSuccessAt > 0 && now - lastSuccessAt > STALE_MS
     const bodyColumns = e.props?.bodyColumns ?? e.viewport?.columns ?? 100
     const cols = Math.max(44, bodyColumns - 4)
+    const driver = b.driver?.state === 'ok' ? b.driver : undefined
+    const limit = driver?.linear.limits[0]
+    const rows = statusBarRows({
+      inFlight: b.inFlight.length, max: b.maxInFlight, failed: b.failed.length,
+      queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
+      quota: limit ? { remaining: limit.requests.remaining, limit: 2500, resetAt: limit.requests.reset } : undefined,
+      driver: b.driver?.state ?? 'unknown', globalPause: driver?.globalPause,
+      at: b.at, refreshSec: remainingSec,
+      snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
+      version: MOD_VERSION, view: v, detail: d, repo: limit?.repo ?? b.repositoryPaths?.[0],
+      complexity: driver?.linear.complexity, linearUsage: b.linearUsage, lastRun: b.lastRun, stale,
+      needsRestart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
+      automation: automation?.enabled, automationKnown, refreshing,
+    }, cols)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
     const card = (key: string, title: string, children: any, color?: string, dim?: boolean) => (
@@ -1429,44 +1441,12 @@ export const register: Register = on => {
         </Text>
       )
     }
-    const driverBadge = () => {
-      const driver = b.driver
-      if (!driver) return null
-      if (driver.state !== 'ok') return <Text dimColor>驱动器 Linear {driver.state === 'unknown' ? '未知' : '状态过期'}</Text>
-      const usage = driver.linear
-      const limits = usage.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
-        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset)
-      return <Text dimColor>{'驱动器 Linear 本小时 请求 ' + usage.requests + ' · 复杂度 ' + usage.complexity
-        + (limits.length ? ' · ' + limits.join(' · ') : ' · 剩余额度/重置时间未知')}</Text>
-    }
-    const focal = '  ' + b.inFlight.length + ' / ' + (b.maxInFlight || '?') + '  '
-    const linearBadge = () => {
-      if (b.driver?.state === 'ok') return null
-      const u = (b as Board).linearUsage
-      if (!u) return null
-      if (!u.known) return <Text dimColor>Linear 用量未知</Text>
-      const color = u.total >= LINEAR_HOURLY_DANGER ? 'red' : u.total >= LINEAR_HOURLY_WARN ? 'yellow' : undefined
-      const main = 'Linear 本小时 ' + u.total + '/' + LINEAR_HOURLY_LIMIT
-      if (d) {
-        const parts = (['precheck', 'prune', 'ledger', 'coordinator'] as const).map(s => s + ' ' + (u.bySource[s] ?? 0))
-        parts.push('看板 ' + u.board)
-        return <Text color={color}>{main} · {parts.join(' · ')}</Text>
-      }
-      return <Text color={color}>{main}</Text>
-    }
-
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" alignItems="center" gap={2} marginBottom={1}>
-          <Text bold inverse>{focal}</Text>
-          <Text bold>在做</Text>
-          {b.driver?.state === 'ok' && b.driver.globalPause.active
-            ? <Text color="yellow">{'⏸ 全局暂停 ' + b.driver.globalPause.durationSeconds + ' 秒'}</Text>
-            : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>}
-          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日按 API 价折算 $' + b.todayCost.toFixed(2) : ''}</Text>
-          {linearBadge()}
-        </Box>
-        {driverBadge()}
+        {rows.map((segments, row) => h(Box, { key: 'status-' + row, flexDirection: 'row' },
+          ...segments.map((segment, index) => /^ +$/.test(segment.text)
+            ? h(Text, { key: index }, (index ? ' ' : '') + segment.text)
+            : h(Text, { key: index, color: segment.color, dimColor: !segment.color }, (index ? ' ' : '') + segment.text))))}
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
@@ -1478,27 +1458,6 @@ export const register: Register = on => {
             ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
             : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
           <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => tick($, handoffs)} />
-          <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
-            ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
-            : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
-          {(() => {
-            if (b.driver?.state === 'ok') return <Text dimColor>· 数据来自驱动器实时状态</Text>
-            const snapshotAgeMs = (b as Board).snapshotAgeMs
-            const throttled = (b as Board).linearThrottled === true
-            if (snapshotAgeMs !== undefined) {
-              const snapshotMin = Math.max(0, Math.floor(snapshotAgeMs / 60_000))
-              return <Text dimColor>· 数据来自快照 {snapshotMin} 分钟前</Text>
-            }
-            if (throttled) return <Text dimColor>· 快照缺失，Linear 读取已节流</Text>
-            return null
-          })()}
-          {(() => {
-            const installed = (b as Board).installedVersion
-            const needsRestart = !!installed && verGT(installed, MOD_VERSION)
-            return <Text dimColor={!needsRestart} color={needsRestart ? 'yellow' : undefined}>
-              {needsRestart ? 'v' + MOD_VERSION + ' → 已安装 v' + installed + '，请重启' : 'v' + MOD_VERSION}
-            </Text>
-          })()}
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
