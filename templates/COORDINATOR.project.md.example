@@ -16,6 +16,6 @@
 
 ## 合并与上线
 
-- lane 1 合并策略：{{coordinator 自合（squash） | 全部人批（即 lane 1 也走第 7 步转人）}}。依据：用户答复。
+- lane 1 合并策略：{{coordinator 自合（squash） | 全部由 resolver 复核（即 lane 1 也走第 7 步 Agent 处置）}}。依据：用户答复。
 - {{合并即部署（CI push main 触发）| 无自动部署：`AGENT_DEPLOY_WORKFLOW`/`AGENT_SMOKE_CMD` 留空，跳过上线步}}。合并前 `behind_by > 0` 必须 rebase 并重跑 CI。
 - 部署工作流名与冒烟命令见 `agent-graph.env`（{{冒烟内容一句话说明}}）。

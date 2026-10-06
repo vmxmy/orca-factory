@@ -20,8 +20,8 @@ func TestScenarios(t *testing.T) {
 		{"z803", []Event{EvClaim, EvExecCrash, EvWorkerOK, EvTick, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 2, 0, 0, 1},
 		{"unsure", []Event{EvClaim, EvReadFail, EvTick, EvTick, EvWorkerOK}, "分支检查", "执行器", 1, 0, 0, 0},
 		{"claude", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, "pauseClaude", EvReviewGreen, "pauseClaude", EvReviewGreen, EvOpenPR, EvMerge}, "已合并", "无", 1, 0, 0, 0},
-		{"budget", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewEmpty, EvReviewEmpty, EvReviewEmpty, EvRequeue, EvClaim}, "worker 运行中", "执行器", 2, 0, 0, 0},
-		{"fake", []Event{EvClaim, EvWorkerOK, EvBranchNo, EvRequeue, "toggleManual", EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvTick}, "等人批", "人", 2, 0, 0, 0},
+		{"budget", []Event{EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewEmpty, EvReviewEmpty, EvReviewEmpty}, "Agent处置", "处置Agent", 1, 0, 3, 0},
+		{"fake", []Event{"toggleManual", EvClaim, EvWorkerOK, EvBranchOK, EvGateGreen, EvReviewGreen, EvOpenPR, EvTick}, "Agent处置", "处置Agent", 1, 0, 0, 0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

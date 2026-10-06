@@ -130,7 +130,7 @@ func TestStartRejectsIncompleteTaskEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			result, err := e.Start(context.Background(), ticket)
-			if err != nil || result.State.Owner != machine.OwnerHuman || result.State.Infra != 3 || result.State.Corrections != 0 || tools.gateCalls != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+			if err != nil || result.State.Owner != machine.OwnerResolver || result.State.Infra != 3 || result.State.Corrections != 0 || tools.gateCalls != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 				t.Fatalf("incomplete evidence must stop recovery: result=%+v err=%v gates=%d", result, err, tools.gateCalls)
 			}
 			assertBudgetHandoff(t, l)
