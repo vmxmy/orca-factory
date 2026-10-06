@@ -919,3 +919,33 @@ for (const state of ['unknown', 'stale']) {
     await ui.unmount()
   })
 }
+
+
+test('cached snapshot feeds graph, throughput and failure tabs without live Linear reads', async ($, on) => {
+  const now = Date.now()
+  const fixture = await snapshotFixture($, on, {
+    issues: [
+      { identifier: 'ZII-1', title: 'blocker', parent: null, state: { type: 'started' }, labels: [] },
+      { identifier: 'ZII-2', title: 'dependent', parent: null, state: { type: 'unstarted' }, labels: [] },
+    ],
+    blockedBy: { 'ZII-2': ['ZII-1'] },
+    comments: {
+      ledger: [{ body: 'ledger ' + JSON.stringify({ ticket: 'ZII-3', started_at: 'attempt-1', outcome: 'merged', finished_at: new Date(now - 60000).toISOString(), stage_secs: { worker: 42 }, corrections: 3, first_gate: 'red', tier: 'fast', lane: 2 }) }],
+      'ZII-2': [{ body: '转人: manual-check', createdAt: new Date(now - 60000).toISOString() }],
+    },
+  })
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'view-graph' })
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /关键路径：ZII-1 → ZII-2/ })).toBeDefined()
+  await ui.press({ key: 'view-throughput' })
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /worker p50\/p90：42 \/ 42 秒/ })).toBeDefined()
+  await ui.press({ key: 'view-failures' })
+  await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /manual-check: 1/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /ZII-3: 3/ })).toBeDefined()
+  await ui.redraw()
+  expect(fixture.orcaLinearCalls()).toBe(0)
+  await ui.unmount()
+})
