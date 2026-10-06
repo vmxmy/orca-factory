@@ -560,7 +560,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if pr != nil {
 			result.PR = *pr
 		} else {
-			result.PR, callErr = e.GitHub.CreatePR(ctx, c.Owner, c.Repository, github.CreatePRRequest{Head: branch, Base: "main", Title: t.Identifier + " " + t.Title, Body: "Fixes " + t.Identifier + "\n\n" + t.Todo})
+			body, err := e.pullRequestBody(ctx, t)
+			if err != nil {
+				return err
+			}
+			result.PR, callErr = e.GitHub.CreatePR(ctx, c.Owner, c.Repository, github.CreatePRRequest{Head: branch, Base: "main", Title: t.Identifier + " " + t.Title, Body: body})
 			if callErr != nil {
 				return errors.New("PR creation failed; reconcile branch before retry")
 			}

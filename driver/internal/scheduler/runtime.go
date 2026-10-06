@@ -322,7 +322,7 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 }
 
 func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
-	if err := r.verifyGitHubDecision(ctx, t, a.Kind == Claim); err != nil {
+	if err := r.verifyGitHubDecision(ctx, t, a.Kind); err != nil {
 		return err
 	}
 	client := r.Clients[t.Repo]
@@ -379,6 +379,9 @@ var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
+	if err := r.verifyGitHubLaunch(ctx, t); err != nil {
+		return err
+	}
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {
 		return errors.New("invalid executor launch configuration")
 	}

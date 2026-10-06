@@ -108,7 +108,7 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	return errors.Join(problems...)
 }
 func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) {
-	if err := r.verifyGitHubDecision(ctx, t, false); err != nil {
+	if err := r.verifyGitHubDecision(ctx, t, ""); err != nil {
 		return err
 	}
 	var cleanupErr error
@@ -312,6 +312,9 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 	if fresh.Head != head || !fresh.CIGreen || fresh.MergeableState != "clean" {
 		return "", errors.New("validation changed")
 	}
+	if err := a.runtime.verifyGitHubDecision(ctx, a.ticket, githubSquash); err != nil {
+		return "", err
+	}
 	h := a.ticket.Handoff
 	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent", CatchupRounds: req.CatchupRounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
@@ -333,6 +336,9 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 	}
 	if fresh.Head != head || !fresh.CIGreen || fresh.MergeableState != "clean" {
 		return "", errors.New("validation changed after intent")
+	}
+	if err := a.runtime.verifyGitHubDecision(ctx, a.ticket, githubSquash); err != nil {
+		return "", err
 	}
 	p, err := a.runtime.GitHub.MergePR(ctx, a.owner, a.repo, req.Number, head)
 	if err != nil {
