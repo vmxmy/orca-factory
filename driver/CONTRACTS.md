@@ -14,7 +14,7 @@
 | 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `linear.TestRecordedInverseRelations` |
 | 调度器认领时写 `term=- run=-`，表示执行器尚未登记 | `linear-comment-ownership-unregistered.json` | `scheduler.TestRecordedOwnershipUnregistered` |
 | 审查员常把结尾的 verdict JSON 包在 Markdown 代码块里 | `reviewer-output-fenced.txt` | `executor.TestRecordedReviewerOutput` |
-| 执行器转人评论固定三行（转人、证据、需要你），不含归属行；调度器以「转人:」开头识别归属转为人 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
+| 历史执行器转人评论固定三行；调度器仍以「转人:」识别旧归属，并按容量接管为 resolver；新回执含 Agent处置、证据、处置要求、阶段与归属 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
 | git 的网络失败（TLS 握手、超时、解析失败）在 stderr 中报告，可重试；HTTP 403、404 不可重试 | `git-stderr-tls-failure.txt`、`git-stderr-auth-failure.txt` | `infra.TestRecordedGitNetworkFailureIsTransient` |
 | worker worktree 名为 `<票号>-<单元>`，本地分支是 Orca 起的（如 `vmxmy/ZII-893-executor`），`agent/<票号>/<单元>` 只是推送目标 | `git-worktree-list-porcelain.bin` | `executor.TestRecordedWorkerWorktree` |
 | `claude -p` 的 `--allowedTools` 是可变参数，会吞掉后面的位置参数；审查员的说明与 diff 必须一起走 stdin | — | `executor.TestReviewSendsPromptAndDiffOnStdin`，`driver selftest --live` |
@@ -108,3 +108,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 仅 live `driver serve` 在获得单例锁后启用发布；dry-run 不创建发布适配器。每轮已获准的仓库巡检结束后扫描，发布计划先写入 `~/.local/state/orca-factory/releases/<仓库名 SHA-256>.json`，记录入队时间、固定 main、文件字节、PR、合并 SHA 和完成状态。功能 PR 与发布 PR 在同一仓库按持久入队时间选出唯一队首，再复用 `internal/merge` 合并。
 
 重启先恢复同一发布分支与 PR，已确认的合并不重做；tag 和 release 写入失败通过读取远端回执恢复。发布只改 manifest 版本、存在时的 `MOD_VERSION` 和 CHANGELOG。等待期间插件源码变化、发布分支被改写、tag 指向冲突、追赶预算耗尽或 smoke 结果不确定时保留队首并报告错误，需要人工核对后恢复；不得删除状态来绕过这些阻塞。部署/冒烟未确认通过前不放行后续 PR。
+
+## Resolver 处置
+
+- `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。
+- mutation 请求按终端作用域生成；替换终端读取完整 task-list/worker-list 对账，不重放旧终端请求。丢失 Run 回执时尚未允许派工，可创建仅属于替换控制器的空 Run。
+- task-list 缺 dispatch_id 是合法的；已有身份用于释放，缺身份时须从 worker-list 的 taskId/runId/dispatchId 关联恢复。录制样本 `orca-resolver-worker-list.json` 来自真实复核 worker 的只读列表，保留完整行集合并移除预览、目录等非契约字段；`resolver.TestRecordedWorkerAssociationRecoversReplacement` 覆盖该契约。
+- 原执行器退出后允许独立处置 Agent 排查保留的 worker；原 Run 未确认停止推进前，调度器拒绝处置成功提案。失效部署提案退回限时重试，读写不确定则保留原身份继续对账。

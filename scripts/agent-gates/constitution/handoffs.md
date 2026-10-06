@@ -47,7 +47,7 @@ LANE      <1|2|3>
   3. `orca orchestration worker-start --run <run> --task <child> --worktree path:<原 wt> --agent <agent> [--model <model> --effort <effort>]`，agent/model/effort 来自本轮档位（`workflow.md §6`：`AGENT_TIER_ESCALATE=1` 则比上一轮升一档，并评论 `correction n → 升至 <t>`）
   4. 通过后 `task-update --id <task> --status completed`
 - 只打回出错的单元，不打回整批。
-- 每单元 3 次封顶。追溯块缺失计一次，CI 红计一次，review 打回计一次。第 4 次 = plan 错，停，转人。
+- 每单元 3 次封顶。追溯块缺失计一次，CI 红计一次，review 打回计一次。第 4 次 = plan 错，停，交给 resolver。
 - 错在 coordinator 写的简报（如把导出放进已满的文件）→ 先改简报再派 correction，这一次也计数。
 
 ## 4. escalation / ask
@@ -55,13 +55,18 @@ LANE      <1|2|3>
 - worker 遇到以下任一情况发 `escalation`，不硬做：需越 SCOPE、简报自相矛盾、CHECK 写不出会红的断言、依赖装不上、gate 因 lane 判红。
   `orca orchestration send --from <handle> --dispatch-capability <cap> --type escalation --subject "Blocked: <原因>" --body "<证据>" --task-id <task> --dispatch-id <dispatch>`
 - 单一事实问题（符号名、落点、二选一）用 `ask`，阻塞等 `reply`；超时按简报默认值做并在 worker_done body 里注明。
-- coordinator 收到 escalation：能改 plan 就改 plan 新建 task 重派；否则转人。
-- 转人（coordinator 对人的 handoff）：Linear `label remove --label ready-for-agent`、`label add --label auto-failed`，评论固定三行，顺序不变；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
+- coordinator 收到 escalation：能改 plan 就改 plan 新建 task 重派；否则交给 resolver。
+- Agent 处置（coordinator 对 resolver 的 handoff）：Linear `label remove --label ready-for-agent`、`label add --label auto-failed`，评论含原因、证据、处置要求、阶段和归属；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
   ```text
-  转人: <一句话卡点>
+  Agent处置: <一句话卡点>
   证据: <文件:行 / PR / worktree 路径 / 命令输出摘录>
-  需要你: <一个具体动作>
+  处置要求: <一个具体动作>
+  阶段: Agent处置
+  归属: 处置Agent
   ```
+
+- Driver 路径：调度器读取处置归属后调用 `driver resolve <ID>`；角色见 `roles/resolver.md`，默认使用 strong 档，可通过 `AGENT_ROLE_RESOLVER=agent:model:effort` 覆盖。结果持久化后由调度器校验、继续合并或恢复部署。
+- 旧 coordinator 路径：在自己的 Run 中按 `roles/resolver.md` 创建独立处置 task 并派 Agent；持续接收 worker_done，校验其合并或部署提案后按 workflow 继续。不能写完评论就退出，也不能与 driver 同时写同一票。
 
 ## 5. 等待
 

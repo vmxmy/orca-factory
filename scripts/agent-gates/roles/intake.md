@@ -14,10 +14,7 @@
   - 拆依赖：被依赖的先建，再 `scripts/agent-gates/agent-graph.sh linear relation add <下游> --related <上游> --type blocked-by`。
   - 挂 project（`$AGENT_LINEAR_PROJECT`）、打 `ready-for-agent`、状态 Todo：
     `scripts/agent-gates/agent-graph.sh linear save-issue --team <KEY> --project $AGENT_LINEAR_PROJECT --state Todo --label ready-for-agent --estimate <N> --title "<标题>" --body-file -`
-- 处理 `auto-failed` 票：读 coordinator 评论里的证据与 PR，向用户解释卡在哪，给三个选项：
-  1. 改需求重开：改票面（SCOPE / CHECK / 拆分），`label remove --label auto-failed --label auto-impl`，`label add --label ready-for-agent`，`status set --to Todo`。
-  2. 升档重试：`label remove --label auto-failed`，`label add --label ready-for-agent --label tier:<高一档>`，`status set --to Todo`；保留 coordinator 的评论作为下一轮的上下文。
-  3. 转人做：`label remove --label auto-failed --label ready-for-agent --label auto-impl`，保留 In Progress，评论指派给谁。
+- `auto-failed` 票由 resolver 接管：读取处置进度并汇报；不清空失败标签、预算或历史记录来重开执行。
 - 汇报：`scripts/agent-gates/agent-graph.sh ledger stats`（按 lane、按 tier 的首跑通过率）；`scripts/agent-gates/agent-graph.sh linear list-issues --team <KEY> --project $AGENT_LINEAR_PROJECT --json` 过滤本周 Done。
 
 ## Does Not Own

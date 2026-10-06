@@ -350,9 +350,11 @@ stale() {
 mark_stale() {
   ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
   ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
-  ocall linear comment add "$1" --body "转人: 在途超过 ${STALE_HOURS} 小时无更新，疑似 coordinator 中断（worktree/PR 若存在均保留）
+  ocall linear comment add "$1" --body "Agent处置: 在途超过 ${STALE_HOURS} 小时无更新，疑似 coordinator 中断（worktree/PR 若存在均保留）
 证据: ${BASH_SOURCE[0]}:61 的 stale 判定为 true，票据 $1 已至少 ${STALE_HOURS} 小时无更新
-需要你: 检查票据 $1 对应的 coordinator 运行状态" >/dev/null || exit 3
+处置要求: 检查票据 $1 对应的 coordinator 运行状态
+阶段: Agent处置
+归属: 处置Agent" >/dev/null || exit 3
   escalated=$((escalated + 1))
 }
 
@@ -522,9 +524,11 @@ release_claim() {
   ocall linear label remove "$1" --label "$LABEL_CLAIMED" >/dev/null || exit 3
   if (( claim_failures >= 2 )); then
     ocall linear label add "$1" --label "$LABEL_FAILED" >/dev/null || exit 3
-    ocall linear comment add "$1" --body "转人: 已多次认领失效（worktree/PR 若存在均保留）
+    ocall linear comment add "$1" --body "Agent处置: 已多次认领失效（worktree/PR 若存在均保留）
 证据: orca linear issue $1 --comments 的评论中已有 ${claim_failures} 次认领失效；${claim_reason}
-需要你: 排查票据 $1 的认领失效原因" >/dev/null || exit 3
+处置要求: 排查票据 $1 的认领失效原因
+阶段: Agent处置
+归属: 处置Agent" >/dev/null || exit 3
     stale_ids+=("$1")
     escalated=$((escalated + 1))
   else
@@ -711,14 +715,17 @@ for id in $ready_ids; do
 done
 # This advisory read must never change claimability or abort the scan.
 failed_backlog='?'
+resolver_ids=''
 if failed_out="$(ocall linear list-issues --team "$TEAM" --project "$PROJECT" --label "$LABEL_FAILED" --order-by createdAt)"; then
   failed_backlog="$(jq -er '
     .result.issues | if type != "array" then error("issues missing") else . end
     | map(select(.state.type != "completed" and .state.type != "canceled")) | length
   ' <<<"$failed_out" 2>/dev/null)" || failed_backlog='?'
+  resolver_ids="$(jq -er '.result.issues | map(select(.state.type != "completed" and .state.type != "canceled") | .identifier | select(type == "string" and test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))) | join(",")' <<<"$failed_out" 2>/dev/null)" || resolver_ids=''
 fi
 rate_guard
+echo "resolver=$resolver_ids"
 echo "claimable=$(IFS=,; echo "${claimable[*]-}") in_flight=$in_flight max=$MAX_IN_FLIGHT"
 echo "stale=$(IFS=,; echo "${stale_ids[*]-}")"
 echo "health=live=$in_flight max=$MAX_IN_FLIGHT released=$released escalated=$escalated failed_backlog=$failed_backlog"
-(( ${#claimable[@]} > 0 && in_flight < MAX_IN_FLIGHT ))
+[[ -n "$resolver_ids" ]] || (( ${#claimable[@]} > 0 && in_flight < MAX_IN_FLIGHT ))

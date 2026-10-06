@@ -185,7 +185,7 @@ func TestCorrectionTierAndCap(t *testing.T) {
 			e.Config.Effort = "low"
 			tools.gateReds = 5
 			result, err := e.Execute(context.Background(), ticket)
-			if err != nil || result.State.Owner != machine.OwnerHuman || s.sessions != 3 || len(o.starts) != 4 {
+			if err != nil || result.State.Owner != machine.OwnerResolver || s.sessions != 3 || len(o.starts) != 4 {
 				t.Fatalf("result=%+v err=%v sessions=%d starts=%d", result, err, s.sessions, len(o.starts))
 			}
 			want := []string{"fast-model", "fast-model", "fast-model", "fast-model"}
@@ -205,7 +205,7 @@ func TestCorrectionMissingArtifactBudget(t *testing.T) {
 	tools.gateReds = 1
 	s.missing = true
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerHuman || s.sessions != 3 || len(o.starts) != 1 || s.children != 0 {
+	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerResolver || s.sessions != 3 || len(o.starts) != 1 || s.children != 0 {
 		t.Fatalf("result=%+v err=%v sessions=%d children=%d starts=%d", result, err, s.sessions, s.children, len(o.starts))
 	}
 	assertBudgetHandoff(t, l)
@@ -224,7 +224,7 @@ func TestInfraBudgetExhaustion(t *testing.T) {
 	e, _, tools, _, l, ticket := recoveryFixture(t)
 	tools.emptyReviews = 3
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerHuman {
+	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerResolver {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	assertBudgetHandoff(t, l)
@@ -236,7 +236,7 @@ func assertBudgetHandoff(t *testing.T, l *budgetLinear) {
 		t.Fatalf("labels=%+v", last)
 	}
 	lines := strings.Split(l.comments[len(l.comments)-1], "\n")
-	if len(lines) != 3 || !strings.HasPrefix(lines[0], "转人: ") || !strings.HasPrefix(lines[1], "证据: ") || !strings.HasPrefix(lines[2], "需要你: ") {
+	if len(lines) != 5 || !strings.HasPrefix(lines[3], "阶段: Agent处置") || !strings.HasPrefix(lines[4], "归属: 处置Agent") || !strings.HasPrefix(lines[0], "Agent处置: ") || !strings.HasPrefix(lines[1], "证据: ") || !strings.HasPrefix(lines[2], "处置要求: ") {
 		t.Fatalf("handoff=%q", lines)
 	}
 }
@@ -322,7 +322,7 @@ func TestInfraBudgetGateTransport(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerHuman || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+	if err != nil || result.State.Infra != 3 || result.State.Owner != machine.OwnerResolver || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
 	}
 	assertBudgetHandoff(t, l)
