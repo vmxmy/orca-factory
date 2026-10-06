@@ -129,7 +129,7 @@ func TestSecondExecutorFailureEscalates(t *testing.T) {
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.launched) != 0 || len(f.actions) != 1 || f.actions[0].Kind != Human {
+	if len(f.launched) != 1 || len(f.actions) != 1 || f.actions[0].Kind != Resolve {
 		t.Fatalf("actions=%v", f.actions)
 	}
 }
@@ -185,7 +185,7 @@ func TestStaleInflightEscalatesWithoutRetry(t *testing.T) {
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.actions) != 1 || f.actions[0].Kind != Human || len(f.launched) != 0 {
+	if len(f.actions) != 1 || f.actions[0].Kind != Resolve || len(f.launched) != 1 {
 		t.Fatalf("actions=%v", f.actions)
 	}
 }

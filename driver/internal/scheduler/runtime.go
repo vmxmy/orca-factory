@@ -169,11 +169,20 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		if err = readOwnership(&ticket, comments); err != nil {
 			return nil, err
 		}
+		// Legacy failed labels without ownership need a new capacity reservation.
+		if failed && ticket.Owner == "" {
+			ticket.Owner = machine.OwnerHuman
+			ticket.Phase = machine.PhaseHuman
+		}
 		readMergeHandoff(&ticket, comments)
+		ticket.Resolution, err = readResolution(comments)
+		if err != nil {
+			return nil, err
+		}
 		// Cancellation cannot erase an already durable deployment barrier.
 		// Done may also precede the final merge ownership receipt.
 		canceled := issue.State.Name == "Canceled" || issue.State.Name == "Cancelled"
-		if (canceled && !DeploymentBarrier(ticket)) || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && !DeploymentBarrier(ticket)) {
+		if (canceled && !DeploymentBarrier(ticket)) || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && ticket.Owner != machine.OwnerResolver && !DeploymentBarrier(ticket)) {
 			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
@@ -190,7 +199,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
 			}
 		}
-		if ticket.Legacy || ticket.Candidate || owned(ticket) || DeploymentBarrier(ticket) {
+		if ticket.Legacy || ticket.Candidate || owned(ticket) || ticket.Owner == machine.OwnerHuman || DeploymentBarrier(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
 				if err != nil {
@@ -228,7 +237,7 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 			}
 			owner := machine.Owner(fields[0])
 			switch owner {
-			case machine.OwnerNone, machine.OwnerExecutor, machine.OwnerMerge, machine.OwnerHuman:
+			case machine.OwnerNone, machine.OwnerExecutor, machine.OwnerMerge, machine.OwnerHuman, machine.OwnerResolver:
 			default:
 				return errors.New("unknown ticket owner")
 			}
@@ -303,17 +312,23 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 			return errors.New("linear release failed")
 		}
 		owner = machine.OwnerNone
-	case Human:
-		if _, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
-			return errors.New("linear escalation failed")
+	case Resolve:
+		if t.Resolution != nil && t.Resolution.Phase == "result" {
+			return r.applyResolution(ctx, t)
 		}
-		owner = machine.OwnerHuman
+		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
+			return errors.New("resolver labels unconfirmed")
+		}
+		owner = machine.OwnerResolver
 	default:
 		return errors.New("invalid scheduler action")
 	}
 	body := fmt.Sprintf("阶段: %s\n归属: %s term=- run=- attempt=%d scheduler-attempt=%d since=%s", a.Phase, owner, a.Attempt, a.Attempt, now.UTC().Format(time.RFC3339))
-	if a.Kind == Human {
-		body = "转人: " + a.Reason + "\n证据: scheduler inspection\n需要你: 检查执行器并决定是否重新排队\n" + body
+	if a.Kind == Resolve {
+		if t.Run != "" {
+			body = strings.Replace(body, " run=- ", " run="+t.Run+" ", 1)
+		}
+		body = "Agent处置: " + a.Reason + "\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n" + body
 	}
 	if _, err := client.CreateComment(ctx, t.ID, body); err != nil {
 		return errors.New("ownership comment failed")
@@ -329,11 +344,17 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		return errors.New("invalid executor launch configuration")
 	}
 	verb := " exec "
+	if t.Owner == machine.OwnerResolver {
+		if t.Resolution != nil && t.Resolution.Phase == "result" {
+			return nil
+		}
+		verb = " resolve "
+	}
 	if t.Phase == machine.PhaseCorrection && t.Handoff != nil && t.Progress != nil && t.Progress.Phase == "correction" && t.Progress.QueueID == t.Handoff.QueueID {
 		// A merge-lane conflict resume runs the executor as a merge resolver.
 		verb = " exec --merging "
 	}
-	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver exec " + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
+	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		return errors.New("executor launch uncertain")
 	}

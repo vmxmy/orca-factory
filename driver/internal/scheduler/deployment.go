@@ -13,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -59,7 +60,7 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 		return nil
 	}
 	if d.State != "pending" {
-		return r.pauseDeployment(ctx, t, p, "deployment requires human reconciliation")
+		return r.pauseDeployment(ctx, t, p, "deployment requires agent reconciliation")
 	}
 	owner, repo, _ := strings.Cut(p.Repository, "/")
 	if d.Workflow != "" {
@@ -100,7 +101,7 @@ func (r *Runtime) pauseDeployment(ctx context.Context, t Ticket, p *merge.Progre
 		d.Reason = reason
 	}
 	b, _ := json.Marshal(p)
-	body := "转人: " + d.Reason + "\n需要你: 核对部署与 smoke，使用 resume-deployment 显式恢复\n阶段: 转人\n归属: 人\n" + merge.ProgressPrefix + string(b)
+	body := "Agent处置: " + d.Reason + "\n处置要求: 核对部署与 smoke，返回绑定队列和 SHA 的恢复决策\n阶段: Agent处置\n归属: 处置Agent\n" + merge.ProgressPrefix + string(b)
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
@@ -122,13 +123,19 @@ func (r *Runtime) runSmoke(ctx context.Context, t Ticket, p *merge.Progress) ([]
 	return run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", p.Deployment.Smoke}, Dir: t.Repo, Env: env, Timeout: 30 * time.Second})
 }
 
-// ResumeDeployment only records an explicit human decision. The caller must
+// ResumeDeployment records an explicit reconciled decision. The caller must
 // exclude serve with the same process lock; dry-run does not require a lock.
 // Queue and SHA are mandatory to prevent a stale operator command from acting
 // on a new handoff. This never merges, queries workflows or executes smoke.
+var errDeploymentProposal = errors.New("deployment proposal rejected")
+
+func rejectDeploymentProposal(reason string) error {
+	return fmt.Errorf("%w: %s", errDeploymentProposal, reason)
+}
+
 func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, action, operator, reason string, dry bool) error {
 	if strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" || strings.ContainsAny(operator+reason, "\r\n") || !commitID(sha) || queue == "" {
-		return errors.New("recovery requires queue, squash SHA, operator and reconciliation reason")
+		return rejectDeploymentProposal("recovery requires queue, squash SHA, operator and reconciliation reason")
 	}
 	repos := []config.Repository{}
 	for _, repo := range r.Repositories {
@@ -142,19 +149,19 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	for i := range tickets {
 		if tickets[i].Identifier == identifier {
 			if target != nil {
-				return errors.New("ambiguous recovery ticket")
+				return rejectDeploymentProposal("ambiguous recovery ticket")
 			}
 			target = &tickets[i]
 		}
 	}
 	if target == nil {
-		return errors.New("deployment barrier not found")
+		return rejectDeploymentProposal("deployment barrier not found")
 	}
 	t := *target
 	p := t.Progress
 	h := t.Handoff
 	if t.MergeProblem != "" || p == nil || h == nil || p.Deployment == nil || p.QueueID != queue || p.QueueID != h.QueueID || p.MergeSHA != sha || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || p.Phase != "merged" {
-		return errors.New("recovery identity mismatch")
+		return rejectDeploymentProposal("recovery identity mismatch")
 	}
 	next := *p
 	deployment := *p.Deployment
@@ -162,25 +169,25 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	p = &next
 	d := p.Deployment
 	if d.State != "paused" && d.State != "smoke-intent" {
-		return errors.New("deployment is not awaiting human recovery")
+		return rejectDeploymentProposal("deployment is not awaiting recovery")
 	}
 	switch action {
 	case "confirm-passed":
 		d.State = "passed"
 	case "retry-workflow":
 		if d.Workflow == "" || d.SmokeStarted {
-			return errors.New("smoke may have executed; reconcile explicitly")
+			return rejectDeploymentProposal("smoke may have executed; reconcile explicitly")
 		}
 		d.State = "pending"
 	case "retry-smoke":
 		if d.Smoke == "" || !d.SmokeStarted {
-			return errors.New("no smoke execution to reconcile")
+			return rejectDeploymentProposal("no smoke execution to reconcile")
 		}
 		d.State = "pending"
 		d.SmokeStarted = false
 		d.SmokePassed = false
 	default:
-		return errors.New("invalid deployment recovery action")
+		return rejectDeploymentProposal("invalid deployment recovery action")
 	}
 	now := time.Now()
 	if r.Now != nil {
@@ -189,13 +196,20 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""
 	if !deploymentTransition(t.Progress, p) {
-		return errors.New("invalid or stale deployment recovery")
+		return rejectDeploymentProposal("invalid or stale deployment recovery")
 	}
 	if dry {
 		return nil
 	}
 	b, _ := json.Marshal(p)
-	return r.mergeComment(ctx, t, "阶段: 排队合并\n归属: 合并通道\n"+merge.ProgressPrefix+string(b))
+	body := "阶段: 排队合并\n归属: 合并通道\n" + merge.ProgressPrefix + string(b)
+	if t.Resolution != nil && t.Resolution.Phase == "result" && operator == "resolver:"+t.Resolution.Dispatch {
+		settled := *t.Resolution
+		settled.Phase = "applied"
+		raw, _ := json.Marshal(settled)
+		body += "\n" + resolver.Prefix + string(raw)
+	}
+	return r.mergeComment(ctx, t, body)
 }
 
 func deploymentIdentity(t Ticket) error {

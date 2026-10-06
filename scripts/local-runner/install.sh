@@ -5,10 +5,10 @@ image_file=${1:?usage: install.sh IMAGE_ID_FILE}
 image_id=$(cat -- "$image_file")
 [[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]
 /usr/bin/docker image inspect "$image_id" >/dev/null
-for slot in 1 2; do
+for slot in 1 2 3 4; do
   state=$(systemctl --user show "orca-go-isolated-runner@$slot.service" -p ActiveState --value)
   if [[ "$state" != inactive && "$state" != failed ]]; then
-    echo "Drain/stop both runner slots before updating installed code." >&2
+    echo "Drain/stop all runner slots before updating installed code." >&2
     exit 1
   fi
 done

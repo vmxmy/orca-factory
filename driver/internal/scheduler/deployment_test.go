@@ -153,7 +153,7 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 		original.ServeHTTP(w, r)
 	})
 	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
-	if !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 人") {
+	if !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
 		t.Fatalf("failure not durably escalated: %v", f.linear.bodies)
 	}
 	conclusion = "success"

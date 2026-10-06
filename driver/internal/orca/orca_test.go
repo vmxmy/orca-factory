@@ -321,12 +321,3 @@ func TestTerminalSend(t *testing.T) {
 		}
 	}
 }
-
-func TestWorkerStartTerminalArguments(t *testing.T) {
-	c, log := fake(t)
-	_, err := c.WorkerStart(context.Background(), firstID, StartOptions{Run: "run_one", Task: "child_task", Worktree: "path:/original/worktree", Terminal: "term_original"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	argv(t, log, []string{"orchestration", "worker-start", "--run", "run_one", "--task", "child_task", "--worktree", "path:/original/worktree", "--terminal", "term_original", "--timeout-ms", "300000", "--retry-request", firstID, "--json", "END"})
-}

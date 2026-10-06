@@ -156,32 +156,32 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		return result, err
 	}
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	cp := checkpoint{}
-	if restored != nil {
-		cp = *restored
-	}
-	released := map[string]bool{}
-	releaseWorker := func(worker checkpoint) error {
-		if worker.Dispatch == "" || !worker.Settled || released[worker.Dispatch] {
+	request := func(step string) string { return scopedRequest(t, c, step+"-"+result.DispatchID, 1) }
+	releaseAttempted := false
+	releaseAllowed := false
+	release := func() error {
+		if result.DispatchID == "" || releaseAttempted || !releaseAllowed {
 			return nil
 		}
-		released[worker.Dispatch] = true
-		if cp.Dispatch == worker.Dispatch {
-			cp.AgentTerminal = ""
-		}
+		releaseAttempted = true
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		if _, releaseErr := e.Orca.WorkerRelease(cleanup, scopedRequest(t, c, "release-"+worker.Dispatch, 1), worker.Dispatch); releaseErr != nil {
-			e.warn("%s worker release failed for dispatch %s: %v", t.Identifier, worker.Dispatch, releaseErr)
+		// A settled dispatch no longer needs its worker; a failed release only leaks
+		// an idle worker and must not fail the ticket.
+		if _, releaseErr := e.Orca.WorkerRelease(cleanup, request("release"), result.DispatchID); releaseErr != nil {
+			e.warn("%s worker release failed for dispatch %s: %v", t.Identifier, result.DispatchID, releaseErr)
 		}
 		return nil
 	}
-	release := func() error { return releaseWorker(cp) }
 	defer func() { err = errors.Join(err, release()) }()
 	// diffBase is the head's merge-base with current main: a worker that rebased
 	// must not be charged for main's commits since the claim baseline.
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, failureSummary, reviewerTier string
 	var mergeGateOutput, mergeReviewOutput string
+	cp := checkpoint{}
+	if restored != nil {
+		cp = *restored
+	}
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
 		previous := result.State
@@ -201,12 +201,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		status.Push(e.Now(), func(view *status.View) {
 			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
 		})
-		if next.Phase == machine.PhaseHuman && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
+		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
 			}
-			return e.handoff(ctx, t, next, evidence)
+			return e.handoff(ctx, t, next, evidence, result.RunID, &cp)
 		}
 		if charged {
 			if err := e.backoff(ctx, next.Infra); err != nil {
@@ -220,8 +220,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if previous.Phase == machine.PhaseReview {
 			body += "\n审查命令档位: " + reviewerTier
 		}
-		if next.Phase == machine.PhaseHuman {
-			body = "转人: " + next.HumanReason + "\n证据: " + string(previous.Phase) + "\n需要你: 检查 worker 分支并重新排队\n" + body
+		if next.Phase == machine.PhaseResolver {
+			body = "Agent处置: " + next.HumanReason + "\n证据: " + string(previous.Phase) + "\n处置要求: 检查 worker 分支并重新排队\n" + body
 		}
 		if ev == machine.EvOpenPR {
 			body = "PR 已开: " + result.PR.HTMLURL + "\n" + body
@@ -357,7 +357,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
 	if cp.MergeCause != "" {
 		result.State.Phase = machine.PhaseCorrection
-		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, transition, releaseWorker)
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, transition)
 		if correctionErr != nil || !again {
 			return result, correctionErr
 		}
@@ -387,7 +387,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if err := transition(machine.EvWorkerStall, nil); err != nil {
 				return err
 			}
-			if result.State.Owner == machine.OwnerHuman {
+			if result.State.Owner == machine.OwnerResolver {
 				return errBudgetExhausted
 			}
 			return nil
@@ -396,7 +396,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			err = e.retryRead(ctx, t, &result, "task polling", func() error {
 				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, &watch, observeIdle)
 				// The stall transition already accounts for exhaustion and handoff.
-				if result.State.Owner == machine.OwnerHuman {
+				if result.State.Owner == machine.OwnerResolver {
 					return nil
 				}
 				return waitErr
@@ -404,10 +404,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if err != nil {
 				return result, err
 			}
-			if result.State.Owner == machine.OwnerHuman {
+			if result.State.Owner == machine.OwnerResolver {
 				return result, waitErr
 			}
-			cp.Settled = report.Provenance != provenanceExecutorLiveness
+			releaseAllowed = report.Provenance != provenanceExecutorLiveness
+		}
+		if cp.Completed {
+			releaseAllowed = cp.Settled
 		}
 		cp.Completed = false
 		if waitErr != nil {
@@ -427,14 +430,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if err = transition(event, nil); err != nil {
 			return result, err
 		}
-		// Keep the settled worker for an immediate correction.
-		if result.State.Phase != machine.PhaseCorrection {
-			if err = release(); err != nil {
-				return result, err
-			}
+		// A settled report authorizes cleanup, including before a correction handoff.
+		if err = release(); err != nil {
+			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, transition, releaseWorker)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -442,9 +443,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return result, nil
 			}
 			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
 			continue
 		}
-		if result.State.Owner == machine.OwnerHuman {
+		if result.State.Owner == machine.OwnerResolver {
 			return result, nil
 		}
 		err = e.retryRead(ctx, t, &result, "branch lookup", func() error { var readErr error; head, readErr = e.Tools.Head(ctx, c.Repo, branch); return readErr })
@@ -466,7 +469,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return result, err
 			}
 		}
-		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerHuman {
+		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerResolver {
 			return result, err
 		}
 		var output, verdict string
@@ -509,7 +512,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, transition, releaseWorker)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -517,9 +520,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return result, nil
 			}
 			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
 			continue
 		}
-		if result.State.Owner == machine.OwnerHuman {
+		if result.State.Owner == machine.OwnerResolver {
 			return result, nil
 		}
 		for result.State.Phase == machine.PhaseReview {
@@ -546,11 +551,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return result, err
 			}
 		}
-		if result.State.Owner == machine.OwnerHuman {
+		if result.State.Owner == machine.OwnerResolver {
 			return result, nil
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, transition, releaseWorker)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -558,6 +563,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return result, nil
 			}
 			taskID = cp.Task
+			releaseAttempted = false
+			releaseAllowed = false
 			continue
 		}
 		break

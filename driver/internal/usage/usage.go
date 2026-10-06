@@ -61,7 +61,7 @@ type Result struct {
 
 var ticketPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
 
-func collectItems(o Options) (Result, error) {
+func collectItems(ctx context.Context, o Options) (Result, error) {
 	result := Result{Ticket: o.Ticket, PriceVersion: prices.Version, Items: []Item{}, Skipped: []FileError{}}
 	if !ticketPattern.MatchString(o.Ticket) {
 		return result, errors.New("usage: valid ticket required")
@@ -121,6 +121,9 @@ func collectItems(o Options) (Result, error) {
 	}
 	for _, source := range []struct{ root, provider string }{{o.ClaudeDir, "claude"}, {o.CodexDir, "codex"}} {
 		err := filepath.WalkDir(source.root, func(path string, d fs.DirEntry, walkErr error) error {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if walkErr != nil {
 				result.Skipped = append(result.Skipped, FileError{path, fmt.Sprintf("cannot read session path: %v", walkErr)})
 				return nil
@@ -128,7 +131,7 @@ func collectItems(o Options) (Result, error) {
 			if !d.Type().IsRegular() || filepath.Ext(path) != ".jsonl" {
 				return nil
 			}
-			records, err := readSession(path, source.provider, roles, coordinatorIDs)
+			records, err := readSession(ctx, path, source.provider, roles, coordinatorIDs)
 			if err != nil {
 				result.Skipped = append(result.Skipped, FileError{path, err.Error()})
 				return nil
@@ -226,7 +229,7 @@ func Collect(ctx context.Context, ticket string, worktrees []string, attribution
 	for _, path := range worktrees {
 		options.Worktrees = append(options.Worktrees, Worktree{Path: path})
 	}
-	result, err := collectItems(options)
+	result, err := collectItems(ctx, options)
 	if err != nil {
 		return TicketUsage{}, err
 	}

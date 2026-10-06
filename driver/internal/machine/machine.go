@@ -16,7 +16,8 @@ const (
 	PhaseMergeQueue  Phase = "排队合并"
 	PhaseMerged      Phase = "已合并"
 	PhaseAwaitHuman  Phase = "等人批"
-	PhaseHuman       Phase = "转人"
+	PhaseHuman       Phase = "转人" // Historical durable receipts.
+	PhaseResolver    Phase = "Agent处置"
 )
 
 type Owner string
@@ -25,7 +26,8 @@ const (
 	OwnerNone     Owner = "无"
 	OwnerExecutor Owner = "执行器"
 	OwnerMerge    Owner = "合并通道"
-	OwnerHuman    Owner = "人"
+	OwnerHuman    Owner = "人" // Historical durable receipts.
+	OwnerResolver Owner = "处置Agent"
 )
 
 type Dependency string
@@ -120,15 +122,15 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		s.Owner = o
 		fx = append(fx, Effect(fmt.Sprintf("write-ownership owner=%s attempt=%d note=%s", o, s.Attempt, note)))
 	}
-	toHuman := func(reason string) {
-		s.Phase, s.HumanReason, s.ExecAlive = PhaseHuman, reason, false
-		own(OwnerHuman, reason)
-		fx = append(fx, "escalate-three-line-comment")
+	toResolver := func(reason string) {
+		s.Phase, s.HumanReason, s.ExecAlive = PhaseResolver, reason, false
+		own(OwnerResolver, reason)
+		fx = append(fx, "enqueue-resolver")
 	}
 	correction := func(cause string) {
 		s.Corrections++
 		if s.Corrections > lim.Corrections {
-			toHuman("correction exhausted: " + cause)
+			toResolver("correction exhausted: " + cause)
 			return
 		}
 		s.Phase = PhaseCorrection
@@ -137,7 +139,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 	infra := func(what string) {
 		s.Infra++
 		if s.Infra >= lim.Infra {
-			toHuman("infra budget exhausted: " + what)
+			toResolver("infra budget exhausted: " + what)
 			return
 		}
 		fx = append(fx, Effect(fmt.Sprintf("retry-step-after-backoff n=%d", s.Infra)))
@@ -199,7 +201,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			return reject("不在分支检查")
 		}
 		if ev == EvBranchNo {
-			toHuman("worker reported success but branch did not advance")
+			toResolver("worker reported success but branch did not advance")
 		} else {
 			s.Phase = PhaseGate
 		}
@@ -254,8 +256,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		fx = append(fx, "open-pr-rest-idempotent-by-branch")
 		s.ExecAlive = false
 		if s.ManualGlob {
-			s.Phase = PhaseAwaitHuman
-			own(OwnerHuman, "manual approval glob")
+			toResolver("approval required by repository policy")
 		} else {
 			s.Phase = PhaseMergeQueue
 			own(OwnerMerge, "handoff")
@@ -295,7 +296,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		}
 		s.ExecFailures++
 		if s.ExecFailures >= lim.ExecFailures {
-			toHuman("executor failed twice")
+			toResolver("executor failed twice")
 			break
 		}
 		startExecutor("resume")

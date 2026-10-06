@@ -26,5 +26,5 @@
 ## Handoff
 
 - 只回给 coordinator：stdout 末尾一个 JSON 对象，`step` 固定 `review`。
-- `red` → coordinator 打回 worker（计一次 correction）；`green` → coordinator 继续开 PR 转人批。
-- 改动文件命中本仓库 `AGENT_LANE3_GLOBS`（由 coordinator 在简报前一行以 `本仓库 AGENT_LANE3_GLOBS=<值>` 给出），或 diff 中出现密钥、token、私钥等明文 → `red`，`reason` 以 `lane3:` 开头，coordinator 直接转人。
+- `red` → coordinator 打回 worker（计一次 correction）；`green` → coordinator 继续开 PR，按合并通道检查推进；审批等待交给 resolver 复核。
+- 改动文件命中本仓库 `AGENT_LANE3_GLOBS`（由 coordinator 在简报前一行以 `本仓库 AGENT_LANE3_GLOBS=<值>` 给出），或 diff 中出现密钥、token、私钥等明文 → `red`，`reason` 以 `lane3:` 开头，coordinator 派发 resolver 排查并保留 lane 3 屏障，resolver 不能代替所需授权。

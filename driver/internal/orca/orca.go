@@ -47,12 +47,22 @@ func RequestID(ticket, unit, step string, attempt int) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:])
 }
 
-// Rejection is a structured Orca refusal, not an uncertain transport result.
-type Rejection struct{ Code string }
-
-func (e *Rejection) Error() string { return "orca command rejected: " + e.Code }
-
 func invalid(message string) error { return &infra.Ticket{Err: errors.New(message)} }
+
+// RejectedError carries the Orca mutation rejection code (see recorded samples).
+// Unwrapping to infra.Ticket keeps the existing non-retryable classification.
+type RejectedError struct{ Code string }
+
+func (e *RejectedError) Error() string { return "orca command rejected: " + e.Code }
+
+func (e *RejectedError) Unwrap() error { return &infra.Ticket{Err: errors.New(e.Code)} }
+
+// IsTerminalStale reports a terminal-reuse rejection: the handle is gone, so the
+// caller must fall back to a fresh agent instead of replaying the request.
+func IsTerminalStale(err error) bool {
+	var rejected *RejectedError
+	return errors.As(err, &rejected) && rejected.Code == "terminal_handle_stale"
+}
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
@@ -127,7 +137,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 			}
 		}
 		if envelope.Error != nil && validCode(envelope.Error.Code) {
-			return envelope.Result, &infra.Ticket{Err: &Rejection{Code: envelope.Error.Code}}
+			return envelope.Result, &RejectedError{Code: envelope.Error.Code}
 		}
 		return envelope.Result, invalid("orca command rejected")
 	}
@@ -182,8 +192,7 @@ func (c *Client) RunUse(ctx context.Context, request, run string) (Receipt, erro
 }
 
 type StartOptions struct {
-	Terminal                                               string
-	Run, Task, Spec, Worktree, Agent, Model, Effort, Setup string
+	Run, Task, Spec, Worktree, Agent, Model, Effort, Setup, Terminal string
 	Name, Repo, BaseBranch, RetryOf                        string
 }
 
@@ -197,11 +206,12 @@ func (c *Client) WorkerStart(ctx context.Context, request string, o StartOptions
 	if o.RetryOf != "" && o.Task == "" {
 		return nil, invalid("retry requires task")
 	}
-	if o.Terminal != "" && (o.Agent != "" || o.Model != "" || o.Effort != "") {
-		return nil, invalid("terminal reuse cannot select launch preferences")
-	}
 	if o.Effort != "" && o.Model == "" {
 		return nil, invalid("effort requires model")
+	}
+	// Terminal reuse drives an already-running agent; launch flags would conflict.
+	if o.Terminal != "" && (o.Agent != "" || o.Model != "" || o.Effort != "") {
+		return nil, invalid("terminal reuse excludes agent flags")
 	}
 	args := []string{"orchestration", "worker-start"}
 	for _, pair := range [][2]string{{"--run", o.Run}, {"--task", o.Task}, {"--spec", o.Spec}, {"--worktree", o.Worktree}, {"--terminal", o.Terminal}, {"--agent", o.Agent}, {"--model", o.Model}, {"--effort", o.Effort}, {"--setup", o.Setup}, {"--name", o.Name}, {"--repo", o.Repo}, {"--base-branch", o.BaseBranch}, {"--retry-of", o.RetryOf}} {

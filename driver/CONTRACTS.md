@@ -14,17 +14,16 @@
 | 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `linear.TestRecordedInverseRelations` |
 | 调度器认领时写 `term=- run=-`，表示执行器尚未登记 | `linear-comment-ownership-unregistered.json` | `scheduler.TestRecordedOwnershipUnregistered` |
 | 审查员常把结尾的 verdict JSON 包在 Markdown 代码块里 | `reviewer-output-fenced.txt` | `executor.TestRecordedReviewerOutput` |
-| 执行器转人评论固定三行（转人、证据、需要你），不含归属行；调度器以「转人:」开头识别归属转为人 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
+| 历史执行器转人评论固定三行；调度器仍以「转人:」识别旧归属，并按容量接管为 resolver；新回执含 Agent处置、证据、处置要求、阶段与归属 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
 | git 的网络失败（TLS 握手、超时、解析失败）在 stderr 中报告，可重试；HTTP 403、404 不可重试 | `git-stderr-tls-failure.txt`、`git-stderr-auth-failure.txt` | `infra.TestRecordedGitNetworkFailureIsTransient` |
 | worker worktree 名为 `<票号>-<单元>`，本地分支是 Orca 起的（如 `vmxmy/ZII-893-executor`），`agent/<票号>/<单元>` 只是推送目标 | `git-worktree-list-porcelain.bin` | `executor.TestRecordedWorkerWorktree` |
 | `claude -p` 的 `--allowedTools` 是可变参数，会吞掉后面的位置参数；审查员的说明与 diff 必须一起走 stdin | — | `executor.TestReviewSendsPromptAndDiffOnStdin`，`driver selftest --live` |
 | `terminal send --wait-submit` 的回执 `send.prompt.stages` 含 `turn_started` 才证明 agent 开始了一轮；shell 等提供方只给 `input_accepted`（`observation: unsupported`） | `orca-prompt-receipt-codex-turn-started.json`、`orca-terminal-send-wait-submit-shell.json` | `orca.TestRecordedTerminalSendTurnStarted` |
 | `orca worktree set` 成功回执带 `result.worktree`；选择器不匹配时拒绝码为 `selector_not_found` | `orca-worktree-set.json`、`orca-worktree-set-not-found.json` | `orca.TestRecordedWorktreeSet` |
+| `worker-start --task --terminal <handle> --worktree path:` 复用已结算 worker 的终端：受理回执带 dispatchId、`stage=input_accepted`；终端忙时排队而非拒绝；handle 失效时拒绝码 `terminal_handle_stale`（回退起新 agent） | `orca-worker-start-reuse-terminal.json`、`orca-worker-start-reuse-busy-queued.json`、`orca-worker-start-reuse-rejected.json` | `executor.TestRecordedWorkerStartReuseTerminal` |
 | 在已有 worktree 上 `worker-start` 等 agent 就绪可超过 30 秒（实测 38 秒）；驱动器的调用超时必须长于传给 Orca 的 `--timeout-ms` | `request-show` 实测（ZII-897 第 3 次 correction） | `orca.TestCommands`、`orca.TestFailedStartRetry` 断言 `--timeout-ms` |
 | `orca orchestration worker-list` 的 `projection.liveness.verdict` 为 `exited` / `unverifiable`；`unverifiable` 不代表进程死亡；`resource.worktreeId` 形如 `<repoId>::<绝对路径>` | `orca-worker-list-liveness.json`（2026-10-06 从 Run `run_9714ea9b8576` 重录；仅保留契约字段并替换 worktree 路径） | `orca.TestRecordedWorkerListLiveness` |
 | `orca orchestration worker-stop --dispatch` 对未结算的 dispatch 返回 `state: stopped`、`alreadySettled: false`、`processAction: closed_agent_terminal`；停后该 dispatch 在 `worker-list` 里变为 `failed` / `process_stopped` | `orca-worker-stop.json`（真实回执，2026-10-06） | `orca.TestRecordedWorkerStop`、`TestCommands` |
-| settled worker 可用 `worker-start --task <new> --terminal <handle> --worktree path:<path>` 复用，省略 agent/model/effort；回执 `dispatchId` 是新派工，`effects` 中 `terminal/agent/reused` 保留句柄 | `orca-worker-start-reuse-terminal.json`（真实回执，2026-10-06；无 prompt 文本，仅投递元数据） | `orca.TestRecordedWorkerStartReuseTerminal`、`executor.TestCorrectionReusesWorkerTerminal` |
-| `worker-release` 关闭终端后再次用该 handle 派工返回 `ok:false`、`error.code:agent_unconfigured`；明确拒绝才允许释放旧 worker 后用新请求启动新 agent，不确定回执不重放 | `orca-worker-start-reuse-released.json`（同一一次性 Run，2026-10-06；已释放 worker 并关闭录制终端） | `orca.TestRecordedWorkerStartReuseTerminal`、`executor.TestCorrectionReuseRejectedFallsBack` |
 | Codex 启动崩溃（`account/read failed … workspace routing discovery timed out`）时 worker 的 `stage.detail` 为 `turn_start_unobserved`、`liveness.verdict` 为 `unverifiable`。**尚无录制文件**：2026-10-06 在 ZII-901 现场观察到，停掉后状态已变；下次再现时必须录下并补测试 | — | `executor.TestWaitStopsWorkerThatNeverStarted`（合成值） |
 | Linear `issueUpdate` 移除票上没有的标签时拒绝整个更新（`Label not on issue`，INPUT_ERROR）；`UpdateIssue` 先读当前标签，只加缺少的、只删存在的 | `linear-remove-absent-label.json` | `linear.TestRecordedRemoveAbsentLabel` |
 | 探测额度只需一次 `query { viewer { id } }`：响应头 `x-ratelimit-requests-limit/remaining/reset` 反映当前预算（Reset 是滑动窗口，约为现在加一小时，不是预算回满的时刻）；样本里 viewer id 已替换为全零 | `linear-viewer-probe.json`、`linear-response-headers.txt` | `linear.TestRecordedQuotaProbe`、`scheduler.TestQuotaPauseProbesWithoutSnapshotAndResumesWithHysteresis` |
@@ -110,3 +109,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 仅 live `driver serve` 在获得单例锁后启用发布；dry-run 不创建发布适配器。每轮已获准的仓库巡检结束后扫描，发布计划先写入 `~/.local/state/orca-factory/releases/<仓库名 SHA-256>.json`，记录入队时间、固定 main、文件字节、PR、合并 SHA 和完成状态。功能 PR 与发布 PR 在同一仓库按持久入队时间选出唯一队首，再复用 `internal/merge` 合并。
 
 重启先恢复同一发布分支与 PR，已确认的合并不重做；tag 和 release 写入失败通过读取远端回执恢复。发布只改 manifest 版本、存在时的 `MOD_VERSION` 和 CHANGELOG。等待期间插件源码变化、发布分支被改写、tag 指向冲突、追赶预算耗尽或 smoke 结果不确定时保留队首并报告错误，需要人工核对后恢复；不得删除状态来绕过这些阻塞。部署/冒烟未确认通过前不放行后续 PR。
+
+## Resolver 处置
+
+- `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。
+- mutation 请求按终端作用域生成；替换终端读取完整 task-list/worker-list 对账，不重放旧终端请求。丢失 Run 回执时尚未允许派工，可创建仅属于替换控制器的空 Run。
+- task-list 缺 dispatch_id 是合法的；已有身份用于释放，缺身份时须从 worker-list 的 taskId/runId/dispatchId 关联恢复。录制样本 `orca-resolver-worker-list.json` 来自真实复核 worker 的只读列表，保留完整行集合并移除预览、目录等非契约字段；`resolver.TestRecordedWorkerAssociationRecoversReplacement` 覆盖该契约。
+- 原执行器退出后允许独立处置 Agent 排查保留的 worker；原 Run 未确认停止推进前，调度器拒绝处置成功提案。失效部署提案退回限时重试，读写不确定则保留原身份继续对账。

@@ -30,3 +30,11 @@ test('ranks corrections and excludes unknown first-gate outcomes', () => {
   expect(data.topCorrections).toEqual([{ ticket: 'X-1', corrections: 3 }])
   expect(data.firstGate).toEqual([{ key: 'fast/lane2', green: 1, total: 2 }])
 })
+
+test('counts resolver handoffs alongside historical human handoffs', () => {
+  const data = buildFailures({ comments: { X: [
+    { body: 'Agent处置: CI failure\n处置要求: repair', createdAt: '2026-10-05T12:00:00Z' },
+    { body: '转人: CI failure', createdAt: '2026-10-05T12:00:00Z' },
+  ] }, now: Date.parse('2026-10-06T12:00:00Z') })
+  expect(data.handoffReasons).toEqual([{ reason: 'CI failure', count: 2 }])
+})

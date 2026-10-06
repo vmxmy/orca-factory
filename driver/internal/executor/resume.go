@@ -16,9 +16,9 @@ import (
 // The ticket state directory is the same durable location as brief.md/gate.spec.
 // Persist association before dispatch: an unknown mutation is never a new worker.
 type checkpoint struct {
-	AgentTerminal                                string `json:",omitempty"`
 	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
 	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
+	StartedAt, Terminal                          string `json:",omitempty"`
 	Settled                                      bool
 	Run, Task, Dispatch, Worktree, Baseline      string
 	Corrections                                  int
@@ -136,9 +136,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if !mergeRepair && cp != nil {
 		result.State.Infra += cp.Infra
 		if result.State.Infra >= machine.DefaultLimits.Infra {
-			result.State.Owner, result.State.Phase = machine.OwnerHuman, machine.PhaseHuman
+			result.State.Owner, result.State.Phase = machine.OwnerResolver, machine.PhaseResolver
 			result.State.HumanReason = "infra budget exhausted: checkpoint recovery"
-			if err := e.handoff(ctx, t, result.State, "checkpoint recovery"); err != nil {
+			if err := e.handoff(ctx, t, result.State, "checkpoint recovery", cp.Run, cp); err != nil {
 				return result, err
 			}
 			return result, errBudgetExhausted

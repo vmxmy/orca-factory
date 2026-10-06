@@ -13,7 +13,7 @@
 
 ## 读取清单
 
-按序读，存在的都读，缺共享条款即停并转人。路径都从仓库根打开。运行时只读 `scripts/agent-gates/`，不读 `core/`，不对两份做 diff。
+按序读，存在的都读，缺共享条款即暂停当前执行并派发 resolver 恢复条款，恢复前不得继续。路径都从仓库根打开。运行时只读 `scripts/agent-gates/`，不读 `core/`，不对两份做 diff。
 
 - `scripts/agent-gates/constitution/engineering.md`
 - `scripts/agent-gates/constitution/workflow.md`

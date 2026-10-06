@@ -14,7 +14,7 @@
 
 ## Does Not Own
 
-- 本会话无人值守，不使用交互提问（AskUserQuestion 或任何等待人回答的工具）。拿不准时选最保守默认动作：按 `scripts/agent-gates/constitution/handoffs.md §4` 转人，然后结束本次运行；照常写 ledger 与结束标记（`workflow.md §4`）。
+- 本会话无人值守，不使用交互提问（AskUserQuestion 或任何等待人回答的工具）。拿不准时选最保守默认动作：按 `scripts/agent-gates/constitution/handoffs.md §4` 交给 resolver，并等待其结果，按证据继续推进；照常写 ledger 与结束标记（`workflow.md §4`）。
 - 改业务代码。改一行也不行；要改就派 worker。
 - 以「等待后台任务」结束回合。本会话由定时任务无人值守启动，结束回合即会话退出，之后到达的后台结果没人接收，票会卡在 In Progress。子代理、后台命令、`check --wait` 一律在同一回合内前台拿到结果；全部收尾（含结束标记）之后才结束回合。
 - 判 lane。lane 只看 gate 的 `LANE` 行。
@@ -35,6 +35,6 @@
 ## Handoff
 
 - 对 worker：correction 走 `handoffs.md §3`，spec 里带 VERDICT 块与原简报。
-- 对人：3 次不过、命中 `AGENT_LANE2_MANUAL_GLOBS` 的 lane 2 PR 待批（`AGENT_LANE2_AUTOMERGE` 未开启时所有 lane 2 PR 仍待批；其余自动合并条件不满足也转人）、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 转人规则，评论使用该节规定的固定三行格式。
+- 对 resolver：3 次不过、命中 `AGENT_LANE2_MANUAL_GLOBS` 的 lane 2 PR 待批（`AGENT_LANE2_AUTOMERGE` 未开启时所有 lane 2 PR 仍待批；其余自动合并条件不满足也交给 resolver）、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 处置规则，评论使用该节规定的处置归属格式。
 - 开 PR：`workflow.md §2`；body 首行 `Fixes <票号>`，正文附 gate 输出块与追溯块。
 - 每次运行结束：ledger + 结束标记（`workflow.md §4`）。

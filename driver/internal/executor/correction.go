@@ -94,7 +94,7 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 
 type transitionFunc func(machine.Event, func([]machine.Effect) error) error
 
-func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, transition transitionFunc, release func(checkpoint) error) (bool, error) {
+func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, transition transitionFunc) (bool, error) {
 	e.logger().Info("correction", "reason", cause, "fail_summary", summary)
 	var err error
 	brief, err = failHistoryBrief(c, t, brief)
@@ -146,7 +146,23 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		if err != nil {
 			return false, err
 		}
-		if tierEscalation(c) {
+		// Same tier + a live worker terminal means the settled worker can be reused
+		// instead of launching a fresh agent (ZII-904).
+		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort
+		handle := cp.Terminal
+		if sameTier && handle == "" && result.DispatchID != "" {
+			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})
+			if listErr == nil {
+				for _, w := range workers {
+					if w.DispatchID == result.DispatchID && w.AgentTerminalHandle != "" {
+						handle = w.AgentTerminalHandle
+						break
+					}
+				}
+			}
+		}
+		canReuse := sameTier && handle != ""
+		if tierEscalation(c) && !sameTier {
 			if err = e.comment(ctx, t.ID, fmt.Sprintf("correction %d → 升至 %s", result.State.Corrections, tier)); err != nil {
 				return false, errors.New("tier comment failed")
 			}
@@ -155,24 +171,40 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if !hasEffect(fx, "worker-start-child-task-reuse-worktree") {
 				return errors.New("missing correction worker effect")
 			}
-			parent := *cp
 			cp.Corrections = result.State.Corrections
 			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
-			fresh := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
-			previousTier, _, _, _, err := correctionTier(c, parent.Corrections)
-			if err != nil {
+			if canReuse {
+				// startDispatch clears PendingParent; keep the parent for a fallback.
+				parent := cp.Task
+				reuseErr := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Terminal: handle})
+				if reuseErr == nil {
+					cp.Terminal = handle
+					result.DispatchID = cp.Dispatch
+					return nil
+				}
+				if !orca.IsTerminalStale(reuseErr) {
+					return reuseErr
+				}
+				// The terminal is gone: fall back to a fresh agent. The reuse
+				// attempt already consumed the child-task request, so the fallback
+				// creates its child under a distinct request scope.
+				fresh, childErr := e.recovery().ChildTask(ctx, cp.Run, parent, childSpec, scopedRequest(t, c, "child-fallback", cp.Corrections+1))
+				if childErr != nil {
+					return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(childErr))
+				}
+				freshOpts := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
+				freshOpts.Task = fresh
+				if err := e.startDispatch(ctx, c, t, cp, freshOpts); err != nil {
+					return err
+				}
+				cp.Terminal = ""
+				result.DispatchID = cp.Dispatch
+				return nil
+			}
+			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
 				return err
 			}
-			opts := fresh
-			if tier == previousTier && cp.Settled && cp.AgentTerminal != "" {
-				opts = orca.StartOptions{Run: result.RunID, Worktree: fresh.Worktree, Terminal: cp.AgentTerminal}
-			} else if err := release(parent); err != nil {
-				return err
-			}
-			fallback := func() (orca.StartOptions, error) { return fresh, release(parent) }
-			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, opts, fallback); err != nil {
-				return err
-			}
+			cp.Terminal = ""
 			result.DispatchID = cp.Dispatch
 			return nil
 		})
@@ -193,7 +225,7 @@ func correctionTier(c Config, n int) (tier, agent, model, effort string, err err
 		return
 	}
 	agent, model, effort = c.Agent, c.Model, c.Effort
-	if tierEscalation(c) && n > 0 {
+	if tierEscalation(c) {
 		index += n
 		if index > 2 {
 			index = 2

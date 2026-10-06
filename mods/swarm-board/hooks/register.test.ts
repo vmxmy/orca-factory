@@ -34,7 +34,7 @@ test('wide lane view shows every lane head with its emoji', async $ => {
     plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board',
     props: { title: 'Swarm', bodyColumns: 160 },
   })
-  expect(await ui.find({ type: 'Text', text: /🙋 需要人/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🙋 Agent处置/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /✅ 今日完成/ })).toBeDefined()
   await ui.unmount()
 })
@@ -164,7 +164,7 @@ const failedFixture = async ($: any, on: any, count = 1) => {
   const reads: string[] = []
   let comments: unknown = { result: { comments: [
     { body: '转人: 旧卡点\n需要你: 旧动作', createdAt: '2026-10-01T00:00:00Z' },
-    { body: '转人: 缺少凭据\n证据: gate red\n需要你: 配置凭据后重试', createdAt: '2026-10-02T00:00:00Z' },
+    { body: 'Agent处置: 缺少凭据\n证据: gate red\n处置要求: 配置凭据后重试', createdAt: '2026-10-02T00:00:00Z' },
     { body: '已领取 (ZII-' + '807)', createdAt: '2026-10-02T00:30:00Z' },
     { body: '普通进度评论', createdAt: '2026-10-03T00:00:00Z' },
   ] } }
@@ -202,25 +202,25 @@ const failedFixture = async ($: any, on: any, count = 1) => {
 test('health badge is green with no auto-failed tickets', async ($, on) => {
   await failedFixture($, on, 0)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /🟢 需要人 0/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🟢 Agent处置 0/ })).toBeDefined()
   await ui.unmount()
 })
 
 test('health badge is red with three auto-failed tickets', async ($, on) => {
   await failedFixture($, on, 3)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /🔴 需要人 3/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🔴 Agent处置 3/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('needs-you cards show the latest handoff and intake guidance in both views', async ($, on) => {
+test('resolver cards show the latest handoff and resolution guidance in both views', async ($, on) => {
   await failedFixture($, on)
   const ui = await mount($, 'terminal')
   for (const key of ['view-task', 'view-swarm']) {
     await ui.press({ key })
     expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /处理好后，开 intake 会话：按 scripts\/agent-gates\/roles\/intake.md 工作，处理 ZII-807/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /处置：配置凭据后重试/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /处置 Agent 接管 ZII-807，完成修复与复核后继续推进/ })).toBeDefined()
   }
   await ui.unmount()
 })
@@ -235,7 +235,7 @@ test('empty comment reads keep the last successful handoff in both views', async
   for (const key of ['view-task', 'view-swarm']) {
     await ui.press({ key })
     expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
-    expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /处置：配置凭据后重试/ })).toBeDefined()
   }
   await ui.unmount()
 })
@@ -249,7 +249,7 @@ test('failed comment commands preserve the last successful handoff', async ($, o
   await fixture.refresh()
   await ui.redraw()
   expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /需要你：配置凭据后重试/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /处置：配置凭据后重试/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -303,11 +303,11 @@ test('linear rate-limit response keeps the last-good ticket list and warns in th
   await ui.unmount()
 })
 
-test('ticket in both failed and inflight shows only in the 需要人 lane', async ($, on) => {
+test('ticket in both failed and inflight shows only in the Agent处置 lane', async ($, on) => {
   await failedFixture($, on)
   const ui = await $.ui.mount({ plugin: 'swarm-board', surface: 'terminal', component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm', bodyColumns: 160 } })
   expect(await ui.find({ type: 'Text', text: /🔨 实现中 \(0\)/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /🙋 需要人 \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -419,7 +419,7 @@ test('handoff parsing stops after three failed tickets while inflight claimedAt 
   expect(reads).toHaveLength(5)
   expect(new Set(reads).size).toBe(5)
   const ui = await mount($, 'terminal')
-  expect(await ui.find({ type: 'Text', text: /处理 ZII-811/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /处置 Agent 接管 ZII-811/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /卡点：缺少凭据/ })).toBeDefined()
   await ui.unmount()
 })
@@ -1018,7 +1018,7 @@ for (const failure of ['missing', 'nonzero', 'invalid', 'wrong shape']) {
   test('driver ' + failure + ' preserves the original board output', async ($, on) => {
     await driverFixture($, on, failure === 'wrong shape' ? '{}' : 'invalid', failure === 'nonzero' ? 1 : 0, failure === 'missing')
     const ui = await mount($, 'terminal')
-    expect(await ui.find({ type: 'Text', text: /🟢 需要人 0/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /🟢 Agent处置 0/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /Linear 用量未知/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /驱动器 Linear/ })).toBeUndefined()
     expect(await ui.find({ type: 'Text', text: /全局暂停/ })).toBeUndefined()
@@ -1196,5 +1196,23 @@ test('online driver cannot prove an unread dependency list is claimable', async 
   await driverFixture($, on, JSON.stringify({ state: 'ok', generatedAt: new Date().toISOString(), tickets: [], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }), 0, false, false)
   const ui = await mount($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /驱动器下一轮巡检领取/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('driver resolver ownership appears in resolution lane without failed label', async ($, on) => {
+  await driverFixture($, on, JSON.stringify({ generatedAt: new Date().toISOString(), state: 'ok', tickets: [{ repo: '/repo', identifier: 'ZII-888', owner: '处置Agent', phase: 'Agent处置' }], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }))
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('driver candidate stage remains in queue alongside resolver ownership', async ($, on) => {
+  await driverFixture($, on, JSON.stringify({ generatedAt: new Date().toISOString(), state: 'ok', tickets: [
+    { repo: '/repo', identifier: 'ZII-888', owner: '无', phase: '待领', stage: 'candidate' },
+    { repo: '/repo', identifier: 'ZII-889', owner: '处置Agent', phase: 'Agent处置' },
+  ], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }))
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /待领 \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
   await ui.unmount()
 })

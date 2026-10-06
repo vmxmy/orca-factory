@@ -2,7 +2,7 @@ type DriverLimit = { remaining: number; reset: string }
 export type DriverStatus = { state: 'unknown' | 'stale' } | {
   state: 'ok'
   generatedAt: string | number
-  tickets: { repo: string; identifier: string; owner: string; phase: string }[]
+  tickets: { repo: string; identifier: string; owner: string; phase: string; stage?: string }[]
   globalPause: { active: boolean; durationSeconds: number }
   linear: { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
 }

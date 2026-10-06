@@ -2,11 +2,11 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -17,17 +17,14 @@ import (
 func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions) error {
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
-	cp.AgentTerminal = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
+	if cp.StartedAt == "" {
+		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
+	}
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
-	step := "worker"
-	if opts.Terminal != "" {
-		step = "worker-reuse"
-	}
-	receipt, callErr := e.workerStart(ctx, scopedRequest(t, c, step, cp.Corrections+1), opts)
-	cp.AgentTerminal = agentTerminalReceipt(receipt)
+	receipt, callErr := e.workerStart(ctx, scopedRequest(t, c, "worker", cp.Corrections+1), opts)
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
 	}
@@ -43,9 +40,10 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 		return err
 	}
 	if callErr != nil {
-		var rejection *orca.Rejection
-		if opts.Terminal != "" && errors.As(callErr, &rejection) {
-			return rejection
+		// A stale-terminal rejection is a definite outcome, not an uncertain one:
+		// pass it through so the correction can fall back to a fresh agent.
+		if orca.IsTerminalStale(callErr) {
+			return callErr
 		}
 		return fmt.Errorf("worker start uncertain; reconcile dispatch before retry: %w", safeDependencyError(callErr))
 	}
@@ -132,7 +130,7 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 
 // Child creation is itself an uncertain mutation. Checkpoint its parent before
 // the request so a restart cannot mistake the old successful task for this one.
-func (e *Executor) startCorrectionDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, spec string, opts orca.StartOptions, fallback func() (orca.StartOptions, error)) error {
+func (e *Executor) startCorrectionDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, spec string, opts orca.StartOptions) error {
 	parent := cp.Task
 	cp.MergeCause = ""
 	cp.PendingParent = parent
@@ -144,16 +142,6 @@ func (e *Executor) startCorrectionDispatch(ctx context.Context, c Config, t Tick
 	child, err := e.recovery().ChildTask(ctx, cp.Run, parent, spec, scopedRequest(t, c, "child", cp.Corrections+1))
 	if err != nil {
 		return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(err))
-	}
-	opts.Task = child
-	err = e.startDispatch(ctx, c, t, cp, opts)
-	_, rejected := err.(*orca.Rejection)
-	if opts.Terminal == "" || !rejected || cp.Dispatch != "" || fallback == nil {
-		return err
-	}
-	opts, err = fallback()
-	if err != nil {
-		return err
 	}
 	opts.Task = child
 	return e.startDispatch(ctx, c, t, cp, opts)
@@ -178,20 +166,3 @@ func (*unconfirmedDispatchError) Error() string {
 	return "worker start uncertain; reconcile dispatch before retry"
 }
 func (e *unconfirmedDispatchError) Unwrap() error { return e.cause }
-
-// Worker-start records the actual agent handle in its effects on current Orca.
-func agentTerminalReceipt(receipt orca.Receipt) string {
-	if handle := receiptString(receipt, "agentTerminalHandle"); handle != "" {
-		return handle
-	}
-	var effects []struct{ Kind, Role, ID string }
-	if json.Unmarshal(receipt["effects"], &effects) != nil {
-		return ""
-	}
-	for _, effect := range effects {
-		if effect.Kind == "terminal" && effect.Role == "agent" {
-			return effect.ID
-		}
-	}
-	return ""
-}

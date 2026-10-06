@@ -76,7 +76,7 @@ func TestStartCorrectionAfterMainAdvances(t *testing.T) {
 				t.Fatalf("recovery changed budgets: %+v", result.State)
 			}
 			if !repaired {
-				if result.State.Owner != machine.OwnerHuman || result.State.HumanReason != "worker reported success but branch did not advance" || result.PR.Number != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
+				if result.State.Owner != machine.OwnerResolver || result.State.HumanReason != "worker reported success but branch did not advance" || result.PR.Number != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 {
 					t.Fatalf("current main is not a repair: result=%+v gates=%d reviews=%d", result, tools.gateCalls, tools.reviewCalls)
 				}
 				return

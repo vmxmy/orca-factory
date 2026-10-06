@@ -107,3 +107,25 @@ make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
 - [setup-go v6.0.0](https://github.com/actions/setup-go/tree/v6.0.0)：`go-version-file` 优先读取 toolchain，`cache-dependency-path` 指向 driver/go.sum。
 - [upload-artifact v4.6.2](https://github.com/actions/upload-artifact/tree/v4.6.2)：`.omc` 下报告需要 `include-hidden-files: true`，只上传明确列出的报告文件。
 - [GitHub workflow 语法](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax)：路径/分支过滤可使被跳过的必需检查保持 pending。
+
+### Resolver role
+
+Exceptions and approval waits now transfer to `处置Agent` / `Agent处置`.
+Historical `人` / `转人` / `等人批` receipts remain readable and are admitted
+through the same resolver path. `driver resolve <ticket>` supervises an Orca
+worker using `scripts/agent-gates/roles/resolver.md`; `AGENT_ROLE_RESOLVER`
+overrides `AGENT_TIER_STRONG` (`agent:model:effort`, default `codex`).
+
+The ticket ledger stores `resolver-state` receipts before dispatch and release.
+A retry in the same terminal reuses its frozen payload and request identity.
+A replacement terminal reconciles the original task and dispatch from complete
+Orca reads; missing evidence never authorizes another worker start. A failed task retains
+its evidence and retries after five minutes. Resolver work consumes ordinary
+admission capacity. Read failures never authorize a second worker.
+
+Successful worker reports contain a JSON merge or deployment proposal. Only
+the scheduler applies it: gate/reviewer evidence, exact PR head, live CI,
+repository policy and deployment identity checks still run. Resolver approval
+permits lane 2 review waits; it does not permit lane 3. Deployment barriers keep
+their FIFO position while a resolver investigates. New validated work receives
+a new queue identity; old executor checkpoints and budgets are not reset.
