@@ -8,41 +8,19 @@ import { buildThroughput, renderThroughput } from './views/throughput'
 import type { ThroughputData, Run as ThroughputRun } from './views/throughput'
 import { buildFailures, renderFailures } from './views/failures'
 import type { FailureView } from './views/failures'
+import { WATCH_POLL_MS, shouldReload } from './snapshot-watch'
+import { parseDriverStatus, pickStatusSource } from './driver-status'
+import type { DriverStatus } from './driver-status'
+import { driverHeadText } from './driver-head'
+import { aggregateUsage, createUsageReader, ledgerUsage } from './usage'
+import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './usage'
 
-import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
 
+type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
 type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[] }
 
-type DriverLimit = { remaining: number; reset: string }
-type DriverStatus = { state: 'unknown' | 'stale' } | {
-  state: 'ok'
-  globalPause: { active: boolean; durationSeconds: number }
-  linear: { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
-}
-const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object'
-const driverLimit = (value: unknown): value is DriverLimit =>
-  record(value) && typeof value.remaining === 'number' && Number.isFinite(value.remaining) && typeof value.reset === 'string'
-const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
-  if (!record(value)) return undefined
-  if (value.state === 'unknown' || value.state === 'stale') return { state: value.state }
-  if (value.state !== 'ok' || !record(value.globalPause) || !record(value.linear)) return undefined
-  const pause = value.globalPause, usage = value.linear
-  if (typeof pause.active !== 'boolean' || typeof pause.durationSeconds !== 'number'
-      || !Number.isFinite(pause.durationSeconds) || pause.durationSeconds < 0
-      || typeof usage.requests !== 'number' || !Number.isFinite(usage.requests)
-      || typeof usage.complexity !== 'number' || !Number.isFinite(usage.complexity)
-      || !Array.isArray(usage.limits)) return undefined
-  const limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] = []
-  for (const limit of usage.limits) {
-    if (!record(limit) || typeof limit.repo !== 'string' || !driverLimit(limit.requests) || !driverLimit(limit.complexity)) return undefined
-    limits.push({ repo: limit.repo, requests: limit.requests, complexity: limit.complexity })
-  }
-  return {
-    state: 'ok', globalPause: { active: pause.active, durationSeconds: pause.durationSeconds },
-    linear: { requests: usage.requests, complexity: usage.complexity, limits },
-  }
-}
 
 type Agent = BaseAgent & { requiresAction?: boolean }
 type WorkerProjection = { provider?: { model?: string } | null; attention?: { requiresAction?: boolean } }
@@ -111,18 +89,8 @@ let TMP_DIR = ''
 let SNAPSHOT_FILE = ''
 // ms epoch of the last live `orca linear list-issues` dispatched by refresh(); 0 before the first one.
 let lastLinearFallbackAt = 0
-const usagePath = (kind: 'claude' | 'codex') => HOME + '/Library/Application Support/orca/orca-' + kind + '-usage.json'
 const workspaces = () => HOME + '/orca/workspaces'
 const AUTOMATION_NAME = (repo: string) => 'agent-linear-scan (' + repo + ')' // install.sh names it so
-
-// USD per 1M tokens: [input, output, cache read]. Unknown model = no cost.
-const PRICE: Record<string, [number, number, number]> = {
-  'claude-sonnet-5-5': [3, 15, 0.3],
-  'claude-opus-5-5': [15, 75, 1.5],
-  'claude-haiku-4-5': [0.8, 4, 0.08],
-}
-const GPT_PRICE: [number, number, number] = [1.25, 10, 0.125]
-const priceOf = (model: string) => PRICE[model] ?? (/(^|\/)gpt-/.test(model) ? GPT_PRICE : null)
 
 // One glyph per state, everywhere: ● working  ◐ waiting  ▲ needs a person  ✓ done  · queued
 const G = { work: '●', wait: '◐', human: '▲', done: '✓', queued: '·' }
@@ -208,11 +176,6 @@ const verGT = (a: string, b: string): boolean => {
   return false
 }
 
-const addTok = (a: Tokens | undefined, b: Tokens | undefined): Tokens | undefined =>
-  !a ? b : !b ? a : { in: a.in + b.in, out: a.out + b.out, cache: a.cache + b.cache }
-const addCost = (a: Cost | undefined, b: Cost | undefined): Cost | undefined =>
-  !a ? b : !b ? a : { usd: a.usd + b.usd, known: a.known || b.known, partial: a.partial || b.partial || a.known !== b.known }
-
 // ---- ledger stats cache + Linear hourly usage ----------------------------------------------------
 // Ledger stats triggers Linear reads (list-issues + per-ticket comments). Caching it for ten minutes
 // keeps the open board under the Linear hourly budget; the refresh button never busts this cache.
@@ -220,10 +183,8 @@ let ledgerCache: { at: number; stats: string[] } | null = null
 // Timestamps (ms) of every `orca linear …` call the board itself just made, trimmed to the last hour.
 const boardLinearCalls: number[] = []
 
-// ---- token usage (Orca cache files) -------------------------------------------------------------
-// One row per session × location that lies inside one of the asked worktree paths.
-type Row = { path: string; model: string; in: number; out: number; cache: number }
-let usageCache: { key: string; rows: Row[] } | null = null
+let readUsage = createUsageReader()
+let ticketLedgerCache: { at: number; rows: Record<string, LedgerUsage>; comments: ReturnType<typeof deepComments> } | null = null
 
 // Test-only reset for module-level caches so each test case starts clean.
 export const __resetSwarmBoardCachesForTests = () => {
@@ -233,8 +194,11 @@ export const __resetSwarmBoardCachesForTests = () => {
   HOME = ''
   TMP_DIR = ''
   SNAPSHOT_FILE = ''
+  driverStatusFile = ''
+  driverCache = undefined
   lastLinearFallbackAt = 0
-  usageCache = null
+  readUsage = createUsageReader()
+  ticketLedgerCache = null
   paneOpen = false
 }
 
@@ -250,58 +214,30 @@ export const RESET_LINEAR_THROTTLE_COMMAND = 'swarm:__reset-linear-throttle-for-
 // The testing harness exposes no direct way to send a `ui.close` event.
 export const SIMULATE_CLOSE_COMMAND = 'swarm:__simulate-close-for-tests__'
 
-const rowsOf = (kind: 'claude' | 'codex', data: any, paths: string[]): Row[] => {
-  const rows: Row[] = []
-  for (const s of data?.sessions ?? []) {
-    const entries = kind === 'codex' ? (s.locationModelBreakdown ?? s.locationBreakdown ?? []) : (s.locationBreakdown ?? [])
-    for (const l of entries) {
-      const k = String(l.locationKey ?? '').replace(/^cwd:/, '')
-      const p = paths.find(x => k === x || k.startsWith(x + '/'))
-      if (!p) continue
-      rows.push(kind === 'codex'
-        ? { path: p, model: l.modelKey ?? s.primaryModel ?? '', in: (l.inputTokens ?? 0) - (l.cachedInputTokens ?? 0), out: l.outputTokens ?? 0, cache: l.cachedInputTokens ?? 0 }
-        : { path: p, model: s.model ?? '', in: l.inputTokens ?? 0, out: l.outputTokens ?? 0, cache: l.cacheReadTokens ?? 0 })
-    }
-  }
-  return rows
-}
+const usageFields = (usage?: TicketUsage) => usage ? {
+  usage, model: usage.model,
+  tokens: { in: usage.input + usage.cacheWrite, out: usage.output, cache: usage.cacheRead },
+  cost: { usd: usage.usd, known: usage.known, partial: usage.known && usage.partial },
+} : {}
 
-// jq projection used when the file is over the 4 MiB $.fs.read limit: keeps only sessions that touch the paths.
-const JQ = '($paths | map("cwd:" + .)) as $ks | { sessions: [ .sessions[]? | select(any((.locationModelBreakdown // .locationBreakdown)[]?; .locationKey as $k | any($ks[]; . as $p | $k == $p or ($k | startswith($p + "/"))))) | { model, primaryModel, locationBreakdown, locationModelBreakdown } ] }'
-
-async function loadUsage($: any, paths: string[]): Promise<Row[]> {
+async function loadUsage($: any, paths: string[]): Promise<UsageRecord[]> {
   if (paths.length === 0) return []
-  let key = paths.join('|')
-  for (const f of (['claude', 'codex'] as const).map(usagePath)) { try { key += '|' + ((await $.fs.stat(f))?.mtimeMs ?? '') } catch { key += '|-' } }
-  if (usageCache?.key === key) return usageCache.rows
-  const rows: Row[] = []
-  for (const kind of ['claude', 'codex'] as const) {
-    const f = usagePath(kind)
-    let data: any = null
-    try { data = json(await $.fs.read(f)) } catch {
-      try { data = json((await $.process.run(['jq', '-c', '--argjson', 'paths', JSON.stringify(paths), JQ, f], { timeoutMs: TIMEOUT_MS })).stdout) } catch { data = null }
-    }
-    if (data) rows.push(...rowsOf(kind, data, paths))
-  }
-  usageCache = { key, rows }
-  return rows
-}
-
-const usageFor = (rows: Row[], path: string): { tokens?: Tokens; cost?: Cost; model: string } => {
-  const mine = rows.filter(r => r.path === path)
-  if (mine.length === 0) return { model: '' }
-  const tokens: Tokens = { in: 0, out: 0, cache: 0 }
-  const cost: Cost = { usd: 0, known: false, partial: false }
-  const byModel: Record<string, number> = {}
-  for (const r of mine) {
-    tokens.in += r.in; tokens.out += r.out; tokens.cache += r.cache
-    byModel[r.model] = (byModel[r.model] ?? 0) + r.out
-    const p = priceOf(r.model)
-    if (p) { cost.known = true; cost.usd += (r.in * p[0] + r.out * p[1] + r.cache * p[2]) / 1e6 } else cost.partial = true
-  }
-  if (!cost.known) cost.partial = false
-  const model = Object.entries(byModel).sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
-  return { tokens, cost, model }
+  return readUsage({
+    files: async () => {
+      const r = await $.process.run(['bash', '-c',
+        'for dir in "$@"; do if [ -d "$dir" ]; then find "$dir" -type f -name "*.jsonl" || exit; fi; done',
+        'usage', ...paths.map(p => HOME + '/.claude/projects/' + p.replace(/[^a-zA-Z0-9]/g, '-')), HOME + '/.codex/sessions'], { timeoutMs: TIMEOUT_MS })
+      if (r.exitCode !== 0) throw new Error(r.stderr || '会话目录读取失败')
+      return r.stdout.split('\n').filter((p: string) => p && (p.includes('/.claude/projects/') || /\/rollout-[^/]+\.jsonl$/.test(p)))
+    },
+    mtime: async path => (await $.fs.stat(path))?.mtimeMs,
+    read: async path => {
+      // Project only accounting fields, avoiding the SDK's 4 MiB transcript read limit.
+      const r = await $.process.run(['jq', '-Rc', 'fromjson? | select(.message.usage or .type == "session_meta" or .type == "turn_context" or .payload.type == "token_count") | {type,cwd,uuid,message:(.message | if . then {id,model,usage} else null end),payload:(.payload | if . then {type,cwd,model,info} else null end)}', path], { timeoutMs: TIMEOUT_MS })
+      if (r.exitCode !== 0) throw new Error(r.stderr || '会话用量读取失败')
+      return r.stdout
+    },
+  }, paths)
 }
 
 // ---- precheck -------------------------------------------------------------------------------
@@ -484,6 +420,60 @@ type Snapshot = {
   blockedBy?: Record<string, string[]>
 }
 
+async function readSnapshot($: any): Promise<Snapshot | null> {
+  try {
+    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
+    if (parsed && typeof parsed === 'object'
+        && Number.isFinite(parsed.generatedAt)
+        && Array.isArray(parsed.issues)
+        && parsed.comments && typeof parsed.comments === 'object') {
+      return parsed
+    }
+  } catch { return null }
+  return null
+}
+
+async function refreshSnapshot($: any, handoffs: Map<string, string>) {
+  const snapshot = await readSnapshot($)
+  if (!snapshot) return
+  const now = Date.now()
+  const snapshotAgeMs = Math.max(0, now - snapshot.generatedAt * 1000)
+  if (snapshotAgeMs > SNAPSHOT_FRESH_MS) return
+  const old = await read($, board)
+  const previous = new Map([...old.inFlight, ...old.doneToday].map(t => [t.id, t]))
+  const all: Ticket[] = snapshot.issues.map(ticket).map(t => {
+    const cached = previous.get(t.id)
+    const comments = snapshot.comments[t.id] ?? []
+    const claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取'))
+      .map(c => c.createdAt).sort().pop() ?? ''
+    return { ...t, tokens: cached?.tokens, cost: cached?.cost, gate: cached?.gate, pr: cached?.pr, usage: cached?.usage, durationMin: cached?.durationMin, claimedAt }
+  })
+  const failed = all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
+    .map(t => {
+      const handoff = (snapshot.comments[t.id] ?? []).filter(c => String(c.body).trim().startsWith('转人:'))
+        .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
+      if (handoff) handoffs.set(t.id, handoff)
+      return { ...t, handoff: handoffs.get(t.id) }
+    })
+  const inFlight = all.filter(t => t.labels.includes('auto-impl') && t.state === 'started')
+  const phases = Object.fromEntries(inFlight.map(t => [t.id, old.phases?.[t.id] ?? {
+    phase: ticketPhase(t, { pr: t.pr }), since: t.claimedAt || t.updatedAt,
+  }]))
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0)
+  const b: Board = {
+    ...old, inFlight, failed, phases,
+    queue: all.filter(t => t.labels.includes('ready-for-agent') && t.state === 'unstarted')
+      .sort((a, b) => (a.priority || 9) - (b.priority || 9)),
+    doneToday: all.filter(t => t.state === 'completed' && Date.parse(t.updatedAt) >= dayStart.getTime()),
+    issueStates: Object.fromEntries(all.map(t => [t.id, t.state])),
+    blockedBy: snapshot.blockedBy,
+    snapshotAgeMs,
+    lastSuccessAt: now,
+  }
+  await update($, board, () => b)
+  $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+}
+
 async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
@@ -509,16 +499,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
-  let snapshot: Snapshot | null = null
-  try {
-    const parsed = json(await $.fs.read(SNAPSHOT_FILE))
-    if (parsed && typeof parsed === 'object'
-        && Number.isFinite((parsed as any).generatedAt)
-        && Array.isArray((parsed as any).issues)
-        && (parsed as any).comments && typeof (parsed as any).comments === 'object') {
-      snapshot = parsed as Snapshot
-    }
-  } catch { /* missing or unreadable snapshot */ }
+  const snapshot = await readSnapshot($)
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
   const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
@@ -550,7 +531,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
-  const driver = parseDriverStatus(await runJson(['orca-factory-driver', 'status', '--json']))
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
@@ -795,21 +775,48 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     ticketPaths[t.id] = [...(c.path ? [c.path] : []), ...(await workersOf(r.id)).map(k => k.path)]
   }
 
-  // Tokens and est. cost per worktree path, summed per agent and per ticket.
-  const rows = await loadUsage($, [...new Set(Object.values(ticketPaths).flat())])
-  for (const a of agents) {
-    if (a.path) {
-      const usage = usageFor(rows, a.path)
-      Object.assign(a, usage, { model: a.model || usage.model })
+  // Add linked cards even when per-run task reads were capped or a run has disappeared.
+  for (const [id, card] of cardByIssue) ticketPaths[id] = [...new Set([...(ticketPaths[id] ?? []), card.path])]
+  const worktreeToTicket: WorktreeToTicket = {}
+  for (const [id, paths] of Object.entries(ticketPaths)) for (const path of new Set(paths)) {
+    if (!path) continue
+    const previous = worktreeToTicket[path]
+    worktreeToTicket[path] = [...new Set([...(typeof previous === 'string' ? [previous] : previous ?? []), id])]
+  }
+  let usageError = '', rows: UsageRecord[] = []
+  try { rows = await loadUsage($, Object.keys(worktreeToTicket)) }
+  catch (e) { usageError = '用量读取失败：' + String(e) }
+  const byTicket = aggregateUsage(rows, worktreeToTicket)
+  const byPath = aggregateUsage(rows, Object.fromEntries(Object.keys(worktreeToTicket).map(p => [p, p])))
+  for (const a of agents) if (a.path) {
+    const usage = byPath[a.path]
+    Object.assign(a, usageFields(usage), { model: a.model || usage?.model || '' })
+  }
+  // Reuse the precheck payload; a fresh snapshot must never trigger extra Linear reads.
+  const localLedgerComments = useSnapshot ? Object.values(snapshot!.comments).flat().filter(c => c.body.startsWith('ledger ')) : []
+  if (localLedgerComments.length) {
+    ticketLedgerCache = { at: now, rows: ledgerUsage(localLedgerComments), comments: localLedgerComments }
+  } else if (!useSnapshot && !linearThrottled && (doneToday.length > 0 || failed.length > 0)
+      && (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS)) {
+    let ledger = all.find(t => t.title === '[ledger] agent-graph')?.id
+    if (!ledger) {
+      const found = await runJson(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
+      const issue = found?.result?.issues?.find((t: { title: string }) => t.title === '[ledger] agent-graph')
+      ledger = issue?.identifier ?? issue?.id
     }
+    const response = ledger ? await runOrca(['orca', 'linear', 'issue', ledger, '--comments', '--json']) : undefined
+    const comments = response?.ok ? deepComments(response.data) : ticketLedgerCache?.comments ?? []
+    ticketLedgerCache = { at: now, rows: ledgerUsage(comments), comments }
   }
   let todayCost = 0
-  const costOf = (id: string) => (ticketPaths[id] ?? []).reduce<{ tokens?: Tokens; cost?: Cost }>((acc, p) => { const u = usageFor(rows, p); return { tokens: addTok(acc.tokens, u.tokens), cost: addCost(acc.cost, u.cost) } }, {})
-  for (const t of [...inFlight, ...doneToday]) {
-    const u = costOf(t.id)
-    t.tokens = u.tokens; t.cost = u.cost; t.gate = gates[t.id]; t.pr = prOf(t.id)?.number
-    if (u.cost?.known) todayCost += u.cost.usd
+  for (const t of [...all, ...failed]) {
+    const ledger = ticketLedgerCache?.rows[t.id]
+    const usage = t.state === 'completed' ? ledger?.usage ?? byTicket[t.id] : byTicket[t.id]
+    Object.assign(t, usageFields(usage))
+    t.durationMin = t.state === 'started' ? undefined : ledger?.minutes
+    t.gate = gates[t.id]; t.pr = prOf(t.id)?.number
   }
+  for (const t of [...inFlight, ...doneToday]) if (t.cost?.known) todayCost += t.cost.usd
 
   // Ledger stats triggers Linear reads indirectly; cache for ten minutes and never bust from the
   // refresh button. On a failed read fall back to the last successful output (per the #45 rule).
@@ -866,7 +873,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const linearUsage = await readLinearUsage($, now)
   if (!linearOk) {
     return {
-      at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
+      at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases: old.phases, coordinatorAlive, driver: undefined,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -874,7 +881,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
   return {
-    at, error, maxInFlight, phases, coordinatorAlive, driver, inFlight, queue, failed, doneToday, prs,
+    at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases, coordinatorAlive, driver: undefined, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -882,18 +889,48 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
 }
 
-async function tick($: any, handoffs: Map<string, string>) {
-  const old = await read($, board)
-  const b = await refresh($, handoffs, old)
-  await update($, board, () => b)
-  await update($, lastTickAt, () => Date.now())
-  $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+let driverCache: DriverStatus | undefined
+let driverStatusFile = ''
+async function readDriverSnapshot($: any) {
+  if (!driverStatusFile) {
+    try {
+      const r = await $.process.run(['sh', '-c', 'printf %s "${XDG_RUNTIME_DIR:-/tmp}/orca-factory/status.json"'], { timeoutMs: TIMEOUT_MS })
+      if (r?.exitCode !== 0) return
+      driverStatusFile = String(r.stdout ?? '').trim()
+    } catch {
+      driverCache = undefined
+      return
+    }
+  }
+  let status: DriverStatus | undefined
+  try { status = parseDriverStatus(json(await $.fs.read(driverStatusFile))) }
+  catch { status = undefined } // A missing cache immediately restores precheck.
+  driverCache = status
 }
 
-async function manualRefresh($: any, handoffs: Map<string, string>) {
+function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Board {
+  if (!driver || driver.state !== 'ok') return { ...b, driver }
+  if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
+  const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
+  const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
+    id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
+    priority: 0, updatedAt: new Date(typeof driver.generatedAt === 'number' ? driver.generatedAt * 1000 : driver.generatedAt).toISOString(), claimedAt: '',
+  })
+  const ids = new Set(inFlight.map(t => t.id))
+  return { ...b, driver, inFlight, queue: b.queue.filter(t => !ids.has(t.id)), failed: b.failed.filter(t => !ids.has(t.id)) }
+}
+
+async function tick($: any, handoffs: Map<string, string>) {
   if (refreshing) return
   refreshing = true
-  try { await tick($, handoffs) } finally { refreshing = false }
+  try {
+    await readDriverSnapshot($)
+    const old = await read($, board)
+    const b = await refresh($, handoffs, old)
+    await update($, board, () => b)
+    await update($, lastTickAt, () => Date.now())
+    $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
+  } finally { refreshing = false }
 }
 
 async function toggleAutomation($: any, handoffs: Map<string, string>) {
@@ -922,7 +959,9 @@ export const register: Register = on => {
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
-  let polling = false
+  let timers: { cancel(): void }[] = []
+  let driverStat: { mtimeMs: number; size: number } | null = null
+  let prevStat: { mtimeMs: number; size: number } | null = null
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board' })
     return next(e)
@@ -932,17 +971,38 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     paneOpen = true
     void tick($, handoffs)
-    if (!polling) {
-      polling = true
+    if (!timers.length) {
       await update($, nowAtom, () => Date.now())
-      $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
+      timers.push($.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) }))
+      timers.push($.clock.every(WATCH_POLL_MS, async () => {
+        if (!paneOpen) return
+        if (!SNAPSHOT_FILE || refreshing) return
+        refreshing = true
+        try {
+          let stat: { mtimeMs: number; size: number } | null
+          try { stat = await $.fs.stat(SNAPSHOT_FILE) } catch { stat = null }
+          const reload = shouldReload(prevStat, stat)
+          prevStat = stat
+          if (reload && paneOpen) await refreshSnapshot($, handoffs)
+          if (!paneOpen) return
+          let nextDriverStat = null
+          try { if (driverStatusFile) nextDriverStat = await $.fs.stat(driverStatusFile) } catch { /* cache was removed */ }
+          if (shouldReload(driverStat, nextDriverStat)) await readDriverSnapshot($)
+          if (!nextDriverStat) driverCache = undefined
+          driverStat = nextDriverStat
+          if (paneOpen) await update($, nowAtom, () => Date.now())
+        } finally { refreshing = false }
+      }))
+      timers.push($.clock.every(1000, () => { if (paneOpen) void update($, nowAtom, () => Date.now()) }))
     }
     return { text: '蜂群看板已打开。' }
   })
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
     paneOpen = false
+    for (const timer of timers) timer.cancel()
+    timers = []
+    prevStat = driverStat = null
     return next(e)
   })
 
@@ -966,7 +1026,8 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [b, v, q, d, , tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
+    const [snapshotBoard, v, q, d, , tickMs] = await Promise.all([read($, board), read($, view), read($, showQueue), read($, detail), read($, nowAtom), read($, lastTickAt)])
+    const b = withDriver(snapshotBoard, driverCache, Date.now())
     const automation = (b as Board).automation
     const automationKnown = (b as Board).automationKnown
     const lastSuccessAt = (b as Board).lastSuccessAt
@@ -987,13 +1048,27 @@ export const register: Register = on => {
       </Box>
     )
     const ciText = (ci: Ci) => (ci.state === 'none' ? '' : 'CI ' + SYM[ci.state] + ' ' + ci.done + '/' + ci.total + ' ' + mins(ci.min))
+    const ticketMinutes = (t: Ticket) => t.state === 'started'
+      ? minutes(t.claimedAt || b.agents.find(a => a.ticket === t.id && a.role === 'coordinator')?.since || t.updatedAt, now)
+      : t.durationMin
+    const ticketAccounting = (t: Ticket) => {
+      const duration = ticketMinutes(t)
+      return '用时 ' + (duration === undefined ? '—' : mins(duration) || '0m')
+        + ' · token ' + (t.usage ? tok(t.usage.total) : '—')
+        + ' · ' + (usd(t.cost) || 'est. $?') + '（按 API 价折算' + (t.usage?.allocated ? ' · 分摊' : '') + '）'
+    }
     const tRow = (glyph: string, t: Ticket, color?: string) => {
       const w = cols - 22
-      return <Text color={color}>{glyph} {t.id.padEnd(8)} {cut(t.title, w).padEnd(w)} {age(t.updatedAt, now).padStart(9)}</Text>
+      return <Box flexDirection="column"><Text color={color}>{glyph} {t.id.padEnd(8)} {cut(t.title, w).padEnd(w)} {age(t.updatedAt, now).padStart(9)}</Text><Text dimColor>{ticketAccounting(t)}</Text></Box>
     }
     // Tasks view: swim lanes. One column per stage; a ticket is a small card that moves right.
     type Lane = { title: string; emoji: string; color?: string; items: Ticket[] }
-    const stage = (t: Ticket): 1 | 2 | 3 => laneStage(t, b.agents)
+    const stage = (t: Ticket): 1 | 2 | 3 => {
+      const phase = b.driver?.state === 'ok' ? b.driver.tickets.find(row => row.identifier === t.id)?.phase : undefined
+      if (phase === '排队合并' || phase === '开 PR') return 3
+      if (phase === 'gate' || phase === '审查') return 2
+      return phase ? 1 : laneStage(t, b.agents)
+    }
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
       const reason = lines[0]?.match(/^转人:\s*(.*)/)?.[1]
@@ -1025,6 +1100,7 @@ export const register: Register = on => {
     }
     // Why each queued ticket is still waiting. `null` means no reason text; the row is skipped.
     const lp = (b as Board).lastPrecheck
+    const driverOnline = b.driver?.state === 'ok'
     const blockedBy = (b as Board).blockedBy
     const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
@@ -1032,10 +1108,11 @@ export const register: Register = on => {
       const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed') : []
       return open.length > 0 ? open : undefined
     }
-    // Group-aware ticket classification: 等依赖 wins over claimable; precheck signals follow.
+    // Dependencies take precedence over the online driver and precheck signals.
     type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
     const queueGroupOf = (t: Ticket): QueueGroup => {
       if (blockersOf(t.id)) return 'blocked'
+      if (driverOnline) return 'claimable'
       if (!lp) return 'unknown'
       if (lp.claimable.includes(t.id)) return 'claimable'
       if (lp.uncertain) return 'warn'
@@ -1123,6 +1200,8 @@ export const register: Register = on => {
     }
     const phaseLine = (t: Ticket) => {
       if (!inFlightNoHuman.some(x => x.id === t.id)) return null
+      const live = b.driver?.state === 'ok' ? b.driver.tickets.find(row => row.identifier === t.id) : undefined
+      if (live) return <Text>{live.phase + ' · 归属 ' + live.owner + ' · ' + live.repo}</Text>
       const observation = (b as Board).phases?.[t.id]
       if (!observation) return null
       const elapsedMs = Number.isFinite(ts(observation.since)) ? now - ts(observation.since) : 0
@@ -1134,18 +1213,18 @@ export const register: Register = on => {
     }
     const laneCard = (l: Lane, t: Ticket, w: number) => {
       const pr = t.pr ? b.prs.find(p => p.number === t.pr) : undefined
-      const dur = mins(minutes(t.claimedAt || t.updatedAt, now))
+      const dur = ticketMinutes(t) === undefined ? '' : mins(ticketMinutes(t)!)
       const facts: string[] = []
       if (t.gate && t.gate.sec) facts.push('🧪 ' + secs(t.gate.sec))
       if (pr && pr.ci.state !== 'none' && pr.ci.total > 0) facts.push('🚦 ' + pr.ci.done + '/' + pr.ci.total + (pr.ci.min ? ' ' + mins(pr.ci.min) : ''))
       if (d && pr && (pr.adds || pr.dels)) facts.push('📝 +' + pr.adds + '/−' + pr.dels)
-      if (t.cost) facts.push('💲 ' + usd(t.cost))
       const head = statusEmojiOf(l, t, pr) + ' ' + t.id + (pr ? ' #' + pr.number : '')
       const headRoom = Math.max(0, w - (dur ? dur.length + 1 : 0))
       return (
         <Box key={'l-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={l.color}>{padW(cutW(head, headRoom), headRoom)}{dur ? ' ' + dur : ''}</Text>
           {phaseLine(t)}
+          <Text dimColor>{ticketAccounting(t)}</Text>
           <Text>{cutW(t.title, w)}</Text>
           {l.title === '需要人' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
@@ -1162,7 +1241,7 @@ export const register: Register = on => {
         const shown = blockers.slice(0, 3).map(id => shortId(id) + stateBadge(id)).join(' ')
         return '等 ' + shown + (blockers.length > 3 ? ' +' + (blockers.length - 3) : '')
       }
-      if (group === 'claimable') return '已入选，等 coordinator 领取'
+      if (group === 'claimable') return driverOnline ? '驱动器下一轮巡检领取' : '已入选，等 coordinator 领取'
       if (group === 'warn') {
         if (lp?.uncertain) return '读取失败：' + (lp.uncertainReason || '退出码 ' + lp.exitCode)
         const skip = lp?.skips[t.id]
@@ -1178,6 +1257,7 @@ export const register: Register = on => {
         <Box key={'ql-' + group + '-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={color}>{padW(cutW(head, w), w)}</Text>
           <Text>{cutW(t.title, w)}</Text>
+          <Text dimColor>{ticketAccounting(t)}</Text>
           {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
         </Box>
       )
@@ -1190,6 +1270,8 @@ export const register: Register = on => {
     const nextRunText = nextRunAtMs > 0 ? (nextRunRemainSec > 0 ? secs(nextRunRemainSec) : '即将') : '—'
     const resultText = (code: number) => (code === 0 ? '✓' : '跳过')
     const buildQueueStatus = (): string | null => {
+      const driverHead = driverHeadText(b.driver?.state === 'ok' ? { ...b.driver, generatedAt: new Date(typeof b.driver.generatedAt === 'number' ? b.driver.generatedAt * 1000 : b.driver.generatedAt).toISOString(), tickets: b.driver.tickets.length } : b.driver, now)
+      if (driverHead !== null) return driverHead
       if (!lp) return null
       const head = '⏳ 下次扫描 ' + nextRunText
         + ' · 上次扫描 run ' + lp.runNumber + ' ' + resultText(lp.exitCode)
@@ -1347,6 +1429,7 @@ export const register: Register = on => {
     }
     const focal = '  ' + b.inFlight.length + ' / ' + (b.maxInFlight || '?') + '  '
     const linearBadge = () => {
+      if (b.driver?.state === 'ok') return null
       const u = (b as Board).linearUsage
       if (!u) return null
       if (!u.known) return <Text dimColor>Linear 用量未知</Text>
@@ -1368,7 +1451,7 @@ export const register: Register = on => {
           {b.driver?.state === 'ok' && b.driver.globalPause.active
             ? <Text color="yellow">{'⏸ 全局暂停 ' + b.driver.globalPause.durationSeconds + ' 秒'}</Text>
             : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>}
-          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日 est. $' + b.todayCost.toFixed(2) : ''}</Text>
+          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日按 API 价折算 $' + b.todayCost.toFixed(2) : ''}</Text>
           {linearBadge()}
         </Box>
         {driverBadge()}
@@ -1382,11 +1465,12 @@ export const register: Register = on => {
           {automation
             ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
             : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
-          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => manualRefresh($, handoffs)} />
+          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => tick($, handoffs)} />
           <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
             ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
             : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
           {(() => {
+            if (b.driver?.state === 'ok') return <Text dimColor>· 数据来自驱动器实时状态</Text>
             const snapshotAgeMs = (b as Board).snapshotAgeMs
             const throttled = (b as Board).linearThrottled === true
             if (snapshotAgeMs !== undefined) {
@@ -1406,7 +1490,7 @@ export const register: Register = on => {
         </Box>
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
-        {v === 'swarm' ? card('agents', G.work + ' Agents', (
+        {v === 'swarm' ? card('agents', G.work + ' Agents · 按 API 价折算', (
           b.agents.length === 0 ? <Text dimColor>无</Text> : b.agents.map(agentRow)
         )) : v === 'graph' ? <Box flexDirection="column">{b.graphNotice && <Text dimColor>{b.graphNotice}</Text>}{renderGraph(Text, b.graph)}</Box>
           : v === 'throughput' ? renderThroughput(Text, b.throughput)
@@ -1429,6 +1513,8 @@ export const register: Register = on => {
           </Box>
         ) : null}
         {v === 'swarm' && q ? b.queue.map(t => <Text key={'q-' + t.id} dimColor>{G.queued} P{t.priority || '-'} {t.id.padEnd(8)} {cut(t.title, cols - 18)}</Text>) : null}
+
+        {d ? card('ticket-usage', '票用量明细', [...new Map([...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday].map(t => [t.id, t])).values()].map(t => <Box key={'usage-' + t.id} flexDirection="column"><Text>{t.id + ' ' + t.title}</Text><Text dimColor>{ticketAccounting(t)}</Text></Box>)) : null}
 
         {b.stats.length > 0 ? <Box marginTop={1} flexDirection="column">{b.stats.map((s, i) => <Text key={'s-' + i} dimColor>{s}</Text>)}</Box> : null}
       </Box>
