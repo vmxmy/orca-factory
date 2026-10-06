@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
@@ -42,15 +43,15 @@ func Project(env map[string]string) string {
 	}
 	return env["AGENT_LINEAR_PROJECT"]
 }
-func New(ctx context.Context, env map[string]string) (Client, error) {
+func New(ctx context.Context, env map[string]string, tuning config.Tuning) (Client, error) {
 	b, err := Backend(env)
 	if err != nil {
 		return nil, err
 	}
 	if b == "linear" {
-		return linear.New(ctx, linear.Options{TeamID: env["AGENT_LINEAR_TEAM"]})
+		return linear.New(ctx, linear.Options{TeamID: env["AGENT_LINEAR_TEAM"], HTTPTimeout: tuning.Linear.HTTPTimeout})
 	}
-	gh, err := github.New(github.Options{BaseURL: env["AGENT_GH_API_URL"]})
+	gh, err := github.New(github.Options{BaseURL: env["AGENT_GH_API_URL"], HTTPTimeout: tuning.GitHub.HTTPTimeout})
 	if err != nil {
 		return nil, err
 	}

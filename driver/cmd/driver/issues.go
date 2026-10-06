@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
@@ -80,7 +81,17 @@ func runIssues(args []string) int {
 	}
 	ctx, cancel := issueCommandContext(context.Background(), args[0])
 	defer cancel()
-	client, err := issues.New(ctx, env)
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "issues: home directory unavailable")
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "issues: driver configuration could not be loaded")
+		return 1
+	}
+	client, err := issues.New(ctx, env, cfg.Tuning)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "issues: backend initialization failed")
 		return 1

@@ -118,3 +118,45 @@ func TestIssueImportBudgetPreservesParentCancellation(t *testing.T) {
 		t.Fatal("import extended parent deadline")
 	}
 }
+
+// Both standalone CLI paths must carry the configured deadline through the
+// selected backend, without needing any Linear credentials or metadata.
+func TestGitHubCLIConfiguredHTTPTimeout(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	home := t.TempDir()
+	configDir := filepath.Join(home, ".config", "orca-factory")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "driver.toml"), []byte("[github]\nhttp_timeout = \"10ms\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	canceled := make(chan struct{}, 2)
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			canceled <- struct{}{}
+		case <-time.After(200 * time.Millisecond):
+			_, _ = fmt.Fprint(w, `[]`)
+		}
+	}))
+	defer s.Close()
+	for _, args := range [][]string{{"issues", "snapshot"}, {"ledger", "stats", "--all"}} {
+		t.Run(args[0], func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
+			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "PATH="+bin, "LINEAR_API_KEY=", "AGENT_LINEAR_TEAM=", "AGENT_LINEAR_PROJECT=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+			out, err := cmd.CombinedOutput()
+			if err == nil {
+				t.Fatalf("configured HTTP deadline ignored: %s", out)
+			}
+			select {
+			case <-canceled:
+			case <-time.After(time.Second):
+				t.Fatalf("request was not canceled by configured deadline: %v: %s", err, out)
+			}
+		})
+	}
+}

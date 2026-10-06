@@ -51,7 +51,7 @@ func (f *fakeBackend) Launch(_ context.Context, t Ticket) error {
 	return nil
 }
 func setup(f *fakeBackend) *Scheduler {
-	return &Scheduler{Config: config.Config{MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 10, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "a", MaxInFlight: 1, StaleHours: 8}, {Path: "b", MaxInFlight: 3, StaleHours: 8}}}, Backend: f, Now: func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) }}
+	return &Scheduler{Config: config.Config{MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 10, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "a", MaxInFlight: 1, StaleHours: 8}, {Path: "b", MaxInFlight: 3, StaleHours: 8}}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Backend: f, Now: func() time.Time { return time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC) }}
 }
 func TestSecondInstanceCannotLock(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "serve.lock")

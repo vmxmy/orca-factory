@@ -128,11 +128,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			// spend a Snapshot; the cached budget is fresh enough to wait one window.
 			s.linearQuotaRetry = now.Add(5 * time.Minute)
 		}
-		if (remaining < pauseFraction || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
+		if (remaining < s.pauseFraction() || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
 			// Quota is critically low and the cached budget is stale. Probe once after
 			// a backoff so a successful Snapshot refreshes the budget; otherwise the
 			// pause latches forever because the paused branch never reaches Snapshot.
-			s.linearQuotaRetry = now.Add(5 * time.Minute)
+			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
 			if prober, ok := s.Backend.(quotaProber); ok {
 				// One tiny request refreshes the headers; a full Snapshot costs more than
 				// the budget has refilled and would drain it again.
@@ -215,11 +215,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				// The claim never gained an executor terminal; after the grace period no
 				// executor exists to provide evidence, so treat the claim as a failed executor.
 				result := "dead"
-				if now.Sub(t.UpdatedAt) < unregisteredGrace {
+				if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
 					result = "uncertain"
 				}
 				s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
-				if now.Sub(t.UpdatedAt) < unregisteredGrace {
+				if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
 					continue
 				}
 			} else {
@@ -402,6 +402,8 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 }
 
 // unregisteredGrace bounds how long a claim may wait for its executor to record a terminal.
-const unregisteredGrace = 3 * time.Minute
+func (s *Scheduler) unregisteredGrace() time.Duration {
+	return s.Config.Tuning.Scheduler.UnregisteredGrace
+}
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }

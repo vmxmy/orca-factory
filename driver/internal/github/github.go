@@ -20,11 +20,12 @@ import (
 // Options injects transport, credentials, and timing. BaseURL defaults to
 // https://api.github.com; an override is a trusted origin (usually httptest).
 type Options struct {
-	BaseURL    string
-	HTTPClient *http.Client
-	Token      func(context.Context) (string, error)
-	Now        func() time.Time
-	Sleep      func(context.Context, time.Duration) error
+	BaseURL     string
+	HTTPTimeout time.Duration
+	HTTPClient  *http.Client
+	Token       func(context.Context) (string, error)
+	Now         func() time.Time
+	Sleep       func(context.Context, time.Duration) error
 }
 
 type cachedResponse struct {
@@ -61,7 +62,11 @@ func New(o Options) (*Client, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, infra.Classify(errors.New("invalid GitHub base URL"))
 	}
-	hc := http.Client{Timeout: 30 * time.Second}
+	timeout := o.HTTPTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	hc := http.Client{Timeout: timeout}
 	if o.HTTPClient != nil {
 		hc = *o.HTTPClient
 	}

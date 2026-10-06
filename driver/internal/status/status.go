@@ -98,8 +98,8 @@ func Write(snapshot Snapshot) error {
 	return nil
 }
 
-// staleAfter tolerates ten missed 30-second serve snapshots.
-const staleAfter = 5 * time.Minute
+// DefaultStaleAfter tolerates ten missed 30-second serve snapshots.
+const DefaultStaleAfter = 5 * time.Minute
 
 type View struct {
 	State       string      `json:"state"`
@@ -116,7 +116,12 @@ type GlobalPause struct {
 }
 
 // Read observes only the disposable snapshot. Missing or damaged caches are unknown.
-func Read(now time.Time) View {
+// Read reports the snapshot, treating it as stale once it is older than staleAfter.
+// staleAfter <= 0 uses DefaultStaleAfter.
+func Read(now time.Time, staleAfter time.Duration) View {
+	if staleAfter <= 0 {
+		staleAfter = DefaultStaleAfter
+	}
 	hour := now.UTC().Truncate(time.Hour)
 	view := View{State: "unknown", Tickets: []Ticket{}, Linear: Usage{Hour: hour, Limits: []ClientLimits{}}}
 	data, err := os.ReadFile(Path())

@@ -47,11 +47,11 @@ func selftest(args []string) int {
 		}
 		fmt.Printf("PASS %s\n", name)
 	}
-	oc := &orca.Client{}
+	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	check("orca terminal list", func() error { _, err := oc.TerminalList(ctx); return err })
 	check("orca task-list carries a parseable worker report", func() error { return liveTaskReport(ctx, oc) })
 	check("issue backend snapshot with blockers", func() error {
-		lc, err := issues.New(ctx, repo.Env)
+		lc, err := issues.New(ctx, repo.Env, cfg.Tuning)
 		if err != nil {
 			return err
 		}
@@ -70,7 +70,7 @@ func selftest(args []string) int {
 		_, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"ls-remote", "--heads", "origin", "main"}, Dir: repo.Path, Timeout: time.Minute})
 		return err
 	})
-	check("github merge-lane reads parse", func() error { return liveMergeReads(ctx, repo) })
+	check("github merge-lane reads parse", func() error { return liveMergeReads(ctx, repo, cfg) })
 	check("reviewer output yields a verdict", func() error { return liveReviewer(ctx, repo) })
 	if failed > 0 {
 		fmt.Printf("selftest: %d check(s) failed\n", failed)
@@ -129,12 +129,12 @@ func liveReviewer(ctx context.Context, repo config.Repository) error {
 }
 
 // liveMergeReads reads the latest merged agent PR the way the merge lane does.
-func liveMergeReads(ctx context.Context, repo config.Repository) error {
+func liveMergeReads(ctx context.Context, repo config.Repository, cfg config.Config) error {
 	owner, name, ok := strings.Cut(repo.Env["AGENT_GH_REPO"], "/")
 	if !ok {
 		return fmt.Errorf("invalid AGENT_GH_REPO")
 	}
-	gh, err := github.New(github.Options{})
+	gh, err := github.New(github.Options{HTTPTimeout: cfg.Tuning.GitHub.HTTPTimeout})
 	if err != nil {
 		return err
 	}

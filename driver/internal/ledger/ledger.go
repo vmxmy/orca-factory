@@ -43,9 +43,11 @@ type Store interface {
 
 type Options struct {
 	Now func() time.Time
-	// Ticks overrides the ten-minute ticker, allowing deterministic clock tests.
-	Ticks    <-chan time.Time
-	Warnings io.Writer
+	// Ticks overrides the flush ticker, allowing deterministic clock tests.
+	Ticks <-chan time.Time
+	// FlushInterval overrides the ten-minute default; <= 0 keeps it.
+	FlushInterval time.Duration
+	Warnings      io.Writer
 }
 type Ledger struct {
 	store      Store
@@ -68,7 +70,11 @@ func New(store Store, options Options) *Ledger {
 	ticks := options.Ticks
 	var ticker *time.Ticker
 	if ticks == nil {
-		ticker = time.NewTicker(FlushInterval)
+		interval := options.FlushInterval
+	if interval <= 0 {
+		interval = FlushInterval
+	}
+	ticker = time.NewTicker(interval)
 		ticks = ticker.C
 	}
 	go func() {

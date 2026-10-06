@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/ledger"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
@@ -31,9 +32,19 @@ func runLedger(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger: home directory unavailable")
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger: driver configuration could not be loaded")
+		return 1
+	}
 	var store ledger.Store
 	if backend == "github" {
-		client, newErr := issues.New(ctx, env)
+		client, newErr := issues.New(ctx, env, cfg.Tuning)
 		if newErr != nil {
 			fmt.Fprintln(os.Stderr, "ledger: backend initialization failed")
 			return 1
@@ -45,14 +56,14 @@ func runLedger(args []string) int {
 			fmt.Fprintln(os.Stderr, "ledger: AGENT_LINEAR_TEAM and AGENT_LINEAR_PROJECT required")
 			return 2
 		}
-		client, newErr := linear.New(ctx, linear.Options{TeamID: team})
+		client, newErr := linear.New(ctx, linear.Options{TeamID: team, HTTPTimeout: cfg.Tuning.Linear.HTTPTimeout})
 		if newErr != nil {
 			fmt.Fprintln(os.Stderr, "ledger: Linear client initialization failed")
 			return 1
 		}
 		store = &ledgerStore{client: client, team: team, project: project}
 	}
-	l := ledger.New(store, ledger.Options{})
+	l := ledger.New(store, ledger.Options{FlushInterval: cfg.Tuning.Ledger.FlushInterval})
 	if appendRow {
 		if err = l.Append(args[1]); err != nil {
 			_ = l.Close(ctx) // Invalid input was never buffered; preserve the validation error.

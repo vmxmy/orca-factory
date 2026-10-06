@@ -23,8 +23,9 @@ import (
 // Client may be used with its zero value. Path, when provided, must be absolute;
 // otherwise runx.OrcaPath resolves it. Timeout defaults to 30 seconds.
 type Client struct {
-	Path    string
-	Timeout time.Duration
+	Path            string
+	Timeout         time.Duration
+	WorkerStartWait time.Duration
 }
 
 // Receipt retains the complete, decoded command result, including evolving
@@ -173,13 +174,18 @@ func (c *Client) WorkerStart(ctx context.Context, request string, o StartOptions
 	}
 	// Agent readiness on an existing worktree can exceed the default call
 	// timeout; a client-side timeout would report a started worker as uncertain.
-	args = append(args, "--timeout-ms", strconv.FormatInt(workerStartWait.Milliseconds(), 10))
+	wait := c.WorkerStartWait
+	if wait == 0 {
+		wait = defaultWorkerStartWait
+	}
+	args = append(args, "--timeout-ms", strconv.FormatInt(wait.Milliseconds(), 10))
 	long := *c
-	long.Timeout = workerStartWait + 30*time.Second
+	long.Timeout = wait + 30*time.Second
 	return long.mutate(ctx, request, args)
 }
 
-const workerStartWait = 5 * time.Minute
+// workerStartWait defaults the agent-readiness window; the Client field overrides it.
+const defaultWorkerStartWait = 5 * time.Minute
 
 type Task struct {
 	ID         string          `json:"id"`
