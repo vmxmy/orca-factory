@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	MaxInFlight  int
 	Repositories []Repository
 	TokenBucket  TokenBucket
+	Tuning       Tuning
 }
 
 // Load reads ~/.config/orca-factory/driver.toml relative to the supplied home.
@@ -38,6 +40,13 @@ func Load(home string) (Config, error) {
 		MaxInFlight  int         `toml:"max_in_flight"`
 		Repositories []string    `toml:"repositories"`
 		TokenBucket  TokenBucket `toml:"token_bucket"`
+		Scheduler    *Scheduler  `toml:"scheduler"`
+		Linear       *Linear     `toml:"linear"`
+		GitHub       *GitHub     `toml:"github"`
+		Orca         *Orca       `toml:"orca"`
+		Ledger       *Ledger     `toml:"ledger"`
+		Status       *Status     `toml:"status"`
+		Runx         *Runx       `toml:"runx"`
 	}{MaxInFlight: 4, TokenBucket: TokenBucket{Capacity: 4, RefillPerSecond: 1}}
 	path := filepath.Join(home, ".config", "orca-factory", "driver.toml")
 	data, err := os.ReadFile(path)
@@ -52,7 +61,37 @@ func Load(home string) (Config, error) {
 	if raw.MaxInFlight < 1 || raw.TokenBucket.Capacity < 1 || raw.TokenBucket.RefillPerSecond <= 0 || math.IsNaN(raw.TokenBucket.RefillPerSecond) || math.IsInf(raw.TokenBucket.RefillPerSecond, 0) {
 		return Config{}, errors.New("configuration limits must be positive")
 	}
-	result := Config{MaxInFlight: raw.MaxInFlight, TokenBucket: raw.TokenBucket}
+	result := Config{MaxInFlight: raw.MaxInFlight, TokenBucket: raw.TokenBucket, Tuning: Tuning{
+		Scheduler: DefaultScheduler(),
+		Linear:    DefaultLinear(),
+		GitHub:    DefaultGitHub(),
+		Orca:      DefaultOrca(),
+		Ledger:    DefaultLedger(),
+		Status:    DefaultStatus(),
+		Runx:      DefaultRunx(),
+	}}
+	// A named section overrides only the fields it names; the rest keep defaults.
+	if raw.Scheduler != nil {
+		result.Tuning.Scheduler = fillScheduler(*raw.Scheduler, result.Tuning.Scheduler)
+	}
+	if raw.Linear != nil {
+		result.Tuning.Linear = fillLinear(*raw.Linear, result.Tuning.Linear)
+	}
+	if raw.GitHub != nil {
+		result.Tuning.GitHub = fillGitHub(*raw.GitHub, result.Tuning.GitHub)
+	}
+	if raw.Orca != nil {
+		result.Tuning.Orca = fillOrca(*raw.Orca, result.Tuning.Orca)
+	}
+	if raw.Ledger != nil {
+		result.Tuning.Ledger = fillLedger(*raw.Ledger, result.Tuning.Ledger)
+	}
+	if raw.Status != nil {
+		result.Tuning.Status = fillStatus(*raw.Status, result.Tuning.Status)
+	}
+	if raw.Runx != nil {
+		result.Tuning.Runx = fillRunx(*raw.Runx, result.Tuning.Runx)
+	}
 	seen := map[string]bool{}
 	for _, repo := range raw.Repositories {
 		if strings.HasPrefix(repo, "~/") {
@@ -140,4 +179,157 @@ func ParseEnv(r io.Reader) (map[string]string, error) {
 		return nil, errors.New("cannot scan repository profile")
 	}
 	return values, nil
+}
+
+// Scheduler holds the scheduler's tunable knobs. A zero field keeps the built-in default.
+type Scheduler struct {
+	PauseFraction       float64       `toml:"pause_fraction"`
+	ResumeFraction      float64       `toml:"resume_fraction"`
+	QuotaProbeBackoff   time.Duration `toml:"quota_probe_backoff"`
+	UnregisteredGrace   time.Duration `toml:"unregistered_grace"`
+	AdaptiveMinInterval time.Duration `toml:"adaptive_min_interval"`
+	AdaptiveMaxInterval time.Duration `toml:"adaptive_max_interval"`
+}
+
+// DefaultScheduler returns the built-in scheduler defaults.
+func DefaultScheduler() Scheduler {
+	return Scheduler{
+		PauseFraction:       .05,
+		ResumeFraction:      .10,
+		QuotaProbeBackoff:   5 * time.Minute,
+		UnregisteredGrace:   3 * time.Minute,
+		AdaptiveMinInterval: time.Minute,
+		AdaptiveMaxInterval: 3 * time.Minute,
+	}
+}
+
+// Linear holds the Linear client's tunables.
+type Linear struct {
+	HTTPTimeout time.Duration `toml:"http_timeout"`
+}
+
+// DefaultLinear returns the built-in Linear defaults.
+func DefaultLinear() Linear { return Linear{HTTPTimeout: 30 * time.Second} }
+
+// GitHub holds the GitHub client's tunables.
+type GitHub struct {
+	HTTPTimeout time.Duration `toml:"http_timeout"`
+}
+
+// DefaultGitHub returns the built-in GitHub defaults.
+func DefaultGitHub() GitHub { return GitHub{HTTPTimeout: 30 * time.Second} }
+
+// Orca holds the Orca runner's tunables.
+type Orca struct {
+	WorkerStartWait time.Duration `toml:"worker_start_wait"`
+	CallTimeout     time.Duration `toml:"call_timeout"`
+}
+
+// DefaultOrca returns the built-in Orca defaults.
+func DefaultOrca() Orca {
+	return Orca{WorkerStartWait: 5 * time.Minute, CallTimeout: 30 * time.Second}
+}
+
+// Ledger holds the ledger's tunables.
+type Ledger struct {
+	FlushInterval time.Duration `toml:"flush_interval"`
+}
+
+// DefaultLedger returns the built-in ledger defaults.
+func DefaultLedger() Ledger { return Ledger{FlushInterval: 10 * time.Minute} }
+
+// Status holds the status snapshot's tunables.
+type Status struct {
+	StaleAfter time.Duration `toml:"stale_after"`
+}
+
+// DefaultStatus returns the built-in status defaults.
+func DefaultStatus() Status { return Status{StaleAfter: 5 * time.Minute} }
+
+// Runx holds the process runner's tunables.
+type Runx struct {
+	WaitDelay time.Duration `toml:"wait_delay"`
+}
+
+// DefaultRunx returns the built-in runx defaults.
+func DefaultRunx() Runx { return Runx{WaitDelay: 100 * time.Millisecond} }
+
+// Tuning bundles every tunable subsystem. The raw TOML may name only the sections it overrides;
+// Load fills the rest with the built-in defaults.
+type Tuning struct {
+	Scheduler Scheduler
+	Linear    Linear
+	GitHub    GitHub
+	Orca      Orca
+	Ledger    Ledger
+	Status    Status
+	Runx      Runx
+}
+
+// fillScheduler returns want with every zero field of over taking its value.
+func fillScheduler(over, want Scheduler) Scheduler {
+	if over.PauseFraction != 0 {
+		want.PauseFraction = over.PauseFraction
+	}
+	if over.ResumeFraction != 0 {
+		want.ResumeFraction = over.ResumeFraction
+	}
+	if over.QuotaProbeBackoff != 0 {
+		want.QuotaProbeBackoff = over.QuotaProbeBackoff
+	}
+	if over.UnregisteredGrace != 0 {
+		want.UnregisteredGrace = over.UnregisteredGrace
+	}
+	if over.AdaptiveMinInterval != 0 {
+		want.AdaptiveMinInterval = over.AdaptiveMinInterval
+	}
+	if over.AdaptiveMaxInterval != 0 {
+		want.AdaptiveMaxInterval = over.AdaptiveMaxInterval
+	}
+	return want
+}
+
+func fillLinear(over, want Linear) Linear {
+	if over.HTTPTimeout != 0 {
+		want.HTTPTimeout = over.HTTPTimeout
+	}
+	return want
+}
+
+func fillGitHub(over, want GitHub) GitHub {
+	if over.HTTPTimeout != 0 {
+		want.HTTPTimeout = over.HTTPTimeout
+	}
+	return want
+}
+
+func fillOrca(over, want Orca) Orca {
+	if over.WorkerStartWait != 0 {
+		want.WorkerStartWait = over.WorkerStartWait
+	}
+	if over.CallTimeout != 0 {
+		want.CallTimeout = over.CallTimeout
+	}
+	return want
+}
+
+func fillLedger(over, want Ledger) Ledger {
+	if over.FlushInterval != 0 {
+		want.FlushInterval = over.FlushInterval
+	}
+	return want
+}
+
+func fillStatus(over, want Status) Status {
+	if over.StaleAfter != 0 {
+		want.StaleAfter = over.StaleAfter
+	}
+	return want
+}
+
+func fillRunx(over, want Runx) Runx {
+	if over.WaitDelay != 0 {
+		want.WaitDelay = over.WaitDelay
+	}
+	return want
 }

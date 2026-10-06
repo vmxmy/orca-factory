@@ -135,7 +135,7 @@ func TestReadViewJSON(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			data, err := json.Marshal(Read(now))
+			data, err := json.Marshal(Read(now, 0))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -166,7 +166,7 @@ func TestReadCurrentHourAndRepoPause(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	view := Read(time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC))
+	view := Read(time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC), 0)
 	if view.GlobalPause.Active || view.GlobalPause.DurationSeconds != 0 || view.Linear.Requests != 0 || view.Linear.Complexity != 0 || view.Linear.Limits[0].Requests.Remaining != 88 {
 		t.Fatalf("view = %+v", view)
 	}

@@ -33,7 +33,7 @@ func TestDeploymentStatusAndDryRunObserveHumanBarrier(t *testing.T) {
 	if err := status.Write(snapshot); err != nil {
 		t.Fatal(err)
 	}
-	raw, rawMarshalErr := json.Marshal(status.Read(time.Now()))
+	raw, rawMarshalErr := json.Marshal(status.Read(time.Now(), 0))
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}

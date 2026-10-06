@@ -43,6 +43,7 @@ type Runtime struct {
 	OrcaPath, DriverPath string
 	Run                  func(context.Context, runx.Spec) ([]byte, error)
 	Now                  func() time.Time
+	Tuning               config.Tuning
 	refused              map[string]error
 }
 
@@ -57,9 +58,16 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, errors.New("cannot locate driver binary")
 	}
-	r := &Runtime{Clients: map[string]LinearClient{}, Repositories: map[string]config.Repository{}, Orca: &orca.Client{Path: path}, OrcaPath: path, DriverPath: binary}
+	r := &Runtime{
+		Tuning:       c.Tuning,
+		Clients:      map[string]LinearClient{},
+		Repositories: map[string]config.Repository{},
+		Orca:         &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout},
+		OrcaPath:     path,
+		DriverPath:   binary,
+	}
 	err = r.initialize(ctx, c, func(ctx context.Context, team string) (LinearClient, error) {
-		return linear.New(ctx, linear.Options{TeamID: team})
+		return linear.New(ctx, linear.Options{TeamID: team, HTTPTimeout: c.Tuning.Linear.HTTPTimeout})
 	})
 	if err != nil {
 		return nil, err

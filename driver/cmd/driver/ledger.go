@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/ledger"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -35,7 +36,17 @@ func runLedger(args []string) int {
 		return 1
 	}
 	store := &ledgerStore{client: client, team: team, project: project}
-	l := ledger.New(store, ledger.Options{})
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger: home directory unavailable")
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ledger: driver configuration could not be loaded")
+		return 1
+	}
+	l := ledger.New(store, ledger.Options{FlushInterval: cfg.Tuning.Ledger.FlushInterval})
 	if appendRow {
 		if err = l.Append(args[1]); err != nil {
 			_ = l.Close(ctx) // Invalid input was never buffered; preserve the validation error.

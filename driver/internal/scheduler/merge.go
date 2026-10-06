@@ -123,7 +123,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	}
 	if r.GitHub == nil {
 		var err error
-		r.GitHub, err = github.New(github.Options{})
+		r.GitHub, err = github.New(github.Options{HTTPTimeout: r.Tuning.GitHub.HTTPTimeout})
 		if err != nil {
 			return err
 		}

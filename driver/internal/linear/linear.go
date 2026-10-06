@@ -25,8 +25,9 @@ const endpoint = "https://api.linear.app/graphql"
 type Options struct {
 	TeamID string
 	// BaseURL overrides the GraphQL endpoint for tests. Redirects are forbidden.
-	BaseURL    string
-	HTTPClient *http.Client
+	BaseURL     string
+	HTTPTimeout time.Duration
+	HTTPClient  *http.Client
 }
 type NamedID struct {
 	ID   string `json:"id"`
@@ -144,7 +145,11 @@ func New(ctx context.Context, options Options) (*Client, error) {
 	if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("invalid Linear endpoint")
 	}
-	hc := http.Client{Timeout: 30 * time.Second}
+	timeout := options.HTTPTimeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
+	}
+	hc := http.Client{Timeout: timeout}
 	if options.HTTPClient != nil {
 		hc = *options.HTTPClient
 	}

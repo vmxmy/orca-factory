@@ -64,12 +64,12 @@ type quotaSource interface{ LinearLimits() []linear.RateLimit }
 // quotaProber is optional: it spends one cheap request to refresh the quota headers.
 type quotaProber interface{ ProbeLinearQuota(context.Context) error }
 
-// A quota pause starts below pauseFraction and ends at resumeFraction, leaving the
-// refilled budget enough room for one Snapshot.
-const (
-	pauseFraction  = .05
-	resumeFraction = .10
-)
+// Quota fractions now come from Config.Tuning.Scheduler (pause_fraction, resume_fraction).
+func (s *Scheduler) pauseFraction() float64  { return s.Config.Tuning.Scheduler.PauseFraction }
+func (s *Scheduler) resumeFraction() float64 { return s.Config.Tuning.Scheduler.ResumeFraction }
+func (s *Scheduler) quotaProbeBackoff() time.Duration {
+	return s.Config.Tuning.Scheduler.QuotaProbeBackoff
+}
 
 func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, error) {
 	if s.Pauses == nil {
@@ -93,9 +93,9 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 				continue
 			}
 			fraction := float64(limit.Remaining) / float64(limit.Limit)
-			if fraction < .05 && limit.Reset.IsZero() {
+			if fraction < s.pauseFraction() && limit.Reset.IsZero() {
 				if s.linearQuotaRetry.IsZero() {
-					s.linearQuotaRetry = now.Add(5 * time.Minute)
+					s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
 				}
 				// Keep the expired deadline until Snapshot actually refreshes
 				// the headers, including when another dependency blocks Tick.
@@ -107,15 +107,15 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 				}
 			}
 			remaining = min(remaining, fraction)
-			if fraction < .05 && limit.Reset.After(reset) {
+			if fraction < s.pauseFraction() && limit.Reset.After(reset) {
 				reset = limit.Reset
 			}
 		}
 		key := pause.Key{Dependency: pause.Linear, Kind: pause.Quota}
-		if remaining < pauseFraction {
+		if remaining < s.pauseFraction() {
 			s.Pauses.Pause(key, reset)
 			s.quotaPaused = true
-		} else if !s.quotaPaused || remaining >= resumeFraction {
+		} else if !s.quotaPaused || remaining >= s.resumeFraction() {
 			s.Pauses.Resume(key)
 			s.quotaPaused = false
 		}

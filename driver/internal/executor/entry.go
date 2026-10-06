@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -60,11 +61,15 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (Result, er
 	if err != nil {
 		return Result{}, errors.New("Linear initialization failed")
 	}
-	gc, err := github.New(github.Options{})
+	cfg, err := config.Load(home())
+	if err != nil {
+		return Result{}, errors.New("driver configuration could not be loaded")
+	}
+	gc, err := github.New(github.Options{HTTPTimeout: cfg.Tuning.GitHub.HTTPTimeout})
 	if err != nil {
 		return Result{}, errors.New("GitHub initialization failed")
 	}
-	oc := &orca.Client{}
+	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
@@ -143,6 +148,14 @@ func workerIdleTimeout(value string) time.Duration {
 }
 
 // executorStateRoot is shared by all entrypoint recovery and artifact writes.
+func home() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 func executorStateRoot() (string, error) {
 	if root := os.Getenv("AGENT_DRIVER_STATE_ROOT"); root != "" {
 		return root, nil
