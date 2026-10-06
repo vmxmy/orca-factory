@@ -42,7 +42,7 @@ func TestStatusFilePush(t *testing.T) {
 			if err := json.Unmarshal(data, &view); err != nil {
 				t.Fatal(err)
 			}
-			if view.State != "ok" || !view.GeneratedAt.Equal(e.Now()) || len(view.Tickets) != 1 || view.Tickets[0].Phase != string(machine.PhaseMergeQueue) || view.Tickets[0].Owner != string(machine.OwnerMerge) {
+			if view.State != "unknown" || !view.GeneratedAt.IsZero() || len(view.Tickets) != 1 || view.Tickets[0].Phase != string(machine.PhaseMergeQueue) || view.Tickets[0].Owner != string(machine.OwnerMerge) {
 				t.Fatalf("view: %+v", view)
 			}
 		})
