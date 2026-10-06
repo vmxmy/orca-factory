@@ -78,10 +78,10 @@ type logsRecord struct {
 }
 
 type logsFile struct {
-	path      string
-	scheduler bool
-	offset    int64
-	info      os.FileInfo
+	path   string
+	shared bool
+	offset int64
+	info   os.FileInfo
 }
 
 func logsLiveFiles(root, ticket string) ([]*logsFile, error) {
@@ -89,7 +89,20 @@ func logsLiveFiles(root, ticket string) ([]*logsFile, error) {
 	if err != nil {
 		return nil, err
 	}
-	files := []*logsFile{{path: filepath.Join(root, "scheduler.log"), scheduler: true}}
+	files := []*logsFile{
+		{path: filepath.Join(root, "scheduler.log"), shared: true},
+		{path: filepath.Join(root, "launch-"+ticket+".log")},
+	}
+	// launchLog redirects stderr under HOME even when the executor's state
+	// root is overridden. Also discover launch files in the selected root.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	launch := filepath.Join(home, ".local", "state", "orca-factory", "launch-"+ticket+".log")
+	if filepath.Clean(launch) != filepath.Clean(files[1].path) {
+		files = append(files, &logsFile{path: launch})
+	}
 	for _, dir := range dirs {
 		files = append(files, &logsFile{path: filepath.Join(dir, "executor.log")})
 	}
@@ -152,11 +165,21 @@ func readLogsFile(state *logsFile, ticket string, cutoff time.Time) (records []l
 		if json.Unmarshal([]byte(line), &fields) != nil {
 			continue
 		}
-		if state.scheduler && logsString(fields["ticket"]) != ticket && logsString(fields["identifier"]) != ticket {
+		// Scoped files may omit ticket metadata (command start/exit records),
+		// but explicit metadata must never name a different ticket. Shared
+		// scheduler files require an exact structured ticket identifier.
+		hasTicket, matches := false, true
+		for _, key := range []string{"ticket", "identifier"} {
+			if value, ok := fields[key]; ok {
+				hasTicket = true
+				matches = matches && logsString(value) == ticket
+			}
+		}
+		if !matches || (state.shared && !hasTicket) {
 			continue
 		}
 		when, err := time.Parse(time.RFC3339Nano, logsString(fields["time"]))
-		if err != nil || when.Before(cutoff) {
+		if err != nil || (!cutoff.IsZero() && !when.After(cutoff)) {
 			continue
 		}
 		records = append(records, logsRecord{raw: line, when: when, fields: fields})
@@ -177,10 +200,14 @@ func writeLogs(out io.Writer, records []logsRecord, asJSON bool) error {
 		line := record.raw
 		if !asJSON {
 			fields := record.fields
-			parts := []string{logsString(fields["time"]), logsString(fields["component"]), logsString(fields["level"]), logsString(fields["event"])}
+			event := logsString(fields["event"])
+			if event == "" {
+				event = logsString(fields["msg"])
+			}
+			parts := []string{logsString(fields["time"]), "[" + logsString(fields["component"]) + "]", logsString(fields["level"]), event}
 			var keys []string
 			for key := range fields {
-				if key != "time" && key != "component" && key != "level" && key != "event" {
+				if key != "time" && key != "component" && key != "level" && key != "event" && (key != "msg" || logsString(fields["event"]) != "") {
 					keys = append(keys, key)
 				}
 			}
@@ -223,7 +250,7 @@ func readLogsBatch(root, ticket string, cutoff time.Time, previous []*logsFile) 
 			if err != nil {
 				return nil, nil, err
 			}
-			state := &logsFile{path: path, scheduler: file.scheduler}
+			state := &logsFile{path: path, shared: file.shared}
 			for _, old := range previous {
 				if old.info != nil && os.SameFile(old.info, info) {
 					state.offset, state.info = old.offset, old.info
