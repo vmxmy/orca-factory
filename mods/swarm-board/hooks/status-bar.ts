@@ -53,10 +53,11 @@ const truncate = (row: Segment[], cols: number): Segment[] => {
   }
   return result
 }
+// The right group stays intact (key quota phrases must not be cut); only the
+// left side truncates, and an over-wide row simply wraps in the terminal.
 const align = (left: Segment[], right: Segment[], cols: number): Segment[] => {
-  const r = truncate(right, Math.floor(cols / 2))
-  const l = truncate(left, Math.max(0, cols - rowWidth(r) - 2))
-  return truncate([...l, { text: ' '.repeat(Math.max(0, cols - rowWidth(l) - rowWidth(r) - 2)) }, ...r], cols)
+  const l = truncate(left, Math.max(0, cols - rowWidth(right) - 2))
+  return [...l, { text: ' '.repeat(Math.max(0, cols - rowWidth(l) - rowWidth(right) - 3)) }, ...right]
 }
 
 // Each segment carries one complete phrase so a single Text node still matches board assertions.
@@ -126,6 +127,9 @@ export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] 
     ...(model.stale && !model.restart ? [part('数据已过期', 'yellow')] : []),
     ...(model.lastRun ? [part(model.lastRun)] : []),
   ]
-  if (cols < 140) return [truncate(pipeline, cols), resources, align(controls, [], cols), footer]
-  return [align(pipeline, resources, cols), align(controls, footer, cols)]
+  const actions = controls.slice(-3)
+  const viewSegments = controls.slice(0, -3)
+  if (cols < 140) return [truncate(pipeline, cols), resources, align(viewSegments, actions, cols), footer]
+  const controlsRow = align(viewSegments, actions, cols - rowWidth(truncate(footer, Math.floor(cols / 4))) - 2)
+  return [align(pipeline, resources, cols), align(controlsRow, footer, cols)]
 }
