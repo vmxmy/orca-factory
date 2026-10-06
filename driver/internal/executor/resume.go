@@ -135,9 +135,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if !mergeRepair && cp != nil {
 		result.State.Infra += cp.Infra
 		if result.State.Infra >= machine.DefaultLimits.Infra {
-			result.State.Owner, result.State.Phase = machine.OwnerHuman, machine.PhaseHuman
+			result.State.Owner, result.State.Phase = machine.OwnerResolver, machine.PhaseResolver
 			result.State.HumanReason = "infra budget exhausted: checkpoint recovery"
-			if err := e.handoff(ctx, t, result.State, "checkpoint recovery"); err != nil {
+			if err := e.handoff(ctx, t, result.State, "checkpoint recovery", cp.Run); err != nil {
 				return result, err
 			}
 			return result, errBudgetExhausted

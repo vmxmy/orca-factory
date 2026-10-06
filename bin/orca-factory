@@ -335,7 +335,7 @@ cmd_selftest() {
   git init -q "$SELFTEST_TMP"
   cmd_init "$SELFTEST_TMP"
   find "$SELFTEST_TMP/$DEST_REL" -type f | sed "s#^$SELFTEST_TMP/##" | sort
-  for f in constitution/constitution.md "${PROTECTED_CLAUSES[@]}" roles/intake.md roles/coordinator.md roles/worker.md roles/reviewer.md roles/README.md; do
+  for f in constitution/constitution.md "${PROTECTED_CLAUSES[@]}" roles/intake.md roles/coordinator.md roles/worker.md roles/reviewer.md roles/resolver.md roles/README.md; do
     [[ -f "$SELFTEST_TMP/$DEST_REL/$f" ]] || fail "selftest: init did not produce $f"
   done
   bash "$SELFTEST_TMP/$DEST_REL/gate.test.sh"
@@ -628,9 +628,9 @@ PRECHECK_GH
           grep -q '认领失效（认领后超过 90 分钟未产出 PR），已释放' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun reason missing" ;;
         overrun-limit)
           grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun not escalated"
-          grep -q '^linear comment add TEST-1 --body 转人:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun handoff missing"
+          grep -q '^linear comment add TEST-1 --body Agent处置:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun handoff missing"
           grep -q '^证据: .*认领后超过 90 分钟未产出 PR$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun evidence missing"
-          grep -q '^需要你:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun action missing"
+          grep -q '^处置要求:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: overrun action missing"
           if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun limit reset Todo"; fi ;;
         overrun-*)
           if grep -Eq '^linear (status|label|comment) ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: overrun guard mutated ($PRECHECK_MODE)"; fi
@@ -676,9 +676,9 @@ PRECHECK_GH
         worker-stuck-limit)
           grep -q '^linear label remove TEST-1 --label auto-impl --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit kept auto-impl"
           grep -q '^linear label add TEST-1 --label auto-failed --json$' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit not escalated"
-          grep -q '^linear comment add TEST-1 --body 转人: 已多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit escalation comment missing"
+          grep -q '^linear comment add TEST-1 --body Agent处置: 已多次认领失效' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit escalation comment missing"
           grep -q '^证据: .*工人卡死：空闲 30 分钟.*登录 failed' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit evidence missing"
-          grep -q '^需要你:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit action missing"
+          grep -q '^处置要求:' "$SELFTEST_TMP/precheck.calls" || fail "selftest: stuck worker limit action missing"
           grep -q '^stale=TEST-1$' "$SELFTEST_TMP/precheck.out" || fail "selftest: stuck worker limit not stale"
           if grep -q '^linear status set ' "$SELFTEST_TMP/precheck.calls"; then fail "selftest: stuck worker limit reset Todo"; fi ;;
         worker-idle|worker-feature|worker-mixed)

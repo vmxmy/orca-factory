@@ -159,8 +159,11 @@ func TestStartMergeCorrectionAddsPriorReadBudget(t *testing.T) {
 	tools.head = "repaired-sha"
 	e.Tools = &mergeHeadRetry{recoveryTools: tools}
 	result, err := e.Start(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerHuman || result.State.Infra != 3 || len(o.starts) != 1 || recovery.sessions != 0 {
+	if err != nil || result.State.Owner != machine.OwnerResolver || result.State.Infra != 3 || len(o.starts) != 1 || recovery.sessions != 0 {
 		t.Fatalf("cumulative budget bypassed: %+v err=%v starts=%d sessions=%d", result, err, len(o.starts), recovery.sessions)
+	}
+	if !strings.Contains(l.comments[len(l.comments)-1], "run=run_one") {
+		t.Fatalf("lost correction source run: %s", l.comments[len(l.comments)-1])
 	}
 }
 

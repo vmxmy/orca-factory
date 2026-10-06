@@ -72,8 +72,7 @@ export const buildFailures = (input: FailureInput = {}): FailureView => {
       if (!Number.isFinite(createdAt)
         || createdAt < now - HANDOFF_WINDOW_MS || createdAt > now) continue
       for (const line of body.split(/\r?\n/)) {
-        if (!line.startsWith('转人:')) continue
-        const handoffReason = line.slice('转人:'.length).trim()
+        const handoffReason = line.match(/^(?:Agent处置|转人):\s*(.*)/)?.[1].trim()
         if (handoffReason) handoffs.set(handoffReason, (handoffs.get(handoffReason) ?? 0) + 1)
       }
     }
@@ -97,7 +96,7 @@ export const renderFailures = (
     return h(Text, { dimColor: true }, '数据未就绪')
   }
   const lines = [
-    { key: 'handoff-title', dimColor: false, text: '转人原因' },
+    { key: 'handoff-title', dimColor: false, text: '处置原因' },
     ...data.handoffReasons.map((row, index) => ({
       key: `handoff-${index}`, dimColor: true, text: `${row.reason}: ${row.count}`,
     })),

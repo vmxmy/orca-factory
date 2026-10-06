@@ -14,10 +14,12 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 type Ticket struct {
+	Resolution *resolver.Record
 	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
 	// reserved by an earlier squash intent for this queue.
 	deploymentReservedQueue             string
@@ -43,7 +45,7 @@ const (
 	Resume  ActionKind = "resume"
 	Merge   ActionKind = "merge"
 	Release ActionKind = "release"
-	Human   ActionKind = "human"
+	Resolve ActionKind = "resolve"
 )
 
 type Action struct {
@@ -102,7 +104,9 @@ func (s *Scheduler) token(now time.Time) bool {
 	s.tokens--
 	return true
 }
-func owned(t Ticket) bool { return t.Owner == machine.OwnerExecutor || t.Owner == machine.OwnerMerge }
+func owned(t Ticket) bool {
+	return t.Owner == machine.OwnerExecutor || t.Owner == machine.OwnerMerge || t.Owner == machine.OwnerResolver
+}
 func priority(n int) int {
 	if n == 0 {
 		return 5
@@ -215,8 +219,26 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		r := repos[t.Repo]
 		action := Action{}
-		if t.Owner == machine.OwnerExecutor && !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
-			action = Action{Kind: Human, Attempt: t.Attempt, Reason: "in-flight ticket exceeded stale limit"}
+		if t.Owner == machine.OwnerResolver || t.Owner == machine.OwnerHuman {
+			if DeploymentBarrier(t) {
+				s.MergeQueue = append(s.MergeQueue, t)
+			}
+			if t.Resolution != nil && t.Resolution.Phase == "waiting" && now.Before(t.Resolution.RetryAt) {
+				continue
+			}
+			if !owned(t) && (total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight) {
+				continue
+			}
+			if (t.Resolution == nil || (t.Resolution.Phase != "result" && t.Resolution.Phase != "waiting")) && t.Terminal != "" && t.Terminal != "-" {
+				absent, readErr := s.Backend.TerminalAbsent(ctx, t)
+				if readErr != nil || !absent {
+					continue
+				}
+			}
+			if (t.Resolution == nil || t.Resolution.Phase != "result") && t.Terminal == "-" && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+				continue
+			}
+			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
 		} else if t.Owner == machine.OwnerMerge || DeploymentBarrier(t) {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
@@ -240,15 +262,19 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					continue
 				}
 			}
-			state := machine.State{Owner: machine.OwnerExecutor, Phase: t.Phase, Attempt: t.Attempt, ExecFailures: max(0, t.Attempt-1)}
-			next, _, stepErr := machine.Step(state, machine.EvTick, machine.DefaultLimits)
-			if stepErr != nil {
-				return stepErr
-			}
-			if next.Owner == machine.OwnerHuman {
-				action = Action{Kind: Human, Attempt: t.Attempt, Reason: "executor failed twice"}
+			if !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "in-flight ticket exceeded stale limit"}
 			} else {
-				action = Action{Kind: Resume, Attempt: next.Attempt, Phase: next.Phase}
+				state := machine.State{Owner: machine.OwnerExecutor, Phase: t.Phase, Attempt: t.Attempt, ExecFailures: max(0, t.Attempt-1)}
+				next, _, stepErr := machine.Step(state, machine.EvTick, machine.DefaultLimits)
+				if stepErr != nil {
+					return stepErr
+				}
+				if next.Owner == machine.OwnerResolver {
+					action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "executor failed twice"}
+				} else {
+					action = Action{Kind: Resume, Attempt: next.Attempt, Phase: next.Phase}
+				}
 			}
 		} else if t.Legacy {
 			legacy, readErr := s.Backend.InspectLegacy(ctx, t)
@@ -270,12 +296,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		} else {
 			continue
 		}
-		if action.Kind == Resume && !s.token(now) {
+		if (action.Kind == Resume || action.Kind == Resolve) && !s.token(now) {
 			continue
 		}
 		// Reserve before an external write: a failed response may already have
 		// persisted ownership. Do not oversubscribe on an uncertain result.
-		if !owned(t) && (action.Kind == Resume || action.Kind == Merge) {
+		if !owned(t) && (action.Kind == Resume || action.Kind == Merge || action.Kind == Resolve) {
 			total++
 			count[t.Repo]++
 		}
@@ -285,14 +311,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		s.pushTicket(t, action)
 		switch action.Kind {
-		case Human:
-			if owned(t) {
-				total--
-				count[t.Repo]--
-			}
 		case Merge:
 			t.Owner = machine.OwnerMerge
 			s.MergeQueue = append(s.MergeQueue, t)
+		case Resolve:
+			t.Owner, t.Phase = machine.OwnerResolver, machine.PhaseResolver
+			if err := s.launch(ctx, t); err != nil {
+				problems = append(problems, errors.New("resolver launch uncertain; ownership retained"))
+			}
 		case Resume:
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase

@@ -52,7 +52,7 @@ func readMergeHandoff(t *Ticket, comments []linear.Comment) {
 					t.MergeProblem = "conflicting handoff"
 				}
 				seen[h.QueueID] = raw
-				if old := t.Progress; old != nil && old.QueueID != h.QueueID && old.Phase == "correction" && unmergedDeploymentDecision(old) && deploymentIdentity(*t) == nil {
+				if old := t.Progress; old != nil && old.QueueID != h.QueueID && (old.Phase == "correction" || old.Phase == "human") && unmergedDeploymentDecision(old) && deploymentIdentity(*t) == nil {
 					// The new validated handoff supersedes an unmerged correction, not a deployment.
 					t.Progress = nil
 				}
@@ -134,6 +134,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			}
 		}
 		if len(rows) == 0 {
+			continue
+		}
+		if rows[0].Owner == machine.OwnerResolver || rows[0].Owner == machine.OwnerHuman {
 			continue
 		}
 		if err := r.advanceMerge(ctx, rows[0]); err != nil {
@@ -379,7 +382,7 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 func (a *mergeAdapter) policy(files []string) error {
 	env := a.runtime.Repositories[a.ticket.Repo].Env
 	lane := a.ticket.Handoff.Lane
-	if lane == 2 && env["AGENT_LANE2_AUTOMERGE"] != "1" {
+	if lane == 2 && env["AGENT_LANE2_AUTOMERGE"] != "1" && !resolverApproved(a.ticket) {
 		return errors.New("lane 2 requires manual approval")
 	}
 	for _, key := range []string{"AGENT_LANE3_GLOBS", "AGENT_LANE2_MANUAL_GLOBS", "AGENT_LANE2_GLOBS"} {
@@ -389,6 +392,9 @@ func (a *mergeAdapter) policy(files []string) error {
 			}
 			for _, file := range files {
 				if scopeMatch(pattern, file) {
+					if key == "AGENT_LANE2_MANUAL_GLOBS" && resolverApproved(a.ticket) {
+						continue
+					}
 					if key != "AGENT_LANE2_GLOBS" || lane != 2 {
 						return errors.New("changed path requires manual approval or new lane validation")
 					}
