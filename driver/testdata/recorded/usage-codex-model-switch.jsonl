@@ -1,0 +1,6 @@
+{"type": "session_meta", "payload": {"id": "codex-one", "cwd": "/unit"}}
+{"type": "turn_context", "payload": {"model": "gpt-5"}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "output_tokens": 10, "cached_input_tokens": 20}}}}
+{"type":"turn_context","payload":{"model":"future-model"}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 400, "output_tokens": 80, "cached_input_tokens": 100}, "last_token_usage": {"input_tokens": 300, "output_tokens": 70}}}}
+{"type": "event_msg", "payload": {"type": "token_count", "info": null}}

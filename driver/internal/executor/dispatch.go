@@ -20,7 +20,7 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
-	receipt, callErr := e.Orca.WorkerStart(ctx, scopedRequest(t, c, "worker", cp.Corrections+1), opts)
+	receipt, callErr := e.workerStart(ctx, scopedRequest(t, c, "worker", cp.Corrections+1), opts)
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
 	}

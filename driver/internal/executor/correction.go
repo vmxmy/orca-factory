@@ -94,7 +94,8 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 
 type transitionFunc func(machine.Event, func([]machine.Effect) error) error
 
-func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause string, transition transitionFunc) (bool, error) {
+func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, transition transitionFunc) (bool, error) {
+	e.logger().Info("correction", "reason", cause, "fail_summary", summary)
 	var err error
 	brief, err = failHistoryBrief(c, t, brief)
 	if err != nil {

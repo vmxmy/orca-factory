@@ -1,0 +1,1 @@
+{"type": "assistant", "cwd": "/run", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 101, "output_tokens": 21}, "id": "coordinator-message-0"}, "sessionId": "coordinator-one"}
