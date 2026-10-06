@@ -65,6 +65,7 @@ func Bump(current string, commits []Commit) (string, error) {
 }
 
 type Plan struct {
+	Base                     string // immutable main snapshot used to generate these bytes
 	Plugin, Version, Section string
 	Files                    map[string][]byte
 }
@@ -229,6 +230,13 @@ func Scan(ctx context.Context, src Source, now func() time.Time) ([]Plan, error)
 		plan, err := Generate(plugin, manifest, log, commits)
 		if err != nil {
 			return nil, err
+		}
+		if completer, ok := src.(interface {
+			CompletePlan(context.Context, *Plan) error
+		}); ok {
+			if err := completer.CompletePlan(ctx, &plan); err != nil {
+				return nil, err
+			}
 		}
 		plans = append(plans, plan)
 	}

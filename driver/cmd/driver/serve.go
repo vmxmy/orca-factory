@@ -66,6 +66,9 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		if err := runtime.EnableReleases(filepath.Join(home, ".local", "state", "orca-factory")); err != nil {
+			return nil, nil, err
+		}
 		return &scheduler.Scheduler{Config: cfg, Backend: runtime}, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
@@ -89,6 +92,8 @@ type statusBackend struct {
 	scheduler.Backend
 	tickets   []scheduler.Ticket
 	inspected bool
+	scheduler *scheduler.Scheduler
+	runtime   *scheduler.Runtime
 }
 
 func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]scheduler.Ticket, error) {
@@ -103,6 +108,9 @@ func (b *statusBackend) LinearLimits() []linear.RateLimit {
 	// Tick checks quota even when a global pause prevents Snapshot. Wait-only
 	// iterations never call this method, so they must not refresh generatedAt.
 	b.inspected = true
+	if b.runtime != nil {
+		b.runtime.ReleaseEligible = nil
+	}
 	if source, ok := b.Backend.(interface{ LinearLimits() []linear.RateLimit }); ok {
 		return source.LinearLimits()
 	}
@@ -128,11 +136,16 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 		if err != nil {
 			return nil, err
 		}
-		backend = &statusBackend{Backend: s.Backend}
+		backend = &statusBackend{Backend: s.Backend, scheduler: s, runtime: runtime}
 		s.Backend = backend
 		return s, nil
 	}, func(ctx context.Context) error {
 		if backend.inspected {
+			if hook, ok := backend.Backend.(interface{ AfterTick(context.Context) error }); ok {
+				if err := hook.AfterTick(ctx); err != nil && report != nil {
+					report(err)
+				}
+			}
 			backend.inspected = false
 			now := time.Now()
 			if s.Now != nil {
@@ -200,6 +213,19 @@ func statusLimit(limit linear.RateLimit) status.RateLimit {
 }
 
 func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.Ticket) error {
+	if b.runtime != nil && b.scheduler != nil {
+		b.runtime.ReleaseEligible = map[string]bool{}
+		for _, repo := range b.scheduler.Config.Repositories {
+			if b.scheduler.Pauses != nil && b.scheduler.Pauses.Paused(repo.Path) {
+				continue
+			}
+			ok, err := b.AutomationDisabled(ctx, repo)
+			if err == nil && ok {
+				b.runtime.ReleaseEligible[repo.Path] = true
+			}
+		}
+	}
+
 	if source, ok := b.Backend.(interface {
 		AdvanceMerges(context.Context, []scheduler.Ticket) error
 	}); ok {

@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/release"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -35,6 +36,8 @@ type OrcaClient interface {
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
 }
 type Runtime struct {
+	Releases             map[string]*release.Manager
+	ReleaseEligible      map[string]bool
 	GitHub               *github.Client
 	Reader               LinearClient
 	Clients              map[string]LinearClient
