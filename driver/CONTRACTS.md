@@ -28,7 +28,6 @@
 | Claude 子代理的转录在 `<session>/subagents/agent-*.jsonl`，`sessionId` 与父会话相同，`isSidechain` 为真，`cwd` 为子代理所在目录 | `claude-session-assistant.jsonl`（第 2 行） | `usage.TestRecordedSessionFormats`、`usage.TestCollectCountsSubagentTranscripts` |
 | Codex rollout 以 `session_meta`（`payload.id`、`payload.cwd`）开头，`turn_context` 给 `payload.model`，`token_count` 的 `total_token_usage` 按会话累计（含 `cached_input_tokens`、`cache_write_input_tokens`、`reasoning_output_tokens`），一个会话只计一次；`input_tokens` 含缓存读，需先减去 | `codex-session-token-count.jsonl` | `usage.TestRecordedSessionFormats` |
 | 价格表里没有的模型按 `unknown` 记录，不估价 | — | `usage.TestCollect` |
-| `orca orchestration worker-show --dispatch` 的结果有 `dispatch.runId` 与 `worker.worktreeId`（格式 `<repoId>::<绝对路径>`）；`orca worktree list` 的结果有 `truncated`、`totalCount` 与 `worktrees[].path`、`worktrees[].linkedLinearIssue`（样本裁剪为 4 个 worktree） | `orca-worker-show.json`、`orca-worktree-list.json` | `main.TestRecordedOrcaUsageMetadata` |
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 
@@ -89,6 +88,6 @@ Claude 读取 assistant 的 `message.usage` 并累加不同消息；同一消息
 
 coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路径>`、`--coordinator-session <提供方会话号>`、`--claimed-ticket-count <本次运行领取票数>`，仅匹配该目录和会话号的会话按领取票数均分，且 `apportioned=true`；未指定时只统计单元和显式 reviewer。读取只用只读打开与流式读行，超过 64KB 的行照常处理；某文件打开、读取、关闭或解析失败就舍弃该文件的全部用量，在 `skipped` 中给出 `path` 和 `error`，其他文件继续。结果仅写 stdout，不落盘。
 
-`usage.Collect(ctx, ticket, worktrees, attribution...)` 保留既有调用签名与账本契约，最后一个可选 `Options` 仅补充 reviewer/coordinator 归属和会话根目录；不再保留旧 `CollectItems` 路径。
+`usage.Collect(ctx, ticket, worktrees, attribution...)` 保留既有调用签名与账本契约，最后一个可选 `Options` 仅补充 reviewer/coordinator 归属和会话根目录。
 
 命令在当前仓库执行 `git worktree list --porcelain`，读取 `worktree <路径>` 行，仅选目录名以 `<票号>-` 开头的单元 worktree（例如 `ZII-894-executor`）；沿用命令的 30 秒 context 超时，不依赖 Orca API。Git 枚举失败时保留错误原因并退出 1；没有匹配且未显式指定 reviewer/coordinator 时返回带票号、价格版本和空分项的结果。`TestDiscoverUsageWorktrees` 使用临时 Git 仓库及两个不同票号的 worktree 验证筛选，JSON 命令测试继续注入 worktree 列表验证输出协议。

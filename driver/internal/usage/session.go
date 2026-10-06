@@ -17,8 +17,9 @@ type rawUsage struct {
 	Output   float64 `json:"output_tokens"`
 	Read     float64 `json:"cache_read_input_tokens"`
 	Write    float64 `json:"cache_creation_input_tokens"`
-	Cached   float64 `json:"cached_input_tokens"`
-	Creation struct {
+	Cached    float64 `json:"cached_input_tokens"`
+	CodexWrite float64 `json:"cache_write_input_tokens"`
+	Creation  struct {
 		Hour float64 `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
 	Reasoning float64 `json:"reasoning_output_tokens"`
@@ -27,7 +28,7 @@ type rawUsage struct {
 func (u rawUsage) tokens(codex bool) (Tokens, error) {
 	t := Tokens{u.Input, u.Output, u.Read, u.Write - u.Creation.Hour, u.Creation.Hour, u.Reasoning}
 	if codex {
-		t = Tokens{InputTokens: u.Input - u.Cached, OutputTokens: u.Output, CacheReadTokens: u.Cached, ReasoningTokens: u.Reasoning}
+		t = Tokens{InputTokens: u.Input - u.Cached, OutputTokens: u.Output, CacheReadTokens: u.Cached, CacheWriteTokens: u.CodexWrite, ReasoningTokens: u.Reasoning}
 	}
 	if t.InputTokens < 0 || t.OutputTokens < 0 || t.CacheReadTokens < 0 || t.CacheWriteTokens < 0 || t.CacheWriteHourTokens < 0 {
 		return Tokens{}, errors.New("invalid token counters")
