@@ -693,6 +693,15 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				watch.unobservedSince = now
 			}
 			if now.Sub(watch.unobservedSince) >= workerTurnStartTimeout {
+				// The fleet projection may lag a report delivered during this poll.
+				// Confirm its absence before issuing the destructive stop request.
+				report, _, err := readReport()
+				if err != nil {
+					return nil, err
+				}
+				if report != nil {
+					return report, nil
+				}
 				if !watch.stopAttempted {
 					watch.stopAttempted = true
 					_, watch.stopErr = e.Orca.WorkerStop(ctx, watch.stopRequest, dispatch)

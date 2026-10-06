@@ -72,8 +72,7 @@
         "projection": {
           "liveness": {
             "verdict": "unverifiable",
-            "reason": "stale_status",
-            "observedAt": 1791211890387
+            "reason": "missing_status"
           },
           "stage": {
             "worker": "succeeded",

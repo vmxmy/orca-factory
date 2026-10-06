@@ -218,3 +218,27 @@ func TestWaitStopFailureIsNotRetried(t *testing.T) {
 		t.Fatalf("state=%+v stops=%d; failed stop must not be replayed or cause correction", result.State, o.stops)
 	}
 }
+
+func TestWaitNeverStartedAfterLateReport(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	o := livenessFixture(t, "unverifiable", "")
+	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
+	// Completion arrives between task-list and the stale worker projection on
+	// the timeout poll. Recheck the authoritative report before stopping.
+	o.reportAt = 3
+	e.Orca = o
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &livenessRecovery{cancel: cancel}
+	e.Recovery = r
+	now := e.Now()
+	e.Now = func() time.Time { return now }
+	e.Sleep = func(context.Context, time.Duration) error {
+		now = now.Add(5 * time.Minute)
+		return nil
+	}
+	result, err := e.Execute(ctx, ticket)
+	if err != nil || result.State.Phase != machine.PhaseMergeQueue || result.State.Corrections != 0 || len(r.requests) != 0 || o.stops != 0 {
+		t.Fatalf("state=%+v err=%v corrections=%+v stops=%d", result.State, err, r.requests, o.stops)
+	}
+}
