@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -106,6 +107,7 @@ func githubSafetyFixture(t *testing.T, f *mergeFixture) *safetyIssues {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	client, err := issues.NewGitHub("o/r", gh)
 	if err != nil {
 		t.Fatal(err)
@@ -153,9 +155,12 @@ func TestGitHubStoppedIntentRetainsDeploymentBarrier(t *testing.T) {
 	for _, tc := range []struct {
 		name           string
 		merged, failed bool
+		sameVersion    bool
 	}{
-		{"canceled-unmerged", false, false}, {"canceled-merged", true, false},
-		{"failed-unmerged", false, true}, {"failed-merged", true, true},
+		{"canceled-unmerged", false, false, false}, {"canceled-merged", true, false, false},
+		{"failed-unmerged", false, true, false}, {"failed-merged", true, true, false},
+		{"same-version-canceled-merged", true, false, true},
+		{"same-version-failed-unmerged", false, true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			merged := tc.merged
@@ -172,7 +177,11 @@ func TestGitHubStoppedIntentRetainsDeploymentBarrier(t *testing.T) {
 				t.Fatal(err)
 			}
 			g.mu.Lock()
+			before := g.row["updated_at"]
 			g.comment(merge.ProgressPrefix + string(b))
+			if tc.sameVersion {
+				g.row["updated_at"] = before
+			}
 			if tc.failed {
 				g.row["labels"] = []any{map[string]any{"name": "auto-failed"}}
 			} else {

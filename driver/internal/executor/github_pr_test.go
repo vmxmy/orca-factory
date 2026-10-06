@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +94,7 @@ func TestGitHubPRReferencesIssueURLAndCanonicalIdentity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 			e.Linear, err = issues.NewGitHub("acme/demo", gh)
 			if err != nil {
 				t.Fatal(err)

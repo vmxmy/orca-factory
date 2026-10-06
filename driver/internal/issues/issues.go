@@ -8,16 +8,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/snapshotcache"
 )
 
 type Client interface {
@@ -109,10 +111,7 @@ type CreateInput struct {
 type GitHub struct {
 	repo, owner, name string
 	gh                *github.Client
-	mu                sync.Mutex
-	cached            map[string]Task
-	comments          map[string]commentHistory
-	commentGeneration uint64
+	cache             snapshotcache.Store
 }
 
 var component = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
@@ -125,7 +124,15 @@ func NewGitHub(repo string, gh *github.Client) (*GitHub, error) {
 	if !ok || !component.MatchString(owner) || !component.MatchString(name) || gh == nil {
 		return nil, errors.New("invalid GitHub task repository")
 	}
-	return &GitHub{repo: repo, owner: owner, name: name, gh: gh}, nil
+	path := os.Getenv("AGENT_GH_CACHE_PATH")
+	if path == "" {
+		root, err := os.UserCacheDir()
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(root, "orca-factory", "github-snapshots", "cache-v1.sqlite")
+	}
+	return &GitHub{repo: repo, owner: owner, name: name, gh: gh, cache: snapshotcache.Store{Path: path}}, nil
 }
 func (c *GitHub) Repository() string { return c.repo }
 func ParseMetadata(body string) (Metadata, error) {
@@ -214,7 +221,11 @@ func (c *GitHub) task(v github.IssueRecord) (Task, error) {
 	}
 	return Task{NativeState: v.State, NativeStateReason: v.StateReason, NativeUpdatedAt: nativeUpdatedAt, Issue: linear.Issue{ID: m.ID, Identifier: effectiveIdentifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Priority: m.Priority, Labels: labels, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Relations: linear.Connection[linear.Relation]{Nodes: []linear.Relation{}}, InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: []linear.InverseRelation{}, PageInfo: linear.PageInfo{HasNextPage: incomplete}}}, Number: v.Number, URL: v.URL, Title: v.Title, Description: strings.TrimSuffix(strings.SplitN(v.Body, marker, 2)[0], "\n\n"), Estimate: m.Estimate, Metadata: m, Complete: !incomplete, Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: []linear.InverseRelation{}}, nil
 }
-func (c *GitHub) List(ctx context.Context) ([]Task, error) {
+func (c *GitHub) listRemote(ctx context.Context) ([]Task, error) {
+	ctx, _, err := c.gh.Scope(ctx, c.repo)
+	if err != nil {
+		return nil, err
+	}
 	raw, err := c.gh.Issues(ctx, c.owner, c.name)
 	if err != nil {
 		return nil, err
@@ -274,36 +285,65 @@ func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 			t.Relations.Nodes = append(t.Relations.Nodes, r)
 		}
 	}
-	c.mu.Lock()
-	c.cached = map[string]Task{}
-	for _, v := range rows {
-		c.cached[v.ID] = v
-		c.cached[v.Identifier] = v
-		c.cached[strconv.Itoa(v.Number)] = v
+	return rows, nil
+}
+func (c *GitHub) List(ctx context.Context) ([]Task, error) { return c.list(ctx, 30*time.Second) }
+func (c *GitHub) list(ctx context.Context, ttl time.Duration) ([]Task, error) {
+	ctx, scope, err := c.gh.Scope(ctx, c.repo)
+	if err != nil {
+		return nil, err
 	}
-	c.mu.Unlock()
+	raw, err := c.cache.Get(ctx, scope, "tasks", "v1", ttl, func(ctx context.Context) ([]byte, error) {
+		rows, err := c.listRemote(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(rows)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var rows []Task
+	if err = json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("invalid cached tasks: %w", err)
+	}
 	return rows, nil
 }
 func (c *GitHub) cachedTask(ctx context.Context, id string) (Task, error) {
-	c.mu.Lock()
-	t, ok := c.cached[id]
-	c.mu.Unlock()
-	if ok {
-		return t, nil
+	rows, err := c.List(ctx)
+	if err != nil {
+		return Task{}, err
 	}
-	return c.Read(ctx, id)
+	for _, t := range rows {
+		if t.ID == id || t.Identifier == id || strconv.Itoa(t.Number) == id {
+			return t, nil
+		}
+	}
+	return Task{}, errors.New("task not found")
 }
+
 func (c *GitHub) Description(ctx context.Context, id string) (string, error) {
 	t, err := c.cachedTask(ctx, id)
 	return t.Description, err
 }
 func (c *GitHub) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]linear.Issue, error) {
+	return c.snapshot(ctx, projects, 30*time.Second)
+}
+
+// FreshSnapshot keeps discovery of durable recovery/deployment receipts as
+// fresh as the pre-cache scheduler. The ordinary CLI Snapshot/List use a TTL.
+// Publishing the forced enumeration still lets unchanged comment histories reuse
+// their separate cache, including across independent scheduler/CLI processes.
+func (c *GitHub) FreshSnapshot(ctx context.Context, projects []string) ([]linear.Issue, error) {
+	return c.snapshot(ctx, projects, 0)
+}
+func (c *GitHub) snapshot(ctx context.Context, projects []string, ttl time.Duration) ([]linear.Issue, error) {
 	for _, p := range projects {
 		if p != c.repo {
 			return nil, errors.New("snapshot repository mismatch")
 		}
 	}
-	tasks, err := c.List(ctx)
+	tasks, err := c.list(ctx, ttl)
 	if err != nil {
 		return nil, err
 	}
@@ -317,7 +357,7 @@ func (c *GitHub) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 	return rows, nil
 }
 func (c *GitHub) Read(ctx context.Context, id string) (Task, error) {
-	rows, err := c.List(ctx)
+	rows, err := c.listRemote(ctx)
 	if err != nil {
 		return Task{}, err
 	}
@@ -329,13 +369,17 @@ func (c *GitHub) Read(ctx context.Context, id string) (Task, error) {
 	return Task{}, errors.New("task not found")
 }
 func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
-	t, err := c.cachedTask(ctx, id)
+	ctx, _, err := c.gh.Scope(ctx, c.repo)
 	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	generation := c.commentGeneration
-	c.mu.Unlock()
+	t, err := c.Read(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return c.commentsRemote(ctx, t)
+}
+func (c *GitHub) commentsRemote(ctx context.Context, t Task) ([]linear.Comment, error) {
 	raw, err := c.gh.IssueComments(ctx, c.owner, c.name, t.Number)
 	if err != nil {
 		return nil, err
@@ -350,19 +394,15 @@ func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment,
 		}
 		rows = append(rows, decoded...)
 	}
-	c.mu.Lock()
-	if c.comments == nil {
-		c.comments = map[string]commentHistory{}
-	}
-	if generation == c.commentGeneration {
-		c.comments[t.ID] = commentHistory{readAt: time.Now(), version: t.NativeUpdatedAt, rows: append([]linear.Comment(nil), rows...)}
-	}
-	c.mu.Unlock()
+
 	return rows, nil
 }
-func (c *GitHub) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
+func (c *GitHub) CreateComment(ctx context.Context, id, body string) (out linear.Comment, err error) {
+	ctx, finish, err := c.beginMutation(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, finish()) }()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return linear.Comment{}, err
@@ -370,9 +410,12 @@ func (c *GitHub) CreateComment(ctx context.Context, id, body string) (linear.Com
 	v, err := c.gh.AddIssueComment(ctx, c.owner, c.name, t.Number, body)
 	return linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}, err
 }
-func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
+func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (out Task, err error) {
+	ctx, finish, err := c.beginMutation(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, finish()) }()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return Task{}, err
@@ -393,9 +436,12 @@ func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, 
 	}
 	return c.task(v)
 }
-func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
+func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (out linear.Issue, err error) {
+	ctx, finish, err := c.beginMutation(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, finish()) }()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return linear.Issue{}, err
@@ -444,7 +490,12 @@ func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove 
 	result, err := c.task(v)
 	return result.Issue, err
 }
-func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
+func (c *GitHub) Create(ctx context.Context, in CreateInput) (out Task, err error) {
+	ctx, finish, err := c.beginMutation(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, finish()) }()
 	if in.ID == "" {
 		b := make([]byte, 16)
 		if _, err := rand.Read(b); err != nil {
@@ -468,7 +519,7 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if _, err = ParseMetadata(body); err != nil {
 		return Task{}, err
 	}
-	rows, err := c.List(ctx)
+	rows, err := c.listRemote(ctx)
 	if err != nil {
 		return Task{}, err
 	}
@@ -506,32 +557,55 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 // GitHubUsage is additive to the legacy usage contract and never probes Linear.
 func (c *GitHub) GitHubUsage() github.Usage { return c.gh.Usage() }
 
-type commentHistory struct {
-	readAt  time.Time
-	version time.Time
-	rows    []linear.Comment
+func (c *GitHub) beginMutation(ctx context.Context) (context.Context, func() error, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	ctx, scope, err := c.gh.Scope(ctx, c.repo)
+	if err != nil {
+		cancel()
+		return ctx, nil, err
+	}
+	finish, err := c.cache.BeginMutation(ctx, scope)
+	if err != nil {
+		cancel()
+		return ctx, nil, err
+	}
+	return ctx, func() error {
+		defer cancel()
+		cleanup, end := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+		defer end()
+		return finish(cleanup)
+	}, nil
 }
 
-func (c *GitHub) invalidateComments() {
-	c.mu.Lock()
-	c.comments = nil
-	c.commentGeneration++
-	c.mu.Unlock()
-}
-
-// SnapshotComments reuses a fully read logical history only when the latest
-// complete issue enumeration confirms its native updated_at has not changed.
-// Recovery and ambiguous-write readback use ListComments and always revalidate.
+// SnapshotComments has its own completeness and TTL. A native issue version
+// change expires the history independently of the metadata enumeration TTL.
 func (c *GitHub) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
+	ctx, scope, err := c.gh.Scope(ctx, c.repo)
+	if err != nil {
+		return nil, err
+	}
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	h, ok := c.comments[t.ID]
-	c.mu.Unlock()
-	if ok && time.Since(h.readAt) < 5*time.Minute && !t.NativeUpdatedAt.IsZero() && h.version.Equal(t.NativeUpdatedAt) {
-		return append([]linear.Comment(nil), h.rows...), nil
+	version := t.NativeUpdatedAt.Format(time.RFC3339Nano)
+	ttl := 5 * time.Minute
+	if t.NativeUpdatedAt.IsZero() {
+		ttl = 0
 	}
-	return c.ListComments(ctx, id)
+	raw, err := c.cache.Get(ctx, scope, "comments:"+t.ID, version, ttl, func(ctx context.Context) ([]byte, error) {
+		rows, err := c.commentsRemote(ctx, t)
+		if err != nil {
+			return nil, err
+		}
+		return json.Marshal(rows)
+	})
+	if err != nil {
+		return nil, err
+	}
+	var rows []linear.Comment
+	if err = json.Unmarshal(raw, &rows); err != nil {
+		return nil, fmt.Errorf("invalid cached comments: %w", err)
+	}
+	return rows, nil
 }

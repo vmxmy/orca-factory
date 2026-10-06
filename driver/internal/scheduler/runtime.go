@@ -168,7 +168,13 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		grouped[client] = append(grouped[client], issues.Project(repo.Env))
 	}
 	for client, selected := range grouped {
-		rows, err := client.Snapshot(ctx, selected, time.Time{})
+		var rows []linear.Issue
+		var err error
+		if gh, ok := client.(*issues.GitHub); ok {
+			rows, err = gh.FreshSnapshot(ctx, selected)
+		} else {
+			rows, err = client.Snapshot(ctx, selected, time.Time{})
+		}
 		if err != nil {
 			return nil, fmt.Errorf("issue snapshot failed: %w", err)
 		}
@@ -207,6 +213,22 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		}
 		if err != nil {
 			return nil, errors.New("ownership snapshot failed")
+		}
+		// Active recovery must observe receipts even when GitHub's parent
+		// updated_at did not change (same-second writes or edited comments).
+		// Cache reuse remains for idle discovery; every critical action still
+		// runs its existing Read/ListComments preflight below.
+		if gh, ok := r.Clients[path].(*issues.GitHub); ok {
+			var observed Ticket
+			if err = readOwnership(&observed, comments); err != nil {
+				return nil, err
+			}
+			if observed.Owner == machine.OwnerExecutor || observed.Owner == machine.OwnerMerge || issue.State.Name == "In Progress" {
+				comments, err = gh.ListComments(ctx, issue.ID)
+				if err != nil {
+					return nil, fmt.Errorf("active ownership snapshot failed: %w", err)
+				}
+			}
 		}
 		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
 		for _, comment := range comments {

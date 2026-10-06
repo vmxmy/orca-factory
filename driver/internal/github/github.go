@@ -4,8 +4,10 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -131,7 +133,7 @@ func (c *Client) requestDetails(ctx context.Context, method, path string, input,
 	if err := c.rateReady(); err != nil {
 		return err
 	}
-	token, err := c.token(ctx)
+	token, err := c.boundToken(ctx)
 	if err != nil || strings.TrimSpace(token) == "" {
 		return &infra.Global{Dep: infra.GitHub, Err: errors.New("GitHub authentication failed")}
 	}
@@ -154,7 +156,8 @@ func (c *Client) requestDetails(ctx context.Context, method, path string, input,
 		req.Header.Set("Content-Type", "application/json")
 	}
 	c.cacheMu.Lock()
-	cached, hasCache := c.cache[endpoint]
+	cacheKey := fmt.Sprintf("%x:%s", sha256.Sum256([]byte(token)), endpoint)
+	cached, hasCache := c.cache[cacheKey]
 	generation := c.generation
 	c.cacheMu.Unlock()
 	if method == http.MethodGet && hasCache {
@@ -218,9 +221,9 @@ func (c *Client) requestDetails(ctx context.Context, method, path string, input,
 			c.cacheMu.Lock()
 			if c.generation == generation {
 				if etag := resp.Header.Get("ETag"); etag != "" {
-					c.cache[endpoint] = cachedResponse{etag: etag, body: body, link: resp.Header.Get("Link")}
+					c.cache[cacheKey] = cachedResponse{etag: etag, body: body, link: resp.Header.Get("Link")}
 				} else {
-					delete(c.cache, endpoint)
+					delete(c.cache, cacheKey)
 				}
 			}
 			c.cacheMu.Unlock()
@@ -243,4 +246,25 @@ func (c *Client) invalidate() {
 
 func repoPath(owner, repo string) string {
 	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
+}
+
+// Scope captures the credential used by this operation. Neither the cache scope
+// nor transport ETag keys persist plaintext credentials; rotation creates a miss.
+func (c *Client) Scope(ctx context.Context, repo string) (context.Context, string, error) {
+	token, err := c.boundToken(ctx)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return ctx, "", &infra.Global{Dep: infra.GitHub, Err: errors.New("GitHub authentication failed")}
+	}
+	namespace := sha256.Sum256([]byte(c.base + "\x00" + strings.ToLower(repo)))
+	authorization := sha256.Sum256([]byte(token))
+	return context.WithValue(ctx, authContextKey{}, token), fmt.Sprintf("%x:%x", namespace, authorization), nil
+}
+
+type authContextKey struct{}
+
+func (c *Client) boundToken(ctx context.Context) (string, error) {
+	if bound, ok := ctx.Value(authContextKey{}).(string); ok {
+		return bound, nil
+	}
+	return c.token(ctx)
 }

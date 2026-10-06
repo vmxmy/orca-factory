@@ -17,11 +17,12 @@ import (
 )
 
 func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	var reads atomic.Int64
+	var reads, issueReads atomic.Int64
 	body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"In Progress","complete":true,"blockers":[],"related":[]} -->`
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "GET" {
@@ -30,6 +31,7 @@ func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/repos/o/r/issues" {
+			issueReads.Add(1)
 			_, _ = fmt.Fprintf(w, `[{"number":42,"title":"[ledger] agent-graph","body":%q,"state":"open","labels":[],"updated_at":"2026-10-06T00:00:00Z"}]`, body)
 			return
 		}
@@ -69,6 +71,24 @@ func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
 	}
 	if !snapshot.OK || !snapshot.Result.Complete || len(snapshot.Result.Issues) != 1 || snapshot.Result.Issues[0].CommentsComplete || reads.Load() != 0 {
 		t.Fatalf("snapshot fanout or schema: %+v comment reads=%d", snapshot, reads.Load())
+	}
+	// Each command is a distinct CLI process sharing only the temp SQLite file.
+	for range 2 {
+		if err := json.Unmarshal(command("issues", "snapshot"), &snapshot); err != nil {
+			t.Fatal(err)
+		}
+		if !snapshot.OK || !snapshot.Result.Complete || len(snapshot.Result.Issues) != 1 {
+			t.Fatalf("reopened JSON snapshot contract: %+v", snapshot)
+		}
+	}
+	if issueReads.Load() != 1 {
+		t.Fatalf("three CLI restarts fetched issues%d times; want1", issueReads.Load())
+	}
+	t.Logf("three CLI snapshots: issue requests=%d versus uncached3", issueReads.Load())
+	beforeValidate := issueReads.Load()
+	command("issues", "validate")
+	if issueReads.Load() != beforeValidate+1 {
+		t.Fatal("validate trusted ordinary cached snapshot")
 	}
 	var read struct {
 		Result struct {
@@ -122,6 +142,7 @@ func TestIssueImportBudgetPreservesParentCancellation(t *testing.T) {
 // Both standalone CLI paths must carry the configured deadline through the
 // selected backend, without needing any Linear credentials or metadata.
 func TestGitHubCLIConfiguredHTTPTimeout(t *testing.T) {
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
 		t.Fatal(err)

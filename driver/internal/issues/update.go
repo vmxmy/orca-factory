@@ -9,9 +9,12 @@ import (
 
 // Edit changes only explicitly supplied task fields. Frozen identity and import
 // provenance are not editable through this public patch operation.
-func (c *GitHub) Edit(ctx context.Context, id string, raw []byte) (Task, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
+func (c *GitHub) Edit(ctx context.Context, id string, raw []byte) (out Task, err error) {
+	ctx, finish, err := c.beginMutation(ctx)
+	if err != nil {
+		return out, err
+	}
+	defer func() { err = errors.Join(err, finish()) }()
 	var patch map[string]json.RawMessage
 	if json.Unmarshal(raw, &patch) != nil || patch == nil {
 		return Task{}, errors.New("invalid task patch")

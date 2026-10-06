@@ -175,7 +175,7 @@ func runIssues(args []string) int {
 			result, err = issues.Import(ctx, gh, raw, *apply)
 		}
 	case "validate":
-		_, err = gh.List(ctx)
+		_, err = gh.FreshSnapshot(ctx, []string{gh.Repository()})
 		result = map[string]any{"repository": gh.Repository(), "backend": "github", "complete": true}
 	default:
 		fmt.Fprintln(os.Stderr, "issues: unknown command")

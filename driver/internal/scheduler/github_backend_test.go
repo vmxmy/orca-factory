@@ -9,6 +9,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +57,7 @@ func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 	}))
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	client, _ := issues.NewGitHub("o/r", gh)
 	if _, err := client.List(ctx); err != nil {
 		t.Fatal(err)
@@ -122,6 +124,7 @@ func TestGitHubRuntimeFrozenMergeRecoveryEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	client, err := issues.NewGitHub("o/r", gh)
 	if err != nil {
 		t.Fatal(err)
@@ -171,6 +174,7 @@ func TestGitHubDoneMergeOwnerMayFinishDurableReceipt(t *testing.T) {
 	}))
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	client, _ := issues.NewGitHub("o/r", gh)
 	r := &Runtime{Clients: map[string]LinearClient{"/repo": client}}
 	err := r.verifyGitHubDecision(context.Background(), Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Owner: "合并通道"}, "")

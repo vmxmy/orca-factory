@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -28,6 +29,7 @@ func TestGitHubSnapshotIdentityAndUnknownBlocker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	c, err := NewGitHub("o/r", gh)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +56,7 @@ func TestImportHoldExcludedFromRuntimeSnapshot(t *testing.T) {
 	}))
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	c, _ := NewGitHub("o/r", gh)
 	rows, err := c.Snapshot(context.Background(), []string{"o/r"}, time.Time{})
 	if err != nil {
@@ -78,6 +81,7 @@ func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
 	}))
 	defer s.Close()
 	gh, _ := github.New(github.Options{BaseURL: s.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	c, _ := NewGitHub("o/r", gh)
 	for range 2 {
 		if _, err := c.List(context.Background()); err != nil {
@@ -87,7 +91,7 @@ func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if issueReads != 2 || commentReads != 1 {
+	if issueReads != 1 || commentReads != 1 {
 		t.Fatalf("unchanged snapshots repeated history: issues=%d comments=%d", issueReads, commentReads)
 	}
 }
@@ -117,6 +121,7 @@ func TestGitHubCreateReconcilesLostResponse(t *testing.T) {
 	}))
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	t.Setenv("AGENT_GH_CACHE_PATH", filepath.Join(t.TempDir(), "private", "cache.sqlite"))
 	c, _ := NewGitHub("o/r", gh)
 	task, err := c.Create(context.Background(), CreateInput{Title: "native task"})
 	if err != nil || task.Identifier != "GH-7" || task.ID == "" || writes != 1 {

@@ -349,7 +349,7 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		return result, err
 	}
 	result.Issues = len(manifest.Issues)
-	rows, err := c.List(ctx)
+	rows, err := c.listRemote(ctx)
 	if err != nil {
 		return result, err
 	}
