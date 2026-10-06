@@ -64,7 +64,7 @@ export const buildThroughput = (input: {
     if (!samples.length) continue
     samples.sort((a, b) => a - b)
     stages[key] = {
-      p50: samples[Math.ceil(0.5 * samples.length) - 1],
+      p50: (samples[Math.floor((samples.length - 1) / 2)] + samples[Math.floor(samples.length / 2)]) / 2,
       p90: samples[Math.ceil(0.9 * samples.length) - 1],
       n: samples.length,
     }

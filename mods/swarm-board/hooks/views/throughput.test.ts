@@ -48,8 +48,8 @@ test('counts merged completions in 24 rolling hourly buckets', () => {
   Object.freeze(ledger)
   const data = buildThroughput({ now: 0, ledger, runs: [] })
   expect(data.stages).toEqual({
-    queue: { p50: 20, p90: 40, n: 4 },
-    worker: { p50: 30, p90: 50, n: 2 },
+    queue: { p50: 25, p90: 40, n: 4 },
+    worker: { p50: 40, p90: 50, n: 2 },
     gate: { p50: 4, p90: 4, n: 1 },
     review: { p50: 5, p90: 5, n: 1 },
     merge: { p50: 6, p90: 6, n: 1 },
