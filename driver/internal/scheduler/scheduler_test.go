@@ -375,3 +375,50 @@ func TestQuotaPauseRefreshesBudgetAfterBackoff(t *testing.T) {
 }
 
 func (f *fakeBackend) LinearLimits() []linear.RateLimit { return f.limits }
+
+type probeBackend struct {
+	*fakeBackend
+	probes int
+	budget func() // sets the limits the probe observes
+}
+
+func (b *probeBackend) ProbeLinearQuota(context.Context) error {
+	b.probes++
+	b.budget()
+	return nil
+}
+
+// A paused scheduler probes with one cheap request, never a Snapshot, and stays
+// paused until the refilled budget clears the resume threshold.
+func TestQuotaPauseProbesWithoutSnapshotAndResumesWithHysteresis(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	f := &fakeBackend{}
+	s := setup(f)
+	s.Now = func() time.Time { return now }
+	limit := func(remaining int64) {
+		f.limits = []linear.RateLimit{{Limit: 2500, Remaining: remaining, Reset: now.Add(time.Hour)}}
+	}
+	b := &probeBackend{fakeBackend: f}
+	s.Backend = b
+	limit(60)
+	if err := s.Tick(context.Background()); err != nil || !s.Pauses.Paused("") {
+		t.Fatalf("low budget must pause: err=%v", err)
+	}
+	for _, step := range []struct {
+		remaining int64
+		paused    bool
+	}{{140, true}, {200, true}, {260, false}} {
+		now = now.Add(6 * time.Minute)
+		remaining := step.remaining
+		b.budget = func() { limit(remaining) }
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.Pauses.Paused(""); got != step.paused {
+			t.Fatalf("remaining=%d: paused=%v, want %v", step.remaining, got, step.paused)
+		}
+	}
+	if b.probes != 3 || f.snapshots != 1 {
+		t.Fatalf("probes=%d snapshots=%d; the paused ticks must probe, and only the resumed tick may snapshot", b.probes, f.snapshots)
+	}
+}
