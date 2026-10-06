@@ -1,21 +1,23 @@
 {
-  "id": "bb61812c-a5e3-4ac9-9b3c-4a6c7322014e",
+  "id": "a60a1de6-8961-45ff-aba5-cce24531e9bb",
   "ok": false,
   "error": {
-    "code": "agent_unconfigured",
-    "message": "Terminal term_8366b1bf-eb23-46d0-a82c-d4ae2d471bff is not running a recognized agent. Orchestration mutation request ID: 0f33a3d5-d1b4-408d-84cd-b736ff0f0e8a.",
+    "code": "terminal_handle_stale",
+    "message": "terminal_handle_stale Orchestration mutation request ID: 46bf55db-574d-4580-bd94-d099e9d9ae2e.",
     "data": {
-      "orchestrationRequestId": "0f33a3d5-d1b4-408d-84cd-b736ff0f0e8a",
+      "orchestrationRequestId": "46bf55db-574d-4580-bd94-d099e9d9ae2e",
       "originalCommand": [
         "orca-ide",
         "orchestration",
         "worker-start",
+        "--run",
+        "run_d30c4d5cec87",
         "--task",
-        "task_546253d0eb9f",
+        "task_41a8d15dd86d",
         "--terminal",
-        "term_8366b1bf-eb23-46d0-a82c-d4ae2d471bff",
+        "term_00000000-0000-0000-0000-000000000000",
         "--worktree",
-        "path:/home/laoxu/orca/workspaces/orca-factory/ZII-904-executor",
+        "path:/home/laoxu/orca/workspaces/orca-factory/probe-904-reuse",
         "--json"
       ]
     }
