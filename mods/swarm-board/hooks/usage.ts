@@ -1,21 +1,17 @@
+import type { TicketUsage as SharedTicketUsage } from '../types'
+import { usagePrices } from './usage-prices'
 /** Disjoint token buckets: input excludes cache reads (including for Codex). */
 export type UsageRecord = {
-  cwd: string; model: string; input: number; output: number; cacheRead: number; cacheWrite: number
+  cwd: string; model: string; input: number; output: number; cacheRead: number; cacheWrite: number; cacheWriteHour?: number; reasoning?: number
 }
-export type TicketUsage = Omit<UsageRecord, 'cwd' | 'model'> & {
+export type TicketUsage = SharedTicketUsage & Omit<UsageRecord, 'cwd' | 'model'> & {
   total: number; usd: number; known: boolean; partial: boolean; allocated: boolean; model: string
 }
 export type WorktreeToTicket = Record<string, string | readonly string[]>
-// Board estimates, USD per million tokens: input, output, cache read, cache write.
-// Unknown models remain explicitly unpriced; do not guess a price for all GPT models.
-const prices: Record<string, readonly number[]> = {
-  'claude-sonnet-5-5': [3, 15, 0.3, 3.75],
-  'claude-opus-5-5': [15, 75, 1.5, 18.75],
-  'claude-haiku-4-5': [0.8, 4, 0.08, 1],
-  'gpt-6-astra': [1.25, 10, 0.125, 0],
-}
+const prices: Record<string, { input: number; output: number; read: number; write?: number; write_hour?: number }> = usagePrices.models
 const count = (v: unknown): number => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0
 const object = (v: unknown): Record<string, unknown> => v !== null && typeof v === 'object' ? v as Record<string, unknown> : {}
+const emptyTotals = () => ({ input: 0, output: 0, cache_read: 0, cache_write: 0, reasoning: 0, cost_usd: 0 })
 const pathKey = (p: string) => p.replace(/\\/g, '/').replace(/\/$/, '')
 
 /** Longest worktree wins; a shared coordinator path is divided among distinct tickets. */
@@ -27,14 +23,22 @@ export function aggregateUsage(records: readonly UsageRecord[], worktreeToTicket
     const cwd = pathKey(r.cwd)
     const ids = paths.find(([p]) => cwd === p || cwd.startsWith(p + '/'))?.[1] ?? []
     for (const id of ids) {
-      const u = result[id] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, usd: 0, known: false, partial: false, allocated: false, model: r.model }
+      const u = result[id] ??= { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, usd: 0, known: false, partial: false, allocated: false, model: r.model, ticket: id, cache_read: 0, cache_write: 0, reasoning: 0, cost_usd: 0, price_version: usagePrices.price_version, apportioned: false, by_role: { worker: emptyTotals(), reviewer: emptyTotals(), coordinator: emptyTotals(), session: emptyTotals() } }
       const buckets = [r.input, r.output, r.cacheRead, r.cacheWrite].map(v => count(v) / ids.length)
       u.input += buckets[0]; u.output += buckets[1]; u.cacheRead += buckets[2]; u.cacheWrite += buckets[3]
       u.total += buckets.reduce((a, b) => a + b, 0)
       u.allocated ||= ids.length > 1
-      const price = prices[r.model.replace(/^.*\//, '')]
-      if (price) { u.known = true; u.usd += buckets.reduce((sum, n, i) => sum + n * price[i], 0) / 1e6 }
+      const model = r.model.replace(/^.*\//, '').replace(/-\d{8}$/, '')
+      const price = prices[model]
+      if (price) {
+        u.known = true
+        const hour = Math.min(count(r.cacheWriteHour) / ids.length, buckets[3])
+        u.usd += (buckets[0] * price.input + buckets[1] * price.output + buckets[2] * price.read + (buckets[3] - hour) * (price.write ?? 0) + hour * (price.write_hour ?? 0)) / 1e6
+      }
       else u.partial = true
+      u.cache_read = u.cacheRead; u.cache_write = u.cacheWrite; u.cost_usd = u.usd; u.apportioned = u.allocated
+      u.reasoning += count(r.reasoning) / ids.length
+      u.by_role.session = { input: u.input, output: u.output, cache_read: u.cache_read, cache_write: u.cache_write, reasoning: u.reasoning, cost_usd: u.cost_usd }
     }
   }
   return result
@@ -57,13 +61,13 @@ export function parseSession(text: string, kind: 'claude' | 'codex', fallbackCwd
       const info = object(payload.info), usage = object(info.total_token_usage)
       if (!Object.keys(usage).length) continue
       const cached = count(usage.cached_input_tokens)
-      last = { cwd, model, input: Math.max(0, count(usage.input_tokens) - cached), output: count(usage.output_tokens), cacheRead: cached, cacheWrite: 0 }
+      last = { cwd, model, input: Math.max(0, count(usage.input_tokens) - cached), output: count(usage.output_tokens), cacheRead: cached, cacheWrite: 0, reasoning: count(usage.reasoning_output_tokens) }
     } else {
       const message = object(row.message), usage = object(message.usage)
       if (!Object.keys(usage).length) continue
       // Repeated streaming snapshots of the same assistant message must not multiply usage.
       const key = typeof message.id === 'string' ? message.id : String(row.uuid ?? index)
-      messages.set(key, { cwd, model: String(message.model ?? ''), input: count(usage.input_tokens), output: count(usage.output_tokens), cacheRead: count(usage.cache_read_input_tokens), cacheWrite: count(usage.cache_creation_input_tokens) })
+      messages.set(key, { cwd, model: String(message.model ?? ''), input: count(usage.input_tokens), output: count(usage.output_tokens), cacheRead: count(usage.cache_read_input_tokens), cacheWrite: count(usage.cache_creation_input_tokens), cacheWriteHour: count(object(usage.cache_creation).ephemeral_1h_input_tokens) })
     }
   }
   return kind === 'codex' ? (last ? [last] : []) : [...messages.values()]
@@ -113,10 +117,18 @@ export function ledgerUsage(comments: readonly { body: string }[]): Record<strin
     if (typeof row.minutes === 'number' && row.minutes >= 0 && Number.isFinite(row.minutes)) value.minutes = row.minutes
     const u = object(row.usage)
     if (Object.keys(u).length) {
-      const r = { cwd: '/', model: String(u.model ?? ''), input: count(u.input), output: count(u.output), cacheRead: count(u.cacheRead), cacheWrite: count(u.cacheWrite) }
+      const r = { cwd: '/', model: String(u.model ?? ''), input: count(u.input), output: count(u.output), cacheRead: count(u.cache_read), cacheWrite: count(u.cache_write), reasoning: count(u.reasoning) }
       value.usage = aggregateUsage([r], { '/': row.ticket })[row.ticket]
-      if (typeof u.usd === 'number' && Number.isFinite(u.usd) && u.usd >= 0) Object.assign(value.usage, { usd: u.usd, known: u.known !== false, partial: u.partial === true })
-      value.usage.allocated = u.allocated === true
+      if (typeof u.cost_usd === 'number' && Number.isFinite(u.cost_usd) && u.cost_usd >= 0 && typeof u.price_version === 'string' && u.price_version) {
+        Object.assign(value.usage, { usd: u.cost_usd, cost_usd: u.cost_usd, known: true, partial: false, price_version: u.price_version })
+      }
+      const models = Object.keys(object(u.by_model))
+      if (models.length) {
+        const priced = models.map(model => !!prices[model.replace(/^.*\//, '').replace(/-\d{8}$/, '')])
+        value.usage.known = priced.some(Boolean)
+        value.usage.partial = priced.some(known => !known)
+      }
+      value.usage.allocated = value.usage.apportioned = u.apportioned === true
     }
     result[row.ticket] = value
   }

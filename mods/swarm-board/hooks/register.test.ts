@@ -1,3 +1,4 @@
+import { recordedUsage } from './usage-recorded'
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
@@ -596,6 +597,7 @@ const snapshotFixture = async (
     comments?: Record<string, unknown[]>
     blockedBy?: Record<string, string[]>
     missing?: boolean
+    usage?: { mtime: number; reads: number }
   },
 ) => {
   __resetSwarmBoardCachesForTests()
@@ -604,6 +606,7 @@ const snapshotFixture = async (
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.stat', () => ({ value: { mtimeMs: opts.usage?.mtime ?? 1, size: 1 } }))
   on('fs.read', (_: unknown, e: { path: string }) => {
     if (e.path.endsWith('/orca-factory-linear-snapshot.json')) {
       if (opts.missing) throw new Error('ENOENT')
@@ -613,6 +616,12 @@ const snapshotFixture = async (
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (opts.usage) {
+      if (e.argv[0] === 'sh' && e.argv[2]?.includes('$HOME')) return { value: { stdout: '/home/u', stderr: '', exitCode: 0 } }
+      if (e.argv[0] === 'orca' && e.argv[1] === 'worktree') return { value: { stdout: JSON.stringify({ ok: true, result: { worktrees: [{ linkedLinearIssue: 'ZII-895', path: '/work/unit' }] } }), stderr: '', exitCode: 0 } }
+      if (e.argv[0] === 'bash' && e.argv[3] === 'usage') return { value: { stdout: '/home/u/.claude/projects/-work-unit/recorded.jsonl', stderr: '', exitCode: 0 } }
+      if (e.argv[0] === 'jq') { opts.usage.reads++; return { value: { stdout: recordedUsage.claude, stderr: '', exitCode: 0 } } }
+    }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
       return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
     }
@@ -872,24 +881,40 @@ const snapshotWatchFixture = async ($: any, on: any) => {
   on('clock.every', (_: unknown, e: { ms: number }) => {
     intervals.push(e.ms); if (e.ms === 5_000) scheduled()
     return new Promise<{ value: undefined }>(resolve => {
+      if (e.ms === 60_000) fire60s = () => resolve({ value: undefined })
       if (e.ms === 5_000) fire5s = () => resolve({ value: undefined })
     })
   })
   const stats: string[] = [], reads: string[] = []
   const external: string[][] = [], statuses: string[] = []
   let mtimeMs = 1, issues: unknown[] = [], refreshed = () => {}
+  let pushed: unknown = null, driverMtime = 1, driverReads = 0
+  let blockRead: (() => Promise<void>) | undefined
+  let blockStat: (() => Promise<void>) | undefined
+  let fire60s = () => {}
   const ready = new Promise<void>(resolve => { refreshed = resolve })
   on('ui.open', () => ({ value: undefined })); on('ui.close', () => ({ value: undefined }))
   on('ui.status', (_: unknown, e: { text: string }) => { statuses.push(e.text); refreshed(); return { value: undefined } })
-  on('fs.stat', (_: unknown, e: { path: string }) => { stats.push(e.path); return { value: { mtimeMs, size: 1 } } })
-  on('fs.read', (_: unknown, e: { path: string }) => {
+  on('fs.stat', async (_: unknown, e: { path: string }) => {
+    stats.push(e.path)
+    if (blockStat) { const wait = blockStat; blockStat = undefined; await wait() }
+    if (e.path.endsWith('/status.json')) {
+      if (!pushed) throw new Error('ENOENT')
+      return { value: { mtimeMs: driverMtime, size: 1 } }
+    }
+    return { value: { mtimeMs, size: 1 } }
+  })
+  on('fs.read', async (_: unknown, e: { path: string }) => {
+    if (e.path.endsWith('/status.json')) { driverReads++; return { value: JSON.stringify(pushed) } }
     if (e.path === '/tmp/orca-factory-linear-snapshot.json') {
+      if (blockRead) { const wait = blockRead; blockRead = undefined; await wait() }
       reads.push(e.path)
       return { value: JSON.stringify({ generatedAt: Math.floor(Date.now() / 1000), issues, comments: { 'ZII-892': [{ body: '转人: 快照新原因', createdAt: '2026-10-05T00:00:00Z' }] }, blockedBy: { 'ZII-891': ['ZII-890'] } }) }
     }
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('XDG_RUNTIME_DIR')) return { value: { stdout: '/runtime/orca-factory/status.json', stderr: '', exitCode: 0 } }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
       return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
     }
@@ -899,7 +924,17 @@ const snapshotWatchFixture = async ($: any, on: any) => {
   await $.command.run({ command: 'swarm', args: '' }); await ready
   external.length = 0; statuses.length = 0
   return {
-    intervals, stats, reads, external, statuses, fire: () => fire5s(),
+    intervals, stats, reads, external, statuses, fire: () => fire5s(), fire60: () => fire60s(),
+    driver: (value: unknown) => { pushed = value; driverMtime++ }, driverReads: () => driverReads,
+    reopen: async () => { const done = new Promise<void>(resolve => { refreshed = resolve }); await $.command.run({ command: 'swarm', args: '' }); await done },
+    hold: (kind: 'read' | 'stat') => {
+      let release = () => {}, started = () => {}
+      const held = new Promise<void>(resolve => { started = resolve })
+      const wait = new Promise<void>(resolve => { release = resolve })
+      const block = () => { started(); return wait }
+      if (kind === 'read') blockRead = block; else blockStat = block
+      return { held, release }
+    },
     tick: async () => { const done = new Promise<void>(resolve => { scheduled = resolve }); fire5s(); await done },
     change: () => {
       mtimeMs = 2
@@ -945,16 +980,18 @@ const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, miss
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
   on('fs.read', (_: unknown, e: { path: string }) => {
+    if (e.path === '/tmp/orca-factory-linear-snapshot.json') return { value: JSON.stringify({ generatedAt: Date.now() / 1000, issues: [queueIssue('ZII-888'), queueIssue('ZII-889')], comments: {}, blockedBy: { 'ZII-889': ['ZII-777'] } }) }
+    if (e.path === '/runtime/orca-factory/status.json') {
+      if (missing || exitCode) throw new Error('ENOENT')
+      return { value: stdout }
+    }
     if (e.path.endsWith('/orca-factory-linear-calls')) throw new Error('ENOENT')
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
   })
-  on('process.run', (_: unknown, e: { argv: string[]; init: { timeoutMs: number } }) => {
-    if (e.argv[0] === 'orca-factory-driver') {
-      expect(e.argv).toEqual(['orca-factory-driver', 'status', '--json'])
-      expect(e.init.timeoutMs).toBe(20_000)
-      if (missing) throw new Error('command not found')
-      return { value: { stdout, stderr: '', exitCode } }
-    }
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
+    if (e.argv[0] === 'orca-factory-driver') throw new Error('board must not execute driver')
+    if (e.argv[0] === 'sh' && e.argv[2]?.includes('XDG_RUNTIME_DIR')) return { value: { stdout: '/runtime/orca-factory/status.json', stderr: '', exitCode: 0 } }
     return { value: { stdout: '{"ok":true,"result":{}}', stderr: '', exitCode: 0 } }
   })
   await $.command.run({ command: RESET_LINEAR_THROTTLE_COMMAND, args: '' })
@@ -964,7 +1001,7 @@ const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, miss
 }
 
 test('driver global pause and hourly Linear usage appear on the board', async ($, on) => {
-  await driverFixture($, on, '{"state":"ok","globalPause":{"active":true,"durationSeconds":180},"linear":{"requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"remaining":966,"reset":"2026-10-05T09:30:00Z"}}]}}')
+  await driverFixture($, on, '{"generatedAt":' + JSON.stringify(new Date().toISOString()) + ',"tickets":[],"state":"ok","globalPause":{"active":true,"durationSeconds":180},"linear":{"requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"remaining":966,"reset":"2026-10-05T09:30:00Z"}}]}}')
   const ui = await mount($, 'terminal')
   expect(await ui.find({ type: 'Text', text: /⏸ 全局暂停 180 秒/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /驱动器 Linear 本小时 请求 12 · 复杂度 34/ })).toBeDefined()
@@ -993,3 +1030,92 @@ for (const state of ['unknown', 'stale']) {
     await ui.unmount()
   })
 }
+
+test('unchanged snapshot is not reread on subsequent polls', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  await f.tick(); const before = f.reads.length
+  await f.tick(); expect(f.reads.length).toBe(before)
+})
+
+for (const expired of [false, true]) {
+  test('driver file ' + (expired ? 'expires back to snapshot' : 'supplies head and ownership'), async ($, on) => {
+    await driverFixture($, on, JSON.stringify({ state: 'ok', generatedAt: new Date(Date.now() - (expired ? 180_000 : 30_000)).toISOString(), tickets: [{ repo: '/repo', identifier: 'ZII-777', owner: '执行器', phase: 'gate' }], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 1, complexity: 2, limits: [] } }))
+    const ui = await mount($, 'terminal')
+    expect(Boolean(await ui.find({ type: 'Text', text: /ZII-777/ }))).toBe(!expired)
+    if (!expired) {
+      expect(await ui.find({ type: 'Text', text: /驱动器.*在做 1/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /驱动器下一轮巡检领取/ })).toBeDefined()
+      expect(await ui.find({ type: 'Text', text: /⛓ 等依赖 \(1\)/ })).toBeDefined()
+    }
+    await ui.unmount()
+  })
+}
+
+test('completed ticket uses snapshot ledger accounting in lanes and detail without Linear reads', async ($, on) => {
+  const f = await snapshotFixture($, on, {
+    issues: [{ identifier: 'ZII-895', title: '用量完成票', state: { type: 'completed' }, labels: [], updatedAt: new Date().toISOString() }],
+    comments: { ledger: [{ body: 'ledger ' + JSON.stringify({ ticket: 'ZII-895', minutes: 12, usage: { input: 10, output: 5, cache_read: 20, cache_write: 30, cost_usd: 0.42, price_version: 'recorded', apportioned: true } }), createdAt: new Date().toISOString() }] },
+  })
+  expect(f.orcaLinearCalls()).toBe(0)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /用时 12 min · token 65 · est\. \$0\.42（按 API 价折算 · 分摊）/ })).toBeDefined()
+  await ui.press({ key: 'view-swarm' }); await ui.press({ key: 'toggle-detail' })
+  expect(await ui.find({ type: 'Text', text: /用时 12 min · token 65/ })).toBeDefined()
+  await f.refresh(); expect(f.orcaLinearCalls()).toBe(0)
+  await ui.unmount()
+})
+
+test('reopening installs a fresh set of poll timers after canceling the old set', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  await $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' })
+  await f.reopen()
+  expect(f.intervals).toEqual([60_000, 5_000, 1_000, 60_000, 5_000, 1_000])
+})
+
+test('full refresh and local poll exclude each other in both directions', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  const full = f.hold('read')
+  const opened = f.reopen(); await full.held
+  const stats = f.stats.length
+  await f.tick(); expect(f.stats.length).toBe(stats)
+  full.release(); await opened
+  const local = f.hold('stat')
+  f.fire(); await local.held
+  const calls = f.external.length
+  f.fire60(); await new Promise(resolve => setTimeout(resolve, 20))
+  expect(f.external.length).toBe(calls)
+  local.release(); await new Promise(resolve => setTimeout(resolve, 20))
+  await $.command.run({ command: SIMULATE_CLOSE_COMMAND, args: '' })
+})
+
+test('status polling reuses mtime, redraws changes, expires and recovers after deletion', async ($, on) => {
+  const f = await snapshotWatchFixture($, on)
+  const driver = { state: 'ok', generatedAt: new Date().toISOString(), tickets: [{ repo: '/repo', identifier: 'ZII-777', owner: '执行器', phase: 'gate' }], globalPause: { active: true, durationSeconds: 9 }, linear: { requests: 7, complexity: 8, limits: [] } }
+  f.driver(driver); await f.tick()
+  const count = f.driverReads(); await f.tick(); expect(f.driverReads()).toBe(count)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /归属 执行器/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /全局暂停 9 秒/ })).toBeDefined()
+  f.driver({ ...driver, generatedAt: new Date(Date.now() - 180_000).toISOString() }); await f.tick()
+  expect(await ui.find({ type: 'Text', text: /ZII-777/ })).toBeUndefined()
+  f.driver(null); await f.tick()
+  expect(await ui.find({ type: 'Text', text: /全局暂停/ })).toBeUndefined()
+  f.driver(driver); await f.tick()
+  expect(await ui.find({ type: 'Text', text: /ZII-777/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('live ticket session usage reaches lanes, detail and overview with mtime caching', async ($, on) => {
+  const usage = { mtime: 1, reads: 0 }
+  const f = await snapshotFixture($, on, { usage, issues: [{ identifier: 'ZII-895', title: '会话用量票', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], updatedAt: new Date(Date.now() - 60_000).toISOString() }] })
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /token 99k.*est\. \$0\.35/ })).toBeDefined()
+  expect(usage.reads).toBe(1)
+  await f.refresh(); expect(usage.reads).toBe(1)
+  usage.mtime++; await f.refresh(); expect(usage.reads).toBe(2)
+  await ui.press({ key: 'view-swarm' }); await ui.press({ key: 'toggle-detail' })
+  expect(await ui.find({ type: 'Text', text: /token 99k.*est\. \$0\.35/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /今日按 API 价折算 \$0\.35/ })).toBeDefined()
+  expect(f.orcaLinearCalls()).toBe(0)
+  await ui.unmount()
+})

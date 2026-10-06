@@ -37,11 +37,11 @@ func push(now time.Time, update func(*View)) error {
 	if err != nil {
 		return err
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 	view := View{Tickets: []Ticket{}, Linear: Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []ClientLimits{}}}
 	if data, err := os.ReadFile(path); err == nil {
 		var previous View
@@ -63,7 +63,7 @@ func push(now time.Time, update func(*View)) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() { _ = os.Remove(file.Name()) }()
 	writeErr := json.NewEncoder(file).Encode(view)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {

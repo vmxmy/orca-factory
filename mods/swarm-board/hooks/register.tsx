@@ -179,7 +179,7 @@ let ledgerCache: { at: number; stats: string[] } | null = null
 const boardLinearCalls: number[] = []
 
 let readUsage = createUsageReader()
-let ticketLedgerCache: { at: number; rows: Record<string, LedgerUsage> } | null = null
+let ticketLedgerCache: { at: number; rows: Record<string, LedgerUsage>; comments: ReturnType<typeof deepComments> } | null = null
 
 // Test-only reset for module-level caches so each test case starts clean.
 export const __resetSwarmBoardCachesForTests = () => {
@@ -440,7 +440,7 @@ async function refreshSnapshot($: any, handoffs: Map<string, string>) {
     const comments = snapshot.comments[t.id] ?? []
     const claimedAt = comments.filter(c => String(c.body).trim().startsWith('已领取'))
       .map(c => c.createdAt).sort().pop() ?? ''
-    return { ...t, tokens: cached?.tokens, cost: cached?.cost, gate: cached?.gate, pr: cached?.pr, claimedAt }
+    return { ...t, tokens: cached?.tokens, cost: cached?.cost, gate: cached?.gate, pr: cached?.pr, usage: cached?.usage, durationMin: cached?.durationMin, claimedAt }
   })
   const failed = all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
     .map(t => {
@@ -786,8 +786,12 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     const usage = byPath[a.path]
     Object.assign(a, usageFields(usage), { model: a.model || usage?.model || '' })
   }
-  // Ledger accounting shares the ten-minute refresh budget, including failed attempts.
-  if ((doneToday.length > 0 || failed.length > 0) && (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS)) {
+  // Reuse the precheck payload; a fresh snapshot must never trigger extra Linear reads.
+  const localLedgerComments = useSnapshot ? Object.values(snapshot!.comments).flat().filter(c => c.body.startsWith('ledger ')) : []
+  if (localLedgerComments.length) {
+    ticketLedgerCache = { at: now, rows: ledgerUsage(localLedgerComments), comments: localLedgerComments }
+  } else if (!useSnapshot && !linearThrottled && (doneToday.length > 0 || failed.length > 0)
+      && (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS)) {
     let ledger = all.find(t => t.title === '[ledger] agent-graph')?.id
     if (!ledger) {
       const found = await runJson(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
@@ -795,7 +799,8 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       ledger = issue?.identifier ?? issue?.id
     }
     const response = ledger ? await runOrca(['orca', 'linear', 'issue', ledger, '--comments', '--json']) : undefined
-    ticketLedgerCache = { at: now, rows: response?.ok ? ledgerUsage(deepComments(response.data)) : ticketLedgerCache?.rows ?? {} }
+    const comments = response?.ok ? deepComments(response.data) : ticketLedgerCache?.comments ?? []
+    ticketLedgerCache = { at: now, rows: ledgerUsage(comments), comments }
   }
   let todayCost = 0
   for (const t of [...all, ...failed]) {
@@ -874,7 +879,8 @@ async function readDriverSnapshot($: any) {
 }
 
 function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Board {
-  if (!driver || driver.state !== 'ok' || pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: undefined }
+  if (!driver || driver.state !== 'ok') return { ...b, driver }
+  if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
   const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
@@ -888,6 +894,7 @@ async function tick($: any, handoffs: Map<string, string>) {
   if (refreshing) return
   refreshing = true
   try {
+    await readDriverSnapshot($)
     const old = await read($, board)
     const b = await refresh($, handoffs, old)
     await update($, board, () => b)
@@ -922,7 +929,8 @@ export const register: Register = on => {
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
   // calls per open PR, and one timer per session exhausted the 5000/h quota.
-  let polling = false
+  let timers: { cancel(): void }[] = []
+  let driverStat: { mtimeMs: number; size: number } | null = null
   let prevStat: { mtimeMs: number; size: number } | null = null
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'swarm', description: 'Open the swarm board' })
@@ -932,13 +940,11 @@ export const register: Register = on => {
   on('command.run', { command: 'swarm' }, async $ => {
     await $.ui.open({ id: PANE, title: 'Swarm' })
     paneOpen = true
-    void readDriverSnapshot($)
     void tick($, handoffs)
-    if (!polling) {
-      polling = true
+    if (!timers.length) {
       await update($, nowAtom, () => Date.now())
-      $.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) })
-      $.clock.every(WATCH_POLL_MS, async () => {
+      timers.push($.clock.every(REFRESH_MS, () => { if (paneOpen) return tick($, handoffs) }))
+      timers.push($.clock.every(WATCH_POLL_MS, async () => {
         if (!paneOpen) return
         if (!SNAPSHOT_FILE || refreshing) return
         refreshing = true
@@ -947,16 +953,26 @@ export const register: Register = on => {
           try { stat = await $.fs.stat(SNAPSHOT_FILE) } catch { stat = null }
           const reload = shouldReload(prevStat, stat)
           prevStat = stat
-          if (reload) await refreshSnapshot($, handoffs)
+          if (reload && paneOpen) await refreshSnapshot($, handoffs)
+          if (!paneOpen) return
+          let nextDriverStat = null
+          try { if (driverStatusFile) nextDriverStat = await $.fs.stat(driverStatusFile) } catch { /* cache was removed */ }
+          if (shouldReload(driverStat, nextDriverStat)) await readDriverSnapshot($)
+          if (!nextDriverStat) driverCache = undefined
+          driverStat = nextDriverStat
+          if (paneOpen) await update($, nowAtom, () => Date.now())
         } finally { refreshing = false }
-      })
-      $.clock.every(1000, () => { void update($, nowAtom, () => Date.now()) })
+      }))
+      timers.push($.clock.every(1000, () => { if (paneOpen) void update($, nowAtom, () => Date.now()) }))
     }
     return { text: '蜂群看板已打开。' }
   })
 
   on('ui.close', { id: PANE }, async ($, e, next) => {
     paneOpen = false
+    for (const timer of timers) timer.cancel()
+    timers = []
+    prevStat = driverStat = null
     return next(e)
   })
 
