@@ -13,13 +13,10 @@ import { parseDriverStatus, pickStatusSource } from './driver-status'
 import type { DriverStatus } from './driver-status'
 import { driverHeadText } from './driver-head'
 import { statusBarRows } from './status-bar'
-
 import { aggregateUsage, createUsageReader, ledgerUsage } from './usage'
 import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './usage'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
-
-declare function h(type: any, props: any, ...children: any[]): any
 
 type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
@@ -78,6 +75,8 @@ const MAX_PRS = 6 // open PRs that get the three gh detail calls
 const MAX_DONE = 4 // done-today tickets that get one task-list call (for today's cost)
 // Ledger stats is slow and depends on comment reads; cache the output for ten minutes.
 const LEDGER_TTL_MS = 600_000
+// Linear API hourly limit the badge is measured against (see #45 rate-limit handling).
+const LINEAR_HOURLY_LIMIT = 2500
 // Shared counter file the pipeline writes; swarm board only reads it.
 const LINEAR_COUNTER_FILE = 'orca-factory-linear-calls'
 // Snapshot the precheck pipeline writes; the board reads it to skip its own `orca linear …` reads.
@@ -1049,20 +1048,6 @@ export const register: Register = on => {
     const stale = lastSuccessAt > 0 && now - lastSuccessAt > STALE_MS
     const bodyColumns = e.props?.bodyColumns ?? e.viewport?.columns ?? 100
     const cols = Math.max(44, bodyColumns - 4)
-    const driver = b.driver?.state === 'ok' ? b.driver : undefined
-    const limit = driver?.linear.limits[0]
-    const rows = statusBarRows({
-      inFlight: b.inFlight.length, max: b.maxInFlight, failed: b.failed.length,
-      queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
-      quota: limit ? { remaining: limit.requests.remaining, limit: 2500, resetAt: limit.requests.reset } : undefined,
-      driver: b.driver?.state ?? 'unknown', globalPause: driver?.globalPause,
-      at: b.at, refreshSec: remainingSec,
-      snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
-      version: MOD_VERSION, view: v, detail: d, repo: limit?.repo ?? b.repositoryPaths?.[0],
-      complexity: driver?.linear.complexity, linearUsage: b.linearUsage, lastRun: b.lastRun, stale,
-      needsRestart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
-      automation: automation?.enabled, automationKnown, refreshing,
-    }, cols)
     const wide = cols >= 96
     const cut = (s: string, n: number) => (s.length > n ? s.slice(0, Math.max(1, n - 1)) + '…' : s)
     const card = (key: string, title: string, children: any, color?: string, dim?: boolean) => (
@@ -1441,24 +1426,45 @@ export const register: Register = on => {
         </Text>
       )
     }
+    const driver = b.driver?.state === 'ok' ? b.driver : undefined
+    const limit = driver?.linear.limits.filter(row => b.repositoryPaths?.includes(row.repo))
+      .sort((a, b) => a.requests.remaining - b.requests.remaining)[0]
+    const statusCols = Math.max(0, bodyColumns - 4)
+    const rows = statusBarRows({
+      inFlight: inFlightNoHuman.length, max: b.maxInFlight, failed: b.failed.length,
+      queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
+      quota: limit ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
+      driver: b.driver?.state ?? 'unknown', globalPause: driver?.globalPause,
+      at: b.at, refreshSec: remainingSec,
+      snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
+      version: MOD_VERSION, view: v, detail: d, repo: limit?.repo ?? b.repositoryPaths?.[0],
+      complexity: driver?.linear.complexity, linearUsage: b.linearUsage, lastRun: b.lastRun, stale,
+      needsRestart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
+      automation: automation?.enabled, automationKnown, refreshing,
+    }, statusCols)
+    const statusActions = new Map<string, { key: string; hotkey: string; dimColor?: boolean; onPress: () => unknown }>()
+    const viewLabels: Record<View, string> = { swarm: '总览', task: '泳道', graph: '依赖', throughput: '吞吐', failures: '失败' }
+    const viewKeys: Record<View, string> = { swarm: 's', task: 't', graph: 'g', throughput: 'p', failures: 'f' }
+    for (const target of Object.keys(viewLabels) as View[]) {
+      statusActions.set(v === target ? '[' + viewLabels[target] + ']' : viewLabels[target], {
+        key: 'view-' + target, hotkey: viewKeys[target], dimColor: v !== target,
+        onPress: async () => { await update($, view, () => target); if (target !== 'swarm' && target !== 'task') await tick($, handoffs) },
+      })
+    }
+    statusActions.set(d ? '[明细]' : '明细', { key: 'toggle-detail', hotkey: 'd', dimColor: !d, onPress: () => update($, detail, x => !x) })
+    if (automation) statusActions.set('定时 ' + (automation.enabled ? '开' : '关'), {
+      key: 'toggle-auto', hotkey: 'a', onPress: () => toggleAutomation($, handoffs),
+    })
+    statusActions.set(refreshing ? '刷新中…' : '刷新', { key: 'refresh', hotkey: 'r', onPress: () => tick($, handoffs) })
+
     return (
       <Box flexDirection="column">
-        {rows.map((segments, row) => h(Box, { key: 'status-' + row, flexDirection: 'row' },
-          ...segments.map((segment, index) => /^ +$/.test(segment.text)
-            ? h(Text, { key: index }, (index ? ' ' : '') + segment.text)
-            : h(Text, { key: index, color: segment.color, dimColor: !segment.color }, (index ? ' ' : '') + segment.text))))}
-        <Box flexDirection="row" gap={2} marginBottom={1}>
-          <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
-          <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
-          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await tick($, handoffs) }} />
-          <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={async () => { await update($, view, () => 'throughput'); await tick($, handoffs) }} />
-          <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={async () => { await update($, view, () => 'failures'); await tick($, handoffs) }} />
-          <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
-          {automation
-            ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
-            : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
-          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => tick($, handoffs)} />
-        </Box>
+        {h(Box, { flexDirection: 'column', marginBottom: 1 }, ...rows.map((segments, row) =>
+          h(Box, { key: 'status-' + row, flexDirection: 'row', gap: 1, width: statusCols }, ...segments.map((segment, index) => {
+            const action = statusActions.get(segment.text)
+            return action ? h(Button, { ...action, plain: true, label: segment.text })
+              : h(Text, { key: index, color: segment.color, wrap: 'truncate-end' }, segment.text)
+          }))))}
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
         {v === 'swarm' ? card('agents', G.work + ' Agents · 按 API 价折算', (
