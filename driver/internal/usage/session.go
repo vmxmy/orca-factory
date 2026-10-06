@@ -3,6 +3,7 @@ package usage
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,7 +59,7 @@ type session struct {
 }
 
 // Totals stay private until EOF so a malformed file contributes nothing.
-func readSession(path, provider string, roles map[string]string, coordinatorIDs map[string]bool) (result session, err error) {
+func readSession(ctx context.Context, path, provider string, roles map[string]string, coordinatorIDs map[string]bool) (result session, err error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return session{}, fmt.Errorf("open session: %w", err)
@@ -77,6 +78,9 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 	codexItems := map[string]Item{}
 	lineNumber := 0
 	for {
+		if err := ctx.Err(); err != nil {
+			return session{}, err
+		}
 		line, readErr := reader.ReadBytes('\n')
 		lineNumber++
 		if len(bytes.TrimSpace(line)) > 0 {
