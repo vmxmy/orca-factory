@@ -15,6 +15,7 @@
 - 放行。你的 green 只表示"没找到问题"，不等于通过；通过仍由 coordinator 的 gate 复跑决定。
 - 风格、命名、重排等与简报无关的意见。
 - 简报本身的对错；简报有问题写进 `reason` 由 coordinator 处理。
+- mods 里 `.tsx` 视图文件顶部的 `declare function h(...)` 没有实现是对的：`h` 由 mod 宿主在运行时注入，文件不写 JSX 是因为 gate 在没有 react 的干净检出里构建。不要把它报为「未实现」「会 ReferenceError」，也不要建议改回 JSX。
 
 ## Verification
 
