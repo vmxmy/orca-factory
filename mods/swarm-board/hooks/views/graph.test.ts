@@ -1,5 +1,4 @@
-import { afterAll, afterEach, expect, spyOn, test } from 'bun:test'
-import * as cache from '../linear-cache'
+import { expect, test } from 'claude-code/testing'
 import { buildGraph, renderGraph, type GraphInput } from './graph'
 
 const input: GraphInput = { issues: [
@@ -9,19 +8,10 @@ const input: GraphInput = { issues: [
   { id: 'D', state: 'unstarted', parent: 'Q', blockedBy: ['A'] },
 ] }
 
-// Model only the injected element factory; never execute a React component directly.
-const originalH = Object.getOwnPropertyDescriptor(globalThis, 'h')
-Object.defineProperty(globalThis, 'h', { configurable: true, value: (_: unknown, props: unknown, ...children: string[]) => ({ props, children }) })
-const Text = () => null
+const Text = (props: { children?: string | unknown[] }) =>
+  Array.isArray(props.children) ? props.children.join('') : props.children
 const lines = (graph?: Parameters<typeof renderGraph>[1]) =>
-  renderGraph(Text, graph).map(element => (element as unknown as { children: string[] }).children.join(''))
-afterEach(() => { snapshot?.mockRestore(); snapshot = undefined })
-let snapshot: ReturnType<typeof spyOn> | undefined
-
-afterAll(() => {
-  if (originalH) Object.defineProperty(globalThis, 'h', originalH)
-  else Reflect.deleteProperty(globalThis, 'h')
-})
+  renderGraph(Text, graph)
 
 test('pure graph preserves input, groups states and indents dependency levels', () => {
   const before = structuredClone(input)
@@ -76,15 +66,12 @@ test('empty input differs from unavailable input', () => {
   expect(lines(buildGraph({ issues: [] }))[0]).toBe('无未完成票')
 })
 
-test('default render consumes the cache snapshot including grouped rows', () => {
-  const graph = buildGraph(input)!
-  snapshot = spyOn(cache, 'readGraphSnapshot').mockReturnValue(graph)
-  expect(lines()).toContain('      C [unstarted] ← B')
-  expect(snapshot).toHaveBeenCalledWith(expect.any(Number))
+test('default render reports unavailable data until refresh supplies a snapshot', () => {
+  expect(lines()).toEqual(['数据未就绪'])
 })
 
 test('legacy GraphData snapshots render summary without requiring new fields', () => {
-  snapshot = spyOn(cache, 'readGraphSnapshot').mockReturnValue({ criticalPath: ['A', 'B'], unlockRank: [{ id: 'A', count: 1 }] })
-  expect(lines()).toContain('关键路径：A → B')
-  expect(lines()).toContain('解锁排行：A(1)')
+  const rendered = lines({ criticalPath: ['A', 'B'], unlockRank: [{ id: 'A', count: 1 }] })
+  expect(rendered).toContain('关键路径：A → B')
+  expect(rendered).toContain('解锁排行：A(1)')
 })

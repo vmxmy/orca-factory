@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, test } from 'claude-code/testing'
 import { buildFailures } from './failures'
 
 test('counts FAIL reasons with or without a trailing evidence field', () => {

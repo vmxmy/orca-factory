@@ -1,6 +1,5 @@
 import type { ComponentType, ReactElement } from 'react'
 import type { GraphData } from '../../types'
-import { readGraphSnapshot } from '../linear-cache'
 
 type TextProps = { dimColor?: boolean; children?: string }
 
@@ -125,7 +124,7 @@ export function buildGraph(input?: GraphInput): GraphView | null {
 
 export function renderGraph(
   Text: ComponentType<TextProps>,
-  graph: (GraphData & Partial<GraphView>) | null = readGraphSnapshot(Date.now()),
+  graph: (GraphData & Partial<GraphView>) | null = null,
 ): ReactElement[] {
   if (!graph) return [h(Text, { key: 'unavailable', dimColor: true }, '数据未就绪')]
   const out: ReactElement[] = [
