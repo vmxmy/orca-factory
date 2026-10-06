@@ -29,6 +29,8 @@ type Options struct {
 }
 
 type Tokens struct {
+	// ReasoningTokens is a subset of output, never an additional charge.
+	ReasoningTokens float64 `json:"reasoning_tokens"`
 	// InputTokens excludes cache reads/writes for both providers.
 	InputTokens          float64 `json:"input_tokens"`
 	OutputTokens         float64 `json:"output_tokens"`
@@ -182,10 +184,10 @@ func collectItems(o Options) (Result, error) {
 }
 
 func add(a, b Tokens) Tokens {
-	return Tokens{a.InputTokens + b.InputTokens, a.OutputTokens + b.OutputTokens, a.CacheReadTokens + b.CacheReadTokens, a.CacheWriteTokens + b.CacheWriteTokens, a.CacheWriteHourTokens + b.CacheWriteHourTokens}
+	return Tokens{a.ReasoningTokens + b.ReasoningTokens, a.InputTokens + b.InputTokens, a.OutputTokens + b.OutputTokens, a.CacheReadTokens + b.CacheReadTokens, a.CacheWriteTokens + b.CacheWriteTokens, a.CacheWriteHourTokens + b.CacheWriteHourTokens}
 }
 func scale(a Tokens, n float64) Tokens {
-	return Tokens{a.InputTokens * n, a.OutputTokens * n, a.CacheReadTokens * n, a.CacheWriteTokens * n, a.CacheWriteHourTokens * n}
+	return Tokens{a.ReasoningTokens * n, a.InputTokens * n, a.OutputTokens * n, a.CacheReadTokens * n, a.CacheWriteTokens * n, a.CacheWriteHourTokens * n}
 }
 
 // normalizePath resolves symlink aliases when the directory is available.
@@ -231,6 +233,7 @@ func Collect(ctx context.Context, ticket string, worktrees []string, attribution
 	out := TicketUsage{Items: result.Items, Skipped: result.Skipped, Ticket: result.Ticket, PriceVersion: result.PriceVersion, ByModel: map[string]Totals{}}
 	for _, item := range result.Items {
 		part := Totals{
+			Reasoning:  int64(math.Round(item.ReasoningTokens)),
 			Input:      int64(math.Round(item.InputTokens)),
 			Output:     int64(math.Round(item.OutputTokens)),
 			CacheRead:  int64(math.Round(item.CacheReadTokens)),

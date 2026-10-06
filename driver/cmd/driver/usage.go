@@ -21,12 +21,12 @@ var usageTicket = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9]*-[0-9]+$`)
 
 // Unit worktrees follow Orca's <ticket>-<unit> directory naming convention.
 var discoverUsageWorktrees = func(ctx context.Context, ticket string) ([]usage.Worktree, error) {
-	out, err := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain").CombinedOutput()
+	out, err := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain", "-z").CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("usage: list git worktrees: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	worktrees := []usage.Worktree{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(string(out), "\x00") {
 		path, ok := strings.CutPrefix(line, "worktree ")
 		if ok && strings.HasPrefix(filepath.Base(path), ticket+"-") {
 			worktrees = append(worktrees, usage.Worktree{Path: path})

@@ -13,7 +13,10 @@ import (
 )
 
 func TestDiscoverUsageWorktrees(t *testing.T) {
-	root := t.TempDir()
+	root := filepath.Join(t.TempDir(), "项目 with spaces\nand newline")
+	if err := os.Mkdir(root, 0700); err != nil {
+		t.Fatal(err)
+	}
 	repo := filepath.Join(root, "repo")
 	if err := os.Mkdir(repo, 0700); err != nil {
 		t.Fatal(err)

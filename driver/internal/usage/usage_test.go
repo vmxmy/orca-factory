@@ -18,11 +18,11 @@ func TestCollect(t *testing.T) {
 		unknown, apportioned bool
 	}
 	base := []expectation{
-		{"session", "claude-sonnet-4-6", Tokens{300, 50, 10, 8, 0}, 0.001683, false, false},
-		{"session", "mystery-model", Tokens{17, 3, 0, 0, 0}, 0, true, false},
-		{"reviewer", "claude-sonnet-4-6", Tokens{80, 10, 0, 0, 0}, 0.00039, false, false},
-		{"coordinator", "claude-sonnet-4-6", Tokens{50.5, 10.5, 0, 0, 0}, 0.000309, false, true},
-		{"worker", "gpt-5", Tokens{300, 80, 100, 0, 0}, 0.0011875, false, false},
+		{"session", "claude-sonnet-4-6", Tokens{0, 300, 50, 10, 8, 0}, 0.001683, false, false},
+		{"session", "mystery-model", Tokens{0, 17, 3, 0, 0, 0}, 0, true, false},
+		{"reviewer", "claude-sonnet-4-6", Tokens{0, 80, 10, 0, 0, 0}, 0.00039, false, false},
+		{"coordinator", "claude-sonnet-4-6", Tokens{0, 50.5, 10.5, 0, 0, 0}, 0.000309, false, true},
+		{"worker", "gpt-5", Tokens{0, 300, 80, 100, 0, 0}, 0.0011875, false, false},
 	}
 	cases := []struct {
 		name             string
@@ -45,7 +45,7 @@ func TestCollect(t *testing.T) {
 		{name: "second ticket receives same half", files: []string{"coordinator"}, want: base[3:4], ticket: "ZII-895", run: true},
 		{name: "duplicate session identity", files: []string{"codex-session"}, want: base[4:5], duplicate: true},
 		{name: "duplicate Claude message", files: []string{"duplicate-message"}, want: base[:1]},
-		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{300, 80, 100, 0, 0}, 0, true, false}}},
+		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{0, 300, 80, 100, 0, 0}, 0, true, false}}},
 		{name: "large record", files: []string{"claude-session"}, want: base[:2], large: true},
 		{name: "no matching unit worktrees", files: []string{"claude-session", "codex-session"}, noWorktrees: true, noReviewer: true},
 		{name: "invalid ticket", invalid: "ticket"},
@@ -224,5 +224,37 @@ func TestCollectCountsSubagentTranscripts(t *testing.T) {
 	}
 	if got.Input != 350 || got.Output != 35 {
 		t.Fatalf("input=%d output=%d; want 350/35 (parent 100+50, subagent 200, replayed message once)", got.Input, got.Output)
+	}
+}
+
+// A rollout belongs to its session_meta cwd even when later turns run elsewhere.
+func TestCollectCodexSessionAttribution(t *testing.T) {
+	for _, moved := range []bool{false, true} {
+		t.Run(fmt.Sprint(moved), func(t *testing.T) {
+			root := t.TempDir()
+			unit := filepath.Join(root, "unit")
+			cwd := unit
+			if moved {
+				cwd = filepath.Join(root, "other")
+			}
+			data := fmt.Sprintf(
+				"{\"type\":\"session_meta\",\"payload\":{\"id\":\"session\",\"cwd\":%q}}\n"+
+					"{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-6.1-sol\",\"cwd\":%q}}\n"+
+					"{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"total_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":20,\"cache_write_input_tokens\":10,\"output_tokens\":30,\"reasoning_output_tokens\":12}}}}\n", unit, cwd)
+			if err := os.WriteFile(filepath.Join(root, "rollout.jsonl"), []byte(data), 0400); err != nil {
+				t.Fatal(err)
+			}
+			claude := filepath.Join(root, "claude")
+			if err := os.Mkdir(claude, 0700); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Collect(context.Background(), "ZII-894", []string{unit}, Options{ClaudeDir: claude, CodexDir: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Input != 70 || got.CacheRead != 20 || got.CacheWrite != 10 || got.Output != 30 || got.Reasoning != 12 || got.ByRole.Worker.Reasoning != 12 || got.ByModel["gpt-6.1-sol"].Reasoning != 12 || math.Abs(got.CostUSD-0.000467) > 1e-12 {
+				t.Fatalf("usage = %+v; want input=70 read=20 write=10 output=30 reasoning=12 cost=0.000467", got)
+			}
+		})
 	}
 }
