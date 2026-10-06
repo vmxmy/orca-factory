@@ -2,6 +2,7 @@ package orca
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -53,5 +54,45 @@ func TestRecordedWorktreeSet(t *testing.T) {
 	var ticket *infra.Ticket
 	if !errors.As(err, &ticket) || !strings.Contains(ticket.Err.Error(), "selector_not_found") {
 		t.Fatalf("missing worktree err=%v", err)
+	}
+}
+
+func TestRecordedWorkerListLiveness(t *testing.T) {
+	workers, err := recordedClient(t, "orca-worker-list-liveness.json").Workers(context.Background(), ListOptions{Run: "run_9714ea9b8576", IncludeRemote: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []struct {
+		dispatch, verdict, reason, status, stage, detail, path, terminal string
+	}{
+		{"ctx_f9e3c9ac102a", "exited", "", "failed", "failed", "settled", "/worktrees/ZII-886-executor", "term_7acbe42d-9151-4fcc-8360-e87907f74698"},
+		{"ctx_2ec61f77c499", "unverifiable", "missing_status", "completed", "succeeded", "settled", "/worktrees/ZII-886-executor-2", "term_8d26a5e7-7490-424c-9369-ad478e72ccbd"},
+	} {
+		t.Run(want.verdict, func(t *testing.T) {
+			for _, w := range workers {
+				if w.DispatchID != want.dispatch {
+					continue
+				}
+				if w.Projection.Liveness.Verdict != want.verdict || w.Projection.Liveness.Reason != want.reason || w.DispatchStatus != want.status || w.Projection.Stage.Worker != want.stage || w.Projection.Stage.Detail != want.detail || w.WorktreePath() != want.path || w.AgentTerminalHandle != want.terminal {
+					t.Fatalf("worker=%+v path=%q; want=%+v", w, w.WorktreePath(), want)
+				}
+				return
+			}
+			t.Fatalf("missing recorded dispatch %s", want.dispatch)
+		})
+	}
+}
+
+// worker-stop fences the dispatch and closes its agent terminal. The receipt below
+// is a real one (a probe codex worker stopped right after start-ready).
+func TestRecordedWorkerStop(t *testing.T) {
+	receipt, err := recordedClient(t, "orca-worker-stop.json").WorkerStop(context.Background(), "c9a47146-5e87-470f-89ef-4fac6b8fec2e", "ctx_142789068719")
+	if err != nil {
+		t.Fatalf("recorded worker-stop err=%v", err)
+	}
+	var state string
+	var settled bool
+	if json.Unmarshal(receipt["state"], &state) != nil || state != "stopped" || json.Unmarshal(receipt["alreadySettled"], &settled) != nil || settled {
+		t.Fatalf("state=%q alreadySettled=%v; want a freshly stopped dispatch", state, settled)
 	}
 }

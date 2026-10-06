@@ -27,6 +27,8 @@ type Orca interface {
 	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
+	Workers(context.Context, orca.ListOptions) ([]orca.Worker, error)
+	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
@@ -362,6 +364,18 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
+		watch := workerWatch{stopRequest: scopedRequest(t, c, "stop", result.State.Corrections+1), observe: func(w orca.Worker) error {
+			if cp.Worktree != "" || w.WorktreePath() == "" {
+				return nil
+			}
+			next := cp
+			next.Worktree = w.WorktreePath()
+			if err := saveCheckpoint(c, t, next); err != nil {
+				return err
+			}
+			cp = next
+			return nil
+		}}
 		observeIdle := func() error {
 			if !idle.observe(ctx, e, cp.Worktree, c.WorkerIdleTimeout, result.State) {
 				return nil
@@ -376,7 +390,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		if !cp.Completed {
 			err = e.retryRead(ctx, t, &result, "task polling", func() error {
-				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, observeIdle)
+				report, waitErr = e.wait(ctx, result.RunID, taskID, result.DispatchID, c.PollInterval, &watch, observeIdle)
 				// The stall transition already accounts for exhaustion and handoff.
 				if result.State.Owner == machine.OwnerHuman {
 					return nil
@@ -389,7 +403,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.State.Owner == machine.OwnerHuman {
 				return result, waitErr
 			}
-			releaseAllowed = true
+			releaseAllowed = report.Provenance != provenanceExecutorLiveness
 		}
 		if cp.Completed {
 			releaseAllowed = cp.Settled
@@ -397,6 +411,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		cp.Completed = false
 		if waitErr != nil {
 			return result, waitErr
+		}
+		failureCause := "worker failed"
+		if report.Provenance == provenanceExecutorLiveness {
+			failureCause = report.Body
+			failureOutput = report.Body
 		}
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
@@ -412,7 +431,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "worker failed", failureSummary, transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -597,29 +616,107 @@ func nestedString(r orca.Receipt, key, field string) string {
 	_ = json.Unmarshal(r[key], &inner)
 	return receiptString(inner, field)
 }
-func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, observeIdle func() error) (*orca.WorkerReport, error) {
-	for {
+
+const workerTurnStartTimeout = 5 * time.Minute
+const provenanceExecutorLiveness = "executor_liveness"
+
+// One watch per dispatch, retained across read retries; restart begins a fresh
+// observation period. An uncertain stop is never issued a second time.
+type workerWatch struct {
+	unobservedSince time.Time
+	stopAttempted   bool
+	stopErr         error
+	stopRequest     string
+	observe         func(orca.Worker) error
+}
+
+func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
+	readReport := func() (*orca.WorkerReport, bool, error) {
 		tasks, err := e.taskList(ctx, run)
 		if err != nil {
-			return nil, safeDependencyError(err)
+			return nil, false, safeDependencyError(err)
 		}
 		completed := false
+		var report *orca.WorkerReport
 		for _, t := range tasks {
-			// task-list rows carry no dispatch_id; match on it only when Orca supplies it.
+			// task-list rows carry no dispatch_id; match it only when supplied.
 			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
 				continue
 			}
 			completed = completed || t.Status == "completed"
-			report, err := t.WorkerReport()
+			report, err = t.WorkerReport()
 			if err != nil {
-				return nil, errors.New("invalid worker report")
+				return nil, false, errors.New("invalid worker report")
 			}
 			if report != nil {
 				if report.Outcome != "succeeded" && report.Outcome != "failed" {
-					return nil, errors.New("invalid worker outcome")
+					return nil, false, errors.New("invalid worker outcome")
 				}
+				break
+			}
+		}
+		return report, completed, nil
+	}
+	for {
+		report, completed, err := readReport()
+		if err != nil {
+			return nil, err
+		}
+		if report != nil {
+			return report, nil
+		}
+		workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: run, IncludeRemote: true})
+		if err != nil {
+			return nil, safeDependencyError(err)
+		}
+		var worker *orca.Worker
+		for i := range workers {
+			if workers[i].DispatchID == dispatch {
+				worker = &workers[i]
+				break
+			}
+		}
+		if worker != nil && watch.observe != nil {
+			if err := watch.observe(*worker); err != nil {
+				return nil, err
+			}
+		}
+		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
+			report, _, err := readReport()
+			if err != nil {
+				return nil, err
+			}
+			if report != nil {
 				return report, nil
 			}
+			return livenessFailure("worker exited without worker_done"), nil
+		}
+		if worker != nil && worker.Projection.Stage.Detail == "turn_start_unobserved" {
+			now := e.Now()
+			if watch.unobservedSince.IsZero() {
+				watch.unobservedSince = now
+			}
+			if now.Sub(watch.unobservedSince) >= workerTurnStartTimeout {
+				// The fleet projection may lag a report delivered during this poll.
+				// Confirm its absence before issuing the destructive stop request.
+				report, _, err := readReport()
+				if err != nil {
+					return nil, err
+				}
+				if report != nil {
+					return report, nil
+				}
+				if !watch.stopAttempted {
+					watch.stopAttempted = true
+					_, watch.stopErr = e.Orca.WorkerStop(ctx, watch.stopRequest, dispatch)
+				}
+				if watch.stopErr != nil {
+					return nil, safeDependencyError(watch.stopErr)
+				}
+				return livenessFailure("worker never started its turn"), nil
+			}
+		} else {
+			watch.unobservedSince = time.Time{}
 		}
 		if !completed {
 			if err := observeIdle(); err != nil {
@@ -635,6 +732,11 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 		}
 	}
 }
+
+func livenessFailure(reason string) *orca.WorkerReport {
+	return &orca.WorkerReport{Provenance: provenanceExecutorLiveness, Outcome: "failed", Body: reason}
+}
+
 func pause(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
