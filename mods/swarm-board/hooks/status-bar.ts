@@ -9,7 +9,7 @@ export type StatusBarModel = {
   linearUsage?: { known: boolean; total: number; bySource: Record<string, number>; board: number }
   linearLimit?: number
   view?: string; detail?: boolean; automation?: boolean; automationKnown?: boolean; refreshing?: boolean
-  at?: string; refreshSec?: number; snapshotMin?: number; version?: string; stale?: boolean
+  at?: string; refreshSec?: number; snapshotMin?: number; linearThrottled?: boolean; version?: string; stale?: boolean
   restart?: boolean; installedVersion?: string; lastRun?: string
 }
 
@@ -71,7 +71,7 @@ export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] 
     : model.failed === 0 ? part('🟢 Agent处置 0')
       : model.failed < 3 ? part(`🟡 Agent处置 ${n(model.failed)}`) : part(`🔴 Agent处置 ${n(model.failed)}`, 'yellow')
   const pipeline = [part(`● 在做 ${n(model.inFlight)}/${n(model.max)}`), health,
-    part(`· 待领 ${n(model.queue)}`), part(`◐ PR ${n(model.prs)}`), part(`✓ 今日完成 ${n(model.doneToday)}`)]
+    part(`· 待领 ${n(model.queue)}`), part(`◐ PR ${n(model.prs)}`), part(`✅ 今日完成 ${n(model.doneToday)}`)]
   if (model.costUsd !== undefined && model.costUsd > 0) pipeline.push(part(`今日按 API 价折算 $${n(model.costUsd).toFixed(2)}`))
 
   // Resources group: driver quota when live, the counter-file estimate otherwise.
@@ -117,7 +117,7 @@ export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] 
 
   // Freshness group: kept as separate segments so wrapping never cuts a phrase.
   const freshness = model.driver === 'ok' ? '数据来自驱动器实时状态'
-    : model.snapshotMin !== undefined ? `数据来自快照 ${n(model.snapshotMin)} 分钟前` : '快照缺失，Linear 读取已节流'
+    : model.snapshotMin !== undefined ? `数据来自快照 ${n(model.snapshotMin)} 分钟前` : model.linearThrottled ? '快照缺失，Linear 读取已节流' : '快照缺失'
   const footer = [
     part(model.at ? `更新于 ${model.at}` : '加载中…'),
     part(`下次刷新 ${n(model.refreshSec)}s`),
