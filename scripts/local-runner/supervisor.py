@@ -67,6 +67,10 @@ def command(args, data=None, timeout=60):
     return subprocess.run(args, input=data, capture_output=True, text=True, timeout=timeout)
 
 
+class RegistrationNotSent(RuntimeError):
+    """The registration connection failed before an HTTP request could be sent."""
+
+
 def api(method, suffix, payload=None, missing_ok=False):
     args = [GH, "api", "--method", method, "repos/" + REPOSITORY + "/actions/runners" + suffix,
             "-H", "Accept: application/vnd.github+json", "-H", "X-GitHub-Api-Version: 2022-11-28"]
@@ -78,6 +82,13 @@ def api(method, suffix, payload=None, missing_ok=False):
         code = status.group(1) if status else "unknown"
         if missing_ok and code == "404":
             return None
+        # gh sends stdin as a non-replayable POST body. Only a direct dial
+        # failure for the original POST URL proves no registration was sent;
+        # redirects, proxy errors, TLS/read timeouts and lost responses do not.
+        url = "https://api.github.com/repos/" + REPOSITORY + "/actions/runners/generate-jitconfig"
+        if (method == "POST" and suffix == "/generate-jitconfig"
+                and re.fullmatch(r'Post "' + re.escape(url) + r'": dial tcp [^\r\n]+', result.stderr.strip())):
+            raise RegistrationNotSent("GitHub registration connection failed before sending request")
         raise RuntimeError("GitHub runner API failed: HTTP " + code)
     return json.loads(result.stdout) if result.stdout.strip() else None
 
@@ -179,7 +190,13 @@ def one_cycle(args, owner, path, image):
     name = f"orca-go-{owner}-{args.slot}-{uuid.uuid4().hex[:8]}"
     lease = {"name": name, "active": True, "image": image, "phase": "registering"}
     save(path, lease)
-    response = api("POST", "/generate-jitconfig", jit_payload(name))
+    try:
+        response = api("POST", "/generate-jitconfig", jit_payload(name))
+    except RegistrationNotSent:
+        lease.update(active=False, phase="registration_not_sent")
+        save(path, lease)
+        event("registration_not_sent", slot=args.slot, name=name)
+        raise
     lease.update(id=response["runner"]["id"], phase="registered")
     save(path, lease)
     jit = response["encoded_jit_config"]

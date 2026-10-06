@@ -26,6 +26,33 @@ class SupervisorTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"response lost"):
                     m.one_cycle(SimpleNamespace(slot=1),"owner",path,"sha256:"+"a"*64)
             self.assertTrue(json.loads(path.read_text())["active"])
+    def test_registration_dial_failure_releases_unsent_intent(self):
+        url="https://api.github.com/repos/vmxmy/orca-factory/actions/runners/generate-jitconfig"
+        for detail in ("198.18.0.76:443: i/o timeout", "127.0.0.1:443: connect: connection refused", "lookup api.github.com: no such host"):
+            with self.subTest(detail=detail), tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/"lease.json"
+                result=subprocess.CompletedProcess([],1,"",f'Post "{url}": dial tcp {detail}\n')
+                with patch.object(m,"command",return_value=result), patch.object(m,"event"), patch.object(m.subprocess,"Popen") as start:
+                    with self.assertRaises(RuntimeError):
+                        m.one_cycle(SimpleNamespace(slot=4),"owner",path,"sha256:"+"a"*64)
+                    start.assert_not_called()
+                self.assertFalse(json.loads(path.read_text())["active"])
+    def test_ambiguous_registration_errors_keep_intent(self):
+        url="https://api.github.com/repos/vmxmy/orca-factory/actions/runners/generate-jitconfig"
+        errors=[f'Post "{url}": EOF', f'Post "{url}": read tcp 1:2->3:4: i/o timeout',
+                f'Post "{url}": net/http: timeout awaiting response headers',
+                f'Post "{url}": proxyconnect tcp: dial tcp 1:443: i/o timeout',
+                'gh: HTTP 503: dial tcp backend:443: i/o timeout',
+                'Post "https://redirect.example/": dial tcp 1:443: i/o timeout',
+                f'Get "{url}": dial tcp 1:443: i/o timeout']
+        for error in errors:
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as directory:
+                path=Path(directory)/"lease.json"
+                result=subprocess.CompletedProcess([],1,"",error+"\n")
+                with patch.object(m,"command",return_value=result):
+                    with self.assertRaises(RuntimeError):
+                        m.one_cycle(SimpleNamespace(slot=4),"owner",path,"sha256:"+"a"*64)
+                self.assertTrue(json.loads(path.read_text())["active"])
     def test_recover_running_idle_never_stops_container(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"lease.json"
