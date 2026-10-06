@@ -433,7 +433,9 @@ func (r *Runtime) writeMergeLedger(ctx context.Context, t Ticket, h merge.Handof
 		_, err := client.CreateComment(ctx, t.ID, body)
 		return err
 	}, func(ctx context.Context, ticket string) (*usage.TicketUsage, error) {
-		u, err := usage.Collect(ctx, ticket, []string{h.Worktree})
+		usageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		u, err := usage.Collect(usageCtx, ticket, []string{h.Worktree})
 		if err != nil {
 			return nil, err
 		}

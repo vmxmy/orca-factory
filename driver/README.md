@@ -1,6 +1,6 @@
 # orca-factory driver
 
-这是用于取代 LLM coordinator 的 Go 驱动器，目前提供子命令注册表和 `version` 命令；整体演进计划见地图 [ZII-826](https://linear.app/ziikoo/issue/ZII-826)。
+这是用于取代 LLM coordinator 的 Go 驱动器，包含调度器、单票执行器、合并通道、部署屏障、用量账本和处置 Agent；整体演进计划见地图 [ZII-826](https://linear.app/ziikoo/issue/ZII-826)。
 
 调度器推进无需合并结果 gate 的已验证队首 PR，GitHub 回读确认 squash 后按该 SHA 验证部署及 smoke，全部通过才写回 Done、放行下一 PR。交接、合并 intent 和部署进度存在 Linear 评论，重启按冻结身份恢复；缺验证证据、CI 未明确成功、manual 路径或重叠继续等待。合并结果 gate/correction 的 #142 接点与持久格式见 `CONTRACTS.md`。
 
