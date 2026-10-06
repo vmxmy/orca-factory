@@ -206,7 +206,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
 			}
-			return e.handoff(ctx, t, next, evidence)
+			return e.handoff(ctx, t, next, evidence, &cp)
 		}
 		if charged {
 			if err := e.backoff(ctx, next.Infra); err != nil {
