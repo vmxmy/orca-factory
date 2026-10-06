@@ -75,6 +75,7 @@ type Scheduler struct {
 	FullReconcile    bool
 	adaptive         Adaptive
 	linearQuotaRetry time.Time
+	quotaPaused      bool
 	tokens           float64
 	refill           time.Time
 	initialized      bool
@@ -122,8 +123,30 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	remaining, pauseErr := s.checkPauses(ctx, now)
 	s.MergeQueue = nil
 	if s.Pauses.Paused("") {
-		s.plan(now, false, remaining)
-		return pauseErr
+		if s.linearQuotaRetry.IsZero() {
+			// Arm the first quota probe so a just-latched pause does not immediately
+			// spend a Snapshot; the cached budget is fresh enough to wait one window.
+			s.linearQuotaRetry = now.Add(5 * time.Minute)
+		}
+		if (remaining < pauseFraction || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
+			// Quota is critically low and the cached budget is stale. Probe once after
+			// a backoff so a successful Snapshot refreshes the budget; otherwise the
+			// pause latches forever because the paused branch never reaches Snapshot.
+			s.linearQuotaRetry = now.Add(5 * time.Minute)
+			if prober, ok := s.Backend.(quotaProber); ok {
+				// One tiny request refreshes the headers; a full Snapshot costs more than
+				// the budget has refilled and would drain it again.
+				if prober.ProbeLinearQuota(ctx) == nil {
+					remaining = s.checkLinearQuota(now)
+				}
+			} else if _, err := s.Backend.Snapshot(ctx, s.Config.Repositories); err == nil {
+				remaining = s.checkLinearQuota(now)
+			}
+		}
+		if s.Pauses.Paused("") {
+			s.plan(now, false, remaining)
+			return pauseErr
+		}
 	}
 	repos := map[string]config.Repository{}
 	allowed := map[string]bool{}

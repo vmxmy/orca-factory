@@ -405,3 +405,14 @@ func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, 
 func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
 }
+
+// ProbeLinearQuota refreshes the usage headers of every Linear client with one cheap query.
+func (r *Runtime) ProbeLinearQuota(ctx context.Context) error {
+	var errs []error
+	for _, client := range r.Clients {
+		if prober, ok := client.(interface{ ProbeQuota(context.Context) error }); ok {
+			errs = append(errs, prober.ProbeQuota(ctx))
+		}
+	}
+	return errors.Join(errs...)
+}
