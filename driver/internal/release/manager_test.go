@@ -95,7 +95,10 @@ type smokeDeployment struct {
 func (d *smokeDeployment) Check(context.Context, merge.Request, string) (merge.DeploymentState, error) {
 	return merge.DeploymentPassed, nil
 }
-func (d *smokeDeployment) Smoke(context.Context, merge.Request, string) error {
+func (d *smokeDeployment) Smoke(_ context.Context, _ merge.Request, _ string, beforeStart func() error) error {
+	if err := beforeStart(); err != nil {
+		return err
+	}
 	d.calls++
 	if d.fail {
 		return errors.New("uncertain smoke")

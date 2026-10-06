@@ -205,16 +205,17 @@ func (m *Manager) Advance(ctx context.Context) error {
 				return errors.New("release smoke outcome uncertain; manual recovery required")
 			}
 			smoke, ok := m.Deploy.(interface {
-				Smoke(context.Context, merge.Request, string) error
+				Smoke(context.Context, merge.Request, string, func() error) error
 			})
 			if !ok {
 				return errors.New("release smoke runner missing")
 			}
-			e.SmokeStarted = true
-			if err = m.save(rows); err != nil {
-				return err
-			}
-			if err = smoke.Smoke(ctx, e.Pending.Request, e.MergeSHA); err != nil {
+			// Preparation can fail safely; reserve execution only when the adapter
+			// is ready to invoke the smoke command. An uncertain invocation stays latched.
+			if err = smoke.Smoke(ctx, e.Pending.Request, e.MergeSHA, func() error {
+				e.SmokeStarted = true
+				return m.save(rows)
+			}); err != nil {
 				return err
 			}
 			e.SmokePassed = true

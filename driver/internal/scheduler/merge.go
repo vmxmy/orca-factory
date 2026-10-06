@@ -79,9 +79,6 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	var problems []error
 	releaseHeads := map[string]string{}
 	for path := range r.Releases {
-		if !r.ReleaseEligible[path] {
-			continue
-		}
 		name := r.Repositories[path].Env["AGENT_GH_REPO"]
 		if _, exists := groups[name]; !exists {
 			groups[name] = nil
@@ -98,6 +95,14 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	sort.Strings(names)
 	for _, repo := range names {
 		rows := groups[repo]
+		// Eligibility controls advancement, never durable FIFO ownership. A
+		// failed live recheck must stop feature work as well as release work.
+		if path, ok := releaseHeads[repo]; ok && !r.ReleaseEligible[path] {
+			if len(rows) > 0 {
+				problems = append(problems, fmt.Errorf("merge waiting %s: release repository eligibility unavailable or refused", repo))
+			}
+			continue
+		}
 		blocked := false
 		for _, t := range rows {
 			if t.Handoff == nil || t.MergeProblem != "" || t.Handoff.QueueID == "" || t.Handoff.EnqueuedAt.IsZero() {

@@ -85,9 +85,13 @@ func splitReleaseRepo(name string) (string, string, bool) {
 	owner, repo, ok := strings.Cut(name, "/")
 	return owner, repo, ok && owner != "" && repo != "" && !strings.Contains(repo, "/")
 }
-func (d *releaseDeployment) Smoke(ctx context.Context, req merge.Request, sha string) error {
+func (d *releaseDeployment) Smoke(ctx context.Context, req merge.Request, sha string, beforeStart func() error) error {
 	if !commitID(sha) {
 		return errors.New("release smoke SHA invalid")
+	}
+	// GitHub squash creates a new object after merge validation fetched main.
+	if _, err := d.runtime.command(ctx, req.Path, "git", "fetch", "--no-tags", "origin", sha); err != nil {
+		return err
 	}
 	dir, err := os.MkdirTemp("", "driver-release-smoke-")
 	if err != nil {
@@ -104,6 +108,16 @@ func (d *releaseDeployment) Smoke(ctx context.Context, req merge.Request, sha st
 	if run == nil {
 		run = runx.Run
 	}
-	_, err = run(ctx, runx.Spec{Path: "bash", Dir: dir, Args: []string{"-c", req.SmokeCommand}, Timeout: 5 * time.Minute})
+	env := []string{}
+	for _, item := range os.Environ() {
+		if !strings.HasPrefix(item, "AGENT_MERGE_SHA=") && !strings.HasPrefix(item, "AGENT_GH_REPO=") {
+			env = append(env, item)
+		}
+	}
+	env = append(env, "AGENT_MERGE_SHA="+sha, "AGENT_GH_REPO="+req.Repository)
+	if err = beforeStart(); err != nil {
+		return err
+	}
+	_, err = run(ctx, runx.Spec{Path: "bash", Dir: dir, Args: []string{"-c", req.SmokeCommand}, Env: env, Timeout: 30 * time.Second})
 	return err
 }
