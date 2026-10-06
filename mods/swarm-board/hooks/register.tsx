@@ -1,13 +1,18 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
-import { renderGraph } from './views/graph'
-import { renderThroughput } from './views/throughput'
-import { renderFailures } from './views/failures'
+import { buildGraph, renderGraph } from './views/graph'
+import type { GraphView } from './views/graph'
+import { readGraphSnapshot, __resetGraphCacheForTests } from './linear-cache'
+import { ledgerRows } from './view-data'
+import { buildThroughput, renderThroughput } from './views/throughput'
+import type { ThroughputData, Run as ThroughputRun } from './views/throughput'
+import { buildFailures, renderFailures } from './views/failures'
+import type { FailureView } from './views/failures'
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket, Tokens, View, TicketPhase, PhaseObservation } from '../types'
 
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[] }
 
 type DriverLimit = { remaining: number; reset: string }
 type DriverStatus = { state: 'unknown' | 'stale' } | {
@@ -834,13 +839,37 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // Snapshot-fed refreshes carry the snapshot's blockedBy map; live refreshes keep the last
   // one we saw so the queue cards do not blink into an "unknown" state between snapshots.
   const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
+  let graph = old.graph, graphNotice = old.graphNotice
+  if (useSnapshot) {
+    const issues = snapshot!.issues.map(row => ({
+      id: String(row.identifier ?? row.id), state: String(row.state?.type ?? ''),
+      parent: row.parent?.identifier ?? null,
+      blockedBy: snapshot!.blockedBy?.[String(row.identifier ?? row.id)] ?? [],
+    }))
+    graph = buildGraph({ issues })
+    const missingParents = snapshot!.issues.some(row => row.parent === undefined)
+    graphNotice = missingParents || !snapshot!.blockedBy ? '数据不全：快照缺少父票或阻塞关系' : ''
+  } else if (await read($, view) === 'graph') {
+    const cached = await readGraphSnapshot(now, $, { team: env.AGENT_LINEAR_TEAM, project: env.AGENT_LINEAR_PROJECT, tmpDir: TMP_DIR || '/tmp' })
+    graph = buildGraph(cached)
+    graphNotice = [cached.stale ? '缓存过期，沿用上次数据' : '', cached.incomplete.length ? '数据不全：' + cached.incomplete.join('、') : ''].filter(Boolean).join(' · ')
+  } else if (graph) graphNotice = '缓存过期；打开依赖视图后刷新'
+  const metricRuns: ThroughputRun[] | undefined = runsResp.ok ? autoRuns.map(run => ({
+    ...run, startedAt: run.startedAt ?? run.dispatchedAt ?? run.scheduledFor ?? run.createdAt,
+  })) : old.metricRuns
+  const ledger = ledgerRows(ticketLedgerCache?.comments ?? [])
+  const throughput = ledger.length ? buildThroughput({ now, ledger, runs: metricRuns ?? [], maxInFlight }) : old.throughput
+  const metricComments = useSnapshot ? snapshot!.comments : Object.fromEntries(commentsByTicket)
+  const failures = ledger.length || Object.keys(metricComments).length
+    ? buildFailures({ now, ledger, comments: metricComments }) : old.failures
+  const metrics = { graph, graphNotice, throughput, failures, metricRuns }
   if (!linearOk) {
     return {
       at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates,
+      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics,
     }
   }
   return {
@@ -848,7 +877,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates,
+    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics,
   }
 }
 
@@ -1345,7 +1374,7 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
-          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={() => update($, view, () => 'graph')} />
+          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await manualRefresh($, handoffs) }} />
           <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={() => update($, view, () => 'throughput')} />
           <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={() => update($, view, () => 'failures')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
@@ -1378,9 +1407,9 @@ export const register: Register = on => {
 
         {v === 'swarm' ? card('agents', G.work + ' Agents', (
           b.agents.length === 0 ? <Text dimColor>无</Text> : b.agents.map(agentRow)
-        )) : v === 'graph' ? renderGraph(Text)
-          : v === 'throughput' ? renderThroughput(Text)
-          : v === 'failures' ? renderFailures(Text)
+        )) : v === 'graph' ? <Box flexDirection="column">{b.graphNotice && <Text dimColor>{b.graphNotice}</Text>}{renderGraph(Text, b.graph)}</Box>
+          : v === 'throughput' ? renderThroughput(Text, b.throughput)
+          : v === 'failures' ? renderFailures(Text, b.failures)
           : laneView()}
 
         {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>无</Text> : b.prs.map(prRow)) : null}
