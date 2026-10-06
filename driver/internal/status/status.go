@@ -30,6 +30,8 @@ type Ticket struct {
 	Identifier string      `json:"identifier"`
 	Owner      string      `json:"owner"`
 	Phase      string      `json:"phase"`
+	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
+	Stage string `json:"stage,omitempty"`
 }
 
 type Pause struct {

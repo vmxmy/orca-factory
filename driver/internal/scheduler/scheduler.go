@@ -177,9 +177,17 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
 		for _, t := range tickets {
-			if owned(t) {
-				view.Tickets = append(view.Tickets, status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase)})
+			row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase)}
+			switch {
+			case owned(t):
+			case t.Candidate:
+				row.Stage = "candidate"
+			case t.Owner == machine.OwnerHuman:
+				row.Stage = "human"
+			default:
+				continue
 			}
+			view.Tickets = append(view.Tickets, row)
 		}
 	})
 	// A successful snapshot replaces the stale quota observation. If the
