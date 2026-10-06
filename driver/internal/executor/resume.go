@@ -18,7 +18,7 @@ import (
 type checkpoint struct {
 	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
 	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
-	StartedAt                                    string `json:",omitempty"`
+	StartedAt, Terminal                          string `json:",omitempty"`
 	Settled                                      bool
 	Run, Task, Dispatch, Worktree, Baseline      string
 	Corrections                                  int
