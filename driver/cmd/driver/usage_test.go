@@ -66,8 +66,11 @@ func TestUsageJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
-	defer writer.Close()
+	t.Cleanup(func() {
+		if err := reader.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	stdout := os.Stdout
 	os.Stdout = writer
 	t.Cleanup(func() { os.Stdout = stdout })

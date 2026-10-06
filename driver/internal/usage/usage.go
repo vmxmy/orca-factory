@@ -240,7 +240,7 @@ func Collect(ctx context.Context, ticket string, worktrees []string, attribution
 			CacheWrite: int64(math.Round(item.CacheWriteTokens + item.CacheWriteHourTokens)),
 			CostUSD:    item.CostUSD,
 		}
-		out.Totals = out.Totals.add(part)
+		out.Totals = out.add(part)
 		out.ByModel[item.Model] = out.ByModel[item.Model].add(part)
 		switch item.Role {
 		case "worker":

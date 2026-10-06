@@ -142,7 +142,7 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 				}
 				if provider == "codex" && r.Type == "event_msg" && r.Payload.Type == "token_count" && r.Payload.Info != nil && r.Payload.Info.Total != nil {
 					if result.ID == "" {
-						return session{}, errors.New("Codex session ID missing")
+						return session{}, errors.New("codex session ID missing")
 					}
 					tokens, err := r.Payload.Info.Total.tokens(true)
 					if err != nil {

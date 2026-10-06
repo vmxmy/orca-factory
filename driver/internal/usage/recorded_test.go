@@ -89,7 +89,7 @@ func TestRecordedSessionFormats(t *testing.T) {
 		}
 	}
 	ticket, err := Collect(context.Background(), "ZII-1", []string{unit})
-	if err != nil || ticket.Output != 320+24+7756 || ticket.ByRole.Worker.Output != 7756 || ticket.Totals.CacheWrite != 36610+16163 {
+	if err != nil || ticket.Output != 320+24+7756 || ticket.ByRole.Worker.Output != 7756 || ticket.CacheWrite != 36610+16163 {
 		t.Fatalf("ticket usage=%+v err=%v", ticket, err)
 	}
 }
