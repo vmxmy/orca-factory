@@ -136,3 +136,39 @@ func TestExternalCallLogHidesClaudePrompt(t *testing.T) {
 		})
 	}
 }
+
+func TestExternalCallLogRepeatedCredential(t *testing.T) {
+	stderr, err := os.ReadFile("../../testdata/recorded/git-stderr-auth-failure.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	ctx := WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)))
+	_, err = Run(ctx, Spec{
+		Path: "/bin/sh",
+		Args: []string{"-c", `cat "$1" >&2; printf '%s\n' "$3" >&2; exit 128`, "sh",
+			"../../testdata/recorded/git-stderr-auth-failure.txt", "--token", "opaque-credential-value",
+			"--diagnostic", "echo opaque-credential-value"},
+		Timeout: time.Second,
+	})
+	if err == nil {
+		t.Fatal("expected command failure")
+	}
+	var entry struct {
+		Args     []string `json:"args"`
+		ExitCode int      `json:"exit_code"`
+		Stderr   string   `json:"stderr"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry.ExitCode != 128 || entry.Stderr != string(stderr)+"[REDACTED]\n" {
+		t.Fatalf("failure diagnostics = %+v", entry)
+	}
+	if strings.Contains(buf.String(), "opaque-credential-value") {
+		t.Fatal("credential repeated outside its flag leaked")
+	}
+	if entry.Args[5] != "[REDACTED]" || entry.Args[7] != "echo [REDACTED]" {
+		t.Fatalf("redacted arguments = %q", entry.Args)
+	}
+}

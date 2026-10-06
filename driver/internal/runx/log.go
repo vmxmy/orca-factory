@@ -82,20 +82,16 @@ func redactArgs(args []string) []string {
 		case strings.HasPrefix(arg, "ghp_"), strings.HasPrefix(arg, "github_pat_"), strings.HasPrefix(arg, "lin_api_"), strings.HasPrefix(arg, "Bearer "):
 			redacted[i] = "[REDACTED]"
 		default:
-			redacted[i] = redactText(arg)
+			redacted[i] = redactText(redactValues(arg, args))
 		}
 	}
 	return redacted
 }
 
-func redactStderr(stderr string, args []string) string {
+// Sensitive values can reappear outside the option that originally supplied them.
+func redactValues(text string, args []string) string {
 	for i, arg := range args {
 		flag, value, assigned := strings.Cut(arg, "=")
-		// Provider diagnostics may echo only fragments of a large prompt. Once
-		// bounded capture drops its middle, whole-value replacement is unsafe.
-		if (flag == "-p" || flag == "--print") && stderr != "" {
-			return "[REDACTED]"
-		}
 		if !sensitiveFlag(flag) {
 			continue
 		}
@@ -103,9 +99,21 @@ func redactStderr(stderr string, args []string) string {
 			value = args[i+1]
 		}
 		if value != "" {
-			stderr = strings.ReplaceAll(stderr, value, "[REDACTED]")
+			text = strings.ReplaceAll(text, value, "[REDACTED]")
 		}
 	}
+	return text
+}
+
+func redactStderr(stderr string, args []string) string {
+	// Provider diagnostics can echo fragments after bounded capture truncation.
+	for _, arg := range args {
+		flag, _, _ := strings.Cut(arg, "=")
+		if (flag == "-p" || flag == "--print") && stderr != "" {
+			return "[REDACTED]"
+		}
+	}
+	stderr = redactValues(stderr, args)
 	stderr = strings.ToValidUTF8(logx.RedactText(redactText(stderr)), "")
 	if len(stderr) > 2048 {
 		end := 2048

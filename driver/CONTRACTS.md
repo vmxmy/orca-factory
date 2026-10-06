@@ -100,6 +100,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `runx.WithLogger(ctx, logger)` 向 runx、Linear、GitHub、Orca 传递可选 logger；所有记录经过 `logx` 脱敏处理器。未传或传 nil 时静默，日志写失败不改变调用结果。serve（非 dry-run）与 exec 将已有日志 sink 接入 context。执行器自身的初始化错误、状态转移、恢复与外部步骤事件也复用该 sink，带票号写入 executor.log，供 driver logs 读取；没有 context logger 时继续使用执行器 Stderr（默认 os.Stderr）。
 - runx 每次记录 executable、脱敏 args、exit_code、duration、stderr（脱敏后最多 2048 字节，UTF-8 完整）与 timed_out；成功也记录 stderr，启动失败为 -1。诊断采集保留最多首尾各 32 KiB，与 exec.Output 的退出错误诊断保持一致；Orca 同时记录进程诊断与业务回执。
 - 自由文本选项（含 Claude -p/--print prompt，以及 objective/spec/setup/text/comment/command/body/title）、凭据选项、Authorization 头及 URL 用户信息不写入日志。带 -p/--print prompt 的命令，其 stderr 日志整体脱敏，防止大 prompt 被截断或仅回显片段后泄漏；返回给调用方的原始诊断不变，退出码和耗时仍记录。Linear 不记录查询正文、变量或授权头；记录 operation/status/duration/X-Complexity/X-RateLimit-Requests-Remaining，RATELIMITED 为 WARN。GitHub 记录接口（去除 query）、状态、耗时及 X-GitHub-Request-Id；Orca 写操作使用重试 UUID，读操作使用回执 id。
+- 敏感参数的值在其他参数或 stderr 中重复出现时同样替换为 `[REDACTED]`；`runx.TestExternalCallLogRepeatedCredential` 重放 `git-stderr-auth-failure.txt`，验证失败退出码、录制诊断与重复凭据脱敏。
 - `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
 - 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
 ## 自动发布的持久回执
