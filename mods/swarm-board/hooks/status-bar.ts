@@ -68,8 +68,8 @@ export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] 
 
   // Pipeline group: liveness first, then volume counters.
   const health = model.globalPauseSec !== undefined ? part(`⏸ 全局暂停 ${n(model.globalPauseSec)} 秒`, 'yellow')
-    : model.failed === 0 ? part('🟢 需要人 0')
-      : model.failed < 3 ? part(`🟡 需要人 ${n(model.failed)}`) : part(`🔴 需要人 ${n(model.failed)}`, 'yellow')
+    : model.failed === 0 ? part('🟢 Agent处置 0')
+      : model.failed < 3 ? part(`🟡 Agent处置 ${n(model.failed)}`) : part(`🔴 Agent处置 ${n(model.failed)}`, 'yellow')
   const pipeline = [part(`● 在做 ${n(model.inFlight)}/${n(model.max)}`), health,
     part(`· 待领 ${n(model.queue)}`), part(`◐ PR ${n(model.prs)}`), part(`✓ 今日完成 ${n(model.doneToday)}`)]
   if (model.costUsd !== undefined && model.costUsd > 0) pipeline.push(part(`今日按 API 价折算 $${n(model.costUsd).toFixed(2)}`))

@@ -16,9 +16,9 @@ import { statusBarRows } from './status-bar'
 import { aggregateUsage, createUsageReader, ledgerUsage } from './usage'
 import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './usage'
 
-import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
-
 declare function h(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown
+
+import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
 
 type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
@@ -66,7 +66,7 @@ const PANE = 'swarm-board'
 // Must match mods/swarm-board/.claude-plugin/plugin.json. The hook sandbox has no plugin-root
 // path (no import.meta.url, no plugin context, no node fs), so plugin.json cannot be read at
 // runtime; keep this literal in lockstep with the manifest when bumping the version.
-const MOD_VERSION = '0.3.17'
+const MOD_VERSION = '0.4.0'
 const PLUGIN_ID = 'swarm-board@orca-factory'
 const INSTALLED_PLUGINS_PATH = '/.claude/plugins/installed_plugins.json'
 const ENV = 'scripts/agent-gates/agent-graph.env'
@@ -79,6 +79,8 @@ const MAX_DONE = 4 // done-today tickets that get one task-list call (for today'
 const LEDGER_TTL_MS = 600_000
 // Linear API hourly limit the badge is measured against (see #45 rate-limit handling).
 const LINEAR_HOURLY_LIMIT = 2500
+const LINEAR_HOURLY_WARN = 1750 // 70% → yellow
+const LINEAR_HOURLY_DANGER = 2250 // 90% → red
 // Shared counter file the pipeline writes; swarm board only reads it.
 const LINEAR_COUNTER_FILE = 'orca-factory-linear-calls'
 // Snapshot the precheck pipeline writes; the board reads it to skip its own `orca linear …` reads.
@@ -451,7 +453,7 @@ async function refreshSnapshot($: any, handoffs: Map<string, string>) {
   })
   const failed = all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
     .map(t => {
-      const handoff = (snapshot.comments[t.id] ?? []).filter(c => String(c.body).trim().startsWith('转人:'))
+      const handoff = (snapshot.comments[t.id] ?? []).filter(c => /^(?:Agent处置|转人):/.test(String(c.body).trim()))
         .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
       if (handoff) handoffs.set(t.id, handoff)
       return { ...t, handoff: handoffs.get(t.id) }
@@ -577,7 +579,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     .map(t => ({ ...t, handoff: handoffs.get(t.id) }))
   for (const t of failed.slice(0, 3)) {
     const comments = await readComments(t.id)
-    const handoff = comments.filter(c => String(c.body).trim().startsWith('转人:'))
+    const handoff = comments.filter(c => /^(?:Agent处置|转人):/.test(String(c.body).trim()))
       .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
     if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
   }
@@ -925,12 +927,18 @@ function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Bo
   if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
   driver = { ...driver, tickets: driver.tickets.filter(ticket => b.repositoryPaths?.includes(ticket.repo)) }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
-  const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
+  const rows = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
     priority: 0, updatedAt: new Date(typeof driver.generatedAt === 'number' ? driver.generatedAt * 1000 : driver.generatedAt).toISOString(), claimedAt: '',
   })
-  const ids = new Set(inFlight.map(t => t.id))
-  return { ...b, driver, inFlight, queue: b.queue.filter(t => !ids.has(t.id)), failed: b.failed.filter(t => !ids.has(t.id)) }
+  const ids = new Set(rows.map(t => t.id))
+  const candidates = new Set(driver.tickets.filter(t => t.stage === 'candidate').map(t => t.identifier))
+  const legacy = new Set(driver.tickets.filter(t => t.stage === 'human' || t.owner === '人').map(t => t.identifier))
+  const resolving = new Set(driver.tickets.filter(t => t.owner === '处置Agent').map(t => t.identifier))
+  const inFlight = rows.filter(t => !candidates.has(t.id) && !legacy.has(t.id))
+  const failed = [...b.failed.filter(t => !ids.has(t.id)), ...rows.filter(t => resolving.has(t.id) || legacy.has(t.id))]
+  const queue = [...b.queue.filter(t => !ids.has(t.id)), ...rows.filter(t => candidates.has(t.id))]
+  return { ...b, driver, inFlight, queue, failed }
 }
 
 async function tick($: any, handoffs: Map<string, string>) {
@@ -967,7 +975,7 @@ export const laneStage = (t: Ticket, agents: readonly BaseAgent[]): 1 | 2 | 3 =>
 
 export const register: Register = on => {
   // Last-good handoff per failed ticket. An empty comment read or a stale handoff
-  // comment falls back to this cache instead of blanking the "需要人" card.
+  // comment falls back to this cache instead of blanking the "Agent处置" card.
   const handoffs = new Map<string, string>()
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
@@ -1047,6 +1055,8 @@ export const register: Register = on => {
     const now = Date.now()
     // Countdown uses the wall clock, not the throttled `nowAtom` (which starts at 0 and could race the first tick).
     const remainingSec = tickMs > 0 ? Math.min(60, Math.max(0, Math.ceil((tickMs + REFRESH_MS - now) / 1000))) : 0
+    const countdown = tickMs > 0 && remainingSec > 0 ? '下次刷新 ' + remainingSec + 's' : '刷新中'
+    const staleMin = lastSuccessAt > 0 ? Math.max(0, Math.floor((now - lastSuccessAt) / 60_000)) : 0
     const stale = lastSuccessAt > 0 && now - lastSuccessAt > STALE_MS
     const bodyColumns = e.props?.bodyColumns ?? e.viewport?.columns ?? 100
     const cols = Math.max(44, bodyColumns - 4)
@@ -1082,17 +1092,17 @@ export const register: Register = on => {
     }
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
-      const reason = lines[0]?.match(/^转人:\s*(.*)/)?.[1]
-      const action = lines.find(l => l.startsWith('需要你:'))?.slice('需要你:'.length).trim()
+      const reason = lines[0]?.match(/^(?:Agent处置|转人):\s*(.*)/)?.[1]
+      const action = lines.find(l => /^(?:处置要求|需要你):/.test(l))?.replace(/^(?:处置要求|需要你):/, '').trim()
       return reason && action ? (
         <Box flexDirection="column">
           <Text color="yellow">卡点：{reason}</Text>
-          <Text color="yellow">需要你：{action}</Text>
+          <Text color="yellow">处置：{action}</Text>
         </Box>
       ) : lines[0] ? <Text color="yellow">{lines[0]}</Text> : null
     }
-    const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
-    // A ticket that already lives in 需要人 does not also appear in the in-flight lanes; lane counts match that dedup.
+    const resolverText = (t: Ticket) => <Text dimColor>处置 Agent 接管 {t.id}，完成修复与复核后继续推进</Text>
+    // A ticket that already lives in Agent处置 does not also appear in the in-flight lanes; lane counts match that dedup.
     const failedIds = new Set(b.failed.map(t => t.id))
     const inFlightNoHuman = b.inFlight.filter(t => !failedIds.has(t.id))
     const lanes: Lane[] = [
@@ -1100,7 +1110,7 @@ export const register: Register = on => {
       { title: '实现中', emoji: LANE_EMOJI.impl, items: inFlightNoHuman.filter(t => stage(t) === 1) },
       { title: 'gate/审查', emoji: LANE_EMOJI.gate, items: inFlightNoHuman.filter(t => stage(t) === 2) },
       { title: 'CI/合并', emoji: LANE_EMOJI.ci, items: inFlightNoHuman.filter(t => stage(t) === 3) },
-      { title: '需要人', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
+      { title: 'Agent处置', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
       { title: '今日完成', emoji: LANE_EMOJI.done, items: b.doneToday },
     ]
     // Status emoji on the card head: prefer CI, then gate, then the lane emoji.
@@ -1237,9 +1247,9 @@ export const register: Register = on => {
           {phaseLine(t)}
           <Text dimColor>{ticketAccounting(t)}</Text>
           <Text>{cutW(t.title, w)}</Text>
-          {l.title === '需要人' ? handoffText(t) : null}
+          {l.title === 'Agent处置' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
-          {l.title === '需要人' ? intakeText(t) : null}
+          {l.title === 'Agent处置' ? resolverText(t) : null}
         </Box>
       )
     }
@@ -1405,7 +1415,7 @@ export const register: Register = on => {
     const agentRow = (a: Agent) => {
       const requiresAction = a.role === 'worker' && a.requiresAction === true
       const glyph = a.phase === 'done' ? G.done : a.phase === 'returned' ? G.human : G.work
-      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ 需要人 ' : '') + cut(a.name, 18)
+      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ Agent处置 ' : '') + cut(a.name, 18)
       const tokens = a.tokens ? tok(a.tokens.out) + ' out · ' + tok(a.tokens.cache) + ' cache' : ''
       const last = a.lastActive ? 'last ' + age(a.lastActive, now) : ''
       const line = name.padEnd(24) + ' ' + a.phase.padEnd(10) + ' ' + mins(a.durationMin).padStart(9)
@@ -1485,11 +1495,11 @@ export const register: Register = on => {
 
         {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>无</Text> : b.prs.map(prRow)) : null}
 
-        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' 需要人', b.failed.map(t => (
+        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' Agent处置', b.failed.map(t => (
           <Box key={'f-' + t.id} flexDirection="column" marginBottom={1}>
             {tRow(G.human, t, 'yellow')}
             {handoffText(t)}
-            {intakeText(t)}
+            {resolverText(t)}
           </Box>
         )), 'yellow') : null}
 
