@@ -19,11 +19,12 @@ LABEL = "orca-go-isolated"
 DOCKER = "/usr/bin/docker"
 GH = "/usr/bin/gh"
 STOP = threading.Event()
+SLOTS = (1, 2, 3, 4)
 
 
 def validate_workers(n):
-    if n not in (1, 2):
-        raise ValueError("only slots 1 and 2 are supported")
+    if n not in SLOTS:
+        raise ValueError("only slots 1 through 4 are supported")
 
 
 def container_args(image, name, owner):
@@ -227,7 +228,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image-file", type=Path, required=True)
     parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--slot", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--slot", type=int, choices=SLOTS, default=1)
     parser.add_argument("--max-cycles", type=int, default=0, help="0 continuously; 1 one ephemeral container")
     parser.add_argument("--idle-timeout", type=int, default=0, help="stop supervisor after N seconds, preserving any live container/lease")
     args = parser.parse_args()

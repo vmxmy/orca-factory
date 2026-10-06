@@ -5,6 +5,7 @@ from unittest.mock import patch
 import tempfile
 import json
 import subprocess
+import os
 from types import SimpleNamespace
 
 spec=importlib.util.spec_from_file_location("supervisor",Path(__file__).with_name("supervisor.py"))
@@ -74,9 +75,25 @@ class SupervisorTests(unittest.TestCase):
     def test_jit_request_is_single_repo_labeled(self):
         self.assertEqual(m.jit_payload("name"),{"name":"name","runner_group_id":1,"labels":["self-hosted","Linux","X64","orca-go-isolated"],"work_folder":"_work"})
     def test_limits_enforced(self):
-        for n in [0,3,100]:
+        for n in [0,5,100]:
             with self.assertRaises(ValueError):m.validate_workers(n)
-        for n in [1,2]:m.validate_workers(n)
+        for n in [1,2,3,4]:m.validate_workers(n)
+    def test_install_refuses_active_new_slots(self):
+        for slot in (3,4):
+            with self.subTest(slot=slot), tempfile.TemporaryDirectory() as directory:
+                root=Path(directory)
+                image=root/"image-id.txt"
+                image.write_text("sha256:"+"a"*64+"\n")
+                stub=root/"stub.bash"
+                stub.write_text("function /usr/bin/docker { return 0; }\n"
+                    + "systemctl() { case \"$*\" in *@"+str(slot)+".service*) echo active;; *) echo inactive;; esac; }\n"
+                    + "loginctl() { echo yes; }\n"
+                    + "install() { echo UNEXPECTED_INSTALL >&2; return 77; }\n")
+                env=dict(os.environ,HOME=str(root),BASH_ENV=str(stub))
+                result=subprocess.run(["bash",str(Path(__file__).with_name("install.sh")),str(image)],env=env,capture_output=True,text=True)
+                self.assertEqual(result.returncode,1,result.stderr)
+                self.assertIn("runner slots before updating",result.stderr)
+                self.assertNotIn("UNEXPECTED_INSTALL",result.stderr)
     def test_log_redaction(self):
         msg=m.redact("jit-value ghp_example123 Bearer hidden", "jit-value")
         self.assertNotIn("jit-value",msg);self.assertNotIn("ghp_example123",msg);self.assertNotIn("hidden",msg)
