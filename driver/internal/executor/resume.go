@@ -94,6 +94,8 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
+	e.Config.Root = c.Root
+	e.initLedger(t, true)
 	branch := "agent/" + t.Identifier + "/" + c.Unit
 	var head string
 	err = e.retryRead(ctx, t, &result, "resume branch lookup", func() error {

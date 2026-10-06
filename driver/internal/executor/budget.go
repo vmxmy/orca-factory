@@ -35,6 +35,7 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 	if err := e.comment(ctx, t.ID, body); err != nil {
 		return errors.New("human handoff comment failed")
 	}
+	e.writeHandoffLedger(ctx, t, state)
 	return nil
 }
 

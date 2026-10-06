@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -83,6 +84,8 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, err
 	}
+	e.Config.LedgerTeam, e.Config.LedgerProject = values[1], values[2]
+	e.LedgerWriter = &merge.LedgerWriter{}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[7]

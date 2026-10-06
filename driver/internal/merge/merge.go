@@ -101,12 +101,13 @@ type lane struct {
 	deployWorkflow, smokeCommand string
 }
 type Channel struct {
-	mu     sync.Mutex
-	lanes  map[string]*lane
-	github GitHub
-	git    Git
-	gate   Gate
-	deploy Deployment
+	ledgerWriter *LedgerWriter
+	mu           sync.Mutex
+	lanes        map[string]*lane
+	github       GitHub
+	git          Git
+	gate         Gate
+	deploy       Deployment
 }
 
 func New(h GitHub, g Git, gate Gate, d Deployment) *Channel {
@@ -330,6 +331,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		l.previous = &deployed{request: e.request, sha: sha}
 		l.mu.Unlock()
 	}
+	c.finishLedger(ctx, e.request)
 	return finish(Merged, "")
 }
 func mergeReady(s Snapshot) bool {

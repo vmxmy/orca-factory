@@ -19,6 +19,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -61,6 +62,7 @@ type Ticket struct {
 	NewTest                                              bool
 }
 type Config struct {
+	LedgerTeam, LedgerProject string
 	// Merging requires durable correction evidence; it never authorizes a fresh run.
 	Merging                                                             bool
 	Lane3Globs                                                          []string
@@ -73,6 +75,8 @@ type Config struct {
 	Tier                                                                string
 }
 type Executor struct {
+	LedgerWriter  *merge.LedgerWriter
+	runLedger     *merge.LedgerRecord
 	Followups     FollowupLinear
 	FollowupTools FollowupTools
 	Orca          Orca
@@ -111,7 +115,8 @@ func (e *Executor) warn(format string, args ...any) {
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
-	return e.withLog(ctx).execute(ctx, t, nil, 0)
+	e = e.withLog(ctx)
+	return e.execute(ctx, t, nil, 0)
 }
 
 func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, infraUsed int) (result Result, err error) {
@@ -152,6 +157,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		c.Root = filepath.Join(home, ".local", "state", "orca-factory")
 	}
+	e.Config.Root = c.Root
+	e.initLedger(t, restored != nil)
 	if err := e.restoreFailLog(ctx, c, t); err != nil {
 		return result, err
 	}
@@ -181,6 +188,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
+		if e.runLedger != nil && cp.Worktree != "" {
+			e.runLedger.Worktrees = []string{cp.Worktree}
+			e.saveLedger(t)
+		}
 	}
 	// Transition authorization always precedes the I/O belonging to the next phase.
 	transition := func(ev machine.Event, action func([]machine.Effect) error) error {
@@ -198,6 +209,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		// Reads inside the authorized action may consume this same ticket budget.
 		next.Infra = result.State.Infra + (next.Infra - previous.Infra)
 		result.State = next
+		e.ledgerTransition(t, next, ev)
 		status.Push(e.Now(), func(view *status.View) {
 			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
 		})
@@ -251,6 +263,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		if commentErr := e.comment(ctx, t.ID, body); commentErr != nil {
 			return errors.New("Linear transition comment failed")
+		}
+		if next.Phase == machine.PhaseHuman {
+			e.writeHandoffLedger(ctx, t, next)
 		}
 		if cp.Worktree != "" {
 			if _, boardErr := e.Orca.WorktreeSet(ctx, cp.Worktree, t.Identifier, boardStatus(next.Phase), "driver: "+string(next.Phase)); boardErr != nil {
@@ -348,6 +363,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return err
 		}
 		taskID, result.DispatchID = cp.Task, cp.Dispatch
+		if e.runLedger != nil && cp.Worktree != "" {
+			e.runLedger.Worktrees = []string{cp.Worktree}
+			e.saveLedger(t)
+		}
 		return nil
 	})
 	if err != nil {
@@ -378,6 +397,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return err
 			}
 			cp = next
+			if e.runLedger != nil {
+				e.runLedger.Worktrees = []string{cp.Worktree}
+				e.saveLedger(t)
+			}
 			return nil
 		}}
 		observeIdle := func() error {
