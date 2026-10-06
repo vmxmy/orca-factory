@@ -201,38 +201,54 @@ func writeLogs(out io.Writer, records []logsRecord, asJSON bool) error {
 	return nil
 }
 
-// streamLogs prints history and polls the live files. A caller-owned context
-// lets tests and signal handlers end follow mode without exiting the process.
-func streamLogs(ctx context.Context, out io.Writer, root, ticket string, cutoff time.Time, asJSON, follow bool) error {
+// readLogsBatch tracks offsets by file identity so a rename during rotation
+// cannot discard unread records from the previous live file.
+func readLogsBatch(root, ticket string, cutoff time.Time, previous []*logsFile) ([]logsRecord, []*logsFile, error) {
 	live, err := logsLiveFiles(root, ticket)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	var history []logsRecord
+	var records []logsRecord
+	var current []*logsFile
 	for _, file := range live {
 		rotations, err := logsRotations(file.path)
 		if err != nil {
-			return err
+			return nil, nil, err
 		}
-		for _, path := range rotations {
-			records, err := readLogsFile(&logsFile{path: path, scheduler: file.scheduler}, ticket, cutoff)
-			if err != nil {
-				return err
+		for _, path := range append(rotations, file.path) {
+			info, err := os.Stat(path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
 			}
-			history = append(history, records...)
+			if err != nil {
+				return nil, nil, err
+			}
+			state := &logsFile{path: path, scheduler: file.scheduler}
+			for _, old := range previous {
+				if old.info != nil && os.SameFile(old.info, info) {
+					state.offset, state.info = old.offset, old.info
+					break
+				}
+			}
+			batch, err := readLogsFile(state, ticket, cutoff)
+			if err != nil {
+				return nil, nil, err
+			}
+			records = append(records, batch...)
+			current = append(current, state)
 		}
-		records, err := readLogsFile(file, ticket, cutoff)
-		if err != nil {
-			return err
-		}
-		history = append(history, records...)
+	}
+	return records, current, nil
+}
+
+// streamLogs prints history and polls live and rotated files until canceled.
+func streamLogs(ctx context.Context, out io.Writer, root, ticket string, cutoff time.Time, asJSON, follow bool) error {
+	history, files, err := readLogsBatch(root, ticket, cutoff, nil)
+	if err != nil {
+		return err
 	}
 	if err := writeLogs(out, history, asJSON); err != nil || !follow {
 		return err
-	}
-	known := make(map[string]*logsFile)
-	for _, file := range live {
-		known[file.path] = file
 	}
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
@@ -241,24 +257,11 @@ func streamLogs(ctx context.Context, out io.Writer, root, ticket string, cutoff 
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			files, err := logsLiveFiles(root, ticket)
+			batch, next, err := readLogsBatch(root, ticket, cutoff, files)
 			if err != nil {
 				return err
 			}
-			for _, file := range files {
-				if known[file.path] == nil {
-					known[file.path] = file
-					live = append(live, file)
-				}
-			}
-			var batch []logsRecord
-			for _, file := range live {
-				records, err := readLogsFile(file, ticket, cutoff)
-				if err != nil {
-					return err
-				}
-				batch = append(batch, records...)
-			}
+			files = next
 			if err := writeLogs(out, batch, asJSON); err != nil {
 				return err
 			}
