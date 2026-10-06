@@ -1,11 +1,11 @@
-type Segment = { text: string; color?: string }
-type Model = {
-  inFlight?: number; max?: number; failed?: number; queue?: number; prs?: number; doneToday?: number; costUsd?: number
-  quota?: { remaining?: number; limit?: number; resetAt?: string | number }
-  driver?: 'ok' | 'unknown' | 'stale'; globalPause?: { active: boolean; durationSeconds: number }
+export type Segment = { text: string; color?: string }
+export type StatusBarModel = {
+  inFlight: number; max: number; failed: number; queue: number; prs: number; doneToday: number; costUsd?: number
+  quota?: { remaining: number; limit: number; resetAt?: string }
+  driver?: string; globalPauseSec?: number
   view?: string; detail?: boolean; automation?: boolean; automationKnown?: boolean; refreshing?: boolean
   at?: string; refreshSec?: number; snapshotMin?: number; version?: string; stale?: boolean
-  needsRestart?: boolean; installedVersion?: string; lastRun?: string; repo?: string; complexity?: number
+  restart?: boolean; installedVersion?: string; lastRun?: string; repo?: string; complexity?: number
   linearUsage?: { known: boolean; total: number; bySource: Record<string, number>; board: number }
 }
 
@@ -55,21 +55,24 @@ const align = (left: Segment[], right: Segment[], cols: number): Segment[] => {
   return truncate([...l, { text: ' '.repeat(Math.max(0, cols - rowWidth(l) - rowWidth(r) - 2)) }, ...r], cols)
 }
 
-export function statusBarRows(model: Model = {}, cols = 100): Segment[][] {
+export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] {
   cols = Number.isFinite(cols) ? Math.max(0, Math.floor(cols)) : 100
   const n = (value = 0) => Number.isFinite(value) ? Math.max(0, value) : 0
   const part = (text: string, color?: string): Segment => ({ text: text.replace(/[\p{Control}\p{Line_Separator}\p{Paragraph_Separator}]/gu, ' '), ...(color ? { color } : {}) })
-  const pipeline = [part(`在做 ${n(model.inFlight)}/${n(model.max)}`),
-    model.globalPause?.active ? part(`⏸ 全局暂停 ${n(model.globalPause.durationSeconds)} 秒`, 'yellow')
-      : part(`需要人 ${n(model.failed)}`, n(model.failed) ? 'yellow' : undefined),
-    part(`待领 ${n(model.queue)}`), part(`PR ${n(model.prs)}`), part(`今日完成 ${n(model.doneToday)}`)]
-  if (cols >= 140 || model.detail) pipeline.push(part(`今日估算 $${n(model.costUsd).toFixed(2)}`))
+  const pipeline = [part(`● 在做 ${n(model.inFlight)}/${n(model.max)}`)]
+  if (model.globalPauseSec !== undefined) pipeline.push(part(`⏸ 全局暂停 ${n(model.globalPauseSec)}s`, 'yellow'))
+  else if (model.failed > 0) pipeline.push(part(`▲ 需要人 ${n(model.failed)}`, 'yellow'))
+  pipeline.push(part(`· 待领 ${n(model.queue)}`), part(`◐ PR ${n(model.prs)}`), part(`✓ 今日完成 ${n(model.doneToday)}`))
+  if ((cols >= 140 || model.detail) && model.costUsd !== undefined) pipeline.push(part(`est. $${n(model.costUsd).toFixed(2)}`))
   const { remaining, limit, resetAt } = model.quota ?? {}
   const ratio = remaining !== undefined && limit && limit > 0 ? remaining / limit : 1
   const reset = resetAt === undefined ? undefined : new Date(resetAt)
-  const resources = [part(`Linear 剩余 ${remaining ?? '?'}/${limit ?? '?'}`, ratio < 0.1 ? 'red' : ratio < 0.2 ? 'yellow' : undefined),
-    part(`重置 ${reset && Number.isFinite(reset.getTime()) ? reset.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }) : '未知'}`),
-    part(`驱动器 ${model.driver === 'ok' ? '在线' : model.driver === 'stale' ? '状态过期' : '未知'}`, model.driver === 'stale' ? 'yellow' : undefined)]
+  const resources: Segment[] = []
+  if (model.quota) {
+    resources.push(part(`剩余 ${remaining}/${limit}`, ratio < 0.1 ? 'red' : ratio < 0.2 ? 'yellow' : undefined))
+    if (reset) resources.push(part(`重置 ${Number.isFinite(reset.getTime()) ? reset.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }) : '未知'}`))
+  }
+  resources.push(part(`驱动器 ${model.driver === 'ok' ? '在线' : model.driver === 'stale' ? '状态过期' : '未知'}`, model.driver === 'stale' ? 'yellow' : undefined))
   if (model.detail) {
     if (model.repo) resources.push(part(`仓库 ${model.repo}`))
     if (model.complexity !== undefined) resources.push(part(`复杂度 ${n(model.complexity)}`))
@@ -86,8 +89,8 @@ export function statusBarRows(model: Model = {}, cols = 100): Segment[][] {
     part(model.refreshing ? '刷新中…' : '刷新')]
   const footer = [part([model.at ? `更新于 ${model.at}` : '加载中…', `下次刷新 ${n(model.refreshSec)}s`,
     `快照 ${model.snapshotMin === undefined ? '未知' : n(model.snapshotMin) + ' 分钟前'}`, `v${model.version ?? '?'}`,
-    model.stale ? '数据已过期' : '', model.needsRestart ? `已安装 v${model.installedVersion ?? '?'}，请重启` : '', model.lastRun ?? '']
-    .filter(Boolean).join(' · '), model.stale || model.needsRestart ? 'yellow' : 'gray')]
+    model.stale ? '数据已过期' : '', model.restart ? `已安装 v${model.installedVersion ?? '?'}，请重启` : '', model.lastRun ?? '']
+    .filter(Boolean).join(' · '), model.stale || model.restart ? 'yellow' : undefined)]
   if (cols < 140) return [truncate(pipeline, cols), truncate(resources, cols), align(views, actions, cols), truncate(footer, cols)]
   const footerWidth = rowWidth(truncate(footer, Math.floor(cols / 2)))
   return [align(pipeline, resources, cols), align(align(views, actions, cols - footerWidth - 2), footer, cols)]

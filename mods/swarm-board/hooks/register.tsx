@@ -18,6 +18,8 @@ import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
 
+declare function h(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown
+
 type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
 type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[]; repositoryPaths?: string[] }
@@ -1431,15 +1433,15 @@ export const register: Register = on => {
       .sort((a, b) => a.requests.remaining - b.requests.remaining)[0]
     const statusCols = Math.max(0, bodyColumns - 4)
     const rows = statusBarRows({
-      inFlight: inFlightNoHuman.length, max: b.maxInFlight, failed: b.failed.length,
+      inFlight: b.inFlight.length, max: b.maxInFlight || 0, failed: b.failed.length,
       queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
       quota: limit ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
-      driver: b.driver?.state ?? 'unknown', globalPause: driver?.globalPause,
+      driver: b.driver?.state ?? 'unknown', globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
       at: b.at, refreshSec: remainingSec,
       snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
       version: MOD_VERSION, view: v, detail: d, repo: limit?.repo ?? b.repositoryPaths?.[0],
       complexity: driver?.linear.complexity, linearUsage: b.linearUsage, lastRun: b.lastRun, stale,
-      needsRestart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
+      restart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
       automation: automation?.enabled, automationKnown, refreshing,
     }, statusCols)
     const statusActions = new Map<string, { key: string; hotkey: string; dimColor?: boolean; onPress: () => unknown }>()
@@ -1463,7 +1465,7 @@ export const register: Register = on => {
           h(Box, { key: 'status-' + row, flexDirection: 'row', gap: 1, width: statusCols }, ...segments.map((segment, index) => {
             const action = statusActions.get(segment.text)
             return action ? h(Button, { ...action, plain: true, label: segment.text })
-              : h(Text, { key: index, color: segment.color, wrap: 'truncate-end' }, segment.text)
+              : h(Text, { key: index, color: segment.color, dimColor: !segment.color, wrap: 'truncate-end' }, segment.text)
           }))))}
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
