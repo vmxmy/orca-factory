@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -17,6 +18,9 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
+	if cp.StartedAt == "" {
+		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
+	}
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}

@@ -18,6 +18,7 @@ import (
 type checkpoint struct {
 	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
 	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
+	StartedAt                                    string `json:",omitempty"`
 	Settled                                      bool
 	Run, Task, Dispatch, Worktree, Baseline      string
 	Corrections                                  int
@@ -137,7 +138,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if result.State.Infra >= machine.DefaultLimits.Infra {
 			result.State.Owner, result.State.Phase = machine.OwnerResolver, machine.PhaseResolver
 			result.State.HumanReason = "infra budget exhausted: checkpoint recovery"
-			if err := e.handoff(ctx, t, result.State, "checkpoint recovery", cp.Run); err != nil {
+			if err := e.handoff(ctx, t, result.State, "checkpoint recovery", cp.Run, cp); err != nil {
 				return result, err
 			}
 			return result, errBudgetExhausted

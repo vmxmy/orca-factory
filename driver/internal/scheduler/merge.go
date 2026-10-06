@@ -5,15 +5,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
 
 func readMergeHandoff(t *Ticket, comments []linear.Comment) {
@@ -235,6 +238,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if err != nil || issue.State.Name != "Done" {
 		return errors.New("completion write unconfirmed")
 	}
+	r.writeMergeLedger(ctx, t, *h, sha)
 	// A failed final comment must not suppress cleanup after confirmed Done.
 	defer r.cleanupMerged(ctx, t)
 	return r.mergeComment(ctx, t, fmt.Sprintf("已合并: PR #%d squash %s\n阶段: %s\n归属: %s\n%s%s", h.PR, sha, machine.PhaseMerged, machine.OwnerNone, merge.ProgressPrefix, b))
@@ -403,4 +407,36 @@ func (a *mergeAdapter) policy(files []string) error {
 		}
 	}
 	return nil
+}
+
+// writeMergeLedger appends one deduped ledger row for a confirmed merge without
+// blocking cleanup. Usage collection failure only omits the usage field.
+func (r *Runtime) writeMergeLedger(ctx context.Context, t Ticket, h merge.Handoff, sha string) {
+	_ = sha
+	client := r.Clients[t.Repo]
+	merge.FinishRunLedger(ctx, merge.LedgerRow{
+		Ticket: t.Identifier, Lane: h.Lane, Outcome: "merged",
+		Corrections: h.Corrections, PR: h.PR,
+		Minutes:   time.Since(h.EnqueuedAt).Minutes(),
+		StartedAt: h.EnqueuedAt, FinishedAt: time.Now().UTC(),
+	}, func(ctx context.Context) ([]string, error) {
+		rows, err := client.ListComments(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		bodies := make([]string, 0, len(rows))
+		for _, c := range rows {
+			bodies = append(bodies, c.Body)
+		}
+		return bodies, nil
+	}, func(ctx context.Context, body string) error {
+		_, err := client.CreateComment(ctx, t.ID, body)
+		return err
+	}, func(ctx context.Context, ticket string) (*usage.TicketUsage, error) {
+		u, err := usage.Collect(ctx, ticket, []string{h.Worktree})
+		if err != nil {
+			return nil, err
+		}
+		return &u, nil
+	}, func(msg string, err error) { slog.Warn(msg, "err", err) })
 }

@@ -73,7 +73,7 @@ func (e *Executor) restoreMergeCorrection(ctx context.Context, c Config, t Ticke
 	if result.State.Infra >= machine.DefaultLimits.Infra {
 		result.State.Owner, result.State.Phase = machine.OwnerResolver, machine.PhaseResolver
 		result.State.HumanReason = "infra budget exhausted: merge correction recovery"
-		if err := e.handoff(ctx, t, result.State, "merge correction recovery", (*cp).Run); err != nil {
+		if err := e.handoff(ctx, t, result.State, "merge correction recovery", (*cp).Run, *cp); err != nil {
 			return false, err
 		}
 		return false, errBudgetExhausted
