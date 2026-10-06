@@ -69,7 +69,7 @@ func TestRecordedSessionFormats(t *testing.T) {
 	wants := []want{
 		{"session", "claude-opus-5-5", Tokens{InputTokens: 2, OutputTokens: 320, CacheReadTokens: 29090, CacheWriteTokens: 0, CacheWriteHourTokens: 36610}, 0.305106},
 		{"session", "claude-sonnet-5-5", Tokens{InputTokens: 2, OutputTokens: 24, CacheReadTokens: 16952, CacheWriteTokens: 16163, CacheWriteHourTokens: 0}, 0.0440419},
-		{"worker", "gpt-6.1-sol", Tokens{InputTokens: 58412, OutputTokens: 7756, CacheReadTokens: 671488}, 0.2615328},
+		{"worker", "gpt-6.1-sol", Tokens{InputTokens: 58412, OutputTokens: 7756, CacheReadTokens: 671488, ReasoningTokens: 2219}, 0.2615328},
 	}
 	if len(got.Items) != len(wants) {
 		t.Fatalf("items=%+v", got.Items)
@@ -89,7 +89,7 @@ func TestRecordedSessionFormats(t *testing.T) {
 		}
 	}
 	ticket, err := Collect(context.Background(), "ZII-1", []string{unit})
-	if err != nil || ticket.Output != 320+24+7756 || ticket.ByRole.Worker.Output != 7756 || ticket.Totals.CacheWrite != 36610+16163 {
+	if err != nil || ticket.Output != 320+24+7756 || ticket.ByRole.Worker.Output != 7756 || ticket.Totals.CacheWrite != 36610+16163 || ticket.Totals.Reasoning != 2219 {
 		t.Fatalf("ticket usage=%+v err=%v", ticket, err)
 	}
 }

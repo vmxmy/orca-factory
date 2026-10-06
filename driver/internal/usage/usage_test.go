@@ -18,11 +18,11 @@ func TestCollect(t *testing.T) {
 		unknown, apportioned bool
 	}
 	base := []expectation{
-		{"session", "claude-sonnet-4-6", Tokens{300, 50, 10, 8, 0}, 0.001683, false, false},
-		{"session", "mystery-model", Tokens{17, 3, 0, 0, 0}, 0, true, false},
-		{"reviewer", "claude-sonnet-4-6", Tokens{80, 10, 0, 0, 0}, 0.00039, false, false},
-		{"coordinator", "claude-sonnet-4-6", Tokens{50.5, 10.5, 0, 0, 0}, 0.000309, false, true},
-		{"worker", "gpt-5", Tokens{300, 80, 100, 0, 0}, 0.0011875, false, false},
+		{"session", "claude-sonnet-4-6", Tokens{300, 50, 10, 8, 0, 0}, 0.001683, false, false},
+		{"session", "mystery-model", Tokens{17, 3, 0, 0, 0, 0}, 0, true, false},
+		{"reviewer", "claude-sonnet-4-6", Tokens{80, 10, 0, 0, 0, 0}, 0.00039, false, false},
+		{"coordinator", "claude-sonnet-4-6", Tokens{50.5, 10.5, 0, 0, 0, 0}, 0.000309, false, true},
+		{"worker", "gpt-5", Tokens{300, 80, 100, 0, 0, 0}, 0.0011875, false, false},
 	}
 	cases := []struct {
 		name             string
@@ -45,7 +45,7 @@ func TestCollect(t *testing.T) {
 		{name: "second ticket receives same half", files: []string{"coordinator"}, want: base[3:4], ticket: "ZII-895", run: true},
 		{name: "duplicate session identity", files: []string{"codex-session"}, want: base[4:5], duplicate: true},
 		{name: "duplicate Claude message", files: []string{"duplicate-message"}, want: base[:1]},
-		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{300, 80, 100, 0, 0}, 0, true, false}}},
+		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{300, 80, 100, 0, 0, 0}, 0, true, false}}},
 		{name: "large record", files: []string{"claude-session"}, want: base[:2], large: true},
 		{name: "no matching unit worktrees", files: []string{"claude-session", "codex-session"}, noWorktrees: true, noReviewer: true},
 		{name: "invalid ticket", invalid: "ticket"},

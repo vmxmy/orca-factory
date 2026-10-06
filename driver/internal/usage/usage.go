@@ -35,6 +35,7 @@ type Tokens struct {
 	CacheReadTokens      float64 `json:"cache_read_tokens"`
 	CacheWriteTokens     float64 `json:"cache_write_tokens"`
 	CacheWriteHourTokens float64 `json:"cache_write_hour_tokens"`
+	ReasoningTokens      float64 `json:"reasoning_tokens"`
 }
 
 type Item struct {
@@ -182,10 +183,10 @@ func collectItems(o Options) (Result, error) {
 }
 
 func add(a, b Tokens) Tokens {
-	return Tokens{a.InputTokens + b.InputTokens, a.OutputTokens + b.OutputTokens, a.CacheReadTokens + b.CacheReadTokens, a.CacheWriteTokens + b.CacheWriteTokens, a.CacheWriteHourTokens + b.CacheWriteHourTokens}
+	return Tokens{a.InputTokens + b.InputTokens, a.OutputTokens + b.OutputTokens, a.CacheReadTokens + b.CacheReadTokens, a.CacheWriteTokens + b.CacheWriteTokens, a.CacheWriteHourTokens + b.CacheWriteHourTokens, a.ReasoningTokens + b.ReasoningTokens}
 }
 func scale(a Tokens, n float64) Tokens {
-	return Tokens{a.InputTokens * n, a.OutputTokens * n, a.CacheReadTokens * n, a.CacheWriteTokens * n, a.CacheWriteHourTokens * n}
+	return Tokens{a.InputTokens * n, a.OutputTokens * n, a.CacheReadTokens * n, a.CacheWriteTokens * n, a.CacheWriteHourTokens * n, a.ReasoningTokens * n}
 }
 
 // normalizePath resolves symlink aliases when the directory is available.
@@ -235,6 +236,7 @@ func Collect(ctx context.Context, ticket string, worktrees []string, attribution
 			Output:     int64(math.Round(item.OutputTokens)),
 			CacheRead:  int64(math.Round(item.CacheReadTokens)),
 			CacheWrite: int64(math.Round(item.CacheWriteTokens + item.CacheWriteHourTokens)),
+			Reasoning:  int64(math.Round(item.ReasoningTokens)),
 			CostUSD:    item.CostUSD,
 		}
 		out.Totals = out.Totals.add(part)
