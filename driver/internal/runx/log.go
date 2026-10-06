@@ -22,10 +22,17 @@ func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
 
 // LoggerFrom returns a silent logger when none was supplied.
 func LoggerFrom(ctx context.Context) *slog.Logger {
-	if logger, ok := ctx.Value(loggerKey{}).(*slog.Logger); ok && logger != nil {
+	if logger, ok := LookupLogger(ctx); ok {
 		return logger
 	}
 	return discardLogger
+}
+
+// LookupLogger reports whether a caller supplied a logger, allowing components
+// with their own fallback sink to share the command's logger when present.
+func LookupLogger(ctx context.Context) (*slog.Logger, bool) {
+	logger, ok := ctx.Value(loggerKey{}).(*slog.Logger)
+	return logger, ok && logger != nil
 }
 
 var authorizationText = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?[^\s"'<>]+`)
@@ -40,7 +47,7 @@ func sensitiveFlag(flag string) bool {
 	flag = strings.ToLower(flag)
 	// Free text may contain credentials or private ticket/terminal content.
 	switch flag {
-	case "--objective", "--spec", "--setup", "--text", "--comment", "--command", "--body", "--title":
+	case "-p", "--print", "--objective", "--spec", "--setup", "--text", "--comment", "--command", "--body", "--title":
 		return true
 	}
 	for _, word := range []string{"token", "key", "secret", "password", "authorization"} {
@@ -84,6 +91,11 @@ func redactArgs(args []string) []string {
 func redactStderr(stderr string, args []string) string {
 	for i, arg := range args {
 		flag, value, assigned := strings.Cut(arg, "=")
+		// Provider diagnostics may echo only fragments of a large prompt. Once
+		// bounded capture drops its middle, whole-value replacement is unsafe.
+		if (flag == "-p" || flag == "--print") && stderr != "" {
+			return "[REDACTED]"
+		}
 		if !sensitiveFlag(flag) {
 			continue
 		}

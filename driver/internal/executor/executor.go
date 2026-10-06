@@ -111,7 +111,7 @@ func (e *Executor) warn(format string, args ...any) {
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately
 // generic because external error messages and receipts may contain credentials.
 func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
-	return e.withLog().execute(ctx, t, nil, 0)
+	return e.withLog(ctx).execute(ctx, t, nil, 0)
 }
 
 func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, infraUsed int) (result Result, err error) {

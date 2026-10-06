@@ -45,7 +45,10 @@ func TestCollect(t *testing.T) {
 		{name: "second ticket receives same half", files: []string{"coordinator"}, want: base[3:4], ticket: "ZII-895", run: true},
 		{name: "duplicate session identity", files: []string{"codex-session"}, want: base[4:5], duplicate: true},
 		{name: "duplicate Claude message", files: []string{"duplicate-message"}, want: base[:1]},
-		{name: "Codex final cumulative snapshot and model", files: []string{"codex-model-switch"}, want: []expectation{{"worker", "future-model", Tokens{0, 300, 80, 100, 0, 0}, 0, true, false}}},
+		{name: "Codex cumulative intervals by model", files: []string{"codex-model-switch"}, want: []expectation{
+			{"worker", "gpt-5", Tokens{0, 80, 10, 20, 0, 0}, 0.0002025, false, false},
+			{"worker", "future-model", Tokens{0, 220, 70, 80, 0, 0}, 0, true, false},
+		}},
 		{name: "large record", files: []string{"claude-session"}, want: base[:2], large: true},
 		{name: "no matching unit worktrees", files: []string{"claude-session", "codex-session"}, noWorktrees: true, noReviewer: true},
 		{name: "invalid ticket", invalid: "ticket"},
@@ -254,6 +257,58 @@ func TestCollectCodexSessionAttribution(t *testing.T) {
 			}
 			if got.Input != 70 || got.CacheRead != 20 || got.CacheWrite != 10 || got.Output != 30 || got.Reasoning != 12 || got.ByRole.Worker.Reasoning != 12 || got.ByModel["gpt-6.1-sol"].Reasoning != 12 || math.Abs(got.CostUSD-0.000467) > 1e-12 {
 				t.Fatalf("usage = %+v; want input=70 read=20 write=10 output=30 reasoning=12 cost=0.000467", got)
+			}
+		})
+	}
+}
+
+func TestCollectCodexModelIntervals(t *testing.T) {
+	for _, invalid := range []bool{false, true} {
+		t.Run(fmt.Sprint(invalid), func(t *testing.T) {
+			root := t.TempDir()
+			claude, codex := filepath.Join(root, "claude"), filepath.Join(root, "codex")
+			for _, dir := range []string{claude, codex} {
+				if err := os.Mkdir(dir, 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			meta := `{"type":"session_meta","payload":{"id":"interval-session","cwd":"/unit"}}` + "\n"
+			turn := func(model string) string {
+				return fmt.Sprintf(`{"type":"turn_context","payload":{"model":%q,"cwd":"/elsewhere"}}`+"\n", model)
+			}
+			count := func(input, cached, write, output, reasoning int) string {
+				return fmt.Sprintf(`{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":%d,"cached_input_tokens":%d,"cache_write_input_tokens":%d,"output_tokens":%d,"reasoning_output_tokens":%d}}}}`+"\n", input, cached, write, output, reasoning)
+			}
+			first, second, third := count(100, 20, 10, 30, 12), count(200, 40, 15, 50, 20), count(300, 60, 20, 80, 30)
+			data := meta + turn("gpt-5") + first + first + turn("future-model") + first + second + second + turn("gpt-5") + second + third + third
+			if invalid {
+				data += first
+			}
+			if err := os.WriteFile(filepath.Join(codex, "rollout.jsonl"), []byte(data), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Collect(context.Background(), "ZII-894", []string{"/unit"}, Options{ClaudeDir: claude, CodexDir: codex})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if invalid {
+				if len(got.Skipped) != 1 || len(got.Items) != 0 {
+					t.Fatalf("regressing counters must not produce a negative or duplicate charge: %+v", got)
+				}
+				return
+			}
+			if len(got.Skipped) != 0 || len(got.Items) != 2 || got.Input != 220 || got.CacheRead != 60 || got.CacheWrite != 20 || got.Output != 80 || got.Reasoning != 30 {
+				t.Fatalf("session totals: %+v", got)
+			}
+			known, unknown := got.ByModel["gpt-5"], got.ByModel["future-model"]
+			if known.Input != 145 || known.CacheRead != 40 || known.CacheWrite != 15 || known.Output != 60 || known.Reasoning != 22 || math.Abs(known.CostUSD-0.00078625) > 1e-12 {
+				t.Fatalf("known model: %+v", known)
+			}
+			if unknown.Input != 75 || unknown.CacheRead != 20 || unknown.CacheWrite != 5 || unknown.Output != 20 || unknown.Reasoning != 8 || unknown.CostUSD != 0 {
+				t.Fatalf("unknown model: %+v", unknown)
+			}
+			if got.ByRole.Worker != got.Totals {
+				t.Fatalf("worker attribution: %+v", got)
 			}
 		})
 	}

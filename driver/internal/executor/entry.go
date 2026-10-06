@@ -22,7 +22,7 @@ import (
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
 func RunTicket(ctx context.Context, identifier string, merging bool) (result Result, err error) {
-	logger := (&Executor{}).withLog()
+	logger := (&Executor{}).withLog(ctx)
 
 	delegated := false
 	defer func() {

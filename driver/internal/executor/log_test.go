@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 func TestExecutorTransitionLog(t *testing.T) {
@@ -213,5 +217,53 @@ func TestExecutorWarningLogRedactsCredentials(t *testing.T) {
 	}
 	if warnings != 1 {
 		t.Fatalf("warnings=%d", warnings)
+	}
+}
+
+func TestExecutorContextLog(t *testing.T) {
+	for _, resume := range []bool{false, true} {
+		t.Run(map[bool]string{false: "execute", true: "resume"}[resume], func(t *testing.T) {
+			e, _, _, _, _, ticket := fixture(t, "new-sha")
+			var fallback bytes.Buffer
+			e.Stderr = &fallback
+			path := filepath.Join(t.TempDir(), "executor.log")
+			sink, err := logx.RotatingFile(path, 0, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := sink.Close(); err != nil {
+					t.Error(err)
+				}
+			})
+			ctx := runx.WithLogger(context.Background(), logx.New("executor", sink).With("ticket", ticket.Identifier))
+			if resume {
+				if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one"}); err != nil {
+					t.Fatal(err)
+				}
+				_, err = e.Start(ctx, ticket)
+			} else {
+				_, err = e.Execute(ctx, ticket)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := []string{`"msg":"transition"`, `"msg":"external.end"`, `"ticket":"` + ticket.Identifier + `"`}
+			if resume {
+				events = append(events, `"msg":"recovery.snapshot"`, `"msg":"recovery.path"`)
+			}
+			for _, event := range events {
+				if !bytes.Contains(data, []byte(event)) {
+					t.Errorf("rotating log missing %s: %s", event, data)
+				}
+			}
+			if fallback.Len() != 0 {
+				t.Errorf("context logs bypassed sink: %s", &fallback)
+			}
+		})
 	}
 }

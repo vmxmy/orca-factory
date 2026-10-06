@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExecCompatibility(t *testing.T) {
@@ -50,6 +53,15 @@ func TestExecCompatibility(t *testing.T) {
 			}
 			if tc.code == 1 && !strings.Contains(string(raw), `"executable":"git"`) {
 				t.Fatalf("missing external command log: %s", raw)
+			}
+			if tc.code == 1 {
+				var viewed bytes.Buffer
+				if err := streamLogs(context.Background(), &viewed, filepath.Join(home, ".local", "state", "orca-factory"), tc.ticket, time.Time{}, true, false); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(viewed.String(), `"msg":"executor failed"`) || !strings.Contains(viewed.String(), `"phase":"initialization"`) {
+					t.Fatalf("driver logs missing executor initialization error: %s", &viewed)
+				}
 			}
 			if _, err := os.Stat(path); err != nil {
 				t.Fatalf("wrong log path: %v", err)

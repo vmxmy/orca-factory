@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -101,5 +103,36 @@ func TestExternalCallLogAuthorization(t *testing.T) {
 	_, err := Run(ctx, Spec{Path: "/bin/sh", Args: []string{"-c", "echo 'Authorization: Basic dXNlcjpwYXNz' >&2; exit 1", "sh", "-H", "Authorization: Basic dXNlcjpwYXNz"}, Timeout: time.Second})
 	if err == nil || strings.Contains(buf.String(), "dXNlcjpwYXNz") {
 		t.Fatalf("authorization leaked: %s", &buf)
+	}
+}
+
+func TestExternalCallLogHidesClaudePrompt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "claude")
+	// Echo full argv and a partial prompt, as a failing provider may do.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" >&2\nprintf 'opaque-private-value' >&2\nexit 7\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"-p", "--print", "--print="} {
+		t.Run(flag, func(t *testing.T) {
+			prompt := "Correction instructions\nBrief: database password: opaque-private-value\n" + strings.Repeat("private-ticket-detail", 5000)
+			args := []string{flag, prompt, "--permission-mode", "acceptEdits"}
+			if flag == "--print=" {
+				args = []string{flag + prompt, "--permission-mode", "acceptEdits"}
+			}
+			var logs bytes.Buffer
+			ctx := WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&logs, nil)))
+			_, err := Run(ctx, Spec{Path: path, Args: args, Timeout: time.Second})
+			if err == nil {
+				t.Fatal("expected provider failure")
+			}
+			for _, private := range []string{"opaque-private-value", "private-ticket-detail", "Correction instructions"} {
+				if strings.Contains(logs.String(), private) {
+					t.Errorf("private prompt text leaked: %s", private)
+				}
+			}
+			if !strings.Contains(logs.String(), `"exit_code":7`) || !strings.Contains(logs.String(), "[REDACTED]") {
+				t.Fatal("missing exit code or redaction marker")
+			}
+		})
 	}
 }

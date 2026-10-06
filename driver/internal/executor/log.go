@@ -12,12 +12,16 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 // Each invocation owns its logger; logging never changes durable state or IDs.
-func (e *Executor) withLog() *Executor {
+func (e *Executor) withLog(ctx context.Context) *Executor {
 	local := *e
 	local.logContext = e.logger()
+	if logger, ok := runx.LookupLogger(ctx); ok {
+		local.logContext = logger
+	}
 	return &local
 }
 

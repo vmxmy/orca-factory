@@ -64,7 +64,7 @@ func readCheckpoint(c Config, t Ticket) (*checkpoint, error) {
 // Start reconciles remote evidence before Execute. Execute remains the explicit
 // new-claim entry point for callers that already performed reconciliation.
 func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err error) {
-	e = e.withLog()
+	e = e.withLog(ctx)
 	phase := machine.PhaseUnclaimed
 	delegated := false
 	result.State = machine.Initial()

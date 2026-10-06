@@ -73,7 +73,8 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 	messages := map[string]Item{}
 	result = session{}
 	cwd, model := "", "unknown"
-	var last *Item
+	previous := rawUsage{}
+	codexItems := map[string]Item{}
 	lineNumber := 0
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -144,16 +145,28 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 					if result.ID == "" {
 						return session{}, errors.New("codex session ID missing")
 					}
-					tokens, err := r.Payload.Info.Total.tokens(true)
+					total := *r.Payload.Info.Total
+					if _, err := total.tokens(true); err != nil {
+						return session{}, fmt.Errorf("line %d: %w", lineNumber, err)
+					}
+					delta := rawUsage{Input: total.Input - previous.Input, Cached: total.Cached - previous.Cached, CodexWrite: total.CodexWrite - previous.CodexWrite, Output: total.Output - previous.Output, Reasoning: total.Reasoning - previous.Reasoning}
+					tokens, err := delta.tokens(true)
 					if err != nil {
 						return session{}, fmt.Errorf("line %d: %w", lineNumber, err)
 					}
 					if role != "coordinator" {
 						role = "worker"
 					}
-					// total_token_usage is cumulative. last_token_usage is a single turn
-					// and is deliberately never substituted for the cumulative snapshot.
-					last = &Item{Role: role, Model: model, Tokens: tokens}
+					// Attribute only the new interval to this model. Replayed snapshots
+					// contribute nothing, even when a turn_context changes the model.
+					previous = total
+					if tokens != (Tokens{}) {
+						key := role + "\x00" + model
+						item := codexItems[key]
+						item.Role, item.Model = role, model
+						item.Tokens = add(item.Tokens, tokens)
+						codexItems[key] = item
+					}
 				}
 			}
 		}
@@ -165,8 +178,8 @@ func readSession(path, provider string, roles map[string]string, coordinatorIDs 
 		}
 	}
 	if provider == "codex" {
-		if last != nil {
-			result.Items = []Item{*last}
+		for _, item := range codexItems {
+			result.Items = append(result.Items, item)
 		}
 		return result, nil
 	}
