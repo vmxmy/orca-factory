@@ -227,6 +227,7 @@ let usageCache: { key: string; rows: Row[] } | null = null
 
 // Test-only reset for module-level caches so each test case starts clean.
 export const __resetSwarmBoardCachesForTests = () => {
+  __resetGraphCacheForTests()
   ledgerCache = null
   boardLinearCalls.length = 0
   HOME = ''
@@ -835,7 +836,6 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // On Linear failure every ticket-shaped slice falls back to the last-good board so the pane does not blank.
   const lastSuccessAt = linearOk ? now : old.lastSuccessAt
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
-  const linearUsage = await readLinearUsage($, now)
   // Snapshot-fed refreshes carry the snapshot's blockedBy map; live refreshes keep the last
   // one we saw so the queue cards do not blink into an "unknown" state between snapshots.
   const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
@@ -863,6 +863,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const failures = ledger.length || Object.keys(metricComments).length
     ? buildFailures({ now, ledger, comments: metricComments }) : old.failures
   const metrics = { graph, graphNotice, throughput, failures, metricRuns }
+  const linearUsage = await readLinearUsage($, now)
   if (!linearOk) {
     return {
       at, error, maxInFlight, phases: old.phases, coordinatorAlive, driver,
