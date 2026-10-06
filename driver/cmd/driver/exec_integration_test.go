@@ -24,7 +24,7 @@ func TestExecCompatibility(t *testing.T) {
 			home := t.TempDir()
 			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, tc.args...)...)
 			cmd.Dir = home
-			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "ORCA_PANE_KEY=", "PATH="+home)
+			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "ORCA_PANE_KEY=", "ORCA_TERMINAL_HANDLE=test-terminal", "PATH="+home)
 			out, err := cmd.CombinedOutput()
 			code := 0
 			if err != nil {
@@ -44,6 +44,13 @@ func TestExecCompatibility(t *testing.T) {
 				t.Fatalf("valid args rejected: %s", out)
 			}
 			path := filepath.Join(home, ".local", "state", "orca-factory", "unknown", tc.ticket, "executor.log")
+			raw, readErr := os.ReadFile(path)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if tc.code == 1 && !strings.Contains(string(raw), `"executable":"git"`) {
+				t.Fatalf("missing external command log: %s", raw)
+			}
 			if _, err := os.Stat(path); err != nil {
 				t.Fatalf("wrong log path: %v", err)
 			}

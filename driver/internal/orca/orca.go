@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -48,6 +49,22 @@ func RequestID(ticket, unit, step string, attempt int) string {
 func invalid(message string) error { return &infra.Ticket{Err: errors.New(message)} }
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
+	started := time.Now()
+	command := strings.Join(args[:min(2, len(args))], " ")
+	request, result := "", "runtime_error"
+	for i := 2; i+1 < len(args); i++ {
+		if args[i] == "--retry-request" {
+			request = args[i+1]
+		}
+	}
+	defer func() {
+		level := slog.LevelInfo
+		if result != "ok" {
+			level = slog.LevelWarn
+		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "Orca call", "command", command, "result", result,
+			"duration", time.Since(started), "request_id", request)
+	}()
 	path := c.Path
 	if path == "" {
 		var err error
@@ -66,6 +83,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
+	// runx redacts free-text arguments and records process diagnostics.
 	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
@@ -74,6 +92,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
+		ID     string  `json:"id"`
 		OK     *bool   `json:"ok"`
 		Result Receipt `json:"result"`
 		Error  *struct {
@@ -85,8 +104,14 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
 	}
+	if request == "" && validUUID(envelope.ID) {
+		request = envelope.ID
+	}
 	if !*envelope.OK {
 		if envelope.Error != nil {
+			if validCode(envelope.Error.Code) {
+				result = envelope.Error.Code
+			}
 			if envelope.Result == nil {
 				envelope.Result = envelope.Error.Data
 			}
@@ -107,6 +132,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if envelope.Result == nil {
 		return nil, invalid("missing orca result")
 	}
+	result = "ok"
 	return envelope.Result, nil
 }
 

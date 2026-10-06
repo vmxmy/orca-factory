@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 const endpoint = "https://api.linear.app/graphql"
@@ -451,7 +453,34 @@ func (c *Client) ProbeQuota(ctx context.Context) error {
 	return c.do(ctx, "query QuotaProbe { viewer { id } }", nil, &out)
 }
 
-func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) error {
+var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)`)
+
+func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (err error) {
+	started := time.Now()
+	operation := ""
+	if match := operationName.FindStringSubmatch(query); len(match) > 1 {
+		operation = match[1]
+	}
+	var response *http.Response
+	rateLimited, transportFailed := false, false
+	defer func() {
+		status, complexity, remaining := 0, "", ""
+		if response != nil && !transportFailed {
+			status = response.StatusCode
+			complexity = response.Header.Get("X-Complexity")
+			remaining = response.Header.Get("X-RateLimit-Requests-Remaining")
+		}
+		attrs := []any{"operation", operation, "status", status, "duration", time.Since(started),
+			"X-Complexity", complexity, "X-RateLimit-Requests-Remaining", remaining, "rate_limited", rateLimited}
+		if transportFailed {
+			attrs = append(attrs, "error", "transport failed")
+		}
+		level := slog.LevelInfo
+		if err != nil || rateLimited {
+			level = slog.LevelWarn
+		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "Linear request", attrs...)
+	}()
 	body, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return protocolError()
@@ -462,9 +491,10 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	}
 	req.Header.Set("Authorization", c.key)
 	req.Header.Set("Content-Type", "application/json")
-	response, err := c.http.Do(req)
+	response, err = c.http.Do(req)
 	c.record(response)
 	if err != nil {
+		transportFailed = true
 		// Classify before discarding transport errors, which can contain URLs or keys.
 		classified := infra.Classify(err)
 		safe := errors.New("linear transport failed")
@@ -493,6 +523,7 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	decodeErr := json.Unmarshal(raw, &envelope)
 	for _, e := range envelope.Errors {
 		if e.Extensions.Code == "RATELIMITED" {
+			rateLimited = true
 			return &infra.Global{Dep: infra.Linear, Err: errors.New("linear rate limited")}
 		}
 	}

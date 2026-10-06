@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -110,7 +111,18 @@ func safeError(err error) error {
 	return infra.Classify(errors.New("GitHub request failed"))
 }
 
-func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
+func (c *Client) request(ctx context.Context, method, path string, input, output any) (err error) {
+	started := time.Now()
+	status, requestID := 0, ""
+	logPath, _, _ := strings.Cut(path, "?")
+	defer func() {
+		level := slog.LevelInfo
+		if err != nil {
+			level = slog.LevelWarn
+		}
+		runx.LoggerFrom(ctx).Log(ctx, level, "GitHub request", "method", method, "path", logPath,
+			"status", status, "duration", time.Since(started), "X-GitHub-Request-Id", requestID)
+	}()
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	token, err := c.token(ctx)
@@ -167,6 +179,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	if err != nil {
 		return safeError(err)
 	}
+	status, requestID = resp.StatusCode, resp.Header.Get("X-GitHub-Request-Id")
 	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	var body []byte
 	if resp.StatusCode == http.StatusNotModified && method == http.MethodGet && hasCache {

@@ -94,3 +94,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 `usage.Collect(ctx, ticket, worktrees, attribution...)` 保留既有调用签名与账本契约，最后一个可选 `Options` 仅补充 reviewer/coordinator 归属和会话根目录；不再保留旧 `CollectItems` 路径。
 
 命令在当前仓库执行 `git worktree list --porcelain -z`，按 NUL 分隔读取 `worktree <路径>` 字段，保留路径中的空格、换行与非 ASCII 字符，仅选目录名以 `<票号>-` 开头的单元 worktree（例如 `ZII-894-executor`）；沿用命令的 30 秒 context 超时，不依赖 Orca API。Git 枚举失败时保留错误原因并退出 1；没有匹配且未显式指定 reviewer/coordinator 时返回带票号、价格版本和空分项的结果。`TestDiscoverUsageWorktrees` 使用临时 Git 仓库及两个不同票号的 worktree 验证筛选，JSON 命令测试继续注入 worktree 列表验证输出协议。
+## 外部调用日志（ZII-900）
+
+- `runx.WithLogger(ctx, logger)` 向 runx、Linear、GitHub、Orca 传递可选 logger；所有记录经过 `logx` 脱敏处理器。未传或传 nil 时静默，日志写失败不改变调用结果。serve（非 dry-run）与 exec 将已有日志 sink 接入 context。
+- runx 每次记录 executable、脱敏 args、exit_code、duration、stderr（脱敏后最多 2048 字节，UTF-8 完整）与 timed_out；成功也记录 stderr，启动失败为 -1。诊断采集保留最多首尾各 32 KiB，与 exec.Output 的退出错误诊断保持一致；Orca 同时记录进程诊断与业务回执。
+- 自由文本选项（objective/spec/setup/text/comment/command/body/title）、凭据选项、Authorization 头及 URL 用户信息不写入日志。Linear 不记录查询正文、变量或授权头；记录 operation/status/duration/X-Complexity/X-RateLimit-Requests-Remaining，RATELIMITED 为 WARN。GitHub 记录接口（去除 query）、状态、耗时及 X-GitHub-Request-Id；Orca 写操作使用重试 UUID，读操作使用回执 id。
+- `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
+- 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
