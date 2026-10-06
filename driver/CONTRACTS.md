@@ -21,6 +21,7 @@
 | `orca worktree set` 成功回执带 `result.worktree`；选择器不匹配时拒绝码为 `selector_not_found` | `orca-worktree-set.json`、`orca-worktree-set-not-found.json` | `orca.TestRecordedWorktreeSet` |
 | 在已有 worktree 上 `worker-start` 等 agent 就绪可超过 30 秒（实测 38 秒）；驱动器的调用超时必须长于传给 Orca 的 `--timeout-ms` | `request-show` 实测（ZII-897 第 3 次 correction） | `orca.TestCommands`、`orca.TestFailedStartRetry` 断言 `--timeout-ms` |
 | Linear `issueUpdate` 移除票上没有的标签时拒绝整个更新（`Label not on issue`，INPUT_ERROR）；`UpdateIssue` 先读当前标签，只加缺少的、只删存在的 | `linear-remove-absent-label.json` | `linear.TestRecordedRemoveAbsentLabel` |
+| 探测额度只需一次 `query { viewer { id } }`：响应头 `x-ratelimit-requests-limit/remaining/reset` 反映当前预算（Reset 是滑动窗口，约为现在加一小时，不是预算回满的时刻）；样本里 viewer id 已替换为全零 | `linear-viewer-probe.json`、`linear-response-headers.txt` | `linear.TestRecordedQuotaProbe`、`scheduler.TestQuotaPauseProbesWithoutSnapshotAndResumesWithHysteresis` |
 | GitHub PR：`state`、`merged`、`mergeable_state`（合并后为 `unknown`）、`merge_commit_sha`（squash 后即 main 上的提交）；`compare/<base>...<head>` 的 `behind_by`、`merge_base_commit.sha` 与 `files`（最多 300，不标截断）；本仓库 CI 只有 GitGuardian 一个 check-run，旧式 commit status 为空且显示 `pending`，CI 只看 check-runs | `github-pr-open-clean.json`、`github-pr-merged.json`、`github-compare-*.json`、`github-commit-main.json`、`github-check-runs-gitguardian.json` | `github.TestRecordedMergeLaneReads`，`driver selftest --live` |
 | squash 时 `sha` 与 PR head 不符返回 409 `Head branch was modified`，不合并；草稿 PR 返回 405 | `github-merge-head-modified-409.json` | `github.TestRecordedMergeHeadModified` |
 
