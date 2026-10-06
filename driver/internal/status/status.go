@@ -100,6 +100,8 @@ func Write(snapshot Snapshot) error {
 // DefaultStaleAfter tolerates ten missed 30-second serve snapshots.
 const DefaultStaleAfter = 5 * time.Minute
 
+// View.GeneratedAt records the last successful full scheduler observation.
+// Partial writes retain it; zero means no scheduler observation is available.
 type View struct {
 	State       string      `json:"state"`
 	GeneratedAt time.Time   `json:"generatedAt"`
@@ -119,6 +121,18 @@ type GlobalPause struct {
 func Read(now time.Time, staleAfter time.Duration) View {
 	if staleAfter <= 0 {
 		staleAfter = DefaultStaleAfter
+	}
+	// The pushed view has exactly the public JSON shape. Legacy observation
+	// caches remain readable for callers that explicitly select their old path.
+	if os.Getenv("DRIVER_STATUS_FILE") == "" {
+		if data, err := os.ReadFile(PushPath()); err == nil {
+			var view View
+			if json.Unmarshal(data, &view) == nil && (!view.GeneratedAt.IsZero() || view.State == "unknown") {
+				normalize(&view, now)
+				view.State = observationState(view.GeneratedAt, now, staleAfter)
+				return view
+			}
+		}
 	}
 	hour := now.UTC().Truncate(time.Hour)
 	view := View{State: "unknown", Tickets: []Ticket{}, Linear: Usage{Hour: hour, Limits: []ClientLimits{}}}

@@ -25,7 +25,7 @@ func TestWaitAcceptsTaskWithoutDispatchID(t *testing.T) {
 		t.Fatal("wait polled again instead of reading the settled task")
 		return nil
 	}}
-	report, err := e.wait(context.Background(), "run_one", "task_one", "ctx_one", time.Millisecond, func() error { return nil })
+	report, err := e.wait(context.Background(), "run_one", "task_one", "ctx_one", time.Millisecond, &workerWatch{}, func() error { return nil })
 	if err != nil || report == nil || report.Outcome != "succeeded" {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}

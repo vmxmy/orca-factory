@@ -7,6 +7,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 func (e *Executor) backoff(ctx context.Context, n int) error {
@@ -24,6 +25,9 @@ func (e *Executor) backoff(ctx context.Context, n int) error {
 	return wait(ctx, delay)
 }
 func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, evidence string) error {
+	status.Push(e.Now(), func(view *status.View) {
+		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
+	})
 	if _, err := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 		return errors.New("human handoff labels failed")
 	}
@@ -51,7 +55,7 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 		if stop := dependencyStop(ctx, err); stop != nil {
 			return stop
 		}
-		next, _, stepErr := machine.Step(result.State, machine.EvInfraFailure, machine.DefaultLimits)
+		next, _, stepErr := e.step(result.State, machine.EvInfraFailure)
 		if stepErr != nil {
 			return stepErr
 		}
