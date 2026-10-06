@@ -4,6 +4,7 @@ package runx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -32,12 +33,13 @@ func (e *commandError) Unwrap() error { return e.cause }
 func Run(ctx context.Context, spec Spec) (output []byte, err error) {
 	started := time.Now()
 	var exit *exec.ExitError
+	var captured stderrBuffer
 	defer func() {
-		code, stderr, level := 0, "", slog.LevelInfo
+		code, stderr, level := 0, string(captured.Bytes()), slog.LevelInfo
 		if err != nil {
 			code, level = -1, slog.LevelWarn
 			if exit != nil {
-				code, stderr = exit.ExitCode(), string(exit.Stderr)
+				code = exit.ExitCode()
 			}
 		}
 		LoggerFrom(ctx).Log(ctx, level, "external command", "executable", filepath.Base(spec.Path),
@@ -52,6 +54,7 @@ func Run(ctx context.Context, spec Spec) (output []byte, err error) {
 	cmd := exec.CommandContext(ctx, spec.Path, spec.Args...)
 	cmd.Dir = spec.Dir
 	cmd.Env = spec.Env
+	cmd.Stderr = &captured
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -62,7 +65,9 @@ func Run(ctx context.Context, spec Spec) (output []byte, err error) {
 	}
 	cmd.WaitDelay = 100 * time.Millisecond
 	output, err = cmd.Output()
-	errors.As(err, &exit)
+	if errors.As(err, &exit) {
+		exit.Stderr = captured.Bytes()
+	}
 	if ctx.Err() != nil {
 		return output, ctx.Err()
 	}
@@ -87,4 +92,36 @@ func OrcaPath() (string, error) {
 		return "", errors.New("orca binary path must be absolute")
 	}
 	return filepath.Clean(path), nil
+}
+
+// Match exec.Output's bounded prefix/suffix diagnostics, also on success.
+// Retain the tail for callers that classify errors from stderr.
+type stderrBuffer struct {
+	prefix, suffix []byte
+	total          int
+}
+
+func (b *stderrBuffer) Write(p []byte) (int, error) {
+	const half = 32 << 10
+	n := len(p)
+	b.total += n
+	take := min(half-len(b.prefix), len(p))
+	b.prefix = append(b.prefix, p[:take]...)
+	p = p[take:]
+	if len(p) >= half {
+		b.suffix = append(b.suffix[:0], p[len(p)-half:]...)
+	} else {
+		if len(b.suffix)+len(p) > half {
+			b.suffix = b.suffix[len(b.suffix)+len(p)-half:]
+		}
+		b.suffix = append(b.suffix, p...)
+	}
+	return n, nil
+}
+func (b *stderrBuffer) Bytes() []byte {
+	out := append([]byte(nil), b.prefix...)
+	if omitted := b.total - len(b.prefix) - len(b.suffix); omitted > 0 {
+		out = fmt.Appendf(out, "\n... omitting %d bytes ...\n", omitted)
+	}
+	return append(out, b.suffix...)
 }

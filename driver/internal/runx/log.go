@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/vmxmy/orca-factory/driver/internal/logx"
 )
 
 type loggerKey struct{}
@@ -15,7 +17,7 @@ var discardLogger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 
 // WithLogger attaches the logger used by external calls. Nil disables logging.
 func WithLogger(ctx context.Context, logger *slog.Logger) context.Context {
-	return context.WithValue(ctx, loggerKey{}, logger)
+	return context.WithValue(ctx, loggerKey{}, logx.Redact(logger))
 }
 
 // LoggerFrom returns a silent logger when none was supplied.
@@ -26,6 +28,7 @@ func LoggerFrom(ctx context.Context) *slog.Logger {
 	return discardLogger
 }
 
+var authorizationText = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?[^\s"'<>]+`)
 var credentialText = regexp.MustCompile(`(?i)\b(?:ghp_|github_pat_|lin_api_)[^\s"'<>]+|Bearer\s+[^\s"'<>]+`)
 var credentialFlag = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s]+)`)
 var urlCredentials = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
@@ -35,6 +38,11 @@ func sensitiveFlag(flag string) bool {
 		return false
 	}
 	flag = strings.ToLower(flag)
+	// Free text may contain credentials or private ticket/terminal content.
+	switch flag {
+	case "--objective", "--spec", "--setup", "--text", "--comment", "--command", "--body", "--title":
+		return true
+	}
 	for _, word := range []string{"token", "key", "secret", "password", "authorization"} {
 		if strings.Contains(flag, word) {
 			return true
@@ -44,6 +52,7 @@ func sensitiveFlag(flag string) bool {
 }
 
 func redactText(text string) string {
+	text = authorizationText.ReplaceAllString(text, "${1}[REDACTED]")
 	text = credentialFlag.ReplaceAllString(text, "${1}=[REDACTED]")
 	text = credentialText.ReplaceAllString(text, "[REDACTED]")
 	return urlCredentials.ReplaceAllString(text, "${1}")
@@ -85,7 +94,7 @@ func redactStderr(stderr string, args []string) string {
 			stderr = strings.ReplaceAll(stderr, value, "[REDACTED]")
 		}
 	}
-	stderr = strings.ToValidUTF8(redactText(stderr), "")
+	stderr = strings.ToValidUTF8(logx.RedactText(redactText(stderr)), "")
 	if len(stderr) > 2048 {
 		end := 2048
 		for !utf8.RuneStart(stderr[end]) {

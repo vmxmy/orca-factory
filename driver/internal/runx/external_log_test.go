@@ -21,6 +21,7 @@ func TestExternalCallLog(t *testing.T) {
 		timedOut     bool
 	}{
 		{"failure", "echo boom-stderr >&2; exit 7", []string{"--token=ghp_SECRET123"}, time.Second, 7, false},
+		{"redacted limit", "i=0; while [ $i -lt 500 ]; do printf 'gho_x ' >&2; i=$((i+1)); done; exit 1", nil, time.Second, 1, false},
 		{"truncate", "i=0; while [ $i -lt 2500 ]; do printf '界' >&2; i=$((i+1)); done; exit 1", nil, time.Second, 1, false},
 		{"timeout", "sleep 5", nil, 50 * time.Millisecond, -1, true},
 		{"credentials", "echo 'ghp_SECRET123 lin_api_SECRET github_pat_SECRET Bearer PRIVATE --password=PASSWORD https://user:pass@example.com' >&2; exit 7", []string{"--api-key", "PRIVATEKEY", "--secret=SECRET", "--password", "PASSWORD", "--authorization", "Bearer PRIVATE", "https://user:pass@example.com"}, time.Second, 7, false},
@@ -75,9 +76,30 @@ func TestExternalCallLog(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		var buf bytes.Buffer
 		ctx := WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)))
-		out, err := Run(ctx, Spec{Path: "/bin/sh", Args: []string{"-c", "printf unchanged"}, Timeout: time.Second})
+		out, err := Run(ctx, Spec{Path: "/bin/sh", Args: []string{"-c", "printf unchanged; echo diagnostic >&2"}, Timeout: time.Second})
+		if !strings.Contains(buf.String(), `"stderr":"diagnostic\n"`) {
+			t.Fatalf("missing successful stderr: %s", &buf)
+		}
 		if err != nil || string(out) != "unchanged" || !strings.Contains(buf.String(), `"exit_code":0`) || !strings.Contains(buf.String(), `"level":"INFO"`) {
 			t.Fatalf("out=%q err=%v log=%q", out, err, buf.String())
 		}
 	})
+}
+
+func TestExternalCallLogUsesLogx(t *testing.T) {
+	var buf bytes.Buffer
+	ctx := WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)))
+	_, err := Run(ctx, Spec{Path: "/bin/sh", Args: []string{"-c", "echo gho_PRIVATE >&2; exit 3"}, Timeout: time.Second})
+	if err == nil || strings.Contains(buf.String(), "gho_PRIVATE") || !strings.Contains(buf.String(), "[REDACTED]") {
+		t.Fatalf("unredacted call: %s", &buf)
+	}
+}
+
+func TestExternalCallLogAuthorization(t *testing.T) {
+	var buf bytes.Buffer
+	ctx := WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&buf, nil)))
+	_, err := Run(ctx, Spec{Path: "/bin/sh", Args: []string{"-c", "echo 'Authorization: Basic dXNlcjpwYXNz' >&2; exit 1", "sh", "-H", "Authorization: Basic dXNlcjpwYXNz"}, Timeout: time.Second})
+	if err == nil || strings.Contains(buf.String(), "dXNlcjpwYXNz") {
+		t.Fatalf("authorization leaked: %s", &buf)
+	}
 }

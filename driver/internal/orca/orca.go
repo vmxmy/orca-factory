@@ -83,8 +83,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if timeout < 0 {
 		return nil, invalid("orca timeout must be positive")
 	}
-	// The Orca receipt log above omits free text and replaces the raw argv log.
-	output, runErr := runx.Run(runx.WithLogger(ctx, nil), runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
+	// runx redacts free-text arguments and records process diagnostics.
+	output, runErr := runx.Run(ctx, runx.Spec{Path: path, Args: append(args, "--json"), Timeout: timeout})
 	if errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) {
 		return nil, infra.Classify(runErr)
 	}
@@ -92,6 +92,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
+		ID     string  `json:"id"`
 		OK     *bool   `json:"ok"`
 		Result Receipt `json:"result"`
 		Error  *struct {
@@ -102,6 +103,9 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	if err := json.Unmarshal(output, &envelope); err != nil || envelope.OK == nil {
 		// Discard parser errors: invalid JSON may contain credentials.
 		return nil, invalid("invalid orca response")
+	}
+	if request == "" && validUUID(envelope.ID) {
+		request = envelope.ID
 	}
 	if !*envelope.OK {
 		if envelope.Error != nil {

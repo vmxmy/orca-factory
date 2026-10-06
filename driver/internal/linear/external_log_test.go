@@ -18,6 +18,10 @@ import (
 
 func TestExternalCallLog(t *testing.T) {
 	t.Setenv("LINEAR_API_KEY", "lin_api_SECRET")
+	headers, err := os.ReadFile("../../testdata/recorded/linear-response-headers.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		name, body string
 		status     int
@@ -32,8 +36,11 @@ func TestExternalCallLog(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("X-Complexity", "42")
-				w.Header().Set("X-RateLimit-Requests-Remaining", "1234")
+				for _, line := range strings.Split(string(headers), "\n")[1:] {
+					if key, value, ok := strings.Cut(line, ":"); ok {
+						w.Header().Set(key, strings.TrimSpace(value))
+					}
+				}
 				w.WriteHeader(tc.status)
 				if _, err := fmt.Fprint(w, tc.body); err != nil {
 					t.Error(err)
@@ -47,7 +54,7 @@ func TestExternalCallLog(t *testing.T) {
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error %v", err)
 			}
-			for _, want := range []string{`"operation":"ListComments"`, fmt.Sprintf(`"status":%d`, tc.status), `"X-Complexity":"42"`, `"X-RateLimit-Requests-Remaining":"1234"`, `"level":"` + tc.level + `"`, `"duration":`} {
+			for _, want := range []string{`"operation":"ListComments"`, fmt.Sprintf(`"status":%d`, tc.status), `"X-Complexity":"1"`, `"X-RateLimit-Requests-Remaining":"76"`, `"level":"` + tc.level + `"`, `"duration":`} {
 				if !strings.Contains(buf.String(), want) {
 					t.Fatalf("missing %s in %s", want, buf.String())
 				}

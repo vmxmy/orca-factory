@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -55,6 +56,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		}
 		return 0, nil
 	}
+	ctx = runx.WithLogger(ctx, logger)
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
 		if err != nil {

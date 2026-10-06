@@ -73,3 +73,11 @@
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
 验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。
+
+## 外部调用日志（ZII-900）
+
+- `runx.WithLogger(ctx, logger)` 向 runx、Linear、GitHub、Orca 传递可选 logger；所有记录经过 `logx` 脱敏处理器。未传或传 nil 时静默，日志写失败不改变调用结果。serve（非 dry-run）与 exec 将已有日志 sink 接入 context。
+- runx 每次记录 executable、脱敏 args、exit_code、duration、stderr（脱敏后最多 2048 字节，UTF-8 完整）与 timed_out；成功也记录 stderr，启动失败为 -1。诊断采集保留最多首尾各 32 KiB，与 exec.Output 的退出错误诊断保持一致；Orca 同时记录进程诊断与业务回执。
+- 自由文本选项（objective/spec/setup/text/comment/command/body/title）、凭据选项、Authorization 头及 URL 用户信息不写入日志。Linear 不记录查询正文、变量或授权头；记录 operation/status/duration/X-Complexity/X-RateLimit-Requests-Remaining，RATELIMITED 为 WARN。GitHub 记录接口（去除 query）、状态、耗时及 X-GitHub-Request-Id；Orca 写操作使用重试 UUID，读操作使用回执 id。
+- `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
+- 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
