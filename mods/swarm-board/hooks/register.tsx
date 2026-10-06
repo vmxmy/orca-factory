@@ -857,7 +857,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     const missingParents = snapshot!.issues.some(row => row.parent === undefined)
     graphNotice = missingParents || !snapshot!.blockedBy ? '数据不全：快照缺少父票或阻塞关系' : ''
   } else if (await read($, view) === 'graph') {
-    const cached = await readGraphSnapshot(now, $, { team: env.AGENT_LINEAR_TEAM, project: env.AGENT_LINEAR_PROJECT, tmpDir: TMP_DIR || '/tmp' })
+    const cached = await readGraphSnapshot(now, { process: { run: (argv, options) => $.process.run(argv, options) }, fs: {} }, { team: env.AGENT_LINEAR_TEAM, project: env.AGENT_LINEAR_PROJECT, tmpDir: TMP_DIR || '/tmp' })
     graph = buildGraph(cached)
     graphNotice = [cached.stale ? '缓存过期，沿用上次数据' : '', cached.incomplete.length ? '数据不全：' + cached.incomplete.join('、') : ''].filter(Boolean).join(' · ')
   } else if (graph) graphNotice = '缓存过期；打开依赖视图后刷新'
@@ -1458,7 +1458,7 @@ export const register: Register = on => {
         <Box flexDirection="row" gap={2} marginBottom={1}>
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
-          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await manualRefresh($, handoffs) }} />
+          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await tick($, handoffs) }} />
           <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={() => update($, view, () => 'throughput')} />
           <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={() => update($, view, () => 'failures')} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
