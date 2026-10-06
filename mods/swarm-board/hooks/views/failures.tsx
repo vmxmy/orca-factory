@@ -64,13 +64,13 @@ export const buildFailures = (input: FailureInput = {}): FailureView => {
   for (const comments of Object.values(input.comments ?? {})) {
     for (const comment of comments) {
       const body = typeof comment === 'string' ? comment : comment.body
-      const reason = body.match(/^FAIL:.*?\|\s*reason=([^|]+?)\s*\|/m)?.[1].trim()
+      const reason = body.match(/^FAIL:.*?\|\s*reason=([^|\r\n]+?)(?:\s*\||$)/m)?.[1].trim()
       if (reason) fails.set(reason, (fails.get(reason) ?? 0) + 1)
 
       const createdAt = typeof comment === 'string' || !comment.createdAt
         ? NaN : Date.parse(comment.createdAt)
-      if (Number.isFinite(createdAt)
-        && (createdAt < now - HANDOFF_WINDOW_MS || createdAt > now)) continue
+      if (!Number.isFinite(createdAt)
+        || createdAt < now - HANDOFF_WINDOW_MS || createdAt > now) continue
       for (const line of body.split(/\r?\n/)) {
         if (!line.startsWith('转人:')) continue
         const handoffReason = line.slice('转人:'.length).trim()
