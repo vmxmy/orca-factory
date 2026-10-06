@@ -593,6 +593,8 @@ const snapshotFixture = async (
   on: any,
   opts: {
     generatedAtOffsetMs?: number
+    liveIssues?: { identifier: string; title: string; state: { type: string }; parent: null }[]
+    liveComments?: Record<string, unknown[]>
     issues?: unknown[]
     comments?: Record<string, unknown[]>
     blockedBy?: Record<string, string[]>
@@ -627,11 +629,12 @@ const snapshotFixture = async (
     }
     if (e.argv[0] === 'orca' && e.argv[1] === 'linear') orcaLinearCalls++
     if (e.argv[0] === 'orca' && e.argv[1] === 'linear' && e.argv[2] === 'list-issues') {
-      return { value: { stdout: JSON.stringify({ ok: true, result: { issues: opts.issues ?? [] } }), stderr: '', exitCode: 0 } }
+      return { value: { stdout: JSON.stringify({ ok: true, result: { issues: opts.liveIssues ?? opts.issues ?? [] } }), stderr: '', exitCode: 0 } }
     }
     if (e.argv[0] === 'orca' && e.argv[1] === 'linear' && e.argv[2] === 'issue') {
       const id = e.argv[3]
-      return { value: { stdout: JSON.stringify({ result: { comments: opts.comments?.[id] ?? [] } }), stderr: '', exitCode: 0 } }
+      const issue = opts.liveIssues?.find(row => row.identifier === id)
+      return { value: { stdout: JSON.stringify({ result: { issue, children: [], relations: [], comments: opts.liveComments?.[id] ?? opts.comments?.[id] ?? [] } }), stderr: '', exitCode: 0 } }
     }
     return { value: { stdout: JSON.stringify({ ok: true, result: {} }), stderr: '', exitCode: 0 } }
   })
@@ -914,6 +917,7 @@ const snapshotWatchFixture = async ($: any, on: any) => {
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory\nAGENT_MAX_IN_FLIGHT=10' }
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'git' && e.argv[1] === 'worktree') return { value: { stdout: 'worktree /repo\0HEAD abc\0\0', stderr: '', exitCode: 0 } }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('XDG_RUNTIME_DIR')) return { value: { stdout: '/runtime/orca-factory/status.json', stderr: '', exitCode: 0 } }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) {
       return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
@@ -974,13 +978,13 @@ test('closing the swarm pane stops snapshot stats and reads', async ($, on) => {
   expect(f.reads).toEqual([])
 })
 
-const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, missing = false) => {
+const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, missing = false, knownDependencies = true) => {
   let refreshed = () => {}
   mock.clock(on)
   on('ui.open', () => ({ value: undefined }))
   on('ui.status', () => { refreshed(); return { value: undefined } })
   on('fs.read', (_: unknown, e: { path: string }) => {
-    if (e.path === '/tmp/orca-factory-linear-snapshot.json') return { value: JSON.stringify({ generatedAt: Date.now() / 1000, issues: [queueIssue('ZII-888'), queueIssue('ZII-889')], comments: {}, blockedBy: { 'ZII-889': ['ZII-777'] } }) }
+    if (e.path === '/tmp/orca-factory-linear-snapshot.json') return { value: JSON.stringify({ generatedAt: Date.now() / 1000, issues: [queueIssue('ZII-888'), queueIssue('ZII-889')], comments: {}, blockedBy: { ...(knownDependencies ? { 'ZII-888': [] } : {}), 'ZII-889': ['ZII-777'] } }) }
     if (e.path === '/runtime/orca-factory/status.json') {
       if (missing || exitCode) throw new Error('ENOENT')
       return { value: stdout }
@@ -989,6 +993,7 @@ const driverFixture = async ($: any, on: any, stdout: string, exitCode = 0, miss
     return { value: 'AGENT_GH_REPO=owner/test-repo\nAGENT_LINEAR_TEAM=ZII\nAGENT_LINEAR_PROJECT=Factory' }
   })
   on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'git' && e.argv[1] === 'worktree') return { value: { stdout: 'worktree /repo\0HEAD abc\0\0', stderr: '', exitCode: 0 } }
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('AGENT_SNAPSHOT_FILE')) return { value: { stdout: '/tmp/orca-factory-linear-snapshot.json', stderr: '', exitCode: 0 } }
     if (e.argv[0] === 'orca-factory-driver') throw new Error('board must not execute driver')
     if (e.argv[0] === 'sh' && e.argv[2]?.includes('XDG_RUNTIME_DIR')) return { value: { stdout: '/runtime/orca-factory/status.json', stderr: '', exitCode: 0 } }
@@ -1147,5 +1152,49 @@ test('live ticket session usage reaches lanes, detail and overview with mtime ca
   expect(await ui.find({ type: 'Text', text: /token 99k.*est\. \$0\.35/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /今日按 API 价折算 \$0\.35/ })).toBeDefined()
   expect(f.orcaLinearCalls()).toBe(0)
+  await ui.unmount()
+})
+
+
+test('explicit metrics tabs fill production snapshot gaps once per cache window', async ($, on) => {
+  const fixture = await snapshotFixture($, on, {
+    issues: [], comments: {},
+    liveIssues: [{ identifier: 'ZII-L', title: '[ledger] agent-graph', state: { type: 'unstarted' }, parent: null }],
+    liveComments: { 'ZII-L': [{ createdAt: new Date().toISOString(), body: 'ledger ' + JSON.stringify({ ticket: 'ZII-42', corrections: 4, stage_secs: { worker: 37 } }) }] },
+  })
+  expect(fixture.orcaLinearCalls()).toBe(0)
+  const ui = await mount($, 'terminal')
+  await ui.press({ key: 'view-throughput' }); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /worker p50\/p90：37 \/ 37 秒/ })).toBeDefined()
+  const afterLedger = fixture.orcaLinearCalls()
+  expect(afterLedger).toBeGreaterThan(0)
+  await ui.press({ key: 'view-failures' }); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /ZII-42: 4/ })).toBeDefined()
+  expect(fixture.orcaLinearCalls()).toBe(afterLedger)
+  await ui.press({ key: 'view-graph' }); await ui.redraw()
+  expect(await ui.find({ type: 'Text', text: /关键路径：ZII-L/ })).toBeDefined()
+  const afterGraph = fixture.orcaLinearCalls()
+  expect(afterGraph).toBeGreaterThan(afterLedger)
+  await ui.press({ key: 'view-graph' }); await ui.redraw()
+  expect(fixture.orcaLinearCalls()).toBe(afterGraph)
+  await ui.unmount()
+})
+
+
+test('machine-wide status overlays only the current repository', async ($, on) => {
+  await driverFixture($, on, JSON.stringify({ state: 'ok', generatedAt: new Date().toISOString(), tickets: [
+    { repo: '/repo', identifier: 'ZII-777', owner: '执行器', phase: 'gate' },
+    { repo: '/other-repo', identifier: 'OTHER-99', owner: '执行器', phase: 'gate' },
+  ], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }))
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /OTHER-99/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /驱动器.*在做 1/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('online driver cannot prove an unread dependency list is claimable', async ($, on) => {
+  await driverFixture($, on, JSON.stringify({ state: 'ok', generatedAt: new Date().toISOString(), tickets: [], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }), 0, false, false)
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /驱动器下一轮巡检领取/ })).toBeUndefined()
   await ui.unmount()
 })

@@ -55,3 +55,42 @@ test('ledger with an unknown model does not present zero as a known price', () =
   expect(u?.known).toBe(false)
   expect(u?.partial).toBe(true)
 })
+
+
+test('batched ledger comments retain accounting for each ticket', () => {
+  const rows = ledgerUsage([{ body: 'ledger {"ticket":"A","minutes":2}\nledger bad\nledger {"ticket":"B","minutes":3}' }])
+  expect(rows.A?.minutes).toBe(2)
+  expect(rows.B?.minutes).toBe(3)
+})
+
+test('Codex model switches preserve known model cost and cumulative totals', () => {
+  const rows = parseSession([
+    { type: 'session_meta', payload: { cwd: '/w' } },
+    { type: 'turn_context', payload: { model: 'gpt-5' } },
+    { payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 20, output_tokens: 10 } } } },
+    { type: 'turn_context', payload: { model: 'future-model' } },
+    { payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 400, cached_input_tokens: 100, output_tokens: 80 } } } },
+  ].map(JSON.stringify).join('\n'), 'codex')
+  const u = aggregateUsage(rows, { '/w': 'A' }).A
+  expect(rows.length).toBe(2)
+  expect(u.total).toBe(480)
+  expect(u.known).toBe(true)
+  expect(u.partial).toBe(true)
+  expect(Math.round(u.usd * 1e7)).toBe(2025)
+})
+
+
+test('regressing Codex cumulative counters do not manufacture extra usage', () => {
+  const text = [
+    { type: 'session_meta', payload: { cwd: '/w' } },
+    ...[100, 50].map(input_tokens => ({ payload: { type: 'token_count', info: { total_token_usage: { input_tokens } } } })),
+  ].map(JSON.stringify).join('\n')
+  expect(() => parseSession(text, 'codex')).toThrow()
+})
+
+
+test('Codex cache writes follow the recorded driver field without double counting input', () => {
+  const rows = parseSession(JSON.stringify({ cwd: '/w', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: 100, cached_input_tokens: 20, cache_write_input_tokens: 10, output_tokens: 10 } } } }), 'codex')
+  expect(rows[0].input).toBe(70)
+  expect(rows[0].cacheWrite).toBe(10)
+})

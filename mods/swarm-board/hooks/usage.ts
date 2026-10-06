@@ -47,7 +47,9 @@ export function aggregateUsage(records: readonly UsageRecord[], worktreeToTicket
 /** Parse complete JSONL rows only: a running session may end with an incomplete row. */
 export function parseSession(text: string, kind: 'claude' | 'codex', fallbackCwd = ''): UsageRecord[] {
   const messages = new Map<string, UsageRecord>()
-  let cwd = fallbackCwd, model = '', last: UsageRecord | undefined
+  let cwd = fallbackCwd, model = ''
+  let previous = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+  const modelRows = new Map<string, UsageRecord>()
   for (const [index, line] of text.split('\n').entries()) {
     if (!line.trim()) continue
     let row: Record<string, unknown>
@@ -61,7 +63,19 @@ export function parseSession(text: string, kind: 'claude' | 'codex', fallbackCwd
       const info = object(payload.info), usage = object(info.total_token_usage)
       if (!Object.keys(usage).length) continue
       const cached = count(usage.cached_input_tokens)
-      last = { cwd, model, input: Math.max(0, count(usage.input_tokens) - cached), output: count(usage.output_tokens), cacheRead: cached, cacheWrite: 0, reasoning: count(usage.reasoning_output_tokens) }
+      const written = count(usage.cache_write_input_tokens)
+      const current = { input: Math.max(0, count(usage.input_tokens) - cached - written), output: count(usage.output_tokens), cacheRead: cached, cacheWrite: written, reasoning: count(usage.reasoning_output_tokens) }
+      const contribution = modelRows.get(model) ?? { cwd, model, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }
+      let changed = false
+      for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'reasoning'] as const) {
+        const delta = current[key] - previous[key]
+        if (delta < 0) throw new Error('Codex 累计用量倒退，无法可靠估价')
+        changed ||= delta > 0
+        contribution[key] = (contribution[key] ?? 0) + delta
+      }
+      if (current.reasoning - previous.reasoning > current.output - previous.output) throw new Error('Codex 推理用量超出输出，无法可靠估价')
+      if (changed) modelRows.set(model, contribution)
+      previous = current
     } else {
       const message = object(row.message), usage = object(message.usage)
       if (!Object.keys(usage).length) continue
@@ -70,7 +84,7 @@ export function parseSession(text: string, kind: 'claude' | 'codex', fallbackCwd
       messages.set(key, { cwd, model: String(message.model ?? ''), input: count(usage.input_tokens), output: count(usage.output_tokens), cacheRead: count(usage.cache_read_input_tokens), cacheWrite: count(usage.cache_creation_input_tokens), cacheWriteHour: count(object(usage.cache_creation).ephemeral_1h_input_tokens) })
     }
   }
-  return kind === 'codex' ? (last ? [last] : []) : [...messages.values()]
+  return kind === 'codex' ? [...modelRows.values()] : [...messages.values()]
 }
 
 export type UsageIO = {
@@ -105,7 +119,7 @@ export type LedgerUsage = { minutes?: number; usage?: TicketUsage }
 /** Latest run per ticket; duplicate ledger comments do not double-count a completed run. */
 export function ledgerUsage(comments: readonly { body: string }[]): Record<string, LedgerUsage> {
   const result: Record<string, LedgerUsage> = {}, latest: Record<string, string> = {}
-  for (const { body } of comments) {
+  for (const comment of comments) for (const body of comment.body.split(/\r?\n/)) {
     if (!body.startsWith('ledger ')) continue
     let row: Record<string, unknown>
     try { row = object(JSON.parse(body.slice(7))) } catch { continue /* invalid ledger comment */ }

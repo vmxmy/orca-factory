@@ -19,7 +19,7 @@ import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, 
 
 type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[] }
+type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[]; repositoryPaths?: string[] }
 
 
 type Agent = BaseAgent & { requiresAction?: boolean }
@@ -496,6 +496,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
   const env = parseEnv(text)
+  const activeView = await read($, view)
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
@@ -531,6 +532,9 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     if (d && typeof d === 'object' && 'ok' in d && d.ok === false) return { ok: false, data: d }
     return { ok: true, data: d }
   }
+  const repositoryList = await run(['git', 'worktree', 'list', '--porcelain', '-z'])
+  const discoveredPaths = repositoryList.split('\0').filter(field => field.startsWith('worktree ')).map(field => field.slice(9))
+  const repositoryPaths = discoveredPaths.length ? discoveredPaths : old.repositoryPaths ?? []
   const has = (t: Ticket, l: string) => t.labels.includes(l)
 
   // Three paths feed `all`: (a) a fresh snapshot — reuse its issues, no live Linear call;
@@ -796,16 +800,22 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const localLedgerComments = useSnapshot ? Object.values(snapshot!.comments).flat().filter(c => c.body.startsWith('ledger ')) : []
   if (localLedgerComments.length) {
     ticketLedgerCache = { at: now, rows: ledgerUsage(localLedgerComments), comments: localLedgerComments }
-  } else if (!useSnapshot && !linearThrottled && (doneToday.length > 0 || failed.length > 0)
-      && (!ticketLedgerCache || now - ticketLedgerCache.at >= LEDGER_TTL_MS)) {
-    let ledger = all.find(t => t.title === '[ledger] agent-graph')?.id
-    if (!ledger) {
-      const found = await runJson(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
-      const issue = found?.result?.issues?.find((t: { title: string }) => t.title === '[ledger] agent-graph')
-      ledger = issue?.identifier ?? issue?.id
+  } else if (((!useSnapshot && !linearThrottled && (doneToday.length > 0 || failed.length > 0))
+      || activeView === 'throughput' || activeView === 'failures')
+      && (!ticketLedgerCache || now - ticketLedgerCache.at >= LINEAR_FALLBACK_THROTTLE_MS)) {
+    // Supplemental view data is not part of the production precheck snapshot.
+    // At most one discovery plus three ledger reads per five-minute window.
+    const found = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
+    const candidates = found.ok && Array.isArray(found.data?.result?.issues)
+      ? found.data.result.issues.filter((row: { title: string }) => /^\[ledger\] agent-graph(?: #\d+)?$/.test(row.title)).slice(0, 3) : null
+    let comments: ReturnType<typeof deepComments> = []
+    let complete = candidates !== null
+    for (const candidate of candidates ?? []) {
+      const response = await runOrca(['orca', 'linear', 'issue', candidate.identifier ?? candidate.id, '--comments', '--json'])
+      if (!response.ok) { complete = false; break }
+      comments.push(...deepComments(response.data))
     }
-    const response = ledger ? await runOrca(['orca', 'linear', 'issue', ledger, '--comments', '--json']) : undefined
-    const comments = response?.ok ? deepComments(response.data) : ticketLedgerCache?.comments ?? []
+    if (!complete) comments = ticketLedgerCache?.comments ?? []
     ticketLedgerCache = { at: now, rows: ledgerUsage(comments), comments }
   }
   let todayCost = 0
@@ -856,16 +866,17 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     graph = buildGraph({ issues })
     const missingParents = snapshot!.issues.some(row => row.parent === undefined)
     graphNotice = missingParents || !snapshot!.blockedBy ? '数据不全：快照缺少父票或阻塞关系' : ''
-  } else if (await read($, view) === 'graph') {
+  }
+  if (activeView === 'graph' && (!useSnapshot || snapshot!.issues.some(row => row.parent === undefined) || !snapshot!.blockedBy)) {
     const cached = await readGraphSnapshot(now, { process: { run: (argv, options) => $.process.run(argv, options) }, fs: {} }, { team: env.AGENT_LINEAR_TEAM, project: env.AGENT_LINEAR_PROJECT, tmpDir: TMP_DIR || '/tmp' })
-    graph = buildGraph(cached)
+    graph = cached.at > 0 ? buildGraph(cached) : old.graph ?? null
     graphNotice = [cached.stale ? '缓存过期，沿用上次数据' : '', cached.incomplete.length ? '数据不全：' + cached.incomplete.join('、') : ''].filter(Boolean).join(' · ')
-  } else if (graph) graphNotice = '缓存过期；打开依赖视图后刷新'
+  } else if (!useSnapshot && graph) graphNotice = '缓存过期；打开依赖视图后刷新'
   const metricRuns: ThroughputRun[] | undefined = runsResp.ok ? autoRuns.map(run => ({
     ...run, startedAt: run.startedAt ?? run.dispatchedAt ?? run.scheduledFor ?? run.createdAt,
   })) : old.metricRuns
   const ledger = ledgerRows(ticketLedgerCache?.comments ?? [])
-  const throughput = ledger.length ? buildThroughput({ now, ledger, runs: metricRuns ?? [], maxInFlight }) : old.throughput
+  const throughput = ledger.length || metricRuns !== undefined ? buildThroughput({ now, ledger, runs: metricRuns ?? [], maxInFlight }) : old.throughput
   const metricComments = useSnapshot ? snapshot!.comments : Object.fromEntries(commentsByTicket)
   const failures = ledger.length || Object.keys(metricComments).length
     ? buildFailures({ now, ledger, comments: metricComments }) : old.failures
@@ -877,7 +888,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics,
+      snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics, repositoryPaths,
     }
   }
   return {
@@ -885,7 +896,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
-    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics,
+    snapshotAgeMs, linearThrottled: linearThrottled ? true : undefined, blockedBy, issueStates, ...metrics, repositoryPaths,
   }
 }
 
@@ -911,6 +922,7 @@ async function readDriverSnapshot($: any) {
 function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Board {
   if (!driver || driver.state !== 'ok') return { ...b, driver }
   if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
+  driver = { ...driver, tickets: driver.tickets.filter(ticket => b.repositoryPaths?.includes(ticket.repo)) }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
   const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
@@ -1105,14 +1117,14 @@ export const register: Register = on => {
     const issueStates = (b as Board).issueStates
     const blockersOf = (id: string): string[] | undefined => {
       const v = blockedBy?.[id]
-      const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed') : []
+      const open = Array.isArray(v) ? v.filter(x => issueStates?.[x] !== 'completed' && issueStates?.[x] !== 'canceled') : []
       return open.length > 0 ? open : undefined
     }
     // Dependencies take precedence over the online driver and precheck signals.
     type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
     const queueGroupOf = (t: Ticket): QueueGroup => {
       if (blockersOf(t.id)) return 'blocked'
-      if (driverOnline) return 'claimable'
+      if (driverOnline && Array.isArray(blockedBy?.[t.id])) return 'claimable'
       if (!lp) return 'unknown'
       if (lp.claimable.includes(t.id)) return 'claimable'
       if (lp.uncertain) return 'warn'
@@ -1459,8 +1471,8 @@ export const register: Register = on => {
           <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
           <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
           <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await tick($, handoffs) }} />
-          <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={() => update($, view, () => 'throughput')} />
-          <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={() => update($, view, () => 'failures')} />
+          <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={async () => { await update($, view, () => 'throughput'); await tick($, handoffs) }} />
+          <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={async () => { await update($, view, () => 'failures'); await tick($, handoffs) }} />
           <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
           {automation
             ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
