@@ -6,6 +6,11 @@
 
 `driver serve --dry-run` 不合并、不写回、不 fetch；scope 使用已读取的声明。旧票检查若需要 fetch 会打印省略原因并报告等待，不据此推断可以释放或重派。
 
+## 启动检查
+
+- `~/.local/bin/orca-factory-driver status --json`：以 JSON 格式查看当前驱动器状态和票据信息；该检查只读，不写入状态。
+- `~/.local/bin/orca-factory-driver serve --dry-run`：只读模拟一次服务巡检；该检查不合并、不写回、不 fetch。
+
 ## 部署屏障与 Agent 处置
 
 `AGENT_DEPLOY_WORKFLOW` 接受现有 workflow 显示名（含空格），也接受 workflow ID 或文件名。显示名必须唯一；GitHub 读取失败、空集合、截断或未知状态都等待。只观察既有 workflow，不触发部署或发布。`AGENT_SMOKE_CMD` 由 `bash -c` 在仓库目录执行，超时 30 秒；环境提供真实 `AGENT_MERGE_SHA` 与 `AGENT_GH_REPO`。只有 workflow 时仅等待 workflow；只有 smoke 时在确认 squash 后执行；两者都有时 workflow 成功才执行 smoke。无效配置不放行。
@@ -31,14 +36,6 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
-
-## 启动检查
-
-`~/.local/bin/orca-factory-driver status --json`
-只读查看当前票号、queue ID、squash SHA、状态及原因。
-
-`~/.local/bin/orca-factory-driver serve --dry-run`
-只读执行启动前巡检，不合并、不写回、不 fetch、不运行 smoke。
 
 ## 可调参数（driver.toml）
 
