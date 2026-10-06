@@ -16,6 +16,7 @@ import (
 // The ticket state directory is the same durable location as brief.md/gate.spec.
 // Persist association before dispatch: an unknown mutation is never a new worker.
 type checkpoint struct {
+	AgentTerminal                                string `json:",omitempty"`
 	MergeQueue, MergeHead, MergeCause, MergeSpec string `json:",omitempty"`
 	CatchupRounds, Attempt, Infra                int    `json:",omitempty"`
 	Settled                                      bool

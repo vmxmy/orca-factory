@@ -1,0 +1,85 @@
+{
+  "id": "90e28cf1-cb5d-4d8c-a7f1-34ad211490b5",
+  "ok": true,
+  "result": {
+    "runId": "run_1b043fe504f5",
+    "taskId": "task_371a6a210a77",
+    "dispatchId": "ctx_b292fb2364fd",
+    "state": "ready",
+    "stage": "input_accepted",
+    "turnStart": "observed",
+    "setup": {
+      "requested": "not_applicable",
+      "effective": "not_applicable",
+      "source": "existing_worktree",
+      "hookFound": false,
+      "startupPolicy": "start-immediately",
+      "state": "not_applicable"
+    },
+    "launch": {
+      "requested": {
+        "agent": null,
+        "model": null,
+        "effort": null
+      },
+      "effective": {
+        "agent": null,
+        "model": null,
+        "effort": null
+      }
+    },
+    "mode": {
+      "mode": "terminal",
+      "preferred": "terminal",
+      "reason": "user_default",
+      "detail": "Started a terminal agent worker, the default for new agent tabs in your settings."
+    },
+    "timeoutMs": 60000,
+    "effects": [
+      {
+        "kind": "worktree",
+        "action": "reused",
+        "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/ZII-904-executor"
+      },
+      {
+        "kind": "setup",
+        "action": "not_applicable",
+        "state": "not_applicable"
+      },
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "reused",
+        "id": "term_8366b1bf-eb23-46d0-a82c-d4ae2d471bff"
+      },
+      {
+        "kind": "dispatch_input",
+        "role": "agent",
+        "id": "term_8366b1bf-eb23-46d0-a82c-d4ae2d471bff",
+        "state": "accepted"
+      }
+    ],
+    "prompt": {
+      "requestId": "8329549e-866a-4c94-bf45-e1fc4312c22e",
+      "stages": [
+        "input_accepted",
+        "turn_started"
+      ],
+      "provider": "codex",
+      "observation": "supported",
+      "processIncarnation": "0f76ae0d-ac63-4a05-8af0-ebb07841ff01",
+      "generation": 1360,
+      "baselineWorkingSequence": 2,
+      "baselineExplicitWorkingStartedAt": null,
+      "baselinePermissionSequence": 0
+    },
+    "residualResources": [],
+    "mutation": {
+      "requestId": "8329549e-866a-4c94-bf45-e1fc4312c22e",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "c9405aea-70aa-430a-8004-873dc9d9bef1"
+  }
+}

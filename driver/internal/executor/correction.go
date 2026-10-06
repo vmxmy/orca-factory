@@ -94,7 +94,7 @@ func (c *Commands) ChildTask(ctx context.Context, run, parent, spec, request str
 
 type transitionFunc func(machine.Event, func([]machine.Effect) error) error
 
-func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, transition transitionFunc) (bool, error) {
+func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Result, cp *checkpoint, brief, cause, summary string, transition transitionFunc, release func(checkpoint) error) (bool, error) {
 	e.logger().Info("correction", "reason", cause, "fail_summary", summary)
 	var err error
 	brief, err = failHistoryBrief(c, t, brief)
@@ -155,9 +155,22 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			if !hasEffect(fx, "worker-start-child-task-reuse-worktree") {
 				return errors.New("missing correction worker effect")
 			}
+			parent := *cp
 			cp.Corrections = result.State.Corrections
 			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
-			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
+			fresh := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
+			previousTier, _, _, _, err := correctionTier(c, parent.Corrections)
+			if err != nil {
+				return err
+			}
+			opts := fresh
+			if tier == previousTier && cp.Settled && cp.AgentTerminal != "" {
+				opts = orca.StartOptions{Run: result.RunID, Worktree: fresh.Worktree, Terminal: cp.AgentTerminal}
+			} else if err := release(parent); err != nil {
+				return err
+			}
+			fallback := func() (orca.StartOptions, error) { return fresh, release(parent) }
+			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, opts, fallback); err != nil {
 				return err
 			}
 			result.DispatchID = cp.Dispatch
@@ -180,7 +193,7 @@ func correctionTier(c Config, n int) (tier, agent, model, effort string, err err
 		return
 	}
 	agent, model, effort = c.Agent, c.Model, c.Effort
-	if tierEscalation(c) {
+	if tierEscalation(c) && n > 0 {
 		index += n
 		if index > 2 {
 			index = 2

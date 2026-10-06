@@ -96,3 +96,23 @@ func TestRecordedWorkerStop(t *testing.T) {
 		t.Fatalf("state=%q alreadySettled=%v; want a freshly stopped dispatch", state, settled)
 	}
 }
+
+func TestRecordedWorkerStartReuseTerminal(t *testing.T) {
+	for _, name := range []string{"orca-worker-start-reuse-terminal.json", "orca-worker-start-reuse-released.json"} {
+		t.Run(name, func(t *testing.T) {
+			receipt, err := recordedClient(t, name).WorkerStart(context.Background(), firstID, StartOptions{Task: "task_child", Worktree: "path:/recorded/worktree", Terminal: "term_recorded"})
+			if name == "orca-worker-start-reuse-released.json" {
+				var rejection *Rejection
+				if !errors.As(err, &rejection) || rejection.Code != "agent_unconfigured" {
+					t.Fatalf("err=%v; want agent_unconfigured rejection", err)
+				}
+				return
+			}
+			var dispatch string
+			_ = json.Unmarshal(receipt["dispatchId"], &dispatch)
+			if err != nil || dispatch != "ctx_b292fb2364fd" {
+				t.Fatalf("receipt=%v err=%v", receipt, err)
+			}
+		})
+	}
+}

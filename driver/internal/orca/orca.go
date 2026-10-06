@@ -47,6 +47,11 @@ func RequestID(ticket, unit, step string, attempt int) string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:])
 }
 
+// Rejection is a structured Orca refusal, not an uncertain transport result.
+type Rejection struct{ Code string }
+
+func (e *Rejection) Error() string { return "orca command rejected: " + e.Code }
+
 func invalid(message string) error { return &infra.Ticket{Err: errors.New(message)} }
 
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
@@ -122,7 +127,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 			}
 		}
 		if envelope.Error != nil && validCode(envelope.Error.Code) {
-			return envelope.Result, invalid("orca command rejected: " + envelope.Error.Code)
+			return envelope.Result, &infra.Ticket{Err: &Rejection{Code: envelope.Error.Code}}
 		}
 		return envelope.Result, invalid("orca command rejected")
 	}
@@ -177,6 +182,7 @@ func (c *Client) RunUse(ctx context.Context, request, run string) (Receipt, erro
 }
 
 type StartOptions struct {
+	Terminal                                               string
 	Run, Task, Spec, Worktree, Agent, Model, Effort, Setup string
 	Name, Repo, BaseBranch, RetryOf                        string
 }
@@ -191,11 +197,14 @@ func (c *Client) WorkerStart(ctx context.Context, request string, o StartOptions
 	if o.RetryOf != "" && o.Task == "" {
 		return nil, invalid("retry requires task")
 	}
+	if o.Terminal != "" && (o.Agent != "" || o.Model != "" || o.Effort != "") {
+		return nil, invalid("terminal reuse cannot select launch preferences")
+	}
 	if o.Effort != "" && o.Model == "" {
 		return nil, invalid("effort requires model")
 	}
 	args := []string{"orchestration", "worker-start"}
-	for _, pair := range [][2]string{{"--run", o.Run}, {"--task", o.Task}, {"--spec", o.Spec}, {"--worktree", o.Worktree}, {"--agent", o.Agent}, {"--model", o.Model}, {"--effort", o.Effort}, {"--setup", o.Setup}, {"--name", o.Name}, {"--repo", o.Repo}, {"--base-branch", o.BaseBranch}, {"--retry-of", o.RetryOf}} {
+	for _, pair := range [][2]string{{"--run", o.Run}, {"--task", o.Task}, {"--spec", o.Spec}, {"--worktree", o.Worktree}, {"--terminal", o.Terminal}, {"--agent", o.Agent}, {"--model", o.Model}, {"--effort", o.Effort}, {"--setup", o.Setup}, {"--name", o.Name}, {"--repo", o.Repo}, {"--base-branch", o.BaseBranch}, {"--retry-of", o.RetryOf}} {
 		args = add(args, pair[0], pair[1])
 	}
 	// Agent readiness on an existing worktree can exceed the default call
