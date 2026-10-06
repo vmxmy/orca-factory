@@ -25,12 +25,12 @@ func (s *Scheduler) pushTicket(t Ticket, a Action) {
 	switch a.Kind {
 	case Merge:
 		owner = machine.OwnerMerge
-	case Human:
-		owner = machine.OwnerHuman
+	case Resolve:
+		owner = machine.OwnerResolver
 	case Release:
 		owner = machine.OwnerNone
 	}
 	status.Push(s.clock(), func(view *status.View) {
-		status.SetTicket(view, status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(owner), Phase: string(a.Phase)}, owner == machine.OwnerExecutor || owner == machine.OwnerMerge)
+		status.SetTicket(view, status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(owner), Phase: string(a.Phase)}, owner == machine.OwnerExecutor || owner == machine.OwnerMerge || owner == machine.OwnerResolver)
 	})
 }

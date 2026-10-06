@@ -3,11 +3,13 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
+	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
 
 func (e *Executor) backoff(ctx context.Context, n int) error {
@@ -24,18 +26,67 @@ func (e *Executor) backoff(ctx context.Context, n int) error {
 	}
 	return wait(ctx, delay)
 }
-func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, evidence string) error {
+func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, evidence, run string, cp *checkpoint) error {
 	status.Push(e.Now(), func(view *status.View) {
 		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
 	})
 	if _, err := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 		return errors.New("human handoff labels failed")
 	}
-	body := "转人: " + state.HumanReason + "\n证据: " + evidence + "\n需要你: 检查保留的 worker 分支并重新排队"
+	if run == "" {
+		cp, err := readCheckpoint(e.Config, t)
+		if err != nil {
+			return err
+		}
+		if cp != nil {
+			run = cp.Run
+		}
+		if run == "" {
+			run = "-"
+		}
+	}
+	e.writeRunLedger(ctx, t, "escalated", cp, state)
+	body := "Agent处置: " + state.HumanReason + "\n证据: " + evidence + "\n处置要求: 检查保留的 worker 分支并完成处置" + fmt.Sprintf("\n阶段: %s\n归属: %s term=%s run=%s attempt=%d", machine.PhaseResolver, machine.OwnerResolver, e.Config.Terminal, run, state.Attempt)
 	if err := e.comment(ctx, t.ID, body); err != nil {
 		return errors.New("human handoff comment failed")
 	}
 	return nil
+}
+
+// writeRunLedger appends one ledger row for a finished run without blocking
+// the handoff. Usage collection failure only omits the usage field.
+func (e *Executor) writeRunLedger(ctx context.Context, t Ticket, outcome string, cp *checkpoint, state machine.State) {
+	if cp == nil || e.Linear == nil {
+		return
+	}
+	started, _ := time.Parse(time.RFC3339, cp.StartedAt)
+	w := &LedgerWriter{
+		Create: func(ctx context.Context, body string) error { return e.comment(ctx, t.ID, body) },
+		List: func(ctx context.Context) ([]string, error) {
+			comments, err := e.Linear.ListComments(ctx, t.ID)
+			if err != nil {
+				return nil, err
+			}
+			bodies := make([]string, 0, len(comments))
+			for _, c := range comments {
+				bodies = append(bodies, c.Body)
+			}
+			return bodies, nil
+		},
+		Collect: func(ctx context.Context, ticket string) (*usage.TicketUsage, error) {
+			u, err := usage.Collect(ctx, ticket, []string{cp.Worktree})
+			if err != nil {
+				return nil, err
+			}
+			return &u, nil
+		},
+		Now: e.Now,
+	}
+	w.Finish(ctx, LedgerRow{
+		Ticket: t.Identifier, Lane: t.Lane, Tier: e.Config.Tier, Outcome: outcome,
+		Corrections: state.Corrections, Minutes: e.Now().Sub(started).Minutes(),
+		StartedAt: started, FinishedAt: e.Now().UTC(),
+	})
 }
 
 // retryRead retries only observations. An uncertain worker-start, child creation,
@@ -60,10 +111,10 @@ func (e *Executor) retryRead(ctx context.Context, t Ticket, result *Result, step
 			return stepErr
 		}
 
-		if next.Owner == machine.OwnerHuman {
+		if next.Owner == machine.OwnerResolver {
 			next.HumanReason = "infra budget exhausted: " + step
 			result.State = next
-			if err := e.handoff(ctx, t, next, step); err != nil {
+			if err := e.handoff(ctx, t, next, step, result.RunID, nil); err != nil {
 				return err
 			}
 			return errBudgetExhausted

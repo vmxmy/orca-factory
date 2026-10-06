@@ -1,0 +1,28 @@
+{
+  "id": "a60a1de6-8961-45ff-aba5-cce24531e9bb",
+  "ok": false,
+  "error": {
+    "code": "terminal_handle_stale",
+    "message": "terminal_handle_stale Orchestration mutation request ID: 46bf55db-574d-4580-bd94-d099e9d9ae2e.",
+    "data": {
+      "orchestrationRequestId": "46bf55db-574d-4580-bd94-d099e9d9ae2e",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "worker-start",
+        "--run",
+        "run_d30c4d5cec87",
+        "--task",
+        "task_41a8d15dd86d",
+        "--terminal",
+        "term_00000000-0000-0000-0000-000000000000",
+        "--worktree",
+        "path:/home/laoxu/orca/workspaces/orca-factory/probe-904-reuse",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "c9405aea-70aa-430a-8004-873dc9d9bef1"
+  }
+}

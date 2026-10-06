@@ -7,7 +7,7 @@
 - 一个单元一个 worktree：`worker-start --worktree new-top-level --repo path:<主检出> --base-branch origin/main --name <unit>`。correction 复用原 worktree（`--worktree path:<wt>`，此时不带 `--name/--repo/--base-branch`）。
 - 不在主检出切分支、不在主检出改文件。coordinator 的运行目录是 Orca 为本次运行建的 worktree（`$AGENT_RUN_WORKTREE_PREFIX*`）。
 - 每次运行开头 `scripts/agent-gates/agent-graph.sh prune-run-worktrees`。
-- 单元 worktree 只在 PR 回读 `merged == true` 后删（`orca worktree rm --worktree path:<wt>`）；转人时保留 worktree、分支与 PR。
+- 单元 worktree 只在 PR 回读 `merged == true` 后删（`orca worktree rm --worktree path:<wt>`）；交给 resolver时保留 worktree、分支与 PR。
 - 依赖边：下游等上游 PR 合入 main 后再 `worker-start`，从新的 origin/main 起 worktree。Orca 只看上游 task 是否 completed，不看产物是否进了 main。
 
 ## 2. 提交规范
@@ -19,9 +19,9 @@
 - PR body 首行 `Fixes <票号>`。
 - 合并通道：每个仓库一条串行 FIFO 通道，发布 PR 与功能 PR 按入队顺序共用；队首等待时后续 PR 不超车。使用 squash 合并并回读 `.merged == true`，固定已验证的 head SHA。
 - 落后 main（`behind_by > 0`）不是阻塞：取 PR 与 main 相对共同祖先的完整改动路径（含重命名前后路径）求交集。交集为空、`mergeable_state == clean` 且 CI 在当前 head 全绿 → 直接 squash 合并。
-- 有文件重叠：用固定的 PR head 与当前 main SHA 执行 `git merge-tree --write-tree`。文本无冲突时，以合并结果建立临时 worktree，在其中运行该单元 gate；gate 绿、当前 head CI 全绿且 mergeability 为 clean 才合并。合并前回读 head 与 main，任一变化则重新验证；连续 2 轮追不上 main → 转人。验证结束清理临时 worktree，不改写 PR 分支，不 rebase、不 force push。
-- 文本冲突：交回调度器启动新执行器解决，计一次 correction；携带已用追赶轮数，连续 2 轮仍追不上 main 则转人。合并结果 gate 本身判红同样计一次 correction 并交回调度器，不放宽 gate。验证 commit、目录或 worktree 建立失败时保留队首，报告错误或等待，不计 correction；gate 已绿后的清理失败附带报告，继续合并，不计 correction。
-- 有部署的仓库：合并后用该 squash commit 等待 `AGENT_DEPLOY_WORKFLOW` 成功，再运行 `AGENT_SMOKE_CMD`；两者通过前保持该仓库通道等待，下一 PR 不合并。部署或冒烟失败 → 转人并暂停该仓库通道，其他仓库继续；恢复由人确认。
+- 有文件重叠：用固定的 PR head 与当前 main SHA 执行 `git merge-tree --write-tree`。文本无冲突时，以合并结果建立临时 worktree，在其中运行该单元 gate；gate 绿、当前 head CI 全绿且 mergeability 为 clean 才合并。合并前回读 head 与 main，任一变化则重新验证；连续 2 轮追不上 main → 交给 resolver。验证结束清理临时 worktree，不改写 PR 分支，不 rebase、不 force push。
+- 文本冲突：交回调度器启动新执行器解决，计一次 correction；携带已用追赶轮数，连续 2 轮仍追不上 main 则交给 resolver。合并结果 gate 本身判红同样计一次 correction 并交回调度器，不放宽 gate。验证 commit、目录或 worktree 建立失败时保留队首，报告错误或等待，不计 correction；gate 已绿后的清理失败附带报告，继续合并，不计 correction。
+- 有部署的仓库：合并后用该 squash commit 等待 `AGENT_DEPLOY_WORKFLOW` 成功，再运行 `AGENT_SMOKE_CMD`；两者通过前保持该仓库通道等待，下一 PR 不合并。部署或冒烟失败 → 交给 resolver并暂停该仓库通道，其他仓库继续；恢复由 resolver 提交绑定队列与 SHA 的证据，由调度器校验执行。
 
 ## 3. 暂存文件
 
@@ -31,7 +31,7 @@
 
 ## 4. 结束标记与 ledger
 
-- 每次运行结束（收尾、转人、无票）固定两步，顺序不变：
+- 每次运行结束（收尾、交给 resolver、无票）固定两步，顺序不变：
   1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入 `AGENT_LINEAR_PROJECT` 内标题精确为 `[ledger] agent-graph` 的 Linear 账本票评论（`ledger <JSON>`）。
   2. `mkdir -p .omc && touch .omc/agent-run-finished`（在运行 worktree）
 - 账本写入失败不阻塞本次运行收尾：只在本票评论里记一句失败原因（无票的 `no_ticket` 运行则只写 stderr），然后继续写结束标记。
@@ -43,7 +43,7 @@
 
 - `orca` 返回 `runtime_unavailable`（CLI 连不上本机 Orca，并发时偶发）：隔几秒重试，最多 3 次。
 - 不把它当业务结果：它不是"没有阻塞关系"、不是"票不存在"、不是"worker 没完成"。
-- 3 次仍失败 → 当次运行转人（见 handoffs.md §4），不要带着不确定状态继续。
+- 3 次仍失败 → 当次运行交给 resolver（见 handoffs.md §4），不要带着不确定状态继续。
 
 ## 6. 档位解析
 

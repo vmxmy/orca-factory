@@ -1,0 +1,137 @@
+{
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_ed25bdf9f9a5",
+        "taskId": "task_cdb587c11d1b",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_cda10262b0a2",
+        "taskId": "task_66e1d331a6fa",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_9e6eb10bf046",
+        "taskId": "task_69228dd536b7",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "retained"
+        }
+      },
+      {
+        "dispatchId": "ctx_d6bc7f6702fc",
+        "taskId": "task_04c5a9b802e5",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_30874aef4a62",
+        "taskId": "task_1c63a1387c89",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": null
+        }
+      },
+      {
+        "dispatchId": "ctx_da1ccb167c61",
+        "taskId": "task_380776e77edf",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": null
+        }
+      },
+      {
+        "dispatchId": "ctx_36ae6f65af35",
+        "taskId": "task_9b5d94129770",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": null
+        }
+      },
+      {
+        "dispatchId": "ctx_fa53f04fe4da",
+        "taskId": "task_43f52154451f",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_0a748397a238",
+        "taskId": "task_f7dac94f3f87",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_438d2b7f01b6",
+        "taskId": "task_001e17b2d9fc",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "retained"
+        }
+      },
+      {
+        "dispatchId": "ctx_851f5aabed30",
+        "taskId": "task_044ae87f8834",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_2712d9741c74",
+        "taskId": "task_b8ba9e824aa1",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_47718ec8d877",
+        "taskId": "task_c04f68516c35",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_c8366dbfac04",
+        "taskId": "task_084ab01e1fea",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      },
+      {
+        "dispatchId": "ctx_2d5a80f2378c",
+        "taskId": "task_1563cb14bd5e",
+        "runId": "run_6fe4b04aad3a",
+        "resource": {
+          "releaseState": "released"
+        }
+      }
+    ],
+    "page": {
+      "limit": 100,
+      "total": 15,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_6fe4b04aad3a",
+      "source": "flag"
+    }
+  }
+}

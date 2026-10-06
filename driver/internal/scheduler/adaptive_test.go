@@ -77,9 +77,10 @@ func TestPauseSchedulerScopeAndStale(t *testing.T) {
 	if len(f.actions) != 0 {
 		t.Fatal("pause time counted as stale", f.actions)
 	}
+	f.absent, f.inactive = true, true
 	now = now.Add(8 * time.Hour)
 	_ = s.Tick(context.Background())
-	if len(f.actions) != 1 || f.actions[0].Kind != Human {
+	if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
 		t.Fatal("effective stale not enforced", f.actions)
 	}
 }

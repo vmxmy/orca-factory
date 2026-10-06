@@ -31,7 +31,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 			return errors.New("merge escalation unconfirmed")
 		}
-		body = "转人: " + p.Reason + "\n证据: merge validation\n需要你: 检查合并结果并重新排队\n阶段: " + string(machine.PhaseHuman) + "\n归属: " + string(machine.OwnerHuman) + "\n" + body
+		body = "Agent处置: " + p.Reason + "\n证据: merge validation\n处置要求: 检查合并结果并重新排队\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 	} else if result.Status == merge.Correction {
 		body = fmt.Sprintf("阶段: %s\n归属: %s term=- run=%s attempt=%d\n%s", machine.PhaseCorrection, machine.OwnerExecutor, h.Run, p.Attempt, body)
 	}

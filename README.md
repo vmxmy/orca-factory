@@ -51,6 +51,6 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 1. 定时任务每 5 分钟跑 `linear-precheck.sh`：project 内带 `ready-for-agent` 且未被阻塞的 Todo 票，且在途数 < 上限，才启动 coordinator。
 2. coordinator（claude）领票、按 blast radius 拆分、写 gate spec 与 task spec，派 Codex 工人在独立 worktree 实现。
 3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试在 base 上必红、项目检查（类型/lint/守卫/定向测试）、CHECK。
-4. 红了打回工人修，最多 3 次；3 次不过视为 plan 错，转人。
-5. lane 1 绿 → 开 PR、等 CI、squash 自合、等部署、冒烟、票置 Done；lane 2 → 开 PR 等人批；lane 3 → gate 直接判红，转人。
+4. 红了打回工人修，最多 3 次；3 次不过由 resolver 接管排障与修复。
+5. lane 1 绿 → 开 PR、等 CI、squash 自合、等部署、冒烟、票置 Done；lane 2 → 检查通过后合并，需额外审批的交给 resolver 复核；lane 3 → gate 判红，由 resolver 查明范围与权限，仍不得绕过限制。
 6. 每轮记账到 `.omc/agent-graph/runs.jsonl`（含 lane 与 tier），首跑通过率低就先改拆分与 spec，再谈加守卫；某档通过率低就调映射或升档。

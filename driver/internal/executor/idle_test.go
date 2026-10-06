@@ -119,10 +119,10 @@ func TestIdleBudgetExhaustion(t *testing.T) {
 	}
 	e.Orca = o
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerHuman || result.State.Infra != machine.DefaultLimits.Infra {
+	if err != nil || result.State.Owner != machine.OwnerResolver || result.State.Infra != machine.DefaultLimits.Infra {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if o.releases != 0 || len(g.created) != 0 || !strings.Contains(l.comments[len(l.comments)-1], "转人:") {
+	if o.releases != 0 || len(g.created) != 0 || !strings.Contains(l.comments[len(l.comments)-1], "Agent处置:") {
 		t.Fatalf("release=%d PR=%v comments=%v", o.releases, g.created, l.comments)
 	}
 }

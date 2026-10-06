@@ -24,7 +24,7 @@ func TestInfraFailureKeepsActualStage(t *testing.T) {
 					if !reflect.DeepEqual(next, want) || len(fx) != 1 {
 						t.Fatalf("changed actual stage: before=%+v after=%+v effects=%v", s, next, fx)
 					}
-				} else if next.Owner != OwnerHuman || next.Phase != PhaseHuman || next.ExecAlive {
+				} else if next.Owner != OwnerResolver || next.Phase != PhaseResolver || next.ExecAlive {
 					t.Fatalf("not handed off: %+v", next)
 				}
 				s = next

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -17,6 +18,9 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
+	if cp.StartedAt == "" {
+		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
+	}
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
@@ -36,6 +40,11 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 		return err
 	}
 	if callErr != nil {
+		// A stale-terminal rejection is a definite outcome, not an uncertain one:
+		// pass it through so the correction can fall back to a fresh agent.
+		if orca.IsTerminalStale(callErr) {
+			return callErr
+		}
 		return fmt.Errorf("worker start uncertain; reconcile dispatch before retry: %w", safeDependencyError(callErr))
 	}
 	if cp.Pending {

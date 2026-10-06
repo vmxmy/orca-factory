@@ -146,7 +146,23 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		if err != nil {
 			return false, err
 		}
-		if tierEscalation(c) {
+		// Same tier + a live worker terminal means the settled worker can be reused
+		// instead of launching a fresh agent (ZII-904).
+		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort
+		handle := cp.Terminal
+		if sameTier && handle == "" && result.DispatchID != "" {
+			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})
+			if listErr == nil {
+				for _, w := range workers {
+					if w.DispatchID == result.DispatchID && w.AgentTerminalHandle != "" {
+						handle = w.AgentTerminalHandle
+						break
+					}
+				}
+			}
+		}
+		canReuse := sameTier && handle != ""
+		if tierEscalation(c) && !sameTier {
 			if err = e.comment(ctx, t.ID, fmt.Sprintf("correction %d → 升至 %s", result.State.Corrections, tier)); err != nil {
 				return false, errors.New("tier comment failed")
 			}
@@ -157,9 +173,38 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			}
 			cp.Corrections = result.State.Corrections
 			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
+			if canReuse {
+				// startDispatch clears PendingParent; keep the parent for a fallback.
+				parent := cp.Task
+				reuseErr := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Terminal: handle})
+				if reuseErr == nil {
+					cp.Terminal = handle
+					result.DispatchID = cp.Dispatch
+					return nil
+				}
+				if !orca.IsTerminalStale(reuseErr) {
+					return reuseErr
+				}
+				// The terminal is gone: fall back to a fresh agent. The reuse
+				// attempt already consumed the child-task request, so the fallback
+				// creates its child under a distinct request scope.
+				fresh, childErr := e.recovery().ChildTask(ctx, cp.Run, parent, childSpec, scopedRequest(t, c, "child-fallback", cp.Corrections+1))
+				if childErr != nil {
+					return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(childErr))
+				}
+				freshOpts := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
+				freshOpts.Task = fresh
+				if err := e.startDispatch(ctx, c, t, cp, freshOpts); err != nil {
+					return err
+				}
+				cp.Terminal = ""
+				result.DispatchID = cp.Dispatch
+				return nil
+			}
 			if err := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
 				return err
 			}
+			cp.Terminal = ""
 			result.DispatchID = cp.Dispatch
 			return nil
 		})

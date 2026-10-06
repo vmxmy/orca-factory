@@ -91,7 +91,7 @@ func TestBudgetEmptyCorrectionArtifact(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerHuman || result.State.Infra != 3 || result.State.Corrections != 1 || r.sessions != 2 || r.children != 0 || len(o.starts) != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+	if err != nil || result.State.Owner != machine.OwnerResolver || result.State.Infra != 3 || result.State.Corrections != 1 || r.sessions != 2 || r.children != 0 || len(o.starts) != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sessions=%d children=%d sleeps=%v", result, err, r.sessions, r.children, sleeps)
 	}
 	assertBudgetHandoff(t, l)
@@ -148,7 +148,7 @@ func TestBudgetReadExhaustion(t *testing.T) {
 			var sleeps []time.Duration
 			e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 			result, err := e.Execute(context.Background(), ticket)
-			if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerHuman || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+			if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerResolver || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 				t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
 			}
 			assertBudgetHandoff(t, l)
@@ -167,7 +167,7 @@ func TestBudgetGateInfrastructureDoesNotCorrect(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerHuman || r.sessions != 0 || len(o.starts) != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerResolver || r.sessions != 0 || len(o.starts) != 1 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sessions=%d sleeps=%v", result, err, r.sessions, sleeps)
 	}
 	assertBudgetHandoff(t, l)
@@ -192,7 +192,7 @@ func TestBudgetReadSuccessDoesNotRepeatBackoffOrReset(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerHuman || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerResolver || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
 	}
 	assertBudgetHandoff(t, l)
@@ -271,7 +271,7 @@ func TestBudgetRecoverDispatchSharesExecutionBudget(t *testing.T) {
 			var sleeps []time.Duration
 			e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 			result, err := e.Start(context.Background(), ticket)
-			if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerHuman || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+			if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerResolver || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 				t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
 			}
 			wantStarts := 1
@@ -312,7 +312,7 @@ func TestBudgetCorrectionWorktreeRead(t *testing.T) {
 	var sleeps []time.Duration
 	e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Corrections != 1 || result.State.Owner != machine.OwnerHuman || r.sessions != 1 || r.reads != 3 || r.children != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+	if err != nil || result.State.Infra != 3 || result.State.Corrections != 1 || result.State.Owner != machine.OwnerResolver || r.sessions != 1 || r.reads != 3 || r.children != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sessions=%d reads=%d sleeps=%v", result, err, r.sessions, r.reads, sleeps)
 	}
 	assertBudgetHandoff(t, l)
@@ -352,7 +352,7 @@ func TestBudgetRecoveryReadExhaustion(t *testing.T) {
 			var sleeps []time.Duration
 			e.Sleep = func(_ context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil }
 			result, err := e.Start(context.Background(), ticket)
-			if err != nil || result.State.Infra != 3 || result.State.Corrections != wantCorrections || result.State.Owner != machine.OwnerHuman || len(o.starts) != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
+			if err != nil || result.State.Infra != 3 || result.State.Corrections != wantCorrections || result.State.Owner != machine.OwnerResolver || len(o.starts) != 0 || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 5 * time.Minute}) {
 				t.Fatalf("result=%+v err=%v starts=%d sleeps=%v", result, err, len(o.starts), sleeps)
 			}
 			assertBudgetHandoff(t, l)
@@ -415,7 +415,7 @@ func TestBudgetReadsStallReviewShareFakeClock(t *testing.T) {
 	e.Orca = &mixedBudgetOrca{idleOrca: idle}
 	tools.emptyReviews = 1
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerHuman || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 2 * time.Minute, 5 * time.Minute, 2 * time.Minute}) {
+	if err != nil || result.State.Infra != 3 || result.State.Corrections != 0 || result.State.Owner != machine.OwnerResolver || !reflect.DeepEqual(sleeps, []time.Duration{time.Minute, 2 * time.Minute, 5 * time.Minute, 2 * time.Minute}) {
 		t.Fatalf("result=%+v err=%v sleeps=%v", result, err, sleeps)
 	}
 	if len(idle.sends) != 1 {

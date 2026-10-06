@@ -211,7 +211,7 @@ func TestWaitStopFailureIsNotRetried(t *testing.T) {
 		return nil
 	}
 	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerHuman || o.polls < 3 {
+	if err != nil || result.State.Owner != machine.OwnerResolver || o.polls < 3 {
 		t.Fatalf("read retries were not exercised: state=%+v err=%v polls=%d", result.State, err, o.polls)
 	}
 	if o.stops != 1 || result.State.Phase == machine.PhaseCorrection || result.State.Corrections != 0 {
