@@ -60,7 +60,7 @@ export function statusBarRows(model: StatusBarModel, cols: number): Segment[][] 
   const n = (value = 0) => Number.isFinite(value) ? Math.max(0, value) : 0
   const part = (text: string, color?: string): Segment => ({ text: text.replace(/[\p{Control}\p{Line_Separator}\p{Paragraph_Separator}]/gu, ' '), ...(color ? { color } : {}) })
   const pipeline = [part(`● 在做 ${n(model.inFlight)}/${n(model.max)}`)]
-  if (model.globalPauseSec !== undefined) pipeline.push(part(`⏸ 全局暂停 ${n(model.globalPauseSec)}s`, 'yellow'))
+  if (model.globalPauseSec !== undefined) pipeline.push(part(`⏸ 全局暂停 ${n(model.globalPauseSec)} 秒`, 'yellow'))
   else if (model.failed > 0) pipeline.push(part(`▲ 需要人 ${n(model.failed)}`, 'yellow'))
   pipeline.push(part(`· 待领 ${n(model.queue)}`), part(`◐ PR ${n(model.prs)}`), part(`✓ 今日完成 ${n(model.doneToday)}`))
   if ((cols >= 140 || model.detail) && model.costUsd !== undefined) pipeline.push(part(`est. $${n(model.costUsd).toFixed(2)}`))
