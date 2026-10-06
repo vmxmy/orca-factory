@@ -57,7 +57,7 @@ func TestStatusSnapshotServe(t *testing.T) {
 			defer cancel()
 			now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
 			backend := &statusFakeBackend{tickets: []scheduler.Ticket{{Repo: "/repo", Identifier: "ZII-883", Owner: machine.OwnerExecutor, Phase: machine.PhaseGate}, {Repo: "/repo", Identifier: "ZII-999", Candidate: true}}}
-			s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}}
+			s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
 			var waits int
 			err := serveWithStatus(ctx, filepath.Join(dir, "lock"), func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 				return s, &scheduler.Runtime{}, nil
@@ -152,7 +152,7 @@ func TestStatusSnapshotPausedTick(t *testing.T) {
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(dir, "status.json"))
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
 	backend := &statusFakeBackend{limits: []linear.RateLimit{{Limit: 100, Remaining: 1, Reset: now.Add(time.Hour)}}}
-	s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}}
+	s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	err := serveWithStatus(ctx, filepath.Join(dir, "lock"), func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {

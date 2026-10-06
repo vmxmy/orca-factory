@@ -29,3 +29,41 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
+
+## 可调参数（driver.toml）
+
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`repositories`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+
+```toml
+max_in_flight = 20
+repositories = ["~/github/orca-factory"]
+
+[scheduler]
+pause_fraction = 0.05       # 低于该比例暂停 Linear 相关调度
+resume_fraction = 0.10      # 回到该比例恢复
+quota_probe_backoff = "5m"  # 暂停后探测 Linear 额度的间隔
+unregistered_grace = "3m"   # 认领后等执行器登记的宽限
+adaptive_min_interval = "1m"
+adaptive_max_interval = "3m"
+
+[linear]
+http_timeout = "30s"
+
+[github]
+http_timeout = "30s"
+
+[orca]
+worker_start_wait = "5m"    # worker-start 的 agent 就绪窗口
+call_timeout = "30s"        # 其他 orca 调用的默认超时
+
+[ledger]
+flush_interval = "10m"
+
+[status]
+stale_after = "5m"          # 状态快照视为过期的年龄
+
+[runx]
+wait_delay = "100ms"        # 子进程退出的收尾等待
+```
+
+不写 `[tuning]` 各节时，所有值取上表默认值，行为与改动前一致。

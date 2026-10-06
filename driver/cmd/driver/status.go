@@ -17,7 +17,7 @@ func showStatus(args []string) int {
 		fmt.Fprintln(os.Stderr, "Usage: orca-factory-driver status [--json]")
 		return 2
 	}
-	view := status.Read(time.Now())
+	view := status.Read(time.Now(), 0)
 	if asJSON {
 		if err := json.NewEncoder(os.Stdout).Encode(view); err != nil {
 			fmt.Fprintln(os.Stderr, "cannot output driver status")
