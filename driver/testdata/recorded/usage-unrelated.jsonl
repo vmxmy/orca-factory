@@ -1,0 +1,1 @@
+{"type": "assistant", "cwd": "/unit-other", "message": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 99999, "output_tokens": 99999}, "id": "unrelated-message-0"}, "sessionId": "unrelated-one"}
