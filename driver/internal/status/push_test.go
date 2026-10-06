@@ -3,6 +3,7 @@ package status
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -68,5 +69,62 @@ func TestStatusFilePush(t *testing.T) {
 	}
 	if len(view.Tickets) != 100 {
 		t.Fatalf("lost write: %+v", view)
+	}
+}
+
+func TestPartialPushPreservesObservationFreshness(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	observed := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	initial := View{State: "ok", GeneratedAt: observed, Tickets: []Ticket{{Repo: "repo", Identifier: "old", Phase: "worker"}}}
+	if err := os.MkdirAll(filepath.Dir(PushPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(PushPath(), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	now := observed.Add(10 * time.Minute)
+	Push(now, func(v *View) {
+		SetTicket(v, Ticket{Repo: "repo", Identifier: "current", Phase: "gate"}, true)
+	})
+	view := Read(now)
+	if view.State != "stale" || !view.GeneratedAt.Equal(observed) {
+		t.Fatalf("partial write renewed observation: %+v", view)
+	}
+	if len(view.Tickets) != 2 || view.Tickets[0].Identifier != "current" || view.Tickets[0].Phase != "gate" {
+		t.Fatalf("partial write lost ticket updates: %+v", view)
+	}
+	data, err = os.ReadFile(PushPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pushed View
+	if err := json.Unmarshal(data, &pushed); err != nil {
+		t.Fatal(err)
+	}
+	if pushed.State != "stale" || !pushed.GeneratedAt.Equal(observed) {
+		t.Fatalf("file reader would see renewed observation: %+v", pushed)
+	}
+}
+
+func TestPartialPushWithoutObservationIsUnknown(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	// An older-format cache must not hide an explicitly unknown pushed view.
+	if err := Write(Snapshot{GeneratedAt: now, Tickets: []Ticket{{Identifier: "legacy"}}}); err != nil {
+		t.Fatal(err)
+	}
+	Push(now, func(v *View) {
+		SetTicket(v, Ticket{Repo: "repo", Identifier: "executor", Phase: "gate"}, true)
+	})
+	view := Read(now)
+	if view.State != "unknown" || !view.GeneratedAt.IsZero() || len(view.Tickets) != 1 || view.Tickets[0].Identifier != "executor" {
+		t.Fatalf("executor-only cache claims scheduler observation or loses ticket: %+v", view)
 	}
 }

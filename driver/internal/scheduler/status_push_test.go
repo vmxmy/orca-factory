@@ -3,10 +3,13 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -42,5 +45,51 @@ func TestStatusFilePush(t *testing.T) {
 	var view status.View
 	if json.Unmarshal(data, &view) != nil || len(view.Tickets) != 1 || !view.GeneratedAt.Equal(s.Now()) {
 		t.Fatalf("tick end: %s", data)
+	}
+}
+
+type observationBackend struct {
+	*fakeBackend
+	fail bool
+}
+
+func (b *observationBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	if b.fail {
+		return nil, errors.New("snapshot unavailable")
+	}
+	return b.fakeBackend.Snapshot(ctx, repos)
+}
+
+func TestFailedSnapshotPreservesStatusObservation(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	f := &fakeBackend{tickets: []Ticket{{Repo: "a", Identifier: "ZII-891", Owner: machine.OwnerExecutor, Phase: machine.PhaseGate}}}
+	s := setup(f)
+	backend := &observationBackend{fakeBackend: f}
+	s.Backend = backend
+	observed := s.Now()
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	backend.fail = true
+	now := observed.Add(10 * time.Minute)
+	s.Now = func() time.Time { return now }
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("expected failed snapshot")
+	}
+	view := status.Read(now)
+	if view.State != "stale" || !view.GeneratedAt.Equal(observed) || len(view.Tickets) != 1 {
+		t.Fatalf("failed snapshot lost or renewed prior observation: %+v", view)
+	}
+	backend.fail = false
+	f.tickets = nil
+	now = now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	view = status.Read(now)
+	if view.State != "ok" || !view.GeneratedAt.Equal(now) || len(view.Tickets) != 0 {
+		t.Fatalf("successful empty snapshot did not renew observation: %+v", view)
 	}
 }

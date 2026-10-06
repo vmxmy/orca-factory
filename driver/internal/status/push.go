@@ -22,13 +22,22 @@ func PushPath() string {
 
 // Push serializes read-modify-replace across executor processes. Readers see a
 // complete old or new JSON document; cache errors never escape into the driver.
+// Partial writes do not renew the last full scheduler observation.
 func Push(now time.Time, update func(*View)) {
-	if err := push(now, update); err != nil {
+	if err := push(now, update, false); err != nil {
 		log.Print("cannot push driver status snapshot")
 	}
 }
 
-func push(now time.Time, update func(*View)) error {
+// PushObservation renews freshness after a successful full scheduler snapshot.
+// Executor transitions, quota reads and pause updates must use Push instead.
+func PushObservation(now time.Time, update func(*View)) {
+	if err := push(now, update, true); err != nil {
+		log.Print("cannot push driver status snapshot")
+	}
+}
+
+func push(now time.Time, update func(*View), observation bool) error {
 	path := PushPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -49,8 +58,13 @@ func push(now time.Time, update func(*View)) error {
 			view = previous
 		}
 	}
+	observedAt := view.GeneratedAt
 	update(&view)
-	view.State, view.GeneratedAt = "ok", now
+	if observation {
+		observedAt = now
+	}
+	view.GeneratedAt = observedAt
+	view.State = observationState(observedAt, now)
 	normalize(&view, now)
 	sort.Slice(view.Tickets, func(i, j int) bool {
 		a, b := view.Tickets[i], view.Tickets[j]
@@ -70,6 +84,16 @@ func push(now time.Time, update func(*View)) error {
 		return errors.New("cannot encode status")
 	}
 	return os.Rename(file.Name(), path)
+}
+
+func observationState(observedAt, now time.Time) string {
+	if observedAt.IsZero() || observedAt.After(now) {
+		return "unknown"
+	}
+	if now.Sub(observedAt) > staleAfter {
+		return "stale"
+	}
+	return "ok"
 }
 
 func normalize(view *View, now time.Time) {

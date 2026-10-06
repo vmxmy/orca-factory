@@ -100,6 +100,8 @@ func Write(snapshot Snapshot) error {
 // staleAfter tolerates ten missed 30-second serve snapshots.
 const staleAfter = 5 * time.Minute
 
+// View.GeneratedAt records the last successful full scheduler observation.
+// Partial writes retain it; zero means no scheduler observation is available.
 type View struct {
 	State       string      `json:"state"`
 	GeneratedAt time.Time   `json:"generatedAt"`
@@ -120,11 +122,9 @@ func Read(now time.Time) View {
 	if os.Getenv("DRIVER_STATUS_FILE") == "" {
 		if data, err := os.ReadFile(PushPath()); err == nil {
 			var view View
-			if json.Unmarshal(data, &view) == nil && !view.GeneratedAt.IsZero() {
+			if json.Unmarshal(data, &view) == nil && (!view.GeneratedAt.IsZero() || view.State == "unknown") {
 				normalize(&view, now)
-				if now.Sub(view.GeneratedAt) > staleAfter {
-					view.State = "stale"
-				}
+				view.State = observationState(view.GeneratedAt, now)
 				return view
 			}
 		}

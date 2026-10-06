@@ -170,7 +170,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("scheduler snapshot failed")
 	}
 	snapshot = true
-	status.Push(s.clock(), func(view *status.View) {
+	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
 		for _, t := range tickets {
 			if owned(t) {
