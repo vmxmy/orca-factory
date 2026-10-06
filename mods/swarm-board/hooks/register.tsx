@@ -450,7 +450,7 @@ async function refreshSnapshot($: any, handoffs: Map<string, string>) {
   })
   const failed = all.filter(t => t.labels.includes('auto-failed') && t.state !== 'completed' && t.state !== 'canceled')
     .map(t => {
-      const handoff = (snapshot.comments[t.id] ?? []).filter(c => String(c.body).trim().startsWith('转人:'))
+      const handoff = (snapshot.comments[t.id] ?? []).filter(c => /^(?:Agent处置|转人):/.test(String(c.body).trim()))
         .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
       if (handoff) handoffs.set(t.id, handoff)
       return { ...t, handoff: handoffs.get(t.id) }
@@ -576,7 +576,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     .map(t => ({ ...t, handoff: handoffs.get(t.id) }))
   for (const t of failed.slice(0, 3)) {
     const comments = await readComments(t.id)
-    const handoff = comments.filter(c => String(c.body).trim().startsWith('转人:'))
+    const handoff = comments.filter(c => /^(?:Agent处置|转人):/.test(String(c.body).trim()))
       .sort((a, b) => ts(b.createdAt) - ts(a.createdAt))[0]?.body
     if (handoff) { handoffs.set(t.id, handoff); t.handoff = handoff }
   }
@@ -924,12 +924,18 @@ function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Bo
   if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
   driver = { ...driver, tickets: driver.tickets.filter(ticket => b.repositoryPaths?.includes(ticket.repo)) }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
-  const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
+  const rows = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
     priority: 0, updatedAt: new Date(typeof driver.generatedAt === 'number' ? driver.generatedAt * 1000 : driver.generatedAt).toISOString(), claimedAt: '',
   })
-  const ids = new Set(inFlight.map(t => t.id))
-  return { ...b, driver, inFlight, queue: b.queue.filter(t => !ids.has(t.id)), failed: b.failed.filter(t => !ids.has(t.id)) }
+  const ids = new Set(rows.map(t => t.id))
+  const candidates = new Set(driver.tickets.filter(t => t.stage === 'candidate').map(t => t.identifier))
+  const legacy = new Set(driver.tickets.filter(t => t.stage === 'human' || t.owner === '人').map(t => t.identifier))
+  const resolving = new Set(driver.tickets.filter(t => t.owner === '处置Agent').map(t => t.identifier))
+  const inFlight = rows.filter(t => !candidates.has(t.id) && !legacy.has(t.id))
+  const failed = [...b.failed.filter(t => !ids.has(t.id)), ...rows.filter(t => resolving.has(t.id) || legacy.has(t.id))]
+  const queue = [...b.queue.filter(t => !ids.has(t.id)), ...rows.filter(t => candidates.has(t.id))]
+  return { ...b, driver, inFlight, queue, failed }
 }
 
 async function tick($: any, handoffs: Map<string, string>) {
@@ -966,7 +972,7 @@ export const laneStage = (t: Ticket, agents: readonly BaseAgent[]): 1 | 2 | 3 =>
 
 export const register: Register = on => {
   // Last-good handoff per failed ticket. An empty comment read or a stale handoff
-  // comment falls back to this cache instead of blanking the "需要人" card.
+  // comment falls back to this cache instead of blanking the "Agent处置" card.
   const handoffs = new Map<string, string>()
   // The plugin loads in every Claude session on the machine, unattended coordinators included.
   // Polling starts only in a session that opens the pane: each refresh costs ~3 GitHub REST
@@ -1083,17 +1089,17 @@ export const register: Register = on => {
     }
     const handoffText = (t: FailedTicket) => {
       const lines = t.handoff?.trim().split(/\r?\n/) ?? []
-      const reason = lines[0]?.match(/^转人:\s*(.*)/)?.[1]
-      const action = lines.find(l => l.startsWith('需要你:'))?.slice('需要你:'.length).trim()
+      const reason = lines[0]?.match(/^(?:Agent处置|转人):\s*(.*)/)?.[1]
+      const action = lines.find(l => /^(?:处置要求|需要你):/.test(l))?.replace(/^(?:处置要求|需要你):/, '').trim()
       return reason && action ? (
         <Box flexDirection="column">
           <Text color="yellow">卡点：{reason}</Text>
-          <Text color="yellow">需要你：{action}</Text>
+          <Text color="yellow">处置：{action}</Text>
         </Box>
       ) : lines[0] ? <Text color="yellow">{lines[0]}</Text> : null
     }
-    const intakeText = (t: Ticket) => <Text dimColor>处理好后，开 intake 会话：按 scripts/agent-gates/roles/intake.md 工作，处理 {t.id}</Text>
-    // A ticket that already lives in 需要人 does not also appear in the in-flight lanes; lane counts match that dedup.
+    const resolverText = (t: Ticket) => <Text dimColor>处置 Agent 接管 {t.id}，完成修复与复核后继续推进</Text>
+    // A ticket that already lives in Agent处置 does not also appear in the in-flight lanes; lane counts match that dedup.
     const failedIds = new Set(b.failed.map(t => t.id))
     const inFlightNoHuman = b.inFlight.filter(t => !failedIds.has(t.id))
     const lanes: Lane[] = [
@@ -1101,7 +1107,7 @@ export const register: Register = on => {
       { title: '实现中', emoji: LANE_EMOJI.impl, items: inFlightNoHuman.filter(t => stage(t) === 1) },
       { title: 'gate/审查', emoji: LANE_EMOJI.gate, items: inFlightNoHuman.filter(t => stage(t) === 2) },
       { title: 'CI/合并', emoji: LANE_EMOJI.ci, items: inFlightNoHuman.filter(t => stage(t) === 3) },
-      { title: '需要人', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
+      { title: 'Agent处置', emoji: LANE_EMOJI.human, color: b.failed.length ? 'yellow' : undefined, items: b.failed },
       { title: '今日完成', emoji: LANE_EMOJI.done, items: b.doneToday },
     ]
     // Status emoji on the card head: prefer CI, then gate, then the lane emoji.
@@ -1238,9 +1244,9 @@ export const register: Register = on => {
           {phaseLine(t)}
           <Text dimColor>{ticketAccounting(t)}</Text>
           <Text>{cutW(t.title, w)}</Text>
-          {l.title === '需要人' ? handoffText(t) : null}
+          {l.title === 'Agent处置' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
-          {l.title === '需要人' ? intakeText(t) : null}
+          {l.title === 'Agent处置' ? resolverText(t) : null}
         </Box>
       )
     }
@@ -1406,7 +1412,7 @@ export const register: Register = on => {
     const agentRow = (a: Agent) => {
       const requiresAction = a.role === 'worker' && a.requiresAction === true
       const glyph = a.phase === 'done' ? G.done : a.phase === 'returned' ? G.human : G.work
-      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ 需要人 ' : '') + cut(a.name, 18)
+      const name = a.role === 'coordinator' ? glyph + ' ' + a.ticket.padEnd(8) + ' coordinator' : '  └ ' + glyph + ' ' + (requiresAction ? '⚠ Agent处置 ' : '') + cut(a.name, 18)
       const tokens = a.tokens ? tok(a.tokens.out) + ' out · ' + tok(a.tokens.cache) + ' cache' : ''
       const last = a.lastActive ? 'last ' + age(a.lastActive, now) : ''
       const line = name.padEnd(24) + ' ' + a.phase.padEnd(10) + ' ' + mins(a.durationMin).padStart(9)
@@ -1462,8 +1468,8 @@ export const register: Register = on => {
           <Text bold>在做</Text>
           {b.driver?.state === 'ok' && b.driver.globalPause.active
             ? <Text color="yellow">{'⏸ 全局暂停 ' + b.driver.globalPause.durationSeconds + ' 秒'}</Text>
-            : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} 需要人 {b.failed.length}</Text>}
-          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} 需要人 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日按 API 价折算 $' + b.todayCost.toFixed(2) : ''}</Text>
+            : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} Agent处置 {b.failed.length}</Text>}
+          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} Agent处置 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日按 API 价折算 $' + b.todayCost.toFixed(2) : ''}</Text>
           {linearBadge()}
         </Box>
         {driverBadge()}
@@ -1511,11 +1517,11 @@ export const register: Register = on => {
 
         {v === 'swarm' ? card('prs', G.wait + ' Open PRs', b.prs.length === 0 ? <Text dimColor>无</Text> : b.prs.map(prRow)) : null}
 
-        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' 需要人', b.failed.map(t => (
+        {v === 'swarm' && b.failed.length > 0 ? card('failed', G.human + ' Agent处置', b.failed.map(t => (
           <Box key={'f-' + t.id} flexDirection="column" marginBottom={1}>
             {tRow(G.human, t, 'yellow')}
             {handoffText(t)}
-            {intakeText(t)}
+            {resolverText(t)}
           </Box>
         )), 'yellow') : null}
 

@@ -198,7 +198,7 @@ func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if calls != 2 || f.puts != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 人") || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"catchup_rounds":2`) {
+	if calls != 2 || f.puts != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"catchup_rounds":2`) {
 		t.Fatalf("budget lost: gates=%d puts=%d comments=%v", calls, f.puts, f.linear.bodies)
 	}
 }
@@ -217,7 +217,7 @@ func TestRuntimeMergeCorrectionCapsPersistedBudget(t *testing.T) {
 			if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.runtime.Orca.(*fakeOrca).launches) != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 人") {
+			if len(f.runtime.Orca.(*fakeOrca).launches) != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
 				t.Fatalf("cap ignored: %v", f.linear.bodies)
 			}
 		})

@@ -174,13 +174,13 @@ func TestFakeSuccess(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.State.Owner != machine.OwnerHuman || result.State.Phase != machine.PhaseHuman {
+			if result.State.Owner != machine.OwnerResolver || result.State.Phase != machine.PhaseResolver {
 				t.Fatalf("state: %+v", result.State)
 			}
 			if len(g.created) != 0 || tools.gateCalls != 0 || tools.reviewCalls != 0 || o.releases != 1 {
 				t.Fatalf("PR=%v gate=%d review=%d release=%d", g.created, tools.gateCalls, tools.reviewCalls, o.releases)
 			}
-			want := []string{"阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z", "阶段: 分支检查", "转人: worker reported success but branch did not advance\n证据: 分支检查\n需要你: 检查 worker 分支并重新排队\n阶段: 转人\n归属: 人 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z"}
+			want := []string{"阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z", "阶段: 分支检查", "Agent处置: worker reported success but branch did not advance\n证据: 分支检查\n处置要求: 检查 worker 分支并重新排队\n阶段: Agent处置\n归属: 处置Agent term=term_exec run=run_one attempt=1 since=2026-10-05T06:00:00Z"}
 			if !reflect.DeepEqual(l.comments, want) {
 				t.Fatalf("comments: %q", l.comments)
 			}
