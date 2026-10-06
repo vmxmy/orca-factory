@@ -48,6 +48,36 @@ func TestStatusFilePush(t *testing.T) {
 	}
 }
 
+// Candidate (待领) and human (转人) tickets are written to the status push, not only in-flight ones.
+func TestStatusFilePushCandidateAndHuman(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	// applyErr keeps the candidate unclaimed so its candidate stage survives to the push.
+	f := &fakeBackend{applyErr: errors.New("write outcome unknown"), tickets: []Ticket{
+		{ID: "c", Identifier: "ZII-891", Repo: "a", Candidate: true},
+		{ID: "h", Identifier: "ZII-892", Repo: "a", Owner: machine.OwnerHuman, Phase: machine.PhaseHuman},
+		{ID: "w", Identifier: "ZII-893", Repo: "a", Owner: machine.OwnerExecutor, Phase: machine.PhaseGate},
+	}}
+	s := setup(f)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "orca-factory", "status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view status.View
+	if json.Unmarshal(data, &view) != nil || len(view.Tickets) != 3 {
+		t.Fatalf("tickets: %s", data)
+	}
+	stages := map[string]string{}
+	for _, tk := range view.Tickets {
+		stages[tk.Identifier] = tk.Stage
+	}
+	if stages["ZII-891"] != "candidate" || stages["ZII-892"] != "human" || stages["ZII-893"] != "" {
+		t.Fatalf("stages: %v", stages)
+	}
+}
+
 type observationBackend struct {
 	*fakeBackend
 	fail bool
