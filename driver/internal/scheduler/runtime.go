@@ -15,6 +15,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -82,6 +83,27 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 			refusals = append(refusals, refusal)
 			continue
 		}
+		backend, backendErr := issues.Backend(repo.Env)
+		if backendErr != nil {
+			return backendErr
+		}
+		if backend == "github" {
+			project := issues.Project(repo.Env)
+			if projects[project] {
+				return errors.New("duplicate issue repository")
+			}
+			client, err := issues.New(ctx, repo.Env)
+			if err != nil {
+				return err
+			}
+			projects[project] = true
+			r.Clients[repo.Path] = client
+			r.Repositories[repo.Path] = repo
+			if r.Reader == nil {
+				r.Reader = client
+			}
+			continue
+		}
 		team, project := repo.Env["AGENT_LINEAR_TEAM"], repo.Env["AGENT_LINEAR_PROJECT"]
 		if team == "" || project == "" || projects[project] {
 			return errors.New("repository requires distinct Linear project and team")
@@ -112,24 +134,40 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	if len(repos) == 0 {
 		return nil, nil
 	}
-	projects := []string{}
 	paths := map[string]string{}
 	scopeEnabled := map[string]bool{}
 	for _, repo := range repos {
 		if r.refused[repo.Path] != nil {
 			continue
 		}
-		project := repo.Env["AGENT_LINEAR_PROJECT"]
-		projects = append(projects, project)
+		project := issues.Project(repo.Env)
 		paths[project] = repo.Path
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
-	issues, err := r.Reader.Snapshot(ctx, projects, time.Time{})
-	if err != nil {
-		return nil, errors.New("linear snapshot failed")
+	var snapshots []linear.Issue
+	grouped := map[LinearClient][]string{}
+	for _, repo := range repos {
+		if r.refused[repo.Path] != nil {
+			continue
+		}
+		client := r.Clients[repo.Path]
+		if client == nil {
+			client = r.Reader
+		}
+		if client == nil {
+			return nil, errors.New("missing issue backend")
+		}
+		grouped[client] = append(grouped[client], issues.Project(repo.Env))
+	}
+	for client, selected := range grouped {
+		rows, err := client.Snapshot(ctx, selected, time.Time{})
+		if err != nil {
+			return nil, fmt.Errorf("issue snapshot failed: %w", err)
+		}
+		snapshots = append(snapshots, rows...)
 	}
 	tickets := []Ticket{}
-	for _, issue := range issues {
+	for _, issue := range snapshots {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
 			path, ok = paths[issue.Project.Name]
@@ -150,11 +188,27 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		}
 		// Ownership, not the auto-impl label, determines in-flight admission. Read
 		// comments even when a user removed the label from a still-owned ticket.
-		comments, err := r.Clients[path].ListComments(ctx, issue.ID)
+		var comments []linear.Comment
+		var err error
+		if client, ok := r.Clients[path].(interface {
+			SnapshotComments(context.Context, string) ([]linear.Comment, error)
+		}); ok {
+			comments, err = client.SnapshotComments(ctx, issue.ID)
+		} else {
+			comments, err = r.Clients[path].ListComments(ctx, issue.ID)
+		}
 		if err != nil {
 			return nil, errors.New("ownership snapshot failed")
 		}
 		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
+		for _, comment := range comments {
+			if comment.UpdatedAt.After(ticket.UpdatedAt) {
+				ticket.UpdatedAt = comment.UpdatedAt
+			}
+			if comment.CreatedAt.After(ticket.UpdatedAt) {
+				ticket.UpdatedAt = comment.CreatedAt
+			}
+		}
 		if err = readOwnership(&ticket, comments); err != nil {
 			return nil, err
 		}
@@ -260,6 +314,9 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 }
 
 func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
+	if err := r.verifyGitHubDecision(ctx, t, a.Kind == Claim); err != nil {
+		return err
+	}
 	client := r.Clients[t.Repo]
 	if client == nil {
 		return errors.New("missing repository client")
@@ -339,6 +396,13 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 // ticketScope stays local to the scheduler because the shared Linear snapshot
 // deliberately carries only scheduling metadata, not issue descriptions.
 func (r *Runtime) ticketScope(ctx context.Context, t Ticket) ([]string, error) {
+	if client, ok := r.Clients[t.Repo].(*issues.GitHub); ok {
+		description, err := client.Description(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		return declaredScope(description), nil
+	}
 	raw, err := r.command(ctx, t.Repo, r.OrcaPath, "linear", "issue", t.Identifier, "--json")
 	if err != nil {
 		return nil, errors.New("ticket scope read failed")
@@ -415,4 +479,11 @@ func (r *Runtime) ProbeLinearQuota(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// InspectOwnership exposes the same logical comment interpretation to CLI readers.
+func InspectOwnership(comments []linear.Comment) (Ticket, error) {
+	var t Ticket
+	err := readOwnership(&t, comments)
+	return t, err
 }

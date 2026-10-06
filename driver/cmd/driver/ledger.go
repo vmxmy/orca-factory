@@ -8,6 +8,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/ledger"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -22,19 +23,35 @@ func runLedger(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: driver ledger append '<json>' | driver ledger stats [--all]")
 		return 2
 	}
-	team, project := os.Getenv("AGENT_LINEAR_TEAM"), os.Getenv("AGENT_LINEAR_PROJECT")
-	if team == "" || project == "" {
-		fmt.Fprintln(os.Stderr, "ledger: AGENT_LINEAR_TEAM and AGENT_LINEAR_PROJECT required")
-		return 2
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	client, err := linear.New(ctx, linear.Options{TeamID: team})
+	env := issueEnvironment()
+	backend, err := issues.Backend(env)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ledger: Linear client initialization failed")
-		return 1
+		fmt.Fprintln(os.Stderr, err)
+		return 2
 	}
-	store := &ledgerStore{client: client, team: team, project: project}
+	var store ledger.Store
+	if backend == "github" {
+		client, newErr := issues.New(ctx, env)
+		if newErr != nil {
+			fmt.Fprintln(os.Stderr, "ledger: backend initialization failed")
+			return 1
+		}
+		store = &issues.LedgerStore{Client: client.(*issues.GitHub)}
+	} else {
+		team, project := env["AGENT_LINEAR_TEAM"], env["AGENT_LINEAR_PROJECT"]
+		if team == "" || project == "" {
+			fmt.Fprintln(os.Stderr, "ledger: AGENT_LINEAR_TEAM and AGENT_LINEAR_PROJECT required")
+			return 2
+		}
+		client, newErr := linear.New(ctx, linear.Options{TeamID: team})
+		if newErr != nil {
+			fmt.Fprintln(os.Stderr, "ledger: Linear client initialization failed")
+			return 1
+		}
+		store = &ledgerStore{client: client, team: team, project: project}
+	}
 	l := ledger.New(store, ledger.Options{})
 	if appendRow {
 		if err = l.Append(args[1]); err != nil {

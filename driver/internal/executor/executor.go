@@ -251,7 +251,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return errors.New("Linear transition comment failed")
 		}
 		if cp.Worktree != "" {
-			if _, boardErr := e.Orca.WorktreeSet(ctx, cp.Worktree, t.Identifier, boardStatus(next.Phase), "driver: "+string(next.Phase)); boardErr != nil {
+			if _, boardErr := e.Orca.WorktreeSet(ctx, cp.Worktree, e.boardIdentifier(t.Identifier), boardStatus(next.Phase), "driver: "+string(next.Phase)); boardErr != nil {
 				e.warn("%s Orca board status update failed: %v", t.Identifier, boardErr)
 			}
 		}
@@ -640,4 +640,12 @@ func pause(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+// GitHub tasks must not create a Linear association in Orca.
+func (e *Executor) boardIdentifier(id string) string {
+	if _, ok := e.Linear.(interface{ Repository() string }); ok {
+		return ""
+	}
+	return id
 }

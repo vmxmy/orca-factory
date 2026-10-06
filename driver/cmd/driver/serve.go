@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
@@ -177,6 +178,19 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 		seen := map[scheduler.LinearClient]bool{}
 		for _, repo := range repos {
 			client := runtime.Clients[repo]
+			if source, ok := client.(interface{ GitHubUsage() github.Usage }); ok {
+				usage := source.GitHubUsage()
+				if snapshot.GitHub == nil {
+					snapshot.GitHub = &status.Usage{Limits: []status.ClientLimits{}}
+				}
+				snapshot.GitHub.Hour = usage.Hour
+				if !seen[client] {
+					snapshot.GitHub.Requests += usage.Requests
+					seen[client] = true
+				}
+				snapshot.GitHub.Limits = append(snapshot.GitHub.Limits, status.ClientLimits{Repo: repo, Requests: status.RateLimit{Limit: usage.Limit, Remaining: usage.Remaining, Reset: usage.Reset}})
+				continue
+			}
 			source, ok := client.(interface{ Usage() linear.Usage })
 			if !ok {
 				continue

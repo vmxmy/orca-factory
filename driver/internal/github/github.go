@@ -29,24 +29,28 @@ type Options struct {
 
 type cachedResponse struct {
 	etag string
+	link string
 	body []byte
 }
 
 // Client is safe for concurrent use. Each client owns a capacity-one write
 // token bucket, refilled once per second, and an ETag cache.
 type Client struct {
-	base       string
-	http       *http.Client
-	token      func(context.Context) (string, error)
-	now        func() time.Time
-	sleep      func(context.Context, time.Duration) error
-	writeMu    sync.Mutex
-	lastWrite  time.Time
-	wrote      bool
-	cacheMu    sync.Mutex
-	cache      map[string]cachedResponse
-	generation uint64
-	createMu   sync.Mutex
+	base         string
+	http         *http.Client
+	token        func(context.Context) (string, error)
+	now          func() time.Time
+	sleep        func(context.Context, time.Duration) error
+	writeMu      sync.Mutex
+	lastWrite    time.Time
+	wrote        bool
+	cacheMu      sync.Mutex
+	cache        map[string]cachedResponse
+	generation   uint64
+	createMu     sync.Mutex
+	quotaMu      sync.Mutex
+	usage        Usage
+	blockedUntil time.Time
 }
 
 func New(o Options) (*Client, error) {
@@ -111,8 +115,17 @@ func safeError(err error) error {
 }
 
 func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
+	return c.requestDetails(ctx, method, path, input, output, nil)
+}
+func (c *Client) requestDetails(ctx context.Context, method, path string, input, output any, link *string) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.rateReady(); err != nil {
+		return err
+	}
 	token, err := c.token(ctx)
 	if err != nil || strings.TrimSpace(token) == "" {
 		return &infra.Global{Dep: infra.GitHub, Err: errors.New("GitHub authentication failed")}
@@ -164,6 +177,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		defer c.invalidate()
 	}
 	resp, err := c.http.Do(req)
+	c.recordUsage(resp)
 	if err != nil {
 		return safeError(err)
 	}
@@ -171,6 +185,9 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	var body []byte
 	if resp.StatusCode == http.StatusNotModified && method == http.MethodGet && hasCache {
 		body = cached.body
+		if link != nil {
+			*link = cached.link
+		}
 	} else {
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			cause := infra.HTTPError{StatusCode: resp.StatusCode}
@@ -181,6 +198,9 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 				return &infra.Transient{Err: cause}
 			}
 			return infra.Classify(cause)
+		}
+		if link != nil {
+			*link = resp.Header.Get("Link")
 		}
 		body, err = io.ReadAll(io.LimitReader(resp.Body, 16<<20+1))
 		if err != nil {
@@ -193,7 +213,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 			c.cacheMu.Lock()
 			if c.generation == generation {
 				if etag := resp.Header.Get("ETag"); etag != "" {
-					c.cache[endpoint] = cachedResponse{etag: etag, body: body}
+					c.cache[endpoint] = cachedResponse{etag: etag, body: body, link: resp.Header.Get("Link")}
 				} else {
 					delete(c.cache, endpoint)
 				}

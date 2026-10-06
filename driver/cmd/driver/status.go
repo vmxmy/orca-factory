@@ -24,6 +24,9 @@ func showStatus(args []string) int {
 			return 1
 		}
 	} else {
+		if view.GitHub != nil && len(view.GitHub.Limits) > 0 {
+			fmt.Printf("GitHub requests %d\n", view.GitHub.Requests)
+		}
 		fmt.Printf("Driver %s · tickets %d · global pause %t (%ds) · Linear requests %d complexity %d\n",
 			view.State, len(view.Tickets), view.GlobalPause.Active, view.GlobalPause.DurationSeconds, view.Linear.Requests, view.Linear.Complexity)
 		for _, t := range view.Tickets {

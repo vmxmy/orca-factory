@@ -45,7 +45,7 @@ func (r *Runtime) cleanupMerged(ctx context.Context, t Ticket) {
 			}
 		}
 	}
-	if _, err := r.Orca.WorktreeSet(ctx, h.Worktree, t.Identifier, "completed", fmt.Sprintf("driver: 已合并 #%d", h.PR)); err != nil {
+	if _, err := r.Orca.WorktreeSet(ctx, h.Worktree, r.boardIdentifier(t), "completed", fmt.Sprintf("driver: 已合并 #%d", h.PR)); err != nil {
 		warn("worktree-set", err)
 	}
 	branch := "refs/heads/agent/" + t.Identifier + "/" + h.Unit
@@ -60,4 +60,11 @@ func (r *Runtime) cleanupMerged(ctx context.Context, t Ticket) {
 	if _, err := r.command(ctx, t.Repo, "git", "push", "origin", "--delete", branch); err != nil {
 		warn("branch-delete", err)
 	}
+}
+
+func (r *Runtime) boardIdentifier(t Ticket) string {
+	if _, ok := r.Clients[t.Repo].(interface{ Repository() string }); ok {
+		return ""
+	}
+	return t.Identifier
 }

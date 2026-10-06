@@ -29,3 +29,74 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
+
+## GitHub Issues task backend
+
+Set `AGENT_ISSUE_BACKEND=github` and `AGENT_GH_REPO=owner/repository` in the
+repository profile. Authentication uses the existing `gh auth token` path
+(including `GH_TOKEN` support). An absent selector retains the shipped Linear
+profile contract; an unknown selector fails. GitHub mode never initializes,
+queries, writes, or synchronizes Linear. `AGENT_GH_API_URL` is an optional trusted
+REST origin override for enterprise installations and offline integration tests.
+
+The `issues` CLI reads these variables from its environment and writes one
+`{"ok":true,"result":...}` JSON envelope to stdout; errors go to stderr with a
+nonzero exit status. Files may be `-` to read stdin.
+
+```sh
+driver issues validate
+driver issues snapshot
+driver issues read --id ZII-42
+driver issues create --input task.json
+driver issues update --id ZII-42 --state 'In Progress' --add-label auto-impl
+driver issues update --id ZII-42 --input patch.json
+driver issues comment --id ZII-42 --body-file comment.txt
+driver issues import --input complete-export.json          # read-only preview
+driver issues import --input complete-export.json --apply  # explicit writes
+driver ledger append '{"outcome":"no_ticket"}'
+driver ledger stats --all
+```
+
+Snapshot/list returns `result.issues` and `result.complete=true` only after
+complete issue pagination. Its comments connection is deliberately unread:
+`commentsComplete=false` and `comments.pageInfo.hasNextPage=true`. Read returns
+`result.issue` with complete logical comments and reconstructed owner/phase.
+Both expose UUID `id`, canonical `identifier`, separate GitHub `number`/`url`,
+title, description, estimate, priority, state `{id,name,type}`, Linear-shaped
+labels/relations/inverseRelations connections, metadata completeness, parent,
+source dates and `nativeUpdatedAt`. Missing dependencies and incomplete imports
+never become claimable; failed labels do not automatically requeue work.
+
+Create accepts `id` (optional UUID), `identifier` (optional), `title`,
+`description`, `state`, `labels` (names), `priority`, `estimate`, `blockers`,
+`related`, and `parent` (canonical UUIDs). Native identifiers are `GH-<number>`;
+the UUID is assigned before POST and recovered by a readback after an uncertain
+response, without repeating the write. Imported UUIDs and identifiers stay
+unchanged. Update patches allow title, description, priority, estimate, blockers,
+related and parent; identity and import provenance are immutable.
+
+Managed issue bodies carry a versioned `orca-task-v1` JSON comment, fenced to
+one repository. Native labels remain labels. Logical history preserves original
+source comment IDs, bodies, timestamps and order, even when source history is
+stored in bounded GitHub comment batches. Ordinary GitHub discussion remains
+ordinary comments. REST calls use deadlines, ETags, pagination, write throttling,
+rate-limit reset/Retry-After pauses, and no automatic write retries.
+
+The import manifest is version 1 with `repository`, `complete:true`, and `issues`.
+Each issue includes the complete create fields, original createdAt/updatedAt,
+`importHold`, `comments`, `commentsComplete:true`, and `relationsComplete:true`;
+empty arrays and nullable estimate must be explicit. Unknown fields, duplicate
+keys/identities, missing references or incomplete history reject the entire
+manifest before any write. Dry-run is default. Import has a bounded 30-minute command deadline while individual
+REST requests retain their 30-second deadline. Apply validates source digests,
+creates held issues, copies/verifies all histories, then releases holds; retries
+reconcile the same source identities and comment batches. It never deletes source
+data, resets execution budgets, changes frozen merge handoffs, or deploys services.
+
+Runtime discovery reuses logical comment histories while native issue timestamps
+are unchanged, with a five-minute repair limit. For N issues, an unchanged scan
+uses ceil(N/100) issue-list requests (plus the terminal empty page when N is an
+exact multiple of 100); changed histories add their paginated reads. Scope reads
+reuse the snapshot index. Claim/ownership and merge decisions force fresh issue
+and comment reads, so the discovery cache cannot authorize work. CLI snapshot
+has no comment fanout; display consumers can fetch only the visible tickets.

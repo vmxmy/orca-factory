@@ -73,3 +73,13 @@
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
 验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。
+
+## GitHub Issues REST (#172)
+
+`testdata/recorded/github/issues-172.json` was recorded on 2026-10-06 with
+`gh api repos/vmxmy/orca-factory/issues/172`, retaining only public REST issue
+fields used by the adapter. `github.TestRecordedGitHubIssueREST` verifies number,
+URL, body and timestamp decoding. It contains actual public data, not invented
+managed-task metadata. Managed metadata, imports, cancellation and HTTP failure
+scenarios are separate synthetic behavior tests in `internal/issues` and
+`scheduler.TestGitHubClaimRefreshesOwnershipBeforeMutation`.

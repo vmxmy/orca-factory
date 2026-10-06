@@ -14,6 +14,7 @@ type Snapshot struct {
 	Tickets     []Ticket  `json:"tickets"`
 	Pauses      []Pause   `json:"pauses"`
 	Linear      Usage     `json:"linear"`
+	GitHub      *Usage    `json:"github,omitempty"`
 }
 
 type Deployment struct {
@@ -106,6 +107,7 @@ type View struct {
 	Tickets     []Ticket    `json:"tickets"`
 	GlobalPause GlobalPause `json:"globalPause"`
 	Linear      Usage       `json:"linear"`
+	GitHub      *Usage      `json:"github,omitempty"`
 }
 
 type GlobalPause struct {
@@ -132,6 +134,16 @@ func Read(now time.Time) View {
 	view.GeneratedAt = snapshot.GeneratedAt
 	if snapshot.Tickets != nil {
 		view.Tickets = snapshot.Tickets
+	}
+	view.GitHub = snapshot.GitHub
+	if view.GitHub != nil {
+		if !view.GitHub.Hour.Equal(hour) {
+			view.GitHub.Hour = hour
+			view.GitHub.Requests = 0
+		}
+		if view.GitHub.Limits == nil {
+			view.GitHub.Limits = []ClientLimits{}
+		}
 	}
 	view.Linear = snapshot.Linear
 	if !view.Linear.Hour.Equal(hour) {

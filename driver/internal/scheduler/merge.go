@@ -108,6 +108,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	return errors.Join(problems...)
 }
 func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) {
+	if err := r.verifyGitHubDecision(ctx, t, false); err != nil {
+		return err
+	}
 	var cleanupErr error
 	defer func() { resultErr = errors.Join(resultErr, cleanupErr) }()
 	h := t.Handoff
