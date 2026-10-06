@@ -65,3 +65,34 @@ func TestRecordedRemoveAbsentLabel(t *testing.T) {
 		t.Fatalf("sent=%v", sent)
 	}
 }
+
+// The quota probe is a bare viewer query; its real response carries the budget headers the scheduler reads.
+func TestRecordedQuotaProbe(t *testing.T) {
+	body, err := os.ReadFile("../../testdata/recorded/linear-viewer-probe.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers, err := os.ReadFile("../../testdata/recorded/linear-response-headers.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		if !strings.Contains(q.Query, "viewer") {
+			t.Errorf("probe sent %q", q.Query)
+		}
+		for _, line := range strings.Split(string(headers), "\n")[1:] {
+			if key, value, ok := strings.Cut(line, ":"); ok {
+				w.Header().Set(key, strings.TrimSpace(value))
+			}
+		}
+		if _, err := w.Write(body); err != nil {
+			t.Error(err)
+		}
+	})
+	if err := c.ProbeQuota(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Usage().RequestLimit; got.Limit != 2500 || got.Remaining != 76 {
+		t.Fatalf("request budget %+v", got)
+	}
+}
