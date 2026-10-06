@@ -447,6 +447,12 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 	}
 }
 
+// ProbeQuota sends the cheapest query so the rate-limit headers reflect the current budget.
+func (c *Client) ProbeQuota(ctx context.Context) error {
+	var out struct{}
+	return c.do(ctx, "query QuotaProbe { viewer { id } }", nil, &out)
+}
+
 var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (err error) {
