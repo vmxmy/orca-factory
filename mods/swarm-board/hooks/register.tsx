@@ -924,14 +924,18 @@ function withDriver(b: Board, driver: DriverStatus | undefined, now: number): Bo
   if (pickStatusSource(driver, b, now) !== 'driver') return { ...b, driver: { state: 'stale' } }
   driver = { ...driver, tickets: driver.tickets.filter(ticket => b.repositoryPaths?.includes(ticket.repo)) }
   const known = [...b.inFlight, ...b.queue, ...b.failed, ...b.doneToday]
-  const inFlight = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
+  const rows = driver.tickets.map(t => known.find(old => old.id === t.identifier) ?? {
     id: t.identifier, title: t.identifier, state: 'started', labels: ['auto-impl'],
     priority: 0, updatedAt: new Date(typeof driver.generatedAt === 'number' ? driver.generatedAt * 1000 : driver.generatedAt).toISOString(), claimedAt: '',
   })
-  const ids = new Set(inFlight.map(t => t.id))
+  const ids = new Set(rows.map(t => t.id))
+  const candidates = new Set(driver.tickets.filter(t => t.stage === 'candidate').map(t => t.identifier))
+  const legacy = new Set(driver.tickets.filter(t => t.stage === 'human' || t.owner === '人').map(t => t.identifier))
   const resolving = new Set(driver.tickets.filter(t => t.owner === '处置Agent').map(t => t.identifier))
-  const failed = [...b.failed.filter(t => !ids.has(t.id)), ...inFlight.filter(t => resolving.has(t.id))]
-  return { ...b, driver, inFlight, queue: b.queue.filter(t => !ids.has(t.id)), failed }
+  const inFlight = rows.filter(t => !candidates.has(t.id) && !legacy.has(t.id))
+  const failed = [...b.failed.filter(t => !ids.has(t.id)), ...rows.filter(t => resolving.has(t.id) || legacy.has(t.id))]
+  const queue = [...b.queue.filter(t => !ids.has(t.id)), ...rows.filter(t => candidates.has(t.id))]
+  return { ...b, driver, inFlight, queue, failed }
 }
 
 async function tick($: any, handoffs: Map<string, string>) {

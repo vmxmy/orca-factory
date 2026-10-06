@@ -1205,3 +1205,14 @@ test('driver resolver ownership appears in resolution lane without failed label'
   expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+test('driver candidate stage remains in queue alongside resolver ownership', async ($, on) => {
+  await driverFixture($, on, JSON.stringify({ generatedAt: new Date().toISOString(), state: 'ok', tickets: [
+    { repo: '/repo', identifier: 'ZII-888', owner: '无', phase: '待领', stage: 'candidate' },
+    { repo: '/repo', identifier: 'ZII-889', owner: '处置Agent', phase: 'Agent处置' },
+  ], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }))
+  const ui = await mount($, 'terminal')
+  expect(await ui.find({ type: 'Text', text: /待领 \(1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
+  await ui.unmount()
+})
