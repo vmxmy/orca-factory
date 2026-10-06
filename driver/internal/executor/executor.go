@@ -526,7 +526,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		}
 		for result.State.Phase == machine.PhaseReview {
 			var reviewErr error
-			output, reviewerTier, reviewErr = e.Tools.Review(ctx, c.Repo, diffBase, head, t.Estimate)
+			output, reviewerTier, reviewErr = e.Tools.Review(WithReviewBrief(ctx, ReviewBrief{Text: brief, Lane3Globs: strings.Join(c.Lane3Globs, " ")}), c.Repo, diffBase, head, t.Estimate)
 			if stop := dependencyStop(ctx, reviewErr); stop != nil {
 				return result, stop
 			}
