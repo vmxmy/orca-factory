@@ -19,6 +19,14 @@ GitHub Issues 是唯一执行账本，统一 driver CLI 负责票据身份、状
 5. 回读核对 ID 映射、完整性、预算与归属，所有 checkpoint 均可找到唯一票。一次性切换 driver、shell、看板、配置与原 automation ID；旧写入方停止后才启用 GitHub 写入方，不并行双写。
 6. 只恢复已验证且可领取的工作。既有 auto-failed 不重排。回滚先停新领取并核对 GitHub 新增事实，不能直接重启旧 Linear 写入方丢失新进度。
 
+## SQLite 本地快照（GH-178）
+
+GitHub 模式的普通发现与展示采用有界缓存；`Read` / `ListComments` 及领取、恢复、合并前的远端复核保持强制读取。SQLite 只保存可重建投影，不替代 GitHub 账本或 executor checkpoint，也不触发 Linear 回退。
+
+缓存按 API 地址、仓库和实际凭据范围隔离，凭据不以明文写入磁盘。数据库使用 WAL，数据与刷新完成信息在同一事务提交；评论独立过期。权限错误、损坏、分页失败或取消保留为未知，不能转换为空列表或完整快照。写操作前后失效缓存，旧刷新不得越过 generation 屏障发布。
+
+缓存默认位于用户缓存目录内，支持测试与运行环境覆盖；具体路径、TTL 和恢复步骤见 [SQLite 设计与运行说明](../research/sqlite-cache-design.md)。保持原有 JSON 输出及快照文件配置契约；看板无需依赖 SQL 表结构。数据库删除或数据重置仍须显式要求。
+
 ## 验证
 
 `bin/orca-factory selftest`、`bin/orca-factory check .`、`claude plugin validate mods/swarm-board`、`claude plugin test mods/swarm-board` 检查脚本和看板；driver 入口见 [开发检查](../../driver/DEVELOPMENT.md)。单元还须运行原有 project gate 的 scope、固定基线与契约检查。源码搜索无 Linear 调用不足以验收：用拒绝 Linear 调用的夹具执行新安装、读写、缓存失败和失败票路径。
