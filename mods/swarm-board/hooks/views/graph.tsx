@@ -1,5 +1,11 @@
 import type { ComponentType, ReactElement } from 'react'
 import type { GraphData } from '../../types'
+import { readGraphSnapshot } from '../linear-cache'
+
+type TextProps = { dimColor?: boolean; children?: string }
+
+// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
+declare function h(component: ComponentType<TextProps>, props: { dimColor?: boolean; key?: string }, ...children: string[]): ReactElement
 
 export type GraphIssue = {
   id: string
@@ -53,7 +59,7 @@ export function buildGraph(input?: GraphInput): GraphView | null {
   for (const issue of active) {
     const pending = [...new Set(issue.blockedBy)].filter(id => {
       const blocker = byId.get(id)
-      return blocker !== undefined && !finished(blocker.state)
+      return blocker === undefined || !finished(blocker.state)
     }).sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
     blockers.set(issue.id, pending)
     for (const id of pending) downstream.get(id)?.push(issue.id)
@@ -106,31 +112,30 @@ export function buildGraph(input?: GraphInput): GraphView | null {
     return { parent, rows }
   })
 
-  const ready = active.filter(issue => blockers.get(issue.id)?.length === 0).length
+  const ready = active.filter(issue => issue.state === 'unstarted' && blockers.get(issue.id)?.length === 0).length
+  const blocked = active.filter(issue => blockers.get(issue.id)!.length > 0)
+  const blockedOn = [...new Set(blocked.flatMap(issue => blockers.get(issue.id)!))]
   const leader = unlockRank[0]
   const headline = active.length === 0 ? '无未完成票'
     : `${active.length} 张未完成，仅 ${ready} 张可领`
-      + (ready === 0 ? '；全部被依赖卡住' : '')
-      + (leader ? `；先完成 ${leader.id} 可放出 ${leader.count} 张下游` : '')
+      + (blocked.length ? `；${blocked.length} 张卡在 ${blockedOn.join('、')}` : '；无依赖阻塞')
+      + (leader ? `；${leader.id} 影响 ${leader.count} 张下游（含间接依赖）` : '')
   return { criticalPath, unlockRank, groups, headline }
 }
 
-type TextProps = { dimColor?: boolean; children?: string }
-
-// h 由 mod 运行时注入；本文件不用 JSX，因为 gate 在没有 node_modules 的检出里跑 CHECK。
-declare function h(component: ComponentType<TextProps>, props: { dimColor?: boolean; key?: string }, ...children: string[]): ReactElement
-
 export function renderGraph(
   Text: ComponentType<TextProps>,
-  graph?: GraphView | null,
+  graph: (GraphData & Partial<GraphView>) | null = readGraphSnapshot(Date.now()),
 ): ReactElement[] {
   if (!graph) return [h(Text, { key: 'unavailable', dimColor: true }, '数据未就绪')]
   const out: ReactElement[] = [
-    h(Text, { key: 'headline' }, graph.headline),
+    h(Text, { key: 'headline' }, graph.headline ?? (graph.unlockRank.length
+      ? `依赖摘要：卡在 ${graph.unlockRank[0].id}，影响 ${graph.unlockRank[0].count} 张下游；可领数量未知`
+      : '依赖摘要：暂无阻塞排行；可领数量未知')),
     h(Text, { key: 'critical-path' }, `关键路径：${graph.criticalPath.join(' → ') || '无'}`),
     h(Text, { key: 'unlock-rank' }, `解锁排行：${graph.unlockRank.map(item => `${item.id}(${item.count})`).join(' · ') || '无'}`),
   ]
-  for (const group of graph.groups) {
+  for (const group of graph.groups ?? []) {
     out.push(h(Text, { key: JSON.stringify(['parent', group.parent]) }, `${group.parent ?? '无父票'}`))
     for (const row of group.rows) {
       out.push(h(Text, { key: JSON.stringify(['row', group.parent, row.id]), dimColor: finished(row.state) },
