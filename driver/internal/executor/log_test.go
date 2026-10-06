@@ -78,7 +78,7 @@ func TestExecutorTransitionLog(t *testing.T) {
 					}
 				case "recovery.snapshot":
 					want := map[string]any{"Run": "run_one", "Task": "task_one", "Dispatch": "ctx_one", "Pending": false, "Completed": false}
-					if !reflect.DeepEqual(r["checkpoint"], want) || r["linear_phase"] != "worker 运行中" || r["linear_owner"] != "执行器 term=term_fdf45555-3378-4ca8-99b1-6200fc3106fc run=run_c2d32709f17c attempt=1 since=2026-10-05T14:08:40Z" {
+					if !reflect.DeepEqual(r["checkpoint"], want) || r["linear_phase"] != string(machine.PhaseHuman) || r["linear_owner"] != string(machine.OwnerHuman) {
 						t.Fatalf("snapshot: %v", r)
 					}
 					snapshot = true
@@ -188,4 +188,30 @@ type logRecordedLinear struct {
 
 func (l *logRecordedLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return l.comments, nil
+}
+
+func TestExecutorWarningLogRedactsCredentials(t *testing.T) {
+	e, o, _, _, _, ticket := fixture(t, "new-sha")
+	o.releaseErr = errors.New("release failed with ghp_privatecredential")
+	var logs bytes.Buffer
+	e.Stderr = &logs
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Phase != machine.PhaseMergeQueue {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if strings.Contains(logs.String(), "ghp_privatecredential") {
+		t.Fatal("warning leaked credential")
+	}
+	warnings := 0
+	for _, record := range transitionLogRecords(t, &logs) {
+		if record["level"] == "WARN" {
+			warnings++
+			if record["component"] != "executor" || !strings.Contains(record["msg"].(string), "[REDACTED]") {
+				t.Fatalf("warning=%v", record)
+			}
+		}
+	}
+	if warnings != 1 {
+		t.Fatalf("warnings=%d", warnings)
+	}
 }

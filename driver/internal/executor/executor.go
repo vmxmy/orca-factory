@@ -80,7 +80,7 @@ type Executor struct {
 	Now           func() time.Time
 	Recovery      Recovery
 	Sleep         func(context.Context, time.Duration) error
-	// Stderr receives best-effort warnings; nil means os.Stderr.
+	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
 }
@@ -102,14 +102,7 @@ func boardStatus(p machine.Phase) string {
 }
 
 func (e *Executor) warn(format string, args ...any) {
-	w := e.Stderr
-	if w == nil {
-		w = os.Stderr
-	}
-	if _, err := fmt.Fprintf(w, "warning: "+format+"\n", args...); err != nil {
-		// Warning delivery must not undo a committed transaction. Do not expose sink errors.
-		slog.Error("executor warning output failed")
-	}
+	e.logger().Warn(fmt.Sprintf(format, args...))
 }
 
 // Execute stops at merge ownership; it never merges a PR. Errors are deliberately

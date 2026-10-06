@@ -123,6 +123,10 @@ func (e *Executor) recoverySnapshot(ctx context.Context, t Ticket, cp *checkpoin
 		comments = append(comments[:0:0], comments...)
 		sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 		for _, c := range comments {
+			// Legacy handoff comments omit explicit phase and ownership lines.
+			if strings.HasPrefix(c.Body, "转人: ") {
+				phase, owner = string(machine.PhaseHuman), string(machine.OwnerHuman)
+			}
 			for _, line := range strings.Split(c.Body, "\n") {
 				if value, ok := strings.CutPrefix(line, "阶段: "); ok && value != "" {
 					phase = value
