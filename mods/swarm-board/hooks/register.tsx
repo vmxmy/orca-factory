@@ -12,8 +12,11 @@ import { WATCH_POLL_MS, shouldReload } from './snapshot-watch'
 import { parseDriverStatus, pickStatusSource } from './driver-status'
 import type { DriverStatus } from './driver-status'
 import { driverHeadText } from './driver-head'
+import { statusBarRows } from './status-bar'
 import { aggregateUsage, createUsageReader, ledgerUsage } from './usage'
 import type { TicketUsage, UsageRecord, LedgerUsage, WorktreeToTicket } from './usage'
+
+declare function h(type: unknown, props?: Record<string, unknown> | null, ...children: unknown[]): unknown
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
 
@@ -1435,77 +1438,52 @@ export const register: Register = on => {
         </Text>
       )
     }
-    const driverBadge = () => {
-      const driver = b.driver
-      if (!driver) return null
-      if (driver.state !== 'ok') return <Text dimColor>驱动器 Linear {driver.state === 'unknown' ? '未知' : '状态过期'}</Text>
-      const usage = driver.linear
-      const limits = usage.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
-        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset)
-      return <Text dimColor>{'驱动器 Linear 本小时 请求 ' + usage.requests + ' · 复杂度 ' + usage.complexity
-        + (limits.length ? ' · ' + limits.join(' · ') : ' · 剩余额度/重置时间未知')}</Text>
+    const driver = b.driver?.state === 'ok' ? b.driver : undefined
+    const limit = driver?.linear.limits.filter(row => b.repositoryPaths?.includes(row.repo))
+      .sort((a, b) => a.requests.remaining - b.requests.remaining)[0]
+    const statusCols = Math.max(0, bodyColumns - 4)
+    const driverBadgeText = driver
+      ? driver.linear.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
+        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset).join(' · ')
+      : undefined
+    const rows = statusBarRows({
+      inFlight: b.inFlight.length, max: b.maxInFlight || 0, failed: b.failed.length,
+      queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
+      quota: limit ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
+      driver: b.driver ? b.driver.state : 'none', driverRequests: driver?.linear.requests, complexity: driver?.linear.complexity,
+      driverBadge: driverBadgeText, globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
+      at: b.at, refreshSec: remainingSec,
+      snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
+      version: MOD_VERSION, view: v, detail: d,
+      linearUsage: b.linearUsage, linearLimit: LINEAR_HOURLY_LIMIT, lastRun: b.lastRun, stale,
+      restart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
+      automation: automation?.enabled, automationKnown, refreshing,
+    }, statusCols)
+    const statusActions = new Map<string, { key: string; hotkey: string; dimColor?: boolean; onPress: () => unknown }>()
+    const viewLabels: Record<View, string> = { swarm: '总览', task: '泳道', graph: '依赖', throughput: '吞吐', failures: '失败' }
+    const viewKeys: Record<View, string> = { swarm: 's', task: 't', graph: 'g', throughput: 'p', failures: 'f' }
+    for (const target of Object.keys(viewLabels) as View[]) {
+      statusActions.set(v === target ? '[' + viewLabels[target] + ']' : viewLabels[target], {
+        key: 'view-' + target, hotkey: viewKeys[target], dimColor: v !== target,
+        onPress: async () => { await update($, view, () => target); if (target !== 'swarm' && target !== 'task') await tick($, handoffs) },
+      })
     }
-    const focal = '  ' + b.inFlight.length + ' / ' + (b.maxInFlight || '?') + '  '
-    const linearBadge = () => {
-      if (b.driver?.state === 'ok') return null
-      const u = (b as Board).linearUsage
-      if (!u) return null
-      if (!u.known) return <Text dimColor>Linear 用量未知</Text>
-      const color = u.total >= LINEAR_HOURLY_DANGER ? 'red' : u.total >= LINEAR_HOURLY_WARN ? 'yellow' : undefined
-      const main = 'Linear 本小时 ' + u.total + '/' + LINEAR_HOURLY_LIMIT
-      if (d) {
-        const parts = (['precheck', 'prune', 'ledger', 'coordinator'] as const).map(s => s + ' ' + (u.bySource[s] ?? 0))
-        parts.push('看板 ' + u.board)
-        return <Text color={color}>{main} · {parts.join(' · ')}</Text>
-      }
-      return <Text color={color}>{main}</Text>
+    statusActions.set(d ? '[明细]' : '明细', { key: 'toggle-detail', hotkey: 'd', dimColor: !d, onPress: () => update($, detail, x => !x) })
+    if (automation) {
+      const toggleAuto = { key: 'toggle-auto', hotkey: 'a', onPress: () => toggleAutomation($, handoffs) }
+      statusActions.set('● 定时 开', toggleAuto)
+      statusActions.set('○ 定时 关', toggleAuto)
     }
+    statusActions.set(refreshing ? '刷新中…' : '刷新', { key: 'refresh', hotkey: 'r', onPress: () => tick($, handoffs) })
 
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" alignItems="center" gap={2} marginBottom={1}>
-          <Text bold inverse>{focal}</Text>
-          <Text bold>在做</Text>
-          {b.driver?.state === 'ok' && b.driver.globalPause.active
-            ? <Text color="yellow">{'⏸ 全局暂停 ' + b.driver.globalPause.durationSeconds + ' 秒'}</Text>
-            : <Text>{b.failed.length === 0 ? '🟢' : b.failed.length < 3 ? '🟡' : '🔴'} Agent处置 {b.failed.length}</Text>}
-          <Text dimColor>{G.queued} 待领 {b.queue.length} · {G.wait} PR {b.prs.length} · {G.human} Agent处置 {b.failed.length} · {G.done} 今日完成 {b.doneToday.length}{b.todayCost > 0 ? ' · 今日按 API 价折算 $' + b.todayCost.toFixed(2) : ''}</Text>
-          {linearBadge()}
-        </Box>
-        {driverBadge()}
-        <Box flexDirection="row" gap={2} marginBottom={1}>
-          <Button key="view-swarm" hotkey="s" plain dimColor={v !== 'swarm'} label={v === 'swarm' ? '[总览]' : ' 总览 '} onPress={() => update($, view, () => 'swarm')} />
-          <Button key="view-task" hotkey="t" plain dimColor={v !== 'task'} label={v === 'task' ? '[泳道]' : ' 泳道 '} onPress={() => update($, view, () => 'task')} />
-          <Button key="view-graph" hotkey="g" plain dimColor={v !== 'graph'} label={v === 'graph' ? '[依赖]' : ' 依赖 '} onPress={async () => { await update($, view, () => 'graph'); await tick($, handoffs) }} />
-          <Button key="view-throughput" hotkey="p" plain dimColor={v !== 'throughput'} label={v === 'throughput' ? '[吞吐]' : ' 吞吐 '} onPress={async () => { await update($, view, () => 'throughput'); await tick($, handoffs) }} />
-          <Button key="view-failures" hotkey="f" plain dimColor={v !== 'failures'} label={v === 'failures' ? '[失败]' : ' 失败 '} onPress={async () => { await update($, view, () => 'failures'); await tick($, handoffs) }} />
-          <Button key="toggle-detail" hotkey="d" plain dimColor={!d} label={d ? '[明细]' : ' 明细 '} onPress={() => update($, detail, x => !x)} />
-          {automation
-            ? <Button key="toggle-auto" hotkey="a" plain label={automation.enabled ? '● 定时 开' : '○ 定时 关'} onPress={() => toggleAutomation($, handoffs)} />
-            : <Text dimColor>定时：{automationKnown ? '未安装' : '?'}</Text>}
-          <Button key="refresh" hotkey="r" plain label={refreshing ? '↻ 刷新中…' : '↻ 刷新'} onPress={() => tick($, handoffs)} />
-          <Text dimColor={!stale} color={stale ? 'yellow' : undefined}>{b.at
-            ? '更新于 ' + b.at + (stale ? ' · 数据已过期 ' + staleMin + ' 分' : countdown ? ' · ' + countdown : '')
-            : '加载中…'}{b.lastRun ? ' · ' + b.lastRun : ''}</Text>
-          {(() => {
-            if (b.driver?.state === 'ok') return <Text dimColor>· 数据来自驱动器实时状态</Text>
-            const snapshotAgeMs = (b as Board).snapshotAgeMs
-            const throttled = (b as Board).linearThrottled === true
-            if (snapshotAgeMs !== undefined) {
-              const snapshotMin = Math.max(0, Math.floor(snapshotAgeMs / 60_000))
-              return <Text dimColor>· 数据来自快照 {snapshotMin} 分钟前</Text>
-            }
-            if (throttled) return <Text dimColor>· 快照缺失，Linear 读取已节流</Text>
-            return null
-          })()}
-          {(() => {
-            const installed = (b as Board).installedVersion
-            const needsRestart = !!installed && verGT(installed, MOD_VERSION)
-            return <Text dimColor={!needsRestart} color={needsRestart ? 'yellow' : undefined}>
-              {needsRestart ? 'v' + MOD_VERSION + ' → 已安装 v' + installed + '，请重启' : 'v' + MOD_VERSION}
-            </Text>
-          })()}
-        </Box>
+        {h(Box, { flexDirection: 'column', marginBottom: 1 }, ...rows.map((segments, row) =>
+          h(Box, { key: 'status-' + row, flexDirection: 'row', gap: 1, width: statusCols }, ...segments.map((segment, index) => {
+            const action = statusActions.get(segment.text)
+            return action ? h(Button, { ...action, plain: true, label: segment.text })
+              : h(Text, { key: index, color: segment.color, dimColor: !segment.color }, segment.text)
+          }))))}
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
         {v === 'swarm' ? card('agents', G.work + ' Agents · 按 API 价折算', (
