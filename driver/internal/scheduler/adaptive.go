@@ -61,6 +61,16 @@ func (s *Scheduler) plan(now time.Time, busy bool, remaining float64) {
 // contract. Both request and complexity quotas constrain all repositories.
 type quotaSource interface{ LinearLimits() []linear.RateLimit }
 
+// quotaProber is optional: it spends one cheap request to refresh the quota headers.
+type quotaProber interface{ ProbeLinearQuota(context.Context) error }
+
+// A quota pause starts below pauseFraction and ends at resumeFraction, leaving the
+// refilled budget enough room for one Snapshot.
+const (
+	pauseFraction  = .05
+	resumeFraction = .10
+)
+
 func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, error) {
 	if s.Pauses == nil {
 		s.Pauses = pause.New(s.clock, nil, nil)
@@ -102,10 +112,12 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 			}
 		}
 		key := pause.Key{Dependency: pause.Linear, Kind: pause.Quota}
-		if remaining < .05 {
+		if remaining < pauseFraction {
 			s.Pauses.Pause(key, reset)
-		} else {
+			s.quotaPaused = true
+		} else if !s.quotaPaused || remaining >= resumeFraction {
 			s.Pauses.Resume(key)
+			s.quotaPaused = false
 		}
 	}
 	return remaining
