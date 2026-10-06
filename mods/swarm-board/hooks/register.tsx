@@ -1432,15 +1432,20 @@ export const register: Register = on => {
     const limit = driver?.linear.limits.filter(row => b.repositoryPaths?.includes(row.repo))
       .sort((a, b) => a.requests.remaining - b.requests.remaining)[0]
     const statusCols = Math.max(0, bodyColumns - 4)
+    const driverBadgeText = driver
+      ? driver.linear.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
+        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset).join(' · ')
+      : undefined
     const rows = statusBarRows({
       inFlight: b.inFlight.length, max: b.maxInFlight || 0, failed: b.failed.length,
       queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
       quota: limit ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
-      driver: b.driver?.state ?? 'unknown', globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
+      driver: b.driver ? b.driver.state : 'none', driverRequests: driver?.linear.requests, complexity: driver?.linear.complexity,
+      driverBadge: driverBadgeText, globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
       at: b.at, refreshSec: remainingSec,
       snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
-      version: MOD_VERSION, view: v, detail: d, repo: limit?.repo ?? b.repositoryPaths?.[0],
-      complexity: driver?.linear.complexity, linearUsage: b.linearUsage, lastRun: b.lastRun, stale,
+      version: MOD_VERSION, view: v, detail: d,
+      linearUsage: b.linearUsage, linearLimit: LINEAR_HOURLY_LIMIT, lastRun: b.lastRun, stale,
       restart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
       automation: automation?.enabled, automationKnown, refreshing,
     }, statusCols)
@@ -1454,9 +1459,11 @@ export const register: Register = on => {
       })
     }
     statusActions.set(d ? '[明细]' : '明细', { key: 'toggle-detail', hotkey: 'd', dimColor: !d, onPress: () => update($, detail, x => !x) })
-    if (automation) statusActions.set('定时 ' + (automation.enabled ? '开' : '关'), {
-      key: 'toggle-auto', hotkey: 'a', onPress: () => toggleAutomation($, handoffs),
-    })
+    if (automation) {
+      const toggleAuto = { key: 'toggle-auto', hotkey: 'a', onPress: () => toggleAutomation($, handoffs) }
+      statusActions.set('● 定时 开', toggleAuto)
+      statusActions.set('○ 定时 关', toggleAuto)
+    }
     statusActions.set(refreshing ? '刷新中…' : '刷新', { key: 'refresh', hotkey: 'r', onPress: () => tick($, handoffs) })
 
     return (
@@ -1465,7 +1472,7 @@ export const register: Register = on => {
           h(Box, { key: 'status-' + row, flexDirection: 'row', gap: 1, width: statusCols }, ...segments.map((segment, index) => {
             const action = statusActions.get(segment.text)
             return action ? h(Button, { ...action, plain: true, label: segment.text })
-              : h(Text, { key: index, color: segment.color, dimColor: !segment.color, wrap: 'truncate-end' }, segment.text)
+              : h(Text, { key: index, color: segment.color, dimColor: !segment.color }, segment.text)
           }))))}
         {b.error ? <Text color="yellow">{b.error}</Text> : null}
 
