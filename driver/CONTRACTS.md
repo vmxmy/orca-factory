@@ -4,7 +4,7 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
-| GitHub tags 返回数组（name、commit.sha）；compare 返回 base_commit.sha、total_commits 与 commits[].commit.message。2026-10-06 通过 `gh api repos/vmxmy/orca-factory/tags` 和 `gh api repos/vmxmy/orca-factory/compare/swarm-board-v0.3.17...main` 原样录制，基线 b912a73，后续包含 eeb82fd；compare 提交是全仓库历史，Source 仍需按插件路径筛选 | `github-release-tags.json`、`github-release-compare.json` | `release.TestRecordedReleaseReads` |
+| GitHub tags 返回数组（name、commit.sha）；compare 返回 base_commit.sha、total_commits 与 commits[].commit.message。2026-10-06 通过 `gh api repos/vmxmy/orca-factory/tags` 和 `gh api repos/vmxmy/orca-factory/compare/swarm-board-v0.3.17...main` 原样录制，基线 b912a73，后续包含 eeb82fd；compare 提交是全仓库历史，生产 Source 以固定 main SHA 的完整 git 历史按插件路径筛选，避免 compare 文件列表截断；测试复用生产 Tag/Comparison 解码结构与 LatestTag 选择 | `github-release-tags.json`、`github-release-compare.json` | `release.TestRecordedReleaseReads` |
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
@@ -74,3 +74,9 @@
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
 验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。
+
+## 自动发布的持久回执
+
+仅 live `driver serve` 在获得单例锁后启用发布；dry-run 不创建发布适配器。每轮已获准的仓库巡检结束后扫描，发布计划先写入 `~/.local/state/orca-factory/releases/<仓库名 SHA-256>.json`，记录入队时间、固定 main、文件字节、PR、合并 SHA 和完成状态。功能 PR 与发布 PR 在同一仓库按持久入队时间选出唯一队首，再复用 `internal/merge` 合并。
+
+重启先恢复同一发布分支与 PR，已确认的合并不重做；tag 和 release 写入失败通过读取远端回执恢复。发布只改 manifest 版本、存在时的 `MOD_VERSION` 和 CHANGELOG。等待期间插件源码变化、发布分支被改写、tag 指向冲突、追赶预算耗尽或 smoke 结果不确定时保留队首并报告错误，需要人工核对后恢复；不得删除状态来绕过这些阻塞。部署/冒烟未确认通过前不放行后续 PR。

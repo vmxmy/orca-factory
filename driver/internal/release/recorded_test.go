@@ -1,6 +1,7 @@
 package release
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -20,29 +21,17 @@ func TestRecordedReleaseReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var tags []struct {
-		Name   string `json:"name"`
-		Commit struct {
-			SHA string `json:"sha"`
-		} `json:"commit"`
-	}
+	var tags []Tag
 	read("github-release-tags.json", &tags)
 	if len(tags) != 1 || tags[0].Name != "swarm-board-v0.3.17" || tags[0].Commit.SHA != "b912a73e868bb09460df4f06e4687e007b394eb8" {
 		t.Fatalf("unexpected baseline tags: %+v", tags)
 	}
-	var comparison struct {
-		Status       string `json:"status"`
-		TotalCommits int    `json:"total_commits"`
-		BaseCommit   struct {
-			SHA string `json:"sha"`
-		} `json:"base_commit"`
-		Commits []struct {
-			SHA    string `json:"sha"`
-			Commit struct {
-				Message string `json:"message"`
-			} `json:"commit"`
-		} `json:"commits"`
+	src := &Repository{tags: tags}
+	latest, err := src.LatestTag(context.Background(), "swarm-board")
+	if err != nil || latest != "swarm-board-v0.3.17" {
+		t.Fatalf("latest=%s err=%v", latest, err)
 	}
+	var comparison Comparison
 	read("github-release-compare.json", &comparison)
 	if comparison.Status != "ahead" || comparison.BaseCommit.SHA != tags[0].Commit.SHA || comparison.TotalCommits != len(comparison.Commits) {
 		t.Fatalf("incomplete or mismatched comparison: %+v", comparison)

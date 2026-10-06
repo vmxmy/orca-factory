@@ -77,6 +77,20 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 		groups[repo] = append(groups[repo], t)
 	}
 	var problems []error
+	releaseHeads := map[string]string{}
+	for path := range r.Releases {
+		if !r.ReleaseEligible[path] {
+			continue
+		}
+		name := r.Repositories[path].Env["AGENT_GH_REPO"]
+		if _, exists := groups[name]; !exists {
+			groups[name] = nil
+		}
+		if old, exists := releaseHeads[name]; exists && old != path {
+			return errors.New("duplicate release repository")
+		}
+		releaseHeads[name] = path
+	}
 	names := make([]string, 0, len(groups))
 	for repo := range groups {
 		names = append(names, repo)
@@ -101,6 +115,22 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			}
 			return a.EnqueuedAt.Before(b.EnqueuedAt)
 		})
+		if path, ok := releaseHeads[repo]; ok {
+			head, err := r.Releases[path].Head()
+			if err != nil {
+				problems = append(problems, err)
+				continue
+			}
+			if !head.IsZero() && (len(rows) == 0 || head.Before(rows[0].Handoff.EnqueuedAt)) {
+				if err := r.Releases[path].Advance(ctx); err != nil {
+					problems = append(problems, err)
+				}
+				continue
+			}
+		}
+		if len(rows) == 0 {
+			continue
+		}
 		if err := r.advanceMerge(ctx, rows[0]); err != nil {
 			problems = append(problems, fmt.Errorf("merge waiting %s: %w", rows[0].Identifier, err))
 		}
