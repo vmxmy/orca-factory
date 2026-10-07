@@ -7,6 +7,8 @@ on:
   workflow_dispatch:
 
 env:
+  http_proxy: ${{ vars.CI_NETWORK_PROXY }}
+  https_proxy: ${{ vars.CI_NETWORK_PROXY }}
   GOPROXY: ${{ vars.GO_MODULE_PROXY || 'https://proxy.golang.org,direct' }}
 
 permissions:

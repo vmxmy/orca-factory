@@ -266,7 +266,7 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 		{"null", `{"terminals":null}`, true},
 		{"missing", `{}`, true},
 		{"string timestamp", `{"terminals":[{"lastOutputAt":"private-value"}]}`, true},
-		{"null timestamp", `{"terminals":[{"lastOutputAt":null}]}`, true},
+		{"null timestamp", `{"terminals":[{"handle":"unknown","worktreePath":"/worker","lastOutputAt":null}]}`, false},
 		{"missing timestamp", `{"terminals":[{}]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -293,7 +293,7 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 			if tc.name == "valid" && (!ok || got.Handle != "new" || got.LastOutputAt != 2000) {
 				t.Fatalf("match=%+v found=%v", got, ok)
 			}
-			if tc.name == "empty" && ok {
+			if (tc.name == "empty" || tc.name == "null timestamp") && ok {
 				t.Fatal("matched empty terminals")
 			}
 			for _, path := range []string{"", "worker", "/work"} {
@@ -318,6 +318,18 @@ func TestTerminalSend(t *testing.T) {
 		var ticket *infra.Ticket
 		if !errors.As(err, &ticket) || ticket.Err.Error() != "terminal send requires handle and text" {
 			t.Fatalf("invalid arguments error=%v", err)
+		}
+	}
+}
+
+func TestTerminalForWorktreeUnknownOutput(t *testing.T) {
+	for _, rows := range [][]Terminal{
+		{{Handle: "unknown", WorktreePath: "/worker"}},
+		{{Handle: "known", WorktreePath: "/worker", LastOutputAt: 1000}, {Handle: "unknown", WorktreePath: "/worker"}},
+		{{Handle: "unknown", WorktreePath: "/worker"}, {Handle: "known", WorktreePath: "/worker", LastOutputAt: 1000}},
+	} {
+		if got, ok := TerminalForWorktree(rows, "/worker"); ok {
+			t.Fatalf("unknown output selected for idle detection: %+v", got)
 		}
 	}
 }

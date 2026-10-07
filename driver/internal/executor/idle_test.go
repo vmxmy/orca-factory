@@ -296,3 +296,21 @@ func TestIdleNudge(t *testing.T) {
 		})
 	}
 }
+
+func TestIdleUnknownOutputDoesNotNudge(t *testing.T) {
+	e, _, _, _, _, _ := fixture(t, "new-sha")
+	o := &idleOrca{}
+	o.terminals = func(int) ([]orca.Terminal, error) {
+		return []orca.Terminal{{Handle: "unknown", WorktreePath: "/worker"}}, nil
+	}
+	e.Orca = o
+	idle := workerIdle{}
+	for range 2 {
+		if idle.observe(context.Background(), e, "/worker", time.Minute, machine.State{}) {
+			t.Fatal("unknown output classified as stalled")
+		}
+	}
+	if len(o.sends) != 0 {
+		t.Fatalf("sent nudge without output evidence: %v", o.sends)
+	}
+}
