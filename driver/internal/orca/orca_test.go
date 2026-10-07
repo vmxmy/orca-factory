@@ -360,7 +360,7 @@ func TestRecordedTerminalUnknownOutput(t *testing.T) {
 			t.Fatal("unrelated unknown timestamp blocked a recorded known terminal")
 		}
 	}
-	if unknown == 0 || unknown == len(rows) {
+	if unknown != 4 || len(rows) != 15 {
 		t.Fatalf("recorded mixed timestamps not exercised: unknown=%d rows=%d", unknown, len(rows))
 	}
 }
