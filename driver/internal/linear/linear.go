@@ -609,6 +609,12 @@ func (c *Client) Usage() Usage { c.mu.Lock(); defer c.mu.Unlock(); c.rotateHour(
 
 type discoveryReadKey struct{}
 
+// DiscoveryQuotaError means the next ordinary page cannot fit above the quota
+// reserve. It requires a backed-off cheap probe, even above the pause fraction.
+type DiscoveryQuotaError struct{}
+
+func (*DiscoveryQuotaError) Error() string { return "linear discovery quota headroom exhausted" }
+
 // This is admission against the last headers, not a cross-process reservation.
 // A cheap probe remains available even when an ordinary page cannot fit.
 func (c *Client) admitDiscovery(complexity int64) error {
@@ -618,7 +624,7 @@ func (c *Client) admitDiscovery(complexity int64) error {
 		cost  int64
 	}{{usage.RequestLimit, 1}, {usage.ComplexityLimit, complexity}} {
 		if budget.limit.Limit > 0 && float64(budget.limit.Remaining-budget.cost) < float64(budget.limit.Limit)*c.discoveryPauseFraction {
-			return &infra.Global{Dep: infra.Linear, Err: errors.New("linear discovery quota headroom exhausted")}
+			return &infra.Global{Dep: infra.Linear, Err: &DiscoveryQuotaError{}}
 		}
 	}
 	return nil

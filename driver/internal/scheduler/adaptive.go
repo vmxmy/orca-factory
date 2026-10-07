@@ -116,7 +116,7 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 		if remaining < s.pauseFraction() {
 			s.Pauses.Pause(key, reset)
 			s.quotaPaused = true
-		} else if !s.quotaPaused || remaining >= s.resumeFraction() {
+		} else if !s.discoveryQuotaPaused && (!s.quotaPaused || remaining >= s.resumeFraction()) {
 			s.Pauses.Resume(key)
 			s.quotaPaused = false
 		}

@@ -83,6 +83,13 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 		switch {
 		case strings.Contains(q.Query, "QuotaProbe"):
 			f.probes.Add(1)
+			switch f.mode.Load().(string) {
+			case "probe-failed":
+				http.Error(w, "probe failed", http.StatusServiceUnavailable)
+				return
+			case "probe-low":
+				w.Header().Set("X-RateLimit-Complexity-Remaining", "180000")
+			}
 			data = map[string]any{"viewer": map[string]any{"id": "viewer"}}
 		case strings.Contains(q.Query, "Metadata"):
 			field := "states"
@@ -167,6 +174,9 @@ merge-progress-v1: {"queue_id":"q","phase":"merged","deployment":{"state":"pendi
 			}
 			if mode := f.mode.Load().(string); mode == "quota-requests" {
 				w.Header().Set("X-RateLimit-Requests-Remaining", "125")
+			} else if mode == "quota-above-resume" {
+				w.Header().Set("X-RateLimit-Complexity-Limit", "1000")
+				w.Header().Set("X-RateLimit-Complexity-Remaining", "600")
 			} else if mode == "quota-complexity" {
 				w.Header().Set("X-RateLimit-Complexity-Remaining", "150500")
 			}
@@ -475,5 +485,68 @@ func TestLiveBatchReservesIssuePageHeadroom(t *testing.T) {
 	rows, err := r.Snapshot(context.Background(), []config.Repository{repo})
 	if err == nil || rows != nil || f.snapshots.Load() != 1 || f.comments.Load() != 0 {
 		t.Fatalf("issue pagination exceeded known headroom: issues=%d comments=%d rows=%d err=%v", f.snapshots.Load(), f.comments.Load(), len(rows), err)
+	}
+}
+
+func TestLiveBatchAdmissionPauseRequiresSuccessfulProbe(t *testing.T) {
+	for _, mode := range []string{"quota-complexity", "quota-above-resume"} {
+		t.Run(mode, func(t *testing.T) {
+			f := liveBatchSetup(t)
+			r, repo := liveBatchRuntime(t, f)
+			now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+			start := now
+			s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+			f.mode.Store(mode)
+			if err := s.Tick(context.Background()); err == nil || !s.Pauses.Paused("") {
+				t.Fatalf("refusal did not pause: %v", err)
+			}
+			beforeIssues, beforeComments := f.snapshots.Load(), f.comments.Load()
+			for _, step := range []struct {
+				minute int
+				mode   string
+				probes int64
+				paused bool
+			}{{3, mode, 0, true}, {5, "probe-failed", 1, true}, {8, "probe-failed", 1, true}, {10, "probe-low", 2, true}, {13, "probe-low", 2, true}, {15, "", 3, false}} {
+				now = start.Add(time.Duration(step.minute) * time.Minute)
+				f.mode.Store(step.mode)
+				_ = s.Tick(context.Background())
+				if f.probes.Load() != step.probes || s.Pauses.Paused("") != step.paused || s.NextInterval <= 0 {
+					t.Fatalf("minute %d: probes=%d paused=%v next=%v", step.minute, f.probes.Load(), s.Pauses.Paused(""), s.NextInterval)
+				}
+				issues, comments := beforeIssues, beforeComments
+				if !step.paused {
+					issues += 5
+					comments += 20
+				}
+				if f.snapshots.Load() != issues || f.comments.Load() != comments || f.writes.Load() != 0 {
+					t.Fatalf("minute %d: unexpected discovery/writes: issues=%d comments=%d writes=%d", step.minute, f.snapshots.Load(), f.comments.Load(), f.writes.Load())
+				}
+			}
+		})
+	}
+}
+
+func TestLiveBatchCanceledProbeKeepsAdmissionPauseAndBackoff(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+	f.mode.Store("quota-above-resume")
+	_ = s.Tick(context.Background())
+	beforeIssues, beforeComments := f.snapshots.Load(), f.comments.Load()
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	now = now.Add(5 * time.Minute)
+	_ = s.Tick(canceled)
+	now = now.Add(3 * time.Minute)
+	_ = s.Tick(context.Background())
+	if !s.Pauses.Paused("") || f.probes.Load() != 0 || f.snapshots.Load() != beforeIssues || f.comments.Load() != beforeComments || s.NextInterval <= 0 {
+		t.Fatal("canceled probe released pause or bypassed backoff")
+	}
+	f.mode.Store("")
+	now = now.Add(2 * time.Minute)
+	_ = s.Tick(context.Background())
+	if s.Pauses.Paused("") || f.probes.Load() != 1 || f.snapshots.Load() != beforeIssues+5 || f.comments.Load() != beforeComments+20 || f.writes.Load() != 0 {
+		t.Fatal("fresh successful probe did not recover after cancellation")
 	}
 }
