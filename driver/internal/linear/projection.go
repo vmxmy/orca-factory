@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS projection_issues (id TEXT PRIMARY KEY, payload BLOB 
 CREATE TABLE IF NOT EXISTS projection_comments (id TEXT PRIMARY KEY, issue_id TEXT NOT NULL, payload BLOB NOT NULL, seen_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS projection_dirty (object_type TEXT NOT NULL, object_id TEXT NOT NULL, PRIMARY KEY(object_type, object_id));
 CREATE TABLE IF NOT EXISTS projection_delivery (dedupe_key TEXT PRIMARY KEY, delivered_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS projection_events (delivery_id TEXT PRIMARY KEY, event_type TEXT NOT NULL, action TEXT NOT NULL, payload BLOB NOT NULL, received_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS projection_intents (intent_key TEXT PRIMARY KEY, payload BLOB NOT NULL, created_at TEXT NOT NULL);`); err != nil {
 		return err
 	}
