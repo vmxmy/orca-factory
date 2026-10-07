@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -15,6 +16,10 @@ type RefreshReader interface {
 }
 
 var ErrRefreshBound = errors.New("linear reconciliation exceeds configured bound")
+
+type RefreshMetrics struct {
+	Coalesced int64 `json:"coalesced"`
+}
 
 type RefreshOptions struct {
 	Projects           []string
@@ -33,8 +38,9 @@ type RefreshCoordinator struct {
 	options    RefreshOptions
 	now        func() time.Time
 
-	mu     sync.Mutex
-	active *refreshCall
+	mu        sync.Mutex
+	active    *refreshCall
+	coalesced atomic.Int64
 }
 
 type refreshCall struct {
@@ -60,6 +66,7 @@ func (c *RefreshCoordinator) Refresh(ctx context.Context) error {
 	if call := c.active; call != nil {
 		onCoalesced := c.options.OnCoalesced
 		c.mu.Unlock()
+		c.coalesced.Add(1)
 		if onCoalesced != nil {
 			onCoalesced()
 		}
@@ -81,6 +88,11 @@ func (c *RefreshCoordinator) Refresh(ctx context.Context) error {
 	c.active = nil
 	c.mu.Unlock()
 	return err
+}
+
+// Metrics reports refresh coordination without exposing ticket data.
+func (c *RefreshCoordinator) Metrics() RefreshMetrics {
+	return RefreshMetrics{Coalesced: c.coalesced.Load()}
 }
 
 // Schedule is the event-driven entry point. The returned channel is closed

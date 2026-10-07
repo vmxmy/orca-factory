@@ -200,6 +200,33 @@ func TestComments(t *testing.T) {
 		t.Fatalf("list: %+v %v", comments, err)
 	}
 }
+
+func TestMetricsRecordRequestCacheForcedVerificationAndQuota(t *testing.T) {
+	c, _ := fixture(t, func(w http.ResponseWriter, q request) {
+		if strings.Contains(q.Query, "QuotaProbe") {
+			_, _ = fmt.Fprint(w, `{"data":{"viewer":{"id":"viewer"}}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}}`)
+	})
+	ctx := BeginRound(context.Background())
+	if _, err := c.ListComments(ctx, "i1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ListComments(ctx, "i1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CriticalComments(context.Background(), c, "i1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.ProbeQuota(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := c.Metrics()
+	if got.Requests != 6 || got.CacheHits != 1 || got.ForcedVerifications != 1 || got.QuotaProbes != 1 {
+		t.Fatalf("metrics=%+v", got)
+	}
+}
 func TestErrorsAreSanitized(t *testing.T) {
 	for _, tc := range []struct {
 		status    int

@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
@@ -168,9 +169,21 @@ type roundEntry struct {
 	comments []Comment
 	err      error
 }
+type Metrics struct {
+	Requests            int64 `json:"requests"`
+	CacheHits           int64 `json:"cache_hits"`
+	ForcedVerifications int64 `json:"forced_verifications"`
+	QuotaProbes         int64 `json:"quota_probes"`
+}
+
+type clientMetrics struct {
+	cacheHits, forcedVerifications, quotaProbes atomic.Int64
+}
+
 type round struct {
 	mu       sync.Mutex
 	comments map[string]*roundEntry
+	metrics  *clientMetrics
 }
 
 // BeginRound marks ordinary reads made with ctx as belonging to one access round.
@@ -192,6 +205,7 @@ type Client struct {
 	mu                       sync.Mutex
 	usage                    Usage
 	now                      func() time.Time
+	metrics                  clientMetrics
 }
 
 // New reads LINEAR_API_KEY and caches all team states, labels and projects.
@@ -517,7 +531,11 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 		return c.ListCommentsRemote(ctx, id)
 	}
 	r.mu.Lock()
+	if r.metrics == nil {
+		r.metrics = &c.metrics
+	}
 	if entry := r.comments[id]; entry != nil {
+		r.metrics.cacheHits.Add(1)
 		r.mu.Unlock()
 		select {
 		case <-ctx.Done():
@@ -578,6 +596,7 @@ func cloneComments(comments []Comment) []Comment {
 
 // ProbeQuota sends the cheapest query so the rate-limit headers reflect the current budget.
 func (c *Client) ProbeQuota(ctx context.Context) error {
+	c.metrics.quotaProbes.Add(1)
 	var out struct{}
 	return c.do(ctx, "query QuotaProbe { viewer { id } }", nil, &out)
 }
@@ -708,6 +727,11 @@ func (c *Client) record(response *http.Response) {
 }
 func (c *Client) Usage() Usage { c.mu.Lock(); defer c.mu.Unlock(); c.rotateHour(); return c.usage }
 
+// Metrics reports credential-free observations made by this client.
+func (c *Client) Metrics() Metrics {
+	return Metrics{Requests: c.Usage().Requests, CacheHits: c.metrics.cacheHits.Load(), ForcedVerifications: c.metrics.forcedVerifications.Load(), QuotaProbes: c.metrics.quotaProbes.Load()}
+}
+
 // CriticalComments forces a remote read for actions whose authorization depends
 // on current ownership or receipts. Clients without the explicit remote seam
 // retain their existing read behavior for compatibility with adapters.
@@ -717,6 +741,9 @@ func CriticalComments(ctx context.Context, reader interface {
 	if fresh, ok := reader.(interface {
 		ListCommentsRemote(context.Context, string) ([]Comment, error)
 	}); ok {
+		if client, ok := reader.(*Client); ok {
+			client.metrics.forcedVerifications.Add(1)
+		}
 		return fresh.ListCommentsRemote(ctx, id)
 	}
 	return reader.ListComments(ctx, id)
