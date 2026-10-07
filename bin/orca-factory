@@ -47,10 +47,36 @@ resolve_repo() {
   cd "$p" && pwd -P
 }
 
+ledger_preflight() {
+  local entry="$1/ledger.sh" driver="${AGENT_DRIVER_BIN:-orca-factory-driver}" contract digest
+  contract="$("$driver" ledger-shell --contract-version)" || fail "ledger driver unavailable or incompatible: $driver"
+  [[ "$contract" == ledger-shell-v1 ]] || fail "unsupported ledger contract: $contract"
+  [[ ! -L "$entry" ]] || fail "ledger conflict: symbolic link $entry"
+  if [[ -e "$entry" ]]; then
+    [[ -f "$entry" ]] || fail "ledger conflict: not a regular file $entry"
+    if ! cmp -s "$CORE/ledger.sh" "$entry"; then
+      digest="$(git hash-object --no-filters "$entry")"
+      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 ]] \
+        || fail "ledger conflict: unknown or customized entry $entry"
+    fi
+  fi
+}
+
+install_ledger() {
+  local dest="$1" tmp
+  mkdir -p "$dest"
+  tmp="$(mktemp "$dest/.ledger.sh.XXXXXX")" || fail "cannot stage ledger entry in $dest"
+  if ! cp "$CORE/ledger.sh" "$tmp" || ! chmod 755 "$tmp" || ! bash -n "$tmp" || ! mv -f "$tmp" "$dest/ledger.sh"; then
+    rm -f "$tmp"
+    fail "cannot replace ledger entry in $dest; original entry retained"
+  fi
+}
+
 copy_core() {  # copy_core <dest-dir> ; overwrites
   local dest="$1" f
   mkdir -p "$dest"
   while IFS= read -r f; do
+    [[ "$f" != ledger.sh ]] || continue
     mkdir -p "$dest/$(dirname "$f")"
     cp "$CORE/$f" "$dest/$f"
     if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
@@ -78,6 +104,8 @@ cmd_init() {
   local repo dest f src
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
+  ledger_preflight "$dest"
+  install_ledger "$dest"
   copy_core "$dest"
   install_mod_settings "$repo"
   echo "init: core -> $dest ($(core_files | wc -l | tr -d ' ') files)"
@@ -100,7 +128,17 @@ cmd_update() {
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
   [[ -d "$dest" ]] || fail "$dest does not exist; run: orca-factory init $repo"
+  ledger_preflight "$dest"
+  if cmp -s "$CORE/ledger.sh" "$dest/ledger.sh"; then
+    same=$((same + 1))
+  elif [[ -e "$dest/ledger.sh" ]]; then
+    changed=$((changed + 1)); echo 'update: ~ ledger.sh (known original shell -> ledger-shell-v1)'
+  else
+    added=$((added + 1)); echo 'update: + ledger.sh (new)'
+  fi
+  install_ledger "$dest"
   while IFS= read -r f; do
+    [[ "$f" != ledger.sh ]] || continue
     if [[ ! -e "$dest/$f" ]]; then
       added=$((added + 1)); echo "update: + $f (new)"
     elif cmp -s "$CORE/$f" "$dest/$f"; then

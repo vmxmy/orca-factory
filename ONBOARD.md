@@ -136,6 +136,10 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 
 ## 4. 生成三份文件
 
+ledger 入口要求先提供支持 `ledger-shell-v1` 的 driver。默认从 PATH 查找 `orca-factory-driver`；指定独立二进制时，导出 `AGENT_DRIVER_BIN` 的可执行路径，并在之后运行账本时保留同一设置。先运行 `"${AGENT_DRIVER_BIN:-orca-factory-driver}" ledger-shell --contract-version`，输出必须为 `ledger-shell-v1`。此探测不读配置、不访问网络。`version=dev` 不能证明契约兼容。jq、Orca、date 和 sleep 仍是账本运行依赖；本次迁移不自动安装或重启 driver 服务。
+
+`init/update` 在写任何 core 文件前检查 driver 契约及 ledger 入口。只接受缺失入口、已知原始 shell 版本或当前受管理薄入口；自定义内容、未知版本和符号链接会停止切换。ledger 使用同目录暂存及 rename 替换，替换失败保留原入口。原子性只覆盖 ledger；其他 core 文件仍沿用原复制方式，不保证整批回滚。回退时恢复已保留的原始入口和配套程序，不修改 Linear 评论或运行状态。
+
 ```bash
 $FACTORY/bin/orca-factory init $REPO
 # 产出 $REPO/scripts/agent-gates/：core 文件原样复制（含 constitution/ 与 roles/ 两个子目录）+ 三份由模板生成、带 {{占位}} 的项目文件

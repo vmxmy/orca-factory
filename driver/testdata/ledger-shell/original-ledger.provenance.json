@@ -1,0 +1,7 @@
+{
+  "description": "历史 shell 账本行为测试夹具，仅供安装测试验证原版识别及失败后入口仍可执行；不是生产 fallback。",
+  "source_commit": "76a944fbdaaaacb768da3856f5beda59bc3dd810",
+  "source_path": "core/ledger.sh",
+  "git_blob": "b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0",
+  "sha256": "801b9a8984f0c0b8a97084b91228b95722a7da5a93727d8d5a88c850f8aa88d0"
+}
