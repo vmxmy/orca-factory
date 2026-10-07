@@ -129,6 +129,16 @@ func (c *RefreshCoordinator) refresh(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// A webhook can mark an issue or comment dirty without changing the issue
+	// updatedAt value used by the incremental filter. Reconcile a bounded full
+	// page set in that case so the dirty object is actually consumed.
+	if !full && len(dirtyAtStart) > 0 {
+		issues, err = c.reader.Snapshot(ctx, c.options.Projects, time.Time{})
+		if err != nil {
+			return err
+		}
+		full = true
+	}
 	if full && c.options.MaxReconcileIssues > 0 && len(issues) > c.options.MaxReconcileIssues {
 		return ErrRefreshBound
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -126,6 +127,25 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestRuntimeSnapshotUsesProjectionClient(t *testing.T) {
+	p, err := linear.OpenProjection(filepath.Join(t.TempDir(), "linear.db"), "team/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	issue := linear.Issue{ID: "i1", Identifier: "ENG-1", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}, UpdatedAt: time.Now().UTC()}
+	if err := p.Publish(context.Background(), linear.ProjectionSnapshot{Issues: []linear.Issue{issue}, Complete: true, Watermark: issue.UpdatedAt.Format(time.RFC3339Nano)}); err != nil {
+		t.Fatal(err)
+	}
+	client := linear.NewProjectionClient(&linear.Client{}, p, time.Hour)
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
+	r := &Runtime{Reader: client, Clients: map[string]LinearClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}, refused: map[string]error{}}
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil || len(tickets) != 1 || tickets[0].Identifier != "ENG-1" {
+		t.Fatalf("tickets=%+v err=%v", tickets, err)
 	}
 }
 

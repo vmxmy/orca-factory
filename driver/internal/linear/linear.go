@@ -205,7 +205,30 @@ type Client struct {
 	mu                       sync.Mutex
 	usage                    Usage
 	now                      func() time.Time
+	criticalReservations     int64
 	metrics                  clientMetrics
+}
+
+// ReserveCritical atomically admits one critical remote read while preserving
+// the reserve floor, closing the check-then-act race between actions.
+func (c *Client) ReserveCritical(now time.Time, reserve int64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.rotateHour()
+	available := c.usage.RequestLimit.EffectiveRemaining(now) - c.criticalReservations
+	if available <= reserve || !c.usage.RequestLimit.CriticalCapacity(now, reserve) {
+		return false
+	}
+	c.criticalReservations++
+	return true
+}
+
+func (c *Client) ReleaseCritical() {
+	c.mu.Lock()
+	if c.criticalReservations > 0 {
+		c.criticalReservations--
+	}
+	c.mu.Unlock()
 }
 
 // New reads LINEAR_API_KEY and caches all team states, labels and projects.
@@ -738,6 +761,15 @@ func (c *Client) Metrics() Metrics {
 func CriticalComments(ctx context.Context, reader interface {
 	ListComments(context.Context, string) ([]Comment, error)
 }, id string) ([]Comment, error) {
+	if reserver, ok := reader.(interface {
+		ReserveCritical(time.Time, int64) bool
+		ReleaseCritical()
+	}); ok {
+		if !reserver.ReserveCritical(time.Now(), 0) {
+			return nil, errors.New("critical Linear quota reservation unavailable")
+		}
+		defer reserver.ReleaseCritical()
+	}
 	if fresh, ok := reader.(interface {
 		ListCommentsRemote(context.Context, string) ([]Comment, error)
 	}); ok {

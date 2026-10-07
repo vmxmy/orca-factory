@@ -28,6 +28,7 @@ var (
 	ErrWebhookSignature = errors.New("invalid webhook signature")
 	ErrWebhookTimestamp = errors.New("invalid webhook timestamp")
 	ErrWebhookDelivery  = errors.New("missing webhook delivery id")
+	ErrWebhookScope     = errors.New("webhook event outside configured scope")
 )
 
 type WebhookOptions struct {
@@ -36,6 +37,7 @@ type WebhookOptions struct {
 	MaxTimestampAge time.Duration
 	Now             func() time.Time
 	OnAccepted      func()
+	Scope           string
 }
 
 type WebhookHandler struct {
@@ -45,6 +47,7 @@ type WebhookHandler struct {
 	maxAge     time.Duration
 	now        func() time.Time
 	onAccepted func()
+	scope      string
 }
 
 func NewWebhookHandler(p *Projection, options WebhookOptions) *WebhookHandler {
@@ -56,11 +59,11 @@ func NewWebhookHandler(p *Projection, options WebhookOptions) *WebhookHandler {
 	if now == nil {
 		now = time.Now
 	}
-	return &WebhookHandler{projection: p, secret: []byte(options.Secret), publicURL: options.PublicURL, maxAge: maxAge, now: now, onAccepted: options.OnAccepted}
+	return &WebhookHandler{projection: p, secret: []byte(options.Secret), publicURL: options.PublicURL, maxAge: maxAge, now: now, onAccepted: options.OnAccepted, scope: strings.TrimSpace(options.Scope)}
 }
 
 func (h *WebhookHandler) Mode() WebhookMode {
-	if !validPublicHTTPS(h.publicURL) {
+	if len(h.secret) == 0 || !validPublicHTTPS(h.publicURL) {
 		return WebhookDegraded
 	}
 	return WebhookReady
@@ -101,6 +104,15 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if event.Type != "Issue" && event.Type != "Comment" {
 		w.WriteHeader(http.StatusNoContent)
 		return
+	}
+	if h.scope != "" && event.Type == "Issue" {
+		var scoped struct {
+			Project NamedID `json:"project"`
+		}
+		if json.Unmarshal(event.Data, &scoped) != nil || (scoped.Project.ID != h.scope && scoped.Project.Name != h.scope) {
+			http.Error(w, ErrWebhookScope.Error(), http.StatusForbidden)
+			return
+		}
 	}
 	if err := h.projection.applyWebhook(r.Context(), r.Header.Get("Linear-Delivery"), event, body, h.now().UTC()); err != nil {
 		http.Error(w, "webhook storage failed", http.StatusInternalServerError)
@@ -160,7 +172,7 @@ func (p *Projection) applyWebhook(ctx context.Context, delivery string, event we
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO projection_delivery(dedupe_key, delivered_at) VALUES(?,?)`, delivery, received.Format(time.RFC3339Nano))
 	if err != nil {
 		return err
@@ -224,7 +236,7 @@ func (p *Projection) Dirty(ctx context.Context) (map[string][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	result := map[string][]string{}
 	for rows.Next() {
 		var typ, id string

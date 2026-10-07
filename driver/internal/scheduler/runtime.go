@@ -47,6 +47,8 @@ type Runtime struct {
 	Run                  func(context.Context, runx.Spec) ([]byte, error)
 	Now                  func() time.Time
 	Tuning               config.Tuning
+	Refreshers           map[string]*linear.RefreshCoordinator
+	Webhooks             map[string]*linear.WebhookHandler
 	refused              map[string]error
 }
 
@@ -65,6 +67,8 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 		Tuning:       c.Tuning,
 		Clients:      map[string]LinearClient{},
 		Repositories: map[string]config.Repository{},
+		Refreshers:   map[string]*linear.RefreshCoordinator{},
+		Webhooks:     map[string]*linear.WebhookHandler{},
 		Orca:         &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout},
 		OrcaPath:     path,
 		DriverPath:   binary,
@@ -81,6 +85,8 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient func(context.Context, string) (LinearClient, error)) error {
 	r.Clients = map[string]LinearClient{}
 	r.Repositories = map[string]config.Repository{}
+	r.Refreshers = map[string]*linear.RefreshCoordinator{}
+	r.Webhooks = map[string]*linear.WebhookHandler{}
 	r.refused = map[string]error{}
 	teams := map[string]LinearClient{}
 	projects := map[string]bool{}
@@ -108,16 +114,46 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 			}
 			teams[team] = client
 		}
-		r.Clients[repo.Path] = client
+		bound := client
+		if remote, ok := client.(*linear.Client); ok {
+			if path := projectionPath(repo); path != "" {
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					return errors.New("linear projection directory unavailable")
+				}
+				projection, err := linear.OpenProjection(path, team+"/"+project)
+				if err != nil {
+					return errors.New("linear projection initialization failed")
+				}
+				bound = linear.NewProjectionClient(remote, projection, 5*time.Minute)
+				coordinator := linear.NewRefreshCoordinator(projection, remote, linear.RefreshOptions{Projects: []string{project}})
+				r.Refreshers[repo.Path] = coordinator
+				secret := repo.Env["AGENT_LINEAR_WEBHOOK_SECRET"]
+				publicURL := repo.Env["AGENT_LINEAR_WEBHOOK_URL"]
+				r.Webhooks[repo.Path] = linear.NewWebhookHandler(projection, linear.WebhookOptions{Secret: secret, PublicURL: publicURL, Scope: project, OnAccepted: func() { coordinator.Schedule(context.Background()) }})
+			}
+		}
+		r.Clients[repo.Path] = bound
 		r.Repositories[repo.Path] = repo
 		if r.Reader == nil {
-			r.Reader = client
+			r.Reader = bound
 		}
 	}
 	if len(r.Clients) == 0 {
 		return errors.Join(refusals...)
 	}
 	return nil
+}
+
+func projectionPath(repo config.Repository) string {
+	if path := repo.Env["AGENT_LINEAR_PROJECTION_PATH"]; path != "" {
+		return path
+	}
+	dir := repo.Env["AGENT_LINEAR_PROJECTION_DIR"]
+	if dir == "" {
+		return ""
+	}
+	name := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(repo.Env["AGENT_LINEAR_TEAM"] + "_" + repo.Env["AGENT_LINEAR_PROJECT"])
+	return filepath.Join(dir, name+".db")
 }
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
 	// One scheduler inspection is one ordinary-read round. Shared clients reuse

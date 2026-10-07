@@ -58,7 +58,7 @@ func (p *Projection) AcknowledgeDirty(ctx context.Context, dirty map[string][]st
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	for typ, ids := range dirty {
 		for _, id := range ids {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM projection_dirty WHERE object_type=? AND object_id=?`, typ, id); err != nil {
@@ -81,7 +81,7 @@ func (p *Projection) ApplyIncremental(ctx context.Context, snapshot ProjectionSn
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, issue := range snapshot.Issues {
 		payload, err := json.Marshal(issue)
@@ -115,7 +115,7 @@ func (p *Projection) ApplyIncremental(ctx context.Context, snapshot ProjectionSn
 	if watermark == "" || (previous != "" && watermark < previous) {
 		watermark = previous
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=1, refreshed_at=?, watermark=? WHERE id=1`, now, watermark); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=1, refreshed_at=?, watermark=?, generation=generation+1 WHERE id=1`, now, watermark); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -125,6 +125,49 @@ type ProjectionRead struct {
 	Issues   []Issue
 	Comments map[string][]Comment
 	Meta     ProjectionMeta
+}
+
+// PendingIntent is durable evidence for a write whose response may have been
+// lost. The scheduler can inspect these records without replaying them.
+type PendingIntent struct {
+	Key     string
+	Payload []byte
+	Created time.Time
+}
+
+func (p *Projection) RecordIntent(ctx context.Context, key string, payload []byte) error {
+	if key == "" {
+		return errors.New("projection intent key is required")
+	}
+	_, err := p.db.ExecContext(ctx, `INSERT OR IGNORE INTO projection_intents(intent_key,payload,created_at) VALUES(?,?,?)`, key, payload, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (p *Projection) PendingIntents(ctx context.Context) ([]PendingIntent, error) {
+	rows, err := p.db.QueryContext(ctx, `SELECT intent_key,payload,created_at FROM projection_intents ORDER BY created_at,intent_key`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result []PendingIntent
+	for rows.Next() {
+		var item PendingIntent
+		var created string
+		if err := rows.Scan(&item.Key, &item.Payload, &created); err != nil {
+			return nil, err
+		}
+		item.Created, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, fmt.Errorf("invalid projection intent timestamp: %w", err)
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+func (p *Projection) AcknowledgeIntent(ctx context.Context, key string) error {
+	_, err := p.db.ExecContext(ctx, `DELETE FROM projection_intents WHERE intent_key=?`, key)
+	return err
 }
 
 func OpenProjection(path, scope string) (*Projection, error) {
@@ -138,7 +181,7 @@ func OpenProjection(path, scope string) (*Projection, error) {
 	db.SetMaxIdleConns(1)
 	p := &Projection{db: db, scope: scope}
 	if err := p.init(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return p, nil
@@ -202,7 +245,7 @@ func (p *Projection) Publish(ctx context.Context, snapshot ProjectionSnapshot) e
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err = tx.ExecContext(ctx, `DELETE FROM projection_issues; DELETE FROM projection_comments;`); err != nil {
 		return err
@@ -225,7 +268,7 @@ func (p *Projection) Publish(ctx context.Context, snapshot ProjectionSnapshot) e
 			}
 		}
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=1, refreshed_at=?, watermark=? WHERE id=1`, now, snapshot.Watermark)
+	_, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=1, refreshed_at=?, watermark=?, generation=generation+1 WHERE id=1`, now, snapshot.Watermark)
 	if err != nil {
 		return err
 	}
@@ -260,7 +303,7 @@ func (p *Projection) Read(ctx context.Context, options ReadOptions) (ProjectionR
 	if err != nil {
 		return ProjectionRead{}, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
@@ -282,7 +325,7 @@ func (p *Projection) Read(ctx context.Context, options ReadOptions) (ProjectionR
 	if err != nil {
 		return ProjectionRead{}, err
 	}
-	defer commentRows.Close()
+	defer func() { _ = commentRows.Close() }()
 	for commentRows.Next() {
 		var issueID string
 		var payload []byte

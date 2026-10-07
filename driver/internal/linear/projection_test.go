@@ -19,7 +19,7 @@ func TestProjectionFailedPublishKeepsCompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	want := Issue{ID: "issue-1", Identifier: "ENG-1", UpdatedAt: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)}
 	if err := p.Publish(context.Background(), ProjectionSnapshot{Issues: []Issue{want}, Complete: true, Watermark: "2026-10-07T00:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestWebhookAcceptsIssueAndDeduplicatesDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	now := time.Date(2026, 10, 7, 4, 0, 0, 0, time.UTC)
 	h := NewWebhookHandler(p, WebhookOptions{Secret: "secret", PublicURL: "https://hooks.example.test/linear", Now: func() time.Time { return now }})
 	body := []byte(`{"action":"create","type":"Issue","data":{"id":"issue-1","identifier":"ENG-1"}}`)
@@ -75,7 +75,7 @@ func TestWebhookRejectsInvalidTimestampAndStorageFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	now := time.Date(2026, 10, 7, 4, 0, 0, 0, time.UTC)
 	h := NewWebhookHandler(p, WebhookOptions{Secret: "secret", PublicURL: "https://hooks.example.test/linear", Now: func() time.Time { return now }})
 	body := []byte(`{"action":"update","type":"Comment","data":{"id":"comment-1","issue":{"id":"issue-1"}}}`)
@@ -99,7 +99,7 @@ func TestWebhookReportsDegradedWithoutPublicHTTPSReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	h := NewWebhookHandler(p, WebhookOptions{Secret: "secret"})
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/", nil))
@@ -127,7 +127,7 @@ func TestWebhookAcceptsCommentAndRejectsBadSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	now := time.Date(2026, 10, 7, 4, 0, 0, 0, time.UTC)
 	h := NewWebhookHandler(p, WebhookOptions{Secret: "secret", PublicURL: "https://hooks.example.test/linear", Now: func() time.Time { return now }})
 	body := []byte(`{"action":"update","type":"Comment","data":{"id":"comment-1","body":"hello","issue":{"id":"issue-1"}}}`)
@@ -156,7 +156,7 @@ func TestProjectionIncrementalRefreshMergesOverlapAndAcknowledgesDirtyAfterSucce
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	initial := Issue{ID: "issue-1", Identifier: "ENG-1", UpdatedAt: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)}
 	if err := p.Publish(context.Background(), ProjectionSnapshot{Issues: []Issue{initial}, Complete: true, Watermark: "2026-10-07T00:00:00Z"}); err != nil {
 		t.Fatal(err)
@@ -189,5 +189,28 @@ func TestProjectionIncrementalRefreshMergesOverlapAndAcknowledgesDirtyAfterSucce
 	cleared, err := p.Dirty(context.Background())
 	if err != nil || len(cleared) != 0 {
 		t.Fatalf("dirty after acknowledge=%v err=%v", cleared, err)
+	}
+}
+
+func TestProjectionPendingIntentLifecycle(t *testing.T) {
+	p, err := OpenProjection(filepath.Join(t.TempDir(), "linear.db"), "team/project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = p.Close() }()
+	ctx := context.Background()
+	if err := p.RecordIntent(ctx, "intent-1", []byte(`{"issue":"i1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	intents, err := p.PendingIntents(ctx)
+	if err != nil || len(intents) != 1 || intents[0].Key != "intent-1" {
+		t.Fatalf("intents=%+v err=%v", intents, err)
+	}
+	if err := p.AcknowledgeIntent(ctx, "intent-1"); err != nil {
+		t.Fatal(err)
+	}
+	intents, err = p.PendingIntents(ctx)
+	if err != nil || len(intents) != 0 {
+		t.Fatalf("remaining intents=%+v err=%v", intents, err)
 	}
 }

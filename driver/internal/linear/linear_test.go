@@ -614,3 +614,17 @@ func TestRateLimitEffectiveRemainingReplenishesFromHeadersConservatively(t *test
 		t.Fatal("unknown quota admitted critical action")
 	}
 }
+
+func TestCriticalReservationSerializesContention(t *testing.T) {
+	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	c := &Client{now: func() time.Time { return now }, usage: Usage{RequestLimit: RateLimit{Limit: 2, Remaining: 1, Reset: now.Add(time.Hour), ObservedAt: now}}}
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	for i := 0; i < 2; i++ {
+		go func() { <-start; results <- c.ReserveCritical(now, 0) }()
+	}
+	close(start)
+	if first, second := <-results, <-results; first == second {
+		t.Fatalf("reservations=%v,%v; exactly one caller should pass", first, second)
+	}
+}
