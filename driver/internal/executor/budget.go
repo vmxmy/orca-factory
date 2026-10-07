@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
@@ -30,6 +31,9 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 	status.Push(e.Now(), func(view *status.View) {
 		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
 	})
+	if _, err := linear.CriticalComments(ctx, e.Linear, t.ID); err != nil {
+		return errors.New("human handoff evidence unavailable")
+	}
 	if _, err := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 		return errors.New("human handoff labels failed")
 	}
@@ -63,7 +67,7 @@ func (e *Executor) writeRunLedger(ctx context.Context, t Ticket, outcome string,
 	w := &LedgerWriter{
 		Create: func(ctx context.Context, body string) error { return e.comment(ctx, t.ID, body) },
 		List: func(ctx context.Context) ([]string, error) {
-			comments, err := e.Linear.ListComments(ctx, t.ID)
+			comments, err := linear.CriticalComments(ctx, e.Linear, t.ID)
 			if err != nil {
 				return nil, err
 			}

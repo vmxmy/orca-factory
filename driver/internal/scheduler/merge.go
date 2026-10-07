@@ -234,7 +234,11 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if err = r.mergeComment(ctx, t, merge.ProgressPrefix+string(b)); err != nil {
 		return err
 	}
-	issue, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"})
+	client := r.Clients[t.Repo]
+	if _, err := linear.CriticalComments(ctx, client, t.ID); err != nil {
+		return err
+	}
+	issue, err := client.UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"})
 	if err != nil || issue.State.Name != "Done" {
 		return errors.New("completion write unconfirmed")
 	}
@@ -245,7 +249,7 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 }
 func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error {
 	client := r.Clients[t.Repo]
-	rows, err := client.ListComments(ctx, t.ID)
+	rows, err := linear.CriticalComments(ctx, client, t.ID)
 	if err != nil {
 		return errors.New("merge receipt read failed")
 	}
@@ -257,7 +261,7 @@ func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error
 	if _, err = client.CreateComment(ctx, t.ID, body); err == nil {
 		return nil
 	}
-	rows, readErr := client.ListComments(ctx, t.ID)
+	rows, readErr := linear.CriticalComments(ctx, client, t.ID)
 	if readErr == nil {
 		for _, c := range rows {
 			if c.Body == body {
@@ -420,7 +424,7 @@ func (r *Runtime) writeMergeLedger(ctx context.Context, t Ticket, h merge.Handof
 		Minutes:   time.Since(h.EnqueuedAt).Minutes(),
 		StartedAt: h.EnqueuedAt, FinishedAt: time.Now().UTC(),
 	}, func(ctx context.Context) ([]string, error) {
-		rows, err := client.ListComments(ctx, t.ID)
+		rows, err := linear.CriticalComments(ctx, client, t.ID)
 		if err != nil {
 			return nil, err
 		}

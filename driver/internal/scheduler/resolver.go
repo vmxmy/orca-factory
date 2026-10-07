@@ -47,7 +47,7 @@ func readResolution(comments []linear.Comment) (*resolver.Record, error) {
 	return p, nil
 }
 func (s resolutionStore) Load(ctx context.Context) (*resolver.Record, error) {
-	comments, err := s.runtime.Clients[s.ticket.Repo].ListComments(ctx, s.ticket.ID)
+	comments, err := linear.CriticalComments(ctx, s.runtime.Clients[s.ticket.Repo], s.ticket.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 	if err != nil {
 		return err
 	}
-	comments, err := r.Clients[t.Repo].ListComments(ctx, t.ID)
+	comments, err := linear.CriticalComments(ctx, r.Clients[t.Repo], t.ID)
 	if err != nil {
 		return err
 	}

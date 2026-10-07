@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -121,7 +122,7 @@ func (e *Executor) recoveryPath(cp *checkpoint, path string) {
 }
 
 func (e *Executor) recoverySnapshot(ctx context.Context, t Ticket, cp *checkpoint) {
-	comments, err := e.Linear.ListComments(ctx, t.ID)
+	comments, err := linear.CriticalComments(ctx, e.Linear, t.ID)
 	phase, owner := "unknown", "unknown"
 	if err == nil {
 		comments = append(comments[:0:0], comments...)

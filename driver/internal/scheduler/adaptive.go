@@ -93,7 +93,7 @@ func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
 			if !limit.Reset.IsZero() && !now.Before(limit.Reset) {
 				continue
 			}
-			fraction := float64(limit.Remaining) / float64(limit.Limit)
+			fraction := float64(limit.EffectiveRemaining(now)) / float64(limit.Limit)
 			if fraction < s.pauseFraction() && limit.Reset.IsZero() {
 				if s.linearQuotaRetry.IsZero() {
 					s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())

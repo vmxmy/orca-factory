@@ -106,9 +106,51 @@ type Comment struct {
 	UpdatedAt time.Time `json:"updatedAt"`
 }
 type RateLimit struct {
-	Limit     int64
-	Remaining int64
-	Reset     time.Time
+	Limit      int64
+	Remaining  int64
+	Reset      time.Time
+	ObservedAt time.Time
+}
+
+// EffectiveRemaining estimates a leaky bucket's available capacity. It only
+// credits replenishment when both an observation time and reset deadline are
+// present; incomplete headers remain conservatively unavailable.
+func (r RateLimit) EffectiveRemaining(now time.Time) int64 {
+	if r.Limit <= 0 || r.Remaining < 0 {
+		return 0
+	}
+	if r.ObservedAt.IsZero() || r.Reset.IsZero() || !r.Reset.After(r.ObservedAt) {
+		return r.Remaining
+	}
+	if !now.After(r.ObservedAt) {
+		return r.Remaining
+	}
+	if !now.Before(r.Reset) {
+		return r.Limit
+	}
+	span := r.Reset.Sub(r.ObservedAt)
+	elapsed := now.Sub(r.ObservedAt)
+	credit := int64(float64(r.Limit-r.Remaining) * float64(elapsed) / float64(span))
+	if credit < 0 {
+		credit = 0
+	}
+	if got := r.Remaining + credit; got > r.Limit {
+		return r.Limit
+	} else {
+		return got
+	}
+}
+
+// CriticalCapacity reports whether a request may safely consume reserve units.
+// Unknown server observations fail closed so critical actions retain capacity.
+func (r RateLimit) CriticalCapacity(now time.Time, reserve int64) bool {
+	if r.Limit <= 0 || r.Remaining < 0 || r.Reset.IsZero() || r.ObservedAt.IsZero() {
+		return false
+	}
+	if reserve < 0 {
+		reserve = 0
+	}
+	return r.EffectiveRemaining(now) > reserve
 }
 
 // Usage is local consumption for the current UTC clock hour, with the latest
@@ -661,6 +703,21 @@ func (c *Client) record(response *http.Response) {
 		if n, err := strconv.ParseInt(h.Get(item.prefix+"Reset"), 10, 64); err == nil && n >= 0 {
 			item.limit.Reset = time.UnixMilli(n).UTC()
 		}
+		item.limit.ObservedAt = c.now().UTC()
 	}
 }
 func (c *Client) Usage() Usage { c.mu.Lock(); defer c.mu.Unlock(); c.rotateHour(); return c.usage }
+
+// CriticalComments forces a remote read for actions whose authorization depends
+// on current ownership or receipts. Clients without the explicit remote seam
+// retain their existing read behavior for compatibility with adapters.
+func CriticalComments(ctx context.Context, reader interface {
+	ListComments(context.Context, string) ([]Comment, error)
+}, id string) ([]Comment, error) {
+	if fresh, ok := reader.(interface {
+		ListCommentsRemote(context.Context, string) ([]Comment, error)
+	}); ok {
+		return fresh.ListCommentsRemote(ctx, id)
+	}
+	return reader.ListComments(ctx, id)
+}

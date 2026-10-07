@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
 
@@ -128,7 +129,7 @@ func (e *Executor) restoreFailLog(ctx context.Context, c Config, t Ticket) error
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("cannot read FAIL history")
 	}
-	comments, err := e.Linear.ListComments(ctx, t.ID)
+	comments, err := linear.CriticalComments(ctx, e.Linear, t.ID)
 	if err != nil {
 		return errors.New("Linear FAIL history lookup failed")
 	}

@@ -294,6 +294,9 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	owner := machine.OwnerExecutor
 	switch a.Kind {
 	case Claim:
+		if _, err := linear.CriticalComments(ctx, client, t.ID); err != nil {
+			return errors.New("linear claim evidence unavailable")
+		}
 		issue, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if err != nil {
 			return errors.New("linear claim failed")

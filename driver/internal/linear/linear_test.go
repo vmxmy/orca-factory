@@ -545,3 +545,45 @@ func TestSameRoundCommentReadsAreCoalesced(t *testing.T) {
 		t.Fatalf("same-round read made %d requests, want metadata plus one comment request", requests)
 	}
 }
+
+func TestCriticalCommentsUsesFreshRemoteSeam(t *testing.T) {
+	reader := criticalReader{remote: []Comment{{ID: "fresh"}}, cached: []Comment{{ID: "cached"}}}
+	got, err := CriticalComments(context.Background(), &reader, "issue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "fresh" || reader.remoteCalls != 1 || reader.cachedCalls != 0 {
+		t.Fatalf("got=%v remote=%d cached=%d", got, reader.remoteCalls, reader.cachedCalls)
+	}
+}
+
+type criticalReader struct {
+	remote, cached           []Comment
+	remoteCalls, cachedCalls int
+}
+
+func (r *criticalReader) ListComments(context.Context, string) ([]Comment, error) {
+	r.cachedCalls++
+	return r.cached, nil
+}
+func (r *criticalReader) ListCommentsRemote(context.Context, string) ([]Comment, error) {
+	r.remoteCalls++
+	return r.remote, nil
+}
+
+func TestRateLimitEffectiveRemainingReplenishesFromHeadersConservatively(t *testing.T) {
+	observed := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	limit := RateLimit{Limit: 100, Remaining: 20, Reset: observed.Add(80 * time.Second), ObservedAt: observed}
+	if got := limit.EffectiveRemaining(observed.Add(40 * time.Second)); got != 60 {
+		t.Fatalf("effective remaining=%d, want 60", got)
+	}
+	if got := (RateLimit{}).EffectiveRemaining(observed.Add(time.Hour)); got != 0 {
+		t.Fatalf("unknown effective remaining=%d, want conservative zero", got)
+	}
+	if limit.CriticalCapacity(observed.Add(40*time.Second), 60) {
+		t.Fatal("critical reserve was not preserved")
+	}
+	if (RateLimit{}).CriticalCapacity(observed, 0) {
+		t.Fatal("unknown quota admitted critical action")
+	}
+}
