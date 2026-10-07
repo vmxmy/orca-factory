@@ -1,12 +1,8 @@
 package executor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -61,13 +57,13 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
-	ticket, err := readTicket(ctx, identifier, values[1], values[2])
-	if err != nil {
-		return Result{}, err
-	}
 	lc, err := linear.New(ctx, linear.Options{TeamID: values[1]})
 	if err != nil {
 		return Result{}, errors.New("Linear initialization failed")
+	}
+	ticket, err := readTicketWithClient(ctx, lc, identifier, values[1], values[2])
+	if err != nil {
+		return Result{}, err
 	}
 	cfg, err := config.Load(home())
 	if err != nil {
@@ -104,47 +100,20 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 // linear.Snapshot deliberately omits description. This executor-local read
 // adapter asks only for the brief and fences it to the configured team/project.
 func readTicket(ctx context.Context, identifier, team, project string) (Ticket, error) {
-	key := os.Getenv("LINEAR_API_KEY")
-	if key == "" {
-		return Ticket{}, errors.New("LINEAR_API_KEY is required")
+	lc, err := linear.New(ctx, linear.Options{TeamID: team})
+	if err != nil {
+		return Ticket{}, errors.New("Linear initialization failed")
 	}
-	body, _ := json.Marshal(map[string]any{"query": `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description estimate team { id } project { id } } }`, "variables": map[string]string{"id": identifier}})
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(body))
+	return readTicketWithClient(ctx, lc, identifier, team, project)
+}
+
+func readTicketWithClient(ctx context.Context, lc *linear.Client, identifier, team, project string) (Ticket, error) {
+	brief, err := lc.Brief(ctx, identifier, team, project)
 	if err != nil {
 		return Ticket{}, errors.New("Linear brief request failed")
 	}
-	req.Header.Set("Authorization", key)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		return Ticket{}, errors.New("Linear brief transport failed")
-	}
-	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
-	if resp.StatusCode != http.StatusOK {
-		return Ticket{}, errors.New("Linear brief request rejected")
-	}
-	var envelope struct {
-		Data struct {
-			Issue *struct {
-				ID, Identifier, Title, Description string
-				Estimate                           *float64
-				Team, Project                      struct{ ID string }
-			}
-		}
-		Errors []json.RawMessage
-	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&envelope) != nil || len(envelope.Errors) > 0 || envelope.Data.Issue == nil {
-		return Ticket{}, errors.New("invalid Linear brief response")
-	}
-	issue := envelope.Data.Issue
-	if issue.Identifier != identifier || issue.Team.ID != team || issue.Project.ID != project {
-		return Ticket{}, errors.New("ticket outside configured repository project")
-	}
-	ticket, err := ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
-	ticket.Estimate = issue.Estimate
+	ticket, err := ParseTicket(brief.ID, brief.Identifier, brief.Title, brief.Description)
+	ticket.Estimate = brief.Estimate
 	return ticket, err
 }
 

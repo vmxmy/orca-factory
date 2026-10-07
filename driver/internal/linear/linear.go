@@ -120,6 +120,29 @@ type Usage struct {
 	RequestLimit    RateLimit
 	ComplexityLimit RateLimit
 }
+type roundKey struct{}
+type roundEntry struct {
+	done     chan struct{}
+	comments []Comment
+	err      error
+}
+type round struct {
+	mu       sync.Mutex
+	comments map[string]*roundEntry
+}
+
+// BeginRound marks ordinary reads made with ctx as belonging to one access round.
+// Successful comment reads are reused for the lifetime of the context. Critical
+// callers can bypass the round with ListCommentsRemote.
+func BeginRound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, roundKey{}, &round{comments: make(map[string]*roundEntry)})
+}
+
+func roundFrom(ctx context.Context) *round {
+	v, _ := ctx.Value(roundKey{}).(*round)
+	return v
+}
+
 type Client struct {
 	key, endpoint            string
 	http                     *http.Client
@@ -229,6 +252,28 @@ func resolve(names []string, cache map[string]string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, nil
+}
+
+// Brief is the executor's issue read through the same authenticated access layer.
+// The team and project IDs fence the result to the configured repository.
+type Brief struct {
+	ID, Identifier, Title, Description string
+	Estimate                           *float64
+	Team, Project                      NamedID
+}
+
+func (c *Client) Brief(ctx context.Context, identifier, team, project string) (Brief, error) {
+	var data struct {
+		Issue *Brief `json:"issue"`
+	}
+	err := c.do(ctx, `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description estimate team { id } project { id } } }`, map[string]any{"id": identifier}, &data)
+	if err != nil {
+		return Brief{}, err
+	}
+	if data.Issue == nil || data.Issue.Identifier != identifier || data.Issue.Team.ID != team || data.Issue.Project.ID != project {
+		return Brief{}, errors.New("ticket outside configured repository project")
+	}
+	return *data.Issue, nil
 }
 
 const issueFields = `id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } } inverseRelations(first: 50) { nodes { id type issue { id identifier state { type } } } pageInfo { hasNextPage endCursor } }`
@@ -425,6 +470,39 @@ func (c *Client) CreateComment(ctx context.Context, id, body string) (Comment, e
 	return *data.CommentCreate.Comment, nil
 }
 func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error) {
+	r := roundFrom(ctx)
+	if r == nil {
+		return c.ListCommentsRemote(ctx, id)
+	}
+	r.mu.Lock()
+	if entry := r.comments[id]; entry != nil {
+		r.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, infra.Classify(ctx.Err())
+		case <-entry.done:
+			return cloneComments(entry.comments), entry.err
+		}
+	}
+	entry := &roundEntry{done: make(chan struct{})}
+	r.comments[id] = entry
+	r.mu.Unlock()
+	comments, err := c.ListCommentsRemote(ctx, id)
+	r.mu.Lock()
+	if err == nil {
+		entry.comments = cloneComments(comments)
+	} else {
+		delete(r.comments, id)
+	}
+	entry.err = err
+	close(entry.done)
+	r.mu.Unlock()
+	return comments, err
+}
+
+// ListCommentsRemote always performs a fresh, paginated remote read. It is used
+// for ownership, handoff, merge, completion, and cleanup verification.
+func (c *Client) ListCommentsRemote(ctx context.Context, id string) ([]Comment, error) {
 	comments := []Comment{}
 	after := ""
 	seen := map[string]bool{}
@@ -450,6 +528,10 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 			return nil, err
 		}
 	}
+}
+
+func cloneComments(comments []Comment) []Comment {
+	return append([]Comment(nil), comments...)
 }
 
 // ProbeQuota sends the cheapest query so the rate-limit headers reflect the current budget.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -494,5 +495,53 @@ func TestIssueBlocked(t *testing.T) {
 		if got := issue.Blocked(); got != c.want {
 			t.Fatalf("%s: Blocked()=%v want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestSameRoundCommentReadsAreCoalesced(t *testing.T) {
+	requests := 0
+	t.Setenv("LINEAR_API_KEY", "test-private-key")
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		var q request
+		if err := json.Unmarshal(body, &q); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		response := `{"data":{"team":{"states":{"nodes":[{"id":"s1","name":"Done"}],"pageInfo":{"hasNextPage":false}}}}}`
+		if strings.Contains(q.Query, "labels(") {
+			response = `{"data":{"team":{"labels":{"nodes":[{"id":"l1","name":"bug"}],"pageInfo":{"hasNextPage":false}}}}}`
+		} else if strings.Contains(q.Query, "projects(") {
+			response = `{"data":{"team":{"projects":{"nodes":[{"id":"p1","name":"Alpha"}],"pageInfo":{"hasNextPage":false}}}}}`
+		} else if strings.Contains(q.Query, "Metadata") {
+		} else if strings.Contains(q.Query, "ListComments") {
+			response = `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello"}],"pageInfo":{"hasNextPage":false}}}}}`
+		} else {
+			t.Fatalf("unexpected query: %s", q.Query)
+			return nil, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(response)), Header: make(http.Header)}, nil
+	})}
+	c, err := New(context.Background(), Options{TeamID: "team-id", BaseURL: "http://linear.test/graphql", HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := BeginRound(context.Background())
+	first, err := c.ListComments(ctx, "i1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := c.ListComments(ctx, "i1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].Body != second[0].Body {
+		t.Fatalf("comments: %+v %+v", first, second)
+	}
+	if requests != 4 {
+		t.Fatalf("same-round read made %d requests, want metadata plus one comment request", requests)
 	}
 }

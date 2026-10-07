@@ -120,6 +120,9 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 	return nil
 }
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	// One scheduler inspection is one ordinary-read round. Shared clients reuse
+	// duplicate comment reads while critical writes continue to use fresh reads.
+	ctx = linear.BeginRound(ctx)
 	if len(repos) == 0 {
 		return nil, nil
 	}
