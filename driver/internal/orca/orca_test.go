@@ -183,7 +183,9 @@ func TestErrorsAndBounds(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			c, _ := fake(t)
 			t.Setenv("ORCA_TEST_SCENARIO", scenario)
-			c.Timeout = 30 * time.Millisecond
+			if scenario == "timeout" {
+				c.Timeout = 30 * time.Millisecond
+			}
 			_, err := c.AutomationsList(context.Background())
 			if err == nil {
 				t.Fatal("expected error")
