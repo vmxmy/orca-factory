@@ -211,6 +211,9 @@ merge-progress-v1: {"queue_id":"q","phase":"merged","deployment":{"state":"pendi
 			f.writes.Add(1)
 			data = map[string]any{"commentCreate": map[string]any{"success": true, "comment": map[string]any{"id": "new", "body": "confirmed"}}}
 		case strings.Contains(q.Query, "issues("):
+			if f.mode.Load().(string) == "quota-issue-page" {
+				w.Header().Set("X-RateLimit-Complexity-Remaining", "155500")
+			}
 			filter := q.Variables["filter"].(map[string]any)["project"].(map[string]any)["id"].(map[string]any)["in"].([]any)
 			if len(filter) != 1 || filter[0] != "p1" {
 				t.Errorf("client received foreign scope: %v", filter)
@@ -462,5 +465,15 @@ func TestLiveBatchHeadroomRefusalUsesCheapProbeRecovery(t *testing.T) {
 	_ = s.Tick(context.Background())
 	if f.probes.Load() != 1 || s.Pauses.Paused("") || f.snapshots.Load() != beforeIssues+5 || f.comments.Load() != beforeComments+20 || f.writes.Load() != 0 {
 		t.Fatalf("cheap probe failed to recover: probes=%d paused=%v issues=%d comments=%d writes=%d", f.probes.Load(), s.Pauses.Paused(""), f.snapshots.Load(), f.comments.Load(), f.writes.Load())
+	}
+}
+
+func TestLiveBatchReservesIssuePageHeadroom(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	f.mode.Store("quota-issue-page")
+	rows, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err == nil || rows != nil || f.snapshots.Load() != 1 || f.comments.Load() != 0 {
+		t.Fatalf("issue pagination exceeded known headroom: issues=%d comments=%d rows=%d err=%v", f.snapshots.Load(), f.comments.Load(), len(rows), err)
 	}
 }

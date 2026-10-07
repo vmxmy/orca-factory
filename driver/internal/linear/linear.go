@@ -475,7 +475,8 @@ func (c *Client) do(ctx context.Context, query string, variables map[string]any,
 	if discovery, _ := ctx.Value(discoveryReadKey{}).(bool); discovery {
 		cost := int64(1000)
 		if strings.Contains(query, "query Snapshot(") {
-			cost = 5000
+			// Reserve the documented per-query ceiling for the nested issue page.
+			cost = 10000
 		}
 		if strings.Contains(query, "query ListCommentsBatch(") {
 			cost = int64(len(variables)/2) * 200
