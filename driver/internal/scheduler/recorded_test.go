@@ -86,7 +86,7 @@ func TestRecordedSchedulerBlockerIdentifiers(t *testing.T) {
 	issue.Labels.Nodes = []linear.NamedID{{Name: "ready-for-agent"}}
 	client := &fakeLinear{issues: []linear.Issue{issue}}
 	repo := config.Repository{Path: "repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Reader: client, Clients: map[string]LinearClient{"repo": client}}
+	runtime := &Runtime{Clients: map[string]LinearClient{"repo": client}}
 	tickets, err := runtime.Snapshot(context.Background(), []config.Repository{repo})
 	if err != nil {
 		t.Fatal(err)

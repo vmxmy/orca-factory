@@ -266,7 +266,7 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 		{"null", `{"terminals":null}`, true},
 		{"missing", `{}`, true},
 		{"string timestamp", `{"terminals":[{"lastOutputAt":"private-value"}]}`, true},
-		{"null timestamp", `{"terminals":[{"lastOutputAt":null}]}`, true},
+		{"null timestamp", `{"terminals":[{"handle":"unknown","worktreePath":"/worker","lastOutputAt":null}]}`, false},
 		{"missing timestamp", `{"terminals":[{}]}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -293,7 +293,7 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 			if tc.name == "valid" && (!ok || got.Handle != "new" || got.LastOutputAt != 2000) {
 				t.Fatalf("match=%+v found=%v", got, ok)
 			}
-			if tc.name == "empty" && ok {
+			if (tc.name == "empty" || tc.name == "null timestamp") && ok {
 				t.Fatal("matched empty terminals")
 			}
 			for _, path := range []string{"", "worker", "/work"} {
@@ -319,5 +319,48 @@ func TestTerminalSend(t *testing.T) {
 		if !errors.As(err, &ticket) || ticket.Err.Error() != "terminal send requires handle and text" {
 			t.Fatalf("invalid arguments error=%v", err)
 		}
+	}
+}
+
+func TestTerminalForWorktreeUnknownOutput(t *testing.T) {
+	for _, rows := range [][]Terminal{
+		{{Handle: "unknown", WorktreePath: "/worker"}},
+		{{Handle: "known", WorktreePath: "/worker", LastOutputAt: 1000}, {Handle: "unknown", WorktreePath: "/worker"}},
+		{{Handle: "unknown", WorktreePath: "/worker"}, {Handle: "known", WorktreePath: "/worker", LastOutputAt: 1000}},
+	} {
+		if got, ok := TerminalForWorktree(rows, "/worker"); ok {
+			t.Fatalf("unknown output selected for idle detection: %+v", got)
+		}
+	}
+}
+
+func TestRecordedTerminalUnknownOutput(t *testing.T) {
+	path, err := filepath.Abs("../../testdata/recorded/orca-terminal-null-output.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCA_RECORDED_RESPONSE", path)
+	cli := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$ORCA_RECORDED_RESPONSE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Path: cli}
+	rows, err := c.TerminalList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := 0
+	for _, row := range rows {
+		if row.LastOutputAt == 0 {
+			unknown++
+			if _, ok := TerminalForWorktree(rows, row.WorktreePath); ok {
+				t.Fatal("recorded unknown timestamp authorized idle detection")
+			}
+		} else if got, ok := TerminalForWorktree(rows, row.WorktreePath); !ok || got.Handle != row.Handle {
+			t.Fatal("unrelated unknown timestamp blocked a recorded known terminal")
+		}
+	}
+	if unknown != 4 || len(rows) != 15 {
+		t.Fatalf("recorded mixed timestamps not exercised: unknown=%d rows=%d", unknown, len(rows))
 	}
 }

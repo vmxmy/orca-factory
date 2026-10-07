@@ -36,7 +36,6 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 		gitMergeTest(t, dir, "commit", "--allow-empty", "-m", "main moved after intent")
 		f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
 	}}
-	f.runtime.Reader = l
 	f.runtime.Clients[dir] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {

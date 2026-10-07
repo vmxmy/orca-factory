@@ -1,0 +1,6 @@
+{
+  "query": "query FreshIssue($id: String!) { issue(id: $id) { id identifier priority createdAt project { id name } updatedAt state { id name } labels(first: 20) { nodes { id name } pageInfo { hasNextPage endCursor } } relations(first: 20) { nodes { id type relatedIssue { id identifier } } pageInfo { hasNextPage endCursor } } inverseRelations(first: 50) { nodes { id type issue { id identifier state { type } } } pageInfo { hasNextPage endCursor } } } }",
+  "variables": {
+    "id": "00000000-0000-4000-8000-000000000045"
+  }
+}

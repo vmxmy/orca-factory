@@ -517,6 +517,7 @@ func (c *Client) Reconcile(ctx context.Context, request, run string) (Reconcilia
 }
 
 // Terminal is a terminal output observation; timestamps are epoch milliseconds.
+// A null output timestamp decodes to zero and cannot establish idle duration.
 type Terminal struct {
 	Handle       string `json:"handle"`
 	WorktreeID   string `json:"worktreeId"`
@@ -544,7 +545,7 @@ func (c *Client) TerminalList(ctx context.Context) ([]Terminal, error) {
 	for _, row := range rows {
 		var terminal Terminal
 		var timestamp struct {
-			LastOutputAt *int64 `json:"lastOutputAt"`
+			LastOutputAt json.RawMessage `json:"lastOutputAt"`
 		}
 		if json.Unmarshal(row, &terminal) != nil || json.Unmarshal(row, &timestamp) != nil || timestamp.LastOutputAt == nil {
 			return nil, invalid("invalid terminal timestamp")
@@ -565,6 +566,9 @@ func TerminalForWorktree(terminals []Terminal, path string) (Terminal, bool) {
 		_, idPath, _ := strings.Cut(terminal.WorktreeID, "::")
 		if terminal.WorktreePath != path && idPath != path {
 			continue
+		}
+		if terminal.LastOutputAt <= 0 {
+			return Terminal{}, false
 		}
 		if !found || terminal.LastOutputAt > latest.LastOutputAt {
 			latest, found = terminal, true

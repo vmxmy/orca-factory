@@ -355,7 +355,6 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	fresh.CreatedAt = fresh.CreatedAt.Add(time.Minute)
 	later.rows = []linear.Comment{old, {Body: "归属: 执行器", CreatedAt: old.CreatedAt.Add(time.Second)}, fresh}
 	source := &mergeTickets{rows: []*mergeLinear{&later, f.linear}}
-	f.runtime.Reader = source
 	f.runtime.Clients[f.config.Repositories[0].Path] = source
 	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)

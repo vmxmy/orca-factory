@@ -1,0 +1,9 @@
+{
+  "query": "query ListCommentsBatch($id0: String!, $after0: String, $id1: String!, $after1: String) { i0: issue(id: $id0) { id comments(first: 100, after: $after0) { nodes { id body createdAt updatedAt } pageInfo { hasNextPage endCursor } } } i1: issue(id: $id1) { id comments(first: 100, after: $after1) { nodes { id body createdAt updatedAt } pageInfo { hasNextPage endCursor } } } }",
+  "variables": {
+    "id0": "00000000-0000-4000-8000-000000000001",
+    "after0": null,
+    "id1": "00000000-0000-4000-8000-000000000045",
+    "after1": null
+  }
+}

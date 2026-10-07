@@ -39,7 +39,6 @@ type Runtime struct {
 	Releases             map[string]*release.Manager
 	ReleaseEligible      map[string]bool
 	GitHub               *github.Client
-	Reader               LinearClient
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository
 	Orca                 OrcaClient
@@ -70,7 +69,7 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 		DriverPath:   binary,
 	}
 	err = r.initialize(ctx, c, func(ctx context.Context, team string) (LinearClient, error) {
-		return linear.New(ctx, linear.Options{TeamID: team, HTTPTimeout: c.Tuning.Linear.HTTPTimeout})
+		return linear.New(ctx, linear.Options{TeamID: team, DiscoveryPauseFraction: c.Tuning.Scheduler.PauseFraction, HTTPTimeout: c.Tuning.Linear.HTTPTimeout})
 	})
 	if err != nil {
 		return nil, err
@@ -110,9 +109,6 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 		}
 		r.Clients[repo.Path] = client
 		r.Repositories[repo.Path] = repo
-		if r.Reader == nil {
-			r.Reader = client
-		}
 	}
 	if len(r.Clients) == 0 {
 		return errors.Join(refusals...)
@@ -120,6 +116,33 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 	return nil
 }
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	groups := map[LinearClient][]config.Repository{}
+	order := []LinearClient{}
+	for _, repo := range repos {
+		if r.refused[repo.Path] != nil {
+			continue
+		}
+		client := r.Clients[repo.Path]
+		if client == nil {
+			return nil, errors.New("missing repository client")
+		}
+		if _, ok := groups[client]; !ok {
+			order = append(order, client)
+		}
+		groups[client] = append(groups[client], repo)
+	}
+	tickets := []Ticket{}
+	for _, client := range order {
+		rows, err := r.snapshotClient(ctx, client, groups[client])
+		if err != nil {
+			return nil, err
+		}
+		tickets = append(tickets, rows...)
+	}
+	return tickets, nil
+}
+
+func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos []config.Repository) ([]Ticket, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
@@ -135,9 +158,47 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		paths[project] = repo.Path
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
-	issues, err := r.Reader.Snapshot(ctx, projects, time.Time{})
+	issues, err := reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
-		return nil, errors.New("linear snapshot failed")
+		return nil, fmt.Errorf("linear snapshot failed: %w", err)
+	}
+	// Batch only within each configured client's authorization boundary.
+	commentsByID := map[string][]linear.Comment{}
+	groups := map[LinearClient][]string{}
+	for _, issue := range issues {
+		path, ok := paths[issue.Project.ID]
+		if !ok {
+			path, ok = paths[issue.Project.Name]
+		}
+		if !ok || r.Clients[path] == nil {
+			return nil, errors.New("snapshot project outside configured repositories")
+		}
+		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue.ID)
+	}
+	for client, ids := range groups {
+		if batch, ok := client.(interface {
+			ListCommentsBatch(context.Context, []string) (map[string][]linear.Comment, error)
+		}); ok {
+			rows, err := batch.ListCommentsBatch(ctx, ids)
+			if err != nil {
+				return nil, fmt.Errorf("ownership snapshot failed: %w", err)
+			}
+			for _, id := range ids {
+				comments, ok := rows[id]
+				if !ok {
+					return nil, errors.New("incomplete ownership snapshot")
+				}
+				commentsByID[id] = comments
+			}
+		} else {
+			for _, id := range ids {
+				comments, err := client.ListComments(ctx, id)
+				if err != nil {
+					return nil, fmt.Errorf("ownership snapshot failed: %w", err)
+				}
+				commentsByID[id] = comments
+			}
+		}
 	}
 	tickets := []Ticket{}
 	for _, issue := range issues {
@@ -148,23 +209,10 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		if !ok {
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
-		ready, claimed, failed := false, false, false
-		for _, label := range issue.Labels.Nodes {
-			switch label.Name {
-			case "ready-for-agent":
-				ready = true
-			case "auto-impl":
-				claimed = true
-			case "auto-failed":
-				failed = true
-			}
-		}
+		candidate, claimed, failed := issueEligibility(issue)
 		// Ownership, not the auto-impl label, determines in-flight admission. Read
 		// comments even when a user removed the label from a still-owned ticket.
-		comments, err := r.Clients[path].ListComments(ctx, issue.ID)
-		if err != nil {
-			return nil, errors.New("ownership snapshot failed")
-		}
+		comments := commentsByID[issue.ID]
 		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
 		if err = readOwnership(&ticket, comments); err != nil {
 			return nil, err
@@ -186,7 +234,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
-		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
+		ticket.Candidate = candidate
 		ticket.Blocked = issue.Blocked()
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
 		for _, relation := range issue.InverseRelations.Nodes {
@@ -212,6 +260,24 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		}
 	}
 	return tickets, nil
+}
+
+// issueEligibility shares only label/state policy. Ownership, blockers and
+// complete fresh evidence remain independent checks at the action boundary.
+func issueEligibility(issue linear.Issue) (candidate, claimed, failed bool) {
+	ready := false
+	for _, label := range issue.Labels.Nodes {
+		switch label.Name {
+		case "ready-for-agent":
+			ready = true
+		case "auto-impl":
+			claimed = true
+		case "auto-failed":
+			failed = true
+		}
+	}
+	candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
+	return candidate, claimed, failed
 }
 
 func readOwnership(t *Ticket, comments []linear.Comment) error {
@@ -291,16 +357,31 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	owner := machine.OwnerExecutor
 	switch a.Kind {
 	case Claim:
-		issue, err := client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
+		issue, err := r.claimIssue(ctx, client, t)
+		if err != nil {
+			return err
+		}
+		candidate, _, _ := issueEligibility(issue)
+		if !candidate || issue.Blocked() || issue.Labels.PageInfo.HasNextPage || issue.Relations.PageInfo.HasNextPage {
+			return errors.New("claim candidate changed")
+		}
+		comments, err := client.ListComments(ctx, t.ID)
+		if err != nil {
+			return errors.New("claim ownership unavailable")
+		}
+		fresh := Ticket{ID: t.ID, Identifier: t.Identifier, Repo: t.Repo}
+		if err := readOwnership(&fresh, comments); err != nil {
+			return err
+		}
+		readMergeHandoff(&fresh, comments)
+		if (fresh.Owner != "" && fresh.Owner != machine.OwnerNone) || fresh.Handoff != nil || fresh.MergeProblem != "" || DeploymentBarrier(fresh) {
+			return errors.New("claim ownership changed")
+		}
+		issue, err = client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if err != nil {
 			return errors.New("linear claim failed")
 		}
-		claimed := false
-		for _, label := range issue.Labels.Nodes {
-			if label.Name == "auto-impl" {
-				claimed = true
-			}
-		}
+		_, claimed, _ := issueEligibility(issue)
 		if !claimed {
 			return errors.New("linear claim not confirmed")
 		}
@@ -334,6 +415,45 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		return errors.New("ownership comment failed")
 	}
 	return nil
+}
+
+// Adapters predating targeted reads retain a live Snapshot fallback; absence is
+// unknown, never permission to reuse the ticket supplied by discovery.
+func (r *Runtime) claimIssue(ctx context.Context, client LinearClient, t Ticket) (linear.Issue, error) {
+	repo := r.Repositories[t.Repo]
+	project := repo.Env["AGENT_LINEAR_PROJECT"]
+	var issue linear.Issue
+	if reader, ok := client.(interface {
+		FreshIssue(context.Context, string) (linear.Issue, error)
+	}); ok {
+		var err error
+		issue, err = reader.FreshIssue(ctx, t.ID)
+		if err != nil {
+			return linear.Issue{}, errors.New("claim issue unavailable")
+		}
+	} else {
+		if project == "" {
+			return linear.Issue{}, errors.New("claim project unavailable")
+		}
+		rows, err := client.Snapshot(ctx, []string{project}, time.Time{})
+		if err != nil {
+			return linear.Issue{}, errors.New("claim issue unavailable")
+		}
+		found := false
+		for _, row := range rows {
+			if row.ID == t.ID {
+				if found {
+					return linear.Issue{}, errors.New("ambiguous claim issue")
+				}
+				issue = row
+				found = true
+			}
+		}
+	}
+	if issue.ID != t.ID || issue.Identifier != t.Identifier || project == "" || (issue.Project.ID != project && issue.Project.Name != project) {
+		return linear.Issue{}, errors.New("claim issue identity changed")
+	}
+	return issue, nil
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)

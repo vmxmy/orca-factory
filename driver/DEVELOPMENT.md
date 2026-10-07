@@ -81,6 +81,12 @@ make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
 
 合并到 main 要求上述五项检查通过。远端分支保护使用上表名称并绑定 GitHub Actions app，要求分支更新至最新主线，管理员也受约束；通过 GitHub API 回读确认配置，检查启动本身不能证明保护已生效。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
 
+### Go 模块下载代理
+
+Go checks 通过仓库变量 `GO_MODULE_PROXY` 设置所有 job 的 `GOPROXY`，未设置时仍使用 `https://proxy.golang.org,direct`。遇到本地 runner 无法访问默认代理时，维护者可设置为 `https://goproxy.cn,https://proxy.golang.org,direct`；逗号分隔的后备仅在代理返回 404/410 时启用，超时不会自动切换。该设置不禁用 Go 校验和数据库、不跳过任何检查，也不改变 runner 标签或锁定的工具版本；代理可达性和实际下载以最终 CI 为准。
+
+CI 还可通过仓库变量 `CI_NETWORK_PROXY` 设置 job 的 `http_proxy` 和 `https_proxy`，用于 checkout、工具链和依赖下载。未设置时为空，保持直接连接。代理地址必须从 runner 容器内可达；宿主的 `127.0.0.1` 不是容器中的宿主地址。本机通过仅监听 Docker bridge 地址 `172.17.0.1:17890` 的 systemd socket 将连接转发到现有 `127.0.0.1:7890` 代理，未改用 host 网络或挂载宿主文件。维护者需保留该 socket 服务；切换托管 runner 前清空这个本机代理变量。不要把含密码的代理 URL 放入仓库变量。
+
 ### Runner 选择与本地隔离
 
 五个 job 使用仓库变量 `GO_RUNNER_LABELS_JSON` 选择 runner。变量未设置或为空时，默认标签为 `["ubuntu-24.04"]`，使用 GitHub 托管云端 runner。本地 runner 就绪后，维护者可将变量设置为 JSON 字符串数组，例如：

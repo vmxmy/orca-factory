@@ -26,6 +26,8 @@ const endpoint = "https://api.linear.app/graphql"
 
 type Options struct {
 	TeamID string
+	// DiscoveryPauseFraction reserves known server quota for critical work; zero uses 5%.
+	DiscoveryPauseFraction float64
 	// BaseURL overrides the GraphQL endpoint for tests. Redirects are forbidden.
 	BaseURL     string
 	HTTPTimeout time.Duration
@@ -127,6 +129,7 @@ type Client struct {
 	mu                       sync.Mutex
 	usage                    Usage
 	now                      func() time.Time
+	discoveryPauseFraction   float64
 }
 
 // New reads LINEAR_API_KEY and caches all team states, labels and projects.
@@ -156,7 +159,14 @@ func New(ctx context.Context, options Options) (*Client, error) {
 		hc = *options.HTTPClient
 	}
 	hc.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	c := &Client{key: key, endpoint: target, http: &hc, now: time.Now}
+	floor := options.DiscoveryPauseFraction
+	if floor == 0 {
+		floor = .05
+	}
+	if floor < 0 || floor >= 1 {
+		return nil, errors.New("invalid discovery quota floor")
+	}
+	c := &Client{key: key, endpoint: target, http: &hc, now: time.Now, discoveryPauseFraction: floor}
 	for _, item := range []struct {
 		field string
 		dest  *map[string]string
@@ -238,6 +248,7 @@ var projectUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 // Snapshot queries all requested project names or UUIDs together, paging the issue
 // connection. A zero updatedSince omits the updatedAt filter entirely.
 func (c *Client) Snapshot(ctx context.Context, projects []string, updatedSince time.Time) ([]Issue, error) {
+	ctx = context.WithValue(ctx, discoveryReadKey{}, true)
 	ids := make([]string, 0, len(projects))
 	for _, project := range projects {
 		if projectUUID.MatchString(project) {
@@ -431,14 +442,14 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 	for {
 		var data struct {
 			Issue *struct {
-				Comments Connection[Comment] `json:"comments"`
+				Comments *commentPage `json:"comments"`
 			} `json:"issue"`
 		}
 		err := c.do(ctx, `query ListComments($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) { nodes { id body createdAt updatedAt } pageInfo { hasNextPage endCursor } } } }`, map[string]any{"id": id, "after": cursor(after)}, &data)
 		if err != nil {
 			return nil, err
 		}
-		if data.Issue == nil {
+		if data.Issue == nil || data.Issue.Comments == nil {
 			return nil, protocolError()
 		}
 		comments = append(comments, data.Issue.Comments.Nodes...)
@@ -461,6 +472,19 @@ func (c *Client) ProbeQuota(ctx context.Context) error {
 var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (err error) {
+	if discovery, _ := ctx.Value(discoveryReadKey{}).(bool); discovery {
+		cost := int64(1000)
+		if strings.Contains(query, "query Snapshot(") {
+			// Reserve the documented per-query ceiling for the nested issue page.
+			cost = 10000
+		}
+		if strings.Contains(query, "query ListCommentsBatch(") {
+			cost = int64(len(variables)/2) * 200
+		}
+		if err := c.admitDiscovery(cost); err != nil {
+			return err
+		}
+	}
 	started := time.Now()
 	operation := ""
 	if match := operationName.FindStringSubmatch(query); len(match) > 1 {
@@ -582,3 +606,26 @@ func (c *Client) record(response *http.Response) {
 	}
 }
 func (c *Client) Usage() Usage { c.mu.Lock(); defer c.mu.Unlock(); c.rotateHour(); return c.usage }
+
+type discoveryReadKey struct{}
+
+// DiscoveryQuotaError means the next ordinary page cannot fit above the quota
+// reserve. It requires a backed-off cheap probe, even above the pause fraction.
+type DiscoveryQuotaError struct{}
+
+func (*DiscoveryQuotaError) Error() string { return "linear discovery quota headroom exhausted" }
+
+// This is admission against the last headers, not a cross-process reservation.
+// A cheap probe remains available even when an ordinary page cannot fit.
+func (c *Client) admitDiscovery(complexity int64) error {
+	usage := c.Usage()
+	for _, budget := range []struct {
+		limit RateLimit
+		cost  int64
+	}{{usage.RequestLimit, 1}, {usage.ComplexityLimit, complexity}} {
+		if budget.limit.Limit > 0 && float64(budget.limit.Remaining-budget.cost) < float64(budget.limit.Limit)*c.discoveryPauseFraction {
+			return &infra.Global{Dep: infra.Linear, Err: &DiscoveryQuotaError{}}
+		}
+	}
+	return nil
+}

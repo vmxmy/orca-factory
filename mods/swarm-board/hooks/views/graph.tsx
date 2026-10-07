@@ -71,19 +71,10 @@ export function buildGraph(input?: GraphInput): GraphView | null {
     if (path.length > criticalPath.length) criticalPath = path
   }
 
-  const unlockRank = active.map(issue => {
-    const seen = new Set([issue.id])
-    const pending = [issue.id]
-    while (pending.length > 0) {
-      const id = pending.pop()!
-      for (const next of downstream.get(id) ?? []) {
-        if (seen.has(next)) continue
-        seen.add(next)
-        pending.push(next)
-      }
-    }
-    return { id: issue.id, count: seen.size - 1 }
-  }).filter(item => item.count > 0)
+  const unlockRank = active.map(issue => ({
+    id: issue.id,
+    count: (downstream.get(issue.id) ?? []).filter(id => id !== issue.id && blockers.get(id)!.length === 1).length,
+  })).filter(item => item.count > 0)
     .sort((a, b) => b.count - a.count || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
 
   const families = new Map<string | null, GraphIssue[]>()
@@ -118,7 +109,7 @@ export function buildGraph(input?: GraphInput): GraphView | null {
   const headline = active.length === 0 ? '无未完成票'
     : `${active.length} 张未完成，仅 ${ready} 张可领`
       + (blocked.length ? `；${blocked.length} 张卡在 ${blockedOn.join('、')}` : '；无依赖阻塞')
-      + (leader ? `；${leader.id} 影响 ${leader.count} 张下游（含间接依赖）` : '')
+      + (leader ? `；${leader.id} 完成可立即解锁 ${leader.count} 张` : '')
   return { criticalPath, unlockRank, groups, headline }
 }
 
