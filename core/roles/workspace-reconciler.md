@@ -18,9 +18,9 @@
 
 ## Verification
 
-1. 用 JSON 获取完整清单：`orca worktree list --json`、`orca worktree ps --json`、`orca terminal list --json`、`orca orchestration worker-list --json`。
+1. 用 JSON 获取完整清单：`orca worktree list --json`、`orca worktree ps --json`、`orca terminal list --json`、`orca orchestration worker-list --json`。发现 `hasMore`、`truncated` 或总数不一致时，使用返回的 cursor 分页读取，直到完整；cursor 缺失、重复或连续重试失败才升级人工。
 2. 对有关联的资源读取 Linear issue 和 PR 状态；检查 workspace status、最后活动时间、terminal/worker liveness、worktree dirty 状态、当前 HEAD、远端分支和 PR head。
-3. 任一清单 `truncated`、`omittedHostIds`、分页未完成、查询失败或证据互相矛盾时，决策为 `HUMAN_REVIEW`。
+3. 任一清单在分页、重试后仍 `truncated`、`omittedHostIds`、查询失败或证据互相矛盾时，决策为 `HUMAN_REVIEW`；只因首次响应不完整时，决策为 `RECHECK_REQUIRED` 并由 Agent 继续补证据。
 4. 只有同时满足“无活跃归属、无打开 PR、issue 已完成或无归属、工作区干净、提交已推送/合并、超过保留期”才可 `AUTO_REMOVE`。
 5. 执行每个删除后重新读取 `orca worktree show` 和 Git worktree 清单；删除失败保留资源并记录错误。
 6. 同一资源使用稳定 identity 去重；已有未解决的人工决策不重复创建。
@@ -29,5 +29,5 @@
 
 - 成功完成清理或生成完整人工队列后发送一次 `worker_done`。
 - body 必须是 JSON：`{"run":"...","scanned":N,"removed":N,"kept":N,"humanReview":[...],"evidenceDir":"..."}`。
-- `humanReview` 每项至少包含 `worktreeId`、`path`、`reason`、`evidence` 和 `recommendedAction`。
+- `humanReview` 每项至少包含 `worktreeId`、`path`、`reason`、`evidence` 和 `recommendedAction`；分页不完整但可继续查询的对象放入 `recheck`，不请求人工。
 - 清单不完整时使用 `outcome=failed`，保留已完成的安全清理记录，并写明需要下一轮重试的查询。
