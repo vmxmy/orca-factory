@@ -8,6 +8,7 @@
 | `coordinator.md` | 定时任务启动的 coordinator | 与 `COORDINATOR.md` 一起读 |
 | `worker.md` | 每个单元的 worker | 原文作为 task spec 开头 |
 | `resolver.md` | driver resolve 启动的处置 Agent | 接管异常、预算耗尽和审批等待；提交经验证的合并/部署提案 |
+| `workspace-reconciler.md` | 每轮流水线收尾的 Orca 资源 Agent | 盘点并安全清理 worktree/workspace；不确定项转人工决策 |
 | `reviewer.md` | lane 2 异构审查命令 | 原文 + 简报经 stdin 喂给 `$AGENT_ROLE_REVIEWER_CMD` |
 | `local-worker.md` | 项目特化（可选） | 追加在 `worker.md` 之后，只能加约束 |
 
