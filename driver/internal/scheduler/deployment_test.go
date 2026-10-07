@@ -40,7 +40,6 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	f.config.Repositories = append(f.config.Repositories, br)
 	f.runtime.Repositories[dir] = br
 	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
-	f.runtime.Reader = source
 	f.runtime.Clients[dir] = source
 	f.runtime.Clients[f.config.Repositories[0].Path] = source
 	original := f.server.Config.Handler
@@ -182,7 +181,6 @@ func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) 
 	f := newMergeFixture(t)
 	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
-	f.runtime.Reader = l
 	f.runtime.Clients[f.config.Repositories[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -332,7 +330,6 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
 	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
-	f.runtime.Reader = source
 	f.runtime.Clients[f.config.Repositories[0].Path] = source
 	nextPuts := 0
 	nextMerged := false

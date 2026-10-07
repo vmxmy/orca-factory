@@ -72,7 +72,7 @@ func TestServeWiresRelease(t *testing.T) {
 			cfg := config.Config{MaxInFlight: 1, Repositories: []config.Repository{repo}, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}}
 			client := &releaseServeLinear{}
 			manager := &release.Manager{File: filepath.Join(dir, "releases.json"), Request: merge.Request{Repository: "o/r", Path: dir}, Source: func(context.Context) (release.Source, error) { return b, nil }, Writer: b, Now: func() time.Time { return now }}
-			runtime := &scheduler.Runtime{Reader: client, Clients: map[string]scheduler.LinearClient{dir: client}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Releases: map[string]*release.Manager{dir: manager}}
+			runtime := &scheduler.Runtime{Clients: map[string]scheduler.LinearClient{dir: client}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Releases: map[string]*release.Manager{dir: manager}}
 			err := serveWithStatus(ctx, filepath.Join(dir, "lock"), func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 				return &scheduler.Scheduler{Backend: runtime, Config: cfg}, runtime, nil
 			}, func(context.Context) error { cancel(); return ctx.Err() }, func(e error) { t.Error(e) })
@@ -150,7 +150,7 @@ func TestServeReleaseBarrierSurvivesSecondProbeFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			orcaClient := &releaseProbeOrca{rejected: rejected}
-			runtime := &scheduler.Runtime{GitHub: gh, Reader: client, Clients: map[string]scheduler.LinearClient{dir: client}, Repositories: map[string]config.Repository{dir: repo}, Orca: orcaClient, Releases: map[string]*release.Manager{dir: {File: file}}}
+			runtime := &scheduler.Runtime{GitHub: gh, Clients: map[string]scheduler.LinearClient{dir: client}, Repositories: map[string]config.Repository{dir: repo}, Orca: orcaClient, Releases: map[string]*release.Manager{dir: {File: file}}}
 			var tickErrors []error
 			err = serveWithStatus(ctx, filepath.Join(dir, "lock"), func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 				return &scheduler.Scheduler{Backend: runtime, Config: cfg}, runtime, nil

@@ -67,7 +67,6 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 					h["enqueued_at"] = "2026-10-06T02:00:00Z"
 				})
 				source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
-				f.runtime.Reader = source
 				f.runtime.Clients[dir] = source
 				f.linear.issue.State.Name = status
 				f.linear.issue.Labels.Nodes = nil

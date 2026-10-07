@@ -253,7 +253,7 @@ merge-progress-v1: {"queue_id":"q","phase":"merged","deployment":{"state":"pendi
 }
 func liveBatchRuntime(t *testing.T, f *liveBatchFixture) (*scheduler.Runtime, config.Repository) {
 	repo := config.Repository{Path: "/fixture", Env: map[string]string{"AGENT_LINEAR_PROJECT": "Alpha", "AGENT_SCOPE_AVOID": "0"}}
-	return &scheduler.Runtime{Reader: f.client, Clients: map[string]scheduler.LinearClient{repo.Path: f.client}, Repositories: map[string]config.Repository{repo.Path: repo}}, repo
+	return &scheduler.Runtime{Clients: map[string]scheduler.LinearClient{repo.Path: f.client}, Repositories: map[string]config.Repository{repo.Path: repo}}, repo
 }
 func TestLiveBatchRepeatedDiscovery(t *testing.T) {
 	f := liveBatchSetup(t)

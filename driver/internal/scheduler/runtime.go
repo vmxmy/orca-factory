@@ -39,7 +39,6 @@ type Runtime struct {
 	Releases             map[string]*release.Manager
 	ReleaseEligible      map[string]bool
 	GitHub               *github.Client
-	Reader               LinearClient
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository
 	Orca                 OrcaClient
@@ -110,9 +109,6 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 		}
 		r.Clients[repo.Path] = client
 		r.Repositories[repo.Path] = repo
-		if r.Reader == nil {
-			r.Reader = client
-		}
 	}
 	if len(r.Clients) == 0 {
 		return errors.Join(refusals...)
@@ -213,17 +209,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		if !ok {
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
-		ready, claimed, failed := false, false, false
-		for _, label := range issue.Labels.Nodes {
-			switch label.Name {
-			case "ready-for-agent":
-				ready = true
-			case "auto-impl":
-				claimed = true
-			case "auto-failed":
-				failed = true
-			}
-		}
+		candidate, claimed, failed := issueEligibility(issue)
 		// Ownership, not the auto-impl label, determines in-flight admission. Read
 		// comments even when a user removed the label from a still-owned ticket.
 		comments := commentsByID[issue.ID]
@@ -248,7 +234,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
-		ticket.Candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
+		ticket.Candidate = candidate
 		ticket.Blocked = issue.Blocked()
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
 		for _, relation := range issue.InverseRelations.Nodes {
@@ -274,6 +260,24 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		}
 	}
 	return tickets, nil
+}
+
+// issueEligibility shares only label/state policy. Ownership, blockers and
+// complete fresh evidence remain independent checks at the action boundary.
+func issueEligibility(issue linear.Issue) (candidate, claimed, failed bool) {
+	ready := false
+	for _, label := range issue.Labels.Nodes {
+		switch label.Name {
+		case "ready-for-agent":
+			ready = true
+		case "auto-impl":
+			claimed = true
+		case "auto-failed":
+			failed = true
+		}
+	}
+	candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
+	return candidate, claimed, failed
 }
 
 func readOwnership(t *Ticket, comments []linear.Comment) error {
@@ -357,18 +361,8 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		if err != nil {
 			return err
 		}
-		ready, claimed, failed := false, false, false
-		for _, label := range issue.Labels.Nodes {
-			switch label.Name {
-			case "ready-for-agent":
-				ready = true
-			case "auto-impl":
-				claimed = true
-			case "auto-failed":
-				failed = true
-			}
-		}
-		if !ready || claimed || failed || (issue.State.Name != "Todo" && issue.State.Name != "Backlog") || issue.Blocked() || issue.Labels.PageInfo.HasNextPage || issue.Relations.PageInfo.HasNextPage {
+		candidate, _, _ := issueEligibility(issue)
+		if !candidate || issue.Blocked() || issue.Labels.PageInfo.HasNextPage || issue.Relations.PageInfo.HasNextPage {
 			return errors.New("claim candidate changed")
 		}
 		comments, err := client.ListComments(ctx, t.ID)
@@ -387,12 +381,7 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		if err != nil {
 			return errors.New("linear claim failed")
 		}
-		claimed = false
-		for _, label := range issue.Labels.Nodes {
-			if label.Name == "auto-impl" {
-				claimed = true
-			}
-		}
+		_, claimed, _ := issueEligibility(issue)
 		if !claimed {
 			return errors.New("linear claim not confirmed")
 		}

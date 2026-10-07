@@ -207,7 +207,7 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	f.linear = &mergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
 	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 	f.config = config.Config{Repositories: []config.Repository{repo}, MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
-	f.runtime = &Runtime{Reader: f.linear, Clients: map[string]LinearClient{dir: f.linear}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
+	f.runtime = &Runtime{Clients: map[string]LinearClient{dir: f.linear}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
 	return f
 }
 func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
@@ -471,7 +471,6 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
 	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
-	f.runtime.Reader = source
 	f.runtime.Clients[f.config.Repositories[0].Path] = source
 	// Waiting head blocks the later PR, even when snapshot and updatedAt favor it.
 	f.checkState = "pending"
@@ -518,7 +517,6 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 	f.config.Repositories = append(f.config.Repositories, br)
 	f.runtime.Repositories[dir] = br
 	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
-	f.runtime.Reader = source
 	f.runtime.Clients[dir] = source
 	f.runtime.Clients[f.config.Repositories[0].Path] = source
 	original := f.server.Config.Handler

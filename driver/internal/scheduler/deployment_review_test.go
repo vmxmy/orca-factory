@@ -50,7 +50,6 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 			gitMergeTest(t, dir, "commit", "-m", "advance main")
 			nextMain := gitMergeTest(t, dir, "rev-parse", "HEAD")
 			l := &movingDeploymentIntent{mergeLinear: f.linear, move: func() { f.main = nextMain }}
-			f.runtime.Reader = l
 			f.runtime.Clients[dir] = l
 			var smokes []string
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {

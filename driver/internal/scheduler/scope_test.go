@@ -35,7 +35,7 @@ func TestScopeActualChanges(t *testing.T) {
 					lc.issues = append(lc.issues, linear.Issue{ID: id, Identifier: id, Project: linear.NamedID{ID: id}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}})
 				}
 				reads := 0
-				r := &Runtime{Reader: lc, Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
+				r := &Runtime{Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
 					reads++
 					if reads == 1 {
 						switch failure {
