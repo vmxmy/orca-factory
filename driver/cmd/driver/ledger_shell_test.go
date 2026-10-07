@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,7 +13,8 @@ import (
 func shellLedgerCommand(t *testing.T, dir string, args ...string) (int, string, string) {
 	t.Helper()
 	command := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--", "ledger-shell"}, args...)...)
-	command.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "PATH="+dir+":"+os.Getenv("PATH"), "AGENT_LINEAR_TEAM=TEST", "AGENT_LINEAR_PROJECT=project", "AGENT_LINEAR_COUNT_FILE="+filepath.Join(dir, "count"), "LEDGER_TEST_DIR="+dir)
+	command.Dir = dir
+	command.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "PATH=.:"+os.Getenv("PATH"), "AGENT_LINEAR_TEAM=TEST", "AGENT_LINEAR_PROJECT=project", "AGENT_LINEAR_COUNT_FILE="+filepath.Join(dir, "count"), "LEDGER_TEST_DIR="+dir)
 	var out, warnings bytes.Buffer
 	command.Stdout, command.Stderr = &out, &warnings
 	code := 0
@@ -94,6 +96,41 @@ func TestLedgerShellFailures(t *testing.T) {
 	sleeps, err := os.ReadFile(filepath.Join(dir, "sleeps"))
 	if code != 1 || out != "" || strings.Count(warnings, "orca diagnostic") != 3 || !strings.Contains(warnings, "attempt 3/3, exit 7") || err != nil || string(sleeps) != "2\n2\n" {
 		t.Fatalf("retry: %d %q %q sleeps=%q error=%v", code, out, warnings, sleeps, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sleep"), []byte("#!/bin/sh\nexit 7\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range []string{"list-issues", "save-issue", "issue", "comment"} {
+		script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = %q ] && [ ! -f "$LEDGER_TEST_DIR/seen" ]; then
+ touch "$LEDGER_TEST_DIR/seen"
+ printf '%%s\n' '{"ok":false,"error":"transient"}'
+ exit 0
+fi
+case "$2" in
+list-issues) if [ %q = save-issue ]; then printf '%%s\n' '{"ok":true,"result":{"issues":[]}}'; else printf '%%s\n' '{"ok":true,"result":{"issues":[{"title":"[ledger] agent-graph","identifier":"TEST-1"}]}}'; fi ;;
+save-issue) printf '%%s\n' '{"ok":true,"result":{"issue":{"identifier":"TEST-1"}}}' ;;
+issue) printf '%%s\n' '{"ok":true,"result":{"comments":[]}}' ;;
+comment) printf '%%s\n' '{"ok":true}' ;;
+esac
+`, operation, operation)
+		if err := os.WriteFile(filepath.Join(dir, "orca"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		command, wantCode, wantOut := "append", 0, ""
+		if operation == "list-issues" || operation == "issue" {
+			command, wantOut = "stats", "runs=0\n"
+		}
+		if operation == "comment" {
+			wantCode = 7
+		}
+		code, out, warnings = shellLedgerCommand(t, dir, command, "{}")
+		if err := os.Remove(filepath.Join(dir, "seen")); err != nil {
+			t.Fatal(err)
+		}
+		if code != wantCode || out != wantOut || !strings.Contains(warnings, "attempt 1/3, exit 0") {
+			t.Fatalf("%s sleep failure: %d %q %q", operation, code, out, warnings)
+		}
 	}
 	if err := os.WriteFile(filepath.Join(dir, "jq"), []byte("#!/bin/sh\nprintf 'jq boundary diagnostic\\n' >&2\nprintf 'partial\\n'\nexit 9\n"), 0o755); err != nil {
 		t.Fatal(err)

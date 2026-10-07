@@ -66,7 +66,7 @@ install_ledger() {
   local dest="$1" tmp
   mkdir -p "$dest"
   tmp="$(mktemp "$dest/.ledger.sh.XXXXXX")" || fail "cannot stage ledger entry in $dest"
-  if ! cp "$CORE/ledger.sh" "$tmp" || ! chmod +x "$tmp" || ! bash -n "$tmp" || ! mv -f "$tmp" "$dest/ledger.sh"; then
+  if ! cp "$CORE/ledger.sh" "$tmp" || ! chmod 755 "$tmp" || ! bash -n "$tmp" || ! mv -f "$tmp" "$dest/ledger.sh"; then
     rm -f "$tmp"
     fail "cannot replace ledger entry in $dest; original entry retained"
   fi

@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,6 +59,9 @@ type shellLedger struct{ out, warnings io.Writer }
 
 func shellProcess(path string, args []string, input string, out, warnings io.Writer) int {
 	command := exec.Command(path, args...)
+	if errors.Is(command.Err, exec.ErrDot) {
+		command.Err = nil
+	}
 	command.Stdin = os.Stdin
 	if input != "" {
 		command.Stdin = strings.NewReader(input)
@@ -125,7 +129,7 @@ func (s shellLedger) linear(args ...string) (string, int) {
 		}
 		_, _ = fmt.Fprintf(s.warnings, "ledger: orca linear %s failed (attempt %d/3, exit %d): %s\n", args[0], attempt, status, reason)
 		if attempt != 3 {
-			if code := shellProcess("sleep", []string{"2"}, "", s.out, s.warnings); code != 0 {
+			if code := shellProcess("sleep", []string{"2"}, "", s.out, s.warnings); code != 0 && args[0] == "comment" {
 				return "", code
 			}
 		}

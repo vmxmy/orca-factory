@@ -14,7 +14,7 @@ func TestLedgerInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	original, err := exec.Command("git", "-C", factory, "show", "76a944f:core/ledger.sh").Output()
+	original, err := os.ReadFile(filepath.Join(factory, "driver/testdata/ledger-shell/original-ledger.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,6 +96,10 @@ func TestLedgerInstallation(t *testing.T) {
 	unchanged()
 	if code, output := invoke("init", driver, os.Getenv("PATH")); code != 0 {
 		t.Fatalf("init failed: %d %s", code, output)
+	}
+	info, err := os.Stat(entry)
+	if err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("installed entry permissions: %v %v", info, err)
 	}
 	managed, err := os.ReadFile(filepath.Join(factory, "core/ledger.sh"))
 	if err != nil {
