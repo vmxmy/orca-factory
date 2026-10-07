@@ -4,11 +4,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/testenv"
+	"github.com/vmxmy/orca-factory/driver/testsupport"
 )
 
 func TestPackageStatusIsolation(t *testing.T) {
-	testenv.CheckStatusIsolation(t, func() {
+	testsupport.CheckStatusIsolation(t, func() {
 
 		now := time.Now()
 		PushObservation(now, func(v *View) { v.Tickets = []Ticket{{Repo: "/repo", Identifier: "ZII-916"}} })

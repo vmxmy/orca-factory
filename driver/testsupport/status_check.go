@@ -1,5 +1,5 @@
-// Package testenv provides process-wide isolation for driver test binaries.
-package testenv
+// Package testsupport provides process-wide isolation for driver test binaries.
+package testsupport
 
 import (
 	"os"

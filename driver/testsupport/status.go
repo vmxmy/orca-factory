@@ -1,4 +1,4 @@
-package testenv
+package testsupport
 
 import (
 	"os"
