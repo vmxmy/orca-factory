@@ -16,6 +16,9 @@ func CheckStatusIsolation(t *testing.T, write func()) {
 	t.Helper()
 	const child = "DRIVER_TEST_STATUS_ISOLATION_CHILD"
 	if os.Getenv(child) == "1" {
+		// Exercise both the selected legacy path and a test that clears it.
+		write()
+		t.Setenv("DRIVER_STATUS_FILE", "")
 		write()
 		return
 	}
