@@ -7,7 +7,16 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/vmxmy/orca-factory/driver/internal/testenv"
 )
+
+func TestMain(m *testing.M) {
+	cleanup := testenv.IsolateStatus()
+	code := m.Run()
+	cleanup()
+	os.Exit(code)
+}
 
 func TestCLIProcess(t *testing.T) {
 	if os.Getenv("DRIVER_TEST_PROCESS") == "1" {
