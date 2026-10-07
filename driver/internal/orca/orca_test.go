@@ -333,3 +333,34 @@ func TestTerminalForWorktreeUnknownOutput(t *testing.T) {
 		}
 	}
 }
+
+func TestRecordedTerminalUnknownOutput(t *testing.T) {
+	path, err := filepath.Abs("../../testdata/recorded/orca-terminal-null-output.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ORCA_RECORDED_RESPONSE", path)
+	cli := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$ORCA_RECORDED_RESPONSE\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	c := &Client{Path: cli}
+	rows, err := c.TerminalList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	unknown := 0
+	for _, row := range rows {
+		if row.LastOutputAt == 0 {
+			unknown++
+			if _, ok := TerminalForWorktree(rows, row.WorktreePath); ok {
+				t.Fatal("recorded unknown timestamp authorized idle detection")
+			}
+		} else if got, ok := TerminalForWorktree(rows, row.WorktreePath); !ok || got.Handle != row.Handle {
+			t.Fatal("unrelated unknown timestamp blocked a recorded known terminal")
+		}
+	}
+	if unknown == 0 || unknown == len(rows) {
+		t.Fatalf("recorded mixed timestamps not exercised: unknown=%d rows=%d", unknown, len(rows))
+	}
+}

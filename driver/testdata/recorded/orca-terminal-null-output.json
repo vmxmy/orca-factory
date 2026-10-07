@@ -1,0 +1,99 @@
+{
+  "ok": true,
+  "result": {
+    "terminals": [
+      {
+        "handle": "term_recorded_0",
+        "worktreeId": "recorded::/recorded/workspace-0",
+        "worktreePath": "/recorded/workspace-0",
+        "lastOutputAt": null
+      },
+      {
+        "handle": "term_recorded_1",
+        "worktreeId": "recorded::/recorded/workspace-1",
+        "worktreePath": "/recorded/workspace-1",
+        "lastOutputAt": null
+      },
+      {
+        "handle": "term_recorded_2",
+        "worktreeId": "recorded::/recorded/workspace-2",
+        "worktreePath": "/recorded/workspace-2",
+        "lastOutputAt": 1791389351899
+      },
+      {
+        "handle": "term_recorded_3",
+        "worktreeId": "recorded::/recorded/workspace-3",
+        "worktreePath": "/recorded/workspace-3",
+        "lastOutputAt": 1791389753678
+      },
+      {
+        "handle": "term_recorded_4",
+        "worktreeId": "recorded::/recorded/workspace-4",
+        "worktreePath": "/recorded/workspace-4",
+        "lastOutputAt": 1791394494925
+      },
+      {
+        "handle": "term_recorded_5",
+        "worktreeId": "recorded::/recorded/workspace-5",
+        "worktreePath": "/recorded/workspace-5",
+        "lastOutputAt": 1791394604557
+      },
+      {
+        "handle": "term_recorded_6",
+        "worktreeId": "recorded::/recorded/workspace-6",
+        "worktreePath": "/recorded/workspace-6",
+        "lastOutputAt": 1791394145353
+      },
+      {
+        "handle": "term_recorded_7",
+        "worktreeId": "recorded::/recorded/workspace-7",
+        "worktreePath": "/recorded/workspace-7",
+        "lastOutputAt": 1791394145346
+      },
+      {
+        "handle": "term_recorded_8",
+        "worktreeId": "recorded::/recorded/workspace-8",
+        "worktreePath": "/recorded/workspace-8",
+        "lastOutputAt": 1791394623039
+      },
+      {
+        "handle": "term_recorded_9",
+        "worktreeId": "recorded::/recorded/workspace-9",
+        "worktreePath": "/recorded/workspace-9",
+        "lastOutputAt": 1791389521882
+      },
+      {
+        "handle": "term_recorded_10",
+        "worktreeId": "recorded::/recorded/workspace-10",
+        "worktreePath": "/recorded/workspace-10",
+        "lastOutputAt": 1791389752522
+      },
+      {
+        "handle": "term_recorded_11",
+        "worktreeId": "recorded::/recorded/workspace-11",
+        "worktreePath": "/recorded/workspace-11",
+        "lastOutputAt": 1791394623017
+      },
+      {
+        "handle": "term_recorded_12",
+        "worktreeId": "recorded::/recorded/workspace-12",
+        "worktreePath": "/recorded/workspace-12",
+        "lastOutputAt": 1791394606195
+      },
+      {
+        "handle": "term_recorded_13",
+        "worktreeId": "recorded::/recorded/workspace-13",
+        "worktreePath": "/recorded/workspace-13",
+        "lastOutputAt": null
+      },
+      {
+        "handle": "term_recorded_14",
+        "worktreeId": "recorded::/recorded/workspace-14",
+        "worktreePath": "/recorded/workspace-14",
+        "lastOutputAt": null
+      }
+    ],
+    "totalCount": 15,
+    "truncated": false
+  }
+}

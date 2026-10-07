@@ -118,4 +118,4 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - task-list 缺 dispatch_id 是合法的；已有身份用于释放，缺身份时须从 worker-list 的 taskId/runId/dispatchId 关联恢复。录制样本 `orca-resolver-worker-list.json` 来自真实复核 worker 的只读列表，保留完整行集合并移除预览、目录等非契约字段；`resolver.TestRecordedWorkerAssociationRecoversReplacement` 覆盖该契约。
 - 原执行器退出后允许独立处置 Agent 排查保留的 worker；原 Run 未确认停止推进前，调度器拒绝处置成功提案。失效部署提案退回限时重试，读写不确定则保留原身份继续对账。
 
-`terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。回归覆盖为 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。
+`terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。真实录制 `orca-terminal-null-output.json` 保留混合时间戳及全部行数，脱敏方式和原始摘要见同名 provenance；`orca.TestRecordedTerminalUnknownOutput` 通过公开客户端重放。回归覆盖还包括 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。
