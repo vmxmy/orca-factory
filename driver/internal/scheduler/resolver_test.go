@@ -129,7 +129,7 @@ func TestNewEscalationStartsAnotherResolverAttempt(t *testing.T) {
 }
 func TestFailedTicketWithoutOwnershipIsAdmittedToResolver(t *testing.T) {
 	l := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}
-	r := &Runtime{Reader: l, Clients: map[string]LinearClient{"/repo": l}}
+	r := &Runtime{Clients: map[string]LinearClient{"/repo": l}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}})
 	if err != nil || len(tickets) != 1 || tickets[0].Owner != machine.OwnerHuman {
 		t.Fatalf("failed ticket orphaned: %+v %v", tickets, err)

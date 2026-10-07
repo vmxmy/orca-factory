@@ -142,7 +142,7 @@ func TestRuntimeSnapshotUsesProjectionClient(t *testing.T) {
 	}
 	client := linear.NewProjectionClient(&linear.Client{}, p, time.Hour)
 	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
-	r := &Runtime{Reader: client, Clients: map[string]LinearClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}, refused: map[string]error{}}
+	r := &Runtime{Clients: map[string]LinearClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}, refused: map[string]error{}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
 	if err != nil || len(tickets) != 1 || tickets[0].Identifier != "ENG-1" {
 		t.Fatalf("tickets=%+v err=%v", tickets, err)
@@ -162,9 +162,9 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	}
 }
 func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
-	lc := &fakeLinear{}
+	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p1"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
 	oc := &fakeOrca{}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": lc}, Orca: oc, DriverPath: "/opt/driver with space"}
+	r := &Runtime{Clients: map[string]LinearClient{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Attempt: 1}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Claim, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestOwnershipPreservesSchedulerAttempt(t *testing.T) {
 }
 func TestRuntimeSnapshotAllProjects(t *testing.T) {
 	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: linear.NamedID{ID: "p2"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
-	r := &Runtime{Reader: lc, Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
+	r := &Runtime{Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
 		return []byte(`{"ok":true,"result":{"issue":{"description":"## SCOPE\nsrc/*"}}}`), nil
 	}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}, {Path: "b", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p2"}}})

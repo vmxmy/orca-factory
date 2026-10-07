@@ -11,6 +11,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
@@ -79,9 +80,12 @@ type Scheduler struct {
 	adaptive         Adaptive
 	linearQuotaRetry time.Time
 	quotaPaused      bool
-	tokens           float64
-	refill           time.Time
-	initialized      bool
+	// A page refusal stays latched until a successful probe, even if stale
+	// headers exceed the usual percentage thresholds.
+	discoveryQuotaPaused bool
+	tokens               float64
+	refill               time.Time
+	initialized          bool
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -143,9 +147,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				// One tiny request refreshes the headers; a full Snapshot costs more than
 				// the budget has refilled and would drain it again.
 				if prober.ProbeLinearQuota(ctx) == nil {
+					s.discoveryQuotaPaused = false
 					remaining = s.checkLinearQuota(now)
 				}
 			} else if _, err := s.Backend.Snapshot(ctx, s.Config.Repositories); err == nil {
+				s.discoveryQuotaPaused = false
 				remaining = s.checkLinearQuota(now)
 			}
 		}
@@ -171,6 +177,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
+		var admission *linear.DiscoveryQuotaError
+		if errors.As(err, &admission) {
+			s.discoveryQuotaPaused = true
+			s.quotaPaused = true
+			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
+			s.Pauses.Pause(pause.Key{Dependency: pause.Linear, Kind: pause.Quota}, s.linearQuotaRetry)
+			s.plan(now, false, 0)
+		}
 		return errors.New("scheduler snapshot failed")
 	}
 	snapshot = true

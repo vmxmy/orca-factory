@@ -52,6 +52,11 @@ func (c *ProjectionClient) Snapshot(ctx context.Context, projects []string, sinc
 	return issues, nil
 }
 
+// FreshIssue bypasses the projection when scheduling decisions need current evidence.
+func (c *ProjectionClient) FreshIssue(ctx context.Context, id string) (Issue, error) {
+	return c.remote.FreshIssue(ctx, id)
+}
+
 func (c *ProjectionClient) ListComments(ctx context.Context, id string) ([]Comment, error) {
 	if c.projection != nil {
 		if read, err := c.projection.Read(ctx, ReadOptions{MaxAge: c.maxAge, RequireComplete: true}); err == nil && read.Meta.Fresh {

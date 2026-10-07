@@ -1,0 +1,7 @@
+{
+  "capturedAt": "2026-10-07T17:37:03.052903+00:00",
+  "command": "orca-ide terminal list --json",
+  "runtimeId": "7c75fd03-633b-4ce1-91ed-f6a1c5232803",
+  "rawSHA256": "7e48c6d851501956fce6ce0dffec095b5dab6aa669b9119277eda5a2a18d269e",
+  "redactions": "Kept ok, terminal handle/worktree identity/output timestamp and count/truncation fields. Pseudonymized handles and paths; removed other envelope/row metadata. Preserved nulls, timestamp values, row order and count."
+}

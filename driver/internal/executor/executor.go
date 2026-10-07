@@ -29,7 +29,6 @@ type Orca interface {
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
 	Workers(context.Context, orca.ListOptions) ([]orca.Worker, error)
-	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
@@ -368,7 +367,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
-		watch := workerWatch{stopRequest: scopedRequest(t, c, "stop", result.State.Corrections+1), observe: func(w orca.Worker) error {
+		watch := workerWatch{observe: func(w orca.Worker) error {
 			if cp.Worktree != "" || w.WorktreePath() == "" {
 				return nil
 			}
@@ -621,17 +620,10 @@ func nestedString(r orca.Receipt, key, field string) string {
 	return receiptString(inner, field)
 }
 
-const workerTurnStartTimeout = 5 * time.Minute
 const provenanceExecutorLiveness = "executor_liveness"
 
-// One watch per dispatch, retained across read retries; restart begins a fresh
-// observation period. An uncertain stop is never issued a second time.
 type workerWatch struct {
-	unobservedSince time.Time
-	stopAttempted   bool
-	stopErr         error
-	stopRequest     string
-	observe         func(orca.Worker) error
+	observe func(orca.Worker) error
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
@@ -694,33 +686,6 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return report, nil
 			}
 			return livenessFailure("worker exited without worker_done"), nil
-		}
-		if worker != nil && worker.Projection.Stage.Detail == "turn_start_unobserved" {
-			now := e.Now()
-			if watch.unobservedSince.IsZero() {
-				watch.unobservedSince = now
-			}
-			if now.Sub(watch.unobservedSince) >= workerTurnStartTimeout {
-				// The fleet projection may lag a report delivered during this poll.
-				// Confirm its absence before issuing the destructive stop request.
-				report, _, err := readReport()
-				if err != nil {
-					return nil, err
-				}
-				if report != nil {
-					return report, nil
-				}
-				if !watch.stopAttempted {
-					watch.stopAttempted = true
-					_, watch.stopErr = e.Orca.WorkerStop(ctx, watch.stopRequest, dispatch)
-				}
-				if watch.stopErr != nil {
-					return nil, safeDependencyError(watch.stopErr)
-				}
-				return livenessFailure("worker never started its turn"), nil
-			}
-		} else {
-			watch.unobservedSince = time.Time{}
 		}
 		if !completed {
 			if err := observeIdle(); err != nil {

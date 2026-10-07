@@ -44,7 +44,7 @@ func TestRefreshFailurePreservesCompleteSnapshotAndDirtyWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	if err := p.Publish(context.Background(), ProjectionSnapshot{Issues: []Issue{{ID: "i1"}}, Complete: true, Watermark: "2026-10-07T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestRefreshCoalescesConcurrentRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 	if err := p.Publish(context.Background(), ProjectionSnapshot{Complete: true, Watermark: "2026-10-07T00:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +79,9 @@ func TestRefreshCoalescesConcurrentRequests(t *testing.T) {
 	joined := make(chan struct{})
 	coord := NewRefreshCoordinator(p, fake, RefreshOptions{Projects: []string{"project"}, OnCoalesced: func() { close(joined) }})
 	first := make(chan error, 1)
+	started := fake.started
 	go func() { first <- coord.Refresh(context.Background()) }()
-	<-fake.started
+	<-started
 	second := make(chan error, 1)
 	go func() { second <- coord.Refresh(context.Background()) }()
 	<-joined

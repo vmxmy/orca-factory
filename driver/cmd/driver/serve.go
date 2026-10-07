@@ -117,6 +117,16 @@ func (b *statusBackend) LinearLimits() []linear.RateLimit {
 	return nil
 }
 
+func (b *statusBackend) ProbeLinearQuota(ctx context.Context) error {
+	if source, ok := b.Backend.(interface{ ProbeLinearQuota(context.Context) error }); ok {
+		return source.ProbeLinearQuota(ctx)
+	}
+	// Older backends refresh quota through Snapshot. Preserve that scheduler
+	// fallback only when the backend lacks the optional cheap probe.
+	_, err := b.Snapshot(ctx, b.scheduler.Config.Repositories)
+	return err
+}
+
 func (b *statusBackend) ActualChanges(ctx context.Context, ticket scheduler.Ticket) ([]string, bool, error) {
 	if source, ok := b.Backend.(interface {
 		ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error)

@@ -166,7 +166,7 @@ func TestComments(t *testing.T) {
 			if !reflect.DeepEqual(q.Variables["input"], map[string]any{"issueId": "i1", "body": "hello"}) {
 				t.Error("comment input")
 			}
-			if _, err := fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1","body":"hello"}}}}`); err != nil {
+			if _, err := fmt.Fprint(w, `{"data":{"commentCreate":{"success":true,"comment":{"id":"c1","body":"hello","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}}}`); err != nil {
 				t.Error(err)
 				return
 			}
@@ -177,7 +177,7 @@ func TestComments(t *testing.T) {
 			t.Error("issue id")
 		}
 		if pages == 1 {
-			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello"}],"pageInfo":{"hasNextPage":true,"endCursor":"c-next"}}}}}`); err != nil {
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}],"pageInfo":{"hasNextPage":true,"endCursor":"c-next"}}}}}`); err != nil {
 				t.Error(err)
 				return
 			}
@@ -185,7 +185,7 @@ func TestComments(t *testing.T) {
 			if q.Variables["after"] != "c-next" {
 				t.Error("comments cursor")
 			}
-			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c2","body":"world"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
+			if _, err := fmt.Fprint(w, `{"data":{"issue":{"comments":{"nodes":[{"id":"c2","body":"world","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}],"pageInfo":{"hasNextPage":false}}}}}`); err != nil {
 				t.Error(err)
 				return
 			}
@@ -545,7 +545,7 @@ func TestSameRoundCommentReadsAreCoalesced(t *testing.T) {
 			response = `{"data":{"team":{"projects":{"nodes":[{"id":"p1","name":"Alpha"}],"pageInfo":{"hasNextPage":false}}}}}`
 		} else if strings.Contains(q.Query, "Metadata") {
 		} else if strings.Contains(q.Query, "ListComments") {
-			response = `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello"}],"pageInfo":{"hasNextPage":false}}}}}`
+			response = `{"data":{"issue":{"comments":{"nodes":[{"id":"c1","body":"hello","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}],"pageInfo":{"hasNextPage":false}}}}}`
 		} else {
 			t.Fatalf("unexpected query: %s", q.Query)
 			return nil, nil

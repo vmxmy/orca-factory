@@ -19,7 +19,6 @@ type livenessOrca struct {
 	polls, stops, terminalCalls, taskCalls int
 	report                                 bool
 	reportAt                               int
-	stopErr                                error
 }
 
 func (o *livenessOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
@@ -51,11 +50,11 @@ func (o *livenessOrca) WorkerStop(_ context.Context, request, dispatch string) (
 		panic("wrong stop request or target")
 	}
 	o.stops++
-	return nil, o.stopErr
+	return nil, nil
 }
 
 // Use the Client's typed parsing path, then change dispatchId to match the executor.
-// Recorded liveness tests keep all other fields; the turn-start timeout test overrides them explicitly.
+// Recorded liveness tests keep all other fields; unobserved-turn tests override the stage detail explicitly.
 func livenessFixture(t *testing.T, verdict, detail string) *livenessOrca {
 	t.Helper()
 	path, err := filepath.Abs("../../testdata/recorded/orca-worker-list-liveness.json")
@@ -116,45 +115,45 @@ func TestWaitFailsExitedWorker(t *testing.T) {
 	}
 }
 
-func TestWaitStopsWorkerThatNeverStarted(t *testing.T) {
+func TestWaitUnobservedPreservesCheckpointAcrossCancellation(t *testing.T) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	e.Config.PollInterval = time.Second
 	o := livenessFixture(t, "unverifiable", "")
-	// 录制 Run 没有 turn_start_unobserved，detail 为合成值
 	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
 	e.Orca = o
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	r := &livenessRecovery{cancel: cancel}
-	e.Recovery = r
 	now := e.Now()
 	e.Now = func() time.Time { return now }
 	sleeps := 0
-	e.Sleep = func(context.Context, time.Duration) error {
+	var original checkpoint
+	e.Sleep = func(_ context.Context, interval time.Duration) error {
+		if interval != e.Config.PollInterval {
+			t.Fatalf("poll interval=%v", interval)
+		}
+		cp, err := readCheckpoint(e.Config, ticket)
+		if err != nil || cp == nil {
+			t.Fatalf("checkpoint=%+v err=%v", cp, err)
+		}
+		if sleeps == 0 {
+			original = *cp
+		} else if *cp != original {
+			t.Fatalf("checkpoint changed: before=%+v after=%+v", original, cp)
+		}
 		sleeps++
-		switch sleeps {
-		case 1:
-			if o.stops != 0 {
-				t.Fatalf("stop before 4m59s: %d", o.stops)
-			}
-			now = now.Add(4*time.Minute + 59*time.Second)
-			o.worker.Projection.Liveness.Verdict = ""
-		case 2:
-			if o.stops != 0 {
-				t.Fatalf("stop at 4m59s: %d", o.stops)
-			}
-			now = now.Add(time.Second)
-			o.worker.Projection.Liveness.Verdict = "unverifiable"
-		default:
-			t.Fatal("worker did not stop after five minutes")
+		now = now.Add(6 * time.Minute)
+		if sleeps >= 3 {
+			return context.Canceled
 		}
 		return nil
 	}
-	result, err := e.Execute(ctx, ticket)
-	if !errors.Is(err, context.Canceled) || o.stops != 1 || result.State.Phase != machine.PhaseCorrection || len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "worker never started its turn") {
-		t.Fatalf("state=%+v err=%v stops=%d corrections=%+v", result.State, err, o.stops, r.requests)
+	for attempt := 0; attempt < 2; attempt++ {
+		result, err := e.Start(context.Background(), ticket)
+		if !errors.Is(err, context.Canceled) || o.stops != 0 || o.releases != 0 || result.State.Corrections != 0 {
+			t.Fatalf("state=%+v err=%v stops=%d releases=%d", result.State, err, o.stops, o.releases)
+		}
 	}
-	if o.releases != 0 {
-		t.Fatalf("release without report: %d", o.releases)
+	cp, err := readCheckpoint(e.Config, ticket)
+	if err != nil || cp == nil || *cp != original || len(o.workerRequests) != 1 || len(o.runRequests) != 2 || o.runRequests[0] != o.runRequests[1] || o.polls != 4 {
+		t.Fatalf("checkpoint=%+v err=%v starts=%v runs=%v polls=%d", cp, err, o.workerRequests, o.runRequests, o.polls)
 	}
 }
 
@@ -198,33 +197,11 @@ func TestWaitIgnoresUnverifiable(t *testing.T) {
 	}
 }
 
-func TestWaitStopFailureIsNotRetried(t *testing.T) {
-	e, _, _, _, _, ticket := fixture(t, "new-sha")
-	o := livenessFixture(t, "unverifiable", "")
-	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
-	o.stopErr = errors.New("worker-stop failed")
-	e.Orca = o
-	now := e.Now()
-	e.Now = func() time.Time { return now }
-	e.Sleep = func(context.Context, time.Duration) error {
-		now = now.Add(6 * time.Minute)
-		return nil
-	}
-	result, err := e.Execute(context.Background(), ticket)
-	if err != nil || result.State.Owner != machine.OwnerResolver || o.polls < 3 {
-		t.Fatalf("read retries were not exercised: state=%+v err=%v polls=%d", result.State, err, o.polls)
-	}
-	if o.stops != 1 || result.State.Phase == machine.PhaseCorrection || result.State.Corrections != 0 {
-		t.Fatalf("state=%+v stops=%d; failed stop must not be replayed or cause correction", result.State, o.stops)
-	}
-}
-
 func TestWaitNeverStartedAfterLateReport(t *testing.T) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
 	o := livenessFixture(t, "unverifiable", "")
 	o.worker.Projection.Stage.Detail = "turn_start_unobserved"
-	// Completion arrives between task-list and the stale worker projection on
-	// the timeout poll. Recheck the authoritative report before stopping.
+	// A late report must settle the original dispatch after prolonged uncertainty.
 	o.reportAt = 3
 	e.Orca = o
 	ctx, cancel := context.WithCancel(context.Background())

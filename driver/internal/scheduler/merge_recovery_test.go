@@ -119,7 +119,6 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	if result.DispatchID != "" {
 		t.Fatal("resume invented dispatch")
 	}
-	f.runtime.Reader = l
 	f.runtime.Clients[f.config.Repositories[0].Path] = l
 	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)

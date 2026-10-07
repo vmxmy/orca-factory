@@ -99,14 +99,6 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 
 // linear.Snapshot deliberately omits description. This executor-local read
 // adapter asks only for the brief and fences it to the configured team/project.
-func readTicket(ctx context.Context, identifier, team, project string) (Ticket, error) {
-	lc, err := linear.New(ctx, linear.Options{TeamID: team})
-	if err != nil {
-		return Ticket{}, errors.New("Linear initialization failed")
-	}
-	return readTicketWithClient(ctx, lc, identifier, team, project)
-}
-
 func readTicketWithClient(ctx context.Context, lc *linear.Client, identifier, team, project string) (Ticket, error) {
 	brief, err := lc.Brief(ctx, identifier, team, project)
 	if err != nil {
