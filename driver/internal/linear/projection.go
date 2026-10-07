@@ -35,12 +35,90 @@ type ReadOptions struct {
 }
 
 type ProjectionMeta struct {
-	Fresh      bool
-	Complete   bool
-	Source     string
-	Scope      string
-	Generation int64
-	Watermark  string
+	Fresh       bool
+	Complete    bool
+	Source      string
+	Scope       string
+	Generation  int64
+	Watermark   string
+	RefreshedAt time.Time
+}
+
+// MarkDirty records an object that must be refreshed from Linear. It is
+// idempotent so repeated webhook deliveries cannot grow the work queue.
+func (p *Projection) MarkDirty(ctx context.Context, objectType, objectID string) error {
+	_, err := p.db.ExecContext(ctx, `INSERT OR IGNORE INTO projection_dirty(object_type,object_id) VALUES(?,?)`, objectType, objectID)
+	return err
+}
+
+// AcknowledgeDirty removes only the keys supplied by a completed refresh.
+// Callers must not acknowledge keys when the remote read was partial or failed.
+func (p *Projection) AcknowledgeDirty(ctx context.Context, dirty map[string][]string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for typ, ids := range dirty {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM projection_dirty WHERE object_type=? AND object_id=?`, typ, id); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// ApplyIncremental merges a complete incremental result into the retained
+// projection. Overlap records are naturally deduplicated by their IDs. An
+// incomplete result is rejected before opening a write transaction, preserving
+// both the prior snapshot and its watermark.
+func (p *Projection) ApplyIncremental(ctx context.Context, snapshot ProjectionSnapshot) error {
+	if !snapshot.Complete {
+		return ErrIncompleteProjection
+	}
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, issue := range snapshot.Issues {
+		payload, err := json.Marshal(issue)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO projection_issues(id,payload,seen_at) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, seen_at=excluded.seen_at`, issue.ID, payload, now); err != nil {
+			return err
+		}
+		comments, hasComments := snapshot.Comments[issue.ID]
+		if hasComments {
+			if _, err = tx.ExecContext(ctx, `DELETE FROM projection_comments WHERE issue_id=?`, issue.ID); err != nil {
+				return err
+			}
+		}
+		for _, comment := range comments {
+			payload, err = json.Marshal(comment)
+			if err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `INSERT INTO projection_comments(id,issue_id,payload,seen_at) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET issue_id=excluded.issue_id, payload=excluded.payload, seen_at=excluded.seen_at`, comment.ID, issue.ID, payload, now); err != nil {
+				return err
+			}
+		}
+	}
+	watermark := snapshot.Watermark
+	var previous string
+	if err = tx.QueryRowContext(ctx, `SELECT watermark FROM projection_meta WHERE id=1`).Scan(&previous); err != nil {
+		return err
+	}
+	if watermark == "" || (previous != "" && watermark < previous) {
+		watermark = previous
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=1, refreshed_at=?, watermark=? WHERE id=1`, now, watermark); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 type ProjectionRead struct {
@@ -54,6 +132,10 @@ func OpenProjection(path, scope string) (*Projection, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite projection transactions are serialized; a single pooled
+	// connection prevents concurrent readers from waiting behind a writer.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	p := &Projection{db: db, scope: scope}
 	if err := p.init(); err != nil {
 		db.Close()
@@ -92,6 +174,25 @@ CREATE TABLE IF NOT EXISTS projection_intents (intent_key TEXT PRIMARY KEY, payl
 }
 
 func (p *Projection) Close() error { return p.db.Close() }
+
+// Meta returns refresh state without materializing the snapshot.
+func (p *Projection) Meta(ctx context.Context) (ProjectionMeta, error) {
+	var complete int
+	var refreshed, watermark string
+	var generation int64
+	if err := p.db.QueryRowContext(ctx, `SELECT complete, refreshed_at, watermark, generation FROM projection_meta WHERE id=1`).Scan(&complete, &refreshed, &watermark, &generation); err != nil {
+		return ProjectionMeta{}, err
+	}
+	var when time.Time
+	var err error
+	if refreshed != "" {
+		when, err = time.Parse(time.RFC3339Nano, refreshed)
+		if err != nil {
+			return ProjectionMeta{}, fmt.Errorf("invalid projection freshness: %w", err)
+		}
+	}
+	return ProjectionMeta{Fresh: refreshed != "", Complete: complete != 0, Source: ProjectionSource, Scope: p.scope, Generation: generation, Watermark: watermark, RefreshedAt: when}, nil
+}
 
 func (p *Projection) Publish(ctx context.Context, snapshot ProjectionSnapshot) error {
 	if !snapshot.Complete {
@@ -152,6 +253,9 @@ func (p *Projection) Read(ctx context.Context, options ReadOptions) (ProjectionR
 	}
 	fresh := refreshed != "" && (options.MaxAge <= 0 || time.Since(when) <= options.MaxAge)
 	result := ProjectionRead{Comments: make(map[string][]Comment), Meta: ProjectionMeta{Fresh: fresh, Complete: complete != 0, Source: ProjectionSource, Scope: p.scope, Generation: generation, Watermark: watermark}}
+	if refreshed != "" {
+		result.Meta.RefreshedAt = when
+	}
 	rows, err := p.db.QueryContext(ctx, `SELECT payload FROM projection_issues ORDER BY id`)
 	if err != nil {
 		return ProjectionRead{}, err
@@ -169,6 +273,9 @@ func (p *Projection) Read(ctx context.Context, options ReadOptions) (ProjectionR
 		result.Issues = append(result.Issues, issue)
 	}
 	if err := rows.Err(); err != nil {
+		return ProjectionRead{}, err
+	}
+	if err := rows.Close(); err != nil {
 		return ProjectionRead{}, err
 	}
 	commentRows, err := p.db.QueryContext(ctx, `SELECT issue_id, payload FROM projection_comments ORDER BY issue_id, id`)

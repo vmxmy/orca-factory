@@ -150,3 +150,44 @@ func TestWebhookAcceptsCommentAndRejectsBadSignature(t *testing.T) {
 		t.Fatalf("dirty=%v", dirty)
 	}
 }
+
+func TestProjectionIncrementalRefreshMergesOverlapAndAcknowledgesDirtyAfterSuccess(t *testing.T) {
+	p, err := OpenProjection(filepath.Join(t.TempDir(), "linear.db"), "team-1/project-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Close()
+	initial := Issue{ID: "issue-1", Identifier: "ENG-1", UpdatedAt: time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)}
+	if err := p.Publish(context.Background(), ProjectionSnapshot{Issues: []Issue{initial}, Complete: true, Watermark: "2026-10-07T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.MarkDirty(context.Background(), "issue", initial.ID); err != nil {
+		t.Fatal(err)
+	}
+	fresh := initial
+	fresh.State = NamedID{ID: "state-1", Name: "In Progress"}
+	if err := p.ApplyIncremental(context.Background(), ProjectionSnapshot{Issues: []Issue{fresh}, Complete: true, Watermark: "2026-10-07T00:05:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Read(context.Background(), ReadOptions{RequireComplete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Issues) != 1 || got.Issues[0].State.Name != "In Progress" || got.Meta.Watermark != "2026-10-07T00:05:00Z" {
+		t.Fatalf("incremental snapshot=%+v", got)
+	}
+	dirty, err := p.Dirty(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dirty["issue"]) != 1 {
+		t.Fatalf("dirty was acknowledged during publish: %v", dirty)
+	}
+	if err := p.AcknowledgeDirty(context.Background(), dirty); err != nil {
+		t.Fatal(err)
+	}
+	cleared, err := p.Dirty(context.Background())
+	if err != nil || len(cleared) != 0 {
+		t.Fatalf("dirty after acknowledge=%v err=%v", cleared, err)
+	}
+}

@@ -35,6 +35,7 @@ type WebhookOptions struct {
 	PublicURL       string
 	MaxTimestampAge time.Duration
 	Now             func() time.Time
+	OnAccepted      func()
 }
 
 type WebhookHandler struct {
@@ -43,6 +44,7 @@ type WebhookHandler struct {
 	publicURL  string
 	maxAge     time.Duration
 	now        func() time.Time
+	onAccepted func()
 }
 
 func NewWebhookHandler(p *Projection, options WebhookOptions) *WebhookHandler {
@@ -54,7 +56,7 @@ func NewWebhookHandler(p *Projection, options WebhookOptions) *WebhookHandler {
 	if now == nil {
 		now = time.Now
 	}
-	return &WebhookHandler{projection: p, secret: []byte(options.Secret), publicURL: options.PublicURL, maxAge: maxAge, now: now}
+	return &WebhookHandler{projection: p, secret: []byte(options.Secret), publicURL: options.PublicURL, maxAge: maxAge, now: now, onAccepted: options.OnAccepted}
 }
 
 func (h *WebhookHandler) Mode() WebhookMode {
@@ -103,6 +105,9 @@ func (h *WebhookHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err := h.projection.applyWebhook(r.Context(), r.Header.Get("Linear-Delivery"), event, body, h.now().UTC()); err != nil {
 		http.Error(w, "webhook storage failed", http.StatusInternalServerError)
 		return
+	}
+	if h.onAccepted != nil {
+		h.onAccepted()
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -162,9 +167,6 @@ func (p *Projection) applyWebhook(ctx context.Context, delivery string, event we
 	}
 	changed, err := result.RowsAffected()
 	if err != nil || changed == 0 {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `UPDATE projection_meta SET complete=0`); err != nil {
 		return err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO projection_events(delivery_id,event_type,action,payload,received_at) VALUES(?,?,?,?,?)`, delivery, event.Type, event.Action, raw, received.Format(time.RFC3339Nano)); err != nil {
