@@ -1,0 +1,40 @@
+{
+  "data": {
+    "issue": {
+      "id": "00000000-0000-4000-8000-000000000045",
+      "identifier": "TEST-1",
+      "priority": 0,
+      "createdAt": "2026-10-07T15:28:24.336Z",
+      "project": {
+        "id": "00000000-0000-4000-8000-000000000046",
+        "name": "Recorded project"
+      },
+      "updatedAt": "2026-10-07T15:28:24.336Z",
+      "state": {
+        "id": "00000000-0000-4000-8000-000000000047",
+        "name": "Backlog"
+      },
+      "labels": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        }
+      },
+      "relations": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        }
+      },
+      "inverseRelations": {
+        "nodes": [],
+        "pageInfo": {
+          "hasNextPage": false,
+          "endCursor": null
+        }
+      }
+    }
+  }
+}
