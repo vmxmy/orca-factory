@@ -67,3 +67,19 @@ func TestRecordedFreshIssue(t *testing.T) {
 		t.Fatalf("recorded explicit empty final connections: %+v", issue)
 	}
 }
+
+func TestRecordedFreshIssueWithInverseRelation(t *testing.T) {
+	c, calls, captured := recordedReadClient(t, "fresh-populated")
+	before := *calls
+	issue, err := c.FreshIssue(context.Background(), captured.Variables["id"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls != before+1 || issue.Identifier != "TEST-2" || issue.State.Name != "Done" || len(issue.InverseRelations.Nodes) != 1 {
+		t.Fatalf("recorded populated issue: calls=%d issue=%+v", *calls-before, issue)
+	}
+	blocker := issue.InverseRelations.Nodes[0]
+	if blocker.ID != "00000000-0000-4000-8000-000000000049" || blocker.Type != "blocks" || blocker.Issue.ID != "00000000-0000-4000-8000-000000000050" || blocker.Issue.Identifier != "TEST-3" || blocker.Issue.State.Type != "completed" || issue.InverseRelations.PageInfo.HasNextPage || issue.Blocked() {
+		t.Fatalf("recorded completed blocker fields lost: %+v", issue.InverseRelations)
+	}
+}
