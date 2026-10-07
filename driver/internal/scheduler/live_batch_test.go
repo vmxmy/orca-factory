@@ -18,12 +18,12 @@ import (
 )
 
 type liveBatchFixture struct {
-	entered                                 chan struct{}
-	claimed                                 atomic.Bool
-	comments, snapshots, writes, freshReads atomic.Int64
-	conflict                                atomic.Bool
-	mode                                    atomic.Value
-	client                                  *linear.Client
+	entered                                         chan struct{}
+	claimed                                         atomic.Bool
+	comments, snapshots, writes, freshReads, probes atomic.Int64
+	conflict                                        atomic.Bool
+	mode                                            atomic.Value
+	client                                          *linear.Client
 }
 
 func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
@@ -82,6 +82,7 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 		}
 		switch {
 		case strings.Contains(q.Query, "QuotaProbe"):
+			f.probes.Add(1)
 			data = map[string]any{"viewer": map[string]any{"id": "viewer"}}
 		case strings.Contains(q.Query, "Metadata"):
 			field := "states"
@@ -427,5 +428,39 @@ func TestLiveBatchRetainsOwnedLabelRemovedAndDoneBarrier(t *testing.T) {
 	}
 	if rows[1].Candidate || !scheduler.DeploymentBarrier(rows[1]) {
 		t.Fatalf("Done barrier lost: %+v", rows[1])
+	}
+}
+
+// Keep repositories refused so this quota recovery test cannot launch workers;
+// discovery and quota probing still use the production Runtime and HTTP client.
+type refusedLiveRuntime struct{ *scheduler.Runtime }
+
+func (r refusedLiveRuntime) AutomationDisabled(context.Context, config.Repository) (bool, error) {
+	return false, nil
+}
+
+func TestLiveBatchHeadroomRefusalUsesCheapProbeRecovery(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
+	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+	f.mode.Store("quota-complexity")
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("headroom refusal was hidden")
+	}
+	if !s.Pauses.Paused("") {
+		t.Fatal("headroom refusal above pause floor must enter quota recovery")
+	}
+	beforeIssues, beforeComments := f.snapshots.Load(), f.comments.Load()
+	now = now.Add(3 * time.Minute)
+	_ = s.Tick(context.Background())
+	if f.probes.Load() != 0 || f.snapshots.Load() != beforeIssues || f.comments.Load() != beforeComments {
+		t.Fatal("paused tick read discovery before backoff")
+	}
+	f.mode.Store("")
+	now = now.Add(2 * time.Minute)
+	_ = s.Tick(context.Background())
+	if f.probes.Load() != 1 || s.Pauses.Paused("") || f.snapshots.Load() != beforeIssues+5 || f.comments.Load() != beforeComments+20 || f.writes.Load() != 0 {
+		t.Fatalf("cheap probe failed to recover: probes=%d paused=%v issues=%d comments=%d writes=%d", f.probes.Load(), s.Pauses.Paused(""), f.snapshots.Load(), f.comments.Load(), f.writes.Load())
 	}
 }
