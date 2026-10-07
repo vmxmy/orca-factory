@@ -17,7 +17,7 @@ test('pure graph preserves input, groups states and indents dependency levels', 
   const before = structuredClone(input)
   const graph = buildGraph(input)!
   expect(graph.criticalPath).toEqual(['A', 'B', 'C'])
-  expect(graph.unlockRank).toEqual([{ id: 'A', count: 3 }, { id: 'B', count: 1 }])
+  expect(graph.unlockRank).toEqual([{ id: 'A', count: 2 }, { id: 'B', count: 1 }])
   expect(graph.groups).toEqual([
     { parent: 'P', rows: input.issues.slice(0, 3).map((issue, depth) => ({ id: issue.id, state: issue.state, blockedBy: issue.blockedBy, depth })) },
     { parent: 'Q', rows: [{ id: 'D', state: 'unstarted', blockedBy: ['A'], depth: 0 }] },
@@ -74,4 +74,21 @@ test('legacy GraphData snapshots render summary without requiring new fields', (
   const rendered = lines({ criticalPath: ['A', 'B'], unlockRank: [{ id: 'A', count: 1 }] })
   expect(rendered).toContain('关键路径：A → B')
   expect(rendered).toContain('解锁排行：A(1)')
+})
+
+test('immediate unlock ranking excludes other unfinished and missing blockers', () => {
+  const graph = buildGraph({ issues: [
+    { id: 'A', state: 'unstarted', blockedBy: [] },
+    { id: 'B', state: 'unstarted', blockedBy: ['A', 'X'] },
+    { id: 'C', state: 'unstarted', blockedBy: [] },
+    { id: 'D', state: 'unstarted', blockedBy: ['C', 'C', 'done', 'canceled'] },
+    { id: 'X', state: 'unstarted', blockedBy: [] },
+    { id: 'E', state: 'unstarted', blockedBy: ['A', 'missing'] },
+    { id: 'done', state: 'completed', blockedBy: ['A'] },
+    { id: 'canceled', state: 'canceled', blockedBy: ['A'] },
+    { id: 'self', state: 'unstarted', blockedBy: ['self'] },
+  ] })!
+  expect(graph.unlockRank).toEqual([{ id: 'C', count: 1 }])
+  expect(graph.headline).toContain('C 完成可立即解锁 1 张')
+  expect(graph.headline).not.toContain('含间接依赖')
 })
