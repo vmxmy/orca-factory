@@ -142,9 +142,9 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	}
 }
 func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
-	lc := &fakeLinear{}
+	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p1"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
 	oc := &fakeOrca{}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": lc}, Orca: oc, DriverPath: "/opt/driver with space"}
+	r := &Runtime{Clients: map[string]LinearClient{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Attempt: 1}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Claim, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
 		t.Fatal(err)
