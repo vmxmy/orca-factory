@@ -1,0 +1,7 @@
+{
+  "source_commit": "7b4df2c566a6f4977bb6cbf4609fed6a57ea10ba",
+  "source_path": "core/prune-run-worktrees.sh",
+  "git_blob": "9838bcaf96c526f7f0c9f1c08e1a16beb8d72825",
+  "sha256": "fad5d41c10182d251b390f13f07df91fa16a0ab3fb84981047aa19e9ebb95bfa",
+  "purpose": "原始安装入口识别与历史契约证据；不是生产 fallback，不依赖 CI 的旧 Git 对象。"
+}

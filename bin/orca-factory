@@ -72,11 +72,36 @@ install_ledger() {
   fi
 }
 
+prune_preflight() {
+  local entry="$1/prune-run-worktrees.sh" driver="${AGENT_DRIVER_BIN:-orca-factory-driver}" contract digest
+  contract="$("$driver" prune-worktrees --contract-version)" || fail "prune driver unavailable or incompatible: $driver"
+  [[ "$contract" == prune-worktrees-v1 ]] || fail "unsupported prune contract: $contract"
+  [[ ! -L "$entry" ]] || fail "prune conflict: symbolic link $entry"
+  if [[ -e "$entry" ]]; then
+    [[ -f "$entry" ]] || fail "prune conflict: not a regular file $entry"
+    if ! cmp -s "$CORE/prune-run-worktrees.sh" "$entry"; then
+      digest="$(git hash-object --no-filters "$entry")"
+      [[ "$digest" == 9838bcaf96c526f7f0c9f1c08e1a16beb8d72825 ]] \
+        || fail "prune conflict: unknown or customized entry $entry"
+    fi
+  fi
+}
+
+install_prune() {
+  local dest="$1" tmp
+  mkdir -p "$dest"
+  tmp="$(mktemp "$dest/.prune-run-worktrees.sh.XXXXXX")" || fail "cannot stage prune entry in $dest"
+  if ! cp "$CORE/prune-run-worktrees.sh" "$tmp" || ! chmod 755 "$tmp" || ! bash -n "$tmp" || ! mv -f "$tmp" "$dest/prune-run-worktrees.sh"; then
+    rm -f "$tmp"
+    fail "cannot replace prune entry in $dest; original entry retained"
+  fi
+}
+
 copy_core() {  # copy_core <dest-dir> ; overwrites
   local dest="$1" f
   mkdir -p "$dest"
   while IFS= read -r f; do
-    [[ "$f" != ledger.sh ]] || continue
+    [[ "$f" != ledger.sh && "$f" != prune-run-worktrees.sh ]] || continue
     mkdir -p "$dest/$(dirname "$f")"
     cp "$CORE/$f" "$dest/$f"
     if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
@@ -105,6 +130,8 @@ cmd_init() {
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
   ledger_preflight "$dest"
+  prune_preflight "$dest"
+  install_prune "$dest"
   install_ledger "$dest"
   copy_core "$dest"
   install_mod_settings "$repo"
@@ -129,6 +156,15 @@ cmd_update() {
   dest="$repo/$DEST_REL"
   [[ -d "$dest" ]] || fail "$dest does not exist; run: orca-factory init $repo"
   ledger_preflight "$dest"
+  prune_preflight "$dest"
+  if cmp -s "$CORE/prune-run-worktrees.sh" "$dest/prune-run-worktrees.sh"; then
+    same=$((same + 1))
+  elif [[ -e "$dest/prune-run-worktrees.sh" ]]; then
+    changed=$((changed + 1)); echo 'update: ~ prune-run-worktrees.sh (known original shell -> prune-worktrees-v1)'
+  else
+    added=$((added + 1)); echo 'update: + prune-run-worktrees.sh (new)'
+  fi
+  install_prune "$dest"
   if cmp -s "$CORE/ledger.sh" "$dest/ledger.sh"; then
     same=$((same + 1))
   elif [[ -e "$dest/ledger.sh" ]]; then
@@ -138,7 +174,7 @@ cmd_update() {
   fi
   install_ledger "$dest"
   while IFS= read -r f; do
-    [[ "$f" != ledger.sh ]] || continue
+    [[ "$f" != ledger.sh && "$f" != prune-run-worktrees.sh ]] || continue
     if [[ ! -e "$dest/$f" ]]; then
       added=$((added + 1)); echo "update: + $f (new)"
     elif cmp -s "$CORE/$f" "$dest/$f"; then

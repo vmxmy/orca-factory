@@ -136,9 +136,9 @@ orca linear team states --team <TEAM_KEY> --json | jq '.result.states[] | {name,
 
 ## 4. 生成三份文件
 
-ledger 入口要求先提供支持 `ledger-shell-v1` 的 driver。默认从 PATH 查找 `orca-factory-driver`；指定独立二进制时，导出 `AGENT_DRIVER_BIN` 的可执行路径，并在之后运行账本时保留同一设置。先运行 `"${AGENT_DRIVER_BIN:-orca-factory-driver}" ledger-shell --contract-version`，输出必须为 `ledger-shell-v1`。此探测不读配置、不访问网络。`version=dev` 不能证明契约兼容。jq、Orca、date 和 sleep 仍是账本运行依赖；本次迁移不自动安装或重启 driver 服务。
+ledger 与 prune 入口要求先提供支持 `ledger-shell-v1` 和 `prune-worktrees-v1` 的 driver。默认从 PATH 查找 `orca-factory-driver`；指定独立二进制时，导出 `AGENT_DRIVER_BIN` 的可执行路径，并在运行入口时保留同一设置。分别运行 `"${AGENT_DRIVER_BIN:-orca-factory-driver}" ledger-shell --contract-version` 与 `"${AGENT_DRIVER_BIN:-orca-factory-driver}" prune-worktrees --contract-version`，输出必须匹配上述契约。探测不读配置、不访问网络。`version=dev` 不能证明契约兼容。jq、Orca、date 和 sleep 仍是账本运行依赖；prune 使用 Git、Orca、gh，JSON、时间与文件读取进入 Go。本次迁移不自动安装或重启 driver 服务。
 
-`init/update` 在写任何 core 文件前检查 driver 契约及 ledger 入口。只接受缺失入口、已知原始 shell 版本或当前受管理薄入口；自定义内容、未知版本和符号链接会停止切换。ledger 使用同目录暂存及 rename 替换，替换失败保留原入口。原子性只覆盖 ledger；其他 core 文件仍沿用原复制方式，不保证整批回滚。回退时恢复已保留的原始入口和配套程序，不修改 Linear 评论或运行状态。
+`init/update` 在写任何 core 文件前检查两项 driver 契约及 ledger/prune 入口。只接受缺失入口、已知原始 shell 版本或当前受管理薄入口；自定义内容、未知版本和符号链接会停止切换。两入口分别使用同目录暂存、0755 及 rename 替换，替换失败保留该原入口。原子性只覆盖单个入口；其他 core 文件仍沿用原复制方式，不保证整批回滚。回退时恢复已保留的原始入口和配套程序，不修改 Linear 评论或运行状态。prune 薄入口支持 `git show ... | bash`，不要求脚本目录；install 的外部 70 秒取消边界不变。
 
 ```bash
 $FACTORY/bin/orca-factory init $REPO

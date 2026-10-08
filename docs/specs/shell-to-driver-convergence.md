@@ -22,7 +22,7 @@
 
 不改 `core/gate.sh`、已安装的 `gate.sh` 或客户 `gate.project.sh`；嵌套锁与客户自定义入口保持原样。不迁移 `mods/swarm-board`（TS 插件），不改变 `AGENT_SMOKE_CMD` 的 bash 命令边界。`core/install.sh` 不属于本轮迁移候选。
 
-2026-10-08 批准的 S2 计划允许 `bin/orca-factory init/update` 增加 ledger 专属 driver 契约预检、原版/当前版识别及同目录原子入口替换。原子性只覆盖 ledger，不重构整个分发系统、不承诺整批回滚。后续组件若无法满足切换条件仍须停止并记录阻塞，不把本次授权扩展到其他组件。客户自定义文件与任何持久状态不属于清理范围。
+2026-10-08 批准的 S2 计划允许 `bin/orca-factory init/update` 增加 ledger 专属 driver 契约预检、原版/当前版识别及同目录原子入口替换。原子性只覆盖 ledger，不重构整个分发系统、不承诺整批回滚。S3 随后获准仅将同样的组件契约预检、原版/当前版识别、0755 和同目录 rename 扩展到 prune 入口；不将分发机制全局平台化。后续组件若无法满足切换条件仍须停止并记录阻塞。客户自定义文件与任何持久状态不属于清理范围。
 
 S2 的 Go 入口实际接管命令分派、发现/创建/追加/查询、重试、计数和 Orca 进程管理；保留已安装 jq 执行 JSON/统计表达式，以保持任意 JSON、jq JSON 排序和错误类型/部分输出契约。此实现不执行旧 ledger.sh、不内嵌 bash，不新增 Go 或系统依赖；它不是纯 Go，也没有移除 jq、Orca、date 和 sleep。原 `driver ledger` 与共享 runx 语义不变。
 
@@ -109,7 +109,7 @@ flowchart TD
 
 ## 跟踪与当前结论
 
-- 阶段 1、`S2.1`–`S2.5` 的本地代码及开发安装验收已完成并集成到主工作区，具备交付下一步审查的条件；这不代表审查、远端 CI 或发布完成。正式 driver 更新、客户清单与客户上线属于合并后的发布待办，不是代码合并前置条件。S3 未推进；S4 未启动。
+- 阶段 1 与 `S2.1`–`S2.5` 已完成。S2 PR #198 已通过 gate、审查修复和 CI，合并为 `7b4df2c566a6f4977bb6cbf4609fed6a57ea10ba`；正式 driver 已在本机部署启动且健康。原两个 S2 worktree 已归档清理。下方 S2 本地证据是当时记录，不代表当前仍待审查或本机部署。其他客户部署清单仍是发布待办，不是代码合并前置条件。S3 本地实施结果见文末；S4 未启动。
 - 用户已选择跳过 Linear 票据，使用本文 `S1`–`S4` 本地任务图跟踪；没有创建本次迁移票，不使用旧任务票号代替。
 - `S2.1` 证据见 [ledger 契约](ledger-contract.md)：11 个可执行调用位置，另有 8 个文档命令位置；已有隔离账本自测片段退出 0，未访问真实 Linear。账本在 Linear 评论中，追加无锁或写前去重，失败可能已有远端副作用。
 - 原安装阻塞已由批准的 ledger 单组件范围修订解除。`bin/orca-factory` 先探测 `ledger-shell-v1` 并识别入口，再暂存、设置权限、检查语法及 rename；缺失/不兼容 driver、自定义入口、符号链接或替换失败均阻止 core 写入。其他 core 文件不承诺原子性。
@@ -122,4 +122,17 @@ flowchart TD
 - 报告位于该 worktree 的 `.omc/reports/test/{tests.json,junit.xml}`、`.omc/reports/race/{tests.json,junit.xml}`、`.omc/reports/s2-red/`、`.omc/reports/s2-install-red/`、`.omc/s2/lint-red.log` 和 `.omc/s2/selftest.log`。开始及交付前的 integration tip 均为 `76a944f`，无需 merge commit。未提交、push、清理 worktree 或推进 S3。
 - 主工作区集成检查：`git diff --check`、修改入口的 `bash -n`、源码与安装副本的 `cmp` 通过。显式候选 driver 的 `update`、`check` 及公开安装入口 `ledger.sh --contract-version` 均退出 0，19 个 core 副本及插件登记正常，开发分支 `DIFFERS` 已消除。没有重跑源代理已完成的 test/race/build/vet/lint/selftest；完整 project gate、审查与远端 CI 仍由后续交付流程处理，未宣称它们已通过。
 - 代码合并证据须包含契约、行为测试、调用点与分发源码、开发安装副本 `check`，并满足后续 gate、审查与 CI。正式程序更新及完整客户安装清单在发布阶段记录；客户自定义冲突、不可达副本或不兼容程序阻塞该目标发布，不作为代码合并前置条件。
-- 收敛范围不包含嵌套锁 gate、ledger 专属切换以外的分发工具、TS 插件和 bash smoke 边界。迁移完成不以 shell 行数归零衡量，而以候选组件职责进入 driver、既有契约保持、客户安装一致且历史状态保留衡量。
+- 收敛范围不包含嵌套锁 gate、ledger/prune 组件专属切换以外的分发工具、TS 插件和 bash smoke 边界。迁移完成不以 shell 行数归零衡量，而以候选组件职责进入 driver、既有契约保持、客户安装一致且历史状态保留衡量。
+
+## S3 本地实施证据（2026-10-08）
+
+- `S3.1`–`S3.5` 本地代码、行为与开发安装验收完成。工作树 `/home/laoxu/github/orca-factory/.claude/worktrees/agent-a94443130127c3073`，工作分支 `worktree-agent-a94443130127c3073`，基线为 S2 合并提交 `7b4df2c`。集成分支 `feature/prune-worktrees-to-driver` 当前 tip 同为该基线。
+- 契约见 [Worktree 清理契约](prune-worktrees-contract.md)，包括 `core/install.sh` 的 Git show 管道入口。无需修改 `core/install.sh`、coordinator、precheck 或 agent-graph 调用命令。薄入口无脚本目录依赖，委派 `driver prune-worktrees`；流程进入 `driver/internal/worktree`，不内嵌 bash，不调用旧业务。旧脚本仅以带来源 SHA/blob/hash 的测试夹具保留。
+- 明确安全差异：旧 legacy run 用年龄/finished 直接 force 删除脏目录。按 S3 安全验收，补主检出/物理路径排除、已知 Git 归属、locked 保留和 clean 门禁；关联票仍用既有非 started 判定。未知路径、读取失败或缺票证据保留。不宣称全行为无差异。预算仍只约束补偿阶段，install 的 70 秒 alarm 不变。取消结束子进程组并回收，保留信号退出码。
+- 已有相关测试先运行：`make test PACKAGES=./cmd/driver`，51 tests，退出 0；原已有 prune selftest 片段在本地临时 Git/bare origin 与 fake 服务下退出 0。公开入口断言先红：原脚本对 probe 参数仍尝试删除脏 legacy，打印 `ok=false` 并退出 7；make 退出 2。安装断言先红：旧分发接受自定义 prune，make 退出 2。两者随后转绿，没有隐藏失败。
+- 最终 `make test PACKAGES='./internal/worktree ./cmd/driver'` 与同范围 `make race` 均为 53 tests，退出 0。公开测试覆盖管道启动、中文空格路径、dirty legacy 保留、清理失败和取消子进程回收；既有 selftest 覆盖候选筛选、票状态、Git/Orca/PR 失败、快照、预算与数量上限。未修改 executor/scheduler 生命周期，没有增加 verifier 或新的测试框架。
+- `make build`、`make vet`、`make lint` 均退出 0，lint 为 0 issues。一次完整 `AGENT_DRIVER_BIN=<工作树>/.omc/s3/orca-factory-driver bin/orca-factory selftest` 退出 0，含 gate regression、插件 validate/test 和 fake 服务验证。之后只重跑相关 Go 检查与已有 prune 片段，不嵌套 gate。
+- `init/update` 在写 core 前检查 ledger/prune 两契约及入口归属。prune 增加同目录 0755 rename；安装测试覆盖原版 update、全新 init、当前版 update、自定义入口、符号链接、不兼容 driver 与 rename 失败。原子性仍只保证各组件入口，不保证整批回滚。
+- 唯一非临时开发切换目标为本 S3 工作树，显式候选程序位于 `.omc/s3/orca-factory-driver`。`update .` 为 `changed=1 added=0 unchanged=18`；再次 update 为 `changed=0 added=0 unchanged=19`。`check .` 退出 0，19 个 core 副本与插件登记一致，无 DIFFERS/OVERRIDDEN。项目文件与正式程序未改，没有部署、重启、真实 Linear 写入或客户 prune。客户目标清单/配套发布在合并后推进，不是代码合并前置。
+- 证据目录为本工作树 `.omc/s3/`：`existing.log`、`existing-prune.log`、`public-red.log`、`public-green.log`、`install-red.log`、`test.log`、`race.log`、`build.log`、`vet.log`、`lint.log`、`selftest.log`、`update.log`、`check-final.log`。机器报告为 `.omc/reports/{test,race}/{tests.json,junit.xml}`；红报告另存 `.omc/reports/s3-public-red/` 与 `.omc/reports/s3-install-red/`。
+- 未删除任何受版本管理路径；旧生产业务已被薄入口替换。尚待主线程集成、PR/gate、已请求的双轴审查、CI、合并和正式发布。未 push，S4 未启动。
