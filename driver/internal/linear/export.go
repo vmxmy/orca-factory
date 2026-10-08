@@ -36,7 +36,7 @@ func (c *Client) ExportIssues(ctx context.Context, project string) ([]ExportIssu
 		var data struct {
 			Issues *completeConnection[json.RawMessage] `json:"issues"`
 		}
-		if err := c.do(ctx, `query ExportIssues($filter: IssueFilter!, $after: String) { issues(filter: $filter, first: 20, after: $after, includeArchived: true) { nodes { `+issueFields+` title description estimate parent { id } } pageInfo { hasNextPage endCursor } }`, map[string]any{"filter": filter, "after": cursor(after)}, &data); err != nil {
+		if err := c.do(ctx, `query ExportIssues($filter: IssueFilter!, $after: String) { issues(filter: $filter, first: 20, after: $after, includeArchived: true) { nodes { `+issueFields+` title description estimate parent { id } } pageInfo { hasNextPage endCursor } } }`, map[string]any{"filter": filter, "after": cursor(after)}, &data); err != nil {
 			return nil, err
 		}
 		if data.Issues == nil {

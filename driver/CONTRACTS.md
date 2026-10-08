@@ -52,6 +52,7 @@
 - open/closed/state_reason、工作流标签与元数据确定映射。closed/held 阻执行，不隐藏历史部署屏障；auto-failed 只进入合法 resolver。业务 PR 不使用 Closes/Fixes 提前关闭票。
 - export 只读且仅验证完整源，preview 离线另验证目标编码，import 默认 held。已有原生票通过 node ID 派生身份识别，不因 GH 编号被误作清单外来源票；真正导入身份冲突仍拒绝。v1 历史批次保持原字节协议；单条超限评论用 `orca-import-comment-v2` 分片携带完整 Comment JSON 的 base64、原 ID、片序/总数及全量 SHA-256，每条目标正文 ≤50,000 UTF-8 字节。完整分页收齐后才还原，缺片/重排/冲突拒绝；同 manifest、held 导入可按精确目标前缀恢复不确定写入。保留来源作者、ID、时间和顺序，不伪造原作者。release-hold 需 manifest、--apply、draining 与完整回读通过；最终导入及释放期间 scheduler 和旧写者必须停止写入，frozen 本身拒绝所有导入写入。
 - Linear 完整导出逐页读取包含归档票的正文、父票和调度字段，复用 fresh 连接校验补齐 labels/relations/inverseRelations；评论按最多五票一组完整分页并保留来源作者，不再逐票重复读 fresh、正文与评论。无嵌套续页且每票评论不超过100条时，N票使用 `ceil(N/20)+ceil(N/5)` 次数据请求，另加元数据页；额外关系/评论续页按实际增加，任何缺失或失败不返回完整清单。123票合成夹具含一次逆关系续页和一次评论续页，共34次数据请求（不含3次初始化）；不是线上测量或任意历史大小的固定上界。
+- `ExportIssues` 缺少 operation 末尾 `}` 时，真实 Linear 返回 HTTP 400 / `GRAPHQL_PARSE_FAILED` / `Expected Name, found <EOF>`。2026-10-08 实录与来源见 `linear-export-parse-error{,.provenance}.json`。公开导出夹具检查 parent、nodes、pageInfo、issues 与 operation 的固定收尾，不能只匹配操作名就接受畸形请求；成功数据仍是合成夹具，不代表修复后线上导出成功。
 - maintenance 持久化本机 drain/freeze/running，独立于 quota。freeze 只能证明本机合作锁无活跃写者，不能声明跨机器单写者；生产切换仍须明确授权与全量事实核验。
 - `testdata/recorded/github/` 中样本记录来源，合成行为夹具不冒充线上录制。既有 Linear recorded、executor/scheduler goleak 与 release FIFO 保留。
 

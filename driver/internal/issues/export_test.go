@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -27,6 +28,10 @@ func TestExportRejectsIncompleteSource(t *testing.T) {
 func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
 	t.Helper()
 	t.Setenv("LINEAR_API_KEY", "test")
+	parseFailure, err := os.ReadFile("../../testdata/recorded/linear-export-parse-error.json")
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	page := func(nodes any, more bool, after string) map[string]any {
 		return map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": more, "endCursor": after}}
@@ -39,6 +44,10 @@ func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 			t.Error(err)
+			return
+		}
+		if strings.Contains(q.Query, "query ExportIssues(") && !strings.HasSuffix(q.Query, "parent { id } } pageInfo { hasNextPage endCursor } } }") {
+			http.Error(w, string(parseFailure), http.StatusBadRequest)
 			return
 		}
 		var data any
