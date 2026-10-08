@@ -29,12 +29,12 @@
 
 ## 此次明确修正的安全差异
 
-S3 明确要求活跃、未知、脏或证据不足的工作树不能误删。旧 legacy run 的年龄/finished 并不足以跳过安全门。此次仅补 legacy 候选的主检出排除、可确认 Git 归属、非活跃票与 clean 判定；读取失败或不明路径保留。不给年龄路径新增授权，不扩大候选集合或 force 能力。Git-only locked 保留；legacy locked 同样保留。此差异是按安全验收修正，不宣称新旧全行为无差异。
+S3 明确要求活跃、未知、脏或证据不足的工作树不能误删。旧 legacy run 的年龄/finished 并不足以跳过安全门。所有实际 worktree 清理路径共用主检出/自身物理路径排除、已登记 Git 归属、locked 保留和关联票非 started 判定；读取失败或不明路径保留。legacy 在每次重新枚举后使用该次 Orca 快照核对 linked 与票关联，不从旧清单授权。finished 标记保持 shell `-f` 的普通文件语义，Stat 跟随指向普通文件的符号链接，但同名目录不算完成。legacy 删除移除 `--force`，让删除端继续保护检查后变脏的目录，不增加强制 fallback。2026-10-08 只读 `orca worktree rm --help` 确认 `--force` 是可选强制 worktree 删除选项；本次不执行真实删除。不扩大候选集合。此差异是按安全验收修正，不宣称新旧全行为无差异。
 
 ## 输出、错误、预算和取消
 
 - 普通补偿成功没有业务 stdout；Git branch/push/remove 输出继承。保留原因向 stderr 写 `skip <对象>: <单行原因>`。
-- run 输出 `pruned <路径> ok=<ok>`；unit 输出 `pruned <路径> (PR <N> <STATE>)`。补偿失败保留并继续，整体通常退出 0；legacy force 管道的命令/JQ失败保留真实非零退出，unit 删除失败仅保留并继续。未知/活跃不计数，已失败删除不得计成成功。
+- run 输出 `pruned <路径> ok=<ok>`；unit 输出 `pruned <路径> (PR <N> <STATE>)`。补偿失败保留并继续，整体通常退出 0；legacy 删除命令/JSON失败保留真实非零退出，unit 删除失败仅保留并继续。未知/活跃不计数，已失败删除不得计成成功。
 - stderr 通常末行 `prune_linear_calls=0|1`。旧 unit fallback 替换 EXIT trap 后会丢失该统计；新实现保留统计，不复刻 trap 缺陷。
 - 数量上限覆盖全部阶段，包含分支删除。达到上限输出一次 `prune: 达到单次回收上限，剩余对象留到下次`。
 - 时间预算只在补偿每个候选前检查，启动时以整数 Unix 秒记时；初始化/外部命令不受该软预算中断，legacy 阶段没有额外预算。超限输出一次 `prune: 超过时间预算，剩余对象留到下次`。保留 install 外部 70 秒 alarm；SIGINT/SIGTERM/SIGALRM 取消 Go 命令及子进程组并等待退出，不继续删除。

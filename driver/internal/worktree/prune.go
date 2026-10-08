@@ -281,7 +281,7 @@ func (p *pruner) issueSafe(path, branch string) bool {
 	}
 	return true
 }
-func (p *pruner) legacySafe(path string) bool {
+func (p *pruner) pathSafe(path string) bool {
 	physical, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		p.keep(path, "worktree path unavailable: "+err.Error())
@@ -294,11 +294,6 @@ func (p *pruner) legacySafe(path string) bool {
 		p.keep(path, "Orca inventory unavailable")
 		return false
 	}
-	for _, item := range p.orca {
-		if item.Path == path && item.Ticket != "" {
-			return false
-		}
-	}
 	for _, item := range p.git {
 		if item.Path == path {
 			if item.Locked {
@@ -310,6 +305,17 @@ func (p *pruner) legacySafe(path string) bool {
 	}
 	p.keep(path, "Git worktree ownership unavailable")
 	return false
+}
+func (p *pruner) legacySafe(path string) bool {
+	if !p.pathSafe(path) {
+		return false
+	}
+	for _, item := range p.orca {
+		if item.Path == path && item.Ticket != "" {
+			return false
+		}
+	}
+	return true
 }
 func (p *pruner) clean(path string, all bool) bool {
 	args := []string{"status", "--porcelain"}
@@ -421,7 +427,7 @@ func (p *pruner) compensateWorkers() {
 		if p.stopped(true) {
 			break
 		}
-		if item.Path == p.self || item.Path == p.main {
+		if !p.pathSafe(item.Path) {
 			continue
 		}
 		branch, _, code := p.gitAt(item.Path, "symbolic-ref", "--quiet", "--short", "HEAD")
@@ -477,8 +483,7 @@ func (p *pruner) compensateGit() {
 		if managed {
 			continue
 		}
-		if item.Locked {
-			p.keep(item.Path, "worktree is locked")
+		if !p.pathSafe(item.Path) {
 			continue
 		}
 		if !p.issueSafe(item.Path, item.Branch) || !p.clean(item.Path, true) {
@@ -585,6 +590,7 @@ func (p *pruner) legacyRuns() int {
 	if !ok {
 		return 0
 	}
+	p.orca = items
 	cutoff := (time.Now().Unix() - p.age*3600) * 1000
 	for _, item := range items {
 		if !strings.HasPrefix(filepath.Base(item.Path), p.prefix) {
@@ -596,15 +602,15 @@ func (p *pruner) legacyRuns() int {
 		if !p.legacySafe(item.Path) {
 			continue
 		}
-		_, err := os.Stat(filepath.Join(item.Path, ".omc/agent-run-finished"))
-		marked := err == nil
+		marker, err := os.Stat(filepath.Join(item.Path, ".omc/agent-run-finished"))
+		marked := err == nil && marker.Mode().IsRegular()
 		if !marked && (item.Created == nil || *item.Created >= cutoff) {
 			continue
 		}
 		if !p.clean(item.Path, true) {
 			continue
 		}
-		result, diagnostic, code := p.command("orca", "worktree", "rm", "--worktree", "path:"+item.Path, "--force", "--json")
+		result, diagnostic, code := p.command("orca", "worktree", "rm", "--worktree", "path:"+item.Path, "--json")
 		var response struct {
 			OK interface{} `json:"ok"`
 		}
@@ -632,6 +638,7 @@ func (p *pruner) legacyUnits() {
 	if !ok {
 		return
 	}
+	p.orca = items
 	for _, item := range items {
 		if p.stopped(false) {
 			break
