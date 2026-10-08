@@ -117,6 +117,7 @@ func (p *commentPage) UnmarshalJSON(raw []byte) error {
 	for _, node := range page.Nodes {
 		var fields struct {
 			ID        string     `json:"id"`
+			User      *NamedID   `json:"user"`
 			Body      *string    `json:"body"`
 			CreatedAt *time.Time `json:"createdAt"`
 			UpdatedAt *time.Time `json:"updatedAt"`
@@ -124,7 +125,7 @@ func (p *commentPage) UnmarshalJSON(raw []byte) error {
 		if json.Unmarshal(node, &fields) != nil || fields.ID == "" || fields.Body == nil || fields.CreatedAt == nil || fields.UpdatedAt == nil {
 			return protocolError()
 		}
-		p.Nodes = append(p.Nodes, Comment{ID: fields.ID, Body: *fields.Body, CreatedAt: *fields.CreatedAt, UpdatedAt: *fields.UpdatedAt})
+		p.Nodes = append(p.Nodes, Comment{ID: fields.ID, User: fields.User, Body: *fields.Body, CreatedAt: *fields.CreatedAt, UpdatedAt: *fields.UpdatedAt})
 	}
 	return nil
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -15,6 +16,14 @@ import (
 // Persist intent before I/O, then preserve every usable association even when
 // the command returns an error. Completion belongs only to this dispatch.
 func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions) error {
+	release, err := maintenance.Admission()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err = e.githubExecution(ctx, t); err != nil {
+		return err
+	}
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false

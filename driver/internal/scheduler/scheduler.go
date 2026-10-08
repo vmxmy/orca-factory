@@ -79,6 +79,7 @@ type Scheduler struct {
 	FullReconcile    bool
 	adaptive         Adaptive
 	linearQuotaRetry time.Time
+	githubQuotaRetry time.Time
 	quotaPaused      bool
 	// A page refusal stays latched until a successful probe, even if stale
 	// headers exceed the usual percentage thresholds.
@@ -138,7 +139,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			// spend a Snapshot; the cached budget is fresh enough to wait one window.
 			s.linearQuotaRetry = now.Add(5 * time.Minute)
 		}
-		if (remaining < s.pauseFraction() || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
+		if (s.checkLinearQuota(now) < s.pauseFraction() || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
 			// Quota is critically low and the cached budget is stale. Probe once after
 			// a backoff so a successful Snapshot refreshes the budget; otherwise the
 			// pause latches forever because the paused branch never reaches Snapshot.
@@ -208,7 +209,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	// refreshed budget is still critical, start its new recovery window before
 	// allowing dispatch, even when no dependency probe is installed.
 	s.linearQuotaRetry = time.Time{}
-	remaining = s.checkLinearQuota(now)
+	s.githubQuotaRetry = time.Time{}
+	remaining = min(s.checkLinearQuota(now), s.checkGitHubQuota(now))
 	if s.Pauses.Paused("") {
 		s.plan(now, false, remaining)
 		for _, t := range tickets {

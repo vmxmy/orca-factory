@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"syscall"
+
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
 
 const ShellContractVersion = "ledger-shell-v1"
@@ -20,6 +22,36 @@ func RunShell(args []string, out, warnings io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+	backend := os.Getenv("AGENT_ISSUE_BACKEND")
+	if backend != "" && backend != "linear" && backend != "github" {
+		_, _ = fmt.Fprintln(warnings, "ledger: unknown backend")
+		return 2
+	}
+	if len(args) > 0 && args[0] == "append" {
+		release, err := maintenance.Write()
+		if err != nil {
+			_, _ = fmt.Fprintln(warnings, err)
+			return 1
+		}
+		defer release()
+	}
+	if backend == "github" {
+		binary, err := os.Executable()
+		if err != nil {
+			_, _ = fmt.Fprintln(warnings, err)
+			return 1
+		}
+		forward := args
+		if len(args) == 1 && args[0] == "append" {
+			raw, err := io.ReadAll(os.Stdin)
+			if err != nil {
+				_, _ = fmt.Fprintln(warnings, err)
+				return 1
+			}
+			forward = []string{"append", string(raw)}
+		}
+		return shellProcess(binary, append([]string{"ledger"}, forward...), "", out, warnings)
 	}
 	for _, key := range []string{"AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT"} {
 		if os.Getenv(key) == "" {

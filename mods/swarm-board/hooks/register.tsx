@@ -20,9 +20,9 @@ declare function h(type: unknown, props?: Record<string, unknown> | null, ...chi
 
 import type { Agent as BaseAgent, Board as BaseBoard, Ci, Cost, Gate, GateStep, LinearUsage, Pr, Precheck, Ticket as BaseTicket, View, TicketPhase, PhaseObservation } from '../types'
 
-type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number }
+type Ticket = BaseTicket & { usage?: TicketUsage; durationMin?: number; url?: string; number?: number; canonicalId?: string }
 type FailedTicket = Ticket & { handoff?: string }
-type Board = Omit<BaseBoard, 'failed'> & { failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[]; repositoryPaths?: string[] }
+type Board = Omit<BaseBoard, 'failed'> & { backend?: 'github' | 'linear'; repository?: string; failed: FailedTicket[]; automation?: { id: string; enabled: boolean }; phases?: Record<string, PhaseObservation>; coordinatorAlive?: boolean; driver?: DriverStatus; graph?: GraphView | null; graphNotice?: string; throughput?: ThroughputData; failures?: FailureView; metricRuns?: ThroughputRun[]; repositoryPaths?: string[] }
 
 
 type Agent = BaseAgent & { requiresAction?: boolean }
@@ -46,7 +46,7 @@ const DRIVER_PHASES: Record<string, TicketPhase> = {
   '审查': '🔍 审查（推断）', '开 PR': '🚦 CI/合并', '排队合并': '🚦 CI/合并',
 }
 const driverPhase = (comment?: string): TicketPhase | undefined =>
-  comment?.startsWith('driver: ') ? DRIVER_PHASES[comment.slice('driver: '.length).trim()] : undefined
+  comment?.startsWith('driver: ') ? DRIVER_PHASES[comment.split('\n', 1)[0].slice('driver: '.length).trim()] : undefined
 
 export const ticketPhase = (ticket: Ticket, data: PhaseData): TicketPhase => {
   if (data.pr || ticket.pr) return '🚦 CI/合并'
@@ -148,7 +148,7 @@ const parseEnv = (text: string): Record<string, string> =>
   )
 
 const ticket = (i: any): Ticket => ({
-  id: i.identifier, title: i.title ?? '', state: i.state?.type ?? '',
+  id: i.identifier, title: i.title ?? '', state: i.state?.type ?? '', url: i.url, number: i.number, canonicalId: i.id,
   labels: (i.labels ?? []).map((l: any) => l.name), priority: i.priority ?? 0, updatedAt: i.updatedAt ?? '', claimedAt: '',
 })
 
@@ -437,6 +437,10 @@ async function readSnapshot($: any): Promise<Snapshot | null> {
 }
 
 async function refreshSnapshot($: any, handoffs: Map<string, string>) {
+  try {
+    const env = parseEnv(await $.fs.read(ENV))
+    if (env.AGENT_ISSUE_BACKEND === 'github') return
+  } catch { return }
   const snapshot = await readSnapshot($)
   if (!snapshot) return
   const now = Date.now()
@@ -477,7 +481,8 @@ async function refreshSnapshot($: any, handoffs: Map<string, string>) {
   $.ui.status(G.work + ' ' + b.inFlight.length + '/' + b.maxInFlight + ' · ' + G.wait + ' ' + b.prs.length + (b.failed.length ? ' · ' + G.human + ' ' + b.failed.length : '') + ' · ' + G.queued + ' ' + b.queue.length)
 }
 
-async function refresh($: any, handoffs: Map<string, string>, old: Board): Promise<Board> {
+async function refresh($: any, handoffs: Map<string, string>, previous: Board): Promise<Board> {
+  let old = previous
   const now = Date.now()
   const at = new Date(now).toTimeString().slice(0, 5)
   if (!HOME) {
@@ -499,14 +504,27 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     return { ...old, at, coordinatorAlive: undefined, linearUsage, installedVersion, error: 'No ' + ENV + ' here. Open a repo that uses the pipeline.' }
   }
   const env = parseEnv(text)
+  const github = env.AGENT_ISSUE_BACKEND === 'github'
+  const backend = github ? 'github' : 'linear'
+  const repository = env.AGENT_GH_REPO ?? ''
+  if (old.repository !== undefined && (old.repository !== repository || old.backend !== backend)) {
+    old = empty
+    handoffs.clear()
+    ledgerCache = null
+    ticketLedgerCache = null
+    lastLinearFallbackAt = 0
+    readUsage = createUsageReader()
+    __resetGraphCacheForTests()
+  }
+  if (env.AGENT_ISSUE_BACKEND && !['github', 'linear'].includes(env.AGENT_ISSUE_BACKEND)) return { ...old, at, error: '未知执行账本配置' }
   const activeView = await read($, view)
   // Snapshot the pipeline's precheck writes; freshness ≤ 10 min means we skip every live
   // `orca linear …` call this refresh. A missing, corrupt, or stale snapshot sends us back
   // to the live path, but the module throttles that path to one actual read per 5 min.
-  const snapshot = await readSnapshot($)
+  const snapshot = github ? null : await readSnapshot($)
   const snapshotAgeMs = snapshot ? Math.max(0, now - snapshot.generatedAt * 1000) : undefined
   const useSnapshot = snapshotAgeMs !== undefined && snapshotAgeMs <= SNAPSHOT_FRESH_MS
-  const linearThrottled = !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
+  const linearThrottled = !github && !useSnapshot && lastLinearFallbackAt > 0 && now - lastLinearFallbackAt < LINEAR_FALLBACK_THROTTLE_MS
   const repoDir = workspaces() + '/' + base(env.AGENT_GH_REPO ?? '')
   // Every external call is serial, bounded by TIMEOUT_MS. `run` returns stdout on exit 0, '' otherwise.
   // `runOrca` tracks success: a non-zero exit, unparseable JSON, or an envelope with ok=false (e.g. Linear rate-limit)
@@ -544,7 +562,10 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   // (b) throttled — skip Linear, treat as a soft failure so the old board carries over;
   // (c) live — call list-issues, remember the attempt timestamp so later refreshes throttle.
   let issuesResp: OrcaResult
-  if (useSnapshot) {
+  if (github) {
+    issuesResp = await runOrca(['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'list-issues', '--json'])
+    if (issuesResp.data?.result?.complete !== true || !Array.isArray(issuesResp.data?.result?.issues)) issuesResp = { ok: false, data: null }
+  } else if (useSnapshot) {
     issuesResp = { ok: true, data: { result: { issues: snapshot!.issues } } }
   } else if (linearThrottled) {
     issuesResp = { ok: false, data: null }
@@ -554,7 +575,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   }
   const linearOk = issuesResp.ok
   const all: Ticket[] = linearOk ? (issuesResp.data?.result?.issues ?? []).map(ticket) : []
-  const error = linearOk || linearThrottled ? '' : 'Linear 限流，沿用旧数据'
+  const error = linearOk || linearThrottled ? '' : github ? 'GitHub 数据不可用，沿用旧数据' : 'Linear 限流，沿用旧数据'
   const inFlight = all.filter(t => has(t, 'auto-impl') && t.state === 'started')
   // Comment reads for the ticket are shared between the handoff pass (≤3 failed tickets)
   // and the in-flight claimedAt loop, so an in-flight+failed ticket is fetched at most once.
@@ -562,6 +583,11 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const readComments = async (id: string) => {
     const cached = commentsByTicket.get(id)
     if (cached) return cached
+    if (github) {
+      const fetched = deepComments(await runJson(['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'issue', id, '--comments', '--json']))
+      commentsByTicket.set(id, fetched)
+      return fetched
+    }
     if (useSnapshot) {
       const fetched = snapshot!.comments[id] ?? []
       commentsByTicket.set(id, fetched)
@@ -669,9 +695,10 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const cardByIssue = new Map<string, WorktreeCard>()
   if (worktreeResp.ok) {
     for (const w of worktreeResp.data?.result?.worktrees ?? []) {
-      if (!w.linkedLinearIssue || !w.path) continue
+      const identifier = github ? /^issue: ([A-Za-z0-9][A-Za-z0-9._-]*)$/m.exec(String(w.comment ?? ''))?.[1] : w.linkedLinearIssue
+      if (!identifier || !w.path) continue
       const card: WorktreeCard = { path: w.path, workspaceStatus: w.workspaceStatus ?? '', comment: w.comment ?? '' }
-      if (!cardByIssue.has(w.linkedLinearIssue)) cardByIssue.set(w.linkedLinearIssue, card)
+      if (!cardByIssue.has(identifier)) cardByIssue.set(identifier, card)
     }
   }
   const runFor = (id: string) => orcaRuns.filter(x => (x.objective ?? '').includes(id)).sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))[0]
@@ -808,13 +835,13 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
       && (!ticketLedgerCache || now - ticketLedgerCache.at >= LINEAR_FALLBACK_THROTTLE_MS)) {
     // Supplemental view data is not part of the production precheck snapshot.
     // At most one discovery plus three ledger reads per five-minute window.
-    const found = await runOrca(['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
+    const found = await runOrca(github ? ['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'list-issues', '--query', '[ledger] agent-graph', '--json'] : ['orca', 'linear', 'list-issues', '--team', env.AGENT_LINEAR_TEAM, '--project', env.AGENT_LINEAR_PROJECT, '--query', '[ledger] agent-graph', '--json'])
     const candidates = found.ok && Array.isArray(found.data?.result?.issues)
       ? found.data.result.issues.filter((row: { title: string }) => /^\[ledger\] agent-graph(?: #\d+)?$/.test(row.title)).slice(0, 3) : null
     let comments: ReturnType<typeof deepComments> = []
     let complete = candidates !== null
     for (const candidate of candidates ?? []) {
-      const response = await runOrca(['orca', 'linear', 'issue', candidate.identifier ?? candidate.id, '--comments', '--json'])
+      const response = await runOrca(github ? ['bash', 'scripts/agent-gates/agent-graph.sh', 'issues', 'issue', candidate.identifier ?? candidate.id, '--comments', '--json'] : ['orca', 'linear', 'issue', candidate.identifier ?? candidate.id, '--comments', '--json'])
       if (!response.ok) { complete = false; break }
       comments.push(...deepComments(response.data))
     }
@@ -846,7 +873,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
 
-  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted').sort((a, b) => (a.priority || 9) - (b.priority || 9))
+  const queue = all.filter(t => has(t, 'ready-for-agent') && t.state === 'unstarted' && (!github || !has(t, 'auto-failed'))).sort((a, b) => (a.priority || 9) - (b.priority || 9))
   // state.type per identifier, used to badge dependency-chain nodes. Only populate on a
   // successful Linear read; a failed refresh carries forward the previous map.
   const issueStates: Record<string, string> = linearOk
@@ -858,7 +885,9 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const maxInFlight = Number(env.AGENT_MAX_IN_FLIGHT || 0) || old.maxInFlight
   // Snapshot-fed refreshes carry the snapshot's blockedBy map; live refreshes keep the last
   // one we saw so the queue cards do not blink into an "unknown" state between snapshots.
-  const blockedBy = useSnapshot ? snapshot!.blockedBy : old.blockedBy
+  const blockedBy = github && linearOk
+    ? Object.fromEntries(issuesResp.data.result.issues.map((row: { identifier: string; complete: boolean; blockedBy: { identifier: string }[] }) => [row.identifier, row.complete ? row.blockedBy.map(blocker => blocker.identifier) : ['依赖或纳管证据不完整']]))
+    : useSnapshot ? snapshot!.blockedBy : old.blockedBy
   let graph = old.graph, graphNotice = old.graphNotice
   if (useSnapshot) {
     const issues = snapshot!.issues.map(row => ({
@@ -870,7 +899,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     const missingParents = snapshot!.issues.some(row => row.parent === undefined)
     graphNotice = missingParents || !snapshot!.blockedBy ? '数据不全：快照缺少父票或阻塞关系' : ''
   }
-  if (activeView === 'graph' && (!useSnapshot || snapshot!.issues.some(row => row.parent === undefined) || !snapshot!.blockedBy)) {
+  if (!github && activeView === 'graph' && (!useSnapshot || snapshot!.issues.some(row => row.parent === undefined) || !snapshot!.blockedBy)) {
     const cached = await readGraphSnapshot(now, { process: { run: (argv, options) => $.process.run(argv, options) }, fs: {} }, { team: env.AGENT_LINEAR_TEAM, project: env.AGENT_LINEAR_PROJECT, tmpDir: TMP_DIR || '/tmp' })
     graph = cached.at > 0 ? buildGraph(cached) : old.graph ?? null
     graphNotice = [cached.stale ? '缓存过期，沿用上次数据' : '', cached.incomplete.length ? '数据不全：' + cached.incomplete.join('、') : ''].filter(Boolean).join(' · ')
@@ -883,11 +912,15 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
   const metricComments = useSnapshot ? snapshot!.comments : Object.fromEntries(commentsByTicket)
   const failures = ledger.length || Object.keys(metricComments).length
     ? buildFailures({ now, ledger, comments: metricComments }) : old.failures
+  const linearUsage = github ? undefined : await readLinearUsage($, now)
+  if (github && linearOk) {
+    graph = buildGraph({ issues: issuesResp.data.result.issues.map((row: { identifier: string; state: { type: string }; parent?: { identifier: string } }) => ({ id: row.identifier, state: row.state.type, parent: row.parent?.identifier ?? null, blockedBy: blockedBy?.[row.identifier] ?? [] })) })
+    graphNotice = issuesResp.data.result.issues.some((row: { complete: boolean }) => !row.complete) ? '数据不全：未纳管或依赖证据不完整' : ''
+  }
   const metrics = { graph, graphNotice, throughput, failures, metricRuns }
-  const linearUsage = await readLinearUsage($, now)
   if (!linearOk) {
     return {
-      at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases: old.phases, coordinatorAlive, driver: undefined,
+      backend, repository, at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases: old.phases, coordinatorAlive, driver: undefined,
       inFlight: old.inFlight, queue: old.queue, failed: old.failed as FailedTicket[], doneToday: old.doneToday,
       prs, agents: old.agents, lastRun, stats, todayCost: old.todayCost, automation, automationKnown, lastSuccessAt,
       lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -895,7 +928,7 @@ async function refresh($: any, handoffs: Map<string, string>, old: Board): Promi
     }
   }
   return {
-    at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases, coordinatorAlive, driver: undefined, inFlight, queue, failed, doneToday, prs,
+    backend, repository, at, error: [error, usageError].filter(Boolean).join(' · '), maxInFlight, phases, coordinatorAlive, driver: undefined, inFlight, queue, failed, doneToday, prs,
     agents: agentsOk ? agents : old.agents,
     lastRun, stats, todayCost: agentsOk ? todayCost : old.todayCost, automation, automationKnown, lastSuccessAt,
     lastPrecheck, nextRunAt, lastRunAt, linearUsage, installedVersion,
@@ -1247,6 +1280,7 @@ export const register: Register = on => {
           {phaseLine(t)}
           <Text dimColor>{ticketAccounting(t)}</Text>
           <Text>{cutW(t.title, w)}</Text>
+          {t.url ? <Text dimColor>{t.url}</Text> : null}
           {l.title === 'Agent处置' ? handoffText(t) : null}
           {facts.length > 0 ? <Text dimColor>{cutW(facts.join(' · '), w)}</Text> : null}
           {l.title === 'Agent处置' ? resolverText(t) : null}
@@ -1278,6 +1312,7 @@ export const register: Register = on => {
         <Box key={'ql-' + group + '-' + t.id} flexDirection="column" marginBottom={1}>
           <Text bold color={color}>{padW(cutW(head, w), w)}</Text>
           <Text>{cutW(t.title, w)}</Text>
+          {t.url ? <Text dimColor>{t.url}</Text> : null}
           <Text dimColor>{ticketAccounting(t)}</Text>
           {reason ? <Text dimColor>{cutW(reason, w)}</Text> : null}
         </Box>
@@ -1439,18 +1474,19 @@ export const register: Register = on => {
       )
     }
     const driver = b.driver?.state === 'ok' ? b.driver : undefined
-    const limit = driver?.linear.limits.filter(row => b.repositoryPaths?.includes(row.repo))
+    const driverUsage = b.backend === 'github' ? driver?.github : driver?.linear
+    const limit = driverUsage?.limits.filter(row => b.repositoryPaths?.includes(row.repo))
       .sort((a, b) => a.requests.remaining - b.requests.remaining)[0]
     const statusCols = Math.max(0, bodyColumns - 4)
-    const driverBadgeText = driver
-      ? driver.linear.limits.map(l => l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
-        + ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset).join(' · ')
+    const driverBadgeText = driverUsage
+      ? driverUsage.limits.map(l => (b.backend === 'github' ? 'GitHub ' : 'Linear ') + l.repo + ' 请求剩余 ' + l.requests.remaining + ' · 重置 ' + l.requests.reset
+        + (b.backend === 'github' ? '' : ' · 复杂度剩余 ' + l.complexity.remaining + ' · 重置 ' + l.complexity.reset)).join(' · ')
       : undefined
     const rows = statusBarRows({
       inFlight: b.inFlight.length, max: b.maxInFlight || 0, failed: b.failed.length,
       queue: b.queue.length, prs: b.prs.length, doneToday: b.doneToday.length, costUsd: b.todayCost,
-      quota: limit ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
-      driver: b.driver ? b.driver.state : 'none', driverRequests: driver?.linear.requests, complexity: driver?.linear.complexity,
+      quota: limit && b.backend !== 'github' ? { remaining: limit.requests.remaining, limit: LINEAR_HOURLY_LIMIT, resetAt: limit.requests.reset } : undefined,
+      driver: b.driver ? b.driver.state : 'none', driverRequests: driverUsage?.requests, complexity: b.backend === 'github' ? undefined : driverUsage?.complexity,
       driverBadge: driverBadgeText, globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
       at: b.at, refreshSec: remainingSec,
       snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),

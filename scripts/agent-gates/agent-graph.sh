@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Entry point inside a checkout: load the project profile, then run a core script.
-# Usage: scripts/agent-gates/agent-graph.sh <linear-precheck|prune-run-worktrees|gate|ledger|linear> [args...]
-# The `linear` subcommand is the shared, accounted entry for `orca linear` so coordinator-session
-# calls land in the same tally as the scripted ones.
+# Usage: scripts/agent-gates/agent-graph.sh <linear-precheck|prune-run-worktrees|gate|ledger|issues|linear> [args...]
+# issues selects the configured provider; linear remains a shipped command alias.
 set -Eeuo pipefail
 # macOS ships bash 3.2: with set -u an empty array expands as unbound, hence the ${names[@]+...} guards below.
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -10,10 +9,11 @@ names=(${!AGENT_@}); for v in ${names[@]+"${names[@]}"}; do printf -v "saved_$v"
 set -a; . "$dir/agent-graph.env"; set +a
 for v in ${names[@]+"${names[@]}"}; do sv="saved_$v"; printf -v "$v" '%s' "${!sv}"; export "$v"; done
 export AGENT_REPO_PATH="${AGENT_REPO_PATH:-$(dirname "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)")}"
-if [[ "${1:-}" == linear ]]; then
-  # Lossy, out-of-band tally shared with the swarm board (writes ignored on failure).
-  { printf '%s coordinator\n' "$(date +%s)" \
-    >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true
-  exec orca linear "${@:2}"
+case "${AGENT_ISSUE_BACKEND:-linear}" in
+  linear|github) ;;
+  *) echo "agent-graph: unsupported AGENT_ISSUE_BACKEND" >&2; exit 2 ;;
+esac
+if [[ "${1:-}" == linear || "${1:-}" == issues ]]; then
+  exec bash "$dir/issues.sh" "${@:2}"
 fi
 exec bash "$dir/${1:?script name}.sh" "${@:2}"

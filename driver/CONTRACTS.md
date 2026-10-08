@@ -43,9 +43,20 @@
 
 当前 task 的权威报告优先于旧提交的 `agent-status: complete`。pending 派工不能由旧 complete 或已有 PR 放行；缺失、歧义或显式截断的任务证据只允许停止对账，不授权重放旧终端请求。`task-list` 缺失 `dispatch_id` 时仍可根据 task 报告恢复，但不会臆造 dispatch 来释放 worker。子任务通过真实 `parent_id` 与 pending parent 对账；尚无权威报告的未确认派工保持 pending，待后续重新启动对账。
 
+## GitHub Issues（#172 / #173）
+
+- `internal/issues.Client` 选择唯一后端，暂复用已交付 `linear.Issue/Comment` 类型，不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。
+- REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
+- 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖。未提供完整依赖清单的原生 create 仅接受默认 Todo，非 Todo 状态在写入前拒绝，不能静默忽略。GitHub 原生更新时间与迁移来源时间独立。
+- `LedgerStore` 仅创建精确账本标题、无标签且具有完整元数据的账本票，不伪造任务 CHECK/SCOPE。400 评论轮转保留旧 canonical ID、关闭旧票并将新记录写入下一张 Backlog 账本；普通任务不通过该入口绕过 adopt。
+- open/closed/state_reason、工作流标签与元数据确定映射。closed/held 阻执行，不隐藏历史部署屏障；auto-failed 只进入合法 resolver。业务 PR 不使用 Closes/Fixes 提前关闭票。
+- export 只读、preview 离线、import 默认 held。稳定标记和历史摘要用于不确定写入回读与幂等；保留来源作者、ID、时间和顺序，不伪造原作者。release-hold 需 manifest、--apply、draining 与完整回读通过。
+- maintenance 持久化本机 drain/freeze/running，独立于 quota。freeze 只能证明本机合作锁无活跃写者，不能声明跨机器单写者；生产切换仍须明确授权与全量事实核验。
+- `testdata/recorded/github/` 中样本记录来源，合成行为夹具不冒充线上录制。既有 Linear recorded、executor/scheduler goleak 与 release FIFO 保留。
+
 ## 合并交接（#141）
 
-持久事实保存在已有 Linear 票评论与 GitHub PR；本地没有新增合并数据库。类型定义见 `internal/merge/evidence.go`。
+持久事实保存在配置选定的票据主账本评论与 GitHub PR；本地没有新增合并数据库。类型定义见 `internal/merge/evidence.go`。
 
 - `merge-handoff-v1: <JSON>` 与 `归属: 合并通道` 写在同一评论。`version=1`，冻结 `ticket_id/identifier/repository/unit/pr/head/baseline`、完整 `gate_spec/gate_output/review_output/lane`、`run/task/dispatch/worktree`、`attempt/corrections/infra/catchup_rounds`、`enqueued_at/queue_id`。`baseline` 是本轮验证的 merge-base；`head` 是实际验证提交。`queue_id` 由仓库、票、单元、head 和 Orca 派工关联生成，重放使用原记录；correction 的新派工产生新身份，排到队尾。
 - `merge-progress-v1: <JSON>` 关联 `version/queue_id/ticket_id/repository/pr/head/main/merge_sha/phase`。`phase=merge-intent` 在 PUT 前持久记录固定 main，写完再核对远端证据；`phase=merged` 只在 GitHub 回读 merged 后记录真实 squash SHA。若恢复时 PR 已合并且没有 intent，`main_unknown=true`、`main=""` 明确表示历史 main 未知，不能用当前 main 伪造；该记录可反复对账并完成票面写回。

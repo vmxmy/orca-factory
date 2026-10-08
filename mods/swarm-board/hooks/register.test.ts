@@ -1,4 +1,5 @@
 import { recordedUsage } from './usage-recorded'
+import { parseDriverStatus } from './driver-status'
 import { test, expect, mock } from 'claude-code/testing'
 
 import type { Ticket } from '../types'
@@ -12,6 +13,45 @@ import {
 
 const mount = ($: any, surface: 'terminal' | 'desktop') =>
   $.ui.mount({ plugin: 'swarm-board', surface, component: 'Pane', requestId: 'swarm-board', props: { title: 'Swarm' } })
+
+test('GitHub 看板展示票 URL、comment 关联和依赖视图且不调用 Linear', async ($, on) => {
+  __resetSwarmBoardCachesForTests()
+  let refreshed: () => void = () => {}
+  const ready = new Promise<void>(resolve => { refreshed = resolve })
+  const linearCalls: string[][] = []
+  const issueCalls: string[][] = []
+  mock.clock(on)
+  on('ui.open', () => ({ value: undefined }))
+  on('ui.status', () => { refreshed(); return { value: undefined } })
+  on('fs.read', () => ({ value: 'AGENT_ISSUE_BACKEND=github\nAGENT_GH_REPO=owner/test-repo' }))
+  on('process.run', (_: unknown, e: { argv: string[] }) => {
+    if (e.argv[0] === 'orca' && e.argv[1] === 'linear') linearCalls.push(e.argv)
+    if (e.argv.includes('issues')) issueCalls.push(e.argv)
+    const issues = [
+      { id: 'canonical-1', identifier: 'GH.1', title: 'blocker', url: 'https://github.com/owner/test-repo/issues/1', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], complete: true, blockedBy: [] },
+      { id: 'canonical-2', identifier: 'GH-2', title: 'dependent', state: { type: 'unstarted' }, labels: [{ name: 'auto-impl' }], complete: true, blockedBy: [{ identifier: 'GH.1' }] },
+    ]
+    return { value: { stdout: JSON.stringify({ ok: true, result: { complete: true, issues, comments: [], runs: [], workers: [], worktrees: [{ path: '/repo/worker', comment: 'driver: gate\nissue: GH.1' }], automations: [] } }), stderr: '', exitCode: 0 } }
+  })
+  // #when
+  await $.command.run({ command: 'swarm', args: '' })
+  await ready
+  const ui = await mount($, 'terminal')
+  const url = await ui.find({ type: 'Text', text: /https:\/\/github.com\/owner\/test-repo\/issues\/1/ })
+  const phase = await ui.find({ type: 'Text', text: /^🧪 gate/ })
+  await ui.press({ key: 'view-graph' })
+  await ui.redraw()
+  const graph = await ui.find({ type: 'Text', text: /关键路径：GH\.1 → GH-2/ })
+  // #then
+  expect({ url: Boolean(url), phase: Boolean(phase), graph: Boolean(graph), linear: linearCalls.length, issues: issueCalls.length > 0 }).toEqual({ url: true, phase: true, graph: true, linear: 0, issues: true })
+  await ui.unmount()
+})
+
+test('GitHub 请求额度保留独立状态', () => {
+  const github = { requests: 7, complexity: 0, limits: [{ repo: '/repo', requests: { remaining: 4993, reset: '2026-10-08T12:00:00Z' }, complexity: { remaining: 0, reset: '' } }] }
+  const parsed = parseDriverStatus({ state: 'ok', generatedAt: '2026-10-08T11:00:00Z', tickets: [], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] }, github })
+  expect(parsed?.state === 'ok' ? parsed.github : undefined).toEqual(github)
+})
 
 test('focal header draws', async $ => {
   const ui = await mount($, 'terminal')

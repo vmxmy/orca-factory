@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-: "${AGENT_LINEAR_TEAM:?run via agent-graph.sh: AGENT_LINEAR_TEAM required}"
-: "${AGENT_LINEAR_PROJECT:?run via agent-graph.sh: AGENT_LINEAR_PROJECT required}"
+case "${AGENT_ISSUE_BACKEND:-linear}" in
+  github) exec "${AGENT_DRIVER_BIN:-orca-factory-driver}" ledger "$@" ;;
+  linear)
+    : "${AGENT_LINEAR_TEAM:?run via agent-graph.sh: AGENT_LINEAR_TEAM required}"
+    : "${AGENT_LINEAR_PROJECT:?run via agent-graph.sh: AGENT_LINEAR_PROJECT required}" ;;
+  *) echo 'ledger: 未知账本后端' >&2; exit 2 ;;
+esac
 
 driver="${AGENT_DRIVER_BIN:-orca-factory-driver}"
 contract="$("$driver" ledger-shell --contract-version)" || {

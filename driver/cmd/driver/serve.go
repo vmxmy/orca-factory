@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -117,6 +118,13 @@ func (b *statusBackend) LinearLimits() []linear.RateLimit {
 	return nil
 }
 
+func (b *statusBackend) GitHubLimits() []github.Usage {
+	if source, ok := b.Backend.(interface{ GitHubLimits() []github.Usage }); ok {
+		return source.GitHubLimits()
+	}
+	return nil
+}
+
 func (b *statusBackend) ProbeLinearQuota(ctx context.Context) error {
 	if source, ok := b.Backend.(interface{ ProbeLinearQuota(context.Context) error }); ok {
 		return source.ProbeLinearQuota(ctx)
@@ -202,6 +210,16 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 		seen := map[scheduler.LinearClient]bool{}
 		for _, repo := range repos {
 			client := runtime.Clients[repo]
+			if source, ok := client.(interface{ Usage() github.Usage }); ok {
+				usage := source.Usage()
+				if !seen[client] {
+					snapshot.GitHub.Requests += usage.Requests
+					seen[client] = true
+				}
+				snapshot.GitHub.Hour = usage.Hour
+				snapshot.GitHub.Limits = append(snapshot.GitHub.Limits, status.ClientLimits{Repo: repo, Requests: status.RateLimit{Limit: usage.Limit, Remaining: usage.Remaining, Reset: usage.Reset}})
+				continue
+			}
 			source, ok := client.(interface{ Usage() linear.Usage })
 			if !ok {
 				continue

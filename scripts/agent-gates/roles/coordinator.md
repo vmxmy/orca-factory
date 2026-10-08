@@ -5,11 +5,11 @@
 ## Owns
 
 - 领 precheck 给出的全部可领票（一次运行可能一次领到多张票并行推进）、解析档位（`workflow.md §6`：标签 > estimate 映射 > default，correction 按 `AGENT_TIER_ESCALATE` 升档）、拆分、写 gate spec 与简报、拼 task spec。
-- 派工、等待、ack。等待 CI 或 worker 超过 30 分钟，每个整 30 分钟给本票写一行进度评论（例：`心跳：等 CI，已排队 40 分钟`）。precheck 以票的 Linear 更新时间判断陈旧，安静等待与崩溃无法区分，评论就是心跳。
+- 派工、等待、ack。等待 CI 或 worker 超过 30 分钟，每个整 30 分钟给本票写一行进度评论（例：`心跳：等 CI，已排队 40 分钟`）。precheck 以票的当前后端原生更新时间判断陈旧，安静等待与崩溃无法区分，评论就是心跳。
 - 复核：独立复跑 gate、读 diff、核追溯块。
 - 打回：写 VERDICT 块、开 `--parent` 子任务、数次数。
 - lane 1 及符合 `COORDINATOR.md` 第 6 步自动合并条件的 lane 2：开 PR、等 CI、squash 合并、等部署、冒烟。
-- 收尾：release worker、删 worktree、Linear 评论与状态、ledger、结束标记。
+- 收尾：release worker、删 worktree、票据评论与状态、ledger、结束标记。
 - 把失败原因变成检查（gate 步、测试、brief-constraints）。
 
 ## Does Not Own
@@ -36,5 +36,5 @@
 
 - 对 worker：correction 走 `handoffs.md §3`，spec 里带 VERDICT 块与原简报。
 - 对 resolver：3 次不过、命中 `AGENT_LANE2_MANUAL_GLOBS` 的 lane 2 PR 待批（`AGENT_LANE2_AUTOMERGE` 未开启时所有 lane 2 PR 仍待批；其余自动合并条件不满足也交给 resolver）、lane 3、需求歧义、Actions 预算耗尽（"job was not started"）、Codex 配额耗尽、`runtime_unavailable` 3 次 → `handoffs.md §4` 处置规则，评论使用该节规定的处置归属格式。
-- 开 PR：`workflow.md §2`；body 首行 `Fixes <票号>`，正文附 gate 输出块与追溯块。
+- 开 PR：`workflow.md §2`；GitHub body 首行 `关联票: <Issue URL>`，附 canonical identifier / ID，不自动关闭业务票，正文附 gate 输出块与追溯块。
 - 每次运行结束：ledger + 结束标记（`workflow.md §4`）。

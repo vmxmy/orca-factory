@@ -15,7 +15,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -23,6 +24,11 @@ import (
 // RunTicket binds a Run to the calling Orca terminal. The repository profile is
 // trusted local configuration; ticket bodies are fetched separately as data.
 func RunTicket(ctx context.Context, identifier string, merging bool) (result Result, err error) {
+	session, err := maintenance.Session()
+	if err != nil {
+		return Result{}, err
+	}
+	defer session()
 	logger := (&Executor{}).withLog(ctx)
 
 	delegated := false
@@ -45,33 +51,46 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-linear}" "${AGENT_GH_API_URL:-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 12 {
+	if len(values) != 14 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
-	if !ok || !component.MatchString(owner) || !component.MatchString(name) || values[1] == "" || values[2] == "" || strings.TrimSpace(values[3]) == "" {
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) || (values[11] != "github" && (values[1] == "" || values[2] == "")) || strings.TrimSpace(values[3]) == "" {
 		return Result{}, errors.New("repository profile requires GitHub repository, Linear team/project and reviewer")
 	}
 	maximum, err := strconv.ParseFloat(values[9], 64)
 	if err != nil {
 		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
-	ticket, err := readTicket(ctx, identifier, values[1], values[2])
-	if err != nil {
-		return Result{}, err
-	}
-	lc, err := linear.New(ctx, linear.Options{TeamID: values[1]})
-	if err != nil {
-		return Result{}, errors.New("Linear initialization failed")
-	}
 	cfg, err := config.Load(home())
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
+	}
+	lc, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[11], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[12], "AGENT_LINEAR_TEAM": values[1]}, cfg.Tuning)
+	if err != nil {
+		return Result{}, err
+	}
+	var ticket Ticket
+	if gh, ok := lc.(*issues.GitHub); ok {
+		task, readErr := gh.Read(ctx, identifier)
+		if readErr != nil {
+			return Result{}, readErr
+		}
+		if !task.Metadata.Complete {
+			return Result{}, errors.New("explicit adoption required before recovery")
+		}
+		ticket, err = ParseTicket(task.ID, task.Identifier, task.Title, task.Description)
+		ticket.Estimate = task.Estimate
+	} else {
+		ticket, err = readTicket(ctx, identifier, values[1], values[2])
+	}
+	if err != nil {
+		return Result{}, err
 	}
 	gc, err := github.New(github.Options{HTTPTimeout: cfg.Tuning.GitHub.HTTPTimeout})
 	if err != nil {

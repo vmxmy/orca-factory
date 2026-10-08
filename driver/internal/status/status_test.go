@@ -160,6 +160,32 @@ func TestReadViewJSON(t *testing.T) {
 	}
 }
 
+func TestGitHubUsageRolloverAndLegacyOmission(t *testing.T) {
+	now := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	PushObservation(now, func(*View) {})
+	raw, err := json.Marshal(Read(now, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if fields["github"] != nil {
+		t.Fatalf("legacy pushed status gained GitHub usage: %s", raw)
+	}
+	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	if err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","github":{"hour":"2026-10-05T08:00:00Z","requests":12,"limits":[{"repo":"/repo","requests":{"remaining":88}}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	view := Read(now, 0)
+	if view.GitHub.Requests != 0 || !view.GitHub.Hour.Equal(now) || view.GitHub.Limits[0].Requests.Remaining != 88 {
+		t.Fatalf("GitHub usage did not roll over: %+v", view.GitHub)
+	}
+}
+
 func TestReadCurrentHourAndRepoPause(t *testing.T) {
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
 	err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","pauses":[{"repo":"/repo","start":"2026-10-05T08:00:00Z"}],"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88}}]}}`), 0600)

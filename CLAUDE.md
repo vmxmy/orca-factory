@@ -36,23 +36,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```mermaid
 flowchart LR
-    L[Linear 票与评论] --> S[driver serve / scheduler]
+    L[统一票据主账本与评论] --> S[driver serve / scheduler]
     S --> E[Orca 终端中的 driver exec]
     E --> W[独立 worktree 中的 worker]
     W --> G[固定 head 的隔离 gate 与 reviewer]
-    G --> H[Linear 冻结合并交接]
+    G --> H[主账本冻结合并交接]
     H --> M[scheduler / merge 通道]
     M --> P[GitHub CI 与 squash]
     P --> D[部署屏障与 smoke]
-    D --> F[Linear Done]
+    D --> F[主账本 Done]
     E --> R[driver resolve / 处置 Agent]
     R --> S
 ```
 
 - `driver/cmd/driver/serve.go` 组装常驻调度器并持有单实例锁。`internal/scheduler` 发现与认领票、恢复执行器、按仓库推进 FIFO 合并队列。当前 driver 不依赖定时 coordinator；同仓库旧 `agent-linear-scan` 必须关闭。根 README 的定时 coordinator 流程是另一条链路，不能与 driver 同时领票。
 - `internal/machine` 只计算状态转换和待执行效果，不做 I/O。`internal/executor` 执行单票派工、gate、review、correction 与 PR 交接；`internal/linear`、`github`、`orca` 和 `runx` 负责外部边界。gate 验证已推送的固定 head，不使用 worker 的未提交内容。
-- 合并事实来自 Linear 评论中的 `merge-handoff-v1`、`merge-progress-v1` 和 GitHub 回读。交接冻结 head、基线、gate/review 证据与队列身份；本地执行器 checkpoint 用于派工恢复，不替代合并事实。缺失或冲突证据导致等待，不能据此重派或放行。部署与 smoke 确认通过后才写 Done、放行下一 PR。
-- `mods/swarm-board` 是 Claude Code 插件，汇总 Linear、Orca、GitHub、ledger 和 driver 状态快照。看板与 `driver status` 展示观察数据，不是合并或恢复授权；状态快照可能过期。
+- 合并事实来自配置选定的票据主账本评论中的 `merge-handoff-v1`、`merge-progress-v1` 和 GitHub 回读。交接冻结 head、基线、gate/review 证据与队列身份；本地执行器 checkpoint 用于派工恢复，不替代合并事实。缺失或冲突证据导致等待，不能据此重派或放行。部署与 smoke 确认通过后才写 Done、放行下一 PR。
+- `mods/swarm-board` 是 Claude Code 插件，汇总配置选定的票据后端、Orca、GitHub、ledger 和 driver 状态快照。看板与 `driver status` 展示观察数据，不是合并或恢复授权；状态快照可能过期。
 
 修改外部输出解析、持久回执、派工恢复或合并通道前，读 [driver/CONTRACTS.md](driver/CONTRACTS.md)，使用 `driver/testdata/recorded/` 中的真实录制样本。排查服务、配额暂停或部署屏障时，读 [driver/README.md](driver/README.md)；部署约束仍以 `AGENTS.md` 指向的共享记忆为准。
 

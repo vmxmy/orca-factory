@@ -15,7 +15,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
 const PruneContractVersion = "prune-worktrees-v1"
@@ -23,13 +27,16 @@ const PruneContractVersion = "prune-worktrees-v1"
 var ticketPattern = regexp.MustCompile(`[A-Z][A-Z0-9]*-[0-9]+`)
 var remotePattern = regexp.MustCompile(`^refs/heads/agent/([A-Z][A-Z0-9]*-[0-9]+)/[^/]+$`)
 var markerPattern = regexp.MustCompile(`^pr=([1-9][0-9]*)$`)
+var issueCommentPattern = regexp.MustCompile(`(?m)^issue: ([A-Za-z0-9][A-Za-z0-9._-]*)$`)
 
 type tree struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	Locked  bool   `json:"locked"`
-	Ticket  string `json:"linkedLinearIssue"`
-	Created *int64 `json:"createdAt"`
+	Path          string `json:"path"`
+	Branch        string `json:"branch"`
+	Locked        bool   `json:"locked"`
+	Ticket        string `json:"linkedLinearIssue"`
+	CommentTicket string `json:"-"`
+	Comment       string `json:"comment"`
+	Created       *int64 `json:"createdAt"`
 }
 type issue struct {
 	Identifier string `json:"identifier"`
@@ -58,6 +65,7 @@ type pruner struct {
 	budgetTripped, quotaTripped, inventoryOK, linearOK, prOK, remoteOK bool
 	git, orca                                                          []tree
 	issues                                                             []issue
+	github                                                             *issues.GitHub
 	pulls                                                              []pull
 	remote                                                             string
 }
@@ -71,8 +79,24 @@ func RunPrune(ctx context.Context, args []string, out, warnings io.Writer) int {
 		}
 		return 0
 	}
+	release, guardErr := maintenance.Write()
+	if guardErr != nil {
+		_, _ = fmt.Fprintln(warnings, guardErr)
+		return 1
+	}
+	defer release()
+	if _, err := issues.Backend(map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND")}); err != nil {
+		_, _ = fmt.Fprintln(warnings, err)
+		return 2
+	}
 	p := pruner{ctx: ctx, out: out, warnings: warnings, repo: os.Getenv("AGENT_REPO_PATH"), prefix: os.Getenv("AGENT_RUN_WORKTREE_PREFIX"), team: os.Getenv("AGENT_LINEAR_TEAM"), project: os.Getenv("AGENT_LINEAR_PROJECT"), gh: os.Getenv("AGENT_GH_REPO"), started: time.Now().Unix()}
-	for _, key := range []string{"AGENT_REPO_PATH", "AGENT_RUN_WORKTREE_PREFIX", "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT"} {
+	required := []string{"AGENT_REPO_PATH", "AGENT_RUN_WORKTREE_PREFIX"}
+	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+		required = append(required, "AGENT_GH_REPO")
+	} else {
+		required = append(required, "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT")
+	}
+	for _, key := range required {
 		if os.Getenv(key) == "" {
 			p.warn("prune: %s required", key)
 			return 1
@@ -191,12 +215,26 @@ func (p *pruner) orcaTrees() ([]tree, bool) {
 	if code != 0 || json.Unmarshal([]byte(raw), &response) != nil || !response.OK || response.Result.Trees == nil {
 		return nil, false
 	}
+	result := make([]tree, 0, len(response.Result.Trees))
 	for _, item := range response.Result.Trees {
 		if item.Path == "" || !filepath.IsAbs(item.Path) {
 			return nil, false
 		}
+		if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+			matches := issueCommentPattern.FindAllStringSubmatch(item.Comment, -1)
+			if len(matches) > 1 {
+				return nil, false
+			}
+			if len(matches) == 1 {
+				item.CommentTicket = matches[0][1]
+				if item.Ticket == "" {
+					item.Ticket = item.CommentTicket
+				}
+			}
+		}
+		result = append(result, item)
 	}
-	return response.Result.Trees, true
+	return result, true
 }
 func tempPath(key, name string) string {
 	if value := os.Getenv(key); value != "" {
@@ -209,6 +247,39 @@ func tempPath(key, name string) string {
 	return filepath.Join(root, name)
 }
 func (p *pruner) loadIssues() bool {
+	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return false
+		}
+		cfg, err := config.Load(home)
+		if err != nil {
+			return false
+		}
+		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL")}, cfg.Tuning)
+		if err != nil {
+			return false
+		}
+		ghClient := client.(*issues.GitHub)
+		p.github = ghClient
+		rows, err := ghClient.List(p.ctx)
+		if err != nil {
+			return false
+		}
+		for _, task := range rows {
+			row := issue{Identifier: task.Identifier}
+			comments, readErr := ghClient.ListComments(p.ctx, task.ID)
+			if readErr != nil {
+				return false
+			}
+			if scheduler.GitHubCleanupAllowed(task, comments) {
+				row.State.Type = task.State.ID
+			}
+			p.issues = append(p.issues, row)
+		}
+		p.linearOK = true
+		return true
+	}
 	raw, err := os.ReadFile(tempPath("AGENT_SNAPSHOT_FILE", "orca-factory-linear-snapshot.json"))
 	var snapshot struct {
 		Generated *float64 `json:"generatedAt"`
@@ -243,6 +314,19 @@ func (p *pruner) loadIssues() bool {
 	return false
 }
 func (p *pruner) ticketSafe(id, object, mode string) bool {
+	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+		if p.github != nil {
+			task, err := p.github.Read(p.ctx, id)
+			if err == nil {
+				comments, readErr := p.github.ListComments(p.ctx, task.ID)
+				if readErr == nil && scheduler.GitHubCleanupAllowed(task, comments) {
+					return true
+				}
+			}
+		}
+		p.keep(object, "GitHub task cleanup evidence unavailable or changed: "+id)
+		return false
+	}
 	if !p.linearOK {
 		p.keep(object, "linear snapshot unavailable, cannot verify ticket "+id)
 		return false
@@ -272,7 +356,22 @@ func (p *pruner) issueSafe(path, branch string) bool {
 		for _, git := range p.git {
 			match = match || (branch != "" && git.Path == item.Path && git.Branch == branch)
 		}
-		if match && item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
+		if !match {
+			continue
+		}
+		if item.CommentTicket != "" && item.Ticket != item.CommentTicket {
+			if p.github == nil {
+				p.keep(object, "worktree association cannot be resolved")
+				return false
+			}
+			legacy, legacyErr := p.github.Read(p.ctx, item.Ticket)
+			current, currentErr := p.github.Read(p.ctx, item.CommentTicket)
+			if legacyErr != nil || currentErr != nil || legacy.ID != current.ID {
+				p.keep(object, "worktree associations conflict or are unavailable")
+				return false
+			}
+		}
+		if item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
 			return false
 		}
 	}
@@ -457,6 +556,9 @@ func (p *pruner) compensateWorkers() {
 			p.keep(item.Path, "head is neither confirmed pushed nor merged")
 			continue
 		}
+		if p.github != nil && !p.issueSafe(item.Path, branch) {
+			continue
+		}
 		result, diagnostic, code := p.command("orca", "worktree", "rm", "--worktree", "path:"+item.Path, "--json")
 		var response struct {
 			OK bool `json:"ok"`
@@ -496,6 +598,9 @@ func (p *pruner) compensateGit() {
 		}
 		if !p.merged(sha, "") {
 			p.keep(item.Path, "head has no matching merged PR")
+			continue
+		}
+		if p.github != nil && !p.issueSafe(item.Path, item.Branch) {
 			continue
 		}
 		if p.visibleGit("worktree", "remove", item.Path) {
@@ -546,6 +651,9 @@ func (p *pruner) compensateBranches() {
 			p.keep(branch, "head has no matching merged PR")
 			continue
 		}
+		if p.github != nil && !p.issueSafe("", branch) {
+			continue
+		}
 		if p.visibleGit("branch", "-D", "--", branch) {
 			p.removed++
 		} else {
@@ -576,6 +684,9 @@ func (p *pruner) compensateRemote() {
 		}
 		if !p.merged(sha, branch) {
 			p.keep(branch, "remote head has no matching merged PR")
+			continue
+		}
+		if p.github != nil && !p.ticketSafe(match[1], branch, "completed") {
 			continue
 		}
 		if p.visibleGit("push", "origin", "--delete", branch) {

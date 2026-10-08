@@ -1,6 +1,8 @@
 # orca-factory
 
-把 Orca 自驱动开发流水线装进任意仓库：Linear 票自动被实现、检查、合并、上线，人只在 lane 2/3 和失败时介入。
+把 Orca 自驱动开发流水线装进任意仓库：以 GitHub Issues 为统一主账本，完成实现、检查、FIFO 合并与部署验收。异常由 resolver 处置，lane 3 不自动放行。旧 Linear 配置保留已交付契约，但 GitHub 模式零 Linear 请求。
+
+代码部署不等于账本切换。已有源数据须按 [票据主账本](docs/agents/issue-tracker.md) 完成 export、preview、维护栅栏、held import 与全量核验，并单独确认生产切换；#171 保留到真实切换验收。
 
 ## 怎么用
 
@@ -10,13 +12,13 @@
 读 https://github.com/vmxmy/orca-factory 的 ONBOARD.md，把 ~/github/<repo> 接入流水线
 ```
 
-agent 会调研目标仓库、向你确认几个无法推导的决定、生成三份项目配置装进 `<repo>/scripts/agent-gates/`、创建一个**禁用**的 Orca 定时任务，并跑一次验收后开 PR。合并后你用一张小票试跑，满意再启用。
+agent 会调研目标仓库、确认无法推导的决定、生成三份项目配置到 `<repo>/scripts/agent-gates/`，在隔离环境验收后开 PR。推荐 driver 单实例调度；旧定时 coordinator 是互斥的运行通道，不能同时领票。合并后先用一张小票演练，再明确启用。
 
-建票推荐用 intake：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、只写 Linear，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
+建票推荐用 intake：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、通过统一 `issues` 入口写票据主账本，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
-看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）会显示 coordinator 写回的进度，状态列为 `in-progress` / `in-review` / `completed`。Workspace Board 只显示现存 worktree（合并后 worktree 会被删除，所以 Done 列通常是 0）；完成历史看 `/swarm` 的「今日完成」和 Linear。
+看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）会显示 coordinator 写回的进度，状态列为 `in-progress` / `in-review` / `completed`。Workspace Board 只显示现存 worktree（合并后 worktree 会被删除，所以 Done 列通常是 0）；完成历史看 `/swarm` 的「今日完成」和 GitHub Issues。
 
 本仓库自己也接入了流水线（自接入），`core/` 是源、`scripts/agent-gates/` 是安装副本，改 `core/` 后要跑 `bin/orca-factory update .`，详见 `ONBOARD.md` 的「附：自接入」。
 
@@ -31,16 +33,16 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 | `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
 | `examples/zhiyun-ai-dashboard/` | 一个真实项目的配置（三份项目文件 + `roles/local-worker.md` + `constitution/local-engineering.md`），照着填 |
 | `bin/orca-factory` | `init`（装 core + 项目模板，并在 `<repo>/.claude/settings.json` 登记 marketplace 与 swarm-board）/ `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖、mod 是否登记）/ `selftest` |
-| `mods/swarm-board/` | Claude Code mod：`/swarm` 看板。泳道视角（待领 / 实现中 / gate·评审 / CI·合并 / 需要人 / 今日完成）与 agent 视角（时长、token、估算成本、最后活动），数据来自 Linear、Orca、gh、ledger |
+| `mods/swarm-board/` | Claude Code mod：`/swarm` 看板。泳道视角（待领 / 实现中 / gate·评审 / CI·合并 / 需要人 / 今日完成）与 agent 视角（时长、token、估算成本、最后活动），数据来自配置选定的票据后端、Orca、gh、ledger 与 driver 观察快照 |
 | `.claude-plugin/marketplace.json` | 本仓库即插件 marketplace；目标仓库 `.claude/settings.json` 的 `extraKnownMarketplaces` + `enabledPlugins` 指向它，Claude Code 启动时自动安装 |
 
 ## 前置条件
 
-- 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`），Linear 已连接（`orca linear team list`）。
+- 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`）。GitHub 模式不要求 Linear 连接。
 - `gh`、`jq`、`codex`、`claude` 已安装并登录。
 - Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，这是唯一在 Orca 里设的模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 装依赖。
 - 角色模型在 `agent-graph.env` 里管：worker 分三档 `AGENT_TIER_FAST/DEFAULT/STRONG`（`agent:model:effort`），由票标签 `tier:*` > estimate 映射 `AGENT_TIER_BY_ESTIMATE` > default 选档，`AGENT_TIER_ESCALATE=1` 时被打回后自动升一档；reviewer 在 `AGENT_ROLE_REVIEWER_CMD`。都随仓库进 git。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
-- Linear 里有与仓库同名的 project，以及 `ready-for-agent` / `auto-impl` / `auto-failed` 三个标签（接入时 agent 会带你建）。
+- GitHub 仓库启用 Issues，配置 `AGENT_ISSUE_BACKEND=github`、`AGENT_GH_REPO`，有 `ready-for-agent` / `auto-impl` / `auto-failed` 工作流标签。票须有完整正文与依赖并显式纳管；直接创建的普通 Issue 不自动领取。
 
 ## 安全须知
 
@@ -48,7 +50,7 @@ agent 会调研目标仓库、向你确认几个无法推导的决定、生成�
 
 ## 核心机制
 
-1. 定时任务每 5 分钟跑 `linear-precheck.sh`：project 内带 `ready-for-agent` 且未被阻塞的 Todo 票，且在途数 < 上限，才启动 coordinator。
+1. driver 持有单实例锁，完整发现当前主账本。只有已纳管、open、非 held、带 `ready-for-agent`、无未完成依赖的 Todo 票才可领取；关键动作前完整 fresh 回读。旧定时通道的 `linear-precheck.sh` 名称保留，但内部按配置选择唯一后端。
 2. coordinator（claude）领票、按 blast radius 拆分、写 gate spec 与 task spec，派 Codex 工人在独立 worktree 实现。
 3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试在 base 上必红、项目检查（类型/lint/守卫/定向测试）、CHECK。
 4. 红了打回工人修，最多 3 次；3 次不过由 resolver 接管排障与修复。

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/ledger"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -23,19 +24,19 @@ func runLedger(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: driver ledger append '<json>' | driver ledger stats [--all]")
 		return 2
 	}
-	team, project := os.Getenv("AGENT_LINEAR_TEAM"), os.Getenv("AGENT_LINEAR_PROJECT")
-	if team == "" || project == "" {
+	env := issueEnvironment()
+	backend, err := issues.Backend(env)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	team, project := env["AGENT_LINEAR_TEAM"], env["AGENT_LINEAR_PROJECT"]
+	if backend == "linear" && (team == "" || project == "") {
 		fmt.Fprintln(os.Stderr, "ledger: AGENT_LINEAR_TEAM and AGENT_LINEAR_PROJECT required")
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	client, err := linear.New(ctx, linear.Options{TeamID: team})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ledger: Linear client initialization failed")
-		return 1
-	}
-	store := &ledgerStore{client: client, team: team, project: project}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ledger: home directory unavailable")
@@ -45,6 +46,22 @@ func runLedger(args []string) int {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "ledger: driver configuration could not be loaded")
 		return 1
+	}
+	var store ledger.Store
+	if backend == "github" {
+		client, err := issues.New(ctx, env, cfg.Tuning)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		store = &issues.LedgerStore{Client: client.(*issues.GitHub)}
+	} else {
+		client, err := linear.New(ctx, linear.Options{TeamID: team, HTTPTimeout: cfg.Tuning.Linear.HTTPTimeout})
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		store = &ledgerStore{client: client, team: team, project: project}
 	}
 	l := ledger.New(store, ledger.Options{FlushInterval: cfg.Tuning.Ledger.FlushInterval})
 	if appendRow {

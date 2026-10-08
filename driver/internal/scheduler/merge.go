@@ -149,6 +149,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 	return errors.Join(problems...)
 }
 func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) {
+	if err := r.verifyGitHubDecision(ctx, t, ""); err != nil {
+		return err
+	}
 	var cleanupErr error
 	defer func() { resultErr = errors.Join(resultErr, cleanupErr) }()
 	h := t.Handoff
@@ -195,6 +198,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 			a.main = p.Main
 		}
 	} else {
+		if err = r.verifyGitHubDecision(ctx, t, githubSquash); err != nil {
+			return err
+		}
 		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, nil)
 		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, CatchupRounds: rounds}
 		if err = channel.Enqueue(req); err != nil {
@@ -341,6 +347,9 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main, PRFiles: prFiles, MainFiles: mainFiles}, nil
 }
 func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main string) (string, error) {
+	if err := a.runtime.verifyGitHubDecision(ctx, a.ticket, githubSquash); err != nil {
+		return "", err
+	}
 	fresh, err := a.Snapshot(ctx, req)
 	if err != nil {
 		return "", err
@@ -362,6 +371,9 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 		return "", err
 	}
 	a.ticket.Progress = &intent
+	if err := a.runtime.verifyGitHubDecision(ctx, a.ticket, githubSquash); err != nil {
+		return "", err
+	}
 	// The durable write can take time; reread all pinned evidence afterwards.
 	fresh, err = a.Snapshot(ctx, req)
 	if err != nil {

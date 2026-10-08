@@ -1,6 +1,23 @@
 # ONBOARD：把一个仓库接入 Orca 自驱动流水线
 
-你是在 Orca 里运行的 agent（Claude 或 Codex）。用户把本仓库（orca-factory）的链接和一个目标仓库路径交给你，你要按下面 0–7 步把目标仓库接入流水线。每步都有命令和验收条件；验收不过就停下，把缺什么、怎么补告诉用户，不要绕过。
+你是在 Orca 里运行的 agent（Claude 或 Codex）。用户交给你目标仓库路径后，先按下面的 GitHub 接入流程安装并验收。验收不过就停下，报告缺项，不绕过。历史 Linear 的 0–7 步只用于维护已交付旧配置；GitHub 接入不得执行其中的 Linear 探测、建 project、建票或通知验证。
+
+## GitHub Issues 接入（当前入口）
+
+1. 只读调研目标仓库。确认 `owner/repo`、main、安装/检查命令、lane glob、部署 workflow、smoke 和角色档位，沿用下文第 1 步的推导表。不读取密钥文件。
+2. 检查 Git、gh、jq、Orca、角色工具和 driver；使用 `gh auth status` 与 `gh api repos/<owner>/<repo>` 核对真实目标、可见性与权限。不调用 `orca linear`，不要求 Linear team/project/key。doctor 的 A/B 推荐仅属于历史 Linear 接入，不能授权 GitHub 切换。
+3. 向用户确认无法推导的合并策略、并发上限、lane 边界、部署/冒烟与模型档位。已有源数据时，先确认单独迁移计划，不先切配置。
+4. 按下文第 4 步用 `bin/orca-factory init <repo>` 安装。模板使用 `AGENT_ISSUE_BACKEND=github` 与 `AGENT_GH_REPO=<owner/repo>`；保留现有项目配置，不自动切换已运行仓库。完成三个项目文件和可选覆盖层。
+5. 运行 `bin/orca-factory check <repo>`、gate 回归、`install.sh --dry-run` 和项目检查。GitHub dry-run 核对唯一仓库与 Issues 数据，不探测 Linear。用隔离临时仓库验证候选 `init/update/check`；不得将 selftest 嵌套进重型 project gate。
+6. 按 `roles/intake.md` 创建一张有「要做」、`CHECK`、`SCOPE` 和完整 `DEPENDENCIES` 的小票。使用 `agent-graph.sh issues create --input <JSON>`；已有原生票用 `issues adopt` 显式纳管。未纳管票可见但默认不领取。完整回读 canonical ID、URL 与依赖，不能用编号替换旧 UUID/ZII。
+7. 交付配置 PR 与实际检查证据。业务 PR 引用 Issue URL，不用 `Closes` / `Fixes`；部署与 smoke 通过才关闭业务票。看板 `/swarm` 使用同一后端，GitHub 额度独立显示，Orca 关联通过 comment 的 `issue:` 行而非 `--linear-issue`。
+8. 启用运行通道需另有明确授权。推荐 `driver serve` 单实例调度；同仓库旧 `agent-linear-scan` 必须关闭，不能同时运行 driver 与定时 coordinator。若使用定时 coordinator，`install.sh` 只创建禁用任务，先手动演练，再由用户启用。
+
+迁移流程见 [票据主账本](docs/agents/issue-tracker.md)：只读 export → offline preview → 明确真实写入授权 → drain 收敛旧写者 → freeze → 最终导出/held import/全量回读 → 单独确认配置切换 → draining 中核验 release-hold → 唯一调度器 running。维护栅栏只约束本机合作写者，不证明跨机器无旧写者。保留预算、checkpoint、receipts、FIFO 与历史部署屏障；不强杀 worker，不自动回滚到陈旧 Linear。
+
+## 历史 Linear 接入手册（仅维护旧配置）
+
+以下 0–7 步保留已交付配置契约，不是 GitHub 接入指令。本仓库 GitHub 模式不执行其中的 Linear 命令。
 
 约定：下文 `$REPO` 指目标仓库主检出的绝对路径（如 `~/github/foo` 展开后），`$FACTORY` 指本仓库的本地检出。本仓库若还没克隆到本机，先 `git clone https://github.com/vmxmy/orca-factory` 到临时目录。读完本手册再动手；读过 `core/COORDINATOR.md` 和 `examples/zhiyun-ai-dashboard/` 三份文件会更清楚最终要生成什么。
 
