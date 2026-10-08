@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -102,6 +103,8 @@ func (i Issue) Blocked() bool {
 }
 
 type Comment struct {
+	Source    string    `json:"source,omitempty"`
+	User      *NamedID  `json:"user,omitempty"`
 	ID        string    `json:"id"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
@@ -445,7 +448,7 @@ func (c *Client) ListComments(ctx context.Context, id string) ([]Comment, error)
 				Comments *commentPage `json:"comments"`
 			} `json:"issue"`
 		}
-		err := c.do(ctx, `query ListComments($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) { nodes { id body createdAt updatedAt } pageInfo { hasNextPage endCursor } } } }`, map[string]any{"id": id, "after": cursor(after)}, &data)
+		err := c.do(ctx, `query ListComments($id: String!, $after: String) { issue(id: $id) { comments(first: 100, after: $after) { nodes { id body createdAt updatedAt user { id name } } pageInfo { hasNextPage endCursor } } } }`, map[string]any{"id": id, "after": cursor(after)}, &data)
 		if err != nil {
 			return nil, err
 		}
@@ -472,6 +475,13 @@ func (c *Client) ProbeQuota(ctx context.Context) error {
 var operationName = regexp.MustCompile(`^\s*(?:query|mutation)\s+([A-Za-z_][A-Za-z0-9_]*)`)
 
 func (c *Client) do(ctx context.Context, query string, variables map[string]any, out any) (err error) {
+	if strings.HasPrefix(strings.TrimSpace(query), "mutation") {
+		release, err := maintenance.Write()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
 	if discovery, _ := ctx.Value(discoveryReadKey{}).(bool); discovery {
 		cost := int64(1000)
 		if strings.Contains(query, "query Snapshot(") {

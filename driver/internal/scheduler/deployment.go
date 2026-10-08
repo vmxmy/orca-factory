@@ -12,6 +12,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -81,7 +82,9 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 		if err := r.deploymentReceipt(ctx, t, p); err != nil {
 			return err
 		}
-		if _, err := r.runSmoke(ctx, t, p); err != nil {
+		observed := t
+		observed.Progress = p
+		if _, err := r.runSmoke(ctx, observed, p); err != nil {
 			safe := safeDeploymentFailure(err)
 			if ctx.Err() != nil {
 				return errors.Join(safe, ctx.Err())
@@ -109,6 +112,14 @@ func (r *Runtime) pauseDeployment(ctx context.Context, t Ticket, p *merge.Progre
 }
 
 func (r *Runtime) runSmoke(ctx context.Context, t Ticket, p *merge.Progress) ([]byte, error) {
+	release, err := maintenance.Write()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if err = r.verifyGitHubDecision(ctx, t, ""); err != nil {
+		return nil, err
+	}
 	env := []string{}
 	for _, item := range os.Environ() {
 		if !strings.HasPrefix(item, "AGENT_MERGE_SHA=") && !strings.HasPrefix(item, "AGENT_GH_REPO=") {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -31,24 +32,28 @@ type Options struct {
 
 type cachedResponse struct {
 	etag string
+	link string
 	body []byte
 }
 
 // Client is safe for concurrent use. Each client owns a capacity-one write
 // token bucket, refilled once per second, and an ETag cache.
 type Client struct {
-	base       string
-	http       *http.Client
-	token      func(context.Context) (string, error)
-	now        func() time.Time
-	sleep      func(context.Context, time.Duration) error
-	writeMu    sync.Mutex
-	lastWrite  time.Time
-	wrote      bool
-	cacheMu    sync.Mutex
-	cache      map[string]cachedResponse
-	generation uint64
-	createMu   sync.Mutex
+	base         string
+	http         *http.Client
+	token        func(context.Context) (string, error)
+	now          func() time.Time
+	sleep        func(context.Context, time.Duration) error
+	writeMu      sync.Mutex
+	lastWrite    time.Time
+	wrote        bool
+	cacheMu      sync.Mutex
+	cache        map[string]cachedResponse
+	generation   uint64
+	createMu     sync.Mutex
+	quotaMu      sync.Mutex
+	usage        Usage
+	blockedUntil time.Time
 }
 
 func New(o Options) (*Client, error) {
@@ -116,7 +121,21 @@ func safeError(err error) error {
 	return infra.Classify(errors.New("GitHub request failed"))
 }
 
-func (c *Client) request(ctx context.Context, method, path string, input, output any) (err error) {
+func (c *Client) request(ctx context.Context, method, path string, input, output any) error {
+	return c.requestDetails(ctx, method, path, input, output, nil)
+}
+
+func (c *Client) requestDetails(ctx context.Context, method, path string, input, output any, link *string) (err error) {
+	if method != http.MethodGet {
+		release, err := maintenance.Write()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	if err := c.rateReady(); err != nil {
+		return err
+	}
 	started := time.Now()
 	status, requestID := 0, ""
 	logPath, _, _ := strings.Cut(path, "?")
@@ -181,6 +200,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 		defer c.invalidate()
 	}
 	resp, err := c.http.Do(req)
+	c.recordUsage(resp)
 	if err != nil {
 		return safeError(err)
 	}
@@ -189,7 +209,13 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 	var body []byte
 	if resp.StatusCode == http.StatusNotModified && method == http.MethodGet && hasCache {
 		body = cached.body
+		if link != nil {
+			*link = cached.link
+		}
 	} else {
+		if link != nil {
+			*link = resp.Header.Get("Link")
+		}
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			cause := infra.HTTPError{StatusCode: resp.StatusCode}
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
@@ -211,7 +237,7 @@ func (c *Client) request(ctx context.Context, method, path string, input, output
 			c.cacheMu.Lock()
 			if c.generation == generation {
 				if etag := resp.Header.Get("ETag"); etag != "" {
-					c.cache[endpoint] = cachedResponse{etag: etag, body: body}
+					c.cache[endpoint] = cachedResponse{etag: etag, body: body, link: resp.Header.Get("Link")}
 				} else {
 					delete(c.cache, endpoint)
 				}

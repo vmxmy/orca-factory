@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -153,6 +154,15 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 }
 
 func (c *Client) mutate(ctx context.Context, request string, args []string) (Receipt, error) {
+	guard := maintenance.Write
+	if len(args) > 1 && args[1] == "worker-start" {
+		guard = maintenance.Admission
+	}
+	release, err := guard()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if !validUUID(request) {
 		return nil, invalid("mutation requires a UUID request ID")
 	}
@@ -193,7 +203,7 @@ func (c *Client) RunUse(ctx context.Context, request, run string) (Receipt, erro
 
 type StartOptions struct {
 	Run, Task, Spec, Worktree, Agent, Model, Effort, Setup, Terminal string
-	Name, Repo, BaseBranch, RetryOf                        string
+	Name, Repo, BaseBranch, RetryOf                                  string
 }
 
 // WorkerStart requires exactly one of Task and Spec. For a positively failed
@@ -415,6 +425,11 @@ type TerminalOptions struct{ Worktree, Title, Command string }
 // TerminalCreate has no retry-request support in the Orca CLI. It is not
 // automatically retried and must not be treated as an idempotent mutation.
 func (c *Client) TerminalCreate(ctx context.Context, o TerminalOptions) (Receipt, error) {
+	release, err := maintenance.Admission()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	args := []string{"terminal", "create"}
 	args = add(args, "--worktree", o.Worktree)
 	args = add(args, "--title", o.Title)
@@ -425,6 +440,11 @@ func (c *Client) TerminalCreate(ctx context.Context, o TerminalOptions) (Receipt
 // TerminalSend is never retried automatically. It waits for the agent to start
 // a turn; TurnStarted tells whether the receipt proves that.
 func (c *Client) TerminalSend(ctx context.Context, terminal, text string) (Receipt, error) {
+	release, err := maintenance.Write()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if terminal == "" || text == "" {
 		return nil, invalid("terminal send requires handle and text")
 	}
@@ -452,6 +472,11 @@ func TurnStarted(r Receipt) bool {
 
 // WorktreeSet updates the Orca board metadata of the worktree at an absolute path.
 func (c *Client) WorktreeSet(ctx context.Context, path, linearIssue, status, comment string) (Receipt, error) {
+	release, err := maintenance.Write()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if !filepath.IsAbs(path) || status == "" {
 		return nil, invalid("worktree set requires absolute path and status")
 	}

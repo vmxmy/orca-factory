@@ -15,8 +15,10 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/release"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -92,6 +94,24 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 			refusals = append(refusals, refusal)
 			continue
 		}
+		backend, err := issues.Backend(repo.Env)
+		if err != nil {
+			return err
+		}
+		if backend == "github" {
+			project := issues.Project(repo.Env)
+			if projects[project] {
+				return errors.New("duplicate issue repository")
+			}
+			client, err := r.newIssueClient(ctx, repo.Env)
+			if err != nil {
+				return err
+			}
+			projects[project] = true
+			r.Clients[repo.Path] = client
+			r.Repositories[repo.Path] = repo
+			continue
+		}
 		team, project := repo.Env["AGENT_LINEAR_TEAM"], repo.Env["AGENT_LINEAR_PROJECT"]
 		if team == "" || project == "" || projects[project] {
 			return errors.New("repository requires distinct Linear project and team")
@@ -153,7 +173,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		if r.refused[repo.Path] != nil {
 			continue
 		}
-		project := repo.Env["AGENT_LINEAR_PROJECT"]
+		project := issues.Project(repo.Env)
 		projects = append(projects, project)
 		paths[project] = repo.Path
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
@@ -346,6 +366,16 @@ func readOwnership(t *Ticket, comments []linear.Comment) error {
 }
 
 func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
+	if a.Kind == Claim || a.Kind == Resume || (a.Kind == Resolve && (t.Resolution == nil || t.Resolution.Phase != "result")) {
+		release, err := maintenance.Admission()
+		if err != nil {
+			return err
+		}
+		defer release()
+	}
+	if err := r.verifyGitHubDecision(ctx, t, a.Kind); err != nil {
+		return err
+	}
 	client := r.Clients[t.Repo]
 	if client == nil {
 		return errors.New("missing repository client")
@@ -421,7 +451,7 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 // unknown, never permission to reuse the ticket supplied by discovery.
 func (r *Runtime) claimIssue(ctx context.Context, client LinearClient, t Ticket) (linear.Issue, error) {
 	repo := r.Repositories[t.Repo]
-	project := repo.Env["AGENT_LINEAR_PROJECT"]
+	project := issues.Project(repo.Env)
 	var issue linear.Issue
 	if reader, ok := client.(interface {
 		FreshIssue(context.Context, string) (linear.Issue, error)
@@ -460,6 +490,14 @@ var identifier = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'" }
 func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
+	release, err := maintenance.Admission()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := r.verifyGitHubLaunch(ctx, t); err != nil {
+		return err
+	}
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {
 		return errors.New("invalid executor launch configuration")
 	}
@@ -474,7 +512,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		// A merge-lane conflict resume runs the executor as a merge resolver.
 		verb = " exec --merging "
 	}
-	_, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
+	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
 		return errors.New("executor launch uncertain")
 	}
@@ -491,6 +529,13 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 // ticketScope stays local to the scheduler because the shared Linear snapshot
 // deliberately carries only scheduling metadata, not issue descriptions.
 func (r *Runtime) ticketScope(ctx context.Context, t Ticket) ([]string, error) {
+	if client, ok := r.Clients[t.Repo].(*issues.GitHub); ok {
+		description, err := client.Description(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		return declaredScope(description), nil
+	}
 	raw, err := r.command(ctx, t.Repo, r.OrcaPath, "linear", "issue", t.Identifier, "--json")
 	if err != nil {
 		return nil, errors.New("ticket scope read failed")

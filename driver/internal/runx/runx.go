@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
 
 // Spec describes a command. Timeout must be positive. Env, when non-nil,
@@ -31,6 +33,18 @@ func (e *commandError) Unwrap() error { return e.cause }
 // Run returns stdout and kills the command's process group on cancellation.
 // The parent's deadline takes precedence over a longer spec timeout.
 func Run(ctx context.Context, spec Spec) (output []byte, err error) {
+	if filepath.Base(spec.Path) == "git" {
+		for _, arg := range spec.Args {
+			if arg == "push" {
+				release, guardErr := maintenance.Write()
+				if guardErr != nil {
+					return nil, guardErr
+				}
+				defer release()
+				break
+			}
+		}
+	}
 	started := time.Now()
 	var exit *exec.ExitError
 	var captured stderrBuffer

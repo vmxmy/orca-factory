@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/release"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -86,6 +87,11 @@ func splitReleaseRepo(name string) (string, string, bool) {
 	return owner, repo, ok && owner != "" && repo != "" && !strings.Contains(repo, "/")
 }
 func (d *releaseDeployment) Smoke(ctx context.Context, req merge.Request, sha string, beforeStart func() error) error {
+	release, guardErr := maintenance.Write()
+	if guardErr != nil {
+		return guardErr
+	}
+	defer release()
 	if !commitID(sha) {
 		return errors.New("release smoke SHA invalid")
 	}

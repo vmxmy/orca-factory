@@ -101,6 +101,15 @@ func normalize(view *View, now time.Time) {
 		view.Tickets = []Ticket{}
 	}
 	hour := now.UTC().Truncate(time.Hour)
+	if !view.GitHub.Hour.IsZero() || view.GitHub.Requests != 0 || view.GitHub.Limits != nil {
+		if !view.GitHub.Hour.Equal(hour) {
+			view.GitHub.Hour = hour
+			view.GitHub.Requests = 0
+		}
+		if view.GitHub.Limits == nil {
+			view.GitHub.Limits = []ClientLimits{}
+		}
+	}
 	if !view.Linear.Hour.Equal(hour) {
 		view.Linear.Hour = hour
 		view.Linear.Requests = 0

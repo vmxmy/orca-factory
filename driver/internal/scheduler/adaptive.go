@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
-	"time"
 )
 
 type Inspection struct {
@@ -76,7 +78,56 @@ func (s *Scheduler) checkPauses(ctx context.Context, now time.Time) (float64, er
 	if s.Pauses == nil {
 		s.Pauses = pause.New(s.clock, nil, nil)
 	}
-	return s.checkLinearQuota(now), s.Pauses.Poll(ctx)
+	return min(s.checkLinearQuota(now), s.checkGitHubQuota(now)), s.Pauses.Poll(ctx)
+}
+
+type githubQuotaSource interface{ GitHubLimits() []github.Usage }
+
+func (s *Scheduler) checkGitHubQuota(now time.Time) float64 {
+	source, ok := s.Backend.(githubQuotaSource)
+	if !ok {
+		return 1
+	}
+	remaining := 1.0
+	var reset time.Time
+	for _, usage := range source.GitHubLimits() {
+		if usage.Limit <= 0 || !usage.Reset.IsZero() && !now.Before(usage.Reset) {
+			continue
+		}
+		fraction := float64(usage.Remaining) / float64(usage.Limit)
+		if fraction < s.pauseFraction() {
+			deadline := usage.Reset
+			if deadline.IsZero() {
+				if s.githubQuotaRetry.IsZero() {
+					s.githubQuotaRetry = now.Add(s.quotaProbeBackoff())
+				}
+				if !now.Before(s.githubQuotaRetry) {
+					continue
+				}
+				deadline = s.githubQuotaRetry
+			}
+			if deadline.After(reset) {
+				reset = deadline
+			}
+		}
+		remaining = min(remaining, fraction)
+	}
+	key := pause.Key{Dependency: pause.GitHub, Kind: pause.Quota}
+	if remaining < s.pauseFraction() {
+		s.Pauses.Pause(key, reset)
+	} else {
+		s.Pauses.Resume(key)
+	}
+	return remaining
+}
+func (r *Runtime) GitHubLimits() []github.Usage {
+	var limits []github.Usage
+	for _, client := range r.Clients {
+		if source, ok := client.(interface{ Usage() github.Usage }); ok {
+			limits = append(limits, source.Usage())
+		}
+	}
+	return limits
 }
 
 func (s *Scheduler) checkLinearQuota(now time.Time) float64 {
@@ -130,8 +181,17 @@ func (r *Runtime) LinearLimits() []linear.RateLimit {
 		now = r.Now()
 	}
 	usageView := status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}
+	githubView := status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}
 	seen := map[LinearClient]bool{}
 	for repo, client := range r.Clients {
+		if source, ok := client.(interface{ Usage() github.Usage }); ok {
+			usage := source.Usage()
+			if !seen[client] {
+				githubView.Requests += usage.Requests
+				seen[client] = true
+			}
+			githubView.Limits = append(githubView.Limits, status.ClientLimits{Repo: repo, Requests: status.RateLimit{Limit: usage.Limit, Remaining: usage.Remaining, Reset: usage.Reset}})
+		}
 		if source, ok := client.(interface{ Usage() linear.Usage }); ok {
 			usage := source.Usage()
 			if !seen[client] {
@@ -146,6 +206,6 @@ func (r *Runtime) LinearLimits() []linear.RateLimit {
 			limits = append(limits, usage.RequestLimit, usage.ComplexityLimit)
 		}
 	}
-	status.Push(now, func(view *status.View) { view.Linear = usageView })
+	status.Push(now, func(view *status.View) { view.Linear = usageView; view.GitHub = githubView })
 	return limits
 }

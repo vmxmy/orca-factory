@@ -2,12 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"testing"
+	"time"
+
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
-	"testing"
-	"time"
 )
 
 func TestAdaptiveIntervalPolicy(t *testing.T) {
@@ -36,6 +38,35 @@ func TestAdaptiveIntervalPolicy(t *testing.T) {
 	}
 	if p := a.Next(now.Add(10*time.Minute), true, 1); p.FullReconcile {
 		t.Fatal("duplicate reconciliation")
+	}
+}
+
+type githubQuotaBackend struct {
+	*fakeBackend
+	usage github.Usage
+}
+
+func (b *githubQuotaBackend) GitHubLimits() []github.Usage { return []github.Usage{b.usage} }
+func TestGitHubQuotaPausesUntilResetWithoutLinear(t *testing.T) {
+	f := &fakeBackend{tickets: []Ticket{{ID: "a", Repo: "a", Candidate: true}}}
+	s := setup(f)
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	b := &githubQuotaBackend{fakeBackend: f, usage: github.Usage{Limit: 5000, Remaining: 1, Reset: now.Add(time.Hour)}}
+	s.Backend = b
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 0 || !s.Pauses.Paused("") {
+		t.Fatal("GitHub quota did not block dispatch")
+	}
+	now = now.Add(time.Hour)
+	b.usage = github.Usage{Limit: 5000, Remaining: 4999, Reset: now.Add(time.Hour)}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 1 || s.Pauses.Paused("") {
+		t.Fatal("GitHub quota did not recover after reset")
 	}
 }
 
