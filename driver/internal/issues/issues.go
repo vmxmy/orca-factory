@@ -453,6 +453,9 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 		if in.Identifier != "" || in.ImportDigest != "" || strings.TrimSpace(in.Title) == "" || strings.Contains(in.Description, marker) {
 			return Task{}, errors.New("invalid native create input")
 		}
+		if (in.Blockers == nil || in.Related == nil) && in.State != "" && in.State != "Todo" {
+			return Task{}, errors.New("explicit adoption required for native create state")
+		}
 		nonce := make([]byte, 16)
 		if _, err := rand.Read(nonce); err != nil {
 			return Task{}, err

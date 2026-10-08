@@ -47,7 +47,8 @@
 
 - `internal/issues.Client` 选择唯一后端，暂复用已交付 `linear.Issue/Comment` 类型，不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。
 - REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
-- 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖。GitHub 原生更新时间与迁移来源时间独立。
+- 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖。未提供完整依赖清单的原生 create 仅接受默认 Todo，非 Todo 状态在写入前拒绝，不能静默忽略。GitHub 原生更新时间与迁移来源时间独立。
+- `LedgerStore` 仅创建精确账本标题、无标签且具有完整元数据的账本票，不伪造任务 CHECK/SCOPE。400 评论轮转保留旧 canonical ID、关闭旧票并将新记录写入下一张 Backlog 账本；普通任务不通过该入口绕过 adopt。
 - open/closed/state_reason、工作流标签与元数据确定映射。closed/held 阻执行，不隐藏历史部署屏障；auto-failed 只进入合法 resolver。业务 PR 不使用 Closes/Fixes 提前关闭票。
 - export 只读、preview 离线、import 默认 held。稳定标记和历史摘要用于不确定写入回读与幂等；保留来源作者、ID、时间和顺序，不伪造原作者。release-hold 需 manifest、--apply、draining 与完整回读通过。
 - maintenance 持久化本机 drain/freeze/running，独立于 quota。freeze 只能证明本机合作锁无活跃写者，不能声明跨机器单写者；生产切换仍须明确授权与全量事实核验。

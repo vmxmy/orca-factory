@@ -85,7 +85,13 @@ func newImportServer(t *testing.T) (*GitHub, *importServer) {
 				if comments == nil {
 					comments = []map[string]any{}
 				}
-				result = comments
+				page := 1
+				if _, err := fmt.Sscanf(r.URL.Query().Get("page"), "%d", &page); err != nil {
+					t.Error(err)
+					return
+				}
+				start := min((page-1)*100, len(comments))
+				result = comments[start:min(start+100, len(comments))]
 			}
 		case r.Method == "PATCH":
 			var n int

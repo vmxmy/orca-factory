@@ -69,6 +69,19 @@ func TestNativeMutationRequiresAdoption(t *testing.T) {
 	}
 }
 
+func TestNativeCreateRejectsStateWithoutAdoption(t *testing.T) {
+	c, f := newImportServer(t)
+	if task, err := c.Create(context.Background(), CreateInput{Title: "native", State: "Done", Labels: []string{}}); err == nil {
+		t.Fatalf("unmanaged native create silently ignored state: %+v", task)
+	}
+	if _, err := (&LedgerStore{Client: c}).CreateIssue(context.Background(), "ordinary task", "Backlog"); err == nil {
+		t.Fatal("ledger creation bypassed ordinary task adoption")
+	}
+	if f.writes != 0 {
+		t.Fatalf("rejected unmanaged creation wrote %d requests", f.writes)
+	}
+}
+
 func TestRuntimeFreshnessUsesNativeTimestamp(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = fmt.Fprintf(w, `[{"number":42,"body":%q,"state":"open","updated_at":"2026-10-08T00:00:00Z"}]`, `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":[],"related":[],"updatedAt":"2026-10-01T00:00:00Z"} -->`)
