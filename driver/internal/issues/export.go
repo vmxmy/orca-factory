@@ -38,12 +38,17 @@ func Export(ctx context.Context, source *linear.Client, repository, project stri
 	if err != nil {
 		return ImportManifest{}, err
 	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.ID)
+	}
+	histories, err := source.ExportComments(ctx, ids)
+	if err != nil {
+		return ImportManifest{}, err
+	}
 	manifest := ImportManifest{Version: 1, Repository: repository, Complete: true, Issues: []ImportIssue{}}
 	for _, row := range rows {
-		comments, err := source.ListComments(ctx, row.ID)
-		if err != nil {
-			return ImportManifest{}, err
-		}
+		comments := histories[row.ID]
 		sourceComments := make([]linear.Comment, 0, len(comments))
 		for _, comment := range comments {
 			copy := comment

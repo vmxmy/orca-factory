@@ -14,12 +14,16 @@ func (c *Client) FreshIssue(ctx context.Context, id string) (Issue, error) {
 	if err := c.do(ctx, `query FreshIssue($id: String!) { issue(id: $id) { `+issueFields+` } }`, map[string]any{"id": id}, &data); err != nil {
 		return Issue{}, err
 	}
+	return c.completeIssue(ctx, id, data.Issue)
+}
+
+func (c *Client) completeIssue(ctx context.Context, id string, raw json.RawMessage) (Issue, error) {
 	var issue Issue
-	if json.Unmarshal(data.Issue, &issue) != nil || issue.ID != id || issue.Identifier == "" || issue.State.ID == "" || issue.State.Name == "" || issue.Project.ID == "" {
+	if json.Unmarshal(raw, &issue) != nil || issue.ID != id || issue.Identifier == "" || issue.State.ID == "" || issue.State.Name == "" || issue.Project.ID == "" {
 		return Issue{}, protocolError()
 	}
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(data.Issue, &fields) != nil {
+	if json.Unmarshal(raw, &fields) != nil {
 		return Issue{}, protocolError()
 	}
 	for _, field := range []string{"labels", "relations", "inverseRelations"} {

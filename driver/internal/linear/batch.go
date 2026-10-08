@@ -11,6 +11,14 @@ import (
 // ListCommentsBatch reads complete live histories, with at most five issues per
 // request. Results belong only to this call; any failed page discards all rows.
 func (c *Client) ListCommentsBatch(ctx context.Context, ids []string) (map[string][]Comment, error) {
+	return c.listCommentsBatch(ctx, ids, "id body createdAt updatedAt")
+}
+
+func (c *Client) ExportComments(ctx context.Context, ids []string) (map[string][]Comment, error) {
+	return c.listCommentsBatch(ctx, ids, "id body createdAt updatedAt user { id name }")
+}
+
+func (c *Client) listCommentsBatch(ctx context.Context, ids []string, selection string) (map[string][]Comment, error) {
 	ctx = context.WithValue(ctx, discoveryReadKey{}, true)
 	result := map[string][]Comment{}
 	unique := []string{}
@@ -39,7 +47,7 @@ func (c *Client) ListCommentsBatch(ctx context.Context, ids []string) (map[strin
 					continue
 				}
 				declarations = append(declarations, fmt.Sprintf("$id%d: String!, $after%d: String", i, i))
-				fields = append(fields, fmt.Sprintf("i%d: issue(id: $id%d) { id comments(first: 100, after: $after%d) { nodes { id body createdAt updatedAt } pageInfo { hasNextPage endCursor } } }", i, i, i))
+				fields = append(fields, fmt.Sprintf("i%d: issue(id: $id%d) { id comments(first: 100, after: $after%d) { nodes { %s } pageInfo { hasNextPage endCursor } } }", i, i, i, selection))
 				variables[fmt.Sprintf("id%d", i)] = id
 				variables[fmt.Sprintf("after%d", i)] = cursor(after[i])
 			}
