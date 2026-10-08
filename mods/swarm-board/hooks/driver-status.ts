@@ -1,10 +1,12 @@
 type DriverLimit = { remaining: number; reset: string }
+type DriverUsage = { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
 export type DriverStatus = { state: 'unknown' | 'stale' } | {
   state: 'ok'
   generatedAt: string | number
   tickets: { repo: string; identifier: string; owner: string; phase: string; stage?: string }[]
   globalPause: { active: boolean; durationSeconds: number }
-  linear: { requests: number; complexity: number; limits: { repo: string; requests: DriverLimit; complexity: DriverLimit }[] }
+  linear: DriverUsage
+  github?: DriverUsage
 }
 const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object'
 const driverLimit = (value: unknown): value is DriverLimit =>
@@ -26,9 +28,21 @@ export const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
     if (!record(limit) || typeof limit.repo !== 'string' || !driverLimit(limit.requests) || !driverLimit(limit.complexity)) return undefined
     limits.push({ repo: limit.repo, requests: limit.requests, complexity: limit.complexity })
   }
+  let github: DriverUsage | undefined
+  if (value.github !== undefined) {
+    const usage = value.github
+    if (!record(usage) || typeof usage.requests !== 'number' || !Number.isFinite(usage.requests)
+        || typeof usage.complexity !== 'number' || !Number.isFinite(usage.complexity) || !Array.isArray(usage.limits)) return undefined
+    const githubLimits: DriverUsage['limits'] = []
+    for (const limit of usage.limits) {
+      if (!record(limit) || typeof limit.repo !== 'string' || !driverLimit(limit.requests) || !driverLimit(limit.complexity)) return undefined
+      githubLimits.push({ repo: limit.repo, requests: limit.requests, complexity: limit.complexity })
+    }
+    github = { requests: usage.requests, complexity: usage.complexity, limits: githubLimits }
+  }
   return {
     state: 'ok', generatedAt: value.generatedAt, tickets: value.tickets, globalPause: { active: pause.active, durationSeconds: pause.durationSeconds },
-    linear: { requests: usage.requests, complexity: usage.complexity, limits },
+    linear: { requests: usage.requests, complexity: usage.complexity, limits }, ...(github ? { github } : {}),
   }
 }
 

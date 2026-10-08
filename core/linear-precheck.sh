@@ -14,8 +14,19 @@
 # ponytail: max in-flight is a flat count, not file-overlap aware; the coordinator skips overlapping tickets.
 set -Eeuo pipefail
 
-TEAM="${AGENT_LINEAR_TEAM:?set in agent-graph.env}"
-PROJECT="${AGENT_LINEAR_PROJECT:?set in agent-graph.env}"
+case "${AGENT_ISSUE_BACKEND:-linear}" in
+  github)
+    TEAM="${AGENT_GH_REPO:?set in agent-graph.env}"; PROJECT="$TEAM"
+    AGENT_LABEL_READY="${AGENT_LABEL_READY:-ready-for-agent}"
+    AGENT_LABEL_CLAIMED="${AGENT_LABEL_CLAIMED:-auto-impl}"
+    AGENT_LABEL_FAILED="${AGENT_LABEL_FAILED:-auto-failed}"
+    issue_script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/issues.sh"
+    ;;
+  linear)
+    TEAM="${AGENT_LINEAR_TEAM:?set in agent-graph.env}"
+    PROJECT="${AGENT_LINEAR_PROJECT:?set in agent-graph.env}" ;;
+  *) echo 'precheck: unsupported AGENT_ISSUE_BACKEND' >&2; exit 2 ;;
+esac
 LABEL_READY="${AGENT_LABEL_READY:?set in agent-graph.env}"
 LABEL_CLAIMED="${AGENT_LABEL_CLAIMED:?set in agent-graph.env}"
 LABEL_FAILED="${AGENT_LABEL_FAILED:?set in agent-graph.env}"
@@ -45,7 +56,7 @@ SNAPSHOT_COMMENT_TTL_SECONDS="${AGENT_SNAPSHOT_COMMENT_TTL_SECONDS:-600}"
 # Cheap tally rotation: keep the tail so the file never grows without bound.
 {
   _lcf="$(_linear_count_file)"
-  if [[ -f "$_lcf" ]] && (( $(wc -l < "$_lcf" 2>/dev/null || echo 0) > 5000 )); then
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" == linear && -f "$_lcf" ]] && (( $(wc -l < "$_lcf" 2>/dev/null || echo 0) > 5000 )); then
     tail -n 3000 "$_lcf" > "$_lcf.tmp" && mv "$_lcf.tmp" "$_lcf"
   fi
   unset _lcf
@@ -60,7 +71,7 @@ finish_precheck() {
     echo '不确定: linear rate limited' >&2
     status=3
   fi
-  { write_linear_snapshot; } 2>/dev/null || true
+  [[ "${AGENT_ISSUE_BACKEND:-linear}" == github ]] || { write_linear_snapshot; } 2>/dev/null || true
   echo "linear_calls=$(wc -l < "$precheck_tmp/calls" | tr -d ' ')" >&2
   rm -rf "$precheck_tmp"
   exit "$status"
@@ -73,6 +84,22 @@ rate_guard() {
 
 ocall() {
   local out attempt attempts=3 cache="" status
+  local argv=(orca "$@" --json)
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github && "$1" == linear ]]; then
+    argv=(bash "$issue_script" "${@:2}" --json)
+    attempts=1
+    # Snapshot already includes scope and dependency metadata, but not comment history.
+    if [[ "$2" == issue && "${4:-}" != --comments && -f "$precheck_tmp/issues" ]]; then
+      if out=$(jq -ce --arg id "$3" '
+        .result.issues[] | select(.identifier == $id) |
+        {ok:true,result:{issue:.,relations:[.blockedBy[] | {relationship:"blockedBy",relatedIssue:.}]}}
+      ' "$precheck_tmp/issues"); then printf '%s' "$out"; return 0; fi
+    fi
+    if [[ "$2" == list-issues && -f "$precheck_tmp/issues" ]]; then
+      jq --arg label "$LABEL_FAILED" '.result.issues |= map(select(any(.labels[]; .name == $label or .id == $label)))' "$precheck_tmp/issues"
+      return 0
+    fi
+  fi
   rate_guard
   if [[ "$1 $2" == 'linear issue' ]]; then
     cache="$precheck_tmp/issue-$(jq -rn --arg id "$3" '$id | @uri')-${4:-detail}"
@@ -87,12 +114,12 @@ ocall() {
   [[ "${claim_bounded:-0}" != 1 ]] || attempts=1
   for ((attempt=1; attempt<=attempts; attempt++)); do
     rate_guard
-    [[ "$1" != linear ]] || { echo call >> "$precheck_tmp/calls"; _count_linear_call; }
+    [[ "$1" != linear || "${AGENT_ISSUE_BACKEND:-linear}" == github ]] || { echo call >> "$precheck_tmp/calls"; _count_linear_call; }
     status=0
     if [[ "${claim_bounded:-0}" == 1 ]]; then
-      out="$(perl -e 'alarm 20; exec @ARGV' -- orca "$@" --json 2> "$precheck_tmp/stderr")" || status=$?
+      out="$(perl -e 'alarm 20; exec @ARGV' -- "${argv[@]}" 2> "$precheck_tmp/stderr")" || status=$?
     else
-      out="$(orca "$@" --json 2> "$precheck_tmp/stderr")" || status=$?
+      out="$("${argv[@]}" 2> "$precheck_tmp/stderr")" || status=$?
     fi
     if [[ "$status" == 0 ]] && jq -e '.ok == true' <<<"$out" >/dev/null 2>&1; then
       if [[ -n "$cache" ]]; then
@@ -124,11 +151,12 @@ ids() {
     printf '%s' "$out" > "$precheck_tmp/issues"
   fi
   # priority: 1 urgent … 4 low; 0/null = none -> 9 so it sorts after every explicit priority.
-  jq -r --arg label "$1" --arg type "$2" '
+  jq -r --arg backend "${AGENT_ISSUE_BACKEND:-linear}" --arg failed "$LABEL_FAILED" --arg label "$1" --arg type "$2" '
     .result.issues
     | sort_by(((.priority // 0) | if . == 0 then 9 else . end), .createdAt)[]
     | select(any(.labels[]?; .id == $label or .name == $label))
-    | select(.state.type == $type) | .identifier' "$precheck_tmp/issues"
+    | select(.state.type == $type)
+    | select($backend != "github" or $type != "unstarted" or (.complete == true and .state.name == "Todo" and (any(.labels[]?; .name == $failed or .id == $failed) | not))) | .identifier' "$precheck_tmp/issues"
 }
 
 # Cross-run cache of a candidate ticket's blocked-by identifiers. Relations only change when
@@ -137,6 +165,7 @@ ids() {
 # populate it, and nothing downstream reads it except the relations fetch itself.
 PRECHECK_CACHE_DIR="${AGENT_PRECHECK_CACHE_DIR:-${TMPDIR:-/tmp}/orca-factory-precheck-cache}"
 RELATION_TTL_SECONDS="${AGENT_RELATION_TTL_SECONDS:-600}"
+[[ "${AGENT_ISSUE_BACKEND:-linear}" != github ]] || PRECHECK_CACHE_DIR="$precheck_tmp/cache"
 mkdir -p "$PRECHECK_CACHE_DIR" 2>/dev/null || true
 mkdir -p "$precheck_tmp/relations-ok" 2>/dev/null || true
 
@@ -152,7 +181,7 @@ relations_of() {
   local id="$1" cache now ts="" rel blockers
   cache="$(relations_cache_file "$id")"
   now="$(date +%s)"
-  if [[ -f "$cache" ]]; then
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" != github && -f "$cache" ]]; then
     IFS= read -r ts < "$cache" 2>/dev/null || ts=""
     if [[ -n "$ts" && "$ts" =~ ^[0-9]+$ ]] && (( now - ts < RELATION_TTL_SECONDS )); then
       { : > "$precheck_tmp/relations-ok/$id"; } 2>/dev/null || true
@@ -641,6 +670,8 @@ escalated=0
 live=()
 stale_ids=()
 for id in $in_flight_ids; do
+  # Driver owns GitHub recovery/owner/correction state; shell never requeues or resets it.
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github ]]; then live+=("$id"); continue; fi
   if stale "$id"; then
     mark_stale "$id"; stale_ids+=("$id")
   elif expired_claim "$id"; then
@@ -709,6 +740,12 @@ for id in $ready_ids; do
   if [[ -n "$overlap" ]]; then
     echo "skip $id: scope overlaps $overlap" >&2
   else
+    if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github ]] && (( SCOPE_AVOID == 1 )); then
+      [[ -n "$cand_scope" ]] || { echo "skip $id: unknown scope" >&2; continue; }
+      scope_known=1
+      for lid in "${live[@]}"; do [[ -s "$precheck_tmp/live-scope/$lid" ]] || scope_known=0; done
+      (( scope_known == 1 )) || { echo "skip $id: unknown in-flight scope" >&2; continue; }
+    fi
     claimable+=("$id")
     if (( cand_avoid == 1 )) && [[ -n "$cand_scope" ]]; then accepted_scope["$id"]="$cand_scope"; fi
   fi

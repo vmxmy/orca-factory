@@ -13,7 +13,7 @@
 
 共享五份（`intake.md` `coordinator.md` `worker.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。
 
-intake 与 coordinator 永不同会话：intake 只写 Linear、只读仓库，由用户手动开会话；coordinator 由定时任务启动，领票并执行。一个会话里不能既建票又领票。
+intake 与 coordinator 永不同会话：intake 只写配置选定的票据主账本、只读仓库，由用户手动开会话；coordinator 由定时任务启动，领票并执行。一个会话里不能既建票又领票。
 
 ## task spec 拼装
 

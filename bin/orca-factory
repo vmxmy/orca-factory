@@ -56,7 +56,7 @@ ledger_preflight() {
     [[ -f "$entry" ]] || fail "ledger conflict: not a regular file $entry"
     if ! cmp -s "$CORE/ledger.sh" "$entry"; then
       digest="$(git hash-object --no-filters "$entry")"
-      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 ]] \
+      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 || "$digest" == 2c64501f4427c07f115f4990e7b2d50b9ab15925 ]] \
         || fail "ledger conflict: unknown or customized entry $entry"
     fi
   fi
@@ -297,8 +297,17 @@ cmd_doctor() {
   local name app_id active user=false profile=A reason='No lark-cli profile detected; use profile A'
   local orca_present=false lark_present=false profile_count=0 value result rows=''
   local detail_text scopes_text='' profiles_text='' display_name display_app_id
+  local issue_backend="${AGENT_ISSUE_BACKEND-}"
+  if [[ ! ${AGENT_ISSUE_BACKEND+x} && -f scripts/agent-gates/agent-graph.env ]]; then
+    # Read the selector as data; doctor must not execute profile shell expressions.
+    issue_backend=$(sed -n 's/^AGENT_ISSUE_BACKEND=//p' scripts/agent-gates/agent-graph.env | tail -n 1 | sed "s/[[:space:]]*#.*//;s/[[:space:]]*$//;s/^['\"]//;s/['\"]$//")
+  fi
+  local AGENT_ISSUE_BACKEND="${issue_backend:-linear}"
+  case "${AGENT_ISSUE_BACKEND:-linear}" in linear|github) ;; *) fail 'unsupported AGENT_ISSUE_BACKEND' ;; esac
   # These helpers append safe, generated diagnostics, never raw command responses.
-  for tool in orca gh jq git codex claude lark-cli; do
+  local doctor_tools=(orca gh jq git codex claude lark-cli)
+  [[ "$AGENT_ISSUE_BACKEND" != github ]] || doctor_tools+=(orca-factory-driver)
+  for tool in "${doctor_tools[@]}"; do
     present=false; details=''; detail_text=''
     if command -v "$tool" >/dev/null 2>&1; then present=true
     else missing="${missing}${missing:+,}$(doctor_string "$tool")"; fi
@@ -349,6 +358,7 @@ cmd_doctor() {
     tools="$tools$sep$(doctor_string "$tool"):{\"present\":$present$details}"; sep=','
     rows="$rows$(printf '%-18s %-7s %s' "$tool" "$present" "$detail_text")"$'\n'
   done
+  if [[ "${AGENT_ISSUE_BACKEND:-linear}" == linear ]]; then
   [[ -z "${LINEAR_API_KEY:-}" ]] || key_present=true
   [[ "$key_present" == true ]] || missing="${missing}${missing:+,}$(doctor_string 'LINEAR_API_KEY')"
   if [[ "$orca_present" == true ]]; then
@@ -362,6 +372,7 @@ cmd_doctor() {
     else errors="${errors}${errors:+,}$(doctor_string "Linear teams: $probe_error")"; fi
   fi
   [[ -n "$teams" ]] || missing="${missing}${missing:+,}$(doctor_string 'Linear team access')"
+  fi
   if [[ "$lark_present" == true ]]; then
     if doctor_probe lark-cli profile list; then
       raw="$probe_output"
@@ -403,6 +414,7 @@ cmd_doctor() {
 SELFTEST_TMP=""
 cmd_selftest() {
   SELFTEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/orca-factory-selftest.XXXXXX")"
+  export AGENT_ISSUE_BACKEND=linear # exercise the shipped legacy fixtures explicitly
   export AGENT_LINEAR_COUNT_FILE="$SELFTEST_TMP/linear-calls"   # selftest uses a fake orca; its calls must not land in the real per-hour counter
   export AGENT_SNAPSHOT_FILE="$SELFTEST_TMP/global-snapshot.json"   # keep every selftest's snapshot off the real cache path
   trap '[[ -n "$SELFTEST_TMP" ]] && rm -rf "$SELFTEST_TMP"' EXIT
@@ -1721,6 +1733,7 @@ LCF_ECHO_ORCA
     chmod 700 "$unwritable"
   )
   echo "selftest: linear calls are counted per source"
+  bash "$FACTORY/core/issues.test.sh"
   echo "selftest: PASS"
 }
 

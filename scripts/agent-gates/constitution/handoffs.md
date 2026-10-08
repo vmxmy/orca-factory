@@ -56,7 +56,7 @@ LANE      <1|2|3>
   `orca orchestration send --from <handle> --dispatch-capability <cap> --type escalation --subject "Blocked: <原因>" --body "<证据>" --task-id <task> --dispatch-id <dispatch>`
 - 单一事实问题（符号名、落点、二选一）用 `ask`，阻塞等 `reply`；超时按简报默认值做并在 worker_done body 里注明。
 - coordinator 收到 escalation：能改 plan 就改 plan 新建 task 重派；否则交给 resolver。
-- Agent 处置（coordinator 对 resolver 的 handoff）：Linear `label remove --label ready-for-agent`、`label add --label auto-failed`，评论含原因、证据、处置要求、阶段和归属；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
+- Agent 处置（coordinator 对 resolver 的 handoff）：经统一 `issues` 入口执行 `label remove --label ready-for-agent`、`label add --label auto-failed`，评论含原因、证据、处置要求、阶段和归属；保持 `auto-impl` + In Progress；保留 worktree、分支、PR。
   ```text
   Agent处置: <一句话卡点>
   证据: <文件:行 / PR / worktree 路径 / 命令输出摘录>
