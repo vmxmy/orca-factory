@@ -449,66 +449,73 @@ func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove 
 	return result.Issue, err
 }
 func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
-	if in.ID == "" {
-		if in.Identifier != "" || in.ImportDigest != "" || strings.TrimSpace(in.Title) == "" || strings.Contains(in.Description, marker) {
-			return Task{}, errors.New("invalid native create input")
-		}
-		if (in.Blockers == nil || in.Related == nil) && in.State != "" && in.State != "Todo" {
-			return Task{}, errors.New("explicit adoption required for native create state")
-		}
-		nonce := make([]byte, 16)
-		if _, err := rand.Read(nonce); err != nil {
-			return Task{}, err
-		}
-		createMarker := fmt.Sprintf("<!-- orca-native-create-v1: %x -->", nonce)
-		description := in.Description + "\n\n" + createMarker
-		v, err := c.gh.CreateIssue(ctx, c.owner, c.name, map[string]any{"title": in.Title, "body": description, "labels": in.Labels})
-		if err != nil {
-			rows, readErr := c.gh.Issues(ctx, c.owner, c.name)
-			found := false
-			if readErr == nil {
-				for _, row := range rows {
-					if strings.Contains(row.Body, createMarker) {
-						if found {
-							return Task{}, errors.New("ambiguous native create marker")
-						}
-						v = row
-						found = true
+	if in.ID != "" || in.Identifier != "" || in.ImportDigest != "" || !in.CreatedAt.IsZero() || !in.UpdatedAt.IsZero() || in.ImportHold {
+		return Task{}, errors.New("native create cannot set imported identity, provenance or hold")
+	}
+	if strings.TrimSpace(in.Title) == "" || strings.Contains(in.Description, marker) {
+		return Task{}, errors.New("invalid native create input")
+	}
+	if (in.Blockers == nil || in.Related == nil) && in.State != "" && in.State != "Todo" {
+		return Task{}, errors.New("explicit adoption required for native create state")
+	}
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return Task{}, err
+	}
+	createMarker := fmt.Sprintf("<!-- orca-native-create-v1: %x -->", nonce)
+	description := in.Description + "\n\n" + createMarker
+	v, err := c.gh.CreateIssue(ctx, c.owner, c.name, map[string]any{"title": in.Title, "body": description, "labels": in.Labels})
+	if err != nil {
+		rows, readErr := c.gh.Issues(ctx, c.owner, c.name)
+		found := false
+		if readErr == nil {
+			for _, row := range rows {
+				if strings.Contains(row.Body, createMarker) {
+					if found {
+						return Task{}, errors.New("ambiguous native create marker")
 					}
+					v = row
+					found = true
 				}
 			}
-			if !found {
-				return Task{}, fmt.Errorf("native create unconfirmed; inspect marker %s before retry: %w", createMarker, err)
-			}
 		}
-		task, err := c.task(v)
-		if err != nil {
+		if !found {
+			return Task{}, fmt.Errorf("native create unconfirmed; inspect marker %s before retry: %w", createMarker, err)
+		}
+	}
+	task, err := c.task(v)
+	if err != nil {
+		return Task{}, err
+	}
+	if in.Blockers == nil || in.Related == nil {
+		return task, nil
+	}
+	raw, err := json.Marshal(AdoptInput{Blockers: in.Blockers, Related: in.Related})
+	if err != nil {
+		return Task{}, err
+	}
+	adopted, err := c.Adopt(ctx, task.ID, raw)
+	if err != nil {
+		return Task{}, fmt.Errorf("native issue %s remains unmanaged: %w", task.Identifier, err)
+	}
+	m := adopted.Metadata
+	m.Priority = in.Priority
+	m.Estimate = in.Estimate
+	m.ImportHold = in.ImportHold
+	if _, err = c.SetMetadata(ctx, task.ID, m); err != nil {
+		return Task{}, err
+	}
+	if in.State != "" && in.State != "Todo" {
+		if _, err = c.UpdateIssue(ctx, task.ID, in.State, nil, nil); err != nil {
 			return Task{}, err
 		}
-		if in.Blockers == nil || in.Related == nil {
-			return task, nil
-		}
-		raw, err := json.Marshal(AdoptInput{Blockers: in.Blockers, Related: in.Related})
-		if err != nil {
-			return Task{}, err
-		}
-		adopted, err := c.Adopt(ctx, task.ID, raw)
-		if err != nil {
-			return Task{}, fmt.Errorf("native issue %s remains unmanaged: %w", task.Identifier, err)
-		}
-		m := adopted.Metadata
-		m.Priority = in.Priority
-		m.Estimate = in.Estimate
-		m.ImportHold = in.ImportHold
-		if _, err = c.SetMetadata(ctx, task.ID, m); err != nil {
-			return Task{}, err
-		}
-		if in.State != "" && in.State != "Todo" {
-			if _, err = c.UpdateIssue(ctx, task.ID, in.State, nil, nil); err != nil {
-				return Task{}, err
-			}
-		}
-		return c.Read(ctx, task.ID)
+	}
+	return c.Read(ctx, task.ID)
+}
+
+func (c *GitHub) createImported(ctx context.Context, in CreateInput) (Task, error) {
+	if in.ID == "" || in.ImportDigest == "" || !in.ImportHold {
+		return Task{}, errors.New("validated held import identity required")
 	}
 	if in.State == "" {
 		in.State = "Todo"
@@ -534,21 +541,12 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 		}
 	}
 	v, err := c.gh.CreateIssue(ctx, c.owner, c.name, map[string]any{"title": in.Title, "body": body, "labels": in.Labels})
-	var t Task
 	if err != nil {
-		if in.ImportDigest != "" {
-			return Task{}, err
-		}
-		recovered, readErr := c.Read(ctx, in.ID)
-		if readErr != nil {
-			return Task{}, fmt.Errorf("create unconfirmed for canonical ID %s: %w", in.ID, err)
-		}
-		t = recovered
-	} else {
-		t, err = c.task(v)
-		if err != nil {
-			return Task{}, err
-		}
+		return Task{}, err
+	}
+	t, err := c.task(v)
+	if err != nil {
+		return Task{}, err
 	}
 	if stateType(in.State) == "completed" || stateType(in.State) == "canceled" || stateType(in.State) == "duplicate" {
 		if _, err = c.UpdateIssue(ctx, t.ID, in.State, nil, nil); err != nil {

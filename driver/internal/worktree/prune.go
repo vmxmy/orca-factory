@@ -30,12 +30,13 @@ var markerPattern = regexp.MustCompile(`^pr=([1-9][0-9]*)$`)
 var issueCommentPattern = regexp.MustCompile(`(?m)^issue: ([A-Za-z0-9][A-Za-z0-9._-]*)$`)
 
 type tree struct {
-	Path    string `json:"path"`
-	Branch  string `json:"branch"`
-	Locked  bool   `json:"locked"`
-	Ticket  string `json:"linkedLinearIssue"`
-	Comment string `json:"comment"`
-	Created *int64 `json:"createdAt"`
+	Path          string `json:"path"`
+	Branch        string `json:"branch"`
+	Locked        bool   `json:"locked"`
+	Ticket        string `json:"linkedLinearIssue"`
+	CommentTicket string `json:"-"`
+	Comment       string `json:"comment"`
+	Created       *int64 `json:"createdAt"`
 }
 type issue struct {
 	Identifier string `json:"identifier"`
@@ -220,13 +221,15 @@ func (p *pruner) orcaTrees() ([]tree, bool) {
 			return nil, false
 		}
 		if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
-			item.Ticket = ""
 			matches := issueCommentPattern.FindAllStringSubmatch(item.Comment, -1)
 			if len(matches) > 1 {
 				return nil, false
 			}
 			if len(matches) == 1 {
-				item.Ticket = matches[0][1]
+				item.CommentTicket = matches[0][1]
+				if item.Ticket == "" {
+					item.Ticket = item.CommentTicket
+				}
 			}
 		}
 		result = append(result, item)
@@ -353,7 +356,22 @@ func (p *pruner) issueSafe(path, branch string) bool {
 		for _, git := range p.git {
 			match = match || (branch != "" && git.Path == item.Path && git.Branch == branch)
 		}
-		if match && item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
+		if !match {
+			continue
+		}
+		if item.CommentTicket != "" && item.Ticket != item.CommentTicket {
+			if p.github == nil {
+				p.keep(object, "worktree association cannot be resolved")
+				return false
+			}
+			legacy, legacyErr := p.github.Read(p.ctx, item.Ticket)
+			current, currentErr := p.github.Read(p.ctx, item.CommentTicket)
+			if legacyErr != nil || currentErr != nil || legacy.ID != current.ID {
+				p.keep(object, "worktree associations conflict or are unavailable")
+				return false
+			}
+		}
+		if item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
 			return false
 		}
 	}

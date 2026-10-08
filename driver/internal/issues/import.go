@@ -449,7 +449,7 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		in := s.CreateInput
 		in.ImportHold = true
 		in.ImportDigest = digest
-		t, err := c.Create(ctx, in)
+		t, err := c.createImported(ctx, in)
 		if err != nil {
 			return result, err
 		}

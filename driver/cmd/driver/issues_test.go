@@ -91,6 +91,30 @@ func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
 	}
 }
 
+func TestGitHubCLICreateRejectsImportedIdentity(t *testing.T) {
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var writes atomic.Int64
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" {
+			_, _ = fmt.Fprint(w, `[]`)
+			return
+		}
+		writes.Add(1)
+		http.Error(w, "unexpected mutation", http.StatusBadRequest)
+	}))
+	defer s.Close()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIProcess$", "--", "issues", "create", "--input", "-")
+	cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+bin, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(bin, "state"), "PATH="+bin, "LINEAR_API_KEY=", "AGENT_LINEAR_TEAM=", "AGENT_LINEAR_PROJECT=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+	cmd.Stdin = strings.NewReader(`{"id":"01234567-1234-1234-1234-012345678901","title":"unvalidated","description":"no task brief","state":"Todo","labels":["ready-for-agent"],"blockers":[],"related":[]}`)
+	out, err := cmd.CombinedOutput()
+	if err == nil || writes.Load() != 0 {
+		t.Fatalf("public create bypassed adoption: writes=%d err=%v output=%s", writes.Load(), err, out)
+	}
+}
+
 func TestIssueImportBudgetPreservesParentCancellation(t *testing.T) {
 	parent, cancel := context.WithCancel(context.Background())
 	ctx, stop := issueCommandContext(parent, "import")
