@@ -13,7 +13,7 @@
 7. 交付配置 PR 与实际检查证据。业务 PR 引用 Issue URL，不用 `Closes` / `Fixes`；部署与 smoke 通过才关闭业务票。看板 `/swarm` 使用同一后端，GitHub 额度独立显示，Orca 关联通过 comment 的 `issue:` 行而非 `--linear-issue`。
 8. 启用运行通道需另有明确授权。推荐 `driver serve` 单实例调度；同仓库旧 `agent-linear-scan` 必须关闭，不能同时运行 driver 与定时 coordinator。若使用定时 coordinator，`install.sh` 只创建禁用任务，先手动演练，再由用户启用。
 
-迁移流程见 [票据主账本](docs/agents/issue-tracker.md)：只读 export → offline preview → 明确真实写入授权 → drain 收敛旧写者 → freeze → 最终导出/held import/全量回读 → 单独确认配置切换 → draining 中核验 release-hold → 唯一调度器 running。维护栅栏只约束本机合作写者，不证明跨机器无旧写者。保留预算、checkpoint、receipts、FIFO 与历史部署屏障；不强杀 worker，不自动回滚到陈旧 Linear。
+迁移流程见 [票据主账本](docs/agents/issue-tracker.md)：只读 export → offline preview → 明确真实写入授权 → drain 收敛并核实旧写者 → freeze 后停止 scheduler、再次核实全体写者 → 最终导出 → 保持停调度并回到 draining → held import/全量回读 → 单独确认配置切换及 release-hold → 唯一调度器 running。frozen 禁止导入写入；draining 不禁止既有合并或 smoke，不能边运行 scheduler 边做最终迁移。维护栅栏只约束本机合作写者，不证明旧二进制或其他机器无写者。保留预算、checkpoint、receipts、FIFO 与历史部署屏障；不强杀 worker，不自动回滚到陈旧 Linear。
 
 ## 历史 Linear 接入手册（仅维护旧配置）
 

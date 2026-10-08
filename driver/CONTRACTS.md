@@ -46,11 +46,11 @@
 ## GitHub Issues（#172 / #173）
 
 - `internal/issues.Client` 选择唯一后端，暂复用已交付 `linear.Issue/Comment` 类型，不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。
-- REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
+- REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。合法 Link 可由 `/repos/<owner>/<repo>/issues` 切换到 `/repositories/<id>/issues`；通过仓库元数据 `id/full_name` 验证同一仓库，保留 after 游标及固定查询，拒绝跨 origin、集合、仓库或非递增页码。2026-10-08 只读录制见 `github/issues-pagination-link.json`（仅头、仓库身份与 provenance，无票正文）。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
 - 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖。未提供完整依赖清单的原生 create 仅接受默认 Todo，非 Todo 状态在写入前拒绝，不能静默忽略。GitHub 原生更新时间与迁移来源时间独立。
 - `LedgerStore` 仅创建精确账本标题、无标签且具有完整元数据的账本票，不伪造任务 CHECK/SCOPE。400 评论轮转保留旧 canonical ID、关闭旧票并将新记录写入下一张 Backlog 账本；普通任务不通过该入口绕过 adopt。
 - open/closed/state_reason、工作流标签与元数据确定映射。closed/held 阻执行，不隐藏历史部署屏障；auto-failed 只进入合法 resolver。业务 PR 不使用 Closes/Fixes 提前关闭票。
-- export 只读、preview 离线、import 默认 held。稳定标记和历史摘要用于不确定写入回读与幂等；保留来源作者、ID、时间和顺序，不伪造原作者。release-hold 需 manifest、--apply、draining 与完整回读通过。
+- export 只读且仅验证完整源，preview 离线另验证目标编码，import 默认 held。已有原生票通过 node ID 派生身份识别，不因 GH 编号被误作清单外来源票；真正导入身份冲突仍拒绝。v1 历史批次保持原字节协议；单条超限评论用 `orca-import-comment-v2` 分片携带完整 Comment JSON 的 base64、原 ID、片序/总数及全量 SHA-256，每条目标正文 ≤50,000 UTF-8 字节。完整分页收齐后才还原，缺片/重排/冲突拒绝；同 manifest、held 导入可按精确目标前缀恢复不确定写入。保留来源作者、ID、时间和顺序，不伪造原作者。release-hold 需 manifest、--apply、draining 与完整回读通过；最终导入及释放期间 scheduler 和旧写者必须停止写入，frozen 本身拒绝所有导入写入。
 - maintenance 持久化本机 drain/freeze/running，独立于 quota。freeze 只能证明本机合作锁无活跃写者，不能声明跨机器单写者；生产切换仍须明确授权与全量事实核验。
 - `testdata/recorded/github/` 中样本记录来源，合成行为夹具不冒充线上录制。既有 Linear recorded、executor/scheduler goleak 与 release FIFO 保留。
 

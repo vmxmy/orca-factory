@@ -1,0 +1,8 @@
+{
+  "source": "gh api -i repos/vmxmy/orca-factory/issues?state=all&per_page=100&page=1&sort=created&direction=asc; gh api repos/vmxmy/orca-factory",
+  "captured_at": "2026-10-08T07:35:41Z",
+  "request_id": "88B2:3368AF:8D8BF:93243:6AC747CC",
+  "retained_fields": "仅保留分页 Link 与仓库 id/full_name；不保留票正文或认证头。",
+  "repository": {"id": 1403187767, "full_name": "vmxmy/orca-factory"},
+  "link": "<https://api.github.com/repositories/1403187767/issues?state=all&per_page=100&page=2&sort=created&direction=asc&after=Y3Vyc29yOnYyOpLPAAABoQrhQajPAAAAAVQ3Ap0%3D>; rel=\"next\""
+}

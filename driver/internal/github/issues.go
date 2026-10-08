@@ -38,9 +38,10 @@ type IssueComment struct {
 func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord, error) {
 	rows := []IssueRecord{}
 	seen := map[int]bool{}
+	path := repoPath(owner, repo) + "/issues?state=all&per_page=100&page=1&sort=created&direction=asc"
 	for page := 1; page <= 10000; page++ {
 		var batch []IssueRecord
-		next, err := c.issuePage(ctx, fmt.Sprintf("%s/issues?state=all&per_page=100&page=%d&sort=created&direction=asc", repoPath(owner, repo), page), page, &batch)
+		next, err := c.issuePage(ctx, owner, repo, path, page, &batch)
 		if err != nil {
 			return nil, err
 		}
@@ -51,18 +52,23 @@ func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord,
 			seen[v.Number] = true
 			rows = append(rows, v)
 		}
-		if !next && len(batch) < 100 {
+		if next == "" && len(batch) < 100 {
 			return rows, nil
 		}
+		if next == "" {
+			next = nextIssuePage(path, page+1)
+		}
+		path = next
 	}
 	return nil, errors.New("GitHub issue pagination limit exceeded")
 }
 func (c *Client) IssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error) {
 	rows := []IssueComment{}
 	seen := map[int64]bool{}
+	path := fmt.Sprintf("%s/issues/%d/comments?per_page=100&page=1", repoPath(owner, repo), number)
 	for page := 1; page <= 10000; page++ {
 		var batch []IssueComment
-		next, err := c.issuePage(ctx, fmt.Sprintf("%s/issues/%d/comments?per_page=100&page=%d", repoPath(owner, repo), number, page), page, &batch)
+		next, err := c.issuePage(ctx, owner, repo, path, page, &batch)
 		if err != nil {
 			return nil, err
 		}
@@ -73,9 +79,13 @@ func (c *Client) IssueComments(ctx context.Context, owner, repo string, number i
 			seen[v.ID] = true
 			rows = append(rows, v)
 		}
-		if !next && len(batch) < 100 {
+		if next == "" && len(batch) < 100 {
 			return rows, nil
 		}
+		if next == "" {
+			next = nextIssuePage(path, page+1)
+		}
+		path = next
 	}
 	return nil, errors.New("GitHub comment pagination limit exceeded")
 }
@@ -95,27 +105,80 @@ func (c *Client) AddIssueComment(ctx context.Context, owner, repo string, number
 	return v, err
 }
 
-// Link headers are part of the cached representation. Never follow an arbitrary
-// remote URL or infer exhaustion solely from the number of returned records.
-func (c *Client) issuePage(ctx context.Context, path string, page int, out any) (bool, error) {
+func nextIssuePage(path string, page int) string {
+	next, _ := url.Parse(path)
+	query := next.Query()
+	query.Set("page", strconv.Itoa(page))
+	next.RawQuery = query.Encode()
+	return next.String()
+}
+
+// Link headers are cached with the response. Preserve cursors only after checking
+// the origin, repository identity, collection and monotonically advancing page.
+func (c *Client) issuePage(ctx context.Context, owner, repo, path string, page int, out any) (string, error) {
 	var link string
 	if err := c.requestDetails(ctx, http.MethodGet, path, nil, out, &link); err != nil {
-		return false, err
+		return "", err
 	}
+	var result string
 	for _, part := range strings.Split(link, ",") {
 		if !strings.Contains(part, `rel="next"`) {
 			continue
 		}
 		raw, _, ok := strings.Cut(strings.TrimSpace(part), ">;")
-		if !ok || !strings.HasPrefix(raw, "<") {
-			return false, errors.New("invalid GitHub next link")
+		if !ok || !strings.HasPrefix(raw, "<") || result != "" {
+			return "", errors.New("invalid GitHub next link")
 		}
 		next, err := url.Parse(strings.TrimPrefix(raw, "<"))
 		expected, _ := url.Parse(c.base + path)
-		if err != nil || next.Scheme != expected.Scheme || next.Host != expected.Host || next.Path != expected.Path || next.User != nil || next.Fragment != "" || next.Query().Get("page") != strconv.Itoa(page+1) {
-			return false, errors.New("unsafe or repeated GitHub next link")
+		if err != nil || next.Scheme != expected.Scheme || next.Host != expected.Host || next.User != nil || next.Fragment != "" || next.RawPath != "" || !issueQueryMatches(expected, next, page+1) {
+			return "", errors.New("unsafe or repeated GitHub next link")
 		}
-		return true, nil
+		if next.Path != expected.Path {
+			if err := c.canonicalIssuePath(ctx, owner, repo, expected.Path, next.Path); err != nil {
+				return "", err
+			}
+		}
+		result = strings.TrimPrefix(next.String(), c.base)
 	}
-	return false, nil
+	return result, nil
+}
+
+func issueQueryMatches(current, next *url.URL, page int) bool {
+	query, err := url.ParseQuery(next.RawQuery)
+	if err != nil || query.Get("page") != strconv.Itoa(page) {
+		return false
+	}
+	original := current.Query()
+	for key, values := range query {
+		if len(values) != 1 || (key != "page" && key != "after" && (len(original[key]) != 1 || values[0] != original.Get(key))) {
+			return false
+		}
+	}
+	for key, values := range original {
+		if key != "page" && key != "after" && (len(query[key]) != 1 || query.Get(key) != values[0]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (c *Client) canonicalIssuePath(ctx context.Context, owner, repo, current, next string) error {
+	base, _ := url.Parse(c.base)
+	prefix := base.Path + repoPath(owner, repo)
+	suffix, ok := strings.CutPrefix(current, prefix+"/issues")
+	if !ok {
+		return errors.New("GitHub pagination changed collection")
+	}
+	var identity struct {
+		ID   int64  `json:"id"`
+		Name string `json:"full_name"`
+	}
+	if err := c.request(ctx, http.MethodGet, repoPath(owner, repo), nil, &identity); err != nil {
+		return err
+	}
+	if identity.ID <= 0 || !strings.EqualFold(identity.Name, owner+"/"+repo) || next != fmt.Sprintf("%s/repositories/%d/issues%s", base.Path, identity.ID, suffix) {
+		return errors.New("GitHub pagination repository identity mismatch")
+	}
+	return nil
 }
