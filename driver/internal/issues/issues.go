@@ -79,6 +79,7 @@ type Task struct {
 	NativeState       string    `json:"nativeState"`
 	NativeStateReason string    `json:"nativeStateReason"`
 	NativeUpdatedAt   time.Time `json:"nativeUpdatedAt"`
+	nativeID          string
 	linear.Issue
 	Number      int                               `json:"number"`
 	URL         string                            `json:"url"`
@@ -179,13 +180,17 @@ func render(description string, m Metadata) (string, error) {
 }
 func (c *GitHub) task(v github.IssueRecord) (Task, error) {
 	m, err := ParseMetadata(v.Body)
+	var nativeID string
+	if v.NodeID != "" {
+		sum := sha256.Sum256([]byte("github-node:" + v.NodeID))
+		nativeID = fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+	}
 	managed := strings.Contains(v.Body, marker)
 	if !managed {
 		if v.NodeID == "" {
 			return Task{}, errors.New("native issue node ID missing")
 		}
-		sum := sha256.Sum256([]byte("github-node:" + v.NodeID))
-		m = Metadata{ID: fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16]), Identifier: "GH-" + strconv.Itoa(v.Number), Project: c.repo, State: "Todo", Blockers: []string{}, Related: []string{}}
+		m = Metadata{ID: nativeID, Identifier: "GH-" + strconv.Itoa(v.Number), Project: c.repo, State: "Todo", Blockers: []string{}, Related: []string{}}
 	} else if err != nil {
 		return Task{}, err
 	}
@@ -219,7 +224,7 @@ func (c *GitHub) task(v github.IssueRecord) (Task, error) {
 	for _, l := range v.Labels {
 		labels.Nodes = append(labels.Nodes, linear.NamedID{ID: l.Name, Name: l.Name})
 	}
-	return Task{NativeState: v.State, NativeStateReason: v.StateReason, NativeUpdatedAt: nativeUpdatedAt, Issue: linear.Issue{ID: m.ID, Identifier: effectiveIdentifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Priority: m.Priority, Labels: labels, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Relations: linear.Connection[linear.Relation]{Nodes: []linear.Relation{}}, InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: []linear.InverseRelation{}, PageInfo: linear.PageInfo{HasNextPage: incomplete}}}, Number: v.Number, URL: v.URL, Title: v.Title, Description: strings.TrimSuffix(strings.SplitN(v.Body, marker, 2)[0], "\n\n"), Estimate: m.Estimate, Metadata: m, Complete: !incomplete, Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: []linear.InverseRelation{}}, nil
+	return Task{nativeID: nativeID, NativeState: v.State, NativeStateReason: v.StateReason, NativeUpdatedAt: nativeUpdatedAt, Issue: linear.Issue{ID: m.ID, Identifier: effectiveIdentifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Priority: m.Priority, Labels: labels, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, Relations: linear.Connection[linear.Relation]{Nodes: []linear.Relation{}}, InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: []linear.InverseRelation{}, PageInfo: linear.PageInfo{HasNextPage: incomplete}}}, Number: v.Number, URL: v.URL, Title: v.Title, Description: strings.TrimSuffix(strings.SplitN(v.Body, marker, 2)[0], "\n\n"), Estimate: m.Estimate, Metadata: m, Complete: !incomplete, Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: []linear.InverseRelation{}}, nil
 }
 func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 	raw, err := c.gh.Issues(ctx, c.owner, c.name)
@@ -341,15 +346,13 @@ func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment,
 	if err != nil {
 		return nil, err
 	}
-	rows := []linear.Comment{}
+	history := make([]linear.Comment, 0, len(raw))
 	for _, v := range raw {
-		row := linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}
-		decoded, decodeErr := DecodeImportedComments(row)
-		err = decodeErr
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, decoded...)
+		history = append(history, linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt})
+	}
+	rows, err := decodeImportedHistory(history)
+	if err != nil {
+		return nil, err
 	}
 	c.mu.Lock()
 	if c.comments == nil {

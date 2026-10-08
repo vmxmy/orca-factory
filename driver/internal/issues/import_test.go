@@ -147,6 +147,77 @@ func importRaw(t *testing.T, m map[string]any) []byte {
 	return raw
 }
 func importIssue(m map[string]any) map[string]any { return m["issues"].([]any)[0].(map[string]any) }
+func TestImportPreservesNativeIssues(t *testing.T) {
+	c, f := newImportServer(t)
+	native, err := c.Create(context.Background(), CreateInput{Title: "existing native", Labels: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := f.writes
+	raw := importRaw(t, importFixture())
+	if _, err = Import(context.Background(), c, raw, false); err != nil || f.writes != before {
+		t.Fatalf("native issue blocked preview: %v writes=%d", err, f.writes-before)
+	}
+	if _, err = Import(context.Background(), c, raw, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Read(context.Background(), native.ID)
+	if err != nil || !reflect.DeepEqual(got, native) {
+		t.Fatalf("native issue changed: %+v error=%v", got, err)
+	}
+	before = f.writes
+	if _, err = Import(context.Background(), c, raw, true); err != nil || f.writes != before {
+		t.Fatalf("repeat import: %v writes=%d", err, f.writes-before)
+	}
+	missing := importFixture()
+	missing["issues"] = []any{}
+	if _, err = Import(context.Background(), c, importRaw(t, missing), false); err == nil {
+		t.Fatal("existing imported identity outside manifest accepted")
+	}
+}
+
+func TestImportOversizedCommentRoundTrip(t *testing.T) {
+	c, f := newImportServer(t)
+	m := importFixture()
+	comment := importIssue(m)["comments"].([]any)[0].(map[string]any)
+	comment["body"] = strings.Repeat("中文\\\"\n", 15000)
+	raw := importRaw(t, m)
+	preview, err := Preview(raw, "o/r")
+	if err != nil || preview["fragmentedComments"] != 1 {
+		t.Fatalf("large source preview: %+v %v", preview, err)
+	}
+	f.fail = "comment-accepted"
+	if _, err = Import(context.Background(), c, raw, true); err == nil {
+		t.Fatal("uncertain fragment write succeeded")
+	}
+	if _, err = c.ListComments(context.Background(), importID); err == nil {
+		t.Fatal("partial comment exposed as complete history")
+	}
+	if _, err = Import(context.Background(), c, raw, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.ListComments(context.Background(), importID)
+	var want []linear.Comment
+	encoded, _ := json.Marshal(importIssue(m)["comments"])
+	_ = json.Unmarshal(encoded, &want)
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("large comment roundtrip: count=%d err=%v", len(got), err)
+	}
+	for _, row := range f.comments[1] {
+		if len(row["body"].(string)) > importCommentLimit {
+			t.Fatal("fragment exceeds destination byte limit")
+		}
+	}
+	before := f.writes
+	if _, err = Import(context.Background(), c, raw, true); err != nil || f.writes != before {
+		t.Fatalf("fragment replay: %v writes=%d", err, f.writes-before)
+	}
+	f.comments[1][1]["body"] = f.comments[1][0]["body"]
+	if _, err = c.ListComments(context.Background(), importID); err == nil {
+		t.Fatal("duplicate fragment accepted")
+	}
+}
+
 func TestImportDryRunAndRepeat(t *testing.T) {
 	c, f := newImportServer(t)
 	m := importFixture()

@@ -75,7 +75,7 @@ func TestExportPreservesCompletePaginationAuthorsAndDependencyClosure(t *testing
 			if q.Variables["after"] == "comments-next" {
 				n = 1
 			}
-			data = map[string]any{"issue": map[string]any{"comments": map[string]any{"nodes": []any{map[string]any{"id": fmt.Sprintf("%s-c%d", id, n), "body": fmt.Sprintf("body%d", n), "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-02T00:00:00Z", "user": map[string]any{"id": "author-id", "name": "来源作者"}}}, "pageInfo": map[string]any{"hasNextPage": n == 0, "endCursor": "comments-next"}}}}
+			data = map[string]any{"issue": map[string]any{"comments": map[string]any{"nodes": []any{map[string]any{"id": fmt.Sprintf("%s-c%d", id, n), "body": strings.Repeat("中文", 10000) + fmt.Sprintf("body%d", n), "createdAt": "2026-10-01T00:00:00Z", "updatedAt": "2026-10-02T00:00:00Z", "user": map[string]any{"id": "author-id", "name": "来源作者"}}}, "pageInfo": map[string]any{"hasNextPage": n == 0, "endCursor": "comments-next"}}}}
 		default:
 			t.Errorf("unexpected query %s", q.Query)
 			http.Error(w, "unknown", 500)
@@ -93,7 +93,7 @@ func TestExportPreservesCompletePaginationAuthorsAndDependencyClosure(t *testing
 	// #when
 	manifest, err := issues.Export(context.Background(), source, "o/r", project)
 	// #then
-	if err != nil || len(manifest.Issues) != 2 || pages != 4 || len(manifest.Issues[1].Blockers) != 1 || manifest.Issues[1].Blockers[0] != ids[0] || len(manifest.Issues[0].Comments) != 2 || (manifest.Issues[0].Comments[1].User == nil || manifest.Issues[0].Comments[1].User.Name != "来源作者") || manifest.Issues[0].Comments[1].Source != "linear:"+ids[0] {
+	if err != nil || len(manifest.Issues) != 2 || pages != 4 || len(manifest.Issues[1].Blockers) != 1 || manifest.Issues[1].Blockers[0] != ids[0] || len(manifest.Issues[0].Comments) != 2 || len(manifest.Issues[0].Comments[0].Body) < 50000 || (manifest.Issues[0].Comments[1].User == nil || manifest.Issues[0].Comments[1].User.Name != "来源作者") || manifest.Issues[0].Comments[1].Source != "linear:"+ids[0] {
 		t.Fatalf("export lost pagination, authors or closure: %+v err=%v pages=%d", manifest, err, pages)
 	}
 }

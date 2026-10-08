@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -64,6 +63,9 @@ func importedHistoryCaption(count int) string {
 // DecodeImportedComments restores ordered source records without changing payload
 // bytes. Native comments pass through unchanged as a single logical comment.
 func DecodeImportedComments(c linear.Comment) ([]linear.Comment, error) {
+	if strings.HasPrefix(c.Body, importedFragmentMarker) {
+		return nil, errors.New("complete comment history required for imported fragments")
+	}
 	if !strings.HasPrefix(c.Body, importedCommentMarker) {
 		return []linear.Comment{c}, nil
 	}
@@ -90,7 +92,7 @@ func DecodeImportedComments(c linear.Comment) ([]linear.Comment, error) {
 }
 
 func validSourceComment(c linear.Comment) bool {
-	return strings.TrimSpace(c.ID) != "" && !c.CreatedAt.IsZero() && !c.UpdatedAt.IsZero() && !strings.HasPrefix(c.Body, importedCommentMarker)
+	return strings.TrimSpace(c.ID) != "" && !c.CreatedAt.IsZero() && !c.UpdatedAt.IsZero() && !strings.HasPrefix(c.Body, importedCommentMarker) && !strings.HasPrefix(c.Body, importedFragmentMarker)
 }
 func importedBatches(comments []linear.Comment) ([]string, error) {
 	batches := []string{}
@@ -100,7 +102,13 @@ func importedBatches(comments []linear.Comment) ([]string, error) {
 			n++
 		}
 		if n == 0 {
-			return nil, errors.New("source comment exceeds import history byte limit")
+			fragments, err := encodeImportedFragments(comments[0])
+			if err != nil {
+				return nil, err
+			}
+			batches = append(batches, fragments...)
+			comments = comments[1:]
+			continue
 		}
 		batches = append(batches, encodeImportedComments(comments[:n]))
 		comments = comments[n:]
@@ -178,6 +186,19 @@ func requiredImportFields(raw json.RawMessage, fields ...string) error {
 	return nil
 }
 func validateManifest(raw []byte, repository string) (ImportManifest, string, error) {
+	manifest, digest, err := validateSourceManifest(raw, repository)
+	if err != nil {
+		return manifest, digest, err
+	}
+	for _, issue := range manifest.Issues {
+		if _, err := importedBatches(issue.Comments); err != nil {
+			return manifest, digest, err
+		}
+	}
+	return manifest, digest, nil
+}
+
+func validateSourceManifest(raw []byte, repository string) (ImportManifest, string, error) {
 	var m ImportManifest
 	if err := decodeImportJSON(raw, &m); err != nil {
 		return m, "", err
@@ -220,9 +241,6 @@ func validateManifest(raw []byte, repository string) (ImportManifest, string, er
 				return m, "", errors.New("invalid or duplicate source comment")
 			}
 			comments[c.ID] = true
-		}
-		if _, err := importedBatches(s.Comments); err != nil {
-			return m, "", err
 		}
 		if hasDuplicateStrings(s.Labels) {
 			return m, "", errors.New("duplicate or empty source label")
@@ -312,30 +330,22 @@ func checkImportedComments(ctx context.Context, c *GitHub, t Task, s ImportIssue
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	for _, v := range raw {
-		if !strings.HasPrefix(v.Body, importedCommentMarker) {
-			return 0, errors.New("existing non-import comment conflicts with source")
-		}
-		comments, err := DecodeImportedComments(linear.Comment{Body: v.Body})
-		if err != nil {
-			return 0, err
-		}
-		for _, got := range comments {
-			if count >= len(s.Comments) {
-				return 0, errors.New("existing comments exceed complete source")
-			}
-			want := s.Comments[count]
-			if got.ID != want.ID || got.Body != want.Body || got.Source != want.Source || !reflect.DeepEqual(got.User, want.User) || !got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) {
-				return 0, errors.New("existing imported comment conflicts with source order or content")
-			}
-			count++
+	batches, err := importedBatches(s.Comments)
+	if err != nil {
+		return 0, err
+	}
+	if len(raw) > len(batches) {
+		return 0, errors.New("existing comments exceed complete source")
+	}
+	for index, comment := range raw {
+		if comment.Body != batches[index] {
+			return 0, errors.New("existing imported comment conflicts with source order or content")
 		}
 	}
-	if count != len(s.Comments) && !t.Metadata.ImportHold {
+	if len(raw) != len(batches) && !t.Metadata.ImportHold {
 		return 0, errors.New("released import has missing source comments")
 	}
-	return count, nil
+	return len(raw), nil
 }
 
 func ReleaseHold(ctx context.Context, c *GitHub, raw []byte) (ImportResult, error) {
@@ -373,7 +383,11 @@ func ReleaseHold(ctx context.Context, c *GitHub, raw []byte) (ImportResult, erro
 		if readErr != nil {
 			return result, readErr
 		}
-		if count != len(source.Comments) {
+		batches, encodeErr := importedBatches(source.Comments)
+		if encodeErr != nil {
+			return result, encodeErr
+		}
+		if count != len(batches) {
 			return result, errors.New("release source comment read-back incomplete")
 		}
 		tasks = append(tasks, task)
@@ -416,7 +430,7 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		sourceIDs[s.ID] = true
 	}
 	for _, t := range rows {
-		if (t.Metadata.ImportDigest != "" || sourceIdentifier.MatchString(t.Metadata.Identifier)) && !sourceIDs[t.ID] {
+		if (t.Metadata.ImportDigest != "" || sourceIdentifier.MatchString(t.Metadata.Identifier) && t.ID != t.nativeID) && !sourceIDs[t.ID] {
 			return result, errors.New("destination contains source identity outside complete manifest")
 		}
 		existing[t.ID] = t
@@ -464,11 +478,11 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		}
 	}
 	for _, s := range manifest.Issues {
-		batches, batchErr := importedBatches(s.Comments[counts[s.ID]:])
+		batches, batchErr := importedBatches(s.Comments)
 		if batchErr != nil {
 			return result, batchErr
 		}
-		for _, body := range batches {
+		for _, body := range batches[counts[s.ID]:] {
 			if _, err = c.CreateComment(ctx, s.ID, body); err != nil {
 				return result, err
 			}
@@ -488,7 +502,11 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		if err != nil {
 			return result, err
 		}
-		if n != len(s.Comments) {
+		batches, encodeErr := importedBatches(s.Comments)
+		if encodeErr != nil {
+			return result, encodeErr
+		}
+		if n != len(batches) {
 			return result, errors.New("import comment read-back incomplete")
 		}
 		existing[s.ID] = t

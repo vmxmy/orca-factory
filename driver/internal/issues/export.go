@@ -13,11 +13,21 @@ func Preview(raw []byte, repository string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	comments := 0
+	comments, fragments, batches := 0, 0, 0
 	for _, issue := range manifest.Issues {
 		comments += len(issue.Comments)
+		encoded, err := importedBatches(issue.Comments)
+		if err != nil {
+			return nil, err
+		}
+		batches += len(encoded)
+		for _, comment := range issue.Comments {
+			if len(encodeImportedComments([]linear.Comment{comment})) > importCommentLimit {
+				fragments++
+			}
+		}
 	}
-	return map[string]any{"repository": repository, "issues": len(manifest.Issues), "comments": comments, "sha256": digest, "complete": true}, nil
+	return map[string]any{"repository": repository, "issues": len(manifest.Issues), "comments": comments, "fragmentedComments": fragments, "destinationComments": batches, "targetEncodingValid": true, "sha256": digest, "complete": true}, nil
 }
 
 func Export(ctx context.Context, source *linear.Client, repository, project string) (ImportManifest, error) {
@@ -72,6 +82,6 @@ func Export(ctx context.Context, source *linear.Client, repository, project stri
 	if err != nil {
 		return ImportManifest{}, err
 	}
-	_, _, err = validateManifest(raw, repository)
+	_, _, err = validateSourceManifest(raw, repository)
 	return manifest, err
 }
