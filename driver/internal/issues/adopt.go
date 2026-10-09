@@ -46,7 +46,7 @@ func (c *GitHub) Adopt(ctx context.Context, id string, raw []byte) (Task, error)
 	for _, refs := range [][]string{in.Blockers, in.Related} {
 		for _, ref := range refs {
 			dependency, err := c.Read(ctx, ref)
-			if err != nil || dependency.ID != ref || dependency.ID == task.ID || !dependency.Metadata.Complete {
+			if err != nil || dependency.ID != ref || dependency.ID == task.ID || !dependency.Complete {
 				return Task{}, errors.New("dependency identity or completeness unavailable")
 			}
 		}

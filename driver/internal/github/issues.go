@@ -38,8 +38,16 @@ type IssueComment struct {
 func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord, error) {
 	rows := []IssueRecord{}
 	seen := map[int]bool{}
+	cursors := map[string]bool{}
 	path := repoPath(owner, repo) + "/issues?state=all&per_page=100&page=1&sort=created&direction=asc"
 	for page := 1; page <= 10000; page++ {
+		current, _ := url.Parse(path)
+		if cursor := current.Query().Get("after"); cursor != "" {
+			if cursors[cursor] {
+				return nil, errors.New("repeated GitHub pagination cursor")
+			}
+			cursors[cursor] = true
+		}
 		var batch []IssueRecord
 		next, err := c.issuePage(ctx, owner, repo, path, page, &batch)
 		if err != nil {
@@ -65,8 +73,16 @@ func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord,
 func (c *Client) IssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error) {
 	rows := []IssueComment{}
 	seen := map[int64]bool{}
+	cursors := map[string]bool{}
 	path := fmt.Sprintf("%s/issues/%d/comments?per_page=100&page=1", repoPath(owner, repo), number)
 	for page := 1; page <= 10000; page++ {
+		current, _ := url.Parse(path)
+		if cursor := current.Query().Get("after"); cursor != "" {
+			if cursors[cursor] {
+				return nil, errors.New("repeated GitHub pagination cursor")
+			}
+			cursors[cursor] = true
+		}
 		var batch []IssueComment
 		next, err := c.issuePage(ctx, owner, repo, path, page, &batch)
 		if err != nil {
