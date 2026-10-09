@@ -113,8 +113,6 @@ type GitHub struct {
 	gh                *github.Client
 	mu                sync.Mutex
 	cached            map[string]Task
-	comments          map[string]commentHistory
-	commentGeneration uint64
 }
 
 var component = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
@@ -339,9 +337,6 @@ func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment,
 	if err != nil {
 		return nil, err
 	}
-	c.mu.Lock()
-	generation := c.commentGeneration
-	c.mu.Unlock()
 	raw, err := c.gh.IssueComments(ctx, c.owner, c.name, t.Number)
 	if err != nil {
 		return nil, err
@@ -350,23 +345,9 @@ func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment,
 	for _, v := range raw {
 		history = append(history, linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt})
 	}
-	rows, err := decodeImportedHistory(history)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	if c.comments == nil {
-		c.comments = map[string]commentHistory{}
-	}
-	if generation == c.commentGeneration {
-		c.comments[t.ID] = commentHistory{readAt: time.Now(), version: t.NativeUpdatedAt, rows: append([]linear.Comment(nil), rows...)}
-	}
-	c.mu.Unlock()
-	return rows, nil
+	return decodeImportedHistory(history)
 }
 func (c *GitHub) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return linear.Comment{}, err
@@ -375,8 +356,6 @@ func (c *GitHub) CreateComment(ctx context.Context, id, body string) (linear.Com
 	return linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}, err
 }
 func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return Task{}, err
@@ -398,8 +377,6 @@ func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, 
 	return c.task(v)
 }
 func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
-	c.invalidateComments()
-	defer c.invalidateComments()
 	t, err := c.Read(ctx, id)
 	if err != nil {
 		return linear.Issue{}, err
@@ -563,32 +540,7 @@ func (c *GitHub) createImported(ctx context.Context, in CreateInput) (Task, erro
 // GitHubUsage is additive to the legacy usage contract and never probes Linear.
 func (c *GitHub) GitHubUsage() github.Usage { return c.gh.Usage() }
 
-type commentHistory struct {
-	readAt  time.Time
-	version time.Time
-	rows    []linear.Comment
-}
-
-func (c *GitHub) invalidateComments() {
-	c.mu.Lock()
-	c.comments = nil
-	c.commentGeneration++
-	c.mu.Unlock()
-}
-
-// SnapshotComments reuses a fully read logical history only when the latest
-// complete issue enumeration confirms its native updated_at has not changed.
-// Recovery and ambiguous-write readback use ListComments and always revalidate.
+// Comment edits need not change the issue timestamp; each page revalidates its ETag.
 func (c *GitHub) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
-	t, err := c.cachedTask(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	c.mu.Lock()
-	h, ok := c.comments[t.ID]
-	c.mu.Unlock()
-	if ok && time.Since(h.readAt) < 5*time.Minute && !t.NativeUpdatedAt.IsZero() && h.version.Equal(t.NativeUpdatedAt) {
-		return append([]linear.Comment(nil), h.rows...), nil
-	}
 	return c.ListComments(ctx, id)
 }

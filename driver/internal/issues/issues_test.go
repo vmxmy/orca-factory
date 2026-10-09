@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
 const taskBody = `spec\n<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":["missing"],"related":[]} -->`
@@ -64,8 +65,9 @@ func TestImportHoldVisibleButBlockedInRuntimeSnapshot(t *testing.T) {
 	}
 }
 
-func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
+func TestSnapshotCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
 	issueReads, commentReads := 0, 0
+	commentETag := `"comments-v1"`
 	body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":[],"related":[]} -->`
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/o/r/issues" {
@@ -74,21 +76,36 @@ func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
 			return
 		}
 		commentReads++
-		_, _ = fmt.Fprint(w, `[{"id":3,"body":"ownership","created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}]`)
+		if r.Header.Get("If-None-Match") == commentETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", commentETag)
+		body := "ownership"
+		if commentETag == `"comments-v2"` {
+			body = "ownership edited"
+		}
+		_, _ = fmt.Fprintf(w, `[{"id":3,"body":%q,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}]`, body)
 	}))
 	defer s.Close()
 	gh, _ := github.New(github.Options{BaseURL: s.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	c, _ := NewGitHub("o/r", gh)
-	for range 2 {
+	var history []linear.Comment
+	for round := range 3 {
+		if round == 2 {
+			commentETag = `"comments-v2"`
+		}
 		if _, err := c.List(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.SnapshotComments(context.Background(), "ZII-42"); err != nil {
+		var err error
+		history, err = c.SnapshotComments(context.Background(), "ZII-42")
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if issueReads != 2 || commentReads != 1 {
-		t.Fatalf("unchanged snapshots repeated history: issues=%d comments=%d", issueReads, commentReads)
+	if issueReads != 3 || commentReads != 3 || len(history) != 1 || history[0].Body != "ownership edited" {
+		t.Fatalf("edited comments stayed cached: issues=%d comments=%d history=%+v", issueReads, commentReads, history)
 	}
 }
 
