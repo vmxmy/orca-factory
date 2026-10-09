@@ -24,12 +24,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-type LinearClient interface {
-	Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error)
-	ListComments(context.Context, string) ([]linear.Comment, error)
-	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
-	CreateComment(context.Context, string, string) (linear.Comment, error)
-}
+type LinearClient = issues.Client
 type OrcaClient interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error)

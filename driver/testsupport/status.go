@@ -18,7 +18,8 @@ func IsolateStatus() func() {
 	for key, value := range map[string]string{
 		"XDG_RUNTIME_DIR":    root,
 		"TMPDIR":             root,
-		"DRIVER_STATUS_FILE": filepath.Join(root, "legacy-status.json"),
+		"DRIVER_STATUS_FILE":     filepath.Join(root, "legacy-status.json"),
+		"AGENT_DRIVER_STATE_ROOT": filepath.Join(root, "state"),
 	} {
 		if err := os.Setenv(key, value); err != nil {
 			cleanup()
