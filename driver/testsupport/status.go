@@ -15,12 +15,16 @@ func IsolateStatus() func() {
 		panic(err)
 	}
 	cleanup := func() { _ = os.RemoveAll(root) }
-	for key, value := range map[string]string{
-		"XDG_RUNTIME_DIR":    root,
-		"TMPDIR":             root,
-		"DRIVER_STATUS_FILE":     filepath.Join(root, "legacy-status.json"),
+	values := map[string]string{
+		"XDG_RUNTIME_DIR":         root,
+		"TMPDIR":                  root,
+		"DRIVER_STATUS_FILE":      filepath.Join(root, "legacy-status.json"),
 		"AGENT_DRIVER_STATE_ROOT": filepath.Join(root, "state"),
-	} {
+	}
+	for key, value := range values {
+		if key == "AGENT_DRIVER_STATE_ROOT" && os.Getenv(key) != "" {
+			continue
+		}
 		if err := os.Setenv(key, value); err != nil {
 			cleanup()
 			panic(err)

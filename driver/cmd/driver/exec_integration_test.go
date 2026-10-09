@@ -27,7 +27,7 @@ func TestExecCompatibility(t *testing.T) {
 			home := t.TempDir()
 			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, tc.args...)...)
 			cmd.Dir = home
-			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "ORCA_PANE_KEY=", "ORCA_TERMINAL_HANDLE=test-terminal", "PATH="+home)
+			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(home, ".local", "state", "orca-factory"), "ORCA_PANE_KEY=", "ORCA_TERMINAL_HANDLE=test-terminal", "PATH="+home)
 			out, err := cmd.CombinedOutput()
 			code := 0
 			if err != nil {
