@@ -44,6 +44,7 @@ type Runtime struct {
 	Now                  func() time.Time
 	Tuning               config.Tuning
 	refused              map[string]error
+	projections          map[LinearClient]map[string]commentProjection
 }
 
 // NewRuntime binds existing clients. Startup exclusion runs before any Linear
@@ -179,7 +180,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 	}
 	// Batch only within each configured client's authorization boundary.
 	commentsByID := map[string][]linear.Comment{}
-	groups := map[LinearClient][]string{}
+	groups := map[LinearClient][]linear.Issue{}
 	for _, issue := range issues {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
@@ -188,31 +189,19 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		if !ok || r.Clients[path] == nil {
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
-		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue.ID)
+		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
 	}
-	for client, ids := range groups {
-		if batch, ok := client.(interface {
-			ListCommentsBatch(context.Context, []string) (map[string][]linear.Comment, error)
-		}); ok {
-			rows, err := batch.ListCommentsBatch(ctx, ids)
-			if err != nil {
-				return nil, fmt.Errorf("ownership snapshot failed: %w", err)
-			}
-			for _, id := range ids {
-				comments, ok := rows[id]
-				if !ok {
-					return nil, errors.New("incomplete ownership snapshot")
-				}
-				commentsByID[id] = comments
-			}
-		} else {
-			for _, id := range ids {
-				comments, err := client.ListComments(ctx, id)
-				if err != nil {
-					return nil, fmt.Errorf("ownership snapshot failed: %w", err)
-				}
-				commentsByID[id] = comments
-			}
+	pending := map[LinearClient]map[string]commentProjection{}
+	for client, rows := range groups {
+		comments, projection, err := r.snapshotComments(ctx, client, rows)
+		if err != nil {
+			return nil, fmt.Errorf("ownership snapshot failed: %w", err)
+		}
+		for id, history := range comments {
+			commentsByID[id] = history
+		}
+		if projection != nil {
+			pending[client] = projection
 		}
 	}
 	tickets := []Ticket{}
@@ -273,6 +262,12 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 			}
 			tickets = append(tickets, ticket)
 		}
+	}
+	if r.projections == nil {
+		r.projections = map[LinearClient]map[string]commentProjection{}
+	}
+	for client, projection := range pending {
+		r.projections[client] = projection
 	}
 	return tickets, nil
 }
@@ -374,6 +369,13 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	client := r.Clients[t.Repo]
 	if client == nil {
 		return errors.New("missing repository client")
+	}
+	if a.Kind != Claim {
+		if _, ok := client.(*linear.Client); ok {
+			if err := r.verifyFreshOwnership(ctx, client, t); err != nil {
+				return err
+			}
+		}
 	}
 	now := time.Now()
 	if r.Now != nil {
