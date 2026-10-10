@@ -914,7 +914,9 @@ async function refresh($: any, handoffs: Map<string, string>, previous: Board): 
     ? buildFailures({ now, ledger, comments: metricComments }) : old.failures
   const linearUsage = github ? undefined : await readLinearUsage($, now)
   if (github && linearOk) {
-    graph = buildGraph({ issues: issuesResp.data.result.issues.map((row: { identifier: string; state: { type: string }; parent?: { identifier: string } }) => ({ id: row.identifier, state: row.state.type, parent: row.parent?.identifier ?? null, blockedBy: blockedBy?.[row.identifier] ?? [] })) })
+    const rows: { id: string; identifier: string; state: { type: string }; parent: string }[] = issuesResp.data.result.issues
+    const identifiers = new Map(rows.map(row => [row.id, row.identifier]))
+    graph = buildGraph({ issues: rows.map(row => ({ id: row.identifier, state: row.state.type, parent: row.parent ? identifiers.get(row.parent) ?? row.parent : null, blockedBy: blockedBy?.[row.identifier] ?? [] })) })
     graphNotice = issuesResp.data.result.issues.some((row: { complete: boolean }) => !row.complete) ? '数据不全：未纳管或依赖证据不完整' : ''
   }
   const metrics = { graph, graphNotice, throughput, failures, metricRuns }

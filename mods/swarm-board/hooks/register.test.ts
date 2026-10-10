@@ -30,6 +30,7 @@ test('GitHub 看板展示票 URL、comment 关联和依赖视图且不调用 Lin
     const issues = [
       { id: 'canonical-1', identifier: 'GH.1', title: 'blocker', url: 'https://github.com/owner/test-repo/issues/1', state: { type: 'started' }, labels: [{ name: 'auto-impl' }], complete: true, blockedBy: [] },
       { id: 'canonical-2', identifier: 'GH-2', title: 'dependent', state: { type: 'unstarted' }, labels: [{ name: 'auto-impl' }], complete: true, blockedBy: [{ identifier: 'GH.1' }] },
+      { id: 'canonical-3', identifier: 'GH-3', title: 'child', state: { type: 'unstarted' }, labels: [], complete: true, blockedBy: [], parent: 'canonical-1' },
     ]
     return { value: { stdout: JSON.stringify({ ok: true, result: { complete: true, issues, comments: [], runs: [], workers: [], worktrees: [{ path: '/repo/worker', comment: 'driver: gate\nissue: GH.1' }], automations: [] } }), stderr: '', exitCode: 0 } }
   })
@@ -42,8 +43,9 @@ test('GitHub 看板展示票 URL、comment 关联和依赖视图且不调用 Lin
   await ui.press({ key: 'view-graph' })
   await ui.redraw()
   const graph = await ui.find({ type: 'Text', text: /关键路径：GH\.1 → GH-2/ })
+  const parent = await ui.find({ type: 'Text', text: /^GH\.1$/ })
   // #then
-  expect({ url: Boolean(url), phase: Boolean(phase), graph: Boolean(graph), linear: linearCalls.length, issues: issueCalls.length > 0 }).toEqual({ url: true, phase: true, graph: true, linear: 0, issues: true })
+  expect({ url: Boolean(url), phase: Boolean(phase), graph: Boolean(graph), parent: Boolean(parent), linear: linearCalls.length, issues: issueCalls.length > 0 }).toEqual({ url: true, phase: true, graph: true, parent: true, linear: 0, issues: true })
   await ui.unmount()
 })
 
