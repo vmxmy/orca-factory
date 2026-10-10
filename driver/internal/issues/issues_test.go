@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
 const taskBody = `spec\n<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":["missing"],"related":[]} -->`
@@ -64,8 +65,9 @@ func TestImportHoldVisibleButBlockedInRuntimeSnapshot(t *testing.T) {
 	}
 }
 
-func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
+func TestSnapshotCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
 	issueReads, commentReads := 0, 0
+	commentETag := `"comments-v1"`
 	body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":[],"related":[]} -->`
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/o/r/issues" {
@@ -74,21 +76,36 @@ func TestUnchangedSnapshotsReuseLogicalCommentHistory(t *testing.T) {
 			return
 		}
 		commentReads++
-		_, _ = fmt.Fprint(w, `[{"id":3,"body":"ownership","created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}]`)
+		if r.Header.Get("If-None-Match") == commentETag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("ETag", commentETag)
+		body := "ownership"
+		if commentETag == `"comments-v2"` {
+			body = "ownership edited"
+		}
+		_, _ = fmt.Fprintf(w, `[{"id":3,"body":%q,"created_at":"2026-10-06T00:00:00Z","updated_at":"2026-10-06T00:00:00Z"}]`, body)
 	}))
 	defer s.Close()
 	gh, _ := github.New(github.Options{BaseURL: s.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	c, _ := NewGitHub("o/r", gh)
-	for range 2 {
+	var history []linear.Comment
+	for round := range 3 {
+		if round == 2 {
+			commentETag = `"comments-v2"`
+		}
 		if _, err := c.List(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.SnapshotComments(context.Background(), "ZII-42"); err != nil {
+		var err error
+		history, err = c.SnapshotComments(context.Background(), "ZII-42")
+		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if issueReads != 2 || commentReads != 1 {
-		t.Fatalf("unchanged snapshots repeated history: issues=%d comments=%d", issueReads, commentReads)
+	if issueReads != 3 || commentReads != 3 || len(history) != 1 || history[0].Body != "ownership edited" {
+		t.Fatalf("edited comments stayed cached: issues=%d comments=%d history=%+v", issueReads, commentReads, history)
 	}
 }
 
@@ -133,5 +150,37 @@ func TestMetadataRejectsAmbiguousAndMissingDependencies(t *testing.T) {
 		if _, err := ParseMetadata("<!-- orca-task-v1: " + raw + " -->"); err == nil {
 			t.Errorf("unsafe metadata accepted: %s", raw)
 		}
+	}
+}
+
+func TestGitHubReopenedBlockerStillBlocks(t *testing.T) {
+	blocked := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":["01234567-1234-1234-1234-012345678902"],"related":[]} -->`
+	for name, blocker := range map[string]string{
+		"reopened": `{"number":43,"body":%q,"state":"open"}`,
+		"held":     `{"number":43,"body":%q,"state":"open"}`,
+	} {
+		meta := `"state":"Done","complete":true`
+		if name == "held" {
+			meta = `"state":"Done","complete":true,"importHold":true`
+		}
+		body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678902","identifier":"ZII-43","project":"o/r",` + meta + `,"blockers":[],"related":[]} -->`
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintf(w, `[{"number":42,"body":%q,"state":"open"},`+blocker+`]`, blocked, body)
+			}))
+			defer server.Close()
+			gh, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := NewGitHub("o/r", gh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err := c.List(context.Background())
+			if err != nil || len(rows) != 2 || !rows[0].Blocked() {
+				t.Fatalf("open blocker treated as completed: %+v err=%v", rows, err)
+			}
+		})
 	}
 }

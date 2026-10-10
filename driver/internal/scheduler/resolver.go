@@ -69,7 +69,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 		return err
 	}
 	defer session()
-	if err := r.verifyGitHubDecision(ctx, t, Resolve); err != nil {
+	if err := r.verifyFreshDecision(ctx, t, Resolve); err != nil {
 		return err
 	}
 	oc, ok := r.Orca.(resolver.Orca)
@@ -163,7 +163,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 }
 
 func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
-	if err := r.verifyGitHubDecision(ctx, t, Resolve); err != nil {
+	if err := r.verifyFreshDecision(ctx, t, Resolve); err != nil {
 		return err
 	}
 	p := t.Resolution

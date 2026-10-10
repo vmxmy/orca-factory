@@ -19,6 +19,7 @@ const secondID = "4a07ab07-4616-5d22-80ea-f8d9c5109195"
 
 func fake(t *testing.T) (*Client, string) {
 	t.Helper()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(t.TempDir(), "state"))
 	path, err := filepath.Abs("testdata/orca")
 	if err != nil {
 		t.Fatal(err)

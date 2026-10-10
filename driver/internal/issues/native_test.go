@@ -55,6 +55,18 @@ func TestAdoptRejectsIncompleteBrief(t *testing.T) {
 	}
 }
 
+func TestAdoptRejectsIncompleteDependency(t *testing.T) {
+	c, f := newImportServer(t)
+	f.rows = []map[string]any{
+		{"node_id": "I_native_1", "number": 1, "title": "native", "body": "## 要做\n施工\nCHECK: make test\nSCOPE: driver/\nDEPENDENCIES: {\"blockers\":[\"" + importID + "\"],\"related\":[]}", "state": "open"},
+		{"number": 2, "body": `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Done","complete":true,"blockers":[],"related":["missing"]} -->`, "state": "closed"},
+	}
+	_, err := c.Adopt(context.Background(), "GH-1", []byte(`{"blockers":["01234567-1234-1234-1234-012345678901"],"related":[]}`))
+	if err == nil || f.writes != 0 {
+		t.Fatalf("incomplete dependency adopted: writes=%d err=%v", f.writes, err)
+	}
+}
+
 func TestNativeMutationRequiresAdoption(t *testing.T) {
 	c, f := newImportServer(t)
 	f.rows = []map[string]any{{"node_id": "I_native_7", "number": 1, "title": "native", "body": "ready-for-agent", "state": "open", "labels": []any{}}}

@@ -11,6 +11,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -50,16 +51,16 @@ func selftest(args []string) int {
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
 	check("orca terminal list", func() error { _, err := oc.TerminalList(ctx); return err })
 	check("orca task-list carries a parseable worker report", func() error { return liveTaskReport(ctx, oc) })
-	check("linear snapshot with blockers", func() error {
-		lc, err := linear.New(ctx, linear.Options{TeamID: repo.Env["AGENT_LINEAR_TEAM"], HTTPTimeout: cfg.Tuning.Linear.HTTPTimeout})
+	check("selected issue backend snapshot with blockers", func() error {
+		client, err := issues.New(ctx, repo.Env, cfg.Tuning)
 		if err != nil {
 			return err
 		}
-		issues, err := lc.Snapshot(ctx, []string{repo.Env["AGENT_LINEAR_PROJECT"]}, time.Now().Add(-24*time.Hour))
+		rows, err := snapshotSelectedBackend(ctx, client, repo.Env)
 		if err != nil {
 			return err
 		}
-		for _, i := range issues {
+		for _, i := range rows {
 			if _, err := executor.ParseTicket(i.ID, i.Identifier, "selftest", ""); err == nil {
 				return fmt.Errorf("empty description parsed for %s", i.Identifier)
 			}
@@ -78,6 +79,17 @@ func selftest(args []string) int {
 	}
 	fmt.Println("selftest: all live contract checks passed")
 	return 0
+}
+
+func snapshotSelectedBackend(ctx context.Context, client issues.Client, env map[string]string) ([]linear.Issue, error) {
+	backend, err := issues.Backend(env)
+	if err != nil {
+		return nil, err
+	}
+	if backend == "github" {
+		return client.Snapshot(ctx, []string{env["AGENT_GH_REPO"]}, time.Time{})
+	}
+	return client.Snapshot(ctx, []string{env["AGENT_LINEAR_PROJECT"]}, time.Now().Add(-24*time.Hour))
 }
 
 func liveTaskReport(ctx context.Context, oc *orca.Client) error {

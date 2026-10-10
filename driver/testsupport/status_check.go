@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,11 @@ func CheckStatusIsolation(t *testing.T, write func()) {
 	t.Helper()
 	const child = "DRIVER_TEST_STATUS_ISOLATION_CHILD"
 	if os.Getenv(child) == "1" {
+		for _, key := range []string{"AGENT_DRIVER_STATE_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME"} {
+			if strings.HasPrefix(os.Getenv(key), os.Getenv("HOME")) {
+				t.Fatalf("%s inherited caller root %s", key, os.Getenv(key))
+			}
+		}
 		// Exercise both the selected legacy path and a test that clears it.
 		write()
 		t.Setenv("DRIVER_STATUS_FILE", "")
@@ -56,7 +62,8 @@ func CheckStatusIsolation(t *testing.T, write func()) {
 				}
 			}
 			cmd := exec.Command(binary, "-test.run=^"+regexp.QuoteMeta(testName)+"$", "-test.count=1")
-			cmd.Env = append(os.Environ(), child+"=1", "XDG_RUNTIME_DIR="+runtime, "TMPDIR="+tmp, "DRIVER_STATUS_FILE="+selected, "HOME="+home)
+			cmd.Env = append(os.Environ(), child+"=1", "XDG_RUNTIME_DIR="+runtime, "TMPDIR="+tmp, "DRIVER_STATUS_FILE="+selected, "HOME="+home,
+				"AGENT_DRIVER_STATE_ROOT="+filepath.Join(home, "state"), "CLAUDE_CONFIG_DIR="+filepath.Join(home, ".claude"), "CODEX_HOME="+filepath.Join(home, ".codex"))
 			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("test subprocess: %v\n%s", err, output)
 			}

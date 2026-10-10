@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -24,6 +25,8 @@ type liveBatchFixture struct {
 	conflict                                        atomic.Bool
 	mode                                            atomic.Value
 	client                                          *linear.Client
+	count                                           int
+	updated                                         atomic.Value
 }
 
 func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
@@ -32,8 +35,9 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 	if len(projects) > 0 {
 		project = projects[0]
 	}
-	f := &liveBatchFixture{entered: make(chan struct{})}
+	f := &liveBatchFixture{entered: make(chan struct{}), count: 100}
 	f.mode.Store("")
+	f.updated.Store("2026-01-01T00:00:00Z")
 	t.Setenv("LINEAR_API_KEY", "isolated-fixture")
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-RateLimit-Requests-Limit", "2500")
@@ -74,11 +78,14 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 			if mode == "removed-label" {
 				labels = []any{}
 			}
+			if mode == "failed" {
+				labels = append(labels, map[string]any{"id": "failed", "name": "auto-failed"})
+			}
 			blockers := []any{}
 			if mode == "blocker" {
 				blockers = append(blockers, map[string]any{"id": "rel", "type": "blocks", "issue": map[string]any{"id": "block", "identifier": "ENG-block", "state": map[string]any{"type": "started"}}})
 			}
-			return map[string]any{"relations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}, "inverseRelations": map[string]any{"nodes": blockers, "pageInfo": map[string]any{"hasNextPage": false}}, "id": id, "identifier": "ENG-" + id, "project": map[string]any{"id": "p1", "name": project}, "state": map[string]any{"id": "state", "name": state}, "labels": map[string]any{"nodes": labels, "pageInfo": map[string]any{"hasNextPage": false}}}
+			return map[string]any{"relations": map[string]any{"nodes": []any{}, "pageInfo": map[string]any{"hasNextPage": false}}, "inverseRelations": map[string]any{"nodes": blockers, "pageInfo": map[string]any{"hasNextPage": false}}, "id": id, "identifier": "ENG-" + id, "updatedAt": f.updated.Load().(string), "project": map[string]any{"id": "p1", "name": project}, "state": map[string]any{"id": "state", "name": state}, "labels": map[string]any{"nodes": labels, "pageInfo": map[string]any{"hasNextPage": false}}}
 		}
 		switch {
 		case strings.Contains(q.Query, "QuotaProbe"):
@@ -127,6 +134,9 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 				nodes := []any{}
 				if mode == "uneven" && !next {
 					nodes = append(nodes, map[string]any{"id": "owned-" + id, "body": "归属: 执行器 term=term-" + id + " run=run-" + id, "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z"})
+				}
+				if mode == "edited-comment" && id == "0" {
+					nodes = append(nodes, map[string]any{"id": "edited", "body": "归属: 执行器 term=edited run=edited", "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z"})
 				}
 				if mode == "retained" && (id == "0" || id == "1") {
 					body := "归属: 执行器 term=owned run=existing attempt=3 scheduler-attempt=3"
@@ -234,10 +244,10 @@ merge-progress-v1: {"queue_id":"q","phase":"merged","deployment":{"state":"pendi
 				_, _ = fmt.Sscan(cursor, &start)
 			}
 			nodes := []any{}
-			for i := start; i < start+20; i++ {
+			for i := start; i < min(start+20, f.count); i++ {
 				nodes = append(nodes, issue(fmt.Sprint(i), false))
 			}
-			data = map[string]any{"issues": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": start+20 < 100, "endCursor": fmt.Sprint(start + 20)}}}
+			data = map[string]any{"issues": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": start+20 < f.count, "endCursor": fmt.Sprint(start + 20)}}}
 		default:
 			t.Errorf("unexpected operation: %s", q.Query)
 		}
@@ -257,10 +267,13 @@ func liveBatchRuntime(t *testing.T, f *liveBatchFixture) (*scheduler.Runtime, co
 }
 func TestLiveBatchRepeatedDiscovery(t *testing.T) {
 	f := liveBatchSetup(t)
+	f.count = 123
 	r, repo := liveBatchRuntime(t, f)
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
 	for round := 1; round <= 4; round++ {
 		got, err := r.Snapshot(context.Background(), []config.Repository{repo})
-		if err != nil || len(got) != 100 {
+		if err != nil || len(got) != 123 {
 			t.Fatalf("round %d tickets=%d err=%v", round, len(got), err)
 		}
 		for _, ticket := range got {
@@ -268,9 +281,20 @@ func TestLiveBatchRepeatedDiscovery(t *testing.T) {
 				t.Fatalf("unexpected candidate: %+v", ticket)
 			}
 		}
-		if f.snapshots.Load() != int64(round*5) || f.comments.Load() != int64(round*20) {
-			t.Fatalf("round=%d issue requests=%d comments=%d; want %d + %d (25 per round)", round, f.snapshots.Load(), f.comments.Load(), round*5, round*20)
+		if f.snapshots.Load() != int64(round*7) || f.comments.Load() != 25 {
+			t.Fatalf("round=%d issue requests=%d comments=%d; want %d + 25", round, f.snapshots.Load(), f.comments.Load(), round*7)
 		}
+		now = now.Add(time.Minute)
+	}
+	f.mode.Store("edited-comment")
+	now = now.Add(6 * time.Minute)
+	rows, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil || len(rows) != 123 || rows[0].Owner != machine.OwnerExecutor || rows[0].Run != "edited" || f.comments.Load() != 50 {
+		t.Fatalf("bounded comment refresh: rows=%d comments=%d err=%v", len(rows), f.comments.Load(), err)
+	}
+	f.updated.Store("2026-01-02T00:00:00Z")
+	if _, err := r.Snapshot(context.Background(), []config.Repository{repo}); err != nil || f.comments.Load() != 75 {
+		t.Fatalf("changed issue refresh: comments=%d err=%v", f.comments.Load(), err)
 	}
 }
 
@@ -296,10 +320,12 @@ func TestLiveBatchClaimRejectsFreshOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.conflict.Store(true)
-	before := f.comments.Load()
-	err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: scheduler.Claim, Attempt: 1})
-	if err == nil || f.writes.Load() != 0 || f.comments.Load() != before+1 {
-		t.Fatalf("fresh owner must prohibit writes: writes=%d fresh comments=%d err=%v", f.writes.Load(), f.comments.Load()-before, err)
+	for _, action := range []scheduler.ActionKind{scheduler.Claim, scheduler.Resume, scheduler.Merge, scheduler.Release, scheduler.Resolve} {
+		before := f.comments.Load()
+		err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: action, Attempt: 1})
+		if err == nil || f.writes.Load() != 0 || f.comments.Load() != before+1 {
+			t.Fatalf("%s fresh owner must prohibit writes: writes=%d fresh comments=%d err=%v", action, f.writes.Load(), f.comments.Load()-before, err)
+		}
 	}
 }
 
@@ -548,5 +574,75 @@ func TestLiveBatchCanceledProbeKeepsAdmissionPauseAndBackoff(t *testing.T) {
 	_ = s.Tick(context.Background())
 	if s.Pauses.Paused("") || f.probes.Load() != 1 || f.snapshots.Load() != beforeIssues+5 || f.comments.Load() != beforeComments+20 || f.writes.Load() != 0 {
 		t.Fatal("fresh successful probe did not recover after cancellation")
+	}
+}
+
+func TestLiveBatchMergeRevalidatesCachedOwner(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	repo.Env["AGENT_GH_REPO"] = "o/r"
+	f.conflict.Store(true)
+	before := f.comments.Load()
+	ticket := scheduler.Ticket{ID: "0", Identifier: "ENG-0", Repo: repo.Path, Owner: machine.OwnerMerge, Handoff: &merge.Handoff{QueueID: "q", EnqueuedAt: time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)}}
+	err := r.AdvanceMerges(context.Background(), []scheduler.Ticket{ticket})
+	if err == nil || !strings.Contains(err.Error(), "resnapshot required") || f.comments.Load() != before+1 || f.writes.Load() != 0 {
+		t.Fatalf("cached merge owner must be reread before merge: fresh comments=%d writes=%d err=%v", f.comments.Load()-before, f.writes.Load(), err)
+	}
+}
+
+func TestLiveBatchFailedTaskRejectsExecution(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mode.Store("failed")
+	for _, action := range []scheduler.ActionKind{scheduler.Resume, scheduler.Merge} {
+		if err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: action, Attempt: 1}); err == nil || f.writes.Load() != 0 {
+			t.Fatalf("%s on failed task must not write: writes=%d err=%v", action, f.writes.Load(), err)
+		}
+	}
+	executor := tickets[0]
+	executor.Owner, executor.Terminal = machine.OwnerExecutor, "-"
+	if err = r.Launch(context.Background(), executor); err == nil || !strings.Contains(err.Error(), "failed task") {
+		t.Fatalf("failed task launch must be refused: %v", err)
+	}
+}
+
+func TestLiveBatchStaleOwnerDropsCachedProjection(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.conflict.Store(true)
+	if err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: scheduler.Resume, Attempt: 1}); err == nil {
+		t.Fatal("stale owner accepted")
+	}
+	before := f.comments.Load()
+	if _, err = r.Snapshot(context.Background(), []config.Repository{repo}); err != nil {
+		t.Fatal(err)
+	}
+	if f.comments.Load() != before+1 {
+		t.Fatalf("resnapshot reused stale comments: comment reads=%d", f.comments.Load()-before)
+	}
+}
+
+func TestLiveBatchResolverLaunchRevalidatesOwner(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.conflict.Store(true)
+	resolver := tickets[0]
+	resolver.Owner, resolver.Terminal = machine.OwnerResolver, "-"
+	if err = r.Launch(context.Background(), resolver); err == nil || !strings.Contains(err.Error(), "changed before launch") {
+		t.Fatalf("resolver launch must reread ownership: %v", err)
 	}
 }

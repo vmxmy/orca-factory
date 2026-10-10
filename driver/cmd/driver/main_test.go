@@ -12,6 +12,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("DRIVER_TEST_PROCESS") == "1" {
+		os.Exit(m.Run())
+	}
 	cleanup := testsupport.IsolateStatus()
 	code := m.Run()
 	cleanup()
