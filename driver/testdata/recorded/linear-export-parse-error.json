@@ -1,0 +1,1 @@
+{"errors":[{"message":"Syntax Error: Expected Name, found <EOF>.","locations":[{"line":1,"column":612}],"extensions":{"http":{"status":400,"headers":{}},"code":"GRAPHQL_PARSE_FAILED","type":"graphql error","userError":true}}]}
