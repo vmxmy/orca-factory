@@ -41,7 +41,10 @@ func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord,
 	cursors := map[string]bool{}
 	path := repoPath(owner, repo) + "/issues?state=all&per_page=100&page=1&sort=created&direction=asc"
 	for page := 1; page <= 10000; page++ {
-		current, _ := url.Parse(path)
+		current, err := url.Parse(path)
+		if err != nil {
+			return nil, fmt.Errorf("parse GitHub pagination path: %w", err)
+		}
 		if cursor := current.Query().Get("after"); cursor != "" {
 			if cursors[cursor] {
 				return nil, errors.New("repeated GitHub pagination cursor")
@@ -76,7 +79,10 @@ func (c *Client) IssueComments(ctx context.Context, owner, repo string, number i
 	cursors := map[string]bool{}
 	path := fmt.Sprintf("%s/issues/%d/comments?per_page=100&page=1", repoPath(owner, repo), number)
 	for page := 1; page <= 10000; page++ {
-		current, _ := url.Parse(path)
+		current, err := url.Parse(path)
+		if err != nil {
+			return nil, fmt.Errorf("parse GitHub pagination path: %w", err)
+		}
 		if cursor := current.Query().Get("after"); cursor != "" {
 			if cursors[cursor] {
 				return nil, errors.New("repeated GitHub pagination cursor")

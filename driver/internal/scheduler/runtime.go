@@ -363,6 +363,7 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		}
 		defer release()
 	}
+	r.forgetProjection(t)
 	if err := r.verifyFreshDecision(ctx, t, a.Kind); err != nil {
 		return err
 	}
@@ -485,6 +486,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		return err
 	}
 	defer release()
+	r.forgetProjection(t)
 	if err := r.verifyFreshLaunch(ctx, t); err != nil {
 		return err
 	}

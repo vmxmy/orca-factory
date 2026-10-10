@@ -609,3 +609,40 @@ func TestLiveBatchFailedTaskRejectsExecution(t *testing.T) {
 		t.Fatalf("failed task launch must be refused: %v", err)
 	}
 }
+
+func TestLiveBatchStaleOwnerDropsCachedProjection(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	now := time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)
+	r.Now = func() time.Time { return now }
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.conflict.Store(true)
+	if err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: scheduler.Resume, Attempt: 1}); err == nil {
+		t.Fatal("stale owner accepted")
+	}
+	before := f.comments.Load()
+	if _, err = r.Snapshot(context.Background(), []config.Repository{repo}); err != nil {
+		t.Fatal(err)
+	}
+	if f.comments.Load() != before+1 {
+		t.Fatalf("resnapshot reused stale comments: comment reads=%d", f.comments.Load()-before)
+	}
+}
+
+func TestLiveBatchResolverLaunchRevalidatesOwner(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.conflict.Store(true)
+	resolver := tickets[0]
+	resolver.Owner, resolver.Terminal = machine.OwnerResolver, "-"
+	if err = r.Launch(context.Background(), resolver); err == nil || !strings.Contains(err.Error(), "changed before launch") {
+		t.Fatalf("resolver launch must reread ownership: %v", err)
+	}
+}
