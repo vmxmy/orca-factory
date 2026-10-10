@@ -363,19 +363,12 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		}
 		defer release()
 	}
-	if err := r.verifyGitHubDecision(ctx, t, a.Kind); err != nil {
+	if err := r.verifyFreshDecision(ctx, t, a.Kind); err != nil {
 		return err
 	}
 	client := r.Clients[t.Repo]
 	if client == nil {
 		return errors.New("missing repository client")
-	}
-	if a.Kind != Claim {
-		if _, ok := client.(*linear.Client); ok {
-			if err := r.verifyFreshOwnership(ctx, client, t); err != nil {
-				return err
-			}
-		}
 	}
 	now := time.Now()
 	if r.Now != nil {
@@ -492,7 +485,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		return err
 	}
 	defer release()
-	if err := r.verifyGitHubLaunch(ctx, t); err != nil {
+	if err := r.verifyFreshLaunch(ctx, t); err != nil {
 		return err
 	}
 	if !identifier.MatchString(t.Identifier) || !filepath.IsAbs(r.DriverPath) {

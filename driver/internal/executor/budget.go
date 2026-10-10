@@ -74,7 +74,9 @@ func (e *Executor) writeRunLedger(ctx context.Context, t Ticket, outcome string,
 			return bodies, nil
 		},
 		Collect: func(ctx context.Context, ticket string) (*usage.TicketUsage, error) {
-			u, err := usage.Collect(ctx, ticket, []string{cp.Worktree})
+			usageCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			u, err := usage.Collect(usageCtx, ticket, []string{cp.Worktree})
 			if err != nil {
 				return nil, err
 			}

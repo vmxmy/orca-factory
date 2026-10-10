@@ -262,6 +262,11 @@ func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 			if n, ok := ids[id]; ok {
 				r.Issue.Identifier = rows[n].Identifier
 				r.Issue.State.Type = stateType(rows[n].State.Name)
+				// Only native closure resolves a blocker; a reopened or held task
+				// keeps stale completed metadata.
+				if rows[n].NativeState != "closed" {
+					r.Issue.State.Type = "started"
+				}
 			} else {
 				t.InverseRelations.PageInfo.HasNextPage = true
 				t.Complete = false

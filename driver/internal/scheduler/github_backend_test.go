@@ -173,7 +173,7 @@ func TestGitHubDoneMergeOwnerMayFinishDurableReceipt(t *testing.T) {
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	client, _ := issues.NewGitHub("o/r", gh)
 	r := &Runtime{Clients: map[string]LinearClient{"/repo": client}}
-	err := r.verifyGitHubDecision(context.Background(), Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Owner: "合并通道"}, "")
+	err := r.verifyFreshDecision(context.Background(), Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Owner: "合并通道"}, "")
 	if err != nil {
 		t.Fatalf("Done before final ownership receipt stranded merge: %v", err)
 	}

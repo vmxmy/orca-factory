@@ -30,7 +30,20 @@ func GitHubCleanupAllowed(task issues.Task, comments []linear.Comment) bool {
 // Revalidate the selected ticket immediately before a decision can mutate it.
 // The snapshot cache helps discovery only; comments may change independently of
 // the issue timestamp, including human cancellation and edited merge receipts.
-func (r *Runtime) verifyGitHubDecision(ctx context.Context, t Ticket, action ActionKind) error {
+func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action ActionKind) error {
+	if client, ok := r.Clients[t.Repo].(*linear.Client); ok && action != Claim {
+		issue, err := r.verifyFreshOwnership(ctx, client, t)
+		if err != nil {
+			return err
+		}
+		if action == Resume && t.Owner == machine.OwnerResolver || action != Resume && action != Merge && action != githubSquash {
+			return nil
+		}
+		if _, _, failed := issueEligibility(issue); failed {
+			return errors.New("failed task requires human recovery")
+		}
+		return nil
+	}
 	c, ok := r.Clients[t.Repo].(*issues.GitHub)
 	if !ok {
 		return nil
@@ -114,7 +127,17 @@ func githubExecutionAllowed(task issues.Task) error {
 	return nil
 }
 
-func (r *Runtime) verifyGitHubLaunch(ctx context.Context, t Ticket) error {
+func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
+	if client, ok := r.Clients[t.Repo].(*linear.Client); ok && t.Owner != machine.OwnerResolver {
+		issue, err := r.claimIssue(ctx, client, t)
+		if err != nil {
+			return err
+		}
+		if _, _, failed := issueEligibility(issue); failed {
+			return errors.New("failed task requires human recovery")
+		}
+		return nil
+	}
 	c, ok := r.Clients[t.Repo].(*issues.GitHub)
 	if !ok {
 		return nil

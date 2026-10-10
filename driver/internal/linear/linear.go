@@ -276,7 +276,7 @@ func (c *Client) Snapshot(ctx context.Context, projects []string, updatedSince t
 	seen := map[string]bool{}
 	for {
 		var data struct {
-			Issues *Connection[Issue] `json:"issues"`
+			Issues *completeConnection[json.RawMessage] `json:"issues"`
 		}
 		err := c.do(ctx, `query Snapshot($filter: IssueFilter!, $after: String) { issues(filter: $filter, first: 20, after: $after) { nodes { `+issueFields+` } pageInfo { hasNextPage endCursor } } }`, map[string]any{"filter": filter, "after": cursor(after)}, &data)
 		if err != nil {
@@ -285,12 +285,19 @@ func (c *Client) Snapshot(ctx context.Context, projects []string, updatedSince t
 		if data.Issues == nil {
 			return nil, protocolError()
 		}
-		for i := range data.Issues.Nodes {
-			if err := c.completeConnections(ctx, &data.Issues.Nodes[i]); err != nil {
+		for _, raw := range data.Issues.Nodes {
+			var node struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &node) != nil {
+				return nil, protocolError()
+			}
+			issue, err := c.completeIssue(ctx, node.ID, raw)
+			if err != nil {
 				return nil, err
 			}
+			issues = append(issues, issue)
 		}
-		issues = append(issues, data.Issues.Nodes...)
 		if !data.Issues.PageInfo.HasNextPage {
 			return issues, nil
 		}
@@ -299,49 +306,6 @@ func (c *Client) Snapshot(ctx context.Context, projects []string, updatedSince t
 			return nil, err
 		}
 	}
-}
-
-// completeConnections prevents nested label/relation connections from silently
-// truncating a snapshot when an issue has more than one page of either.
-func (c *Client) completeConnections(ctx context.Context, issue *Issue) error {
-	for _, field := range []string{"labels", "relations"} {
-		info := issue.Labels.PageInfo
-		selection := `id name`
-		if field == "relations" {
-			info = issue.Relations.PageInfo
-			selection = `id type relatedIssue { id identifier }`
-		}
-		seen := map[string]bool{}
-		for info.HasNextPage {
-			after, err := nextCursor(info, seen)
-			if err != nil {
-				return err
-			}
-			var data struct {
-				Issue *struct {
-					Labels    Connection[NamedID]  `json:"labels"`
-					Relations Connection[Relation] `json:"relations"`
-				} `json:"issue"`
-			}
-			err = c.do(ctx, `query IssueConnection($id: String!, $after: String) { issue(id: $id) { `+field+`(first: 100, after: $after) { nodes { `+selection+` } pageInfo { hasNextPage endCursor } } } }`, map[string]any{"id": issue.ID, "after": after}, &data)
-			if err != nil {
-				return err
-			}
-			if data.Issue == nil {
-				return protocolError()
-			}
-			if field == "labels" {
-				issue.Labels.Nodes = append(issue.Labels.Nodes, data.Issue.Labels.Nodes...)
-				info = data.Issue.Labels.PageInfo
-				issue.Labels.PageInfo = info
-			} else {
-				issue.Relations.Nodes = append(issue.Relations.Nodes, data.Issue.Relations.Nodes...)
-				info = data.Issue.Relations.PageInfo
-				issue.Relations.PageInfo = info
-			}
-		}
-	}
-	return nil
 }
 
 // UpdateIssue performs exactly one mutation and returns its issue selection.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -76,6 +77,9 @@ func liveBatchSetup(t *testing.T, projects ...string) *liveBatchFixture {
 			}
 			if mode == "removed-label" {
 				labels = []any{}
+			}
+			if mode == "failed" {
+				labels = append(labels, map[string]any{"id": "failed", "name": "auto-failed"})
 			}
 			blockers := []any{}
 			if mode == "blocker" {
@@ -570,5 +574,38 @@ func TestLiveBatchCanceledProbeKeepsAdmissionPauseAndBackoff(t *testing.T) {
 	_ = s.Tick(context.Background())
 	if s.Pauses.Paused("") || f.probes.Load() != 1 || f.snapshots.Load() != beforeIssues+5 || f.comments.Load() != beforeComments+20 || f.writes.Load() != 0 {
 		t.Fatal("fresh successful probe did not recover after cancellation")
+	}
+}
+
+func TestLiveBatchMergeRevalidatesCachedOwner(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	repo.Env["AGENT_GH_REPO"] = "o/r"
+	f.conflict.Store(true)
+	before := f.comments.Load()
+	ticket := scheduler.Ticket{ID: "0", Identifier: "ENG-0", Repo: repo.Path, Owner: machine.OwnerMerge, Handoff: &merge.Handoff{QueueID: "q", EnqueuedAt: time.Date(2026, 10, 9, 0, 0, 0, 0, time.UTC)}}
+	err := r.AdvanceMerges(context.Background(), []scheduler.Ticket{ticket})
+	if err == nil || !strings.Contains(err.Error(), "resnapshot required") || f.comments.Load() != before+1 || f.writes.Load() != 0 {
+		t.Fatalf("cached merge owner must be reread before merge: fresh comments=%d writes=%d err=%v", f.comments.Load()-before, f.writes.Load(), err)
+	}
+}
+
+func TestLiveBatchFailedTaskRejectsExecution(t *testing.T) {
+	f := liveBatchSetup(t)
+	r, repo := liveBatchRuntime(t, f)
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mode.Store("failed")
+	for _, action := range []scheduler.ActionKind{scheduler.Resume, scheduler.Merge} {
+		if err = r.Apply(context.Background(), tickets[0], scheduler.Action{Kind: action, Attempt: 1}); err == nil || f.writes.Load() != 0 {
+			t.Fatalf("%s on failed task must not write: writes=%d err=%v", action, f.writes.Load(), err)
+		}
+	}
+	executor := tickets[0]
+	executor.Owner, executor.Terminal = machine.OwnerExecutor, "-"
+	if err = r.Launch(context.Background(), executor); err == nil || !strings.Contains(err.Error(), "failed task") {
+		t.Fatalf("failed task launch must be refused: %v", err)
 	}
 }

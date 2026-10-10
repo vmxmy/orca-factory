@@ -152,3 +152,35 @@ func TestMetadataRejectsAmbiguousAndMissingDependencies(t *testing.T) {
 		}
 	}
 }
+
+func TestGitHubReopenedBlockerStillBlocks(t *testing.T) {
+	blocked := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":["01234567-1234-1234-1234-012345678902"],"related":[]} -->`
+	for name, blocker := range map[string]string{
+		"reopened": `{"number":43,"body":%q,"state":"open"}`,
+		"held":     `{"number":43,"body":%q,"state":"open"}`,
+	} {
+		meta := `"state":"Done","complete":true`
+		if name == "held" {
+			meta = `"state":"Done","complete":true,"importHold":true`
+		}
+		body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678902","identifier":"ZII-43","project":"o/r",` + meta + `,"blockers":[],"related":[]} -->`
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = fmt.Fprintf(w, `[{"number":42,"body":%q,"state":"open"},`+blocker+`]`, blocked, body)
+			}))
+			defer server.Close()
+			gh, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			c, err := NewGitHub("o/r", gh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows, err := c.List(context.Background())
+			if err != nil || len(rows) != 2 || !rows[0].Blocked() {
+				t.Fatalf("open blocker treated as completed: %+v err=%v", rows, err)
+			}
+		})
+	}
+}

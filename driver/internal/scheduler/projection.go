@@ -58,32 +58,32 @@ func (r *Runtime) snapshotComments(ctx context.Context, client LinearClient, iss
 	return comments, projection, nil
 }
 
-func (r *Runtime) verifyFreshOwnership(ctx context.Context, client LinearClient, t Ticket) error {
+func (r *Runtime) verifyFreshOwnership(ctx context.Context, client LinearClient, t Ticket) (linear.Issue, error) {
 	issue, err := r.claimIssue(ctx, client, t)
 	if err != nil {
-		return err
+		return linear.Issue{}, err
 	}
 	comments, err := client.ListComments(ctx, t.ID)
 	if err != nil {
-		return err
+		return linear.Issue{}, err
 	}
 	fresh := Ticket{ID: t.ID, Identifier: t.Identifier, Repo: t.Repo}
 	if err := readOwnership(&fresh, comments); err != nil {
-		return err
+		return linear.Issue{}, err
 	}
 	readMergeHandoff(&fresh, comments)
 	fresh.Resolution, err = readResolution(comments)
 	if err != nil {
-		return err
+		return linear.Issue{}, err
 	}
 	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || !reflect.DeepEqual(fresh.Resolution, t.Resolution) || fresh.MergeProblem != t.MergeProblem {
-		return errors.New("ownership or recovery evidence changed; resnapshot required")
+		return linear.Issue{}, errors.New("ownership or recovery evidence changed; resnapshot required")
 	}
 	closed := issue.State.Name == "Canceled" || issue.State.Name == "Cancelled" || issue.State.Name == "Duplicate" || (issue.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)
 	if closed && !DeploymentBarrier(fresh) {
-		return errors.New("issue closed before decision")
+		return linear.Issue{}, errors.New("issue closed before decision")
 	}
-	return nil
+	return issue, nil
 }
 
 func readSnapshotComments(ctx context.Context, client LinearClient, ids []string) (map[string][]linear.Comment, error) {

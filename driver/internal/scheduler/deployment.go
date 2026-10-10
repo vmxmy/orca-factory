@@ -117,7 +117,7 @@ func (r *Runtime) runSmoke(ctx context.Context, t Ticket, p *merge.Progress) ([]
 		return nil, err
 	}
 	defer release()
-	if err = r.verifyGitHubDecision(ctx, t, ""); err != nil {
+	if err = r.verifyFreshDecision(ctx, t, ""); err != nil {
 		return nil, err
 	}
 	env := []string{}
