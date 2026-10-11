@@ -128,7 +128,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			return result, errors.New("closed or held task observed; execution remains blocked")
 		}
 	}
-	if err = e.githubExecution(ctx, t); err != nil {
+	if err = e.freshExecution(ctx, t); err != nil {
 		return result, err
 	}
 	var head string
