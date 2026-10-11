@@ -21,7 +21,7 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 		return err
 	}
 	defer release()
-	if err = e.githubExecution(ctx, t); err != nil {
+	if err = e.freshExecution(ctx, t); err != nil {
 		return err
 	}
 	cp.Task, cp.Dispatch = opts.Task, ""

@@ -351,6 +351,7 @@ func (p *pruner) issueSafe(path, branch string) bool {
 		p.keep(object, "Orca inventory unavailable")
 		return false
 	}
+	refs := []string{}
 	for _, item := range p.orca {
 		match := item.Path == path
 		for _, git := range p.git {
@@ -374,9 +375,47 @@ func (p *pruner) issueSafe(path, branch string) bool {
 		if item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
 			return false
 		}
+		if item.Ticket != "" {
+			refs = append(refs, item.Ticket)
+		}
 	}
-	if id := ticketPattern.FindString(branch + " " + path); id != "" {
+	id := ticketPattern.FindString(branch + " " + path)
+	if id != "" {
+		refs = append(refs, id)
+	}
+	if !p.sameTask(refs) {
+		p.keep(object, "worktree associations conflict or are unavailable")
+		return false
+	}
+	if id != "" {
 		return p.ticketSafe(id, object, "inactive")
+	}
+	return true
+}
+
+// sameTask reports whether every association names one canonical task. Legacy
+// identifiers and GitHub numbers are compared through the GitHub task identity.
+func (p *pruner) sameTask(refs []string) bool {
+	if len(refs) < 2 {
+		return true
+	}
+	if p.github == nil {
+		for _, ref := range refs[1:] {
+			if ref != refs[0] {
+				return false
+			}
+		}
+		return true
+	}
+	first, err := p.github.Read(p.ctx, refs[0])
+	if err != nil {
+		return false
+	}
+	for _, ref := range refs[1:] {
+		task, err := p.github.Read(p.ctx, ref)
+		if err != nil || task.ID != first.ID {
+			return false
+		}
 	}
 	return true
 }

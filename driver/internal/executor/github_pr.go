@@ -10,29 +10,52 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 )
 
-func (e *Executor) githubExecution(ctx context.Context, t Ticket) error {
-	c, ok := e.Linear.(*issues.GitHub)
-	if !ok {
+// freshExecution rereads the selected backend before executor writes. Discovery
+// data never authorizes a dispatch, and auto-failed work belongs to a resolver.
+func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
+	var labels []linear.NamedID
+	repository := e.Config.Owner + "/" + e.Config.Repository
+	linearDone := false
+	switch c := e.Linear.(type) {
+	case *issues.GitHub:
+		task, err := c.Read(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
+			return errors.New("task held, closed or identity changed")
+		}
+		labels, repository = task.Labels.Nodes, c.Repository()
+	case interface {
+		FreshIssue(context.Context, string) (linear.Issue, error)
+	}:
+		issue, err := c.FreshIssue(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		switch issue.State.Name {
+		case "Canceled", "Cancelled", "Duplicate":
+			return errors.New("task closed")
+		}
+		if issue.ID != t.ID || issue.Identifier != t.Identifier {
+			return errors.New("task identity changed")
+		}
+		labels, linearDone = issue.Labels.Nodes, issue.State.Name == "Done"
+	default:
 		return nil
 	}
-	task, err := c.Read(ctx, t.ID)
-	if err != nil {
-		return err
-	}
-	if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
-		return errors.New("task held, closed or identity changed")
-	}
-	for _, label := range task.Labels.Nodes {
+	for _, label := range labels {
 		if label.Name == "auto-failed" {
 			return errors.New("failed task requires resolver")
 		}
 	}
-	comments, err := c.ListComments(ctx, t.ID)
+	comments, err := e.Linear.ListComments(ctx, t.ID)
 	if err != nil {
 		return err
 	}
@@ -50,7 +73,7 @@ func (e *Executor) githubExecution(ctx context.Context, t Ticket) error {
 		for _, line := range strings.Split(comment.Body, "\n") {
 			if raw, ok := strings.CutPrefix(line, merge.HandoffPrefix); ok {
 				var value merge.Handoff
-				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Identifier != t.Identifier || value.Repository != c.Repository() || value.QueueID == "" {
+				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Identifier != t.Identifier || value.Repository != repository || value.QueueID == "" {
 					return errors.New("invalid frozen execution handoff")
 				}
 				if prior, exists := frozen[value.QueueID]; exists && prior != raw {
@@ -61,7 +84,7 @@ func (e *Executor) githubExecution(ctx context.Context, t Ticket) error {
 			}
 			if raw, ok := strings.CutPrefix(line, merge.ProgressPrefix); ok {
 				var value merge.Progress
-				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Repository != c.Repository() || value.QueueID == "" {
+				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Repository != repository || value.QueueID == "" {
 					return errors.New("invalid frozen execution progress")
 				}
 				progress = &value
@@ -148,6 +171,9 @@ func (e *Executor) githubExecution(ctx context.Context, t Ticket) error {
 	if owner != "" && owner != string(machine.OwnerExecutor) && (!e.Config.Merging || owner != string(machine.OwnerMerge)) {
 		return errors.New("task ownership no longer permits executor")
 	}
+	if linearDone && owner != string(machine.OwnerMerge) {
+		return errors.New("task closed")
+	}
 	return nil
 }
 
@@ -156,7 +182,7 @@ func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error
 	if !ok {
 		return "Fixes " + t.Identifier + "\n\n" + t.Todo, nil
 	}
-	if err := e.githubExecution(ctx, t); err != nil {
+	if err := e.freshExecution(ctx, t); err != nil {
 		return "", err
 	}
 	task, err := c.Read(ctx, t.ID)

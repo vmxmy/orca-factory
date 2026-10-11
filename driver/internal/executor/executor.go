@@ -114,7 +114,7 @@ func (e *Executor) Execute(ctx context.Context, t Ticket) (Result, error) {
 }
 
 func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, infraUsed int) (result Result, err error) {
-	if err := e.githubExecution(ctx, t); err != nil {
+	if err := e.freshExecution(ctx, t); err != nil {
 		return result, err
 	}
 	result.State = machine.Initial()

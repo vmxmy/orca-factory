@@ -13,6 +13,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -319,5 +320,27 @@ func TestGitHubPRReferencesIssueURLAndCanonicalIdentity(t *testing.T) {
 				t.Fatalf("missing URL or changed canonical identity: %+v", pr.created[0])
 			}
 		})
+	}
+}
+
+type freshFailedLinear struct {
+	fakeLinear
+	reads int
+}
+
+func (f *freshFailedLinear) FreshIssue(_ context.Context, id string) (linear.Issue, error) {
+	f.reads++
+	return linear.Issue{ID: id, Identifier: "ZII-861", State: linear.NamedID{ID: "s", Name: "In Progress"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-impl"}, {Name: "auto-failed"}}}}, nil
+}
+
+func TestLinearFailedTaskDoesNotDispatch(t *testing.T) {
+	e, oc, _, _, _, ticket := fixture(t, "new-sha")
+	fake := &freshFailedLinear{}
+	e.Linear = fake
+	if _, err := e.Execute(context.Background(), ticket); err == nil {
+		t.Fatal("failed task executed")
+	}
+	if fake.reads == 0 || len(oc.workerRequests) != 0 {
+		t.Fatalf("failed task must be reread and not dispatched: reads=%d workers=%d", fake.reads, len(oc.workerRequests))
 	}
 }

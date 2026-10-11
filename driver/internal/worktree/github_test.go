@@ -19,8 +19,8 @@ import (
 
 func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 	for _, test := range []struct {
-		name, legacy, comment string
-		changed, active, keep bool
+		name, legacy, comment, branch string
+		changed, active, keep         bool
 	}{
 		{name: "comment", comment: "GH-42"},
 		{name: "fresh ownership", comment: "GH-42", changed: true, keep: true},
@@ -28,6 +28,7 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 		{name: "conflicting associations", legacy: "ZII-43", comment: "GH-42", keep: true},
 		{name: "unmapped legacy", legacy: "ZII-99", comment: "GH-42", keep: true},
 		{name: "same canonical identity", legacy: "01234567-1234-1234-1234-012345678901", comment: "GH-42"},
+		{name: "branch names another task", comment: "GH-42", branch: "agent/ZII-43/executor", keep: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// #given
@@ -47,7 +48,11 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 			git("init", "-q")
 			git("-c", "user.name=test", "-c", "user.email=test@example.test", "commit", "--allow-empty", "-qm", "seed")
 			worker := filepath.Join(repo, "run-old")
-			git("worktree", "add", "-qb", "feature-worker", worker)
+			branch := test.branch
+			if branch == "" {
+				branch = "feature-worker"
+			}
+			git("worktree", "add", "-qb", branch, worker)
 			if err := os.WriteFile(filepath.Join(repo, ".git/info/exclude"), []byte(".omc/\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -95,7 +100,7 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 					state = "open"
 				}
 				rows := []any{map[string]any{"number": 42, "state": state, "body": "<!-- orca-task-v1: " + string(meta) + " -->"}}
-				if test.legacy == "ZII-43" {
+				if test.legacy == "ZII-43" || strings.Contains(test.branch, "ZII-43") {
 					rows = append(rows, map[string]any{"number": 43, "state": "closed", "body": `<!-- orca-task-v1: {"id":"11234567-1234-1234-1234-012345678901","identifier":"ZII-43","project":"acme/demo","state":"Done","complete":true,"blockers":[],"related":[]} -->`})
 				}
 				var out any = rows
