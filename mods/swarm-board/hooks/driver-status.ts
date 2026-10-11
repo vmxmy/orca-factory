@@ -3,7 +3,7 @@ type DriverUsage = { requests: number; complexity: number; limits: { repo: strin
 export type DriverStatus = { state: 'unknown' | 'stale' } | {
   state: 'ok'
   generatedAt: string | number
-  tickets: { repo: string; identifier: string; owner: string; phase: string; stage?: string }[]
+  tickets: { repo: string; identifier: string; owner: string; phase: string; stage?: string; backend?: string; url?: string; held?: boolean; blockedReason?: string }[]
   globalPause: { active: boolean; durationSeconds: number }
   linear: DriverUsage
   github?: DriverUsage
@@ -14,7 +14,8 @@ const driverLimit = (value: unknown): value is DriverLimit =>
 export const parseDriverStatus = (value: unknown): DriverStatus | undefined => {
   if (!record(value)) return undefined
   if (value.state === 'unknown' || value.state === 'stale') return { state: value.state }
-  if (!Array.isArray(value.tickets) || !value.tickets.every(t => record(t) && ['repo', 'identifier', 'owner', 'phase'].every(k => typeof t[k] === 'string'))
+  if (!Array.isArray(value.tickets) || !value.tickets.every(t => record(t) && ['repo', 'identifier', 'owner', 'phase'].every(k => typeof t[k] === 'string')
+      && ['backend', 'url', 'blockedReason'].every(k => t[k] === undefined || typeof t[k] === 'string') && (t.held === undefined || typeof t.held === 'boolean'))
       || (typeof value.generatedAt !== 'number' && typeof value.generatedAt !== 'string')) return undefined
   if (value.state !== 'ok' || !record(value.globalPause) || !record(value.linear)) return undefined
   const pause = value.globalPause, usage = value.linear

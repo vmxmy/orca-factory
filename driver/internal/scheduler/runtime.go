@@ -240,6 +240,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = candidate
 		ticket.Blocked = issue.Blocked()
+		ticket.URL, ticket.Held = issue.URL, issue.Held
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
 		for _, relation := range issue.InverseRelations.Nodes {
 			if relation.Type != "blocks" {

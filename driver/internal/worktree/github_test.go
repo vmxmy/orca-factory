@@ -19,8 +19,8 @@ import (
 
 func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 	for _, test := range []struct {
-		name, legacy, comment, branch string
-		changed, active, keep         bool
+		name, legacy, comment, branch    string
+		changed, active, listFails, keep bool
 	}{
 		{name: "comment", comment: "GH-42"},
 		{name: "fresh ownership", comment: "GH-42", changed: true, keep: true},
@@ -29,6 +29,7 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 		{name: "unmapped legacy", legacy: "ZII-99", comment: "GH-42", keep: true},
 		{name: "same canonical identity", legacy: "01234567-1234-1234-1234-012345678901", comment: "GH-42"},
 		{name: "branch names another task", comment: "GH-42", branch: "agent/ZII-43/executor", keep: true},
+		{name: "task list unavailable", comment: "GH-42", listFails: true, keep: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			// #given
@@ -95,6 +96,10 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 					http.Error(w, "forbidden", 500)
 					return
 				}
+				if test.listFails && !strings.HasSuffix(r.URL.Path, "/comments") {
+					http.Error(w, "unavailable", http.StatusBadGateway)
+					return
+				}
 				state := "closed"
 				if test.active {
 					state = "open"
@@ -124,7 +129,7 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 			code := worktree.RunPrune(context.Background(), nil, &out, &warnings)
 			// #then
 			_, removed := os.Stat(calls)
-			if code != 0 || (removed == nil) == test.keep || !test.keep && reads < 2 {
+			if code != 0 && !test.listFails || (removed == nil) == test.keep || !test.keep && reads < 2 {
 				t.Fatalf("prune code=%d removed=%v reads=%d warnings=%s", code, removed == nil, reads, warnings.String())
 			}
 		})

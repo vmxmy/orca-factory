@@ -181,7 +181,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}, Linear: status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}}
 	for _, ticket := range backend.tickets {
 		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
-			row := status.Ticket{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase)}
+			row := scheduler.ObservationRow(ticket, s.Config.Repositories)
 			if p := ticket.Progress; p != nil && p.Deployment != nil {
 				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
 			}

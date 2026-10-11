@@ -1166,8 +1166,9 @@ export const register: Register = on => {
     }
     // Dependencies take precedence over the online driver and precheck signals.
     type QueueGroup = 'warn' | 'claimable' | 'blocked' | 'unknown'
+    const driverRow = (id: string) => b.driver?.state === 'ok' ? b.driver.tickets.find(row => row.identifier === id) : undefined
     const queueGroupOf = (t: Ticket): QueueGroup => {
-      if (blockersOf(t.id)) return 'blocked'
+      if (blockersOf(t.id) || driverRow(t.id)?.blockedReason) return 'blocked'
       if (driverOnline && Array.isArray(blockedBy?.[t.id])) return 'claimable'
       if (!lp) return 'unknown'
       if (lp.claimable.includes(t.id)) return 'claimable'
@@ -1293,6 +1294,9 @@ export const register: Register = on => {
     const GROUP_EMOJI: Record<QueueGroup, string> = { warn: '⚠', claimable: '🟢', blocked: '⛓', unknown: '?' }
     const queueCardReason = (t: Ticket, group: QueueGroup): string | null => {
       if (group === 'blocked') {
+        const live = driverRow(t.id)
+        if (live?.held) return '🔒 导入保留'
+        if (live?.blockedReason && !blockersOf(t.id)) return live.blockedReason
         const blockers = blockedBy?.[t.id] ?? []
         if (blockers.length === 0) return null
         const shown = blockers.slice(0, 3).map(id => shortId(id) + stateBadge(id)).join(' ')
