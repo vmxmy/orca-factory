@@ -1258,3 +1258,20 @@ test('driver candidate stage remains in queue alongside resolver ownership', asy
   expect(await ui.find({ type: 'Text', text: /🙋 Agent处置 \(1\)/ })).toBeDefined()
   await ui.unmount()
 })
+
+for (const [name, row, text] of [
+  ['held', { held: true, blockedReason: 'import held' }, /导入保留/],
+  ['blocked reason', { blockedReason: 'dependency evidence incomplete' }, /dependency evidence incomplete/],
+] as const) {
+  test('driver ' + name + ' appears on the queue card', async ($, on) => {
+    // #given
+    await driverFixture($, on, JSON.stringify({ generatedAt: new Date().toISOString(), state: 'ok', tickets: [
+      { repo: '/repo', identifier: 'ZII-888', owner: '无', phase: '待领', stage: 'candidate', backend: 'github', ...row },
+    ], globalPause: { active: false, durationSeconds: 0 }, linear: { requests: 0, complexity: 0, limits: [] } }))
+    // #when
+    const ui = await mount($, 'terminal')
+    // #then
+    expect(Boolean(await ui.find({ type: 'Text', text }))).toBe(true)
+    await ui.unmount()
+  })
+}

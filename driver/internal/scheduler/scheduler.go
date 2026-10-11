@@ -28,6 +28,7 @@ type Ticket struct {
 	Handoff                             *merge.Handoff
 	MergeProblem                        string
 	ID, Identifier, Repo, Terminal, Run string
+	URL                                 string
 	Scope                               []string
 	Blockers                            []string
 	BlockersIncomplete                  bool
@@ -36,7 +37,7 @@ type Ticket struct {
 	Owner                               machine.Owner
 	Phase                               machine.Phase
 	Attempt                             int
-	Candidate, Legacy, Blocked          bool
+	Candidate, Legacy, Blocked, Held    bool
 }
 type Legacy struct{ HasPR, Complete bool }
 type ActionKind string
@@ -192,7 +193,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
 		for _, t := range tickets {
-			row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase)}
+			row := ObservationRow(t, s.Config.Repositories)
 			switch {
 			case owned(t):
 			case t.Candidate:

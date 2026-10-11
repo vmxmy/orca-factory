@@ -123,3 +123,35 @@ func TestFailedSnapshotPreservesStatusObservation(t *testing.T) {
 		t.Fatalf("successful empty snapshot did not renew observation: %+v", view)
 	}
 }
+
+func TestStatusPushShowsBackendURLHeldAndBlockReason(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	f := &fakeBackend{applyErr: errors.New("write outcome unknown"), tickets: []Ticket{
+		{ID: "b", Identifier: "ZII-891", Repo: "a", Candidate: true, Blocked: true, Blockers: []string{"ZII-1"}, URL: "https://github.com/o/r/issues/891"},
+		{ID: "h", Identifier: "ZII-892", Repo: "a", Candidate: true, Blocked: true, BlockersIncomplete: true, Held: true},
+	}}
+	s := setup(f)
+	s.Config.Repositories[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github"}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "orca-factory", "status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view status.View
+	if err := json.Unmarshal(data, &view); err != nil || len(view.Tickets) != 2 {
+		t.Fatalf("tickets: %s", data)
+	}
+	rows := map[string]status.Ticket{}
+	for _, tk := range view.Tickets {
+		rows[tk.Identifier] = tk
+	}
+	blocked, held := rows["ZII-891"], rows["ZII-892"]
+	if blocked.Backend != "github" || blocked.URL != "https://github.com/o/r/issues/891" || blocked.Held || blocked.BlockedReason != "blocked by ZII-1" {
+		t.Fatalf("blocked row: %+v", blocked)
+	}
+	if !held.Held || held.BlockedReason != "import held" {
+		t.Fatalf("held row: %+v", held)
+	}
+}
