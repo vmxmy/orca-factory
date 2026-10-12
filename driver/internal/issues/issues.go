@@ -533,6 +533,9 @@ func (c *GitHub) createImported(ctx context.Context, in CreateInput) (Task, erro
 	if err != nil {
 		return Task{}, err
 	}
+	if err = c.awaitListed(ctx, t.ID); err != nil {
+		return Task{}, err
+	}
 	if stateType(in.State) == "completed" || stateType(in.State) == "canceled" || stateType(in.State) == "duplicate" {
 		if _, err = c.UpdateIssue(ctx, t.ID, in.State, nil, nil); err != nil {
 			return Task{}, err
@@ -540,6 +543,28 @@ func (c *GitHub) createImported(ctx context.Context, in CreateInput) (Task, erro
 		return c.Read(ctx, t.ID)
 	}
 	return t, nil
+}
+
+// GitHub's issue list lags a moment behind creation, and every later write
+// resolves canonical IDs through that list.
+func (c *GitHub) awaitListed(ctx context.Context, id string) error {
+	for attempt := 0; attempt < 60; attempt++ {
+		rows, err := c.List(ctx)
+		if err != nil {
+			return err
+		}
+		for _, v := range rows {
+			if v.ID == id {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return errors.New("created task not listed by GitHub")
 }
 
 // GitHubUsage is additive to the legacy usage contract and never probes Linear.

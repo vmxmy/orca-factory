@@ -31,6 +31,7 @@ type importServer struct {
 	comments map[int][]map[string]any
 	writes   int
 	fail     string
+	lag      int
 }
 
 func newImportServer(t *testing.T) (*GitHub, *importServer) {
@@ -52,6 +53,10 @@ func newImportServer(t *testing.T) (*GitHub, *importServer) {
 		switch {
 		case path == "" && r.Method == "GET":
 			result = f.rows
+			if f.lag > 0 {
+				f.lag--
+				result = f.rows[:len(f.rows)-1]
+			}
 		case path == "" && r.Method == "POST":
 			n := len(f.rows) + 1
 			row := map[string]any{"node_id": fmt.Sprintf("I_native_%d", n), "number": n, "title": input["title"], "body": input["body"], "state": "open", "created_at": "2026-10-06T00:00:00Z", "updated_at": "2026-10-06T00:00:00Z"}
@@ -62,6 +67,9 @@ func newImportServer(t *testing.T) (*GitHub, *importServer) {
 			row["labels"] = labels
 			f.rows = append(f.rows, row)
 			result = row
+			if f.fail == "list-lag" {
+				f.lag = 2
+			}
 			if f.fail == "create-accepted" {
 				f.fail = ""
 				http.Error(w, "lost response", 500)
@@ -354,6 +362,20 @@ func TestImportAndReleaseKeepLocalRecoveryState(t *testing.T) {
 		if err != nil || string(got) != body {
 			t.Fatalf("%s changed: %q %v", name, got, err)
 		}
+	}
+}
+
+func TestImportWaitsForCreatedIssueToBeListed(t *testing.T) {
+	c, f := newImportServer(t)
+	m := importFixture()
+	importIssue(m)["state"] = "Done"
+	f.fail = "list-lag"
+	if _, err := Import(context.Background(), c, importRaw(t, m), true); err != nil {
+		t.Fatalf("import failed while the created issue was not yet listed: %v", err)
+	}
+	task, err := c.Read(context.Background(), importID)
+	if err != nil || task.NativeState != "closed" || !task.Metadata.ImportHold {
+		t.Fatalf("closed held import not converged: %+v %v", task, err)
 	}
 }
 
