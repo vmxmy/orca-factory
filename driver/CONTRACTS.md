@@ -4,7 +4,6 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
-| GitHub tags 返回数组（name、commit.sha）；compare 返回 base_commit.sha、total_commits 与 commits[].commit.message。2026-10-06 通过 `gh api repos/vmxmy/orca-factory/tags` 和 `gh api repos/vmxmy/orca-factory/compare/swarm-board-v0.3.17...main` 原样录制，基线 b912a73，后续包含 eeb82fd；compare 提交是全仓库历史，生产 Source 以固定 main SHA 的完整 git 历史按插件路径筛选，避免 compare 文件列表截断；测试复用生产 Tag/Comparison 解码结构与 LatestTag 选择 | `github-release-tags.json`、`github-release-compare.json` | `release.TestRecordedReleaseReads` |
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
@@ -56,7 +55,7 @@
 - Linear 完整导出逐页读取包含归档票的正文、父票和调度字段，复用 fresh 连接校验补齐 labels/relations/inverseRelations；评论按最多五票一组完整分页并保留来源作者，不再逐票重复读 fresh、正文与评论。无嵌套续页且每票评论不超过100条时，N票使用 `ceil(N/20)+ceil(N/5)` 次数据请求，另加元数据页；额外关系/评论续页按实际增加，任何缺失或失败不返回完整清单。123票合成夹具含一次逆关系续页和一次评论续页，共34次数据请求（不含3次初始化）；不是线上测量或任意历史大小的固定上界。
 - `ExportIssues` 缺少 operation 末尾 `}` 时，真实 Linear 返回 HTTP 400 / `GRAPHQL_PARSE_FAILED` / `Expected Name, found <EOF>`。2026-10-08 实录与来源见 `linear-export-parse-error{,.provenance}.json`。公开导出夹具检查 parent、nodes、pageInfo、issues 与 operation 的固定收尾，不能只匹配操作名就接受畸形请求；成功数据仍是合成夹具，不代表修复后线上导出成功。
 - maintenance 持久化本机 drain/freeze/running，独立于 quota。freeze 只能证明本机合作锁无活跃写者，不能声明跨机器单写者；生产切换仍须明确授权与全量事实核验。
-- `testdata/recorded/github/` 中样本记录来源，合成行为夹具不冒充线上录制。既有 Linear recorded、executor/scheduler goleak 与 release FIFO 保留。
+- `testdata/recorded/github/` 中样本记录来源，合成行为夹具不冒充线上录制。既有 Linear recorded 与 executor/scheduler goleak 保留。
 
 ## 合并交接（#141）
 
@@ -120,12 +119,6 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 敏感参数的值在其他参数或 stderr 中重复出现时同样替换为 `[REDACTED]`；`runx.TestExternalCallLogRepeatedCredential` 重放 `git-stderr-auth-failure.txt`，验证失败退出码、录制诊断与重复凭据脱敏。
 - `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
 - 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
-## 自动发布的持久回执
-
-仅 live `driver serve` 在获得单例锁后启用发布；dry-run 不创建发布适配器。每轮已获准的仓库巡检结束后扫描，发布计划先写入 `~/.local/state/orca-factory/releases/<仓库名 SHA-256>.json`，记录入队时间、固定 main、文件字节、PR、合并 SHA 和完成状态。功能 PR 与发布 PR 在同一仓库按持久入队时间选出唯一队首，再复用 `internal/merge` 合并。
-
-重启先恢复同一发布分支与 PR，已确认的合并不重做；tag 和 release 写入失败通过读取远端回执恢复。发布只改 manifest 版本、存在时的 `MOD_VERSION` 和 CHANGELOG。等待期间插件源码变化、发布分支被改写、tag 指向冲突、追赶预算耗尽或 smoke 结果不确定时保留队首并报告错误，需要人工核对后恢复；不得删除状态来绕过这些阻塞。部署/冒烟未确认通过前不放行后续 PR。
-
 ## Resolver 处置
 
 - `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。

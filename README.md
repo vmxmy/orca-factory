@@ -18,7 +18,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
-看板：接入后在目标仓库里启动 Claude Code，首次会按 `.claude/settings.json` 自动安装 `swarm-board` 插件（私有 marketplace 靠本机 `gh` 登录），输入 `/swarm` 打开；`t` 泳道 / `s` agent / `d` 明细 / `q` 队列。Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）会显示 coordinator 写回的进度，状态列为 `in-progress` / `in-review` / `completed`。Workspace Board 只显示现存 worktree（合并后 worktree 会被删除，所以 Done 列通常是 0）；完成历史看 `/swarm` 的「今日完成」和 GitHub Issues。
+看板：票的流转显示在 Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）。先运行 `bin/orca-factory board-columns` 在本机 Orca 加入 driver 的列（实现中 / 验证中 / 排队合并 / 处置中），重启 Orca 后用 `--check` 确认；列与阶段的对应见 `driver/README.md` 的“Orca 看板”。看板只显示现存 worktree，尚未领取的票和完成历史看 GitHub Issues。
 
 本仓库自己也接入了流水线（自接入），`core/` 是源、`scripts/agent-gates/` 是安装副本，改 `core/` 后要跑 `bin/orca-factory update .`，详见 `ONBOARD.md` 的「附：自接入」。
 
@@ -32,9 +32,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 | `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`intake.md`（用户手动开的建票会话）、`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
 | `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
 | `examples/zhiyun-ai-dashboard/` | 一个真实项目的配置（三份项目文件 + `roles/local-worker.md` + `constitution/local-engineering.md`），照着填 |
-| `bin/orca-factory` | `init`（装 core + 项目模板，并在 `<repo>/.claude/settings.json` 登记 marketplace 与 swarm-board）/ `update`（只刷新 core，含 constitution/ roles/）/ `check`（core 是否漂移、共享条款是否被覆盖、mod 是否登记）/ `selftest` |
-| `mods/swarm-board/` | Claude Code mod：`/swarm` 看板。泳道视角（待领 / 实现中 / gate·评审 / CI·合并 / 需要人 / 今日完成）与 agent 视角（时长、token、估算成本、最后活动），数据来自配置选定的票据后端、Orca、gh、ledger 与 driver 观察快照 |
-| `.claude-plugin/marketplace.json` | 本仓库即插件 marketplace；目标仓库 `.claude/settings.json` 的 `extraKnownMarketplaces` + `enabledPlugins` 指向它，Claude Code 启动时自动安装 |
+| `bin/orca-factory` | `init`（装 core + 项目模板）/ `update`（只刷新 core，含 constitution/ roles/；两者都会移除已退役的 swarm-board 登记）/ `check`（core 是否漂移、共享条款是否被覆盖）/ `board-columns`（安装 Orca 看板列）/ `selftest` |
 
 ## 前置条件
 

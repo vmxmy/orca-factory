@@ -3,10 +3,11 @@
 #
 #   orca-factory init <repo-path>      copy core/ (incl. constitution/ and roles/) and the three project files
 #                                      (from templates/, .example stripped) into <repo>/scripts/agent-gates/.
-#                                      Existing project files are never overwritten. Also merges two keys into
-#                                      <repo>/.claude/settings.json so Claude Code auto-installs the swarm-board mod.
+#                                      Existing project files are never overwritten. Removes the retired
+#                                      swarm-board mod registration from <repo>/.claude/settings.json.
 #   orca-factory update <repo-path>    overwrite only the core files (incl. constitution/ roles/) in
 #                                      <repo>/scripts/agent-gates/, print a diff summary. local-*.md untouched.
+#                                      Also removes the retired swarm-board mod registration.
 #   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
 #                                      clauses constitution/{engineering,workflow,handoffs}.md must be byte-identical
 #                                      (reported as OVERRIDDEN otherwise). Exit 1 on any drift.
@@ -23,10 +24,8 @@ TEMPLATES="$FACTORY/templates"
 DEST_REL="scripts/agent-gates"
 PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
 PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitution/handoffs.md)
-MARKETPLACE_REPO="vmxmy/orca-factory"   # .claude-plugin/marketplace.json of this repo; the mod lives in mods/swarm-board
-MOD_ID="swarm-board@orca-factory"
 
-usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
@@ -110,22 +109,19 @@ copy_core() {  # copy_core <dest-dir> ; overwrites
   done < <(core_files)
 }
 
-# Merge the marketplace + enabled-plugin keys into <repo>/.claude/settings.json (created if absent, other keys kept).
-install_mod_settings() {
-  local repo="$1" f="$1/.claude/settings.json" tmp
-  mkdir -p "$repo/.claude"
-  [[ -f "$f" ]] || echo '{}' > "$f"
+# The swarm-board mod is retired in favour of the Orca workspace board: drop its marketplace and plugin keys
+# from <repo>/.claude/settings.json, keeping every other key. A file without them is left untouched.
+retire_mod_settings() {
+  local f="$1/.claude/settings.json" tmp
+  [[ -f "$f" ]] || return 0
+  jq -e '.extraKnownMarketplaces["orca-factory"] != null or .enabledPlugins["swarm-board@orca-factory"] != null' "$f" >/dev/null 2>&1 || return 0
   tmp="$(mktemp)"
-  jq --arg r "$MARKETPLACE_REPO" --arg m "$MOD_ID" \
-    '.extraKnownMarketplaces["orca-factory"] = {source: {source: "github", repo: $r}} | .enabledPlugins[$m] = true' "$f" > "$tmp" \
-    || fail "cannot update $f"
+  jq 'del(.extraKnownMarketplaces["orca-factory"], .enabledPlugins["swarm-board@orca-factory"])
+      | if .extraKnownMarketplaces == {} then del(.extraKnownMarketplaces) else . end
+      | if .enabledPlugins == {} then del(.enabledPlugins) else . end' "$f" > "$tmp" || { rm -f -- "$tmp"; fail "cannot update $f"; }
   mv "$tmp" "$f"
-  echo "init: .claude/settings.json -> marketplace orca-factory + $MOD_ID enabled (Claude Code installs it on next start)"
-  if git -C "$repo" check-ignore -q .claude/settings.json 2>/dev/null; then
-    echo "init: note: .claude/settings.json is gitignored in this repo, so the registration stays on this machine; add '!.claude/settings.json' to .gitignore to share it"
-  fi
+  echo "settings: removed retired swarm-board mod registration from .claude/settings.json"
 }
-mod_enabled() { jq -e --arg m "$MOD_ID" '.enabledPlugins[$m] == true' "$1/.claude/settings.json" >/dev/null 2>&1; }
 
 cmd_init() {
   local repo dest f src
@@ -136,7 +132,7 @@ cmd_init() {
   install_prune "$dest"
   install_ledger "$dest"
   copy_core "$dest"
-  install_mod_settings "$repo"
+  retire_mod_settings "$repo"
   echo "init: core -> $dest ($(core_files | wc -l | tr -d ' ') files)"
   for f in "${PROJECT_FILES[@]}"; do
     src="$TEMPLATES/$f.example"
@@ -192,6 +188,7 @@ cmd_update() {
     cp "$CORE/$f" "$dest/$f"
     if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
   done < <(core_files)
+  retire_mod_settings "$repo"
   echo "update: changed=$changed added=$added unchanged=$same; project files and local-*.md untouched (${PROJECT_FILES[*]})"
 }
 
@@ -224,8 +221,6 @@ cmd_check() {
   while IFS= read -r f; do
     if grep -q '{{' "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
   done < <(find "$dest/constitution" "$dest/roles" -maxdepth 1 -type f -name 'local-*.md' 2>/dev/null | sort)
-  if mod_enabled "$repo"; then echo "check: ok       .claude/settings.json enables $MOD_ID"
-  else echo "check: MOD      $MOD_ID not enabled in .claude/settings.json (run: orca-factory init $repo)"; rc=1; fi
   (( rc == 0 )) && echo "check: core files match $FACTORY/core"
   return $rc
 }
@@ -1589,12 +1584,15 @@ FAKE
   cmd_update "$SELFTEST_TMP" > /dev/null
   cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
   echo "selftest: update restored shared clause"
-  mod_enabled "$SELFTEST_TMP" || fail "selftest: init did not enable $MOD_ID in .claude/settings.json"
-  if command -v claude >/dev/null; then
-    claude plugin validate "$FACTORY/mods/swarm-board" >/dev/null || fail "selftest: mod validate failed"
-    (cd "$SELFTEST_TMP" && claude plugin test "$FACTORY/mods/swarm-board" >/dev/null) || fail "selftest: mod tests failed"
-    echo "selftest: mod validate + test PASS"
+  if jq -e '.enabledPlugins["swarm-board@orca-factory"]' "$SELFTEST_TMP/.claude/settings.json" >/dev/null 2>&1; then
+    fail "selftest: init still enables the retired swarm-board mod"
   fi
+  mkdir -p "$SELFTEST_TMP/.claude"
+  echo '{"keep":1,"extraKnownMarketplaces":{"orca-factory":{"source":{"source":"github","repo":"vmxmy/orca-factory"}},"other":{}},"enabledPlugins":{"swarm-board@orca-factory":true,"x@y":true}}' > "$SELFTEST_TMP/.claude/settings.json"
+  cmd_update "$SELFTEST_TMP" > /dev/null
+  jq -e '.keep == 1 and .extraKnownMarketplaces == {"other":{}} and .enabledPlugins == {"x@y":true}' "$SELFTEST_TMP/.claude/settings.json" >/dev/null \
+    || fail "selftest: update did not retire swarm-board settings"
+  echo "selftest: update retires swarm-board settings and keeps the rest"
   PATH=/usr/bin:/bin "$FACTORY/bin/orca-factory" doctor --json | \
     jq -e '.recommendation.profile == "A" and (.tools|length) > 0' >/dev/null \
     || fail "selftest: doctor must report profile A and tools with restricted PATH"

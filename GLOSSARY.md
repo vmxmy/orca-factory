@@ -40,16 +40,6 @@ _Avoid_: 合并队列、merge lane
 归属为执行器、合并通道或处置 Agent 的票，仍占用流水线的并行容量。
 _Avoid_: 进行中、running
 
-## 发布
-
-**发布 PR**:
-唯一允许修改 `mods/` 下插件版本号的 PR，只改该插件的 `plugin.json` 与 `CHANGELOG.md`，由驱动器自动发起。
-_Avoid_: 版本 PR、release 提交
-
-**功能 PR**:
-实现一张票的 PR，不得修改插件版本号。
-_Avoid_: 普通 PR、开发 PR
-
 ## 失败
 
 **correction**:

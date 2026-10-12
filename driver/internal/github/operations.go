@@ -164,27 +164,3 @@ func (c *Client) CheckRuns(ctx context.Context, owner, repo, ref string) ([]Chec
 		}
 	}
 }
-
-// CreateTag creates a lightweight tag referencing an existing commit.
-func (c *Client) CreateTag(ctx context.Context, owner, repo, tag, sha string) error {
-	return c.request(ctx, http.MethodPost, repoPath(owner, repo)+"/git/refs", map[string]string{"ref": "refs/tags/" + tag, "sha": sha}, nil)
-}
-
-type ReleaseRequest struct {
-	TagName    string `json:"tag_name"`
-	Name       string `json:"name"`
-	Body       string `json:"body,omitempty"`
-	Draft      bool   `json:"draft,omitempty"`
-	Prerelease bool   `json:"prerelease,omitempty"`
-}
-type Release struct {
-	ID      int64  `json:"id"`
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-}
-
-func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input ReleaseRequest) (Release, error) {
-	var release Release
-	err := c.request(ctx, http.MethodPost, repoPath(owner, repo)+"/releases", input, &release)
-	return release, err
-}
