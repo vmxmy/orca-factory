@@ -174,8 +174,8 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			cp.Corrections = result.State.Corrections
 			childSpec := fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief)
 			if canReuse {
-				// startDispatch clears PendingParent; keep the parent for a fallback.
-				parent := cp.Task
+				// startDispatch creates the child once and clears PendingParent before
+				// attempting the terminal-bound worker start.
 				reuseErr := e.startCorrectionDispatch(ctx, c, t, cp, childSpec, orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Terminal: handle})
 				if reuseErr == nil {
 					cp.Terminal = handle
@@ -185,16 +185,11 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				if !orca.IsTerminalStale(reuseErr) {
 					return reuseErr
 				}
-				// The terminal is gone: fall back to a fresh agent. The reuse
-				// attempt already consumed the child-task request, so the fallback
-				// creates its child under a distinct request scope.
-				fresh, childErr := e.recovery().ChildTask(ctx, cp.Run, parent, childSpec, scopedRequest(t, c, "child-fallback", cp.Corrections+1))
-				if childErr != nil {
-					return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(childErr))
-				}
+				// The terminal is gone: reuse the already-created child task and
+				// start it with a fresh agent under a distinct request scope.
 				freshOpts := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
-				freshOpts.Task = fresh
-				if err := e.startDispatch(ctx, c, t, cp, freshOpts); err != nil {
+				freshOpts.Task = cp.Task
+				if err := e.startDispatchWithRequest(ctx, c, t, cp, freshOpts, scopedRequest(t, c, "worker-fallback", cp.Corrections+1)); err != nil {
 					return err
 				}
 				cp.Terminal = ""

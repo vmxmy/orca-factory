@@ -16,6 +16,10 @@ import (
 // Persist intent before I/O, then preserve every usable association even when
 // the command returns an error. Completion belongs only to this dispatch.
 func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions) error {
+	return e.startDispatchWithRequest(ctx, c, t, cp, opts, scopedRequest(t, c, "worker", cp.Corrections+1))
+}
+
+func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions, request string) error {
 	release, err := maintenance.Admission()
 	if err != nil {
 		return err
@@ -33,7 +37,7 @@ func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *ch
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
-	receipt, callErr := e.workerStart(ctx, scopedRequest(t, c, "worker", cp.Corrections+1), opts)
+	receipt, callErr := e.workerStart(ctx, request, opts)
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
 	}

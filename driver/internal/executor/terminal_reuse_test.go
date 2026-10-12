@@ -58,6 +58,7 @@ func TestRecordedWorkerStartReuseTerminal(t *testing.T) {
 type reuseOrca struct {
 	*recoveryOrca
 	started       []orca.StartOptions
+	requests      []string
 	releases      int
 	sequence      int
 	reuseRejected bool
@@ -65,6 +66,7 @@ type reuseOrca struct {
 }
 
 func (o *reuseOrca) WorkerStart(ctx context.Context, request string, opts orca.StartOptions) (orca.Receipt, error) {
+	o.requests = append(o.requests, request)
 	o.started = append(o.started, opts)
 	if o.reuseRejected && opts.Terminal != "" {
 		return nil, &orca.RejectedError{Code: "terminal_handle_stale"}
@@ -157,7 +159,7 @@ func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 
 // A stale-terminal rejection falls back to a fresh agent without failing the run.
 func TestCorrectionReuseRejectedFallsBack(t *testing.T) {
-	e, o, tools, _, _, ticket := recoveryFixture(t)
+	e, o, tools, service, _, ticket := recoveryFixture(t)
 	tools.gateReds = 1
 	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}, reuseRejected: true}
 	e.Orca = ro
@@ -179,5 +181,11 @@ func TestCorrectionReuseRejectedFallsBack(t *testing.T) {
 	}
 	if reuseAttempt == nil {
 		t.Fatalf("no reuse attempt recorded before fallback: %+v", ro.started)
+	}
+	if service.children != 1 {
+		t.Fatalf("fallback must reuse the child task created before terminal rejection: child calls=%d", service.children)
+	}
+	if len(ro.requests) < 3 || ro.requests[1] == ro.requests[2] {
+		t.Fatalf("fallback must use a distinct request scope after terminal rejection: requests=%v", ro.requests)
 	}
 }
