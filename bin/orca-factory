@@ -14,8 +14,8 @@
 #   orca-factory doctor [--json]       read-only environment checks and recommended setup profile (A or B).
 #   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
 #                                      an edited shared clause is reported as overridden.
-#   orca-factory board-columns [--check]  add the driver's Orca workspace board columns before Done in the local
-#                                      Orca data file (backup first; restart Orca to load). --check only verifies.
+#   orca-factory board-columns [--check]  lay out the local Orca workspace board as one column per driver phase
+#                                      (backup first; Orca must be stopped, start it after). --check only verifies.
 set -Eeuo pipefail
 
 FACTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -409,38 +409,49 @@ cmd_doctor() {
 }
 
 SELFTEST_TMP=""
-# Orca board columns the driver writes; ids must match driver/internal/machine BoardColumn.
-BOARD_COLUMNS='[{"id":"agent-impl","label":"实现中","color":"blue","icon":"circle-progress"},{"id":"agent-verify","label":"验证中","color":"violet","icon":"circle-ellipsis"},{"id":"agent-merge","label":"排队合并","color":"sky","icon":"git-pull-request"},{"id":"agent-resolve","label":"处置中","color":"rose","icon":"circle-alert"}]'
+# Orca board columns, one per driver phase; ids must match driver/internal/machine boardColumns.
+BOARD_COLUMNS='[{"id":"driver-unclaimed","label":"待领","color":"neutral","icon":"circle"},{"id":"driver-worker","label":"worker 运行中","color":"blue","icon":"circle-progress"},{"id":"driver-branch-check","label":"分支检查","color":"violet","icon":"circle-ellipsis"},{"id":"driver-gate","label":"gate","color":"violet","icon":"circle-ellipsis"},{"id":"driver-review","label":"审查","color":"violet","icon":"circle-ellipsis"},{"id":"driver-correction","label":"写 correction","color":"amber","icon":"circle-progress"},{"id":"driver-open-pr","label":"开 PR","color":"sky","icon":"git-pull-request"},{"id":"driver-merge-queue","label":"排队合并","color":"sky","icon":"git-pull-request"},{"id":"driver-resolver","label":"Agent处置","color":"rose","icon":"circle-alert"},{"id":"driver-await-human","label":"等人批","color":"amber","icon":"circle-alert"}]'
 # Orca's own defaults, used when the data file has never stored a column list.
 BOARD_DEFAULTS='[{"id":"todo","label":"Todo","color":"neutral","icon":"circle"},{"id":"in-progress","label":"In progress","color":"conductor-progress","icon":"conductor-progress"},{"id":"in-review","label":"In review","color":"conductor-review","icon":"conductor-review"},{"id":"completed","label":"Done","color":"conductor-done","icon":"conductor-done"}]'
+# Columns the layout drops; cards still in them move to in-progress (手动工作区).
+BOARD_RETIRED='["todo","in-review","agent-impl","agent-verify","agent-merge","agent-resolve"]'
+BOARD_LAYOUT='
+  ($want | map(.id)) as $driver
+  | ((.ui.workspaceStatuses // $defaults) | map(select(.id as $id | ($retired + $driver) | index($id) | not))) as $kept
+  | (if ($kept | map(.id) | index("in-progress")) then $kept else [$defaults[1]] + $kept end) as $kept
+  | (if ($kept | map(.id) | index("completed")) then $kept else $kept + [$defaults[3]] end) as $kept
+  | ($kept | map(if .id == "in-progress" then .label = "手动工作区" elif .id == "completed" then .label = "已合并" else . end)) as $kept
+  | ($kept | map(.id) | index("completed")) as $done
+  | .ui.workspaceStatuses = $kept[:$done] + $want + $kept[$done:]
+  | if .worktreeMeta then .worktreeMeta |= map_values(if (.workspaceStatus as $s | $retired | index($s)) then .workspaceStatus = "in-progress" else . end) else . end'
 
 cmd_board_columns() {
-  local mode="${1:-}" file="${ORCA_DATA_FILE:-$HOME/.config/orca/profiles/local-default/orca-data.json}" missing tmp
+  local mode="${1:-}" file="${ORCA_DATA_FILE:-$HOME/.config/orca/profiles/local-default/orca-data.json}" tmp
   case "$mode" in ''|--check) ;; *) usage ;; esac
   command -v jq >/dev/null || fail 'board-columns requires jq'
   [[ -f "$file" ]] || fail "Orca data file not found: $file"
-  missing=$(jq -r --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" \
-    '[$want[].id] - [(.ui.workspaceStatuses // $defaults)[].id] | join(" ")' "$file") || fail "unreadable Orca data file: $file"
-  if [[ -z "$missing" ]]; then
-    echo "board-columns: driver columns present in $file"
+  tmp=$(mktemp "$file.XXXXXX")
+  jq --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" --argjson retired "$BOARD_RETIRED" "$BOARD_LAYOUT" "$file" > "$tmp" \
+    || { rm -f -- "$tmp"; fail "unreadable Orca data file: $file"; }
+  if jq -e --slurpfile laid "$tmp" '.ui.workspaceStatuses == $laid[0].ui.workspaceStatuses and .worktreeMeta == $laid[0].worktreeMeta' "$file" > /dev/null; then
+    rm -f -- "$tmp"
+    echo "board-columns: driver phase columns present in $file"
     return 0
   fi
   if [[ "$mode" == --check ]]; then
-    echo "board-columns: missing $missing in $file" >&2
+    rm -f -- "$tmp"
+    echo "board-columns: $file differs from the driver phase layout" >&2
     return 1
   fi
+  # A running Orca keeps its settings in memory and writes them back over this file.
+  if [[ -z "${ORCA_DATA_FILE:-}" ]] && pgrep -x 'orca-ide|Orca' > /dev/null; then
+    rm -f -- "$tmp"
+    fail 'board-columns: stop Orca (app and orca serve) first; it would overwrite the columns'
+  fi
   cp -p -- "$file" "$file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
-  tmp=$(mktemp "$file.XXXXXX")
-  jq --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" '
-    (.ui.workspaceStatuses // $defaults) as $have
-    | ($have | map(.id)) as $ids
-    | ($want | map(select(.id as $id | $ids | index($id) | not))) as $add
-    | ($ids | index("completed")) as $done
-    | .ui.workspaceStatuses = (if $done == null then $have + $add else $have[:$done] + $add + $have[$done:] end)
-  ' "$file" > "$tmp" || { rm -f -- "$tmp"; fail "could not update $file"; }
   chmod --reference="$file" -- "$tmp"
   mv -- "$tmp" "$file"
-  echo "board-columns: added $missing; restart Orca, then run 'orca-factory board-columns --check'"
+  echo "board-columns: wrote driver phase columns; start Orca, then run 'orca-factory board-columns --check'"
 }
 
 cmd_selftest() {
@@ -1770,17 +1781,19 @@ LCF_ECHO_ORCA
   bash "$FACTORY/core/issues.test.sh"
   (
     export ORCA_DATA_FILE="$SELFTEST_TMP/orca-data.json"
-    echo '{"ui":{"workspaceStatuses":[{"id":"todo","label":"Todo","color":"neutral","icon":"circle"},{"id":"completed","label":"Done","color":"conductor-done","icon":"conductor-done"}]}}' > "$ORCA_DATA_FILE"
+    echo '{"ui":{"workspaceStatuses":[{"id":"todo","label":"Todo","color":"neutral","icon":"circle"},{"id":"agent-impl","label":"实现中","color":"blue","icon":"circle-progress"},{"id":"completed","label":"Done","color":"conductor-done","icon":"conductor-done"}]},"worktreeMeta":{"a":{"workspaceStatus":"agent-impl"},"b":{"workspaceStatus":"completed"}}}' > "$ORCA_DATA_FILE"
     if (cmd_board_columns --check) > /dev/null 2>&1; then fail "selftest: board-columns --check passed without driver columns"; fi
     cmd_board_columns > /dev/null
     order=$(jq -r '[.ui.workspaceStatuses[].id] | join(" ")' "$ORCA_DATA_FILE")
-    [[ "$order" == "todo agent-impl agent-verify agent-merge agent-resolve completed" ]] || fail "selftest: board-columns order is $order"
+    [[ "$order" == "in-progress driver-unclaimed driver-worker driver-branch-check driver-gate driver-review driver-correction driver-open-pr driver-merge-queue driver-resolver driver-await-human completed" ]] || fail "selftest: board-columns order is $order"
+    cards=$(jq -r '[.worktreeMeta[].workspaceStatus] | join(" ")' "$ORCA_DATA_FILE")
+    [[ "$cards" == "in-progress completed" ]] || fail "selftest: board-columns left cards in retired columns: $cards"
     before=$(cksum < "$ORCA_DATA_FILE")
     cmd_board_columns > /dev/null
     [[ "$(cksum < "$ORCA_DATA_FILE")" == "$before" ]] || fail "selftest: board-columns is not idempotent"
     cmd_board_columns --check > /dev/null || fail "selftest: board-columns --check rejected installed columns"
   )
-  echo "selftest: Orca board columns install once before Done"
+  echo "selftest: Orca board lays out one column per driver phase"
   echo "selftest: PASS"
 }
 

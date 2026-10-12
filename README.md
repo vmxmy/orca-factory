@@ -18,7 +18,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
-看板：票的流转显示在 Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）。先运行 `bin/orca-factory board-columns` 在本机 Orca 加入 driver 的列（实现中 / 验证中 / 排队合并 / 处置中），重启 Orca 后用 `--check` 确认；列与阶段的对应见 `driver/README.md` 的“Orca 看板”。看板只显示现存 worktree，尚未领取的票和完成历史看 GitHub Issues。
+看板：票的流转显示在 Orca 自带的 Workspace Board（Settings → Shortcuts 里给「Toggle Workspace Board」绑快捷键后打开）。停止 Orca（应用与 `orca serve`）后运行 `bin/orca-factory board-columns`，把看板改成每个 driver 阶段一列，再启动 Orca 并用 `--check` 确认；列与阶段的对应见 `driver/README.md` 的“Orca 看板”。看板只显示现存 worktree，尚未领取的票和完成历史看 GitHub Issues。
 
 本仓库自己也接入了流水线（自接入），`core/` 是源、`scripts/agent-gates/` 是安装副本，改 `core/` 后要跑 `bin/orca-factory update .`，详见 `ONBOARD.md` 的「附：自接入」。
 

@@ -26,7 +26,7 @@ func TestMergeLaneMirrorsDecisionsOnOrcaBoard(t *testing.T) {
 		t.Fatal("deployment pause must report its reason")
 	}
 	cards := f.runtime.Orca.(*fakeOrca).cards
-	if len(cards) != 2 || cards[0].Status != "agent-merge" || cards[1].Status != "agent-resolve" || cards[0].Unread || !cards[1].Unread {
+	if len(cards) != 2 || cards[0].Status != "driver-merge-queue" || cards[1].Status != "driver-resolver" || cards[0].Unread || !cards[1].Unread {
 		t.Fatalf("cards=%+v", cards)
 	}
 	for _, c := range cards {

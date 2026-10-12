@@ -71,3 +71,27 @@ func assertRejected(t *testing.T, before, after State, effects []Effect, err err
 		t.Fatalf("rejected event emitted effects: %v", effects)
 	}
 }
+
+// Each driver phase owns one Orca board column; the historical 转人 receipt
+// shares 等人批 because new tickets never enter it.
+func TestBoardColumnPerPhase(t *testing.T) {
+	want := map[Phase]string{
+		PhaseUnclaimed:   "driver-unclaimed",
+		PhaseWorker:      "driver-worker",
+		PhaseBranchCheck: "driver-branch-check",
+		PhaseGate:        "driver-gate",
+		PhaseReview:      "driver-review",
+		PhaseCorrection:  "driver-correction",
+		PhaseOpenPR:      "driver-open-pr",
+		PhaseMergeQueue:  "driver-merge-queue",
+		PhaseResolver:    "driver-resolver",
+		PhaseAwaitHuman:  "driver-await-human",
+		PhaseHuman:       "driver-await-human",
+		PhaseMerged:      "completed",
+	}
+	for phase, column := range want {
+		if got := BoardColumn(phase); got != column {
+			t.Errorf("BoardColumn(%q) = %q, want %q", phase, got, column)
+		}
+	}
+}
