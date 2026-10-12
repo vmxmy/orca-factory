@@ -54,7 +54,7 @@ func (*serveMergeOrca) AutomationsList(context.Context) (orca.Receipt, error) {
 func (*serveMergeOrca) WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error) {
 	return orca.Receipt{"workers": json.RawMessage(`[]`)}, nil
 }
-func (*serveMergeOrca) WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error) {
+func (*serveMergeOrca) WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error) {
 	return orca.Receipt{}, nil
 }
 

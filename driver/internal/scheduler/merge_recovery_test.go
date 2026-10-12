@@ -25,7 +25,7 @@ func (o *recoveredMergeOrca) RunUse(context.Context, string, string) (orca.Recei
 func (o *recoveredMergeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	return []orca.Task{{ID: "task_1", RunID: "run_1", Status: "completed", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"succeeded"}`)}}, nil
 }
-func (o *recoveredMergeOrca) WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error) {
+func (o *recoveredMergeOrca) WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error) {
 	return orca.Receipt{}, nil
 }
 func (o *recoveredMergeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {

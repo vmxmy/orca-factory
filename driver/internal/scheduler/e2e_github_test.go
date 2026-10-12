@@ -96,8 +96,8 @@ func (o *e2eSchedulerOrca) WorkerRelease(_ context.Context, _, dispatch string) 
 	o.releases = append(o.releases, dispatch)
 	return orca.Receipt{}, nil
 }
-func (o *e2eSchedulerOrca) WorktreeSet(_ context.Context, path, _, status, _ string) (orca.Receipt, error) {
-	o.worktreeSets = append(o.worktreeSets, path+" "+status)
+func (o *e2eSchedulerOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (orca.Receipt, error) {
+	o.worktreeSets = append(o.worktreeSets, card.Path+" "+card.Status)
 	return orca.Receipt{}, nil
 }
 

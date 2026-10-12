@@ -12,6 +12,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -108,6 +109,7 @@ func (r *Runtime) pauseDeployment(ctx context.Context, t Ticket, p *merge.Progre
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
+	r.board(ctx, t, machine.PhaseResolver, d.Reason)
 	return errors.New(d.Reason)
 }
 

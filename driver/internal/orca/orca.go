@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -470,20 +471,81 @@ func TurnStarted(r Receipt) bool {
 	return false
 }
 
+// BoardCard is the Orca workspace board metadata of one ticket worktree.
+// Zero Issue/PR and empty strings leave those Orca fields unchanged.
+type BoardCard struct {
+	Path, Status, DisplayName, Comment, LinearIssue, Parent string
+	Issue, PR                                               int
+	Unread                                                  bool
+}
+
+// TicketCard builds the card for a ticket phase. A GitHub issue number links
+// natively; otherwise the identifier links as a Linear issue. The comment
+// always ends with exactly one `issue:` line so worktree pruning can map the
+// card back to its ticket.
+func TicketCard(path, identifier, title string, issue int, phase machine.Phase, detail string) BoardCard {
+	card := BoardCard{Path: path, Status: machine.BoardColumn(phase), DisplayName: strings.TrimSpace(identifier + " " + title), Issue: issue, Unread: phase == machine.PhaseResolver}
+	if issue == 0 {
+		card.LinearIssue = identifier
+	}
+	card.Comment = "driver: " + string(phase)
+	if detail != "" {
+		card.Comment += " · " + detail
+	}
+	card.Comment += "\nissue: " + identifier
+	return card
+}
+
 // WorktreeSet updates the Orca board metadata of the worktree at an absolute path.
-func (c *Client) WorktreeSet(ctx context.Context, path, linearIssue, status, comment string) (Receipt, error) {
+func (c *Client) WorktreeSet(ctx context.Context, card BoardCard) (Receipt, error) {
 	release, err := maintenance.Write()
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	if !filepath.IsAbs(path) || status == "" {
-		return nil, invalid("worktree set requires absolute path and status")
+	if !filepath.IsAbs(card.Path) || card.Status == "" || (card.Parent != "" && !filepath.IsAbs(card.Parent)) {
+		return nil, invalid("worktree set requires absolute paths and status")
 	}
-	args := []string{"worktree", "set", "--worktree", "path:" + path, "--workspace-status", status}
-	args = add(args, "--linear-issue", linearIssue)
-	args = add(args, "--comment", comment)
+	args := []string{"worktree", "set", "--worktree", "path:" + card.Path, "--workspace-status", card.Status}
+	args = add(args, "--display-name", card.DisplayName)
+	args = add(args, "--linear-issue", card.LinearIssue)
+	args = add(args, "--comment", card.Comment)
+	if card.Issue > 0 {
+		args = append(args, "--issue", strconv.Itoa(card.Issue))
+	}
+	if card.PR > 0 {
+		args = append(args, "--pr", strconv.Itoa(card.PR))
+	}
+	if card.Parent != "" {
+		args = append(args, "--parent-worktree", "path:"+card.Parent)
+	}
+	if card.Unread {
+		args = append(args, "--unread")
+	} else {
+		args = append(args, "--read")
+	}
 	return c.call(ctx, args)
+}
+
+// ReceiptWorktree returns the absolute worktree path a worker-start receipt
+// placed the worker in, or "" when the receipt does not name one.
+func ReceiptWorktree(r Receipt) string {
+	field := func(raw json.RawMessage, key string) string {
+		var row map[string]json.RawMessage
+		var s string
+		if json.Unmarshal(raw, &row) == nil {
+			_ = json.Unmarshal(row[key], &s)
+		}
+		return s
+	}
+	var top string
+	_ = json.Unmarshal(r["worktreePath"], &top)
+	for _, path := range []string{top, field(r["worktree"], "path"), field(r["placement"], "worktreePath")} {
+		if filepath.IsAbs(path) {
+			return path
+		}
+	}
+	return ""
 }
 func (c *Client) TerminalShow(ctx context.Context, terminal string) (Receipt, error) {
 	return c.call(ctx, []string{"terminal", "show", "--terminal", terminal})

@@ -27,7 +27,7 @@ import (
 type LinearClient = issues.Client
 type OrcaClient interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
-	WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error)
+	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
 	AutomationsList(context.Context) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
@@ -240,7 +240,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = candidate
 		ticket.Blocked = issue.Blocked()
-		ticket.URL, ticket.Held = issue.URL, issue.Held
+		ticket.URL, ticket.Held, ticket.Title, ticket.Number = issue.URL, issue.Held, issue.Title, issue.Number
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
 		for _, relation := range issue.InverseRelations.Nodes {
 			if relation.Type != "blocks" {

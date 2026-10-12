@@ -38,6 +38,14 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
+	switch {
+	case human:
+		r.board(ctx, t, machine.PhaseResolver, p.Reason)
+	case result.Status == merge.Correction:
+		r.board(ctx, t, machine.PhaseCorrection, p.Reason)
+	default:
+		r.board(ctx, t, machine.PhaseMergeQueue, p.Reason)
+	}
 	if human {
 		return nil
 	}

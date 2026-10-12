@@ -50,6 +50,15 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 	if err := e.comment(ctx, t.ID, body); err != nil {
 		return errors.New("human handoff comment failed")
 	}
+	worktree := ""
+	if cp != nil {
+		worktree = cp.Worktree
+	} else if saved, err := readCheckpoint(e.Config, t); err != nil {
+		e.warn("%s Orca board checkpoint unavailable: %v", t.Identifier, err)
+	} else if saved != nil {
+		worktree = saved.Worktree
+	}
+	e.board(ctx, t, worktree, machine.PhaseResolver, state.HumanReason, 0)
 	return nil
 }
 

@@ -41,6 +41,20 @@ orca-factory-driver status --json
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
 
+## Orca 看板
+
+每张票的 worktree 在 Orca workspace 看板上有一张卡片，driver 在阶段变化时更新它：执行器转移、转处置、合并通道的等待/correction/转处置、部署屏障暂停、处置 Agent 派工与结论、合并完成。卡片显示 `<票号> <标题>`，GitHub 模式下链接 Issue 与 PR；评论为 `driver: <阶段>[ · 原因]` 加一行 `issue: <票号>`，prune 依赖这一行把 worktree 对回票。
+
+| 列 id | 列名 | 阶段 |
+| --- | --- | --- |
+| `agent-impl` | 实现中 | worker 运行中、写 correction |
+| `agent-verify` | 验证中 | 分支检查、gate、审查、开 PR |
+| `agent-merge` | 排队合并 | 排队合并、合并通道等待 |
+| `agent-resolve` | 处置中（未读红点） | Agent处置、部署屏障暂停 |
+| `completed` | Done | 已合并；被处置 Agent 接替的旧 worktree |
+
+自定义列由 `bin/orca-factory board-columns` 写入本机 Orca 配置（先备份，重启 Orca 后生效），`--check` 只读核对。Orca 接受未配置的列 id 而不报错，因此缺列时卡片不会出现在任何列里。看板只是镜像：拖动卡片不改变票状态，下一次阶段变化会覆盖它；写入失败只记 warn，不影响票流转。尚未领取的票没有 worktree，只在 GitHub Issues 中可见。
+
 ## Linear 实时批量发现
 
 每轮仍读取全部配置项目及历史评论，按 client 隔离，每个 GraphQL 请求最多五个 issue alias、每票每页 100 条评论，串行完成每票独立分页。缺 alias、null、分页证据不全、循环 cursor、部分错误或取消都使整轮失败，不发布空队列或部分快照；移除标签的在途票和 Done 后的部署屏障仍保留。100 票、五页 issue、每票一页评论的 HTTP 夹具从每轮 105 次降至 25 次（不含初始化、探测与关键复核），不是线上节省率或复杂度下降证明。

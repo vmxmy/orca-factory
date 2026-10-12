@@ -320,11 +320,3 @@ func (c *Commands) Worktree(ctx context.Context, repo, branch string) (string, e
 	}
 	return "", errors.New("original worktree not found")
 }
-func worktreeReceipt(r orca.Receipt) string {
-	for _, path := range []string{receiptString(r, "worktreePath"), nestedString(r, "worktree", "path"), nestedString(r, "placement", "worktreePath")} {
-		if filepath.IsAbs(path) {
-			return path
-		}
-	}
-	return ""
-}

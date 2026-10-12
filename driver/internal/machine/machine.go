@@ -30,6 +30,34 @@ const (
 	OwnerResolver Owner = "处置Agent"
 )
 
+// Orca workspace board column ids. Done reuses Orca's default column; the
+// others are custom columns installed by `orca-factory board-columns`.
+const (
+	BoardImplement = "agent-impl"
+	BoardVerify    = "agent-verify"
+	BoardMerge     = "agent-merge"
+	BoardResolve   = "agent-resolve"
+	BoardDone      = "completed"
+	BoardTodo      = "todo"
+)
+
+// BoardColumn maps a phase to the Orca board column that shows it.
+func BoardColumn(p Phase) string {
+	switch p {
+	case PhaseUnclaimed:
+		return BoardTodo
+	case PhaseWorker, PhaseCorrection:
+		return BoardImplement
+	case PhaseMergeQueue:
+		return BoardMerge
+	case PhaseMerged:
+		return BoardDone
+	case PhaseResolver, PhaseAwaitHuman, PhaseHuman:
+		return BoardResolve
+	}
+	return BoardVerify
+}
+
 type Dependency string
 
 const (

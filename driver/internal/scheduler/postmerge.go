@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -45,13 +46,7 @@ func (r *Runtime) cleanupMerged(ctx context.Context, t Ticket) {
 			}
 		}
 	}
-	boardID := t.Identifier
-	if _, ok := r.Clients[t.Repo].(interface{ Repository() string }); ok {
-		boardID = ""
-	}
-	if _, err := r.Orca.WorktreeSet(ctx, h.Worktree, boardID, "completed", fmt.Sprintf("driver: 已合并 #%d", h.PR)); err != nil {
-		warn("worktree-set", err)
-	}
+	r.board(ctx, t, machine.PhaseMerged, fmt.Sprintf("PR #%d", h.PR))
 	branch := "refs/heads/agent/" + t.Identifier + "/" + h.Unit
 	raw, err := r.command(ctx, t.Repo, "git", "ls-remote", "--heads", "origin", branch)
 	if err != nil {
@@ -63,5 +58,22 @@ func (r *Runtime) cleanupMerged(ctx context.Context, t Ticket) {
 	}
 	if _, err := r.command(ctx, t.Repo, "git", "push", "origin", "--delete", branch); err != nil {
 		warn("branch-delete", err)
+	}
+}
+
+// board mirrors a merge-lane phase onto the ticket's frozen worktree card. The
+// board is an observation, so a failed write only warns.
+func (r *Runtime) board(ctx context.Context, t Ticket, phase machine.Phase, detail string) {
+	if t.Handoff == nil || t.Handoff.Worktree == "" {
+		return
+	}
+	card := orca.TicketCard(t.Handoff.Worktree, t.Identifier, t.Title, t.Number, phase, detail)
+	card.PR = t.Handoff.PR
+	r.setCard(ctx, t, card)
+}
+
+func (r *Runtime) setCard(ctx context.Context, t Ticket, card orca.BoardCard) {
+	if _, err := r.Orca.WorktreeSet(ctx, card); err != nil {
+		logx.New("scheduler", os.Stderr).Warn("Orca board update failed", "ticket", t.Identifier, "column", card.Status, "err", err)
 	}
 }

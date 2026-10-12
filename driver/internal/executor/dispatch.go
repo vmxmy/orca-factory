@@ -42,7 +42,7 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 		cp.Task = task
 	}
 	cp.Dispatch = receiptID(receipt, "dispatch")
-	if path := worktreeReceipt(receipt); path != "" {
+	if path := orca.ReceiptWorktree(receipt); path != "" {
 		cp.Worktree = path
 	}
 	cp.Pending = callErr != nil || cp.Task == "" || cp.Dispatch == ""
