@@ -380,11 +380,19 @@ func ReleaseHold(ctx context.Context, c *GitHub, raw []byte) (ImportResult, erro
 		return result, err
 	}
 	result.Issues = len(manifest.Issues)
+	rows, err := c.List(ctx)
+	if err != nil {
+		return result, err
+	}
+	current := make(map[string]Task, len(rows))
+	for _, t := range rows {
+		current[t.ID] = t
+	}
 	tasks := make([]Task, 0, len(manifest.Issues))
 	for _, source := range manifest.Issues {
-		task, readErr := c.Read(ctx, source.ID)
-		if readErr != nil {
-			return result, readErr
+		task, ok := current[source.ID]
+		if !ok {
+			return result, errors.New("released import task missing from destination")
 		}
 		if err = checkImportedTask(task, source, digest, false); err != nil {
 			return result, err
