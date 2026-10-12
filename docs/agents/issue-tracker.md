@@ -12,7 +12,30 @@
 - `issues adopt --id <ID> --input <JSON>`：显式纳管；输入必须有完整 `blockers`、`related` 数组，正文的 `DEPENDENCIES` 必须与输入一致。
 - `issues update` / `issues comment`：管理状态、标签和评论。未纳管票不能经管理更新入口写入。
 
-票面须包含「要做」、`CHECK`、`SCOPE`。依赖使用 canonical ID，不拿 GitHub number 替换旧 UUID/ZII 身份。原生未纳管票可见但不领取。`auto-failed` 只由合法 resolver 处理，不清空预算后普通重试。任务 PR 首行引用 Issue URL，不用 `Closes` / `Fixes` 提前关闭业务票；部署与 smoke 确认后才 Done。
+依赖使用 canonical ID，不拿 GitHub number 替换旧 UUID/ZII 身份。原生未纳管票可见但不领取。`auto-failed` 只由合法 resolver 处理，不清空预算后普通重试。任务 PR 首行引用 Issue URL，不用 `Closes` / `Fixes` 提前关闭业务票；部署与 smoke 确认后才 Done。
+
+## 票面规范
+
+实现票的票面以 `scripts/agent-gates/roles/intake.md` 的「票面模板」和「Verification」自检清单为唯一规范，本文件不复述字段。driver 纳管与 gate 的硬性要求（「要做」、`CHECK`、`SCOPE`、`DEPENDENCIES`）是该模板的子集；模板其余小节由 intake 自检保证。
+
+## 技能发布票据
+
+to-spec、to-tickets、wayfinder 等技能说“发布到 issue tracker”时，按下表执行。本表覆盖技能自带的 GitHub 默认约定（`gh issue create`、原生 `blocked_by`、不写文件路径、spec 票打 `ready-for-agent`）。
+
+| 票种 | 建票 | 纳管 | `ready-for-agent` |
+| --- | --- | --- | --- |
+| spec 票、wayfinder 地图票与决策票 | `gh issue create` | 不纳管 | 不打 |
+| 实现票（to-tickets 的每张票） | 票面按 intake 模板写，经 `issues create` 建票并给出完整 `blockers`、`related` | 纳管 | 用户确认完整票面后打，状态 Todo |
+
+实现票的字段映射：
+
+1. What to build → 「要做」，逐条编号。
+2. Acceptance criteria → 「验收」中的 `CHECK` 与 `断言`；`CHECK` 是一条可执行命令，main 上红、实现后绿。
+3. `SCOPE` 必填真实路径 glob，覆盖 to-tickets“不写文件路径”的约定。
+4. Blocked by → `DEPENDENCIES` 中的 canonical ID。driver 只读元数据依赖；原生 sub-issue 与 `blocked_by` 可以另加，仅供展示。
+5. Parent → 在「现状」中写 spec 票 URL。
+
+执行方二选一：打 `ready-for-agent` 的实现票由 driver 领取；由 implement-spec 等技能在会话内实现的票不打该标签，避免与 driver 重复实现。
 
 ## 迁移与切换
 
