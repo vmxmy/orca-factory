@@ -10,3 +10,7 @@
 - feat: 统一 GitHub Issues 主账本与执行链路 (#200)
 - fix(driver): batch live Linear reads and preserve safe recovery (#196)
 - feat(mods): 看板顶部状态栏按流水线/资源/控制分组，适配半宽全宽 (ZII-902) (#186)
+
+## 0.5.1
+
+- fix(mods): 快照缺失时仅在 Linear 实际节流才提示读取已节流 (#366)
