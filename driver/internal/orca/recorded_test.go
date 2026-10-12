@@ -81,7 +81,7 @@ func TestRecordedWorktreeSetCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	args := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " ")
-	for _, want := range []string{"--workspace-status agent-resolve", "--display-name GH-139 probe title", "--issue 139", "--pr 373", "--parent-worktree path:/worktrees/GH-139-origin", "--unread", "issue: GH-139"} {
+	for _, want := range []string{"--workspace-status driver-resolver", "--display-name GH-139 probe title", "--issue 139", "--pr 373", "--parent-worktree path:/worktrees/GH-139-origin", "--unread", "issue: GH-139"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args %q missing %q", args, want)
 		}

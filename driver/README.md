@@ -45,15 +45,24 @@ orca-factory-driver status --json
 
 每张票的 worktree 在 Orca workspace 看板上有一张卡片，driver 在阶段变化时更新它：执行器转移、转处置、合并通道的等待/correction/转处置、部署屏障暂停、处置 Agent 派工与结论、合并完成。卡片显示 `<票号> <标题>`，GitHub 模式下链接 Issue 与 PR；评论为 `driver: <阶段>[ · 原因]` 加一行 `issue: <票号>`，prune 依赖这一行把 worktree 对回票。
 
-| 列 id | 列名 | 阶段 |
-| --- | --- | --- |
-| `agent-impl` | 实现中 | worker 运行中、写 correction |
-| `agent-verify` | 验证中 | 分支检查、gate、审查、开 PR |
-| `agent-merge` | 排队合并 | 排队合并、合并通道等待 |
-| `agent-resolve` | 处置中（未读红点） | Agent处置、部署屏障暂停 |
-| `completed` | Done | 已合并；被处置 Agent 接替的旧 worktree |
+看板每个 driver 阶段一列，列名即阶段名：
 
-自定义列由 `bin/orca-factory board-columns` 写入本机 Orca 配置（先备份，重启 Orca 后生效），`--check` 只读核对。Orca 接受未配置的列 id 而不报错，因此缺列时卡片不会出现在任何列里。看板只是镜像：拖动卡片不改变票状态，下一次阶段变化会覆盖它；写入失败只记 warn，不影响票流转。尚未领取的票没有 worktree，只在 GitHub Issues 中可见。
+| 列 id | 列名 | 说明 |
+| --- | --- | --- |
+| `in-progress` | 手动工作区 | Orca 默认列，放非 driver 的 worktree；driver 不写 |
+| `driver-unclaimed` | 待领 | 归属释放后仍保留 worktree 的票 |
+| `driver-worker` | worker 运行中 | |
+| `driver-branch-check` | 分支检查 | |
+| `driver-gate` | gate | |
+| `driver-review` | 审查 | |
+| `driver-correction` | 写 correction | 含合并通道要求的 correction |
+| `driver-open-pr` | 开 PR | |
+| `driver-merge-queue` | 排队合并 | 含合并通道等待 |
+| `driver-resolver` | Agent处置（未读红点） | 含部署屏障暂停、执行器转处置 |
+| `driver-await-human` | 等人批 | 历史回执中的“转人”也在此列 |
+| `completed` | 已合并 | Orca 默认 Done 列；也放被处置 Agent 接替的旧 worktree |
+
+`bin/orca-factory board-columns` 写入本机 Orca 配置：先备份，删除 `todo`、`in-review` 和旧的 `agent-*` 列，并把仍在这些列的卡片移到“手动工作区”。运行中的 Orca 把设置留在内存并写回文件，所以写入前必须停止 Orca 应用与 `orca serve`，命令检测到 Orca 进程时拒绝写入；写完再启动 Orca，`--check` 只读核对。旧定时 coordinator 链路会写 `in-review`，不要在运行该链路的机器上执行此命令。Orca 接受未配置的列 id 而不报错，因此缺列时卡片不会出现在任何列里。看板只是镜像：拖动卡片不改变票状态，下一次阶段变化会覆盖它；写入失败只记 warn，不影响票流转。尚未领取的票没有 worktree，只在 GitHub Issues 中可见。
 
 ## Linear 实时批量发现
 

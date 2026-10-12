@@ -154,7 +154,7 @@ func TestMainPath(t *testing.T) {
 	if tools.reviewBase != "merge-base-sha" {
 		t.Fatalf("review base=%q; review must diff against the head's merge-base with current main, not the claim baseline", tools.reviewBase)
 	}
-	board := []string{"agent-impl driver: worker 运行中\nissue: ZII-861", "agent-verify driver: 分支检查\nissue: ZII-861", "agent-verify driver: gate\nissue: ZII-861", "agent-verify driver: 审查\nissue: ZII-861", "agent-verify driver: 开 PR\nissue: ZII-861", "agent-merge driver: 排队合并\nissue: ZII-861"}
+	board := []string{"driver-worker driver: worker 运行中\nissue: ZII-861", "driver-branch-check driver: 分支检查\nissue: ZII-861", "driver-gate driver: gate\nissue: ZII-861", "driver-review driver: 审查\nissue: ZII-861", "driver-open-pr driver: 开 PR\nissue: ZII-861", "driver-merge-queue driver: 排队合并\nissue: ZII-861"}
 	if !reflect.DeepEqual(o.boardUpdates, board) {
 		t.Fatalf("board updates=%q", o.boardUpdates)
 	}

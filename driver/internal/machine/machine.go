@@ -30,32 +30,29 @@ const (
 	OwnerResolver Owner = "处置Agent"
 )
 
-// Orca workspace board column ids. Done reuses Orca's default column; the
-// others are custom columns installed by `orca-factory board-columns`.
-const (
-	BoardImplement = "agent-impl"
-	BoardVerify    = "agent-verify"
-	BoardMerge     = "agent-merge"
-	BoardResolve   = "agent-resolve"
-	BoardDone      = "completed"
-	BoardTodo      = "todo"
-)
+// BoardDone is Orca's default Done column, reused for merged tickets.
+const BoardDone = "completed"
+
+// boardColumns gives each phase its own Orca workspace board column, installed
+// by `orca-factory board-columns`. The historical 转人 receipt shares 等人批.
+var boardColumns = map[Phase]string{
+	PhaseUnclaimed:   "driver-unclaimed",
+	PhaseWorker:      "driver-worker",
+	PhaseBranchCheck: "driver-branch-check",
+	PhaseGate:        "driver-gate",
+	PhaseReview:      "driver-review",
+	PhaseCorrection:  "driver-correction",
+	PhaseOpenPR:      "driver-open-pr",
+	PhaseMergeQueue:  "driver-merge-queue",
+	PhaseResolver:    "driver-resolver",
+	PhaseAwaitHuman:  "driver-await-human",
+	PhaseHuman:       "driver-await-human",
+	PhaseMerged:      BoardDone,
+}
 
 // BoardColumn maps a phase to the Orca board column that shows it.
 func BoardColumn(p Phase) string {
-	switch p {
-	case PhaseUnclaimed:
-		return BoardTodo
-	case PhaseWorker, PhaseCorrection:
-		return BoardImplement
-	case PhaseMergeQueue:
-		return BoardMerge
-	case PhaseMerged:
-		return BoardDone
-	case PhaseResolver, PhaseAwaitHuman, PhaseHuman:
-		return BoardResolve
-	}
-	return BoardVerify
+	return boardColumns[p]
 }
 
 type Dependency string
