@@ -43,8 +43,8 @@ func (o *postmergeOrca) WorkerRelease(_ context.Context, request, dispatch strin
 	}
 	return nil, o.check("release:" + dispatch)
 }
-func (o *postmergeOrca) WorktreeSet(_ context.Context, path, ticket, status, note string) (orca.Receipt, error) {
-	if ticket != "ENG-1" || status != "completed" || note != "driver: 已合并 #1" || path == "" {
+func (o *postmergeOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (orca.Receipt, error) {
+	if card.LinearIssue != "ENG-1" || card.Status != "completed" || card.Comment != "driver: 已合并 · PR #1\nissue: ENG-1" || card.PR != 1 || card.Path == "" {
 		return nil, fmt.Errorf("wrong board write")
 	}
 	return nil, o.check("board")

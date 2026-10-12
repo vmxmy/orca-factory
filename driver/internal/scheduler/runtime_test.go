@@ -47,6 +47,7 @@ type fakeOrca struct {
 	pages       []orca.Receipt
 	page        int
 	launches    []orca.TerminalOptions
+	cards       []orca.BoardCard
 }
 
 func (f *fakeOrca) AutomationsList(context.Context) (orca.Receipt, error) { return f.automations, nil }
@@ -264,7 +265,8 @@ func TestLaunchMergingArgumentOrder(t *testing.T) {
 func (f *fakeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {
 	return orca.Receipt{}, nil
 }
-func (f *fakeOrca) WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error) {
+func (f *fakeOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (orca.Receipt, error) {
+	f.cards = append(f.cards, card)
 	return orca.Receipt{}, nil
 }
 

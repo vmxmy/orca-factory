@@ -32,7 +32,7 @@ type Orca interface {
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
-	WorktreeSet(context.Context, string, string, string, string) (orca.Receipt, error)
+	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
 }
 type Linear interface {
 	ListComments(context.Context, string) ([]linear.Comment, error)
@@ -57,7 +57,9 @@ type Ticket struct {
 	Estimate                                             *float64
 	ID, Identifier, Title, Todo, Check, Scope, TestFiles string
 	Lane                                                 int
-	NewTest                                              bool
+	// Number is the GitHub issue number; 0 under the Linear backend.
+	Number  int
+	NewTest bool
 }
 type Config struct {
 	// Merging requires durable correction evidence; it never authorizes a fresh run.
@@ -92,15 +94,17 @@ type Result struct {
 	PR                github.PullRequest
 }
 
-// boardStatus maps a phase to an Orca board column so the desktop shows executor progress.
-func boardStatus(p machine.Phase) string {
-	switch p {
-	case machine.PhaseWorker, machine.PhaseCorrection:
-		return "in-progress"
-	case machine.PhaseMerged:
-		return "completed"
+// board mirrors a phase onto the ticket worktree's Orca card. The board is an
+// observation, so a failed write only warns.
+func (e *Executor) board(ctx context.Context, t Ticket, worktree string, phase machine.Phase, detail string, pr int) {
+	if worktree == "" {
+		return
 	}
-	return "in-review"
+	card := orca.TicketCard(worktree, t.Identifier, t.Title, t.Number, phase, detail)
+	card.PR = pr
+	if _, err := e.Orca.WorktreeSet(ctx, card); err != nil {
+		e.warn("%s Orca board status update failed: %v", t.Identifier, err)
+	}
 }
 
 func (e *Executor) warn(format string, args ...any) {
@@ -254,11 +258,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if commentErr := e.comment(ctx, t.ID, body); commentErr != nil {
 			return errors.New("Linear transition comment failed")
 		}
-		if cp.Worktree != "" {
-			if _, boardErr := e.Orca.WorktreeSet(ctx, cp.Worktree, e.boardIdentifier(t.Identifier), boardStatus(next.Phase), e.boardComment(t.Identifier, next.Phase)); boardErr != nil {
-				e.warn("%s Orca board status update failed: %v", t.Identifier, boardErr)
-			}
-		}
+		e.board(ctx, t, cp.Worktree, next.Phase, "", result.PR.Number)
 		return nil
 	}
 

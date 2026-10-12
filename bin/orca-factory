@@ -13,6 +13,8 @@
 #   orca-factory doctor [--json]       read-only environment checks and recommended setup profile (A or B).
 #   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
 #                                      an edited shared clause is reported as overridden.
+#   orca-factory board-columns [--check]  add the driver's Orca workspace board columns before Done in the local
+#                                      Orca data file (backup first; restart Orca to load). --check only verifies.
 set -Eeuo pipefail
 
 FACTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -24,7 +26,7 @@ PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitu
 MARKETPLACE_REPO="vmxmy/orca-factory"   # .claude-plugin/marketplace.json of this repo; the mod lives in mods/swarm-board
 MOD_ID="swarm-board@orca-factory"
 
-usage() { sed -n '2,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
@@ -412,6 +414,40 @@ cmd_doctor() {
 }
 
 SELFTEST_TMP=""
+# Orca board columns the driver writes; ids must match driver/internal/machine BoardColumn.
+BOARD_COLUMNS='[{"id":"agent-impl","label":"实现中","color":"blue","icon":"circle-progress"},{"id":"agent-verify","label":"验证中","color":"violet","icon":"circle-ellipsis"},{"id":"agent-merge","label":"排队合并","color":"sky","icon":"git-pull-request"},{"id":"agent-resolve","label":"处置中","color":"rose","icon":"circle-alert"}]'
+# Orca's own defaults, used when the data file has never stored a column list.
+BOARD_DEFAULTS='[{"id":"todo","label":"Todo","color":"neutral","icon":"circle"},{"id":"in-progress","label":"In progress","color":"conductor-progress","icon":"conductor-progress"},{"id":"in-review","label":"In review","color":"conductor-review","icon":"conductor-review"},{"id":"completed","label":"Done","color":"conductor-done","icon":"conductor-done"}]'
+
+cmd_board_columns() {
+  local mode="${1:-}" file="${ORCA_DATA_FILE:-$HOME/.config/orca/profiles/local-default/orca-data.json}" missing tmp
+  case "$mode" in ''|--check) ;; *) usage ;; esac
+  command -v jq >/dev/null || fail 'board-columns requires jq'
+  [[ -f "$file" ]] || fail "Orca data file not found: $file"
+  missing=$(jq -r --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" \
+    '[$want[].id] - [(.ui.workspaceStatuses // $defaults)[].id] | join(" ")' "$file") || fail "unreadable Orca data file: $file"
+  if [[ -z "$missing" ]]; then
+    echo "board-columns: driver columns present in $file"
+    return 0
+  fi
+  if [[ "$mode" == --check ]]; then
+    echo "board-columns: missing $missing in $file" >&2
+    return 1
+  fi
+  cp -p -- "$file" "$file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+  tmp=$(mktemp "$file.XXXXXX")
+  jq --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" '
+    (.ui.workspaceStatuses // $defaults) as $have
+    | ($have | map(.id)) as $ids
+    | ($want | map(select(.id as $id | $ids | index($id) | not))) as $add
+    | ($ids | index("completed")) as $done
+    | .ui.workspaceStatuses = (if $done == null then $have + $add else $have[:$done] + $add + $have[$done:] end)
+  ' "$file" > "$tmp" || { rm -f -- "$tmp"; fail "could not update $file"; }
+  chmod --reference="$file" -- "$tmp"
+  mv -- "$tmp" "$file"
+  echo "board-columns: added $missing; restart Orca, then run 'orca-factory board-columns --check'"
+}
+
 cmd_selftest() {
   SELFTEST_TMP="$(mktemp -d "${TMPDIR:-/tmp}/orca-factory-selftest.XXXXXX")"
   export AGENT_ISSUE_BACKEND=linear # exercise the shipped legacy fixtures explicitly
@@ -1734,6 +1770,19 @@ LCF_ECHO_ORCA
   )
   echo "selftest: linear calls are counted per source"
   bash "$FACTORY/core/issues.test.sh"
+  (
+    export ORCA_DATA_FILE="$SELFTEST_TMP/orca-data.json"
+    echo '{"ui":{"workspaceStatuses":[{"id":"todo","label":"Todo","color":"neutral","icon":"circle"},{"id":"completed","label":"Done","color":"conductor-done","icon":"conductor-done"}]}}' > "$ORCA_DATA_FILE"
+    if (cmd_board_columns --check) > /dev/null 2>&1; then fail "selftest: board-columns --check passed without driver columns"; fi
+    cmd_board_columns > /dev/null
+    order=$(jq -r '[.ui.workspaceStatuses[].id] | join(" ")' "$ORCA_DATA_FILE")
+    [[ "$order" == "todo agent-impl agent-verify agent-merge agent-resolve completed" ]] || fail "selftest: board-columns order is $order"
+    before=$(cksum < "$ORCA_DATA_FILE")
+    cmd_board_columns > /dev/null
+    [[ "$(cksum < "$ORCA_DATA_FILE")" == "$before" ]] || fail "selftest: board-columns is not idempotent"
+    cmd_board_columns --check > /dev/null || fail "selftest: board-columns --check rejected installed columns"
+  )
+  echo "selftest: Orca board columns install once before Done"
   echo "selftest: PASS"
 }
 
@@ -1743,5 +1792,6 @@ case "${1:-}" in
   check)    cmd_check "${2:-}" ;;
   doctor)   cmd_doctor "${2:-}" ;;
   selftest) cmd_selftest ;;
+  board-columns) cmd_board_columns "${2:-}" ;;
   *)        usage ;;
 esac

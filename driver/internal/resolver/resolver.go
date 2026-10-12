@@ -48,7 +48,9 @@ type Controller struct {
 	Orca                                               Orca
 	Ticket, Repo, Spec, Agent, Model, Effort, Terminal string
 	SourceRun                                          string
-	Now                                                func() time.Time
+	// Board, when set, receives the resolver worktree once Orca places it.
+	Board func(ctx context.Context, worktree string, attempt int)
+	Now   func() time.Time
 }
 
 // Step performs one recoverable observation/transition. Mutations reuse frozen
@@ -132,6 +134,9 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	if p.Phase == "pending" {
 		receipt, err := c.Orca.WorkerStart(ctx, request("dispatch"), orca.StartOptions{Run: p.Run, Spec: p.Spec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: "origin/main", Name: fmt.Sprintf("%s-resolver-%d", c.Ticket, p.Attempt), Setup: "skip", Agent: p.Agent, Model: p.Model, Effort: p.Effort})
 		callErr := err
+		if path := orca.ReceiptWorktree(receipt); path != "" && c.Board != nil {
+			c.Board(ctx, path, p.Attempt)
+		}
 		p.Task, p.Dispatch = receiptID(receipt, "task"), receiptID(receipt, "dispatch")
 		if p.Task == "" || p.Dispatch == "" {
 			if err = c.Store.Save(ctx, *p); err != nil {

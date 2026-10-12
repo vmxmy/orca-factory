@@ -15,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 )
 
@@ -130,6 +131,13 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 		return errors.New("invalid resolver agent tier")
 	}
 	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: parts[0], Now: r.Now, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
+	c.Board = func(ctx context.Context, worktree string, attempt int) {
+		card := orca.TicketCard(worktree, t.Identifier, t.Title, t.Number, machine.PhaseResolver, fmt.Sprintf("第 %d 次处置", attempt))
+		if t.Handoff != nil {
+			card.Parent, card.PR = t.Handoff.Worktree, t.Handoff.PR
+		}
+		r.setCard(ctx, t, card)
+	}
 	if len(parts) > 1 {
 		c.Model = parts[1]
 	}
@@ -191,6 +199,7 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 			return err
 		}
 		// Ownership and deployment identity are written atomically by ResumeDeployment.
+		r.board(ctx, t, machine.PhaseMergeQueue, decision.Reason)
 		return nil
 	}
 	h := decision.Handoff
@@ -220,7 +229,17 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	body := "阶段: " + string(machine.PhaseMergeQueue) + "\n归属: " + string(machine.OwnerMerge) + "\n" + merge.HandoffPrefix + string(handoff) + "\n" + resolver.Prefix + string(raw)
 	// A new queue must not inherit an exhausted old queue's progress. Existing
 	// deployment barriers were rejected above; budgets in the new evidence remain.
-	return r.mergeComment(ctx, t, body)
+	if err := r.mergeComment(ctx, t, body); err != nil {
+		return err
+	}
+	if t.Handoff != nil && t.Handoff.Worktree != "" && t.Handoff.Worktree != h.Worktree {
+		retired := orca.TicketCard(t.Handoff.Worktree, t.Identifier, t.Title, t.Number, machine.PhaseMergeQueue, "已由 "+filepath.Base(h.Worktree)+" 接替")
+		retired.Status = machine.BoardDone
+		r.setCard(ctx, t, retired)
+	}
+	t.Handoff = h
+	r.board(ctx, t, machine.PhaseMergeQueue, decision.Reason)
+	return nil
 }
 func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Record, reason string) error {
 	next := *p

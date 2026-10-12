@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
 
 func recordedClient(t *testing.T, name string) *Client {
@@ -47,13 +48,46 @@ func TestRecordedTerminalSendTurnStarted(t *testing.T) {
 }
 
 func TestRecordedWorktreeSet(t *testing.T) {
-	if _, err := recordedClient(t, "orca-worktree-set.json").WorktreeSet(context.Background(), "/worktrees/ZII-1-impl", "ZII-1", "in-progress", "gate"); err != nil {
+	linear := TicketCard("/worktrees/ZII-1-impl", "ZII-1", "", 0, machine.PhaseGate, "")
+	if _, err := recordedClient(t, "orca-worktree-set.json").WorktreeSet(context.Background(), linear); err != nil {
 		t.Fatalf("recorded success err=%v", err)
 	}
-	_, err := recordedClient(t, "orca-worktree-set-not-found.json").WorktreeSet(context.Background(), "/worktrees/ZII-1-impl", "ZII-1", "in-progress", "gate")
+	_, err := recordedClient(t, "orca-worktree-set-not-found.json").WorktreeSet(context.Background(), linear)
 	var ticket *infra.Ticket
 	if !errors.As(err, &ticket) || !strings.Contains(ticket.Err.Error(), "selector_not_found") {
 		t.Fatalf("missing worktree err=%v", err)
+	}
+}
+
+// The card fixture was recorded from `worktree set` with every board field;
+// the client must send those fields as the flags Orca echoed back.
+func TestRecordedWorktreeSetCard(t *testing.T) {
+	fixture, err := filepath.Abs("../../testdata/recorded/orca-worktree-set-card.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	argsFile := filepath.Join(t.TempDir(), "args")
+	script := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > '"+argsFile+"'\ncat '"+fixture+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	card := TicketCard("/worktrees/GH-139-executor", "GH-139", "probe title", 139, machine.PhaseResolver, "")
+	card.PR, card.Parent = 373, "/worktrees/GH-139-origin"
+	if _, err := (&Client{Path: script}).WorktreeSet(context.Background(), card); err != nil {
+		t.Fatalf("recorded card err=%v", err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " ")
+	for _, want := range []string{"--workspace-status agent-resolve", "--display-name GH-139 probe title", "--issue 139", "--pr 373", "--parent-worktree path:/worktrees/GH-139-origin", "--unread", "issue: GH-139"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("args %q missing %q", args, want)
+		}
+	}
+	if strings.Contains(args, "--linear-issue") {
+		t.Errorf("GitHub card must not link a Linear issue: %q", args)
 	}
 }
 

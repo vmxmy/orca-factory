@@ -194,18 +194,3 @@ func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error
 	}
 	return fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n%s", task.URL, t.Identifier, t.ID, t.Todo), nil
 }
-
-func (e *Executor) boardComment(identifier string, phase machine.Phase) string {
-	body := "driver: " + string(phase)
-	if _, ok := e.Linear.(interface{ Repository() string }); ok {
-		return body + "\nissue: " + identifier
-	}
-	return body
-}
-
-func (e *Executor) boardIdentifier(id string) string {
-	if _, ok := e.Linear.(interface{ Repository() string }); ok {
-		return ""
-	}
-	return id
-}

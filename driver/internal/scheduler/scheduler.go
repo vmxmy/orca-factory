@@ -28,7 +28,8 @@ type Ticket struct {
 	Handoff                             *merge.Handoff
 	MergeProblem                        string
 	ID, Identifier, Repo, Terminal, Run string
-	URL                                 string
+	URL, Title                          string
+	Number                              int
 	Scope                               []string
 	Blockers                            []string
 	BlockersIncomplete                  bool

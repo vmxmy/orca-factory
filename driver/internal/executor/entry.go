@@ -86,6 +86,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		}
 		ticket, err = ParseTicket(task.ID, task.Identifier, task.Title, task.Description)
 		ticket.Estimate = task.Estimate
+		ticket.Number = task.Number
 	} else {
 		ticket, err = readTicket(ctx, identifier, values[1], values[2])
 	}

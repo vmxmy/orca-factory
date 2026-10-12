@@ -154,7 +154,7 @@ func TestMainPath(t *testing.T) {
 	if tools.reviewBase != "merge-base-sha" {
 		t.Fatalf("review base=%q; review must diff against the head's merge-base with current main, not the claim baseline", tools.reviewBase)
 	}
-	board := []string{"in-progress driver: worker 运行中", "in-review driver: 分支检查", "in-review driver: gate", "in-review driver: 审查", "in-review driver: 开 PR", "in-review driver: 排队合并"}
+	board := []string{"agent-impl driver: worker 运行中\nissue: ZII-861", "agent-verify driver: 分支检查\nissue: ZII-861", "agent-verify driver: gate\nissue: ZII-861", "agent-verify driver: 审查\nissue: ZII-861", "agent-verify driver: 开 PR\nissue: ZII-861", "agent-merge driver: 排队合并\nissue: ZII-861"}
 	if !reflect.DeepEqual(o.boardUpdates, board) {
 		t.Fatalf("board updates=%q", o.boardUpdates)
 	}
@@ -257,8 +257,8 @@ func TestMainPathTicketFields(t *testing.T) {
 	}
 }
 
-func (f *fakeOrca) WorktreeSet(_ context.Context, branch, issue, status, comment string) (orca.Receipt, error) {
-	f.boardUpdates = append(f.boardUpdates, status+" "+comment)
+func (f *fakeOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (orca.Receipt, error) {
+	f.boardUpdates = append(f.boardUpdates, card.Status+" "+card.Comment)
 	return orca.Receipt{}, nil
 }
 

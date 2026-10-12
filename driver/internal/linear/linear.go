@@ -79,10 +79,12 @@ type Issue struct {
 	Labels     Connection[NamedID]  `json:"labels"`
 	Relations  Connection[Relation] `json:"relations"`
 	UpdatedAt  time.Time            `json:"updatedAt"`
-	// URL and Held come only from the GitHub backend; Linear discovery keeps
-	// its recorded query shape.
-	URL  string `json:"-"`
-	Held bool   `json:"-"`
+	// URL, Held, Title and Number come only from the GitHub backend; Linear
+	// discovery keeps its recorded query shape.
+	URL    string `json:"-"`
+	Held   bool   `json:"-"`
+	Title  string `json:"-"`
+	Number int    `json:"-"`
 
 	InverseRelations Connection[InverseRelation] `json:"inverseRelations"`
 }

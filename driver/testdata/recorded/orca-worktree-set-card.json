@@ -1,0 +1,19 @@
+{
+  "id": "e7188a00-acc5-43fd-a1dc-567543da443a",
+  "ok": true,
+  "result": {
+    "worktree": {
+      "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/board-probe",
+      "path": "/home/laoxu/orca/workspaces/orca-factory/board-probe",
+      "branch": "refs/heads/board-probe",
+      "displayName": "GH-139 probe title",
+      "comment": "driver: 审查\nissue: GH-139",
+      "workspaceStatus": "in-review",
+      "linkedIssue": 139,
+      "linkedPR": 373,
+      "linkedLinearIssue": null,
+      "parentWorktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+      "isUnread": true
+    }
+  }
+}
