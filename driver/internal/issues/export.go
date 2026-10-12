@@ -87,6 +87,8 @@ func Export(ctx context.Context, source *linear.Client, repository, project stri
 	if err != nil {
 		return ImportManifest{}, err
 	}
-	_, _, err = validateSourceManifest(raw, repository)
-	return manifest, err
+	if _, _, err = validateSourceManifest(raw, repository); err != nil {
+		return ImportManifest{}, err
+	}
+	return manifest, nil
 }

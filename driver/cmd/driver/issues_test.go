@@ -14,6 +14,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
 func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
@@ -182,5 +185,51 @@ func TestGitHubCLIConfiguredHTTPTimeout(t *testing.T) {
 				t.Fatalf("request was not canceled by configured deadline: %v: %s", err, out)
 			}
 		})
+	}
+}
+
+func TestIssueMigrationWritesRequireStoppedServeAndDrain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("guarded migration wrote %s %s", r.Method, r.URL.Path)
+		}
+		_, _ = fmt.Fprint(w, `[]`)
+	}))
+	defer s.Close()
+	manifest := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifest, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run := func(args ...string) (string, string) {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
+		cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "LINEAR_API_KEY=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		_ = cmd.Run()
+		return stdout.String(), stderr.String()
+	}
+	if out, _ := run("issues", "backend"); strings.TrimSpace(out) != `{"backend":"github","repository":"o/r"}` {
+		t.Fatalf("backend = %q", out)
+	}
+	for _, args := range [][]string{{"issues", "import", "--input", manifest, "--apply"}, {"issues", "release-hold", "--input", manifest, "--apply"}} {
+		if out, errText := run(args...); out != "" || !strings.Contains(errText, "maintenance draining required") {
+			t.Fatalf("%v while running: stdout=%q stderr=%q", args, out, errText)
+		}
+	}
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := scheduler.Acquire(filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = lock.Close() }()
+	for _, args := range [][]string{{"issues", "import", "--input", manifest, "--apply"}, {"issues", "release-hold", "--input", manifest, "--apply"}} {
+		if out, errText := run(args...); out != "" || !strings.Contains(errText, "stop driver serve") {
+			t.Fatalf("%v while serve holds lock: stdout=%q stderr=%q", args, out, errText)
+		}
 	}
 }

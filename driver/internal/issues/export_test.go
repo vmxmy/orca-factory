@@ -25,7 +25,7 @@ func TestExportRejectsIncompleteSource(t *testing.T) {
 	}
 }
 
-func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
+func exportFixture(t *testing.T, missingAlias *bool, outsideBlocker bool) (*linear.Client, *int) {
 	t.Helper()
 	t.Setenv("LINEAR_API_KEY", "test")
 	parseFailure, err := os.ReadFile("../../testdata/recorded/linear-export-parse-error.json")
@@ -44,6 +44,11 @@ func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
 			t.Error(err)
+			return
+		}
+		if strings.HasPrefix(strings.TrimSpace(q.Query), "mutation") {
+			t.Error("export sent a Linear mutation")
+			http.Error(w, "mutation", http.StatusBadRequest)
 			return
 		}
 		if strings.Contains(q.Query, "query ExportIssues(") && !strings.HasSuffix(q.Query, "parent { id } } pageInfo { hasNextPage endCursor } } }") {
@@ -83,7 +88,11 @@ func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
 			data = map[string]any{"issues": page(rows, end < 124, strconv.Itoa(end))}
 		case strings.Contains(q.Query, "query FreshIssueConnection("):
 			calls++
-			data = map[string]any{"issue": map[string]any{"id": id(2), "inverseRelations": page([]any{map[string]any{"id": "dep", "type": "blocks", "issue": map[string]any{"id": id(1), "identifier": "ZII-1", "state": map[string]any{"type": "unstarted"}}}}, false, "")}}
+			blocker := 1
+			if outsideBlocker {
+				blocker = 5000
+			}
+			data = map[string]any{"issue": map[string]any{"id": id(2), "inverseRelations": page([]any{map[string]any{"id": "dep", "type": "blocks", "issue": map[string]any{"id": id(blocker), "identifier": fmt.Sprintf("ZII-%d", blocker), "state": map[string]any{"type": "unstarted"}}}}, false, "")}}
 		case strings.Contains(q.Query, "query ListCommentsBatch("):
 			calls++
 			if !strings.Contains(q.Query, "user { id name }") {
@@ -126,7 +135,7 @@ func exportFixture(t *testing.T, missingAlias *bool) (*linear.Client, *int) {
 
 func TestExportPreservesCompletePaginationAuthorsAndDependencyClosure(t *testing.T) {
 	missing := false
-	source, calls := exportFixture(t, &missing)
+	source, calls := exportFixture(t, &missing, false)
 	manifest, err := issues.Export(context.Background(), source, "o/r", "01234567-1234-1234-1234-000000000999")
 	if err != nil {
 		t.Fatal(err)
@@ -142,10 +151,19 @@ func TestExportPreservesCompletePaginationAuthorsAndDependencyClosure(t *testing
 
 func TestExportMissingBatchAliasDiscardsManifest(t *testing.T) {
 	missing := true
-	source, _ := exportFixture(t, &missing)
+	source, _ := exportFixture(t, &missing, false)
 	manifest, err := issues.Export(context.Background(), source, "o/r", "01234567-1234-1234-1234-000000000999")
 	if err == nil || manifest.Complete || len(manifest.Issues) != 0 {
 		t.Fatalf("partial source accepted: complete=%v issues=%d err=%v", manifest.Complete, len(manifest.Issues), err)
+	}
+}
+
+func TestExportOutsideBlockerDiscardsManifest(t *testing.T) {
+	missing := false
+	source, _ := exportFixture(t, &missing, true)
+	manifest, err := issues.Export(context.Background(), source, "o/r", "01234567-1234-1234-1234-000000000999")
+	if err == nil || manifest.Complete || len(manifest.Issues) != 0 {
+		t.Fatalf("blocker outside the exported project accepted: complete=%v issues=%d err=%v", manifest.Complete, len(manifest.Issues), err)
 	}
 }
 

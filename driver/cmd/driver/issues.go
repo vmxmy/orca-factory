@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -57,7 +59,7 @@ func issueInput(path string) ([]byte, error) {
 }
 func runIssues(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|export|preview|import|release-hold|validate")
+		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|export|preview|import|release-hold|validate|backend")
 		return 2
 	}
 	fs := flag.NewFlagSet("issues", flag.ContinueOnError)
@@ -76,6 +78,16 @@ func runIssues(args []string) int {
 	}
 	env := issueEnvironment()
 	backend, err := issues.Backend(env)
+	if args[0] == "backend" {
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		if json.NewEncoder(os.Stdout).Encode(map[string]string{"backend": backend, "repository": env["AGENT_GH_REPO"]}) != nil {
+			return 1
+		}
+		return 0
+	}
 	if args[0] == "preview" {
 		raw, inputErr := issueInput(*input)
 		var result map[string]any
@@ -94,6 +106,14 @@ func runIssues(args []string) int {
 	if err != nil || (backend != "github" && args[0] != "export") {
 		fmt.Fprintln(os.Stderr, "issues: AGENT_ISSUE_BACKEND=github required")
 		return 2
+	}
+	if *apply && (args[0] == "import" || args[0] == "release-hold") {
+		release, guardErr := migrationWriteGuard()
+		if guardErr != nil {
+			fmt.Fprintf(os.Stderr, "issues: %v\n", guardErr)
+			return 1
+		}
+		defer release()
 	}
 	ctx, cancel := issueCommandContext(context.Background(), args[0])
 	defer cancel()
@@ -267,6 +287,29 @@ func publicIssue(ctx context.Context, c *issues.GitHub, t issues.Task, withComme
 	result["phase"] = ownership.Phase
 	result["parent"] = t.Metadata.Parent
 	return result, nil
+}
+
+// Migration writes share the serve lock with deployment recovery so that no
+// scheduler can claim or resume a ticket while its history is imported or released.
+func migrationWriteGuard() (func(), error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("home directory unavailable: %w", err)
+	}
+	lock, err := scheduler.Acquire(filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("stop driver serve before migration writes: %w", err)
+	}
+	state, err := maintenance.Read()
+	if err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("read maintenance state: %w", err)
+	}
+	if state.Mode != "draining" {
+		_ = lock.Close()
+		return nil, errors.New("maintenance draining required for migration writes")
+	}
+	return func() { _ = lock.Close() }, nil
 }
 
 func issueCommandContext(parent context.Context, command string) (context.Context, context.CancelFunc) {
