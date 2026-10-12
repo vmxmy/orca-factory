@@ -151,23 +151,8 @@ func TestWriteSpacingAndEndpoints(t *testing.T) {
 			writes = append(writes, now)
 		}
 		switch r.URL.Path {
-		case "/repos/acme/app/git/refs":
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["ref"] != "refs/tags/v1" || body["sha"] != "abc" {
-				t.Error("wrong tag")
-			}
-			if _, err := fmt.Fprint(w, `{"ref":"refs/tags/v1"}`); err != nil {
-				t.Error(err)
-				return
-			}
-		case "/repos/acme/app/releases":
-			var body map[string]any
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["tag_name"] != "v1" || body["name"] != "First" {
-				t.Error("wrong release")
-			}
-			if _, err := fmt.Fprint(w, `{"id":42,"tag_name":"v1"}`); err != nil {
+		case "/repos/acme/app/issues/1/comments":
+			if _, err := fmt.Fprint(w, `{"id":42}`); err != nil {
 				t.Error(err)
 				return
 			}
@@ -186,12 +171,10 @@ func TestWriteSpacingAndEndpoints(t *testing.T) {
 		}
 	}, Options{Now: func() time.Time { return now }, Sleep: func(_ context.Context, d time.Duration) error { now = now.Add(d); return nil }})
 	ctx := context.Background()
-	if err := c.CreateTag(ctx, "acme", "app", "v1", "abc"); err != nil {
-		t.Fatal(err)
-	}
-	rel, err := c.CreateRelease(ctx, "acme", "app", ReleaseRequest{TagName: "v1", Name: "First"})
-	if err != nil || rel.ID != 42 {
-		t.Fatalf("release=%+v err=%v", rel, err)
+	for range 2 {
+		if err := c.request(ctx, http.MethodPost, "/repos/acme/app/issues/1/comments", map[string]string{"body": "x"}, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if len(writes) != 2 || writes[1].Sub(writes[0]) < time.Second {
 		t.Fatalf("writes=%v", writes)

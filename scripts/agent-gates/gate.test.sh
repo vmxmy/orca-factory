@@ -118,23 +118,4 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u9' 'SCOPE: src/* scripts/*' 'CHECK: true')")
 out="$(GATE_PROJECT_SRC=worktree "$GATE" "$R" "$(spec 'UNIT: u10' 'SCOPE: src/* scripts/*' 'CHECK: true')")"
 [[ "$(field "$out" VERDICT)" == green && "$(field "$out" LANE)" == 2 ]]
 
-# Version bumps belong in release-only changes.
-R="$(mkrepo plugin-version)"; mkdir -p "$R/mods/demo/.claude-plugin"
-printf '{"name":"demo","version":"1.0.0"}\n' > "$R/mods/demo/.claude-plugin/plugin.json"
-echo 'Initial release' > "$R/mods/demo/CHANGELOG.md"
-git -C "$R" add -A && git -C "$R" -c commit.gpgsign=false commit -qm plugin && git -C "$R" update-ref refs/remotes/origin/main HEAD
-printf '{"name":"demo","version":"1.0.1"}\n' > "$R/mods/demo/.claude-plugin/plugin.json"
-echo 'Next release' >> "$R/mods/demo/CHANGELOG.md"
-echo 'feature' > "$R/src/a.js"
-out="$("$GATE" "$R" "$(spec 'UNIT: plugin-feature' 'SCOPE: mods/* src/*' 'CHECK: true')")" && rc=0 || rc=$?
-[[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == plugin-version ]]
-[[ "$(field "$out" REASON)" == '功能 PR 不得修改插件版本号，版本号由发布 PR 修改（ZII-833）' ]]
-[[ "$(field "$out" EVIDENCE)" == src/a.js ]]
-
-# The same version and changelog changes without a feature are allowed.
-git -C "$R" checkout -- src/a.js
-out="$("$GATE" "$R" "$(spec 'UNIT: plugin-release' 'SCOPE: mods/* src/*' 'CHECK: true')")"
-[[ "$(field "$out" VERDICT)" == green && "$(field "$out" STEP)" == all ]]
-printf 'gate.test: plugin version guard ok\n'
-
 printf 'agent gate regression: PASS\n'

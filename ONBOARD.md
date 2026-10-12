@@ -10,7 +10,7 @@
 4. 按下文第 4 步用 `bin/orca-factory init <repo>` 安装。模板使用 `AGENT_ISSUE_BACKEND=github` 与 `AGENT_GH_REPO=<owner/repo>`；保留现有项目配置，不自动切换已运行仓库。完成三个项目文件和可选覆盖层。
 5. 运行 `bin/orca-factory check <repo>`、gate 回归、`install.sh --dry-run` 和项目检查。GitHub dry-run 核对唯一仓库与 Issues 数据，不探测 Linear。用隔离临时仓库验证候选 `init/update/check`；不得将 selftest 嵌套进重型 project gate。
 6. 按 `roles/intake.md` 创建一张有「要做」、`CHECK`、`SCOPE` 和完整 `DEPENDENCIES` 的小票。使用 `agent-graph.sh issues create --input <JSON>`；已有原生票用 `issues adopt` 显式纳管。未纳管票可见但默认不领取。完整回读 canonical ID、URL 与依赖，不能用编号替换旧 UUID/ZII。
-7. 交付配置 PR 与实际检查证据。业务 PR 引用 Issue URL，不用 `Closes` / `Fixes`；部署与 smoke 通过才关闭业务票。看板 `/swarm` 使用同一后端，GitHub 额度独立显示，Orca 关联通过 comment 的 `issue:` 行而非 `--linear-issue`。
+7. 交付配置 PR 与实际检查证据。业务 PR 引用 Issue URL，不用 `Closes` / `Fixes`；部署与 smoke 通过才关闭业务票。票的流转显示在 Orca workspace 看板（先运行 `bin/orca-factory board-columns` 安装列）；卡片通过 Issue 链接与评论中的 `issue:` 行关联票，而非 `--linear-issue`。
 8. 启用运行通道需另有明确授权。推荐 `driver serve` 单实例调度；同仓库旧 `agent-linear-scan` 必须关闭，不能同时运行 driver 与定时 coordinator。若使用定时 coordinator，`install.sh` 只创建禁用任务，先手动演练，再由用户启用。
 
 迁移流程见 [票据主账本](docs/agents/issue-tracker.md)：只读 export → offline preview → 明确真实写入授权 → drain 收敛并核实旧写者 → freeze 后停止 scheduler、再次核实全体写者 → 最终导出 → 保持停调度并回到 draining → held import/全量回读 → 单独确认配置切换及 release-hold → 唯一调度器 running。frozen 禁止导入写入；draining 不禁止既有合并或 smoke，不能边运行 scheduler 边做最终迁移。维护栅栏只约束本机合作写者，不证明旧二进制或其他机器无写者。保留预算、checkpoint、receipts、FIFO 与历史部署屏障；不强杀 worker，不自动回滚到陈旧 Linear。
@@ -160,9 +160,7 @@ ledger 与 prune 入口要求先提供支持 `ledger-shell-v1` 和 `prune-worktr
 ```bash
 $FACTORY/bin/orca-factory init $REPO
 # 产出 $REPO/scripts/agent-gates/：core 文件原样复制（含 constitution/ 与 roles/ 两个子目录）+ 三份由模板生成、带 {{占位}} 的项目文件
-# 同时在 $REPO/.claude/settings.json 合并两个键（extraKnownMarketplaces.orca-factory、enabledPlugins["swarm-board@orca-factory"]），
-# 其余键原样保留；这让 Claude Code 在该仓库启动时自动安装 /swarm 看板。文件已存在只加键，不要手改。
-# 若目标仓库 .gitignore 忽略了 .claude/，init 会提示：登记只在本机生效；要随仓库分发需在 .gitignore 加 `!.claude/settings.json`（第 3 步问用户）。
+# 若 $REPO/.claude/settings.json 里还有已退役的 swarm-board 登记，init/update 会移除这两个键，其余键原样保留。
 ```
 
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
@@ -233,7 +231,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 4. 建一张小票试跑：在该 project 里，Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动（用 intake 建，或手动 `orca linear save-issue --team <KEY> --project <project-id> --state Todo --label ready-for-agent --title "..." --body-file -`）。
 5. `orca automations run <id>` 手动触发一轮，在 Orca 里看 coordinator 会话；结束后看 Linear 评论（含 `已领取 · tier=…`）、PR、`scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 满意后 `orca automations edit <id> --enabled`。
-7. 看板：在该仓库启动 Claude Code 会提示安装 `swarm-board` 插件（来自本仓库 marketplace），`/swarm` 打开；`t` 泳道、`s` agent、`d` 明细。
+7. 看板：运行 `$FACTORY/bin/orca-factory board-columns` 在本机 Orca 加入 driver 的列，重启 Orca 后用 `--check` 确认；之后在 Orca workspace 看板查看票的流转。
 8. 两个 Orca 设置：Settings → Agents 里 claude 默认参数要带模型；该仓库的 setup 脚本要能在新 worktree 里装依赖（内容基本等于 `AGENT_INSTALL_CMD`），否则工人在空 worktree 里跑不了测试。`orca repo` 没有设置 hooks 的子命令，Settings → Repository → Hooks 只能在 UI 里配，留给用户。源码显示 `orca.yaml` 还支持 `scripts.setup`、`scripts.archive`、`setupAgentStartupPolicy`（官网未写）；提交进 git 的 setup 脚本是否触发信任确认、无人值守时是否卡住**未核实**，因此仍以 UI 设置为已验证路径，`orca.yaml` 这几项只在 PR body 里建议，不自己提交。能进 git 的两项只在 PR body 里建议，不自己提交（超出第 7 步允许的改动范围）：仓库根 `orca.yaml` 的 `worktree.sharedDirectories`（共享被 gitignore 的大目录，如 `node_modules`）、`.worktreeinclude`（复制 `.env` 等被 gitignore 的文件，每行一个字面路径）。
 
 ## 附：自接入（`$REPO` 就是 `$FACTORY`）
@@ -241,7 +239,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 - `core/` 是源，`scripts/agent-gates/` 是它的安装副本，两者必须一致。`gate.project.sh` 加 `drift` 步：`bin/orca-factory check .`。`roles/local-worker.md` 写明：改了 `core/` 必须再跑 `bin/orca-factory update .`，不手改 `scripts/agent-gates/` 里由 core 分发的文件。
 - 验证命令 `bin/orca-factory selftest` 写进票的 `CHECK`，不放进 `gate.project.sh`（嵌套抢锁）。
 - 范例：本仓库自己的 `scripts/agent-gates/`。
-- `core/`、`bin/`、`templates/`、`ONBOARD.md`、`.claude-plugin/`、`mods/` 是流水线本体，按 lane 2 走 PR。
+- `core/`、`bin/`、`templates/`、`ONBOARD.md` 是流水线本体，按 lane 2 走 PR。
 
 ## 7. 禁止事项
 

@@ -42,13 +42,13 @@ BATCH_SIZE="${AGENT_BATCH_SIZE:-1}"
 # 0 = skip every SCOPE check (worktree + merge rebase resolve conflicts instead).
 SCOPE_AVOID="${AGENT_SCOPE_AVOID:-1}"
 
-# Lossy, out-of-band tally that lets the swarm board see who spends Linear quota.
+# Lossy, out-of-band tally of who spends Linear quota.
 # Writes are append-only, one line per call: "<epoch> <source>". Failures ignored.
 # The two lines live in-script because this file may be run from stdin via `git show | bash`.
 _linear_count_file() { printf '%s' "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; }
 _count_linear_call() { { printf '%s precheck\n' "$(date +%s)" >> "$(_linear_count_file)"; } 2>/dev/null || true; }
 
-# One Linear reader per run: precheck writes a snapshot that prune, the swarm board and other
+# One Linear reader per run: precheck writes a snapshot that prune and other
 # consumers read instead of hitting Linear themselves. The file is a cache, not state: a failed
 # write or a stale/missing snapshot is harmless, so writes never change the precheck exit code.
 SNAPSHOT_FILE="${AGENT_SNAPSHOT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json}"
@@ -291,7 +291,7 @@ snapshot_comments_of() {
   printf '[]\n'
 }
 
-# Write a single-run snapshot that consumers (prune, swarm board) read instead of hitting Linear.
+# Write a single-run snapshot that consumers (prune) read instead of hitting Linear.
 # Only runs when this run's project-wide list-issues call succeeded (precheck_tmp/issues exists);
 # a failed list leaves the previous snapshot in place. Atomic via tempfile + rename in the same
 # directory so partial writes never surface. The whole function is best effort: any error returns

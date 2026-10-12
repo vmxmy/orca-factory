@@ -122,28 +122,6 @@ if [[ -n "$LANE3_HITS" ]]; then
 fi
 log "--- [lane] $LANE"
 
-# 1c. plugin-version: version bumps must be isolated to one plugin's release files.
-plugin_version() {
-  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
-}
-while IFS= read -r f; do
-  [[ "$f" == mods/*/.claude-plugin/plugin.json ]] || continue
-  plugin="${f#mods/}"
-  plugin="${plugin%/.claude-plugin/plugin.json}"
-  [[ "$plugin" != */* ]] || continue
-  # New plugins have no released version to compare against.
-  base_plugin="$(git -C "$WT" show "$BASE:$f" 2>/dev/null)" || continue
-  base_version="$(printf '%s\n' "$base_plugin" | plugin_version)"
-  worktree_version=""
-  if [[ -f "$WT/$f" ]]; then worktree_version="$(plugin_version < "$WT/$f")"; fi
-  [[ "$base_version" != "$worktree_version" ]] || continue
-  EXTRA_FILES=""
-  while IFS= read -r changed; do
-    [[ "$changed" == "$f" || "$changed" == "mods/$plugin/CHANGELOG.md" ]] || EXTRA_FILES+="$changed"$'\n'
-  done <<< "$CHANGED"
-  [[ -z "$EXTRA_FILES" ]] || verdict red plugin-version "功能 PR 不得修改插件版本号，版本号由发布 PR 修改（ZII-833）" "$EXTRA_FILES"
-done <<< "$CHANGED"
-
 # 2. suppression
 SUPP_RE='@ts-nocheck|@ts-ignore|@ts-expect-error|as any|\.only\(|\.skip\('
 SRC_PATHS=('*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' ':!scripts/agent-gates/*')
