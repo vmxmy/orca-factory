@@ -444,14 +444,28 @@ cmd_board_columns() {
     return 1
   fi
   # A running Orca keeps its settings in memory and writes them back over this file.
-  if [[ -z "${ORCA_DATA_FILE:-}" ]] && pgrep -x 'orca-ide|Orca' > /dev/null; then
+  if [[ -z "${ORCA_DATA_FILE:-}" ]] && orca_app_running; then
     rm -f -- "$tmp"
     fail 'board-columns: stop Orca (app and orca serve) first; it would overwrite the columns'
   fi
   cp -p -- "$file" "$file.bak-$(date -u +%Y%m%dT%H%M%SZ)"
   chmod --reference="$file" -- "$tmp"
   mv -- "$tmp" "$file"
+  # SQLite is the profile authority; without adoption Orca refuses to start on the edited JSON.
+  if [[ -f "$(dirname -- "$file")/profile-state.db" ]]; then
+    "${ORCA_CLI_COMMAND:-orca-ide}" profile state rollback --current-json > /dev/null \
+      || fail "board-columns: Orca did not adopt $file; restore $file.bak-* before starting Orca"
+  fi
   echo "board-columns: wrote driver phase columns; start Orca, then run 'orca-factory board-columns --check'"
+}
+
+# The terminal daemon and Chromium helpers share the binary name but never write profile state.
+orca_app_running() {
+  local pid
+  for pid in $(pgrep -x 'orca-ide|Orca'); do
+    [[ "$(ps -o args= -p "$pid")" == *--type=* || "$(ps -o args= -p "$pid")" == *-entry.js* ]] || return 0
+  done
+  return 1
 }
 
 cmd_selftest() {
@@ -1792,6 +1806,13 @@ LCF_ECHO_ORCA
     cmd_board_columns > /dev/null
     [[ "$(cksum < "$ORCA_DATA_FILE")" == "$before" ]] || fail "selftest: board-columns is not idempotent"
     cmd_board_columns --check > /dev/null || fail "selftest: board-columns --check rejected installed columns"
+    # An SQLite-backed profile only reads the JSON after Orca adopts it.
+    printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/orca-cli.log"\n' "$SELFTEST_TMP" > "$SELFTEST_TMP/orca-cli"
+    chmod +x "$SELFTEST_TMP/orca-cli"
+    : > "$SELFTEST_TMP/profile-state.db"
+    jq '.ui.workspaceStatuses |= map(select(.id != "driver-gate"))' "$ORCA_DATA_FILE" > "$ORCA_DATA_FILE.new" && mv "$ORCA_DATA_FILE.new" "$ORCA_DATA_FILE"
+    ORCA_CLI_COMMAND="$SELFTEST_TMP/orca-cli" cmd_board_columns > /dev/null
+    [[ "$(cat "$SELFTEST_TMP/orca-cli.log" 2>/dev/null)" == "profile state rollback --current-json" ]] || fail "selftest: board-columns did not make Orca adopt the JSON"
   )
   echo "selftest: Orca board lays out one column per driver phase"
   echo "selftest: PASS"
