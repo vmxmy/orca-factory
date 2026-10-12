@@ -1496,6 +1496,7 @@ export const register: Register = on => {
       driverBadge: driverBadgeText, globalPauseSec: driver?.globalPause.active ? driver.globalPause.durationSeconds : undefined,
       at: b.at, refreshSec: remainingSec,
       snapshotMin: b.snapshotAgeMs === undefined ? undefined : Math.max(0, Math.floor(b.snapshotAgeMs / 60_000)),
+      linearThrottled: b.linearThrottled,
       version: MOD_VERSION, view: v, detail: d,
       linearUsage: b.linearUsage, linearLimit: LINEAR_HOURLY_LIMIT, lastRun: b.lastRun, stale,
       restart: !!b.installedVersion && verGT(b.installedVersion, MOD_VERSION), installedVersion: b.installedVersion,
