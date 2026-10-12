@@ -69,6 +69,37 @@ func TestCLIProcess(t *testing.T) {
 	}
 }
 
+func TestTopLevelHelpListsEveryCommand(t *testing.T) {
+	if os.Getenv("DRIVER_TEST_PROCESS") == "1" {
+		t.Skip("parent process only")
+	}
+	for _, flag := range []string{"--help", "-h", "help"} {
+		t.Run(flag, func(t *testing.T) {
+			cmd := exec.Command(os.Args[0], "-test.run=^TestCLIProcess$", "--", flag)
+			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Run(); err != nil {
+				t.Fatalf("exit error = %v; stderr = %q", err, stderr.String())
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("help wrote stderr %q", stderr.String())
+			}
+			listed := map[string]bool{}
+			for _, line := range strings.Split(stdout.String(), "\n") {
+				if name, ok := strings.CutPrefix(line, "  "); ok && name != "" && name[0] != ' ' {
+					listed[strings.Fields(name)[0]] = true
+				}
+			}
+			for name := range commands {
+				if !listed[name] {
+					t.Errorf("help does not list command %q", name)
+				}
+			}
+		})
+	}
+}
+
 func TestRegisterDispatch(t *testing.T) {
 	var got []string
 	Register("test-command", func(args []string) int { got = args; return 7 })

@@ -31,11 +31,17 @@ func init() {
 
 func run(args []string) int {
 	if len(args) > 0 {
+		switch args[0] {
+		case "--help", "-h", "help":
+			fmt.Print(topLevelHelp)
+			return 0
+		}
 		if command, ok := commands[args[0]]; ok {
 			return command(args[1:])
 		}
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 	}
-	fmt.Fprintln(os.Stderr, "Usage: orca-factory-driver <command> [args]")
+	fmt.Fprint(os.Stderr, topLevelHelp)
 	return 2
 }
 
