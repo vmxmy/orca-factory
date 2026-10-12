@@ -1,4 +1,4 @@
-FROM ghcr.io/actions/actions-runner@sha256:5036480998280bb21e32ade9fe1b02b493861ac314b62ba1aea320b94f56ec97
+FROM ghcr.io/actions/actions-runner@sha256:660f7b9d1e0007274f7c867e220b3c382137ef5a30d8e501a025ad50dbd5fb9d
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends bash git make gcc libc6-dev ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/orca-runner-entrypoint
