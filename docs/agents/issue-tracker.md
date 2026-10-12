@@ -24,6 +24,27 @@
 6. scheduler 保持停止、旧写者保持隔离，将维护状态显式改回 `draining`，再执行 `driver issues import --input <manifest> --apply`。frozen 禁止所有 GitHub 写入，不能在 frozen 下导入，也没有导入绕过开关。导入票保持 held，完整回读后才允许继续。`--apply` 在 serve 持有单实例锁或维护状态不是 draining 时直接拒绝。
 7. 单独确认配置切换；保持 scheduler 停止，在 draining 下用 `driver issues release-hold --input <manifest> --apply` 核验完整历史后释放。切到唯一 GitHub 后端，核对其他写者仍隔离，最后恢复 running 并启动唯一调度器。
 
+### 切换证据清单
+
+每项证据在切换窗口内重新读取，写入 #171 评论；未知或不一致即停在 held/draining，不绕过。运维命令须带服务 drop-in 中的 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY`，凭据只列变量名。
+
+| 项 | 证据与来源 | 写入 |
+| --- | --- | --- |
+| 程序与检出 | `orca-factory-driver version` 等于 main 部署提交；生产检出在 `main` 且 `git diff origin/main -- scripts/agent-gates core` 为空 | 否 |
+| 配额 | `driver status --json` 中 `globalPause.active=false`；有配额暂停时推迟，不靠重启清除 | 否 |
+| 旧 writer | `orca automations list` 中同仓库 `agent-linear-scan` 为 disabled；`systemctl --user list-timers`、`crontab -l` 无 coordinator；无 `driver exec`/`driver resolve` 进程；`maintenance status` 中 `writersActive`、`sessionsActive` 为 false；其他机器与 Linear 集成人工确认 | 否 |
+| 在途对象 | `status --json` 逐票列出 owner、phase、blockedReason；合并通道票核对 `merge-handoff-v1`/`merge-progress-v1` 与 PR 状态；resolver 票核对 resolution 与 `resolver.lock` 空闲；`executor.json` 的 Corrections、Completed 只读记录 | 否 |
+| checkpoint 与预算 | 状态根下 `<repo>/<Identifier>/` 文件清单与 sha256，切换前后一致；导入与释放不读写这些文件 | 否 |
+| 部署屏障 | 未完成部署验收的票保持屏障；缺失交接的历史归属单独结算，不靠导入解除 | 否 |
+| drain / freeze | `maintenance drain` 后无新派工；`maintenance freeze` 成功，随后停止 `orca-factory-driver.service` 并确认 `driver-serve.lock` 可取得 | 本地状态 |
+| 最终导出 | freeze 后 `issues export` 退出 0；`issues preview` 通过身份、依赖、编码与凭据形态检查；与预演清单比对票数、评论数与身份差异 | 本地清单 |
+| held import | 回到 draining 后 `issues import --apply` 退出 0，失败按同一清单续传；随后不带 `--apply` 重跑，`created=0` 且无冲突 | GitHub |
+| readback 与 release | `issues snapshot --json` 中导入票的 `metadata.importHold` 全部为 true；`issues release-hold --apply` 完整回读通过后释放 | GitHub |
+| 唯一调度器 | 合并 `AGENT_ISSUE_BACKEND=github` 后生产检出 pull；`issues backend` 输出 github；`serve --dry-run` 无异常候选；只启动一个 serve | 配置、进程 |
+| 切换后验收 | 两个完整周期：status 票行 `backend=github`；Linear 请求计数增量为 0，journal 无 `"Linear request"`；票数、canonical ID、owner 与切换前一致；无重复派工 | 否 |
+
+回滚边界：held import 之前可直接恢复旧程序与配置。import 开始后是单向门：GitHub 上的 held 票不删除，Linear 端保持 draining，由用户决定重来或放弃；GitHub 已产生新事实后不直接回到 Linear。
+
 导出校验完整源 schema、分页和依赖，不因目标评论编码限制丢弃源成果。preview 另校验目标编码并报告 `fragmentedComments`、`destinationComments`；单条大评论使用带来源身份、顺序和完整摘要的 v2 分片，GitHub 每条正文不超过 50,000 字节。普通读取缺片、重排或冲突均失败，不将半条历史暴露给归属解析；仅相同 manifest 摘要的 held 导入可按已确认目标前缀续传。既有 v1 批评论保持可读。
 
 manifest 摘要绑定整个来源集合。不要先导入任意子集，再用不同全量清单续传；已有目标的来源摘要冲突会阻止导入。导入预检保留已有原生 GitHub 票，但仍拒绝清单外的导入身份。
