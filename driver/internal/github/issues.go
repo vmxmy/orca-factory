@@ -63,7 +63,8 @@ func (c *Client) Issues(ctx context.Context, owner, repo string) ([]IssueRecord,
 			seen[v.Number] = true
 			rows = append(rows, v)
 		}
-		if next == "" && len(batch) < 100 {
+		// GitHub marks the last cursor page by omitting rel="next", even when it is full.
+		if next == "" && (len(batch) < 100 || current.Query().Get("after") != "") {
 			return rows, nil
 		}
 		if next == "" {
@@ -101,7 +102,8 @@ func (c *Client) IssueComments(ctx context.Context, owner, repo string, number i
 			seen[v.ID] = true
 			rows = append(rows, v)
 		}
-		if next == "" && len(batch) < 100 {
+		// GitHub marks the last cursor page by omitting rel="next", even when it is full.
+		if next == "" && (len(batch) < 100 || current.Query().Get("after") != "") {
 			return rows, nil
 		}
 		if next == "" {

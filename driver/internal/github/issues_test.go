@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -156,5 +157,30 @@ func TestIssuesFollowNextLinkEvenForShortPage(t *testing.T) {
 	rows, err := c.Issues(context.Background(), "o", "r")
 	if err != nil || len(rows) != 2 || calls != 2 {
 		t.Fatalf("short page truncated: rows=%v calls=%d error=%v", rows, calls, err)
+	}
+}
+
+func TestIssuesStopAtFullCursorPageWithoutNext(t *testing.T) {
+	calls := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		first := 1
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s/repos/o/r/issues?state=all&per_page=100&page=2&sort=created&direction=asc&after=c1>; rel="next"`, r.Host))
+		} else {
+			first = 101
+			w.Header().Set("Link", fmt.Sprintf(`<http://%s/repos/o/r/issues?state=all&per_page=100&page=1&sort=created&direction=asc&before=c2>; rel="prev"`, r.Host))
+		}
+		rows := make([]string, 100)
+		for i := range rows {
+			rows[i] = fmt.Sprintf(`{"number":%d}`, first+i)
+		}
+		_, _ = fmt.Fprint(w, "["+strings.Join(rows, ",")+"]")
+	}))
+	defer s.Close()
+	c, _ := New(Options{BaseURL: s.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	rows, err := c.Issues(context.Background(), "o", "r")
+	if err != nil || len(rows) != 200 || calls != 2 {
+		t.Fatalf("full last cursor page: rows=%d calls=%d error=%v", len(rows), calls, err)
 	}
 }
