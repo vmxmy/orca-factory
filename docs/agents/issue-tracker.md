@@ -31,15 +31,15 @@
 | 项 | 证据与来源 | 写入 |
 | --- | --- | --- |
 | 程序与检出 | `orca-factory-driver version` 等于 main 部署提交；生产检出在 `main` 且 `git diff origin/main -- scripts/agent-gates core` 为空 | 否 |
-| 配额 | `driver status --json` 中 `globalPause.active=false`、无 pauses；有配额暂停时推迟，不靠重启清除 | 否 |
-| 旧 writer | `orca automations list` 中同仓库 `agent-linear-scan` 为 disabled；`systemctl --user list-timers`、`crontab -l` 无 coordinator；无 `driver exec`/`driver resolve` 进程；`maintenance status` 中 writers、sessions 为 false；其他机器与 Linear 集成人工确认 | 否 |
+| 配额 | `driver status --json` 中 `globalPause.active=false`；有配额暂停时推迟，不靠重启清除 | 否 |
+| 旧 writer | `orca automations list` 中同仓库 `agent-linear-scan` 为 disabled；`systemctl --user list-timers`、`crontab -l` 无 coordinator；无 `driver exec`/`driver resolve` 进程；`maintenance status` 中 `writersActive`、`sessionsActive` 为 false；其他机器与 Linear 集成人工确认 | 否 |
 | 在途对象 | `status --json` 逐票列出 owner、phase、blockedReason；合并通道票核对 `merge-handoff-v1`/`merge-progress-v1` 与 PR 状态；resolver 票核对 resolution 与 `resolver.lock` 空闲；`executor.json` 的 Corrections、Completed 只读记录 | 否 |
 | checkpoint 与预算 | 状态根下 `<repo>/<Identifier>/` 文件清单与 sha256，切换前后一致；导入与释放不读写这些文件 | 否 |
-| 部署屏障 | 未完成部署验收的票保持屏障；ZII-899 等缺失交接单独结算，不靠导入解除 | 否 |
+| 部署屏障 | 未完成部署验收的票保持屏障；缺失交接的历史归属单独结算，不靠导入解除 | 否 |
 | drain / freeze | `maintenance drain` 后无新派工；`maintenance freeze` 成功，随后停止 `orca-factory-driver.service` 并确认 `driver-serve.lock` 可取得 | 本地状态 |
 | 最终导出 | freeze 后 `issues export` 退出 0；`issues preview` 通过身份、依赖、编码与凭据形态检查；与预演清单比对票数、评论数与身份差异 | 本地清单 |
 | held import | 回到 draining 后 `issues import --apply` 退出 0，失败按同一清单续传；随后不带 `--apply` 重跑，`created=0` 且无冲突 | GitHub |
-| readback 与 release | `issues snapshot --json` 中导入票全部 held；`issues release-hold --apply` 完整回读通过后释放 | GitHub |
+| readback 与 release | `issues snapshot --json` 中导入票的 `metadata.importHold` 全部为 true；`issues release-hold --apply` 完整回读通过后释放 | GitHub |
 | 唯一调度器 | 合并 `AGENT_ISSUE_BACKEND=github` 后生产检出 pull；`issues backend` 输出 github；`serve --dry-run` 无异常候选；只启动一个 serve | 配置、进程 |
 | 切换后验收 | 两个完整周期：status 票行 `backend=github`；Linear 请求计数增量为 0，journal 无 `"Linear request"`；票数、canonical ID、owner 与切换前一致；无重复派工 | 否 |
 
