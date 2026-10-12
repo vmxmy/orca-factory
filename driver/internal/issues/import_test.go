@@ -1,11 +1,15 @@
 package issues
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -215,6 +219,141 @@ func TestImportOversizedCommentRoundTrip(t *testing.T) {
 	f.comments[1][1]["body"] = f.comments[1][0]["body"]
 	if _, err = c.ListComments(context.Background(), importID); err == nil {
 		t.Fatal("duplicate fragment accepted")
+	}
+}
+
+func TestImportFragmentTamperFailsClosed(t *testing.T) {
+	rewrite := func(t *testing.T, row map[string]any, edit func(*importedFragment)) {
+		t.Helper()
+		body := row["body"].(string)
+		encoded, caption, _ := strings.Cut(strings.TrimPrefix(body, importedFragmentMarker), " -->\n\n")
+		var fragment importedFragment
+		if err := json.Unmarshal([]byte(encoded), &fragment); err != nil {
+			t.Fatal(err)
+		}
+		edit(&fragment)
+		raw, err := json.Marshal(fragment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		row["body"] = importedFragmentMarker + string(raw) + " -->\n\n" + caption
+	}
+	for _, tc := range []struct {
+		name   string
+		tamper func(*testing.T, []map[string]any) []map[string]any
+	}{
+		{"missing middle", func(_ *testing.T, rows []map[string]any) []map[string]any { return append(rows[:1:1], rows[2:]...) }},
+		{"missing last", func(_ *testing.T, rows []map[string]any) []map[string]any {
+			return append(rows[:len(rows)-2:len(rows)-2], rows[len(rows)-1])
+		}},
+		{"reordered", func(_ *testing.T, rows []map[string]any) []map[string]any {
+			rows[0], rows[1] = rows[1], rows[0]
+			return rows
+		}},
+		{"digest conflict", func(t *testing.T, rows []map[string]any) []map[string]any {
+			rewrite(t, rows[1], func(f *importedFragment) {
+				data, _ := base64.StdEncoding.DecodeString(f.Data)
+				f.Data = base64.StdEncoding.EncodeToString(bytes.Replace(data, []byte("中"), []byte("文"), 1))
+			})
+			return rows
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+			c, f := newImportServer(t)
+			m := importFixture()
+			importIssue(m)["comments"].([]any)[0].(map[string]any)["body"] = strings.Repeat("中文\\\"\n", 15000)
+			raw := importRaw(t, m)
+			if _, err := Import(context.Background(), c, raw, true); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.comments[1]) < 4 {
+				t.Fatalf("fixture needs at least three fragments, got %d comments", len(f.comments[1]))
+			}
+			f.comments[1] = tc.tamper(t, f.comments[1])
+			if _, err := c.ListComments(context.Background(), importID); err == nil {
+				t.Fatal("tampered fragments decoded as complete history")
+			}
+			before := f.writes
+			if _, err := Import(context.Background(), c, raw, true); err == nil || f.writes != before {
+				t.Fatalf("tampered import resumed: %v writes=%d", err, f.writes-before)
+			}
+			if err := maintenance.Set("draining"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ReleaseHold(context.Background(), c, raw); err == nil || f.writes != before {
+				t.Fatalf("tampered import released: %v writes=%d", err, f.writes-before)
+			}
+		})
+	}
+}
+
+func TestPreviewRejectsCredentialShapesWithoutEcho(t *testing.T) {
+	secrets := map[string]string{
+		"github":      "gh" + "p_" + strings.Repeat("A1", 18),
+		"linear":      "lin_" + "api_" + strings.Repeat("b2", 20),
+		"anthropic":   "sk-" + "ant-" + strings.Repeat("c3", 20),
+		"aws":         "AK" + "IA" + strings.Repeat("Q", 16),
+		"private key": "-----BEGIN " + "RSA PRIVATE KEY-----",
+		"url":         "https://user:" + "hunter2" + "@example.com/repo.git",
+	}
+	for name, secret := range secrets {
+		for field, place := range map[string]func(map[string]any){
+			"description": func(m map[string]any) { importIssue(m)["description"] = "see " + secret },
+			"comment": func(m map[string]any) {
+				importIssue(m)["comments"].([]any)[1].(map[string]any)["body"] = secret + " leaked"
+			},
+		} {
+			t.Run(name+" in "+field, func(t *testing.T) {
+				m := importFixture()
+				place(m)
+				_, err := Preview(importRaw(t, m), "o/r")
+				if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "ZII-1") {
+					t.Fatalf("credential shape not rejected by location: %v", err)
+				}
+			})
+		}
+	}
+	m := importFixture()
+	importIssue(m)["description"] = "task-runner risk-based desk-check sk-learn ghp_short https://example.com/a:b@c"
+	if _, err := Preview(importRaw(t, m), "o/r"); err != nil {
+		t.Fatalf("ordinary text rejected: %v", err)
+	}
+}
+
+func TestImportAndReleaseKeepLocalRecoveryState(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)
+	ticket := filepath.Join(root, "r", "ZII-1")
+	if err := os.MkdirAll(ticket, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"executor.json": `{"Corrections":2,"Completed":false}`, "budget.json": `{"spent":7}`}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(ticket, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c, _ := newImportServer(t)
+	raw := importRaw(t, importFixture())
+	if _, err := Import(context.Background(), c, raw, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReleaseHold(context.Background(), c, raw); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(ticket)
+	if err != nil || len(entries) != len(files) {
+		t.Fatalf("recovery state entries changed: %d %v", len(entries), err)
+	}
+	for name, body := range files {
+		got, err := os.ReadFile(filepath.Join(ticket, name))
+		if err != nil || string(got) != body {
+			t.Fatalf("%s changed: %q %v", name, got, err)
+		}
 	}
 }
 

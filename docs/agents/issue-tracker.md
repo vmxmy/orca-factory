@@ -17,11 +17,11 @@
 ## 迁移与切换
 
 1. 明确授权只读源导出，使用 `AGENT_ISSUE_BACKEND=linear` 的 `driver issues export`；不提取凭据绕过现有客户端。
-2. 使用 `driver issues preview --input <manifest>` 离线验证目标、身份、依赖闭包与摘要；历史快照不证明当前完整性。
+2. 使用 `driver issues preview --input <manifest>` 离线验证目标、身份、依赖闭包、摘要与凭据形态；命中凭据形态时只报告票号与评论序号，须先处理再导入。历史快照不证明当前完整性。
 3. 单独确认真实导入的数据范围、目标仓库可见性和敏感内容。
 4. 使用 `driver maintenance drain` 停止新认领/派工，允许已有写者自然收敛。draining 仍允许合并、smoke、release 和评论写入；核对实际 worker、resolver 与旧 coordinator，不把 drain 当成停写证明。
 5. 核实所有旧写者后执行 `driver maintenance freeze`，停止 scheduler，并再次确认执行器、resolver、自动化及其他机器不再写入，再完成最终导出与差异核对。旧二进制可能不持维护锁，锁空闲不能代替进程、Run 和完整派工回执核对；未知状态阻止切换。
-6. scheduler 保持停止、旧写者保持隔离，将维护状态显式改回 `draining`，再执行 `driver issues import --input <manifest> --apply`。frozen 禁止所有 GitHub 写入，不能在 frozen 下导入，也没有导入绕过开关。导入票保持 held，完整回读后才允许继续。
+6. scheduler 保持停止、旧写者保持隔离，将维护状态显式改回 `draining`，再执行 `driver issues import --input <manifest> --apply`。frozen 禁止所有 GitHub 写入，不能在 frozen 下导入，也没有导入绕过开关。导入票保持 held，完整回读后才允许继续。`--apply` 在 serve 持有单实例锁或维护状态不是 draining 时直接拒绝。
 7. 单独确认配置切换；保持 scheduler 停止，在 draining 下用 `driver issues release-hold --input <manifest> --apply` 核验完整历史后释放。切到唯一 GitHub 后端，核对其他写者仍隔离，最后恢复 running 并启动唯一调度器。
 
 导出校验完整源 schema、分页和依赖，不因目标评论编码限制丢弃源成果。preview 另校验目标编码并报告 `fragmentedComments`、`destinationComments`；单条大评论使用带来源身份、顺序和完整摘要的 v2 分片，GitHub 每条正文不超过 50,000 字节。普通读取缺片、重排或冲突均失败，不将半条历史暴露给归属解析；仅相同 manifest 摘要的 held 导入可按已确认目标前缀续传。既有 v1 批评论保持可读。

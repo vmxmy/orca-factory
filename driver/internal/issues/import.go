@@ -41,6 +41,10 @@ type ImportResult struct {
 
 var sourceIdentifier = regexp.MustCompile(`^[A-Z][A-Z0-9]*-[1-9][0-9]*$`)
 
+// Imported history becomes visible to every reader of the destination
+// repository, so credential-shaped text stops the migration before any write.
+var credentialShape = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|lin_api_[A-Za-z0-9]{30,}|sk-ant-[A-Za-z0-9_-]{30,}|sk-[A-Za-z0-9]{40,}|AKIA[0-9A-Z]{16}|xox[abprs]-[A-Za-z0-9-]{10,})|-----BEGIN [A-Z ]*PRIVATE KEY-----|[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]+@`)
+
 const importedCommentMarker = "<!-- orca-import-comments-v1: "
 const importCommentLimit = 50000
 
@@ -227,6 +231,9 @@ func validateSourceManifest(raw []byte, repository string) (ImportManifest, stri
 		if strings.TrimSpace(s.Title) == "" || !validState(s.State) || s.Priority < 0 || s.Priority > 4 || s.Estimate != nil && *s.Estimate < 0 || s.ImportDigest != "" || !s.CommentsComplete || !s.RelationsComplete || s.CreatedAt.IsZero() || s.UpdatedAt.IsZero() || strings.Contains(s.Description, marker) {
 			return m, "", errors.New("invalid or incomplete source issue")
 		}
+		if credentialShape.MatchString(s.Title) || credentialShape.MatchString(s.Description) {
+			return m, "", fmt.Errorf("credential-shaped text in %s title or description", s.Identifier)
+		}
 		var source struct {
 			Comments []json.RawMessage `json:"comments"`
 		}
@@ -239,6 +246,9 @@ func validateSourceManifest(raw []byte, repository string) (ImportManifest, stri
 			}
 			if !validSourceComment(c) || comments[c.ID] {
 				return m, "", errors.New("invalid or duplicate source comment")
+			}
+			if credentialShape.MatchString(c.Body) {
+				return m, "", fmt.Errorf("credential-shaped text in %s comment %d", s.Identifier, j+1)
 			}
 			comments[c.ID] = true
 		}
