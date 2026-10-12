@@ -32,6 +32,7 @@ type importServer struct {
 	writes   int
 	fail     string
 	lag      int
+	lists    int
 }
 
 func newImportServer(t *testing.T) (*GitHub, *importServer) {
@@ -52,6 +53,7 @@ func newImportServer(t *testing.T) (*GitHub, *importServer) {
 		path := strings.TrimPrefix(r.URL.Path, "/repos/o/r/issues")
 		switch {
 		case path == "" && r.Method == "GET":
+			f.lists++
 			result = f.rows
 			if f.lag > 0 {
 				f.lag--
@@ -376,6 +378,40 @@ func TestImportWaitsForCreatedIssueToBeListed(t *testing.T) {
 	task, err := c.Read(context.Background(), importID)
 	if err != nil || task.NativeState != "closed" || !task.Metadata.ImportHold {
 		t.Fatalf("closed held import not converged: %+v %v", task, err)
+	}
+}
+
+func TestReleaseHoldReadsDestinationListOnce(t *testing.T) {
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	c, f := newImportServer(t)
+	m := importFixture()
+	base := importIssue(m)
+	base["importHold"] = true
+	issues := []any{base}
+	for i := 2; i <= 3; i++ {
+		clone := map[string]any{}
+		for k, v := range base {
+			clone[k] = v
+		}
+		clone["id"] = fmt.Sprintf("01234567-1234-1234-1234-01234567890%d", i)
+		clone["identifier"] = fmt.Sprintf("ZII-%d", i)
+		clone["comments"] = []any{map[string]any{"id": fmt.Sprintf("clone-%d", i), "body": "body", "createdAt": importTime, "updatedAt": importTime}}
+		issues = append(issues, clone)
+	}
+	m["issues"] = issues
+	raw := importRaw(t, m)
+	if _, err := Import(context.Background(), c, raw, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	f.lists = 0
+	if _, err := ReleaseHold(context.Background(), c, raw); err != nil {
+		t.Fatal(err)
+	}
+	if f.lists != 1 {
+		t.Fatalf("release read-back listed the destination %d times for %d issues", f.lists, len(issues))
 	}
 }
 

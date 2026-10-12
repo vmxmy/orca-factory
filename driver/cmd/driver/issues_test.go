@@ -119,6 +119,14 @@ func TestGitHubCLICreateRejectsImportedIdentity(t *testing.T) {
 }
 
 func TestIssueImportBudgetPreservesParentCancellation(t *testing.T) {
+	for _, command := range []string{"import", "release-hold"} {
+		ctx, stop := issueCommandContext(context.Background(), command)
+		deadline, ok := ctx.Deadline()
+		stop()
+		if !ok || time.Until(deadline) < 29*time.Minute {
+			t.Fatalf("%s budget cannot cover a full destination read-back: %v", command, deadline)
+		}
+	}
 	parent, cancel := context.WithCancel(context.Background())
 	ctx, stop := issueCommandContext(parent, "import")
 	defer stop()

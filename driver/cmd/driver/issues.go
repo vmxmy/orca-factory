@@ -314,7 +314,7 @@ func migrationWriteGuard() (func(), error) {
 
 func issueCommandContext(parent context.Context, command string) (context.Context, context.CancelFunc) {
 	timeout := 10 * time.Minute
-	if command == "import" {
+	if command == "import" || command == "release-hold" {
 		timeout = 30 * time.Minute
 	}
 	return context.WithTimeout(parent, timeout)
