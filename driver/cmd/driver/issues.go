@@ -294,14 +294,18 @@ func publicIssue(ctx context.Context, c *issues.GitHub, t issues.Task, withComme
 func migrationWriteGuard() (func(), error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, errors.New("home directory unavailable")
+		return nil, fmt.Errorf("home directory unavailable: %w", err)
 	}
 	lock, err := scheduler.Acquire(filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"))
 	if err != nil {
 		return nil, fmt.Errorf("stop driver serve before migration writes: %w", err)
 	}
 	state, err := maintenance.Read()
-	if err != nil || state.Mode != "draining" {
+	if err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("read maintenance state: %w", err)
+	}
+	if state.Mode != "draining" {
 		_ = lock.Close()
 		return nil, errors.New("maintenance draining required for migration writes")
 	}

@@ -47,7 +47,9 @@ func exportFixture(t *testing.T, missingAlias *bool, outsideBlocker bool) (*line
 			return
 		}
 		if strings.HasPrefix(strings.TrimSpace(q.Query), "mutation") {
-			t.Fatal("export sent a Linear mutation")
+			t.Error("export sent a Linear mutation")
+			http.Error(w, "mutation", http.StatusBadRequest)
+			return
 		}
 		if strings.Contains(q.Query, "query ExportIssues(") && !strings.HasSuffix(q.Query, "parent { id } } pageInfo { hasNextPage endCursor } } }") {
 			http.Error(w, string(parseFailure), http.StatusBadRequest)
