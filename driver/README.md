@@ -51,7 +51,7 @@ orca-factory-driver status --json
 | --- | --- | --- |
 | `in-progress` | 手动工作区 | Orca 默认列，放非 driver 的 worktree；driver 不写 |
 | `driver-unclaimed` | 待领 | 归属释放后仍保留 worktree 的票 |
-| `driver-worker` | worker 运行中 | |
+| `driver-worker` | worker 运行中 | worker 在独立 worktree 中实现；worker 启动回执不带路径，driver 观察到 worktree 后才写卡片 |
 | `driver-branch-check` | 分支检查 | |
 | `driver-gate` | gate | |
 | `driver-review` | 审查 | |
