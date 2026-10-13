@@ -126,10 +126,9 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err != nil {
 		return "", tier, errors.New("review diff failed")
 	}
-	prompt := "Review the diff below against the repository constitution. End stdout with JSON {\"unit\":\"executor\",\"verdict\":\"green|red\",\"step\":\"review\",\"reason\":\"...\",\"evidence\":[],\"scope\":\"...\",\"lane\":2}."
-	// The role, the instructions and the diff all travel on stdin: claude's
+	// The role, the brief and the diff all travel on stdin: claude's
 	// --allowedTools is variadic and swallows a trailing positional prompt.
-	input := prompt + "\n\n```diff\n" + string(diff) + "```\n"
+	input := "```diff\n" + string(diff) + "```\n"
 	if brief, ok := reviewBriefFrom(ctx); ok && strings.TrimSpace(brief.Text) != "" {
 		// reviewer.md judges the diff against the ticket brief, and expects the
 		// lane-3 globs on the line before it. Without them every change outside the
@@ -159,9 +158,11 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 			err = errors.Join(err, errors.New("review checkout cleanup failed"))
 		}
 	}()
-	if role, readErr := os.ReadFile(filepath.Join(dir, "scripts", "agent-gates", "roles", "reviewer.md")); readErr == nil {
-		input = string(role) + "\n\n" + input
+	role, err := readRole(dir, "reviewer.md")
+	if err != nil {
+		return "", tier, err
 	}
+	input = role + "\n\n" + input
 	// runx intentionally has no stdin field. A private file outside the checkout
 	// supplies stdin through a fixed shell wrapper; no diff bytes become shell source.
 	name := filepath.Join(parent, "input")

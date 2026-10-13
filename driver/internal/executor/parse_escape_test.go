@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -19,9 +21,13 @@ func TestParseTicketLinearMarkdown(t *testing.T) {
 	}
 }
 
-func TestBriefForbidsAsk(t *testing.T) {
-	if !strings.Contains(briefTemplate, "orca orchestration ask") || !strings.Contains(briefTemplate, "--outcome failed") {
-		t.Fatal("brief must forbid ask and require worker_done --outcome failed when blocked")
+func TestDriverWorkerRoleForbidsAsk(t *testing.T) {
+	role, err := os.ReadFile(filepath.Join("..", "..", "..", "core", "roles", "driver-worker.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(role), "orca orchestration ask") || !strings.Contains(string(role), "--outcome failed") {
+		t.Fatal("driver-worker role must forbid ask and require worker_done --outcome failed when blocked")
 	}
 }
 
@@ -33,16 +39,5 @@ func TestParseTicketHeadingWithNote(t *testing.T) {
 	}
 	if got.Todo != "1. do it" || got.Scope != "a/b.go" {
 		t.Fatalf("Todo=%q Scope=%q", got.Todo, got.Scope)
-	}
-}
-
-// A worker that sees `declare function h` without an implementation "fixes" it back to
-// JSX, which cannot build in the clean checkout the gate uses (no react). The brief must
-// say that h is injected by the host and that .tsx views take no JSX.
-func TestBriefExplainsInjectedHAndNoJSX(t *testing.T) {
-	for _, want := range []string{"declare function h", "injected by the host", "JSX"} {
-		if !strings.Contains(briefTemplate, want) {
-			t.Fatalf("brief template lacks %q", want)
-		}
 	}
 }

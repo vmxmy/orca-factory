@@ -124,7 +124,11 @@ func (f *fakeTools) Review(_ context.Context, _, base, _ string, _ *float64) (st
 func fixture(t *testing.T, head string) (*Executor, *fakeOrca, *fakeLinear, *fakeGitHub, *fakeTools, Ticket) {
 	t.Helper()
 	o, l, g, tools := &fakeOrca{}, &fakeLinear{}, &fakeGitHub{}, &fakeTools{head: head}
-	e := &Executor{Orca: o, Linear: l, GitHub: g, Tools: tools, Config: Config{Repo: "/repo/demo", Owner: "acme", Repository: "demo", Terminal: "term_exec", Unit: "executor", Root: t.TempDir()}, Now: func() time.Time { return time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC) }}
+	repo := t.TempDir()
+	for _, role := range []string{"driver-worker.md", "correction.md", "reviewer.md"} {
+		writeRole(t, repo, role, "role "+role+"\n")
+	}
+	e := &Executor{Orca: o, Linear: l, GitHub: g, Tools: tools, Config: Config{Repo: repo, Owner: "acme", Repository: "demo", Terminal: "term_exec", Unit: "executor", Root: t.TempDir()}, Now: func() time.Time { return time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC) }}
 	ticket := Ticket{ID: "issue_one", Identifier: "ZII-861", Title: "执行器", Todo: "实现主路径", Check: "go test ./unit", Scope: "unit/*", Lane: 2}
 	return e, o, l, g, tools, ticket
 }
@@ -158,7 +162,7 @@ func TestMainPath(t *testing.T) {
 	if !reflect.DeepEqual(o.boardUpdates, board) {
 		t.Fatalf("board updates=%q", o.boardUpdates)
 	}
-	if o.objective != "ZII-861 执行器" || o.start.Run != "run_one" || o.start.Worktree != "new-top-level" || o.start.Repo != "path:/repo/demo" {
+	if o.objective != "ZII-861 执行器" || o.start.Run != "run_one" || o.start.Worktree != "new-top-level" || o.start.Repo != "path:"+e.Config.Repo {
 		t.Fatalf("dispatch: %+v %s", o.start, o.objective)
 	}
 	b, err := os.ReadFile(filepath.Join(e.Config.Root, "demo", "ZII-861", "brief.md"))
@@ -244,11 +248,12 @@ func TestMainPathReviewerStdin(t *testing.T) {
 		}
 		stdinPath = s.Args[4]
 		b, err := os.ReadFile(stdinPath)
-		if err != nil || !strings.Contains(string(b), "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n") || !strings.Contains(string(b), "End stdout with JSON") {
+		if err != nil || !strings.Contains(string(b), "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n") || !strings.Contains(string(b), "REVIEWER ROLE") {
 			t.Fatalf("stdin = %q, %v", b, err)
 		}
 		return []byte(`{"verdict":"green","step":"review"}`), nil
 	}
+	c.Run = withReviewerRole(t, c.Run)
 	out, tier, err := c.Review(context.Background(), repo, "base-sha", "new-sha", nil)
 	if err != nil || tier != "default" || out != `{"verdict":"green","step":"review"}` || calls != 4 {
 		t.Fatalf("review=%q calls=%d err=%v", out, calls, err)

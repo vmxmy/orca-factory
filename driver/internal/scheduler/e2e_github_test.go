@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -107,6 +109,13 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	f := newMergeFixture(t)
 	repo := f.config.Repositories[0]
 	gitMergeTest(t, repo.Path, "checkout", "main")
+	roles := filepath.Join(repo.Path, "scripts", "agent-gates", "roles")
+	if err := os.MkdirAll(roles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "driver-worker.md"), []byte("worker role\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	g := githubSafetyFixture(t, f)
 	previous := http.DefaultTransport
 	http.DefaultTransport = linearGuardTransport{t: t, next: previous}

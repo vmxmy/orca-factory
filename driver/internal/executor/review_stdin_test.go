@@ -24,10 +24,11 @@ func TestReviewSendsPromptAndDiffOnStdin(t *testing.T) {
 		stdin = string(b)
 		return []byte(`{"verdict":"green","step":"review"}`), err
 	}}
+	c.Run = withReviewerRole(t, c.Run)
 	if _, _, err := c.Review(context.Background(), repo, "origin/main", "HEAD", nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdin, "End stdout with JSON") || !strings.Contains(stdin, "+added") {
+	if !strings.Contains(stdin, "REVIEWER ROLE") || !strings.Contains(stdin, "+added") {
 		t.Fatalf("stdin must carry prompt and diff: %q", stdin)
 	}
 	if !strings.HasSuffix(script, `reviewer claude -p --allowedTools "Read Grep" `+stdinPath) {
@@ -68,6 +69,7 @@ func TestReviewStdinCarriesBriefAndLane3Globs(t *testing.T) {
 		return []byte(`{"verdict":"green","step":"review"}`), err
 	}}
 	ctx := WithReviewBrief(context.Background(), ReviewBrief{Text: "# ZII-9 / executor\nSCOPE: mods/a.tsx\nDo not edit register.tsx", Lane3Globs: ".env* *secrets*"})
+	c.Run = withReviewerRole(t, c.Run)
 	if _, _, err := c.Review(ctx, repo, "origin/main", "HEAD", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -109,6 +111,7 @@ func TestReviewRunsInHeadCheckout(t *testing.T) {
 		}
 		return nil, nil
 	}}
+	c.Run = withReviewerRole(t, c.Run)
 	if _, _, err := c.Review(context.Background(), repo, "base-sha", "new-sha", nil); err != nil {
 		t.Fatal(err)
 	}

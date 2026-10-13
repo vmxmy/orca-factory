@@ -7,11 +7,13 @@
 | `intake.md` | 用户在 Orca 里手动开的 claude 标签页（交互模式） | prompt `按 scripts/agent-gates/roles/intake.md 工作`；把需求变成合格票、汇报；`auto-failed` 由 resolver 接管 |
 | `coordinator.md` | 定时任务启动的 coordinator | 与 `COORDINATOR.md` 一起读 |
 | `worker.md` | 每个单元的 worker | 原文作为 task spec 开头 |
+| `driver-worker.md` | driver 执行器派的 worker | 原文 + `local-worker.md`（若有）+ 简报，作为 task spec |
+| `correction.md` | driver 执行器的 correction 会话 | 原文 + correction 文件路径、失败原因、简报，作为 prompt |
 | `resolver.md` | driver resolve 启动的处置 Agent | 接管异常、预算耗尽和审批等待；提交经验证的合并/部署提案 |
 | `reviewer.md` | lane 2 异构审查命令 | 原文 + 简报经 stdin 喂给 `$AGENT_ROLE_REVIEWER_CMD` |
-| `local-worker.md` | 项目特化（可选） | 追加在 `worker.md` 之后，只能加约束 |
+| `local-worker.md` | 项目特化（可选） | 追加在 `worker.md` 或 `driver-worker.md` 之后，只能加约束 |
 
-共享五份（`intake.md` `coordinator.md` `worker.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。
+共享七份（`intake.md` `coordinator.md` `worker.md` `driver-worker.md` `correction.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。
 
 intake 与 coordinator 永不同会话：intake 只写配置选定的票据主账本、只读仓库，由用户手动开会话；coordinator 由定时任务启动，领票并执行。一个会话里不能既建票又领票。
 

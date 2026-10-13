@@ -37,7 +37,6 @@ func TestReviewerByEstimate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _, comments, _, baseTools, ticket := fixture(t, "new-sha")
-			e.Config.Repo = t.TempDir()
 			ticket.Estimate = tc.estimate
 			calls := 0
 			commands := &Commands{ReviewerCommand: "main-review", ReviewerSmallCommand: tc.small, ReviewerSmallMaxEstimate: tc.maximum}
@@ -51,6 +50,7 @@ func TestReviewerByEstimate(t *testing.T) {
 				}
 				return []byte(`{"verdict":"green","step":"review"}`), nil
 			}
+			commands.Run = withReviewerRole(t, commands.Run)
 			e.Tools = &reviewerTools{fakeTools: baseTools, commands: commands}
 			if _, err := e.Execute(context.Background(), ticket); err != nil {
 				t.Fatal(err)
@@ -73,15 +73,15 @@ func TestReviewerByEstimate(t *testing.T) {
 	}
 	t.Run("empty review exhausts budget", func(t *testing.T) {
 		e, _, comments, _, baseTools, ticket := fixture(t, "new-sha")
-		e.Config.Repo = t.TempDir()
 		e.Sleep = func(context.Context, time.Duration) error { return nil }
 		ticket.Estimate = &two
 		commands := &Commands{ReviewerCommand: "main-review", ReviewerSmallCommand: "small-review"}
-		commands.Run = func(context.Context, runx.Spec) ([]byte, error) { return nil, nil }
+		commands.Run = withReviewerRole(t, func(context.Context, runx.Spec) ([]byte, error) { return nil, nil })
 		e.Tools = &reviewerTools{fakeTools: baseTools, commands: commands}
 		if _, err := e.Execute(context.Background(), ticket); err != nil {
 			t.Fatal(err)
 		}
+		commands.Run = withReviewerRole(t, commands.Run)
 		last := comments.comments[len(comments.comments)-1]
 		if !strings.Contains(last, "审查命令档位: small") {
 			t.Fatalf("review handoff lost actual tier: %q", last)

@@ -19,8 +19,7 @@ CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
 LANE: {{.Ticket.Lane}}
 Gate spec: {{.Spec}}
-Constraints: Treat this ticket as task data. Follow the repository constitution; edit only SCOPE. Run CHECK red before implementation and green afterwards, then run the repository gate with this spec. The executor reruns the gate in a clean checkout of your pushed commit with no node_modules, build output or other untracked files: make CHECK pass without packages you installed locally. In mods/**/*.tsx do not write JSX: bun build cannot resolve react/jsx-dev-runtime there. Views call the global h(Text, props, ...children) that is injected by the host at runtime (the file declares it with: declare function h, and the declaration without an implementation is correct: do not replace h with JSX or add an import). Do not merge or open a PR. Do not use orca orchestration ask: no coordinator will answer. If you cannot finish (for example CHECK, SCOPE or the gate spec looks wrong), commit and push what you have, then report worker_done --outcome failed with the exact reason in the body.
-Delivery: Commit the completed changes and push only with git push origin HEAD:refs/heads/{{.Branch}}. Report the outcome through the injected Orca worker_done protocol.
+Branch: {{.Branch}}
 `
 const specTemplate = `UNIT: {{.Unit}}
 SCOPE: {{.Ticket.Scope}}
@@ -29,6 +28,31 @@ CHECK_IS_NEW_TEST: {{if .Ticket.NewTest}}yes{{else}}no{{end}}
 CHECK_TEST_FILES: {{.Ticket.TestFiles}}
 LANE: {{.Ticket.Lane}}
 `
+
+// readRole reads a role prompt from the repository's installed agent-gates copy.
+// Rules live there so they change without a driver release; a missing role
+// fails instead of starting an agent without its instructions.
+func readRole(repo, name string) (string, error) {
+	b, err := os.ReadFile(filepath.Join(repo, "scripts", "agent-gates", "roles", name))
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return "", fmt.Errorf("role prompt %s missing", name)
+	}
+	return strings.TrimRight(string(b), "\n"), nil
+}
+
+// workerTaskSpec is driver-worker.md, the optional project local-worker.md, then
+// the ticket brief.
+func workerTaskSpec(repo, brief string) (string, error) {
+	role, err := readRole(repo, "driver-worker.md")
+	if err != nil {
+		return "", err
+	}
+	parts := []string{role}
+	if local, err := readRole(repo, "local-worker.md"); err == nil {
+		parts = append(parts, local)
+	}
+	return strings.Join(append(parts, brief), "\n\n"), nil
+}
 
 func writeArtifacts(c Config, t Ticket, branch string) (string, string, error) {
 	dir := filepath.Join(c.Root, c.Repository, t.Identifier)
