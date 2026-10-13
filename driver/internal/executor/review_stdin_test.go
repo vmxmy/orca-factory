@@ -30,12 +30,10 @@ func TestReviewSendsPromptAndDiffOnStdin(t *testing.T) {
 	if !strings.Contains(stdin, "End stdout with JSON") || !strings.Contains(stdin, "+added") {
 		t.Fatalf("stdin must carry prompt and diff: %q", stdin)
 	}
-	if !strings.HasSuffix(script, `reviewer claude -p --allowedTools "Read Grep" `+repo+"/"+fileBase(stdinPath)) {
+	if !strings.HasSuffix(script, `reviewer claude -p --allowedTools "Read Grep" `+stdinPath) {
 		t.Fatalf("reviewer command must be passed unchanged, without a positional prompt: %s", script)
 	}
 }
-
-func fileBase(path string) string { return path[strings.LastIndex(path, "/")+1:] }
 
 func TestMergeBaseAgainstFreshMain(t *testing.T) {
 	var calls []string
@@ -86,5 +84,35 @@ func TestReviewStdinCarriesBriefAndLane3Globs(t *testing.T) {
 	stdin = ""
 	if _, _, err := c.Review(context.Background(), repo, "origin/main", "HEAD", nil); err != nil || strings.Contains(stdin, "AGENT_LANE3_GLOBS") {
 		t.Fatalf("no brief: err=%v stdin has lane3=%v", err, strings.Contains(stdin, "AGENT_LANE3_GLOBS"))
+	}
+}
+
+// reviewer.md reviews "the current worktree", and the reviewer reads files to
+// check the diff. Running it in the repo checkout shows origin/main, so a done
+// change reads as missing; it must run in a detached checkout of head.
+func TestReviewRunsInHeadCheckout(t *testing.T) {
+	repo := t.TempDir()
+	var added, removed, reviewDir string
+	c := &Commands{ReviewerCommand: "review", Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		switch {
+		case s.Path == "git" && len(s.Args) == 5 && s.Args[1] == "add":
+			if s.Args[2] != "--detach" || s.Args[4] != "new-sha" {
+				t.Fatalf("checkout must detach at head: %q", s.Args)
+			}
+			added = s.Args[3]
+		case s.Path == "git" && len(s.Args) == 4 && s.Args[1] == "remove":
+			removed = s.Args[3]
+		case s.Path == "git":
+			return []byte("diff --git a/x b/x\n+added\n"), nil
+		default:
+			reviewDir = s.Dir
+		}
+		return nil, nil
+	}}
+	if _, _, err := c.Review(context.Background(), repo, "base-sha", "new-sha", nil); err != nil {
+		t.Fatal(err)
+	}
+	if added == "" || reviewDir != added || removed != added {
+		t.Fatalf("checkout=%q reviewer dir=%q removed=%q", added, reviewDir, removed)
 	}
 }
