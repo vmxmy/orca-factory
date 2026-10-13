@@ -28,6 +28,12 @@ concurrency:
 jobs:
   changes:
     name: Go changes and workflow validation
+    env:
+      # Hosted runners cannot reach the isolated runner host's bridge proxy.
+      http_proxy: ''
+      https_proxy: ''
+      GOPROXY: https://proxy.golang.org,direct
+      GO_DOWNLOAD_BASE_URL: https://go.dev/dl
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -123,7 +129,6 @@ jobs:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
       - run: make vuln
-
 
   gate:
     name: Driver ${{ matrix.check }}
