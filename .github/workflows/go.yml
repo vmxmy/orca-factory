@@ -9,7 +9,14 @@ on:
 env:
   http_proxy: ${{ vars.CI_NETWORK_PROXY }}
   https_proxy: ${{ vars.CI_NETWORK_PROXY }}
-  GOPROXY: ${{ vars.GO_MODULE_PROXY || 'https://proxy.golang.org,direct' }}
+  # Domestic mirrors are reached directly; large downloads through the CI proxy stall.
+  no_proxy: mirrors.aliyun.com,goproxy.cn
+  NO_PROXY: mirrors.aliyun.com,goproxy.cn
+  GOPROXY: ${{ vars.GO_MODULE_PROXY || 'https://goproxy.cn,https://proxy.golang.org,direct' }}
+  GO_DOWNLOAD_BASE_URL: ${{ vars.GO_DOWNLOAD_BASE_URL || 'https://mirrors.aliyun.com/golang' }}
+  # Actions cache has no domestic mirror: give up a stalled restore after 2 minutes
+  # instead of the default 10 and continue as a cache miss.
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
 
 permissions:
   contents: read
@@ -27,7 +34,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
@@ -41,7 +48,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
@@ -55,7 +62,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
@@ -69,7 +76,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
@@ -94,7 +101,7 @@ jobs:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
           persist-credentials: false
-      - uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
