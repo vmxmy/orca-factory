@@ -166,6 +166,41 @@ func TestMainPath(t *testing.T) {
 		t.Fatalf("brief: %s %v", b, err)
 	}
 }
+// observedWorktreeOrca matches real Orca: worker-start omits the worktree,
+// which first appears in the fleet projection.
+type observedWorktreeOrca struct {
+	*fakeOrca
+	taskReads int
+}
+
+func (o *observedWorktreeOrca) WorkerStart(ctx context.Context, request string, opts orca.StartOptions) (orca.Receipt, error) {
+	receipt, err := o.fakeOrca.WorkerStart(ctx, request, opts)
+	delete(receipt, "worktreePath")
+	return receipt, err
+}
+func (o *observedWorktreeOrca) TaskList(ctx context.Context, run string) ([]orca.Task, error) {
+	o.taskReads++
+	if o.taskReads == 1 {
+		return []orca.Task{{ID: "task_one", RunID: "run_one", DispatchID: "ctx_one"}}, nil
+	}
+	return o.fakeOrca.TaskList(ctx, run)
+}
+func (o *observedWorktreeOrca) Workers(context.Context, orca.ListOptions) ([]orca.Worker, error) {
+	w := orca.Worker{DispatchID: "ctx_one"}
+	w.Resource.WorktreeID = "repo::/worktrees/ZII-861-executor"
+	return []orca.Worker{w}, nil
+}
+func TestBoardShowsWorkerOnceWorktreeObserved(t *testing.T) {
+	e, o, _, _, _, ticket := fixture(t, "new-sha")
+	e.Orca = &observedWorktreeOrca{fakeOrca: o}
+	e.Sleep = func(context.Context, time.Duration) error { return nil }
+	if _, err := e.Execute(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if len(o.boardUpdates) == 0 || o.boardUpdates[0] != "driver-worker driver: worker 运行中\nissue: ZII-861" {
+		t.Fatalf("board updates=%q", o.boardUpdates)
+	}
+}
 func TestFakeSuccess(t *testing.T) {
 	for _, head := range []string{"base-sha", ""} {
 		t.Run(head, func(t *testing.T) {
