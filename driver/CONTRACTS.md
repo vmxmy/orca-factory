@@ -86,7 +86,9 @@
 
 合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和 Linear 替身，无真实部署或票面变更。
 
-## 重叠验证与 correction（#142）
+## 合并结果验证与 correction（#142）
+
+- head 落后 main 即验证合并结果，不再按两侧改动路径是否重叠决定；路径不相交的改动同样可能合起来出错。
 
 - 保留 `merge-handoff-v1` / `merge-progress-v1` 格式。Progress 增加可选 `corrections/catchup_rounds/infra/attempt/reason`，增加 `waiting`、`correction`、`human` phase。`waiting` 包含移动 main 后的 catchup；写入的 correction 数是累计值（Channel.Result.Corrections 仍是增量）。`merge-intent` 和 `merged` 同样保留累计预算。未知 phase 停止处理，不覆盖为 legacy；部署状态保持 #143 的嵌套 `deployment` 对象；后续 Progress 写入保留它。
 - 对固定 head/main 执行真实 `merge-tree --write-tree`，以两者为 parent 建立临时提交，在隔离 worktree 调用完整 gate。gate.sh 与项目 hook 从固定 main 读取，`GATE_BASE/GATE_PROJECT_SRC` 都固定该 main；spec 使用交接冻结字节，不从 PR 描述猜测，也不只跑 CHECK。spec 和脚本位于 worktree 旁，不进入验证 diff。

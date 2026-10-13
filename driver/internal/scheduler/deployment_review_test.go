@@ -53,7 +53,7 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 			f.runtime.Clients[dir] = l
 			var smokes []string
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
-				if s.Path == "bash" {
+				if s.Path == "bash" && s.Args[0] == "-c" {
 					smokes = append(smokes, s.Args[1])
 					return nil, nil
 				}

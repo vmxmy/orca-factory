@@ -69,7 +69,7 @@ func (f *fakeDeploy) Check(_ context.Context, _ Request, sha string) (Deployment
 	return f.state, nil
 }
 func ready() Snapshot {
-	return Snapshot{Head: "head", Main: "main", CIHead: "head", CIGreen: true, MergeableState: "clean", Behind: true, PRFiles: []string{"feature"}, MainFiles: []string{"other"}}
+	return Snapshot{Head: "head", Main: "main", CIHead: "head", CIGreen: true, MergeableState: "clean", Behind: true}
 }
 func fixture(s Snapshot) (*Channel, *fakeGitHub, *fakeGit, *fakeGate, *fakeDeploy) {
 	h := &fakeGitHub{snapshots: []Snapshot{s}}
@@ -87,8 +87,10 @@ func next(t *testing.T, c *Channel, repo string) Result {
 	}
 	return r
 }
-func TestDisjointDirectSquash(t *testing.T) {
-	c, h, g, gate, _ := fixture(ready())
+func TestCurrentDirectSquash(t *testing.T) {
+	s := ready()
+	s.Behind = false
+	c, h, g, gate, _ := fixture(s)
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -97,10 +99,11 @@ func TestDisjointDirectSquash(t *testing.T) {
 		t.Fatalf("result=%+v merges=%d trees=%d gate=%v", r, h.merges, g.trees, gate.paths)
 	}
 }
-func TestOverlapGatesMergedTree(t *testing.T) {
-	s := ready()
-	s.MainFiles = []string{"feature"}
-	c, h, g, gate, _ := fixture(s)
+
+// Disjoint paths can still break together, so any behind head is validated
+// as the merged result.
+func TestBehindGatesMergedTree(t *testing.T) {
+	c, h, g, gate, _ := fixture(ready())
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +114,6 @@ func TestOverlapGatesMergedTree(t *testing.T) {
 }
 func TestConflictReturnsSchedulerCorrection(t *testing.T) {
 	s := ready()
-	s.MainFiles = []string{"feature"}
 	s.MergeableState = "dirty"
 	c, h, g, _, _ := fixture(s)
 	g.conflict = true
@@ -198,7 +200,6 @@ func TestFailClosed(t *testing.T) {
 			case "unknown":
 				s.MergeableState = "unknown"
 			case "gate":
-				s.MainFiles = []string{"feature"}
 			}
 			c, h, _, gate, _ := fixture(s)
 			if kind == "gate" {
@@ -227,7 +228,7 @@ func TestValidationInfrastructureDoesNotBecomeCorrection(t *testing.T) {
 		t.Run(failure, func(t *testing.T) {
 			s := ready()
 			s.Head, s.Main = strings.Repeat("a", 40), strings.Repeat("b", 40)
-			s.CIHead, s.MainFiles = s.Head, []string{"feature"}
+			s.CIHead = s.Head
 			root := t.TempDir()
 			r := req(1)
 			r.Path = root
@@ -361,7 +362,6 @@ func TestCommandGitDistinguishesConflictFromInfrastructure(t *testing.T) {
 }
 func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
 	s := ready()
-	s.MainFiles = []string{"feature"}
 	moved := s
 	moved.Main = "new-main"
 	c, h, g, _, _ := fixture(s)

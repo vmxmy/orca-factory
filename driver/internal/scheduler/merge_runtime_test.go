@@ -96,6 +96,13 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	if err := os.WriteFile(filepath.Join(dir, "base"), []byte("base"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// A behind head runs the merged-result gate from main.
+	if err := os.MkdirAll(filepath.Join(dir, "scripts/agent-gates"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.sh"), []byte("printf 'UNIT executor\\nVERDICT green\\nSTEP all\\nREASON passed\\nEVIDENCE test\\nSCOPE feature\\nLANE 1\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "base")
 	main := gitMergeTest(t, dir, "rev-parse", "HEAD")
@@ -359,48 +366,6 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 	}
 }
 
-func TestRuntimeMergeReadsAllPathsAndRenameSides(t *testing.T) {
-	for _, overlap := range []bool{false, true} {
-		t.Run(fmt.Sprint(overlap), func(t *testing.T) {
-			f := newMergeFixture(t)
-			dir := f.config.Repositories[0].Path
-			// Place the intersecting deleted/renamed path beyond GitHub compare's 300-file cap.
-			for i := 0; i < 305; i++ {
-				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("a%03d", i)), []byte("pr"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if err := os.WriteFile(filepath.Join(dir, "z-shared"), []byte("initial"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			gitMergeTest(t, dir, "add", ".")
-			gitMergeTest(t, dir, "commit", "-m", "large PR")
-			f.head = gitMergeTest(t, dir, "rev-parse", "HEAD")
-			f.prBody["head"].(map[string]any)["sha"] = f.head
-			rewriteHandoff(t, f, func(h map[string]any) { h["head"] = f.head })
-			gitMergeTest(t, dir, "checkout", "main")
-			name := "unrelated"
-			if overlap {
-				name = "z-shared"
-			}
-			if err := os.WriteFile(filepath.Join(dir, name), []byte("main"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			gitMergeTest(t, dir, "add", ".")
-			gitMergeTest(t, dir, "commit", "-m", "main moved")
-			f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
-			if overlap {
-				if err == nil || f.puts != 0 {
-					t.Fatalf("overlap after path 300 merged: %v puts=%d", err, f.puts)
-				}
-			} else if err != nil || f.puts != 1 {
-				t.Fatalf("nonoverlap behind main did not merge: %v puts=%d", err, f.puts)
-			}
-		})
-	}
-}
-
 func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	f := newMergeFixture(t)
 	f.linear.failDone = true
@@ -577,27 +542,6 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 || bPuts != 1 || b.issue.State.Name != "Done" || f.linear.issue.State.Name != "In Progress" {
 		t.Fatalf("repository isolation failed: err=%v a=%d b=%d state=%s", err, f.puts, bPuts, b.issue.State.Name)
-	}
-}
-
-func TestRuntimeMergeRenameOldPathStillOverlaps(t *testing.T) {
-	f := newMergeFixture(t)
-	dir := f.config.Repositories[0].Path
-	if err := os.WriteFile(filepath.Join(dir, "base"), []byte("pr change"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	gitMergeTest(t, dir, "add", ".")
-	gitMergeTest(t, dir, "commit", "-m", "edit old name")
-	f.head = gitMergeTest(t, dir, "rev-parse", "HEAD")
-	f.prBody["head"].(map[string]any)["sha"] = f.head
-	rewriteHandoff(t, f, func(h map[string]any) { h["head"] = f.head })
-	gitMergeTest(t, dir, "checkout", "main")
-	gitMergeTest(t, dir, "mv", "base", "renamed")
-	gitMergeTest(t, dir, "commit", "-m", "rename main")
-	f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
-	if err == nil || f.puts != 0 {
-		t.Fatalf("old rename path was omitted: %v puts=%d", err, f.puts)
 	}
 }
 

@@ -26,9 +26,6 @@ type Snapshot struct {
 	Head, Main, CIHead string
 	MergeableState     string
 	CIGreen, Behind    bool
-	// Complete changed paths since the common ancestor, including both names of
-	// renames. Implementations must not silently accept truncated API file lists.
-	PRFiles, MainFiles []string
 }
 
 // GitHub supplies fresh snapshots and a head-pinned squash with authoritative
@@ -244,8 +241,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	if s.Head == "" || s.Main == "" {
 		return r, errors.New("incomplete merge snapshot")
 	}
-	overlap := s.Behind && intersects(s.PRFiles, s.MainFiles)
-	if overlap {
+	if s.Behind {
 		if c.git == nil {
 			return r, errors.New("merge validation dependencies required")
 		}
@@ -334,16 +330,4 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 }
 func mergeReady(s Snapshot) bool {
 	return s.MergeableState == "clean" && s.CIGreen && s.CIHead == s.Head
-}
-func intersects(a, b []string) bool {
-	paths := make(map[string]bool, len(a))
-	for _, p := range a {
-		paths[p] = true
-	}
-	for _, p := range b {
-		if paths[p] {
-			return true
-		}
-	}
-	return false
 }
