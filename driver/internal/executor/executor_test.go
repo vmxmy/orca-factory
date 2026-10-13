@@ -227,10 +227,10 @@ func TestFakeSuccess(t *testing.T) {
 func TestMainPathReviewerStdin(t *testing.T) {
 	repo := t.TempDir()
 	c := Commands{ReviewerCommand: "reviewer --quiet"}
-	calls := 0
+	calls, stdinPath := 0, ""
 	c.Run = func(_ context.Context, s runx.Spec) ([]byte, error) {
 		calls++
-		if s.Timeout <= 0 || s.Dir != repo {
+		if s.Timeout <= 0 || (s.Path == "git") != (s.Dir == repo) {
 			t.Fatalf("unbounded or misplaced command: %+v", s)
 		}
 		if s.Path == "git" {
@@ -242,19 +242,20 @@ func TestMainPathReviewerStdin(t *testing.T) {
 		if s.Args[3] != `reviewer --quiet` {
 			t.Fatalf("review command is not passed unchanged: %q", s.Args[3])
 		}
-		b, err := os.ReadFile(s.Args[4])
+		stdinPath = s.Args[4]
+		b, err := os.ReadFile(stdinPath)
 		if err != nil || !strings.Contains(string(b), "diff --git a/unit/a b/unit/a\n+$(do-not-execute)\n") || !strings.Contains(string(b), "End stdout with JSON") {
 			t.Fatalf("stdin = %q, %v", b, err)
 		}
 		return []byte(`{"verdict":"green","step":"review"}`), nil
 	}
 	out, tier, err := c.Review(context.Background(), repo, "base-sha", "new-sha", nil)
-	if err != nil || tier != "default" || out != `{"verdict":"green","step":"review"}` || calls != 2 {
+	if err != nil || tier != "default" || out != `{"verdict":"green","step":"review"}` || calls != 4 {
 		t.Fatalf("review=%q calls=%d err=%v", out, calls, err)
 	}
 	files, err := os.ReadDir(repo)
-	if err != nil || len(files) != 0 {
-		t.Fatalf("stdin file leaked: %v, %v", files, err)
+	if _, statErr := os.Stat(stdinPath); err != nil || len(files) != 0 || !os.IsNotExist(statErr) {
+		t.Fatalf("stdin file leaked: %v, %v, %v", files, err, statErr)
 	}
 }
 func TestMainPathReusesPR(t *testing.T) {

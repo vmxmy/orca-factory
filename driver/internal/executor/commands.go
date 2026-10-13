@@ -110,7 +110,7 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
 	return string(b), err
 }
-func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate *float64) (string, string, error) {
+func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate *float64) (out, tier string, err error) {
 	command, tier := c.ReviewerCommand, "default"
 	maximum := 2.0
 	if c.ReviewerSmallMaxEstimate != nil {
@@ -140,25 +140,35 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		}
 		input = header + brief.Text + "\n\n" + input
 	}
-	if role, readErr := os.ReadFile(filepath.Join(repo, "scripts", "agent-gates", "roles", "reviewer.md")); readErr == nil {
+	// reviewer.md reviews "the current worktree" and the reviewer reads files to
+	// check the diff, so it runs in a detached checkout of head, not the repo
+	// checkout that sits on origin/main.
+	parent, err := os.MkdirTemp("", "driver-review-")
+	if err != nil {
+		return "", tier, errors.New("review directory failed")
+	}
+	defer func() { _ = os.RemoveAll(parent) }() // Best-effort cleanup after the checkout is removed.
+	dir := filepath.Join(parent, "head")
+	if _, err = c.run(ctx, repo, "git", "worktree", "add", "--detach", dir, head); err != nil {
+		return "", tier, errors.New("review checkout failed")
+	}
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if _, removeErr := c.run(cleanup, repo, "git", "worktree", "remove", "--force", dir); removeErr != nil {
+			err = errors.Join(err, errors.New("review checkout cleanup failed"))
+		}
+	}()
+	if role, readErr := os.ReadFile(filepath.Join(dir, "scripts", "agent-gates", "roles", "reviewer.md")); readErr == nil {
 		input = string(role) + "\n\n" + input
 	}
-	// runx intentionally has no stdin field. A private temporary file supplies
-	// stdin through a fixed shell wrapper; no diff bytes become shell source.
-	f, err := os.CreateTemp(repo, ".driver-review-*")
-	if err != nil {
-		return "", tier, errors.New("review input creation failed")
-	}
-	name := f.Name()
-	defer func() { _ = os.Remove(name) }() // Best-effort cleanup of the consumed review input.
-	if _, err = f.WriteString(input); err != nil {
-		_ = f.Close()
+	// runx intentionally has no stdin field. A private file outside the checkout
+	// supplies stdin through a fixed shell wrapper; no diff bytes become shell source.
+	name := filepath.Join(parent, "input")
+	if err = os.WriteFile(name, []byte(input), 0o600); err != nil {
 		return "", tier, errors.New("review input write failed")
 	}
-	if err = f.Close(); err != nil {
-		return "", tier, errors.New("review input close failed")
-	}
-	b, err := c.run(ctx, repo, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name)
+	b, err := c.run(ctx, dir, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name)
 	return string(b), tier, err
 }
 
