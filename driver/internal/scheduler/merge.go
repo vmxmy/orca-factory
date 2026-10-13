@@ -295,10 +295,6 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
-	mainFiles, err := paths(main)
-	if err != nil {
-		return merge.Snapshot{}, err
-	}
 	if err := a.policy(prFiles); err != nil {
 		return merge.Snapshot{}, err
 	}
@@ -309,7 +305,7 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if !*p.Mergeable {
 		p.MergeableState = "dirty"
 	}
-	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main, PRFiles: prFiles, MainFiles: mainFiles}, nil
+	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main}, nil
 }
 func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main string) (string, error) {
 	if err := a.runtime.verifyFreshDecision(ctx, a.ticket, githubSquash); err != nil {

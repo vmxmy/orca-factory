@@ -166,6 +166,7 @@ func TestMainPath(t *testing.T) {
 		t.Fatalf("brief: %s %v", b, err)
 	}
 }
+
 // observedWorktreeOrca matches real Orca: worker-start omits the worktree,
 // which first appears in the fleet projection.
 type observedWorktreeOrca struct {

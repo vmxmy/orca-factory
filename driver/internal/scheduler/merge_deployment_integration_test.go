@@ -39,7 +39,7 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 	f.runtime.Clients[dir] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
-		if s.Path == "bash" {
+		if s.Path == "bash" && s.Args[0] == "-c" {
 			smokes++
 			return nil, nil
 		}
