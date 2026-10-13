@@ -346,7 +346,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			result.DispatchID = cp.Dispatch
 			return nil
 		}
-		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: brief, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
+		workerSpec, err := workerTaskSpec(c.Repo, brief)
+		if err != nil {
+			return err
+		}
+		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
 			return err
 		}
 		taskID, result.DispatchID = cp.Task, cp.Dispatch

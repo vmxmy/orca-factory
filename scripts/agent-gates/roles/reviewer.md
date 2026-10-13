@@ -15,7 +15,6 @@
 - 放行。你的 green 只表示"没找到问题"，不等于通过；通过仍由 coordinator 的 gate 复跑决定。
 - 风格、命名、重排等与简报无关的意见。
 - 简报本身的对错；简报有问题写进 `reason` 由 coordinator 处理。
-- mods 里 `.tsx` 视图文件顶部的 `declare function h(...)` 没有实现是对的：`h` 由 mod 宿主在运行时注入，文件不写 JSX 是因为 gate 在没有 react 的干净检出里构建。不要把它报为「未实现」「会 ReferenceError」，也不要建议改回 JSX。
 
 ## Verification
 
@@ -25,6 +24,6 @@
 
 ## Handoff
 
-- 只回给 coordinator：stdout 末尾一个 JSON 对象，`step` 固定 `review`。
+- 只回给 coordinator：stdout 末尾一个完整 JSON 对象，形如 `{"unit":"<unit>","verdict":"green|red","step":"review","reason":"...","evidence":[{"file":"...","line":1,"note":"..."}],"scope":"...","lane":2}`；`step` 固定 `review`，之后不再输出任何内容。
 - `red` → coordinator 打回 worker（计一次 correction）；`green` → coordinator 继续开 PR，按合并通道检查推进；审批等待交给 resolver 复核。
 - 改动文件命中本仓库 `AGENT_LANE3_GLOBS`（由 coordinator 在简报前一行以 `本仓库 AGENT_LANE3_GLOBS=<值>` 给出），或 diff 中出现密钥、token、私钥等明文 → `red`，`reason` 以 `lane3:` 开头，coordinator 派发 resolver 排查并保留 lane 3 屏障，resolver 不能代替所需授权。

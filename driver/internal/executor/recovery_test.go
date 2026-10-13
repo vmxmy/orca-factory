@@ -269,6 +269,7 @@ func TestResumeExistingPRWaitsWithoutFrozenEvidence(t *testing.T) {
 }
 func TestCorrectionCommands(t *testing.T) {
 	repo := t.TempDir()
+	writeRole(t, repo, "correction.md", "CORRECTION ROLE\n")
 	state := filepath.Join(t.TempDir(), "ticket state")
 	target := filepath.Join(state, "correction.md")
 	for _, key := range []string{"ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN"} {
