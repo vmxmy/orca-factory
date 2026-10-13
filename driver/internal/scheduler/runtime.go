@@ -20,6 +20,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runnerhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -40,6 +41,7 @@ type Runtime struct {
 	Run                  func(context.Context, runx.Spec) ([]byte, error)
 	Now                  func() time.Time
 	Tuning               config.Tuning
+	Runners              *runnerhealth.Monitor
 	refused              map[string]error
 	projections          map[LinearClient]map[string]commentProjection
 }
@@ -69,7 +71,38 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.Runners = r.runnerMonitor()
 	return r, nil
+}
+
+// runnerMonitor watches the isolated CI runners only on the host that runs
+// them, filing alerts in the repository they serve.
+func (r *Runtime) runnerMonitor() *runnerhealth.Monitor {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	dir := filepath.Join(home, ".local", "state", "orca-go-isolated-runner")
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return nil
+	}
+	for path, repo := range r.Repositories {
+		if client, ok := r.Clients[path].(*issues.GitHub); ok && issues.Project(repo.Env) == runnerhealth.Repository {
+			return &runnerhealth.Monitor{StateDir: dir, Record: filepath.Join(home, ".local", "state", "orca-factory", "runner-health.json"), Tickets: client, Run: runx.Run}
+		}
+	}
+	return nil
+}
+
+func (r *Runtime) CheckRunners(ctx context.Context) error {
+	if r.Runners == nil {
+		return nil
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	return r.Runners.Poll(ctx, now)
 }
 
 func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient func(context.Context, string) (LinearClient, error)) error {

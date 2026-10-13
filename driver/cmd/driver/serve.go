@@ -236,3 +236,10 @@ func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.T
 	}
 	return nil
 }
+
+func (b *statusBackend) CheckRunners(ctx context.Context) error {
+	if source, ok := b.Backend.(interface{ CheckRunners(context.Context) error }); ok {
+		return source.CheckRunners(ctx)
+	}
+	return nil
+}

@@ -361,6 +361,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, err)
 		}
 	}
+	if runners, ok := s.Backend.(interface{ CheckRunners(context.Context) error }); ok {
+		// A runner alert never blocks ticket flow; its failure is only logged.
+		if err := runners.CheckRunners(ctx); err != nil {
+			s.logger().Warn("runner health check failed", "err", err)
+		}
+	}
 	sort.SliceStable(tickets, func(i, j int) bool {
 		a, b := tickets[i], tickets[j]
 		if priority(a.Priority) != priority(b.Priority) {
