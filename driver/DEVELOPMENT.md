@@ -67,13 +67,12 @@ make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
 
 ## GitHub Actions
 
-[Go checks](../.github/workflows/go.yml) 对每个 PR 触发（无 path/branch filter），也支持 main push 和手动 `workflow_dispatch`。五个独立 job 直接运行相同的 Make 入口，没有相互依赖：
+[Go checks](../.github/workflows/go.yml) 对每个 PR 触发，并通过 changes job 跳过 docs-only PR 的 Go 检查，也支持 main push 和手动 `workflow_dispatch`。build job 在一次 checkout/setup-go 后依次运行 build、vet、lint；race 和 vuln 保持独立，gate job 总是报告结果：
 
 | 稳定检查名称 | 命令 |
 | --- | --- |
-| `Driver build` | `make build` |
-| `Driver vet` | `make vet` |
-| `Driver lint` | `make lint` |
+| `Driver build` | `make build`, `make vet`, `make lint` |
+| `Driver vet`, `Driver lint` | gate aliases for existing branch protection |
 | `Driver race` | `make race` |
 | `Driver vuln` | `make vuln` |
 
@@ -89,7 +88,7 @@ CI 还可通过仓库变量 `CI_NETWORK_PROXY` 设置 job 的 `http_proxy` 和 `
 
 ### Runner 选择与本地隔离
 
-五个 job 使用仓库变量 `GO_RUNNER_LABELS_JSON` 选择 runner。变量未设置或为空时，默认标签为 `["ubuntu-24.04"]`，使用 GitHub 托管云端 runner。本地 runner 就绪后，维护者可将变量设置为 JSON 字符串数组，例如：
+build、race、vuln 使用仓库变量 `GO_RUNNER_LABELS_JSON` 选择 runner。变量未设置或为空时，默认标签为 `["ubuntu-24.04"]`，使用 GitHub 托管云端 runner。本地 runner 就绪后，维护者可将变量设置为 JSON 字符串数组，例如：
 
 ```json
 ["self-hosted", "linux", "x64", "orca-go-isolated"]

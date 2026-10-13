@@ -50,3 +50,9 @@ tools:
 
 dev-tools:
 	"$(ROOT)/scripts/install-dev-tools.sh"
+
+.PHONY: workflow-check
+workflow-check:
+	"$(ROOT)/scripts/install-dev-tools.sh" actionlint
+	"$(TOOLS)/actionlint"
+	python3 "$(ROOT)/scripts/ci/test_workflow.py"
