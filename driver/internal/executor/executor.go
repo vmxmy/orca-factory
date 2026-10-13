@@ -380,6 +380,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return err
 			}
 			cp = next
+			// Real worker-start receipts omit the worktree, so the claim
+			// transition could not place the card yet.
+			e.board(ctx, t, cp.Worktree, result.State.Phase, "", 0)
 			return nil
 		}}
 		observeIdle := func() error {
