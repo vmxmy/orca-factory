@@ -29,6 +29,7 @@ type Record struct {
 // revision at read time.
 type Page struct {
 	Records    []Record
+	NotFound   []string
 	FieldNames map[string]string
 	FieldTypes map[string]string
 	HasMore    bool
@@ -147,6 +148,20 @@ func (c *Client) BatchUpdate(ctx context.Context, base, table string, records ma
 	return c.writeRecords(ctx, base, table, "batch_update", map[string]any{"update_records": records})
 }
 
+// DeleteResult reports IDs the service could not yet find as well as requested IDs.
+type DeleteResult struct {
+	RecordIDs []string `json:"record_id_list"`
+	NotFound  []string `json:"record_not_found"`
+}
+
+func (c *Client) BatchDelete(ctx context.Context, base, table string, recordIDs []string) (DeleteResult, error) {
+	var data DeleteResult
+	if err := c.write(ctx, base, table, "batch_delete", map[string]any{"record_id_list": recordIDs}, &data); err != nil {
+		return DeleteResult{}, err
+	}
+	return data, nil
+}
+
 func (c *Client) writeRecords(ctx context.Context, base, table, action string, input any) (WriteResult, error) {
 	var data struct {
 		RecordIDs     []string       `json:"record_id_list"`
@@ -165,6 +180,7 @@ func (c *Client) readPage(ctx context.Context, method, path string, input any) (
 		FieldTypes []string            `json:"field_type_list"`
 		FieldNames []string            `json:"fields"`
 		RecordIDs  []string            `json:"record_id_list"`
+		NotFound   []string            `json:"record_not_found"`
 		HasMore    bool                `json:"has_more"`
 		Rev        int64               `json:"rev"`
 	}
@@ -180,6 +196,7 @@ func (c *Client) readPage(ctx context.Context, method, path string, input any) (
 	}
 	page := Page{
 		Records:    make([]Record, 0, len(data.RecordIDs)),
+		NotFound:   data.NotFound,
 		FieldNames: make(map[string]string, len(data.FieldIDs)),
 		FieldTypes: make(map[string]string, len(data.FieldIDs)),
 		HasMore:    data.HasMore,

@@ -253,3 +253,41 @@ func TestNoPermissionIsGlobal(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls.Load())
 	}
 }
+
+func TestRecordedBatchGetDeleted(t *testing.T) {
+	c := recordedFake(t, "bot-tickets-get-deleted.json")
+	ids := []string{"reczz28NPMduAktV"}
+	page, err := c.BatchGet(context.Background(), testBase, ticketTable, ids)
+	if err != nil || !slices.Equal(page.NotFound, ids) {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
+func TestBatchDeleteRetriesNotFound(t *testing.T) {
+	recordings := []recording{loadRecording(t, "bot-tickets-delete-too-early.json"), loadRecording(t, "bot-tickets-delete.json")}
+	var calls atomic.Int64
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		i := int(calls.Add(1)) - 1
+		if i >= len(recordings) {
+			t.Error("unexpected extra delete request")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		rec := recordings[i]
+		var got, want any
+		if r.Method != rec.Request.Method || r.URL.Path != rec.Request.Path ||
+			json.NewDecoder(r.Body).Decode(&got) != nil || json.Unmarshal(rec.Request.Body, &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("request %s %s body=%v want %v", r.Method, r.URL.Path, got, want)
+		}
+		envelope(t, w, 0, rec.Response.Data)
+	}, Options{})
+	ids := []string{"reczz28NPMduAktV"}
+	first, err := c.BatchDelete(context.Background(), testBase, ticketTable, ids)
+	if err != nil || !slices.Equal(first.RecordIDs, ids) || !slices.Equal(first.NotFound, ids) || calls.Load() != 1 {
+		t.Fatalf("first=%+v err=%v calls=%d", first, err, calls.Load())
+	}
+	second, err := c.BatchDelete(context.Background(), testBase, ticketTable, ids)
+	if err != nil || !slices.Equal(second.RecordIDs, ids) || len(second.NotFound) != 0 || calls.Load() != 2 {
+		t.Fatalf("second=%+v err=%v calls=%d", second, err, calls.Load())
+	}
+}

@@ -1,10 +1,18 @@
 package issues
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,9 +63,62 @@ func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue,
 	return rows[i], true, nil
 }
 
+// liveCreateTracker counts rows whose writes may have applied, including
+// unconfirmed responses. Confirmed pre-write rejections do not create rows.
+type liveCreateTracker struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
+	if !strings.HasSuffix(r.URL.Path, "/records/batch_create") {
+		return http.DefaultTransport.RoundTrip(r)
+	}
+	body, err := r.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	var request struct {
+		Records []json.RawMessage `json:"create_records"`
+	}
+	err = json.NewDecoder(body).Decode(&request)
+	_ = body.Close()
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultTransport.RoundTrip(r)
+	if err == nil {
+		raw, readErr := io.ReadAll(res.Body)
+		_ = res.Body.Close()
+		res.Body = io.NopCloser(bytes.NewReader(raw))
+		var envelope struct {
+			Code int `json:"code"`
+		}
+		if readErr == nil && json.Unmarshal(raw, &envelope) == nil {
+			switch envelope.Code {
+			case feishu.CodeWriteConflict, feishu.CodeNoPermission, feishu.CodeMissingScope:
+				return res, nil
+			}
+		}
+		if readErr != nil {
+			res, err = nil, readErr
+		}
+	}
+	parts := strings.Split(r.URL.Path, "/")
+	c.mu.Lock()
+	c.counts[parts[len(parts)-3]] += len(request.Records)
+	c.mu.Unlock()
+	return res, err
+}
+
+func (c *liveCreateTracker) count(table string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[table]
+}
+
 // TestFeishuLive runs the ledger flow against a real test Base as the app
-// identity. It creates one ticket per run and cancels it at the end; nothing
-// is deleted.
+// identity. It deletes the ticket and its events at the end of each run.
 func TestFeishuLive(t *testing.T) {
 	if os.Getenv("AGENT_FEISHU_LIVE") != "1" {
 		t.Skip("AGENT_FEISHU_LIVE=1 not set")
@@ -76,36 +137,110 @@ func TestFeishuLive(t *testing.T) {
 		t.Fatalf("open backend: %v", err)
 	}
 	c := client.(*Feishu)
-	direct, err := feishu.New(feishu.Options{Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
+	creates := &liveCreateTracker{counts: map[string]int{}}
+	direct, err := feishu.New(feishu.Options{HTTPClient: &http.Client{Transport: creates, Timeout: 30 * time.Second}, Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		t.Fatalf("open direct client: %v", err)
 	}
 
-	stamp := time.Now().UTC().Format("20060102T150405Z")
-	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后取消。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
+	c.client = direct
+	stamp, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
 	var task Task
 	var record string
+	var event string
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanupCancel()
+		discoveryCtx, discoveryCancel := context.WithTimeout(cleanupCtx, liveSettleTimeout)
+		defer discoveryCancel()
+		var tickets []string
+		if record != "" {
+			tickets = append(tickets, record)
+		}
+		_, own, err := c.projects(discoveryCtx)
+		if err != nil {
+			t.Errorf("list 项目 for cleanup of 票据 IDs %v: %v", tickets, err)
+		} else {
+			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
+			for {
+				rows, err := c.readAll(discoveryCtx, "票据", &filter)
+				if err != nil {
+					t.Errorf("list 票据 for cleanup IDs %v: %v", tickets, err)
+					break
+				}
+				for _, r := range rows {
+					title, err := c.text("票据", r, "标题")
+					if err != nil {
+						t.Errorf("read 票据 title for cleanup ID %s: %v", r.ID, err)
+						continue
+					}
+					if title == "TestFeishuLive "+stamp && !slices.Contains(tickets, r.ID) {
+						tickets = append(tickets, r.ID)
+					}
+				}
+				if len(tickets) >= creates.count(c.tables["票据"].id) {
+					break
+				}
+				if err := sleepContext(discoveryCtx, liveSettleInterval); err != nil {
+					t.Errorf("未找到本次创建的票行: 票据 title=%q IDs %v: %v", "TestFeishuLive "+stamp, tickets, err)
+					break
+				}
+			}
+		}
+		var events []string
+		if event != "" {
+			events = append(events, event)
+		}
+		for {
+			for _, id := range tickets {
+				filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
+				rows, err := c.readAll(discoveryCtx, "事件", &filter)
+				if err != nil {
+					t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
+				}
+				for _, r := range rows {
+					if !slices.Contains(events, r.ID) {
+						events = append(events, r.ID)
+					}
+				}
+			}
+			if len(events) >= creates.count(c.tables["事件"].id) {
+				break
+			}
+			if err := sleepContext(discoveryCtx, liveSettleInterval); err != nil {
+				t.Errorf("find 事件 for 票据 IDs %v: found %v, submitted %d: %v", tickets, events, creates.count(c.tables["事件"].id), err)
+				break
+			}
+		}
+		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, events); err != nil {
+			t.Errorf("delete 事件 IDs %v for 票据 IDs %v: %v", events, tickets, err)
+			return
+		}
+		if len(events) < creates.count(c.tables["事件"].id) {
+			return
+		}
+		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, tickets); err != nil {
+			t.Errorf("delete 票据 IDs %v: %v", tickets, err)
+		}
+	})
 	ok := t.Run("create adopted", func(t *testing.T) {
 		task, err = c.Create(ctx, CreateInput{Title: "TestFeishuLive " + stamp, Description: brief.Description(), Labels: []string{"ready-for-agent"}, Blockers: []string{}, Related: []string{}})
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
+		record = task.nativeID
 		if !task.Metadata.Complete || task.Held {
 			t.Fatalf("created task not adopted: complete=%t held=%t", task.Metadata.Complete, task.Held)
 		}
-		record = task.nativeID
 	})
 	if !ok {
 		return
 	}
 	t.Logf("ticket %s (%s)", task.Identifier, task.ID)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if _, err := c.UpdateIssue(ctx, task.ID, "Canceled", nil, []string{"ready-for-agent", "auto-impl"}); err != nil {
-			t.Errorf("cancel %s: %v", task.Identifier, err)
-		}
-	})
 
 	steps := []struct {
 		name string
@@ -138,7 +273,6 @@ func TestFeishuLive(t *testing.T) {
 	}
 
 	body := "live-check-v1: {\"run\":\"" + stamp + "\"}\n多字节正文  \n末行无换行"
-	var event string
 	if !t.Run("event round trip", func(t *testing.T) {
 		comment, err := c.CreateComment(ctx, task.ID, body)
 		if err != nil {
@@ -180,4 +314,285 @@ func TestFeishuLive(t *testing.T) {
 			return err != nil && strings.Contains(err.Error(), "evidence conflict"), nil
 		})
 	})
+}
+
+func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string, ids []string) error {
+	for len(ids) > 0 {
+		res, err := c.BatchDelete(ctx, base, table, ids)
+		if err != nil {
+			return fmt.Errorf("delete %s records %v: %w", table, ids, err)
+		}
+		if len(res.NotFound) == 0 {
+			return nil
+		}
+		ids = res.NotFound
+		for {
+			page, err := c.BatchGet(ctx, base, table, ids)
+			if err != nil {
+				return fmt.Errorf("read %s records %v before deletion: %w", table, ids, err)
+			}
+			visible := true
+			for _, id := range ids {
+				if slices.Contains(page.NotFound, id) {
+					visible = false
+					break
+				}
+			}
+			if visible {
+				break
+			}
+			if err := sleepContext(ctx, liveSettleInterval); err != nil {
+				return fmt.Errorf("delete %s records %v: %w", table, ids, err)
+			}
+		}
+	}
+	return nil
+}
+
+func TestFeishuLiveCleanupFailureFailsSuccessfulRun(t *testing.T) {
+	for _, table := range []string{"tblE", "tblT"} {
+		t.Run(table, func(t *testing.T) {
+			f := newFeishuFake(t)
+			f.afterWrite = func(f *feishuFake) {
+				write := f.writes[len(f.writes)-1]
+				if write.table == "tblE" && write.action == "batch_update" {
+					for _, row := range f.rows["tblE"] {
+						if _, edited := write.records[row["_id"].(string)]; edited {
+							row["修改时间"] = "2026-10-15T01:01:00.000+08:00"
+						}
+					}
+				}
+			}
+			denied := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+			deleted := loadFeishuRecording(t, "bot-tickets-delete.json")
+			var deletedTables []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/batch_delete") {
+					f.ServeHTTP(w, r)
+					return
+				}
+				var body struct {
+					IDs []string `json:"record_id_list"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				parts := strings.Split(r.URL.Path, "/")
+				gotTable := parts[len(parts)-3]
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				deletedTables = append(deletedTables, gotTable)
+				if gotTable == table {
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": denied.Response.Error.Code, "data": denied.Response.Data})
+					return
+				}
+				f.rows[gotTable] = slices.DeleteFunc(f.rows[gotTable], func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
+				f.reply(w, deleted.Response.Data)
+			}))
+			defer server.Close()
+			t.Setenv("AGENT_FEISHU_LIVE", "1")
+			t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			t.Setenv("AGENT_FEISHU_BASE", "BASE_TOKEN")
+			t.Setenv("AGENT_FEISHU_PROJECT", feishuRepo)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, executable, "-test.run=^TestFeishuLive$", "-test.v").CombinedOutput()
+			for _, step := range []string{"create_adopted", "snapshot_claimable", "claim_reads_back", "event_round_trip", "scope_edit_holds_ticket", "event_edit_is_evidence_conflict"} {
+				if !strings.Contains(string(out), "--- PASS: TestFeishuLive/"+step+" (") {
+					t.Fatalf("main flow step %s did not pass: %s", step, out)
+				}
+			}
+			if err == nil || ctx.Err() != nil || !strings.Contains(string(out), "--- FAIL: TestFeishuLive (") || !strings.Contains(string(out), "delete ") {
+				t.Fatalf("cleanup failure did not fail successful live flow: %v\n%s", err, out)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			wantTables := []string{"tblE"}
+			wantEvents := 1
+			if table == "tblT" {
+				wantTables = append(wantTables, "tblT")
+				wantEvents = 0
+			}
+			if !slices.Equal(deletedTables, wantTables) || len(f.rows["tblT"]) != 4 || len(f.rows["tblE"]) != wantEvents {
+				t.Fatalf("delete tables=%v tickets=%v events=%v", deletedTables, f.rows["tblT"], f.rows["tblE"])
+			}
+		})
+	}
+}
+
+func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
+	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied", "claim conflict event delete denied", "delete notfound"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFeishuFake(t)
+			tooEarly := loadFeishuRecording(t, "bot-tickets-delete-too-early.json")
+			var recordedDelete struct {
+				IDs []string `json:"record_id_list"`
+			}
+			if err := json.Unmarshal(tooEarly.Request.Body, &recordedDelete); err != nil || len(recordedDelete.IDs) != 1 {
+				t.Fatalf("recorded delete request: %v", err)
+			}
+			recordedID := recordedDelete.IDs[0]
+			f.afterWrite = func(f *feishuFake) {
+				w := f.writes[len(f.writes)-1]
+				if (scenario == "create readback failure" || scenario == "write conflict retry" || scenario == "same second other run" || scenario == "delete notfound") && w.table == "tblT" && w.action == "batch_create" {
+					f.rows["tblT"][len(f.rows["tblT"])-1]["估算"] = "invalid"
+					if scenario == "delete notfound" {
+						f.rows["tblT"][len(f.rows["tblT"])-1]["_id"] = recordedID
+					}
+					if scenario == "same second other run" {
+						row := f.rows["tblT"][len(f.rows["tblT"])-1]
+						otherTitle := "TestFeishuLive " + time.Now().UTC().Format("20060102T150405Z")
+						if len(row["标题"].(string)) == len(otherTitle) {
+							otherTitle = row["标题"].(string)
+						}
+						other := feishuRow{"_id": "recOtherRun", "标题": otherTitle, "项目": row["项目"]}
+						f.rows["tblT"] = append(f.rows["tblT"], other)
+					}
+				}
+				if strings.HasPrefix(scenario, "claim conflict event") && w.table == "tblT" && w.action == "batch_update" {
+					f.rows["tblT"][len(f.rows["tblT"])-1]["状态"] = []string{"Done"}
+				}
+			}
+			var deleted []string
+			var deletedTables []string
+			retryReads := 0
+			conflicted := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if scenario == "delete notfound" && strings.HasSuffix(r.URL.Path, "/batch_get") {
+					f.mu.Lock()
+					if len(deleted) == 1 {
+						retryReads++
+					}
+					f.mu.Unlock()
+				}
+				if scenario == "write conflict retry" && !conflicted && strings.HasSuffix(r.URL.Path, "/tblT/records/batch_create") {
+					conflicted = true
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": feishu.CodeWriteConflict, "msg": "conflict"})
+					return
+				}
+				if strings.HasSuffix(r.URL.Path, "/batch_delete") {
+					var body struct {
+						IDs []string `json:"record_id_list"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					parts := strings.Split(r.URL.Path, "/")
+					table := parts[len(parts)-3]
+					deleted = append(deleted, body.IDs...)
+					deletedTables = append(deletedTables, table)
+					if scenario == "claim conflict event delete denied" && table == "tblE" {
+						rec := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "data": rec.Response.Data})
+						return
+					}
+					if scenario == "delete notfound" && len(deleted) == 1 {
+						if !slices.Equal(body.IDs, recordedDelete.IDs) {
+							t.Errorf("delete request %v, want recorded %v", body.IDs, recordedDelete.IDs)
+						}
+						f.reply(w, tooEarly.Response.Data)
+						return
+					}
+					f.rows[table] = slices.DeleteFunc(f.rows[table], func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
+					rec := loadFeishuRecording(t, "bot-tickets-delete.json")
+					f.reply(w, rec.Response.Data)
+					return
+				}
+				if strings.HasPrefix(scenario, "claim conflict event") && strings.HasSuffix(r.URL.Path, "/tblE/records/batch_create") {
+					if scenario == "claim conflict event denied" {
+						rec := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "data": rec.Response.Data})
+						return
+					}
+					response := httptest.NewRecorder()
+					f.ServeHTTP(response, r)
+					if scenario == "claim conflict event delayed" {
+						f.mu.Lock()
+						f.stale = map[string][]feishuRow{"tblE": nil}
+						f.staleReads = 1
+						f.mu.Unlock()
+					}
+					// The event is stored, but checkWrite cannot confirm its ID.
+					f.reply(w, map[string]any{"record_id_list": []string{}})
+					return
+				}
+				f.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			t.Setenv("AGENT_FEISHU_LIVE", "1")
+			t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			t.Setenv("AGENT_FEISHU_BASE", "BASE_TOKEN")
+			t.Setenv("AGENT_FEISHU_PROJECT", feishuRepo)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, executable, "-test.run=^TestFeishuLive$", "-test.v").CombinedOutput()
+			failure := "feishu 估算 is not a number"
+			want := []string{"recNew1"}
+			if strings.HasPrefix(scenario, "claim conflict event") {
+				failure = "feishu write returned an unexpected record count"
+				want = []string{"recNew2", "recNew1"}
+			}
+			if scenario == "claim conflict event denied" {
+				failure = "global dependency failure"
+				want = []string{"recNew1"}
+			}
+			if scenario == "claim conflict event delete denied" {
+				want = []string{"recNew2"}
+				if !strings.Contains(string(out), "delete 事件 IDs") {
+					t.Fatalf("event deletion failure not reported: %s", out)
+				}
+			}
+			if scenario == "delete notfound" {
+				want = []string{recordedID, recordedID}
+			}
+			if err == nil || !strings.Contains(string(out), failure) || ctx.Err() != nil {
+				t.Fatalf("live test did not reach injected failure: %v\n%s", err, out)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			var wantTables []string
+			for _, id := range want {
+				table := "tblT"
+				if id == "recNew2" {
+					table = "tblE"
+				}
+				wantTables = append(wantTables, table)
+			}
+			if !slices.Equal(deletedTables, wantTables) {
+				t.Fatalf("delete tables %v, want %v", deletedTables, wantTables)
+			}
+			if scenario == "delete notfound" && retryReads != 1 {
+				t.Fatalf("readbacks between delete attempts=%d, want 1", retryReads)
+			}
+			if !slices.Equal(deleted, want) {
+				t.Fatalf("deleted %v, want %v\n%s", deleted, want, out)
+			}
+			remaining := 3
+			if scenario == "same second other run" {
+				remaining++
+			}
+			remainingEvents := 0
+			if scenario == "claim conflict event delete denied" {
+				remaining++
+				remainingEvents = 1
+			}
+			if len(f.rows["tblT"]) != remaining || len(f.rows["tblE"]) != remainingEvents {
+				t.Fatalf("remaining tickets=%v events=%v", f.rows["tblT"], f.rows["tblE"])
+			}
+		})
+	}
 }
