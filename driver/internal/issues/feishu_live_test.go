@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -60,6 +61,41 @@ func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue,
 	return rows[i], true, nil
 }
 
+// liveCreateTracker counts each submitted row, including writes whose response
+// or subsequent readback fails, so cleanup cannot accept an incomplete list.
+type liveCreateTracker struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(r.URL.Path, "/records/batch_create") {
+		body, err := r.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		var request struct {
+			Records []json.RawMessage `json:"create_records"`
+		}
+		err = json.NewDecoder(body).Decode(&request)
+		body.Close()
+		if err != nil {
+			return nil, err
+		}
+		parts := strings.Split(r.URL.Path, "/")
+		c.mu.Lock()
+		c.counts[parts[len(parts)-3]] += len(request.Records)
+		c.mu.Unlock()
+	}
+	return http.DefaultTransport.RoundTrip(r)
+}
+
+func (c *liveCreateTracker) count(table string) int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.counts[table]
+}
+
 // TestFeishuLive runs the ledger flow against a real test Base as the app
 // identity. It deletes the ticket and its events at the end of each run.
 func TestFeishuLive(t *testing.T) {
@@ -80,12 +116,17 @@ func TestFeishuLive(t *testing.T) {
 		t.Fatalf("open backend: %v", err)
 	}
 	c := client.(*Feishu)
-	direct, err := feishu.New(feishu.Options{Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
+	creates := &liveCreateTracker{counts: map[string]int{}}
+	direct, err := feishu.New(feishu.Options{HTTPClient: &http.Client{Transport: creates}, Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		t.Fatalf("open direct client: %v", err)
 	}
 
-	stamp := time.Now().UTC().Format("20060102T150405Z")
+	c.client = direct
+	stamp, err := newUUID()
+	if err != nil {
+		t.Fatal(err)
+	}
 	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
 	var task Task
 	var record string
@@ -118,7 +159,7 @@ func TestFeishuLive(t *testing.T) {
 						tickets = append(tickets, r.ID)
 					}
 				}
-				if len(tickets) > 0 {
+				if len(tickets) >= creates.count(c.tables["票据"].id) {
 					break
 				}
 				if err := sleepContext(cleanupCtx, liveSettleInterval); err != nil {
@@ -127,27 +168,36 @@ func TestFeishuLive(t *testing.T) {
 				}
 			}
 		}
-		for _, id := range tickets {
-			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
-			rows, err := c.readAll(cleanupCtx, "事件", &filter)
-			var events []string
-			for _, r := range rows {
-				if !slices.Contains(events, r.ID) {
-					events = append(events, r.ID)
+		var events []string
+		if event != "" {
+			events = append(events, event)
+		}
+		for {
+			for _, id := range tickets {
+				filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
+				rows, err := c.readAll(cleanupCtx, "事件", &filter)
+				if err != nil {
+					t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
+				}
+				for _, r := range rows {
+					if !slices.Contains(events, r.ID) {
+						events = append(events, r.ID)
+					}
 				}
 			}
-			if event != "" && !slices.Contains(events, event) {
-				events = append(events, event)
+			if len(events) >= creates.count(c.tables["事件"].id) {
+				break
 			}
-			if err != nil {
-				t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
+			if err := sleepContext(cleanupCtx, liveSettleInterval); err != nil {
+				t.Errorf("find 事件 for 票据 IDs %v: found %v, submitted %d: %v", tickets, events, creates.count(c.tables["事件"].id), err)
+				break
 			}
-			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, events); err != nil {
-				t.Errorf("delete 事件 IDs %v for 票据 ID %s: %v", events, id, err)
-			}
-			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, []string{id}); err != nil {
-				t.Errorf("delete 票据 IDs %v: %v", []string{id}, err)
-			}
+		}
+		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, events); err != nil {
+			t.Errorf("delete 事件 IDs %v for 票据 IDs %v: %v", events, tickets, err)
+		}
+		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, tickets); err != nil {
+			t.Errorf("delete 票据 IDs %v: %v", tickets, err)
 		}
 	})
 	ok := t.Run("create adopted", func(t *testing.T) {
@@ -273,15 +323,24 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 }
 
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
-	for _, scenario := range []string{"create readback failure", "claim conflict event rejected"} {
+	for _, scenario := range []string{"create readback failure", "same second other run", "claim conflict event rejected", "claim conflict event delayed"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFeishuFake(t)
 			f.afterWrite = func(f *feishuFake) {
 				w := f.writes[len(f.writes)-1]
-				if scenario == "create readback failure" && w.table == "tblT" && w.action == "batch_create" {
+				if (scenario == "create readback failure" || scenario == "same second other run") && w.table == "tblT" && w.action == "batch_create" {
 					f.rows["tblT"][len(f.rows["tblT"])-1]["估算"] = "invalid"
+					if scenario == "same second other run" {
+						row := f.rows["tblT"][len(f.rows["tblT"])-1]
+						otherTitle := "TestFeishuLive " + time.Now().UTC().Format("20060102T150405Z")
+						if len(row["标题"].(string)) == len(otherTitle) {
+							otherTitle = row["标题"].(string)
+						}
+						other := feishuRow{"_id": "recOtherRun", "标题": otherTitle, "项目": row["项目"]}
+						f.rows["tblT"] = append(f.rows["tblT"], other)
+					}
 				}
-				if scenario == "claim conflict event rejected" && w.table == "tblT" && w.action == "batch_update" {
+				if strings.HasPrefix(scenario, "claim conflict event") && w.table == "tblT" && w.action == "batch_update" {
 					f.rows["tblT"][len(f.rows["tblT"])-1]["状态"] = []string{"Done"}
 				}
 			}
@@ -304,9 +363,15 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 					f.reply(w, rec.Response.Data)
 					return
 				}
-				if scenario == "claim conflict event rejected" && strings.HasSuffix(r.URL.Path, "/tblE/records/batch_create") {
+				if strings.HasPrefix(scenario, "claim conflict event") && strings.HasSuffix(r.URL.Path, "/tblE/records/batch_create") {
 					response := httptest.NewRecorder()
 					f.ServeHTTP(response, r)
+					if scenario == "claim conflict event delayed" {
+						f.mu.Lock()
+						f.stale = map[string][]feishuRow{"tblE": nil}
+						f.staleReads = 1
+						f.mu.Unlock()
+					}
 					// The event is stored, but checkWrite cannot confirm its ID.
 					f.reply(w, map[string]any{"record_id_list": []string{}})
 					return
@@ -329,7 +394,7 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 			out, err := exec.CommandContext(ctx, executable, "-test.run=^TestFeishuLive$", "-test.v").CombinedOutput()
 			failure := "feishu 估算 is not a number"
 			want := []string{"recNew1"}
-			if scenario == "claim conflict event rejected" {
+			if strings.HasPrefix(scenario, "claim conflict event") {
 				failure = "feishu write returned an unexpected record count"
 				want = []string{"recNew2", "recNew1"}
 			}
@@ -341,7 +406,11 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 			if !slices.Equal(deleted, want) {
 				t.Fatalf("deleted %v, want %v\n%s", deleted, want, out)
 			}
-			if len(f.rows["tblT"]) != 3 || len(f.rows["tblE"]) != 0 {
+			remaining := 3
+			if scenario == "same second other run" {
+				remaining++
+			}
+			if len(f.rows["tblT"]) != remaining || len(f.rows["tblE"]) != 0 {
 				t.Fatalf("remaining tickets=%v events=%v", f.rows["tblT"], f.rows["tblE"])
 			}
 		})
