@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
@@ -179,11 +182,52 @@ func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, erro
 	if err != nil {
 		return nil, err
 	}
-	client, err := feishu.New(feishu.Options{Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: os.Getenv("AGENT_FEISHU_APP_ID"), AppSecret: os.Getenv("AGENT_FEISHU_APP_SECRET")})
+	machine, err := feishuMachineSettings()
+	if err != nil {
+		return nil, err
+	}
+	client, err := feishu.New(feishu.Options{Endpoint: machine["AGENT_FEISHU_ENDPOINT"], AppID: machine["AGENT_FEISHU_APP_ID"], AppSecret: machine["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		return nil, err
 	}
 	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"], FeishuOptions{})
+}
+
+var feishuMachineKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET"}
+
+// feishuMachineSettings reads the app credentials and endpoint from the process
+// environment, falling back to the machine driver.env: executors and resolvers
+// start in Orca terminals that do not inherit the service EnvironmentFile.
+func feishuMachineSettings() (map[string]string, error) {
+	settings := map[string]string{}
+	for _, key := range feishuMachineKeys {
+		settings[key] = os.Getenv(key)
+	}
+	if settings["AGENT_FEISHU_APP_ID"] != "" && settings["AGENT_FEISHU_APP_SECRET"] != "" {
+		return settings, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return settings, nil
+	}
+	f, err := os.Open(filepath.Join(home, ".config", "orca-factory", "driver.env"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return settings, nil
+	}
+	if err != nil {
+		return nil, errors.New("driver.env could not be read")
+	}
+	file, parseErr := config.ParseEnv(f)
+	closeErr := f.Close()
+	if parseErr != nil || closeErr != nil {
+		return nil, errors.New("driver.env is invalid")
+	}
+	for _, key := range feishuMachineKeys {
+		if settings[key] == "" {
+			settings[key] = file[key]
+		}
+	}
+	return settings, nil
 }
 
 // NewFeishu locates the 项目, 票据 and 事件 tables and validates their schema.

@@ -10,7 +10,7 @@ set -a; . "$dir/agent-graph.env"; set +a
 for v in ${names[@]+"${names[@]}"}; do sv="saved_$v"; printf -v "$v" '%s' "${!sv}"; export "$v"; done
 export AGENT_REPO_PATH="${AGENT_REPO_PATH:-$(dirname "$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir)")}"
 case "${AGENT_ISSUE_BACKEND:-linear}" in
-  linear|github) ;;
+  linear|github|feishu) ;;
   *) echo "agent-graph: unsupported AGENT_ISSUE_BACKEND" >&2; exit 2 ;;
 esac
 if [[ "${1:-}" == linear || "${1:-}" == issues ]]; then

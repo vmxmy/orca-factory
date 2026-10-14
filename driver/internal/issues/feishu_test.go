@@ -66,10 +66,10 @@ type feishuFake struct {
 	// unnumberedReads leaves 序号 empty on created tickets for that many
 	// later reads, as base/v3 assigns auto numbers asynchronously.
 	unnumberedReads int
-	afterWrite func(f *feishuFake)
-	writes     []feishuWrite
-	batchGets  [][]string
-	created    int
+	afterWrite      func(f *feishuFake)
+	writes          []feishuWrite
+	batchGets       [][]string
+	created         int
 }
 
 // feishuWrite is one batch_create or batch_update request; cells are keyed
