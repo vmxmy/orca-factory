@@ -1,0 +1,28 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "page_size": 50,
+      "record_id": "reczz28NLqZ0kk1a",
+      "table_id": "tbl7jbXwoOR0WHZq"
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/record_history"
+  },
+  "response": {
+    "data": {
+      "has_more": false,
+      "items": [
+        {
+          "activity_type": "create",
+          "create_time": 1791994186,
+          "field_changes": null,
+          "operator": "测试用户",
+          "rev": 1
+        }
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

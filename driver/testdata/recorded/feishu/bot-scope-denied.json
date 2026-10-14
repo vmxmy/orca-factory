@@ -1,0 +1,25 @@
+{
+  "request": {
+    "body": null,
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases"
+  },
+  "response": {
+    "error": {
+      "code": 99991672,
+      "console_url": "https://open.feishu.cn/page/scope-apply?clientID=cli_REDACTED&scopes=base%3Aapp%3Acreate",
+      "hint": "the app developer must apply for the required scope(s) at the developer console: https://open.feishu.cn/page/scope-apply?clientID=cli_REDACTED&scopes=base%3Aapp%3Acreate",
+      "identity": "bot",
+      "log_id": "202610150007488A0041FC0C050393C220",
+      "message": "access denied: app cli_REDACTED has not applied for the required scope(s): base:app:create",
+      "missing_scopes": [
+        "base:app:create"
+      ],
+      "subtype": "app_scope_not_applied",
+      "type": "authorization"
+    },
+    "identity": "bot",
+    "ok": false
+  }
+}

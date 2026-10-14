@@ -1,0 +1,58 @@
+{
+  "request": {
+    "body": {
+      "create_records": [
+        {
+          "摘要": "merge-handoff-v1",
+          "来源": [
+            "driver"
+          ],
+          "正文": "merge-handoff-v1: {\"version\":1,\"queue_id\":\"q-test\"}\n归属: 合并通道",
+          "票据": [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ]
+        },
+        {
+          "摘要": "note",
+          "来源": [
+            "driver"
+          ],
+          "正文": "plain note for B",
+          "票据": [
+            {
+              "id": "reczz28NLqDRHJnT"
+            }
+          ]
+        },
+        {
+          "摘要": "merge-progress-v1",
+          "来源": [
+            "driver"
+          ],
+          "正文": "merge-progress-v1: {\"version\":1,\"phase\":\"merge-intent\"}",
+          "票据": [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ]
+        }
+      ]
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tbl7jbXwoOR0WHZq/records/batch_create"
+  },
+  "response": {
+    "data": {
+      "record_id_list": [
+        "reczz28NLqZ0nWaM",
+        "reczz28NLqZ0kk1a",
+        "reczz28NLqZ0mIFK"
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "request": {
+    "body": {
+      "update_records": {
+        "reczz28NLqDRHJnT": {
+          "相关": [
+            {
+              "id": "reczz28NLqDRJWLV"
+            }
+          ],
+          "阻塞于": [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ]
+        },
+        "reczz28NLqDRHkSp": {
+          "标签": [
+            "ready-for-agent",
+            "auto-impl"
+          ],
+          "状态": [
+            "In Progress"
+          ],
+          "纳管指纹": "sha256:aa",
+          "规范ID": "11111111-2222-4333-8444-555555555555"
+        }
+      }
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/records/batch_update"
+  },
+  "response": {
+    "data": {
+      "record_id_list": [
+        "reczz28NLqDRHJnT",
+        "reczz28NLqDRHkSp"
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

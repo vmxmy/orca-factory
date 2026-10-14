@@ -1,0 +1,69 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "page_size": 50,
+      "record_id": "reczz28NLqDRHkSp",
+      "table_id": "tblZQsD8lnjliPcn"
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/record_history"
+  },
+  "response": {
+    "data": {
+      "has_more": false,
+      "items": [
+        {
+          "activity_type": "update",
+          "create_time": 1791994183,
+          "field_changes": [
+            {
+              "after": [
+                "ready-for-agent",
+                "auto-impl"
+              ],
+              "before": [
+                "ready-for-agent"
+              ],
+              "field_id": "fld4uIyrWj",
+              "field_name": "标签",
+              "field_type": "MultiSelect"
+            },
+            {
+              "after": "11111111-2222-4333-8444-555555555555",
+              "before": "",
+              "field_id": "fldrlw1tU9",
+              "field_name": "规范ID",
+              "field_type": "Text"
+            },
+            {
+              "after": "sha256:aa",
+              "before": "",
+              "field_id": "fldVPgAPid",
+              "field_name": "纳管指纹",
+              "field_type": "Text"
+            },
+            {
+              "after": "In Progress",
+              "before": "Todo",
+              "field_id": "fldKbaSVNc",
+              "field_name": "状态",
+              "field_type": "SingleSelect"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 4
+        },
+        {
+          "activity_type": "create",
+          "create_time": 1791994166,
+          "field_changes": null,
+          "operator": "测试用户",
+          "rev": 3
+        }
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

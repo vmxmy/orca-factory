@@ -1,0 +1,58 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "page_size": 50,
+      "record_id": "reczz28NLqDRHJnT",
+      "table_id": "tblZQsD8lnjliPcn"
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/record_history"
+  },
+  "response": {
+    "data": {
+      "has_more": false,
+      "items": [
+        {
+          "activity_type": "update",
+          "create_time": 1791994183,
+          "field_changes": [
+            {
+              "after": [
+                {
+                  "id": "reczz28NLqDRJWLV"
+                }
+              ],
+              "before": "",
+              "field_id": "fldWwMkQEK",
+              "field_name": "相关",
+              "field_type": "SingleLink"
+            },
+            {
+              "after": [
+                {
+                  "id": "reczz28NLqDRHkSp"
+                }
+              ],
+              "before": "",
+              "field_id": "fldzRJUcyu",
+              "field_name": "阻塞于",
+              "field_type": "SingleLink"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 4
+        },
+        {
+          "activity_type": "create",
+          "create_time": 1791994166,
+          "field_changes": null,
+          "operator": "测试用户",
+          "rev": 3
+        }
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

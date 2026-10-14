@@ -1,0 +1,77 @@
+{
+  "request": {
+    "body": {
+      "create_records": [
+        {
+          "CHECK": "make test",
+          "SCOPE": "driver/**",
+          "估算": 2,
+          "序号": 999,
+          "标签": [
+            "ready-for-agent"
+          ],
+          "标题": "A 基础票",
+          "状态": [
+            "Todo"
+          ],
+          "要做": "做 A",
+          "项目": [
+            {
+              "id": "reczz28NLqBOtI9B"
+            }
+          ]
+        },
+        {
+          "CHECK": "make test",
+          "SCOPE": "driver/**",
+          "估算": 3,
+          "标签": [
+            "ready-for-agent"
+          ],
+          "标题": "B 依赖 A",
+          "状态": [
+            "Todo"
+          ],
+          "要做": "做 B",
+          "项目": [
+            {
+              "id": "reczz28NLqBOtI9B"
+            }
+          ]
+        },
+        {
+          "标题": "C 未纳管",
+          "状态": [
+            "Backlog"
+          ],
+          "项目": [
+            {
+              "id": "reczz28NLqBOtI9B"
+            }
+          ]
+        }
+      ]
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/records/batch_create"
+  },
+  "response": {
+    "data": {
+      "ignored_fields": [
+        {
+          "id": "fld6s350cd",
+          "name": "序号",
+          "reason": "READONLY: auto_number field is auto-created by the system. Do not write to it; read it from the record after creation."
+        }
+      ],
+      "record_id_list": [
+        "reczz28NLqDRHkSp",
+        "reczz28NLqDRHJnT",
+        "reczz28NLqDRJWLV"
+      ]
+    },
+    "identity": "user",
+    "ok": true
+  }
+}
