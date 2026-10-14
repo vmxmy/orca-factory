@@ -76,7 +76,7 @@ make race PACKAGES=./internal/infra TEST_ARGS='-run TestRetryDefaultSleep'
 | `Driver race` | `make race` |
 | `Driver vuln` | `make vuln` |
 
-changes 在云端运行，清空本地代理，使用官方 Go 下载源；只在这个 job 增加 `pull-requests: read` 来读取 PR 文件列表。其他 job 仅声明 `contents: read`，checkout 不持久化凭证，Actions 引用固定完整 commit SHA。setup-go 从 `driver/go.mod` 优先读取 toolchain。race 成功或失败后都尝试上传两份报告，artifact 名 `race-reports`，保留 14 天；若工具安装阶段失败，没有报告时不掩盖原失败。
+changes 在云端运行，清空本地代理，使用官方 Go 下载源；只在这个 job 增加 `pull-requests: read` 来读取 PR 文件列表。其他 job 仅声明 `contents: read`，checkout 不持久化凭证，Actions 引用固定完整 commit SHA。setup-go 从 `driver/go.mod` 优先读取 toolchain，只在 GitHub 托管 runner 上使用远端 cache；本地 runner 镜像已预装 toolchain 和模块。race 成功或失败后都尝试上传两份报告，artifact 名 `race-reports`，保留 14 天；若工具安装阶段失败，没有报告时不掩盖原失败。
 
 合并到 main 要求上述五项检查通过。远端分支保护使用上表名称并绑定 GitHub Actions app，通过 GitHub API 回读确认配置，检查启动本身不能证明保护已生效。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
 
@@ -104,7 +104,7 @@ build、race、vuln 使用仓库变量 `GO_RUNNER_LABELS_JSON` 选择 runner。�
 
 设置变量、部署启动器和调整实际资源上限由维护者执行；只有真实 job 完成才能证明本地 runner 已接通。原五个必需检查名称保持不变；新增 `Driver gate` 汇总 changes、build、race、vuln，失败或取消返回失败，跳过允许通过。changes 和 gate 使用云端 runner。
 
-`make workflow-check` 安装锁定版本的 actionlint，检查所有工作流并执行 gate/票号提醒行为测试；任一检查非零退出即失败。PR 过滤范围是 driver、Makefile、scripts 和工作流，排除 Markdown；main push 和手动运行始终执行 Go 检查。PR 正文更新会重新触发检查；缺票号只给 warning。
+`make workflow-check` 安装锁定版本的 actionlint，检查所有工作流并执行 gate/票号提醒行为测试；任一检查非零退出即失败。PR 过滤范围是 driver、Makefile、scripts 和工作流，排除 Markdown；手动运行始终执行 Go 检查。main push 只在下列条件同时满足时跳过 Go 检查：该提交由某个已合并 PR squash 而来；它的 tree 与该 PR head 的 tree 一致；PR head 上 `Driver build`、`Driver race`、`Driver vuln` 的最新结果都是 success。其他情况，包括 API 读取失败，都执行完整检查。PR 正文更新会重新触发检查；缺票号只给 warning。
 
 [Dependabot](../.github/dependabot.yml) 每周检查 `/driver` 的 Go module 与根目录的 GitHub Actions，依赖变更仍经 PR 门禁。
 
