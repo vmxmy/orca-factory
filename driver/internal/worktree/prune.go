@@ -65,7 +65,7 @@ type pruner struct {
 	budgetTripped, quotaTripped, inventoryOK, linearOK, prOK, remoteOK bool
 	git, orca                                                          []tree
 	issues                                                             []issue
-	github                                                             *issues.GitHub
+	github                                                             issues.Store
 	pulls                                                              []pull
 	remote                                                             string
 }
@@ -91,7 +91,7 @@ func RunPrune(ctx context.Context, args []string, out, warnings io.Writer) int {
 	}
 	p := pruner{ctx: ctx, out: out, warnings: warnings, repo: os.Getenv("AGENT_REPO_PATH"), prefix: os.Getenv("AGENT_RUN_WORKTREE_PREFIX"), team: os.Getenv("AGENT_LINEAR_TEAM"), project: os.Getenv("AGENT_LINEAR_PROJECT"), gh: os.Getenv("AGENT_GH_REPO"), started: time.Now().Unix()}
 	required := []string{"AGENT_REPO_PATH", "AGENT_RUN_WORKTREE_PREFIX"}
-	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+	if nativeBackend() {
 		required = append(required, "AGENT_GH_REPO")
 	} else {
 		required = append(required, "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT")
@@ -220,7 +220,7 @@ func (p *pruner) orcaTrees() ([]tree, bool) {
 		if item.Path == "" || !filepath.IsAbs(item.Path) {
 			return nil, false
 		}
-		if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+		if nativeBackend() {
 			matches := issueCommentPattern.FindAllStringSubmatch(item.Comment, -1)
 			if len(matches) > 1 {
 				return nil, false
@@ -247,7 +247,7 @@ func tempPath(key, name string) string {
 	return filepath.Join(root, name)
 }
 func (p *pruner) loadIssues() bool {
-	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+	if nativeBackend() {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return false
@@ -256,11 +256,14 @@ func (p *pruner) loadIssues() bool {
 		if err != nil {
 			return false
 		}
-		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL")}, cfg.Tuning)
+		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND"), "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL")}, cfg.Tuning)
 		if err != nil {
 			return false
 		}
-		ghClient := client.(*issues.GitHub)
+		ghClient, ok := client.(issues.Store)
+		if !ok {
+			return false
+		}
 		p.github = ghClient
 		rows, err := ghClient.List(p.ctx)
 		if err != nil {
@@ -314,7 +317,7 @@ func (p *pruner) loadIssues() bool {
 	return false
 }
 func (p *pruner) ticketSafe(id, object, mode string) bool {
-	if os.Getenv("AGENT_ISSUE_BACKEND") == "github" {
+	if nativeBackend() {
 		if p.github != nil {
 			task, err := p.github.Read(p.ctx, id)
 			if err == nil {
@@ -846,4 +849,9 @@ func (p *pruner) legacyUnits() {
 		_, _ = fmt.Fprintf(p.out, "pruned %s (PR %s %s)\n", item.Path, match[1], state)
 		p.removed++
 	}
+}
+
+// nativeBackend reports whether the selected backend keeps canonical task records.
+func nativeBackend() bool {
+	return issues.Native(map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND")})
 }

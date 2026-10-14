@@ -8,7 +8,7 @@ import (
 )
 
 // LedgerStore uses the same repository and logical comment history as tasks.
-type LedgerStore struct{ Client *GitHub }
+type LedgerStore struct{ Client Store }
 
 func (s *LedgerStore) ListIssues(ctx context.Context) ([]ledger.Issue, error) {
 	rows, err := s.Client.List(ctx)

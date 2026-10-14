@@ -335,8 +335,8 @@ func checkImportedTask(t Task, s ImportIssue, digest string, allowPendingClosure
 	}
 	return nil
 }
-func checkImportedComments(ctx context.Context, c *GitHub, t Task, s ImportIssue) (int, error) {
-	raw, err := c.gh.IssueComments(ctx, c.owner, c.name, t.Number)
+func checkImportedComments(ctx context.Context, c Importer, t Task, s ImportIssue) (int, error) {
+	raw, err := c.RawComments(ctx, t)
 	if err != nil {
 		return 0, err
 	}
@@ -348,7 +348,7 @@ func checkImportedComments(ctx context.Context, c *GitHub, t Task, s ImportIssue
 		return 0, errors.New("existing comments exceed complete source")
 	}
 	for index, comment := range raw {
-		if comment.Body != batches[index] {
+		if comment != batches[index] {
 			return 0, errors.New("existing imported comment conflicts with source order or content")
 		}
 	}
@@ -358,7 +358,7 @@ func checkImportedComments(ctx context.Context, c *GitHub, t Task, s ImportIssue
 	return len(raw), nil
 }
 
-func ReleaseHold(ctx context.Context, c *GitHub, raw []byte) (ImportResult, error) {
+func ReleaseHold(ctx context.Context, c Importer, raw []byte) (ImportResult, error) {
 	result := ImportResult{}
 	release, err := maintenance.Write()
 	if err != nil {
@@ -427,7 +427,7 @@ func ReleaseHold(ctx context.Context, c *GitHub, raw []byte) (ImportResult, erro
 // Import validates the entire manifest and destination before any mutation.
 // apply=false is a read-only preview. A failed apply leaves unfinished issues held;
 // re-running the same manifest reads accepted writes back before resuming.
-func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResult, error) {
+func Import(ctx context.Context, c Importer, raw []byte, apply bool) (ImportResult, error) {
 	result := ImportResult{DryRun: !apply}
 	if c == nil {
 		return result, errors.New("GitHub client required")
@@ -481,7 +481,7 @@ func Import(ctx context.Context, c *GitHub, raw []byte, apply bool) (ImportResul
 		in := s.CreateInput
 		in.ImportHold = true
 		in.ImportDigest = digest
-		t, err := c.createImported(ctx, in)
+		t, err := c.CreateImported(ctx, in)
 		if err != nil {
 			return result, err
 		}

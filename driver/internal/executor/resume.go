@@ -100,7 +100,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	configured.Config = c
 	e = &configured
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	if client, ok := e.Linear.(*issues.GitHub); ok {
+	if client, ok := e.Linear.(issues.Store); ok {
 		task, readErr := client.Read(ctx, t.ID)
 		if readErr != nil {
 			return result, readErr

@@ -82,14 +82,13 @@ func selftest(args []string) int {
 }
 
 func snapshotSelectedBackend(ctx context.Context, client issues.Client, env map[string]string) ([]linear.Issue, error) {
-	backend, err := issues.Backend(env)
-	if err != nil {
+	if _, err := issues.Backend(env); err != nil {
 		return nil, err
 	}
-	if backend == "github" {
-		return client.Snapshot(ctx, []string{env["AGENT_GH_REPO"]}, time.Time{})
+	if issues.Native(env) {
+		return client.Snapshot(ctx, []string{issues.Project(env)}, time.Time{})
 	}
-	return client.Snapshot(ctx, []string{env["AGENT_LINEAR_PROJECT"]}, time.Now().Add(-24*time.Hour))
+	return client.Snapshot(ctx, []string{issues.Project(env)}, time.Now().Add(-24*time.Hour))
 }
 
 func liveTaskReport(ctx context.Context, oc *orca.Client) error {

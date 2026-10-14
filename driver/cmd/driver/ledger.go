@@ -48,13 +48,18 @@ func runLedger(args []string) int {
 		return 1
 	}
 	var store ledger.Store
-	if backend == "github" {
+	if issues.Native(env) {
 		client, err := issues.New(ctx, env, cfg.Tuning)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		store = &issues.LedgerStore{Client: client.(*issues.GitHub)}
+		tasks, ok := client.(issues.Store)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "ledger: backend keeps no canonical task records")
+			return 1
+		}
+		store = &issues.LedgerStore{Client: tasks}
 	} else {
 		client, err := linear.New(ctx, linear.Options{TeamID: team, HTTPTimeout: cfg.Tuning.Linear.HTTPTimeout})
 		if err != nil {
