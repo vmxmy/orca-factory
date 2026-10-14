@@ -346,13 +346,24 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 }
 
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
-	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied"} {
+	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied", "delete notfound"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFeishuFake(t)
+			tooEarly := loadFeishuRecording(t, "bot-tickets-delete-too-early.json")
+			var recordedDelete struct {
+				IDs []string `json:"record_id_list"`
+			}
+			if err := json.Unmarshal(tooEarly.Request.Body, &recordedDelete); err != nil || len(recordedDelete.IDs) != 1 {
+				t.Fatalf("recorded delete request: %v", err)
+			}
+			recordedID := recordedDelete.IDs[0]
 			f.afterWrite = func(f *feishuFake) {
 				w := f.writes[len(f.writes)-1]
-				if (scenario == "create readback failure" || scenario == "write conflict retry" || scenario == "same second other run") && w.table == "tblT" && w.action == "batch_create" {
+				if (scenario == "create readback failure" || scenario == "write conflict retry" || scenario == "same second other run" || scenario == "delete notfound") && w.table == "tblT" && w.action == "batch_create" {
 					f.rows["tblT"][len(f.rows["tblT"])-1]["估算"] = "invalid"
+					if scenario == "delete notfound" {
+						f.rows["tblT"][len(f.rows["tblT"])-1]["_id"] = recordedID
+					}
 					if scenario == "same second other run" {
 						row := f.rows["tblT"][len(f.rows["tblT"])-1]
 						otherTitle := "TestFeishuLive " + time.Now().UTC().Format("20060102T150405Z")
@@ -368,8 +379,17 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 				}
 			}
 			var deleted []string
+			var deletedTables []string
+			retryReads := 0
 			conflicted := false
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if scenario == "delete notfound" && strings.HasSuffix(r.URL.Path, "/batch_get") {
+					f.mu.Lock()
+					if len(deleted) == 1 {
+						retryReads++
+					}
+					f.mu.Unlock()
+				}
 				if scenario == "write conflict retry" && !conflicted && strings.HasSuffix(r.URL.Path, "/tblT/records/batch_create") {
 					conflicted = true
 					_ = json.NewEncoder(w).Encode(map[string]any{"code": feishu.CodeWriteConflict, "msg": "conflict"})
@@ -384,10 +404,18 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 					}
 					f.mu.Lock()
 					defer f.mu.Unlock()
+					parts := strings.Split(r.URL.Path, "/")
+					table := parts[len(parts)-3]
 					deleted = append(deleted, body.IDs...)
-					for table, rows := range f.rows {
-						f.rows[table] = slices.DeleteFunc(rows, func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
+					deletedTables = append(deletedTables, table)
+					if scenario == "delete notfound" && len(deleted) == 1 {
+						if !slices.Equal(body.IDs, recordedDelete.IDs) {
+							t.Errorf("delete request %v, want recorded %v", body.IDs, recordedDelete.IDs)
+						}
+						f.reply(w, tooEarly.Response.Data)
+						return
 					}
+					f.rows[table] = slices.DeleteFunc(f.rows[table], func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
 					rec := loadFeishuRecording(t, "bot-tickets-delete.json")
 					f.reply(w, rec.Response.Data)
 					return
@@ -436,11 +464,28 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 				failure = "global dependency failure"
 				want = []string{"recNew1"}
 			}
+			if scenario == "delete notfound" {
+				want = []string{recordedID, recordedID}
+			}
 			if err == nil || !strings.Contains(string(out), failure) || ctx.Err() != nil {
 				t.Fatalf("live test did not reach injected failure: %v\n%s", err, out)
 			}
 			f.mu.Lock()
 			defer f.mu.Unlock()
+			var wantTables []string
+			for _, id := range want {
+				table := "tblT"
+				if id == "recNew2" {
+					table = "tblE"
+				}
+				wantTables = append(wantTables, table)
+			}
+			if !slices.Equal(deletedTables, wantTables) {
+				t.Fatalf("delete tables %v, want %v", deletedTables, wantTables)
+			}
+			if scenario == "delete notfound" && retryReads != 1 {
+				t.Fatalf("readbacks between delete attempts=%d, want 1", retryReads)
+			}
 			if !slices.Equal(deleted, want) {
 				t.Fatalf("deleted %v, want %v\n%s", deleted, want, out)
 			}
