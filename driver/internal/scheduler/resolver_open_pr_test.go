@@ -30,7 +30,7 @@ func TestResolverOpenPR(t *testing.T) {
 	if err := json.Unmarshal(recorded(t, "github-commit-main.json"), &commit); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"create", "existing", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch"} {
+	for _, mode := range []string{"create", "existing", "existing-no-reference", "existing-wrong-ticket", "existing-wrong-canonical", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			base := newFeishuClaimBase(t, true)
@@ -55,6 +55,22 @@ func TestResolverOpenPR(t *testing.T) {
 			head := pr.Head.SHA
 			creates, lookups := 0, 0
 			prResponse := prRaw
+			if strings.HasPrefix(mode, "existing") {
+				existing := pr
+				existing.Body = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\nEarlier verified fix", task.URL, task.Identifier, task.ID)
+				switch mode {
+				case "existing-no-reference":
+					existing.Body = "Earlier verified fix"
+				case "existing-wrong-ticket":
+					existing.Body = strings.Replace(existing.Body, task.URL, task.URL+"-other", 1)
+				case "existing-wrong-canonical":
+					existing.Body = strings.Replace(existing.Body, "Canonical ID: "+task.ID, "Canonical ID: other", 1)
+				}
+				prResponse, err = json.Marshal(existing)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 			if mode == "pr-head-changed" {
 				var changed map[string]any
 				if err := json.Unmarshal(prRaw, &changed); err != nil {
@@ -85,8 +101,8 @@ func TestResolverOpenPR(t *testing.T) {
 						http.Error(w, "denied", http.StatusForbidden)
 						return
 					}
-					if mode == "existing" {
-						_, _ = w.Write(append(append([]byte("["), prRaw...), ']'))
+					if strings.HasPrefix(mode, "existing") {
+						_, _ = w.Write(append(append([]byte("["), prResponse...), ']'))
 					} else {
 						_ = json.NewEncoder(w).Encode([]github.PullRequest{})
 					}
@@ -176,6 +192,9 @@ func TestResolverOpenPR(t *testing.T) {
 				}
 				if mode == "ticket-identity-mismatch" && !strings.Contains(body, "ticket reference identity differs") {
 					t.Fatalf("missing ticket identity evidence: %q", body)
+				}
+				if strings.HasPrefix(mode, "existing-") && !strings.Contains(body, "PR ticket reference differs") {
+					t.Fatalf("missing PR reference evidence: %q", body)
 				}
 				f := &fakeBackend{tickets: []Ticket{{ID: ticket.ID, Identifier: ticket.Identifier, Repo: "a", Owner: machine.OwnerHuman, Resolution: record}}}
 				if err := setup(f).Tick(ctx); err != nil {
