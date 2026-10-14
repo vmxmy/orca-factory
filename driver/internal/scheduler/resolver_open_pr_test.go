@@ -19,6 +19,7 @@ import (
 )
 
 func TestResolverOpenPR(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	prRaw := recorded(t, "github-pr-open-clean.json")
 	var pr github.PullRequest
 	if err := json.Unmarshal(prRaw, &pr); err != nil {
@@ -137,7 +138,7 @@ func TestResolverOpenPR(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			gh, err := github.New(github.Options{BaseURL: server.URL, HTTPClient: server.Client()})
+			gh, err := github.New(github.Options{BaseURL: server.URL, HTTPClient: server.Client(), Token: func(context.Context) (string, error) { return "test", nil }})
 			if err != nil {
 				t.Fatal(err)
 			}
