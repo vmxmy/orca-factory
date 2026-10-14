@@ -5,6 +5,7 @@
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
+| Resolver `open-pr` 提案经 Orca `worker_report` 信封的 `body` 送达，必须是单个 JSON 对象；真实自由文本报告被拒绝。调度器核对分支 head 与 PR head，并在证据中保留 PR 号 | `orca-task-list.json`、`github-pr-open-clean.json`、`github-commit-main.json` | `resolver.TestResolverOpenPRResult`、`scheduler.TestResolverOpenPR` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
 | Linear 存储正文时转义 CommonMark 字符（`*` 存为 `\*`，`\` 存为 `\\`） | `linear-description-escaped.md` | `executor.TestRecordedTicketDescriptions` |
@@ -134,6 +135,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `linear-response-headers.txt` 为已有 viewer 探测的真实响应头；`github-response-headers.txt` 为 2026-10-06 对 `https://api.github.com/repos/vmxmy/orca-factory` 匿名只读 GET 的真实 404 响应头，仅保留状态、日期、类型、请求 ID 和额度字段。测试重放这些头，HTTP 状态变化为合成错误/缓存场景，不将其冒充额外线上录制。
 - 验证：runx/Linear `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
 ## Resolver 处置
+
+- 开 PR 结果格式：`{"action":"open-pr","branch":"agent/OF-5/executor","head":"c4e86ec5465d1e2d1f6aea45053e663b54a1350b","title":"修复标题","body":"修复说明","reason":"gate 已通过"}`。五个载荷字段都必填，head 为 40 位十六进制 SHA，reason 保持单行。`resolver.TestResolverOpenPRResult` 读取 `orca-task-list.json`，保留真实 `worker_report` 信封，仅替换其 `body`，并从 `github-pr-open-clean.json` 读取示例 head；`scheduler.TestResolverOpenPR` 读取该 PR 样本和 `github-commit-main.json` 覆盖 GitHub 响应。
+- 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。统一票据存储的新 PR 正文首行为票据关联链接，后附 canonical identifier / ID；旧 Linear 配置为 `Fixes <票号>`，与执行器一致。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
+- 分支读取失败、head 不符、PR 查询或创建失败、PR 回执 head 不符均写证据并转人，resolver-state 的 human 状态禁止自动重试；需要人工核实并明确更新处置回执后才能继续。事件写入失败则保留原回执以便对账，已有 PR 按分支复用。`scheduler.TestResolverOpenPR` 覆盖这些路径。
 
 - `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。
 - mutation 请求按终端作用域生成；替换终端读取完整 task-list/worker-list 对账，不重放旧终端请求。丢失 Run 回执时尚未允许派工，可创建仅属于替换控制器的空 Run。
