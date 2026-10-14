@@ -249,6 +249,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			if DeploymentBarrier(t) {
 				s.MergeQueue = append(s.MergeQueue, t)
 			}
+			if t.Resolution != nil && t.Resolution.Phase == "human" {
+				continue
+			}
 			if t.Resolution != nil && t.Resolution.Phase == "waiting" && now.Before(t.Resolution.RetryAt) {
 				continue
 			}

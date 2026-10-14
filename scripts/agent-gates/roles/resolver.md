@@ -13,6 +13,7 @@
 
 ## Does Not Own
 
+- 没有 PR 时返回 open-pr 提案，由调度器查分支并创建 PR；不自行开 PR，不向 coordinator 发 ask。
 - 不直接合并 PR、不写 Done、不修改流水线归属或 resolver-state；由调度器校验后推进。
 - 不重置旧执行器的预算、checkpoint 或数据库，不绕过 CI、gate、reviewer、lane 3 限制和部署身份校验。
 - 不把失败转成“等人处理”或只建一张后续票就结束；继续完成当前可执行的处置。
@@ -23,7 +24,7 @@
 
 - 先读 `scripts/agent-gates/roles/worker.md` 的检查约束；安装依赖，针对行为修改先运行失败断言，再实现并跑绿。
 - 在真实 PR head 上运行 gate；lane 2 使用仓库配置的独立 reviewer。保留原始完整输出，不伪造 green。
-- 确认推送成功、PR 与票据唯一关联、head 与提交一致；核对所有 CI。检查未通过就修复，不能提交成功决策。
+- 确认推送成功、head 与提交一致。没有 PR 时可先提交 open-pr；调度器创建或复用 PR 后会开启下一次处置，届时核对票据关联、等待 CI，再提交 merge handoff。已有 PR 的检查未通过就修复，不能提交 merge 决策。
 - 新 handoff 按 `driver/internal/merge/evidence.go` 的字段和 `validation.go` 的证据格式填写，ticket_id、identifier、repository 必须与输入一致。
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。
 - 未改动且仅补充审批时可原样返回已有 handoff；任何字段或 head 改动都须重新验证并使用新 queue_id。
@@ -32,6 +33,7 @@
 ## Handoff
 
 - 通过 Orca `worker_done` 提交结果。成功 body 必须是一个 JSON 对象，不附 Markdown 围栏。
+- 开 PR 提案：`{"action":"open-pr","branch":"已推送分支","head":"40 位完整提交 SHA","title":"PR 标题","body":"PR 正文","reason":"已完成检查与开 PR 原因"}`；所有字段必填，reason 为单行。调度器在正文首行添加票据关联链接；远端 head 不符、分支不存在或建 PR 失败会记录证据并转人，不自动重试。
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。

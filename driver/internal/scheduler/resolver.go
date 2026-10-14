@@ -191,6 +191,9 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if err != nil {
 		return r.retryResolution(ctx, t, p, "invalid result; provide a structured, validated resolution")
 	}
+	if decision.Action == "open-pr" {
+		return r.openResolutionPR(ctx, t, p, decision)
+	}
 	if decision.Action != "merge" {
 		if err = r.ResumeDeployment(ctx, t.Identifier, decision.Queue, decision.SHA, decision.Action, "resolver:"+p.Dispatch, decision.Reason, false); err != nil {
 			if errors.Is(err, errDeploymentProposal) {
