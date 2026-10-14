@@ -228,3 +228,28 @@ func TestTablesListsIDsByName(t *testing.T) {
 		t.Fatalf("tables=%+v err=%v", tables, err)
 	}
 }
+
+func TestNoPermissionIsGlobal(t *testing.T) {
+	rec := loadRecording(t, "bot-no-collaborator-write.json")
+	var calls atomic.Int64
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var got, want any
+		if r.Method != rec.Request.Method || r.URL.Path != rec.Request.Path ||
+			json.NewDecoder(r.Body).Decode(&got) != nil || json.Unmarshal(rec.Request.Body, &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("request %s %s body=%v want %v", r.Method, r.URL.Path, got, want)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"code": rec.Response.Error.Code, "msg": rec.Response.Error.Message,
+		}); err != nil {
+			t.Error(err)
+		}
+	}, Options{})
+	_, err := c.BatchUpdate(context.Background(), testBase, ticketTable, map[string]map[string]any{"reczz28NLqDRHkSp": {"估算": 11}})
+	var apiErr *APIError
+	var global *infra.Global
+	if !errors.As(err, &apiErr) || apiErr.Code != CodeNoPermission ||
+		!errors.As(err, &global) || global.Dep != Dep || calls.Load() != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+}

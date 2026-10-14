@@ -22,6 +22,7 @@ const Dep infra.Dep = "Feishu"
 const (
 	CodeWriteConflict = 1254291
 	CodeMissingScope  = 99991672
+	CodeNoPermission  = 91403
 )
 
 const tokenRefreshMargin = 5 * time.Minute
@@ -158,7 +159,7 @@ func (c *Client) call(ctx context.Context, method, path string, input, data any)
 	}
 	switch out.Code {
 	case 0:
-	case CodeMissingScope:
+	case CodeMissingScope, CodeNoPermission:
 		apiErr := &APIError{Code: out.Code}
 		for _, v := range out.Error.PermissionViolations {
 			apiErr.MissingScopes = append(apiErr.MissingScopes, v.Subject)
