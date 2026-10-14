@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,14 +17,33 @@ import (
 )
 
 func TestResolverOpenPR(t *testing.T) {
+	prRaw := recorded(t, "github-pr-open-clean.json")
+	var pr github.PullRequest
+	if err := json.Unmarshal(prRaw, &pr); err != nil {
+		t.Fatal(err)
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.Unmarshal(recorded(t, "github-commit-main.json"), &commit); err != nil {
+		t.Fatal(err)
+	}
 	for _, mode := range []string{"create", "existing", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed"} {
 		t.Run(mode, func(t *testing.T) {
-			head := strings.Repeat("a", 40)
+			head := pr.Head.SHA
 			creates, lookups := 0, 0
-			pr := github.PullRequest{Number: 17, HTMLURL: "https://github.com/o/r/pull/17"}
-			pr.Head.SHA = head
+			prResponse := prRaw
 			if mode == "pr-head-changed" {
-				pr.Head.SHA = strings.Repeat("b", 40)
+				var changed map[string]any
+				if err := json.Unmarshal(prRaw, &changed); err != nil {
+					t.Fatal(err)
+				}
+				changed["head"].(map[string]any)["sha"] = commit.SHA
+				var err error
+				prResponse, err = json.Marshal(changed)
+				if err != nil {
+					t.Fatal(err)
+				}
 			}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
@@ -32,11 +52,11 @@ func TestResolverOpenPR(t *testing.T) {
 						http.NotFound(w, r)
 						return
 					}
-					remote := head
-					if mode == "mismatch" {
-						remote = strings.Repeat("b", 40)
+					remote := commit
+					if mode != "mismatch" {
+						remote.SHA = head
 					}
-					_ = json.NewEncoder(w).Encode(map[string]string{"sha": remote})
+					_ = json.NewEncoder(w).Encode(remote)
 				case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls"):
 					lookups++
 					if mode == "lookup-failed" {
@@ -44,7 +64,7 @@ func TestResolverOpenPR(t *testing.T) {
 						return
 					}
 					if mode == "existing" {
-						_ = json.NewEncoder(w).Encode([]github.PullRequest{pr})
+						_, _ = w.Write(append(append([]byte("["), prRaw...), ']'))
 					} else {
 						_ = json.NewEncoder(w).Encode([]github.PullRequest{})
 					}
@@ -61,7 +81,7 @@ func TestResolverOpenPR(t *testing.T) {
 						http.Error(w, "invalid", 422)
 						return
 					}
-					_ = json.NewEncoder(w).Encode(pr)
+					_, _ = w.Write(prResponse)
 				default:
 					t.Errorf("unexpected %s %s", r.Method, r.URL)
 					http.NotFound(w, r)
@@ -92,7 +112,7 @@ func TestResolverOpenPR(t *testing.T) {
 				if record.Phase != "waiting" || !record.RetryAt.IsZero() || record.Attempt != 2 || record.Outcome != "succeeded" {
 					t.Fatalf("next attempt not ready: %+v", record)
 				}
-				if !strings.Contains(strings.Join(l.comments, "\n"), "pr=17 head="+head) {
+				if !strings.Contains(strings.Join(l.comments, "\n"), fmt.Sprintf("pr=%d head=%s", pr.Number, head)) {
 					t.Fatalf("missing PR evidence: %+v", l.comments)
 				}
 				f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "OF-5", Repo: "a", Owner: machine.OwnerResolver, Resolution: record}}}
