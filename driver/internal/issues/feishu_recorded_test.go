@@ -39,7 +39,10 @@ type feishuRecording struct {
 		} `json:"params"`
 	} `json:"request"`
 	Response struct {
-		Data json.RawMessage `json:"data"`
+		Data  json.RawMessage `json:"data"`
+		Error struct {
+			Code int `json:"code"`
+		} `json:"error"`
 	} `json:"response"`
 }
 
@@ -104,7 +107,7 @@ func (f *recordedFeishuBase) on(method, path, filter string, body []byte, replie
 func (f *recordedFeishuBase) replay(names ...string) {
 	for _, name := range names {
 		r := loadFeishuRecording(f.t, name)
-		f.on(r.Request.Method, r.Request.Path, r.Request.Params.Filter, r.Request.Body, feishuReply{data: r.Response.Data})
+		f.on(r.Request.Method, r.Request.Path, r.Request.Params.Filter, r.Request.Body, feishuReply{code: r.Response.Error.Code, data: r.Response.Data})
 	}
 }
 
@@ -363,14 +366,14 @@ func TestRecordedFeishuIgnoredFieldsRejected(t *testing.T) {
 // added as a Base collaborator. It is not retried and keeps its code.
 func TestFeishuNoCollaboratorWriteNotRetried(t *testing.T) {
 	f := newRecordedFeishuBase(t)
-	path := recBasePath + "/tables/" + recEventTable + "/records/batch_create"
-	f.on(http.MethodPost, path, "", nil, feishuReply{code: 91403})
+	path := recBasePath + "/tables/" + recTicketTable + "/records/batch_update"
+	f.replay("bot-no-collaborator-write.json")
 	c := f.backend(t)
-	_, err := c.CreateComment(context.Background(), feishuUUIDA, "x")
+	err := c.updateTicket(context.Background(), recTicketA, map[string]any{"估算": 11})
 	var apiErr *feishu.APIError
-	var ticket *infra.Ticket
+	var global *infra.Global
 	var transient *infra.Transient
-	if !errors.As(err, &apiErr) || apiErr.Code != 91403 || !errors.As(err, &ticket) || errors.As(err, &transient) {
+	if !errors.As(err, &apiErr) || apiErr.Code != feishu.CodeNoPermission || !errors.As(err, &global) || global.Dep != feishu.Dep || errors.As(err, &transient) {
 		t.Fatalf("err=%v", err)
 	}
 	if calls := len(f.sent(http.MethodPost, path)); calls != 1 {
