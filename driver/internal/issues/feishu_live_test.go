@@ -82,14 +82,14 @@ func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
 		Records []json.RawMessage `json:"create_records"`
 	}
 	err = json.NewDecoder(body).Decode(&request)
-	body.Close()
+	_ = body.Close()
 	if err != nil {
 		return nil, err
 	}
 	res, err := http.DefaultTransport.RoundTrip(r)
 	if err == nil {
 		raw, readErr := io.ReadAll(res.Body)
-		res.Body.Close()
+		_ = res.Body.Close()
 		res.Body = io.NopCloser(bytes.NewReader(raw))
 		var envelope struct {
 			Code int `json:"code"`
