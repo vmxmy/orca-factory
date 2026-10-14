@@ -50,7 +50,7 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 		}
 		return nil
 	}
-	c, ok := r.Clients[t.Repo].(*issues.GitHub)
+	c, ok := r.Clients[t.Repo].(issues.Store)
 	if !ok {
 		return nil
 	}
@@ -146,7 +146,7 @@ func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 				return errors.New("failed task requires human recovery")
 			}
 		}
-	case *issues.GitHub:
+	case issues.Store:
 		task, err := c.Read(ctx, t.ID)
 		if err != nil {
 			return err

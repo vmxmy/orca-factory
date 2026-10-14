@@ -76,7 +76,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, err
 	}
 	var ticket Ticket
-	if gh, ok := lc.(*issues.GitHub); ok {
+	if gh, ok := lc.(issues.Store); ok {
 		task, readErr := gh.Read(ctx, identifier)
 		if readErr != nil {
 			return Result{}, readErr

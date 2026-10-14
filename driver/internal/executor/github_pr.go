@@ -23,7 +23,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 	repository := e.Config.Owner + "/" + e.Config.Repository
 	linearDone := false
 	switch c := e.Linear.(type) {
-	case *issues.GitHub:
+	case issues.Store:
 		task, err := c.Read(ctx, t.ID)
 		if err != nil {
 			return err
@@ -178,7 +178,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 }
 
 func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error) {
-	c, ok := e.Linear.(*issues.GitHub)
+	c, ok := e.Linear.(issues.Store)
 	if !ok {
 		return "Fixes " + t.Identifier + "\n\n" + t.Todo, nil
 	}

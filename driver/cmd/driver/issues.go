@@ -103,8 +103,8 @@ func runIssues(args []string) int {
 		}
 		return 0
 	}
-	if err != nil || (backend != "github" && args[0] != "export") {
-		fmt.Fprintln(os.Stderr, "issues: AGENT_ISSUE_BACKEND=github required")
+	if err != nil || (!issues.Native(env) && args[0] != "export") {
+		fmt.Fprintln(os.Stderr, "issues: AGENT_ISSUE_BACKEND must select a task store such as github")
 		return 2
 	}
 	if *apply && (args[0] == "import" || args[0] == "release-hold") {
@@ -148,7 +148,12 @@ func runIssues(args []string) int {
 		}
 		return 0
 	}
-	gh := client.(*issues.GitHub)
+	gh, ok := client.(issues.Store)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "issues: backend keeps no canonical task records")
+		return 2
+	}
+	importer, _ := gh.(issues.Importer)
 	var result any
 	switch args[0] {
 	case "snapshot", "list":
@@ -175,6 +180,10 @@ func runIssues(args []string) int {
 			result = map[string]any{"issue": row}
 		}
 	case "release-hold":
+		if importer == nil {
+			err = errors.New("backend cannot import held records")
+			break
+		}
 		if !*apply {
 			err = errors.New("release-hold requires explicit --apply")
 			break
@@ -182,7 +191,7 @@ func runIssues(args []string) int {
 		var raw []byte
 		raw, err = issueInput(*input)
 		if err == nil {
-			result, err = issues.ReleaseHold(ctx, gh, raw)
+			result, err = issues.ReleaseHold(ctx, importer, raw)
 		}
 	case "adopt":
 		var raw []byte
@@ -235,14 +244,18 @@ func runIssues(args []string) int {
 			result = map[string]any{"comment": c}
 		}
 	case "import":
+		if importer == nil {
+			err = errors.New("backend cannot import held records")
+			break
+		}
 		var raw []byte
 		raw, err = issueInput(*input)
 		if err == nil {
-			result, err = issues.Import(ctx, gh, raw, *apply)
+			result, err = issues.Import(ctx, importer, raw, *apply)
 		}
 	case "validate":
 		_, err = gh.List(ctx)
-		result = map[string]any{"repository": gh.Repository(), "backend": "github", "complete": true}
+		result = map[string]any{"repository": gh.Repository(), "backend": backend, "complete": true}
 	default:
 		fmt.Fprintln(os.Stderr, "issues: unknown command")
 		return 2
@@ -256,7 +269,7 @@ func runIssues(args []string) int {
 	}
 	return 0
 }
-func publicIssue(ctx context.Context, c *issues.GitHub, t issues.Task, withComments bool) (map[string]any, error) {
+func publicIssue(ctx context.Context, c issues.Store, t issues.Task, withComments bool) (map[string]any, error) {
 	var ownership scheduler.Ticket
 	if withComments {
 		comments, err := c.ListComments(ctx, t.ID)

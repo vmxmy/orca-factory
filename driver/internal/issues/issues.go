@@ -28,6 +28,36 @@ type Client interface {
 	CreateComment(context.Context, string, string) (linear.Comment, error)
 }
 
+// Store is a backend that keeps canonical task records with driver metadata.
+// Callers depend on it instead of a concrete backend; legacy Linear is not one.
+type Store interface {
+	Client
+	Repository() string
+	List(context.Context) ([]Task, error)
+	Read(context.Context, string) (Task, error)
+	Description(context.Context, string) (string, error)
+	FreshIssue(context.Context, string) (linear.Issue, error)
+	Create(context.Context, CreateInput) (Task, error)
+	Adopt(context.Context, string, []byte) (Task, error)
+	Edit(context.Context, string, []byte) (Task, error)
+	SetMetadata(context.Context, string, Metadata) (Task, error)
+}
+
+// Importer is a Store that can create records carrying an imported identity.
+type Importer interface {
+	Store
+	CreateImported(context.Context, CreateInput) (Task, error)
+	RawComments(context.Context, Task) ([]string, error)
+}
+
+var _ Importer = (*GitHub)(nil)
+
+// Native reports whether the selected backend is a Store rather than legacy Linear.
+func Native(env map[string]string) bool {
+	backend, err := Backend(env)
+	return err == nil && backend != "linear"
+}
+
 func Backend(env map[string]string) (string, error) {
 	switch env["AGENT_ISSUE_BACKEND"] {
 	case "", "linear":
@@ -39,7 +69,7 @@ func Backend(env map[string]string) (string, error) {
 	}
 }
 func Project(env map[string]string) string {
-	if env["AGENT_ISSUE_BACKEND"] == "github" {
+	if Native(env) {
 		return env["AGENT_GH_REPO"]
 	}
 	return env["AGENT_LINEAR_PROJECT"]
@@ -498,7 +528,20 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 	return c.Read(ctx, task.ID)
 }
 
-func (c *GitHub) createImported(ctx context.Context, in CreateInput) (Task, error) {
+// RawComments returns stored comment bodies without driver parsing.
+func (c *GitHub) RawComments(ctx context.Context, t Task) ([]string, error) {
+	rows, err := c.gh.IssueComments(ctx, c.owner, c.name, t.Number)
+	if err != nil {
+		return nil, err
+	}
+	bodies := make([]string, len(rows))
+	for i, row := range rows {
+		bodies[i] = row.Body
+	}
+	return bodies, nil
+}
+
+func (c *GitHub) CreateImported(ctx context.Context, in CreateInput) (Task, error) {
 	if in.ID == "" || in.ImportDigest == "" || !in.ImportHold {
 		return Task{}, errors.New("validated held import identity required")
 	}
