@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -61,11 +62,12 @@ func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue,
 	return rows[i], true, nil
 }
 
-// liveCreateTracker counts each submitted row, including writes whose response
-// or subsequent readback fails, so cleanup cannot accept an incomplete list.
+// liveCreateTracker counts unique creation requests. A write-conflict retry
+// repeats the same body without creating an extra row.
 type liveCreateTracker struct {
 	mu     sync.Mutex
 	counts map[string]int
+	seen   map[string]bool
 }
 
 func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -77,14 +79,22 @@ func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
 		var request struct {
 			Records []json.RawMessage `json:"create_records"`
 		}
-		err = json.NewDecoder(body).Decode(&request)
+		raw, err := io.ReadAll(body)
 		body.Close()
+		if err != nil {
+			return nil, err
+		}
+		err = json.Unmarshal(raw, &request)
 		if err != nil {
 			return nil, err
 		}
 		parts := strings.Split(r.URL.Path, "/")
 		c.mu.Lock()
-		c.counts[parts[len(parts)-3]] += len(request.Records)
+		key := r.URL.Path + string(raw)
+		if !c.seen[key] {
+			c.counts[parts[len(parts)-3]] += len(request.Records)
+			c.seen[key] = true
+		}
 		c.mu.Unlock()
 	}
 	return http.DefaultTransport.RoundTrip(r)
@@ -116,7 +126,7 @@ func TestFeishuLive(t *testing.T) {
 		t.Fatalf("open backend: %v", err)
 	}
 	c := client.(*Feishu)
-	creates := &liveCreateTracker{counts: map[string]int{}}
+	creates := &liveCreateTracker{counts: map[string]int{}, seen: map[string]bool{}}
 	direct, err := feishu.New(feishu.Options{HTTPClient: &http.Client{Transport: creates}, Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		t.Fatalf("open direct client: %v", err)
@@ -323,12 +333,12 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 }
 
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
-	for _, scenario := range []string{"create readback failure", "same second other run", "claim conflict event rejected", "claim conflict event delayed"} {
+	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFeishuFake(t)
 			f.afterWrite = func(f *feishuFake) {
 				w := f.writes[len(f.writes)-1]
-				if (scenario == "create readback failure" || scenario == "same second other run") && w.table == "tblT" && w.action == "batch_create" {
+				if (scenario == "create readback failure" || scenario == "write conflict retry" || scenario == "same second other run") && w.table == "tblT" && w.action == "batch_create" {
 					f.rows["tblT"][len(f.rows["tblT"])-1]["估算"] = "invalid"
 					if scenario == "same second other run" {
 						row := f.rows["tblT"][len(f.rows["tblT"])-1]
@@ -345,7 +355,13 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 				}
 			}
 			var deleted []string
+			conflicted := false
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if scenario == "write conflict retry" && !conflicted && strings.HasSuffix(r.URL.Path, "/tblT/records/batch_create") {
+					conflicted = true
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": feishu.CodeWriteConflict, "msg": "conflict"})
+					return
+				}
 				if strings.HasSuffix(r.URL.Path, "/batch_delete") {
 					var body struct {
 						IDs []string `json:"record_id_list"`
