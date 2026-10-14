@@ -2,6 +2,7 @@ package issues
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -56,8 +57,7 @@ func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue,
 }
 
 // TestFeishuLive runs the ledger flow against a real test Base as the app
-// identity. It creates one ticket per run and cancels it at the end; nothing
-// is deleted.
+// identity. It deletes the ticket and its events at the end of each run.
 func TestFeishuLive(t *testing.T) {
 	if os.Getenv("AGENT_FEISHU_LIVE") != "1" {
 		t.Skip("AGENT_FEISHU_LIVE=1 not set")
@@ -82,30 +82,50 @@ func TestFeishuLive(t *testing.T) {
 	}
 
 	stamp := time.Now().UTC().Format("20060102T150405Z")
-	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后取消。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
+	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
 	var task Task
 	var record string
+	var event string
+	parent := t
 	ok := t.Run("create adopted", func(t *testing.T) {
 		task, err = c.Create(ctx, CreateInput{Title: "TestFeishuLive " + stamp, Description: brief.Description(), Labels: []string{"ready-for-agent"}, Blockers: []string{}, Related: []string{}})
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
+		record = task.nativeID
+		parent.Cleanup(func() {
+			t := parent
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cleanupCancel()
+			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: record}}}}}
+			rows, err := c.readAll(cleanupCtx, "事件", &filter)
+			if err != nil {
+				t.Errorf("list events for cleanup %s: %v", task.Identifier, err)
+				return
+			}
+			ids := make([]string, 0, len(rows))
+			for _, row := range rows {
+				ids = append(ids, row.ID)
+			}
+			if event != "" && !slices.Contains(ids, event) {
+				ids = append(ids, event)
+			}
+			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, ids); err != nil {
+				t.Errorf("delete events for %s: %v", task.Identifier, err)
+				return
+			}
+			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, []string{record}); err != nil {
+				t.Errorf("delete ticket %s: %v", task.Identifier, err)
+			}
+		})
 		if !task.Metadata.Complete || task.Held {
 			t.Fatalf("created task not adopted: complete=%t held=%t", task.Metadata.Complete, task.Held)
 		}
-		record = task.nativeID
 	})
 	if !ok {
 		return
 	}
 	t.Logf("ticket %s (%s)", task.Identifier, task.ID)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if _, err := c.UpdateIssue(ctx, task.ID, "Canceled", nil, []string{"ready-for-agent", "auto-impl"}); err != nil {
-			t.Errorf("cancel %s: %v", task.Identifier, err)
-		}
-	})
 
 	steps := []struct {
 		name string
@@ -138,7 +158,6 @@ func TestFeishuLive(t *testing.T) {
 	}
 
 	body := "live-check-v1: {\"run\":\"" + stamp + "\"}\n多字节正文  \n末行无换行"
-	var event string
 	if !t.Run("event round trip", func(t *testing.T) {
 		comment, err := c.CreateComment(ctx, task.ID, body)
 		if err != nil {
@@ -180,4 +199,25 @@ func TestFeishuLive(t *testing.T) {
 			return err != nil && strings.Contains(err.Error(), "evidence conflict"), nil
 		})
 	})
+}
+
+func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string, ids []string) error {
+	for len(ids) > 0 {
+		res, err := c.BatchDelete(ctx, base, table, ids)
+		if err != nil {
+			return err
+		}
+		if len(res.NotFound) == 0 {
+			return nil
+		}
+		ids = res.NotFound
+		// A missing read can also lag creation, so it is not proof of deletion.
+		if _, err := c.BatchGet(ctx, base, table, ids); err != nil {
+			return err
+		}
+		if err := sleepContext(ctx, liveSettleInterval); err != nil {
+			return fmt.Errorf("delete %s records %v: %w", table, ids, err)
+		}
+	}
+	return nil
 }

@@ -147,6 +147,20 @@ func (c *Client) BatchUpdate(ctx context.Context, base, table string, records ma
 	return c.writeRecords(ctx, base, table, "batch_update", map[string]any{"update_records": records})
 }
 
+// DeleteResult reports IDs the service could not yet find as well as requested IDs.
+type DeleteResult struct {
+	RecordIDs []string `json:"record_id_list"`
+	NotFound  []string `json:"record_not_found"`
+}
+
+func (c *Client) BatchDelete(ctx context.Context, base, table string, recordIDs []string) (DeleteResult, error) {
+	var data DeleteResult
+	if err := c.write(ctx, base, table, "batch_delete", map[string]any{"record_id_list": recordIDs}, &data); err != nil {
+		return DeleteResult{}, err
+	}
+	return data, nil
+}
+
 func (c *Client) writeRecords(ctx context.Context, base, table, action string, input any) (WriteResult, error) {
 	var data struct {
 		RecordIDs     []string       `json:"record_id_list"`

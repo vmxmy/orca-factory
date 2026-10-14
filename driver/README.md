@@ -49,7 +49,7 @@ GitHub 配额保护读取 rate-limit 响应头：低额度暂停调度，reset �
 
 ### 真实环境测试
 
-`TestFeishuLive` 以应用身份在测试 Base 上跑一遍：建票并纳管、快照可领取、认领读回、写事件并逐字节读回、直接改 SCOPE 后票变为 held、直接改事件后读取报证据冲突，最后把票改为 Canceled。测试不删除任何行。
+`TestFeishuLive` 以应用身份在测试 Base 上跑一遍：建票并纳管、快照可领取、认领读回、写事件并逐字节读回、直接改 SCOPE 后票变为 held、直接改事件后读取报证据冲突，测试结束删除本次创建的票与事件。
 
 ```sh
 cd driver
