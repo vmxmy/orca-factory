@@ -1,6 +1,7 @@
 package issues
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -62,42 +63,52 @@ func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue,
 	return rows[i], true, nil
 }
 
-// liveCreateTracker counts unique creation requests. A write-conflict retry
-// repeats the same body without creating an extra row.
+// liveCreateTracker counts rows whose writes may have applied, including
+// unconfirmed responses. Confirmed pre-write rejections do not create rows.
 type liveCreateTracker struct {
 	mu     sync.Mutex
 	counts map[string]int
-	seen   map[string]bool
 }
 
 func (c *liveCreateTracker) RoundTrip(r *http.Request) (*http.Response, error) {
-	if strings.HasSuffix(r.URL.Path, "/records/batch_create") {
-		body, err := r.GetBody()
-		if err != nil {
-			return nil, err
-		}
-		var request struct {
-			Records []json.RawMessage `json:"create_records"`
-		}
-		raw, err := io.ReadAll(body)
-		body.Close()
-		if err != nil {
-			return nil, err
-		}
-		err = json.Unmarshal(raw, &request)
-		if err != nil {
-			return nil, err
-		}
-		parts := strings.Split(r.URL.Path, "/")
-		c.mu.Lock()
-		key := r.URL.Path + string(raw)
-		if !c.seen[key] {
-			c.counts[parts[len(parts)-3]] += len(request.Records)
-			c.seen[key] = true
-		}
-		c.mu.Unlock()
+	if !strings.HasSuffix(r.URL.Path, "/records/batch_create") {
+		return http.DefaultTransport.RoundTrip(r)
 	}
-	return http.DefaultTransport.RoundTrip(r)
+	body, err := r.GetBody()
+	if err != nil {
+		return nil, err
+	}
+	var request struct {
+		Records []json.RawMessage `json:"create_records"`
+	}
+	err = json.NewDecoder(body).Decode(&request)
+	body.Close()
+	if err != nil {
+		return nil, err
+	}
+	res, err := http.DefaultTransport.RoundTrip(r)
+	if err == nil {
+		raw, readErr := io.ReadAll(res.Body)
+		res.Body.Close()
+		res.Body = io.NopCloser(bytes.NewReader(raw))
+		var envelope struct {
+			Code int `json:"code"`
+		}
+		if readErr == nil && json.Unmarshal(raw, &envelope) == nil {
+			switch envelope.Code {
+			case feishu.CodeWriteConflict, feishu.CodeNoPermission, feishu.CodeMissingScope:
+				return res, nil
+			}
+		}
+		if readErr != nil {
+			res, err = nil, readErr
+		}
+	}
+	parts := strings.Split(r.URL.Path, "/")
+	c.mu.Lock()
+	c.counts[parts[len(parts)-3]] += len(request.Records)
+	c.mu.Unlock()
+	return res, err
 }
 
 func (c *liveCreateTracker) count(table string) int {
@@ -126,8 +137,8 @@ func TestFeishuLive(t *testing.T) {
 		t.Fatalf("open backend: %v", err)
 	}
 	c := client.(*Feishu)
-	creates := &liveCreateTracker{counts: map[string]int{}, seen: map[string]bool{}}
-	direct, err := feishu.New(feishu.Options{HTTPClient: &http.Client{Transport: creates}, Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
+	creates := &liveCreateTracker{counts: map[string]int{}}
+	direct, err := feishu.New(feishu.Options{HTTPClient: &http.Client{Transport: creates, Timeout: 30 * time.Second}, Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: env["AGENT_FEISHU_APP_ID"], AppSecret: env["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		t.Fatalf("open direct client: %v", err)
 	}
@@ -144,17 +155,19 @@ func TestFeishuLive(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cleanupCancel()
+		discoveryCtx, discoveryCancel := context.WithTimeout(cleanupCtx, liveSettleTimeout)
+		defer discoveryCancel()
 		var tickets []string
 		if record != "" {
 			tickets = append(tickets, record)
 		}
-		_, own, err := c.projects(cleanupCtx)
+		_, own, err := c.projects(discoveryCtx)
 		if err != nil {
 			t.Errorf("list 项目 for cleanup of 票据 IDs %v: %v", tickets, err)
 		} else {
 			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
 			for {
-				rows, err := c.readAll(cleanupCtx, "票据", &filter)
+				rows, err := c.readAll(discoveryCtx, "票据", &filter)
 				if err != nil {
 					t.Errorf("list 票据 for cleanup IDs %v: %v", tickets, err)
 					break
@@ -172,7 +185,7 @@ func TestFeishuLive(t *testing.T) {
 				if len(tickets) >= creates.count(c.tables["票据"].id) {
 					break
 				}
-				if err := sleepContext(cleanupCtx, liveSettleInterval); err != nil {
+				if err := sleepContext(discoveryCtx, liveSettleInterval); err != nil {
 					t.Errorf("未找到本次创建的票行: 票据 title=%q IDs %v: %v", "TestFeishuLive "+stamp, tickets, err)
 					break
 				}
@@ -185,7 +198,7 @@ func TestFeishuLive(t *testing.T) {
 		for {
 			for _, id := range tickets {
 				filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
-				rows, err := c.readAll(cleanupCtx, "事件", &filter)
+				rows, err := c.readAll(discoveryCtx, "事件", &filter)
 				if err != nil {
 					t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
 				}
@@ -198,7 +211,7 @@ func TestFeishuLive(t *testing.T) {
 			if len(events) >= creates.count(c.tables["事件"].id) {
 				break
 			}
-			if err := sleepContext(cleanupCtx, liveSettleInterval); err != nil {
+			if err := sleepContext(discoveryCtx, liveSettleInterval); err != nil {
 				t.Errorf("find 事件 for 票据 IDs %v: found %v, submitted %d: %v", tickets, events, creates.count(c.tables["事件"].id), err)
 				break
 			}
@@ -333,7 +346,7 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 }
 
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
-	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed"} {
+	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFeishuFake(t)
 			f.afterWrite = func(f *feishuFake) {
@@ -380,6 +393,11 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 					return
 				}
 				if strings.HasPrefix(scenario, "claim conflict event") && strings.HasSuffix(r.URL.Path, "/tblE/records/batch_create") {
+					if scenario == "claim conflict event denied" {
+						rec := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "data": rec.Response.Data})
+						return
+					}
 					response := httptest.NewRecorder()
 					f.ServeHTTP(response, r)
 					if scenario == "claim conflict event delayed" {
@@ -413,6 +431,10 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 			if strings.HasPrefix(scenario, "claim conflict event") {
 				failure = "feishu write returned an unexpected record count"
 				want = []string{"recNew2", "recNew1"}
+			}
+			if scenario == "claim conflict event denied" {
+				failure = "global dependency failure"
+				want = []string{"recNew1"}
 			}
 			if err == nil || !strings.Contains(string(out), failure) || ctx.Err() != nil {
 				t.Fatalf("live test did not reach injected failure: %v\n%s", err, out)
