@@ -188,3 +188,43 @@ func TestRecordedMissingScopeNotRetried(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls.Load())
 	}
 }
+
+func TestRecordedFilteredList(t *testing.T) {
+	rec := loadRecording(t, "tickets-list-filter-page1.json")
+	var params struct {
+		Filter string `json:"filter"`
+	}
+	if err := json.Unmarshal(rec.Request.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		var got, want any
+		if r.URL.Path != rec.Request.Path || r.URL.Query().Get("offset") != "0" || r.URL.Query().Get("limit") != "1" ||
+			json.Unmarshal([]byte(r.URL.Query().Get("filter")), &got) != nil || json.Unmarshal([]byte(params.Filter), &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("request %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		envelope(t, w, 0, rec.Response.Data)
+	}, Options{})
+	filter := Filter{Logic: "and", Conditions: []Condition{
+		{Field: "状态", Operator: "intersects", Value: []string{"Todo", "In Progress"}},
+		{Field: "标签", Operator: "intersects", Value: []string{"ready-for-agent"}},
+		{Field: "项目", Operator: "intersects", Value: []LinkRef{{ID: "reczz28NLqBOtI9B"}}},
+	}}
+	page, err := c.ListRecordsWhere(context.Background(), testBase, ticketTable, filter, 0, 1)
+	if err != nil || len(page.Records) != 1 || page.Rev != 4 || !page.HasMore {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
+func TestTablesListsIDsByName(t *testing.T) {
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/open-apis/base/v3/bases/"+testBase+"/tables" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		envelope(t, w, 0, json.RawMessage(`{"tables":[{"id":"tblP","name":"项目"},{"id":"tblT","name":"票据"}],"total":2}`))
+	}, Options{})
+	tables, err := c.Tables(context.Background(), testBase)
+	if err != nil || !reflect.DeepEqual(tables, []Table{{ID: "tblP", Name: "项目"}, {ID: "tblT", Name: "票据"}}) {
+		t.Fatalf("tables=%+v err=%v", tables, err)
+	}
+}

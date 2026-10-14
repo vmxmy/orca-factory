@@ -64,13 +64,19 @@ func Backend(env map[string]string) (string, error) {
 		return "linear", nil
 	case "github":
 		return "github", nil
+	case "feishu":
+		return "feishu", nil
 	default:
 		return "", errors.New("unknown AGENT_ISSUE_BACKEND")
 	}
 }
 func Project(env map[string]string) string {
-	if Native(env) {
+	backend, _ := Backend(env)
+	switch backend {
+	case "github":
 		return env["AGENT_GH_REPO"]
+	case "feishu":
+		return env["AGENT_FEISHU_PROJECT"]
 	}
 	return env["AGENT_LINEAR_PROJECT"]
 }
@@ -81,6 +87,9 @@ func New(ctx context.Context, env map[string]string, tuning config.Tuning) (Clie
 	}
 	if b == "linear" {
 		return linear.New(ctx, linear.Options{TeamID: env["AGENT_LINEAR_TEAM"], HTTPTimeout: tuning.Linear.HTTPTimeout})
+	}
+	if b == "feishu" {
+		return newFeishuFromEnv(ctx, env)
 	}
 	gh, err := github.New(github.Options{BaseURL: env["AGENT_GH_API_URL"], HTTPTimeout: tuning.GitHub.HTTPTimeout})
 	if err != nil {

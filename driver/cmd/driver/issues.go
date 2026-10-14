@@ -22,7 +22,7 @@ import (
 func init() { Register("issues", runIssues) }
 func issueEnvironment() map[string]string {
 	env := map[string]string{}
-	for _, k := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_GH_API_URL", "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT"} {
+	for _, k := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_GH_API_URL", "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT", "AGENT_FEISHU_BASE", "AGENT_FEISHU_PROJECT"} {
 		env[k] = os.Getenv(k)
 	}
 	return env
@@ -83,7 +83,7 @@ func runIssues(args []string) int {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
-		if json.NewEncoder(os.Stdout).Encode(map[string]string{"backend": backend, "repository": env["AGENT_GH_REPO"]}) != nil {
+		if json.NewEncoder(os.Stdout).Encode(map[string]string{"backend": backend, "repository": issues.Project(env)}) != nil {
 			return 1
 		}
 		return 0

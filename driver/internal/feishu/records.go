@@ -73,8 +73,62 @@ func (c *Client) Fields(ctx context.Context, base, table string) ([]Field, error
 	return fields, nil
 }
 
+type Table struct {
+	ID   string
+	Name string
+}
+
+// Condition is one server-side filter clause, sent as [field, operator, value].
+// Field is the field name; link values are []LinkRef.
+type Condition struct {
+	Field    string
+	Operator string
+	Value    any
+}
+
+func (c Condition) MarshalJSON() ([]byte, error) {
+	return json.Marshal([]any{c.Field, c.Operator, c.Value})
+}
+
+type Filter struct {
+	Logic      string      `json:"logic"`
+	Conditions []Condition `json:"conditions"`
+}
+
+// LinkRef is a link cell entry and a link filter value.
+type LinkRef struct {
+	ID string `json:"id"`
+}
+
+func (c *Client) Tables(ctx context.Context, base string) ([]Table, error) {
+	var data struct {
+		Tables []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"tables"`
+	}
+	if err := c.call(ctx, http.MethodGet, "/open-apis/base/v3/bases/"+url.PathEscape(base)+"/tables", nil, &data); err != nil {
+		return nil, err
+	}
+	tables := make([]Table, 0, len(data.Tables))
+	for _, t := range data.Tables {
+		tables = append(tables, Table{ID: t.ID, Name: t.Name})
+	}
+	return tables, nil
+}
+
 func (c *Client) ListRecords(ctx context.Context, base, table string, offset, limit int) (Page, error) {
 	query := url.Values{"offset": {strconv.Itoa(offset)}, "limit": {strconv.Itoa(limit)}}
+	return c.readPage(ctx, http.MethodGet, recordsPath(base, table)+"?"+query.Encode(), nil)
+}
+
+// ListRecordsWhere lists only records matching filter.
+func (c *Client) ListRecordsWhere(ctx context.Context, base, table string, filter Filter, offset, limit int) (Page, error) {
+	raw, err := json.Marshal(filter)
+	if err != nil {
+		return Page{}, safeError(err)
+	}
+	query := url.Values{"filter": {string(raw)}, "offset": {strconv.Itoa(offset)}, "limit": {strconv.Itoa(limit)}}
 	return c.readPage(ctx, http.MethodGet, recordsPath(base, table)+"?"+query.Encode(), nil)
 }
 
