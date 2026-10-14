@@ -1,0 +1,24 @@
+{
+  "request": {
+    "body": {
+      "update_records": {
+        "reczz28NLqDRHkSp": {
+          "估算": 11
+        }
+      }
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/records/batch_update"
+  },
+  "response": {
+    "error": {
+      "code": 91403,
+      "message": "you don't have permission",
+      "subtype": "unknown",
+      "type": "api"
+    },
+    "identity": "bot",
+    "ok": false
+  }
+}

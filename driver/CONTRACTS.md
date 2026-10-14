@@ -37,7 +37,7 @@
 | 飞书写后立即读到旧值（`rev` 3 仍为 Todo），稍后读到新值（`rev` 4）；写响应只有 `record_id_list`，不带 `rev`。认领靠读回确认，超时为结果未知 | `feishu/tickets-batch-get-after-write.json`、`feishu/tickets-batch-get-settled.json`、`feishu/concurrent-update-1.json` | `issues.TestRecordedFeishuWriteThenReadStale`、`issues.TestFeishuWriteReadBackTimeoutUnconfirmed` |
 | 飞书写只读字段时请求成功，响应 `ignored_fields` 带字段 ID 与原因；后端把它当作写入失败 | `feishu/tickets-create.json` | `feishu.TestRecordedBatchCreateIgnoredFields`、`issues.TestRecordedFeishuIgnoredFieldsRejected` |
 | 飞书应用缺 scope 返回 `99991672` 与 `missing_scopes`；按全局故障处理，不重试 | `feishu/bot-scope-denied.json` | `feishu.TestRecordedMissingScopeNotRetried` |
-| 飞书应用有 scope 但未以 edit 加为 Base 协作者：读成功，写返回 `91403`，读记录历史返回 `code 1`；加为协作者后历史操作人显示应用名。`91403` 不重试，保留错误码，按单票错误归类。**`91403` 尚无录制文件**（2026-10-15 人工实测） | `feishu/bot-history.json`（加为协作者后） | `issues.TestFeishuNoCollaboratorWriteNotRetried` |
+| 飞书应用有 scope 但未以 edit 加为 Base 协作者：读成功，写返回 `91403`，读记录历史返回 `code 1`；加为协作者后历史操作人显示应用名。`91403` 不重试，保留错误码，按单票错误归类。2026-10-15 录制（临时移除协作者后以应用身份写入） | `feishu/bot-no-collaborator-write.json`、`feishu/bot-history.json`（加为协作者后） | `issues.TestFeishuNoCollaboratorWriteNotRetried` |
 | 飞书事件 `修改时间` ≠ `创建时间` 即证据冲突。后加 `修改时间` 字段时，旧行回填为真实修改时间：未改过的行两者相等，被改过的行晚于创建时间 | `feishu/bot-events-list.json`、`feishu/bot-events-list-ticket-b.json` | `issues.TestRecordedFeishuBotEventsUpdatedAtBackfilled`、`issues.TestFeishuReadCommentsRejectEditedEvent` |
 | 飞书关联字段筛选一次传多个记录 ID（`intersects`），一次取回多张票的事件 | `feishu/events-list-multi-ticket.json` | `issues.TestRecordedFeishuMultiTicketEventFilter` |
 | 飞书自动编号是字符串（`NO.004`）；删除最大编号后新建不复用 | `feishu/tickets-get-D.json`、`feishu/bot-tickets-list-advperm.json` | `issues.TestRecordedFeishuAutoNumberNotReused`、`issues.TestRecordedFeishuAdvancedPermissionUnfiltered` |
