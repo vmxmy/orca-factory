@@ -2,8 +2,12 @@ package issues
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -86,6 +90,66 @@ func TestFeishuLive(t *testing.T) {
 	var task Task
 	var record string
 	var event string
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanupCancel()
+		var tickets []string
+		if record != "" {
+			tickets = append(tickets, record)
+		}
+		_, own, err := c.projects(cleanupCtx)
+		if err != nil {
+			t.Errorf("list 项目 for cleanup of 票据 IDs %v: %v", tickets, err)
+		} else {
+			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
+			for {
+				rows, err := c.readAll(cleanupCtx, "票据", &filter)
+				if err != nil {
+					t.Errorf("list 票据 for cleanup IDs %v: %v", tickets, err)
+					break
+				}
+				for _, r := range rows {
+					title, err := c.text("票据", r, "标题")
+					if err != nil {
+						t.Errorf("read 票据 title for cleanup ID %s: %v", r.ID, err)
+						continue
+					}
+					if title == "TestFeishuLive "+stamp && !slices.Contains(tickets, r.ID) {
+						tickets = append(tickets, r.ID)
+					}
+				}
+				if len(tickets) > 0 {
+					break
+				}
+				if err := sleepContext(cleanupCtx, liveSettleInterval); err != nil {
+					t.Errorf("未找到本次创建的票行: 票据 title=%q IDs %v: %v", "TestFeishuLive "+stamp, tickets, err)
+					break
+				}
+			}
+		}
+		for _, id := range tickets {
+			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
+			rows, err := c.readAll(cleanupCtx, "事件", &filter)
+			var events []string
+			for _, r := range rows {
+				if !slices.Contains(events, r.ID) {
+					events = append(events, r.ID)
+				}
+			}
+			if event != "" && !slices.Contains(events, event) {
+				events = append(events, event)
+			}
+			if err != nil {
+				t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
+			}
+			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, events); err != nil {
+				t.Errorf("delete 事件 IDs %v for 票据 ID %s: %v", events, id, err)
+			}
+			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, []string{id}); err != nil {
+				t.Errorf("delete 票据 IDs %v: %v", []string{id}, err)
+			}
+		}
+	})
 	ok := t.Run("create adopted", func(t *testing.T) {
 		task, err = c.Create(ctx, CreateInput{Title: "TestFeishuLive " + stamp, Description: brief.Description(), Labels: []string{"ready-for-agent"}, Blockers: []string{}, Related: []string{}})
 		if err != nil {
@@ -96,20 +160,6 @@ func TestFeishuLive(t *testing.T) {
 			t.Fatalf("created task not adopted: complete=%t held=%t", task.Metadata.Complete, task.Held)
 		}
 	})
-	if record != "" {
-		t.Cleanup(func() {
-			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cleanupCancel()
-			if event != "" {
-				if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, []string{event}); err != nil {
-					t.Errorf("delete event for %s: %v", task.Identifier, err)
-				}
-			}
-			if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, []string{record}); err != nil {
-				t.Errorf("delete ticket %s: %v", task.Identifier, err)
-			}
-		})
-	}
 	if !ok {
 		return
 	}
@@ -220,4 +270,80 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 		}
 	}
 	return nil
+}
+
+func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
+	for _, scenario := range []string{"create readback failure", "claim conflict event rejected"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newFeishuFake(t)
+			f.afterWrite = func(f *feishuFake) {
+				w := f.writes[len(f.writes)-1]
+				if scenario == "create readback failure" && w.table == "tblT" && w.action == "batch_create" {
+					f.rows["tblT"][len(f.rows["tblT"])-1]["估算"] = "invalid"
+				}
+				if scenario == "claim conflict event rejected" && w.table == "tblT" && w.action == "batch_update" {
+					f.rows["tblT"][len(f.rows["tblT"])-1]["状态"] = []string{"Done"}
+				}
+			}
+			var deleted []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/batch_delete") {
+					var body struct {
+						IDs []string `json:"record_id_list"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+					}
+					f.mu.Lock()
+					defer f.mu.Unlock()
+					deleted = append(deleted, body.IDs...)
+					for table, rows := range f.rows {
+						f.rows[table] = slices.DeleteFunc(rows, func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
+					}
+					rec := loadFeishuRecording(t, "bot-tickets-delete.json")
+					f.reply(w, rec.Response.Data)
+					return
+				}
+				if scenario == "claim conflict event rejected" && strings.HasSuffix(r.URL.Path, "/tblE/records/batch_create") {
+					response := httptest.NewRecorder()
+					f.ServeHTTP(response, r)
+					// The event is stored, but checkWrite cannot confirm its ID.
+					f.reply(w, map[string]any{"record_id_list": []string{}})
+					return
+				}
+				f.ServeHTTP(w, r)
+			}))
+			defer server.Close()
+			t.Setenv("AGENT_FEISHU_LIVE", "1")
+			t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			t.Setenv("AGENT_FEISHU_BASE", "BASE_TOKEN")
+			t.Setenv("AGENT_FEISHU_PROJECT", feishuRepo)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, executable, "-test.run=^TestFeishuLive$", "-test.v").CombinedOutput()
+			failure := "feishu 估算 is not a number"
+			want := []string{"recNew1"}
+			if scenario == "claim conflict event rejected" {
+				failure = "feishu write returned an unexpected record count"
+				want = []string{"recNew2", "recNew1"}
+			}
+			if err == nil || !strings.Contains(string(out), failure) || ctx.Err() != nil {
+				t.Fatalf("live test did not reach injected failure: %v\n%s", err, out)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if !slices.Equal(deleted, want) {
+				t.Fatalf("deleted %v, want %v\n%s", deleted, want, out)
+			}
+			if len(f.rows["tblT"]) != 3 || len(f.rows["tblE"]) != 0 {
+				t.Fatalf("remaining tickets=%v events=%v", f.rows["tblT"], f.rows["tblE"])
+			}
+		})
+	}
 }
