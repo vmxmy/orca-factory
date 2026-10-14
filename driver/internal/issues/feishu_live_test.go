@@ -349,6 +349,83 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 	return nil
 }
 
+func TestFeishuLiveCleanupFailureFailsSuccessfulRun(t *testing.T) {
+	for _, table := range []string{"tblE", "tblT"} {
+		t.Run(table, func(t *testing.T) {
+			f := newFeishuFake(t)
+			f.afterWrite = func(f *feishuFake) {
+				write := f.writes[len(f.writes)-1]
+				if write.table == "tblE" && write.action == "batch_update" {
+					for _, row := range f.rows["tblE"] {
+						if _, edited := write.records[row["_id"].(string)]; edited {
+							row["修改时间"] = "2026-10-15T01:01:00.000+08:00"
+						}
+					}
+				}
+			}
+			denied := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+			deleted := loadFeishuRecording(t, "bot-tickets-delete.json")
+			var deletedTables []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "/batch_delete") {
+					f.ServeHTTP(w, r)
+					return
+				}
+				var body struct {
+					IDs []string `json:"record_id_list"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				parts := strings.Split(r.URL.Path, "/")
+				gotTable := parts[len(parts)-3]
+				f.mu.Lock()
+				defer f.mu.Unlock()
+				deletedTables = append(deletedTables, gotTable)
+				if gotTable == table {
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": denied.Response.Error.Code, "data": denied.Response.Data})
+					return
+				}
+				f.rows[gotTable] = slices.DeleteFunc(f.rows[gotTable], func(row feishuRow) bool { return slices.Contains(body.IDs, row["_id"].(string)) })
+				f.reply(w, deleted.Response.Data)
+			}))
+			defer server.Close()
+			t.Setenv("AGENT_FEISHU_LIVE", "1")
+			t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			t.Setenv("AGENT_FEISHU_BASE", "BASE_TOKEN")
+			t.Setenv("AGENT_FEISHU_PROJECT", feishuRepo)
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			out, err := exec.CommandContext(ctx, executable, "-test.run=^TestFeishuLive$", "-test.v").CombinedOutput()
+			for _, step := range []string{"create_adopted", "snapshot_claimable", "claim_reads_back", "event_round_trip", "scope_edit_holds_ticket", "event_edit_is_evidence_conflict"} {
+				if !strings.Contains(string(out), "--- PASS: TestFeishuLive/"+step+" (") {
+					t.Fatalf("main flow step %s did not pass: %s", step, out)
+				}
+			}
+			if err == nil || ctx.Err() != nil || !strings.Contains(string(out), "--- FAIL: TestFeishuLive (") || !strings.Contains(string(out), "delete ") {
+				t.Fatalf("cleanup failure did not fail successful live flow: %v\n%s", err, out)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			wantTables := []string{"tblE"}
+			wantEvents := 1
+			if table == "tblT" {
+				wantTables = append(wantTables, "tblT")
+				wantEvents = 0
+			}
+			if !slices.Equal(deletedTables, wantTables) || len(f.rows["tblT"]) != 4 || len(f.rows["tblE"]) != wantEvents {
+				t.Fatalf("delete tables=%v tickets=%v events=%v", deletedTables, f.rows["tblT"], f.rows["tblE"])
+			}
+		})
+	}
+}
+
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied", "claim conflict event delete denied", "delete notfound"} {
 		t.Run(scenario, func(t *testing.T) {
