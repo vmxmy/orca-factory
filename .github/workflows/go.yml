@@ -39,8 +39,9 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      checks: read
     outputs:
-      go: ${{ github.event_name != 'pull_request' || steps.paths.outputs.go == 'true' }}
+      go: ${{ github.event_name == 'pull_request' && steps.paths.outputs.go == 'true' || github.event_name != 'pull_request' && steps.reuse.outputs.verified != 'true' }}
     steps:
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
         with:
@@ -58,7 +59,36 @@ jobs:
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
+          # Isolated runner images carry the toolchain and caches; the remote cache only stalls there.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - run: make workflow-check
+      # A squash whose tree equals the PR head it came from was already checked there.
+      - name: Reuse verified PR head
+        id: reuse
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          verified() {
+            local head main_tree head_tree passed
+            head=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq "map(select(.merge_commit_sha == \"$SHA\"))[0].head.sha // empty") || return 1
+            [[ -n "$head" ]] || { echo "No merged PR for $SHA."; return 1; }
+            main_tree=$(gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha) || return 1
+            head_tree=$(gh api "repos/$REPO/git/commits/$head" --jq .tree.sha) || return 1
+            [[ -n "$main_tree" && "$main_tree" == "$head_tree" ]] || { echo "Tree differs from PR head $head."; return 1; }
+            passed=$(gh api "repos/$REPO/commits/$head/check-runs?per_page=100" --jq '
+              [.check_runs[] | select(.name == "Driver build" or .name == "Driver race" or .name == "Driver vuln")]
+              | group_by(.name) | map(max_by(.id)) | map(select(.conclusion == "success")) | length') || return 1
+            [[ "$passed" == 3 ]] || { echo "PR head $head lacks successful build, race and vuln."; return 1; }
+            echo "::notice::Tree equals PR head $head, which passed Go checks; skipping them."
+          }
+          if verified; then
+            echo 'verified=true' >> "$GITHUB_OUTPUT"
+          else
+            echo '::notice::Running Go checks on main.'
+          fi
       - name: Check ticket reference
         if: github.event_name == 'pull_request'
         continue-on-error: true
@@ -83,6 +113,8 @@ jobs:
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
+          # Isolated runner images carry the toolchain and caches; the remote cache only stalls there.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - run: make build
       - run: make vet
       - run: make lint
@@ -101,6 +133,8 @@ jobs:
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
+          # Isolated runner images carry the toolchain and caches; the remote cache only stalls there.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - run: make race
       - name: Upload test reports
         if: always()
@@ -128,6 +162,8 @@ jobs:
         with:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
+          # Isolated runner images carry the toolchain and caches; the remote cache only stalls there.
+          cache: ${{ runner.environment == 'github-hosted' }}
       - run: make vuln
 
   gate:
