@@ -39,7 +39,7 @@
 
 结论：多维表格能满足账本的读、写、关联、追加日志和审计需求。缺少 CAS 和写后读一致性，需要靠单写者、读回确认和修改时间补足（第 7 节）。
 
-### 2.1 实测结果（2026-10-15，测试 Base，用户身份，`base/v3`）
+### 2.1 实测结果（2026-10-15，测试 Base，`base/v3`；R1–R8 为用户身份，R9–R11 为应用身份）
 
 样本在 `driver/testdata/recorded/feishu/`，已脱敏。下文 R = 实测。
 
@@ -53,7 +53,10 @@
 | R6 | 自动编号是字符串，如 `NO.001`；删除最大编号的记录后新建，编号继续递增（`NO.004`），不复用 | `tickets-get-D.json` |
 | R7 | 写只读字段（自动编号）时，请求成功，响应 `ignored_fields` 带字段 ID 和原因 | `tickets-create.json` |
 | R8 | 记录锚定评论可以创建，响应带 `idempotency_key`；但评论列表的条目**不带记录锚点**，无法从列表还原评论属于哪条记录 | `comment-create.json`、`comments-list.json` |
-| R9 | 当前应用身份没有任何 `base:*` 权限，调用返回 `99991672` 和 `missing_scopes` | `bot-scope-denied.json` |
+| R9 | 授权前应用身份没有任何 `base:*` 权限，调用返回 `99991672` 和 `missing_scopes` | `bot-scope-denied.json` |
+| R10 | 应用身份：授予 base 权限但未加为 Base 协作者时，读表、读记录成功；写入返回 `91403`（you don't have permission）；读记录历史返回 `code 1`。把应用以 edit 加为协作者后，读、写和历史都成功，历史操作人显示应用名。写入以 field ID 为键生效（ID 写入为人工实测） | `bot-tables-list.json`、`bot-tickets-list-filter.json`、`bot-tickets-update.json`、`bot-tickets-batch-get.json`、`bot-events-create.json`、`bot-history.json`；`91403` 未录制 |
+| R11 | 事件表后加“修改时间”字段时，旧行回填为真实修改时间：未改过的事件 修改时间=创建时间；被改过的事件 修改时间晚于创建时间。第 4.3 节的篡改检测在后加字段后仍成立 | `bot-events-list.json`、`history-event-tampered-later.json` |
+| R12 | 自动编号异步分配：新建记录后立即读取，“序号”为空；几秒后才出现 `NO.005`。读路径把没有序号的行视为尚未生成，发现时跳过，建票读回时继续等待，不让整轮失败 | 真实环境测试 `TestFeishuLive` 首次运行时发现；`TestFeishuWriteCreateWaitsForAutoNumber` |
 
 ## 3. 总体结构
 
@@ -225,8 +228,8 @@ GitHub 后端的 100 票夹具每轮要 25 次请求；飞书后端在同样规�
 
 ## 9. 身份、配置与凭据
 
-- **身份**：driver 只用应用身份（tenant_access_token）读写，应用需要被加为 Base 协作者。人用自己的账号在飞书里操作。
-- **应用权限**：当前应用没有任何 `base:*` 权限（R9）。上线前，由应用管理员在开发者后台申请并发布以下权限：`base:table:read`、`base:field:read`、`base:record:read`、`base:record:create`、`base:record:update`、`base:history:read`；第二期加记录评论和消息卡片相关权限。建表初始化可以用人的身份完成，不需要给应用 `base:app:create`。
+- **身份**：driver 只用应用身份（tenant_access_token）读写。**应用须以 edit 加为 Base 协作者**；只授予 scope 时写入返回 `91403`（R10）。人用自己的账号在飞书里操作。
+- **应用权限**：R9 录制时应用没有任何 `base:*` 权限。上线前，由应用管理员在开发者后台申请并发布以下权限：`base:table:read`、`base:field:read`、`base:record:read`、`base:record:create`、`base:record:update`、`base:history:read`；第二期加记录评论和消息卡片相关权限。建表初始化可以用人的身份完成，不需要给应用 `base:app:create`。
 - **项目配置**（仓库 `agent-graph.env`，属于项目规则）：
   - `AGENT_ISSUE_BACKEND=feishu`
   - `AGENT_FEISHU_BASE=<Base URL 或 base_token>`
@@ -252,7 +255,8 @@ GitHub 后端的 100 票夹具每轮要 25 次请求；飞书后端在同样规�
 
 ## 13. 测试与验收
 
-- **录制样本**：第一批已录制，见第 2.1 节和 `driver/testdata/recorded/feishu/`。实现时，每个样本在 `CONTRACTS.md` 登记并有对应测试。还需补录：应用身份下的同一组请求、`1254291`、记录历史翻页、多页列表之间 `rev` 变化。
+- **录制样本**：用户身份与应用身份（`bot-*`）的样本均已录制，见第 2.1 节和 `driver/testdata/recorded/feishu/`，并在 `CONTRACTS.md` 登记对应测试。应用身份已覆盖：表列表、字段列表、筛选列表、批量读、更新、事件新增与列表、记录历史首页、高级权限下的列表。仍未录制：`1254291`、`91403` 的原始响应、记录历史翻页的后续页、多页列表之间 `rev` 变化、被改事件在带“修改时间”列表中的原始行。
+- **真实环境测试**：`TestFeishuLive`（`driver/internal/issues`）在测试 Base 上以应用身份覆盖端到端验收的第 4、5 步；用法见 `driver/README.md` 的“飞书账本后端”。
 - **一致性测试**：GitHub、Linear、飞书三个后端跑同一组契约测试，覆盖四个方法、缺页失败、依赖未完成、未纳管不领取、指纹不一致视为 held、事件被篡改时等待。
 - **端到端验收**：
   1. 用测试 Base 和一个小仓库，建一张票并纳管。
@@ -275,7 +279,7 @@ GitHub 后端的 100 票夹具每轮要 25 次请求；飞书后端在同样规�
 | Q1 | `base/v3` 的频控数值 | 未核实。需要测试应用压测，或向飞书确认 |
 | Q2 | `base/v3` 是否支持按关联字段一次筛选多条记录 | 已核实：支持（R5） |
 | Q3 | 记录历史是否覆盖关联字段和多选字段的变化 | 已核实：覆盖，但有约 60 秒延迟（R4） |
-| Q4 | 高级权限开启后，应用身份的查询结果是否被行列权限过滤 | 未核实。应用权限开通后，在测试 Base 开启高级权限再录制 |
+| Q4 | 高级权限开启后，应用身份的查询结果是否被行列权限过滤 | 已核实：未给应用分配受限角色时（协作者 edit），读到全部行与字段，写入成功，不被过滤（`bot-tickets-list-advperm.json`）。测试后已关闭高级权限 |
 | Q5 | 私有化部署版本是否提供 `base/v3`，以及接口域名的形式 | 未核实。需要向目标客户或飞书私有化团队确认 |
 | Q6 | 自动编号是否可能在删除后复用 | 已核实：不复用（R6） |
 | Q7 | 同表并发写在什么条件下返回 `1254291` | 未复现：6 路并发都成功（R3）。实现时保持串行 |

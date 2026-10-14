@@ -22,6 +22,10 @@ import (
 
 var errFeishuTaskNotFound = errors.New("task not found")
 
+// errFeishuRowUnsettled marks a row whose 序号 base/v3 has not assigned yet.
+// Such a row is not yet a task: reads skip it and retry on a later round.
+var errFeishuRowUnsettled = errors.New("feishu ticket row has no 序号 yet")
+
 const (
 	feishuPageLimit = 500
 	// feishuBatchLimit is the base/v3 per-request record limit.
@@ -380,6 +384,9 @@ func (c *Feishu) row(r feishu.Record) (feishuTicketRow, error) {
 	if err != nil {
 		return row, err
 	}
+	if serial == "" {
+		return row, errFeishuRowUnsettled
+	}
 	m := autoNumber.FindStringSubmatch(serial)
 	if m == nil {
 		return row, errors.New("feishu 序号 lacks a number")
@@ -458,6 +465,9 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 	rows := make([]feishuTicketRow, 0, len(records))
 	for _, r := range records {
 		row, err := c.row(r)
+		if errors.Is(err, errFeishuRowUnsettled) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -482,6 +492,9 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 		}
 		for _, r := range page.Records {
 			row, err := c.row(r)
+			if errors.Is(err, errFeishuRowUnsettled) {
+				continue
+			}
 			if err != nil {
 				return nil, err
 			}

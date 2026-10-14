@@ -1,0 +1,91 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tbl7jbXwoOR0WHZq/fields"
+  },
+  "response": {
+    "data": {
+      "fields": [
+        {
+          "default_value": null,
+          "id": "fldmppaTNw",
+          "name": "摘要",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "bidirectional": false,
+          "id": "fldd5wlUCT",
+          "link_table": "tblZQsD8lnjliPcn",
+          "name": "票据",
+          "type": "link"
+        },
+        {
+          "default_value": null,
+          "id": "fldutke6EY",
+          "name": "正文",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "id": "fldeQcyziv",
+          "name": "修改时间",
+          "style": {
+            "format": "yyyy/MM/dd"
+          },
+          "type": "updated_at"
+        },
+        {
+          "default_value": null,
+          "id": "fldi56syPw",
+          "multiple": false,
+          "name": "来源",
+          "options": [
+            {
+              "hue": "Wathet",
+              "lightness": "Lighter",
+              "name": "driver"
+            },
+            {
+              "hue": "Turquoise",
+              "lightness": "Lighter",
+              "name": "resolver"
+            },
+            {
+              "hue": "Wathet",
+              "lightness": "Lighter",
+              "name": "operator"
+            }
+          ],
+          "type": "select"
+        },
+        {
+          "default_value": null,
+          "id": "fld6umIs07",
+          "name": "操作者",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "id": "fldjvgpvzU",
+          "name": "创建时间",
+          "style": {
+            "format": "yyyy/MM/dd"
+          },
+          "type": "created_at"
+        }
+      ],
+      "total": 7
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

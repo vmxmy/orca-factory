@@ -1,0 +1,49 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblSKMqG6YfKPNik/fields"
+  },
+  "response": {
+    "data": {
+      "fields": [
+        {
+          "id": "fldCWbAonT",
+          "name": "启用",
+          "type": "checkbox"
+        },
+        {
+          "default_value": null,
+          "id": "fld5ZaNCjs",
+          "name": "名称",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fldTaBnY9T",
+          "name": "仓库远端",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fldUjYg3vr",
+          "name": "编号前缀",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        }
+      ],
+      "total": 4
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

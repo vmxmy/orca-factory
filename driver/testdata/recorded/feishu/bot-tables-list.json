@@ -1,0 +1,35 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables"
+  },
+  "response": {
+    "data": {
+      "tables": [
+        {
+          "id": "tblSKMqG6YfKPNik",
+          "name": "项目",
+          "records_count": 1,
+          "rev": 1
+        },
+        {
+          "id": "tblZQsD8lnjliPcn",
+          "name": "票据",
+          "records_count": 3,
+          "rev": 15
+        },
+        {
+          "id": "tbl7jbXwoOR0WHZq",
+          "name": "事件",
+          "records_count": 3,
+          "rev": 3
+        }
+      ],
+      "total": 3
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

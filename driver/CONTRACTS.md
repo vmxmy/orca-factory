@@ -33,6 +33,17 @@
 | Claude 子代理的转录在 `<session>/subagents/agent-*.jsonl`，`sessionId` 与父会话相同，`isSidechain` 为真，`cwd` 为子代理所在目录 | `claude-session-assistant.jsonl`（第 2 行） | `usage.TestRecordedSessionFormats`、`usage.TestCollectCountsSubagentTranscripts` |
 | Codex rollout 以 `session_meta`（`payload.id`、`payload.cwd`）开头，`turn_context` 给 `payload.model`，`token_count` 的 `total_token_usage` 按会话累计（含 `cached_input_tokens`、`cache_write_input_tokens`、`reasoning_output_tokens`），一个会话只计一次；`input_tokens` 含缓存读写，需先减去 | `codex-session-token-count.jsonl` | `usage.TestRecordedSessionFormats` |
 | 价格表里没有的模型按 `unknown` 记录，不估价 | — | `usage.TestCollect` |
+| 飞书 `base/v3` 记录列表按列返回（`fields`、`field_id_list`、`field_type_list`、`record_id_list`、`data`），带 `has_more` 与表级 `rev`；同一轮各页 `rev` 不同则整轮作废 | `feishu/tickets-list-filter-page1.json`、`page2`、`feishu/bot-tickets-list-filter.json` | `feishu.TestRecordedListPagesCarryRev`、`issues.TestRecordedFeishuBotEventsUpdatedAtBackfilled`、`issues.TestFeishuReadSnapshotFailsWhenPageRevDiffers` |
+| 飞书写后立即读到旧值（`rev` 3 仍为 Todo），稍后读到新值（`rev` 4）；写响应只有 `record_id_list`，不带 `rev`。认领靠读回确认，超时为结果未知 | `feishu/tickets-batch-get-after-write.json`、`feishu/tickets-batch-get-settled.json`、`feishu/concurrent-update-1.json` | `issues.TestRecordedFeishuWriteThenReadStale`、`issues.TestFeishuWriteReadBackTimeoutUnconfirmed` |
+| 飞书写只读字段时请求成功，响应 `ignored_fields` 带字段 ID 与原因；后端把它当作写入失败 | `feishu/tickets-create.json` | `feishu.TestRecordedBatchCreateIgnoredFields`、`issues.TestRecordedFeishuIgnoredFieldsRejected` |
+| 飞书应用缺 scope 返回 `99991672` 与 `missing_scopes`；按全局故障处理，不重试 | `feishu/bot-scope-denied.json` | `feishu.TestRecordedMissingScopeNotRetried` |
+| 飞书应用有 scope 但未以 edit 加为 Base 协作者：读成功，写返回 `91403`，读记录历史返回 `code 1`；加为协作者后历史操作人显示应用名。`91403` 不重试，保留错误码，按单票错误归类。**`91403` 尚无录制文件**（2026-10-15 人工实测） | `feishu/bot-history.json`（加为协作者后） | `issues.TestFeishuNoCollaboratorWriteNotRetried` |
+| 飞书事件 `修改时间` ≠ `创建时间` 即证据冲突。后加 `修改时间` 字段时，旧行回填为真实修改时间：未改过的行两者相等，被改过的行晚于创建时间 | `feishu/bot-events-list.json`、`feishu/bot-events-list-ticket-b.json` | `issues.TestRecordedFeishuBotEventsUpdatedAtBackfilled`、`issues.TestFeishuReadCommentsRejectEditedEvent` |
+| 飞书关联字段筛选一次传多个记录 ID（`intersects`），一次取回多张票的事件 | `feishu/events-list-multi-ticket.json` | `issues.TestRecordedFeishuMultiTicketEventFilter` |
+| 飞书自动编号是字符串（`NO.004`）；删除最大编号后新建不复用 | `feishu/tickets-get-D.json`、`feishu/bot-tickets-list-advperm.json` | `issues.TestRecordedFeishuAutoNumberNotReused`、`issues.TestRecordedFeishuAdvancedPermissionUnfiltered` |
+| 飞书 tables 列表为 `tables[]{id,name,records_count,rev}` 与 `total`；后端按表名定位，字段按 ID 引用并校验类型与选项 | `feishu/bot-tables-list.json`、`feishu/tables-list.json`、`feishu/fields-list.json`、`feishu/bot-fields-list-events.json` | `issues.TestRecordedFeishuBotSchemaAndTables`、`feishu.TestRecordedFieldsAndSchema`、`feishu.TestTablesListsIDsByName` |
+| 飞书开启高级权限、未给应用分配受限角色时，应用（edit 协作者）读到全部行与字段（`record_scope: all_records`），写入成功 | `feishu/bot-tickets-list-advperm.json` | `issues.TestRecordedFeishuAdvancedPermissionUnfiltered` |
+| 飞书写入以 field ID 为键生效（字段改名不影响）；应用身份可更新票据、追加事件 | `feishu/bot-tickets-update.json`（字段名写入；ID 写入为人工实测）、`feishu/bot-tickets-batch-get.json`、`feishu/bot-events-create.json` | `issues.TestRecordedFeishuBotWritesKeyedByFieldID` |
 
 部署新二进制前运行 `driver selftest --live`：对真实的 Orca、Linear、git 与审查员命令只读地复核上述契约（只调用一次审查员）。
 

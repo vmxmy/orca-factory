@@ -63,6 +63,9 @@ type feishuFake struct {
 	// later reads, as base/v3 does right after a write (R2).
 	staleReads int
 	stale      map[string][]feishuRow
+	// unnumberedReads leaves 序号 empty on created tickets for that many
+	// later reads, as base/v3 assigns auto numbers asynchronously.
+	unnumberedReads int
 	afterWrite func(f *feishuFake)
 	writes     []feishuWrite
 	batchGets  [][]string
@@ -210,6 +213,16 @@ func (f *feishuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *feishuFake) read(table string) []feishuRow {
+	if f.unnumberedReads > 0 {
+		f.unnumberedReads--
+		if f.unnumberedReads == 0 {
+			for _, row := range f.rows["tblT"] {
+				if serial, ok := row["_serial"]; ok {
+					row["序号"] = serial
+				}
+			}
+		}
+	}
 	if rows, ok := f.stale[table]; ok && f.staleReads > 0 {
 		f.staleReads--
 		return rows
@@ -239,6 +252,9 @@ func (f *feishuFake) write(w http.ResponseWriter, r *http.Request, table, action
 			row := feishuRow{"_id": id, "创建时间": "2026-10-15T01:00:00.000+08:00", "修改时间": "2026-10-15T01:00:00.000+08:00"}
 			if table == "tblT" {
 				row["序号"] = fmt.Sprintf("NO.%03d", 9+f.created)
+				if f.unnumberedReads > 0 {
+					row["_serial"], row["序号"] = row["序号"], ""
+				}
 			}
 			f.rows[table] = append(f.rows[table], row)
 			records[id] = cells

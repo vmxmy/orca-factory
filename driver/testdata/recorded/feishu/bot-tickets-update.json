@@ -1,0 +1,23 @@
+{
+  "request": {
+    "body": {
+      "update_records": {
+        "reczz28NLqDRHkSp": {
+          "估算": 9
+        }
+      }
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/records/batch_update"
+  },
+  "response": {
+    "data": {
+      "record_id_list": [
+        "reczz28NLqDRHkSp"
+      ]
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "page_size": 5,
+      "record_id": "reczz28NLqDRHkSp",
+      "table_id": "tblZQsD8lnjliPcn"
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/record_history"
+  },
+  "response": {
+    "data": {
+      "has_more": true,
+      "items": [
+        {
+          "activity_type": "update",
+          "create_time": 1792001069,
+          "field_changes": [
+            {
+              "after": 8,
+              "before": 7,
+              "field_id": "fld9tF9J2S",
+              "field_name": "估算",
+              "field_type": "Number"
+            }
+          ],
+          "operator": "Orca-Factory",
+          "rev": 15
+        },
+        {
+          "activity_type": "update",
+          "create_time": 1791999203,
+          "field_changes": [
+            {
+              "after": 7,
+              "before": 3,
+              "field_id": "fld9tF9J2S",
+              "field_name": "估算",
+              "field_type": "Number"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 14
+        },
+        {
+          "activity_type": "update",
+          "create_time": 1791994236,
+          "field_changes": [
+            {
+              "after": 3,
+              "before": 1,
+              "field_id": "fld9tF9J2S",
+              "field_name": "估算",
+              "field_type": "Number"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 11
+        },
+        {
+          "activity_type": "update",
+          "create_time": 1791994236,
+          "field_changes": [
+            {
+              "after": 1,
+              "before": 6,
+              "field_id": "fld9tF9J2S",
+              "field_name": "估算",
+              "field_type": "Number"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 10
+        },
+        {
+          "activity_type": "update",
+          "create_time": 1791994236,
+          "field_changes": [
+            {
+              "after": 6,
+              "before": 2,
+              "field_id": "fld9tF9J2S",
+              "field_name": "估算",
+              "field_type": "Number"
+            }
+          ],
+          "operator": "测试用户",
+          "rev": 9
+        }
+      ],
+      "next_max_version": 8
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}
