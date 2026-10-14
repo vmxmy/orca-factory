@@ -2,6 +2,7 @@ name: Go checks
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -25,7 +26,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Go changes and workflow validation
+    env:
+      # Hosted runners cannot reach the isolated runner host's bridge proxy.
+      http_proxy: ''
+      https_proxy: ''
+      GOPROXY: https://proxy.golang.org,direct
+      GO_DOWNLOAD_BASE_URL: https://go.dev/dl
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      go: ${{ github.event_name != 'pull_request' || steps.paths.outputs.go == 'true' }}
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@15192bc058cc28a13dbf6cde61f19e18988b7af6 # v3.0.2
+        id: paths
+        if: github.event_name == 'pull_request'
+        with:
+          predicate-quantifier: every
+          filters: |
+            go:
+              - '{driver/**,Makefile,scripts/**,.github/workflows/**}'
+              - '!**/*.md'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: driver/go.mod
+          cache-dependency-path: driver/go.sum
+      - run: make workflow-check
+      - name: Check ticket reference
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if ! grep -Eq '(^|[^[:alnum:]_])(#[0-9]+|[A-Z][A-Z0-9]*-[0-9]+)([^[:alnum:]_]|$)' <<< "$PR_BODY"; then
+            echo '::warning::PR body should reference GH-n, #n, or a Linear ID.'
+          fi
+
   build:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     name: Driver build
     runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
     timeout-minutes: 20
@@ -38,36 +84,12 @@ jobs:
           go-version-file: driver/go.mod
           cache-dependency-path: driver/go.sum
       - run: make build
-
-  vet:
-    name: Driver vet
-    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: driver/go.mod
-          cache-dependency-path: driver/go.sum
       - run: make vet
-
-  lint:
-    name: Driver lint
-    runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version-file: driver/go.mod
-          cache-dependency-path: driver/go.sum
       - run: make lint
 
   race:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     name: Driver race
     runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
     timeout-minutes: 20
@@ -93,6 +115,8 @@ jobs:
           retention-days: 14
 
   vuln:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
     name: Driver vuln
     runs-on: ${{ fromJSON(vars.GO_RUNNER_LABELS_JSON || '["ubuntu-24.04"]') }}
     timeout-minutes: 20
@@ -106,3 +130,25 @@ jobs:
           cache-dependency-path: driver/go.sum
       - run: make vuln
 
+  gate:
+    name: Driver ${{ matrix.check }}
+    if: always()
+    needs: [changes, build, race, vuln]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        # vet/lint remain required by existing branch protection.
+        check: [gate, vet, lint]
+    steps:
+      - name: Check required results
+        env:
+          NEEDS_RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          for result in $NEEDS_RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::Required job result: $result"; exit 1 ;;
+            esac
+          done

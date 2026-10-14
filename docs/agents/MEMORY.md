@@ -14,7 +14,7 @@
 ## 本地 CI runner
 
 - `GO_RUNNER_LABELS_JSON` 是 runner 标签选择；未设置/为空使用云端，选本地后不因离线自动 failover。配置格式与恢复云端步骤见 [Runner 选择与本地隔离](../../driver/DEVELOPMENT.md#runner-选择与本地隔离)。
-- 本地 runner 按 job 使用限 CPU、内存、进程数和总并发的 ephemeral 容器，完成后销毁；不挂宿主 home、Docker socket 或生产凭据。维护者负责实际部署与仓库变量，五个必需检查名称保持稳定。
+- 本地 runner 按 job 使用限 CPU、内存、进程数和总并发的 ephemeral 容器，完成后销毁；不挂宿主 home、Docker socket 或生产凭据。维护者负责实际部署与仓库变量，build、race、vuln 以及 gate alias 的必需检查名称保持稳定。
 
 ## 部署
 
