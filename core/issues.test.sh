@@ -27,6 +27,10 @@ rc=0
 [[ "$rc" == 17 && "$(cat "$TEST_CALLS")" == 'linear issue ZII-1 --json' ]] || fail 'absent backend must preserve Linear argv and exit status'
 grep -q '^AGENT_ISSUE_BACKEND=github' "$factory/templates/agent-graph.env.example" || fail 'new template must select github'
 ! grep -q '^AGENT_LINEAR_' "$factory/templates/agent-graph.env.example" || fail 'new GitHub template must not require Linear configuration'
+: > "$TEST_CALLS"
+rc=0
+AGENT_ISSUE_BACKEND=feishu AGENT_FEISHU_BASE= bash "$entry" issues issue ZII-1 --json > "$tmp/out" 2> "$tmp/err" || rc=$?
+[[ "$rc" != 0 && ! -s "$TEST_CALLS" ]] && grep -q AGENT_FEISHU_BASE "$tmp/err" || fail 'feishu backend must require AGENT_FEISHU_BASE before external calls'
 echo 'issues.test: backend selection PASS'
 cat > "$tmp/bin/orca-factory-driver" <<'STUB'
 #!/usr/bin/env bash
@@ -43,6 +47,9 @@ case "$*" in
 esac
 STUB
 chmod +x "$tmp/bin/orca-factory-driver"
+: > "$TEST_CALLS"
+DRIVER_FAIL=9 AGENT_ISSUE_BACKEND=feishu AGENT_FEISHU_BASE=BASE_TOKEN bash "$entry" issues issue ZII-1 --json > "$tmp/out" 2> "$tmp/err" || rc=$?
+[[ "$(cat "$TEST_CALLS")" == 'issues read --id ZII-1 --json' ]] || fail 'feishu backend must use the native driver CLI'
 export ISSUES_FIXTURE="$tmp/issues.json" AGENT_ISSUE_BACKEND=github AGENT_DRIVER_BIN="$tmp/bin/orca-factory-driver"
 cat > "$ISSUES_FIXTURE" <<'JSON'
 {"ok":true,"result":{"complete":true,"issues":[{"id":"legacy-uuid","identifier":"ZII-1","number":7,"url":"https://github.com/owner/repo/issues/7","title":"held","description":"## SCOPE\ncore/a.sh","state":{"name":"Todo","type":"unstarted"},"labels":{"nodes":[{"name":"ready-for-agent"},{"name":"auto-failed"}],"pageInfo":{"hasNextPage":false}},"comments":{"nodes":[],"pageInfo":{"hasNextPage":false}},"relations":{"nodes":[],"pageInfo":{"hasNextPage":false}},"inverseRelations":{"nodes":[],"pageInfo":{"hasNextPage":false}},"blockedBy":[],"commentsComplete":true,"complete":true}]}}

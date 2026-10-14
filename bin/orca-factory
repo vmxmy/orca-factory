@@ -57,7 +57,7 @@ ledger_preflight() {
     [[ -f "$entry" ]] || fail "ledger conflict: not a regular file $entry"
     if ! cmp -s "$CORE/ledger.sh" "$entry"; then
       digest="$(git hash-object --no-filters "$entry")"
-      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 || "$digest" == 2c64501f4427c07f115f4990e7b2d50b9ab15925 ]] \
+      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 || "$digest" == 2c64501f4427c07f115f4990e7b2d50b9ab15925 || "$digest" == 3c9f94987910c8727ef12605d332bd88e928f770 ]] \
         || fail "ledger conflict: unknown or customized entry $entry"
     fi
   fi

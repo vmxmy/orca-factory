@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -16,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
@@ -179,11 +182,52 @@ func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, erro
 	if err != nil {
 		return nil, err
 	}
-	client, err := feishu.New(feishu.Options{Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: os.Getenv("AGENT_FEISHU_APP_ID"), AppSecret: os.Getenv("AGENT_FEISHU_APP_SECRET")})
+	machine, err := feishuMachineSettings()
+	if err != nil {
+		return nil, err
+	}
+	client, err := feishu.New(feishu.Options{Endpoint: machine["AGENT_FEISHU_ENDPOINT"], AppID: machine["AGENT_FEISHU_APP_ID"], AppSecret: machine["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		return nil, err
 	}
 	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"], FeishuOptions{})
+}
+
+var feishuMachineKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET"}
+
+// feishuMachineSettings reads the app credentials and endpoint from the process
+// environment, falling back to the machine driver.env: executors and resolvers
+// start in Orca terminals that do not inherit the service EnvironmentFile.
+func feishuMachineSettings() (map[string]string, error) {
+	settings := map[string]string{}
+	for _, key := range feishuMachineKeys {
+		settings[key] = os.Getenv(key)
+	}
+	if settings["AGENT_FEISHU_APP_ID"] != "" && settings["AGENT_FEISHU_APP_SECRET"] != "" {
+		return settings, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return settings, nil
+	}
+	f, err := os.Open(filepath.Join(home, ".config", "orca-factory", "driver.env"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return settings, nil
+	}
+	if err != nil {
+		return nil, errors.New("driver.env could not be read")
+	}
+	file, parseErr := config.ParseEnv(f)
+	closeErr := f.Close()
+	if parseErr != nil || closeErr != nil {
+		return nil, errors.New("driver.env is invalid")
+	}
+	for _, key := range feishuMachineKeys {
+		if settings[key] == "" {
+			settings[key] = file[key]
+		}
+	}
+	return settings, nil
 }
 
 // NewFeishu locates the 项目, 票据 and 事件 tables and validates their schema.
@@ -516,7 +560,6 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 	for _, t := range tasks {
 		c.cached[t.ID] = t
 		c.cached[t.Identifier] = t
-		c.cached[strconv.Itoa(t.Number)] = t
 	}
 	c.mu.Unlock()
 	return tasks, nil
@@ -583,10 +626,10 @@ func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, pro
 	}
 	return Task{
 		nativeID: row.record, NativeState: nativeState, NativeUpdatedAt: row.updated,
-		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title, Number: row.number,
+		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title,
 			Relations:        linear.Connection[linear.Relation]{Nodes: relations, PageInfo: linear.PageInfo{HasNextPage: incomplete}},
 			InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: inverse, PageInfo: linear.PageInfo{HasNextPage: incomplete}}},
-		Number: row.number, URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
+		URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
 		Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: inverse,
 	}
 }
@@ -614,7 +657,7 @@ func (c *Feishu) Read(ctx context.Context, id string) (Task, error) {
 		return Task{}, err
 	}
 	for _, v := range rows {
-		if v.ID == id || v.Identifier == id || strconv.Itoa(v.Number) == id {
+		if v.ID == id || v.Identifier == id {
 			return v, nil
 		}
 	}

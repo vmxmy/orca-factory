@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provider boundary: legacy shell envelopes, native driver mutations in GitHub mode.
+# Provider boundary: legacy shell envelopes, native driver mutations in GitHub and Feishu modes.
 set -Eeuo pipefail
 case "${AGENT_ISSUE_BACKEND:-linear}" in
   linear)
@@ -9,6 +9,7 @@ case "${AGENT_ISSUE_BACKEND:-linear}" in
       *) exec orca linear "$@" ;;
     esac ;;
   github) : "${AGENT_GH_REPO:?AGENT_GH_REPO required}" ;;
+  feishu) : "${AGENT_FEISHU_BASE:?AGENT_FEISHU_BASE required}" ;;
   *) echo 'issues: unsupported AGENT_ISSUE_BACKEND' >&2; exit 2 ;;
 esac
 fail() { echo "issues: $*" >&2; exit 2; }

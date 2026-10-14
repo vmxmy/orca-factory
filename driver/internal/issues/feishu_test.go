@@ -66,10 +66,10 @@ type feishuFake struct {
 	// unnumberedReads leaves 序号 empty on created tickets for that many
 	// later reads, as base/v3 assigns auto numbers asynchronously.
 	unnumberedReads int
-	afterWrite func(f *feishuFake)
-	writes     []feishuWrite
-	batchGets  [][]string
-	created    int
+	afterWrite      func(f *feishuFake)
+	writes          []feishuWrite
+	batchGets       [][]string
+	created         int
 }
 
 // feishuWrite is one batch_create or batch_update request; cells are keyed
@@ -376,7 +376,7 @@ func TestFeishuReadSnapshotManagedTasksAndDependencies(t *testing.T) {
 		t.Fatalf("ticket filter %s", f.filters[0])
 	}
 	a, err := c.Read(ctx, "OF-1")
-	if err != nil || a.ID != feishuUUIDA || a.Number != 1 || a.State.Name != "In Progress" || a.State.ID != "started" || a.NativeState != "open" || !a.Complete || !a.Metadata.Complete || a.Held || a.Project.ID != feishuRepo {
+	if err != nil || a.ID != feishuUUIDA || a.Number != 0 || a.Issue.Number != 0 || a.State.Name != "In Progress" || a.State.ID != "started" || a.NativeState != "open" || !a.Complete || !a.Metadata.Complete || a.Held || a.Project.ID != feishuRepo {
 		t.Fatalf("A=%+v err=%v", a, err)
 	}
 	if a.URL != "https://TENANT.feishu.cn/base/BASE_TOKEN?table=tblT&record=recA" || a.Estimate == nil || *a.Estimate != 3 || len(a.Labels.Nodes) != 2 || a.Labels.Nodes[1].Name != "auto-impl" {
