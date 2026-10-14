@@ -74,7 +74,7 @@ func TestResolverOpenPR(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 						t.Error(err)
 					}
-					if input.Head != "agent/OF-5/executor" || input.Base != "main" || input.Title != "Recover PR" || !strings.HasPrefix(input.Body, "关联票: https://ledger.example/OF-5\n") || !strings.Contains(input.Body, "Verified fix") {
+					if input.Head != "agent/OF-5/executor" || input.Base != "main" || input.Title != "Recover PR" || !strings.HasPrefix(input.Body, "Fixes OF-5\n\n") || !strings.Contains(input.Body, "Verified fix") || strings.Contains(input.Body, "关联票") {
 						t.Errorf("wrong PR: %+v", input)
 					}
 					if mode == "create-failed" {

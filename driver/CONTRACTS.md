@@ -137,7 +137,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 ## Resolver 处置
 
 - 开 PR 结果格式：`{"action":"open-pr","branch":"agent/OF-5/executor","head":"c4e86ec5465d1e2d1f6aea45053e663b54a1350b","title":"修复标题","body":"修复说明","reason":"gate 已通过"}`。五个载荷字段都必填，head 为 40 位十六进制 SHA，reason 保持单行。`resolver.TestResolverOpenPRResult` 读取 `orca-task-list.json`，保留真实 `worker_report` 信封，仅替换其 `body`，并从 `github-pr-open-clean.json` 读取示例 head；`scheduler.TestResolverOpenPR` 读取该 PR 样本和 `github-commit-main.json` 覆盖 GitHub 响应。
-- 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。新 PR 正文首行为票据关联链接，后附 canonical identifier / ID。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
+- 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。统一票据存储的新 PR 正文首行为票据关联链接，后附 canonical identifier / ID；旧 Linear 配置为 `Fixes <票号>`，与执行器一致。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
 - 分支读取失败、head 不符、PR 查询或创建失败、PR 回执 head 不符均写证据并转人，resolver-state 的 human 状态禁止自动重试；需要人工核实并明确更新处置回执后才能继续。事件写入失败则保留原回执以便对账，已有 PR 按分支复用。`scheduler.TestResolverOpenPR` 覆盖这些路径。
 
 - `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。

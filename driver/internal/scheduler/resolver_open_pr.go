@@ -35,26 +35,25 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 	if head != proposal.Head {
 		return stop("remote branch head differs: " + head)
 	}
-	url := t.URL
-	if store, ok := r.Clients[t.Repo].(issues.Store); ok {
-		task, err := store.Read(ctx, t.ID)
-		if err != nil {
-			return stop("ticket reference read failed")
-		}
-		if task.ID != t.ID || task.Identifier != t.Identifier {
-			return stop("ticket reference identity differs")
-		}
-		url = task.URL
-	}
-	if url == "" {
-		return stop("ticket reference unavailable")
-	}
 	pr, err := r.GitHub.FindOpenPR(ctx, owner, repo, proposal.Branch)
 	if err != nil {
 		return stop("PR lookup failed")
 	}
 	if pr == nil {
-		body := fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n%s", url, t.Identifier, t.ID, proposal.Body)
+		body := "Fixes " + t.Identifier + "\n\n" + proposal.Body
+		if store, ok := r.Clients[t.Repo].(issues.Store); ok {
+			task, err := store.Read(ctx, t.ID)
+			if err != nil {
+				return stop("ticket reference read failed")
+			}
+			if task.ID != t.ID || task.Identifier != t.Identifier {
+				return stop("ticket reference identity differs")
+			}
+			if task.URL == "" {
+				return stop("ticket reference unavailable")
+			}
+			body = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n%s", task.URL, t.Identifier, t.ID, proposal.Body)
+		}
 		created, err := r.GitHub.CreatePR(ctx, owner, repo, github.CreatePRRequest{Head: proposal.Branch, Base: "main", Title: proposal.Title, Body: body})
 		if err != nil {
 			return stop("PR creation failed; reconcile branch before resuming")
