@@ -403,3 +403,34 @@ func TestFeishuReadDependenciesBatchGetChunked(t *testing.T) {
 		t.Fatalf("batch_get sizes %d", len(f.batchGets))
 	}
 }
+
+// A created row has no auto number until base/v3 assigns one: discovery
+// skips it, and create keeps reading back until the number appears.
+func TestFeishuWriteCreateWaitsForAutoNumber(t *testing.T) {
+	f := newFeishuFake(t)
+	c := newFeishuTest(t, f)
+	fastReadBack(c)
+	ctx := context.Background()
+	f.unnumberedReads = 3
+	task, err := c.Create(ctx, CreateInput{Title: "新票", Description: "随便写"})
+	if err != nil || task.Identifier != "OF-10" {
+		t.Fatalf("create %s err=%v", task.Identifier, err)
+	}
+	f.unnumberedReads = 2
+	if _, err = c.Create(ctx, CreateInput{Title: "又一张", Description: "随便写"}); err != nil {
+		t.Fatal(err)
+	}
+	f.unnumberedReads = 5
+	f.mu.Lock()
+	f.rows["tblT"] = append(f.rows["tblT"], feishuRow{"_id": "recPending", "标题": "刚建", "序号": "", "_serial": "NO.099", "项目": []feishu.LinkRef{{ID: "recP1"}}, "状态": []string{"Todo"}, "创建时间": "2026-10-15T01:00:00.000+08:00", "修改时间": "2026-10-15T01:00:00.000+08:00"})
+	f.mu.Unlock()
+	tasks, err := c.List(ctx)
+	if err != nil {
+		t.Fatalf("unnumbered row failed discovery: %v", err)
+	}
+	for _, task := range tasks {
+		if task.Title == "刚建" {
+			t.Fatal("unnumbered row listed")
+		}
+	}
+}

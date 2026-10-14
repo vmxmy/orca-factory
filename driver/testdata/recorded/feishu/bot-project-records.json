@@ -1,0 +1,53 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "limit": 100,
+      "offset": 0
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblSKMqG6YfKPNik/records"
+  },
+  "response": {
+    "data": {
+      "data": [
+        [
+          "orca-factory",
+          true,
+          "github.com/vmxmy/orca-factory",
+          "OF"
+        ]
+      ],
+      "field_id_list": [
+        "fld5ZaNCjs",
+        "fldCWbAonT",
+        "fldTaBnY9T",
+        "fldUjYg3vr"
+      ],
+      "field_type_list": [
+        "text",
+        "checkbox",
+        "text",
+        "text"
+      ],
+      "fields": [
+        "名称",
+        "启用",
+        "仓库远端",
+        "编号前缀"
+      ],
+      "has_more": false,
+      "query_context": {
+        "field_scope": "all_fields",
+        "record_scope": "all_records"
+      },
+      "record_id_list": [
+        "reczz28NLqBOtI9B"
+      ],
+      "rev": 1,
+      "timezone": "Asia/Shanghai"
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

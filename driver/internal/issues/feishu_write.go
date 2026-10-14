@@ -132,6 +132,9 @@ func (c *Feishu) ticketIndex(ctx context.Context) (feishuIndex, error) {
 	x := feishuIndex{byRecord: map[string]feishuTicketRow{}, byCanonical: map[string]feishuTicketRow{}}
 	for _, r := range records {
 		row, err := c.row(r)
+		if errors.Is(err, errFeishuRowUnsettled) {
+			continue
+		}
 		if err != nil {
 			return feishuIndex{}, err
 		}
