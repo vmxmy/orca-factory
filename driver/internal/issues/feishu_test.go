@@ -3,10 +3,14 @@ package issues
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -55,6 +59,21 @@ type feishuFake struct {
 	pageSize int
 	revs     []int64
 	filters  []string
+	// staleReads serves the rows from before the last write to that many
+	// later reads, as base/v3 does right after a write (R2).
+	staleReads int
+	stale      map[string][]feishuRow
+	afterWrite func(f *feishuFake)
+	writes     []feishuWrite
+	batchGets  [][]string
+	created    int
+}
+
+// feishuWrite is one batch_create or batch_update request; cells are keyed
+// by field ID as sent.
+type feishuWrite struct {
+	table, action string
+	records       map[string]map[string]json.RawMessage
 }
 
 func newFeishuFake(t *testing.T) *feishuFake {
@@ -171,9 +190,10 @@ func (f *feishuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if json.NewDecoder(r.Body).Decode(&in) != nil {
 			f.t.Error("batch_get body")
 		}
+		f.batchGets = append(f.batchGets, in.IDs)
 		rows := []feishuRow{}
 		for _, id := range in.IDs {
-			for _, row := range f.rows[table] {
+			for _, row := range f.read(table) {
 				if row["_id"] == id {
 					rows = append(rows, row)
 				}
@@ -182,13 +202,92 @@ func (f *feishuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.page(w, table, rows, false, 9)
 	case len(parts) == 2 && parts[1] == "records":
 		f.list(w, r, table)
+	case len(parts) == 3 && (parts[2] == "batch_update" || parts[2] == "batch_create"):
+		f.write(w, r, table, parts[2])
 	default:
 		f.t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 	}
 }
 
+func (f *feishuFake) read(table string) []feishuRow {
+	if rows, ok := f.stale[table]; ok && f.staleReads > 0 {
+		f.staleReads--
+		return rows
+	}
+	return f.rows[table]
+}
+
+func (f *feishuFake) write(w http.ResponseWriter, r *http.Request, table, action string) {
+	var in struct {
+		Update map[string]map[string]json.RawMessage `json:"update_records"`
+		Create []map[string]json.RawMessage          `json:"create_records"`
+	}
+	if json.NewDecoder(r.Body).Decode(&in) != nil {
+		f.t.Error("write body")
+	}
+	f.stale = map[string][]feishuRow{}
+	for name, rows := range f.rows {
+		f.stale[name] = slices.Clone(rows)
+	}
+	records := in.Update
+	ids := []string{}
+	if action == "batch_create" {
+		records = map[string]map[string]json.RawMessage{}
+		for _, cells := range in.Create {
+			f.created++
+			id := "recNew" + strconv.Itoa(f.created)
+			row := feishuRow{"_id": id, "创建时间": "2026-10-15T01:00:00.000+08:00", "修改时间": "2026-10-15T01:00:00.000+08:00"}
+			if table == "tblT" {
+				row["序号"] = fmt.Sprintf("NO.%03d", 9+f.created)
+			}
+			f.rows[table] = append(f.rows[table], row)
+			records[id] = cells
+			ids = append(ids, id)
+		}
+	}
+	for id, cells := range records {
+		i := slices.IndexFunc(f.rows[table], func(row feishuRow) bool { return row["_id"] == id })
+		if i < 0 {
+			f.t.Errorf("write to unknown record %s", id)
+			continue
+		}
+		row := maps.Clone(f.rows[table][i])
+		for fieldID, raw := range cells {
+			def := f.fields[table][slices.IndexFunc(f.fields[table], func(d feishuFieldDef) bool { return d.ID == fieldID })]
+			var value any
+			switch def.Type {
+			case "link":
+				value = &[]feishu.LinkRef{}
+			case "select":
+				value = &[]string{}
+			case "number":
+				value = new(float64)
+			default:
+				value = new(string)
+			}
+			if string(raw) == "null" {
+				delete(row, def.Name)
+				continue
+			}
+			if err := json.Unmarshal(raw, value); err != nil {
+				f.t.Errorf("field %s value %s: %v", def.Name, raw, err)
+			}
+			row[def.Name] = reflect.ValueOf(value).Elem().Interface()
+		}
+		f.rows[table][i] = row
+		if action == "batch_update" {
+			ids = append(ids, id)
+		}
+	}
+	f.writes = append(f.writes, feishuWrite{table: table, action: action, records: records})
+	if f.afterWrite != nil {
+		f.afterWrite(f)
+	}
+	f.reply(w, map[string]any{"record_id_list": ids})
+}
+
 func (f *feishuFake) list(w http.ResponseWriter, r *http.Request, table string) {
-	rows := f.rows[table]
+	rows := f.read(table)
 	if raw := r.URL.Query().Get("filter"); raw != "" {
 		f.filters = append(f.filters, raw)
 		var filter struct {
@@ -202,8 +301,9 @@ func (f *feishuFake) list(w http.ResponseWriter, r *http.Request, table string) 
 		var refs []feishu.LinkRef
 		_ = json.Unmarshal(filter.Conditions[0][0], &field)
 		_ = json.Unmarshal(filter.Conditions[0][2], &refs)
+		all := rows
 		rows = nil
-		for _, row := range f.rows[table] {
+		for _, row := range all {
 			links, _ := row[field].([]feishu.LinkRef)
 			for _, ref := range refs {
 				if slices.Contains(links, ref) {
@@ -339,9 +439,6 @@ func TestFeishuReadUnmanagedRowVisibleNotClaimable(t *testing.T) {
 	again, _ := c.Read(ctx, "OF-4")
 	if again.ID != d.ID {
 		t.Fatalf("unmanaged identity changed %s -> %s", d.ID, again.ID)
-	}
-	if _, err := c.UpdateIssue(ctx, "OF-4", "In Progress", nil, nil); err == nil || !strings.Contains(err.Error(), "GH-398") {
-		t.Fatalf("write path not deferred: %v", err)
 	}
 }
 

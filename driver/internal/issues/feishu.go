@@ -20,9 +20,15 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
-var errFeishuWrites = errors.New("feishu backend: writes arrive in GH-398")
+var errFeishuTaskNotFound = errors.New("task not found")
 
-const feishuPageLimit = 500
+const (
+	feishuPageLimit = 500
+	// feishuBatchLimit is the base/v3 per-request record limit.
+	feishuBatchLimit       = 200
+	feishuReadBackTimeout  = 60 * time.Second
+	feishuReadBackInterval = 2 * time.Second
+)
 
 var feishuTables = []feishu.TableSpec{
 	{Name: "项目", Fields: []feishu.FieldSpec{
@@ -119,15 +125,26 @@ type feishuTable struct {
 	fields map[string]string // name -> field ID
 }
 
-// Feishu reads tasks from one Feishu Base whose 项目 row matches the repository.
+// FeishuOptions tunes write read-back; zero values select the defaults.
+type FeishuOptions struct {
+	ReadBackTimeout time.Duration
+	Now             func() time.Time
+	Sleep           func(context.Context, time.Duration) error
+}
+
+// Feishu reads and writes tasks in one Feishu Base whose 项目 row matches the
+// repository.
 type Feishu struct {
-	client  *feishu.Client
-	base    string
-	baseURL string
-	repo    string
-	tables  map[string]feishuTable
-	mu      sync.Mutex
-	cached  map[string]Task
+	client          *feishu.Client
+	base            string
+	baseURL         string
+	repo            string
+	tables          map[string]feishuTable
+	readBackTimeout time.Duration
+	now             func() time.Time
+	sleep           func(context.Context, time.Duration) error
+	mu              sync.Mutex
+	cached          map[string]Task
 }
 
 var _ Store = (*Feishu)(nil)
@@ -162,12 +179,12 @@ func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, erro
 	if err != nil {
 		return nil, err
 	}
-	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"])
+	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"], FeishuOptions{})
 }
 
 // NewFeishu locates the 项目, 票据 and 事件 tables and validates their schema.
 // baseURL may be empty; it only forms record links.
-func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo string) (*Feishu, error) {
+func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo string, o FeishuOptions) (*Feishu, error) {
 	if client == nil || base == "" || strings.TrimSpace(repo) == "" {
 		return nil, errors.New("feishu backend requires client, base and AGENT_FEISHU_PROJECT")
 	}
@@ -175,7 +192,16 @@ func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo s
 	if err != nil {
 		return nil, err
 	}
-	c := &Feishu{client: client, base: base, baseURL: baseURL, repo: repo, tables: map[string]feishuTable{}}
+	if o.ReadBackTimeout <= 0 {
+		o.ReadBackTimeout = feishuReadBackTimeout
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	if o.Sleep == nil {
+		o.Sleep = sleepContext
+	}
+	c := &Feishu{client: client, base: base, baseURL: baseURL, repo: repo, tables: map[string]feishuTable{}, readBackTimeout: o.ReadBackTimeout, now: o.Now, sleep: o.Sleep}
 	for _, spec := range feishuTables {
 		i := slices.IndexFunc(listed, func(t feishu.Table) bool { return t.Name == spec.Name })
 		if i < 0 || slices.ContainsFunc(listed[i+1:], func(t feishu.Table) bool { return t.Name == spec.Name }) {
@@ -449,8 +475,8 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 			}
 		}
 	}
-	if len(missing) > 0 {
-		page, err := c.client.BatchGet(ctx, c.base, c.tables["票据"].id, missing)
+	for chunk := range slices.Chunk(missing, feishuBatchLimit) {
+		page, err := c.client.BatchGet(ctx, c.base, c.tables["票据"].id, chunk)
 		if err != nil {
 			return nil, err
 		}
@@ -579,7 +605,7 @@ func (c *Feishu) Read(ctx context.Context, id string) (Task, error) {
 			return v, nil
 		}
 	}
-	return Task{}, errors.New("task not found")
+	return Task{}, errFeishuTaskNotFound
 }
 
 func (c *Feishu) cachedTask(ctx context.Context, id string) (Task, error) {
@@ -647,22 +673,4 @@ func (c *Feishu) ListComments(ctx context.Context, id string) ([]linear.Comment,
 
 func (c *Feishu) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
 	return c.ListComments(ctx, id)
-}
-
-func (c *Feishu) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
-	return linear.Issue{}, errFeishuWrites
-}
-
-func (c *Feishu) CreateComment(context.Context, string, string) (linear.Comment, error) {
-	return linear.Comment{}, errFeishuWrites
-}
-
-func (c *Feishu) Create(context.Context, CreateInput) (Task, error) { return Task{}, errFeishuWrites }
-
-func (c *Feishu) Adopt(context.Context, string, []byte) (Task, error) { return Task{}, errFeishuWrites }
-
-func (c *Feishu) Edit(context.Context, string, []byte) (Task, error) { return Task{}, errFeishuWrites }
-
-func (c *Feishu) SetMetadata(context.Context, string, Metadata) (Task, error) {
-	return Task{}, errFeishuWrites
 }

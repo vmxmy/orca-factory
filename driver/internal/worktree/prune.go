@@ -256,7 +256,7 @@ func (p *pruner) loadIssues() bool {
 		if err != nil {
 			return false
 		}
-		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND"), "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL")}, cfg.Tuning)
+		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND"), "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL"), "AGENT_FEISHU_BASE": os.Getenv("AGENT_FEISHU_BASE"), "AGENT_FEISHU_PROJECT": os.Getenv("AGENT_FEISHU_PROJECT")}, cfg.Tuning)
 		if err != nil {
 			return false
 		}
