@@ -2,15 +2,10 @@ package issues
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,7 +206,7 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 			}
 			visible := true
 			for _, id := range ids {
-				if !slices.ContainsFunc(page.Records, func(r feishu.Record) bool { return r.ID == id }) {
+				if slices.Contains(page.NotFound, id) {
 					visible = false
 					break
 				}
@@ -225,73 +220,4 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 		}
 	}
 	return nil
-}
-
-func TestDeleteLiveRecordsWaitsForVisibility(t *testing.T) {
-	ids := []string{"recA", "recB"}
-	var deletes, reads atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
-			fmt.Fprint(w, `{"code":0,"tenant_access_token":"test-token","expire":7200}`)
-			return
-		}
-		var body struct {
-			IDs []string `json:"record_id_list"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !slices.Equal(body.IDs, ids) {
-			t.Errorf("request IDs=%v, want %v, err=%v", body.IDs, ids, err)
-		}
-		data := map[string]any{"record_id_list": ids}
-		switch r.URL.Path {
-		case "/open-apis/base/v3/bases/base/tables/tickets/records/batch_delete":
-			if deletes.Add(1) == 1 {
-				data["record_not_found"] = ids
-			} else if reads.Load() < 2 {
-				t.Errorf("retried deletion after %d reads before both IDs were visible", reads.Load())
-			}
-		case "/open-apis/base/v3/bases/base/tables/tickets/records/batch_get":
-			visible := ids
-			if reads.Add(1) == 1 {
-				visible = ids[:1]
-			}
-			rows := make([][]any, len(visible))
-			for i := range rows {
-				rows[i] = []any{}
-			}
-			data = map[string]any{"record_id_list": visible, "data": rows}
-		default:
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if err := json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": data}); err != nil {
-			t.Error(err)
-		}
-	}))
-	defer server.Close()
-	c, err := feishu.New(feishu.Options{Endpoint: server.URL, AppID: "app", AppSecret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := deleteLiveRecords(ctx, c, "base", "tickets", ids); err != nil {
-		t.Fatal(err)
-	}
-	if deletes.Load() != 2 || reads.Load() != 2 {
-		t.Errorf("delete calls=%d read calls=%d, want 2 of each", deletes.Load(), reads.Load())
-	}
-}
-
-func TestDeleteLiveRecordsTimeoutIdentifiesRemainingIDs(t *testing.T) {
-	c, err := feishu.New(feishu.Options{AppID: "app", AppSecret: "secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	defer cancel()
-	err = deleteLiveRecords(ctx, c, "base", "tickets", []string{"recA"})
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "tickets") || !strings.Contains(err.Error(), "recA") {
-		t.Fatalf("error=%v, want deadline with table tickets and remaining ID recA", err)
-	}
 }

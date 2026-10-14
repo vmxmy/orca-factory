@@ -29,6 +29,7 @@ type Record struct {
 // revision at read time.
 type Page struct {
 	Records    []Record
+	NotFound   []string
 	FieldNames map[string]string
 	FieldTypes map[string]string
 	HasMore    bool
@@ -179,6 +180,7 @@ func (c *Client) readPage(ctx context.Context, method, path string, input any) (
 		FieldTypes []string            `json:"field_type_list"`
 		FieldNames []string            `json:"fields"`
 		RecordIDs  []string            `json:"record_id_list"`
+		NotFound   []string            `json:"record_not_found"`
 		HasMore    bool                `json:"has_more"`
 		Rev        int64               `json:"rev"`
 	}
@@ -194,6 +196,7 @@ func (c *Client) readPage(ctx context.Context, method, path string, input any) (
 	}
 	page := Page{
 		Records:    make([]Record, 0, len(data.RecordIDs)),
+		NotFound:   data.NotFound,
 		FieldNames: make(map[string]string, len(data.FieldIDs)),
 		FieldTypes: make(map[string]string, len(data.FieldIDs)),
 		HasMore:    data.HasMore,

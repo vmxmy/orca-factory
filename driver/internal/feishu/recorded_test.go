@@ -254,6 +254,15 @@ func TestNoPermissionIsGlobal(t *testing.T) {
 	}
 }
 
+func TestRecordedBatchGetDeleted(t *testing.T) {
+	c := recordedFake(t, "bot-tickets-get-deleted.json")
+	ids := []string{"reczz28NPMduAktV"}
+	page, err := c.BatchGet(context.Background(), testBase, ticketTable, ids)
+	if err != nil || !slices.Equal(page.NotFound, ids) {
+		t.Fatalf("page=%+v err=%v", page, err)
+	}
+}
+
 func TestBatchDeleteRetriesNotFound(t *testing.T) {
 	recordings := []recording{loadRecording(t, "bot-tickets-delete-too-early.json"), loadRecording(t, "bot-tickets-delete.json")}
 	var calls atomic.Int64
