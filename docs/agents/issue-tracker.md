@@ -1,18 +1,20 @@
 # 票据主账本
 
-本项目的统一目标是 GitHub Issues：`vmxmy/orca-factory`。#171 跟踪生产切换，#172 跟踪 driver 与导入，#173 跟踪脚本、看板与规范。代码合并或程序部署不等于生产账本已切换；实际后端以当前项目配置和完整验收证据为准。
+本项目的票据主账本是飞书多维表格「orca-factory 研发票据账本」（`AGENT_ISSUE_BACKEND=feishu`，2026-10-15 经用户批准切换）。代码托管、PR、CI 与合并仍在 GitHub `vmxmy/orca-factory`。设计与实测依据见 [飞书多维表格票据账本](../specs/feishu-bitable-ledger.md)，配置与排查见 `driver/README.md` 的“飞书账本后端”。
+
+切换没有迁移历史：切换前的 GitHub Issues 保持原状，只作历史查阅，driver 不再读取它们。新票一律建在飞书。下文“迁移与切换”记录的是此前 Linear → GitHub 的切换流程。
 
 ## 统一入口
 
-加载 `scripts/agent-gates/agent-graph.env` 后，通过 `scripts/agent-gates/agent-graph.sh issues` 读取或写入。GitHub 候选配置使用 `AGENT_ISSUE_BACKEND=github` 与 `AGENT_GH_REPO=vmxmy/orca-factory`，不要求 Linear team、project 或 key。GitHub 模式不调用 `orca linear`，不使用 `--linear-issue`，不双写、不自动回退。已交付的旧 Linear 配置仍可运行，但不能作为本仓库继续新增 Linear 事实的理由。
+加载 `scripts/agent-gates/agent-graph.env` 后，通过 `scripts/agent-gates/agent-graph.sh issues` 读取或写入。飞书配置为 `AGENT_ISSUE_BACKEND=feishu`、`AGENT_FEISHU_BASE`、`AGENT_FEISHU_PROJECT`；应用凭据在本机 `~/.config/orca-factory/driver.env`，driver 自动读取，不进仓库。不调用 `orca linear`，不双写、不自动回退。票号形如 `OF-12`（项目编号前缀 + 序号），`--id` 接受票号或规范 ID。
 
 - `issues snapshot --json`：完整发现，包括未纳管、关闭和 held 票；发现缓存不授权执行。
-- `issues read --id <canonical ID|票号|GitHub number> --json`：新鲜读取票与完整评论。
-- `issues create --input <JSON>`：建票；正常原生票由 GitHub node ID 建立 canonical ID。
+- `issues read --id <canonical ID|票号> --json`：新鲜读取票与完整证据事件。
+- `issues create --input <JSON>`：建票；driver 生成 UUID 作规范 ID，票号由飞书自动编号生成。
 - `issues adopt --id <ID> --input <JSON>`：显式纳管；输入必须有完整 `blockers`、`related` 数组，正文的 `DEPENDENCIES` 必须与输入一致。
 - `issues update` / `issues comment`：管理状态、标签和评论。未纳管票不能经管理更新入口写入。
 
-依赖使用 canonical ID，不拿 GitHub number 替换旧 UUID/ZII 身份。原生未纳管票可见但不领取。`auto-failed` 只由合法 resolver 处理，不清空预算后普通重试。任务 PR 首行引用 Issue URL，不用 `Closes` / `Fixes` 提前关闭业务票；部署与 smoke 确认后才 Done。
+依赖使用 canonical ID。未纳管行可见但不领取。`auto-failed` 只由合法 resolver 处理，不清空预算后普通重试。任务 PR 首行引用飞书票的记录链接；部署与 smoke 确认后才 Done。人工讨论写在飞书记录评论里，driver 不读取记录评论。
 
 ## 票面规范
 
@@ -24,7 +26,7 @@ to-spec、to-tickets、wayfinder 等技能说“发布到 issue tracker”时，
 
 | 票种 | 建票 | 纳管 | `ready-for-agent` |
 | --- | --- | --- | --- |
-| spec 票、wayfinder 地图票与决策票 | `gh issue create` | 不纳管 | 不打 |
+| spec 票、wayfinder 地图票与决策票 | `issues create`（不给 `blockers`/`related`） | 不纳管 | 不打 |
 | 实现票（to-tickets 的每张票） | 票面按 intake 模板写，经 `issues create` 建票并给出完整 `blockers`、`related` | 纳管 | 用户确认完整票面后打，状态 Todo |
 
 实现票的字段映射：
