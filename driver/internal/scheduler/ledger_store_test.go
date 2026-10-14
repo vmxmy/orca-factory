@@ -3,13 +3,17 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/runnerhealth"
 )
 
 // wrappedStore is a ledger store that is not the GitHub backend type.
@@ -53,5 +57,19 @@ func TestStoreClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 	err := r.Apply(ctx, Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Candidate: true}, Action{Kind: Claim})
 	if err == nil || !strings.Contains(err.Error(), "ownership") || writes != 0 {
 		t.Fatalf("claim used cached ownership: error=%v writes=%d", err, writes)
+	}
+}
+
+// The runner alert follows the code repository, whichever ledger holds tickets.
+func TestRunnerMonitorFollowsCodeRepository(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".local", "state", "orca-go-isolated-runner"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_GH_REPO": runnerhealth.Repository, "AGENT_FEISHU_PROJECT": "github.com/" + runnerhealth.Repository}
+	r := &Runtime{Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: env}}, Clients: map[string]LinearClient{"/repo": wrappedStore{}}}
+	if r.runnerMonitor() == nil {
+		t.Fatal("runner monitor disabled for a non-GitHub ledger")
 	}
 }

@@ -516,7 +516,6 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 	for _, t := range tasks {
 		c.cached[t.ID] = t
 		c.cached[t.Identifier] = t
-		c.cached[strconv.Itoa(t.Number)] = t
 	}
 	c.mu.Unlock()
 	return tasks, nil
@@ -583,10 +582,10 @@ func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, pro
 	}
 	return Task{
 		nativeID: row.record, NativeState: nativeState, NativeUpdatedAt: row.updated,
-		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title, Number: row.number,
+		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title,
 			Relations:        linear.Connection[linear.Relation]{Nodes: relations, PageInfo: linear.PageInfo{HasNextPage: incomplete}},
 			InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: inverse, PageInfo: linear.PageInfo{HasNextPage: incomplete}}},
-		Number: row.number, URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
+		URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
 		Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: inverse,
 	}
 }
@@ -614,7 +613,7 @@ func (c *Feishu) Read(ctx context.Context, id string) (Task, error) {
 		return Task{}, err
 	}
 	for _, v := range rows {
-		if v.ID == id || v.Identifier == id || strconv.Itoa(v.Number) == id {
+		if v.ID == id || v.Identifier == id {
 			return v, nil
 		}
 	}

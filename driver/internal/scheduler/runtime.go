@@ -87,7 +87,7 @@ func (r *Runtime) runnerMonitor() *runnerhealth.Monitor {
 		return nil
 	}
 	for path, repo := range r.Repositories {
-		if client, ok := r.Clients[path].(issues.Store); ok && issues.Project(repo.Env) == runnerhealth.Repository {
+		if client, ok := r.Clients[path].(issues.Store); ok && repo.Env["AGENT_GH_REPO"] == runnerhealth.Repository {
 			return &runnerhealth.Monitor{StateDir: dir, Record: filepath.Join(home, ".local", "state", "orca-factory", "runner-health.json"), Tickets: client, Run: runx.Run}
 		}
 	}
