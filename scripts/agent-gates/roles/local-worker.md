@@ -2,7 +2,8 @@
 
 ## Owns（追加）
 
-- 验证只用 `bin/orca-factory selftest`（约 7 秒，含 gate 回归、check、mod validate/test）。依据：`bin/orca-factory` 的 `cmd_selftest`
+- 验证以票面 `CHECK` 为准。改 `core/` 或 `bin/` 时跑 `bin/orca-factory selftest`（含安装、gate 回归、ledger 与 CLI 检查）。依据：`bin/orca-factory` 的 `cmd_selftest`
+- 改 `driver/` 时按 `driver/DEVELOPMENT.md` 选 Make 入口（`make test`、`make race` 等）。依据：`AGENTS.md` 的 Go 开发入口
 - 改了 `core/` 下任何文件，必须再跑 `bin/orca-factory update .`，让 `scripts/agent-gates/` 副本跟上，否则 gate 的 `drift` 步判红。依据：`gate.project.sh`
 
 ## Does Not Own（追加）
