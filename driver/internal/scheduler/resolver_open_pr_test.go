@@ -30,7 +30,7 @@ func TestResolverOpenPR(t *testing.T) {
 	if err := json.Unmarshal(recorded(t, "github-commit-main.json"), &commit); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"create", "existing", "existing-no-reference", "existing-wrong-ticket", "existing-wrong-canonical", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch"} {
+	for _, mode := range []string{"create", "existing", "existing-no-reference", "existing-wrong-ticket", "existing-wrong-canonical", "create-raced-no-reference", "create-recovered-no-reference", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			base := newFeishuClaimBase(t, true)
@@ -101,7 +101,9 @@ func TestResolverOpenPR(t *testing.T) {
 						http.Error(w, "denied", http.StatusForbidden)
 						return
 					}
-					if strings.HasPrefix(mode, "existing") {
+					if strings.HasPrefix(mode, "existing") ||
+						(mode == "create-raced-no-reference" && lookups == 2) ||
+						(mode == "create-recovered-no-reference" && lookups == 3) {
 						_, _ = w.Write(append(append([]byte("["), prResponse...), ']'))
 					} else {
 						_ = json.NewEncoder(w).Encode([]github.PullRequest{})
@@ -119,11 +121,16 @@ func TestResolverOpenPR(t *testing.T) {
 						!strings.Contains(input.Body, "Verified fix") {
 						t.Errorf("wrong PR: %+v", input)
 					}
-					if mode == "create-failed" {
+					if mode == "create-failed" || mode == "create-recovered-no-reference" {
 						http.Error(w, "invalid", http.StatusUnprocessableEntity)
 						return
 					}
-					_, _ = w.Write(prResponse)
+					var created github.PullRequest
+					if err := json.Unmarshal(prResponse, &created); err != nil {
+						t.Error(err)
+					}
+					created.Body = input.Body
+					_ = json.NewEncoder(w).Encode(created)
 				default:
 					t.Errorf("unexpected %s %s", r.Method, r.URL)
 					http.NotFound(w, r)
@@ -193,7 +200,7 @@ func TestResolverOpenPR(t *testing.T) {
 				if mode == "ticket-identity-mismatch" && !strings.Contains(body, "ticket reference identity differs") {
 					t.Fatalf("missing ticket identity evidence: %q", body)
 				}
-				if strings.HasPrefix(mode, "existing-") && !strings.Contains(body, "PR ticket reference differs") {
+				if (strings.HasPrefix(mode, "existing-") || strings.HasSuffix(mode, "no-reference")) && !strings.Contains(body, "PR ticket reference differs") {
 					t.Fatalf("missing PR reference evidence: %q", body)
 				}
 				f := &fakeBackend{tickets: []Ticket{{ID: ticket.ID, Identifier: ticket.Identifier, Repo: "a", Owner: machine.OwnerHuman, Resolution: record}}}
@@ -205,7 +212,7 @@ func TestResolverOpenPR(t *testing.T) {
 				}
 			}
 			wantCreates := 0
-			if mode == "create" || mode == "create-failed" || mode == "pr-head-changed" {
+			if mode == "create" || mode == "create-failed" || mode == "create-recovered-no-reference" || mode == "pr-head-changed" {
 				wantCreates = 1
 			}
 			if creates != wantCreates {

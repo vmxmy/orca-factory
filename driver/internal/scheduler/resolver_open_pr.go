@@ -59,11 +59,12 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 			return stop("PR creation failed; reconcile branch before resuming")
 		}
 		pr = &created
-	} else if !strings.HasPrefix(pr.Body, reference) {
-		return stop("PR ticket reference differs")
 	}
 	if pr.Number < 1 || pr.Head.SHA != proposal.Head {
 		return stop(fmt.Sprintf("PR receipt differs: pr=%d head=%s", pr.Number, pr.Head.SHA))
+	}
+	if !strings.HasPrefix(pr.Body, reference) {
+		return stop("PR ticket reference differs")
 	}
 	next := *p
 	next.Phase, next.Outcome = "waiting", "succeeded"
