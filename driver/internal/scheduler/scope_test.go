@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -171,4 +172,11 @@ func TestScopeActualChanges(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestFeishuReadDescriptionDeclaresScope(t *testing.T) {
+	brief := issues.FeishuBrief{Todo: "做", Check: "make test", Scope: "driver/internal/issues\n  driver/internal/feishu/**  ", Body: "## 现状\n说明", Blockers: []string{}, Related: []string{}}
+	if got := declaredScope(brief.Description()); !reflect.DeepEqual(got, []string{"driver/internal/issues", "driver/internal/feishu/**"}) {
+		t.Fatalf("scope=%q", got)
+	}
 }

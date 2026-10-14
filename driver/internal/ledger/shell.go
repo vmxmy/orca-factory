@@ -24,7 +24,7 @@ func RunShell(args []string, out, warnings io.Writer) int {
 		return 0
 	}
 	backend := os.Getenv("AGENT_ISSUE_BACKEND")
-	if backend != "" && backend != "linear" && backend != "github" {
+	if backend != "" && backend != "linear" && backend != "github" && backend != "feishu" {
 		_, _ = fmt.Fprintln(warnings, "ledger: unknown backend")
 		return 2
 	}
@@ -36,7 +36,7 @@ func RunShell(args []string, out, warnings io.Writer) int {
 		}
 		defer release()
 	}
-	if backend == "github" {
+	if backend == "github" || backend == "feishu" {
 		binary, err := os.Executable()
 		if err != nil {
 			_, _ = fmt.Fprintln(warnings, err)

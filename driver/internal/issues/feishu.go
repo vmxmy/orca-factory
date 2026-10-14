@@ -1,0 +1,668 @@
+package issues
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
+)
+
+var errFeishuWrites = errors.New("feishu backend: writes arrive in GH-398")
+
+const feishuPageLimit = 500
+
+var feishuTables = []feishu.TableSpec{
+	{Name: "项目", Fields: []feishu.FieldSpec{
+		{Name: "名称", Type: "text"},
+		{Name: "仓库远端", Type: "text"},
+		{Name: "编号前缀", Type: "text"},
+		{Name: "启用", Type: "checkbox"},
+	}},
+	{Name: "票据", Fields: []feishu.FieldSpec{
+		{Name: "标题", Type: "text"},
+		{Name: "序号", Type: "auto_number"},
+		{Name: "规范ID", Type: "text"},
+		{Name: "项目", Type: "link"},
+		{Name: "状态", Type: "select", Options: []string{"Backlog", "Todo", "In Progress", "Done", "Canceled", "Duplicate"}},
+		{Name: "标签", Type: "select", Multiple: true, Options: []string{"ready-for-agent", "auto-impl", "auto-failed"}},
+		{Name: "要做", Type: "text"},
+		{Name: "CHECK", Type: "text"},
+		{Name: "SCOPE", Type: "text"},
+		{Name: "正文", Type: "text"},
+		{Name: "阻塞于", Type: "link"},
+		{Name: "相关", Type: "link"},
+		{Name: "估算", Type: "number"},
+		{Name: "纳管指纹", Type: "text"},
+		{Name: "创建时间", Type: "created_at"},
+		{Name: "修改时间", Type: "updated_at"},
+	}},
+	{Name: "事件", Fields: []feishu.FieldSpec{
+		{Name: "摘要", Type: "text"},
+		{Name: "票据", Type: "link"},
+		{Name: "正文", Type: "text"},
+		{Name: "来源", Type: "select", Options: []string{"driver", "resolver", "operator"}},
+		{Name: "操作者", Type: "text"},
+		{Name: "创建时间", Type: "created_at"},
+		{Name: "修改时间", Type: "updated_at"},
+	}},
+}
+
+// FeishuBrief is the structured ticket face stored in Feishu fields.
+// Blockers and Related hold canonical IDs.
+type FeishuBrief struct {
+	Todo, Check, Scope, Body string
+	Blockers, Related        []string
+}
+
+func normalizeBriefText(s string) string {
+	return strings.TrimSpace(strings.ReplaceAll(s, "\r\n", "\n"))
+}
+
+// Fingerprint is the adoption fingerprint over 要做, CHECK, SCOPE and the
+// sorted canonical dependency IDs. 正文 is excluded.
+func (b FeishuBrief) Fingerprint() string {
+	blockers := slices.Sorted(slices.Values(b.Blockers))
+	related := slices.Sorted(slices.Values(b.Related))
+	if blockers == nil {
+		blockers = []string{}
+	}
+	if related == nil {
+		related = []string{}
+	}
+	raw, err := json.Marshal([]any{"orca-feishu-adopt-v1", normalizeBriefText(b.Todo), normalizeBriefText(b.Check), normalizeBriefText(b.Scope), blockers, related})
+	if err != nil {
+		panic(err) // strings and string slices always marshal
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(raw))
+}
+
+// Description renders the intake ticket template read by ParseTicket and the
+// scheduler's declared scope.
+func (b FeishuBrief) Description() string {
+	deps, err := json.Marshal(AdoptInput{Blockers: nonNil(b.Blockers), Related: nonNil(b.Related)})
+	if err != nil {
+		panic(err) // string slices always marshal
+	}
+	var s strings.Builder
+	if body := normalizeBriefText(b.Body); body != "" {
+		s.WriteString(body + "\n\n")
+	}
+	s.WriteString("## 要做\n" + normalizeBriefText(b.Todo) + "\n\n")
+	s.WriteString("## 验收\nCHECK: " + strings.Join(strings.Split(normalizeBriefText(b.Check), "\n"), " ") + "\n\n")
+	s.WriteString("## SCOPE\n" + strings.Join(strings.Fields(b.Scope), " ") + "\n\n")
+	s.WriteString("## 依赖\nDEPENDENCIES: " + string(deps) + "\n")
+	return s.String()
+}
+
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
+}
+
+type feishuTable struct {
+	id     string
+	fields map[string]string // name -> field ID
+}
+
+// Feishu reads tasks from one Feishu Base whose 项目 row matches the repository.
+type Feishu struct {
+	client  *feishu.Client
+	base    string
+	baseURL string
+	repo    string
+	tables  map[string]feishuTable
+	mu      sync.Mutex
+	cached  map[string]Task
+}
+
+var _ Store = (*Feishu)(nil)
+
+// feishuBase accepts a base token or a Base URL whose path carries /base/<token>.
+func feishuBase(raw string) (token, baseURL string, err error) {
+	if !strings.Contains(raw, "/") {
+		if raw == "" {
+			return "", "", errors.New("AGENT_FEISHU_BASE required")
+		}
+		return raw, "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return "", "", errors.New("invalid AGENT_FEISHU_BASE URL")
+	}
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	i := slices.Index(segments, "base")
+	if i < 0 || i+1 >= len(segments) || segments[i+1] == "" {
+		return "", "", errors.New("AGENT_FEISHU_BASE URL lacks /base/<token>")
+	}
+	token = segments[i+1]
+	return token, u.Scheme + "://" + u.Host + "/base/" + token, nil
+}
+
+func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, error) {
+	token, baseURL, err := feishuBase(env["AGENT_FEISHU_BASE"])
+	if err != nil {
+		return nil, err
+	}
+	client, err := feishu.New(feishu.Options{Endpoint: os.Getenv("AGENT_FEISHU_ENDPOINT"), AppID: os.Getenv("AGENT_FEISHU_APP_ID"), AppSecret: os.Getenv("AGENT_FEISHU_APP_SECRET")})
+	if err != nil {
+		return nil, err
+	}
+	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"])
+}
+
+// NewFeishu locates the 项目, 票据 and 事件 tables and validates their schema.
+// baseURL may be empty; it only forms record links.
+func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo string) (*Feishu, error) {
+	if client == nil || base == "" || strings.TrimSpace(repo) == "" {
+		return nil, errors.New("feishu backend requires client, base and AGENT_FEISHU_PROJECT")
+	}
+	listed, err := client.Tables(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	c := &Feishu{client: client, base: base, baseURL: baseURL, repo: repo, tables: map[string]feishuTable{}}
+	for _, spec := range feishuTables {
+		i := slices.IndexFunc(listed, func(t feishu.Table) bool { return t.Name == spec.Name })
+		if i < 0 || slices.ContainsFunc(listed[i+1:], func(t feishu.Table) bool { return t.Name == spec.Name }) {
+			return nil, fmt.Errorf("feishu table %s missing or duplicated", spec.Name)
+		}
+		fields, err := client.Fields(ctx, base, listed[i].ID)
+		if err != nil {
+			return nil, err
+		}
+		if err = feishu.ValidateSchema(spec, fields); err != nil {
+			return nil, err
+		}
+		ids := map[string]string{}
+		for _, f := range fields {
+			ids[f.Name] = f.ID
+		}
+		c.tables[spec.Name] = feishuTable{id: listed[i].ID, fields: ids}
+	}
+	return c, nil
+}
+
+func (c *Feishu) Repository() string { return c.repo }
+
+// readAll pages through one listing; every page must carry the same table rev.
+func (c *Feishu) readAll(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, error) {
+	id := c.tables[table].id
+	records := []feishu.Record{}
+	var rev int64
+	for offset := 0; ; {
+		var page feishu.Page
+		var err error
+		if filter == nil {
+			page, err = c.client.ListRecords(ctx, c.base, id, offset, feishuPageLimit)
+		} else {
+			page, err = c.client.ListRecordsWhere(ctx, c.base, id, *filter, offset, feishuPageLimit)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if offset == 0 {
+			rev = page.Rev
+		} else if page.Rev != rev {
+			return nil, fmt.Errorf("feishu table %s changed between pages (rev %d, %d)", table, rev, page.Rev)
+		}
+		records = append(records, page.Records...)
+		if !page.HasMore {
+			return records, nil
+		}
+		if len(page.Records) == 0 {
+			return nil, fmt.Errorf("feishu table %s returned an empty page with more pending", table)
+		}
+		offset += len(page.Records)
+	}
+}
+
+func (c *Feishu) cell(table string, r feishu.Record, name string) json.RawMessage {
+	v := r.Fields[c.tables[table].fields[name]]
+	if string(v) == "null" {
+		return nil
+	}
+	return v
+}
+
+func (c *Feishu) text(table string, r feishu.Record, name string) (string, error) {
+	var s string
+	if raw := c.cell(table, r, name); raw != nil && json.Unmarshal(raw, &s) != nil {
+		return "", fmt.Errorf("feishu field %s is not text", name)
+	}
+	return s, nil
+}
+
+func (c *Feishu) options(table string, r feishu.Record, name string) ([]string, error) {
+	values := []string{}
+	if raw := c.cell(table, r, name); raw != nil && json.Unmarshal(raw, &values) != nil {
+		return nil, fmt.Errorf("feishu field %s is not a select", name)
+	}
+	return values, nil
+}
+
+func (c *Feishu) links(table string, r feishu.Record, name string) ([]string, error) {
+	var refs []feishu.LinkRef
+	if raw := c.cell(table, r, name); raw != nil && json.Unmarshal(raw, &refs) != nil {
+		return nil, fmt.Errorf("feishu field %s is not a link", name)
+	}
+	ids := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		ids = append(ids, ref.ID)
+	}
+	return ids, nil
+}
+
+func (c *Feishu) timestamp(table string, r feishu.Record, name string) (time.Time, error) {
+	s, err := c.text(table, r, name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("feishu field %s is not a timestamp", name)
+	}
+	return t, nil
+}
+
+type feishuProject struct {
+	prefix  string
+	enabled bool
+}
+
+func (c *Feishu) projects(ctx context.Context) (map[string]feishuProject, string, error) {
+	rows, err := c.readAll(ctx, "项目", nil)
+	if err != nil {
+		return nil, "", err
+	}
+	all := map[string]feishuProject{}
+	own := ""
+	for _, r := range rows {
+		remote, err := c.text("项目", r, "仓库远端")
+		if err != nil {
+			return nil, "", err
+		}
+		prefix, err := c.text("项目", r, "编号前缀")
+		if err != nil {
+			return nil, "", err
+		}
+		var enabled bool
+		if raw := c.cell("项目", r, "启用"); raw != nil && json.Unmarshal(raw, &enabled) != nil {
+			return nil, "", errors.New("feishu field 启用 is not a checkbox")
+		}
+		all[r.ID] = feishuProject{prefix: prefix, enabled: enabled}
+		if remote == c.repo {
+			if own != "" {
+				return nil, "", errors.New("feishu project repository duplicated")
+			}
+			own = r.ID
+		}
+	}
+	if own == "" || !component.MatchString(all[own].prefix) {
+		return nil, "", errors.New("feishu project missing or without a valid 编号前缀")
+	}
+	return all, own, nil
+}
+
+var autoNumber = regexp.MustCompile(`([0-9]+)$`)
+
+// feishuTicketRow is one ticket record before dependencies are resolved.
+type feishuTicketRow struct {
+	record      string
+	project     string
+	canonical   string
+	fingerprint string
+	number      int
+	state       string
+	labels      []string
+	title       string
+	brief       FeishuBrief
+	estimate    *float64
+	blockers    []string // record IDs
+	related     []string
+	created     time.Time
+	updated     time.Time
+}
+
+func (c *Feishu) row(r feishu.Record) (feishuTicketRow, error) {
+	const t = "票据"
+	row := feishuTicketRow{record: r.ID}
+	var err error
+	for name, target := range map[string]*string{"规范ID": &row.canonical, "纳管指纹": &row.fingerprint, "标题": &row.title, "要做": &row.brief.Todo, "CHECK": &row.brief.Check, "SCOPE": &row.brief.Scope, "正文": &row.brief.Body} {
+		if *target, err = c.text(t, r, name); err != nil {
+			return row, err
+		}
+	}
+	if row.canonical != "" && !uuid.MatchString(row.canonical) {
+		return row, errors.New("feishu 规范ID is not a UUID")
+	}
+	serial, err := c.text(t, r, "序号")
+	if err != nil {
+		return row, err
+	}
+	m := autoNumber.FindStringSubmatch(serial)
+	if m == nil {
+		return row, errors.New("feishu 序号 lacks a number")
+	}
+	if row.number, err = strconv.Atoi(m[1]); err != nil || row.number <= 0 {
+		return row, errors.New("feishu 序号 is invalid")
+	}
+	states, err := c.options(t, r, "状态")
+	if err != nil {
+		return row, err
+	}
+	if len(states) > 1 || len(states) == 1 && !validState(states[0]) {
+		return row, errors.New("feishu 状态 is invalid")
+	}
+	if len(states) == 1 {
+		row.state = states[0]
+	}
+	if row.labels, err = c.options(t, r, "标签"); err != nil {
+		return row, err
+	}
+	projects, err := c.links(t, r, "项目")
+	if err != nil {
+		return row, err
+	}
+	if len(projects) == 1 {
+		row.project = projects[0]
+	}
+	if row.blockers, err = c.links(t, r, "阻塞于"); err != nil {
+		return row, err
+	}
+	if row.related, err = c.links(t, r, "相关"); err != nil {
+		return row, err
+	}
+	if raw := c.cell(t, r, "估算"); raw != nil {
+		var v float64
+		if json.Unmarshal(raw, &v) != nil {
+			return row, errors.New("feishu 估算 is not a number")
+		}
+		row.estimate = &v
+	}
+	if row.created, err = c.timestamp(t, r, "创建时间"); err != nil {
+		return row, err
+	}
+	row.updated, err = c.timestamp(t, r, "修改时间")
+	return row, err
+}
+
+func (row feishuTicketRow) id() string {
+	if row.canonical != "" {
+		return row.canonical
+	}
+	sum := sha256.Sum256([]byte("feishu-record:" + row.record))
+	return fmt.Sprintf("%x-%x-%x-%x-%x", sum[:4], sum[4:6], sum[6:8], sum[8:10], sum[10:16])
+}
+
+func closedState(state string) bool {
+	switch stateType(state) {
+	case "completed", "canceled", "duplicate":
+		return true
+	}
+	return false
+}
+
+// List reads this project's tickets and the records their links reference.
+func (c *Feishu) List(ctx context.Context) ([]Task, error) {
+	projects, own, err := c.projects(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
+	records, err := c.readAll(ctx, "票据", &filter)
+	if err != nil {
+		return nil, err
+	}
+	known := map[string]feishuTicketRow{}
+	rows := make([]feishuTicketRow, 0, len(records))
+	for _, r := range records {
+		row, err := c.row(r)
+		if err != nil {
+			return nil, err
+		}
+		if row.project != own {
+			return nil, errors.New("feishu ticket filter returned another project")
+		}
+		known[row.record] = row
+		rows = append(rows, row)
+	}
+	missing := []string{}
+	for _, row := range rows {
+		for _, ref := range append(slices.Clone(row.blockers), row.related...) {
+			if _, ok := known[ref]; !ok && !slices.Contains(missing, ref) {
+				missing = append(missing, ref)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		page, err := c.client.BatchGet(ctx, c.base, c.tables["票据"].id, missing)
+		if err != nil {
+			return nil, err
+		}
+		for _, r := range page.Records {
+			row, err := c.row(r)
+			if err != nil {
+				return nil, err
+			}
+			known[row.record] = row
+		}
+	}
+	tasks := make([]Task, 0, len(rows))
+	ids := map[string]bool{}
+	for _, row := range rows {
+		task := c.task(row, known, projects)
+		if ids[task.ID] || ids[task.Identifier] {
+			return nil, errors.New("duplicate canonical task identity")
+		}
+		ids[task.ID], ids[task.Identifier] = true, true
+		tasks = append(tasks, task)
+	}
+	c.mu.Lock()
+	c.cached = map[string]Task{}
+	for _, t := range tasks {
+		c.cached[t.ID] = t
+		c.cached[t.Identifier] = t
+		c.cached[strconv.Itoa(t.Number)] = t
+	}
+	c.mu.Unlock()
+	return tasks, nil
+}
+
+func identifier(row feishuTicketRow, projects map[string]feishuProject) string {
+	return projects[row.project].prefix + "-" + strconv.Itoa(row.number)
+}
+
+// task maps a row like the GitHub backend: unmanaged, held, disabled or
+// dependency-incomplete rows stay visible but report HasNextPage, so they
+// are never claimable.
+func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, projects map[string]feishuProject) Task {
+	managed := row.canonical != "" && row.fingerprint != ""
+	incomplete := !managed || row.state == "" || !projects[row.project].enabled
+	state := row.state
+	if state == "" {
+		state = "Backlog"
+	}
+	labels := linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{}}
+	for _, l := range row.labels {
+		labels.Nodes = append(labels.Nodes, linear.NamedID{ID: l, Name: l})
+	}
+	m := Metadata{ID: row.id(), Identifier: identifier(row, projects), Project: c.repo, State: state, Estimate: row.estimate, Blockers: []string{}, Related: []string{}, Complete: managed}
+	inverse := []linear.InverseRelation{}
+	relations := []linear.Relation{}
+	for _, ref := range row.blockers {
+		dep, ok := known[ref]
+		r := linear.InverseRelation{ID: ref, Type: "blocks"}
+		r.Issue.ID, r.Issue.Identifier, r.Issue.State.Type = ref, ref, "started"
+		if ok && dep.canonical != "" {
+			r.ID, r.Issue.ID, r.Issue.Identifier = dep.canonical, dep.canonical, identifier(dep, projects)
+			if closedState(dep.state) {
+				r.Issue.State.Type = stateType(dep.state)
+			}
+			m.Blockers = append(m.Blockers, dep.canonical)
+		} else {
+			incomplete = true
+		}
+		inverse = append(inverse, r)
+	}
+	for _, ref := range row.related {
+		dep, ok := known[ref]
+		r := linear.Relation{ID: ref, Type: "related", RelatedIssue: linear.IssueRef{ID: ref}}
+		if ok && dep.canonical != "" {
+			r.ID, r.RelatedIssue = dep.canonical, linear.IssueRef{ID: dep.canonical, Identifier: identifier(dep, projects)}
+			m.Related = append(m.Related, dep.canonical)
+		} else {
+			incomplete = true
+		}
+		relations = append(relations, r)
+	}
+	brief := row.brief
+	brief.Blockers, brief.Related = m.Blockers, m.Related
+	m.ImportHold = managed && brief.Fingerprint() != row.fingerprint
+	incomplete = incomplete || m.ImportHold
+	nativeState := "open"
+	if closedState(state) {
+		nativeState = "closed"
+	}
+	link := ""
+	if c.baseURL != "" {
+		link = c.baseURL + "?table=" + url.QueryEscape(c.tables["票据"].id) + "&record=" + url.QueryEscape(row.record)
+	}
+	return Task{
+		nativeID: row.record, NativeState: nativeState, NativeUpdatedAt: row.updated,
+		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title, Number: row.number,
+			Relations:        linear.Connection[linear.Relation]{Nodes: relations, PageInfo: linear.PageInfo{HasNextPage: incomplete}},
+			InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: inverse, PageInfo: linear.PageInfo{HasNextPage: incomplete}}},
+		Number: row.number, URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
+		Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: inverse,
+	}
+}
+
+func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]linear.Issue, error) {
+	for _, p := range projects {
+		if p != c.repo {
+			return nil, errors.New("snapshot repository mismatch")
+		}
+	}
+	tasks, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	rows := make([]linear.Issue, 0, len(tasks))
+	for _, t := range tasks {
+		rows = append(rows, t.Issue)
+	}
+	return rows, nil
+}
+
+func (c *Feishu) Read(ctx context.Context, id string) (Task, error) {
+	rows, err := c.List(ctx)
+	if err != nil {
+		return Task{}, err
+	}
+	for _, v := range rows {
+		if v.ID == id || v.Identifier == id || strconv.Itoa(v.Number) == id {
+			return v, nil
+		}
+	}
+	return Task{}, errors.New("task not found")
+}
+
+func (c *Feishu) cachedTask(ctx context.Context, id string) (Task, error) {
+	c.mu.Lock()
+	t, ok := c.cached[id]
+	c.mu.Unlock()
+	if ok {
+		return t, nil
+	}
+	return c.Read(ctx, id)
+}
+
+func (c *Feishu) Description(ctx context.Context, id string) (string, error) {
+	t, err := c.cachedTask(ctx, id)
+	return t.Description, err
+}
+
+func (c *Feishu) FreshIssue(ctx context.Context, id string) (linear.Issue, error) {
+	t, err := c.Read(ctx, id)
+	return t.Issue, err
+}
+
+// ListComments returns the ticket's events oldest first. An event whose
+// 修改时间 differs from its 创建时间 was edited and is an evidence conflict.
+func (c *Feishu) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
+	t, err := c.cachedTask(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: t.nativeID}}}}}
+	records, err := c.readAll(ctx, "事件", &filter)
+	if err != nil {
+		return nil, err
+	}
+	const table = "事件"
+	history := make([]linear.Comment, 0, len(records))
+	for _, r := range records {
+		owners, err := c.links(table, r, "票据")
+		if err != nil {
+			return nil, err
+		}
+		if !slices.Equal(owners, []string{t.nativeID}) {
+			return nil, fmt.Errorf("feishu event %s evidence conflict: linked to %d tickets", r.ID, len(owners))
+		}
+		body, err := c.text(table, r, "正文")
+		if err != nil {
+			return nil, err
+		}
+		created, err := c.timestamp(table, r, "创建时间")
+		if err != nil {
+			return nil, err
+		}
+		updated, err := c.timestamp(table, r, "修改时间")
+		if err != nil {
+			return nil, err
+		}
+		if !updated.Equal(created) {
+			return nil, fmt.Errorf("feishu event %s evidence conflict: edited after creation", r.ID)
+		}
+		history = append(history, linear.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated})
+	}
+	sort.SliceStable(history, func(i, j int) bool { return history[i].CreatedAt.Before(history[j].CreatedAt) })
+	return decodeImportedHistory(history)
+}
+
+func (c *Feishu) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
+	return c.ListComments(ctx, id)
+}
+
+func (c *Feishu) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
+	return linear.Issue{}, errFeishuWrites
+}
+
+func (c *Feishu) CreateComment(context.Context, string, string) (linear.Comment, error) {
+	return linear.Comment{}, errFeishuWrites
+}
+
+func (c *Feishu) Create(context.Context, CreateInput) (Task, error) { return Task{}, errFeishuWrites }
+
+func (c *Feishu) Adopt(context.Context, string, []byte) (Task, error) { return Task{}, errFeishuWrites }
+
+func (c *Feishu) Edit(context.Context, string, []byte) (Task, error) { return Task{}, errFeishuWrites }
+
+func (c *Feishu) SetMetadata(context.Context, string, Metadata) (Task, error) {
+	return Task{}, errFeishuWrites
+}

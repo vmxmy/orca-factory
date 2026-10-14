@@ -26,6 +26,7 @@ type recording struct {
 		Method string          `json:"method"`
 		Path   string          `json:"path"`
 		Body   json.RawMessage `json:"body"`
+		Params json.RawMessage `json:"params"`
 	} `json:"request"`
 	Response struct {
 		Data  json.RawMessage `json:"data"`
