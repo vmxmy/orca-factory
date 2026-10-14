@@ -1,0 +1,98 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "filter": "{\"logic\":\"and\",\"conditions\":[[\"票据\",\"intersects\",[{\"id\":\"reczz28NLqDRHkSp\"},{\"id\":\"reczz28NLqDRHJnT\"}]]]}",
+      "limit": 100,
+      "offset": 0
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tbl7jbXwoOR0WHZq/records"
+  },
+  "response": {
+    "data": {
+      "data": [
+        [
+          "merge-handoff-v1",
+          null,
+          [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ],
+          [
+            "driver"
+          ],
+          "2026-10-15T00:09:46.000+08:00",
+          "merge-handoff-v1: {\"version\":1,\"queue_id\":\"q-test\"}\n归属: 合并通道"
+        ],
+        [
+          "note",
+          null,
+          [
+            {
+              "id": "reczz28NLqDRHJnT"
+            }
+          ],
+          [
+            "driver"
+          ],
+          "2026-10-15T00:09:46.000+08:00",
+          "plain note for B"
+        ],
+        [
+          "merge-progress-v1",
+          null,
+          [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ],
+          [
+            "driver"
+          ],
+          "2026-10-15T00:09:46.000+08:00",
+          "merge-progress-v1: {\"version\":1,\"phase\":\"merge-intent\"}"
+        ]
+      ],
+      "field_id_list": [
+        "fldmppaTNw",
+        "fld6umIs07",
+        "fldd5wlUCT",
+        "fldi56syPw",
+        "fldjvgpvzU",
+        "fldutke6EY"
+      ],
+      "field_type_list": [
+        "text",
+        "text",
+        "link",
+        "select",
+        "created_at",
+        "text"
+      ],
+      "fields": [
+        "摘要",
+        "操作者",
+        "票据",
+        "来源",
+        "创建时间",
+        "正文"
+      ],
+      "has_more": false,
+      "query_context": {
+        "field_scope": "all_fields",
+        "record_scope": "filtered_records"
+      },
+      "record_id_list": [
+        "reczz28NLqZ0nWaM",
+        "reczz28NLqZ0kk1a",
+        "reczz28NLqZ0mIFK"
+      ],
+      "rev": 1,
+      "timezone": "Asia/Shanghai"
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

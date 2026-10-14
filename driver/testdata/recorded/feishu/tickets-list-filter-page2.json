@@ -1,0 +1,127 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "filter": "{\"logic\":\"and\",\"conditions\":[[\"状态\",\"intersects\",[\"Todo\",\"In Progress\"]],[\"标签\",\"intersects\",[\"ready-for-agent\"]],[\"项目\",\"intersects\",[{\"id\":\"reczz28NLqBOtI9B\"}]]]}",
+      "limit": 1,
+      "offset": 1
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/records"
+  },
+  "response": {
+    "data": {
+      "data": [
+        [
+          "B 依赖 A",
+          "做 B",
+          [
+            "ready-for-agent"
+          ],
+          [
+            {
+              "id": "reczz28NLqBOtI9B"
+            }
+          ],
+          null,
+          "NO.002",
+          3,
+          "make test",
+          "2026-10-15T00:09:43.000+08:00",
+          "driver/**",
+          [
+            "Todo"
+          ],
+          null,
+          "2026-10-15T00:09:26.000+08:00",
+          [
+            {
+              "id": "ou_REDACTED",
+              "name": "测试用户"
+            }
+          ],
+          null,
+          [
+            {
+              "id": "reczz28NLqDRJWLV"
+            }
+          ],
+          [
+            {
+              "id": "reczz28NLqDRHkSp"
+            }
+          ]
+        ]
+      ],
+      "field_id_list": [
+        "fldQDpx79I",
+        "fld0NXHDCU",
+        "fld4uIyrWj",
+        "fld53YwCWg",
+        "fld5HgAe9Q",
+        "fld6s350cd",
+        "fld9tF9J2S",
+        "fldc0s7zHF",
+        "fldC51Quc6",
+        "fldEydnY5L",
+        "fldKbaSVNc",
+        "fldrlw1tU9",
+        "fldRVkYiSN",
+        "fldSnFGYhy",
+        "fldVPgAPid",
+        "fldWwMkQEK",
+        "fldzRJUcyu"
+      ],
+      "field_type_list": [
+        "text",
+        "text",
+        "select",
+        "link",
+        "text",
+        "auto_number",
+        "number",
+        "text",
+        "updated_at",
+        "text",
+        "select",
+        "text",
+        "created_at",
+        "updated_by",
+        "text",
+        "link",
+        "link"
+      ],
+      "fields": [
+        "标题",
+        "要做",
+        "标签",
+        "项目",
+        "正文",
+        "序号",
+        "估算",
+        "CHECK",
+        "修改时间",
+        "SCOPE",
+        "状态",
+        "规范ID",
+        "创建时间",
+        "修改人",
+        "纳管指纹",
+        "相关",
+        "阻塞于"
+      ],
+      "has_more": false,
+      "query_context": {
+        "field_scope": "all_fields",
+        "record_scope": "filtered_records"
+      },
+      "record_id_list": [
+        "reczz28NLqDRHJnT"
+      ],
+      "rev": 4,
+      "timezone": "Asia/Shanghai"
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

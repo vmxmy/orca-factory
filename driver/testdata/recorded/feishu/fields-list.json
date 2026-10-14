@@ -1,0 +1,214 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": null,
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tblZQsD8lnjliPcn/fields"
+  },
+  "response": {
+    "data": {
+      "fields": [
+        {
+          "id": "fldC51Quc6",
+          "name": "修改时间",
+          "style": {
+            "format": "yyyy/MM/dd"
+          },
+          "type": "updated_at"
+        },
+        {
+          "default_value": null,
+          "id": "fldVPgAPid",
+          "name": "纳管指纹",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fld4uIyrWj",
+          "multiple": true,
+          "name": "标签",
+          "options": [
+            {
+              "hue": "Lime",
+              "lightness": "Lighter",
+              "name": "ready-for-agent"
+            },
+            {
+              "hue": "Wathet",
+              "lightness": "Lighter",
+              "name": "auto-impl"
+            },
+            {
+              "hue": "Orange",
+              "lightness": "Lighter",
+              "name": "auto-failed"
+            }
+          ],
+          "type": "select"
+        },
+        {
+          "default_value": null,
+          "id": "fldrlw1tU9",
+          "name": "规范ID",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fld0NXHDCU",
+          "name": "要做",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "bidirectional": false,
+          "id": "fldWwMkQEK",
+          "link_table": "tblZQsD8lnjliPcn",
+          "name": "相关",
+          "type": "link"
+        },
+        {
+          "id": "fld6s350cd",
+          "name": "序号",
+          "style": {
+            "rules": [
+              {
+                "text": "NO.",
+                "type": "text"
+              },
+              {
+                "length": 3,
+                "type": "incremental_number"
+              }
+            ]
+          },
+          "type": "auto_number"
+        },
+        {
+          "default_value": null,
+          "id": "fld5HgAe9Q",
+          "name": "正文",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "bidirectional": false,
+          "id": "fld53YwCWg",
+          "link_table": "tblSKMqG6YfKPNik",
+          "name": "项目",
+          "type": "link"
+        },
+        {
+          "bidirectional": false,
+          "id": "fldzRJUcyu",
+          "link_table": "tblZQsD8lnjliPcn",
+          "name": "阻塞于",
+          "type": "link"
+        },
+        {
+          "default_value": null,
+          "id": "fldc0s7zHF",
+          "name": "CHECK",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "id": "fldRVkYiSN",
+          "name": "创建时间",
+          "style": {
+            "format": "yyyy/MM/dd"
+          },
+          "type": "created_at"
+        },
+        {
+          "default_value": null,
+          "id": "fldEydnY5L",
+          "name": "SCOPE",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fldKbaSVNc",
+          "multiple": false,
+          "name": "状态",
+          "options": [
+            {
+              "hue": "Purple",
+              "lightness": "Lighter",
+              "name": "Backlog"
+            },
+            {
+              "hue": "Red",
+              "lightness": "Lighter",
+              "name": "Todo"
+            },
+            {
+              "hue": "Red",
+              "lightness": "Lighter",
+              "name": "In Progress"
+            },
+            {
+              "hue": "Orange",
+              "lightness": "Lighter",
+              "name": "Done"
+            },
+            {
+              "hue": "Gray",
+              "lightness": "Lighter",
+              "name": "Canceled"
+            },
+            {
+              "hue": "Blue",
+              "lightness": "Lighter",
+              "name": "Duplicate"
+            }
+          ],
+          "type": "select"
+        },
+        {
+          "id": "fldSnFGYhy",
+          "name": "修改人",
+          "type": "updated_by"
+        },
+        {
+          "default_value": null,
+          "id": "fldQDpx79I",
+          "name": "标题",
+          "style": {
+            "type": "plain"
+          },
+          "type": "text"
+        },
+        {
+          "default_value": null,
+          "id": "fld9tF9J2S",
+          "name": "估算",
+          "style": {
+            "percentage": false,
+            "precision": 2,
+            "thousands_separator": false,
+            "type": "plain"
+          },
+          "type": "number"
+        }
+      ],
+      "total": 17
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

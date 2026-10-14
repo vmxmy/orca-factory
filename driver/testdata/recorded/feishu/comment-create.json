@@ -1,0 +1,31 @@
+{
+  "request": {
+    "body": {
+      "anchor": {
+        "base_record_id": "reczz28NLqDRHkSp",
+        "base_view_id": "vewNQWab9E",
+        "block_id": "tblZQsD8lnjliPcn"
+      },
+      "file_type": "bitable",
+      "reply_elements": [
+        {
+          "text": "人工讨论：这张票的 SCOPE 是否太宽？",
+          "type": "text"
+        }
+      ]
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/drive/v1/files/BASE_TOKEN/new_comments"
+  },
+  "response": {
+    "data": {
+      "comment_id": "7696556632003579121",
+      "created_at": "2026-10-15 00:10:34",
+      "idempotency_key": "c07ce113-f432-4580-9c4e-11bda81c2cb3",
+      "reply_id": "7696556632024550641"
+    },
+    "identity": "user",
+    "ok": true
+  }
+}

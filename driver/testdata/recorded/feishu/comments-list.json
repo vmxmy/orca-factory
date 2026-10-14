@@ -1,0 +1,62 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "file_type": "bitable",
+      "is_solved": false,
+      "page_size": 50
+    },
+    "path": "/open-apis/drive/v1/files/BASE_TOKEN/comments"
+  },
+  "response": {
+    "data": {
+      "has_more": false,
+      "items": [
+        {
+          "comment_id": "7696556632003579121",
+          "create_time": 1791994234,
+          "is_solved": false,
+          "is_whole": false,
+          "quote": "记录",
+          "reply_list": {
+            "replies": [
+              {
+                "content": {
+                  "elements": [
+                    {
+                      "docs_link": null,
+                      "person": null,
+                      "text_run": {
+                        "text": "人工讨论：这张票的 SCOPE 是否太宽？"
+                      },
+                      "type": "text_run"
+                    }
+                  ]
+                },
+                "create_time": 1791994234,
+                "extra": {
+                  "image_list": null,
+                  "notify_extra": {
+                    "record": "reczz28NLqDRHkSp",
+                    "table": "tblZQsD8lnjliPcn",
+                    "view": "vewNQWab9E"
+                  }
+                },
+                "reply_id": "7696556632024550641",
+                "update_time": 1791994234,
+                "user_id": "ou_REDACTED"
+              }
+            ]
+          },
+          "solver_user_id": null,
+          "update_time": 1791994234,
+          "user_id": "ou_REDACTED"
+        }
+      ],
+      "page_token": "7696556632003579121"
+    },
+    "identity": "user",
+    "ok": true
+  }
+}
