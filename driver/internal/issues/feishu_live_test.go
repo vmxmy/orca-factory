@@ -218,6 +218,10 @@ func TestFeishuLive(t *testing.T) {
 		}
 		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["事件"].id, events); err != nil {
 			t.Errorf("delete 事件 IDs %v for 票据 IDs %v: %v", events, tickets, err)
+			return
+		}
+		if len(events) < creates.count(c.tables["事件"].id) {
+			return
 		}
 		if err := deleteLiveRecords(cleanupCtx, direct, c.base, c.tables["票据"].id, tickets); err != nil {
 			t.Errorf("delete 票据 IDs %v: %v", tickets, err)
@@ -346,7 +350,7 @@ func deleteLiveRecords(ctx context.Context, c *feishu.Client, base, table string
 }
 
 func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
-	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied", "delete notfound"} {
+	for _, scenario := range []string{"create readback failure", "write conflict retry", "same second other run", "claim conflict event rejected", "claim conflict event delayed", "claim conflict event denied", "claim conflict event delete denied", "delete notfound"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newFeishuFake(t)
 			tooEarly := loadFeishuRecording(t, "bot-tickets-delete-too-early.json")
@@ -408,6 +412,11 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 					table := parts[len(parts)-3]
 					deleted = append(deleted, body.IDs...)
 					deletedTables = append(deletedTables, table)
+					if scenario == "claim conflict event delete denied" && table == "tblE" {
+						rec := loadFeishuRecording(t, "bot-no-collaborator-write.json")
+						_ = json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "data": rec.Response.Data})
+						return
+					}
 					if scenario == "delete notfound" && len(deleted) == 1 {
 						if !slices.Equal(body.IDs, recordedDelete.IDs) {
 							t.Errorf("delete request %v, want recorded %v", body.IDs, recordedDelete.IDs)
@@ -464,6 +473,12 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 				failure = "global dependency failure"
 				want = []string{"recNew1"}
 			}
+			if scenario == "claim conflict event delete denied" {
+				want = []string{"recNew2"}
+				if !strings.Contains(string(out), "delete 事件 IDs") {
+					t.Fatalf("event deletion failure not reported: %s", out)
+				}
+			}
 			if scenario == "delete notfound" {
 				want = []string{recordedID, recordedID}
 			}
@@ -493,7 +508,12 @@ func TestFeishuLiveCleanupOnWriteFailure(t *testing.T) {
 			if scenario == "same second other run" {
 				remaining++
 			}
-			if len(f.rows["tblT"]) != remaining || len(f.rows["tblE"]) != 0 {
+			remainingEvents := 0
+			if scenario == "claim conflict event delete denied" {
+				remaining++
+				remainingEvents = 1
+			}
+			if len(f.rows["tblT"]) != remaining || len(f.rows["tblE"]) != remainingEvents {
 				t.Fatalf("remaining tickets=%v events=%v", f.rows["tblT"], f.rows["tblE"])
 			}
 		})
