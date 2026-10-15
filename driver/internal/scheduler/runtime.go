@@ -33,6 +33,7 @@ type OrcaClient interface {
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
 }
 type Runtime struct {
+	notifyClient         textSender
 	GitHub               *github.Client
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository

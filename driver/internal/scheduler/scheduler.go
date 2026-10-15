@@ -180,6 +180,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
+		var conflict *feishuEvidenceConflict
+		if errors.As(err, &conflict) && allowed[conflict.ticket.Repo] {
+			s.notifyFeishu(ctx, conflict.ticket)
+		}
 		var admission *linear.DiscoveryQuotaError
 		if errors.As(err, &admission) {
 			s.discoveryQuotaPaused = true
@@ -191,6 +195,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("scheduler snapshot failed")
 	}
 	snapshot = true
+	for _, t := range tickets {
+		if allowed[t.Repo] {
+			s.notifyFeishu(ctx, t)
+		}
+	}
 	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
 		for _, t := range tickets {

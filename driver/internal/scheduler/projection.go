@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"time"
 
+	issuebackend "github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
@@ -36,6 +38,25 @@ func (r *Runtime) snapshotComments(ctx context.Context, client LinearClient, iss
 		} else {
 			ids = append(ids, issue.ID)
 		}
+	}
+	if _, ok := client.(*issuebackend.Feishu); ok {
+		for _, issue := range issues {
+			history, err := client.ListComments(ctx, issue.ID)
+			if err != nil {
+				if strings.Contains(err.Error(), "evidence conflict") {
+					for path, repo := range r.Repositories {
+						if repo.Env["AGENT_FEISHU_PROJECT"] != issue.Project.ID {
+							continue
+						}
+						ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Title: issue.Title, URL: issue.URL, MergeProblem: err.Error()}
+						return nil, nil, &feishuEvidenceConflict{ticket: ticket, err: err}
+					}
+				}
+				return nil, nil, err
+			}
+			comments[issue.ID] = history
+		}
+		return comments, nil, nil
 	}
 	rows, err := readSnapshotComments(ctx, client, ids)
 	if err != nil {
