@@ -11,3 +11,5 @@
 `bot-event-*` 于 2026-10-15 用官方 Go SDK（`oapi-sdk-go/v3` v3.12.1）长连接录制，是 `im.message.receive_v1` 的原始事件体（schema 2.0），保存在 `event` 键下，未经 lark-cli 加工：群内新消息 @机器人（`bot-event-message-at.json`）、话题内 @机器人的回复（`bot-event-thread-at-reply.json`，带 `root_id`、`parent_id`、`thread_id`）。仅开通 `im:message.group_at_msg:readonly` 时，话题内不带 @ 的回复不投递；手打 “@名字” 而未点选成员不算提及，同样不投递。`bot-message-reply-in-thread.json` 为 `reply_in_thread=true` 的话题回复，返回 `thread_id`。发送者 open_id 脱敏为 `ou_REDACTED`，机器人 open_id 为 `ou_BOT_REDACTED`，union_id 为 `on_REDACTED` / `on_BOT_REDACTED`。
 
 开通 `im:message.group_msg` 后（2026-10-15），同一事件也投递不带 @ 的消息，同样用官方 Go SDK 原始录制：群内普通新消息（`bot-event-group-message-no-at.json`，无 `mentions`、无 `thread_id`）与话题内不带 @ 的回复（`bot-event-thread-reply-no-at.json`，带 `thread_id`、`root_id`，无 `mentions`）。
+
+`bot-reaction-*` 于 2026-10-15 以应用身份录制，接口为 `POST /open-apis/im/v1/messages/:message_id/reactions`（`emoji_type=THUMBSUP`），现有 `im:message:send_as_bot` 等权限即可：添加成功返回 `reaction_id`；对同一消息重复添加同一表情仍成功并返回同一 `reaction_id`（幂等）；消息不存在返回 `99992354`。

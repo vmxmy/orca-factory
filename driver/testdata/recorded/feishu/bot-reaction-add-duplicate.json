@@ -1,0 +1,27 @@
+{
+  "request": {
+    "body": {
+      "reaction_type": {
+        "emoji_type": "THUMBSUP"
+      }
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/im/v1/messages/om_x100b623d12ea80a4df66eb299dcbb6d/reactions"
+  },
+  "response": {
+    "data": {
+      "action_time": "1792054826650",
+      "operator": {
+        "operator_id": "cli_REDACTED",
+        "operator_type": "app"
+      },
+      "reaction_id": "3yjc6hjQAmE9IddylOl0HxISVVAhd_boVYqlpxEzo6ddGeA7P6GhvYJzQ9wyQj1y7ss7FMCamryRxToUeQt9xQ==",
+      "reaction_type": {
+        "emoji_type": "THUMBSUP"
+      }
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}
