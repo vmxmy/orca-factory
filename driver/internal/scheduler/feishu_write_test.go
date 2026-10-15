@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -149,18 +148,12 @@ func (f *feishuClaimBase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&in)
 		f.events++
-		id := "recE" + strconv.Itoa(f.events)
-		var links []feishu.LinkRef
-		if err := json.Unmarshal(in.Records[0]["fldETicket"], &links); err != nil {
-			f.t.Error(err)
-			return
-		}
-		row := map[string]any{"_id": id, "票据": links, "创建时间": "2026-10-15T00:10:00.000+08:00", "修改时间": "2026-10-15T00:10:00.000+08:00"}
+		row := map[string]any{"_id": "recE1", "票据": []feishu.LinkRef{{ID: "recA"}}, "创建时间": "2026-10-15T00:10:00.000+08:00", "修改时间": "2026-10-15T00:10:00.000+08:00"}
 		var body string
 		_ = json.Unmarshal(in.Records[0]["fldEBody"], &body)
 		row["正文"] = body
 		f.rows["tblE"] = append(f.rows["tblE"], row)
-		f.reply(w, map[string]any{"record_id_list": []string{id}})
+		f.reply(w, map[string]any{"record_id_list": []string{"recE1"}})
 	default:
 		f.t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 	}

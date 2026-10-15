@@ -152,5 +152,4 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `feishu.Client.SendText` 使用应用 tenant token，POST `/open-apis/im/v1/messages?receive_id_type=chat_id`；`content` 是包含 `text` 的 JSON 字符串。单次调用不重试。`TestFeishuNotifyRecorded` 回放 PR #418 的 `bot-message-send.json`、`bot-message-invalid-chat.json`（230001）、`bot-message-bot-not-in-chat.json`（230002），精确比较请求。缺权限测试复用 `bot-scope-denied.json` 的 99991672 与 permission violations 形态；该录制原请求是 Base 写入，不声称录制过消息接口缺权限。
 - `AGENT_FEISHU_NOTIFY_CHAT` 未配置时不写通知事件、不发消息。配置优先级为仓库 `agent-graph.env`、进程环境、机器 `driver.env`；显式空值关闭通知。应用凭据只读机器配置。非飞书账本不通知。
 - 调度器观察到转人或处置 Agent 归属、合并证据冲突、部署 `paused` 时通知；类别优先级为证据冲突、部署失败、转人。原因摘要折叠空白，先写事件 `通知: <类别> <摘要 sha256 前 12 位>`，已存在同票同标记则不再发送。发送失败或结果未知保留事件，不在以后轮次或重启后自动补发；事件读取或写入失败不发送，下轮可重新观察。通知错误只记 warn，不改变原调度结果。
-- 飞书事件被修改或关联冲突时，快照仍拒绝执行。调度器接收带票据身份的冲突错误，仅为通知去重读取原始事件正文和关联票据，不把这些行作为执行授权。直接调用 Snapshot（含 dry-run）不会通知。
-- `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、读写失败和发送失败；`TestFeishuNotifyEditedEvidence` 使用现有 Base 测试服务覆盖事件修改导致快照失败时的通知及重启去重；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。
+- `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、读写失败和发送失败；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。

@@ -33,7 +33,6 @@ type OrcaClient interface {
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
 }
 type Runtime struct {
-	notifyClient         textSender
 	GitHub               *github.Client
 	Clients              map[string]LinearClient
 	Repositories         map[string]config.Repository
@@ -225,24 +224,6 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 	for client, rows := range groups {
 		comments, projection, err := r.snapshotComments(ctx, client, rows)
 		if err != nil {
-			var failures *snapshotReadFailures
-			if errors.As(err, &failures) {
-				var conflicts []Ticket
-				for _, issue := range rows {
-					failure := failures.byID[issue.ID]
-					if failure == nil || !strings.Contains(failure.Error(), "evidence conflict") {
-						continue
-					}
-					path, ok := paths[issue.Project.ID]
-					if !ok {
-						path = paths[issue.Project.Name]
-					}
-					conflicts = append(conflicts, Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Title: issue.Title, URL: issue.URL, MergeProblem: failure.Error()})
-				}
-				if len(conflicts) != 0 {
-					err = &feishuEvidenceConflict{tickets: conflicts, err: err}
-				}
-			}
 			return nil, fmt.Errorf("ownership snapshot failed: %w", err)
 		}
 		for id, history := range comments {
