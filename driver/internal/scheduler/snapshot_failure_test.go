@@ -13,6 +13,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 )
@@ -90,11 +91,12 @@ func TestRecordedSnapshotFailureKeepsCause(t *testing.T) {
 }
 
 func TestSnapshotFailureKeepsCause(t *testing.T) {
-	decoder := json.NewDecoder(strings.NewReader(`{"SECRET-BODY":1}`))
-	decoder.DisallowUnknownFields()
-	decodeErr := decoder.Decode(&struct{}{})
-	if decodeErr == nil {
-		t.Fatal("decoder accepted an unknown field")
+	imported := func(envelope string) error {
+		_, err := issues.DecodeImportedComments(linear.Comment{Body: "<!-- orca-import-comments-v1: " + envelope + " -->\n\n"})
+		if err == nil {
+			t.Fatalf("imported envelope accepted: %s", envelope)
+		}
+		return err
 	}
 	for _, tc := range []struct {
 		name   string
@@ -107,10 +109,15 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 		hidden: []string{"lin_api_secret123"},
 		want:   []string{`"category":"other"`, "linear request rejected"},
 	}, {
-		name:   "decoded comment",
-		cause:  fmt.Errorf("ownership snapshot failed: %w", decodeErr),
+		name:   "imported unknown field",
+		cause:  fmt.Errorf("ownership snapshot failed: %w", imported(`{"SECRET-BODY":1}`)),
 		hidden: []string{"SECRET-BODY"},
-		want:   []string{`"category":"other"`, "ownership snapshot failed", "unknown field"},
+		want:   []string{`"category":"other"`, "ownership snapshot failed: invalid JSON"},
+	}, {
+		name:   "imported number",
+		cause:  fmt.Errorf("ownership snapshot failed: %w", imported(`{"comments":[{"body":12345678901234567890e9999}],"sha256":""}`)),
+		hidden: []string{"12345678901234567890e9999"},
+		want:   []string{`"category":"other"`, "ownership snapshot failed: invalid JSON"},
 	}, {
 		name: "evidence",
 		cause: &SnapshotEvidenceError{

@@ -4,10 +4,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
-	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -225,7 +226,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				}
 			}
 		}
-		reason := quotedText.ReplaceAllString(logx.RedactText(err.Error()), `"[REDACTED]"`)
+		reason := snapshotReason(err)
 		s.logger().Warn("scheduler snapshot failed", "category", category, "reason", reason)
 		return &snapshotError{reason: reason, err: err}
 	}
@@ -525,9 +526,22 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
 
-// Decoders quote the external text they reject, such as unknown comment JSON
-// fields, so quoted segments never reach logs or stderr.
-var quotedText = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+// Adapters return fixed-text errors, except JSON decoding of imported comment
+// history, whose stdlib messages quote the rejected input.
+func snapshotReason(err error) string {
+	text := err.Error()
+	root := err
+	for next := errors.Unwrap(root); next != nil; next = errors.Unwrap(root) {
+		root = next
+	}
+	var syntax *json.SyntaxError
+	var mismatch *json.UnmarshalTypeError
+	decoding := errors.As(root, &syntax) || errors.As(root, &mismatch) || strings.HasPrefix(root.Error(), "json: ")
+	if decoding && strings.HasSuffix(text, root.Error()) {
+		text = strings.TrimSuffix(text, root.Error()) + "invalid JSON"
+	}
+	return logx.RedactText(text)
+}
 
 // snapshotError text carries only the redacted reason; Unwrap keeps the cause.
 type snapshotError struct {
