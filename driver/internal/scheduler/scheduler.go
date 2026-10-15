@@ -5,11 +5,9 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"regexp"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -228,13 +226,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 		reason := quotedText.ReplaceAllString(logx.RedactText(err.Error()), `"[REDACTED]"`)
-		if category == "evidence" {
-			identifiers := make([]string, 0, len(evidence.Tickets))
-			for _, t := range evidence.Tickets {
-				identifiers = append(identifiers, t.Identifier)
-			}
-			reason = fmt.Sprintf("ownership evidence conflict on %d tickets: %s", len(identifiers), strings.Join(identifiers, ", "))
-		}
 		s.logger().Warn("scheduler snapshot failed", "category", category, "reason", reason)
 		return &snapshotError{reason: reason, err: err}
 	}
