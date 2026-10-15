@@ -3,6 +3,7 @@ package testsupport
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // IsolateStatus redirects every status output for the lifetime of a test
@@ -30,11 +31,18 @@ func IsolateStatus() func() {
 			panic(err)
 		}
 	}
-	// A production backend makes ledger subcommands re-exec os.Executable(),
-	// which under go test is the whole test binary and recurses without bound.
-	if err := os.Unsetenv("AGENT_ISSUE_BACKEND"); err != nil {
-		cleanup()
-		panic(err)
+	// Production configuration must never steer a unit test: AGENT_ISSUE_BACKEND
+	// makes ledger subcommands re-exec the test binary without bound, and the
+	// AGENT_TIER_* agent choice changes executor correction paths.
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(key, "AGENT_") {
+			continue
+		}
+		if err := os.Unsetenv(key); err != nil {
+			cleanup()
+			panic(err)
+		}
 	}
 	return cleanup
 }
