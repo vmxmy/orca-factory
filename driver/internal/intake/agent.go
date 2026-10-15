@@ -16,6 +16,12 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
+// excludeMarker keeps .intake/ (OF-33's per-turn ticket context) out of a
+// checkout's git status: it is Agent-visible working state, not a tracked
+// or even an untracked change the Agent could mistake for something to
+// report on.
+const excludeMarker = "/.intake/"
+
 // Turn is one agent invocation inside a thread conversation. Resume is false
 // only for the first turn, which creates the claude session with this ID.
 // Project is the zero value when the gateway has no projects configured.
@@ -35,7 +41,11 @@ const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.con
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
 	Timeout                               time.Duration
-	refresh                               sync.Mutex
+	// Tickets lists the project's ledger tickets for the .intake/tickets.md
+	// context (OF-33); nil for a gateway with no projects configured
+	// (pre-OF-32), which skips writing it.
+	Tickets func(context.Context) ([]TicketContext, error)
+	refresh sync.Mutex
 }
 
 func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
@@ -46,6 +56,7 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 			return "", err
 		}
 	}
+	r.writeTicketContext(ctx)
 	args := []string{"-p", "--output-format", "json", flag, t.Session}
 	if r.Model != "" {
 		args = append(args, "--model", r.Model)
@@ -97,5 +108,37 @@ func (r *Runner) update(ctx context.Context) error {
 	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: args, Timeout: time.Minute}); err != nil {
 		return errors.New("intake checkout update failed")
 	}
+	if err := excludeIntakeDir(ctx, r.Checkout); err != nil {
+		return errors.New("intake checkout exclude setup failed")
+	}
 	return nil
+}
+
+// excludeIntakeDir appends excludeMarker to the checkout's own
+// info/exclude, so .intake/ never shows as untracked. --git-path resolves
+// to a worktree's own info/exclude, not the main repository's; the call is
+// idempotent, since a fresh worktree gets a fresh info/exclude but a reused
+// one already carries the marker after its first update.
+func excludeIntakeDir(ctx context.Context, checkout string) error {
+	out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", checkout, "rev-parse", "--git-path", "info/exclude"}, Timeout: time.Minute})
+	if err != nil {
+		return err
+	}
+	path := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(checkout, path)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if strings.Contains(string(b), excludeMarker) {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(excludeMarker + "\n")
+	return errors.Join(err, f.Close())
 }

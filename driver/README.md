@@ -263,7 +263,8 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 追加一轮 `[网关]` 前缀的摘要请求，要求 Agent 只输出 `intake-summary-v1` 代码块
 （需求摘要、已定决策、未决问题、当前草稿四项）。回复带合格代码块时，网关轮换到
 一个新的 claude 会话 ID 并把摘要作为新会话首轮输入的前缀，此后该话题继续用新 ID；
-回复不合格时保留原会话和轮数，仅在 stderr 记录告警，下一轮消息仍用原 ID 续聊。
+回复不合格时保留原会话，轮数退回到上限的一半（向下取整），仅在 stderr 记录告警，
+下一轮消息仍用原 ID 续聊；再次请求摘要要等轮数重新达到上限，不是每轮都重试。
 
 每轮执行一次 `claude -p --output-format json`：首轮 `--session-id <新ID>`，之后
 `--resume <ID>`；消息正文经 stdin 传入。Agent 的安全边界：
@@ -279,6 +280,13 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 - 环境只含 `PATH` 与 `HOME`；模型与 effort 通过 `--model`、`--effort` 传入。
   飞书、GitHub 凭据不进入 Agent 进程。
 - `--restricted` 不加载用户技能目录，grilling 技能因此不可用；角色说明自带追问规则。
+
+每轮调用 Agent 前，网关把该项目票据主账本的在途票（不含已关闭的
+Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票号、状态、标题、
+依赖票号（OF-33）。该文件只读给 Agent，经检出的 `.git/info/exclude`（worktree 取
+`git rev-parse --git-path info/exclude` 的路径）忽略，不进 git。账本读取失败时文件
+保留上一份、首行注明“账本读取失败，内容可能过期（时间）”，不阻断对话；无项目表的
+单项目退回模式不写这份文件。
 
 在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
 `im.message.receive_v1`，申请 `im:message.group_at_msg:readonly` 和
