@@ -13,13 +13,19 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
-// Ledger is the part of a project's issues.Store the gateway writes through
-// (OF-15): List for dependency and duplicate lookups, Create for submission.
+// Ledger is the part of a project's issues.Store the gateway writes through:
+// List for dependency and duplicate lookups, Create for submission (OF-15);
+// Read, the event history and UpdateIssue for approval and rejection (OF-16).
 type Ledger interface {
 	List(context.Context) ([]issues.Task, error)
 	Create(context.Context, issues.CreateInput) (issues.Task, error)
+	Read(context.Context, string) (issues.Task, error)
+	ListComments(context.Context, string) ([]linear.Comment, error)
+	CreateComment(context.Context, string, string) (linear.Comment, error)
+	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
 }
 
 const (
@@ -324,7 +330,7 @@ func submit(ctx context.Context, ledger Ledger, thread string, pending []Pending
 	existing := map[string]issues.Task{}
 	for _, t := range tasks {
 		ids[t.Metadata.Identifier], ids[t.Metadata.ID] = t.Metadata.ID, t.Metadata.ID
-		if key, ok := markedKey(t.Description, thread); ok {
+		if marked, key, ok := intakeMarker(t.Description); ok && marked == thread {
 			existing[key] = t
 		}
 	}
@@ -373,24 +379,21 @@ func createTicket(ctx context.Context, ledger Ledger, p PendingTicket, ids map[s
 	return task, nil
 }
 
-// markedKey reports whether description carries this thread's marker and
-// which draft key it names ("" for a single-ticket draft).
-func markedKey(description, thread string) (string, bool) {
+// intakeMarker returns the thread and draft key ("" for a single-ticket
+// draft) from the marker line the gateway wrote into a ticket it submitted.
+func intakeMarker(description string) (thread, key string, ok bool) {
 	for _, line := range strings.Split(description, "\n") {
-		rest, ok := strings.CutPrefix(strings.TrimSpace(line), submitMarker)
-		if !ok {
-			continue
-		}
+		rest, found := strings.CutPrefix(strings.TrimSpace(line), submitMarker)
 		fields := strings.Fields(rest)
-		if len(fields) == 0 || fields[0] != thread {
+		if !found || len(fields) == 0 {
 			continue
 		}
 		if len(fields) > 1 {
-			return fields[1], true
+			key = fields[1]
 		}
-		return "", true
+		return fields[0], key, true
 	}
-	return "", false
+	return "", "", false
 }
 
 func submittedReply(tasks []string, approvers []string) string {
