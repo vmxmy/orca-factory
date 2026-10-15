@@ -14,7 +14,7 @@ func shellLedgerCommand(t *testing.T, dir string, args ...string) (int, string, 
 	t.Helper()
 	command := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--", "ledger-shell"}, args...)...)
 	command.Dir = dir
-	command.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "PATH=.:"+os.Getenv("PATH"), "AGENT_LINEAR_TEAM=TEST", "AGENT_LINEAR_PROJECT=project", "AGENT_LINEAR_COUNT_FILE="+filepath.Join(dir, "count"), "LEDGER_TEST_DIR="+dir)
+	command.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "AGENT_ISSUE_BACKEND=linear", "PATH=.:"+os.Getenv("PATH"), "AGENT_LINEAR_TEAM=TEST", "AGENT_LINEAR_PROJECT=project", "AGENT_LINEAR_COUNT_FILE="+filepath.Join(dir, "count"), "LEDGER_TEST_DIR="+dir)
 	var out, warnings bytes.Buffer
 	command.Stdout, command.Stderr = &out, &warnings
 	code := 0

@@ -474,20 +474,17 @@ func TurnStarted(r Receipt) bool {
 // BoardCard is the Orca workspace board metadata of one ticket worktree.
 // Zero Issue/PR and empty strings leave those Orca fields unchanged.
 type BoardCard struct {
-	Path, Status, DisplayName, Comment, LinearIssue, Parent string
-	Issue, PR                                               int
-	Unread                                                  bool
+	Path, Status, DisplayName, Comment, Parent string
+	Issue, PR                                  int
+	Unread                                     bool
 }
 
 // TicketCard builds the card for a ticket phase. A GitHub issue number links
-// natively; otherwise the identifier links as a Linear issue. The comment
-// always ends with exactly one `issue:` line so worktree pruning can map the
-// card back to its ticket.
+// natively; other tickets link only through the comment, which always ends
+// with exactly one `issue:` line so worktree pruning can map the card back to
+// its ticket.
 func TicketCard(path, identifier, title string, issue int, phase machine.Phase, detail string) BoardCard {
 	card := BoardCard{Path: path, Status: machine.BoardColumn(phase), DisplayName: strings.TrimSpace(identifier + " " + title), Issue: issue, Unread: phase == machine.PhaseResolver}
-	if issue == 0 {
-		card.LinearIssue = identifier
-	}
 	card.Comment = "driver: " + string(phase)
 	if detail != "" {
 		card.Comment += " · " + detail
@@ -508,7 +505,6 @@ func (c *Client) WorktreeSet(ctx context.Context, card BoardCard) (Receipt, erro
 	}
 	args := []string{"worktree", "set", "--worktree", "path:" + card.Path, "--workspace-status", card.Status}
 	args = add(args, "--display-name", card.DisplayName)
-	args = add(args, "--linear-issue", card.LinearIssue)
 	args = add(args, "--comment", card.Comment)
 	if card.Issue > 0 {
 		args = append(args, "--issue", strconv.Itoa(card.Issue))
