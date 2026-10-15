@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
@@ -178,6 +180,95 @@ func TestFeishuNotifyEditedEvidence(t *testing.T) {
 	}
 	if sends != 1 || base.events != 1 {
 		t.Fatalf("sends=%d events=%d", sends, base.events)
+	}
+}
+
+type namedProjectClient struct{ LinearClient }
+
+func (c namedProjectClient) Snapshot(ctx context.Context, projects []string, since time.Time) ([]linear.Issue, error) {
+	rows, err := c.LinearClient.Snapshot(ctx, projects, since)
+	for i := range rows {
+		rows[i].Project.ID = "recP1"
+	}
+	return rows, err
+}
+
+func TestFeishuNotifyEveryEvidenceConflict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, mapping := range []string{"project ID", "project name"} {
+		t.Run(mapping, func(t *testing.T) {
+			ctx := context.Background()
+			base := newFeishuClaimBase(t, true)
+			second := maps.Clone(base.rows["tblT"][0])
+			second["_id"], second["标题"], second["序号"], second["规范ID"] = "recB", "B", "NO.002", "22222222-2222-4333-8444-555555555555"
+			base.rows["tblT"] = append(base.rows["tblT"], second)
+			base.rows["tblE"] = []map[string]any{
+				{"_id": "recEditedA", "票据": []feishu.LinkRef{{ID: "recA"}}, "正文": "edited A", "创建时间": "2026-10-15T00:10:00.000+08:00", "修改时间": "2026-10-15T00:11:00.000+08:00"},
+				{"_id": "recEditedB", "票据": []feishu.LinkRef{{ID: "recB"}}, "正文": "edited B", "创建时间": "2026-10-15T00:10:00.000+08:00", "修改时间": "2026-10-15T00:11:00.000+08:00"},
+			}
+			var messages []string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.URL.Path != "/open-apis/im/v1/messages" {
+					base.ServeHTTP(w, req)
+					return
+				}
+				base.mu.Lock()
+				defer base.mu.Unlock()
+				var body struct{ Content string }
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Error(err)
+				}
+				messages = append(messages, body.Content)
+				if base.events != len(messages) {
+					t.Errorf("sent before event: events=%d messages=%d", base.events, len(messages))
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+			}))
+			defer server.Close()
+			t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			client, err := feishu.New(feishu.Options{Endpoint: server.URL, AppID: "cli_test", AppSecret: "secret"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := issues.NewFeishu(ctx, client, "BASE_TOKEN", "https://example.feishu.cn/base/BASE_TOKEN", feishuClaimRepo, issues.FeishuOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var reader LinearClient = store
+			if mapping == "project name" {
+				reader = namedProjectClient{store}
+			}
+			repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "BASE_TOKEN", "AGENT_FEISHU_PROJECT": feishuClaimRepo, "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+			for range 2 {
+				r := &Runtime{Clients: map[string]LinearClient{repo.Path: reader}, Repositories: map[string]config.Repository{repo.Path: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
+				s := setup(nil)
+				s.Config.Repositories, s.Backend = []config.Repository{repo}, r
+				if err := s.Tick(ctx); err == nil || err.Error() != "scheduler snapshot failed" {
+					t.Fatalf("tick must refuse conflicting evidence: %v", err)
+				}
+				if len(messages) != 2 || base.events != 2 {
+					t.Fatalf("messages=%v events=%d; want one per ticket", messages, base.events)
+				}
+			}
+			for _, identifier := range []string{"OF-1", "OF-2"} {
+				count := 0
+				for _, message := range messages {
+					if strings.Contains(message, identifier+" ") {
+						count++
+					}
+				}
+				if count != 1 {
+					t.Errorf("%s messages=%d, want 1: %v", identifier, count, messages)
+				}
+			}
+			for _, row := range base.rows["tblE"][2:] {
+				if !strings.HasPrefix(row["正文"].(string), "通知: 证据冲突 ") {
+					t.Errorf("unexpected event: %v", row)
+				}
+			}
+		})
 	}
 }
 

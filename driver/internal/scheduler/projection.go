@@ -3,11 +3,12 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
-	issuebackend "github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
@@ -38,25 +39,6 @@ func (r *Runtime) snapshotComments(ctx context.Context, client LinearClient, iss
 		} else {
 			ids = append(ids, issue.ID)
 		}
-	}
-	if _, ok := client.(*issuebackend.Feishu); ok {
-		for _, issue := range issues {
-			history, err := client.ListComments(ctx, issue.ID)
-			if err != nil {
-				if strings.Contains(err.Error(), "evidence conflict") {
-					for path, repo := range r.Repositories {
-						if repo.Env["AGENT_FEISHU_PROJECT"] != issue.Project.ID {
-							continue
-						}
-						ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Title: issue.Title, URL: issue.URL, MergeProblem: err.Error()}
-						return nil, nil, &feishuEvidenceConflict{ticket: ticket, err: err}
-					}
-				}
-				return nil, nil, err
-			}
-			comments[issue.ID] = history
-		}
-		return comments, nil, nil
 	}
 	rows, err := readSnapshotComments(ctx, client, ids)
 	if err != nil {
@@ -107,6 +89,26 @@ func (r *Runtime) verifyFreshOwnership(ctx context.Context, client LinearClient,
 	return issue, nil
 }
 
+type snapshotReadFailures struct {
+	byID map[string]error
+}
+
+func (e *snapshotReadFailures) Error() string {
+	var messages []string
+	for _, id := range slices.Sorted(maps.Keys(e.byID)) {
+		messages = append(messages, id+": "+e.byID[id].Error())
+	}
+	return strings.Join(messages, "; ")
+}
+
+func (e *snapshotReadFailures) Unwrap() []error {
+	var failures []error
+	for _, id := range slices.Sorted(maps.Keys(e.byID)) {
+		failures = append(failures, e.byID[id])
+	}
+	return failures
+}
+
 func readSnapshotComments(ctx context.Context, client LinearClient, ids []string) (map[string][]linear.Comment, error) {
 	if batch, ok := client.(interface {
 		ListCommentsBatch(context.Context, []string) (map[string][]linear.Comment, error)
@@ -114,12 +116,17 @@ func readSnapshotComments(ctx context.Context, client LinearClient, ids []string
 		return batch.ListCommentsBatch(ctx, ids)
 	}
 	rows := map[string][]linear.Comment{}
+	failures := map[string]error{}
 	for _, id := range ids {
 		comments, err := client.ListComments(ctx, id)
 		if err != nil {
-			return nil, err
+			failures[id] = err
+			continue
 		}
 		rows[id] = comments
+	}
+	if len(failures) != 0 {
+		return nil, &snapshotReadFailures{byID: failures}
 	}
 	return rows, nil
 }

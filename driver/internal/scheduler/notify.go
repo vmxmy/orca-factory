@@ -47,7 +47,7 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	}
 	client := r.Clients[t.Repo]
 	comments, err := client.ListComments(ctx, t.ID)
-	if err != nil && (category != "证据冲突" || !strings.Contains(err.Error(), "evidence conflict")) {
+	if err != nil && category != "证据冲突" {
 		return fmt.Errorf("notification event read: %w", err)
 	}
 	conflicted := err != nil
@@ -104,8 +104,8 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 }
 
 type feishuEvidenceConflict struct {
-	ticket Ticket
-	err    error
+	tickets []Ticket
+	err     error
 }
 
 func (e *feishuEvidenceConflict) Error() string { return e.err.Error() }

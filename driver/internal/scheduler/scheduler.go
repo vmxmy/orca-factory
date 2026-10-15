@@ -181,8 +181,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
 		var conflict *feishuEvidenceConflict
-		if errors.As(err, &conflict) && allowed[conflict.ticket.Repo] {
-			s.notifyFeishu(ctx, conflict.ticket)
+		if errors.As(err, &conflict) {
+			for _, t := range conflict.tickets {
+				if allowed[t.Repo] {
+					s.notifyFeishu(ctx, t)
+				}
+			}
 		}
 		var admission *linear.DiscoveryQuotaError
 		if errors.As(err, &admission) {
