@@ -51,6 +51,9 @@ Commands:
       [写入] 清理已结束的定时任务 worktree，需要 AGENT_REPO_PATH 与 AGENT_RUN_WORKTREE_PREFIX。
   feishu-gateway
       [写入] 飞书长连接需求入口，按群与白名单过滤并回复话题。
+  projects --json
+      [只读] 发现本机可接管项目：联立 Orca 仓库清单、飞书项目表与流水线 check，
+      输出可接管与不接管（附原因）两个列表，不读 driver.toml 的 repositories。
   install [--dry-run]
       [写入] 把当前二进制装到 ~/.local/bin，写 systemd user unit 并 daemon-reload。
       --dry-run 只打印步骤。
