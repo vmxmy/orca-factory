@@ -8,12 +8,13 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
-	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
@@ -225,9 +226,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				}
 			}
 		}
-		cause := redactedError{err}
-		s.logger().Warn("scheduler snapshot failed", "category", category, "error", cause)
-		return fmt.Errorf("scheduler snapshot failed: %w", cause)
+		reason := snapshotReason(err)
+		s.logger().Warn("scheduler snapshot failed", "category", category, "reason", reason)
+		return fmt.Errorf("scheduler snapshot failed: %w", snapshotCause{category: category, reason: reason, err: err})
 	}
 	snapshot = true
 	status.PushObservation(s.clock(), func(view *status.View) {
@@ -525,9 +526,46 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
 
-// redactedError keeps the original error reachable through Unwrap while its
-// text carries no credentials.
-type redactedError struct{ err error }
+// snapshotCause keeps the original error reachable through Unwrap while its
+// text carries only a fixed reason, never downstream bodies or credentials.
+type snapshotCause struct {
+	category, reason string
+	err              error
+}
 
-func (e redactedError) Error() string { return logx.RedactText(e.err.Error()) }
-func (e redactedError) Unwrap() error { return e.err }
+func (e snapshotCause) Error() string { return e.category + ": " + e.reason }
+func (e snapshotCause) Unwrap() error { return e.err }
+
+func snapshotReason(err error) string {
+	var admission *linear.DiscoveryQuotaError
+	var evidence *SnapshotEvidenceError
+	var global *infra.Global
+	var transient *infra.Transient
+	var httpValue infra.HTTPError
+	var httpPointer *infra.HTTPError
+	var ticket *infra.Ticket
+	switch {
+	case errors.As(err, &admission):
+		return admission.Error()
+	case errors.As(err, &evidence):
+		identifiers := make([]string, 0, len(evidence.Tickets))
+		for _, t := range evidence.Tickets {
+			identifiers = append(identifiers, t.Identifier)
+		}
+		return fmt.Sprintf("ownership evidence conflict on %d tickets: %s", len(identifiers), strings.Join(identifiers, ", "))
+	case errors.As(err, &global):
+		return fmt.Sprintf("global dependency failure (%s)", global.Dep)
+	case errors.As(err, &transient):
+		return transient.Error()
+	case errors.As(err, &httpValue):
+		return fmt.Sprintf("HTTP %d", httpValue.StatusCode)
+	case errors.As(err, &httpPointer):
+		return fmt.Sprintf("HTTP %d", httpPointer.StatusCode)
+	case errors.As(err, &ticket):
+		return ticket.Error()
+	}
+	for next := errors.Unwrap(err); next != nil; next = errors.Unwrap(err) {
+		err = next
+	}
+	return fmt.Sprintf("unclassified error <%T>", err)
+}

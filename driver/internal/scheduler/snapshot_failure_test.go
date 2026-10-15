@@ -21,26 +21,51 @@ func (f *failingSnapshotBackend) Snapshot(context.Context, []config.Repository) 
 }
 
 func TestSnapshotFailureKeepsCause(t *testing.T) {
-	cause := errors.New("linear request rejected: lin_api_secret123 not allowed")
-	f := &failingSnapshotBackend{err: cause}
-	s := setup(&f.fakeBackend)
-	s.Backend = f
-	var logs bytes.Buffer
-	s.Logger = logx.New("scheduler", &logs)
+	for _, tc := range []struct {
+		name   string
+		cause  error
+		hidden []string
+		want   []string
+	}{{
+		name:   "unclassified",
+		cause:  errors.New(`linear request rejected: {"errors":[{"message":"票正文 SECRET-BODY lin_api_secret123"}]}`),
+		hidden: []string{"SECRET-BODY", "lin_api_secret123", "linear request rejected"},
+		want:   []string{`"category":"other"`, "unclassified error", "*errors.errorString"},
+	}, {
+		name: "evidence",
+		cause: &SnapshotEvidenceError{
+			Tickets: []Ticket{{Identifier: "OF-9", Repo: "/repo"}},
+			Err:     errors.New("comment body SECRET-BODY"),
+		},
+		hidden: []string{"SECRET-BODY", "comment body"},
+		want:   []string{`"category":"evidence"`, "OF-9"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &failingSnapshotBackend{err: tc.cause}
+			s := setup(&f.fakeBackend)
+			s.Backend = f
+			var logs bytes.Buffer
+			s.Logger = logx.New("scheduler", &logs)
 
-	err := s.Tick(context.Background())
+			err := s.Tick(context.Background())
 
-	if !errors.Is(err, cause) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: ") {
-		t.Fatalf("err=%v", err)
-	}
-	if !strings.Contains(err.Error(), "linear request rejected") || strings.Contains(err.Error(), "lin_api_secret123") {
-		t.Fatalf("returned error must keep the reason and hide credentials: %v", err)
-	}
-	out := logs.String()
-	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"category":"other"`) || !strings.Contains(out, "linear request rejected") {
-		t.Fatalf("log must carry category and reason: %s", out)
-	}
-	if strings.Contains(out, "lin_api_secret123") {
-		t.Fatalf("log leaked credential: %s", out)
+			if !errors.Is(err, tc.cause) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: ") {
+				t.Fatalf("err=%v", err)
+			}
+			out := logs.String()
+			if !strings.Contains(out, `"level":"WARN"`) {
+				t.Fatalf("log must be WARN: %s", out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Fatalf("log missing %q: %s", want, out)
+				}
+			}
+			for _, secret := range tc.hidden {
+				if strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
+					t.Fatalf("leaked %q: err=%v log=%s", secret, err, out)
+				}
+			}
+		})
 	}
 }
