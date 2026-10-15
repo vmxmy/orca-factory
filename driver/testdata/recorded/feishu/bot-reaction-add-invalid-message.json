@@ -1,0 +1,22 @@
+{
+  "request": {
+    "body": {
+      "reaction_type": {
+        "emoji_type": "THUMBSUP"
+      }
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/im/v1/messages/om_x100b000000000000000000000000000/reactions"
+  },
+  "response": {
+    "error": {
+      "code": 99992354,
+      "message": "The request you send is not a valid {open_message_id} or not exists, and the example value is {om_da5****************dfe}. Invalid ids: [om_x100b000000000000000000000000000] . Please see field_violations for details and refer to API documentation to correct accordingly and resubmit",
+      "subtype": "unknown",
+      "type": "api"
+    },
+    "identity": "bot",
+    "ok": false
+  }
+}
