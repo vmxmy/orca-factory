@@ -1,6 +1,6 @@
 # orca-factory 流水线
 
-把 Linear 票自动变成合并到 main 的代码：intake 建票，coordinator 领票并编排 worker 与 reviewer，gate 判定结果。
+把票据主账本中的票自动变成合并到 main 的代码：intake 建票，coordinator 领票并编排 worker 与 reviewer，gate 判定结果。
 
 ## 角色
 

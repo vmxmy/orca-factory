@@ -250,7 +250,7 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 ## 可调参数（driver.toml）
 
-`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。已部署 driver.toml 中残留的 `[linear]` 节不再被读取，加载时忽略，可以删除。
 
 `factory_root`（支持 `~/` 展开）是本机 orca-factory 生产检出路径，
 调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`

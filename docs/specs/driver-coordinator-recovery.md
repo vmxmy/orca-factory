@@ -2,6 +2,8 @@
 
 日期：2026-10-07。状态：实现前基线已核实。
 
+Linear 已退役（OF-28），driver 只支持 github 与 feishu 账本；下文 Linear 内容是当时的历史记录。
+
 ## 问题与事实
 
 目标是由 driver serve 独立完成定时扫描、认领、派发与恢复，不依赖 Orca 定时 Agent。现有 main 已有 scheduler.Serve 循环、单实例锁、Tick、Apply、Launch；AutomationDisabled 明确要求旧自动化关闭。因此不新增第二个协调循环，也不重新启用 agent-linear-scan。

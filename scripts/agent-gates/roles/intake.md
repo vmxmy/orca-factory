@@ -14,7 +14,7 @@
   - 拆依赖：被依赖的先建，完整回读其 canonical ID。GitHub 在正文写 `DEPENDENCIES: {"blockers":["<上游canonical ID>"],"related":[]}`，建票 JSON 的 `blockers`、`related` 与正文一致；无依赖也必须显式写空数组。
   - GitHub 配置使用 `$AGENT_GH_REPO`，把 `title`、`description`、`state:"Todo"`、`labels:["ready-for-agent"]`、`estimate`、完整依赖数组写入暂存 JSON 文件，不填迁移用的 `id` / `identifier`：
     `scripts/agent-gates/agent-graph.sh issues create --input <JSON文件>`。
-  - 对已存在的原生票，先核对正文与完整依赖，再 `issues adopt --id <ID> --input <依赖JSON>`；未纳管票可见但不能自动领取。旧 Linear 配置的建票仍通过 `issues save-issue --team <KEY> --project $AGENT_LINEAR_PROJECT ...`，不得在 GitHub 模式调用此路径。
+  - 对已存在的原生票，先核对正文与完整依赖，再 `issues adopt --id <ID> --input <依赖JSON>`；未纳管票可见但不能自动领取。
 - `auto-failed` 票由 resolver 接管：读取处置进度并汇报；不清空失败标签、预算或历史记录来重开执行。
 - 汇报：`scripts/agent-gates/agent-graph.sh ledger stats`（按 lane、按 tier 的首跑通过率）；`scripts/agent-gates/agent-graph.sh issues list-issues --json` 过滤本周 Done。
 

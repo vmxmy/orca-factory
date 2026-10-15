@@ -20,7 +20,7 @@ bin/orca-factory check .
 echo "== omc-ratchet"
 omc_count=$( { grep -ro '\.omc' core || [ "$?" -eq 1 ]; } | wc -l | tr -d '[:space:]')
 if [ "$omc_count" -gt "$OMC_BASELINE" ]; then
-  echo "请把产物放进 Linear/GitHub/Orca，或先降低基线再提交（当前次数：${omc_count}，基线：${OMC_BASELINE}）" >&2
+  echo "请把产物放进票据主账本/GitHub/Orca，或先降低基线再提交（当前次数：${omc_count}，基线：${OMC_BASELINE}）" >&2
   exit 1
 fi
 

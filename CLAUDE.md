@@ -49,8 +49,8 @@ flowchart LR
     R --> S
 ```
 
-- `driver/cmd/driver/serve.go` 组装常驻调度器并持有单实例锁。`internal/scheduler` 发现与认领票、恢复执行器、按仓库推进 FIFO 合并队列。当前 driver 不依赖定时 coordinator；同仓库旧 `agent-linear-scan` 必须关闭。根 README 的定时 coordinator 流程是另一条链路，不能与 driver 同时领票。
-- `internal/machine` 只计算状态转换和待执行效果，不做 I/O。`internal/executor` 执行单票派工、gate、review、correction 与 PR 交接；`internal/linear`、`github`、`orca` 和 `runx` 负责外部边界。gate 验证已推送的固定 head，不使用 worker 的未提交内容。
+- `driver/cmd/driver/serve.go` 组装常驻调度器并持有单实例锁。`internal/scheduler` 发现与认领票、恢复执行器、按仓库推进 FIFO 合并队列。driver 不依赖定时 coordinator；定时 coordinator 已退役，`install.sh` 不再安装它。已安装仓库中旧的 `agent-linear-scan` 定时任务必须关闭，否则 driver 拒绝认领。
+- `internal/machine` 只计算状态转换和待执行效果，不做 I/O。`internal/executor` 执行单票派工、gate、review、correction 与 PR 交接；`internal/issues`、`github`、`feishu`、`orca` 和 `runx` 负责外部边界；共享票据类型在 `internal/task`。gate 验证已推送的固定 head，不使用 worker 的未提交内容。
 - 合并事实来自配置选定的票据主账本评论中的 `merge-handoff-v1`、`merge-progress-v1` 和 GitHub 回读。交接冻结 head、基线、gate/review 证据与队列身份；本地执行器 checkpoint 用于派工恢复，不替代合并事实。缺失或冲突证据导致等待，不能据此重派或放行。部署与 smoke 确认通过后才写 Done、放行下一 PR。
 - driver 把每张票的阶段同步到 Orca workspace 看板（列与映射见 `driver/README.md` 的“Orca 看板”，自定义列由 `bin/orca-factory board-columns` 安装）。看板与 `driver status` 展示观察数据，不是合并或恢复授权；状态快照可能过期。
 
