@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					if id != *event.Event.Message.MessageId {
 						t.Errorf("reply id %s", id)
 					}
-					want := "已收到，需求整理功能即将上线"
+					want := "已整理" + continueHint
 					if scenario == "denied" {
 						want = "无权限"
 					}
@@ -66,7 +67,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					return nil
 				}
 				dir := t.TempDir()
-				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, reply)
+				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, fixedAgent, reply)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -79,7 +80,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					})
 				}
 				wg.Wait()
-				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, reply)
+				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, fixedAgent, reply)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -103,12 +104,14 @@ func TestFeishuGatewayCorruptState(t *testing.T) {
 	if err := os.WriteFile(dir+"/recent.json", []byte("broken"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir, "chat", "bot", []string{"user"}, nil); err == nil {
+	if _, err := New(dir, "chat", "bot", []string{"user"}, 1, nil, nil); err == nil {
 		t.Fatal("corrupt state accepted")
 	}
 }
 
 func ptr(s string) *string { return &s }
+
+func fixedAgent(context.Context, Turn) (string, error) { return "已整理", nil }
 
 // The recorder stores the decoded SDK response rather than the OpenAPI envelope.
 // Only the code/data wrapper and token endpoint below are synthetic.
@@ -152,7 +155,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 		} else if err := json.Unmarshal([]byte(raw), &content); err != nil {
 			t.Error(err)
 		}
-		if content["text"] != "已收到，需求整理功能即将上线" {
+		if content["text"] != "已整理"+continueHint {
 			t.Errorf("content=%v", content)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-token" {
@@ -167,7 +170,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, client.ReplyInThread)
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, fixedAgent, client.ReplyInThread)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,14 +196,14 @@ func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
 	send := func(context.Context, string, string) error { calls++; return errors.New("send unconfirmed") }
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, send)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, fixedAgent, send)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Handle(context.Background(), event); err == nil {
 		t.Fatal("send error hidden")
 	}
-	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, send)
+	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, fixedAgent, send)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,10 +214,10 @@ func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
 		t.Fatalf("uncertain send replayed %d times", calls)
 	}
 	event.Event.Message.MessageId = ptr("om_new")
-	if err := os.Remove(g.path); err != nil {
+	if err := os.Remove(filepath.Join(dir, "recent.json")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(g.path, 0700); err != nil {
+	if err := os.Mkdir(filepath.Join(dir, "recent.json"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Handle(context.Background(), event); err == nil {

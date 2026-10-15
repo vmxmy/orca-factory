@@ -95,10 +95,23 @@ func TestFeishuGatewayInstall(t *testing.T) {
 // Bootstrap and WebSocket transport are synthetic; message contracts are
 // exercised separately against PR #420 recordings.
 func TestFeishuGatewayReconnectAndShutdown(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home, repo := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/bin/true")
 	for _, key := range gatewayKeys[:5] {
 		t.Setenv(key, "test")
+	}
+	for path, content := range map[string]string{
+		filepath.Join(home, ".config/orca-factory/driver.toml"):    "repositories = [\"" + repo + "\"]\n",
+		filepath.Join(repo, "scripts/agent-gates/agent-graph.env"): "AGENT_ISSUE_BACKEND=feishu\nAGENT_TIER_STRONG='claude:claude-opus-5-5:high'\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	accepted := make(chan *websocket.Conn, 4)
 	upgrader := websocket.Upgrader{}
