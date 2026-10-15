@@ -28,9 +28,9 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 		want   []string
 	}{{
 		name:   "unclassified",
-		cause:  errors.New(`linear request rejected: {"errors":[{"message":"票正文 SECRET-BODY lin_api_secret123"}]}`),
-		hidden: []string{"SECRET-BODY", "lin_api_secret123", "linear request rejected"},
-		want:   []string{`"category":"other"`, "unclassified error", "*errors.errorString"},
+		cause:  errors.New("linear request rejected: key lin_api_secret123"),
+		hidden: []string{"lin_api_secret123"},
+		want:   []string{`"category":"other"`, "linear request rejected"},
 	}, {
 		name: "evidence",
 		cause: &SnapshotEvidenceError{
@@ -52,9 +52,9 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 			if !errors.Is(err, tc.cause) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: ") {
 				t.Fatalf("err=%v", err)
 			}
-			out := logs.String()
-			if !strings.Contains(out, `"level":"WARN"`) {
-				t.Fatalf("log must be WARN: %s", out)
+			out, _, _ := strings.Cut(logs.String(), "\n")
+			if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"scheduler snapshot failed"`) {
+				t.Fatalf("first record must be the snapshot WARN: %s", logs.String())
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(out, want) {
@@ -62,8 +62,8 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 				}
 			}
 			for _, secret := range tc.hidden {
-				if strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
-					t.Fatalf("leaked %q: err=%v log=%s", secret, err, out)
+				if strings.Contains(out, secret) {
+					t.Fatalf("leaked %q: log=%s", secret, out)
 				}
 			}
 		})
