@@ -134,15 +134,8 @@ func New(dir, chat, bot string, users, approvers []string, concurrency int, proj
 		}
 		maxTurns = n
 	}
-	seen := map[string]bool{}
-	for _, p := range projects {
-		if p.Prefix == "" {
-			return nil, errors.New("intake project prefix required")
-		}
-		if seen[p.Prefix] {
-			return nil, errors.New("intake project prefix duplicated")
-		}
-		seen[p.Prefix] = true
+	if err := validateProjects(projects); err != nil {
+		return nil, err
 	}
 	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, approvers: approvers, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
@@ -158,6 +151,60 @@ func New(dir, chat, bot string, users, approvers []string, concurrency int, proj
 		return nil, err
 	}
 	return g, nil
+}
+
+func validateProjects(projects []Project) error {
+	seen := map[string]bool{}
+	for _, p := range projects {
+		if p.Prefix == "" {
+			return errors.New("intake project prefix required")
+		}
+		if seen[p.Prefix] {
+			return errors.New("intake project prefix duplicated")
+		}
+		seen[p.Prefix] = true
+	}
+	return nil
+}
+
+// SetProjects merges a freshly discovered project set into the gateway's
+// routable projects (OF-42): a new Feishu topic rediscovers the live Orca
+// repository inventory and ledger project table before picking a project,
+// since both can change while this long-running gateway keeps serving older
+// topics. fresh entries take priority over a same-prefix stale one; a stale
+// project absent from fresh is kept (after every fresh entry, in its prior
+// order) so a thread that already committed to it keeps working.
+func (g *Gateway) SetProjects(fresh []Project) error {
+	if err := validateProjects(fresh); err != nil {
+		return err
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	seen := make(map[string]bool, len(fresh))
+	merged := append([]Project{}, fresh...)
+	for _, p := range fresh {
+		seen[p.Prefix] = true
+	}
+	for _, stale := range g.projects {
+		if !seen[stale.Prefix] {
+			merged = append(merged, stale)
+			seen[stale.Prefix] = true
+		}
+	}
+	g.projects = merged
+	return nil
+}
+
+func (g *Gateway) projectsSnapshot() []Project {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.projects
+}
+
+func (g *Gateway) hasProjects() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.projects) > 0
 }
 
 func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) error {
@@ -227,7 +274,7 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
 	}
-	if len(g.projects) > 0 && session.Project == "" && (!resume || session.PendingPrompt != "") {
+	if g.hasProjects() && session.Project == "" && (!resume || session.PendingPrompt != "") {
 		return g.selectProject(ctx, id, thread, path, session, resume, sender, prompt)
 	}
 	if resume && prompt == confirmCommand {
@@ -287,7 +334,7 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 		}
 		return g.reply(ctx, id, endedReply)
 	}
-	if len(g.projects) > 0 && session.Project == "" && session.PendingPrompt != "" {
+	if g.hasProjects() && session.Project == "" && session.PendingPrompt != "" {
 		return g.selectProject(ctx, id, thread, path, session, true, sender, prompt)
 	}
 	if prompt == confirmCommand {

@@ -185,6 +185,69 @@ func TestIntakeProjectSelection(t *testing.T) {
 	}
 }
 
+// TestIntakeProjectSelectionDiscoveryReason covers OF-42: a project the
+// discovery package rejected (e.g. its pipeline check failed) carries that
+// specific reason, and selecting it by marker replies with the reason
+// instead of the generic "本机未配置仓库" message.
+func TestIntakeProjectSelectionDiscoveryReason(t *testing.T) {
+	rejected := Project{Name: "flaky", Remote: "github.com/vmxmy/flaky", Prefix: "FLK", Enabled: true, Reason: "check 失败"}
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{rejected}, "", func(context.Context, Turn) (string, error) {
+		t.Fatal("agent called for a rejected project")
+		return "", nil
+	}, func(_ context.Context, _, text string) error {
+		if !strings.Contains(text, "check 失败") {
+			t.Errorf("reply=%q, want it to contain the discovery reason", text)
+		}
+		return nil
+	}, noopReact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := recordedEvent(t, "bot-event-message-at")
+	event.Event.Message.MessageId = ptr("om_reject_reason")
+	event.Event.Message.Content = ptr(`{"text":"@_user_1 #FLK 帮我整理这个需求"}`)
+	if err := g.Handle(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestSetProjects covers OF-42's merge semantics: a fresh discovery result
+// replaces a same-prefix project but a stale one absent from it survives, so
+// a thread that already committed to a project keeps working even if a
+// later rediscovery (triggered by a different topic) no longer reports it.
+func TestSetProjects(t *testing.T) {
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1,
+		[]Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}},
+		"", noopAgent, noopReply, noopReact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.SetProjects([]Project{{Prefix: "ZII", Name: "ziikoo", Enabled: true, Repo: "/repo/zii"}}); err != nil {
+		t.Fatal(err)
+	}
+	of, ok := g.findProject("OF", "")
+	if !ok || of.Repo != "/repo/of" {
+		t.Fatalf("stale project OF dropped: %+v", g.projectsSnapshot())
+	}
+	zii, ok := g.findProject("ZII", "")
+	if !ok || zii.Repo != "/repo/zii" {
+		t.Fatalf("fresh project ZII missing: %+v", g.projectsSnapshot())
+	}
+	if err := g.SetProjects([]Project{{Prefix: "OF", Name: "orca-factory", Enabled: false}}); err != nil {
+		t.Fatal(err)
+	}
+	of, ok = g.findProject("OF", "")
+	if !ok || of.Enabled {
+		t.Fatalf("fresh OF did not override stale: %+v", of)
+	}
+	if err := g.SetProjects([]Project{{Prefix: "DUP"}, {Prefix: "DUP"}}); err == nil {
+		t.Fatal("duplicate prefix accepted")
+	}
+}
+
+func noopAgent(context.Context, Turn) (string, error) { return "", nil }
+func noopReply(context.Context, string, string) error { return nil }
+
 func TestProjectMarkerOnlyAtMessageStart(t *testing.T) {
 	for _, tc := range []struct{ in, prefix, name, rest string }{
 		{"#OF 给 status 加一列", "OF", "", "给 status 加一列"},
