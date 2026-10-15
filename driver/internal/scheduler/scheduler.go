@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -226,7 +227,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				}
 			}
 		}
-		reason := logx.RedactText(err.Error())
+		reason := quotedText.ReplaceAllString(logx.RedactText(err.Error()), `"[REDACTED]"`)
 		if category == "evidence" {
 			identifiers := make([]string, 0, len(evidence.Tickets))
 			for _, t := range evidence.Tickets {
@@ -235,7 +236,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = fmt.Sprintf("ownership evidence conflict on %d tickets: %s", len(identifiers), strings.Join(identifiers, ", "))
 		}
 		s.logger().Warn("scheduler snapshot failed", "category", category, "reason", reason)
-		return fmt.Errorf("scheduler snapshot failed: %w", err)
+		return &snapshotError{reason: reason, err: err}
 	}
 	snapshot = true
 	status.PushObservation(s.clock(), func(view *status.View) {
@@ -532,3 +533,16 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 }
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
+
+// Decoders quote the external text they reject, such as unknown comment JSON
+// fields, so quoted segments never reach logs or stderr.
+var quotedText = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+
+// snapshotError text carries only the redacted reason; Unwrap keeps the cause.
+type snapshotError struct {
+	reason string
+	err    error
+}
+
+func (e *snapshotError) Error() string { return "scheduler snapshot failed: " + e.reason }
+func (e *snapshotError) Unwrap() error { return e.err }

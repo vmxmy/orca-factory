@@ -3,7 +3,9 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,6 +23,12 @@ func (f *failingSnapshotBackend) Snapshot(context.Context, []config.Repository) 
 }
 
 func TestSnapshotFailureKeepsCause(t *testing.T) {
+	decoder := json.NewDecoder(strings.NewReader(`{"SECRET-BODY":1}`))
+	decoder.DisallowUnknownFields()
+	decodeErr := decoder.Decode(&struct{}{})
+	if decodeErr == nil {
+		t.Fatal("decoder accepted an unknown field")
+	}
 	for _, tc := range []struct {
 		name   string
 		cause  error
@@ -31,6 +39,11 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 		cause:  errors.New("linear request rejected: key lin_api_secret123"),
 		hidden: []string{"lin_api_secret123"},
 		want:   []string{`"category":"other"`, "linear request rejected"},
+	}, {
+		name:   "decoded comment",
+		cause:  fmt.Errorf("ownership snapshot failed: %w", decodeErr),
+		hidden: []string{"SECRET-BODY"},
+		want:   []string{`"category":"other"`, "ownership snapshot failed", "unknown field"},
 	}, {
 		name: "evidence",
 		cause: &SnapshotEvidenceError{
@@ -52,18 +65,19 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 			if !errors.Is(err, tc.cause) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: ") {
 				t.Fatalf("err=%v", err)
 			}
-			out, _, _ := strings.Cut(logs.String(), "\n")
-			if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, `"msg":"scheduler snapshot failed"`) {
-				t.Fatalf("first record must be the snapshot WARN: %s", logs.String())
+			out := logs.String()
+			warn, _, _ := strings.Cut(out, "\n")
+			if !strings.Contains(warn, `"level":"WARN"`) || !strings.Contains(warn, `"msg":"scheduler snapshot failed"`) {
+				t.Fatalf("first record must be the snapshot WARN: %s", out)
 			}
 			for _, want := range tc.want {
-				if !strings.Contains(out, want) {
-					t.Fatalf("log missing %q: %s", want, out)
+				if !strings.Contains(warn, want) {
+					t.Fatalf("WARN missing %q: %s", want, warn)
 				}
 			}
 			for _, secret := range tc.hidden {
-				if strings.Contains(out, secret) {
-					t.Fatalf("leaked %q: log=%s", secret, out)
+				if strings.Contains(err.Error(), secret) || strings.Contains(out, secret) {
+					t.Fatalf("leaked %q: err=%v log=%s", secret, err, out)
 				}
 			}
 		})
