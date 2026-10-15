@@ -130,12 +130,8 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if err := deploymentConfig(env); err != nil {
 		return err
 	}
-	if r.GitHub == nil {
-		var err error
-		r.GitHub, err = github.New(github.Options{HTTPTimeout: r.Tuning.GitHub.HTTPTimeout})
-		if err != nil {
-			return err
-		}
+	if _, err := r.githubClient(); err != nil {
+		return err
 	}
 	owner, repo, ok := strings.Cut(h.Repository, "/")
 	if !ok || owner == "" || repo == "" {

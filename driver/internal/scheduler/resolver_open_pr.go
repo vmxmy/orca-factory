@@ -25,17 +25,21 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 		return stop("existing deployment or merge evidence requires reconciliation")
 	}
 	owner, repo, ok := strings.Cut(r.Repositories[t.Repo].Env["AGENT_GH_REPO"], "/")
-	if !ok || owner == "" || repo == "" || r.GitHub == nil {
+	if !ok || owner == "" || repo == "" {
 		return stop("GitHub repository unavailable")
 	}
-	head, err := r.GitHub.BranchSHA(ctx, owner, repo, proposal.Branch)
+	gh, err := r.githubClient()
+	if err != nil {
+		return stop("GitHub repository unavailable")
+	}
+	head, err := gh.BranchSHA(ctx, owner, repo, proposal.Branch)
 	if err != nil {
 		return stop("remote branch read failed")
 	}
 	if head != proposal.Head {
 		return stop("remote branch head differs: " + head)
 	}
-	pr, err := r.GitHub.FindOpenPR(ctx, owner, repo, proposal.Branch)
+	pr, err := gh.FindOpenPR(ctx, owner, repo, proposal.Branch)
 	if err != nil {
 		return stop("PR lookup failed")
 	}
@@ -54,7 +58,7 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 		reference = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n", task.URL, t.Identifier, t.ID)
 	}
 	if pr == nil {
-		created, err := r.GitHub.CreatePR(ctx, owner, repo, github.CreatePRRequest{Head: proposal.Branch, Base: "main", Title: proposal.Title, Body: reference + proposal.Body})
+		created, err := gh.CreatePR(ctx, owner, repo, github.CreatePRRequest{Head: proposal.Branch, Base: "main", Title: proposal.Title, Body: reference + proposal.Body})
 		if err != nil {
 			return stop("PR creation failed; reconcile branch before resuming")
 		}

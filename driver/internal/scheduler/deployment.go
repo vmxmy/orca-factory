@@ -66,7 +66,11 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 	}
 	owner, repo, _ := strings.Cut(p.Repository, "/")
 	if d.Workflow != "" {
-		state, err := r.GitHub.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
+		gh, err := r.githubClient()
+		if err != nil {
+			return fmt.Errorf("deployment query unavailable: %w", err)
+		}
+		state, err := gh.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
 		if err != nil {
 			return fmt.Errorf("deployment query unavailable: %w", err)
 		}
