@@ -206,3 +206,57 @@ wait_delay = "100ms"        # 子进程退出的收尾等待
 ```
 
 不写 `[tuning]` 各节时，所有值取上表默认值，行为与改动前一致。
+
+## 飞书需求入口网关
+
+`orca-factory-driver feishu-gateway` 独立运行官方 Go SDK 长连接，订阅
+`im.message.receive_v1`，断线自动重连，SIGTERM/SIGINT 取消连接并退出。
+它只处理指定群内 @ 本机器人的用户消息。白名单内回复“已收到，需求整理功能即将上线”，
+名单外回复“无权限”，两者都在话题内回复。当前版本不调用 Agent、不创建票据。
+话题内每条消息仍需 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，
+事件中的 `thread_id` 才是既有话题身份。对收到的 message_id 使用 `reply_in_thread=true`
+即可创建或延续该话题。
+
+在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
+`im.message.receive_v1`，申请 `im:message.group_at_msg:readonly` 和
+`im:message:send_as_bot` 权限，发布应用版本并完成管理员审批，再把机器人加入需求群。
+无需配置公网回调地址，也无需申请读取全部群消息权限。参考
+[官方 SDK](https://github.com/larksuite/oapi-sdk-go) 的长连接接口。
+
+在 `~/.config/orca-factory/driver.env` 配置以下变量，文件权限设为 `0600`。
+进程环境中的非空值优先于该文件；缺失必填项时仅打印变量名并退出。
+
+| 变量 | 含义 |
+| --- | --- |
+| `AGENT_FEISHU_APP_ID` | 应用 ID，沿用 driver 凭据 |
+| `AGENT_FEISHU_APP_SECRET` | 应用密钥，沿用 driver 凭据 |
+| `AGENT_FEISHU_BOT_OPEN_ID` | 本机器人的 open_id，必须与事件 mentions 中的机器人身份一致，不是 app_id |
+| `AGENT_FEISHU_INTAKE_CHAT` | 唯一允许的需求群 chat_id |
+| `AGENT_FEISHU_INTAKE_USERS` | 可对话成员 open_id，逗号分隔 |
+| `AGENT_FEISHU_ENDPOINT` | 可选，默认 `https://open.feishu.cn`，同时用于 HTTP 与长连接发现 |
+
+机器人 open_id 可从已确认 @ 本应用的消息事件 `mentions` 中取得，核对
+`mentioned_type=bot`；不要从任意用户提交的字符串配置该身份。
+状态默认保存在 `~/.local/state/orca-factory/intake/`，设置
+`AGENT_DRIVER_STATE_ROOT` 可改状态根目录。网关独占 `gateway.lock`，保留最近
+10,000 个 message_id 到 `recent.json`，并在发回复前原子保存。重启不重发这些消息；
+发送前崩溃或结果不确定时可能漏回一条，网关不会自动重发。保留状态文件，不要为重试清空状态。
+SDK 日志不输出连接 URL、凭据或消息正文。
+
+安装及启停：
+
+```sh
+orca-factory-driver install --dry-run
+orca-factory-driver install
+systemctl --user enable --now orca-factory-feishu-gateway.service
+systemctl --user status orca-factory-feishu-gateway.service
+journalctl --user -u orca-factory-feishu-gateway.service -f
+systemctl --user stop orca-factory-feishu-gateway.service
+```
+
+`install` 仅安装二进制、写服务并 daemon-reload，不启动网关。网关通过
+`EnvironmentFile` 读取上述机器配置。代理与 serve 一样使用 systemd drop-in：
+`~/.config/systemd/user/orca-factory-feishu-gateway.service.d/proxy.conf`。
+首次安装时，若已有 `orca-factory-driver.service.d/proxy.conf`，安装器复制其内容；
+网关已有的代理文件不会被覆盖。后续代理变更分别维护两个服务的 drop-in，执行
+`systemctl --user daemon-reload`，再重启需要应用变更的服务。网关服务不依赖 serve 启停。

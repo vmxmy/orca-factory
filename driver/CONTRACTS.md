@@ -146,3 +146,15 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 原执行器退出后允许独立处置 Agent 排查保留的 worker；原 Run 未确认停止推进前，调度器拒绝处置成功提案。失效部署提案退回限时重试，读写不确定则保留原身份继续对账。
 
 `terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。真实录制 `orca-terminal-null-output.json` 保留混合时间戳及全部行数，脱敏方式和原始摘要见同名 provenance；`orca.TestRecordedTerminalUnknownOutput` 通过公开客户端重放。回归覆盖还包括 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。
+
+## 飞书需求网关（OF-13）
+
+- 官方 Go SDK `github.com/larksuite/oapi-sdk-go/v3 v3.12.1` 承担长连接发现、事件分派、自动重连与 context 取消退出。网关只注册 `im.message.receive_v1`，SIGTERM/SIGINT 取消该 context；每个状态目录使用独占进程锁。
+- `TestFeishuGatewayRecorded` 从 PR #420 的 `bot-event-message-at.json` 和 `bot-event-thread-at-reply.json` 解包录制器外层 `event`，读取内部 schema 2.0 事件。群、发送者 open_id、mention 身份的负例均仅修改样本字段，覆盖白名单、非指定群、私聊、其他机器人、用户 mention、无 mention、并发重复投递和重启去重。
+- mention 必须同时满足 `mentioned_type=bot` 和配置的本机器人 open_id。首条事件无 root_id/thread_id，后续事件含 thread_id；回复接口始终定位收到的 message_id 并设置 `reply_in_thread=true`，由飞书创建或延续话题，不把 root_id 当作话题 ID。
+- `TestFeishuGatewayRecordedHTTP` 经 SDK dispatcher 重放原始事件，使用真实 `bot-message-reply-in-thread.json` 的请求 method/path、msg_type、reply_in_thread 与响应 data 检验 HTTP 客户端。原录制响应是 SDK 解包后的 `{identity,ok,data}`，测试仅补合成的 OpenAPI `{code:0,data}` 信封；token 响应也是合成，不冒充线上录制。
+- 最近 10,000 个 message_id 持久于 `intake/recent.json`，发送前保存。保证该窗口内至多发送一次；发送前崩溃、超时或发送失败可能漏回，不能声称 exactly-once。状态读写失败停止发送，损坏状态不自动清空。`TestFeishuGatewayUncertainSendAndStateFailure` 覆盖该行为。
+- `TestFeishuGatewayConfig` 覆盖缺失变量名、driver.env 回退与环境优先；`TestFeishuGatewayInstall` 覆盖独立服务、EnvironmentFile 和代理 drop-in；`TestFeishuGatewayReconnectAndShutdown` 用合成 HTTP/WebSocket 服务器验证真实 SDK 断线重连和取消后释放锁，不连接真实群。
+
+三个录制文件原样来自 PR #420 的提交 `555e44b3a919eb472cffc0155e92616695fcb47a`。
+其 chat_id、用户和机器人 open_id、tenant_key 已脱敏，原始消息 ID、话题 ID 和字段结构保留。

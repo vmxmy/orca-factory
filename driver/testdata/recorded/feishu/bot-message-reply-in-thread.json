@@ -1,0 +1,37 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"text\":\"收到（原始格式录制）。请在本话题里先发一条不带 @ 的回复，再发一条带 @ 的回复。\"}",
+      "msg_type": "text",
+      "reply_in_thread": true
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/im/v1/messages/om_x100b623034f21cb4df865fbf3aa4e56/reply"
+  },
+  "response": {
+    "data": {
+      "body": {
+        "content": "{\"text\":\"收到（原始格式录制）。请在本话题里先发一条不带 @ 的回复，再发一条带 @ 的回复。\"}"
+      },
+      "chat_id": "oc_REDACTED",
+      "create_time": "1792034748975",
+      "deleted": false,
+      "message_id": "om_x100b6230350020a8de15671aa0a331e",
+      "msg_type": "text",
+      "parent_id": "om_x100b623034f21cb4df865fbf3aa4e56",
+      "root_id": "om_x100b623034f21cb4df865fbf3aa4e56",
+      "sender": {
+        "id": "cli_REDACTED",
+        "id_type": "app_id",
+        "sender_type": "app",
+        "tenant_key": "TENANT_KEY"
+      },
+      "thread_id": "omt_19b5cf6adf0e5a54",
+      "update_time": "1792034748975",
+      "updated": false
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}
