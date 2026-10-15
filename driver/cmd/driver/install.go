@@ -29,6 +29,22 @@ Restart=on-failure
 WantedBy=default.target
 `
 
+const gatewayInstallUnit = `[Unit]
+Description=Orca Factory Feishu Gateway
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/orca-factory-driver feishu-gateway
+EnvironmentFile=-%h/.config/orca-factory/driver.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+`
+
 type installRunner interface {
 	Run(context.Context, runx.Spec) ([]byte, error)
 }
@@ -65,8 +81,9 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	}
 	binary := filepath.Join(home, ".local", "bin", "orca-factory-driver")
 	unit := filepath.Join(home, ".config", "systemd", "user", "orca-factory-driver.service")
+	gatewayUnit := filepath.Join(filepath.Dir(unit), "orca-factory-feishu-gateway.service")
 	if *dryRun {
-		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nRun systemctl --user daemon-reload\n", binary, unit)
+		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nWrite gateway service unit to %s\nCopy existing driver proxy.conf if gateway proxy.conf is absent\nRun systemctl --user daemon-reload\n", binary, unit, gatewayUnit)
 		return err
 	}
 	executable, err := os.Executable()
@@ -106,6 +123,26 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 		return err
 	}
 	if err := os.WriteFile(unit, []byte(installUnit), 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(gatewayUnit, []byte(gatewayInstallUnit), 0644); err != nil {
+		return err
+	}
+	gatewayProxy := gatewayUnit + ".d/proxy.conf"
+	if _, err := os.Stat(gatewayProxy); os.IsNotExist(err) {
+		proxy, readErr := os.ReadFile(unit + ".d/proxy.conf")
+		if readErr != nil && !os.IsNotExist(readErr) {
+			return readErr
+		}
+		if readErr == nil {
+			if err := os.MkdirAll(filepath.Dir(gatewayProxy), 0755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(gatewayProxy, proxy, 0600); err != nil {
+				return err
+			}
+		}
+	} else if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -156,3 +156,15 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 全局暂停期间不通知。调度器在暂停检查之后，对允许自动化的仓库通知转人或处置 Agent 归属、合并证据冲突、部署 `paused`；票级归属或处置凭证的证据冲突导致 Snapshot 失败时，聚合本轮完整读取评论后的票，通知全部待通知票，Snapshot 错误保留，整轮停止调度。无执行归属的纳管票只要有 `MergeProblem` 也保留以便通知。类别优先级为证据冲突、部署失败、转人。原因摘要折叠空白，先写事件 `通知: <类别> <摘要 sha256 前 12 位>`，已存在同票同标记则不再发送。发送失败或结果未知保留事件，不在以后轮次或重启后自动补发；原因与已有通知事件来自同一轮 Snapshot 的评论视图，通知不调用 `ListComments`。评论读取或事件写入失败不发送，下轮可重新观察。通知错误只记 warn，不改变原调度结果。
 - `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、已有事件、写入失败和发送失败；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`TestFeishuNotifySnapshotConflict` 验证票级错误身份、Snapshot 失败与跨轮去重；`TestFeishuNotifyPausedSkips` 覆盖 Snapshot 前后及失败时的全局暂停；`TestFeishuNotifySnapshotReason` 验证原因按创建时间、ID 排序并使用快照事件。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。
 - `TestFeishuNotifyTwoTicks` 回放 `linear-comments-executor-handoff.json` 的转人评论，通过真实 Runtime 快照和连续两轮 Tick 验证三张票各发送一次、各写一条通知事件，并在两轮之间重建 Runtime；同时覆盖快照凭证错误与其他待通知票共存时，通知不漏报且不派工。`TestFeishuNotifyUnownedConflict` 覆盖无归属、非候选票的合并证据冲突。通知标记由本次测试的实际写入产生，第二轮从评论重新解析，不手工恢复 `NotifyEvents`。
+
+## 飞书需求网关（OF-13）
+
+- 官方 Go SDK `github.com/larksuite/oapi-sdk-go/v3 v3.12.1` 承担长连接发现、事件分派、自动重连与 context 取消退出。网关只注册 `im.message.receive_v1`，SIGTERM/SIGINT 取消该 context；每个状态目录使用独占进程锁。
+- `TestFeishuGatewayRecorded` 从 PR #420 的 `bot-event-message-at.json` 和 `bot-event-thread-at-reply.json` 解包录制器外层 `event`，读取内部 schema 2.0 事件。群、发送者 open_id、mention 身份的负例均仅修改样本字段，覆盖白名单、非指定群、私聊、其他机器人、用户 mention、无 mention、并发重复投递和重启去重。
+- mention 必须同时满足 `mentioned_type=bot` 和配置的本机器人 open_id。首条事件无 root_id/thread_id，后续事件含 thread_id；回复接口始终定位收到的 message_id 并设置 `reply_in_thread=true`，由飞书创建或延续话题，不把 root_id 当作话题 ID。
+- `TestFeishuGatewayRecordedHTTP` 经 SDK dispatcher 重放原始事件，使用真实 `bot-message-reply-in-thread.json` 的请求 method/path、msg_type、reply_in_thread 与响应 data 检验 HTTP 客户端。原录制响应是 SDK 解包后的 `{identity,ok,data}`，测试仅补合成的 OpenAPI `{code:0,data}` 信封；token 响应也是合成，不冒充线上录制。
+- 最近 10,000 个 message_id 持久于 `intake/recent.json`，发送前保存。保证该窗口内至多发送一次；发送前崩溃、超时或发送失败可能漏回，不能声称 exactly-once。状态读写失败停止发送，损坏状态不自动清空。`TestFeishuGatewayUncertainSendAndStateFailure` 覆盖该行为。
+- `TestFeishuGatewayConfig` 覆盖缺失变量名、driver.env 回退与环境优先；`TestFeishuGatewayInstall` 覆盖独立服务、EnvironmentFile 和代理 drop-in；`TestFeishuGatewayReconnectAndShutdown` 用合成 HTTP/WebSocket 服务器验证真实 SDK 断线重连和取消后释放锁，不连接真实群。
+
+三个录制文件原样来自 PR #420 的提交 `555e44b3a919eb472cffc0155e92616695fcb47a`。
+其 chat_id、用户和机器人 open_id、tenant_key 已脱敏，原始消息 ID、话题 ID 和字段结构保留。
