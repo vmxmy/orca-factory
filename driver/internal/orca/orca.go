@@ -603,6 +603,40 @@ func (c *Client) Reconcile(ctx context.Context, request, run string) (Reconcilia
 	return result, err
 }
 
+// Repo is one repository Orca already manages locally. CanonicalKey is
+// gitRemoteIdentity.canonicalKey, stable across a repo's display name or
+// remote URL changes; the projects package joins it to the ledger's
+// 仓库远端 column (OF-42).
+type Repo struct {
+	Path         string
+	CanonicalKey string
+}
+
+// RepoList lists every repository registered in this machine's Orca client.
+func (c *Client) RepoList(ctx context.Context) ([]Repo, error) {
+	receipt, err := c.call(ctx, []string{"repo", "list"})
+	if err != nil {
+		return nil, err
+	}
+	var rows []struct {
+		Path              string `json:"path"`
+		GitRemoteIdentity struct {
+			CanonicalKey string `json:"canonicalKey"`
+		} `json:"gitRemoteIdentity"`
+	}
+	if json.Unmarshal(receipt["repos"], &rows) != nil || rows == nil {
+		return nil, invalid("invalid repo list")
+	}
+	repos := make([]Repo, 0, len(rows))
+	for _, row := range rows {
+		if !filepath.IsAbs(row.Path) {
+			return nil, invalid("invalid repo list entry")
+		}
+		repos = append(repos, Repo{Path: filepath.Clean(row.Path), CanonicalKey: row.GitRemoteIdentity.CanonicalKey})
+	}
+	return repos, nil
+}
+
 // Terminal is a terminal output observation; timestamps are epoch milliseconds.
 // A null output timestamp decodes to zero and cannot establish idle duration.
 type Terminal struct {

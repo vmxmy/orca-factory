@@ -13,13 +13,16 @@ import (
 // repository checkout for its remote. Repo is empty when no configured
 // repository matches Remote. Checkout, Ledger and the space-separated lane
 // globs serve draft validation and submission (OF-15); a nil Ledger leaves
-// drafts as plain replies.
+// drafts as plain replies. Reason, when non-empty, is why the project
+// discovery package (OF-42) would not let this project take over right now
+// (e.g. "check 失败"); it overrides the generic unavailable-project reply.
 type Project struct {
 	Prefix, Name, Remote, Repo string
 	Enabled                    bool
 	Checkout                   string
 	Ledger                     Ledger
 	Lane2Globs, Lane3Globs     string
+	Reason                     string
 }
 
 func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
@@ -48,6 +51,9 @@ const (
 )
 
 func unavailableProjectReply(p Project) string {
+	if p.Reason != "" {
+		return fmt.Sprintf("项目 %s 不可用：%s", p.Prefix, p.Reason)
+	}
 	if !p.Enabled {
 		return fmt.Sprintf("项目 %s 未启用，无法使用", p.Prefix)
 	}
@@ -58,7 +64,7 @@ func unavailableProjectReply(p Project) string {
 // declaration order: the stable order the picker's indices refer to.
 func (g *Gateway) enabledProjects() []Project {
 	var out []Project
-	for _, p := range g.projects {
+	for _, p := range g.projectsSnapshot() {
 		if p.usable() {
 			out = append(out, p)
 		}
@@ -79,7 +85,7 @@ func (g *Gateway) projectListReply() string {
 // name), including disabled or locally unmatched ones, so the caller can
 // give a specific rejection reason.
 func (g *Gateway) findProject(prefix, name string) (Project, bool) {
-	for _, p := range g.projects {
+	for _, p := range g.projectsSnapshot() {
 		if (prefix != "" && p.Prefix == prefix) || (name != "" && p.Name == name) {
 			return p, true
 		}
@@ -96,7 +102,7 @@ func (g *Gateway) project(prefix string) Project {
 }
 
 func (g *Gateway) projectByRemote(remote string) (Project, bool) {
-	for _, p := range g.projects {
+	for _, p := range g.projectsSnapshot() {
 		if p.Remote == remote {
 			return p, true
 		}

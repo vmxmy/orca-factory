@@ -1,0 +1,172 @@
+{
+  "id": "6bc084e1-c7de-416f-9c25-9e06720d2d45",
+  "ok": true,
+  "result": {
+    "repos": [
+      {
+        "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252",
+        "path": "/home/laoxu/github/orca-factory",
+        "displayName": "orca-factory",
+        "badgeColor": "#737373",
+        "addedAt": 1791133887164,
+        "kind": "git",
+        "externalWorktreeVisibilityLegacy": false,
+        "gitUsername": "vmxmy",
+        "repoIcon": {
+          "type": "image",
+          "src": "https://github.com/vmxmy.png?size=64",
+          "source": "github",
+          "label": "vmxmy/orca-factory"
+        },
+        "upstream": null,
+        "gitRemoteIdentity": {
+          "canonicalKey": "github.com/vmxmy/orca-factory",
+          "remoteName": "origin",
+          "remoteUrl": "https://github.com/vmxmy/orca-factory.git"
+        },
+        "hookSettings": {
+          "mode": "auto",
+          "setupRunPolicy": "run-by-default",
+          "setupAgentStartupPolicy": "start-immediately",
+          "scripts": {
+            "setup": "",
+            "archive": ""
+          }
+        },
+        "externalWorktreeVisibility": "hide"
+      },
+      {
+        "id": "3154097f-3a5c-4ea3-8a7e-94215659af9a",
+        "path": "/home/laoxu/github/zhiyun-ai-dashboard",
+        "displayName": "zhiyun-ai-dashboard",
+        "badgeColor": "#737373",
+        "addedAt": 1791133887983,
+        "kind": "git",
+        "externalWorktreeVisibilityLegacy": false,
+        "hookSettings": {
+          "mode": "auto",
+          "setupRunPolicy": "run-by-default",
+          "setupAgentStartupPolicy": "start-immediately",
+          "scripts": {
+            "setup": "pnpm install",
+            "archive": ""
+          },
+          "commandSourcePolicy": "local-only"
+        },
+        "gitUsername": "vmxmy",
+        "repoIcon": {
+          "type": "image",
+          "src": "https://github.com/vmxmy.png?size=64",
+          "source": "github",
+          "label": "vmxmy/zhiyun-ai-dashboard"
+        },
+        "upstream": null,
+        "gitRemoteIdentity": {
+          "canonicalKey": "github.com/vmxmy/zhiyun-ai-dashboard",
+          "remoteName": "origin",
+          "remoteUrl": "https://github.com/vmxmy/zhiyun-ai-dashboard.git"
+        },
+        "externalWorktreeVisibility": "hide"
+      },
+      {
+        "id": "3a8b9a70-4030-454a-88fa-6ddaa5333e37",
+        "path": "/home/laoxu/ansible",
+        "displayName": "ansible",
+        "badgeColor": "#737373",
+        "addedAt": 1791133888867,
+        "kind": "git",
+        "externalWorktreeVisibilityLegacy": false,
+        "externalWorktreeVisibility": "show",
+        "gitUsername": "vmxmy",
+        "repoIcon": {
+          "type": "image",
+          "src": "https://github.com/vmxmy.png?size=64",
+          "source": "github",
+          "label": "vmxmy/ansible"
+        },
+        "upstream": null,
+        "gitRemoteIdentity": {
+          "canonicalKey": "github.com/vmxmy/ansible",
+          "remoteName": "origin",
+          "remoteUrl": "https://github.com/vmxmy/ansible.git"
+        },
+        "hookSettings": {
+          "mode": "auto",
+          "setupRunPolicy": "run-by-default",
+          "setupAgentStartupPolicy": "start-immediately",
+          "scripts": {
+            "setup": "",
+            "archive": ""
+          }
+        }
+      },
+      {
+        "id": "2db637f0-fbad-4511-9836-1a79e2527adb",
+        "path": "/home/laoxu/github/ziikoo-control-plane",
+        "displayName": "ziikoo-control-plane",
+        "badgeColor": "#737373",
+        "addedAt": 1791398896664,
+        "kind": "git",
+        "externalWorktreeVisibilityLegacy": false,
+        "gitUsername": "vmxmy",
+        "repoIcon": {
+          "type": "image",
+          "src": "https://github.com/vmxmy.png?size=64",
+          "source": "github",
+          "label": "vmxmy/ziikoo-control-plane"
+        },
+        "upstream": null,
+        "gitRemoteIdentity": {
+          "canonicalKey": "github.com/vmxmy/ziikoo-control-plane",
+          "remoteName": "origin",
+          "remoteUrl": "https://github.com/vmxmy/ziikoo-control-plane.git"
+        },
+        "hookSettings": {
+          "mode": "auto",
+          "setupRunPolicy": "run-by-default",
+          "setupAgentStartupPolicy": "start-immediately",
+          "scripts": {
+            "setup": "",
+            "archive": ""
+          }
+        },
+        "externalWorktreeVisibility": "hide"
+      },
+      {
+        "id": "790b55e8-eda4-49dd-97d2-a9b011a6274c",
+        "path": "/home/laoxu/github/dujiao-next",
+        "displayName": "dujiao-next",
+        "badgeColor": "#737373",
+        "addedAt": 1791430513651,
+        "kind": "git",
+        "externalWorktreeVisibilityLegacy": false,
+        "gitUsername": "vmxmy",
+        "repoIcon": {
+          "type": "image",
+          "src": "https://github.com/dujiao-next.png?size=64",
+          "source": "github",
+          "label": "dujiao-next/dujiao-next"
+        },
+        "upstream": null,
+        "gitRemoteIdentity": {
+          "canonicalKey": "github.com/dujiao-next/dujiao-next",
+          "remoteName": "origin",
+          "remoteUrl": "https://github.com/dujiao-next/dujiao-next"
+        },
+        "hookSettings": {
+          "mode": "auto",
+          "setupRunPolicy": "run-by-default",
+          "setupAgentStartupPolicy": "start-immediately",
+          "scripts": {
+            "setup": "",
+            "archive": ""
+          }
+        },
+        "externalWorktreeVisibility": "hide"
+      }
+    ]
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

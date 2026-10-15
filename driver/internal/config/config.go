@@ -29,8 +29,12 @@ type Repository struct {
 type Config struct {
 	MaxInFlight  int
 	Repositories []Repository
-	TokenBucket  TokenBucket
-	Tuning       Tuning
+	// FactoryRoot is this machine's orca-factory production checkout, whose
+	// bin/orca-factory the projects package runs to check a candidate
+	// repository's pipeline (OF-42). Empty when unconfigured.
+	FactoryRoot string
+	TokenBucket TokenBucket
+	Tuning      Tuning
 }
 
 // Load reads ~/.config/orca-factory/driver.toml relative to the supplied home.
@@ -39,6 +43,7 @@ func Load(home string) (Config, error) {
 	raw := struct {
 		MaxInFlight  int         `toml:"max_in_flight"`
 		Repositories []string    `toml:"repositories"`
+		FactoryRoot  string      `toml:"factory_root"`
 		TokenBucket  TokenBucket `toml:"token_bucket"`
 		Scheduler    *Scheduler  `toml:"scheduler"`
 		Linear       *Linear     `toml:"linear"`
@@ -92,6 +97,16 @@ func Load(home string) (Config, error) {
 	if raw.Runx != nil {
 		result.Tuning.Runx = fillRunx(*raw.Runx, result.Tuning.Runx)
 	}
+	if raw.FactoryRoot != "" {
+		root := raw.FactoryRoot
+		if strings.HasPrefix(root, "~/") {
+			root = filepath.Join(home, root[2:])
+		}
+		if !filepath.IsAbs(root) {
+			return Config{}, errors.New("factory root path must be absolute")
+		}
+		result.FactoryRoot = filepath.Clean(root)
+	}
 	seen := map[string]bool{}
 	for _, repo := range raw.Repositories {
 		if strings.HasPrefix(repo, "~/") {
@@ -105,26 +120,38 @@ func Load(home string) (Config, error) {
 			return Config{}, errors.New("duplicate repository")
 		}
 		seen[repo] = true
-		f, err := os.Open(filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env"))
-		if err != nil {
-			return Config{}, errors.New("cannot read repository profile")
-		}
-		env, parseErr := ParseEnv(f)
-		closeErr := f.Close()
-		if parseErr != nil || closeErr != nil {
-			return Config{}, errors.New("invalid repository profile")
-		}
-		limit, err := positive(env, "AGENT_MAX_IN_FLIGHT", 4)
+		repository, err := LoadRepository(repo)
 		if err != nil {
 			return Config{}, err
 		}
-		stale, err := positive(env, "AGENT_STALE_HOURS", 8)
-		if err != nil {
-			return Config{}, err
-		}
-		result.Repositories = append(result.Repositories, Repository{Path: repo, MaxInFlight: limit, StaleHours: stale, Env: env})
+		result.Repositories = append(result.Repositories, repository)
 	}
 	return result, nil
+}
+
+// LoadRepository reads one repository's own pipeline profile
+// (scripts/agent-gates/agent-graph.env) at the given absolute, cleaned path,
+// returning its resolved limits and full environment. Shared by Load's
+// driver.toml repositories list and the projects package's discovery (OF-42).
+func LoadRepository(path string) (Repository, error) {
+	f, err := os.Open(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
+	if err != nil {
+		return Repository{}, errors.New("cannot read repository profile")
+	}
+	env, parseErr := ParseEnv(f)
+	closeErr := f.Close()
+	if parseErr != nil || closeErr != nil {
+		return Repository{}, errors.New("invalid repository profile")
+	}
+	limit, err := positive(env, "AGENT_MAX_IN_FLIGHT", 4)
+	if err != nil {
+		return Repository{}, err
+	}
+	stale, err := positive(env, "AGENT_STALE_HOURS", 8)
+	if err != nil {
+		return Repository{}, err
+	}
+	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env}, nil
 }
 func positive(env map[string]string, key string, fallback int) (int, error) {
 	value, ok := env[key]

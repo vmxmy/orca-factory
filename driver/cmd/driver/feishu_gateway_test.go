@@ -13,9 +13,48 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/larksuite/oapi-sdk-go/v3/ws"
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
+
+func strPtr(s string) *string { return &s }
+
+func TestIsNewIntakeTopic(t *testing.T) {
+	newTopic := &im.P2MessageReceiveV1{Event: &im.P2MessageReceiveV1Data{Message: &im.EventMessage{ThreadId: strPtr("")}}}
+	reply := &im.P2MessageReceiveV1{Event: &im.P2MessageReceiveV1Data{Message: &im.EventMessage{ThreadId: strPtr("omt_123")}}}
+	for _, tc := range []struct {
+		name string
+		in   *im.P2MessageReceiveV1
+		want bool
+	}{
+		{"nil event", nil, false},
+		{"root message has no thread_id", newTopic, true},
+		{"reply carries thread_id", reply, false},
+	} {
+		if got := isNewIntakeTopic(tc.in); got != tc.want {
+			t.Errorf("%s: isNewIntakeTopic=%v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// discoverIntakeProjects with no factory_root configured joins a live Orca
+// repository list into zero ledger rows (there is no table to read) and so
+// returns no intake.Project at all (OF-42): nothing is eligible, and nothing
+// in the (empty) ledger table names an unavailable project either.
+func TestDiscoverIntakeProjectsFactoryRootUnconfigured(t *testing.T) {
+	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, "/repo/orca-factory", "github.com/vmxmy/orca-factory"))
+	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	out, err := discoverIntakeProjects(context.Background(), config.Config{}, &orca.Client{}, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 0 {
+		t.Fatalf("out=%+v, want none", out)
+	}
+}
 
 func TestFeishuGatewayConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
