@@ -160,6 +160,15 @@ func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient fun
 	}
 	return nil
 }
+
+type SnapshotEvidenceError struct {
+	Tickets []Ticket
+	Err     error
+}
+
+func (e *SnapshotEvidenceError) Error() string { return e.Err.Error() }
+func (e *SnapshotEvidenceError) Unwrap() error { return e.Err }
+
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
 	groups := map[LinearClient][]config.Repository{}
 	order := []LinearClient{}
@@ -177,12 +186,21 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		groups[client] = append(groups[client], repo)
 	}
 	tickets := []Ticket{}
+	var problems []error
 	for _, client := range order {
 		rows, err := r.snapshotClient(ctx, client, groups[client])
 		if err != nil {
-			return nil, err
+			var evidence *SnapshotEvidenceError
+			if !errors.As(err, &evidence) {
+				return nil, err
+			}
+			rows = evidence.Tickets
+			problems = append(problems, evidence.Err)
 		}
 		tickets = append(tickets, rows...)
+	}
+	if len(problems) != 0 {
+		return nil, &SnapshotEvidenceError{Tickets: tickets, Err: errors.Join(problems...)}
 	}
 	return tickets, nil
 }
@@ -234,6 +252,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		}
 	}
 	tickets := []Ticket{}
+	var problems []error
 	for _, issue := range issues {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
@@ -246,9 +265,13 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		// Ownership, not the auto-impl label, determines in-flight admission. Read
 		// comments even when a user removed the label from a still-owned ticket.
 		comments := commentsByID[issue.ID]
-		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
+		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, Title: issue.Title, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
 		if err = readOwnership(&ticket, comments); err != nil {
-			return nil, err
+			readFeishuNotification(&ticket, comments)
+			ticket.MergeProblem = err.Error()
+			tickets = append(tickets, ticket)
+			problems = append(problems, err)
+			continue
 		}
 		// Legacy failed labels without ownership need a new capacity reservation.
 		if failed && ticket.Owner == "" {
@@ -257,8 +280,12 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		}
 		readMergeHandoff(&ticket, comments)
 		ticket.Resolution, err = readResolution(comments)
+		readFeishuNotification(&ticket, comments)
 		if err != nil {
-			return nil, err
+			ticket.MergeProblem = err.Error()
+			tickets = append(tickets, ticket)
+			problems = append(problems, err)
+			continue
 		}
 		// Cancellation cannot erase an already durable deployment barrier.
 		// Done may also precede the final merge ownership receipt.
@@ -269,7 +296,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = candidate
 		ticket.Blocked = issue.Blocked()
-		ticket.URL, ticket.Held, ticket.Title, ticket.Number = issue.URL, issue.Held, issue.Title, issue.Number
+		ticket.Held, ticket.Number = issue.Held, issue.Number
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
 		for _, relation := range issue.InverseRelations.Nodes {
 			if relation.Type != "blocks" {
@@ -281,7 +308,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
 			}
 		}
-		if ticket.Legacy || ticket.Candidate || owned(ticket) || ticket.Owner == machine.OwnerHuman || DeploymentBarrier(ticket) {
+		if ticket.Legacy || ticket.Candidate || owned(ticket) || ticket.Owner == machine.OwnerHuman || ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
 				if err != nil {
@@ -292,6 +319,9 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 			}
 			tickets = append(tickets, ticket)
 		}
+	}
+	if len(problems) != 0 {
+		return nil, &SnapshotEvidenceError{Tickets: tickets, Err: errors.Join(problems...)}
 	}
 	if r.projections == nil {
 		r.projections = map[LinearClient]map[string]commentProjection{}

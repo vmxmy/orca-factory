@@ -29,6 +29,8 @@ type Ticket struct {
 	MergeProblem                        string
 	ID, Identifier, Repo, Terminal, Run string
 	URL, Title                          string
+	NotifyReason                        string
+	NotifyEvents                        map[string]bool
 	Number                              int
 	Scope                               []string
 	Blockers                            []string
@@ -177,6 +179,24 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, errors.New("repository refused: automation enabled or unverifiable"))
 		}
 	}
+	notify := func(t Ticket) {
+		if category, _ := feishuNotification(t); category == "" {
+			return
+		}
+		notifier, ok := s.Backend.(interface {
+			NotifyFeishu(context.Context, Ticket) error
+		})
+		if !ok {
+			return
+		}
+		if err := notifier.NotifyFeishu(ctx, t); err != nil {
+			logger := s.Logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			logger.Warn("Feishu notification failed", "ticket", t.Identifier, "error", err)
+		}
+	}
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
@@ -187,6 +207,16 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
 			s.Pauses.Pause(pause.Key{Dependency: pause.Linear, Kind: pause.Quota}, s.linearQuotaRetry)
 			s.plan(now, false, 0)
+		}
+		s.checkLinearQuota(now)
+		s.checkGitHubQuota(now)
+		var evidence *SnapshotEvidenceError
+		if !s.Pauses.Paused("") && errors.As(err, &evidence) {
+			for _, ticket := range evidence.Tickets {
+				if allowed[ticket.Repo] {
+					notify(ticket)
+				}
+			}
 		}
 		return errors.New("scheduler snapshot failed")
 	}
@@ -221,6 +251,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 		return errors.Join(problems...)
+	}
+	for _, t := range tickets {
+		if allowed[t.Repo] {
+			notify(t)
+		}
 	}
 	busy := false
 	for _, t := range tickets {
