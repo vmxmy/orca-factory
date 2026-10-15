@@ -1,0 +1,36 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"text\":\"【测试】orca-factory 通知通道录制样本（OF-9 前置），可忽略。\"}",
+      "msg_type": "text",
+      "receive_id": "oc_REDACTED"
+    },
+    "method": "POST",
+    "params": {
+      "receive_id_type": "chat_id"
+    },
+    "path": "/open-apis/im/v1/messages"
+  },
+  "response": {
+    "data": {
+      "body": {
+        "content": "{\"text\":\"【测试】orca-factory 通知通道录制样本（OF-9 前置），可忽略。\"}"
+      },
+      "chat_id": "oc_REDACTED",
+      "create_time": "1792032299191",
+      "deleted": false,
+      "message_id": "om_x100b6237ac7ca484dd1ab863c305fcc",
+      "msg_type": "text",
+      "sender": {
+        "id": "cli_REDACTED",
+        "id_type": "app_id",
+        "sender_type": "app",
+        "tenant_key": "TENANT_KEY"
+      },
+      "update_time": "1792032299191",
+      "updated": false
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

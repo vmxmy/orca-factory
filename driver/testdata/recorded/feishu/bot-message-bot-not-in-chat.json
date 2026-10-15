@@ -1,0 +1,24 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"text\":\"probe\"}",
+      "msg_type": "text",
+      "receive_id": "oc_REDACTED"
+    },
+    "method": "POST",
+    "params": {
+      "receive_id_type": "chat_id"
+    },
+    "path": "/open-apis/im/v1/messages"
+  },
+  "response": {
+    "error": {
+      "code": 230002,
+      "message": "Bot/User can NOT be out of the chat.",
+      "subtype": "unknown",
+      "type": "api"
+    },
+    "identity": "bot",
+    "ok": false
+  }
+}
