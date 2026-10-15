@@ -119,6 +119,11 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 		hidden: []string{"12345678901234567890e9999"},
 		want:   []string{`"category":"other"`, "ownership snapshot failed: invalid JSON"},
 	}, {
+		name:   "imported time",
+		cause:  fmt.Errorf("ownership snapshot failed: %w", imported(`{"comments":[{"createdAt":"PRIVATE-BODY"}],"sha256":""}`)),
+		hidden: []string{"PRIVATE-BODY"},
+		want:   []string{`"category":"other"`, "ownership snapshot failed: invalid JSON"},
+	}, {
 		name: "evidence",
 		cause: &SnapshotEvidenceError{
 			Tickets: []Ticket{{Identifier: "OF-9", Repo: "/repo"}},

@@ -526,8 +526,8 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
 
-// Adapters return fixed-text errors, except JSON decoding of imported comment
-// history, whose stdlib messages quote the rejected input.
+// Adapters return fixed-text errors, except decoding imported comment history
+// into linear.Comment: its encoding/json and time errors quote the rejected input.
 func snapshotReason(err error) string {
 	text := err.Error()
 	root := err
@@ -536,7 +536,8 @@ func snapshotReason(err error) string {
 	}
 	var syntax *json.SyntaxError
 	var mismatch *json.UnmarshalTypeError
-	decoding := errors.As(root, &syntax) || errors.As(root, &mismatch) || strings.HasPrefix(root.Error(), "json: ")
+	var timestamp *time.ParseError
+	decoding := errors.As(root, &syntax) || errors.As(root, &mismatch) || errors.As(root, &timestamp) || strings.HasPrefix(root.Error(), "json: ")
 	if decoding && strings.HasSuffix(text, root.Error()) {
 		text = strings.TrimSuffix(text, root.Error()) + "invalid JSON"
 	}
