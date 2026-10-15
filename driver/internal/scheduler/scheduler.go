@@ -5,6 +5,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
@@ -200,8 +202,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
+		category := "other"
 		var admission *linear.DiscoveryQuotaError
 		if errors.As(err, &admission) {
+			category = "quota"
 			s.discoveryQuotaPaused = true
 			s.quotaPaused = true
 			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
@@ -211,6 +215,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		s.checkLinearQuota(now)
 		s.checkGitHubQuota(now)
 		var evidence *SnapshotEvidenceError
+		if errors.As(err, &evidence) && category == "other" {
+			category = "evidence"
+		}
 		if !s.Pauses.Paused("") && errors.As(err, &evidence) {
 			for _, ticket := range evidence.Tickets {
 				if allowed[ticket.Repo] {
@@ -218,7 +225,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				}
 			}
 		}
-		return errors.New("scheduler snapshot failed")
+		cause := redactedError{err}
+		s.logger().Warn("scheduler snapshot failed", "category", category, "error", cause)
+		return fmt.Errorf("scheduler snapshot failed: %w", cause)
 	}
 	snapshot = true
 	status.PushObservation(s.clock(), func(view *status.View) {
@@ -515,3 +524,10 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 }
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
+
+// redactedError keeps the original error reachable through Unwrap while its
+// text carries no credentials.
+type redactedError struct{ err error }
+
+func (e redactedError) Error() string { return logx.RedactText(e.err.Error()) }
+func (e redactedError) Unwrap() error { return e.err }
