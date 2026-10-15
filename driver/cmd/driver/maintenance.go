@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
@@ -29,13 +31,27 @@ func runMaintenance(args []string) int {
 		}
 		return 0
 	}
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: driver maintenance status|drain|freeze|resume")
+	const usage = "usage: driver maintenance status|freeze|drain [--wait 2m]|resume [--wait 2m]"
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
+	}
+	var wait time.Duration
+	if args[0] == "drain" || args[0] == "resume" {
+		flags := flag.NewFlagSet("maintenance "+args[0], flag.ContinueOnError)
+		flags.SetOutput(os.Stderr)
+		flags.DurationVar(&wait, "wait", 2*time.Minute, "maximum wait for admitted claims and dispatches")
+		if flags.Parse(args[1:]) != nil || flags.NArg() != 0 || wait < 0 {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+	} else if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
 	modes := map[string]string{"drain": "draining", "freeze": "frozen", "resume": "running"}
 	if mode, ok := modes[args[0]]; ok {
-		if err := maintenance.Set(mode); err != nil {
+		if err := maintenance.SetWithin(mode, wait); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}

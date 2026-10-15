@@ -3,6 +3,7 @@ package maintenance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -93,15 +94,26 @@ func Status() (Observation, error) {
 	return Observation{State: state, WritersActive: writers, SessionsActive: sessions}, err
 }
 
-func Set(mode string) (err error) {
+func Set(mode string) error { return SetWithin(mode, 0) }
+
+// SetWithin holds the intent lock while it waits, so a new Admission is
+// refused and in-flight admissions cannot starve the change. Plain external
+// writes never delay drain or resume; only freeze excludes them.
+func SetWithin(mode string, wait time.Duration) (err error) {
 	if mode != "running" && mode != "draining" && mode != "frozen" {
 		return errors.New("invalid maintenance mode")
 	}
-	guard, err := lock("writes", syscall.LOCK_EX)
+	deadline := time.Now().Add(wait)
+	intent, err := waitLock("intent", deadline)
 	if err != nil {
-		return err
+		return fmt.Errorf("another maintenance change is pending: %w", err)
 	}
-	defer func() { err = errors.Join(err, guard.Close()) }()
+	defer func() { err = errors.Join(err, intent.Close()) }()
+	admissions, err := waitLock("admissions", deadline)
+	if err != nil {
+		return fmt.Errorf("admitted claim or dispatch still holds the maintenance lock: %w", err)
+	}
+	defer func() { err = errors.Join(err, admissions.Close()) }()
 	old, err := Read()
 	if err != nil {
 		return err
@@ -110,6 +122,11 @@ func Set(mode string) (err error) {
 		return errors.New("drain required before freeze")
 	}
 	if mode == "frozen" {
+		writes, lockErr := lock("writes", syscall.LOCK_EX)
+		if lockErr != nil {
+			return lockErr
+		}
+		defer func() { err = errors.Join(err, writes.Close()) }()
 		sessions, lockErr := lock("sessions", syscall.LOCK_EX)
 		if lockErr != nil {
 			return errors.New("active executor or resolver; keep draining")
@@ -147,18 +164,48 @@ func Set(mode string) (err error) {
 	}
 	return os.Rename(name, filepath.Join(root, "maintenance.json"))
 }
+func waitLock(name string, deadline time.Time) (*os.File, error) {
+	for {
+		file, err := lock(name, syscall.LOCK_EX)
+		if !errors.Is(err, syscall.EWOULDBLOCK) || !time.Now().Before(deadline) {
+			return file, err
+		}
+		time.Sleep(min(50*time.Millisecond, time.Until(deadline)))
+	}
+}
 func Admission() (func(), error) {
 	release, err := Write()
 	if err != nil {
 		return nil, err
 	}
-	if err = Admit(); err != nil {
+	admissions, err := lock("admissions", syscall.LOCK_SH)
+	if err != nil {
 		release()
 		return nil, err
 	}
-	return release, nil
+	if err = Admit(); err != nil {
+		err = errors.Join(err, admissions.Close())
+		release()
+		return nil, err
+	}
+	return func() {
+		if err := admissions.Close(); err != nil {
+			log.Print("cannot close maintenance guard")
+		}
+		release()
+	}, nil
 }
 func Admit() error {
+	intent, err := lock("intent", syscall.LOCK_SH)
+	if errors.Is(err, syscall.EWOULDBLOCK) {
+		return errors.New("maintenance change pending; new claim or dispatch refused")
+	}
+	if err != nil {
+		return err
+	}
+	if err = intent.Close(); err != nil {
+		return err
+	}
 	state, err := Read()
 	if err != nil {
 		return err

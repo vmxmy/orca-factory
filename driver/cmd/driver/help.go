@@ -25,9 +25,11 @@ Commands:
       [只读] 查看单票的执行器与处置日志。
   usage <票号> --json [--reviewer-worktree <path>] [--run-worktree <path> ...]
       [只读] 汇总单票的模型用量。
-  maintenance status|drain|freeze|resume
+  maintenance status|freeze|drain [--wait 2m]|resume [--wait 2m]
       [写入] 查看或切换本机维护状态。drain 停止新派工；freeze 停止全部外部写入；
-      resume 恢复 running。status 只读。
+      resume 恢复 running。drain/resume 等待已准入的认领与派工结束（默认 2 分钟），
+      等待期间拒绝新认领与派工，超时不切换状态。freeze 仍需先 drain 且无活动会话。
+      status 只读。
   issues <subcommand> [--id <ID>] [--input <file|->] [--body-file <file|->] [--state <状态>]
          [--add-label <名>] [--remove-label <名>] [--apply] [--json]
       [写入] 票据主账本 CLI，需要先加载 scripts/agent-gates/agent-graph.env。
