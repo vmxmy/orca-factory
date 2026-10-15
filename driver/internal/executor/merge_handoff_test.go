@@ -51,6 +51,7 @@ func TestStartExistingPRPreservesFrozenHandoff(t *testing.T) {
 	g.existing = &result.PR
 	g.existing.Head.SHA = strings.Repeat("b", 40)
 	before := append([]string(nil), l.comments...)
+	e.Config.Merging = true
 	resumed, err := e.Start(context.Background(), ticket)
 	if err != nil {
 		t.Fatal(err)

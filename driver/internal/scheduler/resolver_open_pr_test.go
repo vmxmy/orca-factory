@@ -13,9 +13,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestResolverOpenPR(t *testing.T) {
@@ -49,23 +49,23 @@ func TestResolverOpenPR(t *testing.T) {
 			if err != nil || len(tasks) != 1 {
 				t.Fatalf("ticket list: %+v %v", tasks, err)
 			}
-			task := tasks[0]
-			if task.URL != "https://ledger.example/base/BASE_TOKEN?table=tblT&record=recA" {
-				t.Fatalf("ticket link: %q", task.URL)
+			created := tasks[0]
+			if created.URL != "https://ledger.example/base/BASE_TOKEN?table=tblT&record=recA" {
+				t.Fatalf("ticket link: %q", created.URL)
 			}
 			head := pr.Head.SHA
 			creates, lookups := 0, 0
 			prResponse := prRaw
 			if strings.HasPrefix(mode, "existing") {
 				existing := pr
-				existing.Body = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\nEarlier verified fix", task.URL, task.Identifier, task.ID)
+				existing.Body = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\nEarlier verified fix", created.URL, created.Identifier, created.ID)
 				switch mode {
 				case "existing-no-reference":
 					existing.Body = "Earlier verified fix"
 				case "existing-wrong-ticket":
-					existing.Body = strings.Replace(existing.Body, task.URL, task.URL+"-other", 1)
+					existing.Body = strings.Replace(existing.Body, created.URL, created.URL+"-other", 1)
 				case "existing-wrong-canonical":
-					existing.Body = strings.Replace(existing.Body, "Canonical ID: "+task.ID, "Canonical ID: other", 1)
+					existing.Body = strings.Replace(existing.Body, "Canonical ID: "+created.ID, "Canonical ID: other", 1)
 				}
 				prResponse, err = json.Marshal(existing)
 				if err != nil {
@@ -116,9 +116,9 @@ func TestResolverOpenPR(t *testing.T) {
 						t.Error(err)
 					}
 					if input.Head != "agent/OF-5/executor" || input.Base != "main" || input.Title != "Recover PR" ||
-						!strings.HasPrefix(input.Body, "关联票: "+task.URL+"\n") ||
-						!strings.Contains(input.Body, "Canonical identifier: "+task.Identifier+"\n") ||
-						!strings.Contains(input.Body, "Canonical ID: "+task.ID+"\n") ||
+						!strings.HasPrefix(input.Body, "关联票: "+created.URL+"\n") ||
+						!strings.Contains(input.Body, "Canonical identifier: "+created.Identifier+"\n") ||
+						!strings.Contains(input.Body, "Canonical ID: "+created.ID+"\n") ||
 						!strings.Contains(input.Body, "Verified fix") {
 						t.Errorf("wrong PR: %+v", input)
 					}
@@ -142,9 +142,9 @@ func TestResolverOpenPR(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtime := &Runtime{GitHub: gh, Clients: map[string]IssueClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+			runtime := &Runtime{GitHub: gh, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 			raw, _ := json.Marshal(map[string]string{"action": "open-pr", "branch": "agent/OF-5/executor", "head": head, "title": "Recover PR", "body": "Verified fix", "reason": "gate passed"})
-			ticket := Ticket{ID: task.ID, Identifier: task.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
+			ticket := Ticket{ID: created.ID, Identifier: created.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
 			if mode == "ticket-identity-mismatch" {
 				ticket.Identifier += "-changed"
 			}
@@ -174,7 +174,7 @@ func TestResolverOpenPR(t *testing.T) {
 			if events != 1 || body == "" {
 				t.Fatalf("want one resolution event, got %d: %q", events, body)
 			}
-			record, err := readResolution([]linear.Comment{{Body: body}})
+			record, err := readResolution([]task.Comment{{Body: body}})
 			if err != nil || record == nil {
 				t.Fatalf("missing receipt: %q %v", body, err)
 			}
@@ -186,7 +186,7 @@ func TestResolverOpenPR(t *testing.T) {
 				if !strings.Contains(body, fmt.Sprintf("pr=%d head=%s", pr.Number, head)) {
 					t.Fatalf("missing PR evidence: %q", body)
 				}
-				f := &fakeBackend{tickets: []Ticket{{ID: task.ID, Identifier: task.Identifier, Repo: "a", Owner: machine.OwnerResolver, Resolution: record}}}
+				f := &fakeBackend{tickets: []Ticket{{ID: created.ID, Identifier: created.Identifier, Repo: "a", Owner: machine.OwnerResolver, Resolution: record}}}
 				if err := setup(f).Tick(ctx); err != nil {
 					t.Fatal(err)
 				}

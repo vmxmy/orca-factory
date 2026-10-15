@@ -8,9 +8,10 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // Contract tests read payloads recorded from the real systems (testdata/recorded).
@@ -28,7 +29,7 @@ func TestRecordedOwnershipUnregistered(t *testing.T) {
 	var resp struct {
 		Data struct {
 			Issue struct {
-				Comments struct{ Nodes []linear.Comment } `json:"comments"`
+				Comments struct{ Nodes []task.Comment } `json:"comments"`
 			} `json:"issue"`
 		} `json:"data"`
 	}
@@ -59,7 +60,7 @@ func TestRecordedExecutorHandoff(t *testing.T) {
 	var resp struct {
 		Data struct {
 			Issue struct {
-				Comments struct{ Nodes []linear.Comment } `json:"comments"`
+				Comments struct{ Nodes []task.Comment } `json:"comments"`
 			} `json:"issue"`
 		} `json:"data"`
 	}
@@ -76,17 +77,17 @@ func TestRecordedExecutorHandoff(t *testing.T) {
 }
 
 func TestRecordedSchedulerBlockerIdentifiers(t *testing.T) {
-	var response struct{ Data struct{ Issue linear.Issue } }
+	var response struct{ Data struct{ Issue task.Issue } }
 	if err := json.Unmarshal(recorded(t, "linear-inverse-relations.json"), &response); err != nil {
 		t.Fatal(err)
 	}
 	issue := response.Data.Issue
 	issue.Project.ID = "project"
 	issue.State.Name = "Todo"
-	issue.Labels.Nodes = []linear.NamedID{{Name: "ready-for-agent"}}
-	client := &fakeIssues{issues: []linear.Issue{issue}}
+	issue.Labels.Nodes = []task.NamedID{{Name: "ready-for-agent"}}
+	client := &fakeIssues{issues: []task.Issue{issue}}
 	repo := config.Repository{Path: "repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "project", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Clients: map[string]IssueClient{"repo": client}}
+	runtime := &Runtime{Clients: map[string]issues.Store{"repo": client}}
 	tickets, err := runtime.Snapshot(context.Background(), []config.Repository{repo})
 	if err != nil {
 		t.Fatal(err)

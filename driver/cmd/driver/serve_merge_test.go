@@ -14,35 +14,39 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type serveMergeIssues struct {
-	scheduler.IssueClient
-	issue    linear.Issue
-	comments []linear.Comment
+	issues.Store
+	issue    task.Issue
+	comments []task.Comment
 	writes   int
 }
 
-func (l *serveMergeIssues) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
-	return []linear.Issue{l.issue}, nil
+func (l *serveMergeIssues) Snapshot(context.Context, []string, time.Time) ([]task.Issue, error) {
+	return []task.Issue{l.issue}, nil
 }
-func (l *serveMergeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *serveMergeIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	return l.comments, nil
 }
-func (l *serveMergeIssues) CreateComment(_ context.Context, _ string, body string) (linear.Comment, error) {
+func (l *serveMergeIssues) CreateComment(_ context.Context, _ string, body string) (task.Comment, error) {
 	l.writes++
-	c := linear.Comment{ID: fmt.Sprint(l.writes), CreatedAt: time.Now(), Body: body}
+	c := task.Comment{ID: fmt.Sprint(l.writes), CreatedAt: time.Now(), Body: body}
 	l.comments = append(l.comments, c)
 	return c, nil
 }
-func (l *serveMergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
+func (l *serveMergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (task.Issue, error) {
 	l.writes++
 	l.issue.State.Name = state
 	return l.issue, nil
+}
+func (l *serveMergeIssues) Read(context.Context, string) (issues.Task, error) {
+	return issues.Task{Issue: l.issue, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
 }
 
 type serveMergeOrca struct{ scheduler.OrcaClient }
@@ -137,10 +141,10 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 			if rawMarshalErr != nil {
 				t.Fatal(rawMarshalErr)
 			}
-			l := &serveMergeIssues{issue: linear.Issue{ID: "id", Identifier: "ENG-1", State: linear.NamedID{Name: "In Progress"}, Project: linear.NamedID{ID: "o/r"}}, comments: []linear.Comment{{ID: "handoff", Body: "归属: 合并通道\nmerge-handoff-v1: " + string(raw)}}}
+			l := &serveMergeIssues{issue: task.Issue{ID: "id", Identifier: "ENG-1", State: task.NamedID{Name: "In Progress"}, Project: task.NamedID{ID: "o/r"}}, comments: []task.Comment{{ID: "handoff", Body: "归属: 合并通道\nmerge-handoff-v1: " + string(raw)}}}
 			repo := config.Repository{Path: dir, MaxInFlight: 2, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 			cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{repo}
-			runtime := &scheduler.Runtime{GitHub: gh, Clients: map[string]scheduler.IssueClient{dir: l}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+			runtime := &scheduler.Runtime{GitHub: gh, Clients: map[string]issues.Store{dir: l}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path != "git" || s.Dir != dir || s.Timeout <= 0 {
 					t.Fatalf("unsafe command: %+v", s)
 				}

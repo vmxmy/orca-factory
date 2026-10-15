@@ -48,6 +48,7 @@ func TestStartHandoffRestoresHistoricalInfraOnce(t *testing.T) {
 			g := e.GitHub.(*fakeGitHub)
 			g.existing = &handoff.PR
 			g.existing.Head.SHA = tools.head
+			e.Config.Merging = true
 			if tc.checkpoint < 0 {
 				if err := os.Remove(checkpointPath(e.Config, ticket)); err != nil {
 					t.Fatal(err)

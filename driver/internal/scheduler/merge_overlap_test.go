@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 	"os"
 	"path/filepath"
 	"slices"
@@ -334,7 +334,7 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	f := newMergeFixture(t)
 	later := *f.tracker
 	later.issue.ID, later.issue.Identifier = "repaired", "ENG-2"
-	later.rows = append([]linear.Comment(nil), f.tracker.rows...)
+	later.rows = append([]task.Comment(nil), f.tracker.rows...)
 	nf := *f
 	nf.tracker = &later
 	rewriteHandoff(t, &nf, func(h map[string]any) {
@@ -353,7 +353,7 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	})
 	fresh := later.rows[0]
 	fresh.CreatedAt = fresh.CreatedAt.Add(time.Minute)
-	later.rows = []linear.Comment{old, {Body: "归属: 执行器", CreatedAt: old.CreatedAt.Add(time.Second)}, fresh}
+	later.rows = []task.Comment{old, {Body: "归属: 执行器", CreatedAt: old.CreatedAt.Add(time.Second)}, fresh}
 	source := &mergeTickets{rows: []*mergeIssues{&later, f.tracker}}
 	f.runtime.Clients[f.repos[0].Path] = source
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
@@ -370,7 +370,7 @@ func TestRuntimeUnknownProgressWaitsWithoutOverwriting(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 || len(f.tracker.bodies) != 0 {
 		t.Fatalf("unknown progress overwritten: %v %v", err, f.tracker.bodies)

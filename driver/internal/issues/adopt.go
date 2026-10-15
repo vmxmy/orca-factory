@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type AdoptInput struct {
@@ -58,7 +58,7 @@ func (c *GitHub) Adopt(ctx context.Context, id string, raw []byte) (Task, error)
 	return c.SetMetadata(ctx, task.ID, m)
 }
 
-func (c *GitHub) FreshIssue(ctx context.Context, id string) (linear.Issue, error) {
+func (c *GitHub) FreshIssue(ctx context.Context, id string) (task.Issue, error) {
 	task, err := c.Read(ctx, id)
 	return task.Issue, err
 }

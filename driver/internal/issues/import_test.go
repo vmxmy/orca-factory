@@ -17,8 +17,8 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const importID = "01234567-1234-1234-1234-012345678901"
@@ -211,7 +211,7 @@ func TestImportOversizedCommentRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := c.ListComments(context.Background(), importID)
-	var want []linear.Comment
+	var want []task.Comment
 	encoded, _ := json.Marshal(importIssue(m)["comments"])
 	_ = json.Unmarshal(encoded, &want)
 	if err != nil || !reflect.DeepEqual(got, want) {
@@ -440,19 +440,19 @@ func TestImportDryRunAndRepeat(t *testing.T) {
 	if f.writes != before {
 		t.Fatalf("repeat wrote %d times", f.writes-before)
 	}
-	task, err := c.Read(context.Background(), importID)
+	stored, err := c.Read(context.Background(), importID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	at, _ := time.Parse(time.RFC3339, importTime)
-	if task.ID != importID || task.Identifier != "ZII-1" || task.Description != importIssue(m)["description"] || !task.CreatedAt.Equal(at) || !task.Metadata.UpdatedAt.Equal(at) || !task.Metadata.ImportHold {
-		t.Fatalf("source or hold lost: %+v", task)
+	if stored.ID != importID || stored.Identifier != "ZII-1" || stored.Description != importIssue(m)["description"] || !stored.CreatedAt.Equal(at) || !stored.Metadata.UpdatedAt.Equal(at) || !stored.Metadata.ImportHold {
+		t.Fatalf("source or hold lost: %+v", stored)
 	}
 	got, err := c.ListComments(context.Background(), importID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var want []linear.Comment
+	var want []task.Comment
 	encoded, _ := json.Marshal(importIssue(m)["comments"])
 	_ = json.Unmarshal(encoded, &want)
 	if !reflect.DeepEqual(got, want) {
@@ -590,9 +590,9 @@ func TestImportPreservesHeldAndDependencies(t *testing.T) {
 	}
 }
 func TestImportCommentDecoder(t *testing.T) {
-	normal := linear.Comment{ID: "normal", Body: "unchanged\n", CreatedAt: time.Now()}
+	normal := task.Comment{ID: "normal", Body: "unchanged\n", CreatedAt: time.Now()}
 	got, err := DecodeImportedComments(normal)
-	if err != nil || !reflect.DeepEqual(got, []linear.Comment{normal}) {
+	if err != nil || !reflect.DeepEqual(got, []task.Comment{normal}) {
 		t.Fatal("normal comment changed")
 	}
 }

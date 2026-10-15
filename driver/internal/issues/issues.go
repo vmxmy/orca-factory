@@ -19,25 +19,21 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
-
-type Client interface {
-	Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error)
-	ListComments(context.Context, string) ([]linear.Comment, error)
-	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
-	CreateComment(context.Context, string, string) (linear.Comment, error)
-}
 
 // Store is a backend that keeps canonical task records with driver metadata.
 // Callers depend on it instead of a concrete backend.
 type Store interface {
-	Client
+	Snapshot(context.Context, []string, time.Time) ([]task.Issue, error)
+	ListComments(context.Context, string) ([]task.Comment, error)
+	UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error)
+	CreateComment(context.Context, string, string) (task.Comment, error)
 	Repository() string
 	List(context.Context) ([]Task, error)
 	Read(context.Context, string) (Task, error)
 	Description(context.Context, string) (string, error)
-	FreshIssue(context.Context, string) (linear.Issue, error)
+	FreshIssue(context.Context, string) (task.Issue, error)
 	Create(context.Context, CreateInput) (Task, error)
 	Adopt(context.Context, string, []byte) (Task, error)
 	Edit(context.Context, string, []byte) (Task, error)
@@ -107,16 +103,16 @@ type Task struct {
 	NativeStateReason string    `json:"nativeStateReason"`
 	NativeUpdatedAt   time.Time `json:"nativeUpdatedAt"`
 	nativeID          string
-	linear.Issue
-	Number      int                               `json:"number"`
-	URL         string                            `json:"url"`
-	Title       string                            `json:"title"`
-	Description string                            `json:"description"`
-	Estimate    *float64                          `json:"estimate"`
-	Comments    linear.Connection[linear.Comment] `json:"comments"`
-	Metadata    Metadata                          `json:"metadata"`
-	Complete    bool                              `json:"complete"`
-	BlockedBy   []linear.InverseRelation          `json:"blockedBy"`
+	task.Issue
+	Number      int                           `json:"number"`
+	URL         string                        `json:"url"`
+	Title       string                        `json:"title"`
+	Description string                        `json:"description"`
+	Estimate    *float64                      `json:"estimate"`
+	Comments    task.Connection[task.Comment] `json:"comments"`
+	Metadata    Metadata                      `json:"metadata"`
+	Complete    bool                          `json:"complete"`
+	BlockedBy   []task.InverseRelation        `json:"blockedBy"`
 }
 type CreateInput struct {
 	ImportDigest string    `json:"importDigest,omitempty"`
@@ -245,11 +241,11 @@ func (c *GitHub) task(v github.IssueRecord) (Task, error) {
 	} else if stateType(state) == "completed" || stateType(state) == "canceled" || stateType(state) == "duplicate" {
 		incomplete = true
 	}
-	labels := linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{}}
+	labels := task.Connection[task.NamedID]{Nodes: []task.NamedID{}}
 	for _, l := range v.Labels {
-		labels.Nodes = append(labels.Nodes, linear.NamedID{ID: l.Name, Name: l.Name})
+		labels.Nodes = append(labels.Nodes, task.NamedID{ID: l.Name, Name: l.Name})
 	}
-	return Task{nativeID: nativeID, NativeState: v.State, NativeStateReason: v.StateReason, NativeUpdatedAt: nativeUpdatedAt, Issue: linear.Issue{ID: m.ID, Identifier: effectiveIdentifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Priority: m.Priority, Labels: labels, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, URL: v.URL, Held: m.ImportHold, Title: v.Title, Number: v.Number, Relations: linear.Connection[linear.Relation]{Nodes: []linear.Relation{}}, InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: []linear.InverseRelation{}, PageInfo: linear.PageInfo{HasNextPage: incomplete}}}, Number: v.Number, URL: v.URL, Title: v.Title, Description: strings.TrimSuffix(strings.SplitN(v.Body, marker, 2)[0], "\n\n"), Estimate: m.Estimate, Metadata: m, Complete: !incomplete, Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: []linear.InverseRelation{}}, nil
+	return Task{nativeID: nativeID, NativeState: v.State, NativeStateReason: v.StateReason, NativeUpdatedAt: nativeUpdatedAt, Issue: task.Issue{ID: m.ID, Identifier: effectiveIdentifier, Project: task.NamedID{ID: c.repo, Name: c.repo}, State: task.NamedID{ID: stateType(state), Name: state}, Priority: m.Priority, Labels: labels, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt, URL: v.URL, Held: m.ImportHold, Title: v.Title, Number: v.Number, Relations: task.Connection[task.Relation]{Nodes: []task.Relation{}}, InverseRelations: task.Connection[task.InverseRelation]{Nodes: []task.InverseRelation{}, PageInfo: task.PageInfo{HasNextPage: incomplete}}}, Number: v.Number, URL: v.URL, Title: v.Title, Description: strings.TrimSuffix(strings.SplitN(v.Body, marker, 2)[0], "\n\n"), Estimate: m.Estimate, Metadata: m, Complete: !incomplete, Comments: task.Connection[task.Comment]{Nodes: []task.Comment{}}, BlockedBy: []task.InverseRelation{}}, nil
 }
 func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 	raw, err := c.gh.Issues(ctx, c.owner, c.name)
@@ -283,7 +279,7 @@ func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 			}
 		}
 		for _, id := range t.Metadata.Blockers {
-			r := linear.InverseRelation{ID: id, Type: "blocks"}
+			r := task.InverseRelation{ID: id, Type: "blocks"}
 			r.Issue.ID = id
 			r.Issue.Identifier = id
 			if n, ok := ids[id]; ok {
@@ -302,7 +298,7 @@ func (c *GitHub) List(ctx context.Context) ([]Task, error) {
 			t.BlockedBy = append(t.BlockedBy, r)
 		}
 		for _, id := range t.Metadata.Related {
-			r := linear.Relation{ID: id, Type: "related", RelatedIssue: linear.IssueRef{ID: id}}
+			r := task.Relation{ID: id, Type: "related", RelatedIssue: task.IssueRef{ID: id}}
 			if n, ok := ids[id]; ok {
 				r.RelatedIssue.Identifier = rows[n].Identifier
 			} else {
@@ -336,7 +332,7 @@ func (c *GitHub) Description(ctx context.Context, id string) (string, error) {
 	t, err := c.cachedTask(ctx, id)
 	return t.Description, err
 }
-func (c *GitHub) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]linear.Issue, error) {
+func (c *GitHub) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]task.Issue, error) {
 	for _, p := range projects {
 		if p != c.repo {
 			return nil, errors.New("snapshot repository mismatch")
@@ -346,7 +342,7 @@ func (c *GitHub) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]linear.Issue, 0, len(tasks))
+	rows := make([]task.Issue, 0, len(tasks))
 	for _, t := range tasks {
 		rows = append(rows, t.Issue)
 	}
@@ -364,7 +360,7 @@ func (c *GitHub) Read(ctx context.Context, id string) (Task, error) {
 	}
 	return Task{}, errors.New("task not found")
 }
-func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
+func (c *GitHub) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
 		return nil, err
@@ -373,19 +369,19 @@ func (c *GitHub) ListComments(ctx context.Context, id string) ([]linear.Comment,
 	if err != nil {
 		return nil, err
 	}
-	history := make([]linear.Comment, 0, len(raw))
+	history := make([]task.Comment, 0, len(raw))
 	for _, v := range raw {
-		history = append(history, linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt})
+		history = append(history, task.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt})
 	}
 	return decodeImportedHistory(history)
 }
-func (c *GitHub) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (c *GitHub) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	t, err := c.Read(ctx, id)
 	if err != nil {
-		return linear.Comment{}, err
+		return task.Comment{}, err
 	}
 	v, err := c.gh.AddIssueComment(ctx, c.owner, c.name, t.Number, body)
-	return linear.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}, err
+	return task.Comment{ID: strconv.FormatInt(v.ID, 10), Body: v.Body, CreatedAt: v.CreatedAt, UpdatedAt: v.UpdatedAt}, err
 }
 func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, error) {
 	t, err := c.Read(ctx, id)
@@ -408,18 +404,18 @@ func (c *GitHub) SetMetadata(ctx context.Context, id string, m Metadata) (Task, 
 	}
 	return c.task(v)
 }
-func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	t, err := c.Read(ctx, id)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	if !t.Metadata.Complete {
-		return linear.Issue{}, errors.New("explicit adoption required before update")
+		return task.Issue{}, errors.New("explicit adoption required before update")
 	}
 	m := t.Metadata
 	if state != "" {
 		if !validState(state) {
-			return linear.Issue{}, errors.New("unknown task state")
+			return task.Issue{}, errors.New("unknown task state")
 		}
 		m.State = state
 	}
@@ -440,7 +436,7 @@ func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove 
 	sort.Strings(names)
 	body, err := render(t.Description, m)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	input := map[string]any{"body": body, "labels": names}
 	if state != "" {
@@ -455,7 +451,7 @@ func (c *GitHub) UpdateIssue(ctx context.Context, id, state string, add, remove 
 	}
 	v, err := c.gh.EditIssue(ctx, c.owner, c.name, t.Number, input)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	result, err := c.task(v)
 	return result.Issue, err
@@ -614,6 +610,6 @@ func (c *GitHub) awaitListed(ctx context.Context, id string) error {
 func (c *GitHub) GitHubUsage() github.Usage { return c.gh.Usage() }
 
 // Comment edits need not change the issue timestamp; each page revalidates its ETag.
-func (c *GitHub) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
+func (c *GitHub) SnapshotComments(ctx context.Context, id string) ([]task.Comment, error) {
 	return c.ListComments(ctx, id)
 }

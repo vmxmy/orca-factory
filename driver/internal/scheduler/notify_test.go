@@ -15,32 +15,33 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type notifyStore struct {
 	fakeIssues
 	writeErr, readErr error
 	reads, writes     int
-	commentsByID      map[string][]linear.Comment
+	commentsByID      map[string][]task.Comment
 }
 
-func (f *notifyStore) ListComments(_ context.Context, id string) ([]linear.Comment, error) {
+func (f *notifyStore) ListComments(_ context.Context, id string) ([]task.Comment, error) {
 	f.reads++
 	if f.commentsByID != nil {
 		return f.commentsByID[id], f.readErr
 	}
 	return f.issueComments, f.readErr
 }
-func (f *notifyStore) CreateComment(_ context.Context, id string, body string) (linear.Comment, error) {
+func (f *notifyStore) CreateComment(_ context.Context, id string, body string) (task.Comment, error) {
 	f.writes++
 	if f.writeErr != nil {
-		return linear.Comment{}, f.writeErr
+		return task.Comment{}, f.writeErr
 	}
-	c := linear.Comment{ID: "event", Body: body}
+	c := task.Comment{ID: "event", Body: body}
 	f.issueComments = append(f.issueComments, c)
 	if f.commentsByID != nil {
 		f.commentsByID[id] = append(f.commentsByID[id], c)
@@ -132,7 +133,7 @@ func TestFeishuNotifyDurable(t *testing.T) {
 				for _, event := range store.issueComments {
 					ticket.NotifyEvents[event.Body] = true
 				}
-				r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+				r := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 				if err := r.NotifyFeishu(ctx, ticket); err != nil {
 					t.Fatal(err)
 				}
@@ -182,7 +183,7 @@ func TestFeishuNotifyFailureAndDisabled(t *testing.T) {
 			case "other backend":
 				repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 			}
-			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			r := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 			err := r.NotifyFeishu(ctx, ticket)
 			wantErr := scenario == "send" || scenario == "write"
 			if (err != nil) != wantErr {
@@ -253,7 +254,7 @@ func TestFeishuNotifyPausedSkips(t *testing.T) {
 			sender := &notifySender{store: store}
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 1, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
-			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
+			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
 			s := setup(&f.fakeBackend)
 			s.Backend = f
 			s.Repositories = []config.Repository{repo}
@@ -287,12 +288,12 @@ func TestFeishuNotifySnapshotConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, body := range []string{"归属: unknown", resolver.Prefix + "{}"} {
 		t.Run(body, func(t *testing.T) {
-			store := &notifyStore{fakeIssues: fakeIssues{issueComments: []linear.Comment{{ID: "bad", Body: body}}, issues: []linear.Issue{{ID: "id", Identifier: "OF-9", Title: "conflicting ticket", URL: "https://example.feishu.cn/base/base?record=rec", Project: linear.NamedID{ID: "project"}}}}}
+			store := &notifyStore{fakeIssues: fakeIssues{issueComments: []task.Comment{{ID: "bad", Body: body}}, issues: []task.Issue{{ID: "id", Identifier: "OF-9", Title: "conflicting ticket", URL: "https://example.feishu.cn/base/base?record=rec", Project: task.NamedID{ID: "project"}}}}}
 			sender := &notifySender{store: store}
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 1, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
 
-			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			r := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 			rows, err := r.Snapshot(context.Background(), []config.Repository{repo})
 			var evidence *SnapshotEvidenceError
 			if !errors.As(err, &evidence) || len(rows) != 0 || len(evidence.Tickets) != 1 {
@@ -336,17 +337,17 @@ func TestFeishuNotifySnapshotReason(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct {
 		name     string
-		comments []linear.Comment
+		comments []task.Comment
 		want     string
 	}{
-		{"latest ID", []linear.Comment{{ID: "z", CreatedAt: now, Body: "Agent处置: latest reason\n证据: proof"}, {ID: "a", CreatedAt: now, Body: "转人: older reason"}, {ID: "new", CreatedAt: now.Add(time.Minute), Body: "通知: 转人 existing"}}, "latest reason"},
-		{"latest time", []linear.Comment{{ID: "z", CreatedAt: now, Body: "转人: old"}, {ID: "a", CreatedAt: now.Add(time.Minute), Body: "Agent处置: new"}}, "new"},
+		{"latest ID", []task.Comment{{ID: "z", CreatedAt: now, Body: "Agent处置: latest reason\n证据: proof"}, {ID: "a", CreatedAt: now, Body: "转人: older reason"}, {ID: "new", CreatedAt: now.Add(time.Minute), Body: "通知: 转人 existing"}}, "latest reason"},
+		{"latest time", []task.Comment{{ID: "z", CreatedAt: now, Body: "转人: old"}, {ID: "a", CreatedAt: now.Add(time.Minute), Body: "Agent处置: new"}}, "new"},
 		{"default", nil, "等待处置"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &notifyStore{fakeIssues: fakeIssues{issueComments: tc.comments, issues: []linear.Issue{{ID: "id", Project: linear.NamedID{ID: "p"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}}
+			store := &notifyStore{fakeIssues: fakeIssues{issueComments: tc.comments, issues: []task.Issue{{ID: "id", Project: task.NamedID{ID: "p"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-failed"}}}}}}}
 			repo := config.Repository{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}
-			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}}
+			r := &Runtime{Clients: map[string]issues.Store{repo.Path: store}}
 			tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
 			if err != nil || len(tickets) != 1 {
 				t.Fatalf("tickets=%v err=%v", tickets, err)
@@ -389,23 +390,23 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 			var recording struct {
 				Data struct {
 					Issue struct {
-						Comments struct{ Nodes []linear.Comment }
+						Comments struct{ Nodes []task.Comment }
 					}
 				}
 			}
 			if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &recording); err != nil {
 				t.Fatal(err)
 			}
-			store := &notifyStore{commentsByID: map[string][]linear.Comment{}}
+			store := &notifyStore{commentsByID: map[string][]task.Comment{}}
 			for _, id := range []string{"human", "conflict", "deployment"} {
-				store.issues = append(store.issues, linear.Issue{ID: id, Identifier: "OF-" + id, Title: id, URL: "https://example.feishu.cn/base/base?record=" + id, Project: linear.NamedID{ID: "project"}})
-				store.commentsByID[id] = append([]linear.Comment(nil), recording.Data.Issue.Comments.Nodes...)
+				store.issues = append(store.issues, task.Issue{ID: id, Identifier: "OF-" + id, Title: id, URL: "https://example.feishu.cn/base/base?record=" + id, Project: task.NamedID{ID: "project"}})
+				store.commentsByID[id] = append([]task.Comment(nil), recording.Data.Issue.Comments.Nodes...)
 			}
 			conflict := merge.HandoffPrefix + "invalid"
 			if snapshotConflict {
 				conflict = "归属: unknown"
 			}
-			store.commentsByID["conflict"] = append(store.commentsByID["conflict"], linear.Comment{ID: "conflict", Body: conflict, CreatedAt: time.Now()})
+			store.commentsByID["conflict"] = append(store.commentsByID["conflict"], task.Comment{ID: "conflict", Body: conflict, CreatedAt: time.Now()})
 			handoff := validHandoffForResolver()
 			handoff.TicketID = "deployment"
 			progress := merge.Progress{Version: 1, QueueID: handoff.QueueID, TicketID: handoff.TicketID, Repository: handoff.Repository, PR: handoff.PR, Head: handoff.Head, Main: strings.Repeat("b", 40), MergeSHA: strings.Repeat("c", 40), Phase: "merged", Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "paused", Reason: "workflow failed"}}
@@ -419,13 +420,13 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				store.commentsByID["deployment"] = append(store.commentsByID["deployment"], linear.Comment{Body: entry.prefix + string(body), CreatedAt: time.Now()})
+				store.commentsByID["deployment"] = append(store.commentsByID["deployment"], task.Comment{Body: entry.prefix + string(body), CreatedAt: time.Now()})
 			}
 			sender := &notifySender{store: store}
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
 			for range 2 {
-				runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+				runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 				backend := &notifyTickBackend{runtime: runtime}
 				backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 				s := setup(&backend.fakeBackend)
@@ -472,13 +473,13 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 func TestFeishuNotifyUnownedConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	store := &notifyStore{fakeIssues: fakeIssues{
-		issues:        []linear.Issue{{ID: "id", Identifier: "OF-9", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}}},
-		issueComments: []linear.Comment{{ID: "bad", Body: merge.HandoffPrefix + "invalid"}},
+		issues:        []task.Issue{{ID: "id", Identifier: "OF-9", Project: task.NamedID{ID: "project"}, State: task.NamedID{Name: "In Progress"}}},
+		issueComments: []task.Comment{{ID: "bad", Body: merge.HandoffPrefix + "invalid"}},
 	}}
 	sender := &notifySender{store: store}
 	sender.start(t)
 	repo := config.Repository{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 	backend := &notifyTickBackend{runtime: runtime}
 	backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 	s := setup(&backend.fakeBackend)

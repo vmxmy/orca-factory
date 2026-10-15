@@ -11,6 +11,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
@@ -34,7 +35,7 @@ func (b *statusFakeBackend) ActualChanges(context.Context, scheduler.Ticket) ([]
 }
 
 type statusFakeClient struct {
-	scheduler.IssueClient
+	issues.Store
 	usage github.Usage
 }
 
@@ -106,7 +107,7 @@ func TestStatusSnapshotCollection(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
 	a := &statusFakeClient{usage: github.Usage{Hour: now, Requests: 3, Limit: 100, Remaining: 97, Reset: now.Add(time.Hour)}}
 	b := &statusFakeClient{usage: github.Usage{Hour: now, Requests: 5}}
-	runtime := &scheduler.Runtime{Clients: map[string]scheduler.IssueClient{"/b": b, "/a": a, "/shared": a}}
+	runtime := &scheduler.Runtime{Clients: map[string]issues.Store{"/b": b, "/a": a, "/shared": a}}
 	backend := &statusBackend{Backend: &statusFakeBackend{}}
 	s := &scheduler.Scheduler{}
 	snapshot := collectStatus(s, backend, runtime, now)

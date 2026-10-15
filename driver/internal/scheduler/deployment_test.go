@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) {
@@ -30,7 +30,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	b := *f.tracker
 	b.issue.ID = "b"
 	b.issue.Project.ID = "o/s"
-	b.rows = append([]linear.Comment(nil), f.tracker.rows...)
+	b.rows = append([]task.Comment(nil), f.tracker.rows...)
 	bf := *f
 	bf.tracker = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
@@ -113,7 +113,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	}
 	// An operator may mark the issue Done or transfer ownership while waiting.
 	f.tracker.issue.State.Name = "Done"
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "operator", CreatedAt: time.Now(), Body: "归属: 无"})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "operator", CreatedAt: time.Now(), Body: "归属: 无"})
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -171,9 +171,9 @@ type uncertainSmokeIssues struct {
 	loseResult bool
 }
 
-func (l *uncertainSmokeIssues) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (l *uncertainSmokeIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	if l.loseResult && strings.Contains(body, `"state":"passed"`) {
-		return linear.Comment{}, fmt.Errorf("lost result")
+		return task.Comment{}, fmt.Errorf("lost result")
 	}
 	return l.mergeIssues.CreateComment(ctx, id, body)
 }
@@ -288,7 +288,7 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			if damage == "invalid-json" {
 				raw = []byte("{")
 			}
-			f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "damaged", CreatedAt: time.Now(), Body: "归属: 无\nmerge-progress-v1: " + string(raw)})
+			f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "damaged", CreatedAt: time.Now(), Body: "归属: 无\nmerge-progress-v1: " + string(raw)})
 			f.tracker.issue.State.Name = "Done"
 			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = ""
 			rebuilt := *f.runtime
@@ -318,7 +318,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	next := *f.tracker
 	next.issue.ID = "next"
 	next.issue.Identifier = "ENG-2"
-	next.rows = append([]linear.Comment(nil), f.tracker.rows[:1]...)
+	next.rows = append([]task.Comment(nil), f.tracker.rows[:1]...)
 	next.bodies = nil
 	nf := *f
 	nf.tracker = &next
@@ -380,7 +380,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	// Config removal cannot erase the durable barrier or authorize replay.
 	f.repos[0].Env["AGENT_SMOKE_CMD"] = ""
 	f.tracker.issue.State.Name = "Done"
-	f.tracker.issue.Labels.Nodes = []linear.NamedID{{Name: "auto-failed"}}
+	f.tracker.issue.Labels.Nodes = []task.NamedID{{Name: "auto-failed"}}
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -491,7 +491,7 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "reset", CreatedAt: time.Now(), Body: "merge-progress-v1: " + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "reset", CreatedAt: time.Now(), Body: "merge-progress-v1: " + string(raw)})
 	l.loseResult = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil

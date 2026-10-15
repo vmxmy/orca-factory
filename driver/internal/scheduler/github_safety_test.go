@@ -113,7 +113,7 @@ func githubSafetyFixture(t *testing.T, f *mergeFixture) *safetyIssues {
 	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 	f.repos[0] = repo
-	f.runtime.Clients = map[string]IssueClient{repo.Path: client}
+	f.runtime.Clients = map[string]issues.Store{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
 	return g
 }

@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type recoveryOrca struct {
@@ -129,7 +129,7 @@ type budgetIssues struct {
 	}
 }
 
-func (l *budgetIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (l *budgetIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	l.updates = append(l.updates, struct {
 		state       string
 		add, remove []string

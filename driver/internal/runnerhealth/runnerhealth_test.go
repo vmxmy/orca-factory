@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type fakeTickets struct {
@@ -32,9 +32,9 @@ func (f *fakeTickets) Read(_ context.Context, id string) (issues.Task, error) {
 	t.ID, t.NativeState = id, f.state
 	return t, nil
 }
-func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
+func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
 	f.comments = append(f.comments, id+": "+body)
-	return linear.Comment{}, nil
+	return task.Comment{}, nil
 }
 
 func healthyUnits(context.Context, runx.Spec) ([]byte, error) {

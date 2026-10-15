@@ -20,7 +20,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 var errFeishuTaskNotFound = errors.New("task not found")
@@ -616,16 +616,16 @@ func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, pro
 	if state == "" {
 		state = "Backlog"
 	}
-	labels := linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{}}
+	labels := task.Connection[task.NamedID]{Nodes: []task.NamedID{}}
 	for _, l := range row.labels {
-		labels.Nodes = append(labels.Nodes, linear.NamedID{ID: l, Name: l})
+		labels.Nodes = append(labels.Nodes, task.NamedID{ID: l, Name: l})
 	}
 	m := Metadata{ID: row.id(), Identifier: identifier(row, projects), Project: c.repo, State: state, Estimate: row.estimate, Blockers: []string{}, Related: []string{}, Complete: managed}
-	inverse := []linear.InverseRelation{}
-	relations := []linear.Relation{}
+	inverse := []task.InverseRelation{}
+	relations := []task.Relation{}
 	for _, ref := range row.blockers {
 		dep, ok := known[ref]
-		r := linear.InverseRelation{ID: ref, Type: "blocks"}
+		r := task.InverseRelation{ID: ref, Type: "blocks"}
 		r.Issue.ID, r.Issue.Identifier, r.Issue.State.Type = ref, ref, "started"
 		if ok && dep.canonical != "" {
 			r.ID, r.Issue.ID, r.Issue.Identifier = dep.canonical, dep.canonical, identifier(dep, projects)
@@ -640,9 +640,9 @@ func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, pro
 	}
 	for _, ref := range row.related {
 		dep, ok := known[ref]
-		r := linear.Relation{ID: ref, Type: "related", RelatedIssue: linear.IssueRef{ID: ref}}
+		r := task.Relation{ID: ref, Type: "related", RelatedIssue: task.IssueRef{ID: ref}}
 		if ok && dep.canonical != "" {
-			r.ID, r.RelatedIssue = dep.canonical, linear.IssueRef{ID: dep.canonical, Identifier: identifier(dep, projects)}
+			r.ID, r.RelatedIssue = dep.canonical, task.IssueRef{ID: dep.canonical, Identifier: identifier(dep, projects)}
 			m.Related = append(m.Related, dep.canonical)
 		} else {
 			incomplete = true
@@ -663,15 +663,15 @@ func (c *Feishu) task(row feishuTicketRow, known map[string]feishuTicketRow, pro
 	}
 	return Task{
 		nativeID: row.record, NativeState: nativeState, NativeUpdatedAt: row.updated,
-		Issue: linear.Issue{ID: m.ID, Identifier: m.Identifier, Project: linear.NamedID{ID: c.repo, Name: c.repo}, State: linear.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title,
-			Relations:        linear.Connection[linear.Relation]{Nodes: relations, PageInfo: linear.PageInfo{HasNextPage: incomplete}},
-			InverseRelations: linear.Connection[linear.InverseRelation]{Nodes: inverse, PageInfo: linear.PageInfo{HasNextPage: incomplete}}},
+		Issue: task.Issue{ID: m.ID, Identifier: m.Identifier, Project: task.NamedID{ID: c.repo, Name: c.repo}, State: task.NamedID{ID: stateType(state), Name: state}, Labels: labels, CreatedAt: row.created, UpdatedAt: row.updated, URL: link, Held: m.ImportHold, Title: row.title,
+			Relations:        task.Connection[task.Relation]{Nodes: relations, PageInfo: task.PageInfo{HasNextPage: incomplete}},
+			InverseRelations: task.Connection[task.InverseRelation]{Nodes: inverse, PageInfo: task.PageInfo{HasNextPage: incomplete}}},
 		URL: link, Title: row.title, Description: brief.Description(), Estimate: row.estimate, Metadata: m, Complete: !incomplete,
-		Comments: linear.Connection[linear.Comment]{Nodes: []linear.Comment{}}, BlockedBy: inverse,
+		Comments: task.Connection[task.Comment]{Nodes: []task.Comment{}}, BlockedBy: inverse,
 	}
 }
 
-func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]linear.Issue, error) {
+func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) ([]task.Issue, error) {
 	for _, p := range projects {
 		if p != c.repo {
 			return nil, errors.New("snapshot repository mismatch")
@@ -681,7 +681,7 @@ func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	rows := make([]linear.Issue, 0, len(tasks))
+	rows := make([]task.Issue, 0, len(tasks))
 	for _, t := range tasks {
 		rows = append(rows, t.Issue)
 	}
@@ -716,14 +716,14 @@ func (c *Feishu) Description(ctx context.Context, id string) (string, error) {
 	return t.Description, err
 }
 
-func (c *Feishu) FreshIssue(ctx context.Context, id string) (linear.Issue, error) {
+func (c *Feishu) FreshIssue(ctx context.Context, id string) (task.Issue, error) {
 	t, err := c.Read(ctx, id)
 	return t.Issue, err
 }
 
 // ListComments returns the ticket's events oldest first. An event whose
 // 修改时间 differs from its 创建时间 was edited and is an evidence conflict.
-func (c *Feishu) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
+func (c *Feishu) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
 		return nil, err
@@ -734,7 +734,7 @@ func (c *Feishu) ListComments(ctx context.Context, id string) ([]linear.Comment,
 		return nil, err
 	}
 	const table = "事件"
-	history := make([]linear.Comment, 0, len(records))
+	history := make([]task.Comment, 0, len(records))
 	for _, r := range records {
 		owners, err := c.links(table, r, "票据")
 		if err != nil {
@@ -758,12 +758,12 @@ func (c *Feishu) ListComments(ctx context.Context, id string) ([]linear.Comment,
 		if !updated.Equal(created) {
 			return nil, fmt.Errorf("feishu event %s evidence conflict: edited after creation", r.ID)
 		}
-		history = append(history, linear.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated})
+		history = append(history, task.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated})
 	}
 	sort.SliceStable(history, func(i, j int) bool { return history[i].CreatedAt.Before(history[j].CreatedAt) })
 	return decodeImportedHistory(history)
 }
 
-func (c *Feishu) SnapshotComments(ctx context.Context, id string) ([]linear.Comment, error) {
+func (c *Feishu) SnapshotComments(ctx context.Context, id string) ([]task.Comment, error) {
 	return c.ListComments(ctx, id)
 }

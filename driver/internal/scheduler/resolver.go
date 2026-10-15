@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type resolutionStore struct {
@@ -24,8 +24,8 @@ type resolutionStore struct {
 	ticket  Ticket
 }
 
-func readResolution(comments []linear.Comment) (*resolver.Record, error) {
-	rows := append([]linear.Comment(nil), comments...)
+func readResolution(comments []task.Comment) (*resolver.Record, error) {
+	rows := append([]task.Comment(nil), comments...)
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
 	var p *resolver.Record
 	for _, c := range rows {
@@ -96,7 +96,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 		copy.Spec = ""
 		contextTicket.Resolution = &copy
 	}
-	contextComments := append([]linear.Comment(nil), comments...)
+	contextComments := append([]task.Comment(nil), comments...)
 	for i := range contextComments {
 		lines := strings.Split(contextComments[i].Body, "\n")
 		for j, line := range lines {
@@ -115,7 +115,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 	evidence, err := json.Marshal(struct {
 		Repository string
 		Ticket     Ticket
-		Comments   []linear.Comment
+		Comments   []task.Comment
 	}{env["AGENT_GH_REPO"], contextTicket, contextComments})
 	if err != nil {
 		return err

@@ -9,8 +9,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // NotifyFeishu reserves an event before sending. A failed or uncertain send
@@ -66,8 +66,8 @@ func feishuNotification(t Ticket) (string, string) {
 	}
 }
 
-func readFeishuNotification(t *Ticket, comments []linear.Comment) {
-	rows := append([]linear.Comment(nil), comments...)
+func readFeishuNotification(t *Ticket, comments []task.Comment) {
+	rows := append([]task.Comment(nil), comments...)
 	sort.Slice(rows, func(i, j int) bool {
 		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
 			return rows[i].ID < rows[j].ID

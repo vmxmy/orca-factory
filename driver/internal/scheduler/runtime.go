@@ -15,15 +15,14 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runnerhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
-type IssueClient = issues.Client
 type OrcaClient interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
@@ -33,7 +32,7 @@ type OrcaClient interface {
 }
 type Runtime struct {
 	GitHub               *github.Client
-	Clients              map[string]IssueClient
+	Clients              map[string]issues.Store
 	Repositories         map[string]config.Repository
 	Orca                 OrcaClient
 	OrcaPath, DriverPath string
@@ -44,7 +43,7 @@ type Runtime struct {
 	refused              map[string]error
 	// newClient binds a ledger client for a repository's env; Track calls it
 	// for every repository discovery hands over.
-	newClient func(context.Context, map[string]string) (IssueClient, error)
+	newClient func(context.Context, map[string]string) (issues.Store, error)
 	// runnerState is the isolated CI runners' state directory on the host that
 	// runs them; Track starts Runners once their repository is bound.
 	runnerState string
@@ -66,13 +65,13 @@ func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository)
 	r := &Runtime{
 		runnerState:  runnerStateDir(),
 		Tuning:       c.Tuning,
-		Clients:      map[string]IssueClient{},
+		Clients:      map[string]issues.Store{},
 		Repositories: map[string]config.Repository{},
 		Orca:         &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout},
 		OrcaPath:     path,
 		DriverPath:   binary,
 	}
-	if err = r.initialize(ctx, repos, r.newIssueClient); err != nil {
+	if err = r.initialize(ctx, repos, r.newIssueStore); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -95,7 +94,7 @@ func runnerStateDir() string {
 // watchRunners files runner alerts in repo once it is the repository the
 // isolated CI runners serve.
 func (r *Runtime) watchRunners(repo config.Repository) {
-	client, ok := r.Clients[repo.Path].(issues.Store)
+	client, ok := r.Clients[repo.Path]
 	if r.runnerState == "" || r.Runners != nil || !ok || repo.Env["AGENT_GH_REPO"] != runnerhealth.Repository {
 		return
 	}
@@ -135,8 +134,8 @@ func (r *Runtime) githubClient() (*github.Client, error) {
 	return gh, nil
 }
 
-func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, newClient func(context.Context, map[string]string) (IssueClient, error)) error {
-	r.Clients = map[string]IssueClient{}
+func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, newClient func(context.Context, map[string]string) (issues.Store, error)) error {
+	r.Clients = map[string]issues.Store{}
 	r.Repositories = map[string]config.Repository{}
 	r.refused = map[string]error{}
 	r.newClient = newClient
@@ -202,8 +201,8 @@ func (e *SnapshotEvidenceError) Error() string { return e.Err.Error() }
 func (e *SnapshotEvidenceError) Unwrap() error { return e.Err }
 
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
-	groups := map[IssueClient][]config.Repository{}
-	order := []IssueClient{}
+	groups := map[issues.Store][]config.Repository{}
+	order := []issues.Store{}
 	for _, repo := range repos {
 		if r.refused[repo.Path] != nil {
 			continue
@@ -237,7 +236,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	return tickets, nil
 }
 
-func (r *Runtime) snapshotClient(ctx context.Context, reader IssueClient, repos []config.Repository) ([]Ticket, error) {
+func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos []config.Repository) ([]Ticket, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
@@ -253,14 +252,14 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader IssueClient, repos 
 		paths[project] = repo.Path
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
-	issues, err := reader.Snapshot(ctx, projects, time.Time{})
+	snapshot, err := reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("issue snapshot failed: %w", err)
 	}
 	// Batch only within each configured client's authorization boundary.
-	commentsByID := map[string][]linear.Comment{}
-	groups := map[IssueClient][]linear.Issue{}
-	for _, issue := range issues {
+	commentsByID := map[string][]task.Comment{}
+	groups := map[issues.Store][]task.Issue{}
+	for _, issue := range snapshot {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
 			path, ok = paths[issue.Project.Name]
@@ -281,7 +280,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader IssueClient, repos 
 	}
 	tickets := []Ticket{}
 	var problems []error
-	for _, issue := range issues {
+	for _, issue := range snapshot {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
 			path, ok = paths[issue.Project.Name]
@@ -356,7 +355,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader IssueClient, repos 
 
 // issueEligibility shares only label/state policy. Ownership, blockers and
 // complete fresh evidence remain independent checks at the action boundary.
-func issueEligibility(issue linear.Issue) (candidate, claimed, failed bool) {
+func issueEligibility(issue task.Issue) (candidate, claimed, failed bool) {
 	ready := false
 	for _, label := range issue.Labels.Nodes {
 		switch label.Name {
@@ -372,8 +371,8 @@ func issueEligibility(issue linear.Issue) (candidate, claimed, failed bool) {
 	return candidate, claimed, failed
 }
 
-func readOwnership(t *Ticket, comments []linear.Comment) error {
-	comments = append([]linear.Comment(nil), comments...)
+func readOwnership(t *Ticket, comments []task.Comment) error {
+	comments = append([]task.Comment(nil), comments...)
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 	schedulerAttempt := 0
 	for _, comment := range comments {
@@ -521,21 +520,15 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 
 // claimIssue rereads the ticket itself; absence is unknown, never permission
 // to reuse the ticket supplied by discovery.
-func (r *Runtime) claimIssue(ctx context.Context, client IssueClient, t Ticket) (linear.Issue, error) {
+func (r *Runtime) claimIssue(ctx context.Context, client issues.Store, t Ticket) (task.Issue, error) {
 	repo := r.Repositories[t.Repo]
 	project := issues.Project(repo.Env)
-	reader, ok := client.(interface {
-		FreshIssue(context.Context, string) (linear.Issue, error)
-	})
-	if !ok {
-		return linear.Issue{}, errors.New("claim issue unavailable")
-	}
-	issue, err := reader.FreshIssue(ctx, t.ID)
+	issue, err := client.FreshIssue(ctx, t.ID)
 	if err != nil {
-		return linear.Issue{}, errors.New("claim issue unavailable")
+		return task.Issue{}, errors.New("claim issue unavailable")
 	}
 	if issue.ID != t.ID || issue.Identifier != t.Identifier || project == "" || (issue.Project.ID != project && issue.Project.Name != project) {
-		return linear.Issue{}, errors.New("claim issue identity changed")
+		return task.Issue{}, errors.New("claim issue identity changed")
 	}
 	return issue, nil
 }
@@ -583,13 +576,7 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 // ticketScope stays local to the scheduler because the shared snapshot
 // deliberately carries only scheduling metadata, not issue descriptions.
 func (r *Runtime) ticketScope(ctx context.Context, t Ticket) ([]string, error) {
-	client, ok := r.Clients[t.Repo].(interface {
-		Description(context.Context, string) (string, error)
-	})
-	if !ok {
-		return nil, errors.New("ticket scope unavailable")
-	}
-	description, err := client.Description(ctx, t.ID)
+	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
 	if err != nil {
 		return nil, err
 	}

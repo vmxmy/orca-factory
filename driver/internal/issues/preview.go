@@ -1,7 +1,7 @@
 package issues
 
 import (
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func Preview(raw []byte, repository string) (map[string]any, error) {
@@ -18,7 +18,7 @@ func Preview(raw []byte, repository string) (map[string]any, error) {
 		}
 		batches += len(encoded)
 		for _, comment := range issue.Comments {
-			if len(encodeImportedComments([]linear.Comment{comment})) > importCommentLimit {
+			if len(encodeImportedComments([]task.Comment{comment})) > importCommentLimit {
 				fragments++
 			}
 		}

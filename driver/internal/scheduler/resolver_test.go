@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 	"os"
 	"path/filepath"
 	"strings"
@@ -53,11 +54,12 @@ func TestStaleExecutorMustSettleBeforeResolver(t *testing.T) {
 
 func TestResolverRuntimeReservesAndLaunchesRole(t *testing.T) {
 	l, o := &fakeIssues{}, &fakeOrca{}
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}, Orca: o, DriverPath: "/bin/driver"}
-	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": l}, Orca: o, DriverPath: "/bin/driver"}
+	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Resolve, Phase: machine.PhaseResolver}); err != nil {
 		t.Fatal(err)
 	}
+	ticket.Owner, ticket.Phase = machine.OwnerResolver, machine.PhaseResolver
 	if err := r.Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
@@ -98,16 +100,23 @@ func validHandoffForResolver() merge.Handoff {
 }
 func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 	for _, barrier := range []bool{false, true} {
-		l := &fakeIssues{}
-		r := &Runtime{Clients: map[string]IssueClient{"/repo": l}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 		h := validHandoffForResolver()
 		if !barrier {
 			h.TicketID = "another"
 		}
 		body, _ := json.Marshal(resolver.Resolution{Action: "merge", Reason: "reviewed", Handoff: &h})
-		ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Owner: machine.OwnerResolver, Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)}}
+		record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)})
+		bodies := []string{"阶段: Agent处置\n归属: 处置Agent\n" + resolver.Prefix + string(record)}
 		if barrier {
-			ticket.Progress = &merge.Progress{Phase: "merged", Deployment: &merge.DeploymentProgress{State: "paused"}}
+			progress, _ := json.Marshal(merge.Progress{Phase: "merged", Deployment: &merge.DeploymentProgress{State: "paused"}})
+			bodies = append(bodies, merge.ProgressPrefix+string(progress))
+		}
+		comments := evidenceComments(bodies...)
+		l := &fakeIssues{issueComments: comments}
+		r := &Runtime{Clients: map[string]issues.Store{"/repo": l}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, comments)
+		if barrier != DeploymentBarrier(ticket) {
+			t.Fatalf("barrier fixture: %+v", ticket)
 		}
 		if err := r.applyResolution(context.Background(), ticket); err != nil {
 			t.Fatal(err)
@@ -121,15 +130,15 @@ func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 func TestNewEscalationStartsAnotherResolverAttempt(t *testing.T) {
 	old := resolver.Record{Version: 1, Attempt: 2, Phase: "applied", Result: "old"}
 	raw, _ := json.Marshal(old)
-	comments := []linear.Comment{{Body: resolver.Prefix + string(raw), CreatedAt: time.Unix(1, 0)}, {Body: "Agent处置: CI broke\n阶段: Agent处置\n归属: 处置Agent", CreatedAt: time.Unix(2, 0)}}
+	comments := []task.Comment{{Body: resolver.Prefix + string(raw), CreatedAt: time.Unix(1, 0)}, {Body: "Agent处置: CI broke\n阶段: Agent处置\n归属: 处置Agent", CreatedAt: time.Unix(2, 0)}}
 	p, err := readResolution(comments)
 	if err != nil || p == nil || p.Phase != "waiting" || p.Attempt != 2 || !p.RetryAt.IsZero() {
 		t.Fatalf("old resolution prevents new dispatch: %+v %v", p, err)
 	}
 }
 func TestFailedTicketWithoutOwnershipIsAdmittedToResolver(t *testing.T) {
-	l := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}}
+	l := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "project"}, State: task.NamedID{Name: "In Progress"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-failed"}}}}}}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": l}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "project", "AGENT_SCOPE_AVOID": "0"}}})
 	if err != nil || len(tickets) != 1 || tickets[0].Owner != machine.OwnerHuman {
 		t.Fatalf("failed ticket orphaned: %+v %v", tickets, err)
@@ -146,10 +155,12 @@ func TestResolverCanInvestigatePreservedWorkerAfterExecutorExit(t *testing.T) {
 	}
 }
 func TestRejectedDeploymentProposalReturnsToResolver(t *testing.T) {
-	l := &fakeIssues{}
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}}
 	body, _ := json.Marshal(resolver.Resolution{Action: "retry-smoke", Reason: "checked", Queue: "wrong", SHA: strings.Repeat("a", 40)})
-	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)}}
+	record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)})
+	comments := evidenceComments(resolver.Prefix + string(record))
+	l := &fakeIssues{issueComments: comments}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": l}}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, comments)
 	if err := r.applyResolution(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
@@ -181,9 +192,10 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	l := &fakeIssues{}
-	r := &Runtime{Clients: map[string]IssueClient{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
-	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo, Owner: machine.OwnerResolver, Run: "source-run"}
+	comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent term=- run=source-run attempt=0")
+	l := &fakeIssues{issueComments: comments}
+	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
 	if err := r.ResolveTicket(context.Background(), ticket, "new-controller"); err == nil {
 		t.Fatal("expected interrupted start")
 	}
@@ -201,13 +213,13 @@ func TestResolverEvidenceRepository(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	comments := []linear.Comment{{ID: "comment", Body: "Preserve this evidence"}}
+	comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent", "Preserve this evidence")
 	l := &fakeIssues{issueComments: comments}
-	r := &Runtime{Clients: map[string]IssueClient{repo: l}, Repositories: map[string]config.Repository{
+	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{
 		repo:     {Path: repo, Env: map[string]string{"AGENT_GH_REPO": "owner/code-repo"}},
 		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
 	}, Orca: &resolverStartupProbe{}}
-	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo, Owner: machine.OwnerResolver}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
 	if err := r.ResolveTicket(context.Background(), ticket, "controller"); err == nil || err.Error() != "stop after durable registration" {
 		t.Fatalf("expected interrupted start, got %v", err)
 	}

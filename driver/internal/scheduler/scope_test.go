@@ -9,9 +9,9 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type scopeBackend struct {
@@ -40,10 +40,10 @@ func TestScopeActualChanges(t *testing.T) {
 	t.Run("snapshot scope read failure", func(t *testing.T) {
 		lc := &fakeIssues{}
 		for _, id := range []string{"bad", "healthy"} {
-			lc.issues = append(lc.issues, linear.Issue{ID: id, Identifier: id, Project: linear.NamedID{ID: id}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}})
+			lc.issues = append(lc.issues, task.Issue{ID: id, Identifier: id, Project: task.NamedID{ID: id}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}})
 		}
 		client := scopeIssues{lc}
-		r := &Runtime{Clients: map[string]IssueClient{"a": client, "b": client}}
+		r := &Runtime{Clients: map[string]issues.Store{"a": client, "b": client}}
 		tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "bad"}}, {Path: "b", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "healthy"}}})
 		if err != nil {
 			t.Fatalf("scope failure aborted snapshot: %v", err)

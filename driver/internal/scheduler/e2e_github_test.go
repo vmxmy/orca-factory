@@ -117,7 +117,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	g.mu.Unlock()
 
 	client := f.runtime.Clients[repo.Path].(*issues.GitHub)
-	if err = f.runtime.initialize(ctx, f.repos, func(context.Context, map[string]string) (IssueClient, error) {
+	if err = f.runtime.initialize(ctx, f.repos, func(context.Context, map[string]string) (issues.Store, error) {
 		return client, nil
 	}); err != nil {
 		t.Fatal(err)

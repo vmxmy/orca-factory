@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // unconfirmedIssues stores the first comment but reports an error, like a backend
@@ -17,7 +17,7 @@ type unconfirmedIssues struct {
 	failed bool
 }
 
-func (f *unconfirmedIssues) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (f *unconfirmedIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	c, _ := f.fakeIssues.CreateComment(ctx, id, body)
 	if !f.failed {
 		f.failed = true

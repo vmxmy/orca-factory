@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -100,33 +99,31 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	configured.Config = c
 	e = &configured
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	if client, ok := e.Issues.(issues.Store); ok {
-		task, readErr := client.Read(ctx, t.ID)
+	task, readErr := e.Issues.Read(ctx, t.ID)
+	if readErr != nil {
+		return result, readErr
+	}
+	if task.ID != t.ID || task.Identifier != t.Identifier || !task.Metadata.Complete {
+		return result, errors.New("recovery identity or adoption changed")
+	}
+	if task.NativeState != "open" || task.Metadata.ImportHold {
+		cp, readErr := readCheckpoint(c, t)
 		if readErr != nil {
 			return result, readErr
 		}
-		if task.ID != t.ID || task.Identifier != t.Identifier || !task.Metadata.Complete {
-			return result, errors.New("recovery identity or adoption changed")
-		}
-		if task.NativeState != "open" || task.Metadata.ImportHold {
-			cp, readErr := readCheckpoint(c, t)
+		if cp != nil && cp.Run != "" && (cp.Task != "" || cp.Pending) {
+			tasks, readErr := e.taskList(ctx, cp.Run)
 			if readErr != nil {
 				return result, readErr
 			}
-			if cp != nil && cp.Run != "" && (cp.Task != "" || cp.Pending) {
-				tasks, readErr := e.taskList(ctx, cp.Run)
-				if readErr != nil {
-					return result, readErr
-				}
-				copy := *cp
-				if _, readErr = recoverDispatch(tasks, &copy, branch); readErr != nil {
-					return result, readErr
-				}
-				result.RunID, result.DispatchID = cp.Run, cp.Dispatch
-				result.State.Corrections = cp.Corrections
+			copy := *cp
+			if _, readErr = recoverDispatch(tasks, &copy, branch); readErr != nil {
+				return result, readErr
 			}
-			return result, errors.New("closed or held task observed; execution remains blocked")
+			result.RunID, result.DispatchID = cp.Run, cp.Dispatch
+			result.State.Corrections = cp.Corrections
 		}
+		return result, errors.New("closed or held task observed; execution remains blocked")
 	}
 	if err = e.freshExecution(ctx, t); err != nil {
 		return result, err

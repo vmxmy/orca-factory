@@ -17,7 +17,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -33,11 +33,6 @@ type Orca interface {
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
-}
-type Issues interface {
-	ListComments(context.Context, string) ([]linear.Comment, error)
-	CreateComment(context.Context, string, string) (linear.Comment, error)
-	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
 }
 type GitHub interface {
 	FindOpenPR(context.Context, string, string, string) (*github.PullRequest, error)
@@ -75,7 +70,7 @@ type Config struct {
 }
 type Executor struct {
 	Orca     Orca
-	Issues   Issues
+	Issues   issues.Store
 	GitHub   GitHub
 	Tools    Tools
 	Config   Config

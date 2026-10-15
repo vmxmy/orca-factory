@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 )
 
@@ -43,20 +42,17 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 	if err != nil {
 		return stop("PR lookup failed")
 	}
-	reference := "Fixes " + t.Identifier + "\n\n"
-	if store, ok := r.Clients[t.Repo].(issues.Store); ok {
-		task, err := store.Read(ctx, t.ID)
-		if err != nil {
-			return stop("ticket reference read failed")
-		}
-		if task.ID != t.ID || task.Identifier != t.Identifier {
-			return stop("ticket reference identity differs")
-		}
-		if task.URL == "" {
-			return stop("ticket reference unavailable")
-		}
-		reference = fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n", task.URL, t.Identifier, t.ID)
+	task, err := r.Clients[t.Repo].Read(ctx, t.ID)
+	if err != nil {
+		return stop("ticket reference read failed")
 	}
+	if task.ID != t.ID || task.Identifier != t.Identifier {
+		return stop("ticket reference identity differs")
+	}
+	if task.URL == "" {
+		return stop("ticket reference unavailable")
+	}
+	reference := fmt.Sprintf("关联票: %s\n\nCanonical identifier: %s\nCanonical ID: %s\n\n", task.URL, t.Identifier, t.ID)
 	if pr == nil {
 		created, err := gh.CreatePR(ctx, owner, repo, github.CreatePRRequest{Head: proposal.Branch, Base: "main", Title: proposal.Title, Body: reference + proposal.Body})
 		if err != nil {

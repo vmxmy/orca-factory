@@ -15,8 +15,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type mergeTransport struct{ url string }
@@ -30,35 +30,35 @@ func (m mergeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 type mergeIssues struct {
 	issues.Store
-	issue     linear.Issue
-	rows      []linear.Comment
+	issue     task.Issue
+	rows      []task.Comment
 	bodies    []string
 	failDone  bool
 	failFinal bool
 }
 
-func (m *mergeIssues) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
-	return []linear.Issue{m.issue}, nil
+func (m *mergeIssues) Snapshot(context.Context, []string, time.Time) ([]task.Issue, error) {
+	return []task.Issue{m.issue}, nil
 }
 func (m *mergeIssues) Repository() string { return "o/r" }
 func (m *mergeIssues) Read(context.Context, string) (issues.Task, error) {
 	return issues.Task{Issue: m.issue, URL: "https://tickets.example/" + m.issue.ID, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
 }
-func (m *mergeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (m *mergeIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	return m.rows, nil
 }
-func (m *mergeIssues) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
+func (m *mergeIssues) CreateComment(_ context.Context, _ string, b string) (task.Comment, error) {
 	if m.failFinal && strings.Contains(b, "归属: 无") {
-		return linear.Comment{}, fmt.Errorf("offline")
+		return task.Comment{}, fmt.Errorf("offline")
 	}
-	c := linear.Comment{ID: fmt.Sprint(len(m.rows) + 1), Body: b, CreatedAt: time.Now()}
+	c := task.Comment{ID: fmt.Sprint(len(m.rows) + 1), Body: b, CreatedAt: time.Now()}
 	m.rows = append(m.rows, c)
 	m.bodies = append(m.bodies, b)
 	return c, nil
 }
-func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
+func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (task.Issue, error) {
 	if m.failDone {
-		return linear.Issue{}, fmt.Errorf("offline")
+		return task.Issue{}, fmt.Errorf("offline")
 	}
 	m.issue.State.Name = state
 	return m.issue, nil
@@ -218,11 +218,11 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	if bMarshalErr != nil {
 		t.Fatal(bMarshalErr)
 	}
-	f.tracker = &mergeIssues{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "o/r"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
+	f.tracker = &mergeIssues{issue: task.Issue{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "o/r"}, State: task.NamedID{Name: "In Progress"}}, rows: []task.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
 	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 	f.repos = []config.Repository{repo}
 	f.config = config.Config{MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
-	f.runtime = &Runtime{Clients: map[string]IssueClient{dir: f.tracker}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
+	f.runtime = &Runtime{Clients: map[string]issues.Store{dir: f.tracker}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
 	return f
 }
 func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
@@ -399,10 +399,13 @@ func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	}
 }
 
-type mergeTickets struct{ rows []*mergeIssues }
+type mergeTickets struct {
+	issues.Store
+	rows []*mergeIssues
+}
 
-func (m *mergeTickets) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
-	var issues []linear.Issue
+func (m *mergeTickets) Snapshot(context.Context, []string, time.Time) ([]task.Issue, error) {
+	var issues []task.Issue
 	for _, r := range m.rows {
 		issues = append(issues, r.issue)
 	}
@@ -416,13 +419,16 @@ func (m *mergeTickets) row(id string) *mergeIssues {
 	}
 	panic("unknown issue " + id)
 }
-func (m *mergeTickets) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
+func (m *mergeTickets) Read(ctx context.Context, id string) (issues.Task, error) {
+	return m.row(id).Read(ctx, id)
+}
+func (m *mergeTickets) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
 	return m.row(id).ListComments(ctx, id)
 }
-func (m *mergeTickets) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (m *mergeTickets) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	return m.row(id).CreateComment(ctx, id, body)
 }
-func (m *mergeTickets) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (m *mergeTickets) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	return m.row(id).UpdateIssue(ctx, id, state, add, remove)
 }
 
@@ -431,7 +437,7 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 	next := *f.tracker
 	next.issue.ID = "next"
 	next.issue.Identifier = "ENG-2"
-	next.rows = append([]linear.Comment(nil), f.tracker.rows...)
+	next.rows = append([]task.Comment(nil), f.tracker.rows...)
 	next.issue.UpdatedAt = time.Now().Add(-48 * time.Hour)
 	f.tracker.issue.UpdatedAt = time.Now()
 	nf := *f
@@ -480,7 +486,7 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 	b := *f.tracker
 	b.issue.ID = "b"
 	b.issue.Project.ID = "o/s"
-	b.rows = append([]linear.Comment(nil), f.tracker.rows...)
+	b.rows = append([]task.Comment(nil), f.tracker.rows...)
 	bf := *f
 	bf.tracker = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
@@ -627,7 +633,7 @@ func TestRuntimeMergeIncompleteHandoffAndUnknownProgressWait(t *testing.T) {
 			case "progress":
 				f.merged = true
 				raw := fmt.Sprintf(`{"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"unknown"}`, f.head, f.main, strings.Repeat("a", 40))
-				f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
+				f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {

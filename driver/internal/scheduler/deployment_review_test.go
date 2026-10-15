@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type movingDeploymentIntent struct {
@@ -23,7 +23,7 @@ type movingDeploymentIntent struct {
 	move func()
 }
 
-func (l *movingDeploymentIntent) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (l *movingDeploymentIntent) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	c, err := l.mergeIssues.CreateComment(ctx, id, body)
 	if err == nil && strings.Contains(body, `"phase":"merge-intent"`) && l.move != nil {
 		move := l.move
@@ -257,7 +257,7 @@ func TestDeploymentHistoryRequiresHumanRecovery(t *testing.T) {
 					if rawMarshalErr != nil {
 						t.Fatal(rawMarshalErr)
 					}
-					f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "unauthorized", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
+					f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "unauthorized", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 					rebuilt := *f.runtime
 					rebuilt.GitHub = nil
 					err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
@@ -295,7 +295,7 @@ func TestDeploymentOldRecoveryCannotAuthorizeAnotherSmoke(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "replayed-proof", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "replayed-proof", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil || count != 2 {
