@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -325,5 +326,94 @@ func TestIntakeThreadReplyWithoutMention(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestIntakeQuietAndEnd covers OF-30: every turn's prompt is tagged with who
+// is speaking ("[需求人]" or, by first-appearance order, "[成员2]", ...); the
+// Agent may skip a reply with the fixed quietMarker while the session still
+// advances; and "结束"/"取消" closes the session without invoking the Agent,
+// after which further un-@ messages in that topic are dropped silently, as
+// TestIntakeThreadReplyWithoutMention's closed-session case already covers.
+func TestIntakeQuietAndEnd(t *testing.T) {
+	const thread = "om_x100b62338a9e9890df2772823e2edec"
+	requester, member2 := "ou_REDACTED", "ou_member2"
+	existing := Session{ID: "existing-session", Requester: requester, State: Chatting, LastMessage: time.Now().Add(-time.Hour)}
+	dir := t.TempDir()
+	if err := writeJSON(filepath.Join(dir, thread+".json"), existing); err != nil {
+		t.Fatal(err)
+	}
+
+	var prompts []string
+	answers := []string{"已跟进", quietMarker}
+	calls := 0
+	agent := func(_ context.Context, turn Turn) (string, error) {
+		prompts = append(prompts, turn.Prompt)
+		if turn.Session != existing.ID || !turn.Resume {
+			t.Errorf("turn=%+v", turn)
+		}
+		answer := answers[calls]
+		calls++
+		return answer, nil
+	}
+	var replies []string
+	reply := func(_ context.Context, _, text string) error {
+		replies = append(replies, text)
+		return nil
+	}
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{requester, member2}, 1, agent, reply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock := time.Now()
+	g.now = func() time.Time { clock = clock.Add(time.Minute); return clock }
+
+	send := func(id, sender, text string) {
+		t.Helper()
+		event := recordedEvent(t, "bot-event-thread-reply-no-at")
+		event.Event.Message.MessageId = ptr(id)
+		event.Event.Message.Content = ptr(`{"text":"` + text + `"}`)
+		event.Event.Sender.SenderId.OpenId = ptr(sender)
+		if err := g.Handle(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	send("om_quiet_turn1", requester, "进展如何")
+	if calls != 1 || prompts[0] != "[需求人] 进展如何" {
+		t.Fatalf("turn1 prompt=%q calls=%d", prompts, calls)
+	}
+	if !slices.Equal(replies, []string{"已跟进"}) {
+		t.Fatalf("turn1 replies=%q", replies)
+	}
+	before := session(t, dir, thread)
+
+	replies = nil
+	send("om_quiet_turn2", member2, "好的，谢谢")
+	if calls != 2 || !strings.HasPrefix(prompts[1], "[成员2]") {
+		t.Fatalf("turn2 prompt=%q calls=%d", prompts, calls)
+	}
+	if len(replies) != 0 {
+		t.Fatalf("quiet marker sent a reply: %q", replies)
+	}
+	after := session(t, dir, thread)
+	if !after.LastMessage.After(before.LastMessage) {
+		t.Fatal("quiet turn did not update last message time")
+	}
+
+	send("om_quiet_turn3", requester, "结束")
+	if calls != 2 {
+		t.Fatalf("end command invoked the agent: calls=%d", calls)
+	}
+	if !slices.Equal(replies, []string{endedReply}) {
+		t.Fatalf("end replies=%q", replies)
+	}
+	if got := session(t, dir, thread); got.State != Closed {
+		t.Fatalf("session not closed: %+v", got)
+	}
+
+	send("om_quiet_turn4", member2, "还在吗")
+	if calls != 2 || len(replies) != 1 {
+		t.Fatalf("closed topic answered: calls=%d replies=%q", calls, replies)
 	}
 }

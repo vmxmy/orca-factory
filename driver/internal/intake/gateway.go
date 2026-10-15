@@ -27,6 +27,11 @@ const (
 	failedReply   = "处理失败，请重试"
 	closedReply   = "本话题超过 7 天无消息，已关闭；请在群里重新 @需求助手 发起需求"
 	textOnlyReply = "请在 @需求助手 后用文字描述需求"
+	endedReply    = "已结束本话题的需求整理"
+
+	// quietMarker is the fixed Agent reply (after trimming) that tells the
+	// gateway to record the turn without sending anything back to the group.
+	quietMarker = "<无需回复>"
 )
 
 type SessionState string
@@ -44,6 +49,34 @@ type Session struct {
 	Requester   string       `json:"requester"`
 	State       SessionState `json:"state"`
 	LastMessage time.Time    `json:"last_message_at"`
+	// Speakers holds the open_ids of non-requester members who have spoken in
+	// this session, comma-joined in the order they first spoke. It survives a
+	// restart so a member's "[成员N]" label never changes mid-conversation.
+	Speakers string `json:"speakers,omitempty"`
+}
+
+// speakerLabel tags a turn with who sent it, since promptText carries only the
+// message body and the Agent cannot otherwise tell members apart. The
+// requester is always "[需求人]"; other whitelisted members are numbered
+// "[成员2]", "[成员3]", ... by the order they first speak in this session.
+func (s *Session) speakerLabel(sender string) string {
+	if sender == s.Requester {
+		return "[需求人]"
+	}
+	var members []string
+	if s.Speakers != "" {
+		members = strings.Split(s.Speakers, ",")
+	}
+	if idx := slices.Index(members, sender); idx >= 0 {
+		return fmt.Sprintf("[成员%d]", idx+2)
+	}
+	members = append(members, sender)
+	s.Speakers = strings.Join(members, ",")
+	return fmt.Sprintf("[成员%d]", len(members)+1)
+}
+
+func isEndCommand(prompt string) bool {
+	return prompt == "结束" || prompt == "取消"
 }
 
 type Gateway struct {
@@ -132,10 +165,17 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if prompt == "" {
 		return g.reply(ctx, id, textOnlyReply)
 	}
+	if resume && isEndCommand(prompt) {
+		session.State = Closed
+		if err = writeJSON(path, session); err != nil {
+			return err
+		}
+		return g.reply(ctx, id, endedReply)
+	}
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
 	}
-	return g.respond(ctx, id, thread, path, session, resume, prompt)
+	return g.respond(ctx, id, thread, path, session, resume, sender, prompt)
 }
 
 // handleUnmentioned continues a thread session this gateway already opened,
@@ -169,12 +209,20 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 	if prompt == "" {
 		return g.reply(ctx, id, textOnlyReply)
 	}
-	return g.respond(ctx, id, thread, path, session, true, prompt)
+	if isEndCommand(prompt) {
+		session.State = Closed
+		if err := writeJSON(path, session); err != nil {
+			return err
+		}
+		return g.reply(ctx, id, endedReply)
+	}
+	return g.respond(ctx, id, thread, path, session, true, sender, prompt)
 }
 
 // respond runs one agent turn under the concurrency limit, persists the
 // session, and sends the reply.
-func (g *Gateway) respond(ctx context.Context, id, thread, path string, session Session, resume bool, prompt string) error {
+func (g *Gateway) respond(ctx context.Context, id, thread, path string, session Session, resume bool, sender, prompt string) error {
+	label := session.speakerLabel(sender)
 	select {
 	case g.slots <- struct{}{}:
 	default:
@@ -187,7 +235,7 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 			return ctx.Err()
 		}
 	}
-	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: resume, Prompt: prompt})
+	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: resume, Prompt: label + " " + prompt})
 	<-g.slots
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "intake agent turn failed for thread %s: %v\n", thread, err)
@@ -196,6 +244,11 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 	session.State, session.LastMessage = Chatting, g.now()
 	if err = writeJSON(path, session); err != nil {
 		return err
+	}
+	// quietMarker lets the Agent sit out a turn (members chatting among
+	// themselves, a bare acknowledgment) while the session still advances.
+	if strings.TrimSpace(answer) == quietMarker {
+		return nil
 	}
 	return g.reply(ctx, id, answer)
 }
