@@ -154,7 +154,7 @@ func TestIntakeSession(t *testing.T) {
 			id = s.ID
 		}
 		got := calls(t, logs)
-		if len(got) != 1 || !slices.Equal(got[0].args, argv(turn.flag, id)) || !slices.Equal(got[0].env, wantEnv) || got[0].cwd != checkout || got[0].stdin != turn.prompt {
+		if len(got) != 1 || !slices.Equal(got[0].args, argv(turn.flag, id)) || !slices.Equal(got[0].env, wantEnv) || got[0].cwd != checkout || got[0].stdin != "[需求人] "+turn.prompt {
 			t.Fatalf("turn %d call %#v", i, got)
 		}
 		if s.Requester != "ou_REDACTED" || s.State != Chatting {
