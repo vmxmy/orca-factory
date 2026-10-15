@@ -20,12 +20,13 @@ type Project struct {
 func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
 
 var (
-	markerPrefix = regexp.MustCompile(`#([A-Z][A-Z0-9]*)`)
-	markerName   = regexp.MustCompile(`项目:(\S+)`)
+	markerPrefix = regexp.MustCompile(`^\s*#([A-Z][A-Z0-9]*)(?:\s|$)`)
+	markerName   = regexp.MustCompile(`^\s*项目:(\S+)(?:\s|$)`)
 )
 
 // parseProjectMarker extracts an explicit project selection from a thread's
-// first message: #<编号前缀> or 项目:<名称>. rest is prompt with the marker
+// first message: a leading #<编号前缀> or 项目:<名称>, so a ticket reference
+// such as #OF-17 inside the text never selects a project. rest is prompt with the marker
 // removed; prefix and name are both "" when the message carries no marker.
 func parseProjectMarker(prompt string) (prefix, name, rest string) {
 	if m := markerPrefix.FindStringSubmatchIndex(prompt); m != nil {

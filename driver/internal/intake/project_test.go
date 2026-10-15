@@ -184,3 +184,18 @@ func TestIntakeProjectSelection(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectMarkerOnlyAtMessageStart(t *testing.T) {
+	for _, tc := range []struct{ in, prefix, name, rest string }{
+		{"#OF 给 status 加一列", "OF", "", "给 status 加一列"},
+		{"  项目:orca-factory 加一列", "", "orca-factory", "加一列"},
+		{"和 #OF-17 有关的需求", "", "", "和 #OF-17 有关的需求"},
+		{"#OF-17 卡住了", "", "", "#OF-17 卡住了"},
+		{"参考 项目:旧系统 的做法", "", "", "参考 项目:旧系统 的做法"},
+	} {
+		prefix, name, rest := parseProjectMarker(tc.in)
+		if prefix != tc.prefix || name != tc.name || rest != tc.rest {
+			t.Errorf("parseProjectMarker(%q) = %q %q %q, want %q %q %q", tc.in, prefix, name, rest, tc.prefix, tc.name, tc.rest)
+		}
+	}
+}
