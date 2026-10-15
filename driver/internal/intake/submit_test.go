@@ -12,6 +12,7 @@ import (
 
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
 // fakeLedger stands in for the project's issues.Store. Create mirrors the
@@ -19,7 +20,11 @@ import (
 type fakeLedger struct {
 	tasks   []issues.Task
 	creates []issues.CreateInput
+	updates []ledgerUpdate
+	events  map[string][]string
 }
+
+type ledgerUpdate struct{ id, state, add string }
 
 func (l *fakeLedger) List(context.Context) ([]issues.Task, error) { return slices.Clone(l.tasks), nil }
 
@@ -33,6 +38,54 @@ func (l *fakeLedger) Create(_ context.Context, in issues.CreateInput) (issues.Ta
 	task.Metadata = issues.Metadata{ID: fmt.Sprintf("canon-%d", n), Identifier: fmt.Sprintf("OF-%d", 100+n), State: in.State, Blockers: in.Blockers, Related: in.Related, Complete: true}
 	l.tasks = append(l.tasks, task)
 	return task, nil
+}
+
+func (l *fakeLedger) index(id string) (int, error) {
+	i := slices.IndexFunc(l.tasks, func(t issues.Task) bool { return t.Metadata.ID == id || t.Metadata.Identifier == id })
+	if i < 0 {
+		return 0, fmt.Errorf("task %s not found", id)
+	}
+	return i, nil
+}
+
+func (l *fakeLedger) Read(_ context.Context, id string) (issues.Task, error) {
+	i, err := l.index(id)
+	if err != nil {
+		return issues.Task{}, err
+	}
+	return l.tasks[i], nil
+}
+
+func (l *fakeLedger) UpdateIssue(_ context.Context, id, state string, add, _ []string) (linear.Issue, error) {
+	i, err := l.index(id)
+	if err != nil {
+		return linear.Issue{}, err
+	}
+	l.updates = append(l.updates, ledgerUpdate{id: id, state: state, add: strings.Join(add, ",")})
+	t := &l.tasks[i]
+	if state != "" {
+		t.Metadata.State = state
+	}
+	for _, label := range add {
+		t.Labels.Nodes = append(t.Labels.Nodes, linear.NamedID{ID: label, Name: label})
+	}
+	return t.Issue, nil
+}
+
+func (l *fakeLedger) ListComments(_ context.Context, id string) ([]linear.Comment, error) {
+	var out []linear.Comment
+	for _, body := range l.events[id] {
+		out = append(out, linear.Comment{Body: body})
+	}
+	return out, nil
+}
+
+func (l *fakeLedger) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
+	if l.events == nil {
+		l.events = map[string][]string{}
+	}
+	l.events[id] = append(l.events[id], body)
+	return linear.Comment{Body: body}, nil
 }
 
 func existingLedger() *fakeLedger {
@@ -66,6 +119,7 @@ type submitHarness struct {
 	ledger  *fakeLedger
 	turns   []Turn
 	replies []string
+	targets []string
 	answers []string
 }
 
@@ -97,8 +151,9 @@ func (h *submitHarness) start(t *testing.T, p Project) {
 		h.answers = h.answers[1:]
 		return answer, nil
 	}
-	reply := func(_ context.Context, _, text string) error {
+	reply := func(_ context.Context, id, text string) error {
 		h.replies = append(h.replies, text)
+		h.targets = append(h.targets, id)
 		return nil
 	}
 	g, err := New(h.dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED", "ou_MEMBER"}, []string{"ou_APPROVER1", "ou_APPROVER2"}, 1, []Project{p}, p.Remote, agent, reply, noopReact)

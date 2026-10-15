@@ -182,6 +182,9 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if first, err := g.claim(ctx, id); err != nil || !first {
 		return err
 	}
+	if r, ok := parseReview(promptText(m)); ok {
+		return g.handleReview(ctx, id, sender, r)
+	}
 	// reply_in_thread on the received message creates a thread for a new message
 	// and preserves the existing thread_id for a reply.
 	if !slices.Contains(g.users, sender) {
@@ -238,18 +241,30 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 // not only the ones that mention it. Anything short of an open, whitelisted
 // session this gateway recognizes is dropped with no trace — no reply, no
 // dedup claim, no state write, no logging of the message body — since most
-// such messages are not addressed to the bot at all.
+// such messages are not addressed to the bot at all. An exact approval
+// command is the exception: it counts in any thread this gateway opened,
+// whatever its state and whoever sends it, and handleReview checks the
+// sender against the approvers.
 func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id, sender string) error {
-	if value(m.ThreadId) == "" || !slices.Contains(g.users, sender) {
+	thread := value(m.RootId)
+	if value(m.ThreadId) == "" || !threadRoot.MatchString(thread) {
 		return nil
 	}
-	thread := value(m.RootId)
-	if !threadRoot.MatchString(thread) {
+	path := filepath.Join(g.dir, thread+".json")
+	if r, ok := parseReview(promptText(m)); ok {
+		if _, resume, err := readSession(path); err != nil || !resume {
+			return err
+		}
+		if first, err := g.claim(ctx, id); err != nil || !first {
+			return err
+		}
+		return g.handleReview(ctx, id, sender, r)
+	}
+	if !slices.Contains(g.users, sender) {
 		return nil
 	}
 	unlock := g.lockThread(thread)
 	defer unlock()
-	path := filepath.Join(g.dir, thread+".json")
 	session, resume, err := readSession(path)
 	if err != nil {
 		return err
