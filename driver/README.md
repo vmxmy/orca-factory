@@ -104,7 +104,7 @@ orca-factory-driver status --json
 上线时先完成检查与审查，保存旧二进制及其提交信息。部署顺序：
 
 1. 运行 `orca-factory-driver maintenance drain`。
-2. 用 `status --json` 等在途票归零。
+2. 运行 `orca-factory-driver maintenance status`，等 `writersActive` 与 `sessionsActive` 都为 false（没有正在运行的执行器、处置 Agent 和已准入写入）。不要求在途票归零：drain 拒绝重新派工，在途票（例如等待 correction 重新派工的票）可能永远不归零；重启后执行器从 checkpoint 恢复。等待超时（建议 1 小时）时先运行 `maintenance resume`，放弃本次部署。
 3. 替换二进制并重启服务。
 4. 运行 `orca-factory-driver maintenance resume`。
 
