@@ -108,12 +108,13 @@ type Gateway struct {
 	defaultRemote string
 	agent         func(context.Context, Turn) (string, error)
 	reply         func(context.Context, string, string) error
+	react         func(context.Context, string) error
 	now           func() time.Time
 }
 
 var threadRoot = regexp.MustCompile(`^om_[0-9A-Za-z_]+$`)
 
-func New(dir, chat, bot string, users []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error) (*Gateway, error) {
+func New(dir, chat, bot string, users []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error, react func(context.Context, string) error) (*Gateway, error) {
 	if concurrency < 1 {
 		return nil, errors.New("intake concurrency must be positive")
 	}
@@ -135,7 +136,7 @@ func New(dir, chat, bot string, users []string, concurrency int, projects []Proj
 		}
 		seen[p.Prefix] = true
 	}
-	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, now: time.Now}
+	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -205,6 +206,7 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 		return g.reply(ctx, id, textOnlyReply)
 	}
 	if resume && isEndCommand(prompt) {
+		g.addReceipt(ctx, id)
 		session.State = Closed
 		if err = writeJSON(path, session); err != nil {
 			return err
@@ -252,6 +254,7 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 		return g.reply(ctx, id, textOnlyReply)
 	}
 	if isEndCommand(prompt) {
+		g.addReceipt(ctx, id)
 		session.State = Closed
 		if err := writeJSON(path, session); err != nil {
 			return err
@@ -264,9 +267,20 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 	return g.respond(ctx, id, thread, path, session, true, sender, prompt)
 }
 
+// addReceipt marks id as received with a 👍 before the Agent runs, so the
+// requester can tell "received" apart from "no reply needed" and from
+// never having been delivered at all. A failure here only logs a warning
+// (never the message text) and is not retried on this delivery.
+func (g *Gateway) addReceipt(ctx context.Context, id string) {
+	if err := g.react(ctx, id); err != nil {
+		fmt.Fprintf(os.Stderr, "intake reaction failed for message %s: %v\n", id, err)
+	}
+}
+
 // respond runs one agent turn under the concurrency limit, persists the
 // session, and sends the reply.
 func (g *Gateway) respond(ctx context.Context, id, thread, path string, session Session, resume bool, sender, prompt string) error {
+	g.addReceipt(ctx, id)
 	label := session.speakerLabel(sender)
 	select {
 	case g.slots <- struct{}{}:
@@ -301,6 +315,9 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 			session.Turns = 0
 			session.PendingSummary = summary
 		} else {
+			// Back off instead of requesting a summary again every turn
+			// until the cap is reached once more.
+			session.Turns = g.maxTurns / 2
 			fmt.Fprintf(os.Stderr, "intake rolling summary rejected for thread %s\n", thread)
 		}
 	}
@@ -452,6 +469,12 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	return writeAtomic(path, b)
+}
+
+// writeAtomic writes b to path via a sibling temp file and rename, so a
+// reader never observes a partial write.
+func writeAtomic(path string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".intake-*")
 	if err != nil {
 		return err

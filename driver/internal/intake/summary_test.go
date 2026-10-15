@@ -12,8 +12,9 @@ import (
 )
 
 // rollingSetup builds a Gateway backed by a stand-in claude command, the
-// same shape TestIntakeSession uses, for the rolling-summary tests.
-func rollingSetup(t *testing.T, script func(logs string) string) (g *Gateway, logs, state, checkout string, taken func() []string) {
+// same shape TestIntakeSession uses, for the rolling-summary tests. tickets
+// is nil for tests that do not exercise OF-33's ticket context.
+func rollingSetup(t *testing.T, script func(logs string) string, tickets func(context.Context) ([]TicketContext, error)) (g *Gateway, logs, state, checkout string, taken func() []string) {
 	t.Helper()
 	root := t.TempDir()
 	git(t, root, "init", "-q", "--bare", "-b", "main", "origin.git")
@@ -30,7 +31,7 @@ func rollingSetup(t *testing.T, script func(logs string) string) (g *Gateway, lo
 		t.Fatal(err)
 	}
 	checkout = filepath.Join(root, "checkout")
-	runner := &Runner{Claude: standIn, Repo: repo, Checkout: checkout, Model: "claude-opus-5-5", Effort: "high", Timeout: 10 * time.Second}
+	runner := &Runner{Claude: standIn, Repo: repo, Checkout: checkout, Model: "claude-opus-5-5", Effort: "high", Timeout: 10 * time.Second, Tickets: tickets}
 	var mu sync.Mutex
 	var replies []string
 	reply := func(_ context.Context, _, text string) error {
@@ -48,7 +49,7 @@ func rollingSetup(t *testing.T, script func(logs string) string) (g *Gateway, lo
 	}
 	state = filepath.Join(root, "state")
 	var err error
-	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 2, nil, "", runner.Turn, reply)
+	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 2, nil, "", runner.Turn, reply, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,7 @@ func TestIntakeRollingSummary(t *testing.T) {
 
 	t.Run("accepted", func(t *testing.T) {
 		t.Setenv("AGENT_INTAKE_MAX_TURNS", "3")
-		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedSummary))
+		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedSummary), nil)
 		ctx := context.Background()
 
 		first := recordedEvent(t, "bot-event-message-at")
@@ -167,7 +168,7 @@ func TestIntakeRollingSummary(t *testing.T) {
 
 	t.Run("rejected", func(t *testing.T) {
 		t.Setenv("AGENT_INTAKE_MAX_TURNS", "3")
-		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedNormal))
+		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedNormal), nil)
 		ctx := context.Background()
 
 		first := recordedEvent(t, "bot-event-message-at")

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -70,7 +71,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					return nil
 				}
 				dir := t.TempDir()
-				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, reply)
+				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, reply, noopReact)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -83,7 +84,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					})
 				}
 				wg.Wait()
-				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, reply)
+				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, reply, noopReact)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -107,7 +108,7 @@ func TestFeishuGatewayCorruptState(t *testing.T) {
 	if err := os.WriteFile(dir+"/recent.json", []byte("broken"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir, "chat", "bot", []string{"user"}, 1, nil, "", nil, nil); err == nil {
+	if _, err := New(dir, "chat", "bot", []string{"user"}, 1, nil, "", nil, nil, nil); err == nil {
 		t.Fatal("corrupt state accepted")
 	}
 }
@@ -115,6 +116,8 @@ func TestFeishuGatewayCorruptState(t *testing.T) {
 func ptr(s string) *string { return &s }
 
 func fixedAgent(context.Context, Turn) (string, error) { return "已整理", nil }
+
+func noopReact(context.Context, string) error { return nil }
 
 // The recorder stores the decoded SDK response rather than the OpenAPI envelope.
 // Only the code/data wrapper and token endpoint below are synthetic.
@@ -173,7 +176,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, client.ReplyInThread)
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, client.ReplyInThread, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,14 +202,14 @@ func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
 	send := func(context.Context, string, string) error { calls++; return errors.New("send unconfirmed") }
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, send)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, send, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Handle(context.Background(), event); err == nil {
 		t.Fatal("send error hidden")
 	}
-	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, send)
+	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, nil, "", fixedAgent, send, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +285,7 @@ func TestIntakeThreadReplyWithoutMention(t *testing.T) {
 				}
 				return nil
 			}
-			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, 1, nil, "", agent, reply)
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, 1, nil, "", agent, reply, noopReact)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -361,7 +364,7 @@ func TestIntakeQuietAndEnd(t *testing.T) {
 		replies = append(replies, text)
 		return nil
 	}
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{requester, member2}, 1, nil, "", agent, reply)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{requester, member2}, 1, nil, "", agent, reply, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,5 +418,169 @@ func TestIntakeQuietAndEnd(t *testing.T) {
 	send("om_quiet_turn4", member2, "还在吗")
 	if calls != 2 || len(replies) != 1 {
 		t.Fatalf("closed topic answered: calls=%d replies=%q", calls, replies)
+	}
+}
+
+// reactionFixture serves a recorded feishu reaction response (success or
+// error) over a real feishu.Client, so AddReaction exercises the exact
+// captured request and response shape. It returns the client, the request
+// counter, and the message ID the recording's path was captured against.
+func reactionFixture(t *testing.T, name string) (*feishu.Client, *int, string) {
+	t.Helper()
+	b, err := os.ReadFile("../../testdata/recorded/feishu/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec struct {
+		Request struct {
+			Method string          `json:"method"`
+			Path   string          `json:"path"`
+			Body   json.RawMessage `json:"body"`
+		} `json:"request"`
+		Response struct {
+			Data  json.RawMessage `json:"data"`
+			Error struct {
+				Code    int    `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatal(err)
+	}
+	id := strings.TrimSuffix(strings.TrimPrefix(rec.Request.Path, "/open-apis/im/v1/messages/"), "/reactions")
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_, _ = fmt.Fprint(w, `{"code":0,"tenant_access_token":"test-token","expire":7200}`)
+			return
+		}
+		requests++
+		var got, want any
+		if r.Method != rec.Request.Method || r.URL.Path != rec.Request.Path ||
+			json.NewDecoder(r.Body).Decode(&got) != nil || json.Unmarshal(rec.Request.Body, &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("reaction request %s %s", r.Method, r.URL.Path)
+		}
+		if rec.Response.Error.Code != 0 {
+			if err := json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "msg": rec.Response.Error.Message}); err != nil {
+				t.Error(err)
+			}
+			return
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": rec.Response.Data}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := feishu.New(feishu.Options{Endpoint: server.URL, AppID: "test", AppSecret: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client, &requests, id
+}
+
+// TestIntakeReceiptReaction covers OF-34: a message accepted into a session
+// gets a 👍 (THUMBSUP) reaction before the Agent runs, in that order, for an
+// ordinary turn, and for an end/cancel command that never reaches the Agent
+// at all; a denied sender, a silently dropped message, and a non-text
+// message get no reaction; a reaction failure (real recorded 99992354) only
+// logs a warning and the Agent still runs, with no retry. Real captures:
+// bot-reaction-add.json, bot-reaction-add-invalid-message.json (PR #443).
+func TestIntakeReceiptReaction(t *testing.T) {
+	const thread = "om_x100b62338a9e9890df2772823e2edec"
+	existing := Session{ID: "existing-session", Requester: "ou_REDACTED", State: Chatting, LastMessage: time.Now().Add(-time.Hour)}
+
+	for _, scenario := range []string{"accepted", "quiet-marker", "end-command", "denied", "dropped", "non-text", "reaction-fails"} {
+		t.Run(scenario, func(t *testing.T) {
+			fixture := "bot-reaction-add.json"
+			if scenario == "reaction-fails" {
+				fixture = "bot-reaction-add-invalid-message.json"
+			}
+			client, requests, reactionID := reactionFixture(t, fixture)
+
+			var order []string
+			react := func(ctx context.Context, id string) error {
+				order = append(order, "react")
+				return client.AddReaction(ctx, id)
+			}
+			agentCalls := 0
+			agent := func(context.Context, Turn) (string, error) {
+				agentCalls++
+				order = append(order, "agent")
+				if scenario == "quiet-marker" {
+					return quietMarker, nil
+				}
+				return "已整理", nil
+			}
+			var replies []string
+			reply := func(_ context.Context, _, text string) error {
+				replies = append(replies, text)
+				return nil
+			}
+
+			dir := t.TempDir()
+			users := []string{"ou_REDACTED"}
+			var event *im.P2MessageReceiveV1
+			switch scenario {
+			case "dropped":
+				event = recordedEvent(t, "bot-event-thread-reply-no-at")
+			case "end-command", "quiet-marker":
+				if err := writeJSON(filepath.Join(dir, thread+".json"), existing); err != nil {
+					t.Fatal(err)
+				}
+				event = recordedEvent(t, "bot-event-thread-reply-no-at")
+				event.Event.Message.MessageId = ptr(reactionID)
+				text := "继续推进"
+				if scenario == "end-command" {
+					text = "结束"
+				}
+				event.Event.Message.Content = ptr(`{"text":"` + text + `"}`)
+			default:
+				event = recordedEvent(t, "bot-event-message-at")
+				event.Event.Message.MessageId = ptr(reactionID)
+				if scenario == "denied" {
+					users = []string{"ou_someone_else"}
+				}
+				if scenario == "non-text" {
+					event.Event.Message.MessageType = ptr("image")
+				}
+			}
+
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, 1, nil, "", agent, reply, react)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Handle(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+
+			switch scenario {
+			case "accepted", "reaction-fails":
+				if !slices.Equal(order, []string{"react", "agent"}) || *requests != 1 || !slices.Equal(replies, []string{"已整理"}) {
+					t.Fatalf("order=%v requests=%d replies=%q", order, *requests, replies)
+				}
+			case "quiet-marker":
+				if !slices.Equal(order, []string{"react", "agent"}) || *requests != 1 || len(replies) != 0 {
+					t.Fatalf("order=%v requests=%d replies=%q", order, *requests, replies)
+				}
+			case "end-command":
+				if !slices.Equal(order, []string{"react"}) || *requests != 1 || agentCalls != 0 || !slices.Equal(replies, []string{endedReply}) {
+					t.Fatalf("order=%v requests=%d agentCalls=%d replies=%q", order, *requests, agentCalls, replies)
+				}
+			case "denied":
+				if len(order) != 0 || *requests != 0 || !slices.Equal(replies, []string{deniedReply}) {
+					t.Fatalf("order=%v requests=%d replies=%q", order, *requests, replies)
+				}
+			case "dropped":
+				if len(order) != 0 || *requests != 0 || len(replies) != 0 {
+					t.Fatalf("order=%v requests=%d replies=%q", order, *requests, replies)
+				}
+			case "non-text":
+				if len(order) != 0 || *requests != 0 || !slices.Equal(replies, []string{textOnlyReply}) {
+					t.Fatalf("order=%v requests=%d replies=%q", order, *requests, replies)
+				}
+			}
+		})
 	}
 }
