@@ -1,0 +1,36 @@
+{
+  "event": {
+    "event": {
+      "message": {
+        "chat_id": "oc_REDACTED",
+        "chat_type": "group",
+        "content": "{\"text\":\"话题内不带艾特\"}",
+        "create_time": "1792049694750",
+        "message_id": "om_x100b623c6f2708a4c031bb463f72f5e",
+        "message_type": "text",
+        "parent_id": "om_x100b62338a9e9890df2772823e2edec",
+        "root_id": "om_x100b62338a9e9890df2772823e2edec",
+        "thread_id": "omt_19b5f48c174c1a5e",
+        "update_time": "1792049694750"
+      },
+      "sender": {
+        "sender_id": {
+          "open_id": "ou_REDACTED",
+          "union_id": "on_REDACTED",
+          "user_id": null
+        },
+        "sender_type": "user",
+        "tenant_key": "TENANT_KEY"
+      }
+    },
+    "header": {
+      "app_id": "cli_REDACTED",
+      "create_time": "1792049695149",
+      "event_id": "810f83f64efc120a7e4318902495d156",
+      "event_type": "im.message.receive_v1",
+      "tenant_key": "TENANT_KEY",
+      "token": ""
+    },
+    "schema": "2.0"
+  }
+}
