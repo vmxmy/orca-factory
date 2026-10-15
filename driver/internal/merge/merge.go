@@ -6,6 +6,7 @@ package merge
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 )
 
@@ -26,6 +27,10 @@ type Snapshot struct {
 	Head, Main, CIHead string
 	MergeableState     string
 	CIGreen, Behind    bool
+	// CIFailed and FailedChecks describe CIHead's check-runs when they finished
+	// with at least one failing conclusion. Only trusted when CIHead == Head.
+	CIFailed     bool
+	FailedChecks []string
 }
 
 // GitHub supplies fresh snapshots and a head-pinned squash with authoritative
@@ -218,6 +223,16 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		}
 		return r, nil
 	}
+	// notReady escalates a confirmed, finished check-run failure at the pinned
+	// head to Correction instead of leaving the ticket waiting forever; CI
+	// still running, or any other not-ready cause, stays Waiting.
+	notReady := func(s Snapshot, reason string) (Result, error) {
+		if ciFailed(s) {
+			r.Corrections = 1
+			return finish(Correction, ciFailureReason(s))
+		}
+		return finish(Waiting, reason)
+	}
 	stale := func() (Result, error) {
 		e.rounds++
 		if e.rounds >= 2 {
@@ -261,7 +276,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 			return r, errors.New("empty merge tree")
 		}
 		if !mergeReady(s) {
-			return finish(Waiting, "head CI or mergeability not ready")
+			return notReady(s, "head CI or mergeability not ready")
 		}
 		if c.gate == nil {
 			return r, errors.New("merge gate required")
@@ -298,7 +313,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 			cleanupErr = ErrWorktreeCleanup
 		}
 	} else if !mergeReady(s) {
-		return finish(Waiting, "head CI or mergeability not ready")
+		return notReady(s, "head CI or mergeability not ready")
 	}
 	fresh, err := c.github.Snapshot(ctx, e.request)
 	if err != nil {
@@ -307,8 +322,11 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	if fresh.Main != s.Main {
 		return stale()
 	}
-	if fresh.Head != s.Head || !mergeReady(fresh) {
+	if fresh.Head != s.Head {
 		return finish(Waiting, "head validation changed")
+	}
+	if !mergeReady(fresh) {
+		return notReady(fresh, "head validation changed")
 	}
 	sha, err := c.github.Squash(ctx, e.request, s.Head, s.Main)
 	if errors.Is(err, ErrMainAdvanced) {
@@ -330,4 +348,17 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 }
 func mergeReady(s Snapshot) bool {
 	return s.MergeableState == "clean" && s.CIGreen && s.CIHead == s.Head
+}
+
+// ciFailed reports a confirmed, finished CI failure at the pinned head. A
+// stale CIHead must never report a failure for the wrong commit.
+func ciFailed(s Snapshot) bool {
+	return s.CIHead == s.Head && s.CIFailed
+}
+
+func ciFailureReason(s Snapshot) string {
+	if len(s.FailedChecks) == 0 {
+		return "head CI failed"
+	}
+	return "head CI failed: " + strings.Join(s.FailedChecks, ", ")
 }
