@@ -131,7 +131,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
-			fmt.Fprint(w, `{"code":0,"tenant_access_token":"test-token","expire":7200}`)
+			_, _ = fmt.Fprint(w, `{"code":0,"tenant_access_token":"test-token","expire":7200}`)
 			return
 		}
 		requests++
