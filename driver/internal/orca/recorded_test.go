@@ -26,6 +26,30 @@ func recordedClient(t *testing.T, name string) *Client {
 	return &Client{Path: script}
 }
 
+// The fixture is a real `orca-ide repo list --json` recording (OF-42): 5
+// registered repositories, each with a gitRemoteIdentity.canonicalKey.
+func TestRecordedRepoList(t *testing.T) {
+	repos, err := recordedClient(t, "orca-repo-list.json").RepoList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Repo{
+		{Path: "/home/laoxu/github/orca-factory", CanonicalKey: "github.com/vmxmy/orca-factory"},
+		{Path: "/home/laoxu/github/zhiyun-ai-dashboard", CanonicalKey: "github.com/vmxmy/zhiyun-ai-dashboard"},
+		{Path: "/home/laoxu/ansible", CanonicalKey: "github.com/vmxmy/ansible"},
+		{Path: "/home/laoxu/github/ziikoo-control-plane", CanonicalKey: "github.com/vmxmy/ziikoo-control-plane"},
+		{Path: "/home/laoxu/github/dujiao-next", CanonicalKey: "github.com/dujiao-next/dujiao-next"},
+	}
+	if len(repos) != len(want) {
+		t.Fatalf("repos=%+v, want %+v", repos, want)
+	}
+	for i, r := range repos {
+		if r != want[i] {
+			t.Errorf("repos[%d]=%+v, want %+v", i, r, want[i])
+		}
+	}
+}
+
 func TestRecordedRequestMismatch(t *testing.T) {
 	c := recordedClient(t, "orca-run-create-request-mismatch.json")
 	_, err := c.RunCreate(context.Background(), "6e2f5bc0-7a6f-53e0-bff8-b8cdf5d2e070", "objective")

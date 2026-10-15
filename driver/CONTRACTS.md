@@ -4,6 +4,7 @@
 
 | 契约 | 真实样本 | 测试 |
 |---|---|---|
+| `orca repo list` 的每个仓库在 `gitRemoteIdentity.canonicalKey` 携带稳定远端身份，与 `path` 一并用于项目发现（OF-42） | `orca-repo-list.json`（2026-10-15，本机 5 个已登记仓库，脱敏仅限路径与用户名） | `orca.TestRecordedRepoList`、`projects.TestDiscoverRecordedSample` |
 | `orca orchestration task-list` 的任务**没有** `dispatch_id` 字段 | `orca-task-list.json` | `executor.TestRecordedTaskList`、`executor.TestRecordedStartWithoutDispatchID` |
 | Resolver `open-pr` 提案经 Orca `worker_report` 信封的 `body` 送达，必须是单个 JSON 对象；真实自由文本报告被拒绝。调度器核对分支 head 与 PR head，并在证据中保留 PR 号 | `orca-task-list.json`、`github-pr-open-clean.json`、`github-commit-main.json` | `resolver.TestResolverOpenPRResult`、`scheduler.TestResolverOpenPR` |
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
