@@ -137,8 +137,6 @@ func (l *budgetLinear) UpdateIssue(ctx context.Context, id, state string, add, r
 	return l.fakeLinear.UpdateIssue(ctx, id, state, add, remove)
 }
 func recoveryFixture(t *testing.T) (*Executor, *recoveryOrca, *recoveryTools, *recoveryService, *budgetLinear, Ticket) {
-	// The merge lane runs this suite with the repository profile in the environment.
-	t.Setenv("AGENT_TIER_ESCALATE", "0")
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
 	o := &recoveryOrca{}
 	tools := &recoveryTools{fakeTools: fakeTools{head: "new-sha"}}
@@ -177,11 +175,11 @@ func TestCorrectionLoop(t *testing.T) {
 func TestCorrectionTierAndCap(t *testing.T) {
 	for _, escalate := range []string{"0", "1"} {
 		t.Run(escalate, func(t *testing.T) {
-			e, o, tools, s, _, ticket := recoveryFixture(t)
 			t.Setenv("AGENT_TIER_ESCALATE", escalate)
 			t.Setenv("AGENT_TIER_FAST", "codex:fast-model:low")
 			t.Setenv("AGENT_TIER_DEFAULT", "codex:default-model:medium")
 			t.Setenv("AGENT_TIER_STRONG", "claude:strong-model:high")
+			e, o, tools, s, _, ticket := recoveryFixture(t)
 			e.Config.Tier = "fast"
 			e.Config.Model = "fast-model"
 			e.Config.Effort = "low"
