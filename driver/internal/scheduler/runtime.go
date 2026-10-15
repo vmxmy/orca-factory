@@ -105,6 +105,27 @@ func (r *Runtime) CheckRunners(ctx context.Context) error {
 	return r.Runners.Poll(ctx, now)
 }
 
+// githubNew constructs a GitHub client from Options; a test may replace it to
+// redirect the lazily created client at a recorded fixture server instead of
+// the real GitHub API.
+var githubNew = github.New
+
+// githubClient returns the Runtime's GitHub client, lazily constructing it on
+// first use (serve restarts leave it nil until the merge lane first runs).
+// The merge lane, the open-pr resolution path, and deployment checks all
+// share this one accessor instead of duplicating the nil check and creation.
+func (r *Runtime) githubClient() (*github.Client, error) {
+	if r.GitHub != nil {
+		return r.GitHub, nil
+	}
+	gh, err := githubNew(github.Options{HTTPTimeout: r.Tuning.GitHub.HTTPTimeout})
+	if err != nil {
+		return nil, err
+	}
+	r.GitHub = gh
+	return gh, nil
+}
+
 func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient func(context.Context, string) (LinearClient, error)) error {
 	r.Clients = map[string]LinearClient{}
 	r.Repositories = map[string]config.Repository{}

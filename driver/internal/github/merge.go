@@ -36,14 +36,18 @@ var checkRunFailureConclusions = map[string]bool{
 
 // MergeChecks requires an explicitly complete collection, read at the pinned
 // head. Green requires a nonempty set of successful checks/statuses; unknown
-// is not green. Failed additionally requires every check-run to have
-// completed, with at least one reaching a terminal failure conclusion.
+// is not green. Path-filtered CI jobs conclude skipped/neutral, so those count
+// as passing once at least one check-run truly succeeded; an all
+// skipped/neutral set proves nothing ran and is not green. Failed additionally
+// requires every check-run to have completed, with at least one reaching a
+// terminal failure conclusion.
 func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (CheckResult, error) {
 	count := 0
 	expectedChecks := -1
 	seenChecks := map[int64]bool{}
 	allComplete := true
 	allSuccess := true
+	hasSuccess := false
 	var failedNames []string
 	for page := 1; ; page++ {
 		var v struct {
@@ -75,7 +79,12 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (Che
 				allComplete = false
 				continue
 			}
-			if r.Conclusion != "success" {
+			switch r.Conclusion {
+			case "success":
+				hasSuccess = true
+			case "skipped", "neutral":
+				// Counts toward a pass only when paired with at least one real success (checked via hasSuccess below).
+			default:
 				allSuccess = false
 				if checkRunFailureConclusions[r.Conclusion] {
 					failedNames = append(failedNames, r.Name)
@@ -132,7 +141,7 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (Che
 		}
 	}
 	return CheckResult{
-		Green:       allComplete && allSuccess && count+statuses > 0,
+		Green:       allComplete && allSuccess && (hasSuccess || statuses > 0),
 		Failed:      allComplete && len(failedNames) > 0,
 		FailedNames: failedNames,
 	}, nil
