@@ -263,8 +263,10 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 每轮执行一次 `claude -p --output-format json`：首轮 `--session-id <新ID>`，之后
 `--resume <ID>`；消息正文经 stdin 传入。Agent 的安全边界：
 
-- 工作目录是只读检出 `~/.cache/orca-factory/intake-checkout`，为来源仓库的分离 HEAD
-  worktree；每个新会话开始前 fetch 并切到 `origin/main`。
+- 工作目录是只读检出 `~/.cache/orca-factory/intake/<编号前缀>/checkout`（每个项目独立，
+  不互相共享 `origin/main` 状态；单项目退回模式下仍用旧路径
+  `~/.cache/orca-factory/intake-checkout`），为来源仓库的分离 HEAD worktree；每个新
+  会话开始前 fetch 并切到 `origin/main`。
 - `--tools Read,Grep,Glob,Skill`，`--restricted`（文件工具限于工作目录，忽略用户、
   项目和本地 settings 及其 hooks），`--permission-mode dontAsk`（需授权的调用直接拒绝），
   `--strict-mcp-config`（不加载 MCP），`--settings` 再拒绝读取 `~/.claude`、`~/.config`、
@@ -291,14 +293,35 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 | `AGENT_FEISHU_INTAKE_USERS` | 可对话成员 open_id，逗号分隔 |
 | `AGENT_FEISHU_ENDPOINT` | 可选，默认 `https://open.feishu.cn`，同时用于 HTTP 与长连接发现 |
 | `AGENT_INTAKE_CLAUDE` | 可选，claude 可执行文件的绝对路径；默认在网关 `PATH` 中查找 `claude`。服务 `PATH` 不含 npm 全局目录时必须设置（取 bash 中 `command -v claude` 的结果，不要用 shell 别名） |
+| `AGENT_FEISHU_INTAKE_PROJECT` | 可选，群默认项目的仓库远端（项目表“仓库远端”列的值，如 `github.com/vmxmy/orca-factory`）。未设置或不匹配任何已启用项目时，话题首条消息未显式指定项目时改为列出项目供需求人选择 |
 
-Agent 的来源仓库是 `driver.toml` 中唯一一个 `AGENT_ISSUE_BACKEND=feishu` 的仓库；
-不是恰好一个时网关拒绝启动。该仓库 `agent-graph.env` 的以下变量生效：
+`driver.toml` 中每个 `AGENT_ISSUE_BACKEND=feishu` 的仓库是一个可路由项目（OF-32）。
+网关启动时读取其中第一个仓库的飞书多维表格项目表（`项目` 表，逻辑见
+`driver/internal/issues/feishu.go` 的 `LedgerProjects`），按各仓库 `agent-graph.env`
+的 `AGENT_FEISHU_PROJECT`（= 该项目表行的“仓库远端”）匹配本机检出；该仓库若未设置
+`AGENT_FEISHU_BASE`（没有多维表格可读），网关退回每个 OF-32 之前的单项目行为，直接
+把它当作唯一隐式项目。匹配上的每个项目用各自 `agent-graph.env` 的以下变量：
 
 | 变量 | 含义 |
 | --- | --- |
 | `AGENT_ROLE_INTAKE` | Agent 档位，格式 `claude:<model>:<effort>`；为空时用 `AGENT_TIER_STRONG` |
-| `AGENT_INTAKE_CONCURRENCY` | 同时运行的 Agent 数，默认 2 |
+| `AGENT_INTAKE_CONCURRENCY` | 该项目同时运行的 Agent 数，默认 2；网关总并发为所有匹配项目的和 |
+
+### 项目选择
+
+一个话题只属于一个项目，选定后话题内不可更改；换项目须另开话题。话题首条消息
+（@ 机器人新开会话时）按顺序确定项目：
+
+1. 消息中出现 `#<编号前缀>`（如 `#OF`）或 `项目:<名称>`：命中该项目，网关把该标记从
+   消息中去掉后再交给 Agent。
+2. 未显式指定且配置了 `AGENT_FEISHU_INTAKE_PROJECT`：用该默认项目，消息原样交给 Agent。
+3. 都没有命中：网关在话题里列出项目表中已启用且本机已匹配到检出的项目（序号、编号
+   前缀、名称），不调用 Agent；需求人在同一话题回复序号或编号前缀后，网关才用这条
+   首条消息的原文作为第一轮输入调用 Agent。
+
+项目须在项目表中“启用”为真，且其“仓库远端”匹配到本机 `driver.toml` 配置的某个仓库，
+否则网关在话题里说明原因并拒绝，不调用 Agent（未启用的项目与本机未配置检出的项目分别
+提示）。
 
 机器人 open_id 可从已确认 @ 本应用的消息事件 `mentions` 中取得，核对
 `mentioned_type=bot`；不要从任意用户提交的字符串配置该身份。

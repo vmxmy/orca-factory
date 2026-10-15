@@ -358,6 +358,51 @@ type feishuProject struct {
 	enabled bool
 }
 
+// LedgerProject is one row of the ledger's 项目 table, enabled or not, for a
+// caller outside Store that resolves a project by its repository remote (the
+// Feishu intake gateway's project selection, OF-32).
+type LedgerProject struct {
+	Name, Remote, Prefix string
+	Enabled              bool
+}
+
+func (c *Feishu) ledgerProjectRow(r feishu.Record) (LedgerProject, error) {
+	name, err := c.text("项目", r, "名称")
+	if err != nil {
+		return LedgerProject{}, err
+	}
+	remote, err := c.text("项目", r, "仓库远端")
+	if err != nil {
+		return LedgerProject{}, err
+	}
+	prefix, err := c.text("项目", r, "编号前缀")
+	if err != nil {
+		return LedgerProject{}, err
+	}
+	var enabled bool
+	if raw := c.cell("项目", r, "启用"); raw != nil && json.Unmarshal(raw, &enabled) != nil {
+		return LedgerProject{}, errors.New("feishu field 启用 is not a checkbox")
+	}
+	return LedgerProject{Name: name, Remote: remote, Prefix: prefix, Enabled: enabled}, nil
+}
+
+// LedgerProjects lists every row of the ledger's 项目 table.
+func (c *Feishu) LedgerProjects(ctx context.Context) ([]LedgerProject, error) {
+	rows, err := c.readAll(ctx, "项目", nil)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]LedgerProject, 0, len(rows))
+	for _, r := range rows {
+		row, err := c.ledgerProjectRow(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
 func (c *Feishu) projects(ctx context.Context) (map[string]feishuProject, string, error) {
 	rows, err := c.readAll(ctx, "项目", nil)
 	if err != nil {
@@ -366,20 +411,12 @@ func (c *Feishu) projects(ctx context.Context) (map[string]feishuProject, string
 	all := map[string]feishuProject{}
 	own := ""
 	for _, r := range rows {
-		remote, err := c.text("项目", r, "仓库远端")
+		row, err := c.ledgerProjectRow(r)
 		if err != nil {
 			return nil, "", err
 		}
-		prefix, err := c.text("项目", r, "编号前缀")
-		if err != nil {
-			return nil, "", err
-		}
-		var enabled bool
-		if raw := c.cell("项目", r, "启用"); raw != nil && json.Unmarshal(raw, &enabled) != nil {
-			return nil, "", errors.New("feishu field 启用 is not a checkbox")
-		}
-		all[r.ID] = feishuProject{prefix: prefix, enabled: enabled}
-		if remote == c.repo {
+		all[r.ID] = feishuProject{prefix: row.Prefix, enabled: row.Enabled}
+		if row.Remote == c.repo {
 			if own != "" {
 				return nil, "", errors.New("feishu project repository duplicated")
 			}

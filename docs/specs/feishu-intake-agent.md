@@ -29,7 +29,7 @@ flowchart LR
 
 - **网关** `driver feishu-gateway`：独立常驻进程，独立 systemd 服务。它是本应用长连接的唯一消费者，也是唯一写入者。driver serve 重启或部署不影响对话；不可信的群消息不进入调度器进程。
 - **Agent**：每轮对话启动一次 `claude -p --resume <会话>`，进程结束即退出。会话内容由 claude 自身持久化。
-- **只读检出**：网关维护一个分离 HEAD 的 worktree，新会话开始前更新到 `origin/main`。Agent 的工作目录就是这个检出。
+- **只读检出**：网关为每个匹配到本机仓库的项目维护一个分离 HEAD 的 worktree（`~/.cache/orca-factory/intake/<编号前缀>/checkout`），新会话开始前更新到 `origin/main`。Agent 的工作目录就是其项目的检出。
 
 ## 3. 话题与会话
 
@@ -38,6 +38,30 @@ flowchart LR
 3. 会话状态：`对话中` → `待确认` → `已提交` → `已关闭`。超过 7 天无消息自动关闭。
 4. 同一话题串行处理；全局同时运行的 Agent 不超过 `AGENT_INTAKE_CONCURRENCY`（默认 2），其余排队，排队时回复“排队中”。
 5. 网关以 message_id 去重，不以 event_id 去重（飞书文档说明 event_id 不适合作为去重键）。
+
+### 3.1 项目选择（OF-32）
+
+网关可服务多个项目，每个项目一份独立检出；项目来自飞书项目表（名称、仓库远端、编号
+前缀、启用，逻辑见 `driver/internal/issues/feishu.go` 的 `LedgerProjects`），按各
+本机仓库 `agent-graph.env` 的 `AGENT_FEISHU_PROJECT`（=该项目表行的“仓库远端”）匹配到
+`driver.toml` 配置的检出。
+
+一个话题只属于一个项目，选定后写入会话文件，话题内不可更改；换项目须另开话题。话题
+首条消息按顺序确定项目：
+
+1. 消息中出现 `#<编号前缀>`（如 `#OF`）或 `项目:<名称>`：命中该项目，网关去掉该标记
+   后把剩余文本交给 Agent。
+2. 未显式指定且配置了群默认项目 `AGENT_FEISHU_INTAKE_PROJECT`（值为项目表“仓库远端”）：
+   用该默认项目，消息原样交给 Agent。
+3. 都没有命中：网关列出项目表中已启用且本机已匹配到检出的项目（序号、编号前缀、
+   名称），不调用 Agent；需求人在同一话题回复序号或编号前缀后，网关才用首条消息的
+   原文作为第一轮输入调用 Agent。
+
+项目须在项目表中“启用”为真，且“仓库远端”匹配到本机某个仓库的检出，否则网关在话题
+里分别说明“未启用”或“本机未配置仓库”并拒绝，不调用 Agent。
+
+没有 `AGENT_FEISHU_BASE`（无项目表可读）的仓库退回 OF-32 之前的单项目行为：它是唯一
+隐式项目，不经过上述选择流程，检出路径仍是旧的 `~/.cache/orca-factory/intake-checkout`。
 6. 开通 `im:message.group_msg` 后话题内无需 @。此前仅开通 `im:message.group_at_msg:readonly` 时，不带 @ 或手打“@名字”的回复不投递（Q1 实测）；开通 `group_msg` 后群内全部消息都会投递，网关据此续接：该话题已有网关自己开的会话、会话未关闭、发送者在 `AGENT_FEISHU_INTAKE_USERS` 中，三者同时成立才续接，否则静默丢弃（不回复、不写去重记录、不写会话、不记录消息正文）。开新话题仍须 @需求助手。话题由事件中的 `thread_id` 识别，话题首条消息的 `root_id` 为空，后续回复的 `root_id` 指向首条消息。
 7. 网关在每轮输入前加发言人标签：需求人固定为“[需求人]”，其他白名单成员按会话内首次发言的顺序标“[成员2]”“[成员3]”…；这份映射存入会话文件（不调用通讯录接口），重启后编号不变。Agent 据此分辨成员互相讨论与对自己的提问；回复（去首尾空白后）恰为固定标记 `<无需回复>` 时，网关不发消息，但仍更新会话最后消息时间。
 8. 话题内消息文字（去首尾空白后）恰为“结束”或“取消”时，网关不调用 Agent，把会话置为 `已关闭` 并回复“已结束本话题的需求整理”；此后该话题内的消息按已关闭会话处理（不带 @ 的静默丢弃，带 @ 的提示重新发起）。
@@ -80,6 +104,7 @@ flowchart LR
 | `AGENT_FEISHU_INTAKE_CHAT` | `driver.env` | 需求群 chat_id |
 | `AGENT_FEISHU_INTAKE_USERS` | `driver.env` | 可对话成员 open_id，逗号分隔 |
 | `AGENT_FEISHU_APPROVERS` | `driver.env` | 审批人 open_id，逗号分隔 |
+| `AGENT_FEISHU_INTAKE_PROJECT` | `driver.env` | 可选，群默认项目的仓库远端（OF-32）；未设置或不匹配已启用项目时改为列出项目供选择 |
 | `AGENT_ROLE_INTAKE` | `agent-graph.env` | Agent 档位，默认 strong 档的 claude 配置 |
 | `AGENT_INTAKE_CONCURRENCY` | `agent-graph.env` | 同时运行的 Agent 数，默认 2 |
 | `AGENT_INTAKE_MAX_TURNS` | 网关进程环境 | 单个会话滚动摘要前的轮数上限，默认 30 |

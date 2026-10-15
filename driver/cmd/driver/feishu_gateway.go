@@ -20,11 +20,12 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 )
 
-var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE"}
+var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT"}
 
-var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE"}
+var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT"}
 
 func loadGatewaySettings() (map[string]string, error) {
 	settings := map[string]string{}
@@ -62,53 +63,113 @@ func loadGatewaySettings() (map[string]string, error) {
 	return settings, nil
 }
 
-// intakeRunner configures the agent from the single Feishu-ledger repository
-// in driver.toml; its profile chooses the model tier and concurrency.
-func intakeRunner(claude string) (*intake.Runner, int, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, 0, err
-	}
-	cfg, err := config.Load(home)
-	if err != nil {
-		return nil, 0, err
-	}
-	var repos []config.Repository
-	for _, repo := range cfg.Repositories {
-		if repo.Env["AGENT_ISSUE_BACKEND"] == "feishu" {
-			repos = append(repos, repo)
-		}
-	}
-	if len(repos) != 1 {
-		return nil, 0, errors.New("intake gateway requires exactly one feishu repository in driver.toml")
-	}
-	env := repos[0].Env
+// tierParts splits a repository's AGENT_ROLE_INTAKE (or AGENT_TIER_STRONG
+// fallback) "claude:model:effort" tier into its model and effort.
+func tierParts(env map[string]string) (model, effort string, err error) {
 	tier := env["AGENT_ROLE_INTAKE"]
 	if tier == "" {
 		tier = env["AGENT_TIER_STRONG"]
 	}
 	parts := strings.Split(tier, ":")
 	if parts[0] != "claude" || len(parts) > 3 {
-		return nil, 0, errors.New("AGENT_ROLE_INTAKE must be a claude tier")
+		return "", "", errors.New("AGENT_ROLE_INTAKE must be a claude tier")
 	}
 	parts = append(parts, "", "")
-	concurrency := 2
-	if raw := env["AGENT_INTAKE_CONCURRENCY"]; raw != "" {
-		if concurrency, err = strconv.Atoi(raw); err != nil || concurrency < 1 {
-			return nil, 0, errors.New("AGENT_INTAKE_CONCURRENCY must be a positive integer")
-		}
+	return parts[1], parts[2], nil
+}
+
+func intakeConcurrency(env map[string]string) (int, error) {
+	raw := env["AGENT_INTAKE_CONCURRENCY"]
+	if raw == "" {
+		return 2, nil
 	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0, errors.New("AGENT_INTAKE_CONCURRENCY must be a positive integer")
+	}
+	return n, nil
+}
+
+// legacyIntakeRunner serves a feishu repository that has no AGENT_FEISHU_BASE
+// and so no ledger to resolve projects against: it is its own sole implicit
+// project, exactly as before OF-32, including the pre-OF-32 checkout path.
+func legacyIntakeRunner(claude string, repo config.Repository, cache string) (*intake.Runner, int, error) {
+	model, effort, err := tierParts(repo.Env)
+	if err != nil {
+		return nil, 0, err
+	}
+	concurrency, err := intakeConcurrency(repo.Env)
+	if err != nil {
+		return nil, 0, err
+	}
+	return &intake.Runner{Claude: claude, Repo: repo.Path, Checkout: filepath.Join(cache, "orca-factory", "intake-checkout"), Model: model, Effort: effort, Timeout: 5 * time.Minute}, concurrency, nil
+}
+
+// intakeRunners matches each ledger project (rows, possibly empty) to the
+// local repository that serves it, by driver.toml's AGENT_FEISHU_PROJECT
+// remote, and builds one Runner per matched project, each in its own
+// checkout so two projects never share origin/main state (OF-32). An empty
+// rows falls back to legacyIntakeRunner: a single implicit project.
+func intakeRunners(claude string, repos []config.Repository, rows []issues.LedgerProject) ([]intake.Project, func(context.Context, intake.Turn) (string, error), int, error) {
 	if claude == "" {
 		claude, _ = exec.LookPath("claude")
 	}
 	if !filepath.IsAbs(claude) {
-		return nil, 0, errors.New("AGENT_INTAKE_CLAUDE must be an absolute path to claude")
+		return nil, nil, 0, errors.New("AGENT_INTAKE_CLAUDE must be an absolute path to claude")
 	}
 	cache, err := os.UserCacheDir()
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
-	return &intake.Runner{Claude: claude, Repo: repos[0].Path, Checkout: filepath.Join(cache, "orca-factory", "intake-checkout"), Model: parts[1], Effort: parts[2], Timeout: 5 * time.Minute}, concurrency, nil
+	if len(rows) == 0 {
+		runner, concurrency, err := legacyIntakeRunner(claude, repos[0], cache)
+		if err != nil {
+			return nil, nil, 0, err
+		}
+		return nil, runner.Turn, concurrency, nil
+	}
+	byRemote := map[string]config.Repository{}
+	for _, repo := range repos {
+		remote := repo.Env["AGENT_FEISHU_PROJECT"]
+		if remote == "" {
+			continue
+		}
+		if _, dup := byRemote[remote]; dup {
+			return nil, nil, 0, errors.New("duplicate AGENT_FEISHU_PROJECT across repositories")
+		}
+		byRemote[remote] = repo
+	}
+	runners := map[string]*intake.Runner{}
+	projects := make([]intake.Project, 0, len(rows))
+	concurrency := 0
+	for _, row := range rows {
+		p := intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled}
+		if repo, matched := byRemote[row.Remote]; matched {
+			model, effort, err := tierParts(repo.Env)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			projectConcurrency, err := intakeConcurrency(repo.Env)
+			if err != nil {
+				return nil, nil, 0, err
+			}
+			concurrency += projectConcurrency
+			p.Repo = repo.Path
+			runners[row.Prefix] = &intake.Runner{Claude: claude, Repo: repo.Path, Checkout: filepath.Join(cache, "orca-factory", "intake", row.Prefix, "checkout"), Model: model, Effort: effort, Timeout: 5 * time.Minute}
+		}
+		projects = append(projects, p)
+	}
+	if concurrency == 0 {
+		concurrency = 2
+	}
+	agent := func(ctx context.Context, t intake.Turn) (string, error) {
+		r, ok := runners[t.Project.Prefix]
+		if !ok {
+			return "", fmt.Errorf("intake gateway: no local repository for project %s", t.Project.Prefix)
+		}
+		return r.Turn(ctx, t)
+	}
+	return projects, agent, concurrency, nil
 }
 
 func gatewayUsers(raw string) []string {
@@ -136,7 +197,41 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runner, concurrency, err := intakeRunner(settings["AGENT_INTAKE_CLAUDE"])
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		return err
+	}
+	var repos []config.Repository
+	for _, repo := range cfg.Repositories {
+		if repo.Env["AGENT_ISSUE_BACKEND"] == "feishu" {
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) == 0 {
+		return errors.New("intake gateway requires at least one feishu repository in driver.toml")
+	}
+	// A repository with no AGENT_FEISHU_BASE has no ledger to resolve
+	// projects against; intakeRunners then falls back to the pre-OF-32
+	// single-project behavior.
+	var rows []issues.LedgerProject
+	if repos[0].Env["AGENT_FEISHU_BASE"] != "" {
+		store, err := issues.New(ctx, repos[0].Env, cfg.Tuning)
+		if err != nil {
+			return err
+		}
+		ledger, ok := store.(*issues.Feishu)
+		if !ok {
+			return errors.New("intake gateway requires a feishu repository")
+		}
+		if rows, err = ledger.LedgerProjects(ctx); err != nil {
+			return err
+		}
+	}
+	projects, agent, concurrency, err := intakeRunners(settings["AGENT_INTAKE_CLAUDE"], repos, rows)
 	if err != nil {
 		return err
 	}
@@ -150,7 +245,7 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), concurrency, runner.Turn, client.ReplyInThread)
+	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), concurrency, projects, settings["AGENT_FEISHU_INTAKE_PROJECT"], agent, client.ReplyInThread)
 	if err != nil {
 		return err
 	}
