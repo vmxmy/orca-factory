@@ -4,14 +4,17 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
@@ -200,8 +203,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
 	if err != nil {
+		category := "other"
 		var admission *linear.DiscoveryQuotaError
 		if errors.As(err, &admission) {
+			category = "quota"
 			s.discoveryQuotaPaused = true
 			s.quotaPaused = true
 			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
@@ -211,6 +216,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		s.checkLinearQuota(now)
 		s.checkGitHubQuota(now)
 		var evidence *SnapshotEvidenceError
+		if errors.As(err, &evidence) && category == "other" {
+			category = "evidence"
+		}
 		if !s.Pauses.Paused("") && errors.As(err, &evidence) {
 			for _, ticket := range evidence.Tickets {
 				if allowed[ticket.Repo] {
@@ -218,7 +226,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				}
 			}
 		}
-		return errors.New("scheduler snapshot failed")
+		reason := snapshotReason(err)
+		s.logger().Warn("scheduler snapshot failed", "category", category, "reason", reason)
+		return &snapshotError{reason: reason, err: err}
 	}
 	snapshot = true
 	status.PushObservation(s.clock(), func(view *status.View) {
@@ -515,3 +525,30 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 }
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
+
+// Adapters return fixed-text errors, except decoding imported comment history
+// into linear.Comment: its encoding/json and time errors quote the rejected input.
+func snapshotReason(err error) string {
+	text := err.Error()
+	root := err
+	for next := errors.Unwrap(root); next != nil; next = errors.Unwrap(root) {
+		root = next
+	}
+	var syntax *json.SyntaxError
+	var mismatch *json.UnmarshalTypeError
+	var timestamp *time.ParseError
+	decoding := errors.As(root, &syntax) || errors.As(root, &mismatch) || errors.As(root, &timestamp) || strings.HasPrefix(root.Error(), "json: ")
+	if decoding && strings.HasSuffix(text, root.Error()) {
+		text = strings.TrimSuffix(text, root.Error()) + "invalid JSON"
+	}
+	return logx.RedactText(text)
+}
+
+// snapshotError text carries only the redacted reason; Unwrap keeps the cause.
+type snapshotError struct {
+	reason string
+	err    error
+}
+
+func (e *snapshotError) Error() string { return "scheduler snapshot failed: " + e.reason }
+func (e *snapshotError) Unwrap() error { return e.err }

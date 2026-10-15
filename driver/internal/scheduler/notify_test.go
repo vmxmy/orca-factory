@@ -266,7 +266,7 @@ func TestFeishuNotifyPausedSkips(t *testing.T) {
 			}
 			err := s.Tick(context.Background())
 			if timing == "failed snapshot" {
-				if err == nil || err.Error() != "scheduler snapshot failed" {
+				if err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
 					t.Fatalf("err=%v", err)
 				}
 			} else if err != nil {
@@ -304,7 +304,7 @@ func TestFeishuNotifySnapshotConflict(t *testing.T) {
 				s.Config.Repositories = []config.Repository{repo}
 				s.Backend = f
 				before := len(sender.messages)
-				if err := s.Tick(context.Background()); err == nil || err.Error() != "scheduler snapshot failed" {
+				if err := s.Tick(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
 					t.Fatalf("tick error=%v", err)
 				}
 				want := 1
@@ -429,7 +429,7 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 				s.Config.Repositories = []config.Repository{repo}
 				err := s.Tick(context.Background())
 				if snapshotConflict {
-					if err == nil || err.Error() != "scheduler snapshot failed" {
+					if err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
 						t.Fatalf("tick error=%v", err)
 					}
 					if len(backend.actions) != 0 || len(backend.launched) != 0 {
