@@ -18,10 +18,12 @@ import (
 
 // Turn is one agent invocation inside a thread conversation. Resume is false
 // only for the first turn, which creates the claude session with this ID.
+// Project is the zero value when the gateway has no projects configured.
 type Turn struct {
 	Session string
 	Resume  bool
 	Prompt  string
+	Project Project
 }
 
 // agentSettings deny reads of credential and state directories on top of

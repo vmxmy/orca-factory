@@ -61,6 +61,12 @@ type Session struct {
 	Turns          int    `json:"turns,omitempty"`
 	Generation     int    `json:"generation,omitempty"`
 	PendingSummary string `json:"pending_summary,omitempty"`
+	// Project is the prefix of the project this thread was routed to; set
+	// once and never changed again in this thread (OF-32). PendingPrompt
+	// holds the thread's original first message while Project is still ""
+	// and the gateway is waiting for the requester to pick one.
+	Project       string `json:"project,omitempty"`
+	PendingPrompt string `json:"pending_prompt,omitempty"`
 }
 
 // speakerLabel tags a turn with who sent it, since promptText carries only the
@@ -94,14 +100,20 @@ type Gateway struct {
 	threads        map[string]*sync.Mutex
 	slots          chan struct{}
 	maxTurns       int
-	agent          func(context.Context, Turn) (string, error)
-	reply          func(context.Context, string, string) error
-	now            func() time.Time
+	// projects is nil when this gateway serves a single implicit project
+	// (pre-OF-32 behavior): every session's Project stays "" and selectProject
+	// is never consulted. defaultRemote is the configured group default,
+	// compared against each Project's Remote.
+	projects      []Project
+	defaultRemote string
+	agent         func(context.Context, Turn) (string, error)
+	reply         func(context.Context, string, string) error
+	now           func() time.Time
 }
 
 var threadRoot = regexp.MustCompile(`^om_[0-9A-Za-z_]+$`)
 
-func New(dir, chat, bot string, users []string, concurrency int, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error) (*Gateway, error) {
+func New(dir, chat, bot string, users []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error) (*Gateway, error) {
 	if concurrency < 1 {
 		return nil, errors.New("intake concurrency must be positive")
 	}
@@ -113,7 +125,17 @@ func New(dir, chat, bot string, users []string, concurrency int, agent func(cont
 		}
 		maxTurns = n
 	}
-	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, agent: agent, reply: reply, now: time.Now}
+	seen := map[string]bool{}
+	for _, p := range projects {
+		if p.Prefix == "" {
+			return nil, errors.New("intake project prefix required")
+		}
+		if seen[p.Prefix] {
+			return nil, errors.New("intake project prefix duplicated")
+		}
+		seen[p.Prefix] = true
+	}
+	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -192,6 +214,9 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
 	}
+	if len(g.projects) > 0 && session.Project == "" && (!resume || session.PendingPrompt != "") {
+		return g.selectProject(ctx, id, thread, path, session, resume, sender, prompt)
+	}
 	return g.respond(ctx, id, thread, path, session, resume, sender, prompt)
 }
 
@@ -233,6 +258,9 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 		}
 		return g.reply(ctx, id, endedReply)
 	}
+	if len(g.projects) > 0 && session.Project == "" && session.PendingPrompt != "" {
+		return g.selectProject(ctx, id, thread, path, session, true, sender, prompt)
+	}
 	return g.respond(ctx, id, thread, path, session, true, sender, prompt)
 }
 
@@ -257,7 +285,7 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 	if session.PendingSummary != "" {
 		turnPrompt = session.PendingSummary + "\n\n" + turnPrompt
 	}
-	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: callResume, Prompt: turnPrompt})
+	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: callResume, Prompt: turnPrompt, Project: g.project(session.Project)})
 	<-g.slots
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "intake agent turn failed for thread %s: %v\n", thread, err)
@@ -297,7 +325,7 @@ func (g *Gateway) rollSummary(ctx context.Context, session Session) (string, boo
 	case <-ctx.Done():
 		return "", false
 	}
-	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: true, Prompt: summaryRequestPrompt(g.maxTurns)})
+	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: true, Prompt: summaryRequestPrompt(g.maxTurns), Project: g.project(session.Project)})
 	<-g.slots
 	if err != nil {
 		return "", false
