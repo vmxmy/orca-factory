@@ -19,12 +19,32 @@ func (c *Client) MainSHA(ctx context.Context, owner, repo string) (string, error
 	return v.Object.SHA, err
 }
 
-// MergeChecks requires an explicitly complete collection and a nonempty set of
-// successful checks/statuses, all read at the pinned head. Unknown is not green.
-func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (bool, error) {
+// CheckResult reports the pinned head's check-runs. Failed and FailedNames
+// are only meaningful once every check-run has reached a terminal status;
+// a still-running run leaves Failed false regardless of other conclusions.
+type CheckResult struct {
+	Green       bool
+	Failed      bool
+	FailedNames []string
+}
+
+// checkRunFailureConclusions mirrors the terminal-failure set classified for
+// deployment workflow runs in deployment.go.
+var checkRunFailureConclusions = map[string]bool{
+	"failure": true, "cancelled": true, "timed_out": true, "action_required": true, "startup_failure": true,
+}
+
+// MergeChecks requires an explicitly complete collection, read at the pinned
+// head. Green requires a nonempty set of successful checks/statuses; unknown
+// is not green. Failed additionally requires every check-run to have
+// completed, with at least one reaching a terminal failure conclusion.
+func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (CheckResult, error) {
 	count := 0
 	expectedChecks := -1
 	seenChecks := map[int64]bool{}
+	allComplete := true
+	allSuccess := true
+	var failedNames []string
 	for page := 1; ; page++ {
 		var v struct {
 			Total *int        `json:"total_count"`
@@ -32,24 +52,34 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 		}
 		err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(head)+"/check-runs?per_page=100&page="+strconv.Itoa(page), nil, &v)
 		if err != nil {
-			return false, err
+			return CheckResult{}, err
 		}
 		if v.Total == nil || v.Runs == nil {
-			return false, errors.New("incomplete check runs")
+			return CheckResult{}, errors.New("incomplete check runs")
 		}
 		if expectedChecks < 0 {
 			expectedChecks = *v.Total
 		}
 		if expectedChecks != *v.Total || *v.Total < 0 {
-			return false, errors.New("check collection changed")
+			return CheckResult{}, errors.New("check collection changed")
 		}
 		for _, r := range *v.Runs {
 			if r.ID <= 0 || seenChecks[r.ID] {
-				return false, errors.New("invalid or repeated check identity")
+				return CheckResult{}, errors.New("invalid or repeated check identity")
 			}
 			seenChecks[r.ID] = true
-			if r.HeadSHA != head || r.Status != "completed" || r.Conclusion != "success" {
-				return false, nil
+			if r.HeadSHA != head {
+				return CheckResult{}, nil
+			}
+			if r.Status != "completed" {
+				allComplete = false
+				continue
+			}
+			if r.Conclusion != "success" {
+				allSuccess = false
+				if checkRunFailureConclusions[r.Conclusion] {
+					failedNames = append(failedNames, r.Name)
+				}
 			}
 		}
 		count += len(*v.Runs)
@@ -57,7 +87,7 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 			break
 		}
 		if len(*v.Runs) == 0 || count > *v.Total {
-			return false, errors.New("incomplete check pagination")
+			return CheckResult{}, errors.New("incomplete check pagination")
 		}
 	}
 	statuses := 0
@@ -73,24 +103,24 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 		}
 		err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(head)+"/status?per_page=100&page="+strconv.Itoa(page), nil, &v)
 		if err != nil {
-			return false, err
+			return CheckResult{}, err
 		}
 		if v.Total == nil || v.Statuses == nil {
-			return false, errors.New("incomplete commit statuses")
+			return CheckResult{}, errors.New("incomplete commit statuses")
 		}
 		if expectedStatuses < 0 {
 			expectedStatuses = *v.Total
 		}
 		if expectedStatuses != *v.Total || *v.Total < 0 {
-			return false, errors.New("status collection changed")
+			return CheckResult{}, errors.New("status collection changed")
 		}
 		for _, s := range *v.Statuses {
 			if seenStatuses[s.Context] {
-				return false, errors.New("repeated status context")
+				return CheckResult{}, errors.New("repeated status context")
 			}
 			seenStatuses[s.Context] = true
 			if s.State != "success" || s.Context == "" {
-				return false, nil
+				return CheckResult{}, nil
 			}
 		}
 		statuses += len(*v.Statuses)
@@ -98,10 +128,14 @@ func (c *Client) MergeChecks(ctx context.Context, owner, repo, head string) (boo
 			break
 		}
 		if len(*v.Statuses) == 0 || statuses > *v.Total {
-			return false, errors.New("incomplete status pagination")
+			return CheckResult{}, errors.New("incomplete status pagination")
 		}
 	}
-	return count+statuses > 0, nil
+	return CheckResult{
+		Green:       allComplete && allSuccess && count+statuses > 0,
+		Failed:      allComplete && len(failedNames) > 0,
+		FailedNames: failedNames,
+	}, nil
 }
 
 // UniqueTicketPR refuses multiple units or candidates. #141 supports only the

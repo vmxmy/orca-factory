@@ -298,14 +298,14 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err := a.policy(prFiles); err != nil {
 		return merge.Snapshot{}, err
 	}
-	green, err := a.runtime.GitHub.MergeChecks(ctx, a.owner, a.repo, p.Head.SHA)
+	checks, err := a.runtime.GitHub.MergeChecks(ctx, a.owner, a.repo, p.Head.SHA)
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
 	if !*p.Mergeable {
 		p.MergeableState = "dirty"
 	}
-	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: green, MergeableState: p.MergeableState, Behind: base != main}, nil
+	return merge.Snapshot{Head: p.Head.SHA, Main: main, CIHead: p.Head.SHA, CIGreen: checks.Green, CIFailed: checks.Failed, FailedChecks: checks.FailedNames, MergeableState: p.MergeableState, Behind: base != main}, nil
 }
 func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main string) (string, error) {
 	if err := a.runtime.verifyFreshDecision(ctx, a.ticket, githubSquash); err != nil {
