@@ -39,8 +39,10 @@ const (
 type SessionState string
 
 const (
-	Chatting SessionState = "对话中"
-	Closed   SessionState = "已关闭"
+	Chatting        SessionState = "对话中"
+	AwaitingConfirm SessionState = "待确认"
+	Submitted       SessionState = "已提交"
+	Closed          SessionState = "已关闭"
 )
 
 // Session is one thread conversation, keyed by the thread's root message ID:
@@ -67,6 +69,11 @@ type Session struct {
 	// and the gateway is waiting for the requester to pick one.
 	Project       string `json:"project,omitempty"`
 	PendingPrompt string `json:"pending_prompt,omitempty"`
+	// Draft is the validated draft awaiting the requester's “确认提交”; it
+	// stays until a newer valid draft replaces it or it is submitted.
+	// Submitted lists the created tickets once the thread is 已提交 (OF-15).
+	Draft     []PendingTicket `json:"draft,omitempty"`
+	Submitted []string        `json:"submitted,omitempty"`
 }
 
 // speakerLabel tags a turn with who sent it, since promptText carries only the
@@ -97,6 +104,7 @@ type Gateway struct {
 	mu             sync.Mutex
 	dir, chat, bot string
 	users, recent  []string
+	approvers      []string
 	threads        map[string]*sync.Mutex
 	slots          chan struct{}
 	maxTurns       int
@@ -114,7 +122,7 @@ type Gateway struct {
 
 var threadRoot = regexp.MustCompile(`^om_[0-9A-Za-z_]+$`)
 
-func New(dir, chat, bot string, users []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error, react func(context.Context, string) error) (*Gateway, error) {
+func New(dir, chat, bot string, users, approvers []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error, react func(context.Context, string) error) (*Gateway, error) {
 	if concurrency < 1 {
 		return nil, errors.New("intake concurrency must be positive")
 	}
@@ -136,7 +144,7 @@ func New(dir, chat, bot string, users []string, concurrency int, projects []Proj
 		}
 		seen[p.Prefix] = true
 	}
-	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, now: time.Now}
+	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, approvers: approvers, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -219,6 +227,9 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if len(g.projects) > 0 && session.Project == "" && (!resume || session.PendingPrompt != "") {
 		return g.selectProject(ctx, id, thread, path, session, resume, sender, prompt)
 	}
+	if resume && prompt == confirmCommand {
+		return g.confirm(ctx, id, thread, path, session, sender)
+	}
 	return g.respond(ctx, id, thread, path, session, resume, sender, prompt)
 }
 
@@ -264,6 +275,9 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 	if len(g.projects) > 0 && session.Project == "" && session.PendingPrompt != "" {
 		return g.selectProject(ctx, id, thread, path, session, true, sender, prompt)
 	}
+	if prompt == confirmCommand {
+		return g.confirm(ctx, id, thread, path, session, sender)
+	}
 	return g.respond(ctx, id, thread, path, session, true, sender, prompt)
 }
 
@@ -307,7 +321,18 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 	}
 	session.PendingSummary = ""
 	session.Turns++
-	session.State, session.LastMessage = Chatting, g.now()
+	if session.State != AwaitingConfirm && session.State != Submitted {
+		session.State = Chatting
+	}
+	session.LastMessage = g.now()
+	answer, session, err = g.reviewDraft(ctx, thread, session, answer)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "intake draft correction failed for thread %s: %v\n", thread, err)
+		if err := writeJSON(path, session); err != nil {
+			return err
+		}
+		return g.reply(ctx, id, failedReply)
+	}
 	if session.Turns >= g.maxTurns {
 		if summary, ok := g.rollSummary(ctx, session); ok {
 			session.ID = newSessionID()
@@ -337,17 +362,23 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 // turn. It returns false when the agent call fails or the reply has no valid
 // intakeSummary block, in which case the caller keeps the current session.
 func (g *Gateway) rollSummary(ctx context.Context, session Session) (string, bool) {
-	select {
-	case g.slots <- struct{}{}:
-	case <-ctx.Done():
-		return "", false
-	}
-	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: true, Prompt: summaryRequestPrompt(g.maxTurns), Project: g.project(session.Project)})
-	<-g.slots
+	answer, err := g.turn(ctx, Turn{Session: session.ID, Resume: true, Prompt: summaryRequestPrompt(g.maxTurns), Project: g.project(session.Project)})
 	if err != nil {
 		return "", false
 	}
 	return parseSummary(answer)
+}
+
+// turn runs one gateway-initiated agent call (summary request, draft
+// correction) under the concurrency limit, waiting for a slot silently.
+func (g *Gateway) turn(ctx context.Context, t Turn) (string, error) {
+	select {
+	case g.slots <- struct{}{}:
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	defer func() { <-g.slots }()
+	return g.agent(ctx, t)
 }
 
 func summaryRequestPrompt(maxTurns int) string {

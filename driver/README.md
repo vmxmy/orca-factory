@@ -233,7 +233,16 @@ wait_delay = "100ms"        # 子进程退出的收尾等待
 `im.message.receive_v1`，断线自动重连，SIGTERM/SIGINT 取消连接并退出。
 它只处理指定群内 @ 本机器人发起的新话题。名单外回复“无权限”；白名单内的消息交给
 需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文
-作为话题回复。当前版本不创建票据（OF-15）。
+作为话题回复。
+
+Agent 回复带 `intake-draft-v1` 草稿时（OF-15），网关先校验：必填字段、SCOPE 每个
+glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环。不通过时把原因
+作为 `[网关]` 前缀的下一轮输入交还 Agent（每条消息最多 2 次），需求人看不到。通过后
+网关按该项目 `AGENT_LANE2_GLOBS` / `AGENT_LANE3_GLOBS` 计算 lane（不采信草稿），发票面
+摘要，会话进入“待确认”。只有需求人发“确认提交”才建票：已纳管、Todo、不打
+`ready-for-agent`，正文带提出人与 `intake-chat-v1: <话题ID>` 标记；多张票按依赖顺序
+创建。建票前按标记查账本，已存在的票不重建，所以重复确认或重启不会重复建票。建票后
+回复票号与记录链接，并 @ `AGENT_FEISHU_APPROVERS` 中的审批人。
 已开通 `im:message.group_msg` 后，话题内无需 @ 也能继续对话：该话题已有网关自己开的
 会话、会话未关闭、发送者在名单内，三者同时成立才续接；否则静默丢弃，不回复、不写
 任何状态。开新话题仍须 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，
@@ -304,6 +313,7 @@ Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票
 | `AGENT_FEISHU_BOT_OPEN_ID` | 本机器人的 open_id，必须与事件 mentions 中的机器人身份一致，不是 app_id |
 | `AGENT_FEISHU_INTAKE_CHAT` | 唯一允许的需求群 chat_id |
 | `AGENT_FEISHU_INTAKE_USERS` | 可对话成员 open_id，逗号分隔 |
+| `AGENT_FEISHU_APPROVERS` | 可选，审批人 open_id，逗号分隔；建票后在话题里 @ 他们 |
 | `AGENT_FEISHU_ENDPOINT` | 可选，默认 `https://open.feishu.cn`，同时用于 HTTP 与长连接发现 |
 | `AGENT_INTAKE_CLAUDE` | 可选，claude 可执行文件的绝对路径；默认在网关 `PATH` 中查找 `claude`。服务 `PATH` 不含 npm 全局目录时必须设置（取 bash 中 `command -v claude` 的结果，不要用 shell 别名） |
 | `AGENT_FEISHU_INTAKE_PROJECT` | 可选，群默认项目的仓库远端（项目表“仓库远端”列的值，如 `github.com/vmxmy/orca-factory`）。未设置或不匹配任何已启用项目时，话题首条消息未显式指定项目时改为列出项目供需求人选择 |
