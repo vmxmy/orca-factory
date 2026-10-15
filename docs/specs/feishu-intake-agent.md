@@ -41,6 +41,7 @@ flowchart LR
 6. 开通 `im:message.group_msg` 后话题内无需 @。此前仅开通 `im:message.group_at_msg:readonly` 时，不带 @ 或手打“@名字”的回复不投递（Q1 实测）；开通 `group_msg` 后群内全部消息都会投递，网关据此续接：该话题已有网关自己开的会话、会话未关闭、发送者在 `AGENT_FEISHU_INTAKE_USERS` 中，三者同时成立才续接，否则静默丢弃（不回复、不写去重记录、不写会话、不记录消息正文）。开新话题仍须 @需求助手。话题由事件中的 `thread_id` 识别，话题首条消息的 `root_id` 为空，后续回复的 `root_id` 指向首条消息。
 7. 网关在每轮输入前加发言人标签：需求人固定为“[需求人]”，其他白名单成员按会话内首次发言的顺序标“[成员2]”“[成员3]”…；这份映射存入会话文件（不调用通讯录接口），重启后编号不变。Agent 据此分辨成员互相讨论与对自己的提问；回复（去首尾空白后）恰为固定标记 `<无需回复>` 时，网关不发消息，但仍更新会话最后消息时间。
 8. 话题内消息文字（去首尾空白后）恰为“结束”或“取消”时，网关不调用 Agent，把会话置为 `已关闭` 并回复“已结束本话题的需求整理”；此后该话题内的消息按已关闭会话处理（不带 @ 的静默丢弃，带 @ 的提示重新发起）。
+9. 会话轮数达到 `AGENT_INTAKE_MAX_TURNS`（默认 30）时，网关在同一 claude 会话内追加一轮 `[网关]` 前缀的摘要请求，要求 Agent 只输出 `intake-summary-v1` 代码块（字段：需求摘要、已定决策、未决问题、当前草稿，均非空）。回复带合格代码块时，网关轮换到一个新的 claude 会话 ID（话题 ID 不变，claude 会话 ID 换新、轮数清零），把摘要拼成下一轮首轮输入的前缀，该前缀只用一次；回复不带合格代码块时保留原会话 ID 和轮数，仅在 stderr 记录告警，话题继续用原会话续聊。
 
 ## 4. 权限与安全
 
@@ -81,6 +82,7 @@ flowchart LR
 | `AGENT_FEISHU_APPROVERS` | `driver.env` | 审批人 open_id，逗号分隔 |
 | `AGENT_ROLE_INTAKE` | `agent-graph.env` | Agent 档位，默认 strong 档的 claude 配置 |
 | `AGENT_INTAKE_CONCURRENCY` | `agent-graph.env` | 同时运行的 Agent 数，默认 2 |
+| `AGENT_INTAKE_MAX_TURNS` | 网关进程环境 | 单个会话滚动摘要前的轮数上限，默认 30 |
 
 飞书应用新增：事件订阅方式为长连接；订阅 `im.message.receive_v1`；权限 `im:message.group_at_msg:readonly`（必需）、`im:message.group_msg`（可选，见 Q1）、`contact:user.base:readonly`（读取提出人姓名，可选）。
 
