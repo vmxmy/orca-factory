@@ -65,14 +65,24 @@ func (r *Runner) writeTicketContext(ctx context.Context) {
 	}
 	path := filepath.Join(r.Checkout, ticketContextPath)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "intake ticket context unavailable: %v\n", err)
 		return
 	}
-	if tickets, err := r.Tickets(ctx); err == nil {
-		_ = writeAtomic(path, []byte(renderTicketContext(tickets)))
+	tickets, readErr := r.Tickets(ctx)
+	if readErr == nil {
+		if err := writeAtomic(path, []byte(renderTicketContext(tickets))); err != nil {
+			fmt.Fprintf(os.Stderr, "intake ticket context write failed: %v\n", err)
+		}
 		return
 	}
-	prev, _ := os.ReadFile(path)
+	fmt.Fprintf(os.Stderr, "intake ledger read failed, keeping previous ticket context: %v\n", readErr)
+	prev, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "intake ticket context read failed: %v\n", err)
+	}
 	prev = staleTicketMarker.ReplaceAll(prev, nil)
 	marker := fmt.Sprintf("账本读取失败，内容可能过期（%s）\n", time.Now().Format("2006-01-02 15:04:05"))
-	_ = writeAtomic(path, append([]byte(marker), prev...))
+	if err := writeAtomic(path, append([]byte(marker), prev...)); err != nil {
+		fmt.Fprintf(os.Stderr, "intake ticket context write failed: %v\n", err)
+	}
 }
