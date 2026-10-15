@@ -38,7 +38,7 @@ flowchart LR
 3. 会话状态：`对话中` → `待确认` → `已提交` → `已关闭`。超过 7 天无消息自动关闭。
 4. 同一话题串行处理；全局同时运行的 Agent 不超过 `AGENT_INTAKE_CONCURRENCY`（默认 2），其余排队，排队时回复“排队中”。
 5. 网关以 message_id 去重，不以 event_id 去重（飞书文档说明 event_id 不适合作为去重键）。
-6. 话题内的后续消息：若只开通 `im:message.group_at_msg:readonly`，每条都要 @需求助手；若开通 `im:message.group_msg`（敏感权限，需管理员审批），网关只处理自己创建的话题内消息。见待核实 Q1。
+6. 话题内的后续消息必须 @需求助手（点选成员生成的提及）才会投递：仅开通 `im:message.group_at_msg:readonly` 时，不带 @ 或手打“@名字”的回复不投递（Q1 实测）。网关在每次回复末尾提示“继续请 @需求助手”。话题由事件中的 `thread_id` 识别，话题首条消息的 `root_id` 为空，后续回复的 `root_id` 指向首条消息。
 
 ## 4. 权限与安全
 
@@ -97,8 +97,8 @@ flowchart LR
 
 ## 10. 待核实
 
-| 编号 | 问题 |
-| --- | --- |
-| Q1 | 仅开通 `group_at_msg` 时，话题内不 @ 的回复是否投递；`group_msg` 能否获批 |
-| Q2 | 同一应用有多个长连接客户端时，事件是否只投递给其中一个（文档如此描述，未实测）；录制样本时需先停掉 lark-cli 的事件守护进程 |
-| Q3 | 话题回复的接口参数（`reply_in_thread`）与返回的 thread_id 形态 |
+| 编号 | 问题 | 状态 |
+| --- | --- | --- |
+| Q1 | 仅开通 `group_at_msg` 时，话题内不 @ 的回复是否投递 | 已核实：不投递；手打“@名字”未点选也不投递（`bot-event-thread-at-reply.json`） |
+| Q2 | 同一应用有多个长连接客户端时，事件是否只投递给其中一个 | 未实测。部署时网关必须是唯一消费者；排查用的 lark-cli 事件守护进程须先停止 |
+| Q3 | 话题回复的接口参数与 thread_id 形态 | 已核实：`POST /im/v1/messages/:message_id/reply`，`reply_in_thread=true`，返回 `thread_id`（`omt_` 前缀），后续事件带同一 `thread_id`（`bot-message-reply-in-thread.json`） |
