@@ -9,8 +9,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
@@ -57,7 +59,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					if id != *event.Event.Message.MessageId {
 						t.Errorf("reply id %s", id)
 					}
-					want := "已整理" + continueHint
+					want := "已整理"
 					if scenario == "denied" {
 						want = "无权限"
 					}
@@ -155,7 +157,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 		} else if err := json.Unmarshal([]byte(raw), &content); err != nil {
 			t.Error(err)
 		}
-		if content["text"] != "已整理"+continueHint {
+		if content["text"] != "已整理" {
 			t.Errorf("content=%v", content)
 		}
 		if r.Header.Get("Authorization") != "Bearer test-token" {
@@ -225,5 +227,103 @@ func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatal("sent despite failed persistence")
+	}
+}
+
+// TestIntakeThreadReplyWithoutMention covers OF-29: now that the group
+// delivers every message, a thread reply that does not @ the bot continues
+// an open, whitelisted session exactly as an @ reply would, and anything
+// short of that (no session, a closed or idle-expired one, an unlisted
+// sender, or a plain group message with no thread at all) is dropped with
+// no trace.
+func TestIntakeThreadReplyWithoutMention(t *testing.T) {
+	const thread = "om_x100b62338a9e9890df2772823e2edec"
+	existing := Session{ID: "existing-session", Requester: "ou_REDACTED", State: Chatting, LastMessage: time.Now().Add(-time.Hour)}
+
+	for _, scenario := range []string{"resumes", "no-session", "closed-session", "idle-expired", "unlisted-sender", "group-no-thread"} {
+		t.Run(scenario, func(t *testing.T) {
+			name := "bot-event-thread-reply-no-at"
+			if scenario == "group-no-thread" {
+				name = "bot-event-group-message-no-at"
+			}
+			event := recordedEvent(t, name)
+			dir := t.TempDir()
+			onDisk := existing
+			switch scenario {
+			case "closed-session":
+				onDisk.State = Closed
+			case "idle-expired":
+				onDisk.LastMessage = time.Now().Add(-idleClose - time.Hour)
+			}
+			switch scenario {
+			case "resumes", "group-no-thread", "closed-session", "idle-expired":
+				if err := writeJSON(filepath.Join(dir, thread+".json"), onDisk); err != nil {
+					t.Fatal(err)
+				}
+			}
+			users := []string{"ou_REDACTED"}
+			if scenario == "unlisted-sender" {
+				users = []string{"ou_someone_else"}
+			}
+			calls := 0
+			agent := func(_ context.Context, turn Turn) (string, error) {
+				calls++
+				if turn.Session != existing.ID || !turn.Resume {
+					t.Errorf("turn=%+v", turn)
+				}
+				return "已续聊", nil
+			}
+			replies := 0
+			reply := func(_ context.Context, id, text string) error {
+				replies++
+				if id != *event.Event.Message.MessageId || text != "已续聊" {
+					t.Errorf("reply id=%s text=%q", id, text)
+				}
+				return nil
+			}
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, 1, agent, reply)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := g.Handle(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			wantCalls, wantReplies := 0, 0
+			if scenario == "resumes" {
+				wantCalls, wantReplies = 1, 1
+			}
+			if calls != wantCalls || replies != wantReplies {
+				t.Fatalf("calls=%d replies=%d want %d/%d", calls, replies, wantCalls, wantReplies)
+			}
+			claimed := false
+			if b, err := os.ReadFile(filepath.Join(dir, "recent.json")); err == nil {
+				var recent []string
+				if err := json.Unmarshal(b, &recent); err != nil {
+					t.Fatal(err)
+				}
+				claimed = slices.Contains(recent, *event.Event.Message.MessageId)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				t.Fatal(err)
+			}
+			if claimed != (scenario == "resumes") {
+				t.Fatalf("claimed=%v want=%v", claimed, scenario == "resumes")
+			}
+			switch scenario {
+			case "no-session", "unlisted-sender":
+				if _, err := os.Stat(filepath.Join(dir, thread+".json")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("session file created for a dropped message")
+				}
+			case "closed-session", "idle-expired", "group-no-thread":
+				got := session(t, dir, thread)
+				if got.ID != onDisk.ID || got.Requester != onDisk.Requester || got.State != onDisk.State || !got.LastMessage.Equal(onDisk.LastMessage) {
+					t.Fatalf("session mutated: %+v want %+v", got, onDisk)
+				}
+			case "resumes":
+				got := session(t, dir, thread)
+				if got.ID != existing.ID || got.State != Chatting || !got.LastMessage.After(existing.LastMessage) {
+					t.Fatalf("session not resumed: %+v", got)
+				}
+			}
+		})
 	}
 }

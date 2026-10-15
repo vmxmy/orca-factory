@@ -137,7 +137,7 @@ func TestIntakeSession(t *testing.T) {
 			"--settings", `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)"]}}`}
 	}
 	wantEnv := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-	answer := "pong\n\nROLE-LOADED\n\n继续请 @需求助手"
+	answer := "pong\n\nROLE-LOADED"
 
 	first, second := recordedEvent(t, "bot-event-message-at"), recordedEvent(t, "bot-event-thread-at-reply")
 	thread := *first.Event.Message.MessageId
@@ -220,7 +220,7 @@ func TestIntakeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls(t, logs)
-	if r := taken(); !slices.Equal(r, []string{"处理失败，请重试\n\n继续请 @需求助手"}) {
+	if r := taken(); !slices.Equal(r, []string{"处理失败，请重试"}) {
 		t.Fatalf("timeout replies %q", r)
 	}
 	if after := session(t, state, thread); after != before {

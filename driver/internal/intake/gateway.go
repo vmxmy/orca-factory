@@ -22,10 +22,9 @@ const (
 	recentLimit = 10000
 	idleClose   = 7 * 24 * time.Hour
 
-	continueHint  = "\n\n继续请 @需求助手"
 	deniedReply   = "无权限"
 	queuedReply   = "排队中"
-	failedReply   = "处理失败，请重试" + continueHint
+	failedReply   = "处理失败，请重试"
 	closedReply   = "本话题超过 7 天无消息，已关闭；请在群里重新 @需求助手 发起需求"
 	textOnlyReply = "请在 @需求助手 后用文字描述需求"
 )
@@ -95,10 +94,10 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 			break
 		}
 	}
-	if !mentioned {
-		return nil
-	}
 	id, sender := *m.MessageId, *s.SenderId.OpenId
+	if !mentioned {
+		return g.handleUnmentioned(ctx, m, id, sender)
+	}
 	if first, err := g.claim(ctx, id); err != nil || !first {
 		return err
 	}
@@ -136,10 +135,50 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
 	}
+	return g.respond(ctx, id, thread, path, session, resume, prompt)
+}
+
+// handleUnmentioned continues a thread session this gateway already opened,
+// for a reply that does not @ the bot: the group now delivers every message,
+// not only the ones that mention it. Anything short of an open, whitelisted
+// session this gateway recognizes is dropped with no trace — no reply, no
+// dedup claim, no state write, no logging of the message body — since most
+// such messages are not addressed to the bot at all.
+func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id, sender string) error {
+	if value(m.ThreadId) == "" || !slices.Contains(g.users, sender) {
+		return nil
+	}
+	thread := value(m.RootId)
+	if !threadRoot.MatchString(thread) {
+		return nil
+	}
+	unlock := g.lockThread(thread)
+	defer unlock()
+	path := filepath.Join(g.dir, thread+".json")
+	session, resume, err := readSession(path)
+	if err != nil {
+		return err
+	}
+	if !resume || session.State == Closed || g.now().Sub(session.LastMessage) > idleClose {
+		return nil
+	}
+	if first, err := g.claim(ctx, id); err != nil || !first {
+		return err
+	}
+	prompt := promptText(m)
+	if prompt == "" {
+		return g.reply(ctx, id, textOnlyReply)
+	}
+	return g.respond(ctx, id, thread, path, session, true, prompt)
+}
+
+// respond runs one agent turn under the concurrency limit, persists the
+// session, and sends the reply.
+func (g *Gateway) respond(ctx context.Context, id, thread, path string, session Session, resume bool, prompt string) error {
 	select {
 	case g.slots <- struct{}{}:
 	default:
-		if err = g.reply(ctx, id, queuedReply); err != nil {
+		if err := g.reply(ctx, id, queuedReply); err != nil {
 			return err
 		}
 		select {
@@ -154,11 +193,11 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 		fmt.Fprintf(os.Stderr, "intake agent turn failed for thread %s: %v\n", thread, err)
 		return g.reply(ctx, id, failedReply)
 	}
-	session.State, session.LastMessage = Chatting, now
+	session.State, session.LastMessage = Chatting, g.now()
 	if err = writeJSON(path, session); err != nil {
 		return err
 	}
-	return g.reply(ctx, id, answer+continueHint)
+	return g.reply(ctx, id, answer)
 }
 
 // claim records the message ID before any external write: an interrupted or
