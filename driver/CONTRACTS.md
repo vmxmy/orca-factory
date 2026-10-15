@@ -62,6 +62,7 @@
 - REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。合法 Link 可由 `/repos/<owner>/<repo>/issues` 切换到 `/repositories/<id>/issues`；通过仓库元数据 `id/full_name` 验证同一仓库，保留 after 游标及固定查询，拒绝跨 origin、集合、仓库或非递增页码。2026-10-08 只读录制见 `github/issues-pagination-link.json`（仅头、仓库身份与 provenance，无票正文）。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
 - 评论编辑不保证改变 Issue 的 `updated_at`；发现逐页条件请求评论并校验 ETag，304 保留已验证的分页 Link，不以 Issue 时间戳跳过评论请求。重复 `after` 游标拒绝整个 Issue/评论集合，不发布部分快照；ETag 复用响应正文，不保证减少实际请求或配额计数。
 - 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖，并拒绝 held、重新打开的终态或关系不完整的依赖票。未提供完整依赖清单的原生 create 仅接受默认 Todo，非 Todo 状态在写入前拒绝，不能静默忽略。GitHub 原生更新时间与迁移来源时间独立。
+- 原生 `Create` 带 `blockers`/`related` 时，`CreateIssue` 成功后不能立即假定 List 已可见：GitHub 列表接口对刚建的 issue 有延迟，先复用 `awaitListed` 的有界读回等待，再执行 `Adopt`；超时返回包裹 `infra.ErrWriteUnconfirmed` 的错误并以非 0 退出，不留下「已建未纳管」的静默成功（OF-26）。真实原生 issue 载荷（含 `node_id`）见 `github/issues-401-node-id.json`（2026-10-15 对已关闭 issue #401 只读录制，裁剪字段与 `issues-172.json` 一致并保留 `node_id`）；`issues-172.json` 缺该字段，不可用于需要 node ID 的场景。
 - `LedgerStore` 仅创建精确账本标题、无标签且具有完整元数据的账本票，不伪造任务 CHECK/SCOPE。400 评论轮转保留旧 canonical ID、关闭旧票并将新记录写入下一张 Backlog 账本；普通任务不通过该入口绕过 adopt。
 - open/closed/state_reason、工作流标签与元数据确定映射。closed/held 阻执行，不隐藏历史部署屏障；auto-failed 只进入合法 resolver。业务 PR 不使用 Closes/Fixes 提前关闭票。
 - 两种后端在 claim、resume、launch、resolver、squash、release 及 executor 派工前都直接读取票据与评论；发现投影只用于选择，决策或启动前丢弃该票投影。Linear auto-failed 同样只进入 resolver。prune 要求分支票号、Orca 关联与评论关联指向同一 canonical 任务，冲突或读取失败即保留 worktree。
