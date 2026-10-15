@@ -18,6 +18,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
@@ -514,6 +515,9 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if in.Blockers == nil || in.Related == nil {
 		return task, nil
 	}
+	if err := c.awaitListed(ctx, task.ID); err != nil {
+		return Task{}, fmt.Errorf("native issue %s remains unmanaged: %w", task.Identifier, err)
+	}
 	raw, err := json.Marshal(AdoptInput{Blockers: in.Blockers, Related: in.Related})
 	if err != nil {
 		return Task{}, err
@@ -616,7 +620,7 @@ func (c *GitHub) awaitListed(ctx context.Context, id string) error {
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-	return errors.New("created task not listed by GitHub")
+	return fmt.Errorf("created task not listed by GitHub within bounded retries: %w", infra.ErrWriteUnconfirmed)
 }
 
 // GitHubUsage is additive to the legacy usage contract and never probes Linear.

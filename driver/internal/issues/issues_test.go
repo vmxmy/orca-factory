@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -139,6 +141,82 @@ func TestGitHubCreateReconcilesLostResponse(t *testing.T) {
 	task, err := c.Create(context.Background(), CreateInput{Title: "native task"})
 	if err != nil || task.Identifier != "GH-7" || task.ID == "" || writes != 1 {
 		t.Fatalf("ambiguous create not reconciled: task=%+v error=%v writes=%d", task, err, writes)
+	}
+}
+
+// node ID recorded through gh api repos/vmxmy/orca-factory/issues/401 on
+// 2026-10-15; the field this test exercises, not a hand-written value.
+func recordedGitHubNodeID(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/github/issues-401-node-id.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		NodeID string `json:"node_id"`
+	}
+	if err = json.Unmarshal(raw, &rows); err != nil || len(rows) != 1 || rows[0].NodeID == "" {
+		t.Fatalf("recorded node id fixture malformed: %v", err)
+	}
+	return rows[0].NodeID
+}
+
+func TestGitHubCreateAdoptsBeforeListCatchesUp(t *testing.T) {
+	nodeID := recordedGitHubNodeID(t)
+	var mu sync.Mutex
+	var created map[string]any
+	lag := 2
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			var in map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			created = map[string]any{"node_id": nodeID, "number": 1, "title": in["title"], "body": in["body"], "state": "open", "labels": []any{}}
+			if err := json.NewEncoder(w).Encode(created); err != nil {
+				t.Error(err)
+			}
+		case http.MethodPatch:
+			var in map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Error(err)
+			}
+			for k, v := range in {
+				created[k] = v
+			}
+			if err := json.NewEncoder(w).Encode(created); err != nil {
+				t.Error(err)
+			}
+		default:
+			rows := []map[string]any{}
+			if created != nil {
+				if lag > 0 {
+					lag--
+				} else {
+					rows = append(rows, created)
+				}
+			}
+			if err := json.NewEncoder(w).Encode(rows); err != nil {
+				t.Error(err)
+			}
+		}
+	}))
+	defer server.Close()
+	gh, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewGitHub("o/r", gh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := c.Create(context.Background(), CreateInput{Title: "native", Description: "## 要做\n施工\nCHECK: make test\nSCOPE: driver/\nDEPENDENCIES: {\"blockers\":[],\"related\":[]}", Labels: []string{}, Blockers: []string{}, Related: []string{}})
+	if err != nil || !task.Metadata.Complete || task.Identifier != "GH-1" {
+		t.Fatalf("create did not survive list lag before adoption: task=%+v err=%v", task, err)
 	}
 }
 
