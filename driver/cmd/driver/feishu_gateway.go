@@ -205,7 +205,7 @@ func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca
 			return nil, err
 		}
 	}
-	result := projects.Discover(ctx, toDiscoverRepos(orcaRepos), rows, checker)
+	result := projects.Discover(ctx, orcaRepos, rows, checker)
 	reasons := make(map[string]projects.Reason, len(result.Rejected))
 	for _, rejected := range result.Rejected {
 		reasons[rejected.Remote] = rejected.Reason

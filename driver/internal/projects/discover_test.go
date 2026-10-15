@@ -74,7 +74,7 @@ func TestDiscoverRecordedSample(t *testing.T) {
 		"github.com/vmxmy/zhiyun-ai-dashboard": true,
 		"github.com/vmxmy/ansible":             true,
 	}
-	var repos []Repo
+	var repos []orca.Repo
 	var rows []issues.LedgerProject
 	for _, r := range recorded {
 		path := filepath.Join(root, filepath.Base(r.Path))
@@ -85,7 +85,7 @@ func TestDiscoverRecordedSample(t *testing.T) {
 			writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 			rows = append(rows, issues.LedgerProject{Name: filepath.Base(r.Path), Remote: r.CanonicalKey, Prefix: filepath.Base(r.Path), Enabled: true})
 		}
-		repos = append(repos, Repo{Path: path, CanonicalKey: r.CanonicalKey})
+		repos = append(repos, orca.Repo{Path: path, CanonicalKey: r.CanonicalKey})
 	}
 	result := Discover(context.Background(), repos, rows, alwaysPass)
 	if len(result.Eligible) != 3 {
@@ -110,7 +110,7 @@ func TestDiscoverRecordedSample(t *testing.T) {
 func TestDiscoverProjectDisabled(t *testing.T) {
 	path := t.TempDir()
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
-	repos := []Repo{{Path: path, CanonicalKey: "github.com/example/disabled"}}
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/disabled"}}
 	rows := []issues.LedgerProject{{Name: "disabled", Remote: "github.com/example/disabled", Prefix: "DIS", Enabled: false}}
 	result := Discover(context.Background(), repos, rows, alwaysPass)
 	reason, ok := rejection(result, "github.com/example/disabled")
@@ -122,7 +122,7 @@ func TestDiscoverProjectDisabled(t *testing.T) {
 func TestDiscoverNoLedgerRow(t *testing.T) {
 	path := t.TempDir()
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
-	repos := []Repo{{Path: path, CanonicalKey: "github.com/example/orphan"}}
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/orphan"}}
 	rows := []issues.LedgerProject{{Name: "other", Remote: "github.com/example/other", Prefix: "OTH", Enabled: true}}
 	result := Discover(context.Background(), repos, rows, alwaysPass)
 	reason, ok := rejection(result, "github.com/example/orphan")
@@ -134,7 +134,7 @@ func TestDiscoverNoLedgerRow(t *testing.T) {
 func TestDiscoverLedgerNotFeishu(t *testing.T) {
 	path := t.TempDir()
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=linear\n")
-	repos := []Repo{{Path: path, CanonicalKey: "github.com/example/linear"}}
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/linear"}}
 	rows := []issues.LedgerProject{{Name: "linear", Remote: "github.com/example/linear", Prefix: "LIN", Enabled: true}}
 	result := Discover(context.Background(), repos, rows, alwaysPass)
 	reason, ok := rejection(result, "github.com/example/linear")
@@ -146,7 +146,7 @@ func TestDiscoverLedgerNotFeishu(t *testing.T) {
 func TestDiscoverCheckFailed(t *testing.T) {
 	path := t.TempDir()
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
-	repos := []Repo{{Path: path, CanonicalKey: "github.com/example/failing"}}
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/failing"}}
 	rows := []issues.LedgerProject{{Name: "failing", Remote: "github.com/example/failing", Prefix: "FAI", Enabled: true}}
 	failing := func(context.Context, string) error { return errors.New("gate red") }
 	result := Discover(context.Background(), repos, rows, failing)
@@ -160,7 +160,7 @@ func TestDiscoverCheckFailed(t *testing.T) {
 // not configured, and every repository is rejected for that reason alone,
 // without even checking whether its pipeline is installed.
 func TestDiscoverFactoryRootUnconfigured(t *testing.T) {
-	repos := []Repo{{Path: "/anything", CanonicalKey: "github.com/example/anything"}}
+	repos := []orca.Repo{{Path: "/anything", CanonicalKey: "github.com/example/anything"}}
 	result := Discover(context.Background(), repos, nil, nil)
 	reason, ok := rejection(result, "github.com/example/anything")
 	if !ok || reason != ReasonFactoryRootUnconfigured || len(result.Eligible) != 0 {

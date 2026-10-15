@@ -12,13 +12,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
-
-// Repo is one repository Orca already manages locally, as reported by
-// orca.Client.RepoList.
-type Repo struct {
-	Path, CanonicalKey string
-}
 
 // Checker runs a repository's own pipeline check (production: `<factory
 // root>/bin/orca-factory check <path>`) and reports whether it passed. A nil
@@ -71,7 +66,7 @@ type Result struct {
 // have a row whose 仓库远端 equals its CanonicalKey, and that row must be
 // enabled. The first unmet condition is recorded as the Reason; no
 // repository is silently skipped.
-func Discover(ctx context.Context, repos []Repo, rows []issues.LedgerProject, check Checker) Result {
+func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProject, check Checker) Result {
 	var result Result
 	if check == nil {
 		for _, repo := range repos {

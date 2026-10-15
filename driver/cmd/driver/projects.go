@@ -52,15 +52,6 @@ func ledgerProjectRows(ctx context.Context, repos []orca.Repo, tuning config.Tun
 	return nil, nil
 }
 
-// toDiscoverRepos adapts orca.Client.RepoList's result to projects.Discover's input.
-func toDiscoverRepos(repos []orca.Repo) []projects.Repo {
-	out := make([]projects.Repo, 0, len(repos))
-	for _, r := range repos {
-		out = append(out, projects.Repo{Path: r.Path, CanonicalKey: r.CanonicalKey})
-	}
-	return out
-}
-
 // discoverProjects joins the live Orca repository inventory, the Feishu
 // ledger's project table and each repository's own pipeline check (OF-42).
 // It never reads driver.toml's repositories: the caller re-runs it whenever
@@ -71,13 +62,13 @@ func discoverProjects(ctx context.Context, cfg config.Config, client *orca.Clien
 		return projects.Result{}, err
 	}
 	if cfg.FactoryRoot == "" {
-		return projects.Discover(ctx, toDiscoverRepos(orcaRepos), nil, nil), nil
+		return projects.Discover(ctx, orcaRepos, nil, nil), nil
 	}
 	rows, err := ledgerProjectRows(ctx, orcaRepos, cfg.Tuning)
 	if err != nil {
 		return projects.Result{}, err
 	}
-	return projects.Discover(ctx, toDiscoverRepos(orcaRepos), rows, factoryChecker(cfg.FactoryRoot)), nil
+	return projects.Discover(ctx, orcaRepos, rows, factoryChecker(cfg.FactoryRoot)), nil
 }
 
 func runProjects(args []string) int {
