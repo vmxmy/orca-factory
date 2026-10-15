@@ -210,11 +210,13 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		s.checkLinearQuota(now)
 		s.checkGitHubQuota(now)
-		var evidence *TicketEvidenceError
-		if !s.Pauses.Paused("") && errors.As(err, &evidence) && allowed[evidence.Ticket.Repo] {
-			ticket := evidence.Ticket
-			ticket.MergeProblem = evidence.Err.Error()
-			notify(ticket)
+		var evidence *SnapshotEvidenceError
+		if !s.Pauses.Paused("") && errors.As(err, &evidence) {
+			for _, ticket := range evidence.Tickets {
+				if allowed[ticket.Repo] {
+					notify(ticket)
+				}
+			}
 		}
 		return errors.New("scheduler snapshot failed")
 	}
