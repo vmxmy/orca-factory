@@ -25,6 +25,10 @@ fi
 echo "== driver"
 if [ -f driver/go.mod ]; then
   (cd driver && go vet ./... && go test -count=1 ./...)
+  echo "== driver-lint"
+  make lint
+  echo "== driver-vuln"
+  make vuln
 fi
 
 echo "== driver-wired"   # 依据：合并通道写完未接线，上线后一次都没合并（2026-10-06）

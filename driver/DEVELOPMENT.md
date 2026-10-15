@@ -80,6 +80,8 @@ changes 在云端运行，清空本地代理，使用官方 Go 下载源；只�
 
 合并到 main 要求上述五项检查通过。远端分支保护使用上表名称并绑定 GitHub Actions app，通过 GitHub API 回读确认配置，检查启动本身不能证明保护已生效。本地 Make 不修改远端保护。现有 `scripts/agent-gates/gate.sh` 和 project gate 继续保留；`make check` 不替代 scope、固定基线、契约及部署门禁。
 
+project gate 在存在 `driver/go.mod` 时运行 vet、未缓存的完整测试，并从仓库根目录依次运行 `make lint`、`make vuln`，包括 driver 变更。后两项使用上述锁定工具入口，分别标记为 `driver-lint`、`driver-vuln`；工具安装、检查或漏洞扫描非零退出会立即使 gate 判红，输出保留在 gate 日志中。project gate 还检查包接线和录制契约；CI 另行执行显式 build 和 race，因此本地 gate 通过仍须等待 CI。
+
 ### Go 模块下载代理
 
 Go checks 通过仓库变量 `GO_MODULE_PROXY` 设置所有 job 的 `GOPROXY`，未设置时仍使用 `https://proxy.golang.org,direct`。遇到本地 runner 无法访问默认代理时，维护者可设置为 `https://goproxy.cn,https://proxy.golang.org,direct`；逗号分隔的后备仅在代理返回 404/410 时启用，超时不会自动切换。该设置不禁用 Go 校验和数据库、不跳过任何检查，也不改变 runner 标签或锁定的工具版本；代理可达性和实际下载以最终 CI 为准。
