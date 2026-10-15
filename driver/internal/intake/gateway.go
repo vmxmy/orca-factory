@@ -315,6 +315,9 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 			session.Turns = 0
 			session.PendingSummary = summary
 		} else {
+			// Back off instead of requesting a summary again every turn
+			// until the cap is reached once more.
+			session.Turns = g.maxTurns / 2
 			fmt.Fprintf(os.Stderr, "intake rolling summary rejected for thread %s\n", thread)
 		}
 	}
@@ -466,6 +469,12 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	return writeAtomic(path, b)
+}
+
+// writeAtomic writes b to path via a sibling temp file and rename, so a
+// reader never observes a partial write.
+func writeAtomic(path string, b []byte) error {
 	f, err := os.CreateTemp(filepath.Dir(path), ".intake-*")
 	if err != nil {
 		return err
