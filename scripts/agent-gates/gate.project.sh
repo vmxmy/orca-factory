@@ -4,6 +4,8 @@
 # 不要在这里跑 `bin/orca-factory selftest` 或 gate.test.sh：它们会再调 gate.sh，嵌套抢 agent-gate-heavy.lock，空等 30 分钟。
 # 它们放进票的 CHECK（gate.sh 第 5 步，锁已释放）。
 set -Eeuo pipefail
+# 依据：生产 AGENT_ISSUE_BACKEND 泄漏进 go test 会让 ledger 子命令递归执行测试二进制，2026-10-15 撑爆内存被 oomd 杀光 worker。本文件从基线读取，旧分支的测试也受保护。
+unset AGENT_ISSUE_BACKEND
 
 OMC_BASELINE=27 # 只允许调低，不允许调高
 
