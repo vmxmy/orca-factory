@@ -1,0 +1,49 @@
+{
+  "event": {
+    "event": {
+      "message": {
+        "chat_id": "oc_REDACTED",
+        "chat_type": "group",
+        "content": "{\"text\":\"@_user_1 话题内带艾特\"}",
+        "create_time": "1792035067934",
+        "mentions": [
+          {
+            "id": {
+              "open_id": "ou_BOT_REDACTED",
+              "union_id": "on_BOT_REDACTED",
+              "user_id": null
+            },
+            "key": "@_user_1",
+            "mentioned_type": "bot",
+            "name": "Orca-Factory",
+            "tenant_key": "TENANT_KEY"
+          }
+        ],
+        "message_id": "om_x100b6230c170e4a4df20e6e69b1fa1e",
+        "message_type": "text",
+        "parent_id": "om_x100b623034f21cb4df865fbf3aa4e56",
+        "root_id": "om_x100b623034f21cb4df865fbf3aa4e56",
+        "thread_id": "omt_19b5cf6adf0e5a54",
+        "update_time": "1792035067934"
+      },
+      "sender": {
+        "sender_id": {
+          "open_id": "ou_REDACTED",
+          "union_id": "on_REDACTED",
+          "user_id": null
+        },
+        "sender_type": "user",
+        "tenant_key": "TENANT_KEY"
+      }
+    },
+    "header": {
+      "app_id": "cli_REDACTED",
+      "create_time": "1792035068358",
+      "event_id": "bb7e445fe4bbf9aae0cb1636487aba4c",
+      "event_type": "im.message.receive_v1",
+      "tenant_key": "TENANT_KEY",
+      "token": ""
+    },
+    "schema": "2.0"
+  }
+}

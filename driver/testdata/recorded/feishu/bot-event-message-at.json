@@ -1,0 +1,46 @@
+{
+  "event": {
+    "event": {
+      "message": {
+        "chat_id": "oc_REDACTED",
+        "chat_type": "group",
+        "content": "{\"text\":\"@_user_1 原始格式测试\"}",
+        "create_time": "1792034724078",
+        "mentions": [
+          {
+            "id": {
+              "open_id": "ou_BOT_REDACTED",
+              "union_id": "on_BOT_REDACTED",
+              "user_id": null
+            },
+            "key": "@_user_1",
+            "mentioned_type": "bot",
+            "name": "Orca-Factory",
+            "tenant_key": "TENANT_KEY"
+          }
+        ],
+        "message_id": "om_x100b623034f21cb4df865fbf3aa4e56",
+        "message_type": "text",
+        "update_time": "1792034724212"
+      },
+      "sender": {
+        "sender_id": {
+          "open_id": "ou_REDACTED",
+          "union_id": "on_REDACTED",
+          "user_id": null
+        },
+        "sender_type": "user",
+        "tenant_key": "TENANT_KEY"
+      }
+    },
+    "header": {
+      "app_id": "cli_REDACTED",
+      "create_time": "1792034724494",
+      "event_id": "163bf189dc9d7c86082f7b4abb1fd6e9",
+      "event_type": "im.message.receive_v1",
+      "tenant_key": "TENANT_KEY",
+      "token": ""
+    },
+    "schema": "2.0"
+  }
+}
