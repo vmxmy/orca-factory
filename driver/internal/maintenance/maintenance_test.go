@@ -2,6 +2,7 @@ package maintenance_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
@@ -64,5 +65,66 @@ func TestDrainPersistsAndFreezeExcludesWriters(t *testing.T) {
 	}
 	if err := maintenance.Admit(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestMaintenanceDrainWaitsForWriters(t *testing.T) {
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	writer, err := maintenance.Write()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer()
+
+	admitted, err := maintenance.Admission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.SetWithin("draining", 200*time.Millisecond); err == nil {
+		t.Fatal("drain finished while admitted dispatch was in flight")
+	}
+	if state, err := maintenance.Read(); err != nil || state.Mode != "running" {
+		t.Fatalf("timed-out drain changed state: %+v %v", state, err)
+	}
+	if err := maintenance.Admit(); err != nil {
+		t.Fatal("timed-out drain kept refusing dispatch:", err)
+	}
+	admitted()
+
+	admitted, err = maintenance.Admission()
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan time.Time, 1)
+	refused := make(chan error, 1)
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		late, err := maintenance.Admission()
+		if err == nil {
+			late()
+		}
+		refused <- err
+		time.Sleep(500 * time.Millisecond)
+		released <- time.Now()
+		admitted()
+	}()
+	if err := maintenance.SetWithin("draining", 5*time.Second); err != nil {
+		t.Fatal("drain did not wait for admitted dispatch:", err)
+	}
+	finished := time.Now()
+	if err := <-refused; err == nil {
+		t.Fatal("admission arriving during drain wait was accepted")
+	}
+	if finished.Before(<-released) {
+		t.Fatal("drain finished before admitted dispatch released")
+	}
+	if state, err := maintenance.Read(); err != nil || state.Mode != "draining" {
+		t.Fatalf("drain not persisted: %+v %v", state, err)
+	}
+	if err := maintenance.Admit(); err == nil {
+		t.Fatal("drained state admitted new dispatch")
+	}
+	if _, err := maintenance.Admission(); err == nil {
+		t.Fatal("drained state admitted new dispatch")
 	}
 }
