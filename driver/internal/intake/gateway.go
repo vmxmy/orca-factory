@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,8 +20,9 @@ import (
 )
 
 const (
-	recentLimit = 10000
-	idleClose   = 7 * 24 * time.Hour
+	recentLimit           = 10000
+	idleClose             = 7 * 24 * time.Hour
+	defaultIntakeMaxTurns = 30
 
 	deniedReply   = "无权限"
 	queuedReply   = "排队中"
@@ -53,6 +55,12 @@ type Session struct {
 	// this session, comma-joined in the order they first spoke. It survives a
 	// restart so a member's "[成员N]" label never changes mid-conversation.
 	Speakers string `json:"speakers,omitempty"`
+	// Turns counts agent turns since Generation's last rollover; Generation
+	// counts rollovers; PendingSummary, when non-empty, is the carried-over
+	// summary a new generation's first turn prefixes onto its prompt.
+	Turns          int    `json:"turns,omitempty"`
+	Generation     int    `json:"generation,omitempty"`
+	PendingSummary string `json:"pending_summary,omitempty"`
 }
 
 // speakerLabel tags a turn with who sent it, since promptText carries only the
@@ -85,6 +93,7 @@ type Gateway struct {
 	users, recent  []string
 	threads        map[string]*sync.Mutex
 	slots          chan struct{}
+	maxTurns       int
 	agent          func(context.Context, Turn) (string, error)
 	reply          func(context.Context, string, string) error
 	now            func() time.Time
@@ -96,7 +105,15 @@ func New(dir, chat, bot string, users []string, concurrency int, agent func(cont
 	if concurrency < 1 {
 		return nil, errors.New("intake concurrency must be positive")
 	}
-	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), agent: agent, reply: reply, now: time.Now}
+	maxTurns := defaultIntakeMaxTurns
+	if raw := os.Getenv("AGENT_INTAKE_MAX_TURNS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return nil, errors.New("AGENT_INTAKE_MAX_TURNS must be a positive integer")
+		}
+		maxTurns = n
+	}
+	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, agent: agent, reply: reply, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -235,13 +252,30 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 			return ctx.Err()
 		}
 	}
-	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: resume, Prompt: label + " " + prompt})
+	turnPrompt := label + " " + prompt
+	callResume := resume && session.PendingSummary == ""
+	if session.PendingSummary != "" {
+		turnPrompt = session.PendingSummary + "\n\n" + turnPrompt
+	}
+	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: callResume, Prompt: turnPrompt})
 	<-g.slots
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "intake agent turn failed for thread %s: %v\n", thread, err)
 		return g.reply(ctx, id, failedReply)
 	}
+	session.PendingSummary = ""
+	session.Turns++
 	session.State, session.LastMessage = Chatting, g.now()
+	if session.Turns >= g.maxTurns {
+		if summary, ok := g.rollSummary(ctx, session); ok {
+			session.ID = newSessionID()
+			session.Generation++
+			session.Turns = 0
+			session.PendingSummary = summary
+		} else {
+			fmt.Fprintf(os.Stderr, "intake rolling summary rejected for thread %s\n", thread)
+		}
+	}
 	if err = writeJSON(path, session); err != nil {
 		return err
 	}
@@ -251,6 +285,55 @@ func (g *Gateway) respond(ctx context.Context, id, thread, path string, session 
 		return nil
 	}
 	return g.reply(ctx, id, answer)
+}
+
+// rollSummary runs one extra agent turn inside session asking it to compress
+// the conversation so far, under the same concurrency slot as an ordinary
+// turn. It returns false when the agent call fails or the reply has no valid
+// intakeSummary block, in which case the caller keeps the current session.
+func (g *Gateway) rollSummary(ctx context.Context, session Session) (string, bool) {
+	select {
+	case g.slots <- struct{}{}:
+	case <-ctx.Done():
+		return "", false
+	}
+	answer, err := g.agent(ctx, Turn{Session: session.ID, Resume: true, Prompt: summaryRequestPrompt(g.maxTurns)})
+	<-g.slots
+	if err != nil {
+		return "", false
+	}
+	return parseSummary(answer)
+}
+
+func summaryRequestPrompt(maxTurns int) string {
+	return fmt.Sprintf("[网关] 本话题已进行 %d 轮，请把目前的讨论压缩成摘要，只输出下面这个代码块，不要附加其他文字：\n\n"+
+		"```intake-summary-v1\n{\n  \"需求摘要\": \"...\",\n  \"已定决策\": \"...\",\n  \"未决问题\": \"...\",\n  \"当前草稿\": \"...\"\n}\n```", maxTurns)
+}
+
+var summaryBlock = regexp.MustCompile("(?s)```intake-summary-v1\\s*\\n(.*?)\\n```")
+
+type intakeSummary struct {
+	Need    string `json:"需求摘要"`
+	Decided string `json:"已定决策"`
+	Open    string `json:"未决问题"`
+	Draft   string `json:"当前草稿"`
+}
+
+// parseSummary extracts and validates the intake-summary-v1 code block from
+// an agent reply, returning the next generation's carried-over prompt prefix.
+func parseSummary(answer string) (string, bool) {
+	m := summaryBlock.FindStringSubmatch(answer)
+	if m == nil {
+		return "", false
+	}
+	var s intakeSummary
+	if json.Unmarshal([]byte(m[1]), &s) != nil {
+		return "", false
+	}
+	if strings.TrimSpace(s.Need) == "" || strings.TrimSpace(s.Decided) == "" || strings.TrimSpace(s.Open) == "" || strings.TrimSpace(s.Draft) == "" {
+		return "", false
+	}
+	return fmt.Sprintf("[网关] 新会话续接，此前摘要：\n需求摘要：%s\n已定决策：%s\n未决问题：%s\n当前草稿：%s", s.Need, s.Decided, s.Open, s.Draft), true
 }
 
 // claim records the message ID before any external write: an interrupted or
