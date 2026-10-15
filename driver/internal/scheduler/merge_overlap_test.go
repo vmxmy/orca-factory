@@ -84,7 +84,7 @@ func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 	}
 	o := f.runtime.Orca.(*fakeOrca)
 	var p merge.Progress
-	for _, row := range f.linear.rows {
+	for _, row := range f.tracker.rows {
 		for _, line := range strings.Split(row.Body, "\n") {
 			if strings.HasPrefix(line, merge.ProgressPrefix) {
 				p = merge.Progress{}
@@ -94,7 +94,7 @@ func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 			}
 		}
 	}
-	if f.puts != 0 || len(o.launches) != 1 || !strings.Contains(o.launches[0].Command, " exec --merging ") || p.Phase != "correction" || p.Corrections != 1 || p.CatchupRounds != 1 || p.Head != f.head || p.Main != f.main || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 执行器") {
+	if f.puts != 0 || len(o.launches) != 1 || !strings.Contains(o.launches[0].Command, " exec --merging ") || p.Phase != "correction" || p.Corrections != 1 || p.CatchupRounds != 1 || p.Head != f.head || p.Main != f.main || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 执行器") {
 		t.Fatalf("not repaired: puts=%d launch=%v receipt=%+v", f.puts, o.launches, p)
 	}
 	// New scheduler sees executor ownership, not the old merge handoff.
@@ -147,14 +147,14 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 			if calls != 1 {
 				t.Fatalf("gate not run: calls=%d err=%v", calls, err)
 			}
-			if verdict == "green" && (err != nil || f.puts != 1 || f.linear.issue.State.Name != "Done") {
+			if verdict == "green" && (err != nil || f.puts != 1 || f.tracker.issue.State.Name != "Done") {
 				t.Fatalf("green not merged: %v puts=%d", err, f.puts)
 			}
 			if verdict == "red" && (err != nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 1) {
 				t.Fatalf("red not corrected: %v puts=%d", err, f.puts)
 			}
-			if verdict == "infra" && (err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || strings.Contains(strings.Join(f.linear.bodies, "\n"), `"phase":"correction"`)) {
-				t.Fatalf("infra charged: %v %v", err, f.linear.bodies)
+			if verdict == "infra" && (err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"phase":"correction"`)) {
+				t.Fatalf("infra charged: %v %v", err, f.tracker.bodies)
 			}
 			if got := gitMergeTest(t, dir, "rev-parse", "agent/ENG-1/executor"); got != f.head {
 				t.Fatal("worker branch rewritten")
@@ -198,8 +198,8 @@ func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if calls != 2 || f.puts != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"catchup_rounds":2`) {
-		t.Fatalf("budget lost: gates=%d puts=%d comments=%v", calls, f.puts, f.linear.bodies)
+	if calls != 2 || f.puts != 0 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 处置Agent") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"catchup_rounds":2`) {
+		t.Fatalf("budget lost: gates=%d puts=%d comments=%v", calls, f.puts, f.tracker.bodies)
 	}
 }
 
@@ -217,8 +217,8 @@ func TestRuntimeMergeCorrectionCapsPersistedBudget(t *testing.T) {
 			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if len(f.runtime.Orca.(*fakeOrca).launches) != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
-				t.Fatalf("cap ignored: %v", f.linear.bodies)
+			if len(f.runtime.Orca.(*fakeOrca).launches) != 0 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 处置Agent") {
+				t.Fatalf("cap ignored: %v", f.tracker.bodies)
 			}
 		})
 	}
@@ -236,8 +236,8 @@ func TestRuntimeOverlapGreenCleanupFailureStillCompletes(t *testing.T) {
 		return runx.Run(ctx, s)
 	}
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if !errors.Is(err, merge.ErrWorktreeCleanup) || f.puts != 1 || f.linear.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 无") {
-		t.Fatalf("lost successful merge: err=%v puts=%d state=%s receipts=%v", err, f.puts, f.linear.issue.State.Name, f.linear.bodies)
+	if !errors.Is(err, merge.ErrWorktreeCleanup) || f.puts != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 无") {
+		t.Fatalf("lost successful merge: err=%v puts=%d state=%s receipts=%v", err, f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
 	}
 }
 
@@ -279,8 +279,8 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
-		t.Fatalf("original full gate did not pass: %v", f.linear.bodies)
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("original full gate did not pass: %v", f.tracker.bodies)
 	}
 }
 
@@ -305,8 +305,8 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 				return runx.Run(ctx, s)
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
-			if err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || len(f.linear.bodies) != 0 {
-				t.Fatalf("infrastructure spent correction: %v receipts=%v", err, f.linear.bodies)
+			if err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || len(f.tracker.bodies) != 0 {
+				t.Fatalf("infrastructure spent correction: %v receipts=%v", err, f.tracker.bodies)
 			}
 			dir := f.repos[0].Path
 			if got := gitMergeTest(t, dir, "worktree", "list", "--porcelain"); strings.Count(got, "worktree ") != 1 {
@@ -332,11 +332,11 @@ func TestRuntimeOverlapGateLaneRedReturnsCorrection(t *testing.T) {
 
 func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	f := newMergeFixture(t)
-	later := *f.linear
+	later := *f.tracker
 	later.issue.ID, later.issue.Identifier = "repaired", "ENG-2"
-	later.rows = append([]linear.Comment(nil), f.linear.rows...)
+	later.rows = append([]linear.Comment(nil), f.tracker.rows...)
 	nf := *f
-	nf.linear = &later
+	nf.tracker = &later
 	rewriteHandoff(t, &nf, func(h map[string]any) {
 		h["ticket_id"] = "repaired"
 		h["identifier"] = "ENG-2"
@@ -354,12 +354,12 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	fresh := later.rows[0]
 	fresh.CreatedAt = fresh.CreatedAt.Add(time.Minute)
 	later.rows = []linear.Comment{old, {Body: "归属: 执行器", CreatedAt: old.CreatedAt.Add(time.Second)}, fresh}
-	source := &mergeTickets{rows: []*mergeLinear{&later, f.linear}}
+	source := &mergeTickets{rows: []*mergeIssues{&later, f.tracker}}
 	f.runtime.Clients[f.repos[0].Path] = source
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || f.linear.issue.State.Name != "Done" || later.issue.State.Name != "In Progress" {
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" || later.issue.State.Name != "In Progress" {
 		t.Fatalf("repaired PR overtook original: %d %+v", f.puts, later.issue)
 	}
 }
@@ -370,10 +370,10 @@ func TestRuntimeUnknownProgressWaitsWithoutOverwriting(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if err == nil || f.puts != 0 || len(f.linear.bodies) != 0 {
-		t.Fatalf("unknown progress overwritten: %v %v", err, f.linear.bodies)
+	if err == nil || f.puts != 0 || len(f.tracker.bodies) != 0 {
+		t.Fatalf("unknown progress overwritten: %v %v", err, f.tracker.bodies)
 	}
 }
 
@@ -405,7 +405,7 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 				t.Fatal(err)
 			}
 			var p merge.Progress
-			for _, row := range f.linear.rows {
+			for _, row := range f.tracker.rows {
 				for _, line := range strings.Split(row.Body, "\n") {
 					if strings.HasPrefix(line, merge.ProgressPrefix) {
 						p = merge.Progress{}
@@ -506,7 +506,7 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 			defer cancel()
 			err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
 			if policy == "approved" {
-				if err != nil || f.puts != 1 || f.linear.issue.State.Name != "Done" {
+				if err != nil || f.puts != 1 || f.tracker.issue.State.Name != "Done" {
 					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)
 				}
 			} else if err == nil || f.puts != 0 {

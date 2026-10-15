@@ -121,7 +121,7 @@ func (e *Executor) recoveryPath(cp *checkpoint, path string) {
 }
 
 func (e *Executor) recoverySnapshot(ctx context.Context, t Ticket, cp *checkpoint) {
-	comments, err := e.Linear.ListComments(ctx, t.ID)
+	comments, err := e.Issues.ListComments(ctx, t.ID)
 	phase, owner := "unknown", "unknown"
 	if err == nil {
 		comments = append(comments[:0:0], comments...)
@@ -144,5 +144,5 @@ func (e *Executor) recoverySnapshot(ctx context.Context, t Ticket, cp *checkpoin
 			}
 		}
 	}
-	e.logger().Info("recovery.snapshot", "checkpoint", checkpointEvidence(cp), "linear_phase", phase, "linear_owner", owner)
+	e.logger().Info("recovery.snapshot", "checkpoint", checkpointEvidence(cp), "ticket_phase", phase, "ticket_owner", owner)
 }

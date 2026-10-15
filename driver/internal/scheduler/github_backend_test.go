@@ -10,26 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 )
-
-func TestRuntimeGitHubOnlyInitialization(t *testing.T) {
-	t.Setenv("LINEAR_API_KEY", "")
-	r := &Runtime{Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
-	repos := []config.Repository{{Path: "/github", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r"}}}
-	err := r.initialize(context.Background(), repos, func(context.Context, string) (LinearClient, error) {
-		t.Fatal("GitHub selected but Linear initialized")
-		return nil, nil
-	})
-	if err != nil {
-		t.Fatalf("GitHub-only startup: %v", err)
-	}
-	if r.Clients["/github"] == nil {
-		t.Fatal("GitHub backend not bound")
-	}
-}
 
 func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 	ctx := context.Background()
@@ -65,7 +48,7 @@ func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed = true
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": client}}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": client}}
 	err := r.Apply(ctx, Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Candidate: true}, Action{Kind: Claim})
 	if err == nil || !strings.Contains(err.Error(), "ownership") || writes != 0 {
 		t.Fatalf("claim used cached ownership: error=%v writes=%d", err, writes)
@@ -73,13 +56,12 @@ func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 }
 
 func TestGitHubRuntimeFrozenMergeRecoveryEndToEnd(t *testing.T) {
-	t.Setenv("LINEAR_API_KEY", "")
 	f := newMergeFixture(t)
 	canonical := "01234567-1234-1234-1234-012345678901"
 	rewriteHandoff(t, f, func(h map[string]any) { h["ticket_id"] = canonical })
 	body := fmt.Sprintf(`<!-- orca-task-v1: {"id":%q,"identifier":"ENG-1","project":"o/r","state":"In Progress","complete":true,"blockers":[],"related":[]} -->`, canonical)
 	row := map[string]any{"number": 42, "title": "frozen execution", "body": body, "state": "open", "labels": []any{}, "updated_at": "2026-10-06T01:00:00Z"}
-	comments := []map[string]any{{"id": 1, "body": f.linear.rows[0].Body, "created_at": f.linear.rows[0].CreatedAt, "updated_at": f.linear.rows[0].CreatedAt}}
+	comments := []map[string]any{{"id": 1, "body": f.tracker.rows[0].Body, "created_at": f.tracker.rows[0].CreatedAt, "updated_at": f.tracker.rows[0].CreatedAt}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var out any
 		switch {
@@ -129,9 +111,8 @@ func TestGitHubRuntimeFrozenMergeRecoveryEndToEnd(t *testing.T) {
 	}
 	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
-	delete(repo.Env, "AGENT_LINEAR_PROJECT")
 	f.repos[0] = repo
-	f.runtime.Clients = map[string]LinearClient{repo.Path: client}
+	f.runtime.Clients = map[string]IssueClient{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
 	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 	if err = s.Tick(context.Background()); err != nil {
@@ -172,7 +153,7 @@ func TestGitHubDoneMergeOwnerMayFinishDurableReceipt(t *testing.T) {
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	client, _ := issues.NewGitHub("o/r", gh)
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": client}}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": client}}
 	err := r.verifyFreshDecision(context.Background(), Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Owner: "合并通道"}, "")
 	if err != nil {
 		t.Fatalf("Done before final ownership receipt stranded merge: %v", err)

@@ -30,7 +30,7 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 	status.Push(e.Now(), func(view *status.View) {
 		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
 	})
-	if _, err := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
+	if _, err := e.Issues.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 		return errors.New("human handoff labels failed")
 	}
 	if run == "" {
@@ -65,14 +65,14 @@ func (e *Executor) handoff(ctx context.Context, t Ticket, state machine.State, e
 // writeRunLedger appends one ledger row for a finished run without blocking
 // the handoff. Usage collection failure only omits the usage field.
 func (e *Executor) writeRunLedger(ctx context.Context, t Ticket, outcome string, cp *checkpoint, state machine.State) {
-	if cp == nil || e.Linear == nil {
+	if cp == nil || e.Issues == nil {
 		return
 	}
 	started, _ := time.Parse(time.RFC3339, cp.StartedAt)
 	w := &LedgerWriter{
 		Create: func(ctx context.Context, body string) error { return e.comment(ctx, t.ID, body) },
 		List: func(ctx context.Context) ([]string, error) {
-			comments, err := e.Linear.ListComments(ctx, t.ID)
+			comments, err := e.Issues.ListComments(ctx, t.ID)
 			if err != nil {
 				return nil, err
 			}

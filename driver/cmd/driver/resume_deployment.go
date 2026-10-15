@@ -55,7 +55,7 @@ func resumeDeployment(args []string) int {
 func runDeploymentRecovery(args []string, out io.Writer, apply func(context.Context, string, string, string, string, string, string, bool) error) int {
 	fs := flag.NewFlagSet("resume-deployment", flag.ContinueOnError)
 	fs.SetOutput(out)
-	issue := fs.String("issue", "", "Linear identifier")
+	issue := fs.String("issue", "", "ticket identifier")
 	queue := fs.String("queue", "", "frozen queue ID")
 	sha := fs.String("sha", "", "actual squash SHA")
 	action := fs.String("action", "", "retry-workflow, retry-smoke or confirm-passed")

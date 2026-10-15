@@ -15,6 +15,14 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 )
 
+func TestBackendRequiresExplicitStore(t *testing.T) {
+	for _, value := range []string{"", "linear", "jira"} {
+		if backend, err := Backend(map[string]string{"AGENT_ISSUE_BACKEND": value}); err == nil {
+			t.Fatalf("AGENT_ISSUE_BACKEND=%q selected %q", value, backend)
+		}
+	}
+}
+
 const taskBody = `spec\n<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":["missing"],"related":[]} -->`
 
 func TestGitHubSnapshotIdentityAndUnknownBlocker(t *testing.T) {

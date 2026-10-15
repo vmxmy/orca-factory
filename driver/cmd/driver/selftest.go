@@ -12,7 +12,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -65,7 +64,7 @@ func selftest(args []string) int {
 		if err != nil {
 			return err
 		}
-		rows, err := snapshotSelectedBackend(ctx, client, repo.Env)
+		rows, err := client.Snapshot(ctx, []string{issues.Project(repo.Env)}, time.Time{})
 		if err != nil {
 			return err
 		}
@@ -88,16 +87,6 @@ func selftest(args []string) int {
 	}
 	fmt.Println("selftest: all live contract checks passed")
 	return 0
-}
-
-func snapshotSelectedBackend(ctx context.Context, client issues.Client, env map[string]string) ([]linear.Issue, error) {
-	if _, err := issues.Backend(env); err != nil {
-		return nil, err
-	}
-	if issues.Native(env) {
-		return client.Snapshot(ctx, []string{issues.Project(env)}, time.Time{})
-	}
-	return client.Snapshot(ctx, []string{issues.Project(env)}, time.Now().Add(-24*time.Hour))
 }
 
 func liveTaskReport(ctx context.Context, oc *orca.Client) error {

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -44,12 +43,6 @@ func (b *dryBackend) Apply(_ context.Context, t scheduler.Ticket, a scheduler.Ac
 func (b *dryBackend) Launch(_ context.Context, t scheduler.Ticket) error {
 	_, err := fmt.Fprintf(b.out, "would launch %s\n", t.Identifier)
 	return err
-}
-func (b *dryBackend) LinearLimits() []linear.RateLimit {
-	if source, ok := b.Backend.(interface{ LinearLimits() []linear.RateLimit }); ok {
-		return source.LinearLimits()
-	}
-	return nil
 }
 
 // Runtime.ActualChanges fetches remote refs. Dry-run uses declared scope.

@@ -19,7 +19,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
-func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
+func TestGitHubCLIAndLedger(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestGitHubCLIAndLedgerWithoutLinear(t *testing.T) {
 	command := func(args ...string) []byte {
 		t.Helper()
 		cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
-		cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "PATH="+bin, "LINEAR_API_KEY=", "AGENT_LINEAR_TEAM=", "AGENT_LINEAR_PROJECT=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+		cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+bin, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(bin, "state"), "PATH="+bin, "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout = &stdout
 		cmd.Stderr = &stderr
@@ -110,7 +110,7 @@ func TestGitHubCLICreateRejectsImportedIdentity(t *testing.T) {
 	}))
 	defer s.Close()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestCLIProcess$", "--", "issues", "create", "--input", "-")
-	cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+bin, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(bin, "state"), "PATH="+bin, "LINEAR_API_KEY=", "AGENT_LINEAR_TEAM=", "AGENT_LINEAR_PROJECT=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+	cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+bin, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(bin, "state"), "PATH="+bin, "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
 	cmd.Stdin = strings.NewReader(`{"id":"01234567-1234-1234-1234-012345678901","title":"unvalidated","description":"no task brief","state":"Todo","labels":["ready-for-agent"],"blockers":[],"related":[]}`)
 	out, err := cmd.CombinedOutput()
 	if err == nil || writes.Load() != 0 {
@@ -155,7 +155,7 @@ func TestIssueImportBudgetPreservesParentCancellation(t *testing.T) {
 }
 
 // Both standalone CLI paths must carry the configured deadline through the
-// selected backend, without needing any Linear credentials or metadata.
+// selected backend.
 func TestGitHubCLIConfiguredHTTPTimeout(t *testing.T) {
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token\n"), 0700); err != nil {
@@ -182,7 +182,7 @@ func TestGitHubCLIConfiguredHTTPTimeout(t *testing.T) {
 	for _, args := range [][]string{{"issues", "snapshot"}, {"ledger", "stats", "--all"}} {
 		t.Run(args[0], func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
-			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "PATH="+bin, "LINEAR_API_KEY=", "AGENT_LINEAR_TEAM=", "AGENT_LINEAR_PROJECT=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+			cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "PATH="+bin, "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
 			out, err := cmd.CombinedOutput()
 			if err == nil {
 				t.Fatalf("configured HTTP deadline ignored: %s", out)
@@ -213,7 +213,7 @@ func TestIssueMigrationWritesRequireStoppedServeAndDrain(t *testing.T) {
 	run := func(args ...string) (string, string) {
 		t.Helper()
 		cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCLIProcess$", "--"}, args...)...)
-		cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "LINEAR_API_KEY=", "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
+		cmd.Env = append(os.Environ(), "DRIVER_TEST_PROCESS=1", "HOME="+home, "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=o/r", "AGENT_GH_API_URL="+s.URL)
 		var stdout, stderr bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &stdout, &stderr
 		_ = cmd.Run()

@@ -45,7 +45,6 @@ func Load(home string) (Config, error) {
 		FactoryRoot string      `toml:"factory_root"`
 		TokenBucket TokenBucket `toml:"token_bucket"`
 		Scheduler   *Scheduler  `toml:"scheduler"`
-		Linear      *Linear     `toml:"linear"`
 		GitHub      *GitHub     `toml:"github"`
 		Orca        *Orca       `toml:"orca"`
 		Ledger      *Ledger     `toml:"ledger"`
@@ -67,7 +66,6 @@ func Load(home string) (Config, error) {
 	}
 	result := Config{MaxInFlight: raw.MaxInFlight, TokenBucket: raw.TokenBucket, Tuning: Tuning{
 		Scheduler: DefaultScheduler(),
-		Linear:    DefaultLinear(),
 		GitHub:    DefaultGitHub(),
 		Orca:      DefaultOrca(),
 		Ledger:    DefaultLedger(),
@@ -77,9 +75,6 @@ func Load(home string) (Config, error) {
 	// A named section overrides only the fields it names; the rest keep defaults.
 	if raw.Scheduler != nil {
 		result.Tuning.Scheduler = fillScheduler(*raw.Scheduler, result.Tuning.Scheduler)
-	}
-	if raw.Linear != nil {
-		result.Tuning.Linear = fillLinear(*raw.Linear, result.Tuning.Linear)
 	}
 	if raw.GitHub != nil {
 		result.Tuning.GitHub = fillGitHub(*raw.GitHub, result.Tuning.GitHub)
@@ -191,7 +186,6 @@ func ParseEnv(r io.Reader) (map[string]string, error) {
 // Scheduler holds the scheduler's tunable knobs. A zero field keeps the built-in default.
 type Scheduler struct {
 	PauseFraction       float64       `toml:"pause_fraction"`
-	ResumeFraction      float64       `toml:"resume_fraction"`
 	QuotaProbeBackoff   time.Duration `toml:"quota_probe_backoff"`
 	UnregisteredGrace   time.Duration `toml:"unregistered_grace"`
 	AdaptiveMinInterval time.Duration `toml:"adaptive_min_interval"`
@@ -202,21 +196,12 @@ type Scheduler struct {
 func DefaultScheduler() Scheduler {
 	return Scheduler{
 		PauseFraction:       .05,
-		ResumeFraction:      .10,
 		QuotaProbeBackoff:   5 * time.Minute,
 		UnregisteredGrace:   3 * time.Minute,
 		AdaptiveMinInterval: time.Minute,
 		AdaptiveMaxInterval: 3 * time.Minute,
 	}
 }
-
-// Linear holds the Linear client's tunables.
-type Linear struct {
-	HTTPTimeout time.Duration `toml:"http_timeout"`
-}
-
-// DefaultLinear returns the built-in Linear defaults.
-func DefaultLinear() Linear { return Linear{HTTPTimeout: 30 * time.Second} }
 
 // GitHub holds the GitHub client's tunables.
 type GitHub struct {
@@ -265,7 +250,6 @@ func DefaultRunx() Runx { return Runx{WaitDelay: 100 * time.Millisecond} }
 // Load fills the rest with the built-in defaults.
 type Tuning struct {
 	Scheduler Scheduler
-	Linear    Linear
 	GitHub    GitHub
 	Orca      Orca
 	Ledger    Ledger
@@ -278,9 +262,6 @@ func fillScheduler(over, want Scheduler) Scheduler {
 	if over.PauseFraction != 0 {
 		want.PauseFraction = over.PauseFraction
 	}
-	if over.ResumeFraction != 0 {
-		want.ResumeFraction = over.ResumeFraction
-	}
 	if over.QuotaProbeBackoff != 0 {
 		want.QuotaProbeBackoff = over.QuotaProbeBackoff
 	}
@@ -292,13 +273,6 @@ func fillScheduler(over, want Scheduler) Scheduler {
 	}
 	if over.AdaptiveMaxInterval != 0 {
 		want.AdaptiveMaxInterval = over.AdaptiveMaxInterval
-	}
-	return want
-}
-
-func fillLinear(over, want Linear) Linear {
-	if over.HTTPTimeout != 0 {
-		want.HTTPTimeout = over.HTTPTimeout
 	}
 	return want
 }

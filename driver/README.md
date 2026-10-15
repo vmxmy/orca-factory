@@ -8,15 +8,15 @@
 
 ## GitHub Issues 主账本
 
-项目配置设置 `AGENT_ISSUE_BACKEND=github` 与 `AGENT_GH_REPO=owner/repo`。GitHub 模式不加载 Linear team/project/key、不调用 `orca linear` 或 `--linear-issue`，无双写或自动 fallback。旧 Linear 配置继续遵守已交付契约，不能据此静默切回。
+项目配置必须显式设置 `AGENT_ISSUE_BACKEND=github`（配 `AGENT_GH_REPO=owner/repo`）或 `feishu`。空值或 `linear` 直接报错，不静默选择默认后端；无双写或自动 fallback。
 
 `driver issues snapshot/read/create/adopt/update/comment` 是统一 GitHub CLI。原生未纳管票可见但不领取；adopt 校验「要做」、CHECK、SCOPE 和正文 `DEPENDENCIES` 的完整 canonical ID 数组。旧 UUID/ZII 与 checkpoint/receipts 身份不变，GitHub repo/number/URL 独立。发现缓存与历史来源时间不授权关键动作；认领、恢复、resolver、proposal、squash 和 smoke 都使用完整 fresh 证据。
 
-关闭或 ImportHold 禁止新执行/合并，历史部署屏障仍在 FIFO 中观察对账。auto-failed 不普通重试。任务 PR 引用 Issue URL，不用 Closes/Fixes 提前关闭票。看板与 status 的 GitHub request 额度独立于 Linear complexity。
+关闭或 ImportHold 禁止新执行/合并，历史部署屏障仍在 FIFO 中观察对账。auto-failed 不普通重试。任务 PR 引用 Issue URL，不用 Closes/Fixes 提前关闭票。看板与 status 只展示 GitHub request 额度。
 
 迁移及生产切换见 [票据主账本](../docs/agents/issue-tracker.md)。`driver maintenance drain|freeze|resume|status` 保存本机维护状态；drain 禁新派工，freeze 需本机合作 sessions/writes 空闲并阻外部写入。这不证明远端写者已退出。真实导出、held import、release-hold 和配置切换分别授权，不因为部署二进制就切 backend。`driver issues backend` 只读输出当前进程选定的后端与 `AGENT_GH_REPO`。
 
-GitHub 配额保护读取 rate-limit 响应头：低额度暂停调度，reset 或无 reset 的退避期限后允许下一次发现刷新；403 权限错误不伪装成 quota。Linear 专用 viewer ProbeQuota 只在旧 Linear 路径运行，GitHub 不触发该探测。
+GitHub 配额保护读取 rate-limit 响应头：低额度暂停调度，reset 或无 reset 的退避期限后允许下一次发现刷新；403 权限错误不伪装成 quota。
 
 ## 飞书账本后端
 
@@ -97,9 +97,9 @@ journalctl --user -u orca-factory-driver.service -n 50 --no-pager
 orca-factory-driver status --json
 ```
 
-`status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期，配额暂停期间也可能出现。`globalPause.durationSeconds` 是已经暂停的时长，不是恢复倒计时。票行的 `backend` 是所在仓库选定的账本；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整或未完成的 blocker），只是观察，不授权任何动作。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成 Linear 没有任务。
+`status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期，配额暂停期间也可能出现。`globalPause.durationSeconds` 是已经暂停的时长，不是恢复倒计时。票行的 `backend` 是所在仓库选定的账本；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整或未完成的 blocker），只是观察，不授权任何动作。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成主账本没有任务。
 
-配额低于暂停阈值时，调度器按退避间隔调用低成本 `ProbeQuota` 刷新响应头，达到恢复阈值后才继续完整发现；暂停期间不应通过重启或完整评论扫描来试探额度。Linear reset 时间不是固定整点恢复时刻。无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
+配额低于暂停阈值时，调度器暂停到 reset 时间，或无 reset 时等到退避期限后再允许一次发现刷新；暂停期间不应通过重启或完整评论扫描来试探额度。无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 上线时先完成检查与审查，保存旧二进制及其提交信息。部署顺序：
 
@@ -220,14 +220,6 @@ driver 票的评论包含单独一行 `issue: <票号>`，用这行把卡片对�
 
 本机存在 `~/.local/state/orca-go-isolated-runner` 且配置了 `vmxmy/orca-factory` 的 GitHub 主账本时，调度器每轮巡检读取 4 个 `orca-go-isolated-runner@N` 槽位：服务 failed、NRestarts 自上轮增加、租约停在 registering 超过 10 分钟，都算异常。任一异常持续 10 分钟，调度器按 intake 模板开一张带 `ready-for-agent` 的纳管票，写明证据和 `scripts/local-runner/README.md` 的维护步骤；同一故障只开一张，全部槽位恢复后在该票评论一次。建票失败时不重试，直到槽位恢复，避免重复开票。检测只读 systemd 与租约文件，不改 runner；状态记在 `~/.local/state/orca-factory/runner-health.json`。检测失败只记 warn，不影响票流转；`serve --dry-run` 不检测。
 
-## Linear 实时批量发现
-
-每轮仍读取全部配置项目及历史评论，按 client 隔离，每个 GraphQL 请求最多五个 issue alias、每票每页 100 条评论，串行完成每票独立分页。缺 alias、null、分页证据不全、循环 cursor、部分错误或取消都使整轮失败，不发布空队列或部分快照；移除标签的在途票和 Done 后的部署屏障仍保留。100 票、五页 issue、每票一页评论的 HTTP 夹具从每轮 105 次降至 25 次（不含初始化、探测与关键复核），不是线上节省率或复杂度下降证明。
-
-普通发现每页先检查最近响应头中的 request/complexity 余量，保留 `pause_fraction` 配额底线，并为下一页预留保守成本（issue 页按每次查询上限预留 10000、连接页 1000、每个评论 alias 200 点）。即使余量仍高于百分比暂停/恢复阈值，页前拒绝也进入既有配额暂停和探测退避；只有成功的便宜探测才能解除这次页前拒绝，随后仍须满足原恢复阈值，探测失败或取消不触发完整扫描。这是进程内已知余量检查，不是跨进程预算协调；响应头中的实际 `X-Complexity` 继续记录。低成本探测与关键单票读取独立保留，轮次结果不授权合并、Done 或清理。
-
-认领前重新读取单票状态、项目、完整标签/关系/阻塞连接及完整评论；候选资格变化、归属冲突、交接/部署屏障或未知证据都会阻止认领写入。此复核沿用单调度器领票约束，不提供 Linear 原子比较交换。旧适配器可继续使用实时 Snapshot 和逐票评论回退；生产 client 使用批量发现和定向单票复核。未引入持久缓存、数据库或 Webhook；不变轮次仍扫描历史，SQLite/Webhook 与跨进程预算验收仍属后续工作。
-
 ## 部署屏障与 Agent 处置
 
 `AGENT_DEPLOY_WORKFLOW` 接受现有 workflow 显示名（含空格），也接受 workflow ID 或文件名。显示名必须唯一；GitHub 读取失败、空集合、截断或未知状态都等待。只观察既有 workflow，不触发部署或发布。`AGENT_SMOKE_CMD` 由 `bash -c` 在仓库目录执行，超时 30 秒；环境提供真实 `AGENT_MERGE_SHA` 与 `AGENT_GH_REPO`。只有 workflow 时仅等待 workflow；只有 smoke 时在确认 squash 后执行；两者都有时 workflow 成功才执行 smoke。无效配置不放行。
@@ -258,7 +250,7 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 ## 可调参数（driver.toml）
 
-`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
 
 `factory_root`（支持 `~/` 展开）是本机 orca-factory 生产检出路径，
 调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
@@ -270,15 +262,11 @@ max_in_flight = 20
 factory_root = "~/github/orca-factory"
 
 [scheduler]
-pause_fraction = 0.05       # 低于该比例暂停 Linear 相关调度
-resume_fraction = 0.10      # 回到该比例恢复
-quota_probe_backoff = "5m"  # 暂停后探测 Linear 额度的间隔
+pause_fraction = 0.05       # GitHub 额度低于该比例时暂停调度
+quota_probe_backoff = "5m"  # 无 reset 时间的额度暂停的退避期限
 unregistered_grace = "3m"   # 认领后等执行器登记的宽限
 adaptive_min_interval = "1m"
 adaptive_max_interval = "3m"
-
-[linear]
-http_timeout = "30s"
 
 [github]
 http_timeout = "30s"

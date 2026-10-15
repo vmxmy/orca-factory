@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -19,43 +18,24 @@ import (
 // freshExecution rereads the selected backend before executor writes. Discovery
 // data never authorizes a dispatch, and auto-failed work belongs to a resolver.
 func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
-	var labels []linear.NamedID
-	repository := e.Config.Owner + "/" + e.Config.Repository
-	linearDone := false
-	switch c := e.Linear.(type) {
-	case issues.Store:
-		task, err := c.Read(ctx, t.ID)
-		if err != nil {
-			return err
-		}
-		if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
-			return errors.New("task held, closed or identity changed")
-		}
-		labels, repository = task.Labels.Nodes, c.Repository()
-	case interface {
-		FreshIssue(context.Context, string) (linear.Issue, error)
-	}:
-		issue, err := c.FreshIssue(ctx, t.ID)
-		if err != nil {
-			return err
-		}
-		switch issue.State.Name {
-		case "Canceled", "Cancelled", "Duplicate":
-			return errors.New("task closed")
-		}
-		if issue.ID != t.ID || issue.Identifier != t.Identifier {
-			return errors.New("task identity changed")
-		}
-		labels, linearDone = issue.Labels.Nodes, issue.State.Name == "Done"
-	default:
+	c, ok := e.Issues.(issues.Store)
+	if !ok {
 		return nil
 	}
-	for _, label := range labels {
+	task, err := c.Read(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
+		return errors.New("task held, closed or identity changed")
+	}
+	repository := c.Repository()
+	for _, label := range task.Labels.Nodes {
 		if label.Name == "auto-failed" {
 			return errors.New("failed task requires resolver")
 		}
 	}
-	comments, err := e.Linear.ListComments(ctx, t.ID)
+	comments, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
 		return err
 	}
@@ -171,14 +151,11 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 	if owner != "" && owner != string(machine.OwnerExecutor) && (!e.Config.Merging || owner != string(machine.OwnerMerge)) {
 		return errors.New("task ownership no longer permits executor")
 	}
-	if linearDone && owner != string(machine.OwnerMerge) {
-		return errors.New("task closed")
-	}
 	return nil
 }
 
 func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error) {
-	c, ok := e.Linear.(issues.Store)
+	c, ok := e.Issues.(issues.Store)
 	if !ok {
 		return "Fixes " + t.Identifier + "\n\n" + t.Todo, nil
 	}

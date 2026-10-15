@@ -181,7 +181,7 @@ func TestFeishuWriteClaimUnconfirmedDoesNotLaunch(t *testing.T) {
 			}
 			repo := config.Repository{Path: "/repo", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": feishuClaimRepo}}
 			oc := &fakeOrca{automations: receipt(`{"automations":[]}`)}
-			r := &Runtime{Clients: map[string]LinearClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": repo}, Orca: oc, DriverPath: "/driver"}
+			r := &Runtime{Clients: map[string]IssueClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": repo}, Orca: oc, DriverPath: "/driver"}
 			s := &Scheduler{Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 10, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Repositories: []config.Repository{repo}, Backend: r}
 			err = s.Tick(ctx)
 			if settle {

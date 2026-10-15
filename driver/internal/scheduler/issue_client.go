@@ -13,6 +13,6 @@ func InspectOwnership(comments []linear.Comment) (Ticket, error) {
 	return t, err
 }
 
-func (r *Runtime) newIssueClient(ctx context.Context, env map[string]string) (LinearClient, error) {
+func (r *Runtime) newIssueClient(ctx context.Context, env map[string]string) (IssueClient, error) {
 	return issues.New(ctx, env, r.Tuning)
 }

@@ -120,7 +120,7 @@ func truncateFail(s string, limit int) string {
 	return s
 }
 
-// Linear is the recovery source when this ticket's local state is lost.
+// The ticket backend is the recovery source when this ticket's local state is lost.
 func (e *Executor) restoreFailLog(ctx context.Context, c Config, t Ticket) error {
 	path := failLogPath(c, t)
 	if _, err := os.ReadFile(path); err == nil {
@@ -128,9 +128,9 @@ func (e *Executor) restoreFailLog(ctx context.Context, c Config, t Ticket) error
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return errors.New("cannot read FAIL history")
 	}
-	comments, err := e.Linear.ListComments(ctx, t.ID)
+	comments, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
-		return errors.New("Linear FAIL history lookup failed")
+		return errors.New("ticket FAIL history lookup failed")
 	}
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 	var history strings.Builder

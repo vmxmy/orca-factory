@@ -38,12 +38,6 @@ type tree struct {
 	Comment       string `json:"comment"`
 	Created       *int64 `json:"createdAt"`
 }
-type issue struct {
-	Identifier string `json:"identifier"`
-	State      struct {
-		Type string `json:"type"`
-	} `json:"state"`
-}
 type pull struct {
 	Number int     `json:"number"`
 	Merged *string `json:"merged_at"`
@@ -56,18 +50,17 @@ type pull struct {
 	} `json:"head"`
 }
 type pruner struct {
-	ctx                                                                context.Context
-	out, warnings                                                      io.Writer
-	repo, main, self, prefix, team, project, gh                        string
-	age, budget, limit                                                 int64
-	started                                                            int64
-	removed, calls                                                     int64
-	budgetTripped, quotaTripped, inventoryOK, linearOK, prOK, remoteOK bool
-	git, orca                                                          []tree
-	issues                                                             []issue
-	github                                                             issues.Store
-	pulls                                                              []pull
-	remote                                                             string
+	ctx                                                      context.Context
+	out, warnings                                            io.Writer
+	repo, main, self, prefix, gh                             string
+	age, budget, limit                                       int64
+	started                                                  int64
+	removed                                                  int64
+	budgetTripped, quotaTripped, inventoryOK, prOK, remoteOK bool
+	git, orca                                                []tree
+	github                                                   issues.Store
+	pulls                                                    []pull
+	remote                                                   string
 }
 
 // RunPrune preserves the distributed entry while keeping destructive work behind evidence checks.
@@ -89,14 +82,8 @@ func RunPrune(ctx context.Context, args []string, out, warnings io.Writer) int {
 		_, _ = fmt.Fprintln(warnings, err)
 		return 2
 	}
-	p := pruner{ctx: ctx, out: out, warnings: warnings, repo: os.Getenv("AGENT_REPO_PATH"), prefix: os.Getenv("AGENT_RUN_WORKTREE_PREFIX"), team: os.Getenv("AGENT_LINEAR_TEAM"), project: os.Getenv("AGENT_LINEAR_PROJECT"), gh: os.Getenv("AGENT_GH_REPO"), started: time.Now().Unix()}
-	required := []string{"AGENT_REPO_PATH", "AGENT_RUN_WORKTREE_PREFIX"}
-	if nativeBackend() {
-		required = append(required, "AGENT_GH_REPO")
-	} else {
-		required = append(required, "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT")
-	}
-	for _, key := range required {
+	p := pruner{ctx: ctx, out: out, warnings: warnings, repo: os.Getenv("AGENT_REPO_PATH"), prefix: os.Getenv("AGENT_RUN_WORKTREE_PREFIX"), gh: os.Getenv("AGENT_GH_REPO"), started: time.Now().Unix()}
+	for _, key := range []string{"AGENT_REPO_PATH", "AGENT_RUN_WORKTREE_PREFIX", "AGENT_GH_REPO"} {
 		if os.Getenv(key) == "" {
 			p.warn("prune: %s required", key)
 			return 1
@@ -119,7 +106,6 @@ func RunPrune(ctx context.Context, args []string, out, warnings io.Writer) int {
 		}
 		*setting.value = n
 	}
-	defer func() { p.warn("prune_linear_calls=%d", p.calls) }()
 	var err error
 	p.main, err = filepath.Abs(p.repo)
 	if err == nil {
@@ -220,129 +206,58 @@ func (p *pruner) orcaTrees() ([]tree, bool) {
 		if item.Path == "" || !filepath.IsAbs(item.Path) {
 			return nil, false
 		}
-		if nativeBackend() {
-			matches := issueCommentPattern.FindAllStringSubmatch(item.Comment, -1)
-			if len(matches) > 1 {
-				return nil, false
-			}
-			if len(matches) == 1 {
-				item.CommentTicket = matches[0][1]
-				if item.Ticket == "" {
-					item.Ticket = item.CommentTicket
-				}
+		matches := issueCommentPattern.FindAllStringSubmatch(item.Comment, -1)
+		if len(matches) > 1 {
+			return nil, false
+		}
+		if len(matches) == 1 {
+			item.CommentTicket = matches[0][1]
+			if item.Ticket == "" {
+				item.Ticket = item.CommentTicket
 			}
 		}
 		result = append(result, item)
 	}
 	return result, true
 }
-func tempPath(key, name string) string {
-	if value := os.Getenv(key); value != "" {
-		return value
-	}
-	root := os.Getenv("TMPDIR")
-	if root == "" {
-		root = "/tmp"
-	}
-	return filepath.Join(root, name)
-}
+
+// loadIssues requires every task history to be readable before any compensation runs.
 func (p *pruner) loadIssues() bool {
-	if nativeBackend() {
-		home, err := os.UserHomeDir()
-		if err != nil {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		return false
+	}
+	client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND"), "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL"), "AGENT_FEISHU_BASE": os.Getenv("AGENT_FEISHU_BASE"), "AGENT_FEISHU_PROJECT": os.Getenv("AGENT_FEISHU_PROJECT")}, cfg.Tuning)
+	if err != nil {
+		return false
+	}
+	rows, err := client.List(p.ctx)
+	if err != nil {
+		return false
+	}
+	for _, task := range rows {
+		if _, err := client.ListComments(p.ctx, task.ID); err != nil {
 			return false
 		}
-		cfg, err := config.Load(home)
-		if err != nil {
-			return false
-		}
-		client, err := issues.New(p.ctx, map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND"), "AGENT_GH_REPO": p.gh, "AGENT_GH_API_URL": os.Getenv("AGENT_GH_API_URL"), "AGENT_FEISHU_BASE": os.Getenv("AGENT_FEISHU_BASE"), "AGENT_FEISHU_PROJECT": os.Getenv("AGENT_FEISHU_PROJECT")}, cfg.Tuning)
-		if err != nil {
-			return false
-		}
-		ghClient, ok := client.(issues.Store)
-		if !ok {
-			return false
-		}
-		p.github = ghClient
-		rows, err := ghClient.List(p.ctx)
-		if err != nil {
-			return false
-		}
-		for _, task := range rows {
-			row := issue{Identifier: task.Identifier}
-			comments, readErr := ghClient.ListComments(p.ctx, task.ID)
-			if readErr != nil {
-				return false
-			}
-			if scheduler.GitHubCleanupAllowed(task, comments) {
-				row.State.Type = task.State.ID
-			}
-			p.issues = append(p.issues, row)
-		}
-		p.linearOK = true
-		return true
 	}
-	raw, err := os.ReadFile(tempPath("AGENT_SNAPSHOT_FILE", "orca-factory-linear-snapshot.json"))
-	var snapshot struct {
-		Generated *float64 `json:"generatedAt"`
-		Issues    []issue  `json:"issues"`
-	}
-	if err == nil && json.Unmarshal(raw, &snapshot) == nil && snapshot.Generated != nil && float64(time.Now().Unix())-*snapshot.Generated <= 900 && snapshot.Issues != nil {
-		p.issues = snapshot.Issues
-		p.linearOK = true
-		return true
-	}
-	p.calls++
-	file, err := os.OpenFile(tempPath("AGENT_LINEAR_COUNT_FILE", "orca-factory-linear-calls"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o666)
-	if err == nil {
-		_, _ = fmt.Fprintf(file, "%d prune\n", time.Now().Unix())
-		_ = file.Close()
-	}
-	result, diagnostic, code := p.command("orca", "linear", "list-issues", "--team", p.team, "--project", p.project, "--json")
-	var response struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			Issues []issue `json:"issues"`
-		} `json:"result"`
-	}
-	if code == 0 && json.Unmarshal([]byte(result), &response) == nil && response.OK && response.Result.Issues != nil {
-		p.issues = response.Result.Issues
-		p.linearOK = true
-		return true
-	}
-	if strings.Contains(result+diagnostic, "Rate limit") {
-		p.warn("prune: 不确定: linear rate limited")
-	}
-	return false
+	p.github = client
+	return true
 }
-func (p *pruner) ticketSafe(id, object, mode string) bool {
-	if nativeBackend() {
-		if p.github != nil {
-			task, err := p.github.Read(p.ctx, id)
-			if err == nil {
-				comments, readErr := p.github.ListComments(p.ctx, task.ID)
-				if readErr == nil && scheduler.GitHubCleanupAllowed(task, comments) {
-					return true
-				}
-			}
-		}
-		p.keep(object, "GitHub task cleanup evidence unavailable or changed: "+id)
-		return false
-	}
-	if !p.linearOK {
-		p.keep(object, "linear snapshot unavailable, cannot verify ticket "+id)
-		return false
-	}
-	for _, item := range p.issues {
-		if item.Identifier == id {
-			if item.State.Type != "" && ((mode == "completed" && item.State.Type == "completed") || (mode != "completed" && item.State.Type != "started")) {
+func (p *pruner) ticketSafe(id, object string) bool {
+	if p.github != nil {
+		task, err := p.github.Read(p.ctx, id)
+		if err == nil {
+			comments, readErr := p.github.ListComments(p.ctx, task.ID)
+			if readErr == nil && scheduler.GitHubCleanupAllowed(task, comments) {
 				return true
 			}
-			break
 		}
 	}
-	p.keep(object, fmt.Sprintf("ticket %s is not confirmed %s (in flight or missing from Linear snapshot)", id, mode))
+	p.keep(object, "task cleanup evidence unavailable or changed: "+id)
 	return false
 }
 func (p *pruner) issueSafe(path, branch string) bool {
@@ -375,7 +290,7 @@ func (p *pruner) issueSafe(path, branch string) bool {
 				return false
 			}
 		}
-		if item.Ticket != "" && !p.ticketSafe(item.Ticket, object, "inactive") {
+		if item.Ticket != "" && !p.ticketSafe(item.Ticket, object) {
 			return false
 		}
 		if item.Ticket != "" {
@@ -391,7 +306,7 @@ func (p *pruner) issueSafe(path, branch string) bool {
 		return false
 	}
 	if id != "" {
-		return p.ticketSafe(id, object, "inactive")
+		return p.ticketSafe(id, object)
 	}
 	return true
 }
@@ -550,7 +465,7 @@ func (p *pruner) compensate() {
 	}
 	p.inventoryOK = true
 	if !p.loadIssues() {
-		p.warn("prune: 不确定: linear unavailable，跳过补偿")
+		p.warn("prune: 不确定: issue backend unavailable，跳过补偿")
 		return
 	}
 	p.loadPulls()
@@ -576,7 +491,7 @@ func (p *pruner) compensateWorkers() {
 			p.keep(item.Path, "branch unavailable")
 			continue
 		}
-		if !p.issueSafe(item.Path, branch) || !p.ticketSafe(item.Ticket, item.Path, "completed") || !p.clean(item.Path, true) {
+		if !p.issueSafe(item.Path, branch) || !p.ticketSafe(item.Ticket, item.Path) || !p.clean(item.Path, true) {
 			continue
 		}
 		sha, _, code := p.gitAt(item.Path, "rev-parse", "--verify", "HEAD")
@@ -721,14 +636,14 @@ func (p *pruner) compensateRemote() {
 			continue
 		}
 		sha, branch := fields[0], strings.TrimPrefix(fields[1], "refs/heads/")
-		if !p.issueSafe("", branch) || !p.ticketSafe(match[1], branch, "completed") {
+		if !p.issueSafe("", branch) || !p.ticketSafe(match[1], branch) {
 			continue
 		}
 		if !p.merged(sha, branch) {
 			p.keep(branch, "remote head has no matching merged PR")
 			continue
 		}
-		if p.github != nil && !p.ticketSafe(match[1], branch, "completed") {
+		if p.github != nil && !p.ticketSafe(match[1], branch) {
 			continue
 		}
 		if p.visibleGit("push", "origin", "--delete", branch) {
@@ -849,9 +764,4 @@ func (p *pruner) legacyUnits() {
 		_, _ = fmt.Fprintf(p.out, "pruned %s (PR %s %s)\n", item.Path, match[1], state)
 		p.removed++
 	}
-}
-
-// nativeBackend reports whether the selected backend keeps canonical task records.
-func nativeBackend() bool {
-	return issues.Native(map[string]string{"AGENT_ISSUE_BACKEND": os.Getenv("AGENT_ISSUE_BACKEND")})
 }

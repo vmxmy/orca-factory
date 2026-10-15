@@ -18,7 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
 
-// ImportManifest is a complete, offline source snapshot. Import never contacts Linear.
+// ImportManifest is a complete, offline source snapshot. Import never contacts the source tracker.
 type ImportManifest struct {
 	Version    int           `json:"version"`
 	Repository string        `json:"repository"`

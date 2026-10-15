@@ -1,12 +1,8 @@
 package executor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,19 +47,19 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_LINEAR_TEAM" "$AGENT_LINEAR_PROJECT" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-linear}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 17 {
+	if len(values) != 15 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
-	if !ok || !component.MatchString(owner) || !component.MatchString(name) || (values[11] == "linear" && (values[1] == "" || values[2] == "")) || strings.TrimSpace(values[3]) == "" {
-		return Result{}, errors.New("repository profile requires GitHub repository, Linear team/project and reviewer")
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
+		return Result{}, errors.New("repository profile requires GitHub repository and reviewer")
 	}
-	maximum, err := strconv.ParseFloat(values[9], 64)
+	maximum, err := strconv.ParseFloat(values[7], 64)
 	if err != nil {
 		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
@@ -71,25 +67,20 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
 	}
-	lc, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[11], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[12], "AGENT_LINEAR_TEAM": values[1], "AGENT_FEISHU_BASE": values[13], "AGENT_FEISHU_PROJECT": values[14]}, cfg.Tuning)
+	store, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[9], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[10], "AGENT_FEISHU_BASE": values[11], "AGENT_FEISHU_PROJECT": values[12]}, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
 	}
-	var ticket Ticket
-	if gh, ok := lc.(issues.Store); ok {
-		task, readErr := gh.Read(ctx, identifier)
-		if readErr != nil {
-			return Result{}, readErr
-		}
-		if !task.Metadata.Complete {
-			return Result{}, errors.New("explicit adoption required before recovery")
-		}
-		ticket, err = ParseTicket(task.ID, task.Identifier, task.Title, task.Description)
-		ticket.Estimate = task.Estimate
-		ticket.Number = task.Number
-	} else {
-		ticket, err = readTicket(ctx, identifier, values[1], values[2])
+	task, err := store.Read(ctx, identifier)
+	if err != nil {
+		return Result{}, err
 	}
+	if !task.Metadata.Complete {
+		return Result{}, errors.New("explicit adoption required before recovery")
+	}
+	ticket, err := ParseTicket(task.ID, task.Identifier, task.Title, task.Description)
+	ticket.Estimate = task.Estimate
+	ticket.Number = task.Number
 	if err != nil {
 		return Result{}, err
 	}
@@ -98,16 +89,16 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
-	e := Executor{Orca: oc, Linear: lc, GitHub: gc, Tools: &Commands{ReviewerCommand: values[3], ReviewerSmallCommand: values[8], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[15]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
+	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[6], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[13]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err
 	}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
-	e.Config.Escalate = values[7]
-	e.Config.TierSettings = map[string]string{"fast": values[4], "default": values[5], "strong": values[6]}
-	parts := strings.Split(values[5], ":")
+	e.Config.Escalate = values[5]
+	e.Config.TierSettings = map[string]string{"fast": values[2], "default": values[3], "strong": values[4]}
+	parts := strings.Split(values[3], ":")
 	if len(parts) != 3 || parts[0] == "" {
 		return Result{}, errors.New("repository profile requires default worker tier")
 	}
@@ -117,55 +108,8 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	}
 	delegated = true
 	e.Config.Merging = merging
-	e.Config.Lane3Globs = strings.Fields(values[10])
+	e.Config.Lane3Globs = strings.Fields(values[8])
 	return e.Start(ctx, ticket)
-}
-
-// linear.Snapshot deliberately omits description. This executor-local read
-// adapter asks only for the brief and fences it to the configured team/project.
-func readTicket(ctx context.Context, identifier, team, project string) (Ticket, error) {
-	key := os.Getenv("LINEAR_API_KEY")
-	if key == "" {
-		return Ticket{}, errors.New("LINEAR_API_KEY is required")
-	}
-	body, _ := json.Marshal(map[string]any{"query": `query ExecutorBrief($id: String!) { issue(id: $id) { id identifier title description estimate team { id } project { id } } }`, "variables": map[string]string{"id": identifier}})
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.linear.app/graphql", bytes.NewReader(body))
-	if err != nil {
-		return Ticket{}, errors.New("Linear brief request failed")
-	}
-	req.Header.Set("Authorization", key)
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := client.Do(req)
-	if err != nil {
-		return Ticket{}, errors.New("Linear brief transport failed")
-	}
-	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
-	if resp.StatusCode != http.StatusOK {
-		return Ticket{}, errors.New("Linear brief request rejected")
-	}
-	var envelope struct {
-		Data struct {
-			Issue *struct {
-				ID, Identifier, Title, Description string
-				Estimate                           *float64
-				Team, Project                      struct{ ID string }
-			}
-		}
-		Errors []json.RawMessage
-	}
-	if json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&envelope) != nil || len(envelope.Errors) > 0 || envelope.Data.Issue == nil {
-		return Ticket{}, errors.New("invalid Linear brief response")
-	}
-	issue := envelope.Data.Issue
-	if issue.Identifier != identifier || issue.Team.ID != team || issue.Project.ID != project {
-		return Ticket{}, errors.New("ticket outside configured repository project")
-	}
-	ticket, err := ParseTicket(issue.ID, issue.Identifier, issue.Title, issue.Description)
-	ticket.Estimate = issue.Estimate
-	return ticket, err
 }
 
 func workerIdleTimeout(value string) time.Duration {

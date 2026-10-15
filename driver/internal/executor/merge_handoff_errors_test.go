@@ -14,7 +14,7 @@ import (
 )
 
 type handoffReadFailure struct {
-	*fakeLinear
+	*fakeIssues
 	failure error
 }
 
@@ -22,7 +22,7 @@ func (l *handoffReadFailure) ListComments(ctx context.Context, id string) ([]lin
 	if l.failure != nil {
 		return nil, l.failure
 	}
-	return l.fakeLinear.ListComments(ctx, id)
+	return l.fakeIssues.ListComments(ctx, id)
 }
 
 type handoffBudgetTools struct {
@@ -40,13 +40,13 @@ func (f *handoffBudgetTools) Head(ctx context.Context, repo, branch string) (str
 
 type handoffFailureAfterPR struct {
 	*fakeGitHub
-	linear  *handoffReadFailure
+	tracker *handoffReadFailure
 	failure error
 }
 
 func (g *handoffFailureAfterPR) CreatePR(ctx context.Context, owner, repo string, input github.CreatePRRequest) (github.PullRequest, error) {
 	pr, err := g.fakeGitHub.CreatePR(ctx, owner, repo, input)
-	g.linear.failure = g.failure
+	g.tracker.failure = g.failure
 	return pr, err
 }
 
@@ -63,19 +63,19 @@ func TestMergeHandoffReadFailureKeepsSafeClassAndBudget(t *testing.T) {
 					g.existing = &r.PR
 					g.existing.Head.SHA = tools.head
 				}
-				cause := error(&infra.Global{Dep: infra.Linear, Err: fmt.Errorf("secret-token: %w", context.Canceled)})
+				cause := error(&infra.Global{Dep: infra.GitHub, Err: fmt.Errorf("secret-token: %w", context.Canceled)})
 				if kind == "canceled" {
 					cause = fmt.Errorf("secret-token: %w", context.Canceled)
 				}
 				if kind == "deadline" {
 					cause = fmt.Errorf("secret-token: %w", context.DeadlineExceeded)
 				}
-				failing := &handoffReadFailure{fakeLinear: l}
-				e.Linear = failing
+				failing := &handoffReadFailure{fakeIssues: l}
+				e.Issues = failing
 				if existing {
 					failing.failure = cause
 				} else {
-					e.GitHub = &handoffFailureAfterPR{fakeGitHub: g, linear: failing, failure: cause}
+					e.GitHub = &handoffFailureAfterPR{fakeGitHub: g, tracker: failing, failure: cause}
 				}
 				e.Tools = &handoffBudgetTools{fakeTools: tools}
 				sleeps := 0
@@ -86,7 +86,7 @@ func TestMergeHandoffReadFailureKeepsSafeClassAndBudget(t *testing.T) {
 				}
 				if kind == "global" {
 					var global *infra.Global
-					if !errors.As(err, &global) || global.Dep != infra.Linear {
+					if !errors.As(err, &global) || global.Dep != infra.GitHub {
 						t.Fatalf("lost global class: %v", err)
 					}
 				}

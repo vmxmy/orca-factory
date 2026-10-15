@@ -14,7 +14,6 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
@@ -165,7 +164,6 @@ type statusBackend struct {
 	scheduler.Backend
 	tickets   []scheduler.Ticket
 	inspected bool
-	scheduler *scheduler.Scheduler
 }
 
 func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]scheduler.Ticket, error) {
@@ -176,31 +174,14 @@ func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository)
 	return tickets, err
 }
 
-func (b *statusBackend) LinearLimits() []linear.RateLimit {
+func (b *statusBackend) GitHubLimits() []github.Usage {
 	// Tick checks quota even when a global pause prevents Snapshot. Wait-only
 	// iterations never call this method, so they must not refresh generatedAt.
 	b.inspected = true
-	if source, ok := b.Backend.(interface{ LinearLimits() []linear.RateLimit }); ok {
-		return source.LinearLimits()
-	}
-	return nil
-}
-
-func (b *statusBackend) GitHubLimits() []github.Usage {
 	if source, ok := b.Backend.(interface{ GitHubLimits() []github.Usage }); ok {
 		return source.GitHubLimits()
 	}
 	return nil
-}
-
-func (b *statusBackend) ProbeLinearQuota(ctx context.Context) error {
-	if source, ok := b.Backend.(interface{ ProbeLinearQuota(context.Context) error }); ok {
-		return source.ProbeLinearQuota(ctx)
-	}
-	// Older backends refresh quota through Snapshot. Preserve that scheduler
-	// fallback only when the backend lacks the optional cheap probe.
-	_, err := b.Snapshot(ctx, b.scheduler.Repositories)
-	return err
 }
 
 func (b *statusBackend) ActualChanges(ctx context.Context, ticket scheduler.Ticket) ([]string, bool, error) {
@@ -231,7 +212,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 		if err != nil {
 			return nil, err
 		}
-		backend = &statusBackend{Backend: s.Backend, scheduler: s}
+		backend = &statusBackend{Backend: s.Backend}
 		s.Backend = backend
 		return s, nil
 	}, func(ctx context.Context) error {
@@ -250,7 +231,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 }
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
-	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}, Linear: status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}}
+	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}}
 	for _, ticket := range backend.tickets {
 		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
 			row := scheduler.ObservationRow(ticket, s.Repositories)
@@ -278,8 +259,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 			repos = append(repos, repo)
 		}
 		sort.Strings(repos)
-		// Runtime shares a client between repositories in the same Linear team.
-		seen := map[scheduler.LinearClient]bool{}
+		seen := map[scheduler.IssueClient]bool{}
 		for _, repo := range repos {
 			client := runtime.Clients[repo]
 			if source, ok := client.(interface{ Usage() github.Usage }); ok {
@@ -290,26 +270,10 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 				}
 				snapshot.GitHub.Hour = usage.Hour
 				snapshot.GitHub.Limits = append(snapshot.GitHub.Limits, status.ClientLimits{Repo: repo, Requests: status.RateLimit{Limit: usage.Limit, Remaining: usage.Remaining, Reset: usage.Reset}})
-				continue
 			}
-			source, ok := client.(interface{ Usage() linear.Usage })
-			if !ok {
-				continue
-			}
-			usage := source.Usage()
-			if !seen[client] {
-				snapshot.Linear.Requests += usage.Requests
-				snapshot.Linear.Complexity += usage.Complexity
-				seen[client] = true
-			}
-			snapshot.Linear.Limits = append(snapshot.Linear.Limits, status.ClientLimits{Repo: repo, Requests: statusLimit(usage.RequestLimit), Complexity: statusLimit(usage.ComplexityLimit)})
 		}
 	}
 	return snapshot
-}
-
-func statusLimit(limit linear.RateLimit) status.RateLimit {
-	return status.RateLimit{Limit: limit.Limit, Remaining: limit.Remaining, Reset: limit.Reset}
 }
 
 func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.Ticket) error {

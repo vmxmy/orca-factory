@@ -18,26 +18,36 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-type fakeLinear struct {
+type fakeIssues struct {
 	updates       int
 	comments      []string
 	issueComments []linear.Comment
 	issues        []linear.Issue
 	projects      []string
+	description   string
 }
 
-func (f *fakeLinear) Snapshot(_ context.Context, p []string, _ time.Time) ([]linear.Issue, error) {
+func (f *fakeIssues) Snapshot(_ context.Context, p []string, _ time.Time) ([]linear.Issue, error) {
 	f.projects = p
 	return f.issues, nil
 }
-func (f *fakeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (f *fakeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return f.issueComments, nil
 }
-func (f *fakeLinear) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
+func (f *fakeIssues) FreshIssue(_ context.Context, id string) (linear.Issue, error) {
+	for _, issue := range f.issues {
+		if issue.ID == id {
+			return issue, nil
+		}
+	}
+	return linear.Issue{}, errors.New("issue not found")
+}
+func (f *fakeIssues) Description(context.Context, string) (string, error) { return f.description, nil }
+func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
 	f.updates++
 	return linear.Issue{ID: "id", Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-impl"}}}}, nil
 }
-func (f *fakeLinear) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
+func (f *fakeIssues) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
 	f.comments = append(f.comments, b)
 	return linear.Comment{ID: "comment"}, nil
 }
@@ -87,9 +97,9 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 				base := setup(nil)
 				cfg, repos := base.Config, base.Repositories
 				repos[0].Path = "/a"
-				repos[0].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-a", "AGENT_LINEAR_PROJECT": "p-a"}
+				repos[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-a"}
 				repos[1].Path = "/b"
-				repos[1].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-b", "AGENT_LINEAR_PROJECT": "p-b"}
+				repos[1].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-b"}
 				oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":false,"runContext":{"path":"/a"}},{"enabled":true,"runContext":{"path":"/b"}}]}`)}}
 				if failedRead {
 					oc.failRead = 2
@@ -100,19 +110,17 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 						oc.failRead = 1
 					}
 				}
-				lc := &fakeLinear{issues: []linear.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: linear.NamedID{ID: "p-a"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
-				r := &Runtime{Orca: oc, DriverPath: "/driver", Run: func(context.Context, runx.Spec) ([]byte, error) {
-					return []byte(`{"ok":true,"result":{"issue":{"description":""}}}`), nil
-				}}
+				lc := &fakeIssues{issues: []linear.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: linear.NamedID{ID: "p-a"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+				r := &Runtime{Orca: oc, DriverPath: "/driver"}
 				var initialized []string
-				err := r.initialize(context.Background(), repos, func(_ context.Context, team string) (LinearClient, error) {
-					initialized = append(initialized, team)
+				err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (IssueClient, error) {
+					initialized = append(initialized, env["AGENT_GH_REPO"])
 					return lc, nil
 				})
 				if err != nil {
 					t.Fatalf("startup rejected healthy repository: %v", err)
 				}
-				if !reflect.DeepEqual(initialized, []string{"team-a"}) {
+				if !reflect.DeepEqual(initialized, []string{"p-a"}) {
 					t.Fatalf("initialized clients for refused repository: %v", initialized)
 				}
 				// Even after B's automation is disabled, it needs a restart to
@@ -135,7 +143,7 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	repos := setup(nil).Repositories
 	oc := &fakeOrca{automations: receipt(`{"automations":[{"enabled":true,"runContext":{"path":"a"}},{"enabled":true,"runContext":{"path":"b"}}]}`)}
 	r := &Runtime{Orca: oc}
-	err := r.initialize(context.Background(), repos, func(context.Context, string) (LinearClient, error) {
+	err := r.initialize(context.Background(), repos, func(context.Context, map[string]string) (IssueClient, error) {
 		t.Fatal("initialized client for refused repository")
 		return nil, nil
 	})
@@ -144,9 +152,9 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	}
 }
 func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
-	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p1"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+	lc := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p1"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
 	oc := &fakeOrca{}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Attempt: 1}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Claim, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
 		t.Fatal(err)
@@ -166,8 +174,8 @@ func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 	}
 }
 func TestResumeOnlyWritesOwnership(t *testing.T) {
-	lc := &fakeLinear{}
-	r := &Runtime{Clients: map[string]LinearClient{"repo": lc}}
+	lc := &fakeIssues{}
+	r := &Runtime{Clients: map[string]IssueClient{"repo": lc}}
 	if err := r.Apply(context.Background(), Ticket{ID: "id", Repo: "repo"}, Action{Kind: Resume, Attempt: 2, Phase: machine.PhaseGate}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +197,10 @@ func TestOwnershipPreservesSchedulerAttempt(t *testing.T) {
 	}
 }
 func TestRuntimeSnapshotAllProjects(t *testing.T) {
-	lc := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: linear.NamedID{ID: "p2"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
-	r := &Runtime{Clients: map[string]LinearClient{"a": lc, "b": lc}, Run: func(context.Context, runx.Spec) ([]byte, error) {
-		return []byte(`{"ok":true,"result":{"issue":{"description":"## SCOPE\nsrc/*"}}}`), nil
-	}}
-	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p1"}}, {Path: "b", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p2"}}})
+	lc := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: linear.NamedID{ID: "p2"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+	lc.description = "## SCOPE\nsrc/*"
+	r := &Runtime{Clients: map[string]IssueClient{"a": lc, "b": lc}}
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}, {Path: "b", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p2"}}})
 	if err != nil {
 		t.Fatal(err)
 	}

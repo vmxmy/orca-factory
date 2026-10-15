@@ -17,7 +17,7 @@ import (
 )
 
 // freezeMergeHandoff adds no new local recovery store. The caller writes this
-// line atomically with merge ownership through the existing Linear comment path.
+// line atomically with merge ownership through the existing ticket comment path.
 func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, result Result, cp checkpoint, head, base, spec, gate, review string) (string, error) {
 	raw, err := os.ReadFile(spec)
 	if err != nil {
@@ -33,7 +33,7 @@ func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, r
 	h := merge.Handoff{Version: 1, TicketID: t.ID, Identifier: t.Identifier, Repository: c.Owner + "/" + c.Repository, Unit: c.Unit, PR: result.PR.Number, Head: head, Baseline: base, GateSpec: string(raw), GateOutput: gate, ReviewOutput: review, Lane: lane, Run: result.RunID, Task: cp.Task, Dispatch: result.DispatchID, Worktree: cp.Worktree, Attempt: result.State.Attempt, Corrections: result.State.Corrections, Infra: result.State.Infra, CatchupRounds: cp.CatchupRounds, EnqueuedAt: e.Now().UTC()}
 	key := sha256.Sum256([]byte(strings.Join([]string{h.Repository, h.TicketID, h.Unit, h.Head, h.Run, h.Task, h.Dispatch}, "\x00")))
 	h.QueueID = hex.EncodeToString(key[:])
-	rows, err := e.Linear.ListComments(ctx, t.ID)
+	rows, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
 		return "", safeDependencyError(err)
 	}
@@ -70,7 +70,7 @@ var errMissingMergeHandoff = errors.New("existing PR has no frozen handoff")
 // PR alone cannot prove gate/reviewer success, or authorize a fresh handoff.
 func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, pr github.PullRequest, head string, current *checkpoint, prior Result) (Result, error) {
 	result := prior
-	rows, err := e.Linear.ListComments(ctx, t.ID)
+	rows, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
 		return result, safeDependencyError(err)
 	}

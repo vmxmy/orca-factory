@@ -11,7 +11,7 @@ import (
 
 func TestStatusSnapshot(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
-	input := Snapshot{GeneratedAt: now, Tickets: []Ticket{{Repo: "/repo", Identifier: "ZII-883", Owner: "executor", Phase: "gate"}}, Pauses: []Pause{{Dependency: "Linear", Repo: "/repo", Kind: "quota", Start: now.Add(-time.Minute), Duration: time.Minute}}, Linear: Usage{Hour: now, Requests: 12, Complexity: 34, Limits: []ClientLimits{{Repo: "/repo", Requests: RateLimit{Limit: 100, Remaining: 88, Reset: now.Add(time.Hour)}, Complexity: RateLimit{Limit: 1000, Remaining: 966, Reset: now.Add(time.Hour)}}}}}
+	input := Snapshot{GeneratedAt: now, Tickets: []Ticket{{Repo: "/repo", Identifier: "ZII-883", Owner: "executor", Phase: "gate"}}, Pauses: []Pause{{Dependency: "GitHub", Repo: "/repo", Kind: "quota", Start: now.Add(-time.Minute), Duration: time.Minute}}, GitHub: Usage{Hour: now, Requests: 12, Complexity: 34, Limits: []ClientLimits{{Repo: "/repo", Requests: RateLimit{Limit: 100, Remaining: 88, Reset: now.Add(time.Hour)}, Complexity: RateLimit{Limit: 1000, Remaining: 966, Reset: now.Add(time.Hour)}}}}}
 	t.Run("fields and atomic replacement", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "status.json")
@@ -37,7 +37,7 @@ func TestStatusSnapshot(t *testing.T) {
 		if err := json.Unmarshal(data, &fields); err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range []string{"generatedAt", "tickets", "pauses", "linear"} {
+		for _, field := range []string{"generatedAt", "tickets", "pauses", "github"} {
 			if _, ok := fields[field]; !ok {
 				t.Errorf("missing %s", field)
 			}
@@ -51,10 +51,10 @@ func TestStatusSnapshot(t *testing.T) {
 			t.Fatalf("ticket fields: %v", ticket)
 		}
 		paused := wire["pauses"].([]any)[0].(map[string]any)
-		if !reflect.DeepEqual(paused, map[string]any{"dependency": "Linear", "repo": "/repo", "kind": "quota", "start": "2026-10-05T07:59:00Z", "duration": float64(time.Minute)}) {
+		if !reflect.DeepEqual(paused, map[string]any{"dependency": "GitHub", "repo": "/repo", "kind": "quota", "start": "2026-10-05T07:59:00Z", "duration": float64(time.Minute)}) {
 			t.Fatalf("pause fields: %v", paused)
 		}
-		usage := wire["linear"].(map[string]any)
+		usage := wire["github"].(map[string]any)
 		if usage["hour"] != "2026-10-05T08:00:00Z" || usage["requests"] != float64(12) || usage["complexity"] != float64(34) {
 			t.Fatalf("usage fields: %v", usage)
 		}
@@ -118,7 +118,7 @@ func TestReadViewJSON(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 2, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "status.json")
 	t.Setenv("DRIVER_STATUS_FILE", path)
-	input := `{"generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"pauses":[{"repo":"","dependency":"Linear","kind":"credentials","start":"2026-10-05T07:59:00Z","duration":60000000000},{"repo":"/repo","start":"2026-10-05T07:00:00Z"}],"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+	input := `{"generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"pauses":[{"repo":"","dependency":"GitHub","kind":"credentials","start":"2026-10-05T07:59:00Z","duration":60000000000},{"repo":"/repo","start":"2026-10-05T07:00:00Z"}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
 	for _, tc := range []struct {
 		name, data, state string
 		missing           bool
@@ -147,7 +147,7 @@ func TestReadViewJSON(t *testing.T) {
 				t.Fatalf("view = %s", data)
 			}
 			if tc.name == "normal" {
-				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"globalPause":{"active":true,"durationSeconds":180},"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"globalPause":{"active":true,"durationSeconds":180},"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
 				var expected map[string]any
 				if err := json.Unmarshal([]byte(want), &expected); err != nil {
 					t.Fatal(err)
@@ -186,14 +186,14 @@ func TestGitHubUsageRolloverAndLegacyOmission(t *testing.T) {
 	}
 }
 
-func TestReadCurrentHourAndRepoPause(t *testing.T) {
+func TestReadRepoPauseIsNotGlobal(t *testing.T) {
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
-	err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","pauses":[{"repo":"/repo","start":"2026-10-05T08:00:00Z"}],"linear":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"remaining":88}}]}}`), 0600)
+	err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","pauses":[{"repo":"/repo","start":"2026-10-05T08:00:00Z"}]}`), 0600)
 	if err != nil {
 		t.Fatal(err)
 	}
 	view := Read(time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC), 0)
-	if view.GlobalPause.Active || view.GlobalPause.DurationSeconds != 0 || view.Linear.Requests != 0 || view.Linear.Complexity != 0 || view.Linear.Limits[0].Requests.Remaining != 88 {
+	if view.GlobalPause.Active || view.GlobalPause.DurationSeconds != 0 {
 		t.Fatalf("view = %+v", view)
 	}
 }

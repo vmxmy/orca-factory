@@ -1,5 +1,5 @@
 // Package scheduler owns machine-wide admission and executor recovery. Durable
-// ownership lives in Linear comments; merge work is reconstructed each snapshot.
+// ownership lives in ticket comments; merge work is reconstructed each snapshot.
 package scheduler
 
 import (
@@ -13,7 +13,6 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -97,22 +96,19 @@ type Scheduler struct {
 	coreBehind   string
 	// identityDrift remembers the last-logged ledger-identity change per
 	// repository path so RefreshProjects (OF-45) warns once per distinct drift.
-	identityDrift    map[string]string
-	Now              func() time.Time
-	MergeQueue       []Ticket
-	Pauses           *pause.Manager
-	NextInterval     time.Duration
-	FullReconcile    bool
-	adaptive         Adaptive
-	linearQuotaRetry time.Time
+	identityDrift map[string]string
+	Now           func() time.Time
+	MergeQueue    []Ticket
+	Pauses        *pause.Manager
+	NextInterval  time.Duration
+	FullReconcile bool
+	adaptive      Adaptive
+	// quotaRetry caps the next inspection while any pause is active.
+	quotaRetry       time.Time
 	githubQuotaRetry time.Time
-	quotaPaused      bool
-	// A page refusal stays latched until a successful probe, even if stale
-	// headers exceed the usual percentage thresholds.
-	discoveryQuotaPaused bool
-	tokens               float64
-	refill               time.Time
-	initialized          bool
+	tokens           float64
+	refill           time.Time
+	initialized      bool
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -160,32 +156,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	remaining, pauseErr := s.checkPauses(ctx, now)
 	s.MergeQueue = nil
 	if s.Pauses.Paused("") {
-		if s.linearQuotaRetry.IsZero() {
-			// Arm the first quota probe so a just-latched pause does not immediately
-			// spend a Snapshot; the cached budget is fresh enough to wait one window.
-			s.linearQuotaRetry = now.Add(5 * time.Minute)
+		if s.quotaRetry.IsZero() {
+			// Wake within five minutes of a new pause even when the idle backoff is longer.
+			s.quotaRetry = now.Add(5 * time.Minute)
 		}
-		if (s.checkLinearQuota(now) < s.pauseFraction() || s.quotaPaused) && !now.Before(s.linearQuotaRetry) {
-			// Quota is critically low and the cached budget is stale. Probe once after
-			// a backoff so a successful Snapshot refreshes the budget; otherwise the
-			// pause latches forever because the paused branch never reaches Snapshot.
-			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
-			if prober, ok := s.Backend.(quotaProber); ok {
-				// One tiny request refreshes the headers; a full Snapshot costs more than
-				// the budget has refilled and would drain it again.
-				if prober.ProbeLinearQuota(ctx) == nil {
-					s.discoveryQuotaPaused = false
-					remaining = s.checkLinearQuota(now)
-				}
-			} else if _, err := s.Backend.Snapshot(ctx, s.Repositories); err == nil {
-				s.discoveryQuotaPaused = false
-				remaining = s.checkLinearQuota(now)
-			}
-		}
-		if s.Pauses.Paused("") {
-			s.plan(now, false, remaining)
-			return pauseErr
-		}
+		s.plan(now, false, remaining)
+		return pauseErr
 	}
 	// A failed rediscovery is already logged and keeps the previous projects.
 	_ = s.RefreshProjects(ctx)
@@ -225,16 +201,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	tickets, err = s.Backend.Snapshot(ctx, s.Repositories)
 	if err != nil {
 		category := "other"
-		var admission *linear.DiscoveryQuotaError
-		if errors.As(err, &admission) {
-			category = "quota"
-			s.discoveryQuotaPaused = true
-			s.quotaPaused = true
-			s.linearQuotaRetry = now.Add(s.quotaProbeBackoff())
-			s.Pauses.Pause(pause.Key{Dependency: pause.Linear, Kind: pause.Quota}, s.linearQuotaRetry)
-			s.plan(now, false, 0)
-		}
-		s.checkLinearQuota(now)
 		s.checkGitHubQuota(now)
 		var evidence *SnapshotEvidenceError
 		if errors.As(err, &evidence) && category == "other" {
@@ -272,9 +238,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	// A successful snapshot replaces the stale quota observation. If the
 	// refreshed budget is still critical, start its new recovery window before
 	// allowing dispatch, even when no dependency probe is installed.
-	s.linearQuotaRetry = time.Time{}
+	s.quotaRetry = time.Time{}
 	s.githubQuotaRetry = time.Time{}
-	remaining = min(s.checkLinearQuota(now), s.checkGitHubQuota(now))
+	remaining = s.checkGitHubQuota(now)
 	if s.Pauses.Paused("") {
 		s.plan(now, false, remaining)
 		for _, t := range tickets {

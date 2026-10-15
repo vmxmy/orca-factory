@@ -54,9 +54,9 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 	return orca.Receipt{}, f.releaseErr
 }
 
-type fakeLinear struct{ comments []string }
+type fakeIssues struct{ comments []string }
 
-func (f *fakeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (f *fakeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	var comments []linear.Comment
 	for _, body := range f.comments {
 		comments = append(comments, linear.Comment{Body: body})
@@ -64,14 +64,14 @@ func (f *fakeLinear) ListComments(context.Context, string) ([]linear.Comment, er
 	return comments, nil
 }
 
-func (f *fakeLinear) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
+func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
 	if id != "issue_one" {
 		panic("wrong issue")
 	}
 	f.comments = append(f.comments, body)
 	return linear.Comment{}, nil
 }
-func (f *fakeLinear) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
+func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
 	return linear.Issue{Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-impl"}}}}, nil
 }
 
@@ -121,14 +121,14 @@ func (f *fakeTools) Review(_ context.Context, _, base, _ string, _ *float64) (st
 	f.reviewCalls++
 	return "review notes\n{\"verdict\":\"green\",\"step\":\"review\"}", "default", nil
 }
-func fixture(t *testing.T, head string) (*Executor, *fakeOrca, *fakeLinear, *fakeGitHub, *fakeTools, Ticket) {
+func fixture(t *testing.T, head string) (*Executor, *fakeOrca, *fakeIssues, *fakeGitHub, *fakeTools, Ticket) {
 	t.Helper()
-	o, l, g, tools := &fakeOrca{}, &fakeLinear{}, &fakeGitHub{}, &fakeTools{head: head}
+	o, l, g, tools := &fakeOrca{}, &fakeIssues{}, &fakeGitHub{}, &fakeTools{head: head}
 	repo := t.TempDir()
 	for _, role := range []string{"driver-worker.md", "correction.md", "reviewer.md"} {
 		writeRole(t, repo, role, "role "+role+"\n")
 	}
-	e := &Executor{Orca: o, Linear: l, GitHub: g, Tools: tools, Config: Config{Repo: repo, Owner: "acme", Repository: "demo", Terminal: "term_exec", Unit: "executor", Root: t.TempDir()}, Now: func() time.Time { return time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC) }}
+	e := &Executor{Orca: o, Issues: l, GitHub: g, Tools: tools, Config: Config{Repo: repo, Owner: "acme", Repository: "demo", Terminal: "term_exec", Unit: "executor", Root: t.TempDir()}, Now: func() time.Time { return time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC) }}
 	ticket := Ticket{ID: "issue_one", Identifier: "ZII-861", Title: "执行器", Todo: "实现主路径", Check: "go test ./unit", Scope: "unit/*", Lane: 2}
 	return e, o, l, g, tools, ticket
 }

@@ -68,17 +68,17 @@ func (g *recoveredMergePR) CreatePR(context.Context, string, string, github.Crea
 	return g.pr, nil
 }
 
-type recoveredMergeLinear struct{ *mergeLinear }
+type recoveredMergeIssues struct{ *mergeIssues }
 
-func (l *recoveredMergeLinear) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
-	v, err := l.mergeLinear.UpdateIssue(ctx, id, state, add, remove)
+func (l *recoveredMergeIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+	v, err := l.mergeIssues.UpdateIssue(ctx, id, state, add, remove)
 	v.Labels.Nodes = []linear.NamedID{{Name: "auto-impl"}}
 	return v, err
 }
 
 func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	f := newMergeFixture(t)
-	f.linear.rows = nil
+	f.tracker.rows = nil
 	root := t.TempDir()
 	dir := filepath.Join(root, "r", "ENG-1")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -101,8 +101,8 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr.HTMLURL = "https://example.test/pr/1"
-	l := &recoveredMergeLinear{f.linear}
-	e := &executor.Executor{Orca: &recoveredMergeOrca{t: t}, Linear: l, GitHub: &recoveredMergePR{pr: pr}, Tools: &recoveredMergeTools{head: f.head, base: f.main}, Config: executor.Config{Repo: f.repos[0].Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: root}, Now: time.Now}
+	l := &recoveredMergeIssues{f.tracker}
+	e := &executor.Executor{Orca: &recoveredMergeOrca{t: t}, Issues: l, GitHub: &recoveredMergePR{pr: pr}, Tools: &recoveredMergeTools{head: f.head, base: f.main}, Config: executor.Config{Repo: f.repos[0].Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: root}, Now: time.Now}
 	ticket := executor.Ticket{ID: "id", Identifier: "ENG-1", Title: "test", Todo: "implement", Check: "true", Scope: "feature", Lane: 1}
 	result, err := e.Start(context.Background(), ticket)
 	if err != nil {
@@ -126,7 +126,7 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
-		t.Fatalf("valid task handoff stranded: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("valid task handoff stranded: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
 	}
 }

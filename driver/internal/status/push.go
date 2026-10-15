@@ -51,7 +51,7 @@ func push(now time.Time, update func(*View), observation bool) error {
 		return err
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
-	view := View{Tickets: []Ticket{}, Linear: Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []ClientLimits{}}}
+	view := View{Tickets: []Ticket{}}
 	if data, err := os.ReadFile(path); err == nil {
 		var previous View
 		if json.Unmarshal(data, &previous) == nil {
@@ -109,14 +109,6 @@ func normalize(view *View, now time.Time) {
 		if view.GitHub.Limits == nil {
 			view.GitHub.Limits = []ClientLimits{}
 		}
-	}
-	if !view.Linear.Hour.Equal(hour) {
-		view.Linear.Hour = hour
-		view.Linear.Requests = 0
-		view.Linear.Complexity = 0
-	}
-	if view.Linear.Limits == nil {
-		view.Linear.Limits = []ClientLimits{}
 	}
 }
 

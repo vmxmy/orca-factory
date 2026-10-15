@@ -68,7 +68,7 @@ func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	}
 }
 
-func correctionReceipt(t *testing.T, e *Executor, l *budgetLinear, ticket Ticket, infra int) {
+func correctionReceipt(t *testing.T, e *Executor, l *budgetIssues, ticket Ticket, infra int) {
 	t.Helper()
 	var h merge.Handoff
 	for _, body := range l.comments {

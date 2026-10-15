@@ -72,11 +72,11 @@ func TestRecordedTerminalSendTurnStarted(t *testing.T) {
 }
 
 func TestRecordedWorktreeSet(t *testing.T) {
-	linear := TicketCard("/worktrees/ZII-1-impl", "ZII-1", "", 0, machine.PhaseGate, "")
-	if _, err := recordedClient(t, "orca-worktree-set.json").WorktreeSet(context.Background(), linear); err != nil {
+	card := TicketCard("/worktrees/ZII-1-impl", "ZII-1", "", 0, machine.PhaseGate, "")
+	if _, err := recordedClient(t, "orca-worktree-set.json").WorktreeSet(context.Background(), card); err != nil {
 		t.Fatalf("recorded success err=%v", err)
 	}
-	_, err := recordedClient(t, "orca-worktree-set-not-found.json").WorktreeSet(context.Background(), linear)
+	_, err := recordedClient(t, "orca-worktree-set-not-found.json").WorktreeSet(context.Background(), card)
 	var ticket *infra.Ticket
 	if !errors.As(err, &ticket) || !strings.Contains(ticket.Err.Error(), "selector_not_found") {
 		t.Fatalf("missing worktree err=%v", err)

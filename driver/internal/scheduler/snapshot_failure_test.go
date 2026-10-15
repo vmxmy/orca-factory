@@ -3,7 +3,6 @@ package scheduler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
@@ -31,40 +31,25 @@ func (f *failingSnapshotBackend) Snapshot(ctx context.Context, repos []config.Re
 	return nil, f.err
 }
 
-// The recorded Linear 400 body travels through the real client and Runtime.
+// A recorded GitHub 409 body travels through the real client and Runtime.
 func TestRecordedSnapshotFailureKeepsCause(t *testing.T) {
-	t.Setenv("LINEAR_API_KEY", "lin_api_recorded_fixture") // ggignore
-	body := recorded(t, "linear-export-parse-error.json")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var q struct{ Query string }
-		if err := json.NewDecoder(r.Body).Decode(&q); err != nil {
-			t.Error(err)
-			return
-		}
-		if !strings.Contains(q.Query, "query Metadata(") {
-			http.Error(w, string(body), http.StatusBadRequest)
-			return
-		}
-		nodes := []any{}
-		if strings.Contains(q.Query, "projects(") {
-			nodes = append(nodes, map[string]any{"id": "p1", "name": "Alpha"})
-		}
-		connection := map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}
-		field := map[bool]string{true: "projects", false: "states"}[strings.Contains(q.Query, "projects(")]
-		if strings.Contains(q.Query, "labels(") {
-			field = "labels"
-		}
-		if err := json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"team": map[string]any{field: connection}}}); err != nil {
-			t.Error(err)
-		}
+	body := recorded(t, "github-merge-head-modified-409.json")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write(body)
 	}))
 	t.Cleanup(server.Close)
-	client, err := linear.New(context.Background(), linear.Options{TeamID: "team", BaseURL: server.URL, HTTPClient: server.Client()})
+	gh, err := github.New(github.Options{BaseURL: server.URL, HTTPClient: server.Client(), Token: func(context.Context) (string, error) { return "TEST-PLACEHOLDER-CRED", nil }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := config.Repository{Path: "/fixture", Env: map[string]string{"AGENT_LINEAR_PROJECT": "Alpha", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Clients: map[string]LinearClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	client, err := issues.NewGitHub("o/r", gh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := config.Repository{Path: "/fixture", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
+	runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}}
 	f := &failingSnapshotBackend{snapshot: func(ctx context.Context, _ []config.Repository) ([]Ticket, error) {
 		return runtime.Snapshot(ctx, []config.Repository{repo})
 	}}
@@ -76,14 +61,14 @@ func TestRecordedSnapshotFailureKeepsCause(t *testing.T) {
 	err = s.Tick(context.Background())
 
 	var classified *infra.Ticket
-	if !errors.As(err, &classified) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: linear snapshot failed") {
+	if !errors.As(err, &classified) || !strings.HasPrefix(err.Error(), "scheduler snapshot failed: issue snapshot failed") {
 		t.Fatalf("err=%v", err)
 	}
 	warn, _, _ := strings.Cut(logs.String(), "\n")
-	if !strings.Contains(warn, `"level":"WARN"`) || !strings.Contains(warn, `"category":"other"`) || !strings.Contains(warn, "linear snapshot failed") {
+	if !strings.Contains(warn, `"level":"WARN"`) || !strings.Contains(warn, `"category":"other"`) || !strings.Contains(warn, "issue snapshot failed") {
 		t.Fatalf("WARN=%s", warn)
 	}
-	for _, leaked := range []string{"Syntax Error", "lin_api_recorded_fixture"} { // ggignore
+	for _, leaked := range []string{"Head branch was modified", "TEST-PLACEHOLDER-CRED"} {
 		if strings.Contains(err.Error(), leaked) || strings.Contains(logs.String(), leaked) {
 			t.Fatalf("leaked %q: err=%v log=%s", leaked, err, logs.String())
 		}

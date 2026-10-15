@@ -352,7 +352,7 @@ func newFeishuTest(t *testing.T, f *feishuFake) *Feishu {
 	t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
 	t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
 	env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "https://TENANT.feishu.cn/base/BASE_TOKEN?table=tblT", "AGENT_FEISHU_PROJECT": feishuRepo}
-	if !Native(env) || Project(env) != feishuRepo {
+	if backend, err := Backend(env); err != nil || backend != "feishu" || Project(env) != feishuRepo {
 		t.Fatalf("feishu env not native: project=%q", Project(env))
 	}
 	client, err := New(context.Background(), env, config.Tuning{})

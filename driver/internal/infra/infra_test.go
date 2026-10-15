@@ -23,7 +23,7 @@ func TestClassify(t *testing.T) {
 			t.Errorf("not ticket: %v", err)
 		}
 	}
-	for _, dep := range []Dep{Claude, Codex, Linear, GitHub, Orca} {
+	for _, dep := range []Dep{Claude, Codex, GitHub, Orca} {
 		original := &Global{Dep: dep, Err: io.EOF}
 		var global *Global
 		if !errors.As(Classify(original), &global) || global.Dep != dep {

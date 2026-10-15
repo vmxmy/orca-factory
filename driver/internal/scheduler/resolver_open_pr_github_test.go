@@ -74,7 +74,7 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 		return github.New(o)
 	}
 
-	runtime := &Runtime{GitHub: nil, Clients: map[string]LinearClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+	runtime := &Runtime{GitHub: nil, Clients: map[string]IssueClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 	record := &resolver.Record{Version: 1, Attempt: 2, Phase: "result"}
 	ticket := Ticket{ID: task.ID, Identifier: task.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: record}
 	proposal := resolver.Resolution{Action: "open-pr", Branch: "agent/OF-5/executor", Head: pr.Head.SHA, Title: "Recover PR", Body: "Verified fix", Reason: "gate passed"}

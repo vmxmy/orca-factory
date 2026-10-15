@@ -121,7 +121,7 @@ func TestGitHubPruneUsesCommentAssociationAndFreshOwnership(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			for key, value := range map[string]string{"HOME": dir, "PATH": dir + ":" + os.Getenv("PATH"), "AGENT_DRIVER_STATE_ROOT": filepath.Join(dir, "state"), "AGENT_REPO_PATH": repo, "AGENT_RUN_WORKTREE_PREFIX": "run-", "AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "acme/demo", "AGENT_GH_API_URL": server.URL, "AGENT_LINEAR_TEAM": "", "AGENT_LINEAR_PROJECT": ""} {
+			for key, value := range map[string]string{"HOME": dir, "PATH": dir + ":" + os.Getenv("PATH"), "AGENT_DRIVER_STATE_ROOT": filepath.Join(dir, "state"), "AGENT_REPO_PATH": repo, "AGENT_RUN_WORKTREE_PREFIX": "run-", "AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "acme/demo", "AGENT_GH_API_URL": server.URL} {
 				t.Setenv(key, value)
 			}
 			// #when

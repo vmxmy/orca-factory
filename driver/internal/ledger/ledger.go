@@ -1,4 +1,4 @@
-// Package ledger stores batched run records as comments on rotating Linear issues.
+// Package ledger stores batched run records as comments on rotating ledger tickets.
 package ledger
 
 import (

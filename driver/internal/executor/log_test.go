@@ -41,7 +41,7 @@ func TestExecutorTransitionLog(t *testing.T) {
 				if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &envelope); err != nil {
 					t.Fatal(err)
 				}
-				e.Linear = &logRecordedLinear{comments: envelope.Data.Issue.Comments.Nodes}
+				e.Issues = &logRecordedIssues{comments: envelope.Data.Issue.Comments.Nodes}
 				if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one"}); err != nil {
 					t.Fatal(err)
 				}
@@ -82,7 +82,7 @@ func TestExecutorTransitionLog(t *testing.T) {
 					}
 				case "recovery.snapshot":
 					want := map[string]any{"Run": "run_one", "Task": "task_one", "Dispatch": "ctx_one", "Pending": false, "Completed": false}
-					if !reflect.DeepEqual(r["checkpoint"], want) || r["linear_phase"] != string(machine.PhaseHuman) || r["linear_owner"] != string(machine.OwnerHuman) {
+					if !reflect.DeepEqual(r["checkpoint"], want) || r["ticket_phase"] != string(machine.PhaseHuman) || r["ticket_owner"] != string(machine.OwnerHuman) {
 						t.Fatalf("snapshot: %v", r)
 					}
 					snapshot = true
@@ -185,12 +185,12 @@ func transitionLogRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
 	return records
 }
 
-type logRecordedLinear struct {
-	fakeLinear
+type logRecordedIssues struct {
+	fakeIssues
 	comments []linear.Comment
 }
 
-func (l *logRecordedLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *logRecordedIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return l.comments, nil
 }
 
