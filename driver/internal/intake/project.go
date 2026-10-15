@@ -11,10 +11,15 @@ import (
 // Project is one project this gateway can route a thread to: a row of the
 // Feishu ledger's 项目 table, joined with whether this machine has a local
 // repository checkout for its remote. Repo is empty when no configured
-// repository matches Remote.
+// repository matches Remote. Checkout, Ledger and the space-separated lane
+// globs serve draft validation and submission (OF-15); a nil Ledger leaves
+// drafts as plain replies.
 type Project struct {
 	Prefix, Name, Remote, Repo string
 	Enabled                    bool
+	Checkout                   string
+	Ledger                     Ledger
+	Lane2Globs, Lane3Globs     string
 }
 
 func (p Project) usable() bool { return p.Enabled && p.Repo != "" }

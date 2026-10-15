@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -125,7 +126,7 @@ func TestIntakeSession(t *testing.T) {
 		return out
 	}
 	state := filepath.Join(root, "state")
-	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 2, nil, "", runner.Turn, reply, noopReact)
+	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, nil, "", runner.Turn, reply, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +224,7 @@ func TestIntakeSession(t *testing.T) {
 	if r := taken(); !slices.Equal(r, []string{"处理失败，请重试"}) {
 		t.Fatalf("timeout replies %q", r)
 	}
-	if after := session(t, state, thread); after != before {
+	if after := session(t, state, thread); !reflect.DeepEqual(after, before) {
 		t.Fatalf("failed turn changed session %+v", after)
 	}
 

@@ -23,9 +23,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 )
 
-var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT"}
+var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
 
-var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT"}
+var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
 
 func loadGatewaySettings() (map[string]string, error) {
 	settings := map[string]string{}
@@ -105,10 +105,10 @@ func legacyIntakeRunner(claude string, repo config.Repository, cache string) (*i
 	return &intake.Runner{Claude: claude, Repo: repo.Path, Checkout: filepath.Join(cache, "orca-factory", "intake-checkout"), Model: model, Effort: effort, Timeout: 5 * time.Minute}, concurrency, nil
 }
 
-// intakeTickets builds the ledger reader a Runner writes into
-// .intake/tickets.md before every Agent turn (OF-33): Store.List scoped to
-// this project's own repository env (its AGENT_FEISHU_PROJECT remote).
-func intakeTickets(ctx context.Context, env map[string]string, tuning config.Tuning) (func(context.Context) ([]intake.TicketContext, error), error) {
+// intakeLedger opens the ledger Store scoped to this project's own
+// repository env (its AGENT_FEISHU_PROJECT remote): the gateway submits
+// confirmed drafts through it (OF-15) and reads it for the ticket context.
+func intakeLedger(ctx context.Context, env map[string]string, tuning config.Tuning) (issues.Store, error) {
 	client, err := issues.New(ctx, env, tuning)
 	if err != nil {
 		return nil, err
@@ -117,6 +117,12 @@ func intakeTickets(ctx context.Context, env map[string]string, tuning config.Tun
 	if !ok {
 		return nil, errors.New("intake gateway requires a feishu repository")
 	}
+	return store, nil
+}
+
+// intakeTickets builds the ledger reader a Runner writes into
+// .intake/tickets.md before every Agent turn (OF-33).
+func intakeTickets(store issues.Store) func(context.Context) ([]intake.TicketContext, error) {
 	return func(ctx context.Context) ([]intake.TicketContext, error) {
 		tasks, err := store.List(ctx)
 		if err != nil {
@@ -131,7 +137,7 @@ func intakeTickets(ctx context.Context, env map[string]string, tuning config.Tun
 			out = append(out, intake.TicketContext{Identifier: task.Identifier, State: task.Metadata.State, Title: task.Title, Blockers: blockers})
 		}
 		return out, nil
-	}, nil
+	}
 }
 
 // intakeRunners matches each ledger project (rows, possibly empty) to the
@@ -183,12 +189,15 @@ func intakeRunners(ctx context.Context, claude string, repos []config.Repository
 				return nil, nil, 0, err
 			}
 			concurrency += projectConcurrency
-			p.Repo = repo.Path
-			tickets, err := intakeTickets(ctx, repo.Env, tuning)
+			store, err := intakeLedger(ctx, repo.Env, tuning)
 			if err != nil {
 				return nil, nil, 0, err
 			}
-			runners[row.Prefix] = &intake.Runner{Claude: claude, Repo: repo.Path, Checkout: filepath.Join(cache, "orca-factory", "intake", row.Prefix, "checkout"), Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: tickets}
+			checkout := filepath.Join(cache, "orca-factory", "intake", row.Prefix, "checkout")
+			// core/gate.sh always treats scripts/agent-gates/* as lane 2.
+			p.Repo, p.Checkout, p.Ledger = repo.Path, checkout, store
+			p.Lane2Globs, p.Lane3Globs = "scripts/agent-gates/* "+repo.Env["AGENT_LANE2_GLOBS"], repo.Env["AGENT_LANE3_GLOBS"]
+			runners[row.Prefix] = &intake.Runner{Claude: claude, Repo: repo.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store)}
 		}
 		projects = append(projects, p)
 	}
@@ -278,7 +287,7 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), concurrency, projects, settings["AGENT_FEISHU_INTAKE_PROJECT"], agent, client.ReplyInThread, client.AddReaction)
+	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), gatewayUsers(settings["AGENT_FEISHU_APPROVERS"]), concurrency, projects, settings["AGENT_FEISHU_INTAKE_PROJECT"], agent, client.ReplyInThread, client.AddReaction)
 	if err != nil {
 		return err
 	}

@@ -73,7 +73,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 		}
 		var replies []string
 		send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, projects, "", agent, send, noopReact)
+		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +99,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 			return "已整理", nil
 		}
 		send := func(context.Context, string, string) error { return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, projects, of.Remote, agent, send, noopReact)
+		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, of.Remote, agent, send, noopReact)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +120,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 		}
 		var replies []string
 		send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, projects, "", agent, send, noopReact)
+		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -167,7 +167,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 			}
 			var replies []string
 			send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-			g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 1, projects, "", agent, send, noopReact)
+			g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
 			if err != nil {
 				t.Fatal(err)
 			}
