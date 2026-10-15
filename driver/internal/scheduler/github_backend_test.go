@@ -18,8 +18,8 @@ import (
 func TestRuntimeGitHubOnlyInitialization(t *testing.T) {
 	t.Setenv("LINEAR_API_KEY", "")
 	r := &Runtime{Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
-	cfg := config.Config{Repositories: []config.Repository{{Path: "/github", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r"}}}}
-	err := r.initialize(context.Background(), cfg, func(context.Context, string) (LinearClient, error) {
+	repos := []config.Repository{{Path: "/github", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r"}}}
+	err := r.initialize(context.Background(), repos, func(context.Context, string) (LinearClient, error) {
 		t.Fatal("GitHub selected but Linear initialized")
 		return nil, nil
 	})
@@ -127,13 +127,13 @@ func TestGitHubRuntimeFrozenMergeRecoveryEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := f.config.Repositories[0]
+	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 	delete(repo.Env, "AGENT_LINEAR_PROJECT")
-	f.config.Repositories[0] = repo
+	f.repos[0] = repo
 	f.runtime.Clients = map[string]LinearClient{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
-	s := &Scheduler{Config: f.config, Backend: f.runtime}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 	if err = s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}

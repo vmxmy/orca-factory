@@ -110,10 +110,10 @@ func githubSafetyFixture(t *testing.T, f *mergeFixture) *safetyIssues {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo := f.config.Repositories[0]
+	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 	delete(repo.Env, "AGENT_LINEAR_PROJECT")
-	f.config.Repositories[0] = repo
+	f.repos[0] = repo
 	f.runtime.Clients = map[string]LinearClient{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
 	return g
@@ -140,7 +140,7 @@ func TestGitHubCancellationBeforeSquash(t *testing.T) {
 			if when == "intent-cancel" {
 				g.afterIntent = func() { g.stop(false) }
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if gates != 1 || f.puts != 0 || f.merged || err == nil {
 				t.Fatalf("stop ignored: gates=%d squash=%d merged=%v error=%v", gates, f.puts, f.merged, err)
 			}
@@ -160,7 +160,7 @@ func TestGitHubStoppedIntentRetainsDeploymentBarrier(t *testing.T) {
 			merged := tc.merged
 			f := newMergeFixture(t)
 			g := githubSafetyFixture(t, f)
-			rows, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+			rows, err := f.runtime.Snapshot(context.Background(), f.repos)
 			if err != nil || len(rows) != 1 {
 				t.Fatalf("snapshot: %v %v", rows, err)
 			}
@@ -187,11 +187,11 @@ func TestGitHubStoppedIntentRetainsDeploymentBarrier(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			err = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if f.puts != 0 {
 				t.Fatalf("canceled intent authorized squash: %d", f.puts)
 			}
-			rows, readErr := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+			rows, readErr := f.runtime.Snapshot(context.Background(), f.repos)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
@@ -218,7 +218,7 @@ func TestGitHubFailedRecoveryNeverStartsExecutor(t *testing.T) {
 				g.row["labels"] = []any{map[string]any{"name": "auto-failed"}}
 			}
 			g.mu.Unlock()
-			rows, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+			rows, err := f.runtime.Snapshot(context.Background(), f.repos)
 			if err != nil || len(rows) != 1 {
 				t.Fatalf("snapshot: %+v %v", rows, err)
 			}

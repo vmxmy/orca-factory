@@ -45,8 +45,8 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 		{ID: "b", Identifier: "ZII-2", Repo: "r", Candidate: true, Blocked: true, CreatedAt: now},
 	}}
 	var out bytes.Buffer
-	cfg := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}}
-	if err := dryRunTick(context.Background(), cfg, trap, &out, func() time.Time { return now }); err != nil {
+	cfg, repos := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}
+	if err := dryRunTick(context.Background(), cfg, repos, trap, &out, func() time.Time { return now }); err != nil {
 		t.Fatal(err)
 	}
 	if trap.writes != 0 {
@@ -71,9 +71,9 @@ func (b *writeTrapBackend) AdvanceMerges(context.Context, []scheduler.Ticket) er
 }
 func TestDryRunMergeOwnershipDoesNotFetchOrWrite(t *testing.T) {
 	trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ENG-1", Repo: "r", Owner: machine.OwnerMerge}}}
-	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
+	cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}
 	var out bytes.Buffer
-	if err := dryRunTick(context.Background(), cfg, trap, &out, time.Now); err != nil {
+	if err := dryRunTick(context.Background(), cfg, repos, trap, &out, time.Now); err != nil {
 		t.Fatal(err)
 	}
 	if trap.writes != 0 {
@@ -89,9 +89,9 @@ func (b *legacyWriteTrap) InspectLegacy(context.Context, scheduler.Ticket) (sche
 }
 func TestDryRunLegacyDoesNotFetch(t *testing.T) {
 	trap := &legacyWriteTrap{&writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ENG-1", Repo: "r", Legacy: true}}}}
-	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
+	cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}
 	var out bytes.Buffer
-	_ = dryRunTick(context.Background(), cfg, trap, &out, time.Now)
+	_ = dryRunTick(context.Background(), cfg, repos, trap, &out, time.Now)
 	if trap.writes != 0 {
 		t.Fatalf("dry-run legacy reconciliation mutated git: %d", trap.writes)
 	}

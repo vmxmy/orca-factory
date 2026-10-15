@@ -110,6 +110,19 @@ orca-factory-driver status --json
 
 drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继续收敛。drain 与 resume 只等待已准入的认领与派工结束，不等待普通外部写入；默认最多等 2 分钟，用 `--wait 30s` 等时长调整。等待期间新认领与派工被拒绝；超时报错且状态不变。保留 driver.toml、凭据、账本和在途执行器；失败时恢复旧二进制，不删除数据库、不清空 checkpoint、不强行解除配额暂停。验证服务存活、旧 Automation 关闭、连续调度周期和配额探测日志；单次 `status` 成功不代表端到端验收通过。
 
+## 调度范围（项目发现）
+
+调度器不读 `driver.toml` 的仓库清单。它与飞书需求网关共用项目发现（`driver/internal/projects` 的 `Discover`，OF-42）：联立本机 Orca 仓库清单、飞书项目表与各仓库的流水线 check，得到可接管项目。规则如下（OF-43）：
+
+1. serve 启动时运行一次发现。发现失败时 serve 退出，由 systemd 重启。
+2. serve 每 10 分钟重新发现一次。间隔不是每轮调度，因为每次发现都要读 Orca、飞书项目表并逐个运行 check。发现失败时保留上一次的项目集合，写一条 WARN。
+3. 新加入的项目在下一次发现后开始领票。
+4. 项目移出可接管集合后，调度器停止领取该项目的新票（决策日志原因为 `retired`）。该项目的在途执行器、处置 Agent、合并通道与部署屏障照常推进到结束，不中断、不重派。该项目不再有在途票后，调度器停止读取它。
+5. 发现结果中不接管的项目（含原因）变化时，每个项目写一条 WARN `project not taken over`，带 `path` 与 `reason`；结果不变不重复写。每次发现还写一条 INFO `projects discovered`，列出 `eligible` 与 `retired`；每轮调度的 `scheduler inspection` 摘要也带 `retired`。
+6. 已接管项目的 `agent-graph.env` 变更在 serve 重启后生效。
+
+人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`resume-deployment` 与 `selftest --live` 各运行一次发现。`resume-deployment` 因此只能找到仍可接管项目的部署屏障；已移出项目的屏障需先恢复其项目表启用状态。
+
 ## 启动检查
 
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
@@ -191,15 +204,15 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 ## 可调参数（driver.toml）
 
-`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`repositories`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
 
-`factory_root`（支持 `~/` 展开，同 `repositories`）是本机 orca-factory 生产检出路径，
-飞书需求网关的项目发现（OF-42）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
-核对候选仓库的流水线；缺省时发现结果把全部仓库判为不接管。
+`factory_root`（支持 `~/` 展开）是本机 orca-factory 生产检出路径，
+调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
+核对候选仓库的流水线；缺省时发现结果把全部仓库判为不接管，调度器不领任何票。
+`repositories` 已删除（OF-43）。旧文件中残留的该键被忽略，不影响加载；部署后从 `driver.toml` 删去即可。
 
 ```toml
 max_in_flight = 20
-repositories = ["~/github/orca-factory"]
 factory_root = "~/github/orca-factory"
 
 [scheduler]
@@ -331,7 +344,7 @@ Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票
 | `AGENT_INTAKE_CLAUDE` | 可选，claude 可执行文件的绝对路径；默认在网关 `PATH` 中查找 `claude`。服务 `PATH` 不含 npm 全局目录时必须设置（取 bash 中 `command -v claude` 的结果，不要用 shell 别名） |
 | `AGENT_FEISHU_INTAKE_PROJECT` | 可选，群默认项目的仓库远端（项目表“仓库远端”列的值，如 `github.com/vmxmy/orca-factory`）。未设置或不匹配任何已启用项目时，话题首条消息未显式指定项目时改为列出项目供需求人选择 |
 
-网关不读 `driver.toml` 的 `repositories`：每个新话题（不带 `thread_id` 的根消息）
+网关与调度器使用同一项目来源：每个新话题（不带 `thread_id` 的根消息）
 开始前，网关重新跑一次项目发现（`driver/internal/projects` 的 `Discover`，OF-42），
 联立本机 Orca 的仓库清单（`orca repo list`）、飞书多维表格项目表（`项目` 表）与各仓库
 自己的流水线 check（`<factory_root>/bin/orca-factory check <仓库路径>`），得到可接管

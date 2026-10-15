@@ -20,9 +20,9 @@ import (
 func TestDeploymentStatusAndDryRunObserveHumanBarrier(t *testing.T) {
 	ticket := scheduler.Ticket{ID: "id", Identifier: "ENG-1", Repo: "r", Owner: machine.OwnerHuman, Progress: &merge.Progress{QueueID: "q1", MergeSHA: strings.Repeat("a", 40), Deployment: &merge.DeploymentProgress{State: "paused", Reason: "smoke uncertain", Workflow: "Deploy", Smoke: "secret-command"}}}
 	trap := &writeTrapBackend{tickets: []scheduler.Ticket{ticket}}
-	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
+	cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}
 	var out bytes.Buffer
-	if err := dryRunTick(context.Background(), cfg, trap, &out, time.Now); err != nil {
+	if err := dryRunTick(context.Background(), cfg, repos, trap, &out, time.Now); err != nil {
 		t.Fatal(err)
 	}
 	if trap.writes != 0 || !strings.Contains(out.String(), "smoke uncertain") || !strings.Contains(out.String(), "q1") || strings.Contains(out.String(), "secret-command") {
@@ -45,6 +45,7 @@ func TestServeDryRunDoesNotWriteLogs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(home, "state"))
+	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, "/repo/orca-factory", "github.com/vmxmy/orca-factory"))
 	if code := serve([]string{"--dry-run"}); code != 0 {
 		t.Fatalf("dryrun failed: %d", code)
 	}

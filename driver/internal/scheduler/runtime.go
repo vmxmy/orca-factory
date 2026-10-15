@@ -43,12 +43,17 @@ type Runtime struct {
 	Tuning               config.Tuning
 	Runners              *runnerhealth.Monitor
 	refused              map[string]error
-	projections          map[LinearClient]map[string]commentProjection
+	newLinear            func(context.Context, string) (LinearClient, error)
+	// runnerState is the isolated CI runners' state directory on the host that
+	// runs them; Track starts Runners once their repository is bound.
+	runnerState string
+	projections map[LinearClient]map[string]commentProjection
 }
 
-// NewRuntime binds existing clients. Startup exclusion runs before any Linear
-// initialization; Tick repeats the check before each inspection.
-func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
+// NewRuntime binds a client for each of repos. Startup exclusion runs before
+// any Linear initialization; Tick repeats the check before each inspection.
+// serve passes no repos and lets the scheduler Track what discovery finds.
+func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository) (*Runtime, error) {
 	path, err := runx.OrcaPath()
 	if err != nil {
 		return nil, err
@@ -58,6 +63,7 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 		return nil, errors.New("cannot locate driver binary")
 	}
 	r := &Runtime{
+		runnerState:  runnerStateDir(),
 		Tuning:       c.Tuning,
 		Clients:      map[string]LinearClient{},
 		Repositories: map[string]config.Repository{},
@@ -65,33 +71,38 @@ func NewRuntime(ctx context.Context, c config.Config) (*Runtime, error) {
 		OrcaPath:     path,
 		DriverPath:   binary,
 	}
-	err = r.initialize(ctx, c, func(ctx context.Context, team string) (LinearClient, error) {
+	err = r.initialize(ctx, repos, func(ctx context.Context, team string) (LinearClient, error) {
 		return linear.New(ctx, linear.Options{TeamID: team, DiscoveryPauseFraction: c.Tuning.Scheduler.PauseFraction, HTTPTimeout: c.Tuning.Linear.HTTPTimeout})
 	})
 	if err != nil {
 		return nil, err
 	}
-	r.Runners = r.runnerMonitor()
 	return r, nil
 }
 
-// runnerMonitor watches the isolated CI runners only on the host that runs
-// them, filing alerts in the repository they serve.
-func (r *Runtime) runnerMonitor() *runnerhealth.Monitor {
+// runnerStateDir is the isolated CI runners' state directory, or "" on a host
+// that does not run them.
+func runnerStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil
+		return ""
 	}
 	dir := filepath.Join(home, ".local", "state", "orca-go-isolated-runner")
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
-		return nil
+		return ""
 	}
-	for path, repo := range r.Repositories {
-		if client, ok := r.Clients[path].(issues.Store); ok && repo.Env["AGENT_GH_REPO"] == runnerhealth.Repository {
-			return &runnerhealth.Monitor{StateDir: dir, Record: filepath.Join(home, ".local", "state", "orca-factory", "runner-health.json"), Tickets: client, Run: runx.Run}
-		}
+	return dir
+}
+
+// watchRunners files runner alerts in repo once it is the repository the
+// isolated CI runners serve.
+func (r *Runtime) watchRunners(repo config.Repository) {
+	client, ok := r.Clients[repo.Path].(issues.Store)
+	if r.runnerState == "" || r.Runners != nil || !ok || repo.Env["AGENT_GH_REPO"] != runnerhealth.Repository {
+		return
 	}
-	return nil
+	record := filepath.Join(filepath.Dir(r.runnerState), "orca-factory", "runner-health.json")
+	r.Runners = &runnerhealth.Monitor{StateDir: r.runnerState, Record: record, Tickets: client, Run: runx.Run}
 }
 
 func (r *Runtime) CheckRunners(ctx context.Context) error {
@@ -126,59 +137,73 @@ func (r *Runtime) githubClient() (*github.Client, error) {
 	return gh, nil
 }
 
-func (r *Runtime) initialize(ctx context.Context, c config.Config, newClient func(context.Context, string) (LinearClient, error)) error {
+func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, newClient func(context.Context, string) (LinearClient, error)) error {
 	r.Clients = map[string]LinearClient{}
 	r.Repositories = map[string]config.Repository{}
 	r.refused = map[string]error{}
-	teams := map[string]LinearClient{}
-	projects := map[string]bool{}
+	r.newLinear = newClient
 	var refusals []error
-	for _, repo := range c.Repositories {
-		ok, err := r.AutomationDisabled(ctx, repo)
-		if err != nil || !ok {
-			refusal := fmt.Errorf("repository refused: %s: automation enabled or unverifiable; restart required", repo.Path)
-			r.refused[repo.Path] = refusal
-			refusals = append(refusals, refusal)
-			continue
-		}
-		if _, err := issues.Backend(repo.Env); err != nil {
-			return err
-		}
-		if issues.Native(repo.Env) {
-			project := issues.Project(repo.Env)
-			if projects[project] {
-				return errors.New("duplicate issue repository")
-			}
-			client, err := r.newIssueClient(ctx, repo.Env)
-			if err != nil {
+	for _, repo := range repos {
+		if err := r.Track(ctx, repo); err != nil {
+			if r.refused[repo.Path] == nil {
 				return err
 			}
-			projects[project] = true
-			r.Clients[repo.Path] = client
-			r.Repositories[repo.Path] = repo
-			continue
+			refusals = append(refusals, err)
 		}
-		team, project := repo.Env["AGENT_LINEAR_TEAM"], repo.Env["AGENT_LINEAR_PROJECT"]
-		if team == "" || project == "" || projects[project] {
-			return errors.New("repository requires distinct Linear project and team")
-		}
-		projects[project] = true
-		client := teams[team]
-		if client == nil {
-			bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-			client, err = newClient(bounded, team)
-			cancel()
-			if err != nil {
-				return errors.New("linear initialization failed")
-			}
-			teams[team] = client
-		}
-		r.Clients[repo.Path] = client
-		r.Repositories[repo.Path] = repo
 	}
 	if len(r.Clients) == 0 {
 		return errors.Join(refusals...)
 	}
+	return nil
+}
+
+// Track binds a ledger client for repo unless one is already bound. A
+// repository whose Orca Automation is enabled or unverifiable is refused
+// until restart; every other error leaves the runtime unchanged.
+func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
+	if r.Clients[repo.Path] != nil {
+		return nil
+	}
+	if ok, err := r.AutomationDisabled(ctx, repo); err != nil || !ok {
+		refusal := fmt.Errorf("repository refused: %s: automation enabled or unverifiable; restart required", repo.Path)
+		r.refused[repo.Path] = refusal
+		return refusal
+	}
+	if _, err := issues.Backend(repo.Env); err != nil {
+		return err
+	}
+	project := issues.Project(repo.Env)
+	var shared LinearClient
+	for path, known := range r.Repositories {
+		if issues.Project(known.Env) == project {
+			return errors.New("duplicate issue repository")
+		}
+		if !issues.Native(known.Env) && known.Env["AGENT_LINEAR_TEAM"] == repo.Env["AGENT_LINEAR_TEAM"] {
+			shared = r.Clients[path]
+		}
+	}
+	var client LinearClient
+	var err error
+	switch {
+	case issues.Native(repo.Env):
+		if client, err = r.newIssueClient(ctx, repo.Env); err != nil {
+			return err
+		}
+	case repo.Env["AGENT_LINEAR_TEAM"] == "" || project == "":
+		return errors.New("repository requires distinct Linear project and team")
+	case shared != nil:
+		client = shared
+	default:
+		bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
+		client, err = r.newLinear(bounded, repo.Env["AGENT_LINEAR_TEAM"])
+		cancel()
+		if err != nil {
+			return errors.New("linear initialization failed")
+		}
+	}
+	r.Clients[repo.Path] = client
+	r.Repositories[repo.Path] = repo
+	r.watchRunners(repo)
 	return nil
 }
 

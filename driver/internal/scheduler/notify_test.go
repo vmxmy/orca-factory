@@ -252,7 +252,7 @@ func TestFeishuNotifyPausedSkips(t *testing.T) {
 			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
 			s := setup(&f.fakeBackend)
 			s.Backend = f
-			s.Config.Repositories = []config.Repository{repo}
+			s.Repositories = []config.Repository{repo}
 			low := []linear.RateLimit{{Limit: 100, Remaining: 1, Reset: s.Now().Add(time.Hour)}}
 			if timing == "before snapshot" {
 				f.limits = low
@@ -301,7 +301,7 @@ func TestFeishuNotifySnapshotConflict(t *testing.T) {
 				f := &notifyTickBackend{runtime: r}
 				f.snapshot = func() ([]Ticket, error) { return r.Snapshot(context.Background(), []config.Repository{repo}) }
 				s := setup(&f.fakeBackend)
-				s.Config.Repositories = []config.Repository{repo}
+				s.Repositories = []config.Repository{repo}
 				s.Backend = f
 				before := len(sender.messages)
 				if err := s.Tick(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
@@ -426,7 +426,7 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 				backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 				s := setup(&backend.fakeBackend)
 				s.Backend = backend
-				s.Config.Repositories = []config.Repository{repo}
+				s.Repositories = []config.Repository{repo}
 				err := s.Tick(context.Background())
 				if snapshotConflict {
 					if err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
@@ -479,7 +479,7 @@ func TestFeishuNotifyUnownedConflict(t *testing.T) {
 	backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 	s := setup(&backend.fakeBackend)
 	s.Backend = backend
-	s.Config.Repositories = []config.Repository{repo}
+	s.Repositories = []config.Repository{repo}
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}

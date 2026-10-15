@@ -35,16 +35,11 @@ func resolveTicket(args []string) int {
 		if err != nil {
 			return 1, err
 		}
-		var repos []config.Repository
-		for _, repo := range cfg.Repositories {
-			if repo.Path == cwd {
-				repos = append(repos, repo)
-			}
+		repo, err := config.LoadRepository(cwd)
+		if err != nil {
+			return 1, errors.New("resolver must run at a repository root with an installed pipeline")
 		}
-		if len(repos) != 1 {
-			return 1, errors.New("resolver must run at a configured repository root")
-		}
-		cfg.Repositories = repos
+		repos := []config.Repository{repo}
 		// Local exclusion is only a controller lock. Ledger receipts own all state.
 		lock, err := scheduler.Acquire(filepath.Join(logStateRoot(), executorLogRepository(), args[0], "resolver.lock"))
 		if err != nil {
@@ -55,7 +50,7 @@ func resolveTicket(args []string) int {
 				logger.Error("resolver lock close", "err", err)
 			}
 		}()
-		runtime, err := scheduler.NewRuntime(ctx, cfg)
+		runtime, err := scheduler.NewRuntime(ctx, cfg, repos)
 		if err != nil {
 			return 1, err
 		}

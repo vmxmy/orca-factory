@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -34,7 +35,11 @@ func resumeDeployment(args []string) int {
 		if err != nil {
 			return err
 		}
-		runtime, err := scheduler.NewRuntime(ctx, cfg)
+		discovered, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+		if err != nil {
+			return err
+		}
+		runtime, err := scheduler.NewRuntime(ctx, cfg, eligibleRepositories(discovered))
 		if err != nil {
 			return err
 		}

@@ -54,21 +54,30 @@ func ledgerProjectRows(ctx context.Context, repos []orca.Repo, tuning config.Tun
 
 // discoverProjects joins the live Orca repository inventory, the Feishu
 // ledger's project table and each repository's own pipeline check (OF-42).
-// It never reads driver.toml's repositories: the caller re-runs it whenever
-// it needs the current eligible/rejected set.
-func discoverProjects(ctx context.Context, cfg config.Config, client *orca.Client) (projects.Result, error) {
+// It is the single project source for serve, the intake gateway and the
+// one-shot commands; each caller re-runs it whenever it needs the current
+// eligible/rejected set. rows is the ledger project table it joined against.
+func discoverProjects(ctx context.Context, cfg config.Config, client *orca.Client) (result projects.Result, rows []issues.LedgerProject, err error) {
 	orcaRepos, err := client.RepoList(ctx)
 	if err != nil {
-		return projects.Result{}, err
+		return projects.Result{}, nil, err
 	}
 	if cfg.FactoryRoot == "" {
-		return projects.Discover(ctx, orcaRepos, nil, nil), nil
+		return projects.Discover(ctx, orcaRepos, nil, nil), nil, nil
 	}
-	rows, err := ledgerProjectRows(ctx, orcaRepos, cfg.Tuning)
-	if err != nil {
-		return projects.Result{}, err
+	if rows, err = ledgerProjectRows(ctx, orcaRepos, cfg.Tuning); err != nil {
+		return projects.Result{}, nil, err
 	}
-	return projects.Discover(ctx, orcaRepos, rows, factoryChecker(cfg.FactoryRoot)), nil
+	return projects.Discover(ctx, orcaRepos, rows, factoryChecker(cfg.FactoryRoot)), rows, nil
+}
+
+// eligibleRepositories is every repository discovery lets this driver take over.
+func eligibleRepositories(result projects.Result) []config.Repository {
+	repos := make([]config.Repository, 0, len(result.Eligible))
+	for _, p := range result.Eligible {
+		repos = append(repos, p.Repository)
+	}
+	return repos
 }
 
 func runProjects(args []string) int {
@@ -88,7 +97,7 @@ func runProjects(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	result, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

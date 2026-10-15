@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -76,9 +77,19 @@ type Backend interface {
 }
 
 type Scheduler struct {
-	Logger           *slog.Logger
-	Config           config.Config
-	Backend          Backend
+	Logger  *slog.Logger
+	Config  config.Config
+	Backend Backend
+	// Repositories is every repository Tick reads: the eligible projects plus
+	// retired ones whose in-flight work has not finished yet.
+	Repositories []config.Repository
+	// Discover, when set, yields the projects this driver may take over;
+	// RefreshProjects re-runs it every DiscoverEvery (OF-43).
+	Discover         func(context.Context) (projects.Result, error)
+	DiscoverEvery    time.Duration
+	retired          map[string]bool
+	nextDiscover     time.Time
+	rejections       string
 	Now              func() time.Time
 	MergeQueue       []Ticket
 	Pauses           *pause.Manager
@@ -158,7 +169,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					s.discoveryQuotaPaused = false
 					remaining = s.checkLinearQuota(now)
 				}
-			} else if _, err := s.Backend.Snapshot(ctx, s.Config.Repositories); err == nil {
+			} else if _, err := s.Backend.Snapshot(ctx, s.Repositories); err == nil {
 				s.discoveryQuotaPaused = false
 				remaining = s.checkLinearQuota(now)
 			}
@@ -168,13 +179,15 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			return pauseErr
 		}
 	}
+	// A failed rediscovery is already logged and keeps the previous projects.
+	_ = s.RefreshProjects(ctx)
 	repos := map[string]config.Repository{}
 	allowed := map[string]bool{}
 	var problems []error
 	if pauseErr != nil {
 		problems = append(problems, pauseErr)
 	}
-	for _, r := range s.Config.Repositories {
+	for _, r := range s.Repositories {
 		repos[r.Path] = r
 		ok, err := s.Backend.AutomationDisabled(ctx, r)
 		allowed[r.Path] = err == nil && ok
@@ -201,7 +214,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	var err error
-	tickets, err = s.Backend.Snapshot(ctx, s.Config.Repositories)
+	tickets, err = s.Backend.Snapshot(ctx, s.Repositories)
 	if err != nil {
 		category := "other"
 		var admission *linear.DiscoveryQuotaError
@@ -231,10 +244,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return &snapshotError{reason: reason, err: err}
 	}
 	snapshot = true
+	s.dropIdleRetired(tickets)
 	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
 		for _, t := range tickets {
-			row := ObservationRow(t, s.Config.Repositories)
+			row := ObservationRow(t, s.Repositories)
 			switch {
 			case owned(t):
 			case t.Candidate:
@@ -433,6 +447,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		switch {
 		case !allowed[t.Repo] || s.Pauses.Paused(t.Repo):
 			reason = "paused"
+		case s.retired[t.Repo]:
+			reason = "retired"
 		case t.Blocked:
 			reason = "blocked"
 		case t.Legacy:

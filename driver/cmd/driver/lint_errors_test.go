@@ -60,8 +60,8 @@ func TestLintDryOutputErrors(t *testing.T) {
 		t.Errorf("legacy: %v", err)
 	}
 	trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ENG-1", Repo: "r", Owner: machine.OwnerMerge}}}
-	cfg := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}, Repositories: []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}}
-	if err := dryRunTick(ctx, cfg, trap, &lintFailWriter{err: failure, allow: 1}, time.Now); !errors.Is(err, failure) {
+	cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 2, StaleHours: 8}}
+	if err := dryRunTick(ctx, cfg, repos, trap, &lintFailWriter{err: failure, allow: 1}, time.Now); !errors.Is(err, failure) {
 		t.Errorf("merge-lane output: %v", err)
 	}
 }

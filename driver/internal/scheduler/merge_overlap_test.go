@@ -23,7 +23,7 @@ import (
 func overlapFixture(t *testing.T, conflict bool) *mergeFixture {
 	t.Helper()
 	f := newMergeFixture(t)
-	dir := f.config.Repositories[0].Path
+	dir := f.repos[0].Path
 	gitMergeTest(t, dir, "checkout", "main")
 	text := "first\n" + strings.Repeat("middle\n", 20) + "last\n"
 	if err := os.WriteFile(filepath.Join(dir, "shared"), []byte(text), 0600); err != nil {
@@ -79,7 +79,7 @@ func overlapFixture(t *testing.T, conflict bool) *mergeFixture {
 
 func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 	f := overlapFixture(t, true)
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	o := f.runtime.Orca.(*fakeOrca)
@@ -98,7 +98,7 @@ func TestRuntimeTextConflictStartsCorrection(t *testing.T) {
 		t.Fatalf("not repaired: puts=%d launch=%v receipt=%+v", f.puts, o.launches, p)
 	}
 	// New scheduler sees executor ownership, not the old merge handoff.
-	tickets, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+	tickets, err := f.runtime.Snapshot(context.Background(), f.repos)
 	if err != nil || len(tickets) != 1 || string(tickets[0].Owner) != "执行器" {
 		t.Fatalf("lost ownership: %+v %v", tickets, err)
 	}
@@ -108,7 +108,7 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 	for _, verdict := range []string{"green", "red", "infra"} {
 		t.Run(verdict, func(t *testing.T) {
 			f := overlapFixture(t, false)
-			dir := f.config.Repositories[0].Path
+			dir := f.repos[0].Path
 			calls := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path != "bash" {
@@ -143,7 +143,7 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 				}
 				return output, nil
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if calls != 1 {
 				t.Fatalf("gate not run: calls=%d err=%v", calls, err)
 			}
@@ -177,7 +177,7 @@ func (gateExit) ExitCode() int { return 1 }
 
 func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 	f := overlapFixture(t, false)
-	dir := f.config.Repositories[0].Path
+	dir := f.repos[0].Path
 	calls := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path != "bash" {
@@ -190,7 +190,7 @@ func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 	}
 	for round := 1; round <= 2; round++ {
 		rebuilt := *f.runtime
-		err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background())
+		err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 		if round == 1 && err == nil {
 			t.Fatal("first moving main must wait")
 		}
@@ -214,7 +214,7 @@ func TestRuntimeMergeCorrectionCapsPersistedBudget(t *testing.T) {
 					h["catchup_rounds"] = 1
 				}
 			})
-			if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			if len(f.runtime.Orca.(*fakeOrca).launches) != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
@@ -235,7 +235,7 @@ func TestRuntimeOverlapGreenCleanupFailureStillCompletes(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if !errors.Is(err, merge.ErrWorktreeCleanup) || f.puts != 1 || f.linear.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 无") {
 		t.Fatalf("lost successful merge: err=%v puts=%d state=%s receipts=%v", err, f.puts, f.linear.issue.State.Name, f.linear.bodies)
 	}
@@ -244,7 +244,7 @@ func TestRuntimeOverlapGreenCleanupFailureStillCompletes(t *testing.T) {
 func TestRuntimeMergeExplicitUnmergeableCannotSquash(t *testing.T) {
 	f := newMergeFixture(t)
 	f.prBody["mergeable"] = false // Inconsistent GitHub fields must not become approval.
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 {
 		t.Fatalf("false mergeability accepted: %v puts=%d", err, f.puts)
 	}
@@ -253,7 +253,7 @@ func TestRuntimeMergeExplicitUnmergeableCannotSquash(t *testing.T) {
 func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	f := overlapFixture(t, false)
-	dir := f.config.Repositories[0].Path
+	dir := f.repos[0].Path
 	script, err := os.ReadFile("../../../scripts/agent-gates/gate.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -276,7 +276,7 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
@@ -304,11 +304,11 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx)
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
 			if err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || len(f.linear.bodies) != 0 {
 				t.Fatalf("infrastructure spent correction: %v receipts=%v", err, f.linear.bodies)
 			}
-			dir := f.config.Repositories[0].Path
+			dir := f.repos[0].Path
 			if got := gitMergeTest(t, dir, "worktree", "list", "--porcelain"); strings.Count(got, "worktree ") != 1 {
 				t.Fatalf("leaked canceled worktree: %s", got)
 			}
@@ -324,7 +324,7 @@ func TestRuntimeOverlapGateLaneRedReturnsCorrection(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err != nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 1 {
 		t.Fatalf("valid gate red ignored: %v", err)
 	}
@@ -355,8 +355,8 @@ func TestRuntimeCorrectionRequeueGoesBehindExistingTicket(t *testing.T) {
 	fresh.CreatedAt = fresh.CreatedAt.Add(time.Minute)
 	later.rows = []linear.Comment{old, {Body: "归属: 执行器", CreatedAt: old.CreatedAt.Add(time.Second)}, fresh}
 	source := &mergeTickets{rows: []*mergeLinear{&later, f.linear}}
-	f.runtime.Clients[f.config.Repositories[0].Path] = source
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	f.runtime.Clients[f.repos[0].Path] = source
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" || later.issue.State.Name != "In Progress" {
@@ -371,7 +371,7 @@ func TestRuntimeUnknownProgressWaitsWithoutOverwriting(t *testing.T) {
 		t.Fatal(rawMarshalErr)
 	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: merge.ProgressPrefix + string(raw)})
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 || len(f.linear.bodies) != 0 {
 		t.Fatalf("unknown progress overwritten: %v %v", err, f.linear.bodies)
 	}
@@ -381,7 +381,7 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 	for _, cleanupFails := range []bool{false, true} {
 		t.Run(fmt.Sprint(cleanupFails), func(t *testing.T) {
 			f := overlapFixture(t, false)
-			dir := f.config.Repositories[0].Path
+			dir := f.repos[0].Path
 			calls := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path == "bash" {
@@ -397,10 +397,10 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil {
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 				t.Fatal("moving main must wait")
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if (!cleanupFails && err != nil) || (cleanupFails && !errors.Is(err, merge.ErrWorktreeCleanup)) {
 				t.Fatal(err)
 			}
@@ -440,7 +440,7 @@ func TestRuntimeMergeGateScriptReadRetainsSafeFailure(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if !errors.Is(err, want) {
 				t.Fatalf("lost read context identity: %v", err)
 			}
@@ -462,8 +462,8 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 		t.Run(policy, func(t *testing.T) {
 			t.Setenv("TMPDIR", t.TempDir())
 			f := overlapFixture(t, false)
-			dir := f.config.Repositories[0].Path
-			env := f.config.Repositories[0].Env
+			dir := f.repos[0].Path
+			env := f.repos[0].Env
 			env["AGENT_LANE2_GLOBS"] = "absorbed"
 			if policy != "manual" {
 				env["AGENT_LANE2_AUTOMERGE"] = "1"
@@ -504,7 +504,7 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 			})
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx)
+			err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
 			if policy == "approved" {
 				if err != nil || f.puts != 1 || f.linear.issue.State.Name != "Done" {
 					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)

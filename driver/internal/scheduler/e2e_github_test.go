@@ -107,7 +107,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	t.Setenv("LINEAR_API_KEY", "")
 	ctx := context.Background()
 	f := newMergeFixture(t)
-	repo := f.config.Repositories[0]
+	repo := f.repos[0]
 	gitMergeTest(t, repo.Path, "checkout", "main")
 	roles := filepath.Join(repo.Path, "scripts", "agent-gates", "roles")
 	if err := os.MkdirAll(roles, 0o700); err != nil {
@@ -134,7 +134,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	g.mu.Unlock()
 
 	client := f.runtime.Clients[repo.Path].(*issues.GitHub)
-	if err = f.runtime.initialize(ctx, f.config, func(context.Context, string) (LinearClient, error) {
+	if err = f.runtime.initialize(ctx, f.repos, func(context.Context, string) (LinearClient, error) {
 		t.Fatal("GitHub pipeline initialized a Linear client")
 		return nil, nil
 	}); err != nil {
@@ -171,7 +171,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 		return startErr
 	}
 	f.runtime.Orca = schedOrca
-	s := &Scheduler{Config: f.config, Backend: f.runtime}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 
 	if err = s.Tick(ctx); err != nil {
 		t.Fatalf("claim and launch tick: %v", err)

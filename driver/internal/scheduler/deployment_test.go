@@ -16,8 +16,8 @@ import (
 
 func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+	f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	deployState := "in_progress"
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -35,13 +35,13 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	bf.linear = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
 	dir := t.TempDir()
-	gitMergeTest(t, dir, "clone", f.config.Repositories[0].Path, ".")
+	gitMergeTest(t, dir, "clone", f.repos[0].Path, ".")
 	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p-b", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
-	f.config.Repositories = append(f.config.Repositories, br)
+	f.repos = append(f.repos, br)
 	f.runtime.Repositories[dir] = br
 	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
 	f.runtime.Clients[dir] = source
-	f.runtime.Clients[f.config.Repositories[0].Path] = source
+	f.runtime.Clients[f.repos[0].Path] = source
 	original := f.server.Config.Handler
 	bMerged := false
 	bPuts := 0
@@ -107,7 +107,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 			original.ServeHTTP(w, r)
 		}
 	})
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 1 || bPuts != 1 || b.issue.State.Name != "Done" || f.linear.issue.State.Name != "In Progress" {
 		t.Fatalf("repository isolation failed: err=%v a=%d b=%d state=%s", err, f.puts, bPuts, b.issue.State.Name)
 	}
@@ -117,7 +117,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err == nil {
+		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil {
 			t.Fatal("lost deployment barrier on restart")
 		}
 	}
@@ -127,7 +127,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	deployState = "completed"
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if smokes != 1 || f.puts != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"passed"`) {
@@ -138,7 +138,7 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 
 func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+	f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
 	conclusion := "failure"
 	original := f.server.Config.Handler
 	f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -151,7 +151,7 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 		}
 		original.ServeHTTP(w, r)
 	})
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
 		t.Fatalf("failure not durably escalated: %v", f.linear.bodies)
 	}
@@ -160,7 +160,7 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err == nil {
+		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil {
 			t.Fatal("restart/credential recovery bypassed human confirmation")
 		}
 	}
@@ -179,9 +179,9 @@ func (l *uncertainSmokeLinear) CreateComment(ctx context.Context, id, body strin
 }
 func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
-	f.runtime.Clients[f.config.Repositories[0].Path] = l
+	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path == "bash" {
@@ -193,7 +193,7 @@ func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) 
 		}
 		return runx.Run(ctx, s)
 	}
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if smokes != 1 {
 		t.Fatalf("smoke not executed via configured bash adapter: %d", smokes)
 	}
@@ -201,7 +201,7 @@ func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) 
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		_ = (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background())
+		_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 	}
 	if smokes != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) {
 		t.Fatalf("uncertain smoke replayed or not escalated: %d %v", smokes, f.linear.bodies)
@@ -210,7 +210,7 @@ func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) 
 
 func TestDeploymentManualRecoveryIsPinnedAndDurable(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path == "bash" {
@@ -219,7 +219,7 @@ func TestDeploymentManualRecoveryIsPinnedAndDurable(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	recovery, ok := any(f.runtime).(interface {
 		ResumeDeployment(context.Context, string, string, string, string, string, string, bool) error
 	})
@@ -241,7 +241,7 @@ func TestDeploymentManualRecoveryIsPinnedAndDurable(t *testing.T) {
 	}
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if smokes != 1 || f.linear.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"action":"confirm-passed"`) {
@@ -254,7 +254,7 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 		t.Run(damage, func(t *testing.T) {
 			f := newMergeFixture(t)
 			f.merged = true
-			f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
 			original := f.server.Config.Handler
 			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.Contains(r.URL.Path, "/actions/") {
@@ -266,7 +266,7 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 				}
 				original.ServeHTTP(w, r)
 			})
-			_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			var p map[string]any
 			if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
 				t.Fatal(err)
@@ -290,10 +290,10 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			}
 			f.linear.rows = append(f.linear.rows, linear.Comment{ID: "damaged", CreatedAt: time.Now(), Body: "归属: 无\nmerge-progress-v1: " + string(raw)})
 			f.linear.issue.State.Name = "Done"
-			f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = ""
+			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = ""
 			rebuilt := *f.runtime
 			rebuilt.GitHub = nil
-			if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err == nil {
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil {
 				t.Fatal("damaged durable barrier vanished with Done/config removal")
 			}
 		})
@@ -302,9 +302,9 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 
 func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
-	f.runtime.Clients[f.config.Repositories[0].Path] = l
+	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path == "bash" {
@@ -313,7 +313,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	// Introduce a later queue member after the first merge, preserving all external evidence.
 	next := *f.linear
 	next.issue.ID = "next"
@@ -330,7 +330,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
 	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
-	f.runtime.Clients[f.config.Repositories[0].Path] = source
+	f.runtime.Clients[f.repos[0].Path] = source
 	nextPuts := 0
 	nextMerged := false
 	original := f.server.Config.Handler
@@ -378,13 +378,13 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		}
 	})
 	// Config removal cannot erase the durable barrier or authorize replay.
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = ""
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = ""
 	f.linear.issue.State.Name = "Done"
 	f.linear.issue.Labels.Nodes = []linear.NamedID{{Name: "auto-failed"}}
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		_ = (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background())
+		_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 	}
 	if nextPuts != 0 || smokes != 1 {
 		t.Fatalf("later PR bypassed uncertain smoke: next=%d smoke=%d", nextPuts, smokes)
@@ -395,7 +395,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -411,9 +411,9 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 			smokes := 0
 			failed := true
 			if kind == "workflow" {
-				f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+				f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
 			} else {
-				f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+				f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 			}
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path == "bash" {
@@ -440,7 +440,7 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 				}
 				original.ServeHTTP(w, r)
 			})
-			_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			failed = false
 			action := "retry-workflow"
 			if kind == "smoke" {
@@ -454,7 +454,7 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 			}
 			rebuilt := *f.runtime
 			rebuilt.GitHub = nil
-			if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			wantSmoke := 0
@@ -470,9 +470,9 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 
 func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
-	f.runtime.Clients[f.config.Repositories[0].Path] = l
+	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 		if s.Path == "bash" {
@@ -481,7 +481,7 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	var p map[string]any
 	if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
 		t.Fatal(err)
@@ -495,7 +495,7 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	l.loseResult = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err == nil || smokes != 1 {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil || smokes != 1 {
 		t.Fatalf("intent reset replayed smoke: err=%v smokes=%d", err, smokes)
 	}
 }
