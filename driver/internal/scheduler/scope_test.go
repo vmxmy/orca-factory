@@ -81,7 +81,7 @@ func TestScopeActualChanges(t *testing.T) {
 			s := setup(f.fakeBackend)
 			s.Backend = f
 			if tc.disabled {
-				s.Config.Repositories[1].Env = map[string]string{"AGENT_SCOPE_AVOID": "0"}
+				s.Repositories[1].Env = map[string]string{"AGENT_SCOPE_AVOID": "0"}
 			}
 			f.tickets = []Ticket{
 				{ID: "live", Identifier: "ZII-1", Repo: "b", Owner: machine.OwnerMerge, UpdatedAt: s.Now(), Scope: []string{"src/*"}},

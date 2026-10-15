@@ -59,8 +59,8 @@ func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string,
 
 // dryRunTick runs one scheduler tick without the serve lock or pause manager, so
 // it neither competes with the running service nor writes probes or alerts.
-func dryRunTick(ctx context.Context, cfg config.Config, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
-	s := &scheduler.Scheduler{Config: cfg, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
+func dryRunTick(ctx context.Context, cfg config.Config, repos []config.Repository, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
+	s := &scheduler.Scheduler{Config: cfg, Repositories: repos, Backend: &dryBackend{Backend: backend, out: out}, Now: now}
 	err := s.Tick(ctx)
 	for _, t := range s.MergeQueue {
 		if _, writeErr := fmt.Fprintf(out, "would merge-lane %s\n", t.Identifier); writeErr != nil {

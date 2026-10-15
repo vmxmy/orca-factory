@@ -104,7 +104,7 @@ func TestSchedulerDecisionLogSkipsEveryCandidate(t *testing.T) {
 				s.Config.MaxInFlight = 1
 			case "token":
 				s.Config.TokenBucket.Capacity = 1
-				s.Config.Repositories[1].Env = map[string]string{"AGENT_SCOPE_AVOID": "0"}
+				s.Repositories[1].Env = map[string]string{"AGENT_SCOPE_AVOID": "0"}
 			case "paused":
 				s.Pauses = pause.New(s.clock, nil, nil)
 				s.Pauses.Pause(pause.Key{Repo: "b", Dependency: pause.GitHub}, time.Time{})

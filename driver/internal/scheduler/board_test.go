@@ -13,7 +13,7 @@ import (
 func TestMergeLaneMirrorsDecisionsOnOrcaBoard(t *testing.T) {
 	ctx := context.Background()
 	f := newMergeFixture(t)
-	tickets, err := f.runtime.Snapshot(ctx, f.config.Repositories)
+	tickets, err := f.runtime.Snapshot(ctx, f.repos)
 	if err != nil || len(tickets) != 1 || tickets[0].Handoff == nil {
 		t.Fatalf("snapshot=%+v err=%v", tickets, err)
 	}

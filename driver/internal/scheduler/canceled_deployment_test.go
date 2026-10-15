@@ -18,8 +18,8 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 			t.Run(status+"/"+kind, func(t *testing.T) {
 				ctx := context.Background()
 				f := newMergeFixture(t)
-				dir := f.config.Repositories[0].Path
-				env := f.config.Repositories[0].Env
+				dir := f.repos[0].Path
+				env := f.repos[0].Env
 				smokes, nextReads := 0, 0
 				original := f.server.Config.Handler
 				f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -50,7 +50,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 					}
 					return runx.Run(ctx, s)
 				}
-				if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(ctx); err == nil || f.puts != 1 {
+				if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx); err == nil || f.puts != 1 {
 					t.Fatalf("fixture did not persist failed/unknown deployment: err=%v puts=%d", err, f.puts)
 				}
 				next := *f.linear
@@ -77,7 +77,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 				for restart := 0; restart < 2; restart++ {
 					rebuilt := *f.runtime
 					rebuilt.GitHub = nil
-					rows, err := rebuilt.Snapshot(ctx, f.config.Repositories)
+					rows, err := rebuilt.Snapshot(ctx, f.repos)
 					found := false
 					for _, row := range rows {
 						if row.Identifier == "ENG-1" && DeploymentBarrier(row) {
@@ -94,7 +94,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 					if len(f.linear.bodies) != before {
 						t.Fatal("dry recovery wrote")
 					}
-					if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(ctx); err == nil {
+					if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(ctx); err == nil {
 						t.Error("canceled barrier disappeared from scheduler")
 					}
 				}
@@ -109,7 +109,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 				if !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"action":"confirm-passed"`) {
 					t.Fatal("manual recovery receipt missing")
 				}
-				rows, err := rebuilt.Snapshot(ctx, f.config.Repositories)
+				rows, err := rebuilt.Snapshot(ctx, f.repos)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -128,12 +128,12 @@ func TestCanceledUnmergedSnapshotDoesNotQueue(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			f := newMergeFixture(t)
 			f.linear.issue.State.Name = status
-			f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
-			rows, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+			rows, err := f.runtime.Snapshot(context.Background(), f.repos)
 			if err != nil || len(rows) != 0 {
 				t.Fatalf("unmerged canceled ticket survived snapshot: %+v err=%v", rows, err)
 			}
-			s := &Scheduler{Config: f.config, Backend: f.runtime}
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}

@@ -4,8 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 	"testing"
+	"time"
 )
 
 func TestDefaultMachineLimit(t *testing.T) {
@@ -47,7 +47,9 @@ func TestMachineAndRepositoryConfig(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := "max_in_flight=6\nrepositories=[" + `"` + repo + `"` + "]\n[token_bucket]\ncapacity=3\nrefill_per_second=0.5\n"
+	// A deployed driver.toml may still carry the retired repositories key; it
+	// must load and must not read the listed path (OF-43).
+	body := "max_in_flight=6\nrepositories=[\"/missing\"]\n[token_bucket]\ncapacity=3\nrefill_per_second=0.5\n"
 	if err := os.WriteFile(filepath.Join(dir, "driver.toml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +57,12 @@ func TestMachineAndRepositoryConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.MaxInFlight != 6 || len(c.Repositories) != 1 || c.Repositories[0].MaxInFlight != 2 || c.Repositories[0].StaleHours != 8 || c.TokenBucket.Capacity != 3 || c.TokenBucket.RefillPerSecond != 0.5 {
+	if c.MaxInFlight != 6 || c.TokenBucket.Capacity != 3 || c.TokenBucket.RefillPerSecond != 0.5 {
 		t.Fatalf("configuration: %+v", c)
+	}
+	r, err := LoadRepository(repo)
+	if err != nil || r.MaxInFlight != 2 || r.StaleHours != 8 {
+		t.Fatalf("repository: %+v %v", r, err)
 	}
 }
 

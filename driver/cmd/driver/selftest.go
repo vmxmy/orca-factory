@@ -32,13 +32,22 @@ func selftest(args []string) int {
 		return 1
 	}
 	cfg, err := config.Load(home)
-	if err != nil || len(cfg.Repositories) == 0 {
-		fmt.Fprintln(os.Stderr, "driver.toml lists no repositories")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	repo := cfg.Repositories[0]
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	discovered, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "project discovery failed:", err)
+		return 1
+	}
+	if len(discovered.Eligible) == 0 {
+		fmt.Fprintln(os.Stderr, "project discovery found no repository to take over")
+		return 1
+	}
+	repo := discovered.Eligible[0].Repository
 	failed := 0
 	check := func(name string, run func() error) {
 		if err := run(); err != nil {

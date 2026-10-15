@@ -3,8 +3,6 @@ package scheduler
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,14 +60,10 @@ func TestStoreClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 
 // The runner alert follows the code repository, whichever ledger holds tickets.
 func TestRunnerMonitorFollowsCodeRepository(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	if err := os.MkdirAll(filepath.Join(home, ".local", "state", "orca-go-isolated-runner"), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_GH_REPO": runnerhealth.Repository, "AGENT_FEISHU_PROJECT": "github.com/" + runnerhealth.Repository}
-	r := &Runtime{Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: env}}, Clients: map[string]LinearClient{"/repo": wrappedStore{}}}
-	if r.runnerMonitor() == nil {
+	r := &Runtime{runnerState: t.TempDir(), Clients: map[string]LinearClient{"/repo": wrappedStore{}}}
+	r.watchRunners(config.Repository{Path: "/repo", Env: env})
+	if r.Runners == nil {
 		t.Fatal("runner monitor disabled for a non-GitHub ledger")
 	}
 }

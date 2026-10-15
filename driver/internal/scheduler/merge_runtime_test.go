@@ -78,6 +78,7 @@ type mergeFixture struct {
 	requests     []string
 	runtime      *Runtime
 	config       config.Config
+	repos        []config.Repository
 	linear       *mergeLinear
 	head, main   string
 	puts         int
@@ -213,13 +214,14 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	}
 	f.linear = &mergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
 	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
-	f.config = config.Config{Repositories: []config.Repository{repo}, MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
+	f.repos = []config.Repository{repo}
+	f.config = config.Config{MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
 	f.runtime = &Runtime{Clients: map[string]LinearClient{dir: f.linear}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
 	return f
 }
 func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
 	f := newMergeFixture(t)
-	s := &Scheduler{Config: f.config, Backend: f.runtime}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +259,7 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 			case "review-red":
 				rewriteHandoff(t, f, func(h map[string]any) { h["review_output"] = `{"verdict":"red","step":"review"}` })
 			case "manual":
-				f.config.Repositories[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*"
+				f.repos[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*"
 			case "lane2-disabled":
 				rewriteHandoff(t, f, func(h map[string]any) {
 					h["lane"] = 2
@@ -265,7 +267,7 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 					h["gate_spec"] = strings.ReplaceAll(h["gate_spec"].(string), "LANE: 1", "LANE: 2")
 				})
 			case "lane3-path":
-				f.config.Repositories[0].Env["AGENT_LANE3_GLOBS"] = "feat*"
+				f.repos[0].Env["AGENT_LANE3_GLOBS"] = "feat*"
 			case "wrong-spec":
 				rewriteHandoff(t, f, func(h map[string]any) { h["gate_spec"] = "UNIT: unrelated\nCHECK: true\nSCOPE: other\nLANE: 1" })
 			case "missing-orca":
@@ -273,7 +275,7 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 			case "multiple-pr":
 				f.duplicatePR = true
 			}
-			s := &Scheduler{Config: f.config, Backend: f.runtime}
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 			err := s.Tick(context.Background())
 			if f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
 				t.Fatalf("unsafe merge %s: puts=%d state=%s", kind, f.puts, f.linear.issue.State.Name)
@@ -291,7 +293,7 @@ func TestRuntimeMergeRetainsOwnershipUntilCompletionConfirmed(t *testing.T) {
 			f := newMergeFixture(t)
 			f.linear.failDone = failure == "done"
 			f.linear.failFinal = failure == "final-comment"
-			s := &Scheduler{Config: f.config, Backend: f.runtime}
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 			if err := s.Tick(context.Background()); err == nil {
 				t.Fatal("expected unconfirmed completion")
 			}
@@ -302,7 +304,7 @@ func TestRuntimeMergeRetainsOwnershipUntilCompletionConfirmed(t *testing.T) {
 			f.linear.failFinal = false
 			rebuilt := *f.runtime
 			rebuilt.GitHub = nil
-			s = &Scheduler{Config: f.config, Backend: &rebuilt}
+			s = &Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -316,7 +318,7 @@ func TestRuntimeMergeRetainsOwnershipUntilCompletionConfirmed(t *testing.T) {
 func TestRuntimeMergeMissingDraftIsUnknown(t *testing.T) {
 	f := newMergeFixture(t)
 	delete(f.prBody, "draft")
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 {
 		t.Fatalf("missing draft was accepted: err=%v puts=%d", err, f.puts)
 	}
@@ -344,9 +346,9 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 			case "moving-main":
 				f.moveMain = true
 			case "invalid-deployment":
-				f.config.Repositories[0].Env["AGENT_DEPLOY_WORKFLOW"] = " "
+				f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = " "
 			case "invalid-smoke":
-				f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = " "
+				f.repos[0].Env["AGENT_SMOKE_CMD"] = " "
 			case "changed-head":
 				f.prBody["head"].(map[string]any)["sha"] = strings.Repeat("f", 40)
 			case "missing-handoff":
@@ -358,7 +360,7 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 			case "unknown-mergeability":
 				delete(f.prBody, "mergeable")
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if err == nil || f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
 				t.Fatalf("unsafe evidence %s: err=%v puts=%d state=%s", kind, err, f.puts, f.linear.issue.State.Name)
 			}
@@ -369,11 +371,11 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	f := newMergeFixture(t)
 	f.linear.failDone = true
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	f.linear.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for _, body := range f.linear.bodies {
@@ -436,24 +438,24 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
 	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
-	f.runtime.Clients[f.config.Repositories[0].Path] = source
+	f.runtime.Clients[f.repos[0].Path] = source
 	// Waiting head blocks the later PR, even when snapshot and updatedAt favor it.
 	f.checkState = "pending"
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background())
+		err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 		if err == nil || f.puts != 0 {
 			t.Fatalf("FIFO wait lost on restart: %v puts=%d", err, f.puts)
 		}
 	}
 	f.checkState = "success"
 	f.linear.failDone = true
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	f.linear.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" || next.issue.State.Name != "In Progress" {
@@ -477,13 +479,13 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 	bf.linear = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
 	dir := t.TempDir()
-	gitMergeTest(t, dir, "clone", f.config.Repositories[0].Path, ".")
+	gitMergeTest(t, dir, "clone", f.repos[0].Path, ".")
 	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p-b", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
-	f.config.Repositories = append(f.config.Repositories, br)
+	f.repos = append(f.repos, br)
 	f.runtime.Repositories[dir] = br
 	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
 	f.runtime.Clients[dir] = source
-	f.runtime.Clients[f.config.Repositories[0].Path] = source
+	f.runtime.Clients[f.repos[0].Path] = source
 	original := f.server.Config.Handler
 	bMerged := false
 	bPuts := 0
@@ -539,7 +541,7 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 			original.ServeHTTP(w, r)
 		}
 	})
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 || bPuts != 1 || b.issue.State.Name != "Done" || f.linear.issue.State.Name != "In Progress" {
 		t.Fatalf("repository isolation failed: err=%v a=%d b=%d state=%s", err, f.puts, bPuts, b.issue.State.Name)
 	}
@@ -549,14 +551,14 @@ func TestRuntimeMergeObservedWithoutIntentSurvivesCompletionFailure(t *testing.T
 	f := newMergeFixture(t)
 	f.merged = true
 	f.linear.failDone = true
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 		t.Fatal("expected Done failure")
 	}
 	f.linear.failDone = false
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
-		if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 			t.Fatalf("observed merged recovery stuck: %v", err)
 		}
 	}
@@ -567,7 +569,7 @@ func TestRuntimeMergeObservedWithoutIntentSurvivesCompletionFailure(t *testing.T
 func TestRuntimeMergeLostResponseAndReadbackRetainsIntent(t *testing.T) {
 	f := newMergeFixture(t)
 	f.loseReadback = true
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 		t.Fatal("expected readback failure")
 	}
 	if f.puts != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"phase":"merge-intent"`) {
@@ -575,11 +577,11 @@ func TestRuntimeMergeLostResponseAndReadbackRetainsIntent(t *testing.T) {
 	}
 	f.loseReadback = false
 	f.linear.failDone = true
-	_ = (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	f.linear.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
@@ -593,7 +595,7 @@ func TestRuntimeMergeUsesGateLaneRatherThanBriefEstimate(t *testing.T) {
 	rewriteHandoff(t, f, func(h map[string]any) {
 		h["gate_spec"] = strings.ReplaceAll(h["gate_spec"].(string), "LANE: 1", "LANE: 2")
 	})
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err != nil || f.puts != 1 {
 		t.Fatalf("gate lane 1 was overridden by brief estimate: err=%v puts=%d", err, f.puts)
 	}
@@ -602,7 +604,7 @@ func TestRuntimeMergeUsesGateLaneRatherThanBriefEstimate(t *testing.T) {
 func TestRuntimeMergeRejectsRepeatedCIPages(t *testing.T) {
 	f := newMergeFixture(t)
 	f.checksBody = fmt.Sprintf(`{"total_count":2,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, f.head)
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.puts != 0 {
 		t.Fatalf("repeated pages treated as complete: %v puts=%d", err, f.puts)
 	}
@@ -621,7 +623,7 @@ func TestRuntimeMergeIncompleteHandoffAndUnknownProgressWait(t *testing.T) {
 				raw := fmt.Sprintf(`{"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"unknown"}`, f.head, f.main, strings.Repeat("a", 40))
 				f.linear.rows = append(f.linear.rows, linear.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if err == nil || f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
 				t.Fatalf("invalid evidence accepted: %v puts=%d state=%s", err, f.puts, f.linear.issue.State.Name)
 			}
@@ -633,7 +635,7 @@ func TestRuntimeMergedPRWithAnotherCandidateDoesNotCompleteTicket(t *testing.T) 
 	f := newMergeFixture(t)
 	f.merged = true
 	f.duplicatePR = true
-	err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	if err == nil || f.linear.issue.State.Name != "In Progress" {
 		t.Fatalf("ambiguous ticket completed after first PR: %v state=%s", err, f.linear.issue.State.Name)
 	}
@@ -642,7 +644,7 @@ func TestRuntimeMergedPRWithAnotherCandidateDoesNotCompleteTicket(t *testing.T) 
 func TestRuntimeMergeCanceledTicketIsNotAdvanced(t *testing.T) {
 	f := newMergeFixture(t)
 	f.linear.issue.State.Name = "Canceled"
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 0 || f.linear.issue.State.Name != "Canceled" {

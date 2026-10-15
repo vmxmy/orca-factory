@@ -79,7 +79,7 @@ func TestPostmergeCleanupPreservesDone(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background())
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if failure == "done" {
 				if err == nil || len(o.calls) != 0 || len(gitCalls) != 0 {
 					t.Fatalf("cleanup on unconfirmed Done: err=%v calls=%v git=%v", err, o.calls, gitCalls)

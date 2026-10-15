@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,6 +16,8 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -45,14 +48,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if dry {
-		cfg, err := config.Load(home)
-		if err == nil {
-			var runtime *scheduler.Runtime
-			if runtime, err = scheduler.NewRuntime(ctx, cfg); err == nil {
-				err = dryRunTick(ctx, cfg, runtime, os.Stdout, time.Now)
-			}
-		}
-		if err != nil {
+		if err := serveDryRun(ctx, home, os.Stdout); err != nil {
 			return 1, err
 		}
 		return 0, nil
@@ -63,11 +59,17 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		runtime, err := scheduler.NewRuntime(ctx, cfg)
+		runtime, err := scheduler.NewRuntime(ctx, cfg, nil)
 		if err != nil {
 			return nil, nil, err
 		}
-		return &scheduler.Scheduler{Config: cfg, Backend: runtime}, runtime, nil
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval}
+		// Without a first project set serve has nothing to schedule; exit so
+		// the service manager restarts it instead of idling on an empty set.
+		if err := s.RefreshProjects(ctx); err != nil {
+			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
+		}
+		return s, runtime, nil
 	}, func(ctx context.Context) error {
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
@@ -82,6 +84,46 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		return 1, err
 	}
 	return 0, nil
+}
+
+// projectDiscoveryInterval spaces serve's project rediscovery: each run reads
+// Orca, the Feishu project table and every candidate's pipeline check.
+const projectDiscoveryInterval = 10 * time.Minute
+
+func projectSource(cfg config.Config) func(context.Context) (projects.Result, error) {
+	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
+	return func(ctx context.Context) (projects.Result, error) {
+		result, _, err := discoverProjects(ctx, cfg, client)
+		return result, err
+	}
+}
+
+// serveDryRun discovers projects once, prints them, and runs one write-free tick.
+func serveDryRun(ctx context.Context, home string, out io.Writer) error {
+	cfg, err := config.Load(home)
+	if err != nil {
+		return err
+	}
+	discovered, err := projectSource(cfg)(ctx)
+	if err != nil {
+		return err
+	}
+	for _, p := range discovered.Eligible {
+		if _, err := fmt.Fprintf(out, "project eligible %s\n", p.Path); err != nil {
+			return err
+		}
+	}
+	for _, r := range discovered.Rejected {
+		if _, err := fmt.Fprintf(out, "project rejected %s reason=%q\n", r.Path, r.Reason); err != nil {
+			return err
+		}
+	}
+	repos := eligibleRepositories(discovered)
+	runtime, err := scheduler.NewRuntime(ctx, cfg, repos)
+	if err != nil {
+		return err
+	}
+	return dryRunTick(ctx, cfg, repos, runtime, out, time.Now)
 }
 
 // statusBackend observes existing reads without issuing additional requests.
@@ -124,7 +166,7 @@ func (b *statusBackend) ProbeLinearQuota(ctx context.Context) error {
 	}
 	// Older backends refresh quota through Snapshot. Preserve that scheduler
 	// fallback only when the backend lacks the optional cheap probe.
-	_, err := b.Snapshot(ctx, b.scheduler.Config.Repositories)
+	_, err := b.Snapshot(ctx, b.scheduler.Repositories)
 	return err
 }
 
@@ -178,7 +220,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}, Linear: status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}}
 	for _, ticket := range backend.tickets {
 		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
-			row := scheduler.ObservationRow(ticket, s.Config.Repositories)
+			row := scheduler.ObservationRow(ticket, s.Repositories)
 			if p := ticket.Progress; p != nil && p.Deployment != nil {
 				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
 			}
@@ -242,6 +284,15 @@ func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.T
 		AdvanceMerges(context.Context, []scheduler.Ticket) error
 	}); ok {
 		return source.AdvanceMerges(ctx, tickets)
+	}
+	return nil
+}
+
+func (b *statusBackend) Track(ctx context.Context, repo config.Repository) error {
+	if source, ok := b.Backend.(interface {
+		Track(context.Context, config.Repository) error
+	}); ok {
+		return source.Track(ctx, repo)
 	}
 	return nil
 }

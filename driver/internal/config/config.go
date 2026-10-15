@@ -27,8 +27,7 @@ type Repository struct {
 	Env         map[string]string
 }
 type Config struct {
-	MaxInFlight  int
-	Repositories []Repository
+	MaxInFlight int
 	// FactoryRoot is this machine's orca-factory production checkout, whose
 	// bin/orca-factory the projects package runs to check a candidate
 	// repository's pipeline (OF-42). Empty when unconfigured.
@@ -38,20 +37,20 @@ type Config struct {
 }
 
 // Load reads ~/.config/orca-factory/driver.toml relative to the supplied home.
-// A missing machine file is an empty repository list with default limits.
+// A missing machine file yields default limits. It lists no repositories:
+// serve discovers them (projects.Discover, OF-43).
 func Load(home string) (Config, error) {
 	raw := struct {
-		MaxInFlight  int         `toml:"max_in_flight"`
-		Repositories []string    `toml:"repositories"`
-		FactoryRoot  string      `toml:"factory_root"`
-		TokenBucket  TokenBucket `toml:"token_bucket"`
-		Scheduler    *Scheduler  `toml:"scheduler"`
-		Linear       *Linear     `toml:"linear"`
-		GitHub       *GitHub     `toml:"github"`
-		Orca         *Orca       `toml:"orca"`
-		Ledger       *Ledger     `toml:"ledger"`
-		Status       *Status     `toml:"status"`
-		Runx         *Runx       `toml:"runx"`
+		MaxInFlight int         `toml:"max_in_flight"`
+		FactoryRoot string      `toml:"factory_root"`
+		TokenBucket TokenBucket `toml:"token_bucket"`
+		Scheduler   *Scheduler  `toml:"scheduler"`
+		Linear      *Linear     `toml:"linear"`
+		GitHub      *GitHub     `toml:"github"`
+		Orca        *Orca       `toml:"orca"`
+		Ledger      *Ledger     `toml:"ledger"`
+		Status      *Status     `toml:"status"`
+		Runx        *Runx       `toml:"runx"`
 	}{MaxInFlight: 4, TokenBucket: TokenBucket{Capacity: 4, RefillPerSecond: 1}}
 	path := filepath.Join(home, ".config", "orca-factory", "driver.toml")
 	data, err := os.ReadFile(path)
@@ -107,32 +106,13 @@ func Load(home string) (Config, error) {
 		}
 		result.FactoryRoot = filepath.Clean(root)
 	}
-	seen := map[string]bool{}
-	for _, repo := range raw.Repositories {
-		if strings.HasPrefix(repo, "~/") {
-			repo = filepath.Join(home, repo[2:])
-		}
-		if !filepath.IsAbs(repo) {
-			return Config{}, errors.New("repository path must be absolute")
-		}
-		repo = filepath.Clean(repo)
-		if seen[repo] {
-			return Config{}, errors.New("duplicate repository")
-		}
-		seen[repo] = true
-		repository, err := LoadRepository(repo)
-		if err != nil {
-			return Config{}, err
-		}
-		result.Repositories = append(result.Repositories, repository)
-	}
 	return result, nil
 }
 
 // LoadRepository reads one repository's own pipeline profile
 // (scripts/agent-gates/agent-graph.env) at the given absolute, cleaned path,
-// returning its resolved limits and full environment. Shared by Load's
-// driver.toml repositories list and the projects package's discovery (OF-42).
+// returning its resolved limits and full environment. Used by the projects
+// package's discovery (OF-42) and by commands run at a repository root.
 func LoadRepository(path string) (Repository, error) {
 	f, err := os.Open(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
 	if err != nil {

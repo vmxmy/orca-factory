@@ -84,7 +84,7 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	cp := map[string]any{"Run": "run_1", "Task": "task_1", "Worktree": f.config.Repositories[0].Path, "Baseline": f.main}
+	cp := map[string]any{"Run": "run_1", "Task": "task_1", "Worktree": f.repos[0].Path, "Baseline": f.main}
 	b, bMarshalErr := json.Marshal(cp)
 	if bMarshalErr != nil {
 		t.Fatal(bMarshalErr)
@@ -102,7 +102,7 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	}
 	pr.HTMLURL = "https://example.test/pr/1"
 	l := &recoveredMergeLinear{f.linear}
-	e := &executor.Executor{Orca: &recoveredMergeOrca{t: t}, Linear: l, GitHub: &recoveredMergePR{pr: pr}, Tools: &recoveredMergeTools{head: f.head, base: f.main}, Config: executor.Config{Repo: f.config.Repositories[0].Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: root}, Now: time.Now}
+	e := &executor.Executor{Orca: &recoveredMergeOrca{t: t}, Linear: l, GitHub: &recoveredMergePR{pr: pr}, Tools: &recoveredMergeTools{head: f.head, base: f.main}, Config: executor.Config{Repo: f.repos[0].Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: root}, Now: time.Now}
 	ticket := executor.Ticket{ID: "id", Identifier: "ENG-1", Title: "test", Todo: "implement", Check: "true", Scope: "feature", Lane: 1}
 	result, err := e.Start(context.Background(), ticket)
 	if err != nil {
@@ -119,8 +119,8 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 	if result.DispatchID != "" {
 		t.Fatal("resume invented dispatch")
 	}
-	f.runtime.Clients[f.config.Repositories[0].Path] = l
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	f.runtime.Clients[f.repos[0].Path] = l
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.linear.issue.State.Name != "Done" {

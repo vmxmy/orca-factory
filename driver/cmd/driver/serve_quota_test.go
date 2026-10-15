@@ -74,9 +74,9 @@ func TestServeQuotaProbeBackoffAndRecovery(t *testing.T) {
 		Backend: backend, Now: func() time.Time { return now },
 		Config: config.Config{
 			MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1},
-			Repositories: []config.Repository{{Path: "/quota-repo", MaxInFlight: 1}},
-			Tuning:       config.Tuning{Scheduler: config.DefaultScheduler()},
+			Tuning: config.Tuning{Scheduler: config.DefaultScheduler()},
 		},
+		Repositories: []config.Repository{{Path: "/quota-repo", MaxInFlight: 1}},
 	}
 	steps := []struct {
 		minute int
@@ -144,9 +144,9 @@ func TestServeQuotaLegacySnapshotRecovery(t *testing.T) {
 		Backend: backend, Now: func() time.Time { return now },
 		Config: config.Config{
 			MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1},
-			Repositories: []config.Repository{{Path: "/quota-repo", MaxInFlight: 1}},
-			Tuning:       config.Tuning{Scheduler: config.DefaultScheduler()},
+			Tuning: config.Tuning{Scheduler: config.DefaultScheduler()},
 		},
+		Repositories: []config.Repository{{Path: "/quota-repo", MaxInFlight: 1}},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -84,17 +84,18 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 		for _, badFirst := range []bool{false, true} {
 			name := fmt.Sprintf("readFailure=%v/badFirst=%v", failedRead, badFirst)
 			t.Run(name, func(t *testing.T) {
-				cfg := setup(nil).Config
-				cfg.Repositories[0].Path = "/a"
-				cfg.Repositories[0].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-a", "AGENT_LINEAR_PROJECT": "p-a"}
-				cfg.Repositories[1].Path = "/b"
-				cfg.Repositories[1].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-b", "AGENT_LINEAR_PROJECT": "p-b"}
+				base := setup(nil)
+				cfg, repos := base.Config, base.Repositories
+				repos[0].Path = "/a"
+				repos[0].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-a", "AGENT_LINEAR_PROJECT": "p-a"}
+				repos[1].Path = "/b"
+				repos[1].Env = map[string]string{"AGENT_LINEAR_TEAM": "team-b", "AGENT_LINEAR_PROJECT": "p-b"}
 				oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":false,"runContext":{"path":"/a"}},{"enabled":true,"runContext":{"path":"/b"}}]}`)}}
 				if failedRead {
 					oc.failRead = 2
 				}
 				if badFirst {
-					cfg.Repositories[0], cfg.Repositories[1] = cfg.Repositories[1], cfg.Repositories[0]
+					repos[0], repos[1] = repos[1], repos[0]
 					if failedRead {
 						oc.failRead = 1
 					}
@@ -104,7 +105,7 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 					return []byte(`{"ok":true,"result":{"issue":{"description":""}}}`), nil
 				}}
 				var initialized []string
-				err := r.initialize(context.Background(), cfg, func(_ context.Context, team string) (LinearClient, error) {
+				err := r.initialize(context.Background(), repos, func(_ context.Context, team string) (LinearClient, error) {
 					initialized = append(initialized, team)
 					return lc, nil
 				})
@@ -117,7 +118,7 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 				// Even after B's automation is disabled, it needs a restart to
 				// acquire its client; A must still be inspected and claimed.
 				oc.automations = receipt(`{"automations":[]}`)
-				s := &Scheduler{Config: cfg, Backend: r}
+				s := &Scheduler{Config: cfg, Repositories: repos, Backend: r}
 				err = s.Tick(context.Background())
 				if err == nil || !strings.Contains(err.Error(), "repository refused") {
 					t.Fatalf("refusal was not reported: %v", err)
@@ -131,10 +132,10 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 }
 
 func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
-	cfg := setup(nil).Config
+	repos := setup(nil).Repositories
 	oc := &fakeOrca{automations: receipt(`{"automations":[{"enabled":true,"runContext":{"path":"a"}},{"enabled":true,"runContext":{"path":"b"}}]}`)}
 	r := &Runtime{Orca: oc}
-	err := r.initialize(context.Background(), cfg, func(context.Context, string) (LinearClient, error) {
+	err := r.initialize(context.Background(), repos, func(context.Context, string) (LinearClient, error) {
 		t.Fatal("initialized client for refused repository")
 		return nil, nil
 	})

@@ -38,7 +38,7 @@ func fakeOrcaRepoList(t *testing.T, path, canonicalKey string) string {
 // discovered repository for that reason alone (OF-42).
 func TestDiscoverProjectsFactoryRootUnconfigured(t *testing.T) {
 	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, "/repo/orca-factory", "github.com/vmxmy/orca-factory"))
-	result, err := discoverProjects(context.Background(), config.Config{}, &orca.Client{})
+	result, _, err := discoverProjects(context.Background(), config.Config{}, &orca.Client{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -131,7 +131,7 @@ func TestStatusPushShowsBackendURLHeldAndBlockReason(t *testing.T) {
 		{ID: "h", Identifier: "ZII-892", Repo: "a", Candidate: true, Blocked: true, BlockersIncomplete: true, Held: true},
 	}}
 	s := setup(f)
-	s.Config.Repositories[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github"}
+	s.Repositories[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github"}
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}

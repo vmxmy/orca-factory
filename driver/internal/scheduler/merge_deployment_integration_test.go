@@ -28,9 +28,9 @@ func (l *moveAfterIntent) CreateComment(ctx context.Context, id, body string) (l
 }
 func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "integration-smoke"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "integration-smoke"
 	rewriteHandoff(t, f, func(h map[string]any) { h["corrections"] = 2; h["infra"] = 1; h["attempt"] = 2 })
-	dir := f.config.Repositories[0].Path
+	dir := f.repos[0].Path
 	l := &moveAfterIntent{mergeLinear: f.linear, move: func() {
 		gitMergeTest(t, dir, "checkout", "main")
 		gitMergeTest(t, dir, "commit", "--allow-empty", "-m", "main moved after intent")
@@ -45,10 +45,10 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 		t.Fatal("moving main must wait")
 	}
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var p merge.Progress
@@ -79,7 +79,7 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 		t.Fatal(rawMarshalErr)
 	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: "归属: 执行器 term=-\n" + merge.ProgressPrefix + string(raw)})
-	rows, err := f.runtime.Snapshot(context.Background(), f.config.Repositories)
+	rows, err := f.runtime.Snapshot(context.Background(), f.repos)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {
 		t.Fatalf("unmerged correction mistaken for deployment: %+v %v", rows, err)
 	}
@@ -91,7 +91,7 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 		t.Fatal(rawMarshalErr)
 	}
 	f.linear.rows = append(f.linear.rows, linear.Comment{CreatedAt: time.Now().Add(2 * time.Second), Body: "归属: 合并通道\n" + merge.HandoffPrefix + string(raw)})
-	rows, err = f.runtime.Snapshot(context.Background(), f.config.Repositories)
+	rows, err = f.runtime.Snapshot(context.Background(), f.repos)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {
 		t.Fatalf("old unmerged intent blocks repaired head: %+v %v", rows, err)
 	}
@@ -99,9 +99,9 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 
 func TestDeploymentConfigReservedAtFirstIntentAfterWaiting(t *testing.T) {
 	f := newMergeFixture(t)
-	f.config.Repositories[0].Env["AGENT_SMOKE_CMD"] = "integration-smoke"
+	f.repos[0].Env["AGENT_SMOKE_CMD"] = "integration-smoke"
 	f.checkState = "pending"
-	if err := (&Scheduler{Config: f.config, Backend: f.runtime}).Tick(context.Background()); err == nil || f.puts != 0 {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil || f.puts != 0 {
 		t.Fatalf("expected pre-intent wait: %v", err)
 	}
 	smokes := 0
@@ -115,7 +115,7 @@ func TestDeploymentConfigReservedAtFirstIntentAfterWaiting(t *testing.T) {
 	f.checkState = "success"
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
-	if err := (&Scheduler{Config: f.config, Backend: &rebuilt}).Tick(context.Background()); err != nil {
+	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if smokes != 1 || f.puts != 1 {

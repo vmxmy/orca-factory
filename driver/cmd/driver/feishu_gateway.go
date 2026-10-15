@@ -193,19 +193,10 @@ func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, erro
 // runtime. Every other ledger row is still returned, carrying its rejection
 // reason, so the gateway can answer a thread that names it specifically.
 func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, error) {
-	orcaRepos, err := client.RepoList(ctx)
+	result, rows, err := discoverProjects(ctx, cfg, client)
 	if err != nil {
 		return nil, err
 	}
-	var rows []issues.LedgerProject
-	var checker projects.Checker
-	if cfg.FactoryRoot != "" {
-		checker = factoryChecker(cfg.FactoryRoot)
-		if rows, err = ledgerProjectRows(ctx, orcaRepos, cfg.Tuning); err != nil {
-			return nil, err
-		}
-	}
-	result := projects.Discover(ctx, orcaRepos, rows, checker)
 	reasons := make(map[string]projects.Reason, len(result.Rejected))
 	for _, rejected := range result.Rejected {
 		reasons[rejected.Remote] = rejected.Reason

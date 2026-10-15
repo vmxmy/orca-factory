@@ -482,7 +482,7 @@ func TestLiveBatchHeadroomRefusalUsesCheapProbeRecovery(t *testing.T) {
 	f := liveBatchSetup(t)
 	r, repo := liveBatchRuntime(t, f)
 	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
-	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Repositories: []config.Repository{repo}}
 	f.mode.Store("quota-complexity")
 	if err := s.Tick(context.Background()); err == nil {
 		t.Fatal("headroom refusal was hidden")
@@ -521,7 +521,7 @@ func TestLiveBatchAdmissionPauseRequiresSuccessfulProbe(t *testing.T) {
 			r, repo := liveBatchRuntime(t, f)
 			now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
 			start := now
-			s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+			s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Repositories: []config.Repository{repo}}
 			f.mode.Store(mode)
 			if err := s.Tick(context.Background()); err == nil || !s.Pauses.Paused("") {
 				t.Fatalf("refusal did not pause: %v", err)
@@ -556,7 +556,7 @@ func TestLiveBatchCanceledProbeKeepsAdmissionPauseAndBackoff(t *testing.T) {
 	f := liveBatchSetup(t)
 	r, repo := liveBatchRuntime(t, f)
 	now := time.Date(2026, 10, 7, 0, 0, 0, 0, time.UTC)
-	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Repositories: []config.Repository{repo}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+	s := &scheduler.Scheduler{Backend: refusedLiveRuntime{r}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 1, TokenBucket: config.TokenBucket{Capacity: 1, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}, Repositories: []config.Repository{repo}}
 	f.mode.Store("quota-above-resume")
 	_ = s.Tick(context.Background())
 	beforeIssues, beforeComments := f.snapshots.Load(), f.comments.Load()
