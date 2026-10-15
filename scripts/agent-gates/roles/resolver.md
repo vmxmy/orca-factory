@@ -26,6 +26,7 @@
 - 在真实 PR head 上运行 gate；lane 2 使用仓库配置的独立 reviewer。保留原始完整输出，不伪造 green。
 - 确认推送成功、head 与提交一致。没有 PR 时可先提交 open-pr；调度器创建或复用 PR 后会开启下一次处置，届时核对票据关联、等待 CI，再提交 merge handoff。已有 PR 的检查未通过就修复，不能提交 merge 决策。
 - 新 handoff 按 `driver/internal/merge/evidence.go` 的字段和 `validation.go` 的证据格式填写，ticket_id、identifier、repository 必须与输入一致。
+- merge handoff 的 `repository` 填处置证据顶层的 `Repository`，即仓库配置的 `AGENT_GH_REPO`，不是本机路径。
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。
 - 未改动且仅补充审批时可原样返回已有 handoff；任何字段或 head 改动都须重新验证并使用新 queue_id。
 - 部署恢复先核对副作用：确认成功用 confirm-passed；workflow 需重试用 retry-workflow；已执行 smoke 确认可安全重试才用 retry-smoke。

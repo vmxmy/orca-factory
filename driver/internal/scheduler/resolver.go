@@ -111,14 +111,15 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 		}
 		contextComments[i].Body = strings.Join(lines, "\n")
 	}
+	env := r.Repositories[t.Repo].Env
 	evidence, err := json.Marshal(struct {
-		Ticket   Ticket
-		Comments []linear.Comment
-	}{contextTicket, contextComments})
+		Repository string
+		Ticket     Ticket
+		Comments   []linear.Comment
+	}{env["AGENT_GH_REPO"], contextTicket, contextComments})
 	if err != nil {
 		return err
 	}
-	env := r.Repositories[t.Repo].Env
 	tier := env["AGENT_ROLE_RESOLVER"]
 	if tier == "" {
 		tier = env["AGENT_TIER_STRONG"]

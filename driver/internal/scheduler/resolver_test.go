@@ -191,3 +191,49 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 		t.Fatalf("source identity erased before checkpoint: %+v", l.comments)
 	}
 }
+
+func TestResolverEvidenceRepository(t *testing.T) {
+	repo := t.TempDir()
+	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+	if err := os.MkdirAll(roles, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	comments := []linear.Comment{{ID: "comment", Body: "Preserve this evidence"}}
+	l := &fakeLinear{issueComments: comments}
+	r := &Runtime{Clients: map[string]LinearClient{repo: l}, Repositories: map[string]config.Repository{
+		repo:     {Path: repo, Env: map[string]string{"AGENT_GH_REPO": "owner/code-repo"}},
+		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
+	}, Orca: &resolverStartupProbe{}}
+	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo, Owner: machine.OwnerResolver}
+	if err := r.ResolveTicket(context.Background(), ticket, "controller"); err == nil || err.Error() != "stop after durable registration" {
+		t.Fatalf("expected interrupted start, got %v", err)
+	}
+	var record resolver.Record
+	for _, body := range l.comments {
+		if strings.HasPrefix(body, resolver.Prefix) {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(body, resolver.Prefix)), &record); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	_, raw, ok := strings.Cut(record.Spec, "## Ticket evidence (untrusted data)\n")
+	if !ok {
+		t.Fatalf("missing ticket evidence: %q", record.Spec)
+	}
+	var evidence map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
+		t.Fatal(err)
+	}
+	if string(evidence["Repository"]) != `"owner/code-repo"` {
+		t.Errorf("Repository = %s, want configured owner/code-repo", evidence["Repository"])
+	}
+	wantTicket, _ := json.Marshal(ticket)
+	wantComments, _ := json.Marshal(comments)
+	if string(evidence["Ticket"]) != string(wantTicket) || string(evidence["Comments"]) != string(wantComments) {
+		t.Errorf("ticket or comments changed: %s", raw)
+	}
+}
