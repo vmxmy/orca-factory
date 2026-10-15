@@ -57,7 +57,7 @@ ledger_preflight() {
     [[ -f "$entry" ]] || fail "ledger conflict: not a regular file $entry"
     if ! cmp -s "$CORE/ledger.sh" "$entry"; then
       digest="$(git hash-object --no-filters "$entry")"
-      [[ "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 || "$digest" == 2c64501f4427c07f115f4990e7b2d50b9ab15925 || "$digest" == 3c9f94987910c8727ef12605d332bd88e928f770 ]] \
+      [[ "$digest" == 9d42e98a250df669c2771c75cb27315b4026dcf3 || "$digest" == b34287c3b5e5fbdd6cd03e5a26e2a8572a7fe1a0 || "$digest" == 2c64501f4427c07f115f4990e7b2d50b9ab15925 || "$digest" == 3c9f94987910c8727ef12605d332bd88e928f770 ]] \
         || fail "ledger conflict: unknown or customized entry $entry"
     fi
   fi
@@ -82,7 +82,7 @@ prune_preflight() {
     [[ -f "$entry" ]] || fail "prune conflict: not a regular file $entry"
     if ! cmp -s "$CORE/prune-run-worktrees.sh" "$entry"; then
       digest="$(git hash-object --no-filters "$entry")"
-      [[ "$digest" == 9838bcaf96c526f7f0c9f1c08e1a16beb8d72825 ]] \
+      [[ "$digest" == 671b29fc3da917cf3b73204f21c6f2700441c058 || "$digest" == 5063806453048b0afaca86e06f58ce9d78506fff || "$digest" == 9838bcaf96c526f7f0c9f1c08e1a16beb8d72825 ]] \
         || fail "prune conflict: unknown or customized entry $entry"
     fi
   fi
