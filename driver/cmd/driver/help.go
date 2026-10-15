@@ -49,6 +49,8 @@ Commands:
       [写入] core/ledger.sh 的兼容入口。stats 只读。
   prune-worktrees [--contract-version]
       [写入] 清理已结束的定时任务 worktree，需要 AGENT_REPO_PATH 与 AGENT_RUN_WORKTREE_PREFIX。
+  feishu-gateway
+      [写入] 飞书长连接需求入口，按群与白名单过滤并回复话题。
   install [--dry-run]
       [写入] 把当前二进制装到 ~/.local/bin，写 systemd user unit 并 daemon-reload。
       --dry-run 只打印步骤。
