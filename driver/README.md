@@ -231,11 +231,32 @@ wait_delay = "100ms"        # 子进程退出的收尾等待
 
 `orca-factory-driver feishu-gateway` 独立运行官方 Go SDK 长连接，订阅
 `im.message.receive_v1`，断线自动重连，SIGTERM/SIGINT 取消连接并退出。
-它只处理指定群内 @ 本机器人的用户消息。白名单内回复“已收到，需求整理功能即将上线”，
-名单外回复“无权限”，两者都在话题内回复。当前版本不调用 Agent、不创建票据。
+它只处理指定群内 @ 本机器人的用户消息。名单外回复“无权限”；白名单内的消息交给
+需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文加
+“继续请 @需求助手”作为话题回复。当前版本不创建票据（OF-15）。
 话题内每条消息仍需 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，
 事件中的 `thread_id` 才是既有话题身份。对收到的 message_id 使用 `reply_in_thread=true`
 即可创建或延续该话题。
+
+每个话题是一次会话，以话题根消息 ID 为键：不带 `thread_id` 的消息自己成为根，
+带 `thread_id` 的消息的 `root_id` 指向根。会话状态保存在状态目录的
+`intake/<根消息ID>.json`（claude 会话 ID、需求人 open_id、状态、最后消息时间）。
+同一话题串行处理；全局同时运行的 Agent 不超过 `AGENT_INTAKE_CONCURRENCY`，
+其余排队并先回复“排队中”。7 天无消息的话题关闭，再 @ 时提示重新发起。
+Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stderr 记录，会话保留。
+
+每轮执行一次 `claude -p --output-format json`：首轮 `--session-id <新ID>`，之后
+`--resume <ID>`；消息正文经 stdin 传入。Agent 的安全边界：
+
+- 工作目录是只读检出 `~/.cache/orca-factory/intake-checkout`，为来源仓库的分离 HEAD
+  worktree；每个新会话开始前 fetch 并切到 `origin/main`。
+- `--tools Read,Grep,Glob,Skill`，`--restricted`（文件工具限于工作目录，忽略用户、
+  项目和本地 settings 及其 hooks），`--permission-mode dontAsk`（需授权的调用直接拒绝），
+  `--strict-mcp-config`（不加载 MCP），`--settings` 再拒绝读取 `~/.claude`、`~/.config`、
+  `~/.local/state`、`~/.ssh`。
+- 环境只含 `PATH` 与 `HOME`；模型与 effort 通过 `--model`、`--effort` 传入。
+  飞书、GitHub 凭据不进入 Agent 进程。
+- `--restricted` 不加载用户技能目录，grilling 技能因此不可用；角色说明自带追问规则。
 
 在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
 `im.message.receive_v1`，申请 `im:message.group_at_msg:readonly` 和
@@ -254,6 +275,15 @@ wait_delay = "100ms"        # 子进程退出的收尾等待
 | `AGENT_FEISHU_INTAKE_CHAT` | 唯一允许的需求群 chat_id |
 | `AGENT_FEISHU_INTAKE_USERS` | 可对话成员 open_id，逗号分隔 |
 | `AGENT_FEISHU_ENDPOINT` | 可选，默认 `https://open.feishu.cn`，同时用于 HTTP 与长连接发现 |
+| `AGENT_INTAKE_CLAUDE` | 可选，claude 可执行文件的绝对路径；默认在网关 `PATH` 中查找 `claude`。服务 `PATH` 不含 npm 全局目录时必须设置（取 bash 中 `command -v claude` 的结果，不要用 shell 别名） |
+
+Agent 的来源仓库是 `driver.toml` 中唯一一个 `AGENT_ISSUE_BACKEND=feishu` 的仓库；
+不是恰好一个时网关拒绝启动。该仓库 `agent-graph.env` 的以下变量生效：
+
+| 变量 | 含义 |
+| --- | --- |
+| `AGENT_ROLE_INTAKE` | Agent 档位，格式 `claude:<model>:<effort>`；为空时用 `AGENT_TIER_STRONG` |
+| `AGENT_INTAKE_CONCURRENCY` | 同时运行的 Agent 数，默认 2 |
 
 机器人 open_id 可从已确认 @ 本应用的消息事件 `mentions` 中取得，核对
 `mentioned_type=bot`；不要从任意用户提交的字符串配置该身份。
