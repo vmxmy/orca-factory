@@ -231,10 +231,12 @@ wait_delay = "100ms"        # 子进程退出的收尾等待
 
 `orca-factory-driver feishu-gateway` 独立运行官方 Go SDK 长连接，订阅
 `im.message.receive_v1`，断线自动重连，SIGTERM/SIGINT 取消连接并退出。
-它只处理指定群内 @ 本机器人的用户消息。名单外回复“无权限”；白名单内的消息交给
-需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文加
-“继续请 @需求助手”作为话题回复。当前版本不创建票据（OF-15）。
-话题内每条消息仍需 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，
+它只处理指定群内 @ 本机器人发起的新话题。名单外回复“无权限”；白名单内的消息交给
+需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文
+作为话题回复。当前版本不创建票据（OF-15）。
+已开通 `im:message.group_msg` 后，话题内无需 @ 也能继续对话：该话题已有网关自己开的
+会话、会话未关闭、发送者在名单内，三者同时成立才续接；否则静默丢弃，不回复、不写
+任何状态。开新话题仍须 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，
 事件中的 `thread_id` 才是既有话题身份。对收到的 message_id 使用 `reply_in_thread=true`
 即可创建或延续该话题。
 
