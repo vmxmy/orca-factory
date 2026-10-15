@@ -24,19 +24,26 @@ type notifyStore struct {
 	fakeLinear
 	writeErr, readErr error
 	reads, writes     int
+	commentsByID      map[string][]linear.Comment
 }
 
-func (f *notifyStore) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (f *notifyStore) ListComments(_ context.Context, id string) ([]linear.Comment, error) {
 	f.reads++
+	if f.commentsByID != nil {
+		return f.commentsByID[id], f.readErr
+	}
 	return f.issueComments, f.readErr
 }
-func (f *notifyStore) CreateComment(_ context.Context, _ string, body string) (linear.Comment, error) {
+func (f *notifyStore) CreateComment(_ context.Context, id string, body string) (linear.Comment, error) {
 	f.writes++
 	if f.writeErr != nil {
 		return linear.Comment{}, f.writeErr
 	}
 	c := linear.Comment{ID: "event", Body: body}
 	f.issueComments = append(f.issueComments, c)
+	if f.commentsByID != nil {
+		f.commentsByID[id] = append(f.commentsByID[id], c)
+	}
 	return c, nil
 }
 
@@ -364,5 +371,76 @@ func TestFeishuNotifyDeploymentReason(t *testing.T) {
 	readFeishuNotification(&ticket, nil)
 	if ticket.NotifyReason != "progress reason" {
 		t.Fatalf("progress reason=%q", ticket.NotifyReason)
+	}
+}
+
+func TestFeishuNotifyTwoTicks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var recording struct {
+		Data struct {
+			Issue struct {
+				Comments struct{ Nodes []linear.Comment }
+			}
+		}
+	}
+	if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	store := &notifyStore{commentsByID: map[string][]linear.Comment{}}
+	for _, id := range []string{"human", "conflict", "deployment"} {
+		store.issues = append(store.issues, linear.Issue{ID: id, Identifier: "OF-" + id, Title: id, URL: "https://example.feishu.cn/base/base?record=" + id, Project: linear.NamedID{ID: "project"}})
+		store.commentsByID[id] = append([]linear.Comment(nil), recording.Data.Issue.Comments.Nodes...)
+	}
+	store.commentsByID["conflict"] = append(store.commentsByID["conflict"], linear.Comment{ID: "conflict", Body: merge.HandoffPrefix + "invalid"})
+	handoff := validHandoffForResolver()
+	handoff.TicketID = "deployment"
+	progress := merge.Progress{Version: 1, QueueID: handoff.QueueID, TicketID: handoff.TicketID, Repository: handoff.Repository, PR: handoff.PR, Head: handoff.Head, Main: strings.Repeat("b", 40), MergeSHA: strings.Repeat("c", 40), Phase: "merged", Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "paused", Reason: "workflow failed"}}
+	pending := progress
+	pending.Deployment = &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending"}
+	for _, entry := range []struct {
+		prefix string
+		value  any
+	}{{merge.HandoffPrefix, handoff}, {merge.ProgressPrefix, pending}, {merge.ProgressPrefix, progress}} {
+		body, err := json.Marshal(entry.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		store.commentsByID["deployment"] = append(store.commentsByID["deployment"], linear.Comment{Body: entry.prefix + string(body), CreatedAt: time.Now()})
+	}
+	sender := &notifySender{store: store}
+	sender.start(t)
+	repo := config.Repository{Path: "a", MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
+	for range 2 {
+		runtime := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+		backend := &notifyTickBackend{runtime: runtime}
+		backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
+		s := setup(&backend.fakeBackend)
+		s.Backend = backend
+		s.Config.Repositories = []config.Repository{repo}
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sender.messages) != 3 || store.writes != 3 || store.reads != 6 {
+		t.Fatalf("messages=%v writes=%d reads=%d", sender.messages, store.writes, store.reads)
+	}
+	for id, category := range map[string]string{"human": "转人", "conflict": "证据冲突", "deployment": "部署失败"} {
+		var events, messages int
+		for _, comment := range store.commentsByID[id] {
+			if strings.HasPrefix(comment.Body, "通知: "+category+" ") {
+				events++
+			}
+		}
+		for _, message := range sender.messages {
+			if strings.Contains(message, "OF-"+id+" ") && strings.Contains(message, "类别: "+category) {
+				messages++
+				if id == "human" && !strings.Contains(message, "原因: infra budget exhausted: reviewer empty output") {
+					t.Fatalf("recorded reason lost: %s", message)
+				}
+			}
+		}
+		if events != 1 || messages != 1 {
+			t.Fatalf("%s events=%d messages=%d", id, events, messages)
+		}
 	}
 }

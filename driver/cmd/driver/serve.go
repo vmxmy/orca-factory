@@ -137,6 +137,15 @@ func (b *statusBackend) ActualChanges(ctx context.Context, ticket scheduler.Tick
 	return nil, false, nil
 }
 
+func (b *statusBackend) NotifyFeishu(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		NotifyFeishu(context.Context, scheduler.Ticket) error
+	}); ok {
+		return source.NotifyFeishu(ctx, ticket)
+	}
+	return nil
+}
+
 func serveWithStatus(ctx context.Context, lockPath string, initialize func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error), wait func(context.Context) error, report func(error)) error {
 	var s *scheduler.Scheduler
 	var runtime *scheduler.Runtime
