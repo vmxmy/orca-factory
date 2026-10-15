@@ -29,6 +29,21 @@ if [ -f driver/go.mod ]; then
   (cd driver && go vet ./... && go test -count=1 ./...)
 fi
 
+echo "== driver-lint-vuln"   # 依据：OF-24，CI 跑 make lint/make vuln 但 gate 不跑，PR 开出后才发现失败（PR #421 的 gorilla/websocket 漏洞 GO-2026-6278 与 errcheck）
+driver_go_tooling_changed=0   # 只在改动命中 driver/ 或 Go 工具链时才跑，避免拖慢与 driver 无关的票
+while IFS= read -r f; do
+  case "$f" in
+    *.md) ;;
+    driver/*|Makefile|scripts/dev-tools.lock|scripts/install-dev-tools.sh) driver_go_tooling_changed=1 ;;
+  esac
+done <<< "${GATE_CHANGED:-}"
+if [ -f driver/go.mod ] && [ "$driver_go_tooling_changed" = 1 ]; then
+  echo "== driver-lint"
+  make lint
+  echo "== driver-vuln"
+  make vuln
+fi
+
 echo "== driver-wired"   # 依据：合并通道写完未接线，上线后一次都没合并（2026-10-06）
 if [ -f driver/go.mod ]; then
   # 每个 internal 包都必须能从 cmd/ 到达
