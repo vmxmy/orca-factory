@@ -99,6 +99,6 @@ flowchart LR
 
 | 编号 | 问题 | 状态 |
 | --- | --- | --- |
-| Q1 | 仅开通 `group_at_msg` 时，话题内不 @ 的回复是否投递 | 已核实：不投递；手打“@名字”未点选也不投递（`bot-event-thread-at-reply.json`） |
+| Q1 | 仅开通 `group_at_msg` 时，话题内不 @ 的回复是否投递 | 已核实：不投递；手打“@名字”未点选也不投递（`bot-event-thread-at-reply.json`）。开通 `im:message.group_msg` 后投递群内全部消息，含话题内不带 @ 的回复（`bot-event-thread-reply-no-at.json`）|
 | Q2 | 同一应用有多个长连接客户端时，事件是否只投递给其中一个 | 未实测。部署时网关必须是唯一消费者；排查用的 lark-cli 事件守护进程须先停止 |
 | Q3 | 话题回复的接口参数与 thread_id 形态 | 已核实：`POST /im/v1/messages/:message_id/reply`，`reply_in_thread=true`，返回 `thread_id`（`omt_` 前缀），后续事件带同一 `thread_id`（`bot-message-reply-in-thread.json`） |

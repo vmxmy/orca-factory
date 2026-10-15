@@ -1,0 +1,33 @@
+{
+  "event": {
+    "event": {
+      "message": {
+        "chat_id": "oc_REDACTED",
+        "chat_type": "group",
+        "content": "{\"text\":\"普通群聊测试\"}",
+        "create_time": "1792049680423",
+        "message_id": "om_x100b623c6fc8d8b0ddd4662c71bb482",
+        "message_type": "text",
+        "update_time": "1792049680423"
+      },
+      "sender": {
+        "sender_id": {
+          "open_id": "ou_REDACTED",
+          "union_id": "on_REDACTED",
+          "user_id": null
+        },
+        "sender_type": "user",
+        "tenant_key": "TENANT_KEY"
+      }
+    },
+    "header": {
+      "app_id": "cli_REDACTED",
+      "create_time": "1792049680755",
+      "event_id": "fd2327780d30e5831a866dd088bc4e36",
+      "event_type": "im.message.receive_v1",
+      "tenant_key": "TENANT_KEY",
+      "token": ""
+    },
+    "schema": "2.0"
+  }
+}
