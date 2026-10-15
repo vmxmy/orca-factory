@@ -52,6 +52,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	if result.Status == merge.Correction {
 		t.Owner = machine.OwnerExecutor
 		t.Phase = machine.PhaseCorrection
+		t.Run = h.Run
 		t.Attempt = p.Attempt
 		t.Progress = &p
 		return r.Launch(ctx, t)
