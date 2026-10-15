@@ -191,11 +191,16 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 ## 可调参数（driver.toml）
 
-`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`repositories`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`repositories`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[linear]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。
+
+`factory_root`（支持 `~/` 展开，同 `repositories`）是本机 orca-factory 生产检出路径，
+飞书需求网关的项目发现（OF-42）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
+核对候选仓库的流水线；缺省时发现结果把全部仓库判为不接管。
 
 ```toml
 max_in_flight = 20
 repositories = ["~/github/orca-factory"]
+factory_root = "~/github/orca-factory"
 
 [scheduler]
 pause_fraction = 0.05       # 低于该比例暂停 Linear 相关调度
@@ -289,9 +294,8 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 `--resume <ID>`；消息正文经 stdin 传入。Agent 的安全边界：
 
 - 工作目录是只读检出 `~/.cache/orca-factory/intake/<编号前缀>/checkout`（每个项目独立，
-  不互相共享 `origin/main` 状态；单项目退回模式下仍用旧路径
-  `~/.cache/orca-factory/intake-checkout`），为来源仓库的分离 HEAD worktree；每个新
-  会话开始前 fetch 并切到 `origin/main`。
+  不互相共享 `origin/main` 状态），为来源仓库的分离 HEAD worktree；每个新会话开始前
+  fetch 并切到 `origin/main`。
 - `--tools Read,Grep,Glob,Skill`，`--restricted`（文件工具限于工作目录，忽略用户、
   项目和本地 settings 及其 hooks），`--permission-mode dontAsk`（需授权的调用直接拒绝），
   `--strict-mcp-config`（不加载 MCP），`--settings` 再拒绝读取 `~/.claude`、`~/.config`、
@@ -304,8 +308,7 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票号、状态、标题、
 依赖票号（OF-33）。该文件只读给 Agent，经检出的 `.git/info/exclude`（worktree 取
 `git rev-parse --git-path info/exclude` 的路径）忽略，不进 git。账本读取失败时文件
-保留上一份、首行注明“账本读取失败，内容可能过期（时间）”，不阻断对话；无项目表的
-单项目退回模式不写这份文件。
+保留上一份、首行注明“账本读取失败，内容可能过期（时间）”，不阻断对话。
 
 在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
 `im.message.receive_v1`，申请 `im:message.group_at_msg:readonly` 和
@@ -328,17 +331,21 @@ Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票
 | `AGENT_INTAKE_CLAUDE` | 可选，claude 可执行文件的绝对路径；默认在网关 `PATH` 中查找 `claude`。服务 `PATH` 不含 npm 全局目录时必须设置（取 bash 中 `command -v claude` 的结果，不要用 shell 别名） |
 | `AGENT_FEISHU_INTAKE_PROJECT` | 可选，群默认项目的仓库远端（项目表“仓库远端”列的值，如 `github.com/vmxmy/orca-factory`）。未设置或不匹配任何已启用项目时，话题首条消息未显式指定项目时改为列出项目供需求人选择 |
 
-`driver.toml` 中每个 `AGENT_ISSUE_BACKEND=feishu` 的仓库是一个可路由项目（OF-32）。
-网关启动时读取其中第一个仓库的飞书多维表格项目表（`项目` 表，逻辑见
-`driver/internal/issues/feishu.go` 的 `LedgerProjects`），按各仓库 `agent-graph.env`
-的 `AGENT_FEISHU_PROJECT`（= 该项目表行的“仓库远端”）匹配本机检出；该仓库若未设置
-`AGENT_FEISHU_BASE`（没有多维表格可读），网关退回每个 OF-32 之前的单项目行为，直接
-把它当作唯一隐式项目。匹配上的每个项目用各自 `agent-graph.env` 的以下变量：
+网关不读 `driver.toml` 的 `repositories`：每个新话题（不带 `thread_id` 的根消息）
+开始前，网关重新跑一次项目发现（`driver/internal/projects` 的 `Discover`，OF-42），
+联立本机 Orca 的仓库清单（`orca repo list`）、飞书多维表格项目表（`项目` 表）与各仓库
+自己的流水线 check（`<factory_root>/bin/orca-factory check <仓库路径>`），得到可接管
+与不接管（附原因）两个列表，并把结果按编号前缀合并进路由集合——已经选定某项目的
+话题不因另一个话题触发的重新发现而失去绑定。这样新增/新启用的项目或新接入的本机
+Orca 仓库无需改配置或重启网关即可路由；人工核对用 `orca-factory-driver projects --json`。
 
-| 变量 | 含义 |
-| --- | --- |
-| `AGENT_ROLE_INTAKE` | Agent 档位，格式 `claude:<model>:<effort>`；为空时用 `AGENT_TIER_STRONG` |
-| `AGENT_INTAKE_CONCURRENCY` | 该项目同时运行的 Agent 数，默认 2；网关总并发为所有匹配项目的和 |
+`driver.toml` 必须设置 `factory_root`（见上一节），否则发现结果把所有仓库都判为
+“factory_root 未配置”，网关没有任何可路由项目。可接管项目除执行 Agent 档位（本机
+`agent-graph.env` 的 `AGENT_ROLE_INTAKE`，为空时用 `AGENT_TIER_STRONG`）外，还按各自
+`AGENT_LANE2_GLOBS` / `AGENT_LANE3_GLOBS` 预判 lane（OF-15）。网关总并发由单一机器级
+环境变量 `AGENT_INTAKE_CONCURRENCY` 决定（默认 2），因为可路由项目是按话题动态发现
+的，没有“全部项目并发之和”可在启动时求出。每个项目的 Ledger Store 与 Runner 在网关
+生命周期内只在第一次真正被话题用到时建一次（懒建），同一项目的后续话题复用。
 
 ### 项目选择
 
@@ -348,13 +355,13 @@ Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票
 1. 消息中出现 `#<编号前缀>`（如 `#OF`）或 `项目:<名称>`：命中该项目，网关把该标记从
    消息中去掉后再交给 Agent。
 2. 未显式指定且配置了 `AGENT_FEISHU_INTAKE_PROJECT`：用该默认项目，消息原样交给 Agent。
-3. 都没有命中：网关在话题里列出项目表中已启用且本机已匹配到检出的项目（序号、编号
-   前缀、名称），不调用 Agent；需求人在同一话题回复序号或编号前缀后，网关才用这条
-   首条消息的原文作为第一轮输入调用 Agent。
+3. 都没有命中：网关在话题里列出本轮发现中可接管的项目（序号、编号前缀、名称），不
+   调用 Agent；需求人在同一话题回复序号或编号前缀后，网关才用这条首条消息的原文
+   作为第一轮输入调用 Agent。
 
-项目须在项目表中“启用”为真，且其“仓库远端”匹配到本机 `driver.toml` 配置的某个仓库，
-否则网关在话题里说明原因并拒绝，不调用 Agent（未启用的项目与本机未配置检出的项目分别
-提示）。
+项目表中存在该行但本轮发现判定其不可接管时（如“check 失败”“项目未启用”），网关在
+话题里回复该项目表行的编号前缀与具体原因，不调用 Agent；项目表里完全没有对应行、
+或本机 Orca 未登记该仓库时，回复“本机未配置仓库，无法使用”。
 
 机器人 open_id 可从已确认 @ 本应用的消息事件 `mentions` 中取得，核对
 `mentioned_type=bot`；不要从任意用户提交的字符串配置该身份。
