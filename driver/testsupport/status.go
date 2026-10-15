@@ -30,5 +30,11 @@ func IsolateStatus() func() {
 			panic(err)
 		}
 	}
+	// A production backend makes ledger subcommands re-exec os.Executable(),
+	// which under go test is the whole test binary and recurses without bound.
+	if err := os.Unsetenv("AGENT_ISSUE_BACKEND"); err != nil {
+		cleanup()
+		panic(err)
+	}
 	return cleanup
 }
