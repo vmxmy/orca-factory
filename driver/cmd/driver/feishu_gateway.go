@@ -245,7 +245,7 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), concurrency, projects, settings["AGENT_FEISHU_INTAKE_PROJECT"], agent, client.ReplyInThread)
+	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), concurrency, projects, settings["AGENT_FEISHU_INTAKE_PROJECT"], agent, client.ReplyInThread, client.AddReaction)
 	if err != nil {
 		return err
 	}

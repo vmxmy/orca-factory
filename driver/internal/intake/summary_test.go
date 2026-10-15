@@ -48,7 +48,7 @@ func rollingSetup(t *testing.T, script func(logs string) string) (g *Gateway, lo
 	}
 	state = filepath.Join(root, "state")
 	var err error
-	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 2, nil, "", runner.Turn, reply)
+	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, 2, nil, "", runner.Turn, reply, noopReact)
 	if err != nil {
 		t.Fatal(err)
 	}

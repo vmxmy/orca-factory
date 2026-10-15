@@ -291,3 +291,30 @@ func TestBatchDeleteRetriesNotFound(t *testing.T) {
 		t.Fatalf("second=%+v err=%v calls=%d", second, err, calls.Load())
 	}
 }
+
+func TestRecordedReactionAdd(t *testing.T) {
+	for _, name := range []string{"bot-reaction-add.json", "bot-reaction-add-duplicate.json"} {
+		t.Run(name, func(t *testing.T) {
+			c := recordedFake(t, name)
+			if err := c.AddReaction(context.Background(), "om_x100b623d12ea80a4df66eb299dcbb6d"); err != nil {
+				t.Fatalf("err=%v", err)
+			}
+		})
+	}
+}
+
+func TestRecordedReactionAddInvalidMessage(t *testing.T) {
+	rec := loadRecording(t, "bot-reaction-add-invalid-message.json")
+	var calls atomic.Int64
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if err := json.NewEncoder(w).Encode(map[string]any{"code": rec.Response.Error.Code, "msg": rec.Response.Error.Message}); err != nil {
+			t.Error(err)
+		}
+	}, Options{})
+	err := c.AddReaction(context.Background(), "om_x100b000000000000000000000000000")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != 99992354 || calls.Load() != 1 {
+		t.Fatalf("err=%v calls=%d", err, calls.Load())
+	}
+}
