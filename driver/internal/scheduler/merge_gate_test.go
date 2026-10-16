@@ -60,7 +60,7 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 
 func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "wt")
-	for _, installErr := range []error{errors.New("exit status 1"), context.DeadlineExceeded} {
+	for _, installErr := range []error{errors.New("exit status 1: secret output"), context.DeadlineExceeded} {
 		gateRan := false
 		a := mergeGateAdapter("false", func(_ context.Context, s runx.Spec) ([]byte, error) {
 			switch {
@@ -74,7 +74,7 @@ func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
 		})
 		err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt)
 		var ticket *infra.Ticket
-		if !errors.As(err, &ticket) || errors.Is(err, merge.ErrGateRed) || strings.Contains(err.Error(), "secret") {
+		if !errors.As(err, &ticket) || ticket.Err == nil || strings.Contains(ticket.Err.Error(), "secret") || errors.Is(err, installErr) || errors.Is(err, merge.ErrGateRed) {
 			t.Fatalf("install error %v: want sanitized ticket infra error, got %v", installErr, err)
 		}
 		if gateRan {
