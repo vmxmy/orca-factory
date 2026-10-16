@@ -52,8 +52,8 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 	if err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 3 || calls[1].Path != "bash" || calls[1].Args[0] != "-c" || calls[1].Args[1] != "true" || calls[1].Dir != wt || calls[2].Args[0] == "-c" {
-		t.Fatalf("unset repo install must run true from repo env, not process env (%d calls)", len(calls))
+	if len(calls) != 2 || calls[0].Path != "git" || calls[1].Args[0] == "-c" {
+		t.Fatalf("unset repo install must skip install and ignore process env (%d calls)", len(calls))
 	}
 }
 
