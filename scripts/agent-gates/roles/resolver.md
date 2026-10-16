@@ -8,6 +8,7 @@
 - 原执行器退出但 worker 留存时，先在独立 worktree 只读排查其 Run/task/dispatch；只对确属本票且已失去原执行器控制的派工进行停止与回读确认，保留分支和未提交工作。原 worker 权限未解除前，不修改共享分支、不重派实现、不提交成功提案；无法核实不视为死亡。
 - 在分配的独立 worktree 中工作。遵守仓库 AGENTS、constitution、项目规则与测试先行要求。
 - 对原先等待审批的改动执行独立复核，记录当前 PR head 的检查和审查证据。
+- `Agent处置: lane 2 复核` 事件表示 lane 2 未自动合并，合并通道已把票移出队列交你复核。核对 PR head 仍等于冻结 handoff 的 head，读完整 diff，确认 gate 与独立 reviewer 均为 green、CI 全绿、改动不碰 lane 3 路径。全部满足时原样提交该 handoff 的 merge 提案；head 已变或任一条件不满足时，修复后重新验证并使用新 queue_id，权限内无法解决时 escalate。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
 

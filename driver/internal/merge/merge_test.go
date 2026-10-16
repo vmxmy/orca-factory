@@ -440,3 +440,22 @@ func TestSnapshotFailureReasonNamesStepAndStaysSafe(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewRequiredLeavesQueue(t *testing.T) {
+	c, h, _, _, _ := fixture(ready())
+	h.snapshotErr = ErrReviewRequired
+	for _, n := range []int{1, 2} {
+		if err := c.Enqueue(req(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := next(t, c, "owner/repo")
+	if r.Status != Review || r.Request.Number != 1 || r.Reason != "lane 2 requires resolver review" {
+		t.Fatalf("review result=%+v", r)
+	}
+	h.snapshotErr = nil
+	r = next(t, c, "owner/repo")
+	if r.Status != Merged || r.Request.Number != 2 {
+		t.Fatalf("later PR blocked by review: %+v", r)
+	}
+}

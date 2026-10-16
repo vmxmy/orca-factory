@@ -60,7 +60,9 @@ func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ [
 	if m.failDone {
 		return task.Issue{}, fmt.Errorf("offline")
 	}
-	m.issue.State.Name = state
+	if state != "" {
+		m.issue.State.Name = state
+	}
 	return m.issue, nil
 }
 func gitMergeTest(t *testing.T, dir string, args ...string) string {
@@ -254,7 +256,7 @@ func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 	f.tracker.rows[0].Body = parts[0] + "merge-handoff-v1: " + string(b)
 }
 func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
-	for _, kind := range []string{"gate-red", "review-red", "manual", "lane2-disabled", "lane3-path", "wrong-spec", "missing-orca", "multiple-pr"} {
+	for _, kind := range []string{"gate-red", "review-red", "manual", "lane3-path", "wrong-spec", "missing-orca", "multiple-pr"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newMergeFixture(t)
 			switch kind {
@@ -266,12 +268,6 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 				rewriteHandoff(t, f, func(h map[string]any) { h["review_output"] = `{"verdict":"red","step":"review"}` })
 			case "manual":
 				f.repos[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*"
-			case "lane2-disabled":
-				rewriteHandoff(t, f, func(h map[string]any) {
-					h["lane"] = 2
-					h["gate_output"] = strings.ReplaceAll(h["gate_output"].(string), "LANE 1", "LANE 2")
-					h["gate_spec"] = strings.ReplaceAll(h["gate_spec"].(string), "LANE: 1", "LANE: 2")
-				})
 			case "lane3-path":
 				f.repos[0].Env["AGENT_LANE3_GLOBS"] = "feat*"
 			case "wrong-spec":

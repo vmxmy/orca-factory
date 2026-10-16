@@ -14,6 +14,11 @@ var ErrGateRed = errors.New("merged-result gate red")
 
 var ErrMainAdvanced = errors.New("main advanced during merge validation")
 
+// ErrReviewRequired is returned by Snapshot when policy needs an independent
+// resolver review before squash. Next dequeues the PR with Review so a review
+// never blocks later PRs in the same repository.
+var ErrReviewRequired = errors.New("lane 2 requires resolver review")
+
 // SnapshotError names which Snapshot step failed. A GitHub implementation
 // builds Reason from its own driver-authored text or from an external error
 // already passed through an existing sanitizer; Next never reads raw external
@@ -97,6 +102,7 @@ const (
 	Merged     Status = "merged"
 	Correction Status = "scheduler-new-executor"
 	Human      Status = "human"
+	Review     Status = "review"
 	Paused     Status = "paused"
 )
 
@@ -237,7 +243,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	r := Result{Request: e.request, Rounds: e.rounds}
 	finish := func(status Status, reason string) (Result, error) {
 		r.Status, r.Reason, r.Rounds = status, reason, e.rounds
-		if status == Merged || status == Correction || status == Human {
+		if status == Merged || status == Correction || status == Human || status == Review {
 			l.mu.Lock()
 			l.queue = l.queue[1:]
 			l.mu.Unlock()
@@ -271,6 +277,9 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		return r, errors.New("deployment checker required")
 	}
 	s, err := c.github.Snapshot(ctx, e.request)
+	if errors.Is(err, ErrReviewRequired) {
+		return finish(Review, err.Error())
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return r, ctx.Err()

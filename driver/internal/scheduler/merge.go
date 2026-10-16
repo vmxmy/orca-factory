@@ -291,7 +291,9 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
-	if err := a.policy(prFiles); err != nil {
+	if err := a.policy(prFiles); errors.Is(err, merge.ErrReviewRequired) {
+		return merge.Snapshot{}, err
+	} else if err != nil {
 		return merge.Snapshot{}, &merge.SnapshotError{Step: "policy", Reason: err.Error()}
 	}
 	checks, err := a.runtime.GitHub.MergeChecks(ctx, a.owner, a.repo, p.Head.SHA)
@@ -356,7 +358,7 @@ func (a *mergeAdapter) policy(files []string) error {
 	env := a.runtime.Repositories[a.ticket.Repo].Env
 	lane := a.ticket.Handoff.Lane
 	if lane == 2 && env["AGENT_LANE2_AUTOMERGE"] != "1" && !resolverApproved(a.ticket) {
-		return errors.New("lane 2 requires manual approval")
+		return merge.ErrReviewRequired
 	}
 	for _, key := range []string{"AGENT_LANE3_GLOBS", "AGENT_LANE2_MANUAL_GLOBS", "AGENT_LANE2_GLOBS"} {
 		for _, pattern := range strings.Fields(env[key]) {

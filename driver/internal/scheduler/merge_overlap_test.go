@@ -509,6 +509,11 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 				if err != nil || f.puts != 1 || f.tracker.issue.State.Name != "Done" {
 					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)
 				}
+			} else if policy == "manual" {
+				if err != nil || f.puts != 0 {
+					t.Fatalf("lane 2 review not handed to resolver: %v puts=%d", err, f.puts)
+				}
+				assertLane2Review(t, f.tracker.bodies)
 			} else if err == nil || f.puts != 0 {
 				t.Fatalf("unsafe policy accepted: %s %v puts=%d", policy, err, f.puts)
 			}

@@ -19,6 +19,9 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		retainMergeProgress(&p, t.Progress)
 	}
 	human := result.Status == merge.Human || p.Corrections > machine.DefaultLimits.Corrections
+	// A lane 2 review keeps the waiting phase so the resolver can approve the
+	// same frozen handoff instead of revalidating a new queue identity.
+	review := result.Status == merge.Review && !human
 	if result.Status == merge.Correction {
 		p.Phase = "correction"
 	}
@@ -27,11 +30,15 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	}
 	raw, _ := json.Marshal(p)
 	body := merge.ProgressPrefix + string(raw)
-	if human {
+	if human || review {
 		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 			return errors.New("merge escalation unconfirmed")
 		}
-		body = "Agent处置: " + p.Reason + "\n证据: merge validation\n处置要求: 检查合并结果并重新排队\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
+		event, evidence, demand := p.Reason, "merge validation", "检查合并结果并重新排队"
+		if review {
+			event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
+		}
+		body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 	} else if result.Status == merge.Correction {
 		body = fmt.Sprintf("阶段: %s\n归属: %s term=- run=%s attempt=%d\n%s", machine.PhaseCorrection, machine.OwnerExecutor, h.Run, p.Attempt, body)
 	}
@@ -39,14 +46,14 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		return err
 	}
 	switch {
-	case human:
+	case human || review:
 		r.board(ctx, t, machine.PhaseResolver, p.Reason)
 	case result.Status == merge.Correction:
 		r.board(ctx, t, machine.PhaseCorrection, p.Reason)
 	default:
 		r.board(ctx, t, machine.PhaseMergeQueue, p.Reason)
 	}
-	if human {
+	if human || review {
 		return nil
 	}
 	if result.Status == merge.Correction {
