@@ -99,9 +99,35 @@ const projectDiscoveryInterval = 10 * time.Minute
 
 func projectSource(cfg config.Config) func(context.Context) (projects.Result, error) {
 	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
+	warned := map[string]string{}
 	return func(ctx context.Context) (projects.Result, error) {
 		result, _, err := discoverProjects(ctx, cfg, client)
+		if err == nil {
+			warnRemoteMismatch(ctx, result.Eligible, warned)
+		}
 		return result, err
+	}
+}
+
+// warnRemoteMismatch logs once per distinct live-remote drift an eligible
+// project carries (OF-56): projects.Discover already marks RemoteMismatch on
+// the Project itself for `projects --json`; this only adds a log line, and
+// only the first time a given drift is seen for a path, so a long-running
+// serve does not repeat the same warning every discovery interval. warned
+// persists in projectSource's closure across calls; it never changes which
+// projects are eligible.
+func warnRemoteMismatch(ctx context.Context, eligible []projects.Project, warned map[string]string) {
+	logger := runx.LoggerFrom(ctx)
+	for _, p := range eligible {
+		if p.RemoteMismatch == "" {
+			delete(warned, p.Path)
+			continue
+		}
+		if warned[p.Path] == p.RemoteMismatch {
+			continue
+		}
+		warned[p.Path] = p.RemoteMismatch
+		logger.Warn("live remote drifted from Orca identity", "path", p.Path, "canonicalKey", p.Remote, "liveRemote", p.RemoteMismatch)
 	}
 }
 

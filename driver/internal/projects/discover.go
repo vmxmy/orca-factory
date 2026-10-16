@@ -52,7 +52,22 @@ type Project struct {
 	// CoreBehind is every core file whose installed copy lags the factory
 	// (OF-53); empty when the copy is in step.
 	CoreBehind []string `json:",omitempty"`
+	// RemoteMismatch is this project's live `git remote get-url origin`,
+	// normalized, when it no longer agrees with Remote (OF-56): Orca caches
+	// canonicalKey at registration and never refreshes it when the local
+	// origin changes later. Empty when they agree, or when the live remote
+	// could not be read or normalized — an unconfirmed comparison is not
+	// reported as a mismatch. This never changes eligibility: the drift may
+	// be an intentional migration a person decides whether to act on.
+	RemoteMismatch string `json:",omitempty"`
 }
+
+// LiveRemote reads a repository's actual `git remote get-url origin`
+// (production: `git -C <path> remote get-url origin`). Discover calls it
+// only for repositories that are otherwise eligible, the same scope OF-56
+// marks when Orca's cached canonicalKey has drifted. A nil LiveRemote skips
+// the comparison entirely, leaving RemoteMismatch empty on every Project.
+type LiveRemote func(ctx context.Context, path string) (string, error)
 
 // Rejection is one repository this driver cannot take over right now.
 type Rejection struct {
@@ -79,8 +94,10 @@ type Result struct {
 // its own profile's AGENT_ISSUE_BACKEND must be "feishu", rows must
 // have a row whose 仓库远端 equals its CanonicalKey, and that row must be
 // enabled. The first unmet condition is recorded as the Reason; no
-// repository is silently skipped.
-func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProject, check Checker) Result {
+// repository is silently skipped. liveRemote, when non-nil, additionally
+// compares each eligible project's live origin against its canonicalKey
+// (OF-56), filling Project.RemoteMismatch without affecting eligibility.
+func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProject, check Checker, liveRemote LiveRemote) Result {
 	var result Result
 	if check == nil {
 		for _, repo := range repos {
@@ -132,9 +149,30 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 			reject(ReasonProjectDisabled)
 			continue
 		}
-		result.Eligible = append(result.Eligible, Project{Path: repo.Path, Remote: repo.CanonicalKey, Prefix: row.Prefix, Name: row.Name, Repository: repository, CoreBehind: behind})
+		result.Eligible = append(result.Eligible, Project{Path: repo.Path, Remote: repo.CanonicalKey, Prefix: row.Prefix, Name: row.Name,
+			Repository: repository, CoreBehind: behind, RemoteMismatch: remoteMismatch(ctx, repo.Path, repo.CanonicalKey, liveRemote)})
 	}
 	return result
+}
+
+// remoteMismatch is Discover's OF-56 comparison for one eligible
+// repository: it returns the normalized live remote when it disagrees with
+// canonicalKey, or "" when they agree, liveRemote is nil, the read fails, or
+// the live value does not normalize — none of those last three confirm a
+// mismatch, so none is reported as one.
+func remoteMismatch(ctx context.Context, path, canonicalKey string, liveRemote LiveRemote) string {
+	if liveRemote == nil {
+		return ""
+	}
+	live, err := liveRemote(ctx, path)
+	if err != nil {
+		return ""
+	}
+	normalized, err := orca.NormalizeRemote(live)
+	if err != nil || normalized == canonicalKey {
+		return ""
+	}
+	return normalized
 }
 
 // ReadableRepositories is every repository whose own pipeline profile

@@ -91,7 +91,7 @@ func TestDiscoverRecordedSample(t *testing.T) {
 		}
 		repos = append(repos, orca.Repo{Path: path, CanonicalKey: r.CanonicalKey})
 	}
-	result := Discover(context.Background(), repos, rows, alwaysPass)
+	result := Discover(context.Background(), repos, rows, alwaysPass, nil)
 	if len(result.Eligible) != 3 {
 		t.Fatalf("eligible=%+v, want 3", result.Eligible)
 	}
@@ -116,7 +116,7 @@ func TestDiscoverProjectDisabled(t *testing.T) {
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/disabled"}}
 	rows := []issues.LedgerProject{{Name: "disabled", Remote: "github.com/example/disabled", Prefix: "DIS", Enabled: false}}
-	result := Discover(context.Background(), repos, rows, alwaysPass)
+	result := Discover(context.Background(), repos, rows, alwaysPass, nil)
 	reason, ok := rejection(result, "github.com/example/disabled")
 	if !ok || reason != ReasonProjectDisabled || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonProjectDisabled", result)
@@ -128,7 +128,7 @@ func TestDiscoverNoLedgerRow(t *testing.T) {
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/orphan"}}
 	rows := []issues.LedgerProject{{Name: "other", Remote: "github.com/example/other", Prefix: "OTH", Enabled: true}}
-	result := Discover(context.Background(), repos, rows, alwaysPass)
+	result := Discover(context.Background(), repos, rows, alwaysPass, nil)
 	reason, ok := rejection(result, "github.com/example/orphan")
 	if !ok || reason != ReasonNoLedgerRow || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonNoLedgerRow", result)
@@ -140,7 +140,7 @@ func TestDiscoverLedgerNotFeishu(t *testing.T) {
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=linear\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/linear"}}
 	rows := []issues.LedgerProject{{Name: "linear", Remote: "github.com/example/linear", Prefix: "LIN", Enabled: true}}
-	result := Discover(context.Background(), repos, rows, alwaysPass)
+	result := Discover(context.Background(), repos, rows, alwaysPass, nil)
 	reason, ok := rejection(result, "github.com/example/linear")
 	if !ok || reason != ReasonLedgerNotFeishu || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonLedgerNotFeishu", result)
@@ -153,7 +153,7 @@ func TestDiscoverCheckFailed(t *testing.T) {
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/failing"}}
 	rows := []issues.LedgerProject{{Name: "failing", Remote: "github.com/example/failing", Prefix: "FAI", Enabled: true}}
 	failing := func(context.Context, string) ([]string, error) { return nil, errors.New("gate red") }
-	result := Discover(context.Background(), repos, rows, failing)
+	result := Discover(context.Background(), repos, rows, failing, nil)
 	reason, ok := rejection(result, "github.com/example/failing")
 	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonCheckFailed", result)
@@ -171,10 +171,85 @@ func TestDiscoverCoreBehindStillEligible(t *testing.T) {
 	behind := func(context.Context, string) ([]string, error) {
 		return []string{"install.sh", "roles/onboard.md"}, nil
 	}
-	result := Discover(context.Background(), repos, rows, behind)
+	result := Discover(context.Background(), repos, rows, behind, nil)
 	p, ok := eligible(result, "github.com/example/behind")
 	if !ok || len(result.Rejected) != 0 || !slices.Equal(p.CoreBehind, []string{"install.sh", "roles/onboard.md"}) {
 		t.Fatalf("result=%+v, want eligible with CoreBehind", result)
+	}
+}
+
+// alwaysLive is the LiveRemote stand-in for an eligible project whose live
+// origin reports remote verbatim.
+func alwaysLive(remote string) LiveRemote {
+	return func(context.Context, string) (string, error) { return remote, nil }
+}
+
+// TestDiscoverRemoteMismatch is OF-56: an already-eligible project whose
+// live origin no longer normalizes to the same value as Orca's cached
+// canonicalKey is marked, not rejected — the drift may be an intentional
+// migration a person decides whether to act on, so it never changes which
+// projects are eligible.
+func TestDiscoverRemoteMismatch(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	// The real-world case this ticket fixes: Orca still names the old
+	// upstream after the local origin moved to a fork.
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/dujiao-next/dujiao-next"}}
+	rows := []issues.LedgerProject{{Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Prefix: "DUJ", Enabled: true}}
+	result := Discover(context.Background(), repos, rows, alwaysPass, alwaysLive("https://github.com/vmxmy/dujiao-next.git"))
+	p, ok := eligible(result, "github.com/dujiao-next/dujiao-next")
+	if !ok || len(result.Rejected) != 0 {
+		t.Fatalf("result=%+v, want it to stay eligible", result)
+	}
+	if p.RemoteMismatch != "github.com/vmxmy/dujiao-next" {
+		t.Fatalf("RemoteMismatch=%q, want the normalized live remote", p.RemoteMismatch)
+	}
+}
+
+// TestDiscoverRemoteAgrees: a live origin that normalizes to the same value
+// as the cached canonicalKey leaves RemoteMismatch empty.
+func TestDiscoverRemoteAgrees(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/vmxmy/orca-factory"}}
+	rows := []issues.LedgerProject{{Name: "orca-factory", Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Enabled: true}}
+	result := Discover(context.Background(), repos, rows, alwaysPass, alwaysLive("https://github.com/vmxmy/orca-factory.git"))
+	p, ok := eligible(result, "github.com/vmxmy/orca-factory")
+	if !ok || p.RemoteMismatch != "" {
+		t.Fatalf("result=%+v, want RemoteMismatch empty", result)
+	}
+}
+
+// TestDiscoverRemoteMismatchUnreadableIsNotAConfirmedMismatch: a LiveRemote
+// read failure, or a live value that fails to normalize, cannot confirm a
+// mismatch, so it must not be reported as one.
+func TestDiscoverRemoteMismatchUnreadableIsNotAConfirmedMismatch(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/unreadable"}}
+	rows := []issues.LedgerProject{{Name: "unreadable", Remote: "github.com/example/unreadable", Prefix: "UNR", Enabled: true}}
+	failing := func(context.Context, string) (string, error) {
+		return "", errors.New("git remote get-url origin failed")
+	}
+	result := Discover(context.Background(), repos, rows, alwaysPass, failing)
+	p, ok := eligible(result, "github.com/example/unreadable")
+	if !ok || p.RemoteMismatch != "" {
+		t.Fatalf("result=%+v, want it eligible with RemoteMismatch empty", result)
+	}
+}
+
+// TestDiscoverRemoteMismatchNilLiveRemoteSkipsComparison: a nil LiveRemote
+// (the zero value every pre-OF-56 caller still passes) never marks a
+// mismatch.
+func TestDiscoverRemoteMismatchNilLiveRemoteSkipsComparison(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/no-live-remote"}}
+	rows := []issues.LedgerProject{{Name: "no-live-remote", Remote: "github.com/example/no-live-remote", Prefix: "NLR", Enabled: true}}
+	result := Discover(context.Background(), repos, rows, alwaysPass, nil)
+	p, ok := eligible(result, "github.com/example/no-live-remote")
+	if !ok || p.RemoteMismatch != "" {
+		t.Fatalf("result=%+v, want it eligible with RemoteMismatch empty", result)
 	}
 }
 
@@ -184,7 +259,7 @@ func TestDiscoverCoreBehindStillEligible(t *testing.T) {
 func TestDiscoverOnboardable(t *testing.T) {
 	path := t.TempDir()
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/never-onboarded"}}
-	result := Discover(context.Background(), repos, nil, alwaysPass)
+	result := Discover(context.Background(), repos, nil, alwaysPass, nil)
 	reason, ok := rejection(result, "github.com/example/never-onboarded")
 	if !ok || reason != ReasonOnboardable || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonOnboardable", result)
@@ -201,7 +276,7 @@ func TestDiscoverPartialInstallNotOnboardable(t *testing.T) {
 		t.Fatal(err)
 	}
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/partial"}}
-	result := Discover(context.Background(), repos, nil, alwaysPass)
+	result := Discover(context.Background(), repos, nil, alwaysPass, nil)
 	reason, ok := rejection(result, "github.com/example/partial")
 	if !ok || reason != ReasonPipelineNotInstalled || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonPipelineNotInstalled", result)
@@ -217,7 +292,7 @@ func TestDiscoverCheckFailedIsNotOnboardable(t *testing.T) {
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/installed-failing"}}
 	failing := func(context.Context, string) ([]string, error) { return nil, errors.New("gate red") }
-	result := Discover(context.Background(), repos, nil, failing)
+	result := Discover(context.Background(), repos, nil, failing, nil)
 	reason, ok := rejection(result, "github.com/example/installed-failing")
 	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonCheckFailed, not ReasonOnboardable", result)
@@ -229,7 +304,7 @@ func TestDiscoverCheckFailedIsNotOnboardable(t *testing.T) {
 // without even checking whether its pipeline is installed.
 func TestDiscoverFactoryRootUnconfigured(t *testing.T) {
 	repos := []orca.Repo{{Path: "/anything", CanonicalKey: "github.com/example/anything"}}
-	result := Discover(context.Background(), repos, nil, nil)
+	result := Discover(context.Background(), repos, nil, nil, nil)
 	reason, ok := rejection(result, "github.com/example/anything")
 	if !ok || reason != ReasonFactoryRootUnconfigured || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonFactoryRootUnconfigured", result)
