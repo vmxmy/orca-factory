@@ -14,6 +14,11 @@
 | 2 可逆·宽（`AGENT_LANE2_GLOBS`） | 流水线本体 `core/`、`bin/`、`templates/`、`ONBOARD.md`（改坏会波及所有接入仓库）；`.github/`、`.claude/`、`.codex/`、`AGENTS.md`、`CLAUDE.md`、`scripts/agent-gates/`。依据：用户答复、`bin/orca-factory` 的分发逻辑 |
 | 3 不可逆（`AGENT_LANE3_GLOBS` + 操作） | 文件：`.env*`、`*secrets*`、`.github/workflows/deploy*`（当前都不存在，预留）。操作（不经文件，靠流程禁止）：push main / force push、改写已发布的 marketplace 版本、删除票据主账本中的项目 / 标签、启用或删除 Orca 定时任务 |
 
+## 外部契约
+
+- 录制样本目录：`driver/testdata/recorded/`。依据：`driver/CONTRACTS.md`。
+- 契约清单：见 `driver/CONTRACTS.md`。解析外部系统输出（CLI 的 JSON、工单正文与评论、模型输出）或依赖其字段的代码改动，审查时按 `core/roles/reviewer.md` 的“外部契约”条款核对是否读取了这份目录下的真实样本。
+
 ## 合并与上线
 
 - lane 1 合并策略：coordinator 自合（squash）。依据：用户答复。
