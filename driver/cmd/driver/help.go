@@ -49,6 +49,10 @@ Commands:
       [写入] core/ledger.sh 的兼容入口。stats 只读。
   prune-worktrees [--contract-version]
       [写入] 清理已结束的定时任务 worktree，需要 AGENT_REPO_PATH 与 AGENT_RUN_WORKTREE_PREFIX。
+  prune-workspaces [--dry-run]
+      [写入] 按 serve 的回收规则一次性删除可接管项目中已结束票的 Orca 工作区：
+      Done/Canceled 票的全部 executor、resolver 工作区，及其他票被新一轮取代的旧 resolver。
+      有未提交改动、未推送提交、运行中终端或 Orca 置顶时保留。--dry-run 只列出不删除。
   feishu-gateway
       [写入] 飞书长连接需求入口，按群与白名单过滤并回复话题。
   projects --json

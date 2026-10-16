@@ -217,6 +217,36 @@ orca-ide worktree list --json |
 
 driver 票的评论包含单独一行 `issue: <票号>`，用这行把卡片对应回票据。
 
+### 工作区回收
+
+driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票号>-resolver-<轮次>`（Orca 重名时追加 `-<n>`）。serve 每 10 分钟按上一次巡检读到的票状态回收一次：
+
+| 对象 | 回收条件 |
+|---|---|
+| Done（部署通过、归属已释放）或 Canceled 的票 | 该票全部 executor、resolver 工作区 |
+| 其他票 | 被更新一轮取代的旧 resolver 工作区；最新一轮与 executor 保留 |
+
+满足下列任一条件的工作区保留，同一组原因只记一次 WARN：
+
+| 原因 | 判定 |
+|---|---|
+| `dirty` | `git status --porcelain` 非空 |
+| `unpushed` | `git rev-list --count HEAD --not --remotes` 非 0；HEAD 等于该票合并交接的冻结 head 时视为已推送 |
+| `terminal-running` / `terminal-unknown` | `orca terminal list` 仍有该工作区的终端 / 终端列表读取失败 |
+| `pinned` | Orca 置顶（Orca 没有锁定标记，置顶是用户唯一的标记） |
+| `git-status-failed` / `git-rev-list-failed` / `remove-failed` | 检查或删除失败 |
+
+删除调用 `orca worktree rm --worktree path:<路径>`，不带 `--force`；Orca 同时删除能证明已合并的本地分支。删除失败只记 WARN，不影响票流转。
+
+存量回收用同一规则，先只读核对再执行：
+
+```sh
+orca-factory-driver prune-workspaces --dry-run
+orca-factory-driver prune-workspaces
+```
+
+`--dry-run` 每行输出 `would-remove` 或 `keep … blocks=<原因>`；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
+
 ## 隔离 CI runner 检测
 
 本机存在 `~/.local/state/orca-go-isolated-runner` 且配置了 `vmxmy/orca-factory` 的 GitHub 主账本时，调度器每轮巡检读取 4 个 `orca-go-isolated-runner@N` 槽位：服务 failed、NRestarts 自上轮增加、租约停在 registering 超过 10 分钟，都算异常。任一异常持续 10 分钟，调度器按 intake 模板开一张带 `ready-for-agent` 的纳管票，写明证据和 `scripts/local-runner/README.md` 的维护步骤；同一故障只开一张，全部槽位恢复后在该票评论一次。建票失败时不重试，直到槽位恢复，避免重复开票。检测只读 systemd 与租约文件，不改 runner；状态记在 `~/.local/state/orca-factory/runner-health.json`。检测失败只记 warn，不影响票流转；`serve --dry-run` 不检测。

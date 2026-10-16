@@ -1,0 +1,11 @@
+{
+  "id": "b032665f-28af-486a-9def-392b71af27d1",
+  "ok": false,
+  "error": {
+    "code": "runtime_error",
+    "message": "Failed to delete worktree at /home/laoxu/orca/workspaces/orca-factory/of96-rm-probe. ?? of96-untracked.txt"
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}
