@@ -35,6 +35,7 @@ type Runtime struct {
 	Clients              map[string]issues.Store
 	Repositories         map[string]config.Repository
 	Orca                 OrcaClient
+	Workspaces           WorkspaceClient
 	OrcaPath, DriverPath string
 	Run                  func(context.Context, runx.Spec) ([]byte, error)
 	Now                  func() time.Time
@@ -47,6 +48,10 @@ type Runtime struct {
 	// runnerState is the isolated CI runners' state directory on the host that
 	// runs them; Track starts Runners once their repository is bound.
 	runnerState string
+	// closed holds, per repository, the Done or Canceled tickets of the last
+	// Snapshot; ReclaimWorkspaces removes their workspaces (OF-96).
+	closed        map[string]map[string]closedTicket
+	reclaimWarned map[string]string
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -62,12 +67,14 @@ func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository)
 	if err != nil {
 		return nil, errors.New("cannot locate driver binary")
 	}
+	client := &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout}
 	r := &Runtime{
 		runnerState:  runnerStateDir(),
 		Tuning:       c.Tuning,
 		Clients:      map[string]issues.Store{},
 		Repositories: map[string]config.Repository{},
-		Orca:         &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout},
+		Orca:         client,
+		Workspaces:   client,
 		OrcaPath:     path,
 		DriverPath:   binary,
 	}
@@ -252,6 +259,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		paths[project] = repo.Path
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
+	closed := map[string]map[string]closedTicket{}
 	snapshot, err := reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
 		return nil, fmt.Errorf("issue snapshot failed: %w", err)
@@ -318,6 +326,14 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		// Done may also precede the final merge ownership receipt.
 		canceled := issue.State.Name == "Canceled" || issue.State.Name == "Cancelled"
 		if (canceled && !DeploymentBarrier(ticket)) || (issue.State.Name == "Done" && ticket.Owner != machine.OwnerMerge && ticket.Owner != machine.OwnerResolver && !DeploymentBarrier(ticket)) {
+			if closed[path] == nil {
+				closed[path] = map[string]closedTicket{}
+			}
+			head := ""
+			if ticket.Handoff != nil {
+				head = ticket.Handoff.Head
+			}
+			closed[path][ticket.Identifier] = closedTicket{State: issue.State.Name, Head: head}
 			continue
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
@@ -346,6 +362,12 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 			}
 			tickets = append(tickets, ticket)
 		}
+	}
+	if r.closed == nil {
+		r.closed = map[string]map[string]closedTicket{}
+	}
+	for _, repo := range paths {
+		r.closed[repo] = closed[repo]
 	}
 	if len(problems) != 0 {
 		return nil, &SnapshotEvidenceError{Tickets: tickets, Err: errors.Join(problems...)}

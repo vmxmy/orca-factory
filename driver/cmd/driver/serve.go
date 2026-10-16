@@ -54,6 +54,8 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		return 0, nil
 	}
 	ctx = runx.WithLogger(ctx, logger)
+	var served *scheduler.Runtime
+	var nextReclaim time.Time
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
 		if err != nil {
@@ -76,8 +78,15 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err := s.RefreshProjects(ctx); err != nil {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
 		}
+		served = runtime
 		return s, runtime, nil
 	}, func(ctx context.Context) error {
+		if now := time.Now(); served != nil && !now.Before(nextReclaim) {
+			nextReclaim = now.Add(workspaceReclaimInterval)
+			if _, err := served.ReclaimWorkspaces(ctx, false, logger); err != nil {
+				logger.Warn("workspace reclaim incomplete", "err", err)
+			}
+		}
 		timer := time.NewTimer(30 * time.Second)
 		defer timer.Stop()
 		select {
@@ -96,6 +105,10 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 // projectDiscoveryInterval spaces serve's project rediscovery: each run reads
 // Orca, the Feishu project table and every candidate's pipeline check.
 const projectDiscoveryInterval = 10 * time.Minute
+
+// workspaceReclaimInterval spaces serve's workspace reclaim (OF-96): each run
+// lists the Orca workspaces of every tracked repository.
+const workspaceReclaimInterval = 10 * time.Minute
 
 func projectSource(cfg config.Config) func(context.Context) (projects.Result, error) {
 	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}

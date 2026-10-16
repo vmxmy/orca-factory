@@ -163,3 +163,36 @@ func TestRecordedWorkerStop(t *testing.T) {
 		t.Fatalf("state=%q alreadySettled=%v; want a freshly stopped dispatch", state, settled)
 	}
 }
+
+// The list fixture is a real `orca-ide worktree list --repo ... --json`
+// recording (OF-96): the main checkout plus five driver workspaces.
+func TestRecordedWorktreeList(t *testing.T) {
+	trees, err := recordedClient(t, "orca-worktree-list.json").WorktreeList(context.Background(), "/home/laoxu/github/orca-factory")
+	if err != nil {
+		t.Fatalf("recorded list err=%v", err)
+	}
+	if len(trees) != 6 || !trees[0].Main || trees[1].Main {
+		t.Fatalf("trees=%+v", trees)
+	}
+	if trees[4].Path != "/home/laoxu/orca/workspaces/orca-factory/OF-62-resolver-1" || trees[4].Pinned {
+		t.Fatalf("resolver row=%+v", trees[4])
+	}
+}
+
+// The rm fixtures are real receipts from a probe workspace (OF-96): success,
+// Orca refusing an untracked file without --force, and a removed selector.
+func TestRecordedWorktreeRemove(t *testing.T) {
+	path := "/home/laoxu/orca/workspaces/orca-factory/of96-rm-probe"
+	if err := recordedClient(t, "orca-worktree-rm.json").WorktreeRemove(context.Background(), path); err != nil {
+		t.Fatalf("recorded removal err=%v", err)
+	}
+	for name, code := range map[string]string{"orca-worktree-rm-dirty.json": "runtime_error", "orca-worktree-rm-not-found.json": "selector_not_found"} {
+		var rejected *RejectedError
+		if err := recordedClient(t, name).WorktreeRemove(context.Background(), path); !errors.As(err, &rejected) || rejected.Code != code {
+			t.Errorf("%s err=%v, want %s", name, err, code)
+		}
+	}
+	if err := recordedClient(t, "orca-worktree-rm.json").WorktreeRemove(context.Background(), "relative"); err == nil {
+		t.Error("relative path accepted")
+	}
+}

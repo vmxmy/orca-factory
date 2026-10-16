@@ -523,6 +523,60 @@ func (c *Client) WorktreeSet(ctx context.Context, card BoardCard) (Receipt, erro
 	return c.call(ctx, args)
 }
 
+// Worktree is one Orca-managed checkout of a repository. Pinned is the only
+// mark a user can put on an Orca workspace (Orca has no lock flag).
+type Worktree struct {
+	Path   string `json:"path"`
+	Pinned bool   `json:"isPinned"`
+	Main   bool   `json:"isMainWorktree"`
+}
+
+// WorktreeList lists every Orca workspace of the repository at an absolute path.
+// A truncated page is rejected: absence from it proves nothing.
+func (c *Client) WorktreeList(ctx context.Context, repo string) ([]Worktree, error) {
+	if !filepath.IsAbs(repo) {
+		return nil, invalid("worktree list requires an absolute repository path")
+	}
+	receipt, err := c.call(ctx, []string{"worktree", "list", "--repo", "path:" + repo, "--limit", "1000"})
+	if err != nil {
+		return nil, err
+	}
+	var truncated bool
+	var trees []Worktree
+	if json.Unmarshal(receipt["truncated"], &truncated) != nil || truncated || json.Unmarshal(receipt["worktrees"], &trees) != nil || trees == nil {
+		return nil, invalid("invalid worktree list")
+	}
+	for _, tree := range trees {
+		if !filepath.IsAbs(tree.Path) {
+			return nil, invalid("invalid worktree list entry")
+		}
+	}
+	return trees, nil
+}
+
+// WorktreeRemove removes the Orca workspace at an absolute path, its checkout
+// and, when Orca can prove it merged, its local branch. It never passes
+// --force: Orca refuses a checkout with uncommitted changes (runtime_error).
+func (c *Client) WorktreeRemove(ctx context.Context, path string) error {
+	release, err := maintenance.Write()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !filepath.IsAbs(path) {
+		return invalid("worktree rm requires an absolute path")
+	}
+	receipt, err := c.call(ctx, []string{"worktree", "rm", "--worktree", "path:" + path})
+	if err != nil {
+		return err
+	}
+	var removed bool
+	if json.Unmarshal(receipt["removed"], &removed) != nil || !removed {
+		return invalid("worktree rm unconfirmed")
+	}
+	return nil
+}
+
 // ReceiptWorktree returns the absolute worktree path a worker-start receipt
 // placed the worker in, or "" when the receipt does not name one.
 func ReceiptWorktree(r Receipt) string {
