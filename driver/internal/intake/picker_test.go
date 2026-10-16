@@ -288,3 +288,37 @@ func TestIntakeProjectPicker(t *testing.T) {
 		}
 	})
 }
+
+// TestIntakeProjectPickerNoProjects covers OF-48: a gateway that currently
+// knows no project at all (discovery never succeeded yet, or found none
+// eligible) still routes a brand-new topic through the picker instead of
+// the deleted pre-OF-32 single-implicit-project fallback. The requester
+// gets the "暂无可接管的项目" card and the Agent is never invoked with an
+// unresolved empty project.
+func TestIntakeProjectPickerNoProjects(t *testing.T) {
+	var turns []Turn
+	agent := func(_ context.Context, turn Turn) (string, error) {
+		turns = append(turns, turn)
+		return "已整理", nil
+	}
+	var cards []sent
+	card := func(_ context.Context, target, content string) error {
+		cards = append(cards, sent{target, content})
+		return nil
+	}
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", agent, noopReply, noopReact, card, noopReply)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := recordedEvent(t, "bot-event-message-at")
+	event.Event.Message.Content = ptr(`{"text":"@_user_1 帮我整理这个需求"}`)
+	if err := g.Handle(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("agent called with no project resolved: %+v", turns)
+	}
+	if len(cards) != 1 || !strings.Contains(cards[0].content, "暂无可接管的项目") {
+		t.Fatalf("cards=%+v, want one card mentioning 暂无可接管的项目", cards)
+	}
+}

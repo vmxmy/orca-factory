@@ -54,7 +54,7 @@ func TestIntakeTicketContext(t *testing.T) {
 		}
 	}
 
-	first := recordedEvent(t, "bot-event-message-at")
+	first := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 	if err := g.Handle(ctx, first); err != nil {
 		t.Fatal(err)
 	}

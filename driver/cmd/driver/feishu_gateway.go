@@ -77,7 +77,7 @@ func tierParts(env map[string]string) (model, effort string, err error) {
 	}
 	parts := strings.Split(tier, ":")
 	if parts[0] != "claude" || len(parts) > 3 {
-		return "", "", errors.New("AGENT_ROLE_INTAKE must be a claude tier")
+		return "", "", errors.New("需求助手档位不是 claude（AGENT_ROLE_INTAKE）")
 	}
 	parts = append(parts, "", "")
 	return parts[1], parts[2], nil
@@ -163,7 +163,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	}
 	store, err := intakeLedger(ctx, p.Repository.Env, r.tuning)
 	if err != nil {
-		return intake.Project{}, err
+		return intake.Project{}, fmt.Errorf("账本打开失败：%w", err)
 	}
 	checkout := filepath.Join(r.cacheDir, "orca-factory", "intake", p.Prefix, "checkout")
 	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store}
@@ -191,13 +191,28 @@ func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, erro
 // discoverIntakeProjects re-runs project discovery (OF-42: live Orca
 // repository inventory, the Feishu ledger's project table, each repository's
 // own pipeline check) and resolves every eligible repository's wiring via
-// runtime. Every other ledger row is still returned, carrying its rejection
-// reason, so the gateway can answer a thread that names it specifically.
+// runtime. A failure here is the discovery round itself failing outright
+// (the live Orca repository list or the ledger project table could not be
+// read): there is then no row to report anything against, so the caller
+// must not install an empty project set over an already-working one.
 func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, error) {
 	result, rows, err := discoverProjects(ctx, cfg, client)
 	if err != nil {
 		return nil, err
 	}
+	return resolveIntakeProjects(ctx, result, rows, runtime), nil
+}
+
+// resolveIntakeProjects maps one discovery round's eligible/rejected
+// repositories and ledger project rows into the gateway's routable set.
+// Every ledger row is returned: an eligible repository whose own wiring
+// fails to resolve (OF-48: AGENT_ROLE_INTAKE/AGENT_TIER_STRONG is not a
+// claude tier, or its ledger Store fails to open) is listed unavailable with
+// that failure as its Reason instead of aborting the whole round, exactly
+// like a repository discovery itself rejected; every other row still
+// resolves. A row discovery did not consider eligible carries the rejection
+// reason discovery already gave it.
+func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []issues.LedgerProject, runtime *projectRuntime) []intake.Project {
 	reasons := make(map[string]projects.Reason, len(result.Rejected))
 	for _, rejected := range result.Rejected {
 		reasons[rejected.Remote] = rejected.Reason
@@ -211,14 +226,15 @@ func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca
 		if p, ok := eligible[row.Remote]; ok {
 			project, err := runtime.resolve(ctx, p)
 			if err != nil {
-				return nil, err
+				out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: err.Error()})
+				continue
 			}
 			out = append(out, project)
 			continue
 		}
 		out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: string(reasons[row.Remote])})
 	}
-	return out, nil
+	return out
 }
 
 // refreshIntakeProjects rediscovers and installs the gateway's current

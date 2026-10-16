@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,7 +18,9 @@ import (
 	"github.com/larksuite/oapi-sdk-go/v3/ws"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
 
 func strPtr(s string) *string { return &s }
@@ -53,6 +56,55 @@ func TestDiscoverIntakeProjectsFactoryRootUnconfigured(t *testing.T) {
 	}
 	if len(out) != 0 {
 		t.Fatalf("out=%+v, want none", out)
+	}
+}
+
+// TestResolveIntakeProjectsPartialTierFailure covers OF-48: among three
+// eligible projects, two carry a non-claude AGENT_TIER_STRONG tier (no
+// AGENT_ROLE_INTAKE set). Each of those two must fail to resolve on its own
+// and be listed unavailable with the tier reason, while the one claude-tier
+// project still resolves — a single bad tier must never take down the whole
+// discovery round (the production defect: it made every other project
+// disappear from the picker, and the gateway could not route at all).
+func TestResolveIntakeProjectsPartialTierFailure(t *testing.T) {
+	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	eligible := func(prefix, remote, tier string) projects.Project {
+		return projects.Project{Path: "/repo/" + prefix, Remote: remote, Prefix: prefix, Name: prefix + "-project",
+			Repository: config.Repository{Env: map[string]string{
+				"AGENT_ISSUE_BACKEND": "github",
+				"AGENT_GH_REPO":       "vmxmy/" + prefix,
+				"AGENT_TIER_STRONG":   tier,
+			}}}
+	}
+	result := projects.Result{Eligible: []projects.Project{
+		eligible("OF", "github.com/vmxmy/orca-factory", "claude:claude-opus-5-5:high"),
+		eligible("ZY", "github.com/vmxmy/zhiyun-ai-dashboard", "codex:gpt-6:high"),
+		eligible("AN", "github.com/vmxmy/ansible", "codex:gpt-6:high"),
+	}}
+	rows := []issues.LedgerProject{
+		{Prefix: "OF", Name: "orca-factory", Remote: "github.com/vmxmy/orca-factory", Enabled: true},
+		{Prefix: "ZY", Name: "zhiyun-ai-dashboard", Remote: "github.com/vmxmy/zhiyun-ai-dashboard", Enabled: true},
+		{Prefix: "AN", Name: "ansible", Remote: "github.com/vmxmy/ansible", Enabled: true},
+	}
+	out := resolveIntakeProjects(context.Background(), result, rows, runtime)
+	if len(out) != 3 {
+		t.Fatalf("out=%+v, want 3 projects", out)
+	}
+	var usable []string
+	unavailable := map[string]string{}
+	for _, p := range out {
+		if p.Repo != "" {
+			usable = append(usable, p.Prefix)
+			continue
+		}
+		unavailable[p.Prefix] = p.Reason
+	}
+	if !slices.Equal(usable, []string{"OF"}) {
+		t.Fatalf("usable=%v, want only OF", usable)
+	}
+	const wantReason = "需求助手档位不是 claude（AGENT_ROLE_INTAKE）"
+	if unavailable["ZY"] != wantReason || unavailable["AN"] != wantReason {
+		t.Fatalf("unavailable=%+v, want %q for ZY and AN", unavailable, wantReason)
 	}
 }
 
