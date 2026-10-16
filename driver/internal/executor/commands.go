@@ -20,7 +20,10 @@ type Commands struct {
 	ReviewerCommand          string
 	ReviewerSmallCommand     string
 	ReviewerSmallMaxEstimate *float64
-	Run                      func(context.Context, runx.Spec) ([]byte, error)
+	// InstallCommand comes from the primary checkout's profile, never from the
+	// head under verification. Gate runs it in the verify checkout first.
+	InstallCommand string
+	Run            func(context.Context, runx.Spec) ([]byte, error)
 }
 
 func (c *Commands) run(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
@@ -107,6 +110,11 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 			err = errors.Join(err, errors.New("verification checkout cleanup failed"))
 		}
 	}()
+	if strings.TrimSpace(c.InstallCommand) != "" {
+		if _, err = c.run(ctx, dir, "/bin/bash", "-c", c.InstallCommand); err != nil {
+			return "", &infra.Ticket{Err: errors.New("verification install failed")}
+		}
+	}
 	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
 	return string(b), err
 }
