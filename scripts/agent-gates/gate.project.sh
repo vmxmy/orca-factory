@@ -58,11 +58,20 @@ echo "== driver-contracts"   # 依据：外部接口解析须用录制的真实�
 if [ -f driver/go.mod ]; then
   # 基线取分支与 origin/main 的分叉点：分支不得删减契约测试，main 之后新增的契约测试不让旧底座的分支变红
   base=$(git merge-base HEAD origin/main) || { echo "契约基线：找不到与 origin/main 的分叉点" >&2; exit 1; }
-  # 测试文件随被测解析代码整体删除时不计入基线；仍存在的文件不得删减契约测试
+  # 测试文件随被测解析代码整体删除时不计入基线；仍存在的文件不得删减契约测试，
+  # 除非被删的测试连同它读取的全部录制样本一起删除（契约退役，样本删除在 diff 中可审）
   CONTRACT_BASELINE=0
   while IFS= read -r file; do
     [ -f "$file" ] || continue
-    CONTRACT_BASELINE=$((CONTRACT_BASELINE + $(git show "$base:$file" | grep -c '^func TestRecorded')))
+    while IFS= read -r name; do
+      if ! grep -q "^func ${name}(" "$file"; then
+        samples=$(git show "$base:$file" | awk -v n="func ${name}(" 'index($0,n)==1{p=1} p{print} p&&/^}/{exit}' | grep -oE 'testdata/recorded/[^"]+' | sort -u)
+        retired=${samples:+1}
+        for sample in $samples; do [ -e "driver/$sample" ] && retired=; done
+        [ -n "$retired" ] && { echo "契约退役：$file $name（样本已删除）"; continue; }
+      fi
+      CONTRACT_BASELINE=$((CONTRACT_BASELINE + 1))
+    done < <(git show "$base:$file" | sed -n 's/^func \(TestRecorded[A-Za-z0-9_]*\)(.*/\1/p')
   done < <(git grep -l '^func TestRecorded' "$base" -- 'driver/*_test.go' | sed "s#^$base:##")
   contract_passed=$( { (cd driver && go test -count=1 -v -run '^TestRecorded' ./...) || true; } | grep -c '^--- PASS: TestRecorded' || true)
   if [ "$contract_passed" -lt "$CONTRACT_BASELINE" ]; then
