@@ -117,12 +117,12 @@ type Gateway struct {
 	// picker card (OF-47), never chosen on the requester's behalf.
 	projects []Project
 	// onboardable is every repository discovery found in Orca's inventory but
-	// this driver has never onboarded (OF-49): shown read-only in the picker
-	// card so the requester knows it exists, with no selectable option since
-	// onboarding itself needs an approver. Unlike projects, nothing in a
-	// thread ever commits to one of these, so SetOnboardable just replaces
-	// the set wholesale.
+	// this driver has never onboarded (OF-49): listed in the picker card with
+	// an "接入" button only an approver's press acts on (OF-50), through
+	// onboard. Unlike projects, nothing in a thread ever commits to one of
+	// these, so SetOnboardable just replaces the set wholesale.
 	onboardable   []Onboardable
+	onboard       Onboarder
 	defaultRemote string
 	agent         func(context.Context, Turn) (string, error)
 	reply         func(context.Context, string, string) error

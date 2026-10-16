@@ -31,8 +31,9 @@ func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
 // driver has never onboarded (OF-49: no scripts/agent-gates/ at all). It
 // carries no Prefix because it was never assigned one in the Feishu ledger's
 // 项目 table; Name is the local checkout's own directory name, so the
-// requester can recognize it even without a ledger row.
-type Onboardable struct{ Name, Remote string }
+// requester can recognize it even without a ledger row. Path is that
+// checkout, the repository an approver's "接入" press onboards (OF-50).
+type Onboardable struct{ Name, Remote, Path string }
 
 var (
 	markerPrefix = regexp.MustCompile(`^\s*#([A-Z][A-Z0-9]*)(?:\s|$)`)

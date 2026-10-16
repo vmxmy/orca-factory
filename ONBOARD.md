@@ -15,6 +15,17 @@
 
 迁移流程见 [票据主账本](docs/agents/issue-tracker.md)：只读 export → offline preview → 明确真实写入授权 → drain 收敛并核实旧写者 → freeze 后停止 scheduler、再次核实全体写者 → 最终导出 → 保持停调度并回到 draining → held import/全量回读 → 单独确认配置切换及 release-hold → 唯一调度器 running。frozen 禁止导入写入；draining 不禁止既有合并或 smoke，不能边运行 scheduler 边做最终迁移。维护栅栏只约束本机合作写者，不证明旧二进制或其他机器无写者。保留预算、checkpoint、receipts、FIFO 与历史部署屏障；不强杀 worker，不自动回滚到陈旧 Linear。
 
+## 飞书账本自动接入（`driver onboard`）
+
+本机 Orca 已登记、`scripts/agent-gates/` 目录完全不存在的仓库是「可接入」仓库（`orca-factory-driver projects --json` 中原因为「可接入」）。对它可以不手工走本手册，改用自动入口：
+
+1. 审批人先运行 `orca-factory-driver onboard --repo <本机检出路径> --dry-run`，核对步骤、编号前缀与 `agent-graph.env` 默认值：账本、档位与 `AGENT_ROLE_INTAKE` 取自 orca-factory 本仓库配置，`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey，`AGENT_GH_REPO` 取远端；部署 workflow、smoke、通知 profile 与群列为待确认、留空。
+2. 去掉 `--dry-run` 运行，或在飞书需求助手的项目选择卡片上点该仓库的「接入」（只对 `AGENT_FEISHU_APPROVERS` 生效）。driver 在目标仓库独立 worktree 的 `feat/agent-graph` 分支（基于 `origin/main`）上启动接入 Agent，角色为 [`roles/onboard.md`](core/roles/onboard.md)：它按本手册第 1、4、5、6 节运行 `init`、只读调研并填写三份项目文件、跑 5a～5d（gate 绿、注入错误 gate 红、注入撤干净）、在目标仓库开接入 PR，PR 正文逐项列出待确认的键；遵守第 7 节，不改业务代码、不合并、不写飞书。
+3. Agent 报告 PR 后，driver 自己在飞书项目表新增该仓库行，「启用」=false，编号前缀按目录名生成且不与现有前缀冲突。命令输出（或话题回复）给出 PR 链接与该行。
+4. 人补齐待确认项，合并接入 PR，在项目表勾选「启用」；下一次项目发现后该仓库变为可接管。
+
+同一仓库同时只允许一个接入；worktree 或分支已存在时拒绝，由人核对后清理。细节见 [driver/README.md 的“自动接入”](driver/README.md#自动接入)。
+
 ## 历史 Linear 接入手册（仅维护旧配置）
 
 以下 0–7 步保留已交付配置契约，不是 GitHub 接入指令。本仓库 GitHub 模式不执行其中的 Linear 命令。

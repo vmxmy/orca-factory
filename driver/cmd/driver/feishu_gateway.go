@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -212,7 +211,7 @@ func resolveOnboardable(result projects.Result) []intake.Onboardable {
 		if r.Reason != projects.ReasonOnboardable {
 			continue
 		}
-		out = append(out, intake.Onboardable{Name: filepath.Base(r.Path), Remote: r.Remote})
+		out = append(out, intake.Onboardable{Name: filepath.Base(r.Path), Remote: r.Remote, Path: r.Path})
 	}
 	return out
 }
@@ -314,12 +313,9 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	claude := settings["AGENT_INTAKE_CLAUDE"]
-	if claude == "" {
-		claude, _ = exec.LookPath("claude")
-	}
-	if !filepath.IsAbs(claude) {
-		return errors.New("AGENT_INTAKE_CLAUDE must be an absolute path to claude")
+	claude, err := resolveClaude(settings["AGENT_INTAKE_CLAUDE"])
+	if err != nil {
+		return err
 	}
 	cacheDir, err := os.UserCacheDir()
 	if err != nil {
@@ -347,6 +343,9 @@ func runFeishuGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if cfg.FactoryRoot != "" {
+		gateway.SetOnboarder(onboarder{cfg: cfg, orca: orcaClient, claude: claude, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg)}.run)
+	}
 	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(func(ctx context.Context, event *im.P2MessageReceiveV1) error {
 		if isNewIntakeTopic(event) {
 			refreshIntakeProjects(ctx, gateway, cfg, orcaClient, runtime)
@@ -359,7 +358,7 @@ func runFeishuGateway(ctx context.Context) error {
 		if settle != nil {
 			go func() {
 				if err := settle(ctx); err != nil {
-					fmt.Fprintln(os.Stderr, "intake gateway: project pick failed:", err)
+					fmt.Fprintln(os.Stderr, "intake gateway: card action failed:", err)
 				}
 			}()
 		}

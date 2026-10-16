@@ -446,6 +446,40 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 	return c.awaitTask(ctx, canonical, func(t Task) bool { return !adopt || t.Metadata.Complete && !t.Held })
 }
 
+// CreateLedgerProject adds row to the 项目 table for an onboarded repository
+// (OF-50) and reads it back. An identical existing row is returned without a
+// write, so a retry after an unconfirmed write converges; a row whose remote
+// or 编号前缀 another row already uses is refused.
+func (c *Feishu) CreateLedgerProject(ctx context.Context, row LedgerProject) (LedgerProject, error) {
+	find := func() (bool, error) {
+		rows, err := c.LedgerProjects(ctx)
+		if err != nil {
+			return false, err
+		}
+		for _, r := range rows {
+			if r == row {
+				return true, nil
+			}
+			if r.Remote == row.Remote || r.Prefix == row.Prefix {
+				return false, fmt.Errorf("项目表已有仓库远端 %s 或编号前缀 %s 的行", r.Remote, r.Prefix)
+			}
+		}
+		return false, nil
+	}
+	if found, err := find(); err != nil || found {
+		return row, err
+	}
+	cells := c.cells("项目", map[string]any{"名称": row.Name, "仓库远端": row.Remote, "编号前缀": row.Prefix, "启用": row.Enabled})
+	res, err := c.client.BatchCreate(ctx, c.base, c.tables["项目"].id, []map[string]any{cells})
+	if err != nil {
+		return LedgerProject{}, err
+	}
+	if err = checkWrite(res, 1); err != nil {
+		return LedgerProject{}, err
+	}
+	return row, c.readBack(ctx, find)
+}
+
 // dependencyCells adds the dependency links and the adoption fingerprint.
 func (c *Feishu) dependencyCells(ctx context.Context, row map[string]any, self string, brief FeishuBrief, blockers, related []string) error {
 	x, err := c.ticketIndex(ctx)

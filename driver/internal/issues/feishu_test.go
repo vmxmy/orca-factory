@@ -278,6 +278,8 @@ func (f *feishuFake) write(w http.ResponseWriter, r *http.Request, table, action
 				value = &[]string{}
 			case "number":
 				value = new(float64)
+			case "checkbox":
+				value = new(bool)
 			default:
 				value = new(string)
 			}

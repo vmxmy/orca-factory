@@ -114,7 +114,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 调度器不读 `driver.toml` 的仓库清单。它与飞书需求网关共用项目发现（`driver/internal/projects` 的 `Discover`，OF-42）：联立本机 Orca 仓库清单、飞书项目表与各仓库的流水线 check，得到可接管项目。规则如下（OF-43）：
 
-本机 Orca 仓库清单中存在、但 `scripts/agent-gates/` 目录完全不存在的仓库，不接管的原因是「可接入」而不是「未装流水线」（OF-49）：这是从未接入过流水线的仓库，与「目录已存在但缺 `agent-graph.env`」或「已装但 check 失败」区分开，后两者仍各自保留原有原因。飞书需求助手的项目选择卡片据此在「暂不可用」之外单列一段「可接入」，列出这些仓库本机检出目录名与远端，提示「需审批人接入后可用」；本票不提供任何接入入口，接入仍需审批人手动跑 `orca-factory init`。
+本机 Orca 仓库清单中存在、但 `scripts/agent-gates/` 目录完全不存在的仓库，不接管的原因是「可接入」而不是「未装流水线」（OF-49）：这是从未接入过流水线的仓库，与「目录已存在但缺 `agent-graph.env`」或「已装但 check 失败」区分开，后两者仍各自保留原有原因。飞书需求助手的项目选择卡片据此在「暂不可用」之外单列一段「可接入」，列出这些仓库本机检出目录名与远端，提示「需审批人接入后可用」，每个仓库带一个「接入」按钮（OF-50，见下文“自动接入”）。
 
 1. serve 启动时运行一次发现。发现失败时 serve 退出，由 systemd 重启。
 2. serve 每 10 分钟重新发现一次。间隔不是每轮调度，因为每次发现都要读 Orca、飞书项目表并逐个运行 check。发现失败时保留上一次的项目集合，写一条 WARN。
@@ -124,6 +124,27 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 6. 已接管项目的 `agent-graph.env` 变更在下一次发现后比较新旧配置生效（OF-45）：账本身份键（`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、`AGENT_FEISHU_PROJECT`、`AGENT_LINEAR_TEAM`、`AGENT_GH_REPO`）不变时，整条配置（含 `MaxInFlight`、`StaleHours`、`AGENT_SCOPE_AVOID` 等）热替换，写一条 INFO 列出变化的键名，不记值；账本身份键变化时保留旧配置继续运行，写一条 WARN 要求重启 serve 生效，同一变化只写一次。已冻结在合并交接、部署意图中的证据不受影响，继续按冻结值执行。
 
 人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`selftest --live` 运行一次发现。`resume-deployment` 不运行发现（OF-44）：它不联立飞书项目表、不跑流水线 check，而是直接枚举本机 Orca 仓库清单中每个 `agent-graph.env` 可读且声明飞书账本（`AGENT_ISSUE_BACKEND=feishu` 且 `AGENT_FEISHU_BASE` 非空）的仓库。项目移出可接管集合后（未启用、项目表无对应行、check 变红等任意原因），只要其 `agent-graph.env` 还在且声明飞书账本，`resume-deployment` 仍能找到并处置其部署屏障，不必先恢复项目表启用状态。
+
+### 自动接入
+
+`orca-factory-driver onboard --repo <本机检出路径> [--dry-run]` 接入一个「可接入」仓库（OF-50）。命令先重跑项目发现：路径不在 Orca 清单、或原因不是「可接入」（已接入、半装、check 失败等）时拒绝。`--dry-run` 只打印 JSON 计划：步骤、worktree 路径、编号前缀，以及 `agent-graph.env` 默认值（`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、档位 `AGENT_TIER_*`/`AGENT_ROLE_INTAKE` 取自 `factory_root` 的 `agent-graph.env`；`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey；`AGENT_GH_REPO` 取远端），`pending` 列出只有人知道、留空待确认的键。不加 `--dry-run` 时：
+
+```mermaid
+flowchart LR
+    A[发现校验：可接入] --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
+    B --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
+    C --> D[接入 Agent：init、填项目文件、ONBOARD 5a～5d、开 PR]
+    D --> E[driver 写飞书项目表行，启用=false]
+    E --> F[输出 PR 链接与项目表行]
+```
+
+- 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
+- worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。该目录已存在或分支已存在时拒绝，由人核对后清理再重试；driver 不自动删除。
+- 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
+- Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，不写项目表。项目表行由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
+- 接入 PR 合并、并在项目表勾选「启用」后，下一次发现才把该仓库判为可接管。
+
+需求助手卡片的「接入」按钮走同一入口：只有 `AGENT_FEISHU_APPROVERS` 中的人点击生效，其他人得到 toast“只有审批人可以接入”；生效后网关在话题回复“开始接入 <仓库>”，完成后回复 PR 链接、项目表行与“合并 PR 并在项目表勾选启用后生效”，失败时回复原因。网关只在 `driver.toml` 配置了 `factory_root` 时开启按钮。
 
 ## 启动检查
 
@@ -373,7 +394,8 @@ Orca 仓库无需改配置或重启网关即可路由；人工核对用 `orca-fa
    原文暂存为会话的 `pending_prompt`。卡片下拉框列出本轮发现中可接管的项目（`编号前缀
    名称`），预选 `AGENT_FEISHU_INTAKE_PROJECT` 对应项目（若可接管）；卡片正文列出暂不
    可用的项目及原因，再列出“可接入”仓库（OF-49：本机 Orca 已登记但从未接入流水线
-   的仓库，按检出目录名与远端展示，固定文案“需审批人接入后可用”，不可点击）。需求人
+   的仓库，按检出目录名与远端展示，固定文案“需审批人接入后可用”，各带一个只对审批人
+   生效的“接入”按钮，OF-50，见“自动接入”）。需求人
    点“开始”后，网关把卡片更新为“已选择 <前缀> <名称>”（不可再操作），再用首条消息
    原文作为第一轮输入调用 Agent。
 3. 文字兜底：待选期间需求人在话题里回复序号或编号前缀同样生效；无法识别时网关回复
