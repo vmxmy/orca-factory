@@ -16,6 +16,14 @@ type projectTracker interface {
 	Track(context.Context, config.Repository) error
 }
 
+// repositoryUpdater is the optional Backend capability that keeps its own
+// copy of an already-tracked repository's configuration in sync once
+// RefreshProjects confirms a hot reload is safe (OF-45): the ledger identity
+// keys are unchanged, so no bound Linear/GitHub/Feishu client needs rebinding.
+type repositoryUpdater interface {
+	UpdateRepository(config.Repository)
+}
+
 // RefreshProjects re-runs Discover when it is due and replaces the claimable
 // set (OF-43). A repository that leaves the eligible set is retired: Tick keeps
 // reading it so its in-flight tickets, merges, deployment barriers and
@@ -37,11 +45,13 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 		rejected[r.Path] = string(r.Reason)
 	}
 	tracker, _ := s.Backend.(projectTracker)
+	updater, _ := s.Backend.(repositoryUpdater)
 	eligible := map[string]bool{}
 	repositories := slices.Clone(s.Repositories)
 	for _, p := range result.Eligible {
-		if slices.ContainsFunc(repositories, func(r config.Repository) bool { return r.Path == p.Path }) {
+		if idx := slices.IndexFunc(repositories, func(r config.Repository) bool { return r.Path == p.Path }); idx >= 0 {
 			eligible[p.Path] = true
+			repositories[idx] = s.reconcileRepository(repositories[idx], p.Repository, updater)
 			continue
 		}
 		if tracker != nil {
@@ -68,6 +78,49 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 	sort.Strings(paths)
 	s.logger().Info("projects discovered", "eligible", paths, "retired", s.retiredPaths())
 	return nil
+}
+
+// reconcileRepository replaces current with fresh whenever fresh differs and
+// keeps the ledger identity keys (config.LedgerIdentityKeys) unchanged: every
+// reader (scheduler.go's MaxInFlight/StaleHours/AGENT_SCOPE_AVOID checks, and
+// the Backend's own repositoryUpdater copy) sees the replacement on this same
+// tick. A changed identity key instead keeps current entirely until serve
+// restarts, so a bound Linear/GitHub/Feishu client is never rebound live.
+func (s *Scheduler) reconcileRepository(current, fresh config.Repository, updater repositoryUpdater) config.Repository {
+	changed := config.ChangedEnvKeys(current.Env, fresh.Env)
+	if current.MaxInFlight != fresh.MaxInFlight {
+		changed = append(changed, "MaxInFlight")
+	}
+	if current.StaleHours != fresh.StaleHours {
+		changed = append(changed, "StaleHours")
+	}
+	if len(changed) == 0 {
+		return current
+	}
+	sort.Strings(changed)
+	if slices.ContainsFunc(changed, func(key string) bool { return slices.Contains(config.LedgerIdentityKeys, key) }) {
+		s.warnIdentityDrift(current.Path, changed)
+		return current
+	}
+	if updater != nil {
+		updater.UpdateRepository(fresh)
+	}
+	s.logger().Info("repository configuration updated", "path", current.Path, "changed", changed)
+	return fresh
+}
+
+// warnIdentityDrift logs once per distinct ledger-identity change a
+// repository carries; an unchanged drift is not re-logged on every discovery.
+func (s *Scheduler) warnIdentityDrift(path string, changed []string) {
+	fingerprint := strings.Join(changed, ",")
+	if s.identityDrift == nil {
+		s.identityDrift = map[string]string{}
+	}
+	if s.identityDrift[path] == fingerprint {
+		return
+	}
+	s.identityDrift[path] = fingerprint
+	s.logger().Warn("ledger identity changed; restart required", "path", path, "changed", changed)
 }
 
 // logRejections warns once per repository whenever the rejected set changes.

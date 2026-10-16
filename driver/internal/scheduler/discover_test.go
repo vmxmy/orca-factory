@@ -113,6 +113,84 @@ func TestDiscoverRetiredProjectFinishesInFlightButClaimsNothingNew(t *testing.T)
 	}
 }
 
+// TestRefreshProjectsHotReloadsConfigButFreezesLedgerIdentity is OF-45's
+// acceptance test: a non-identity change (MaxInFlight) takes effect on the
+// next discovery, while a ledger identity change (AGENT_FEISHU_BASE) freezes
+// the repository on its old configuration and logs its warning only once.
+func TestRefreshProjectsHotReloadsConfigButFreezesLedgerIdentity(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	result := projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: config.Repository{
+		Path: "/a", MaxInFlight: 1, StaleHours: 8,
+		Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "https://base1.feishu.cn/base/tok1"},
+	}}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second discovery raises MaxInFlight to 2 and also changes the ledger
+	// identity key AGENT_FEISHU_BASE; the identity change must win and keep
+	// the repository on its old configuration entirely.
+	now = now.Add(time.Minute)
+	result.Eligible[0].Repository = config.Repository{
+		Path: "/a", MaxInFlight: 2, StaleHours: 8,
+		Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "https://base2.feishu.cn/base/tok2"},
+	}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].MaxInFlight; got != 1 {
+		t.Fatalf("MaxInFlight=%d, want frozen at 1 alongside the changed ledger identity", got)
+	}
+	if got := s.Repositories[0].Env["AGENT_FEISHU_BASE"]; got != "https://base1.feishu.cn/base/tok1" {
+		t.Fatalf("AGENT_FEISHU_BASE=%q, want frozen to the old value pending restart", got)
+	}
+	if n := strings.Count(logs.String(), "ledger identity changed"); n != 1 {
+		t.Fatalf("identity-drift warning logged %d times, want once:\n%s", n, logs.String())
+	}
+	if strings.Contains(logs.String(), "base1.feishu.cn") || strings.Contains(logs.String(), "base2.feishu.cn") {
+		t.Fatalf("log leaked an Env value, want key names only:\n%s", logs.String())
+	}
+
+	// Rediscovering the same drift again must not log a second warning.
+	now = now.Add(time.Minute)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(logs.String(), "ledger identity changed"); n != 1 {
+		t.Fatalf("identity-drift warning re-logged, want once total:\n%s", logs.String())
+	}
+
+	// A third discovery drops the identity drift (AGENT_FEISHU_BASE reverts)
+	// but keeps MaxInFlight at 2; the hot-reloadable change now applies.
+	now = now.Add(time.Minute)
+	result.Eligible[0].Repository = config.Repository{
+		Path: "/a", MaxInFlight: 2, StaleHours: 8,
+		Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "https://base1.feishu.cn/base/tok1"},
+	}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].MaxInFlight; got != 2 {
+		t.Fatalf("MaxInFlight=%d, want hot-reloaded to 2 once the ledger identity matches again", got)
+	}
+
+	// The next tick claims up to the hot-reloaded MaxInFlight of 2.
+	now = now.Add(time.Minute)
+	f.tickets = []Ticket{
+		{ID: "a-1", Repo: "/a", Candidate: true, CreatedAt: now},
+		{ID: "a-2", Repo: "/a", Candidate: true, CreatedAt: now.Add(time.Second)},
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := launchedIDs(f); !reflect.DeepEqual(got, []string{"a-1", "a-2"}) {
+		t.Fatalf("launches=%v, want both tickets claimed under the hot-reloaded limit of 2", got)
+	}
+}
+
 func TestDiscoverFailureKeepsPreviousProjects(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	fail := false
