@@ -21,7 +21,7 @@
 
 1. 审批人先运行 `orca-factory-driver onboard --repo <本机检出路径> --dry-run`，核对步骤、编号前缀与 `agent-graph.env` 默认值：账本、档位与 `AGENT_ROLE_INTAKE` 取自 orca-factory 本仓库配置，`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey，`AGENT_GH_REPO` 取远端；部署 workflow、smoke、通知 profile 与群列为待确认、留空。
 2. 去掉 `--dry-run` 运行，或在飞书需求助手的项目选择卡片上点该仓库的「接入」（只对 `AGENT_FEISHU_APPROVERS` 生效）。driver 在目标仓库独立 worktree 的 `feat/agent-graph` 分支（基于 `origin/main`）上启动接入 Agent，角色为 [`roles/onboard.md`](core/roles/onboard.md)：它按本手册第 1、4、5、6 节运行 `init`、只读调研并填写三份项目文件、跑 5a～5d（gate 绿、注入错误 gate 红、注入撤干净）、在目标仓库开接入 PR，PR 正文逐项列出待确认的键；遵守第 7 节，不改业务代码、不合并、不写飞书。
-3. Agent 报告 PR 后，driver 自己在飞书项目表新增该仓库行，「启用」=false，编号前缀按目录名生成且不与现有前缀冲突。命令输出（或话题回复）给出 PR 链接与该行。
+3. driver 在启动 Agent 之前在飞书项目表新增该仓库行，「启用」=false，编号前缀按目录名生成且不与现有前缀冲突；5b 的 `install.sh --dry-run` 需要该行存在。重试时沿用已有行。命令输出（或话题回复）给出 PR 链接与该行。
 4. 人补齐待确认项，合并接入 PR，在项目表勾选「启用」；下一次项目发现后该仓库变为可接管。
 
 同一仓库同时只允许一个接入；worktree 或分支已存在时拒绝，由人核对后清理。细节见 [driver/README.md 的“自动接入”](driver/README.md#自动接入)。

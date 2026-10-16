@@ -60,8 +60,11 @@ type onboardPlan struct {
 	Model    string            `json:"model"`
 	Effort   string            `json:"effort"`
 	Env      map[string]string `json:"env"`
-	Pending  []string          `json:"pending"`
-	Steps    []string          `json:"steps"`
+	// RowExists is set when an earlier attempt already wrote this remote's
+	// project-table row; the retry reuses its prefix and writes no new row.
+	RowExists bool     `json:"row_exists"`
+	Pending   []string `json:"pending"`
+	Steps     []string `json:"steps"`
 }
 
 // onboarder onboards one Orca repository (OF-50): the agent works only in a
@@ -127,22 +130,33 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 		}
 	}
 	taken := make([]string, 0, len(rows))
+	existing := ""
 	for _, row := range rows {
 		taken = append(taken, row.Prefix)
+		if row.Remote == target.Remote {
+			existing = row.Prefix
+		}
 	}
 	name := filepath.Base(repo)
-	prefix := projects.OnboardPrefix(name, taken)
+	prefix := existing
+	if prefix == "" {
+		prefix = projects.OnboardPrefix(name, taken)
+	}
+	rowStep := fmt.Sprintf("driver 在飞书项目表新增行：名称=%s 仓库远端=%s 编号前缀=%s 启用=false（先于接入 Agent，install.sh --dry-run 校验需要该行）", name, target.Remote, prefix)
+	if existing != "" {
+		rowStep = fmt.Sprintf("飞书项目表已有 %s 的行（编号前缀=%s），沿用不新增", target.Remote, prefix)
+	}
 	worktree := filepath.Join(o.cacheDir, "orca-factory", "onboard", onboardKey(target.Remote), "worktree")
 	steps := []string{
+		rowStep,
 		fmt.Sprintf("git -C %s fetch origin main && git -C %s worktree add -b %s %s origin/main", repo, repo, onboardBranch, worktree),
 		fmt.Sprintf("接入 Agent（claude %s:%s，工作目录 %s）运行 %s/bin/orca-factory init %s", model, effort, worktree, o.cfg.FactoryRoot, worktree),
 		"接入 Agent 只读调研并填写 gate.project.sh、COORDINATOR.project.md、agent-graph.env（默认值见 env，pending 留空列入 PR 待确认）",
 		"接入 Agent 跑 ONBOARD 5a～5d：gate.test.sh、install.sh --dry-run、gate 绿、注入错误 gate 红并撤干净",
 		fmt.Sprintf("接入 Agent 推送 %s 并在 %s 开接入 PR（不合并）", onboardBranch, m[1]),
-		fmt.Sprintf("driver 在飞书项目表新增行：名称=%s 仓库远端=%s 编号前缀=%s 启用=false", name, target.Remote, prefix),
 	}
 	return onboardPlan{Repo: repo, Remote: target.Remote, Name: name, Prefix: prefix, Branch: onboardBranch, Worktree: worktree,
-		Model: model, Effort: effort, Env: env, Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
+		Model: model, Effort: effort, Env: env, RowExists: existing != "", Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
 }
 
 // run onboards req.Repo under its repository's single-instance lock,
@@ -164,16 +178,18 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 	if plan.Remote != req.Remote {
 		return intake.OnboardResult{}, fmt.Errorf("%s 的远端已变为 %s", req.Repo, plan.Remote)
 	}
+	row := issues.LedgerProject{Name: plan.Name, Remote: plan.Remote, Prefix: plan.Prefix}
+	if !plan.RowExists {
+		if row, err = o.writeRow(ctx, row); err != nil {
+			return intake.OnboardResult{}, fmt.Errorf("项目表写入失败：%w", err)
+		}
+	}
 	if err := o.addWorktree(ctx, plan); err != nil {
 		return intake.OnboardResult{}, err
 	}
 	pr, err := o.runAgent(ctx, plan)
 	if err != nil {
 		return intake.OnboardResult{}, err
-	}
-	row, err := o.writeRow(ctx, issues.LedgerProject{Name: plan.Name, Remote: plan.Remote, Prefix: plan.Prefix})
-	if err != nil {
-		return intake.OnboardResult{}, fmt.Errorf("接入 PR %s 已开，项目表写入失败：%w", pr, err)
 	}
 	return intake.OnboardResult{PR: pr, Row: row}, nil
 }
@@ -228,7 +244,7 @@ func (o onboarder) runAgent(ctx context.Context, plan onboardPlan) (string, erro
 	if json.Unmarshal(out, &result) != nil || result.Type != "result" || result.Subtype != "success" || result.IsError {
 		return "", errors.New("接入 Agent 没有成功结果")
 	}
-	prs := regexp.MustCompile(`https://github\.com/` + regexp.QuoteMeta(plan.Env["AGENT_GH_REPO"]) + `/pull/[0-9]+`).FindAllString(result.Result, -1)
+	prs := regexp.MustCompile(`https://github\.com/`+regexp.QuoteMeta(plan.Env["AGENT_GH_REPO"])+`/pull/[0-9]+`).FindAllString(result.Result, -1)
 	if len(prs) == 0 {
 		return "", fmt.Errorf("接入 Agent 未报告接入 PR，Agent 最终说明：%s", truncateOnboardResult(result.Result))
 	}

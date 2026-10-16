@@ -183,8 +183,9 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	mainSHA := gitIn(t, f.repo, "rev-parse", "HEAD")
 
 	record := filepath.Join(t.TempDir(), "claude.record")
+	rowMarker := filepath.Join(t.TempDir(), "row.written")
 	claude := filepath.Join(t.TempDir(), "claude")
-	script := "#!/bin/sh\n{ printf 'cwd=%s\\n' \"$(pwd -P)\"; printf 'home=%s\\n' \"$HOME\"; printf 'secret=%s\\n' \"${AGENT_FEISHU_APP_SECRET-unset}\"; printf 'gh=%s\\n' \"${GH_TOKEN-unset}\"; } > " + record + "\n" +
+	script := "#!/bin/sh\n{ if [ -e " + rowMarker + " ]; then echo row=before-agent; else echo row=missing; fi; printf 'cwd=%s\\n' \"$(pwd -P)\"; printf 'home=%s\\n' \"$HOME\"; printf 'secret=%s\\n' \"${AGENT_FEISHU_APP_SECRET-unset}\"; printf 'gh=%s\\n' \"${GH_TOKEN-unset}\"; } > " + record + "\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > " + record + ".args\n" +
 		`printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"已开接入 PR：https://github.com/vmxmy/ziikoo-control-plane/pull/7"}'` + "\n"
 	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
@@ -198,7 +199,7 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
 		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
 			rows = append(rows, row)
-			return row, nil
+			return row, os.WriteFile(rowMarker, nil, 0o600)
 		}}
 	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote, Requester: "ou_APPROVER", Thread: "om_ROOT"}
 
@@ -237,7 +238,7 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"cwd=" + realWorktree, "home=" + f.home, "secret=unset", "gh=unset"} {
+	for _, want := range []string{"row=before-agent", "cwd=" + realWorktree, "home=" + f.home, "secret=unset", "gh=unset"} {
 		if !slices.Contains(lines, want) {
 			t.Fatalf("record=%v\nwant %q", lines, want)
 		}
@@ -306,9 +307,8 @@ func TestOnboardReportsAgentResultWhenPRMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
-		writeRow: func(context.Context, issues.LedgerProject) (issues.LedgerProject, error) {
-			t.Fatal("ledger row must not be written when the agent reports no PR")
-			return issues.LedgerProject{}, nil
+		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
+			return row, nil
 		}}
 	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote}
 	if _, err := o.run(context.Background(), req); err == nil || !strings.Contains(err.Error(), explanation) {
