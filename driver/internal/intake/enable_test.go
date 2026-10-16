@@ -178,6 +178,24 @@ func TestIntakeEnableButton(t *testing.T) {
 		}
 	})
 
+	t.Run("a cleanup note from the Enabler is appended to the success message", func(t *testing.T) {
+		g, replies, requests := newGateway(t)
+		g.SetEnabler(func(_ context.Context, req EnableRequest) (EnableResult, error) {
+			*requests = append(*requests, req)
+			return EnableResult{Row: issues.LedgerProject{Name: "dujiao-next", Remote: dujiao, Prefix: "DJ", Enabled: true},
+				Cleanup: "本地分支 feat/agent-graph 保留（尚未合入 origin/main 且远端分支仍存在）"}, nil
+		})
+		toast, begin := clickEnable(t, g, "ou_APPROVER", dujiao, "/repo/dujiao-next", "dujiao-next")
+		if toast.Type != "success" {
+			t.Fatalf("toast=%+v", toast)
+		}
+		run(t, begin)
+		want := sent{pickerCardMessage, "已启用 DJ dujiao-next，下次项目发现后接管；本地分支 feat/agent-graph 保留（尚未合入 origin/main 且远端分支仍存在）"}
+		if len(*replies) != 1 || (*replies)[0] != want {
+			t.Fatalf("replies=%+v, want [%+v]", *replies, want)
+		}
+	})
+
 	t.Run("no enabler configured refuses the press", func(t *testing.T) {
 		var replies []sent
 		reply := func(_ context.Context, target, content string) error {
