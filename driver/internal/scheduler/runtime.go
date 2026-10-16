@@ -207,6 +207,13 @@ func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 	return nil
 }
 
+// UpdateRepository replaces repo's stored configuration (OF-45). RefreshProjects
+// calls this only after confirming repo's ledger identity keys match the
+// previous configuration, so no bound Linear/GitHub/Feishu client is rebound.
+func (r *Runtime) UpdateRepository(repo config.Repository) {
+	r.Repositories[repo.Path] = repo
+}
+
 type SnapshotEvidenceError struct {
 	Tickets []Ticket
 	Err     error

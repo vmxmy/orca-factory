@@ -85,11 +85,14 @@ type Scheduler struct {
 	Repositories []config.Repository
 	// Discover, when set, yields the projects this driver may take over;
 	// RefreshProjects re-runs it every DiscoverEvery (OF-43).
-	Discover         func(context.Context) (projects.Result, error)
-	DiscoverEvery    time.Duration
-	retired          map[string]bool
-	nextDiscover     time.Time
-	rejections       string
+	Discover      func(context.Context) (projects.Result, error)
+	DiscoverEvery time.Duration
+	retired       map[string]bool
+	nextDiscover  time.Time
+	rejections    string
+	// identityDrift remembers the last-logged ledger-identity change per
+	// repository path so RefreshProjects (OF-45) warns once per distinct drift.
+	identityDrift    map[string]string
 	Now              func() time.Time
 	MergeQueue       []Ticket
 	Pauses           *pause.Manager
