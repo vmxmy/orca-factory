@@ -50,9 +50,11 @@ func alwaysPass(context.Context, string) error { return nil }
 // recording (testdata/recorded/orca-repo-list.json, OF-42): 5 registered
 // repositories. orca-factory, zhiyun-ai-dashboard and ansible have their own
 // pipeline installed, pass check, declare a feishu backend and have an
-// enabled ledger row; ziikoo-control-plane and dujiao-next have no pipeline
-// installed at all, in a temp directory standing in for the local checkout
-// so this test never reads a real repository on this machine.
+// enabled ledger row; ziikoo-control-plane and dujiao-next have no
+// scripts/agent-gates/ directory at all, in a temp directory standing in for
+// the local checkout so this test never reads a real repository on this
+// machine, so OF-49 marks them ReasonOnboardable rather than
+// ReasonPipelineNotInstalled.
 func TestDiscoverRecordedSample(t *testing.T) {
 	fixture, err := filepath.Abs("../../testdata/recorded/orca-repo-list.json")
 	if err != nil {
@@ -99,8 +101,8 @@ func TestDiscoverRecordedSample(t *testing.T) {
 	}
 	for _, remote := range []string{"github.com/vmxmy/ziikoo-control-plane", "github.com/dujiao-next/dujiao-next"} {
 		reason, ok := rejection(result, remote)
-		if !ok || reason != ReasonPipelineNotInstalled {
-			t.Errorf("remote %s reason=%q ok=%v, want %q", remote, reason, ok, ReasonPipelineNotInstalled)
+		if !ok || reason != ReasonOnboardable {
+			t.Errorf("remote %s reason=%q ok=%v, want %q", remote, reason, ok, ReasonOnboardable)
 		}
 	}
 	if len(result.Rejected) != 2 {
@@ -154,6 +156,52 @@ func TestDiscoverCheckFailed(t *testing.T) {
 	reason, ok := rejection(result, "github.com/example/failing")
 	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonCheckFailed", result)
+	}
+}
+
+// TestDiscoverOnboardable is OF-49: a repository Orca knows about whose
+// scripts/agent-gates/ directory does not exist at all (never onboarded) is
+// rejected as ReasonOnboardable, not ReasonPipelineNotInstalled.
+func TestDiscoverOnboardable(t *testing.T) {
+	path := t.TempDir()
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/never-onboarded"}}
+	result := Discover(context.Background(), repos, nil, alwaysPass)
+	reason, ok := rejection(result, "github.com/example/never-onboarded")
+	if !ok || reason != ReasonOnboardable || len(result.Eligible) != 0 {
+		t.Fatalf("result=%+v, want ReasonOnboardable", result)
+	}
+}
+
+// TestDiscoverPartialInstallNotOnboardable: scripts/agent-gates/ already
+// exists (someone started onboarding) but agent-graph.env itself is missing.
+// This stays ReasonPipelineNotInstalled, not ReasonOnboardable, because the
+// directory's existence means the repository is not untouched.
+func TestDiscoverPartialInstallNotOnboardable(t *testing.T) {
+	path := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(path, "scripts", "agent-gates"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/partial"}}
+	result := Discover(context.Background(), repos, nil, alwaysPass)
+	reason, ok := rejection(result, "github.com/example/partial")
+	if !ok || reason != ReasonPipelineNotInstalled || len(result.Eligible) != 0 {
+		t.Fatalf("result=%+v, want ReasonPipelineNotInstalled", result)
+	}
+}
+
+// TestDiscoverCheckFailedIsNotOnboardable is the ticket's other half: a
+// fully installed repository (scripts/agent-gates/agent-graph.env present)
+// whose own pipeline check fails stays ReasonCheckFailed, never
+// ReasonOnboardable, even though it is also not eligible right now.
+func TestDiscoverCheckFailedIsNotOnboardable(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/installed-failing"}}
+	failing := func(context.Context, string) error { return errors.New("gate red") }
+	result := Discover(context.Background(), repos, nil, failing)
+	reason, ok := rejection(result, "github.com/example/installed-failing")
+	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {
+		t.Fatalf("result=%+v, want ReasonCheckFailed, not ReasonOnboardable", result)
 	}
 }
 

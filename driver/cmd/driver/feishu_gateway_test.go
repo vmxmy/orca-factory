@@ -18,6 +18,7 @@ import (
 	"github.com/larksuite/oapi-sdk-go/v3/ws"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
@@ -50,12 +51,38 @@ func TestIsNewIntakeTopic(t *testing.T) {
 func TestDiscoverIntakeProjectsFactoryRootUnconfigured(t *testing.T) {
 	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, "/repo/orca-factory", "github.com/vmxmy/orca-factory"))
 	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
-	out, err := discoverIntakeProjects(context.Background(), config.Config{}, &orca.Client{}, runtime)
+	out, onboardable, err := discoverIntakeProjects(context.Background(), config.Config{}, &orca.Client{}, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(out) != 0 {
 		t.Fatalf("out=%+v, want none", out)
+	}
+	// ReasonFactoryRootUnconfigured, not ReasonOnboardable: without a
+	// factory_root, discovery cannot tell onboardable repos apart from any
+	// other repo, so OF-49's set stays empty too.
+	if len(onboardable) != 0 {
+		t.Fatalf("onboardable=%+v, want none", onboardable)
+	}
+}
+
+// TestResolveOnboardable is OF-49: resolveOnboardable keeps only the
+// ReasonOnboardable rejections, naming each by its local checkout directory,
+// and drops repositories rejected for any other reason (e.g. "check 失败"
+// below), which are not onboardable even though they are also not eligible.
+func TestResolveOnboardable(t *testing.T) {
+	result := projects.Result{Rejected: []projects.Rejection{
+		{Path: "/repo/ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane", Reason: projects.ReasonOnboardable},
+		{Path: "/repo/dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Reason: projects.ReasonOnboardable},
+		{Path: "/repo/orca-factory", Remote: "github.com/vmxmy/orca-factory", Reason: projects.ReasonCheckFailed},
+	}}
+	got := resolveOnboardable(result)
+	want := []intake.Onboardable{
+		{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane"},
+		{Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("resolveOnboardable=%+v, want %+v", got, want)
 	}
 }
 

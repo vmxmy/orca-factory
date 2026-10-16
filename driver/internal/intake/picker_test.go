@@ -289,6 +289,33 @@ func TestIntakeProjectPicker(t *testing.T) {
 	})
 }
 
+// TestIntakeProjectPickerOnboardable covers OF-49: discovery's onboardable
+// repositories (known to Orca, never onboarded) show up in the picker card
+// as a read-only "可接入" section naming the local checkout directory and
+// remote, distinct from the "暂不可用" section that lists ledger project rows
+// discovery rejected for some other reason (e.g. "未装流水线" below). Neither
+// section lets the requester pick an onboardable repository.
+func TestIntakeProjectPickerOnboardable(t *testing.T) {
+	h := newPickerHarness(t)
+	h.g.SetOnboardable([]Onboardable{
+		{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane"},
+		{Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next"},
+	})
+	h.open(t, "帮我整理这个需求")
+	if len(h.cards) != 1 {
+		t.Fatalf("cards=%+v", h.cards)
+	}
+	card := h.cards[0].content
+	for _, want := range []string{"可接入", "ziikoo-control-plane（github.com/vmxmy/ziikoo-control-plane）：需审批人接入后可用", "dujiao-next（github.com/dujiao-next/dujiao-next）：需审批人接入后可用"} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("card=%s\nwant it to contain %q", card, want)
+		}
+	}
+	if strings.Count(card, "可接入") != 1 {
+		t.Fatalf("card=%s\nwant exactly one 可接入 section", card)
+	}
+}
+
 // TestIntakeProjectPickerNoProjects covers OF-48: a gateway that currently
 // knows no project at all (discovery never succeeded yet, or found none
 // eligible) still routes a brand-new topic through the picker instead of

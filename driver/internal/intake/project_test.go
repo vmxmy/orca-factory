@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -166,6 +167,28 @@ func TestSetProjects(t *testing.T) {
 	}
 	if err := g.SetProjects([]Project{{Prefix: "DUP"}, {Prefix: "DUP"}}); err == nil {
 		t.Fatal("duplicate prefix accepted")
+	}
+}
+
+// TestSetOnboardable is OF-49: a fresh discovery round's onboardable set
+// simply replaces the prior one, since no thread ever commits to one of
+// these the way SetProjects preserves a stale project a thread already uses.
+func TestSetOnboardable(t *testing.T) {
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", noopAgent, noopReply, noopReact, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := g.onboardableSnapshot(); len(got) != 0 {
+		t.Fatalf("onboardable=%+v, want none before SetOnboardable", got)
+	}
+	first := []Onboardable{{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane"}, {Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next"}}
+	g.SetOnboardable(first)
+	if got := g.onboardableSnapshot(); !reflect.DeepEqual(got, first) {
+		t.Fatalf("onboardable=%+v, want %+v", got, first)
+	}
+	g.SetOnboardable(nil)
+	if got := g.onboardableSnapshot(); len(got) != 0 {
+		t.Fatalf("onboardable=%+v, want cleared", got)
 	}
 }
 
