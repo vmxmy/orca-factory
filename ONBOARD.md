@@ -82,6 +82,7 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 | 测试命令、定向跑法 | 测试框架；`vitest related` / `jest --findRelatedTests` / pytest 路径等；仓库自带的守卫测试（依赖方向、文件大小）单列 | `gate.project.sh` guards / test 步；工人约束「只跑定向」 |
 | 生成物目录与生成器 | 文档或 scripts 里 `generate*`；冲突时重生成不手改 | `COORDINATOR.project.md` 拆分注意 |
 | 文件大小/导出数上限 | 仓库守卫脚本里的阈值 | 同上 |
+| 外部契约样本目录 | 仓库是否有解析外部系统输出（CLI 的 JSON、工单正文与评论、模型输出）的代码，及是否已提交真实录制样本（任意 `testdata` 目录）；没有就写「无」 | `COORDINATOR.project.md`「外部契约」小节 |
 | lane 2 路径 | 至少：CI/基础设施（`.github/*`）、契约/类型/路由定义、权限/会话/鉴权、迁移目录、依赖清单（`package.json` 等）、agent 配置（`AGENTS.md` `CLAUDE.md` `.claude/*` `.codex/*`）、UI 原语库、`scripts/agent-gates/*`（本流水线目录，gate.sh 已硬编码，env 里也写上便于阅读） | `AGENT_LANE2_GLOBS` + 判据表 |
 | lane 3 路径 | 密钥/环境变量文件（`.env*` `.dev.vars*` `*secrets*`）、部署脚本、部署工作流（`.github/workflows/deploy*`） | `AGENT_LANE3_GLOBS` + 判据表 |
 | lane 3 操作 | 不经文件的危险动作：执行迁移/DDL、deploy、写 secret、远程删除、push main | 判据表「操作」列 |
@@ -169,7 +170,7 @@ $FACTORY/bin/orca-factory init $REPO
 
 - `agent-graph.env`：基本 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。另有两个可选通知变量：A 保持 `AGENT_NOTIFY_FEISHU_PROFILE=''`、`AGENT_NOTIFY_FEISHU_CHAT=''`；B 在用户确认后把机器人 profile（默认 `orca-factory`，隔离时为确认的新名称）和本项目新群的真实 ID 写进这两个变量。它们暂时只记录配置，发通知由后续票完成。
 - `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.lock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
-- `COORDINATOR.project.md`：lane 判据表、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
+- `COORDINATOR.project.md`：lane 判据表、外部契约（录制样本目录与契约清单，没有就删除该小节或写「无」）、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 
 如需项目特化（工人跑法、大小上限、生成物、必读文档），不要改 `constitution/` 与 `roles/` 里由 core 分发的文件，而是新增两份覆盖层（模板在 `$FACTORY/templates/`，对照 `examples/zhiyun-ai-dashboard/`）：
 

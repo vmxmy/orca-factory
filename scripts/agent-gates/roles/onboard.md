@@ -11,6 +11,7 @@
    - 启动消息给出的默认值原样写入：`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、`AGENT_FEISHU_PROJECT`（Orca canonicalKey）、`AGENT_GH_REPO`（远端）、档位 `AGENT_TIER_*` 与 `AGENT_ROLE_INTAKE`（有则写）。
    - 安装、类型检查、lint、测试命令与 lane glob 从仓库文件推导，每项写明依据；命令在工作目录实际跑过一次。
    - “待确认”键（部署 workflow、smoke、通知 profile 与群）只有人知道：留空 `''`，不猜。
+   - `COORDINATOR.project.md` 的“外部契约”小节：目标仓库存在解析外部系统输出（CLI 的 JSON、工单正文与评论、模型输出）的代码且仓库内已提交真实录制样本时，填样本目录与契约清单，依据写明；没有这类代码时，该小节删除或写“无”。
 5. 跑 ONBOARD 5a～5d，保留每步输出末行：
    - 5a `bash scripts/agent-gates/gate.test.sh` 末行 PASS；
    - 5b `scripts/agent-gates/install.sh --dry-run` 不改任何东西；

@@ -14,6 +14,13 @@
 | 2 可逆·宽（`AGENT_LANE2_GLOBS`） | {{CI/基础设施（.github/）、契约/类型/路由、权限/会话、迁移、依赖清单、agent 配置、scripts/agent-gates/、UI 原语。依据：…}} |
 | 3 不可逆（`AGENT_LANE3_GLOBS` + 操作） | 文件：{{密钥/环境文件、部署工作流}}。操作（不经文件，靠流程禁止）：{{执行迁移/DDL、deploy、secret 写入、远程删除、push main / force push}} |
 
+## 外部契约
+
+<!-- 填法：改动解析外部系统输出（CLI 的 JSON、工单正文与评论、模型输出）或依赖其字段的代码，审查员（core/roles/reviewer.md）要求读取录制真实样本的测试。本小节声明样本目录与契约清单，供审查员核对；本仓库无此类代码时，删除本小节或写"无"。 -->
+
+- 录制样本目录：{{仓库内已提交真实样本的目录，如 testdata/recorded/}}。依据：…
+- 契约清单：{{样本对应的契约文档或登记清单，如有}}。
+
 ## 合并与上线
 
 - lane 1 合并策略：{{coordinator 自合（squash） | 全部由 resolver 复核（即 lane 1 也走第 7 步 Agent 处置）}}。依据：用户答复。
