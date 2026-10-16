@@ -78,8 +78,8 @@ func TestResolveOnboardable(t *testing.T) {
 	}}
 	got := resolveOnboardable(result)
 	want := []intake.Onboardable{
-		{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane"},
-		{Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next"},
+		{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane", Path: "/repo/ziikoo-control-plane"},
+		{Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Path: "/repo/dujiao-next"},
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("resolveOnboardable=%+v, want %+v", got, want)

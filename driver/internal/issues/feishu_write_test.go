@@ -434,3 +434,37 @@ func TestFeishuWriteCreateWaitsForAutoNumber(t *testing.T) {
 		}
 	}
 }
+
+// TestFeishuWriteCreateLedgerProject covers OF-50: onboarding adds one 项目
+// row, 启用 false, read back from the table; repeating the same row (a retry
+// after an unconfirmed write) converges without a second write; a row whose
+// remote or 编号前缀 another row already uses is refused before any write.
+func TestFeishuWriteCreateLedgerProject(t *testing.T) {
+	f := newFeishuFake(t)
+	c := newFeishuTest(t, f)
+	fastReadBack(c)
+	want := LedgerProject{Name: "ziikoo-control-plane", Remote: "github.com/vmxmy/ziikoo-control-plane", Prefix: "ZCP"}
+	got, err := c.CreateLedgerProject(context.Background(), want)
+	if err != nil || got != want {
+		t.Fatalf("CreateLedgerProject=%+v, %v; want %+v", got, err, want)
+	}
+	if len(f.writes) != 1 || f.writes[0].table != "tblP" || f.writes[0].action != "batch_create" {
+		t.Fatalf("writes=%+v", f.writes)
+	}
+	for record := range f.writes[0].records {
+		if on := feishuCell[bool](t, f.writes[0], record, "fldPOn"); on {
+			t.Fatal("启用 written as true, want false")
+		}
+	}
+	if got, err = c.CreateLedgerProject(context.Background(), want); err != nil || got != want || len(f.writes) != 1 {
+		t.Fatalf("repeat=%+v, %v; writes=%d", got, err, len(f.writes))
+	}
+	for _, clash := range []LedgerProject{
+		{Name: "x", Remote: "github.com/vmxmy/new", Prefix: "OF"},
+		{Name: "x", Remote: feishuRepo, Prefix: "NEW"},
+	} {
+		if _, err := c.CreateLedgerProject(context.Background(), clash); err == nil || len(f.writes) != 1 {
+			t.Fatalf("clash %+v: err=%v writes=%d", clash, err, len(f.writes))
+		}
+	}
+}

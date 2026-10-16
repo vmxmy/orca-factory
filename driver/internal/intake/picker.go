@@ -36,8 +36,12 @@ func toast(kind, content string) *callback.CardActionTriggerResponse {
 // toast, never a card (a JSON 2.0 card in a long-connection callback
 // response is rejected with 200673). For an accepted pick, or any
 // requester's pick once the thread already has a project, it also returns
-// the work the caller runs after responding: settlePick.
+// the work the caller runs after responding: settlePick. An onboard button
+// press (OF-50) goes to handleOnboardAction instead.
 func (g *Gateway) HandleCardAction(event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, func(context.Context) error) {
+	if isOnboardAction(event) {
+		return g.handleOnboardAction(event)
+	}
 	pick, ok := g.parsePick(event)
 	if !ok {
 		return toast("error", "无法识别的卡片操作"), nil
@@ -141,8 +145,8 @@ func cardJSON(title, template string, elements []any) string {
 // project: a form with a dropdown of the usable projects (preselect chosen
 // when non-empty) and a submit button, then every unavailable project with
 // its reason, then every onboardable repository (OF-49: known to Orca but
-// never onboarded) with a fixed "需审批人接入后可用" note — read-only, no
-// button, since onboarding itself needs an approver. A form plus button
+// never onboarded) with a fixed "需审批人接入后可用" note and its own
+// "接入" button (OF-50), which only an approver's press acts on. A form plus button
 // rather than submit-on-select, because a preselected default must be
 // confirmable without changing the selection.
 func pickerCard(thread string, usable, unavailable []Project, onboardable []Onboardable, preselect string) string {
@@ -171,12 +175,13 @@ func pickerCard(thread string, usable, unavailable []Project, onboardable []Onbo
 		elements = append(elements, markdown(b.String()))
 	}
 	if len(onboardable) > 0 {
-		var b strings.Builder
-		b.WriteString("可接入：")
+		elements = append(elements, markdown("可接入："))
 		for _, o := range onboardable {
-			b.WriteString("\n- " + o.Name + "（" + o.Remote + "）：需审批人接入后可用")
+			value := map[string]any{pickerThreadKey: thread, onboardActionKey: onboardAction, onboardRemoteKey: o.Remote}
+			elements = append(elements, markdown("- "+o.Name+"（"+o.Remote+"）：需审批人接入后可用"),
+				map[string]any{"tag": "button", "text": plainText("接入 " + o.Name), "type": "default",
+					"behaviors": []any{map[string]any{"type": "callback", "value": value}}})
 		}
-		elements = append(elements, markdown(b.String()))
 	}
 	return cardJSON("选择项目", "blue", elements)
 }

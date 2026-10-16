@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | `intake.md` | 用户在 Orca 里手动开的 claude 标签页（交互模式） | prompt `按 scripts/agent-gates/roles/intake.md 工作`；把需求变成合格票、汇报；`auto-failed` 由 resolver 接管 |
 | `intake-chat.md` | `driver feishu-gateway` 每轮启动的只读需求整理 Agent | 网关以 `--append-system-prompt-file` 传入检出中的本文件；在飞书话题里追问并输出 `intake-draft-v1` 草稿，不建票 |
+| `onboard.md` | `driver onboard` 或需求助手“接入”按钮启动的接入 Agent | driver 以 `--append-system-prompt-file` 传入 orca-factory 根目录中的本文件；在目标仓库独立 worktree 里 init、填项目文件、跑 ONBOARD 5a～5d、开接入 PR，不合并，不写飞书 |
 | `coordinator.md` | 定时任务启动的 coordinator | 与 `COORDINATOR.md` 一起读 |
 | `worker.md` | 每个单元的 worker | 原文作为 task spec 开头 |
 | `driver-worker.md` | driver 执行器派的 worker | 原文 + `local-worker.md`（若有）+ 简报，作为 task spec |
@@ -14,7 +15,7 @@
 | `reviewer.md` | lane 2 异构审查命令 | 原文 + 简报经 stdin 喂给 `$AGENT_ROLE_REVIEWER_CMD` |
 | `local-worker.md` | 项目特化（可选） | 追加在 `worker.md` 或 `driver-worker.md` 之后，只能加约束 |
 
-共享八份（`intake.md` `intake-chat.md` `coordinator.md` `worker.md` `driver-worker.md` `correction.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。
+共享九份（`intake.md` `intake-chat.md` `onboard.md` `coordinator.md` `worker.md` `driver-worker.md` `correction.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。
 
 intake 与 coordinator 永不同会话：intake 只写配置选定的票据主账本、只读仓库，由用户手动开会话；coordinator 由定时任务启动，领票并执行。一个会话里不能既建票又领票。
 
