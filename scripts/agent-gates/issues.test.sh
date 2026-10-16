@@ -8,7 +8,7 @@ mkdir -p "$tmp/bin" "$tmp/repo/scripts/agent-gates"
 cp "$factory"/core/*.sh "$tmp/repo/scripts/agent-gates/"
 git init -q "$tmp/repo"
 printf 'AGENT_GH_REPO=owner/repo\n' > "$tmp/repo/scripts/agent-gates/agent-graph.env"
-export TEST_CALLS="$tmp/calls" AGENT_LINEAR_COUNT_FILE="$tmp/count"
+export TEST_CALLS="$tmp/calls"
 cat > "$tmp/bin/orca" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_CALLS"
@@ -20,13 +20,15 @@ entry="$tmp/repo/scripts/agent-gates/agent-graph.sh"
 fail() { echo "issues.test: $*" >&2; exit 1; }
 : > "$TEST_CALLS"
 rc=0
-AGENT_ISSUE_BACKEND=invalid bash "$entry" linear issue ZII-1 --json > "$tmp/out" 2> "$tmp/err" || rc=$?
-[[ "$rc" == 2 && ! -s "$TEST_CALLS" ]] || fail 'unknown backend must fail before external calls'
+for backend in invalid linear ''; do
+  rc=0
+  AGENT_ISSUE_BACKEND="$backend" bash "$entry" issues issue ZII-1 --json > "$tmp/out" 2> "$tmp/err" || rc=$?
+  [[ "$rc" == 2 && ! -s "$TEST_CALLS" ]] || fail "backend '$backend' must fail before external calls"
+done
 rc=0
-( unset AGENT_ISSUE_BACKEND; bash "$entry" linear issue ZII-1 --json ) > "$tmp/out" 2> "$tmp/err" || rc=$?
-[[ "$rc" == 17 && "$(cat "$TEST_CALLS")" == 'linear issue ZII-1 --json' ]] || fail 'absent backend must preserve Linear argv and exit status'
+( unset AGENT_ISSUE_BACKEND; bash "$entry" issues issue ZII-1 --json ) > "$tmp/out" 2> "$tmp/err" || rc=$?
+[[ "$rc" == 2 && ! -s "$TEST_CALLS" ]] || fail 'absent backend must fail before external calls'
 grep -q '^AGENT_ISSUE_BACKEND=github' "$factory/templates/agent-graph.env.example" || fail 'new template must select github'
-! grep -q '^AGENT_LINEAR_' "$factory/templates/agent-graph.env.example" || fail 'new GitHub template must not require Linear configuration'
 : > "$TEST_CALLS"
 rc=0
 AGENT_ISSUE_BACKEND=feishu AGENT_FEISHU_BASE= bash "$entry" issues issue ZII-1 --json > "$tmp/out" 2> "$tmp/err" || rc=$?
@@ -57,9 +59,13 @@ JSON
 : > "$TEST_CALLS"
 bash "$entry" issues list-issues --json > "$tmp/out"
 jq -e '.ok and .result.complete and .result.issues[0].identifier == "ZII-1" and .result.issues[0].labels[1].name == "auto-failed"' "$tmp/out" >/dev/null || fail 'normalized snapshot lost identity or hold'
-bash "$entry" linear list-issues --json > "$tmp/out"
 [[ "$(bash "$entry" ledger stats)" == runs=7 ]] || fail 'GitHub ledger did not delegate'
-! grep -q '^linear ' "$TEST_CALLS" || fail 'GitHub mode called Linear'
+[[ "$(AGENT_ISSUE_BACKEND=feishu AGENT_FEISHU_BASE=BASE_TOKEN bash "$entry" ledger stats)" == runs=7 ]] || fail 'Feishu ledger did not delegate'
+for backend in linear ''; do
+  : > "$TEST_CALLS"; rc=0
+  AGENT_ISSUE_BACKEND="$backend" bash "${entry%/*}/ledger.sh" stats > "$tmp/out" 2> "$tmp/err" || rc=$?
+  { [[ "$rc" == 2 && ! -s "$TEST_CALLS" ]] && grep -q 'must be github or feishu' "$tmp/err"; } || fail "ledger backend '$backend' must exit 2 before calling the driver"
+done
 rc=0
 DRIVER_FAIL=23 bash "$entry" issues list-issues --json > "$tmp/out" 2> "$tmp/err" || rc=$?
 [[ "$rc" == 23 ]] || fail 'driver failure exit status lost'
@@ -70,27 +76,11 @@ bash "$entry" issues list-issues --json > "$tmp/out" 2> "$tmp/err" || rc=$?
 [[ "$rc" != 0 ]] || fail 'incomplete snapshot was accepted'
 echo 'issues.test: GitHub routing and completeness PASS'
 cp "$tmp/complete.json" "$ISSUES_FIXTURE"
-export AGENT_MAX_IN_FLIGHT=2 AGENT_STALE_HOURS=8 AGENT_SCOPE_AVOID=0
 export AGENT_REPO_PATH="$tmp/repo" AGENT_RUN_WORKTREE_PREFIX=run-
-export AGENT_PRECHECK_CACHE_DIR="$tmp/cache" AGENT_SNAPSHOT_FILE="$tmp/snapshot.json"
-unset AGENT_LINEAR_TEAM AGENT_LINEAR_PROJECT AGENT_LABEL_READY AGENT_LABEL_CLAIMED AGENT_LABEL_FAILED
-rc=0
-bash "$entry" linear-precheck > "$tmp/out" 2> "$tmp/err" || rc=$?
-[[ "$rc" == 0 ]] && grep -q '^claimable= in_flight=0' "$tmp/out" || { cat "$tmp/out" "$tmp/err"; fail "GitHub auto-failed+ready must stay unclaimed without Linear variables (exit $rc)"; }
-# A valid, unblocked fresh ticket is discoverable; dependencies are checked by read.
-jq '.result.issues[0].labels.nodes = [{name:"ready-for-agent"}]' "$tmp/complete.json" > "$ISSUES_FIXTURE"
-bash "$entry" linear-precheck > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'complete GitHub candidate unavailable'; }
-grep -q '^claimable=ZII-1 ' "$tmp/out" || fail 'candidate identity changed'
-jq '.result.complete=false' "$tmp/complete.json" > "$ISSUES_FIXTURE"
-rc=0
-bash "$entry" linear-precheck > "$tmp/out" 2> "$tmp/err" || rc=$?
-[[ "$rc" == 3 ]] || fail 'incomplete GitHub precheck must exit uncertain'
-cp "$tmp/complete.json" "$ISSUES_FIXTURE"
 cat > "$tmp/bin/orca" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_CALLS"
 case "$1" in
-  linear) echo 'forbidden Linear call' >&2; exit 99 ;;
   --version) echo 1.0.0 ;;
   *) echo '{"ok":true,"result":{"worktrees":[],"automations":[]}}' ;;
 esac
@@ -113,19 +103,16 @@ AGENT_TIER_STRONG=codex:model:high
 PROFILE
 cp "$factory/core/COORDINATOR.md" "$tmp/repo/scripts/agent-gates/"
 touch "$tmp/repo/scripts/agent-gates/COORDINATOR.project.md"
-bash "$tmp/repo/scripts/agent-gates/install.sh" --dry-run > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'GitHub installation requires Linear configuration'; }
-bash "$entry" prune-run-worktrees > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'GitHub prune requires Linear configuration'; }
-AGENT_ISSUE_BACKEND=github "$factory/bin/orca-factory" doctor --json > "$tmp/out"
-jq -e '[.recommendation.missing[] | select(test("[Ll][Ii][Nn][Ee][Aa][Rr]"))] | length == 0' "$tmp/out" >/dev/null || fail 'GitHub doctor requires Linear'
-! grep -q '^linear ' "$TEST_CALLS" || fail 'GitHub install/precheck/prune/doctor called Linear'
-echo 'issues.test: GitHub precheck/install/prune/doctor PASS'
+bash "$tmp/repo/scripts/agent-gates/install.sh" --dry-run > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'GitHub installation check failed'; }
+! grep -q '^automations ' "$TEST_CALLS" || fail 'install touched Orca automations'
+bash "$entry" prune-run-worktrees > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'GitHub prune failed'; }
+AGENT_ISSUE_BACKEND=github "$factory/bin/orca-factory" doctor --json > "$tmp/out" || fail 'GitHub doctor must accept the github backend'
+echo 'issues.test: GitHub install/prune/doctor PASS'
 AGENT_ISSUE_BACKEND=feishu "$factory/bin/orca-factory" doctor --json > "$tmp/out" || fail 'Feishu doctor must accept the feishu backend'
-jq -e '[.recommendation.missing[] | select(test("[Ll][Ii][Nn][Ee][Aa][Rr]"))] | length == 0' "$tmp/out" >/dev/null || fail 'Feishu doctor requires Linear'
 echo 'issues.test: Feishu doctor PASS'
 
-: > "$TEST_CALLS"
 ( unset AGENT_ISSUE_BACKEND; cd "$tmp/repo"; "$factory/bin/orca-factory" doctor --json ) > "$tmp/out"
-! grep -q '^linear ' "$TEST_CALLS" || fail 'doctor ignored current project GitHub profile'
+jq -e '.tools | has("orca-factory-driver")' "$tmp/out" >/dev/null || fail 'doctor ignored current project GitHub profile'
 echo 'issues.test: profile doctor PASS'
 
 # Snapshot intentionally omits comments; metadata/dependencies still must be complete.
@@ -148,16 +135,9 @@ grep -Fxq 'issues update --id ZII-1 --remove-label ready-for-agent --remove-labe
 grep -Fxq 'issues comment --id ZII-1 --body-file -' "$TEST_CALLS" || fail 'comment not delegated via stdin'
 echo 'issues.test: fail-closed prune and mutation contracts PASS'
 
-jq '.result.issues[0].labels.nodes = [{name:"ready-for-agent"}]' "$tmp/complete.json" > "$ISSUES_FIXTURE"
-: > "$TEST_CALLS"
-AGENT_SCOPE_AVOID=1 bash "$entry" linear-precheck > "$tmp/out" 2> "$tmp/err" || { cat "$tmp/err"; fail 'scoped candidate unavailable'; }
-[[ "$(grep -c '^issues snapshot' "$TEST_CALLS")" == 1 ]] || fail 'precheck enumerates snapshot more than once'
-! grep -q '^issues read' "$TEST_CALLS" || fail 'precheck fetches full comments to read scope or blockers already in snapshot'
-echo 'issues.test: one-snapshot precheck PASS'
-
 # Feishu ledger backend (OF-51): install.sh --dry-run requires its own keys
 # and validates the ledger is reachable through the same driver entry point
-# agent-graph.sh issues validate uses, before linear/github did.
+# agent-graph.sh issues validate uses.
 feishu_repo="$tmp/feishu-repo"
 mkdir -p "$feishu_repo/scripts/agent-gates"
 git init -q "$feishu_repo"
@@ -179,8 +159,8 @@ PROFILE
 : > "$TEST_CALLS"
 bash "$feishu_repo/scripts/agent-gates/install.sh" --dry-run > "$tmp/out" 2> "$tmp/err" \
   || { cat "$tmp/err"; fail 'Feishu installation must dry-run clean with ledger keys present'; }
-grep -q 'dry run, nothing changed' "$tmp/out" || fail 'Feishu dry-run did not report no changes'
-! grep -q '^linear ' "$TEST_CALLS" || fail 'Feishu install called Linear'
+grep -q 'profile valid (backend feishu)' "$tmp/out" || fail 'Feishu install did not report the validated backend'
+! grep -q '^automations ' "$TEST_CALLS" || fail 'Feishu install touched Orca automations'
 
 sed -i '/^AGENT_FEISHU_BASE=/d' "$feishu_repo/scripts/agent-gates/agent-graph.env"
 rc=0

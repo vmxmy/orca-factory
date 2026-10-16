@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
-# Provider boundary: legacy shell envelopes, native driver mutations in GitHub and Feishu modes.
+# Provider boundary: legacy shell envelopes over native driver mutations in GitHub and Feishu modes.
 set -Eeuo pipefail
-case "${AGENT_ISSUE_BACKEND:-linear}" in
-  linear)
-    { printf '%s coordinator\n' "$(date +%s)" >> "${AGENT_LINEAR_COUNT_FILE:-${TMPDIR:-/tmp}/orca-factory-linear-calls}"; } 2>/dev/null || true
-    case "${1:-}" in
-      save-issue|status|label|comment) exec orca-factory-driver maintenance exec orca linear "$@" ;;
-      *) exec orca linear "$@" ;;
-    esac ;;
+case "${AGENT_ISSUE_BACKEND:-}" in
   github) : "${AGENT_GH_REPO:?AGENT_GH_REPO required}" ;;
   feishu) : "${AGENT_FEISHU_BASE:?AGENT_FEISHU_BASE required}" ;;
-  *) echo 'issues: unsupported AGENT_ISSUE_BACKEND' >&2; exit 2 ;;
+  *) echo 'issues: AGENT_ISSUE_BACKEND must be github or feishu' >&2; exit 2 ;;
 esac
 fail() { echo "issues: $*" >&2; exit 2; }
 # Only reshape the public CLI schema; ownership and metadata stay in the driver.

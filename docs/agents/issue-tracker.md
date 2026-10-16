@@ -2,11 +2,11 @@
 
 本项目的票据主账本是飞书多维表格「orca-factory 研发票据账本」（`AGENT_ISSUE_BACKEND=feishu`，2026-10-15 经用户批准切换）。代码托管、PR、CI 与合并仍在 GitHub `vmxmy/orca-factory`。设计与实测依据见 [飞书多维表格票据账本](../specs/feishu-bitable-ledger.md)，配置与排查见 `driver/README.md` 的“飞书账本后端”。
 
-切换没有迁移历史：切换前的 GitHub Issues 保持原状，只作历史查阅，driver 不再读取它们。新票一律建在飞书。下文“迁移与切换”记录的是此前 Linear → GitHub 的切换流程。
+切换没有迁移历史：切换前的 GitHub Issues 保持原状，只作历史查阅，driver 不再读取它们。新票一律建在飞书。下文“迁移与切换”记录的是此前 Linear → GitHub 的切换流程，是历史记录：Linear 后端与 `driver issues export` 已随 OF-28 删除，`issues preview`、`import`、`release-hold` 仍可用。
 
 ## 统一入口
 
-加载 `scripts/agent-gates/agent-graph.env` 后，通过 `scripts/agent-gates/agent-graph.sh issues` 读取或写入。飞书配置为 `AGENT_ISSUE_BACKEND=feishu`、`AGENT_FEISHU_BASE`、`AGENT_FEISHU_PROJECT`；应用凭据在本机 `~/.config/orca-factory/driver.env`，driver 自动读取，不进仓库。不调用 `orca linear`，不双写、不自动回退。票号形如 `OF-12`（项目编号前缀 + 序号），`--id` 接受票号或规范 ID。
+加载 `scripts/agent-gates/agent-graph.env` 后，通过 `scripts/agent-gates/agent-graph.sh issues` 读取或写入。飞书配置为 `AGENT_ISSUE_BACKEND=feishu`、`AGENT_FEISHU_BASE`、`AGENT_FEISHU_PROJECT`；应用凭据在本机 `~/.config/orca-factory/driver.env`，driver 自动读取，不进仓库。不双写、不自动回退。票号形如 `OF-12`（项目编号前缀 + 序号），`--id` 接受票号或规范 ID。
 
 - `issues snapshot --json`：完整发现，包括未纳管、关闭和 held 票；发现缓存不授权执行。
 - `issues read --id <canonical ID|票号> --json`：新鲜读取票与完整证据事件。
@@ -41,11 +41,11 @@ to-spec、to-tickets、wayfinder 等技能说“发布到 issue tracker”时，
 
 ## 迁移与切换
 
-1. 明确授权只读源导出，使用 `AGENT_ISSUE_BACKEND=linear` 的 `driver issues export`；不提取凭据绕过现有客户端。
+1. 准备源 manifest。当时经明确授权，用已删除的 `driver issues export` 只读导出；现在没有导出命令，新迁移须另行准备 manifest。不提取凭据绕过现有客户端。
 2. 使用 `driver issues preview --input <manifest>` 离线验证目标、身份、依赖闭包、摘要与凭据形态；命中凭据形态时只报告票号与评论序号，须先处理再导入。历史快照不证明当前完整性。
 3. 单独确认真实导入的数据范围、目标仓库可见性和敏感内容。
 4. 使用 `driver maintenance drain` 停止新认领/派工，允许已有写者自然收敛。draining 仍允许合并、smoke、release 和评论写入；核对实际 worker、resolver 与旧 coordinator，不把 drain 当成停写证明。
-5. 核实所有旧写者后执行 `driver maintenance freeze`，停止 scheduler，并再次确认执行器、resolver、自动化及其他机器不再写入，再完成最终导出与差异核对。旧二进制可能不持维护锁，锁空闲不能代替进程、Run 和完整派工回执核对；未知状态阻止切换。
+5. 核实所有旧写者后执行 `driver maintenance freeze`，停止 scheduler，并再次确认执行器、resolver、自动化及其他机器不再写入，再完成最终 manifest 与差异核对。旧二进制可能不持维护锁，锁空闲不能代替进程、Run 和完整派工回执核对；未知状态阻止切换。
 6. scheduler 保持停止、旧写者保持隔离，将维护状态显式改回 `draining`，再执行 `driver issues import --input <manifest> --apply`。frozen 禁止所有 GitHub 写入，不能在 frozen 下导入，也没有导入绕过开关。导入票保持 held，完整回读后才允许继续。`--apply` 在 serve 持有单实例锁或维护状态不是 draining 时直接拒绝。
 7. 单独确认配置切换；保持 scheduler 停止，在 draining 下用 `driver issues release-hold --input <manifest> --apply` 核验完整历史后释放。切到唯一 GitHub 后端，核对其他写者仍隔离，最后恢复 running 并启动唯一调度器。
 
@@ -62,7 +62,7 @@ to-spec、to-tickets、wayfinder 等技能说“发布到 issue tracker”时，
 | checkpoint 与预算 | 状态根下 `<repo>/<Identifier>/` 文件清单与 sha256，切换前后一致；导入与释放不读写这些文件 | 否 |
 | 部署屏障 | 未完成部署验收的票保持屏障；缺失交接的历史归属单独结算，不靠导入解除 | 否 |
 | drain / freeze | `maintenance drain` 后无新派工；`maintenance freeze` 成功，随后停止 `orca-factory-driver.service` 并确认 `driver-serve.lock` 可取得 | 本地状态 |
-| 最终导出 | freeze 后 `issues export` 退出 0；`issues preview` 通过身份、依赖、编码与凭据形态检查；与预演清单比对票数、评论数与身份差异 | 本地清单 |
+| 最终 manifest | 当时 freeze 后用 `issues export` 导出（命令已删除）；`issues preview` 通过身份、依赖、编码与凭据形态检查；与预演清单比对票数、评论数与身份差异 | 本地清单 |
 | held import | 回到 draining 后 `issues import --apply` 退出 0，失败按同一清单续传；随后不带 `--apply` 重跑，`created=0` 且无冲突 | GitHub |
 | readback 与 release | `issues snapshot --json` 中导入票的 `metadata.importHold` 全部为 true；`issues release-hold --apply` 完整回读通过后释放 | GitHub |
 | 唯一调度器 | 合并 `AGENT_ISSUE_BACKEND=github` 后生产检出 pull；`issues backend` 输出 github；`serve --dry-run` 无异常候选；只启动一个 serve | 配置、进程 |

@@ -2,15 +2,15 @@
 
 你是 coordinator。规矩在 `constitution/`（先读 `constitution.md` 及其清单），角色边界在 `roles/coordinator.md`，项目参数在 `agent-graph.env`（`set -a; . scripts/agent-gates/agent-graph.env; set +a` 后 `$AGENT_*` 可用），项目判据在 `COORDINATOR.project.md`。本文件只写流程顺序，每步引用条款，不重述。
 
-所有票据调用一律经 `scripts/agent-gates/agent-graph.sh issues <参数…>` 入口。GitHub 模式只访问 `$AGENT_GH_REPO`，不调用 `orca linear`、不使用 `--linear-issue`、不双写或回退。普通原生票须显式纳管才领取。维护 draining 禁新认领/派工，frozen 禁外部写入；不得用 quota 暂停代替维护。
+所有票据调用一律经 `scripts/agent-gates/agent-graph.sh issues <参数…>` 入口。票据只访问 `AGENT_ISSUE_BACKEND` 选定的主账本（github 或 feishu），不双写或回退。普通原生票须显式纳管才领取。维护 draining 禁新认领/派工，frozen 禁外部写入；不得用 quota 暂停代替维护。
 
-`driver serve` 已启用的仓库不得再启动本定时 coordinator。关闭、held 或证据不完整的票不启动新动作；已有 run/dispatch 与历史合并/部署屏障仍完整观察，不重派。关键动作前重新读完整票与评论，不能用发现缓存授权。
+定时 coordinator 已退役：生产由 `driver serve` 调度，`install.sh` 不再安装定时任务，领票 precheck 已删除。本手册只用于人工单次运行，处理调用方给出的票号；`driver serve` 已启用的仓库不得运行本手册。关闭、held 或证据不完整的票不启动新动作；已有 run/dispatch 与历史合并/部署屏障仍完整观察，不重派。关键动作前重新读完整票与评论，不能用发现缓存授权。
 
 ## 0. 领票
 
 1. `scripts/agent-gates/agent-graph.sh prune-run-worktrees`（workflow §1）。
-2. `scripts/agent-gates/agent-graph.sh linear-precheck`，取 `claimable=` 行**全部**票号（逗号分隔；已按 priority、createdAt 排序，已排除被阻塞票；precheck 按 `$AGENT_BATCH_SIZE` 与 `$AGENT_MAX_IN_FLIGHT − 在途数` 上限截断）。同时读取 `resolver=`：在并行容量内优先按第 7 步接管异常票；先检查其已有 Run/dispatch，仍在运行则复用并等待，不重复派工。两者都为空才结束。`stale=` 票进入 resolver，不重新作为普通实现领取。退出码非 0 但 `claimable=` 非空时，仍按同样方式取 claimable。
-3. SCOPE 由 precheck 按 `$AGENT_SCOPE_AVOID` 处理：为 1 时已排除与在途票 SCOPE 重叠的候选；为 0 时 precheck 不做任何 SCOPE 过滤。coordinator 在本步不再手动按 SCOPE 拦票。并行多票改同一批文件时的冲突，按第 6 步 workflow §2 的 rebase 规则在合并阶段处理（落后 main 且有重叠才 rebase 重跑，最多 2 轮，第 2 轮后仍有重叠交给 resolver），领票时不拦截。
+2. 候选票是调用方给出的票号，按 `$AGENT_MAX_IN_FLIGHT − 在途数` 截断。没有候选票就结束。
+3. coordinator 在本步不按 SCOPE 拦票。并行多票改同一批文件时的冲突，按第 6 步 workflow §2 的 rebase 规则在合并阶段处理（落后 main 且有重叠才 rebase 重跑，最多 2 轮，第 2 轮后仍有重叠交给 resolver），领票时不拦截。
 4. 逐张处理每个候选票号（一张失败不影响其他张；收齐所有成功领到的票号后再进第 1 步）：
    a. 跑下文「领票前检查」的三源扫描。命中表格里非「什么都没有」的行时按对应动作处理本张票（交给 resolver或接管/重派），然后继续下一张；本张不进入后续步骤。
    b. 领取前再读一次 `scripts/agent-gates/agent-graph.sh issues issue <ID> --json`：不是 Todo 或已带 `auto-impl` 就跳过本张，继续下一张。从同一份 JSON 解析档位（workflow §6：`tier:*` 标签 > `estimate` 按 `$AGENT_TIER_BY_ESTIMATE` 映射 > default），记下 `TIER`（对应 `$AGENT_TIER_FAST|DEFAULT|STRONG` 的值）与依据。
@@ -24,7 +24,7 @@
 
 - GitHub 开放 PR：`gh pr list --repo $AGENT_GH_REPO --state open --search "<票号> in:title"`。
 - GitHub 远端分支：`git ls-remote --heads origin "*<票号>*"`。
-- Orca worktree：`orca worktree ps --json`，GitHub 筛选 comment 中完整 `issue: <canonical identifier>` 行等于本票的卡片，旧 Linear 筛选 `linkedLinearIssue`；只读检查其 worktree 是否含未提交改动或未推送提交。无法确认状态时视为「不确定」。
+- Orca worktree：`orca worktree ps --json`，筛选 comment 中完整 `issue: <canonical identifier>` 行等于本票的卡片，旧卡片另查 `linkedLinearIssue` 字段；只读检查其 worktree 是否含未提交改动或未推送提交。无法确认状态时视为「不确定」。
 
 对匹配 `agent/<票号>/<unit>` 的分支，先 `git fetch origin`，再用 `git log -1 --format=%B origin/agent/<票号>/<unit>` 核对最后提交的 trailer；不凭分支名判断完成。多个单元逐个核对；开放 PR、陌生分支或本地未备份工作优先交给 resolver，不接管覆盖。
 
@@ -53,7 +53,7 @@
 
 ## 2. 派工
 
-本次运行领到多张票时，先把**所有已领票**的第 1 步拆分和第 2 步派工全部跑完（为每张票单独 `run-create`，并把该票的所有单元 `task-create` + `worker-start`），再进入统一的等待循环。每张票一个独立的 orchestration run，objective 以票号开头（precheck 靠它匹配本次运行的 run）。
+本次运行领到多张票时，先把**所有已领票**的第 1 步拆分和第 2 步派工全部跑完（为每张票单独 `run-create`，并把该票的所有单元 `task-create` + `worker-start`），再进入统一的等待循环。每张票一个独立的 orchestration run，objective 以票号开头。
 
 ```bash
 orca orchestration run-create --objective "<ID>: <标题>" --json
@@ -64,9 +64,8 @@ MODEL_ARGS=(); [[ -n "$T_MODEL" ]] && MODEL_ARGS=(--model "$T_MODEL" ${T_EFFORT:
 orca orchestration worker-start --run <run> --task <task> --worktree new-top-level \
   --repo path:<主检出> --base-branch origin/main --name <unit> \
   --agent "$T_AGENT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} --json
-# GitHub：comment 保留完整身份行，不传 --linear-issue
+# comment 保留完整身份行
 orca worktree set --worktree path:<wt> --comment $'<unit>: 实现中\nissue: <canonical identifier>' --workspace-status in-progress
-# 旧 Linear 配置仍使用 --linear-issue <ID> 关联。
 ```
 
 - `--deps` JSON 原样单引号包住。同一张票的所有单元用同一档位。

@@ -79,7 +79,7 @@
 - `merge-progress-v1: <JSON>` 关联 `version/queue_id/ticket_id/repository/pr/head/main/merge_sha/phase`。`phase=merge-intent` 在 PUT 前持久记录固定 main，写完再核对远端证据；`phase=merged` 只在 GitHub 回读 merged 后记录真实 squash SHA。若恢复时 PR 已合并且没有 intent，`main_unknown=true`、`main=""` 明确表示历史 main 未知，不能用当前 main 伪造；该记录可反复对账并完成票面写回。
 - FIFO 按冻结 `enqueued_at`、`queue_id` 排序，不依赖 issue UpdatedAt。缺失、冲突或不可解析交接阻塞该仓库；同仓库每 Tick 只处理队首。完成评论或 Done 写入失败保留归属；Done 但仍属合并通道的票继续参与对账。已确认完成后的名额在下一快照释放。
 - 合并前读完整分页 PR 候选、固定 head 的 checks/statuses 与 Git 提交对象。用固定 merge-base 的 `git diff --no-renames -z` 读取全部路径（重命名表现为删除与新增），不使用 GitHub compare 的 300 文件截断列表。空/未知/缺字段 CI 均不绿。lane 2 需显式 `AGENT_LANE2_AUTOMERGE=1`；manual、lane 3 路径等待。旧 PR 或旧三行归属不能替代验证证据。
-- 合并结果验证由 `Runtime.advanceMerge` 组装真实 `merge.CommandGit` 和冻结 gate adapter。#143 部署屏障见下节，读取 Linear 原始项目快照/评论后保留 Done/转人票的未完成屏障。
+- 合并结果验证由 `Runtime.advanceMerge` 组装真实 `merge.CommandGit` 和冻结 gate adapter。#143 部署屏障见下节，读取主账本原始快照/评论后保留 Done/转人票的未完成屏障。
 - `Executor.Start` 对已有 PR 仅复用匹配的完整冻结交接，保留原 FIFO 与预算，不新写旧三行归属。恢复/correction 实现应在该短路前处理待恢复派工；独立 helper 位于 `executor/merge_handoff.go`。
 
 验证：`TestExecuteFreezesMergeHandoff`、`TestStartExistingPR*`、`TestRuntimeMerge*`、`TestServeRuntimeActuallyMergesAndDryRunIsReadOnly` 使用外部替身、HTTP 和临时 Git 仓库；这些是合成行为测试，不冒充线上录制样本。
@@ -98,7 +98,7 @@
 - GitHub 使用 [workflow runs REST API](https://docs.github.com/en/rest/actions/workflow-runs)：固定 workflow 与 `head_sha=<实际 squash SHA>`，显式核对响应身份和完整分页。显示名从 workflows 集合唯一解析。空/缺失/未知/仍运行的回执等待，已完成的明确失败转人；成功才 smoke。多个历史 run 以最新 run 的完成结论为准，但仍运行的旧 run 保守等待。
 - status 与 dry-run 仅展示 queue/SHA/workflow/state/reason，不暴露 smoke 命令。status 是观察缓存，不是恢复授权；人工恢复命令与 serve 共用锁，dry-run 不取锁、不写日志或评论、不执行 smoke。
 
-合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和 Linear 替身，无真实部署或票面变更。
+合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和票据替身，无真实部署或票面变更。
 
 ## 合并结果验证与 correction（#142）
 
@@ -112,7 +112,7 @@
 - 合并结果 gate 使用本次实际 lane 验证，允许 main 已吸收 lane 2 改动后降至 lane 1；旧交接不改写，lane 3、lane 升级和未批准的仓库策略仍不放行。
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
-验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/Linear/Orca 使用外部边界替身，不触碰线上资源。
+验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/票据/Orca 使用外部边界替身，不触碰线上资源。
 
 ## `driver usage` 会话用量
 

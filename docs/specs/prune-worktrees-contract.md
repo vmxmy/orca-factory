@@ -5,20 +5,20 @@
 ## 公开边界与调用链
 
 - `core/agent-graph.sh` 加载项目 env，保留调用方 AGENT 覆盖值，推导主检出，然后 `exec bash <目录>/prune-run-worktrees.sh`。coordinator 与 `core/constitution/workflow.md` 使用此命令。安装副本同样调用。
-- `core/install.sh` 的 precheck 从 `origin/main:scripts/agent-gates/agent-graph.env` 加载配置，导出主检出，再将 `git show origin/main:scripts/agent-gates/prune-run-worktrees.sh` 管道交给 `perl -e 'alarm 70; exec "bash"'`。失败由 `|| true` 接住，再执行 Linear precheck。此入口没有脚本目录；新薄入口不能依赖 BASH_SOURCE、相邻文件或本地 checkout 的源码。
-- `bin/orca-factory selftest` 直接运行 core 或临时安装副本。现有覆盖包括补偿候选、dirty/locked/started/canceled、PR/Linear 失败、预算、数量上限、共享快照与调用计数。
-- README 描述分发内容；模板及项目 env 定义运行前缀。研究文档中的命令是历史观察，不是额外生产入口。`linear-precheck.sh` 写共享快照，自己不调用 prune。
+- 旧 `core/install.sh` 的定时 precheck 曾把 `git show origin/main:scripts/agent-gates/prune-run-worktrees.sh` 管道交给 `bash` 执行。定时 coordinator 已随 Linear 退役删除（OF-28），该入口不再存在；薄入口仍不依赖 BASH_SOURCE、相邻文件或本地 checkout 的源码。
+- prune 行为由 driver 测试覆盖（`driver/cmd/driver/prune_worktrees_test.go`、`prune_install_test.go`）。`bin/orca-factory selftest` 中依赖 Linear 替身的 shell prune 用例已删除（OF-28）。
+- README 描述分发内容；模板及项目 env 定义运行前缀。研究文档中的命令是历史观察，不是额外生产入口。
 - 新公开命令为 `driver prune-worktrees`；唯一额外参数 `--contract-version` 输出 `prune-worktrees-v1\n`，退出 0，不读配置或访问服务。旧脚本忽略位置参数；其他参数继续忽略。薄入口探测同一 driver 后 exec，不调用旧业务，不提供 fallback。
 
 ## 输入、路径和状态
 
-必需非空环境变量：`AGENT_REPO_PATH`、`AGENT_RUN_WORKTREE_PREFIX`、`AGENT_LINEAR_TEAM`、`AGENT_LINEAR_PROJECT`。可选 `AGENT_GH_REPO` 控制 PR 查询。默认 `AGENT_RUN_MAX_AGE_HOURS=24`、`AGENT_PRUNE_BUDGET_SECONDS=60`、`AGENT_PRUNE_MAX_PER_RUN=5`。数值边界接受十进制整数；错误拒绝执行。运行目录以物理路径排除自身，主检出同样解析物理路径。路径作为单个命令参数，不经 shell 拆词；Git 使用已有 NUL porcelain 格式，避免旧换行枚举的歧义。
+必需非空环境变量：`AGENT_REPO_PATH`、`AGENT_RUN_WORKTREE_PREFIX`、`AGENT_GH_REPO`；`AGENT_ISSUE_BACKEND` 必须为 `github` 或 `feishu`。默认 `AGENT_RUN_MAX_AGE_HOURS=24`、`AGENT_PRUNE_BUDGET_SECONDS=60`、`AGENT_PRUNE_MAX_PER_RUN=5`。数值边界接受十进制整数；错误拒绝执行。运行目录以物理路径排除自身，主检出同样解析物理路径。路径作为单个命令参数，不经 shell 拆词；Git 使用已有 NUL porcelain 格式，避免旧换行枚举的歧义。
 
-`AGENT_SNAPSHOT_FILE` 默认 `${TMPDIR:-/tmp}/orca-factory-linear-snapshot.json`。generatedAt 必须为数值，距当前秒数不超过 900，issues 必须是数组；旧实现接受未来时间，新实现保持这一规则。失效时最多一次 `orca linear list-issues --team ... --project ... --json`，不逐票读取。调用记录向 `AGENT_LINEAR_COUNT_FILE` 或 `${TMPDIR:-/tmp}/orca-factory-linear-calls` 追加 `<unix秒> prune\n`，失败忽略，这是既有非授权观察数据。没有新增账本、锁、数据库、checkpoint、预算重置或状态迁移。
+票状态由所选账本一次完整列举读取。Linear 快照文件与调用计数文件已随 Linear 退役删除（OF-28）。没有新增账本、锁、数据库、checkpoint、预算重置或状态迁移。
 
 ## 原算法及保留规则
 
-执行顺序固定为补偿、legacy run、legacy unit。补偿保留原 Git/Orca 清单用于票关联，PR 分页只读一次，remote heads 只读一次。Git 枚举或 Orca 清单失败使候选保留。Linear 不可用停止补偿；legacy 中有关票状态也不能据失败删除。
+执行顺序固定为补偿、legacy run、legacy unit。补偿保留原 Git/Orca 清单用于票关联，PR 分页只读一次，remote heads 只读一次。Git 枚举或 Orca 清单失败使候选保留。票据主账本不可用停止补偿；legacy 中有关票状态也不能据失败删除。
 
 1. Orca linked worker：排除自己和主检出；当前分支与路径中的第一个 `[A-Z][A-Z0-9]*-[0-9]+` 及清单关联票全部非 started；linked 票必须 completed；Git 全量未跟踪状态干净；HEAD 等于该分支 remote SHA，或匹配同仓库 merged PR 的 head SHA。非 force `orca worktree rm --worktree path:<路径> --json`，命令成功且 ok=true 才计数。
 2. Git-only Claude worktree：路径仅限主检出 `.claude/worktrees/agent-*`，排除自己、Orca 管理路径与 locked；关联票非 started、全量状态干净、HEAD 匹配同仓库 merged PR。`git worktree remove` 成功计数。
@@ -35,11 +35,10 @@ S3 明确要求活跃、未知、脏或证据不足的工作树不能误删。�
 
 - 普通补偿成功没有业务 stdout；Git branch/push/remove 输出继承。保留原因向 stderr 写 `skip <对象>: <单行原因>`。
 - run 输出 `pruned <路径> ok=<ok>`；unit 输出 `pruned <路径> (PR <N> <STATE>)`。补偿失败保留并继续，整体通常退出 0；legacy 删除命令/JSON失败保留真实非零退出，unit 删除失败仅保留并继续。未知/活跃不计数，已失败删除不得计成成功。
-- stderr 通常末行 `prune_linear_calls=0|1`。旧 unit fallback 替换 EXIT trap 后会丢失该统计；新实现保留统计，不复刻 trap 缺陷。
 - 数量上限覆盖全部阶段，包含分支删除。达到上限输出一次 `prune: 达到单次回收上限，剩余对象留到下次`。
-- 时间预算只在补偿每个候选前检查，启动时以整数 Unix 秒记时；初始化/外部命令不受该软预算中断，legacy 阶段没有额外预算。超限输出一次 `prune: 超过时间预算，剩余对象留到下次`。保留 install 外部 70 秒 alarm；SIGINT/SIGTERM/SIGALRM 取消 Go 命令及子进程组并等待退出，不继续删除。
+- 时间预算只在补偿每个候选前检查，启动时以整数 Unix 秒记时；初始化/外部命令不受该软预算中断，legacy 阶段没有额外预算。超限输出一次 `prune: 超过时间预算，剩余对象留到下次`。SIGINT/SIGTERM/SIGALRM 取消 Go 命令及子进程组并等待退出，不继续删除。
 - Git、Orca、gh 为既有外部依赖；JSON 验证、时间与文件读取进入 Go，prune 不再调用 jq、date、awk、grep、cat、mktemp。未新增依赖。已有 executor/merge/usage 的 Git 命令模式保持原样，复用 runx 子进程组取消能力；仓库原来没有 internal/worktree 包，不迁移其已交付调用者。
 
 ## 分发边界
 
-`init/update` 在任何 core 写入前分别预检 ledger 和 prune driver 契约及入口归属。prune 仅接受缺失、上述原 blob、当前 core 薄入口；自定义、符号链接、不兼容程序拒绝切换。同目录暂存、0755、语法检查和 rename 只扩展到 prune，其他文件仍沿用原复制，不承诺整批回滚。开发以显式候选 `AGENT_DRIVER_BIN` 同步受版本管理副本；正式程序和客户发布只在合并后进行。所有删除验收仅在隔离临时 Git/local bare origin，加 fake Orca/GitHub/Linear；不执行真实客户/生产 prune。
+`init/update` 在任何 core 写入前分别预检 ledger 和 prune driver 契约及入口归属。prune 仅接受缺失、上述原 blob、当前 core 薄入口；自定义、符号链接、不兼容程序拒绝切换。同目录暂存、0755、语法检查和 rename 只扩展到 prune，其他文件仍沿用原复制，不承诺整批回滚。开发以显式候选 `AGENT_DRIVER_BIN` 同步受版本管理副本；正式程序和客户发布只在合并后进行。所有删除验收仅在隔离临时 Git/local bare origin，加 fake Orca/GitHub/票据；不执行真实客户/生产 prune。

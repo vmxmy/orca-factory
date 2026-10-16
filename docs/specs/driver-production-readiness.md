@@ -2,6 +2,8 @@
 
 基线：fd1d71d，2026-10-07。承接内置协调恢复修复，目标是可持续交付，而非仅进程存活。
 
+Linear 已退役（OF-28），driver 只支持 github 与 feishu 账本；下文 Linear 内容是当时的历史记录。
+
 ## 当前缺口
 
 - 合并通道反复报告 ZII-899 missing or conflicting durable handoff；必须核对真实 PR、head、gate/reviewer 与持久回执后恢复，不能伪造交接。

@@ -16,7 +16,7 @@
 - 分支：`git push -u origin <branch>`。永不 push main，永不 force push。
 - PR 用 REST 开（GraphQL 常 EOF）：
   `gh api -X POST repos/$AGENT_GH_REPO/pulls -f title=… -f head=… -f base=main -F body=@<wt>/.omc/tmp/<ID>-pr.md -q .number`
-- GitHub 任务 PR body 首行 `关联票: <Issue URL>`，附 canonical identifier / ID。不写会在 squash 时自动关闭业务票的 `Closes` / `Fixes`；部署与 smoke 通过后才 Done。旧 Linear 配置保留 `Fixes <票号>`。
+- GitHub 任务 PR body 首行 `关联票: <Issue URL>`，附 canonical identifier / ID。不写会在 squash 时自动关闭业务票的 `Closes` / `Fixes`；部署与 smoke 通过后才 Done。
 - 合并通道：每个仓库一条串行 FIFO 通道，PR 按入队顺序排队；队首等待时后续 PR 不超车。使用 squash 合并并回读 `.merged == true`，固定已验证的 head SHA。
 - 落后 main（`behind_by > 0`）不是阻塞：取 PR 与 main 相对共同祖先的完整改动路径（含重命名前后路径）求交集。交集为空、`mergeable_state == clean` 且 CI 在当前 head 全绿 → 直接 squash 合并。
 - 有文件重叠：用固定的 PR head 与当前 main SHA 执行 `git merge-tree --write-tree`。文本无冲突时，以合并结果建立临时 worktree，在其中运行该单元 gate；gate 绿、当前 head CI 全绿且 mergeability 为 clean 才合并。合并前回读 head 与 main，任一变化则重新验证；连续 2 轮追不上 main → 交给 resolver。验证结束清理临时 worktree，不改写 PR 分支，不 rebase、不 force push。
@@ -32,7 +32,7 @@
 ## 4. 结束标记与 ledger
 
 - 每次运行结束（收尾、交给 resolver、无票）固定两步，顺序不变：
-  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入当前主账本中标题精确为 `[ledger] agent-graph` 的账本票评论（GitHub 围栏为 `AGENT_GH_REPO`，旧 Linear 围栏为 `AGENT_LINEAR_PROJECT`）（`ledger <JSON>`）。
+  1. `scripts/agent-gates/agent-graph.sh ledger append '<json>'`，写入当前主账本中标题精确为 `[ledger] agent-graph` 的账本票评论（GitHub 围栏为 `AGENT_GH_REPO`）（`ledger <JSON>`）。
   2. `mkdir -p .omc && touch .omc/agent-run-finished`（在运行 worktree）
 - 账本写入失败不阻塞本次运行收尾：只在本票评论里记一句失败原因（无票的 `no_ticket` 运行则只写 stderr），然后继续写结束标记。
 - `ledger stats` 从 当前主账本票评论读取并按 `(ticket, started_at)` 去重；无账本票时输出 `runs=0`，不创建票。

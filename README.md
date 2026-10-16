@@ -1,6 +1,6 @@
 # orca-factory
 
-把 Orca 自驱动开发流水线装进任意仓库：以 GitHub Issues 为统一主账本，完成实现、检查、FIFO 合并与部署验收。异常由 resolver 处置，lane 3 不自动放行。旧 Linear 配置保留已交付契约，但 GitHub 模式零 Linear 请求。
+把 Orca 自驱动开发流水线装进任意仓库：以 GitHub Issues 或飞书多维表格为统一主账本，完成实现、检查、FIFO 合并与部署验收。异常由 resolver 处置，lane 3 不自动放行。
 
 代码部署不等于账本切换。已有源数据须按 [票据主账本](docs/agents/issue-tracker.md) 完成 export、preview、维护栅栏、held import 与全量核验，并单独确认生产切换；#171 保留到真实切换验收。
 
@@ -12,7 +12,7 @@
 读 https://github.com/vmxmy/orca-factory 的 ONBOARD.md，把 ~/github/<repo> 接入流水线
 ```
 
-agent 会调研目标仓库、确认无法推导的决定、生成三份项目配置到 `<repo>/scripts/agent-gates/`，在隔离环境验收后开 PR。推荐 driver 单实例调度；旧定时 coordinator 是互斥的运行通道，不能同时领票。合并后先用一张小票演练，再明确启用。
+agent 会调研目标仓库、确认无法推导的决定、生成三份项目配置到 `<repo>/scripts/agent-gates/`，在隔离环境验收后开 PR。由 driver 单实例调度；定时 coordinator 已退役。合并后先用一张小票演练，再明确启用。
 
 建票推荐用 intake：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、通过统一 `issues` 入口写票据主账本，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
 
@@ -27,7 +27,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 | 路径 | 内容 |
 | --- | --- |
 | `ONBOARD.md` | 给 agent 读的接入手册（核心交付） |
-| `core/` | 通用脚本与手册，原样复制到目标仓库：`gate.sh`（确定性检查门）、`gate.test.sh`、`linear-precheck.sh`（定时任务前置扫描）、`prune-run-worktrees.sh`、`ledger.sh`、`agent-graph.sh`（入口）、`install.sh`（创建定时任务）、`COORDINATOR.md`（coordinator 流程，只引用条款） |
+| `core/` | 通用脚本与手册，原样复制到目标仓库：`gate.sh`（确定性检查门）、`gate.test.sh`、`prune-run-worktrees.sh`、`ledger.sh`、`agent-graph.sh`（入口）、`install.sh`（校验工具、配置与账本）、`COORDINATOR.md`（coordinator 流程，只引用条款） |
 | `core/constitution/` | 宪法：`constitution.md`（入口与优先级）+ 共享条款 `engineering.md` / `workflow.md` / `handoffs.md`（项目不得覆盖，只能加 `local-*.md`） |
 | `core/roles/` | 角色 prompt，固定 Owns / Does Not Own / Verification / Handoff 四段：`intake.md`（用户手动开的建票会话）、`coordinator.md`、`worker.md`、`reviewer.md`；`README.md` 写 task spec 拼装与简报模板 |
 | `templates/` | 三份项目文件的模板（`agent-graph.env`、`gate.project.sh`、`COORDINATOR.project.md`）和两份可选覆盖层（`local-worker.md`、`local-engineering.md`），带 `{{占位}}` |
@@ -36,7 +36,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 
 ## 前置条件
 
-- 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`）。GitHub 模式不要求 Linear 连接。
+- 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`）。
 - `gh`、`jq`、`codex`、`claude` 已安装并登录。
 - Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，这是唯一在 Orca 里设的模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 装依赖。
 - 角色模型在 `agent-graph.env` 里管：worker 分三档 `AGENT_TIER_FAST/DEFAULT/STRONG`（`agent:model:effort`），由票标签 `tier:*` > estimate 映射 `AGENT_TIER_BY_ESTIMATE` > default 选档，`AGENT_TIER_ESCALATE=1` 时被打回后自动升一档；reviewer 在 `AGENT_ROLE_REVIEWER_CMD`。都随仓库进 git。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
@@ -48,7 +48,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 
 ## 核心机制
 
-1. driver 持有单实例锁，完整发现当前主账本。只有已纳管、open、非 held、带 `ready-for-agent`、无未完成依赖的 Todo 票才可领取；关键动作前完整 fresh 回读。旧定时通道的 `linear-precheck.sh` 名称保留，但内部按配置选择唯一后端。
+1. driver 持有单实例锁，完整发现当前主账本。只有已纳管、open、非 held、带 `ready-for-agent`、无未完成依赖的 Todo 票才可领取；关键动作前完整 fresh 回读。
 2. coordinator（claude）领票、按 blast radius 拆分、写 gate spec 与 task spec，派 Codex 工人在独立 worktree 实现。
 3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试在 base 上必红、项目检查（类型/lint/守卫/定向测试）、CHECK。
 4. 红了打回工人修，最多 3 次；3 次不过由 resolver 接管排障与修复。

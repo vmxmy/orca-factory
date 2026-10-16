@@ -96,7 +96,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           if ! grep -Eq '(^|[^[:alnum:]_])(#[0-9]+|[A-Z][A-Z0-9]*-[0-9]+)([^[:alnum:]_]|$)' <<< "$PR_BODY"; then
-            echo '::warning::PR body should reference GH-n, #n, or a Linear ID.'
+            echo '::warning::PR body should reference a ticket: #n or an identifier such as OF-12.'
           fi
 
   build:

@@ -12,7 +12,7 @@
 | --- | --- |
 | 1 可逆·局部 | `examples/*`、`README.md`、`LICENSE` 等其余路径；几十行、`bin/orca-factory selftest` 能覆盖。依据：用户答复 |
 | 2 可逆·宽（`AGENT_LANE2_GLOBS`） | 流水线本体 `core/`、`bin/`、`templates/`、`ONBOARD.md`（改坏会波及所有接入仓库）；`.github/`、`.claude/`、`.codex/`、`AGENTS.md`、`CLAUDE.md`、`scripts/agent-gates/`。依据：用户答复、`bin/orca-factory` 的分发逻辑 |
-| 3 不可逆（`AGENT_LANE3_GLOBS` + 操作） | 文件：`.env*`、`*secrets*`、`.github/workflows/deploy*`（当前都不存在，预留）。操作（不经文件，靠流程禁止）：push main / force push、改写已发布的 marketplace 版本、删除 Linear project / 标签、启用或删除 Orca 定时任务 |
+| 3 不可逆（`AGENT_LANE3_GLOBS` + 操作） | 文件：`.env*`、`*secrets*`、`.github/workflows/deploy*`（当前都不存在，预留）。操作（不经文件，靠流程禁止）：push main / force push、改写已发布的 marketplace 版本、删除票据主账本中的项目 / 标签、启用或删除 Orca 定时任务 |
 
 ## 合并与上线
 
