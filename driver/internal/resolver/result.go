@@ -34,6 +34,10 @@ func ParseResult(body string) (Resolution, error) {
 		if p.Handoff == nil || p.Handoff.Validated() != nil || p.Handoff.QueueID == "" {
 			return p, errors.New("resolver requires validated merge handoff")
 		}
+	case "escalate":
+		if strings.TrimSpace(p.Body) == "" {
+			return p, errors.New("resolver escalation requires evidence body")
+		}
 	case "retry-workflow", "retry-smoke", "confirm-passed":
 		if p.Queue == "" || len(p.SHA) != 40 || strings.Trim(p.SHA, "0123456789abcdef") != "" {
 			return p, errors.New("resolver requires pinned deployment identity")

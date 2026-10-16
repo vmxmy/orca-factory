@@ -30,6 +30,9 @@ type Record struct {
 	Result    string    `json:"result,omitempty"`
 	Outcome   string    `json:"outcome,omitempty"`
 	RetryAt   time.Time `json:"retry_at,omitempty"`
+	// Failures counts consecutive failed attempts before this one. It is derived
+	// from the ledger history on read so receipts written before it existed count.
+	Failures int `json:"-"`
 }
 type Store interface {
 	Load(context.Context) (*Record, error)
@@ -204,10 +207,6 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			}
 		}
 		p.Phase = "result"
-		if p.Outcome == "failed" {
-			p.Phase = "waiting"
-			p.RetryAt = now.Add(5 * time.Minute)
-		}
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err
 		}

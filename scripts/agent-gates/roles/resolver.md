@@ -17,7 +17,7 @@
 - 不直接合并 PR、不写 Done、不修改流水线归属或 resolver-state；由调度器校验后推进。
 - 不重置旧执行器的预算、checkpoint 或数据库，不绕过 CI、gate、reviewer、lane 3 限制和部署身份校验。
 - 不把失败转成“等人处理”或只建一张后续票就结束；继续完成当前可执行的处置。
-- 缺少凭证或确需用户授权的不可逆操作时，不假定获得授权；返回 failed，写清阻塞证据和已完成工作。
+- 缺少凭证、环境或确需用户授权的不可逆操作，在权限内无法解决时，不假定获得授权；提交 escalate 转人，写清阻塞证据和已完成工作。
 - 不重启其他协调者拥有的生产服务，不盲目重跑可能已产生副作用的 smoke。
 
 ## Verification
@@ -38,5 +38,6 @@
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
-- 未完成时用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器会保留结果并退避重试。
+- 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。
+- 可重试的暂时失败用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器退避重试，连续 3 次失败转人工。
 - 报告后停止操作，等待控制器释放 worker。

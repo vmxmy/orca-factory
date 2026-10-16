@@ -64,6 +64,18 @@ func TestBlockedResolutionEscalatesOnce(t *testing.T) {
 	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "类别: 转人") || !strings.Contains(sender.messages[0], "原因: PATH 缺少 PostgreSQL") {
 		t.Fatalf("messages=%q", sender.messages)
 	}
+	store.commentsByID["id"] = append(store.commentsByID["id"], task.Comment{ID: "z", Body: resolver.Prefix + `{"version":1,"attempt":1,"phase":"waiting"}`})
+	backend := &notifyTickBackend{runtime: runtime}
+	backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(ctx, []config.Repository{repo}) }
+	s := setup(&backend.fakeBackend)
+	s.Backend = backend
+	s.Repositories = []config.Repository{repo}
+	if err := s.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(backend.actions) != 1 || backend.actions[0].Kind != Resolve {
+		t.Fatalf("documented human recovery did not resume resolution: %+v", backend.actions)
+	}
 }
 
 func TestRetryableResolutionFailuresEscalateAfterThree(t *testing.T) {

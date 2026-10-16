@@ -28,6 +28,7 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 	rows := append([]task.Comment(nil), comments...)
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
 	var p *resolver.Record
+	failures, failedAttempt := 0, 0
 	for _, c := range rows {
 		if p != nil && p.Phase == "applied" && strings.HasPrefix(c.Body, "Agent处置: ") {
 			next := *p
@@ -43,8 +44,19 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 			if json.Unmarshal([]byte(strings.TrimPrefix(line, resolver.Prefix)), &next) != nil || next.Version != 1 || next.Attempt < 1 {
 				return nil, errors.New("invalid resolver receipt")
 			}
+			switch {
+			case next.Phase == "waiting" && next.Outcome == "failed":
+				if next.Attempt != failedAttempt {
+					failures, failedAttempt = failures+1, next.Attempt
+				}
+			case next.Phase == "waiting" || next.Phase == "applied":
+				failures, failedAttempt = 0, 0
+			}
 			p = &next
 		}
+	}
+	if p != nil {
+		p.Failures = failures
 	}
 	return p, nil
 }
@@ -179,6 +191,13 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if p == nil || p.Phase != "result" {
 		return errors.New("resolver result missing")
 	}
+	decision, err := resolver.ParseResult(p.Result)
+	if err == nil && decision.Action == "escalate" {
+		return r.escalateResolution(ctx, t, p, decision.Reason, decision.Body)
+	}
+	if p.Outcome == "failed" {
+		return r.retryResolution(ctx, t, p, p.Result)
+	}
 	if p.SourceRun != "" {
 		inactive, readErr := r.NoActiveDispatch(ctx, Ticket{Run: p.SourceRun})
 		if readErr != nil {
@@ -188,7 +207,6 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 			return r.retryResolution(ctx, t, p, "original worker still owns execution; reconcile its exact dispatch before completing resolution")
 		}
 	}
-	decision, err := resolver.ParseResult(p.Result)
 	if err != nil {
 		return r.retryResolution(ctx, t, p, "invalid result; provide a structured, validated resolution")
 	}
@@ -245,7 +263,12 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	r.board(ctx, t, machine.PhaseMergeQueue, decision.Reason)
 	return nil
 }
+const resolverFailureLimit = 3
+
 func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Record, reason string) error {
+	if failures := p.Failures + 1; failures >= resolverFailureLimit {
+		return r.escalateResolution(ctx, t, p, fmt.Sprintf("处置连续失败 %d 次: %s", failures, reason), fmt.Sprintf("resolver attempt=%d dispatch=%s", p.Attempt, p.Dispatch))
+	}
 	next := *p
 	next.Phase = "waiting"
 	next.Outcome = "failed"
@@ -256,6 +279,29 @@ func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Rec
 	}
 	next.RetryAt = now.Add(5 * time.Minute)
 	return (resolutionStore{r, t}).Save(ctx, next)
+}
+
+// escalateResolution hands the ticket to a human; the human resolver phase
+// stops automatic dispatch until a person writes a new resolver receipt.
+func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
+	next := *p
+	next.Phase, next.Outcome = "human", "failed"
+	next.RetryAt = time.Time{}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	body := fmt.Sprintf("转人: %s\n证据: %s\n阶段: %s\n归属: %s\n%s%s", ledgerLine(reason), ledgerLine(evidence), machine.PhaseHuman, machine.OwnerHuman, resolver.Prefix, raw)
+	return r.mergeComment(ctx, t, body)
+}
+
+// ledgerLine keeps agent text on one line so it cannot forge ledger fields.
+func ledgerLine(s string) string {
+	runes := []rune(strings.Join(strings.Fields(s), " "))
+	if len(runes) > 300 {
+		return string(runes[:300]) + "…"
+	}
+	return string(runes)
 }
 func resolverApproved(t Ticket) bool {
 	if t.Resolution == nil || t.Resolution.Phase != "applied" || t.Handoff == nil {
