@@ -39,9 +39,6 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 	f.runtime.Clients[dir] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
-		if isMergeInstall(s) {
-			return nil, nil
-		}
 		if s.Path == "bash" && s.Args[0] == "-c" {
 			smokes++
 			return nil, nil
@@ -109,9 +106,6 @@ func TestDeploymentConfigReservedAtFirstIntentAfterWaiting(t *testing.T) {
 	}
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
-		if isMergeInstall(s) {
-			return nil, nil
-		}
 		if s.Path == "bash" {
 			smokes++
 			return nil, nil

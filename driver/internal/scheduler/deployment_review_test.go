@@ -53,9 +53,6 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 			f.runtime.Clients[dir] = l
 			var smokes []string
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
-				if isMergeInstall(s) {
-					return nil, nil
-				}
 				if s.Path == "bash" && s.Args[0] == "-c" {
 					smokes = append(smokes, s.Args[1])
 					return nil, nil

@@ -54,18 +54,16 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 	if run == nil {
 		run = runx.Run
 	}
-	install := env["AGENT_INSTALL_CMD"]
-	if install == "" {
-		install = "true"
-	}
-	if _, err := run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", install}, Dir: wt, Env: entries, Timeout: 30 * time.Minute}); err != nil {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	if install := env["AGENT_INSTALL_CMD"]; install != "" {
+		if _, err := run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", install}, Dir: wt, Env: entries, Timeout: 30 * time.Minute}); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
+			return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return err
-		}
-		return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
 	}
 	output, err := run(ctx, runx.Spec{Path: "bash", Args: []string{gatePath, wt, specPath}, Dir: req.Path, Env: entries, Timeout: 30 * time.Minute})
 	if ctx.Err() != nil {

@@ -3,7 +3,6 @@ package scheduler
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,14 +68,4 @@ func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
 	if gateRan {
 		t.Fatal("gate ran after install failure")
 	}
-}
-
-// isMergeInstall tells the merge worktree install apart from the gate and smoke
-// commands: only the install runs beside the frozen gate.spec.
-func isMergeInstall(s runx.Spec) bool {
-	if s.Path != "bash" || len(s.Args) < 1 || s.Args[0] != "-c" {
-		return false
-	}
-	_, err := os.Stat(filepath.Join(filepath.Dir(s.Dir), "gate.spec"))
-	return err == nil
 }
