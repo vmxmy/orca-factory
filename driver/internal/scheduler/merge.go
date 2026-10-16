@@ -379,7 +379,7 @@ func (a *mergeAdapter) policy(files []string) error {
 					return merge.ErrReviewRequired
 				default: // AGENT_LANE2_GLOBS
 					if lane != 2 {
-						return errors.New("changed path requires manual approval or new lane validation")
+						return merge.ErrReviewRequired
 					}
 				}
 			}
