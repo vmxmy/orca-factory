@@ -111,6 +111,9 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 			dir := f.repos[0].Path
 			calls := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if isMergeInstall(s) {
+					return nil, nil
+				}
 				if s.Path != "bash" {
 					return runx.Run(ctx, s)
 				}
@@ -180,6 +183,9 @@ func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 	dir := f.repos[0].Path
 	calls := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if isMergeInstall(s) {
+			return nil, nil
+		}
 		if s.Path != "bash" {
 			return runx.Run(ctx, s)
 		}
@@ -227,6 +233,9 @@ func TestRuntimeMergeCorrectionCapsPersistedBudget(t *testing.T) {
 func TestRuntimeOverlapGreenCleanupFailureStillCompletes(t *testing.T) {
 	f := overlapFixture(t, false)
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if isMergeInstall(s) {
+			return nil, nil
+		}
 		if s.Path == "bash" {
 			return []byte("UNIT executor\nVERDICT green\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature shared\nLANE 1"), nil
 		}
@@ -291,6 +300,9 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if isMergeInstall(s) {
+					return nil, nil
+				}
 				if s.Path == "bash" {
 					if failure == "gate-cancel" {
 						cancel()
@@ -319,6 +331,9 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 func TestRuntimeOverlapGateLaneRedReturnsCorrection(t *testing.T) {
 	f := overlapFixture(t, false)
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if isMergeInstall(s) {
+			return nil, nil
+		}
 		if s.Path == "bash" {
 			return []byte("UNIT executor\nVERDICT red\nSTEP lane\nREASON changed files are lane 3\nEVIDENCE shared\nSCOPE feature shared\nLANE 3"), gateExit{}
 		}
@@ -384,6 +399,9 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 			dir := f.repos[0].Path
 			calls := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if isMergeInstall(s) {
+					return nil, nil
+				}
 				if s.Path == "bash" {
 					calls++
 					if calls == 1 {

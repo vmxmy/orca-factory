@@ -126,6 +126,9 @@ func TestGitHubCancellationBeforeSquash(t *testing.T) {
 			g := githubSafetyFixture(t, f)
 			gates := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if isMergeInstall(s) {
+					return nil, nil
+				}
 				if s.Path != "bash" {
 					return runx.Run(ctx, s)
 				}
@@ -181,6 +184,9 @@ func TestGitHubStoppedIntentRetainsDeploymentBarrier(t *testing.T) {
 			f.merged = merged
 			smoke := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if isMergeInstall(s) {
+					return nil, nil
+				}
 				if s.Path == "bash" {
 					smoke++
 					return nil, nil
