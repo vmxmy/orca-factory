@@ -300,10 +300,10 @@ cmd_doctor() {
     issue_backend=$(sed -n 's/^AGENT_ISSUE_BACKEND=//p' scripts/agent-gates/agent-graph.env | tail -n 1 | sed "s/[[:space:]]*#.*//;s/[[:space:]]*$//;s/^['\"]//;s/['\"]$//")
   fi
   local AGENT_ISSUE_BACKEND="${issue_backend:-linear}"
-  case "${AGENT_ISSUE_BACKEND:-linear}" in linear|github) ;; *) fail 'unsupported AGENT_ISSUE_BACKEND' ;; esac
+  case "${AGENT_ISSUE_BACKEND:-linear}" in linear|github|feishu) ;; *) fail 'unsupported AGENT_ISSUE_BACKEND' ;; esac
   # These helpers append safe, generated diagnostics, never raw command responses.
   local doctor_tools=(orca gh jq git codex claude lark-cli)
-  [[ "$AGENT_ISSUE_BACKEND" != github ]] || doctor_tools+=(orca-factory-driver)
+  [[ "$AGENT_ISSUE_BACKEND" == linear ]] || doctor_tools+=(orca-factory-driver)
   for tool in "${doctor_tools[@]}"; do
     present=false; details=''; detail_text=''
     if command -v "$tool" >/dev/null 2>&1; then present=true

@@ -119,6 +119,9 @@ AGENT_ISSUE_BACKEND=github "$factory/bin/orca-factory" doctor --json > "$tmp/out
 jq -e '[.recommendation.missing[] | select(test("[Ll][Ii][Nn][Ee][Aa][Rr]"))] | length == 0' "$tmp/out" >/dev/null || fail 'GitHub doctor requires Linear'
 ! grep -q '^linear ' "$TEST_CALLS" || fail 'GitHub install/precheck/prune/doctor called Linear'
 echo 'issues.test: GitHub precheck/install/prune/doctor PASS'
+AGENT_ISSUE_BACKEND=feishu "$factory/bin/orca-factory" doctor --json > "$tmp/out" || fail 'Feishu doctor must accept the feishu backend'
+jq -e '[.recommendation.missing[] | select(test("[Ll][Ii][Nn][Ee][Aa][Rr]"))] | length == 0' "$tmp/out" >/dev/null || fail 'Feishu doctor requires Linear'
+echo 'issues.test: Feishu doctor PASS'
 
 : > "$TEST_CALLS"
 ( unset AGENT_ISSUE_BACKEND; cd "$tmp/repo"; "$factory/bin/orca-factory" doctor --json ) > "$tmp/out"
