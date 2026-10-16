@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,10 @@ import (
 
 func TestMain(m *testing.M) {
 	if os.Getenv("DRIVER_TEST_PROCESS") == "1" {
+		if !slices.Contains(os.Args, "--") {
+			// os.Executable re-invoked the test binary as the driver itself.
+			os.Exit(run(os.Args[1:]))
+		}
 		os.Exit(m.Run())
 	}
 	cleanup := testsupport.IsolateStatus()

@@ -113,6 +113,15 @@ func TestRecordedWorktreeSetCard(t *testing.T) {
 	if strings.Contains(args, "--linear-issue") {
 		t.Errorf("GitHub card must not link a Linear issue: %q", args)
 	}
+	if _, err := (&Client{Path: script}).WorktreeSet(context.Background(), TicketCard("/worktrees/OF-12-executor", "OF-12", "feishu title", 0, machine.PhaseWorker, "")); err != nil {
+		t.Fatalf("feishu card err=%v", err)
+	}
+	if raw, err = os.ReadFile(argsFile); err != nil {
+		t.Fatal(err)
+	}
+	if args = string(raw); strings.Contains(args, "--linear-issue") || !strings.Contains(args, "issue: OF-12") {
+		t.Errorf("Feishu card must map back through the comment only: %q", args)
+	}
 }
 
 func TestRecordedWorkerListLiveness(t *testing.T) {
