@@ -23,7 +23,7 @@
 ## Does Not Own
 
 - 目标仓库业务代码：只新增 `scripts/agent-gates/`、init 写入 `.claude/settings.json` 的两个键、必要时 `.gitignore` 加 `.omc/`。5d 的注入必须撤干净。
-- 飞书项目表与任何飞书写入：项目表行由 driver 在你报告 PR 后写入（“启用”=false）。不运行 `issues`、`lark-cli` 或任何写账本的命令。
+- 飞书项目表与任何飞书写入：项目表行由 driver 在启动你之前写入（“启用”=false），`install.sh --dry-run` 据此校验账本。不运行 `issues`、`lark-cli` 或任何写账本的命令。
 - 合并、部署、启用：不 `gh pr merge`，不 push main，不 force push，不跑 `install.sh`（干跑除外），不 `orca automations edit --enabled`。
 - 凭据：不读密钥文件内容（`.env*`、`*secrets*` 等只看文件名），不运行 `env`、`printenv`，不打印环境变量或 token。
 - `git stash`：stash 栈在 worktree 间共享；需要搁置改动用 WIP commit。

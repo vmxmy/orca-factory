@@ -15,6 +15,7 @@ orca status --json | jq -e '.ok == true' >/dev/null || fail "Orca app is not run
 set -a; . "$dir/agent-graph.env"; set +a
 case "${AGENT_ISSUE_BACKEND:-linear}" in
   github) command -v orca-factory-driver >/dev/null || fail 'missing tool: orca-factory-driver' ;;
+  feishu) command -v orca-factory-driver >/dev/null || fail 'missing tool: orca-factory-driver' ;;
   linear) ;;
   *) fail 'unsupported AGENT_ISSUE_BACKEND' ;;
 esac
@@ -32,6 +33,11 @@ done
 
 if [[ "${AGENT_ISSUE_BACKEND:-linear}" == github ]]; then
   orca-factory-driver issues validate --json | jq -e '.ok == true' >/dev/null || fail 'cannot validate GitHub issue repository'
+elif [[ "${AGENT_ISSUE_BACKEND:-linear}" == feishu ]]; then
+  for v in AGENT_FEISHU_BASE AGENT_FEISHU_PROJECT; do
+    [[ -n "${!v:-}" ]] || fail "agent-graph.env: $v is empty"
+  done
+  orca-factory-driver issues validate --json | jq -e '.ok == true' >/dev/null || fail 'cannot validate Feishu ledger project'
 else
   for v in AGENT_LINEAR_TEAM AGENT_LINEAR_PROJECT AGENT_LABEL_READY AGENT_LABEL_CLAIMED AGENT_LABEL_FAILED; do
     [[ -n "${!v:-}" ]] || fail "agent-graph.env: $v is empty"

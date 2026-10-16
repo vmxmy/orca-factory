@@ -151,3 +151,36 @@ AGENT_SCOPE_AVOID=1 bash "$entry" linear-precheck > "$tmp/out" 2> "$tmp/err" || 
 [[ "$(grep -c '^issues snapshot' "$TEST_CALLS")" == 1 ]] || fail 'precheck enumerates snapshot more than once'
 ! grep -q '^issues read' "$TEST_CALLS" || fail 'precheck fetches full comments to read scope or blockers already in snapshot'
 echo 'issues.test: one-snapshot precheck PASS'
+
+# Feishu ledger backend (OF-51): install.sh --dry-run requires its own keys
+# and validates the ledger is reachable through the same driver entry point
+# agent-graph.sh issues validate uses, before linear/github did.
+feishu_repo="$tmp/feishu-repo"
+mkdir -p "$feishu_repo/scripts/agent-gates"
+git init -q "$feishu_repo"
+cp "$factory"/core/*.sh "$feishu_repo/scripts/agent-gates/"
+cp "$factory/core/COORDINATOR.md" "$feishu_repo/scripts/agent-gates/"
+touch "$feishu_repo/scripts/agent-gates/COORDINATOR.project.md"
+cat > "$feishu_repo/scripts/agent-gates/agent-graph.env" <<'PROFILE'
+AGENT_ISSUE_BACKEND=feishu
+AGENT_GH_REPO=owner/repo
+AGENT_FEISHU_BASE=BASE_TOKEN
+AGENT_FEISHU_PROJECT=github.com/owner/repo
+AGENT_MAX_IN_FLIGHT=2
+AGENT_RUN_WORKTREE_PREFIX=run-
+AGENT_INSTALL_CMD=true
+AGENT_TIER_FAST=codex:model:low
+AGENT_TIER_DEFAULT=codex:model:medium
+AGENT_TIER_STRONG=codex:model:high
+PROFILE
+: > "$TEST_CALLS"
+bash "$feishu_repo/scripts/agent-gates/install.sh" --dry-run > "$tmp/out" 2> "$tmp/err" \
+  || { cat "$tmp/err"; fail 'Feishu installation must dry-run clean with ledger keys present'; }
+grep -q 'dry run, nothing changed' "$tmp/out" || fail 'Feishu dry-run did not report no changes'
+! grep -q '^linear ' "$TEST_CALLS" || fail 'Feishu install called Linear'
+
+sed -i '/^AGENT_FEISHU_BASE=/d' "$feishu_repo/scripts/agent-gates/agent-graph.env"
+rc=0
+bash "$feishu_repo/scripts/agent-gates/install.sh" --dry-run > "$tmp/out" 2> "$tmp/err" || rc=$?
+[[ "$rc" != 0 ]] && grep -q 'AGENT_FEISHU_BASE' "$tmp/err" || fail 'missing AGENT_FEISHU_BASE must fail install with the key name'
+echo 'issues.test: Feishu install dry-run PASS'

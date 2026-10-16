@@ -183,8 +183,9 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	mainSHA := gitIn(t, f.repo, "rev-parse", "HEAD")
 
 	record := filepath.Join(t.TempDir(), "claude.record")
+	rowMarker := filepath.Join(t.TempDir(), "row.written")
 	claude := filepath.Join(t.TempDir(), "claude")
-	script := "#!/bin/sh\n{ printf 'cwd=%s\\n' \"$(pwd -P)\"; printf 'home=%s\\n' \"$HOME\"; printf 'secret=%s\\n' \"${AGENT_FEISHU_APP_SECRET-unset}\"; printf 'gh=%s\\n' \"${GH_TOKEN-unset}\"; } > " + record + "\n" +
+	script := "#!/bin/sh\n{ if [ -e " + rowMarker + " ]; then echo row=before-agent; else echo row=missing; fi; printf 'cwd=%s\\n' \"$(pwd -P)\"; printf 'home=%s\\n' \"$HOME\"; printf 'secret=%s\\n' \"${AGENT_FEISHU_APP_SECRET-unset}\"; printf 'gh=%s\\n' \"${GH_TOKEN-unset}\"; } > " + record + "\n" +
 		"for a in \"$@\"; do printf '%s\\0' \"$a\"; done > " + record + ".args\n" +
 		`printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"已开接入 PR：https://github.com/vmxmy/ziikoo-control-plane/pull/7"}'` + "\n"
 	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
@@ -198,7 +199,7 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
 		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
 			rows = append(rows, row)
-			return row, nil
+			return row, os.WriteFile(rowMarker, nil, 0o600)
 		}}
 	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote, Requester: "ou_APPROVER", Thread: "om_ROOT"}
 
@@ -237,7 +238,7 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"cwd=" + realWorktree, "home=" + f.home, "secret=unset", "gh=unset"} {
+	for _, want := range []string{"row=before-agent", "cwd=" + realWorktree, "home=" + f.home, "secret=unset", "gh=unset"} {
 		if !slices.Contains(lines, want) {
 			t.Fatalf("record=%v\nwant %q", lines, want)
 		}
@@ -272,5 +273,45 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 	}
 	if !slices.Contains(args, "--restricted") || !slices.Contains(args, "--strict-mcp-config") || !strings.Contains(flag("--settings"), "Bash(printenv:*)") {
 		t.Fatalf("args=%v", args)
+	}
+}
+
+// TestOnboardReportsAgentResultWhenPRMissing covers OF-51: when the
+// onboarding agent finishes successfully but its final text carries no PR
+// link, the error must carry that final explanation instead of discarding
+// it, so a person reading the CLI error or the card's topic reply (which
+// forwards the same error) knows where the agent got stuck.
+func TestOnboardReportsAgentResultWhenPRMissing(t *testing.T) {
+	f := newOnboardFixture(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, filepath.Dir(origin), "init", "--quiet", "--bare", "-b", "main", origin)
+	if err := os.RemoveAll(f.repo); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Dir(f.repo), "clone", "--quiet", origin, f.repo)
+	if err := os.WriteFile(filepath.Join(f.repo, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", "README.md")
+	gitIn(t, f.repo, "commit", "--quiet", "-m", "init")
+	gitIn(t, f.repo, "push", "--quiet", "origin", "HEAD:main")
+
+	claude := filepath.Join(t.TempDir(), "claude")
+	explanation := "卡在 ONBOARD 5b：install.sh --dry-run 报 unsupported AGENT_ISSUE_BACKEND，需要人工确认账本后端配置后重试"
+	script := "#!/bin/sh\n" + `printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"` + explanation + `"}'` + "\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
+		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
+			return row, nil
+		}}
+	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote}
+	if _, err := o.run(context.Background(), req); err == nil || !strings.Contains(err.Error(), explanation) {
+		t.Fatalf("err=%v, want it to carry the agent's final explanation %q", err, explanation)
 	}
 }

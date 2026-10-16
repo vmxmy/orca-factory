@@ -132,16 +132,16 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 ```mermaid
 flowchart LR
     A[发现校验：可接入] --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
-    B --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
+    B --> E[driver 写飞书项目表行，启用=false<br/>已有同远端行则沿用]
+    E --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
     C --> D[接入 Agent：init、填项目文件、ONBOARD 5a～5d、开 PR]
-    D --> E[driver 写飞书项目表行，启用=false]
-    E --> F[输出 PR 链接与项目表行]
+    D --> F[输出 PR 链接与项目表行]
 ```
 
 - 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
 - worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。该目录已存在或分支已存在时拒绝，由人核对后清理再重试；driver 不自动删除。
 - 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
-- Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，不写项目表。项目表行由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
+- Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，错误信息附 Agent 最终说明。项目表行在启动 Agent 之前由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
 - 接入 PR 合并、并在项目表勾选「启用」后，下一次发现才把该仓库判为可接管。
 
 需求助手卡片的「接入」按钮走同一入口：只有 `AGENT_FEISHU_APPROVERS` 中的人点击生效，其他人得到 toast“只有审批人可以接入”；生效后网关在话题回复“开始接入 <仓库>”，完成后回复 PR 链接、项目表行与“合并 PR 并在项目表勾选启用后生效”，失败时回复原因。网关只在 `driver.toml` 配置了 `factory_root` 时开启按钮。
