@@ -19,6 +19,13 @@ var ErrMainAdvanced = errors.New("main advanced during merge validation")
 // never blocks later PRs in the same repository.
 var ErrReviewRequired = errors.New("lane 2 requires resolver review")
 
+// ErrHumanRequired is returned by Snapshot when policy forbids any agent
+// approval (lane 3: secrets, deploy files, or any AGENT_LANE3_GLOBS match).
+// Next dequeues the PR with HumanDirect so lane 3 never blocks later PRs in
+// the same repository; lane 3 is excluded from resolver and automerge
+// authorization, so no resolver review is attempted first.
+var ErrHumanRequired = errors.New("lane 3 requires human approval")
+
 // SnapshotError names which Snapshot step failed. A GitHub implementation
 // builds Reason from its own driver-authored text or from an external error
 // already passed through an existing sanitizer; Next never reads raw external
@@ -97,13 +104,14 @@ type Deployment interface {
 type Status string
 
 const (
-	Empty      Status = "empty"
-	Waiting    Status = "waiting"
-	Merged     Status = "merged"
-	Correction Status = "scheduler-new-executor"
-	Human      Status = "human"
-	Review     Status = "review"
-	Paused     Status = "paused"
+	Empty       Status = "empty"
+	Waiting     Status = "waiting"
+	Merged      Status = "merged"
+	Correction  Status = "scheduler-new-executor"
+	Human       Status = "human"
+	Review      Status = "review"
+	HumanDirect Status = "human-direct"
+	Paused      Status = "paused"
 )
 
 type Result struct {
@@ -243,7 +251,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	r := Result{Request: e.request, Rounds: e.rounds}
 	finish := func(status Status, reason string) (Result, error) {
 		r.Status, r.Reason, r.Rounds = status, reason, e.rounds
-		if status == Merged || status == Correction || status == Human || status == Review {
+		if status == Merged || status == Correction || status == Human || status == Review || status == HumanDirect {
 			l.mu.Lock()
 			l.queue = l.queue[1:]
 			l.mu.Unlock()
@@ -279,6 +287,9 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	s, err := c.github.Snapshot(ctx, e.request)
 	if errors.Is(err, ErrReviewRequired) {
 		return finish(Review, err.Error())
+	}
+	if errors.Is(err, ErrHumanRequired) {
+		return finish(HumanDirect, err.Error())
 	}
 	if err != nil {
 		if ctx.Err() != nil {

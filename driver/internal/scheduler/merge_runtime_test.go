@@ -256,7 +256,11 @@ func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 	f.tracker.rows[0].Body = parts[0] + "merge-handoff-v1: " + string(b)
 }
 func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
-	for _, kind := range []string{"gate-red", "review-red", "manual", "lane3-path", "wrong-spec", "missing-orca", "multiple-pr"} {
+	// AGENT_LANE2_MANUAL_GLOBS and AGENT_LANE3_GLOBS no longer leave the
+	// ticket Waiting with a generic policy error: TestRuntimeMergeManualGlobReviewLeavesQueue
+	// and TestRuntimeMergeLane3EscalatesDirectlyToHuman assert their dedicated
+	// escalation receipts and dequeue (OF-103).
+	for _, kind := range []string{"gate-red", "review-red", "wrong-spec", "missing-orca", "multiple-pr"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newMergeFixture(t)
 			switch kind {
@@ -266,10 +270,6 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 				})
 			case "review-red":
 				rewriteHandoff(t, f, func(h map[string]any) { h["review_output"] = `{"verdict":"red","step":"review"}` })
-			case "manual":
-				f.repos[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*"
-			case "lane3-path":
-				f.repos[0].Env["AGENT_LANE3_GLOBS"] = "feat*"
 			case "wrong-spec":
 				rewriteHandoff(t, f, func(h map[string]any) { h["gate_spec"] = "UNIT: unrelated\nCHECK: true\nSCOPE: other\nLANE: 1" })
 			case "missing-orca":
@@ -442,7 +442,11 @@ func TestRuntimeMergeSnapshotReasonNamesFailureStep(t *testing.T) {
 				return runx.Run(ctx, spec)
 			}
 		}},
-		{"policy", "policy", func(f *mergeFixture) { f.repos[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*" }},
+		// AGENT_LANE2_GLOBS on a lane-1 ticket still falls through to the
+		// generic policy SnapshotError; AGENT_LANE2_MANUAL_GLOBS and
+		// AGENT_LANE3_GLOBS now return their own sentinels (OF-103) and
+		// never reach this generic reason path.
+		{"policy", "policy", func(f *mergeFixture) { f.repos[0].Env["AGENT_LANE2_GLOBS"] = "feat*" }},
 		{"checks", "checks", func(f *mergeFixture) { f.checksBody = "{not-json" }},
 	}
 	seen := map[string]bool{}
