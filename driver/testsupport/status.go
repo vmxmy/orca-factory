@@ -36,7 +36,7 @@ func IsolateStatus() func() {
 	// AGENT_TIER_* agent choice changes executor correction paths.
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(key, "AGENT_") {
+		if !strings.HasPrefix(key, "AGENT_") || key == "AGENT_DRIVER_STATE_ROOT" {
 			continue
 		}
 		if err := os.Unsetenv(key); err != nil {
