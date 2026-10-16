@@ -318,3 +318,28 @@ func TestRecordedReactionAddInvalidMessage(t *testing.T) {
 		t.Fatalf("err=%v calls=%d", err, calls.Load())
 	}
 }
+
+func recordedContent(t *testing.T, name string) string {
+	t.Helper()
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(loadRecording(t, name).Request.Body, &body); err != nil || body.Content == "" {
+		t.Fatalf("%s request content: %v", name, err)
+	}
+	return body.Content
+}
+
+func TestRecordedReplyCardInThread(t *testing.T) {
+	c := recordedFake(t, "bot-message-reply-card.json")
+	if err := c.ReplyCardInThread(context.Background(), "om_REDACTED_ROOT", recordedContent(t, "bot-message-reply-card.json")); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestRecordedUpdateCard(t *testing.T) {
+	c := recordedFake(t, "bot-message-update-card.json")
+	if err := c.UpdateCard(context.Background(), "om_REDACTED_CARD", recordedContent(t, "bot-message-update-card.json")); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+}

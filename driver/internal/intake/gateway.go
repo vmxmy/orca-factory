@@ -111,18 +111,22 @@ type Gateway struct {
 	// projects is nil when this gateway serves a single implicit project
 	// (pre-OF-32 behavior): every session's Project stays "" and selectProject
 	// is never consulted. defaultRemote is the configured group default,
-	// compared against each Project's Remote.
+	// compared against each Project's Remote and only preselected on the
+	// picker card (OF-47), never chosen on the requester's behalf.
 	projects      []Project
 	defaultRemote string
 	agent         func(context.Context, Turn) (string, error)
 	reply         func(context.Context, string, string) error
 	react         func(context.Context, string) error
-	now           func() time.Time
+	// replyCard sends an interactive card as a thread reply to a message;
+	// updateCard replaces a sent card's content (OF-47).
+	replyCard, updateCard func(context.Context, string, string) error
+	now                   func() time.Time
 }
 
 var threadRoot = regexp.MustCompile(`^om_[0-9A-Za-z_]+$`)
 
-func New(dir, chat, bot string, users, approvers []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error, react func(context.Context, string) error) (*Gateway, error) {
+func New(dir, chat, bot string, users, approvers []string, concurrency int, projects []Project, defaultRemote string, agent func(context.Context, Turn) (string, error), reply func(context.Context, string, string) error, react func(context.Context, string) error, replyCard, updateCard func(context.Context, string, string) error) (*Gateway, error) {
 	if concurrency < 1 {
 		return nil, errors.New("intake concurrency must be positive")
 	}
@@ -137,7 +141,7 @@ func New(dir, chat, bot string, users, approvers []string, concurrency int, proj
 	if err := validateProjects(projects); err != nil {
 		return nil, err
 	}
-	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, approvers: approvers, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, now: time.Now}
+	g := &Gateway{dir: dir, chat: chat, bot: bot, users: users, approvers: approvers, threads: map[string]*sync.Mutex{}, slots: make(chan struct{}, concurrency), maxTurns: maxTurns, projects: projects, defaultRemote: defaultRemote, agent: agent, reply: reply, react: react, replyCard: replyCard, updateCard: updateCard, now: time.Now}
 	b, err := os.ReadFile(filepath.Join(dir, "recent.json"))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

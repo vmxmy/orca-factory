@@ -71,7 +71,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					return nil
 				}
 				dir := t.TempDir()
-				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact)
+				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact, nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -84,7 +84,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					})
 				}
 				wg.Wait()
-				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact)
+				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact, nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -108,7 +108,7 @@ func TestFeishuGatewayCorruptState(t *testing.T) {
 	if err := os.WriteFile(dir+"/recent.json", []byte("broken"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := New(dir, "chat", "bot", []string{"user"}, nil, 1, nil, "", nil, nil, nil); err == nil {
+	if _, err := New(dir, "chat", "bot", []string{"user"}, nil, 1, nil, "", nil, nil, nil, nil, nil); err == nil {
 		t.Fatal("corrupt state accepted")
 	}
 }
@@ -176,7 +176,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, client.ReplyInThread, noopReact)
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, client.ReplyInThread, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,14 +202,14 @@ func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
 	dir := t.TempDir()
 	calls := 0
 	send := func(context.Context, string, string) error { calls++; return errors.New("send unconfirmed") }
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Handle(context.Background(), event); err == nil {
 		t.Fatal("send error hidden")
 	}
-	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact)
+	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestIntakeThreadReplyWithoutMention(t *testing.T) {
 				}
 				return nil
 			}
-			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, nil, "", agent, reply, noopReact)
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, nil, "", agent, reply, noopReact, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -364,7 +364,7 @@ func TestIntakeQuietAndEnd(t *testing.T) {
 		replies = append(replies, text)
 		return nil
 	}
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{requester, member2}, nil, 1, nil, "", agent, reply, noopReact)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{requester, member2}, nil, 1, nil, "", agent, reply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -547,7 +547,7 @@ func TestIntakeReceiptReaction(t *testing.T) {
 				}
 			}
 
-			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, nil, "", agent, reply, react)
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, nil, "", agent, reply, react, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

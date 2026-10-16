@@ -13,3 +13,5 @@
 开通 `im:message.group_msg` 后（2026-10-15），同一事件也投递不带 @ 的消息，同样用官方 Go SDK 原始录制：群内普通新消息（`bot-event-group-message-no-at.json`，无 `mentions`、无 `thread_id`）与话题内不带 @ 的回复（`bot-event-thread-reply-no-at.json`，带 `thread_id`、`root_id`，无 `mentions`）。
 
 `bot-reaction-*` 于 2026-10-15 以应用身份录制，接口为 `POST /open-apis/im/v1/messages/:message_id/reactions`（`emoji_type=THUMBSUP`），现有 `im:message:send_as_bot` 等权限即可：添加成功返回 `reaction_id`；对同一消息重复添加同一表情仍成功并返回同一 `reaction_id`（幂等）；消息不存在返回 `99992354`。
+
+`bot-message-reply-card.json`、`bot-message-update-card.json` 于 2026-10-16 以应用身份（`lark-cli 1.0.97 api --as bot`）在真实需求群录制（OF-47）：对一条机器人根消息以 `reply_in_thread=true` 回复 JSON 2.0 项目选择卡片，再以 `PATCH /open-apis/im/v1/messages/:message_id` 把卡片改为已选择状态。message_id 脱敏为 `om_REDACTED_ROOT`（根消息）与 `om_REDACTED_CARD`（卡片），thread_id 为 `omt_REDACTED`；lark-cli 附加的 `_notice` 版本提示已删除。`constructed-card-action-project-pick.json` 不是录制：它按 SDK 类型构造 `card.action.trigger` 回调，待上线后真实点击实录替换。

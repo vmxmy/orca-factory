@@ -1,0 +1,37 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"body\":{\"elements\":[{\"content\":\"请选择本需求所属的项目，然后点“开始”。\",\"tag\":\"markdown\"},{\"elements\":[{\"initial_option\":\"OF\",\"name\":\"project\",\"options\":[{\"text\":{\"content\":\"OF orca-factory\",\"tag\":\"plain_text\"},\"value\":\"OF\"},{\"text\":{\"content\":\"ZY zhiyun-ai-dashboard\",\"tag\":\"plain_text\"},\"value\":\"ZY\"},{\"text\":{\"content\":\"AN ansible\",\"tag\":\"plain_text\"},\"value\":\"AN\"}],\"placeholder\":{\"content\":\"选择项目\",\"tag\":\"plain_text\"},\"required\":true,\"tag\":\"select_static\"},{\"behaviors\":[{\"type\":\"callback\",\"value\":{\"thread\":\"om_REDACTED_ROOT\"}}],\"form_action_type\":\"submit\",\"name\":\"start\",\"tag\":\"button\",\"text\":{\"content\":\"开始\",\"tag\":\"plain_text\"},\"type\":\"primary\"}],\"name\":\"project_picker\",\"tag\":\"form\"},{\"content\":\"暂不可用：\\n- OLD retired：未启用\\n- DOC docs-site：未装流水线\",\"tag\":\"markdown\"}]},\"config\":{\"update_multi\":true},\"header\":{\"template\":\"blue\",\"title\":{\"content\":\"选择项目\",\"tag\":\"plain_text\"}},\"schema\":\"2.0\"}",
+      "msg_type": "interactive",
+      "reply_in_thread": true
+    },
+    "method": "POST",
+    "params": null,
+    "path": "/open-apis/im/v1/messages/om_REDACTED_ROOT/reply"
+  },
+  "response": {
+    "data": {
+      "body": {
+        "content": "{\"title\":\"选择项目\",\"elements\":[[{\"tag\":\"img\",\"image_key\":\"img_v3_02ad_e19fca1f-912a-450e-95de-3c229091b53g\"},{\"tag\":\"text\",\"text\":\"请升级至最新版本客户端，以查看内容\"},{\"tag\":\"text\",\"text\":\"\"}]]}"
+      },
+      "chat_id": "oc_REDACTED",
+      "create_time": "1792130271147",
+      "deleted": false,
+      "message_id": "om_REDACTED_CARD",
+      "msg_type": "interactive",
+      "parent_id": "om_REDACTED_ROOT",
+      "root_id": "om_REDACTED_ROOT",
+      "sender": {
+        "id": "cli_REDACTED",
+        "id_type": "app_id",
+        "sender_type": "app",
+        "tenant_key": "TENANT_KEY"
+      },
+      "thread_id": "omt_REDACTED",
+      "update_time": "1792130271147",
+      "updated": false
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

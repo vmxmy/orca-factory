@@ -1,0 +1,33 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "CONSTRUCTED_EVENT_ID",
+    "token": "CONSTRUCTED_TOKEN",
+    "create_time": "1792130000000000",
+    "event_type": "card.action.trigger",
+    "tenant_key": "TENANT_KEY",
+    "app_id": "cli_REDACTED"
+  },
+  "event": {
+    "operator": {
+      "tenant_key": "TENANT_KEY",
+      "open_id": "ou_REDACTED"
+    },
+    "token": "CONSTRUCTED_CARD_TOKEN",
+    "action": {
+      "value": {
+        "thread": "om_REDACTED_ROOT"
+      },
+      "tag": "button",
+      "name": "start",
+      "form_value": {
+        "project": "ZY"
+      }
+    },
+    "host": "im_message",
+    "context": {
+      "open_message_id": "om_REDACTED_CARD",
+      "open_chat_id": "oc_REDACTED"
+    }
+  }
+}

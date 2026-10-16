@@ -35,14 +35,11 @@ func recordedLedgerProject(t *testing.T) Project {
 	return Project{Name: at("名称").(string), Enabled: at("启用").(bool), Remote: at("仓库远端").(string), Prefix: at("编号前缀").(string)}
 }
 
-// TestIntakeProjectSelection covers OF-32: a brand-new thread's first message
-// picks a project by an explicit #<编号前缀> marker, by the configured group
-// default (AGENT_FEISHU_INTAKE_PROJECT), or — failing both — the gateway
-// lists the enabled, locally available projects and waits for the requester
-// to pick one by index or prefix before any agent turn runs, using the
-// original first message as the first round's input. A project that is not
-// enabled, or has no local repository match, is rejected without starting
-// the Agent.
+// TestIntakeProjectSelection covers OF-32's explicit marker: a brand-new
+// thread's first message that starts with #<编号前缀> routes immediately with
+// the marker stripped. A project that is not enabled, or has no local
+// repository match, is rejected without starting the Agent. A first message
+// without a marker gets the project picker card (TestIntakeProjectPicker).
 func TestIntakeProjectSelection(t *testing.T) {
 	of := recordedLedgerProject(t)
 	of.Repo = "/repo/of"
@@ -57,13 +54,6 @@ func TestIntakeProjectSelection(t *testing.T) {
 		event.Event.Message.Content = ptr(`{"text":"` + text + `"}`)
 		return event
 	}
-	pick := func(id, root, text string) *im.P2MessageReceiveV1 {
-		event := recordedEvent(t, "bot-event-thread-reply-no-at")
-		event.Event.Message.MessageId = ptr(id)
-		event.Event.Message.RootId = ptr(root)
-		event.Event.Message.Content = ptr(`{"text":"` + text + `"}`)
-		return event
-	}
 
 	t.Run("explicit marker strips it and routes immediately", func(t *testing.T) {
 		var calls []Turn
@@ -73,7 +63,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 		}
 		var replies []string
 		send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
+		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact, nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,72 +82,6 @@ func TestIntakeProjectSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("group default is used when no marker", func(t *testing.T) {
-		var calls []Turn
-		agent := func(_ context.Context, turn Turn) (string, error) {
-			calls = append(calls, turn)
-			return "已整理", nil
-		}
-		send := func(context.Context, string, string) error { return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, of.Remote, agent, send, noopReact)
-		if err != nil {
-			t.Fatal(err)
-		}
-		event := newThread("om_default1", "@_user_1 帮我整理这个需求")
-		if err := g.Handle(context.Background(), event); err != nil {
-			t.Fatal(err)
-		}
-		if len(calls) != 1 || calls[0].Project.Prefix != "OF" || calls[0].Prompt != "[需求人] 帮我整理这个需求" {
-			t.Fatalf("calls=%+v", calls)
-		}
-	})
-
-	t.Run("no marker and no default lists projects, then routes on pick", func(t *testing.T) {
-		var calls []Turn
-		agent := func(_ context.Context, turn Turn) (string, error) {
-			calls = append(calls, turn)
-			return "已整理", nil
-		}
-		var replies []string
-		send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
-		if err != nil {
-			t.Fatal(err)
-		}
-		first := newThread("om_list1", "@_user_1 帮我整理这个需求")
-		if err := g.Handle(context.Background(), first); err != nil {
-			t.Fatal(err)
-		}
-		if len(calls) != 0 {
-			t.Fatalf("agent called before project chosen: %+v", calls)
-		}
-		if len(replies) != 1 || !strings.Contains(replies[0], "OF "+of.Name) || !strings.Contains(replies[0], "ZII ziikoo") || strings.Contains(replies[0], "OLD") || strings.Contains(replies[0], "ELS") {
-			t.Fatalf("list reply=%q", replies)
-		}
-		if got := session(t, g.dir, "om_list1"); got.Project != "" || got.PendingPrompt != "帮我整理这个需求" {
-			t.Fatalf("pending session=%+v", got)
-		}
-
-		bad := pick("om_list_bad", "om_list1", "99")
-		if err := g.Handle(context.Background(), bad); err != nil {
-			t.Fatal(err)
-		}
-		if len(calls) != 0 || len(replies) != 2 {
-			t.Fatalf("invalid pick: calls=%+v replies=%q", calls, replies)
-		}
-
-		good := pick("om_list_good", "om_list1", "1")
-		if err := g.Handle(context.Background(), good); err != nil {
-			t.Fatal(err)
-		}
-		if len(calls) != 1 || calls[0].Project.Prefix != "OF" || calls[0].Prompt != "[需求人] 帮我整理这个需求" || calls[0].Resume {
-			t.Fatalf("calls after pick=%+v", calls)
-		}
-		if got := session(t, g.dir, "om_list1"); got.Project != "OF" || got.PendingPrompt != "" {
-			t.Fatalf("resolved session=%+v", got)
-		}
-	})
-
 	for _, tc := range []struct{ name, marker string }{{"disabled project", "#OLD"}, {"project with no local repo", "#ELS"}} {
 		t.Run(tc.name+" is rejected", func(t *testing.T) {
 			var calls []Turn
@@ -167,7 +91,7 @@ func TestIntakeProjectSelection(t *testing.T) {
 			}
 			var replies []string
 			send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
-			g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact)
+			g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, projects, "", agent, send, noopReact, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -199,7 +123,7 @@ func TestIntakeProjectSelectionDiscoveryReason(t *testing.T) {
 			t.Errorf("reply=%q, want it to contain the discovery reason", text)
 		}
 		return nil
-	}, noopReact)
+	}, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +142,7 @@ func TestIntakeProjectSelectionDiscoveryReason(t *testing.T) {
 func TestSetProjects(t *testing.T) {
 	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1,
 		[]Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}},
-		"", noopAgent, noopReply, noopReact)
+		"", noopAgent, noopReply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

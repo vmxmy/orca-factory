@@ -51,11 +51,11 @@ flowchart LR
 
 1. 消息中出现 `#<编号前缀>`（如 `#OF`）或 `项目:<名称>`：命中该项目，网关去掉该标记
    后把剩余文本交给 Agent。
-2. 未显式指定且配置了群默认项目 `AGENT_FEISHU_INTAKE_PROJECT`（值为项目表“仓库远端”）：
-   用该默认项目，消息原样交给 Agent。
-3. 都没有命中：网关列出项目表中已启用且本机已匹配到检出的项目（序号、编号前缀、
-   名称），不调用 Agent；需求人在同一话题回复序号或编号前缀后，网关才用首条消息的
-   原文作为第一轮输入调用 Agent。
+2. 未显式指定：网关回复项目选择卡片（OF-47），列出可接管项目供下拉选择，预选群默认
+   项目 `AGENT_FEISHU_INTAKE_PROJECT`（值为项目表“仓库远端”，须可接管），并列出暂不
+   可用项目及原因；不调用 Agent。需求人点“开始”后卡片改为“已选择”，网关用首条消息
+   原文作为第一轮输入调用 Agent。待选期间回复序号或编号前缀同样生效，无法识别时回复
+   附可选清单。
 
 项目须在项目表中“启用”为真，且“仓库远端”匹配到本机某个仓库的检出，否则网关在话题
 里分别说明“未启用”或“本机未配置仓库”并拒绝，不调用 Agent。
@@ -121,7 +121,7 @@ stderr 记录告警，话题继续用原会话续聊；下一次请求摘要要�
 | `AGENT_FEISHU_INTAKE_CHAT` | `driver.env` | 需求群 chat_id |
 | `AGENT_FEISHU_INTAKE_USERS` | `driver.env` | 可对话成员 open_id，逗号分隔 |
 | `AGENT_FEISHU_APPROVERS` | `driver.env` | 审批人 open_id，逗号分隔 |
-| `AGENT_FEISHU_INTAKE_PROJECT` | `driver.env` | 可选，群默认项目的仓库远端（OF-32）；未设置或不匹配已启用项目时改为列出项目供选择 |
+| `AGENT_FEISHU_INTAKE_PROJECT` | `driver.env` | 可选，群默认项目的仓库远端（OF-32）；OF-47 起只作为项目选择卡片的预选值 |
 | `AGENT_ROLE_INTAKE` | `agent-graph.env` | Agent 档位，默认 strong 档的 claude 配置 |
 | `AGENT_INTAKE_CONCURRENCY` | `agent-graph.env` | 同时运行的 Agent 数，默认 2 |
 | `AGENT_INTAKE_MAX_TURNS` | 网关进程环境 | 单个会话滚动摘要前的轮数上限，默认 30 |

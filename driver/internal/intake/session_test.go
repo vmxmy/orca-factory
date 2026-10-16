@@ -126,7 +126,7 @@ func TestIntakeSession(t *testing.T) {
 		return out
 	}
 	state := filepath.Join(root, "state")
-	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, nil, "", runner.Turn, reply, noopReact)
+	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, nil, "", runner.Turn, reply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

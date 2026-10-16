@@ -156,7 +156,7 @@ func (h *submitHarness) start(t *testing.T, p Project) {
 		h.targets = append(h.targets, id)
 		return nil
 	}
-	g, err := New(h.dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED", "ou_MEMBER"}, []string{"ou_APPROVER1", "ou_APPROVER2"}, 1, []Project{p}, p.Remote, agent, reply, noopReact)
+	g, err := New(h.dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED", "ou_MEMBER"}, []string{"ou_APPROVER1", "ou_APPROVER2"}, 1, []Project{p}, p.Remote, agent, reply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func (h *submitHarness) open(t *testing.T, thread, text string) {
 	t.Helper()
 	event := recordedEvent(t, "bot-event-message-at")
 	event.Event.Message.MessageId = ptr(thread)
-	event.Event.Message.Content = ptr(`{"text":"@_user_1 ` + text + `"}`)
+	event.Event.Message.Content = ptr(`{"text":"@_user_1 #OF ` + text + `"}`)
 	h.handle(t, event)
 }
 
