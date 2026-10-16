@@ -73,6 +73,28 @@ func calls(t *testing.T, logs string) []call {
 	return out
 }
 
+// withProjectMarker inserts a #<prefix> marker right after the bot mention
+// in a recorded event's text content, so a test exercising a brand-new
+// topic can route straight to that project (OF-48: the gateway always
+// requires a resolved project, with no implicit single-project fallback)
+// without driving the picker card.
+func withProjectMarker(t *testing.T, event *im.P2MessageReceiveV1, prefix string) *im.P2MessageReceiveV1 {
+	t.Helper()
+	var content struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal([]byte(*event.Event.Message.Content), &content); err != nil {
+		t.Fatal(err)
+	}
+	content.Text = strings.Replace(content.Text, "@_user_1 ", "@_user_1 #"+prefix+" ", 1)
+	b, err := json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Event.Message.Content = ptr(string(b))
+	return event
+}
+
 func session(t *testing.T, state, key string) Session {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(state, key+".json"))
@@ -126,7 +148,7 @@ func TestIntakeSession(t *testing.T) {
 		return out
 	}
 	state := filepath.Join(root, "state")
-	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, nil, "", runner.Turn, reply, noopReact, nil, nil)
+	g, err := New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", runner.Turn, reply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +162,7 @@ func TestIntakeSession(t *testing.T) {
 	wantEnv := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	answer := "pong\n\nROLE-LOADED"
 
-	first, second := recordedEvent(t, "bot-event-message-at"), recordedEvent(t, "bot-event-thread-at-reply")
+	first, second := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF"), recordedEvent(t, "bot-event-thread-at-reply")
 	thread := *first.Event.Message.MessageId
 	var id string
 	for i, turn := range []struct {
@@ -175,7 +197,7 @@ func TestIntakeSession(t *testing.T) {
 	}
 	var wg sync.WaitGroup
 	for _, id := range []string{"om_c1", "om_c2", "om_c3"} {
-		event := recordedEvent(t, "bot-event-message-at")
+		event := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 		event.Event.Message.MessageId = ptr(id)
 		wg.Go(func() {
 			if err := g.Handle(ctx, event); err != nil {

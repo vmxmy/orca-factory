@@ -49,7 +49,7 @@ func rollingSetup(t *testing.T, script func(logs string) string, tickets func(co
 	}
 	state = filepath.Join(root, "state")
 	var err error
-	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, nil, "", runner.Turn, reply, noopReact, nil, nil)
+	g, err = New(state, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 2, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", runner.Turn, reply, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestIntakeRollingSummary(t *testing.T) {
 		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedSummary), nil)
 		ctx := context.Background()
 
-		first := recordedEvent(t, "bot-event-message-at")
+		first := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 		thread := *first.Event.Message.MessageId
 		if err := g.Handle(ctx, first); err != nil {
 			t.Fatal(err)
@@ -171,7 +171,7 @@ func TestIntakeRollingSummary(t *testing.T) {
 		g, logs, state, checkout, taken := rollingSetup(t, branchingScript(recordedNormal, recordedNormal), nil)
 		ctx := context.Background()
 
-		first := recordedEvent(t, "bot-event-message-at")
+		first := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 		thread := *first.Event.Message.MessageId
 		if err := g.Handle(ctx, first); err != nil {
 			t.Fatal(err)

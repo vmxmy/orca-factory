@@ -40,7 +40,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 	for _, name := range []string{"bot-event-message-at", "bot-event-thread-at-reply"} {
 		for _, scenario := range []string{"allowed", "denied", "other-chat", "private", "other-bot", "user-mention", "no-mention"} {
 			t.Run(name+"/"+scenario, func(t *testing.T) {
-				event := recordedEvent(t, name)
+				event := withProjectMarker(t, recordedEvent(t, name), "OF")
 				switch scenario {
 				case "denied":
 					event.Event.Sender.SenderId.OpenId = ptr("ou_outside")
@@ -71,7 +71,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					return nil
 				}
 				dir := t.TempDir()
-				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact, nil, nil)
+				g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", fixedAgent, reply, noopReact, nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -84,7 +84,7 @@ func TestFeishuGatewayRecorded(t *testing.T) {
 					})
 				}
 				wg.Wait()
-				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, reply, noopReact, nil, nil)
+				g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", fixedAgent, reply, noopReact, nil, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -176,7 +176,7 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, client.ReplyInThread, noopReact, nil, nil)
+	g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", fixedAgent, client.ReplyInThread, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +184,9 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A brand-new topic always needs a resolved project (OF-48): the marker
+	// routes straight to OF without driving the picker card.
+	raw = []byte(strings.Replace(string(raw), "@_user_1 原始格式测试", "@_user_1 #OF 原始格式测试", 1))
 	var wrapper struct{ Event json.RawMessage }
 	if err := json.Unmarshal(raw, &wrapper); err != nil {
 		t.Fatal(err)
@@ -198,18 +201,18 @@ func TestFeishuGatewayRecordedHTTP(t *testing.T) {
 }
 
 func TestFeishuGatewayUncertainSendAndStateFailure(t *testing.T) {
-	event := recordedEvent(t, "bot-event-message-at")
+	event := withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 	dir := t.TempDir()
 	calls := 0
 	send := func(context.Context, string, string) error { calls++; return errors.New("send unconfirmed") }
-	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact, nil, nil)
+	g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", fixedAgent, send, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := g.Handle(context.Background(), event); err == nil {
 		t.Fatal("send error hidden")
 	}
-	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, nil, "", fixedAgent, send, noopReact, nil, nil)
+	g, err = New(dir, "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", fixedAgent, send, noopReact, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,7 +540,7 @@ func TestIntakeReceiptReaction(t *testing.T) {
 				}
 				event.Event.Message.Content = ptr(`{"text":"` + text + `"}`)
 			default:
-				event = recordedEvent(t, "bot-event-message-at")
+				event = withProjectMarker(t, recordedEvent(t, "bot-event-message-at"), "OF")
 				event.Event.Message.MessageId = ptr(reactionID)
 				if scenario == "denied" {
 					users = []string{"ou_someone_else"}
@@ -547,7 +550,7 @@ func TestIntakeReceiptReaction(t *testing.T) {
 				}
 			}
 
-			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, nil, "", agent, reply, react, nil, nil)
+			g, err := New(dir, "oc_REDACTED", "ou_BOT_REDACTED", users, nil, 1, []Project{{Prefix: "OF", Name: "orca-factory", Enabled: true, Repo: "/repo/of"}}, "", agent, reply, react, nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}

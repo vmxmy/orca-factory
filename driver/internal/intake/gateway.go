@@ -108,9 +108,11 @@ type Gateway struct {
 	threads        map[string]*sync.Mutex
 	slots          chan struct{}
 	maxTurns       int
-	// projects is nil when this gateway serves a single implicit project
-	// (pre-OF-32 behavior): every session's Project stays "" and selectProject
-	// is never consulted. defaultRemote is the configured group default,
+	// projects is this gateway's current routable set, possibly empty (no
+	// discovery has ever succeeded, or none is eligible right now): every new
+	// topic still goes through selectProject, whose picker card then shows
+	// "暂无可接管的项目" instead of calling the Agent with an unresolved
+	// project (OF-48). defaultRemote is the configured group default,
 	// compared against each Project's Remote and only preselected on the
 	// picker card (OF-47), never chosen on the requester's behalf.
 	projects      []Project
@@ -205,12 +207,6 @@ func (g *Gateway) projectsSnapshot() []Project {
 	return g.projects
 }
 
-func (g *Gateway) hasProjects() bool {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return len(g.projects) > 0
-}
-
 func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) error {
 	if event == nil || event.Event == nil || event.Event.Message == nil || event.Event.Sender == nil {
 		return nil
@@ -278,7 +274,7 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
 	}
-	if g.hasProjects() && session.Project == "" && (!resume || session.PendingPrompt != "") {
+	if session.Project == "" && (!resume || session.PendingPrompt != "") {
 		return g.selectProject(ctx, id, thread, path, session, resume, sender, prompt)
 	}
 	if resume && prompt == confirmCommand {
@@ -338,7 +334,7 @@ func (g *Gateway) handleUnmentioned(ctx context.Context, m *im.EventMessage, id,
 		}
 		return g.reply(ctx, id, endedReply)
 	}
-	if g.hasProjects() && session.Project == "" && session.PendingPrompt != "" {
+	if session.Project == "" && session.PendingPrompt != "" {
 		return g.selectProject(ctx, id, thread, path, session, true, sender, prompt)
 	}
 	if prompt == confirmCommand {
