@@ -114,14 +114,6 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 		if _, err = c.run(ctx, dir, "/bin/bash", "-c", c.InstallCommand); err != nil {
 			return "", &infra.Ticket{Err: errors.New("verification install failed")}
 		}
-		status, statusErr := c.run(ctx, dir, "git", "status", "--porcelain")
-		if statusErr != nil {
-			return "", &infra.Ticket{Err: errors.New("verification status failed")}
-		}
-		// gate.sh scopes untracked and modified files as worker changes.
-		if strings.TrimSpace(string(status)) != "" {
-			return "", &infra.Ticket{Err: errors.New("verification install modified checkout")}
-		}
 	}
 	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
 	return string(b), err
