@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -129,6 +130,23 @@ func TestSecondExecutorFailureEscalates(t *testing.T) {
 	}
 	if len(f.launched) != 1 || len(f.actions) != 1 || f.actions[0].Kind != Resolve {
 		t.Fatalf("actions=%v", f.actions)
+	}
+}
+// OF-100: an Apply failure must name the ticket and the action it attempted,
+// and must never surface a credential from the backend's raw error text.
+func TestOwnershipApplyFailureNamesTicketAndAction(t *testing.T) {
+	f := &fakeBackend{absent: true, inactive: true, applyErr: errors.New("write rejected: ghp_TEST-PLACEHOLDER-CRED")}
+	s := setup(f)
+	f.tickets = []Ticket{{ID: "ticket", Identifier: "OF-100", Repo: "a", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now()}}
+	err := s.Tick(context.Background())
+	if err == nil {
+		t.Fatal("expected ownership update failure")
+	}
+	if !strings.Contains(err.Error(), "OF-100") || !strings.Contains(err.Error(), string(Resume)) {
+		t.Fatalf("missing ticket or action: %v", err)
+	}
+	if strings.Contains(err.Error(), "TEST-PLACEHOLDER-CRED") {
+		t.Fatalf("leaked credential: %v", err)
 	}
 }
 func TestEnabledAutomationRefusesRepositoryEveryTick(t *testing.T) {

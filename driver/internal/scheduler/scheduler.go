@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
@@ -368,7 +369,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			count[t.Repo]++
 		}
 		if err := s.Backend.Apply(ctx, t, action); err != nil {
-			problems = append(problems, errors.New("ownership update failed"))
+			problems = append(problems, fmt.Errorf("ownership update failed: %s %s: %s", t.Identifier, action.Kind, applyReason(err)))
 			continue
 		}
 		s.pushTicket(t, action)
@@ -459,7 +460,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		s.decision(t, "claim", "", "result", result, "err", err)
 		if err != nil {
-			problems = append(problems, errors.New("ticket claim failed"))
+			problems = append(problems, fmt.Errorf("ticket claim failed: %s %s: %s", t.Identifier, Claim, applyReason(err)))
 			continue
 		}
 		s.pushTicket(t, Action{Kind: Claim, Phase: state.Phase})
@@ -515,6 +516,20 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 }
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
+
+// applyReason is the safety-error handling OF-99 introduced, reused for an
+// Apply failure (OF-100): a single line, truncated, with the same redaction
+// snapshotReason applies, so a Backend implementation's raw error text can
+// never carry a credential or a response body into the problems list.
+const applyReasonLimit = 200
+
+func applyReason(err error) string {
+	reason := logx.RedactText(strings.Join(strings.Fields(err.Error()), " "))
+	if runes := []rune(reason); len(runes) > applyReasonLimit {
+		reason = string(runes[:applyReasonLimit])
+	}
+	return reason
+}
 
 // Adapters return fixed-text errors, except decoding imported comment history
 // into task.Comment: its encoding/json and time errors quote the rejected input.
