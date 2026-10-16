@@ -194,12 +194,12 @@ func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, erro
 // (the live Orca repository list or the ledger project table could not be
 // read): there is then no row to report anything against, so the caller
 // must not install an empty project set over an already-working one.
-func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, []intake.Onboardable, error) {
+func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, []intake.Onboardable, []intake.PendingEnable, error) {
 	result, rows, err := discoverProjects(ctx, cfg, client)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return resolveIntakeProjects(ctx, result, rows, runtime), resolveOnboardable(result), nil
+	return resolveIntakeProjects(ctx, result, rows, runtime), resolveOnboardable(result), resolvePendingEnable(result, rows), nil
 }
 
 // resolveOnboardable extracts OF-49's discovery result: repositories Orca
@@ -212,6 +212,31 @@ func resolveOnboardable(result projects.Result) []intake.Onboardable {
 			continue
 		}
 		out = append(out, intake.Onboardable{Name: filepath.Base(r.Path), Remote: r.Remote, Path: r.Path})
+	}
+	return out
+}
+
+// resolvePendingEnable extracts OF-54's discovery result: repositories whose
+// pipeline is installed and own check passes (or only lags on core, OF-53)
+// but whose ledger project-table row still has 启用=false. Unlike
+// resolveOnboardable, these already have a ledger row (ReasonProjectDisabled
+// requires one), so Prefix and Name come from rows rather than the local
+// checkout's directory name.
+func resolvePendingEnable(result projects.Result, rows []issues.LedgerProject) []intake.PendingEnable {
+	byRemote := make(map[string]issues.LedgerProject, len(rows))
+	for _, row := range rows {
+		byRemote[row.Remote] = row
+	}
+	var out []intake.PendingEnable
+	for _, r := range result.Rejected {
+		if r.Reason != projects.ReasonProjectDisabled {
+			continue
+		}
+		row, ok := byRemote[r.Remote]
+		if !ok {
+			continue
+		}
+		out = append(out, intake.PendingEnable{Prefix: row.Prefix, Name: row.Name, Remote: r.Remote, Path: r.Path})
 	}
 	return out
 }
@@ -255,7 +280,7 @@ func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []i
 // gateway's existing projects untouched: a transient Orca or ledger error
 // must not drop an already-working project out of the picker.
 func refreshIntakeProjects(ctx context.Context, gateway *intake.Gateway, cfg config.Config, client *orca.Client, runtime *projectRuntime) {
-	fresh, onboardable, err := discoverIntakeProjects(ctx, cfg, client, runtime)
+	fresh, onboardable, pendingEnable, err := discoverIntakeProjects(ctx, cfg, client, runtime)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "intake gateway: project discovery failed:", err)
 		return
@@ -264,6 +289,7 @@ func refreshIntakeProjects(ctx context.Context, gateway *intake.Gateway, cfg con
 		fmt.Fprintln(os.Stderr, "intake gateway: invalid discovered projects:", err)
 	}
 	gateway.SetOnboardable(onboardable)
+	gateway.SetPendingEnable(pendingEnable)
 }
 
 // isNewIntakeTopic reports whether event opens a new thread rather than
@@ -345,6 +371,7 @@ func runFeishuGateway(ctx context.Context) error {
 	}
 	if cfg.FactoryRoot != "" {
 		gateway.SetOnboarder(onboarder{cfg: cfg, orca: orcaClient, claude: claude, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}.run)
+		gateway.SetEnabler(enabler{checker: factoryChecker(cfg.FactoryRoot), writeRow: factoryEnabledWriter(cfg)}.run)
 	}
 	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(func(ctx context.Context, event *im.P2MessageReceiveV1) error {
 		if isNewIntakeTopic(event) {

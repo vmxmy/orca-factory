@@ -480,6 +480,65 @@ func (c *Feishu) CreateLedgerProject(ctx context.Context, row LedgerProject) (Le
 	return row, c.readBack(ctx, find)
 }
 
+// EnableLedgerProject sets 启用=true for the 项目 row whose 仓库远端 is
+// remote (OF-54) and records operator and the time as a 事件 row. A row
+// already enabled is returned unchanged with no write and no event, so a
+// repeated approver click converges without a duplicate event.
+func (c *Feishu) EnableLedgerProject(ctx context.Context, remote, operator string) (LedgerProject, error) {
+	records, err := c.readAll(ctx, "项目", nil)
+	if err != nil {
+		return LedgerProject{}, err
+	}
+	for _, r := range records {
+		row, err := c.ledgerProjectRow(r)
+		if err != nil {
+			return LedgerProject{}, err
+		}
+		if row.Remote != remote {
+			continue
+		}
+		if row.Enabled {
+			return row, nil
+		}
+		res, err := c.client.BatchUpdate(ctx, c.base, c.tables["项目"].id, map[string]map[string]any{r.ID: c.cells("项目", map[string]any{"启用": true})})
+		if err != nil {
+			return LedgerProject{}, err
+		}
+		if err = checkWrite(res, 1); err != nil {
+			return LedgerProject{}, err
+		}
+		enabled := row
+		enabled.Enabled = true
+		if err = c.readBack(ctx, func() (bool, error) {
+			rows, err := c.LedgerProjects(ctx)
+			if err != nil {
+				return false, err
+			}
+			i := slices.IndexFunc(rows, func(x LedgerProject) bool { return x.Remote == remote })
+			return i >= 0 && rows[i].Enabled, nil
+		}); err != nil {
+			return LedgerProject{}, err
+		}
+		body := fmt.Sprintf("启用：%s %s", operator, c.now().Format(time.RFC3339))
+		if err = c.recordProjectEvent(ctx, "启用 "+enabled.Prefix, body, operator); err != nil {
+			return LedgerProject{}, err
+		}
+		return enabled, nil
+	}
+	return LedgerProject{}, fmt.Errorf("项目表无仓库远端 %s 的行", remote)
+}
+
+// recordProjectEvent appends one 事件 row not tied to any ticket (OF-54,
+// unlike CreateComment): 票据 stays empty, 操作者 carries who acted.
+func (c *Feishu) recordProjectEvent(ctx context.Context, summary, body, operator string) error {
+	row := c.cells("事件", map[string]any{"摘要": summary, "正文": body, "来源": []string{"driver"}, "操作者": operator})
+	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
+	if err != nil {
+		return err
+	}
+	return checkWrite(res, 1)
+}
+
 // dependencyCells adds the dependency links and the adoption fingerprint.
 func (c *Feishu) dependencyCells(ctx context.Context, row map[string]any, self string, brief FeishuBrief, blockers, related []string) error {
 	x, err := c.ticketIndex(ctx)

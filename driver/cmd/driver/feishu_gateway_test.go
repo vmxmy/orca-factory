@@ -51,18 +51,42 @@ func TestIsNewIntakeTopic(t *testing.T) {
 func TestDiscoverIntakeProjectsFactoryRootUnconfigured(t *testing.T) {
 	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, "/repo/orca-factory", "github.com/vmxmy/orca-factory"))
 	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
-	out, onboardable, err := discoverIntakeProjects(context.Background(), config.Config{}, &orca.Client{}, runtime)
+	out, onboardable, pendingEnable, err := discoverIntakeProjects(context.Background(), config.Config{}, &orca.Client{}, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(out) != 0 {
 		t.Fatalf("out=%+v, want none", out)
 	}
-	// ReasonFactoryRootUnconfigured, not ReasonOnboardable: without a
-	// factory_root, discovery cannot tell onboardable repos apart from any
-	// other repo, so OF-49's set stays empty too.
+	// ReasonFactoryRootUnconfigured, not ReasonOnboardable or
+	// ReasonProjectDisabled: without a factory_root, discovery cannot tell
+	// onboardable or pending-enable repos apart from any other repo, so
+	// OF-49's and OF-54's sets both stay empty too.
 	if len(onboardable) != 0 {
 		t.Fatalf("onboardable=%+v, want none", onboardable)
+	}
+	if len(pendingEnable) != 0 {
+		t.Fatalf("pendingEnable=%+v, want none", pendingEnable)
+	}
+}
+
+// TestResolvePendingEnable is OF-54: resolvePendingEnable keeps only the
+// ReasonProjectDisabled rejections joined with their ledger row (Prefix and
+// Name, unlike resolveOnboardable's local directory name), and drops
+// repositories rejected for any other reason, or one without a matching row.
+func TestResolvePendingEnable(t *testing.T) {
+	result := projects.Result{Rejected: []projects.Rejection{
+		{Path: "/repo/dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Reason: projects.ReasonProjectDisabled},
+		{Path: "/repo/orca-factory", Remote: "github.com/vmxmy/orca-factory", Reason: projects.ReasonCheckFailed},
+		{Path: "/repo/no-row", Remote: "github.com/vmxmy/no-row", Reason: projects.ReasonProjectDisabled},
+	}}
+	rows := []issues.LedgerProject{
+		{Prefix: "DJ", Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Enabled: false},
+	}
+	got := resolvePendingEnable(result, rows)
+	want := []intake.PendingEnable{{Prefix: "DJ", Name: "dujiao-next", Remote: "github.com/dujiao-next/dujiao-next", Path: "/repo/dujiao-next"}}
+	if !slices.Equal(got, want) {
+		t.Fatalf("resolvePendingEnable=%+v, want %+v", got, want)
 	}
 }
 

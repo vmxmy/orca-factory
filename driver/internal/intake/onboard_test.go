@@ -57,16 +57,21 @@ func clickOnboard(t *testing.T, g *Gateway, operator, remote string) (*callback.
 // carries one "接入" button per repository; only an AGENT_FEISHU_APPROVERS
 // member's press starts onboarding, with the repository's local checkout,
 // remote, the approver and the thread as the request. The thread first gets
-// "开始接入 <仓库>", then the PR link and the enable instruction.
+// "开始接入 <仓库>", then a completion card (OF-54) carrying the PR link, the
+// 启用=false row, and the same "启用" button handleEnableAction answers.
 func TestIntakeOnboardButton(t *testing.T) {
-	newGateway := func(t *testing.T) (*Gateway, *[]sent, *[]OnboardRequest) {
-		var replies []sent
+	newGateway := func(t *testing.T) (*Gateway, *[]sent, *[]sent, *[]OnboardRequest) {
+		var replies, cards []sent
 		var requests []OnboardRequest
 		reply := func(_ context.Context, target, content string) error {
 			replies = append(replies, sent{target, content})
 			return nil
 		}
-		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, []string{"ou_APPROVER"}, 1, nil, "", nil, reply, noopReact, noopReply, noopReply)
+		replyCard := func(_ context.Context, target, content string) error {
+			cards = append(cards, sent{target, content})
+			return nil
+		}
+		g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, []string{"ou_APPROVER"}, 1, nil, "", nil, reply, noopReact, replyCard, noopReply)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -75,11 +80,11 @@ func TestIntakeOnboardButton(t *testing.T) {
 			requests = append(requests, req)
 			return OnboardResult{PR: "https://github.com/vmxmy/ziikoo-control-plane/pull/7", Row: issues.LedgerProject{Name: "ziikoo-control-plane", Remote: ziikoo, Prefix: "ZCP"}}, nil
 		})
-		return g, &replies, &requests
+		return g, &replies, &cards, &requests
 	}
 
 	t.Run("picker card has one 接入 button per onboardable repository", func(t *testing.T) {
-		g, _, _ := newGateway(t)
+		g, _, _, _ := newGateway(t)
 		card := g.projectPicker(pickerRoot)
 		for _, want := range []string{`"tag":"button"`, `"action":"onboard"`, `"remote":"` + ziikoo + `"`, `"content":"接入 ziikoo-control-plane"`} {
 			if !strings.Contains(card, want) {
@@ -89,7 +94,7 @@ func TestIntakeOnboardButton(t *testing.T) {
 	})
 
 	t.Run("non-approver press is refused and starts nothing", func(t *testing.T) {
-		g, replies, requests := newGateway(t)
+		g, replies, _, requests := newGateway(t)
 		toast, begin := clickOnboard(t, g, "ou_REDACTED", ziikoo)
 		if toast.Type != "error" || toast.Content != "只有审批人可以接入" || begin != nil {
 			t.Fatalf("toast=%+v begin=%v", toast, begin != nil)
@@ -100,15 +105,15 @@ func TestIntakeOnboardButton(t *testing.T) {
 	})
 
 	t.Run("press for a repository no longer onboardable is refused", func(t *testing.T) {
-		g, _, requests := newGateway(t)
+		g, _, _, requests := newGateway(t)
 		toast, begin := clickOnboard(t, g, "ou_APPROVER", "github.com/vmxmy/orca-factory")
 		if toast.Type != "error" || toast.Content != "该仓库当前不可接入" || begin != nil || len(*requests) != 0 {
 			t.Fatalf("toast=%+v begin=%v requests=%+v", toast, begin != nil, *requests)
 		}
 	})
 
-	t.Run("approver press starts onboarding and reports the PR in the thread", func(t *testing.T) {
-		g, replies, requests := newGateway(t)
+	t.Run("approver press starts onboarding and reports the PR card in the thread", func(t *testing.T) {
+		g, replies, cards, requests := newGateway(t)
 		toast, begin := clickOnboard(t, g, "ou_APPROVER", ziikoo)
 		if toast.Type != "success" || toast.Content != "开始接入 ziikoo-control-plane" {
 			t.Fatalf("toast=%+v", toast)
@@ -118,13 +123,16 @@ func TestIntakeOnboardButton(t *testing.T) {
 		if len(*requests) != 1 || (*requests)[0] != want {
 			t.Fatalf("requests=%+v, want [%+v]", *requests, want)
 		}
-		if len(*replies) != 2 || (*replies)[0] != (sent{pickerCardMessage, "开始接入 ziikoo-control-plane"}) {
+		if len(*replies) != 1 || (*replies)[0] != (sent{pickerCardMessage, "开始接入 ziikoo-control-plane"}) {
 			t.Fatalf("replies=%+v", *replies)
 		}
-		done := (*replies)[1]
-		for _, part := range []string{"https://github.com/vmxmy/ziikoo-control-plane/pull/7", "ZCP", "合并 PR 并在项目表勾选启用后生效"} {
+		if len(*cards) != 1 {
+			t.Fatalf("cards=%+v", *cards)
+		}
+		done := (*cards)[0]
+		for _, part := range []string{"https://github.com/vmxmy/ziikoo-control-plane/pull/7", "ZCP", `"action":"enable"`, `"remote":"` + ziikoo + `"`, `"path":"/repo/ziikoo-control-plane"`, `"content":"启用 ziikoo-control-plane"`} {
 			if done.target != pickerCardMessage || !strings.Contains(done.content, part) {
-				t.Fatalf("final reply=%+v, want it to contain %q", done, part)
+				t.Fatalf("completion card=%+v, want it to contain %q", done, part)
 			}
 		}
 	})
