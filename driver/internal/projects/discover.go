@@ -112,3 +112,22 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 	}
 	return result
 }
+
+// ReadableRepositories is every repository whose own pipeline profile
+// (scripts/agent-gates/agent-graph.env) config.LoadRepository can read, with
+// a Feishu ledger backend and a non-empty base. This is resume-deployment's
+// manual-recovery criterion (OF-44): unlike Discover, it does not require the
+// pipeline check to pass or a ledger project-table row to exist, because a
+// deployment barrier can outlive a repository's eligibility, and the recovery
+// exit must still be able to find it.
+func ReadableRepositories(repos []orca.Repo) []config.Repository {
+	result := make([]config.Repository, 0, len(repos))
+	for _, repo := range repos {
+		repository, err := config.LoadRepository(repo.Path)
+		if err != nil || repository.Env["AGENT_ISSUE_BACKEND"] != "feishu" || repository.Env["AGENT_FEISHU_BASE"] == "" {
+			continue
+		}
+		result = append(result, repository)
+	}
+	return result
+}
