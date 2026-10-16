@@ -181,9 +181,10 @@ func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	expectedRun := ""
 	if t.Owner == machine.OwnerResolver {
 		expected = machine.OwnerResolver
-		if t.Run != "" {
-			expectedRun = t.Run
-		}
+	}
+	// A merge correction reservation keeps the frozen handoff run.
+	if t.Owner == machine.OwnerResolver || t.Phase == machine.PhaseCorrection {
+		expectedRun = t.Run
 	}
 	if fresh.Owner != expected || fresh.Terminal != "-" || fresh.Run != expectedRun || fresh.Phase != t.Phase || fresh.Attempt != t.Attempt {
 		return errors.New("executor reservation changed before launch")

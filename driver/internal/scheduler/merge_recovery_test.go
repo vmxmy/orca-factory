@@ -112,6 +112,9 @@ func TestRecoveredTaskWithoutDispatchReachesSchedulerMerge(t *testing.T) {
 		t.Fatalf("invented/lost association: %+v", result)
 	}
 	// Existing-PR recovery must retain the frozen task-only association too.
+	// The first start handed ownership to the merge lane, so only a merging
+	// executor may re-enter.
+	e.Config.Merging = true
 	result, err = e.Start(context.Background(), ticket)
 	if err != nil {
 		t.Fatal(err)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -28,6 +29,7 @@ func (m mergeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 type mergeLinear struct {
+	issues.Store
 	issue     linear.Issue
 	rows      []linear.Comment
 	bodies    []string
@@ -37,6 +39,10 @@ type mergeLinear struct {
 
 func (m *mergeLinear) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
 	return []linear.Issue{m.issue}, nil
+}
+func (m *mergeLinear) Repository() string { return "o/r" }
+func (m *mergeLinear) Read(context.Context, string) (issues.Task, error) {
+	return issues.Task{Issue: m.issue, URL: "https://tickets.example/" + m.issue.ID, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
 }
 func (m *mergeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return m.rows, nil
