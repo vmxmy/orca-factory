@@ -377,7 +377,36 @@ func checkOnboardRepoAccess(ctx context.Context, o onboarder, plan onboardPlan) 
 	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "ls-remote", "--exit-code", "origin", "main"}, Timeout: 30 * time.Second}); err != nil {
 		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("git ls-remote origin main 退出码 %d；补法：确认本机能访问该仓库远端", exitCode(err))}
 	}
-	return preflightCheck{Name: name, OK: true, Detail: "gh 有 push 权限，origin main 可达"}
+	if ok, detail := remoteIdentityCheck(ctx, plan.Repo, plan.Remote); !ok {
+		return preflightCheck{Name: name, OK: false, Detail: detail}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "gh 有 push 权限，origin main 可达，Orca 标识与 origin 一致"}
+}
+
+// remoteIdentityCheck is OF-56's half of preflight group (c): Orca caches a
+// repository's canonicalKey at registration and never refreshes it when the
+// local origin changes later, so project discovery, AGENT_GH_REPO and the
+// onboarding PR target can all silently drift to a stale remote. It compares
+// plan.Remote (the canonicalKey discovery already confirmed) against a live
+// `git -C path remote get-url origin`, normalized the same way (OF-56:
+// orca.NormalizeRemote). ok is false whenever agreement cannot be
+// confirmed — the git call failing, the URL not normalizing, or the two
+// normalized values differing — and detail never carries the raw URL, only
+// the two normalized values or a generic reason, so a URL embedding
+// credentials never reaches a person.
+func remoteIdentityCheck(ctx context.Context, path, canonicalKey string) (ok bool, detail string) {
+	out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", path, "remote", "get-url", "origin"}, Timeout: 10 * time.Second})
+	if err != nil {
+		return false, fmt.Sprintf("git remote get-url origin 退出码 %d；补法：确认仓库已配置 origin 远端", exitCode(err))
+	}
+	live, err := orca.NormalizeRemote(string(out))
+	if err != nil {
+		return false, "origin 远端 URL 无法规范化；补法：核对 origin 远端配置"
+	}
+	if live != canonicalKey {
+		return false, fmt.Sprintf("Orca 标识 %s 与 origin 规范化后的 %s 不一致；补法：重启 Orca 或在 Orca 中重新登记该仓库", canonicalKey, live)
+	}
+	return true, "Orca 标识与 origin 一致：" + canonicalKey
 }
 
 // checkOnboardScene is preflight group (d): the onboarding worktree path,

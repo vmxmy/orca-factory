@@ -48,6 +48,18 @@ func factoryChecker(factoryRoot string) projects.Checker {
 	}
 }
 
+// gitLiveRemote is the production projects.LiveRemote (OF-56): it runs
+// `git -C <path> remote get-url origin`, which reads only local config, no
+// network, and never fails the discovery run itself — a read failure only
+// leaves that project's RemoteMismatch unconfirmed (see projects.Discover).
+func gitLiveRemote(ctx context.Context, path string) (string, error) {
+	out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", path, "remote", "get-url", "origin"}, Timeout: 10 * time.Second})
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
 // ledgerProjectRows reads the Feishu ledger's 项目 table through the first
 // repo whose own profile already names a feishu backend and base: that table
 // is base-wide, so any one onboarded repository's credentials reach it. It
@@ -84,12 +96,12 @@ func discoverProjects(ctx context.Context, cfg config.Config, client *orca.Clien
 		return projects.Result{}, nil, err
 	}
 	if cfg.FactoryRoot == "" {
-		return projects.Discover(ctx, orcaRepos, nil, nil), nil, nil
+		return projects.Discover(ctx, orcaRepos, nil, nil, nil), nil, nil
 	}
 	if rows, err = ledgerProjectRows(ctx, orcaRepos, cfg.Tuning); err != nil {
 		return projects.Result{}, nil, err
 	}
-	return projects.Discover(ctx, orcaRepos, rows, factoryChecker(cfg.FactoryRoot)), rows, nil
+	return projects.Discover(ctx, orcaRepos, rows, factoryChecker(cfg.FactoryRoot), gitLiveRemote), rows, nil
 }
 
 // eligibleRepositories is every repository discovery lets this driver take over.
