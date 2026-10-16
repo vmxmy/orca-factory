@@ -37,10 +37,14 @@ func toast(kind, content string) *callback.CardActionTriggerResponse {
 // response is rejected with 200673). For an accepted pick, or any
 // requester's pick once the thread already has a project, it also returns
 // the work the caller runs after responding: settlePick. An onboard button
-// press (OF-50) goes to handleOnboardAction instead.
+// press (OF-50) goes to handleOnboardAction instead, and an enable button
+// press (OF-54) goes to handleEnableAction.
 func (g *Gateway) HandleCardAction(event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, func(context.Context) error) {
 	if isOnboardAction(event) {
 		return g.handleOnboardAction(event)
+	}
+	if isEnableAction(event) {
+		return g.handleEnableAction(event)
 	}
 	pick, ok := g.parsePick(event)
 	if !ok {
@@ -114,7 +118,7 @@ func (g *Gateway) projectPicker(thread string) string {
 			preselect = p.Prefix
 		}
 	}
-	return pickerCard(thread, usable, unavailable, g.onboardableSnapshot(), preselect)
+	return pickerCard(thread, usable, unavailable, g.pendingEnableSnapshot(), g.onboardableSnapshot(), preselect)
 }
 
 func selectedText(p Project) string { return "已选择 " + p.Prefix + " " + p.Name }
@@ -144,12 +148,14 @@ func cardJSON(title, template string, elements []any) string {
 // pickerCard is the JSON 2.0 card asking the requester of thread to choose a
 // project: a form with a dropdown of the usable projects (preselect chosen
 // when non-empty) and a submit button, then every unavailable project with
-// its reason, then every onboardable repository (OF-49: known to Orca but
-// never onboarded) with a fixed "需审批人接入后可用" note and its own
-// "接入" button (OF-50), which only an approver's press acts on. A form plus button
-// rather than submit-on-select, because a preselected default must be
-// confirmable without changing the selection.
-func pickerCard(thread string, usable, unavailable []Project, onboardable []Onboardable, preselect string) string {
+// its reason, then every pending-enable repository (OF-54: onboarded and
+// passing check but still 启用=false) with its own "启用" button, then every
+// onboardable repository (OF-49: known to Orca but never onboarded) with a
+// fixed "需审批人接入后可用" note and its own "接入" button (OF-50). Both
+// buttons act only on an approver's press. A form plus button rather than
+// submit-on-select, because a preselected default must be confirmable
+// without changing the selection.
+func pickerCard(thread string, usable, unavailable []Project, pending []PendingEnable, onboardable []Onboardable, preselect string) string {
 	elements := []any{markdown("请选择本需求所属的项目，然后点“开始”。")}
 	if len(usable) == 0 {
 		elements[0] = markdown("暂无可接管的项目。")
@@ -173,6 +179,12 @@ func pickerCard(thread string, usable, unavailable []Project, onboardable []Onbo
 			b.WriteString("\n- " + p.Prefix + " " + p.Name + "：" + unavailableReason(p))
 		}
 		elements = append(elements, markdown(b.String()))
+	}
+	if len(pending) > 0 {
+		elements = append(elements, markdown("待启用："))
+		for _, p := range pending {
+			elements = append(elements, markdown("- "+p.Prefix+" "+p.Name+"（"+p.Remote+"）"), enableButton(thread, p.Name, p.Remote, p.Path))
+		}
 	}
 	if len(onboardable) > 0 {
 		elements = append(elements, markdown("可接入："))

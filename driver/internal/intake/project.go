@@ -35,6 +35,15 @@ func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
 // checkout, the repository an approver's "接入" press onboards (OF-50).
 type Onboardable struct{ Name, Remote, Path string }
 
+// PendingEnable is one repository discovery found with its pipeline
+// installed and its own check passing (or only lagging on core, OF-53), but
+// whose Feishu ledger 项目 row still has 启用=false (OF-54). Unlike
+// Onboardable it already has a ledger row, so Prefix and Name come from that
+// row rather than the local checkout's directory name. Path is that
+// checkout, the repository an approver's "启用" press re-validates and
+// enables.
+type PendingEnable struct{ Prefix, Name, Remote, Path string }
+
 var (
 	markerPrefix = regexp.MustCompile(`^\s*#([A-Z][A-Z0-9]*)(?:\s|$)`)
 	markerName   = regexp.MustCompile(`^\s*项目:(\S+)(?:\s|$)`)

@@ -468,3 +468,51 @@ func TestFeishuWriteCreateLedgerProject(t *testing.T) {
 		}
 	}
 }
+
+// TestFeishuEnableLedgerProject covers OF-54: an approver's click flips a
+// disabled 项目 row's 启用 to true and records one 事件 row naming the
+// operator and the time, not tied to any ticket; an already-enabled row
+// converges without a second write or event; an unknown remote is refused.
+func TestFeishuEnableLedgerProject(t *testing.T) {
+	f := newFeishuFake(t)
+	f.mu.Lock()
+	f.rows["tblP"] = append(f.rows["tblP"], feishuRow{"_id": "recP3", "名称": "dujiao-next", "仓库远端": "github.com/dujiao-next/dujiao-next", "编号前缀": "DJ", "启用": false})
+	f.mu.Unlock()
+	c := newFeishuTest(t, f)
+	fastReadBack(c)
+	ctx := context.Background()
+	const remote = "github.com/dujiao-next/dujiao-next"
+
+	want := LedgerProject{Name: "dujiao-next", Remote: remote, Prefix: "DJ", Enabled: true}
+	got, err := c.EnableLedgerProject(ctx, remote, "ou_APPROVER")
+	if err != nil || got != want {
+		t.Fatalf("EnableLedgerProject=%+v, %v; want %+v", got, err, want)
+	}
+	if len(f.writes) != 2 || f.writes[0].table != "tblP" || f.writes[0].action != "batch_update" || f.writes[1].table != "tblE" || f.writes[1].action != "batch_create" {
+		t.Fatalf("writes=%+v", f.writes)
+	}
+	if on := feishuCell[bool](t, f.writes[0], "recP3", "fldPOn"); !on {
+		t.Fatal("启用 not written as true")
+	}
+	events := f.eventWrites()
+	if len(events) != 1 {
+		t.Fatalf("event writes=%+v", events)
+	}
+	for record := range events[0].records {
+		if op := feishuCell[string](t, events[0], record, "fld6umIs07"); op != "ou_APPROVER" {
+			t.Fatalf("操作者=%q", op)
+		}
+		if _, ok := events[0].records[record]["fldd5wlUCT"]; ok {
+			t.Fatal("票据 written for a project-level event, want it left empty")
+		}
+	}
+
+	// A repeated click converges: already enabled, no further write or event.
+	if got, err = c.EnableLedgerProject(ctx, remote, "ou_APPROVER"); err != nil || got != want || len(f.writes) != 2 {
+		t.Fatalf("repeat=%+v, %v; writes=%d", got, err, len(f.writes))
+	}
+
+	if _, err := c.EnableLedgerProject(ctx, "github.com/nope/nope", "ou_APPROVER"); err == nil {
+		t.Fatal("unknown remote: want an error")
+	}
+}

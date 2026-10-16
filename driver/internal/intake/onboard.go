@@ -91,6 +91,17 @@ func (g *Gateway) handleOnboardAction(event *callback.CardActionTriggerEvent) (*
 		if err != nil {
 			return g.reply(ctx, card, fmt.Sprintf("接入 %s 失败：%v", repo.Name, err))
 		}
-		return g.reply(ctx, card, fmt.Sprintf("接入 PR：%s\n项目表行：%s %s（启用=false）\n合并 PR 并在项目表勾选启用后生效", result.PR, result.Row.Prefix, result.Row.Name))
+		return g.replyCard(ctx, card, onboardDoneCard(thread, repo, result))
 	}
+}
+
+// onboardDoneCard is OF-50's completion card: the PR link and the ledger row
+// the driver wrote, with the same "启用" button handleEnableAction answers
+// (OF-54). It carries the button directly from repo and result rather than
+// relying on the gateway's pendingEnable snapshot, since a repository that
+// just finished onboarding has not necessarily been rediscovered as
+// pending-enable yet.
+func onboardDoneCard(thread string, repo Onboardable, result OnboardResult) string {
+	body := fmt.Sprintf("接入 PR：%s\n项目表行：%s %s（启用=false）\n合并 PR 后点击下方按钮启用", result.PR, result.Row.Prefix, result.Row.Name)
+	return cardJSON("接入完成", "green", []any{markdown(body), enableButton(thread, result.Row.Name, repo.Remote, repo.Path)})
 }

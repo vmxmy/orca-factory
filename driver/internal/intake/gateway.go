@@ -121,8 +121,15 @@ type Gateway struct {
 	// an "接入" button only an approver's press acts on (OF-50), through
 	// onboard. Unlike projects, nothing in a thread ever commits to one of
 	// these, so SetOnboardable just replaces the set wholesale.
-	onboardable   []Onboardable
-	onboard       Onboarder
+	onboardable []Onboardable
+	onboard     Onboarder
+	// pendingEnable is every repository discovery found already onboarded
+	// (pipeline installed, check passing or only core-behind) but not yet
+	// enabled in the ledger (OF-54): listed in the picker card with an "启用"
+	// button only an approver's press acts on, through enable. Like
+	// onboardable, nothing in a thread ever commits to one of these.
+	pendingEnable []PendingEnable
+	enable        Enabler
 	defaultRemote string
 	agent         func(context.Context, Turn) (string, error)
 	reply         func(context.Context, string, string) error
@@ -227,6 +234,21 @@ func (g *Gateway) onboardableSnapshot() []Onboardable {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.onboardable
+}
+
+// SetPendingEnable replaces the gateway's OF-54 pending-enable set with
+// fresh, a fresh discovery round's repositories that are onboarded and
+// passing check but not yet enabled.
+func (g *Gateway) SetPendingEnable(fresh []PendingEnable) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pendingEnable = fresh
+}
+
+func (g *Gateway) pendingEnableSnapshot() []PendingEnable {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pendingEnable
 }
 
 func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) error {
