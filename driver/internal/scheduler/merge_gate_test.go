@@ -45,6 +45,16 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 	if !strings.Contains(strings.Join(calls[1].Env, "\n"), "AGENT_INSTALL_CMD=pnpm install --frozen-lockfile") || calls[2].Args[0] == "-c" {
 		t.Fatal("install env or gate order wrong")
 	}
+
+	t.Setenv("AGENT_INSTALL_CMD", "leak")
+	calls = nil
+	a = mergeGateAdapter("", a.runtime.Run)
+	if err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 3 || calls[1].Path != "bash" || calls[1].Args[0] != "-c" || calls[1].Args[1] != "true" || calls[1].Dir != wt || calls[2].Args[0] == "-c" {
+		t.Fatalf("unset repo install must run true from repo env, not process env (%d calls)", len(calls))
+	}
 }
 
 func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
