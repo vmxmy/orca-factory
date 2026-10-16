@@ -514,6 +514,11 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 					t.Fatalf("lane 2 review not handed to resolver: %v puts=%d", err, f.puts)
 				}
 				assertLane2Review(t, f.tracker.bodies)
+			} else if policy == "lane3" {
+				if err != nil || f.puts != 0 {
+					t.Fatalf("lane 3 path not escalated to human: %v puts=%d", err, f.puts)
+				}
+				assertHumanEscalation(t, f.tracker.bodies)
 			} else if err == nil || f.puts != 0 {
 				t.Fatalf("unsafe policy accepted: %s %v puts=%d", policy, err, f.puts)
 			}

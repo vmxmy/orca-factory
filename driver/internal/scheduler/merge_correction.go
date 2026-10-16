@@ -22,23 +22,30 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	// A lane 2 review keeps the waiting phase so the resolver can approve the
 	// same frozen handoff instead of revalidating a new queue identity.
 	review := result.Status == merge.Review && !human
+	// Lane 3 never reaches a resolver: automerge authorization excludes it, so
+	// the ticket transfers straight to a human instead of Agent处置.
+	direct := result.Status == merge.HumanDirect && !human
 	if result.Status == merge.Correction {
 		p.Phase = "correction"
 	}
-	if human {
+	if human || direct {
 		p.Phase = "human"
 	}
 	raw, _ := json.Marshal(p)
 	body := merge.ProgressPrefix + string(raw)
-	if human || review {
+	if human || review || direct {
 		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 			return errors.New("merge escalation unconfirmed")
 		}
-		event, evidence, demand := p.Reason, "merge validation", "检查合并结果并重新排队"
-		if review {
-			event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
+		if direct {
+			body = "转人: " + p.Reason + "\n证据: merge policy\n阶段: " + string(machine.PhaseHuman) + "\n归属: " + string(machine.OwnerHuman) + "\n" + body
+		} else {
+			event, evidence, demand := p.Reason, "merge validation", "检查合并结果并重新排队"
+			if review {
+				event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
+			}
+			body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 		}
-		body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 	} else if result.Status == merge.Correction {
 		body = fmt.Sprintf("阶段: %s\n归属: %s term=- run=%s attempt=%d\n%s", machine.PhaseCorrection, machine.OwnerExecutor, h.Run, p.Attempt, body)
 	}
@@ -46,6 +53,8 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		return err
 	}
 	switch {
+	case direct:
+		r.board(ctx, t, machine.PhaseHuman, p.Reason)
 	case human || review:
 		r.board(ctx, t, machine.PhaseResolver, p.Reason)
 	case result.Status == merge.Correction:
@@ -53,7 +62,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	default:
 		r.board(ctx, t, machine.PhaseMergeQueue, p.Reason)
 	}
-	if human || review {
+	if human || review || direct {
 		return nil
 	}
 	if result.Status == merge.Correction {

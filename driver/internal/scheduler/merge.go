@@ -291,7 +291,7 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 	if err != nil {
 		return merge.Snapshot{}, err
 	}
-	if err := a.policy(prFiles); errors.Is(err, merge.ErrReviewRequired) {
+	if err := a.policy(prFiles); errors.Is(err, merge.ErrReviewRequired) || errors.Is(err, merge.ErrHumanRequired) {
 		return merge.Snapshot{}, err
 	} else if err != nil {
 		return merge.Snapshot{}, &merge.SnapshotError{Step: "policy", Reason: err.Error()}
@@ -366,11 +366,19 @@ func (a *mergeAdapter) policy(files []string) error {
 				return errors.New("invalid merge policy glob")
 			}
 			for _, file := range files {
-				if scopeMatch(pattern, file) {
-					if key == "AGENT_LANE2_MANUAL_GLOBS" && resolverApproved(a.ticket) {
+				if !scopeMatch(pattern, file) {
+					continue
+				}
+				switch key {
+				case "AGENT_LANE3_GLOBS":
+					return merge.ErrHumanRequired
+				case "AGENT_LANE2_MANUAL_GLOBS":
+					if resolverApproved(a.ticket) {
 						continue
 					}
-					if key != "AGENT_LANE2_GLOBS" || lane != 2 {
+					return merge.ErrReviewRequired
+				default: // AGENT_LANE2_GLOBS
+					if lane != 2 {
 						return errors.New("changed path requires manual approval or new lane validation")
 					}
 				}
