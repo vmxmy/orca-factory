@@ -127,19 +127,21 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 ### 自动接入
 
-`orca-factory-driver onboard --repo <本机检出路径> [--dry-run]` 接入一个「可接入」仓库（OF-50）。命令先重跑项目发现：路径不在 Orca 清单、或原因不是「可接入」（已接入、半装、check 失败等）时拒绝。`--dry-run` 只打印 JSON 计划：步骤、worktree 路径、编号前缀，以及 `agent-graph.env` 默认值（`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、档位 `AGENT_TIER_*`/`AGENT_ROLE_INTAKE` 取自 `factory_root` 的 `agent-graph.env`；`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey；`AGENT_GH_REPO` 取远端），`pending` 列出只有人知道、留空待确认的键。不加 `--dry-run` 时：
+`orca-factory-driver onboard --repo <本机检出路径> [--dry-run]` 接入一个「可接入」仓库（OF-50）。命令先重跑项目发现：路径不在 Orca 清单、或原因不是「可接入」（已接入、半装、check 失败等）时拒绝。`--dry-run` 打印 JSON 计划：步骤、worktree 路径、编号前缀，`agent-graph.env` 默认值（`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、档位 `AGENT_TIER_*`/`AGENT_ROLE_INTAKE` 取自 `factory_root` 的 `agent-graph.env`；`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey；`AGENT_GH_REPO` 取远端）与 `pending`（只有人知道、留空待确认的键），以及 `preflight` 数组（OF-52，见下文）。不加 `--dry-run` 时：
 
 ```mermaid
 flowchart LR
-    A[发现校验：可接入] --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
+    A[发现校验：可接入] --> P[接入前置检查<br/>本机工具/factory 自身/目标仓库/现场/账本]
+    P --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
     B --> E[driver 写飞书项目表行，启用=false<br/>已有同远端行则沿用]
     E --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
     C --> D[接入 Agent：init、填项目文件、ONBOARD 5a～5d、开 PR]
     D --> F[输出 PR 链接与项目表行]
 ```
 
+- 接入前置检查（OF-52）在写任何东西之前，对每个确定性判断给出 `name`/`ok`/`detail`，`--dry-run` 和真实执行跑同一套：（a）本机工具，复用 `<factory_root>/bin/orca-factory doctor --json` 核对 orca 运行中、gh 已登录、git、jq 存在，并用 `resolveClaude` 核对 claude 可解析；（b）factory 自身，在 `factory_root` 跑 `scripts/agent-gates/install.sh --dry-run` 要求退出 0；（c）目标仓库，`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true 且 `git ls-remote origin main` 成功；（d）现场，接入 worktree 路径与 `feat/agent-graph` 分支（本地与远端）都不存在、接入锁空闲；（e）账本，由已经成功算出的接入计划直接证明（计算该计划本身就已读过飞书项目表并算出不冲突的编号前缀，账本不可读会在这之前就失败，不会走到这里）。`--dry-run` 的 JSON 带全部 5 项结果，任一失败即退出非 0；真实执行（命令行与卡片「接入」按钮共用同一入口）任一失败都不写项目表行、不建 worktree、不启动 Agent。检查输出只给键名、布尔值与命令退出码，不回显凭据或环境变量值。
 - 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
-- worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。该目录已存在或分支已存在时拒绝，由人核对后清理再重试；driver 不自动删除。
+- worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。现场前置检查已确认该目录与分支都不存在；driver 不自动删除残留。
 - 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
 - Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，错误信息附 Agent 最终说明。项目表行在启动 Agent 之前由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
 - 接入 PR 合并、并在项目表勾选「启用」后，下一次发现才把该仓库判为可接管。

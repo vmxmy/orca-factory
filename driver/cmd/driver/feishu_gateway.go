@@ -344,7 +344,7 @@ func runFeishuGateway(ctx context.Context) error {
 		return err
 	}
 	if cfg.FactoryRoot != "" {
-		gateway.SetOnboarder(onboarder{cfg: cfg, orca: orcaClient, claude: claude, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg)}.run)
+		gateway.SetOnboarder(onboarder{cfg: cfg, orca: orcaClient, claude: claude, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}.run)
 	}
 	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(func(ctx context.Context, event *im.P2MessageReceiveV1) error {
 		if isNewIntakeTopic(event) {

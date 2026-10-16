@@ -19,12 +19,13 @@
 
 本机 Orca 已登记、`scripts/agent-gates/` 目录完全不存在的仓库是「可接入」仓库（`orca-factory-driver projects --json` 中原因为「可接入」）。对它可以不手工走本手册，改用自动入口：
 
-1. 审批人先运行 `orca-factory-driver onboard --repo <本机检出路径> --dry-run`，核对步骤、编号前缀与 `agent-graph.env` 默认值：账本、档位与 `AGENT_ROLE_INTAKE` 取自 orca-factory 本仓库配置，`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey，`AGENT_GH_REPO` 取远端；部署 workflow、smoke、通知 profile 与群列为待确认、留空。
-2. 去掉 `--dry-run` 运行，或在飞书需求助手的项目选择卡片上点该仓库的「接入」（只对 `AGENT_FEISHU_APPROVERS` 生效）。driver 在目标仓库独立 worktree 的 `feat/agent-graph` 分支（基于 `origin/main`）上启动接入 Agent，角色为 [`roles/onboard.md`](core/roles/onboard.md)：它按本手册第 1、4、5、6 节运行 `init`、只读调研并填写三份项目文件、跑 5a～5d（gate 绿、注入错误 gate 红、注入撤干净）、在目标仓库开接入 PR，PR 正文逐项列出待确认的键；遵守第 7 节，不改业务代码、不合并、不写飞书。
-3. driver 在启动 Agent 之前在飞书项目表新增该仓库行，「启用」=false，编号前缀按目录名生成且不与现有前缀冲突；5b 的 `install.sh --dry-run` 需要该行存在。重试时沿用已有行。命令输出（或话题回复）给出 PR 链接与该行。
-4. 人补齐待确认项，合并接入 PR，在项目表勾选「启用」；下一次项目发现后该仓库变为可接管。
+1. 审批人先运行 `orca-factory-driver onboard --repo <本机检出路径> --dry-run`，核对步骤、编号前缀、`agent-graph.env` 默认值（账本、档位与 `AGENT_ROLE_INTAKE` 取自 orca-factory 本仓库配置，`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey，`AGENT_GH_REPO` 取远端；部署 workflow、smoke、通知 profile 与群列为待确认、留空）以及 `preflight` 数组（接入前置检查，见下）；任一检查为 `ok:false` 时 `--dry-run` 本身也以非 0 退出，照 `detail` 给的补法修完再重跑。
+2. 接入前置检查（OF-52）在写任何东西之前，对 (a) 本机工具（复用 `doctor --json`：orca 运行中、gh 已登录、git、jq 存在，claude 可解析）、(b) factory 自身（`scripts/agent-gates/install.sh --dry-run` 退出 0）、(c) 目标仓库（`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true，`git ls-remote origin main` 成功）、(d) 现场（接入 worktree 路径与 `feat/agent-graph` 分支本地远端均不存在，接入锁空闲）、(e) 账本（接入计划已证明飞书项目表可读、编号前缀不冲突）逐项给出确定性的 `ok`/`detail`，不回显凭据或环境变量值。`--dry-run` 与真实执行（命令行、飞书卡片「接入」按钮共用同一入口）跑同一套；真实执行任一失败都不写项目表行、不建 worktree、不启动 Agent，失败原因（卡片路径回到话题）直接是未通过项各自的 `detail`。
+3. 检查全部通过后，去掉 `--dry-run` 运行，或在飞书需求助手的项目选择卡片上点该仓库的「接入」（只对 `AGENT_FEISHU_APPROVERS` 生效）。driver 在目标仓库独立 worktree 的 `feat/agent-graph` 分支（基于 `origin/main`）上启动接入 Agent，角色为 [`roles/onboard.md`](core/roles/onboard.md)：它按本手册第 1、4、5、6 节运行 `init`、只读调研并填写三份项目文件、跑 5a～5d（gate 绿、注入错误 gate 红、注入撤干净）、在目标仓库开接入 PR，PR 正文逐项列出待确认的键；遵守第 7 节，不改业务代码、不合并、不写飞书。
+4. driver 在启动 Agent 之前在飞书项目表新增该仓库行，「启用」=false，编号前缀按目录名生成且不与现有前缀冲突；5b 的 `install.sh --dry-run` 需要该行存在。重试时沿用已有行。命令输出（或话题回复）给出 PR 链接与该行。
+5. 人补齐待确认项，合并接入 PR，在项目表勾选「启用」；下一次项目发现后该仓库变为可接管。
 
-同一仓库同时只允许一个接入；worktree 或分支已存在时拒绝，由人核对后清理。细节见 [driver/README.md 的“自动接入”](driver/README.md#自动接入)。
+同一仓库同时只允许一个接入；前置检查已确认 worktree 与分支不存在、锁空闲，否则直接拒绝，由人核对后清理再重试。细节见 [driver/README.md 的“自动接入”](driver/README.md#自动接入)。
 
 ## 历史 Linear 接入手册（仅维护旧配置）
 
