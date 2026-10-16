@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -42,7 +43,7 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 	if len(calls) != 3 || calls[1].Path != "bash" || calls[1].Args[0] != "-c" || calls[1].Args[1] != "pnpm install --frozen-lockfile" || calls[1].Dir != wt {
 		t.Fatalf("install must run in the merge worktree before the gate (%d calls)", len(calls))
 	}
-	if !strings.Contains(strings.Join(calls[1].Env, "\n"), "AGENT_INSTALL_CMD=pnpm install --frozen-lockfile") || calls[2].Args[0] == "-c" {
+	if !slices.Contains(calls[1].Env, "AGENT_INSTALL_CMD=pnpm install --frozen-lockfile") || calls[2].Args[0] == "-c" {
 		t.Fatal("install env or gate order wrong")
 	}
 
@@ -59,23 +60,25 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 
 func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "wt")
-	gateRan := false
-	a := mergeGateAdapter("false", func(_ context.Context, s runx.Spec) ([]byte, error) {
-		switch {
-		case s.Path == "git":
-			return []byte("#!/bin/bash\n"), nil
-		case s.Args[0] == "-c":
-			return []byte("secret output"), errors.New("exit status 1")
+	for _, installErr := range []error{errors.New("exit status 1"), context.DeadlineExceeded} {
+		gateRan := false
+		a := mergeGateAdapter("false", func(_ context.Context, s runx.Spec) ([]byte, error) {
+			switch {
+			case s.Path == "git":
+				return []byte("#!/bin/bash\n"), nil
+			case s.Args[0] == "-c":
+				return []byte("secret output"), installErr
+			}
+			gateRan = true
+			return nil, nil
+		})
+		err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt)
+		var ticket *infra.Ticket
+		if !errors.As(err, &ticket) || errors.Is(err, merge.ErrGateRed) || strings.Contains(err.Error(), "secret") {
+			t.Fatalf("install error %v: want sanitized ticket infra error, got %v", installErr, err)
 		}
-		gateRan = true
-		return nil, nil
-	})
-	err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt)
-	var ticket *infra.Ticket
-	if !errors.As(err, &ticket) || errors.Is(err, merge.ErrGateRed) || strings.Contains(err.Error(), "secret") {
-		t.Fatalf("want sanitized ticket infra error, got %v", err)
-	}
-	if gateRan {
-		t.Fatal("gate ran after install failure")
+		if gateRan {
+			t.Fatalf("install error %v: gate ran after install failure", installErr)
+		}
 	}
 }

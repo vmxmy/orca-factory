@@ -59,9 +59,6 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return err
-			}
 			return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
 		}
 	}
