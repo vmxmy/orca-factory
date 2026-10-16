@@ -54,6 +54,14 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 	if run == nil {
 		run = runx.Run
 	}
+	if install := a.runtime.Repositories[a.ticket.Repo].Env["AGENT_INSTALL_CMD"]; install != "" {
+		if _, err := run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", install}, Dir: wt, Env: entries, Timeout: 30 * time.Minute}); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
+		}
+	}
 	output, err := run(ctx, runx.Spec{Path: "bash", Args: []string{gatePath, wt, specPath}, Dir: req.Path, Env: entries, Timeout: 30 * time.Minute})
 	if ctx.Err() != nil {
 		return ctx.Err()
