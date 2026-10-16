@@ -274,3 +274,44 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 		t.Fatalf("args=%v", args)
 	}
 }
+
+// TestOnboardReportsAgentResultWhenPRMissing covers OF-51: when the
+// onboarding agent finishes successfully but its final text carries no PR
+// link, the error must carry that final explanation instead of discarding
+// it, so a person reading the CLI error or the card's topic reply (which
+// forwards the same error) knows where the agent got stuck.
+func TestOnboardReportsAgentResultWhenPRMissing(t *testing.T) {
+	f := newOnboardFixture(t)
+	origin := filepath.Join(t.TempDir(), "origin.git")
+	gitIn(t, filepath.Dir(origin), "init", "--quiet", "--bare", "-b", "main", origin)
+	if err := os.RemoveAll(f.repo); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, filepath.Dir(f.repo), "clone", "--quiet", origin, f.repo)
+	if err := os.WriteFile(filepath.Join(f.repo, "README.md"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.repo, "add", "README.md")
+	gitIn(t, f.repo, "commit", "--quiet", "-m", "init")
+	gitIn(t, f.repo, "push", "--quiet", "origin", "HEAD:main")
+
+	claude := filepath.Join(t.TempDir(), "claude")
+	explanation := "卡在 ONBOARD 5b：install.sh --dry-run 报 unsupported AGENT_ISSUE_BACKEND，需要人工确认账本后端配置后重试"
+	script := "#!/bin/sh\n" + `printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"` + explanation + `"}'` + "\n"
+	if err := os.WriteFile(claude, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(f.home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
+		writeRow: func(context.Context, issues.LedgerProject) (issues.LedgerProject, error) {
+			t.Fatal("ledger row must not be written when the agent reports no PR")
+			return issues.LedgerProject{}, nil
+		}}
+	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote}
+	if _, err := o.run(context.Background(), req); err == nil || !strings.Contains(err.Error(), explanation) {
+		t.Fatalf("err=%v, want it to carry the agent's final explanation %q", err, explanation)
+	}
+}

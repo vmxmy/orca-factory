@@ -230,9 +230,24 @@ func (o onboarder) runAgent(ctx context.Context, plan onboardPlan) (string, erro
 	}
 	prs := regexp.MustCompile(`https://github\.com/` + regexp.QuoteMeta(plan.Env["AGENT_GH_REPO"]) + `/pull/[0-9]+`).FindAllString(result.Result, -1)
 	if len(prs) == 0 {
-		return "", errors.New("接入 Agent 未报告接入 PR")
+		return "", fmt.Errorf("接入 Agent 未报告接入 PR，Agent 最终说明：%s", truncateOnboardResult(result.Result))
 	}
 	return prs[len(prs)-1], nil
+}
+
+// onboardResultExcerptLimit bounds how much of the agent's final result text
+// goes into an error a person reads (CLI stderr or the card's topic reply).
+const onboardResultExcerptLimit = 2000
+
+// truncateOnboardResult keeps a failed onboarding's agent explanation
+// readable instead of discarding it.
+func truncateOnboardResult(s string) string {
+	s = strings.TrimSpace(s)
+	runes := []rune(s)
+	if len(runes) > onboardResultExcerptLimit {
+		return string(runes[:onboardResultExcerptLimit]) + "…"
+	}
+	return s
 }
 
 func onboardPrompt(plan onboardPlan, factoryRoot string) string {

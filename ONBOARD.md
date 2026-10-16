@@ -197,7 +197,7 @@ cd $REPO
 # 5a 通用 gate 回归（在临时仓库里测 gate.sh 本身）
 bash scripts/agent-gates/gate.test.sh            # 期望末行: agent gate regression: PASS
 
-# 5b 安装脚本干跑：工具、env 非空、Linear 标签/项目 ID 真实存在
+# 5b 安装脚本干跑：工具、env 非空；按账本后端分别核对——Linear 标签/项目 ID 真实存在；GitHub/飞书只读核对账本可达（飞书还校验 AGENT_FEISHU_BASE、AGENT_FEISHU_PROJECT 非空）
 scripts/agent-gates/install.sh --dry-run         # 期望: install: dry run, nothing changed
 
 # 5c 对本次接入改动跑一次完整 gate（含 gate.project.sh）
