@@ -255,35 +255,35 @@ func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
 func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Snapshot, error) {
 	p, err := a.readPR(ctx)
 	if err != nil {
-		return merge.Snapshot{}, err
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "pr", Reason: err.Error()}
 	}
 	if p.Merged || p.State != "open" || p.Draft == nil || *p.Draft || p.Mergeable == nil {
-		return merge.Snapshot{}, errors.New("PR not explicitly mergeable")
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "pr", Reason: "PR not explicitly mergeable"}
 	}
 	if err := a.runtime.GitHub.UniqueTicketPR(ctx, a.owner, a.repo, a.ticket.Identifier, a.ticket.Handoff.PR, false); err != nil {
-		return merge.Snapshot{}, err
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "duplicate-pr", Reason: err.Error()}
 	}
 	main, err := a.runtime.GitHub.MainSHA(ctx, a.owner, a.repo)
 	if err != nil || !commitID(main) {
-		return merge.Snapshot{}, errors.New("main unavailable")
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "main", Reason: "main unavailable"}
 	}
 	a.main = main
 	run := func(args ...string) ([]byte, error) { return a.runtime.command(ctx, a.ticket.Repo, "git", args...) }
 	if _, err = run("fetch", "--no-tags", "origin", p.Head.SHA, main); err != nil {
-		return merge.Snapshot{}, errors.New("fixed commits unavailable")
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "fetch", Reason: "fixed commits unavailable"}
 	}
 	raw, err := run("merge-base", p.Head.SHA, main)
 	base := strings.TrimSpace(string(raw))
 	if err != nil || !commitID(base) {
-		return merge.Snapshot{}, errors.New("merge base unavailable")
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "merge-base", Reason: "merge base unavailable"}
 	}
 	paths := func(head string) ([]string, error) {
 		b, e := run("diff", "--name-only", "--no-renames", "-z", base, head, "--")
 		if e != nil {
-			return nil, e
+			return nil, &merge.SnapshotError{Step: "diff", Reason: "changed paths unavailable"}
 		}
 		if len(b) > 0 && b[len(b)-1] != 0 {
-			return nil, errors.New("incomplete paths")
+			return nil, &merge.SnapshotError{Step: "diff", Reason: "incomplete paths"}
 		}
 		return strings.Split(strings.TrimSuffix(string(b), "\x00"), "\x00"), nil
 	}
@@ -292,11 +292,11 @@ func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Sna
 		return merge.Snapshot{}, err
 	}
 	if err := a.policy(prFiles); err != nil {
-		return merge.Snapshot{}, err
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "policy", Reason: err.Error()}
 	}
 	checks, err := a.runtime.GitHub.MergeChecks(ctx, a.owner, a.repo, p.Head.SHA)
 	if err != nil {
-		return merge.Snapshot{}, err
+		return merge.Snapshot{}, &merge.SnapshotError{Step: "checks", Reason: err.Error()}
 	}
 	if !*p.Mergeable {
 		p.MergeableState = "dirty"

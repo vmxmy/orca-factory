@@ -399,6 +399,81 @@ func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	}
 }
 
+// lastSnapshotReason returns the most recent merge-progress-v1 reason written
+// to the ticket, the artifact the merge channel and the scheduler log share.
+func lastSnapshotReason(t *testing.T, f *mergeFixture) string {
+	t.Helper()
+	for i := len(f.tracker.bodies) - 1; i >= 0; i-- {
+		for _, line := range strings.Split(f.tracker.bodies[i], "\n") {
+			if strings.HasPrefix(line, "merge-progress-v1: ") {
+				var p struct {
+					Reason string `json:"reason"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "merge-progress-v1: ")), &p); err != nil {
+					t.Fatal(err)
+				}
+				return p.Reason
+			}
+		}
+	}
+	t.Fatal("no merge-progress-v1 written")
+	return ""
+}
+
+// Each of ZCP-70's seven ambiguous Snapshot failure steps must produce a
+// distinguishable, credential-free reason in both the scheduler error and the
+// persisted merge-progress-v1, and the ticket must stay Waiting (no status
+// change), not escalate to a hard, unexplained scheduler error.
+func TestRuntimeMergeSnapshotReasonNamesFailureStep(t *testing.T) {
+	cases := []struct {
+		kind      string
+		step      string
+		configure func(f *mergeFixture)
+	}{
+		{"pr", "pr", func(f *mergeFixture) { delete(f.prBody, "mergeable") }},
+		{"duplicate-pr", "duplicate-pr", func(f *mergeFixture) { f.duplicatePR = true }},
+		{"main", "main", func(f *mergeFixture) { f.main = "" }},
+		{"fetch", "fetch", func(f *mergeFixture) {
+			f.runtime.Run = func(context.Context, runx.Spec) ([]byte, error) {
+				return nil, fmt.Errorf("fatal: unable to access remote: TEST-PLACEHOLDER-CRED")
+			}
+		}},
+		{"merge-base", "merge-base", func(f *mergeFixture) {
+			f.runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+				if len(spec.Args) > 0 && spec.Args[0] == "merge-base" {
+					return nil, fmt.Errorf("fatal: TEST-PLACEHOLDER-CRED not a valid object name")
+				}
+				return runx.Run(ctx, spec)
+			}
+		}},
+		{"policy", "policy", func(f *mergeFixture) { f.repos[0].Env["AGENT_LANE2_MANUAL_GLOBS"] = "feat*" }},
+		{"checks", "checks", func(f *mergeFixture) { f.checksBody = "{not-json" }},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		t.Run(tc.kind, func(t *testing.T) {
+			f := newMergeFixture(t)
+			tc.configure(f)
+			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+				t.Fatalf("expected a waiting snapshot failure: err=%v puts=%d state=%s", err, f.puts, f.tracker.issue.State.Name)
+			}
+			reason := lastSnapshotReason(t, f)
+			want := "merge snapshot unavailable: " + tc.step + ": "
+			if !strings.HasPrefix(reason, want) {
+				t.Fatalf("reason=%q want prefix %q", reason, want)
+			}
+			if strings.Contains(err.Error(), "TEST-PLACEHOLDER-CRED") || strings.Contains(reason, "TEST-PLACEHOLDER-CRED") {
+				t.Fatalf("credential leaked: err=%v reason=%q", err, reason)
+			}
+			if seen[reason] {
+				t.Fatalf("reason not distinguishable from an earlier step: %q", reason)
+			}
+			seen[reason] = true
+		})
+	}
+}
+
 type mergeTickets struct {
 	issues.Store
 	rows []*mergeIssues

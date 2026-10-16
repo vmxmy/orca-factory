@@ -14,6 +14,27 @@ var ErrGateRed = errors.New("merged-result gate red")
 
 var ErrMainAdvanced = errors.New("main advanced during merge validation")
 
+// SnapshotError names which Snapshot step failed. A GitHub implementation
+// builds Reason from its own driver-authored text or from an external error
+// already passed through an existing sanitizer; Next never reads raw external
+// text itself, so a credential or response body can never reach the reason.
+type SnapshotError struct {
+	Step, Reason string
+}
+
+func (e *SnapshotError) Error() string { return e.Step + ": " + e.Reason }
+
+// snapshotFailureReason reports the failed step when the implementation
+// identified one, and a generic reason otherwise rather than risk
+// unsanitized text from an error it did not construct.
+func snapshotFailureReason(err error) string {
+	var se *SnapshotError
+	if errors.As(err, &se) && se.Step != "" && se.Reason != "" {
+		return se.Error()
+	}
+	return "unspecified"
+}
+
 type Request struct {
 	Repository     string // canonical owner/repository; identical for every local checkout
 	Path           string // local checkout used by Git implementations
@@ -251,7 +272,10 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	}
 	s, err := c.github.Snapshot(ctx, e.request)
 	if err != nil {
-		return r, errors.New("merge snapshot unavailable")
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
+		return finish(Waiting, "merge snapshot unavailable: "+snapshotFailureReason(err))
 	}
 	if s.Head == "" || s.Main == "" {
 		return r, errors.New("incomplete merge snapshot")
@@ -317,7 +341,10 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	}
 	fresh, err := c.github.Snapshot(ctx, e.request)
 	if err != nil {
-		return r, errors.New("merge recheck unavailable")
+		if ctx.Err() != nil {
+			return r, ctx.Err()
+		}
+		return finish(Waiting, "merge recheck unavailable: "+snapshotFailureReason(err))
 	}
 	if fresh.Main != s.Main {
 		return stale()
