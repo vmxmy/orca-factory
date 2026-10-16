@@ -13,6 +13,7 @@ import (
 
 type fakeGitHub struct {
 	snapshots     []Snapshot
+	snapshotErr   error
 	reads, merges int
 	mergeErr      error
 	order         []int
@@ -24,7 +25,7 @@ func (f *fakeGitHub) Snapshot(context.Context, Request) (Snapshot, error) {
 	if i >= len(f.snapshots) {
 		i = len(f.snapshots) - 1
 	}
-	return f.snapshots[i], nil
+	return f.snapshots[i], f.snapshotErr
 }
 func (f *fakeGitHub) Squash(_ context.Context, r Request, head, main string) (string, error) {
 	f.merges++
@@ -396,5 +397,46 @@ func TestDeploymentPolicyBelongsToRepository(t *testing.T) {
 	r := next(t, c, first.Repository)
 	if r.Status != Waiting || h.merges != 2 {
 		t.Fatalf("repository deployment barrier lost: %+v merges=%d", r, h.merges)
+	}
+}
+
+// A Snapshot failure keeps the ticket Waiting (status judgment unchanged) but
+// the reason must name which step failed, distinguishably per step, and must
+// never surface a raw external error an implementation did not sanitize.
+func TestSnapshotFailureReasonNamesStepAndStaysSafe(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"pr", &SnapshotError{Step: "pr", Reason: "PR not explicitly mergeable"}, "merge snapshot unavailable: pr: PR not explicitly mergeable"},
+		{"duplicate-pr", &SnapshotError{Step: "duplicate-pr", Reason: "multiple ticket PRs"}, "merge snapshot unavailable: duplicate-pr: multiple ticket PRs"},
+		{"main", &SnapshotError{Step: "main", Reason: "main unavailable"}, "merge snapshot unavailable: main: main unavailable"},
+		{"fetch", &SnapshotError{Step: "fetch", Reason: "fixed commits unavailable"}, "merge snapshot unavailable: fetch: fixed commits unavailable"},
+		{"merge-base", &SnapshotError{Step: "merge-base", Reason: "merge base unavailable"}, "merge snapshot unavailable: merge-base: merge base unavailable"},
+		{"policy", &SnapshotError{Step: "policy", Reason: "changed path requires manual approval or new lane validation"}, "merge snapshot unavailable: policy: changed path requires manual approval or new lane validation"},
+		{"checks", &SnapshotError{Step: "checks", Reason: "GitHub request failed"}, "merge snapshot unavailable: checks: GitHub request failed"},
+		{"unsanitized fallback", errors.New("raw external failure TEST-PLACEHOLDER-CRED"), "merge snapshot unavailable: unspecified"},
+	}
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, h, _, _, _ := fixture(ready())
+			h.snapshotErr = tc.err
+			if err := c.Enqueue(req(1)); err != nil {
+				t.Fatal(err)
+			}
+			r := next(t, c, "owner/repo")
+			if r.Status != Waiting || r.Reason != tc.want {
+				t.Fatalf("status=%v reason=%q want=%q", r.Status, r.Reason, tc.want)
+			}
+			if strings.Contains(r.Reason, "TEST-PLACEHOLDER-CRED") {
+				t.Fatalf("credential leaked into reason: %q", r.Reason)
+			}
+			if seen[r.Reason] {
+				t.Fatalf("reason not distinguishable from an earlier step: %q", r.Reason)
+			}
+			seen[r.Reason] = true
+		})
 	}
 }
