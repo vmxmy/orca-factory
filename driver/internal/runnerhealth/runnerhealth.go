@@ -16,8 +16,8 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // Repository is the only repository the isolated runners register for.
@@ -31,7 +31,7 @@ var slots = []int{1, 2, 3, 4}
 type Tickets interface {
 	Create(context.Context, issues.CreateInput) (issues.Task, error)
 	Read(context.Context, string) (issues.Task, error)
-	CreateComment(context.Context, string, string) (linear.Comment, error)
+	CreateComment(context.Context, string, string) (task.Comment, error)
 }
 
 type Monitor struct {

@@ -48,7 +48,7 @@ func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed = true
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": client}}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": client}}
 	err := r.Apply(ctx, Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Candidate: true}, Action{Kind: Claim})
 	if err == nil || !strings.Contains(err.Error(), "ownership") || writes != 0 {
 		t.Fatalf("claim used cached ownership: error=%v writes=%d", err, writes)
@@ -112,7 +112,7 @@ func TestGitHubRuntimeFrozenMergeRecoveryEndToEnd(t *testing.T) {
 	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 	f.repos[0] = repo
-	f.runtime.Clients = map[string]IssueClient{repo.Path: client}
+	f.runtime.Clients = map[string]issues.Store{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
 	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 	if err = s.Tick(context.Background()); err != nil {
@@ -153,7 +153,7 @@ func TestGitHubDoneMergeOwnerMayFinishDurableReceipt(t *testing.T) {
 	defer server.Close()
 	gh, _ := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	client, _ := issues.NewGitHub("o/r", gh)
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": client}}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": client}}
 	err := r.verifyFreshDecision(context.Background(), Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Owner: "合并通道"}, "")
 	if err != nil {
 		t.Fatalf("Done before final ownership receipt stranded merge: %v", err)

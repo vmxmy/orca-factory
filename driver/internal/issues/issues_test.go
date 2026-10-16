@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestBackendRequiresExplicitStore(t *testing.T) {
@@ -100,7 +100,7 @@ func TestSnapshotCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
 	defer s.Close()
 	gh, _ := github.New(github.Options{BaseURL: s.URL, Token: func(context.Context) (string, error) { return "test", nil }})
 	c, _ := NewGitHub("o/r", gh)
-	var history []linear.Comment
+	var history []task.Comment
 	for round := range 3 {
 		if round == 2 {
 			commentETag = `"comments-v2"`

@@ -10,17 +10,22 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+// handoffReadFailure fails comment reads once passes earlier reads succeeded.
 type handoffReadFailure struct {
 	*fakeIssues
 	failure error
+	passes  int
 }
 
-func (l *handoffReadFailure) ListComments(ctx context.Context, id string) ([]linear.Comment, error) {
-	if l.failure != nil {
+func (l *handoffReadFailure) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	if l.failure != nil && l.passes == 0 {
 		return nil, l.failure
+	}
+	if l.failure != nil {
+		l.passes--
 	}
 	return l.fakeIssues.ListComments(ctx, id)
 }
@@ -73,7 +78,9 @@ func TestMergeHandoffReadFailureKeepsSafeClassAndBudget(t *testing.T) {
 				failing := &handoffReadFailure{fakeIssues: l}
 				e.Issues = failing
 				if existing {
-					failing.failure = cause
+					// The merge lane re-enters; its fresh ownership read precedes the handoff read.
+					e.Config.Merging = true
+					failing.failure, failing.passes = cause, 1
 				} else {
 					e.GitHub = &handoffFailureAfterPR{fakeGitHub: g, tracker: failing, failure: cause}
 				}
@@ -119,6 +126,7 @@ func TestResumeMergeHandoffRetainsEarlierReadBudget(t *testing.T) {
 	g.existing.Head.SHA = tools.head
 	e.Tools = &handoffBudgetTools{fakeTools: tools}
 	e.Sleep = func(context.Context, time.Duration) error { return nil }
+	e.Config.Merging = true
 	r, err = e.Start(context.Background(), ticket)
 	if err != nil {
 		t.Fatal(err)

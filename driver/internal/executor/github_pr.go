@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -18,13 +17,10 @@ import (
 // freshExecution rereads the selected backend before executor writes. Discovery
 // data never authorizes a dispatch, and auto-failed work belongs to a resolver.
 func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
-	c, ok := e.Issues.(issues.Store)
-	if !ok {
-		return nil
-	}
+	c := e.Issues
 	task, err := c.Read(ctx, t.ID)
 	if err != nil {
-		return err
+		return safeDependencyError(err)
 	}
 	if task.ID != t.ID || task.Identifier != t.Identifier || !task.Complete || task.Metadata.ImportHold || task.NativeState != "open" {
 		return errors.New("task held, closed or identity changed")
@@ -35,9 +31,9 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 			return errors.New("failed task requires resolver")
 		}
 	}
-	comments, err := e.Issues.ListComments(ctx, t.ID)
+	comments, err := c.ListComments(ctx, t.ID)
 	if err != nil {
-		return err
+		return safeDependencyError(err)
 	}
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
 	owner := ""
@@ -155,14 +151,10 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 }
 
 func (e *Executor) pullRequestBody(ctx context.Context, t Ticket) (string, error) {
-	c, ok := e.Issues.(issues.Store)
-	if !ok {
-		return "Fixes " + t.Identifier + "\n\n" + t.Todo, nil
-	}
 	if err := e.freshExecution(ctx, t); err != nil {
 		return "", err
 	}
-	task, err := c.Read(ctx, t.ID)
+	task, err := e.Issues.Read(ctx, t.ID)
 	if err != nil {
 		return "", err
 	}

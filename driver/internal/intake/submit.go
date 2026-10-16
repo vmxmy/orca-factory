@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // Ledger is the part of a project's issues.Store the gateway writes through:
@@ -23,9 +23,9 @@ type Ledger interface {
 	List(context.Context) ([]issues.Task, error)
 	Create(context.Context, issues.CreateInput) (issues.Task, error)
 	Read(context.Context, string) (issues.Task, error)
-	ListComments(context.Context, string) ([]linear.Comment, error)
-	CreateComment(context.Context, string, string) (linear.Comment, error)
-	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
+	ListComments(context.Context, string) ([]task.Comment, error)
+	CreateComment(context.Context, string, string) (task.Comment, error)
+	UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error)
 }
 
 const (

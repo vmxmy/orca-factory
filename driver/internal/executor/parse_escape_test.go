@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestParseTicketLinearMarkdown(t *testing.T) {
+func TestParseTicketEscapedMarkdown(t *testing.T) {
 	description := "## 要做\n\n1. do it\n\n## 验收\n\nCHECK: \\[\\[ $X == claude\\\\ -p\\* \\]\\] && grep -q 'a\\_b' f\n断言: 这一行不是命令\n\n## SCOPE\n\ndriver/internal/status/\\* mods/x/\\_y.ts\n\n## 依赖\n\n无\n"
 	got, err := ParseTicket("id", "ZII-1", "t", description)
 	if err != nil {

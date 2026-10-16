@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
@@ -55,7 +55,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 				}
 				next := *f.tracker
 				next.issue.ID, next.issue.Identifier = "next", "ENG-2"
-				next.rows = append([]linear.Comment(nil), f.tracker.rows[:1]...)
+				next.rows = append([]task.Comment(nil), f.tracker.rows[:1]...)
 				next.bodies = nil
 				nf := *f
 				nf.tracker = &next
@@ -70,7 +70,7 @@ func TestCanceledDeploymentSnapshotRetainsBarrierAndRecovery(t *testing.T) {
 				f.runtime.Clients[dir] = source
 				f.tracker.issue.State.Name = status
 				f.tracker.issue.Labels.Nodes = nil
-				f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "operator-cancel", CreatedAt: time.Now(), Body: "归属: 无"})
+				f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "operator-cancel", CreatedAt: time.Now(), Body: "归属: 无"})
 				delete(env, "AGENT_DEPLOY_WORKFLOW")
 				delete(env, "AGENT_SMOKE_CMD")
 				beforeSmokes := smokes

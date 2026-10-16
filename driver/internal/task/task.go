@@ -1,5 +1,8 @@
-// Package linear holds the issue and comment shapes shared by the issue backends.
-package linear
+// Package task holds the ticket domain types shared by every issue backend
+// (GitHub Issues and the Feishu Base ledger): issues, comments, relations, and
+// paginated connections. JSON tags are a persisted contract: checkpoints,
+// import manifests, and recorded samples depend on them.
+package task
 
 import "time"
 

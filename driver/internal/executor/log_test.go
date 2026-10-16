@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestExecutorTransitionLog(t *testing.T) {
@@ -34,14 +34,16 @@ func TestExecutorTransitionLog(t *testing.T) {
 				var envelope struct {
 					Data struct {
 						Issue struct {
-							Comments struct{ Nodes []linear.Comment }
+							Comments struct{ Nodes []task.Comment }
 						}
 					}
 				}
 				if err := json.Unmarshal(recorded(t, "linear-comments-executor-handoff.json"), &envelope); err != nil {
 					t.Fatal(err)
 				}
-				e.Issues = &logRecordedIssues{comments: envelope.Data.Issue.Comments.Nodes}
+				// The human requeued the recorded ticket and the scheduler reclaimed it.
+				requeued := task.Comment{Body: "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=2", CreatedAt: time.Date(2026, 10, 5, 14, 20, 0, 0, time.UTC)}
+				e.Issues = &logRecordedIssues{comments: append(envelope.Data.Issue.Comments.Nodes, requeued)}
 				if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one"}); err != nil {
 					t.Fatal(err)
 				}
@@ -82,7 +84,7 @@ func TestExecutorTransitionLog(t *testing.T) {
 					}
 				case "recovery.snapshot":
 					want := map[string]any{"Run": "run_one", "Task": "task_one", "Dispatch": "ctx_one", "Pending": false, "Completed": false}
-					if !reflect.DeepEqual(r["checkpoint"], want) || r["ticket_phase"] != string(machine.PhaseHuman) || r["ticket_owner"] != string(machine.OwnerHuman) {
+					if !reflect.DeepEqual(r["checkpoint"], want) || r["ticket_phase"] != string(machine.PhaseWorker) || r["ticket_owner"] != "执行器 term=- run=- attempt=1 scheduler-attempt=2" {
 						t.Fatalf("snapshot: %v", r)
 					}
 					snapshot = true
@@ -187,10 +189,10 @@ func transitionLogRecords(t *testing.T, logs *bytes.Buffer) []map[string]any {
 
 type logRecordedIssues struct {
 	fakeIssues
-	comments []linear.Comment
+	comments []task.Comment
 }
 
-func (l *logRecordedIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *logRecordedIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	return l.comments, nil
 }
 

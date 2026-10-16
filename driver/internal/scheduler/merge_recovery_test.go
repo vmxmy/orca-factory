@@ -10,8 +10,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type recoveredMergeOrca struct {
@@ -70,9 +70,9 @@ func (g *recoveredMergePR) CreatePR(context.Context, string, string, github.Crea
 
 type recoveredMergeIssues struct{ *mergeIssues }
 
-func (l *recoveredMergeIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (l *recoveredMergeIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	v, err := l.mergeIssues.UpdateIssue(ctx, id, state, add, remove)
-	v.Labels.Nodes = []linear.NamedID{{Name: "auto-impl"}}
+	v.Labels.Nodes = []task.NamedID{{Name: "auto-impl"}}
 	return v, err
 }
 

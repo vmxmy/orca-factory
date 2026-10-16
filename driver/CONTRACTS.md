@@ -13,7 +13,7 @@
 | Linear 存储正文时转义 CommonMark 字符（`*` 存为 `\*`，`\` 存为 `\\`） | `linear-description-escaped.md` | `executor.TestRecordedTicketDescriptions` |
 | 票面「CHECK:」的下一行是「断言:」，不属于命令 | `linear-description-check-assertion.md` | 同上 |
 | 小节标题可能带说明，如「## 要做（接口票）」 | `linear-description-heading-note.md` | 同上 |
-| 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `linear.TestRecordedInverseRelations` |
+| 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `task.TestRecordedInverseRelations` |
 | 调度器认领时写 `term=- run=-`，表示执行器尚未登记 | `linear-comment-ownership-unregistered.json` | `scheduler.TestRecordedOwnershipUnregistered` |
 | 审查员常把结尾的 verdict JSON 包在 Markdown 代码块里 | `reviewer-output-fenced.txt` | `executor.TestRecordedReviewerOutput` |
 | 历史执行器转人评论固定三行；调度器仍以「转人:」识别旧归属，并按容量接管为 resolver；新回执含 Agent处置、证据、处置要求、阶段与归属 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
@@ -59,7 +59,7 @@
 
 ## GitHub Issues（#172 / #173）
 
-- `internal/issues.Client` 选择唯一后端，暂复用已交付 `linear.Issue/Comment` 类型，不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。
+- `internal/issues.Store` 选择唯一后端，复用 `internal/task` 的 `Issue/Comment` 类型（JSON 字段不变），不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。
 - REST Issues/Comments 完整分页，过滤 pull_request，校验分页 Link。合法 Link 可由 `/repos/<owner>/<repo>/issues` 切换到 `/repositories/<id>/issues`；通过仓库元数据 `id/full_name` 验证同一仓库，保留 after 游标及固定查询，拒绝跨 origin、集合、仓库或非递增页码。2026-10-08 只读录制见 `github/issues-pagination-link.json`（仅头、仓库身份与 provenance，无票正文）。发现可缓存，关键动作完整 fresh 回读；评论编辑不因 issue 更新时间不变而被遗漏。
 - 评论编辑不保证改变 Issue 的 `updated_at`；发现逐页条件请求评论并校验 ETag，304 保留已验证的分页 Link，不以 Issue 时间戳跳过评论请求。重复 `after` 游标拒绝整个 Issue/评论集合，不发布部分快照；ETag 复用响应正文，不保证减少实际请求或配额计数。
 - 正常原生票由稳定 node ID 建立 canonical ID。未纳管票可见但不领取；adopt 校验正文和完整 canonical 依赖，并拒绝 held、重新打开的终态或关系不完整的依赖票。未提供完整依赖清单的原生 create 仅接受默认 Todo，非 Todo 状态在写入前拒绝，不能静默忽略。GitHub 原生更新时间与迁移来源时间独立。
@@ -138,7 +138,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 ## Resolver 处置
 
 - 开 PR 结果格式：`{"action":"open-pr","branch":"agent/OF-5/executor","head":"c4e86ec5465d1e2d1f6aea45053e663b54a1350b","title":"修复标题","body":"修复说明","reason":"gate 已通过"}`。五个载荷字段都必填，head 为 40 位十六进制 SHA，reason 保持单行。`resolver.TestResolverOpenPRResult` 读取 `orca-task-list.json`，保留真实 `worker_report` 信封，仅替换其 `body`，并从 `github-pr-open-clean.json` 读取示例 head；`scheduler.TestResolverOpenPR` 读取该 PR 样本和 `github-commit-main.json` 覆盖 GitHub 响应。
-- 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。复用已有 PR 时，正文前缀须匹配当前票据链接及 canonical identifier / ID；旧 Linear 配置核对 `Fixes <票号>`。统一票据存储的新 PR 正文首行为票据关联链接，后附 canonical identifier / ID；旧 Linear 配置为 `Fixes <票号>`，与执行器一致。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
+- 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。复用已有 PR 时，正文前缀须匹配当前票据链接及 canonical identifier / ID。新 PR 正文首行为票据关联链接，后附 canonical identifier / ID，与执行器一致。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
 - 分支读取失败、head 不符、PR 查询或创建失败、PR 回执 head 不符均写证据并转人，resolver-state 的 human 状态禁止自动重试；需要人工核实并明确更新处置回执后才能继续。事件写入失败则保留原回执以便对账，已有 PR 按分支复用。`scheduler.TestResolverOpenPR` 覆盖 PR 创建与复用、head 不符、操作失败及票据关联冲突，包含 CreatePR 内部二次查询和失败后回读的复用路径。
 
 - `resolver-state` 保存派工前意图、冻结角色/模型、原执行 Run、当前 task/dispatch、报告和退避时间。仅在报告持久化后释放 worker。

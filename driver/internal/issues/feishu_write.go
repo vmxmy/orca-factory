@@ -12,7 +12,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // ErrOwnershipConflict means a read-back found values neither written by this
@@ -290,20 +290,20 @@ func sameStateLabels(a, b feishuTicketRow) bool {
 // reads the record back until both match. Reading the old values means the
 // write is not visible yet; reading anything else is an ownership conflict,
 // recorded as a handoff event before the error returns.
-func (c *Feishu) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (c *Feishu) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	t, err := c.Read(ctx, id)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	if !t.Metadata.Complete {
-		return linear.Issue{}, errors.New("explicit adoption required before update")
+		return task.Issue{}, errors.New("explicit adoption required before update")
 	}
 	if state != "" && !validState(state) {
-		return linear.Issue{}, errors.New("unknown task state")
+		return task.Issue{}, errors.New("unknown task state")
 	}
 	before, err := c.ticketRow(ctx, t.nativeID)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	want := before
 	labels := slices.Clone(before.labels)
@@ -321,7 +321,7 @@ func (c *Feishu) UpdateIssue(ctx context.Context, id, state string, add, remove 
 		cells["状态"] = []string{want.state}
 	}
 	if err = c.updateTicket(ctx, t.nativeID, cells); err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	err = c.readBack(ctx, func() (bool, error) {
 		got, err := c.ticketRow(ctx, t.nativeID)
@@ -336,15 +336,15 @@ func (c *Feishu) UpdateIssue(ctx context.Context, id, state string, add, remove 
 		return false, c.conflict(ctx, t.ID, want, got)
 	})
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	issue := t.Issue
 	if want.state != "" {
-		issue.State = linear.NamedID{ID: stateType(want.state), Name: want.state}
+		issue.State = task.NamedID{ID: stateType(want.state), Name: want.state}
 	}
-	issue.Labels = linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{}}
+	issue.Labels = task.Connection[task.NamedID]{Nodes: []task.NamedID{}}
 	for _, l := range labels {
-		issue.Labels.Nodes = append(issue.Labels.Nodes, linear.NamedID{ID: l, Name: l})
+		issue.Labels.Nodes = append(issue.Labels.Nodes, task.NamedID{ID: l, Name: l})
 	}
 	return issue, nil
 }
@@ -360,10 +360,10 @@ func (c *Feishu) conflict(ctx context.Context, id string, want, got feishuTicket
 }
 
 // CreateComment appends one 事件 row whose 正文 is body unchanged.
-func (c *Feishu) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
-		return linear.Comment{}, err
+		return task.Comment{}, err
 	}
 	summary, _, _ := strings.Cut(body, "\n")
 	summary = strings.TrimSuffix(summary, "\r")
@@ -373,13 +373,13 @@ func (c *Feishu) CreateComment(ctx context.Context, id, body string) (linear.Com
 	row := c.cells("事件", map[string]any{"摘要": summary, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{"driver"}})
 	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
 	if err != nil {
-		return linear.Comment{}, err
+		return task.Comment{}, err
 	}
 	if err = checkWrite(res, 1); err != nil {
-		return linear.Comment{}, err
+		return task.Comment{}, err
 	}
 	now := c.now().UTC()
-	return linear.Comment{ID: res.RecordIDs[0], Body: body, CreatedAt: now, UpdatedAt: now}, nil
+	return task.Comment{ID: res.RecordIDs[0], Body: body, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 // Create writes the structured ticket face parsed from the description and a

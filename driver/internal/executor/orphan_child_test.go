@@ -51,7 +51,7 @@ func (o *lostChildOrca) WorkerStart(ctx context.Context, request string, opts or
 }
 func lostChildFixture(t *testing.T) (*Executor, *lostChildOrca, *recoveryTools, *lostChildService, Ticket) {
 	t.Helper()
-	e, base, tools, _, _, ticket := recoveryFixture(t)
+	e, base, tools, _, l, ticket := recoveryFixture(t)
 	tools.gateReds = 1
 	s := &lostChildService{cause: &infra.Ticket{Err: errors.New("rejected: request_mismatch ghp_private")}}
 	o := &lostChildOrca{recoveryOrca: base, service: s}
@@ -71,6 +71,8 @@ func lostChildFixture(t *testing.T) (*Executor, *lostChildOrca, *recoveryTools, 
 	if err := saveCheckpoint(e.Config, ticket, *cp); err != nil {
 		t.Fatal(err)
 	}
+	// The scheduler re-reserves the ticket before launching a replacement terminal.
+	l.comments = append(l.comments, "阶段: 写 correction\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")
 	e.Config.Terminal = "replacement_terminal"
 	return e, o, tools, s, ticket
 }
@@ -86,6 +88,7 @@ func TestLostCorrectionChildStartsOnceAfterTerminalReplacement(t *testing.T) {
 	e.Config.Terminal = "third_terminal"
 	e.GitHub.(*fakeGitHub).existing = &result.PR
 	e.GitHub.(*fakeGitHub).existing.Head.SHA = tools.head
+	e.Config.Merging = true
 	for restart := 0; restart < 2; restart++ {
 		resumed, err := e.Start(context.Background(), ticket)
 		if err != nil || resumed.State.Infra != 1 {

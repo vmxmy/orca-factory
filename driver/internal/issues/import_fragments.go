@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const importedFragmentMarker = "<!-- orca-import-comment-v2: "
@@ -21,7 +21,7 @@ type importedFragment struct {
 	Data  string `json:"data"`
 }
 
-func encodeImportedFragments(comment linear.Comment) ([]string, error) {
+func encodeImportedFragments(comment task.Comment) ([]string, error) {
 	raw, err := json.Marshal(comment)
 	if err != nil {
 		return nil, err
@@ -60,8 +60,8 @@ func decodeImportedFragment(body string) (importedFragment, []byte, error) {
 	return fragment, data, nil
 }
 
-func decodeImportedHistory(comments []linear.Comment) ([]linear.Comment, error) {
-	rows := []linear.Comment{}
+func decodeImportedHistory(comments []task.Comment) ([]task.Comment, error) {
+	rows := []task.Comment{}
 	seen := map[string]bool{}
 	for index := 0; index < len(comments); {
 		if !strings.HasPrefix(comments[index].Body, importedFragmentMarker) {
@@ -93,25 +93,25 @@ func decodeImportedHistory(comments []linear.Comment) ([]linear.Comment, error) 
 	return rows, nil
 }
 
-func decodeFragmentGroup(comments []linear.Comment) (linear.Comment, int, error) {
+func decodeFragmentGroup(comments []task.Comment) (task.Comment, int, error) {
 	first, _, err := decodeImportedFragment(comments[0].Body)
 	if err != nil || first.Part != 0 || first.Total > len(comments) {
-		return linear.Comment{}, 0, errors.New("incomplete imported comment fragments")
+		return task.Comment{}, 0, errors.New("incomplete imported comment fragments")
 	}
 	var raw []byte
 	for part := 0; part < first.Total; part++ {
 		if !strings.HasPrefix(comments[part].Body, importedFragmentMarker) {
-			return linear.Comment{}, 0, errors.New("interrupted imported comment fragments")
+			return task.Comment{}, 0, errors.New("interrupted imported comment fragments")
 		}
 		fragment, data, err := decodeImportedFragment(comments[part].Body)
 		if err != nil || fragment.ID != first.ID || fragment.Hash != first.Hash || fragment.Total != first.Total || fragment.Part != part {
-			return linear.Comment{}, 0, errors.New("conflicting imported comment fragments")
+			return task.Comment{}, 0, errors.New("conflicting imported comment fragments")
 		}
 		raw = append(raw, data...)
 	}
-	var comment linear.Comment
+	var comment task.Comment
 	if importHash(raw) != first.Hash || decodeImportJSON(raw, &comment) != nil || comment.ID != first.ID || !validSourceComment(comment) {
-		return linear.Comment{}, 0, errors.New("imported comment fragment integrity mismatch")
+		return task.Comment{}, 0, errors.New("imported comment fragment integrity mismatch")
 	}
 	return comment, first.Total, nil
 }

@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type fakeOrca struct {
@@ -54,25 +55,35 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 	return orca.Receipt{}, f.releaseErr
 }
 
-type fakeIssues struct{ comments []string }
+// fakeIssues serves the fixture ticket issue_one/ZII-861 as a managed open record.
+type fakeIssues struct {
+	issues.Store
+	comments []string
+}
 
-func (f *fakeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
-	var comments []linear.Comment
+func (f *fakeIssues) Repository() string { return "acme/demo" }
+func (f *fakeIssues) Read(_ context.Context, id string) (issues.Task, error) {
+	issue := task.Issue{ID: id, Identifier: "ZII-861"}
+	return issues.Task{Issue: issue, URL: "https://github.com/acme/demo/issues/1", Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
+}
+
+func (f *fakeIssues) ListComments(context.Context, string) ([]task.Comment, error) {
+	var comments []task.Comment
 	for _, body := range f.comments {
-		comments = append(comments, linear.Comment{Body: body})
+		comments = append(comments, task.Comment{Body: body})
 	}
 	return comments, nil
 }
 
-func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
+func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
 	if id != "issue_one" {
 		panic("wrong issue")
 	}
 	f.comments = append(f.comments, body)
-	return linear.Comment{}, nil
+	return task.Comment{}, nil
 }
-func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
-	return linear.Issue{Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-impl"}}}}, nil
+func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error) {
+	return task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}}}, nil
 }
 
 type fakeGitHub struct {
@@ -149,7 +160,7 @@ func TestMainPath(t *testing.T) {
 	if !reflect.DeepEqual(legacyComments, want) {
 		t.Fatalf("comments:\n%q\nwant:\n%q", l.comments, want)
 	}
-	if !reflect.DeepEqual(g.created, []github.CreatePRRequest{{Head: "agent/ZII-861/executor", Base: "main", Title: "ZII-861 执行器", Body: "Fixes ZII-861\n\n实现主路径"}}) {
+	if !reflect.DeepEqual(g.created, []github.CreatePRRequest{{Head: "agent/ZII-861/executor", Base: "main", Title: "ZII-861 执行器", Body: "关联票: https://github.com/acme/demo/issues/1\n\nCanonical identifier: ZII-861\nCanonical ID: issue_one\n\n实现主路径"}}) {
 		t.Fatalf("PR input: %+v", g.created)
 	}
 	if o.releases != 1 || tools.gateCalls != 1 || tools.reviewCalls != 1 {

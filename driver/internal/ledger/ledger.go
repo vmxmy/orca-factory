@@ -71,10 +71,10 @@ func New(store Store, options Options) *Ledger {
 	var ticker *time.Ticker
 	if ticks == nil {
 		interval := options.FlushInterval
-	if interval <= 0 {
-		interval = FlushInterval
-	}
-	ticker = time.NewTicker(interval)
+		if interval <= 0 {
+			interval = FlushInterval
+		}
+		ticker = time.NewTicker(interval)
 		ticks = ticker.C
 	}
 	go func() {

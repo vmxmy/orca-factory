@@ -14,8 +14,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // ImportManifest is a complete, offline source snapshot. Import never contacts the source tracker.
@@ -27,9 +27,9 @@ type ImportManifest struct {
 }
 type ImportIssue struct {
 	CreateInput
-	Comments          []linear.Comment `json:"comments"`
-	CommentsComplete  bool             `json:"commentsComplete"`
-	RelationsComplete bool             `json:"relationsComplete"`
+	Comments          []task.Comment `json:"comments"`
+	CommentsComplete  bool           `json:"commentsComplete"`
+	RelationsComplete bool           `json:"relationsComplete"`
 }
 type ImportResult struct {
 	DryRun          bool `json:"dryRun"`
@@ -49,12 +49,12 @@ const importedCommentMarker = "<!-- orca-import-comments-v1: "
 const importCommentLimit = 50000
 
 type importedComments struct {
-	Comments []linear.Comment `json:"comments"`
-	Hash     string           `json:"sha256"`
+	Comments []task.Comment `json:"comments"`
+	Hash     string         `json:"sha256"`
 }
 
 func importHash(raw []byte) string { sum := sha256.Sum256(raw); return hex.EncodeToString(sum[:]) }
-func encodeImportedComments(comments []linear.Comment) string {
+func encodeImportedComments(comments []task.Comment) string {
 	raw, _ := json.Marshal(comments)
 	envelope, _ := json.Marshal(importedComments{Comments: comments, Hash: importHash(raw)})
 	return importedCommentMarker + string(envelope) + " -->\n\n" + importedHistoryCaption(len(comments))
@@ -66,12 +66,12 @@ func importedHistoryCaption(count int) string {
 
 // DecodeImportedComments restores ordered source records without changing payload
 // bytes. Native comments pass through unchanged as a single logical comment.
-func DecodeImportedComments(c linear.Comment) ([]linear.Comment, error) {
+func DecodeImportedComments(c task.Comment) ([]task.Comment, error) {
 	if strings.HasPrefix(c.Body, importedFragmentMarker) {
 		return nil, errors.New("complete comment history required for imported fragments")
 	}
 	if !strings.HasPrefix(c.Body, importedCommentMarker) {
-		return []linear.Comment{c}, nil
+		return []task.Comment{c}, nil
 	}
 	raw, caption, ok := strings.Cut(strings.TrimPrefix(c.Body, importedCommentMarker), " -->\n\n")
 	if len(c.Body) > importCommentLimit || !ok {
@@ -95,10 +95,10 @@ func DecodeImportedComments(c linear.Comment) ([]linear.Comment, error) {
 	return envelope.Comments, nil
 }
 
-func validSourceComment(c linear.Comment) bool {
+func validSourceComment(c task.Comment) bool {
 	return strings.TrimSpace(c.ID) != "" && !c.CreatedAt.IsZero() && !c.UpdatedAt.IsZero() && !strings.HasPrefix(c.Body, importedCommentMarker) && !strings.HasPrefix(c.Body, importedFragmentMarker)
 }
-func importedBatches(comments []linear.Comment) ([]string, error) {
+func importedBatches(comments []task.Comment) ([]string, error) {
 	batches := []string{}
 	for len(comments) > 0 {
 		n := 0

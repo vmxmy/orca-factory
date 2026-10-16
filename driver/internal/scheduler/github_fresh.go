@@ -6,13 +6,13 @@ import (
 	"reflect"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const githubSquash ActionKind = "github-squash"
 
-func GitHubCleanupAllowed(task issues.Task, comments []linear.Comment) bool {
+func GitHubCleanupAllowed(task issues.Task, comments []task.Comment) bool {
 	if !task.Complete || task.Metadata.ImportHold || task.NativeState != "closed" {
 		return false
 	}
@@ -31,10 +31,7 @@ func GitHubCleanupAllowed(task issues.Task, comments []linear.Comment) bool {
 // Comments may change independently of the issue timestamp, including human
 // cancellation and edited merge receipts.
 func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action ActionKind) error {
-	c, ok := r.Clients[t.Repo].(issues.Store)
-	if !ok {
-		return nil
-	}
+	c := r.Clients[t.Repo]
 	task, err := c.Read(ctx, t.ID)
 	if err != nil {
 		return err
@@ -116,21 +113,16 @@ func githubExecutionAllowed(task issues.Task) error {
 
 func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	client := r.Clients[t.Repo]
-	switch c := client.(type) {
-	case issues.Store:
-		task, err := c.Read(ctx, t.ID)
-		if err != nil {
+	task, err := client.Read(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if t.Owner != machine.OwnerResolver {
+		if err = githubExecutionAllowed(task); err != nil {
 			return err
 		}
-		if t.Owner != machine.OwnerResolver {
-			if err = githubExecutionAllowed(task); err != nil {
-				return err
-			}
-		} else if !task.Metadata.Complete || task.Metadata.ImportHold || task.NativeState != "open" && !DeploymentBarrier(t) {
-			return errors.New("resolver task is held or closed without deployment barrier")
-		}
-	default:
-		return nil
+	} else if !task.Metadata.Complete || task.Metadata.ImportHold || task.NativeState != "open" && !DeploymentBarrier(t) {
+		return errors.New("resolver task is held or closed without deployment barrier")
 	}
 	comments, err := client.ListComments(ctx, t.ID)
 	if err != nil {

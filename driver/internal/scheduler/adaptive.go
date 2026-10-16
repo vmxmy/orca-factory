@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -120,7 +121,7 @@ func (r *Runtime) GitHubLimits() []github.Usage {
 		now = r.Now()
 	}
 	view := status.Usage{Hour: now.UTC().Truncate(time.Hour), Limits: []status.ClientLimits{}}
-	seen := map[IssueClient]bool{}
+	seen := map[issues.Store]bool{}
 	for repo, client := range r.Clients {
 		source, ok := client.(interface{ Usage() github.Usage })
 		if !ok {

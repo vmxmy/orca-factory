@@ -13,14 +13,14 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
 
-func readMergeHandoff(t *Ticket, comments []linear.Comment) {
-	rows := append([]linear.Comment(nil), comments...)
+func readMergeHandoff(t *Ticket, comments []task.Comment) {
+	rows := append([]task.Comment(nil), comments...)
 	sort.SliceStable(rows, func(i, j int) bool {
 		if rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
 			return rows[i].ID < rows[j].ID

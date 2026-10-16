@@ -18,7 +18,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const (
@@ -46,19 +46,19 @@ func eventually(ctx context.Context, t *testing.T, what string, check func() (bo
 	}
 }
 
-func claimable(i linear.Issue) bool {
-	ready := slices.ContainsFunc(i.Labels.Nodes, func(l linear.NamedID) bool { return l.Name == "ready-for-agent" })
+func claimable(i task.Issue) bool {
+	ready := slices.ContainsFunc(i.Labels.Nodes, func(l task.NamedID) bool { return l.Name == "ready-for-agent" })
 	return i.State.Name == "Todo" && ready && !i.Held && !i.Blocked()
 }
 
-func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (linear.Issue, bool, error) {
+func liveSnapshotIssue(ctx context.Context, c *Feishu, id string) (task.Issue, bool, error) {
 	rows, err := c.Snapshot(ctx, []string{c.Repository()}, time.Time{})
 	if err != nil {
-		return linear.Issue{}, false, err
+		return task.Issue{}, false, err
 	}
-	i := slices.IndexFunc(rows, func(r linear.Issue) bool { return r.ID == id })
+	i := slices.IndexFunc(rows, func(r task.Issue) bool { return r.ID == id })
 	if i < 0 {
-		return linear.Issue{}, false, nil
+		return task.Issue{}, false, nil
 	}
 	return rows[i], true, nil
 }
@@ -149,7 +149,7 @@ func TestFeishuLive(t *testing.T) {
 		t.Fatal(err)
 	}
 	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
-	var task Task
+	var created Task
 	var record string
 	var event string
 	t.Cleanup(func() {
@@ -228,19 +228,19 @@ func TestFeishuLive(t *testing.T) {
 		}
 	})
 	ok := t.Run("create adopted", func(t *testing.T) {
-		task, err = c.Create(ctx, CreateInput{Title: "TestFeishuLive " + stamp, Description: brief.Description(), Labels: []string{"ready-for-agent"}, Blockers: []string{}, Related: []string{}})
+		created, err = c.Create(ctx, CreateInput{Title: "TestFeishuLive " + stamp, Description: brief.Description(), Labels: []string{"ready-for-agent"}, Blockers: []string{}, Related: []string{}})
 		if err != nil {
 			t.Fatalf("create: %v", err)
 		}
-		record = task.nativeID
-		if !task.Metadata.Complete || task.Held {
-			t.Fatalf("created task not adopted: complete=%t held=%t", task.Metadata.Complete, task.Held)
+		record = created.nativeID
+		if !created.Metadata.Complete || created.Held {
+			t.Fatalf("created task not adopted: complete=%t held=%t", created.Metadata.Complete, created.Held)
 		}
 	})
 	if !ok {
 		return
 	}
-	t.Logf("ticket %s (%s)", task.Identifier, task.ID)
+	t.Logf("ticket %s (%s)", created.Identifier, created.ID)
 
 	steps := []struct {
 		name string
@@ -248,17 +248,17 @@ func TestFeishuLive(t *testing.T) {
 	}{
 		{"snapshot claimable", func(t *testing.T) {
 			eventually(ctx, t, "claimable ticket in snapshot", func() (bool, error) {
-				issue, found, err := liveSnapshotIssue(ctx, c, task.ID)
+				issue, found, err := liveSnapshotIssue(ctx, c, created.ID)
 				return found && claimable(issue), err
 			})
 		}},
 		{"claim reads back", func(t *testing.T) {
-			issue, err := c.UpdateIssue(ctx, task.ID, "In Progress", []string{"auto-impl"}, nil)
+			issue, err := c.UpdateIssue(ctx, created.ID, "In Progress", []string{"auto-impl"}, nil)
 			if err != nil {
 				t.Fatalf("claim: %v", err)
 			}
-			got, err := c.Read(ctx, task.ID)
-			if err != nil || got.State.Name != "In Progress" || !slices.ContainsFunc(got.Labels.Nodes, func(l linear.NamedID) bool { return l.Name == "auto-impl" }) {
+			got, err := c.Read(ctx, created.ID)
+			if err != nil || got.State.Name != "In Progress" || !slices.ContainsFunc(got.Labels.Nodes, func(l task.NamedID) bool { return l.Name == "auto-impl" }) {
 				t.Fatalf("claim not read back: state=%s labels=%v err=%v", got.State.Name, got.Labels.Nodes, err)
 			}
 			if issue.State.Name != "In Progress" {
@@ -274,14 +274,14 @@ func TestFeishuLive(t *testing.T) {
 
 	body := "live-check-v1: {\"run\":\"" + stamp + "\"}\n多字节正文  \n末行无换行"
 	if !t.Run("event round trip", func(t *testing.T) {
-		comment, err := c.CreateComment(ctx, task.ID, body)
+		comment, err := c.CreateComment(ctx, created.ID, body)
 		if err != nil {
 			t.Fatalf("create event: %v", err)
 		}
 		event = comment.ID
 		eventually(ctx, t, "event "+event+" listed byte for byte", func() (bool, error) {
-			comments, err := c.ListComments(ctx, task.ID)
-			i := slices.IndexFunc(comments, func(x linear.Comment) bool { return x.ID == event })
+			comments, err := c.ListComments(ctx, created.ID)
+			i := slices.IndexFunc(comments, func(x task.Comment) bool { return x.ID == event })
 			if i >= 0 && comments[i].Body != body {
 				t.Fatalf("event body %q, want %q", comments[i].Body, body)
 			}
@@ -297,7 +297,7 @@ func TestFeishuLive(t *testing.T) {
 			t.Fatalf("direct SCOPE edit: %v", err)
 		}
 		eventually(ctx, t, "held ticket", func() (bool, error) {
-			issue, found, err := liveSnapshotIssue(ctx, c, task.ID)
+			issue, found, err := liveSnapshotIssue(ctx, c, created.ID)
 			return found && issue.Held && !claimable(issue), err
 		})
 	}) {
@@ -310,7 +310,7 @@ func TestFeishuLive(t *testing.T) {
 			t.Fatalf("direct event edit: %v", err)
 		}
 		eventually(ctx, t, "evidence conflict", func() (bool, error) {
-			_, err := c.ListComments(ctx, task.ID)
+			_, err := c.ListComments(ctx, created.ID)
 			return err != nil && strings.Contains(err.Error(), "evidence conflict"), nil
 		})
 	})

@@ -277,6 +277,8 @@ func TestStartMergeCorrectionLostCheckpointReconcilesChild(t *testing.T) {
 			if err := os.Remove(checkpointPath(e.Config, ticket)); err != nil {
 				t.Fatal(err)
 			}
+			// The scheduler re-reserves the ticket before launching a replacement terminal.
+			l.comments = append(l.comments, "阶段: 写 correction\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2")
 			e.Config.Terminal = "replacement-executor"
 			tools.gateErr = nil
 			history.running = state == "running"

@@ -9,9 +9,9 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type failLogIssues struct {
@@ -20,11 +20,11 @@ type failLogIssues struct {
 	reads   int
 }
 
-func (l *failLogIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *failLogIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	l.reads++
-	var comments []linear.Comment
+	var comments []task.Comment
 	for _, body := range l.comments {
-		comments = append(comments, linear.Comment{Body: body})
+		comments = append(comments, task.Comment{Body: body})
 	}
 	return comments, l.readErr
 }
@@ -231,7 +231,8 @@ func TestFailLogRebuild(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	l.comments = append(l.comments, "not FAIL: ignored\n FAIL: ignored\nordinary comment")
+	// The scheduler re-reserves the ticket for the executor before the rebuild.
+	l.comments = append(l.comments, "not FAIL: ignored\n FAIL: ignored\nordinary comment", "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1")
 	r := &failLogRecovery{}
 	e.Recovery = r
 	e.Orca = &recoveryOrca{}

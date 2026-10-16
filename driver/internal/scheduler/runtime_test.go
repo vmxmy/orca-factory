@@ -11,45 +11,87 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+// openRecord projects a fake issue as a managed, open backend record.
+func openRecord(issue task.Issue) issues.Task {
+	return issues.Task{Issue: issue, URL: "https://tickets.example/" + issue.ID, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}
+}
+
 type fakeIssues struct {
+	issues.Store
 	updates       int
 	comments      []string
-	issueComments []linear.Comment
-	issues        []linear.Issue
+	issueComments []task.Comment
+	issues        []task.Issue
 	projects      []string
 	description   string
 }
 
-func (f *fakeIssues) Snapshot(_ context.Context, p []string, _ time.Time) ([]linear.Issue, error) {
+func (f *fakeIssues) Snapshot(_ context.Context, p []string, _ time.Time) ([]task.Issue, error) {
 	f.projects = p
 	return f.issues, nil
 }
-func (f *fakeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (f *fakeIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	return f.issueComments, nil
 }
-func (f *fakeIssues) FreshIssue(_ context.Context, id string) (linear.Issue, error) {
+func (f *fakeIssues) FreshIssue(_ context.Context, id string) (task.Issue, error) {
 	for _, issue := range f.issues {
 		if issue.ID == id {
 			return issue, nil
 		}
 	}
-	return linear.Issue{}, errors.New("issue not found")
+	return task.Issue{}, errors.New("issue not found")
+}
+
+// Read treats a ticket outside the fixture's issue list as a managed open record.
+func (f *fakeIssues) Read(ctx context.Context, id string) (issues.Task, error) {
+	issue, err := f.FreshIssue(ctx, id)
+	if err != nil {
+		issue = task.Issue{ID: id}
+	}
+	return openRecord(issue), nil
 }
 func (f *fakeIssues) Description(context.Context, string) (string, error) { return f.description, nil }
-func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error) {
+func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error) {
 	f.updates++
-	return linear.Issue{ID: "id", Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-impl"}}}}, nil
+	return task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}}}, nil
 }
-func (f *fakeIssues) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
+func (f *fakeIssues) CreateComment(_ context.Context, _ string, b string) (task.Comment, error) {
 	f.comments = append(f.comments, b)
-	return linear.Comment{ID: "comment"}, nil
+	c := task.Comment{ID: "comment", Body: b, CreatedAt: time.Now()}
+	f.issueComments = append(f.issueComments, c)
+	return c, nil
+}
+
+func evidenceComments(bodies ...string) []task.Comment {
+	comments := make([]task.Comment, 0, len(bodies))
+	for i, body := range bodies {
+		comments = append(comments, task.Comment{ID: fmt.Sprint("evidence", i), Body: body, CreatedAt: time.Unix(int64(i+1), 0)})
+	}
+	return comments
+}
+
+// fromEvidence derives a ticket from durable comments the way Snapshot does,
+// so the fresh backend reread before a decision sees the same evidence.
+func fromEvidence(t *testing.T, base Ticket, comments []task.Comment) Ticket {
+	t.Helper()
+	if err := readOwnership(&base, comments); err != nil {
+		t.Fatal(err)
+	}
+	readMergeHandoff(&base, comments)
+	record, err := readResolution(comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base.Resolution = record
+	return base
 }
 
 type fakeOrca struct {
@@ -110,10 +152,10 @@ func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
 						oc.failRead = 1
 					}
 				}
-				lc := &fakeIssues{issues: []linear.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: linear.NamedID{ID: "p-a"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+				lc := &fakeIssues{issues: []task.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: task.NamedID{ID: "p-a"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
 				r := &Runtime{Orca: oc, DriverPath: "/driver"}
 				var initialized []string
-				err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (IssueClient, error) {
+				err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (issues.Store, error) {
 					initialized = append(initialized, env["AGENT_GH_REPO"])
 					return lc, nil
 				})
@@ -143,7 +185,7 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	repos := setup(nil).Repositories
 	oc := &fakeOrca{automations: receipt(`{"automations":[{"enabled":true,"runContext":{"path":"a"}},{"enabled":true,"runContext":{"path":"b"}}]}`)}
 	r := &Runtime{Orca: oc}
-	err := r.initialize(context.Background(), repos, func(context.Context, map[string]string) (IssueClient, error) {
+	err := r.initialize(context.Background(), repos, func(context.Context, map[string]string) (issues.Store, error) {
 		t.Fatal("initialized client for refused repository")
 		return nil, nil
 	})
@@ -152,16 +194,17 @@ func TestStartupAllRefusedFailsWithoutInitializingClients(t *testing.T) {
 	}
 }
 func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
-	lc := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p1"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+	lc := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
 	oc := &fakeOrca{}
-	r := &Runtime{Clients: map[string]IssueClient{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
-	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Attempt: 1}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": lc}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}}, Orca: oc, DriverPath: "/opt/driver with space"}
+	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Claim, Attempt: 1, Phase: machine.PhaseWorker}); err != nil {
 		t.Fatal(err)
 	}
 	if lc.updates != 1 || len(lc.comments) != 1 || !strings.Contains(lc.comments[0], "scheduler-attempt=1") {
 		t.Fatalf("updates=%d comments=%v", lc.updates, lc.comments)
 	}
+	ticket.Owner, ticket.Phase, ticket.Attempt = machine.OwnerExecutor, machine.PhaseWorker, 1
 	if err := r.Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +218,7 @@ func TestClaimOneUpdateOneCommentAndSafeLaunch(t *testing.T) {
 }
 func TestResumeOnlyWritesOwnership(t *testing.T) {
 	lc := &fakeIssues{}
-	r := &Runtime{Clients: map[string]IssueClient{"repo": lc}}
+	r := &Runtime{Clients: map[string]issues.Store{"repo": lc}}
 	if err := r.Apply(context.Background(), Ticket{ID: "id", Repo: "repo"}, Action{Kind: Resume, Attempt: 2, Phase: machine.PhaseGate}); err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +227,7 @@ func TestResumeOnlyWritesOwnership(t *testing.T) {
 	}
 }
 func TestOwnershipPreservesSchedulerAttempt(t *testing.T) {
-	comments := []linear.Comment{
+	comments := []task.Comment{
 		{CreatedAt: time.Unix(1, 0), Body: "阶段: gate\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2"},
 		{CreatedAt: time.Unix(2, 0), Body: "阶段: worker 运行中\n归属: 执行器 term=term_new run=run_new attempt=1 since=2026-01-01T00:00:00Z"},
 	}
@@ -197,9 +240,9 @@ func TestOwnershipPreservesSchedulerAttempt(t *testing.T) {
 	}
 }
 func TestRuntimeSnapshotAllProjects(t *testing.T) {
-	lc := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: linear.NamedID{ID: "p2"}, State: linear.NamedID{Name: "Todo"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "ready-for-agent"}}}}}}
+	lc := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: task.NamedID{ID: "p2"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
 	lc.description = "## SCOPE\nsrc/*"
-	r := &Runtime{Clients: map[string]IssueClient{"a": lc, "b": lc}}
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc, "b": lc}}
 	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1"}}, {Path: "b", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p2"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -261,8 +304,10 @@ func TestNoActiveDispatchChecksEveryPage(t *testing.T) {
 
 func TestLaunchMergingArgumentOrder(t *testing.T) {
 	o := &fakeOrca{}
-	r := &Runtime{Orca: o, DriverPath: "/driver path/bin"}
-	if err := r.Launch(context.Background(), Ticket{Identifier: "ENG-1", Repo: "/repo", Phase: machine.PhaseCorrection, Handoff: &merge.Handoff{QueueID: "q1"}, Progress: &merge.Progress{QueueID: "q1", Phase: "correction"}}); err != nil {
+	comments := evidenceComments("阶段: 写 correction\n归属: 执行器 term=- run=- attempt=0", merge.HandoffPrefix+`{"queue_id":"q1"}`, merge.ProgressPrefix+`{"queue_id":"q1","phase":"correction"}`)
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": &fakeIssues{issueComments: comments}}, Orca: o, DriverPath: "/driver path/bin"}
+	ticket := fromEvidence(t, Ticket{Identifier: "ENG-1", Repo: "/repo"}, comments)
+	if err := r.Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
 	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver path/bin' exec --merging 'ENG-1'") {
@@ -280,8 +325,9 @@ func (f *fakeOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (orca.Rec
 
 func TestLaunchOrdinaryCorrectionKeepsRecoveryRoute(t *testing.T) {
 	o := &fakeOrca{}
-	r := &Runtime{Orca: o, DriverPath: "/driver"}
-	if err := r.Launch(context.Background(), Ticket{Identifier: "ENG-1", Repo: "/repo", Phase: machine.PhaseCorrection}); err != nil {
+	comments := evidenceComments("阶段: 写 correction\n归属: 执行器 term=- run=- attempt=0")
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": &fakeIssues{issueComments: comments}}, Orca: o, DriverPath: "/driver"}
+	if err := r.Launch(context.Background(), fromEvidence(t, Ticket{Identifier: "ENG-1", Repo: "/repo"}, comments)); err != nil {
 		t.Fatal(err)
 	}
 	if len(o.launches) != 1 || !strings.HasPrefix(o.launches[0].Command, "exec '/driver' exec 'ENG-1'") {

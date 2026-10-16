@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type moveAfterIntent struct {
@@ -18,7 +18,7 @@ type moveAfterIntent struct {
 	moved bool
 }
 
-func (l *moveAfterIntent) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (l *moveAfterIntent) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
 	c, err := l.mergeIssues.CreateComment(ctx, id, body)
 	if err == nil && !l.moved && strings.Contains(body, `"phase":"merge-intent"`) {
 		l.moved = true
@@ -78,7 +78,7 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{CreatedAt: time.Now().Add(time.Second), Body: "归属: 执行器 term=-\n" + merge.ProgressPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{CreatedAt: time.Now().Add(time.Second), Body: "归属: 执行器 term=-\n" + merge.ProgressPrefix + string(raw)})
 	rows, err := f.runtime.Snapshot(context.Background(), f.repos)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {
 		t.Fatalf("unmerged correction mistaken for deployment: %+v %v", rows, err)
@@ -90,7 +90,7 @@ func TestCorrectionDeploymentIntentDoesNotOwnExecutor(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.tracker.rows = append(f.tracker.rows, linear.Comment{CreatedAt: time.Now().Add(2 * time.Second), Body: "归属: 合并通道\n" + merge.HandoffPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{CreatedAt: time.Now().Add(2 * time.Second), Body: "归属: 合并通道\n" + merge.HandoffPrefix + string(raw)})
 	rows, err = f.runtime.Snapshot(context.Background(), f.repos)
 	if err != nil || len(rows) != 1 || rows[0].MergeProblem != "" || DeploymentBarrier(rows[0]) {
 		t.Fatalf("old unmerged intent blocks repaired head: %+v %v", rows, err)

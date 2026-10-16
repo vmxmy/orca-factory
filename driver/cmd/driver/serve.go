@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
@@ -259,7 +260,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 			repos = append(repos, repo)
 		}
 		sort.Strings(repos)
-		seen := map[scheduler.IssueClient]bool{}
+		seen := map[issues.Store]bool{}
 		for _, repo := range repos {
 			client := runtime.Clients[repo]
 			if source, ok := client.(interface{ Usage() github.Usage }); ok {
