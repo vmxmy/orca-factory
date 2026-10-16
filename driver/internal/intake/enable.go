@@ -17,9 +17,13 @@ type EnableRequest struct {
 	Requester, Thread string
 }
 
-// EnableResult is a finished enabling: the ledger 项目 row, now 启用=true.
+// EnableResult is a finished enabling: the ledger 项目 row, now 启用=true,
+// plus Cleanup (OF-57), a note on the onboarding scene the enable also tried
+// to remove — "" when fully clean, otherwise what is left and why (a
+// cleanup failure never fails the enable itself).
 type EnableResult struct {
-	Row issues.LedgerProject
+	Row     issues.LedgerProject
+	Cleanup string
 }
 
 // Enabler re-validates one repository live (the onboarding PR's merge into
@@ -98,6 +102,10 @@ func (g *Gateway) handleEnableAction(event *callback.CardActionTriggerEvent) (*c
 		if err != nil {
 			return g.reply(ctx, card, fmt.Sprintf("启用 %s 失败：%v", name, err))
 		}
-		return g.reply(ctx, card, fmt.Sprintf("已启用 %s %s，下次项目发现后接管", result.Row.Prefix, result.Row.Name))
+		msg := fmt.Sprintf("已启用 %s %s，下次项目发现后接管", result.Row.Prefix, result.Row.Name)
+		if result.Cleanup != "" {
+			msg += "；" + result.Cleanup
+		}
+		return g.reply(ctx, card, msg)
 	}
 }
