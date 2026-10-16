@@ -51,13 +51,18 @@ const (
 )
 
 func unavailableProjectReply(p Project) string {
-	if p.Reason != "" {
-		return fmt.Sprintf("项目 %s 不可用：%s", p.Prefix, p.Reason)
+	return fmt.Sprintf("项目 %s 不可用：%s", p.Prefix, unavailableReason(p))
+}
+
+func unavailableReason(p Project) string {
+	switch {
+	case p.Reason != "":
+		return p.Reason
+	case !p.Enabled:
+		return "未启用"
+	default:
+		return "本机未配置仓库"
 	}
-	if !p.Enabled {
-		return fmt.Sprintf("项目 %s 未启用，无法使用", p.Prefix)
-	}
-	return fmt.Sprintf("项目 %s 本机未配置仓库，无法使用", p.Prefix)
 }
 
 // enabledProjects is every configured project usable right now, in
@@ -128,11 +133,11 @@ func (g *Gateway) findProjectChoice(input string) (Project, bool) {
 	return Project{}, false
 }
 
-// selectProject resolves a thread's project before any agent turn runs
-// (OF-32): an explicit marker in the first message, the configured group
-// default, or — failing both — the enabled project list, held pending until
-// the requester picks one. The chosen project is written into the session
-// and never changes again in this thread.
+// selectProject resolves a thread's project before any agent turn runs: an
+// explicit marker in the first message (OF-32), or else the picker card
+// (OF-47), with the thread held pending until the requester picks on the
+// card or replies with an index or prefix. The chosen project is written
+// into the session and never changes again in this thread.
 func (g *Gateway) selectProject(ctx context.Context, id, thread, path string, session Session, resume bool, sender, prompt string) error {
 	if !resume {
 		if prefix, name, rest := parseProjectMarker(prompt); prefix != "" || name != "" {
@@ -145,21 +150,16 @@ func (g *Gateway) selectProject(ctx context.Context, id, thread, path string, se
 			}
 			return g.beginProject(ctx, id, thread, path, session, sender, p, rest)
 		}
-		if g.defaultRemote != "" {
-			if p, ok := g.projectByRemote(g.defaultRemote); ok && p.usable() {
-				return g.beginProject(ctx, id, thread, path, session, sender, p, prompt)
-			}
-		}
 		session.PendingPrompt = prompt
 		session.State, session.LastMessage = Chatting, g.now()
 		if err := writeJSON(path, session); err != nil {
 			return err
 		}
-		return g.reply(ctx, id, g.projectListReply())
+		return g.replyCard(ctx, id, g.projectPicker(thread))
 	}
 	p, ok := g.findProjectChoice(strings.TrimSpace(prompt))
 	if !ok {
-		return g.reply(ctx, id, unknownProjectReply)
+		return g.reply(ctx, id, "未识别该项目。"+g.projectListReply())
 	}
 	if !p.usable() {
 		return g.reply(ctx, id, unavailableProjectReply(p))

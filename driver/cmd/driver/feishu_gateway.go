@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/larksuite/oapi-sdk-go/v3/ws"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -311,7 +312,7 @@ func runFeishuGateway(ctx context.Context) error {
 	}
 	// Projects are discovered on demand (OF-42): the gateway starts with none
 	// and rediscovers the live Orca/ledger state when each new topic begins.
-	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), gatewayUsers(settings["AGENT_FEISHU_APPROVERS"]), concurrency, nil, settings["AGENT_FEISHU_INTAKE_PROJECT"], runtime.agent, client.ReplyInThread, client.AddReaction)
+	gateway, err := intake.New(dir, settings["AGENT_FEISHU_INTAKE_CHAT"], settings["AGENT_FEISHU_BOT_OPEN_ID"], gatewayUsers(settings["AGENT_FEISHU_INTAKE_USERS"]), gatewayUsers(settings["AGENT_FEISHU_APPROVERS"]), concurrency, nil, settings["AGENT_FEISHU_INTAKE_PROJECT"], runtime.agent, client.ReplyInThread, client.AddReaction, client.ReplyCardInThread, client.UpdateCard)
 	if err != nil {
 		return err
 	}
@@ -320,6 +321,18 @@ func runFeishuGateway(ctx context.Context) error {
 			refreshIntakeProjects(ctx, gateway, cfg, orcaClient, runtime)
 		}
 		return gateway.Handle(ctx, event)
+	}).OnP2CardActionTrigger(func(_ context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
+		// The callback must be answered within Feishu's deadline, while the
+		// card update and the first agent turn can take much longer.
+		response, settle := gateway.HandleCardAction(event)
+		if settle != nil {
+			go func() {
+				if err := settle(ctx); err != nil {
+					fmt.Fprintln(os.Stderr, "intake gateway: project pick failed:", err)
+				}
+			}()
+		}
+		return response, nil
 	})
 	handler.Config.Logger = gatewaySDKLogger{}
 	options := []ws.ClientOption{ws.WithEventHandler(handler), ws.WithAutoReconnect(true), ws.WithLogger(gatewaySDKLogger{})}

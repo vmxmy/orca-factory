@@ -1,0 +1,15 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"body\":{\"elements\":[{\"content\":\"已选择 ZY zhiyun-ai-dashboard\",\"tag\":\"markdown\"}]},\"config\":{\"update_multi\":true},\"header\":{\"template\":\"green\",\"title\":{\"content\":\"选择项目\",\"tag\":\"plain_text\"}},\"schema\":\"2.0\"}"
+    },
+    "method": "PATCH",
+    "params": null,
+    "path": "/open-apis/im/v1/messages/om_REDACTED_CARD"
+  },
+  "response": {
+    "data": {},
+    "identity": "bot",
+    "ok": true
+  }
+}
