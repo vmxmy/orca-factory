@@ -13,12 +13,7 @@ import (
 
 func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Record, proposal resolver.Resolution) error {
 	stop := func(reason string) error {
-		next := *p
-		next.Phase, next.Outcome = "human", "failed"
-		next.RetryAt = time.Time{}
-		raw, _ := json.Marshal(next)
-		body := fmt.Sprintf("转人: open-pr %s\n证据: branch=%s head=%s\n阶段: 转人\n归属: 人\n%s%s", reason, proposal.Branch, proposal.Head, resolver.Prefix, raw)
-		return r.mergeComment(ctx, t, body)
+		return r.escalateResolution(ctx, t, p, "open-pr "+reason, fmt.Sprintf("branch=%s head=%s", proposal.Branch, proposal.Head))
 	}
 	if DeploymentBarrier(t) || t.MergeProblem != "" {
 		return stop("existing deployment or merge evidence requires reconciliation")

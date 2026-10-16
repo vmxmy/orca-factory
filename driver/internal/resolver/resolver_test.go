@@ -141,7 +141,7 @@ func TestReportIsDurableBeforeRelease(t *testing.T) {
 		t.Fatal("completed resolver replayed")
 	}
 }
-func TestFailedAgentWaitsBeforeNewAttempt(t *testing.T) {
+func TestFailedAgentReportIsHandedToScheduler(t *testing.T) {
 	c, s, o := setupController()
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
@@ -150,8 +150,8 @@ func TestFailedAgentWaitsBeforeNewAttempt(t *testing.T) {
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.record.Phase != "waiting" || !s.record.RetryAt.After(c.Now()) || o.releases != 1 {
-		t.Fatalf("failure did not retain timed agent ownership: %+v", s.record)
+	if s.record.Phase != "result" || s.record.Outcome != "failed" || s.record.Result != "dependency unavailable" || !s.record.RetryAt.IsZero() || o.releases != 1 {
+		t.Fatalf("failure not handed to scheduler: %+v", s.record)
 	}
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
@@ -169,7 +169,7 @@ func TestFailedTaskWithoutReportRetriesInsteadOfWaitingForever(t *testing.T) {
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if s.record.Phase != "waiting" || o.releases != 1 {
+	if s.record.Phase != "result" || s.record.Outcome != "failed" || o.releases != 1 {
 		t.Fatalf("failed task stuck: %+v", s.record)
 	}
 }

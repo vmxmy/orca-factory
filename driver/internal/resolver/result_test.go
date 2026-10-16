@@ -9,6 +9,15 @@ func TestResolutionRejectsUnstructuredOrUnknownDecision(t *testing.T) {
 		}
 	}
 }
+func TestResolutionEscalateRequiresReasonAndEvidence(t *testing.T) {
+	p, err := ParseResult(`{"action":"escalate","reason":"PATH 缺少 PostgreSQL","body":"make test 需要 pg_ctl"}`)
+	if err != nil || p.Action != "escalate" || p.Body != "make test 需要 pg_ctl" {
+		t.Fatalf("escalation rejected: %+v %v", p, err)
+	}
+	if _, err := ParseResult(`{"action":"escalate","reason":"blocked"}`); err == nil {
+		t.Fatal("accepted escalation without evidence")
+	}
+}
 func TestResolutionAcceptsPinnedDeploymentProposal(t *testing.T) {
 	p, err := ParseResult(`{"action":"retry-smoke","queue":"q","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reason":"verified previous side effects"}`)
 	if err != nil || p.Queue != "q" {
