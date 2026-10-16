@@ -98,15 +98,7 @@ func intakeConcurrency(env map[string]string) (int, error) {
 // repository env (its AGENT_FEISHU_PROJECT remote): the gateway submits
 // confirmed drafts through it (OF-15) and reads it for the ticket context.
 func intakeLedger(ctx context.Context, env map[string]string, tuning config.Tuning) (issues.Store, error) {
-	client, err := issues.New(ctx, env, tuning)
-	if err != nil {
-		return nil, err
-	}
-	store, ok := client.(issues.Store)
-	if !ok {
-		return nil, errors.New("intake gateway requires a feishu repository")
-	}
-	return store, nil
+	return issues.New(ctx, env, tuning)
 }
 
 // intakeTickets builds the ledger reader a Runner writes into

@@ -20,7 +20,7 @@ type projectTracker interface {
 // repositoryUpdater is the optional Backend capability that keeps its own
 // copy of an already-tracked repository's configuration in sync once
 // RefreshProjects confirms a hot reload is safe (OF-45): the ledger identity
-// keys are unchanged, so no bound Linear/GitHub/Feishu client needs rebinding.
+// keys are unchanged, so no bound GitHub/Feishu client needs rebinding.
 type repositoryUpdater interface {
 	UpdateRepository(config.Repository)
 }
@@ -87,7 +87,7 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 // reader (scheduler.go's MaxInFlight/StaleHours/AGENT_SCOPE_AVOID checks, and
 // the Backend's own repositoryUpdater copy) sees the replacement on this same
 // tick. A changed identity key instead keeps current entirely until serve
-// restarts, so a bound Linear/GitHub/Feishu client is never rebound live.
+// restarts, so a bound GitHub/Feishu client is never rebound live.
 func (s *Scheduler) reconcileRepository(current, fresh config.Repository, updater repositoryUpdater) config.Repository {
 	changed := config.ChangedEnvKeys(current.Env, fresh.Env)
 	if current.MaxInFlight != fresh.MaxInFlight {
