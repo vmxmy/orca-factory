@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -165,5 +166,47 @@ func TestDiscoverFactoryRootUnconfigured(t *testing.T) {
 	reason, ok := rejection(result, "github.com/example/anything")
 	if !ok || reason != ReasonFactoryRootUnconfigured || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonFactoryRootUnconfigured", result)
+	}
+}
+
+// containsPath reports whether repos includes one whose Path is path.
+func containsPath(repos []config.Repository, path string) bool {
+	for _, r := range repos {
+		if r.Path == path {
+			return true
+		}
+	}
+	return false
+}
+
+// TestReadableRepositories is OF-44's manual-recovery criterion: unlike
+// Discover, it never consults the ledger project table or a pipeline check,
+// so a repository stays findable after it is moved out of the eligible set.
+func TestReadableRepositories(t *testing.T) {
+	root := t.TempDir()
+
+	noProfile := filepath.Join(root, "no-profile")
+	if err := os.MkdirAll(noProfile, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	linearBackend := filepath.Join(root, "linear-backend")
+	writeEnv(t, linearBackend, "AGENT_ISSUE_BACKEND=linear\n")
+
+	emptyBase := filepath.Join(root, "empty-base")
+	writeEnv(t, emptyBase, "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=\n")
+
+	readable := filepath.Join(root, "readable")
+	writeEnv(t, readable, "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=BASE_TOKEN\n")
+
+	repos := []orca.Repo{
+		{Path: noProfile, CanonicalKey: "github.com/example/no-profile"},
+		{Path: linearBackend, CanonicalKey: "github.com/example/linear-backend"},
+		{Path: emptyBase, CanonicalKey: "github.com/example/empty-base"},
+		{Path: readable, CanonicalKey: "github.com/example/readable"},
+	}
+	result := ReadableRepositories(repos)
+	if len(result) != 1 || !containsPath(result, readable) {
+		t.Fatalf("ReadableRepositories=%+v, want only %s", result, readable)
 	}
 }

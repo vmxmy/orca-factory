@@ -12,6 +12,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -35,11 +36,16 @@ func resumeDeployment(args []string) int {
 		if err != nil {
 			return err
 		}
-		discovered, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+		// Unlike serve's discoverProjects, recovery must still find a
+		// repository's deployment barrier after it was moved out of the
+		// eligible set (project disabled, ledger row gone, pipeline check
+		// red): it reads every repository Orca knows about whose own
+		// agent-graph.env declares a Feishu ledger (OF-44).
+		repos, err := (&orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}).RepoList(ctx)
 		if err != nil {
 			return err
 		}
-		runtime, err := scheduler.NewRuntime(ctx, cfg, eligibleRepositories(discovered))
+		runtime, err := scheduler.NewRuntime(ctx, cfg, projects.ReadableRepositories(repos))
 		if err != nil {
 			return err
 		}

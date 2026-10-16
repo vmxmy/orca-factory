@@ -121,7 +121,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 5. 发现结果中不接管的项目（含原因）变化时，每个项目写一条 WARN `project not taken over`，带 `path` 与 `reason`；结果不变不重复写。每次发现还写一条 INFO `projects discovered`，列出 `eligible` 与 `retired`；每轮调度的 `scheduler inspection` 摘要也带 `retired`。
 6. 已接管项目的 `agent-graph.env` 变更在 serve 重启后生效。
 
-人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`resume-deployment` 与 `selftest --live` 各运行一次发现。`resume-deployment` 因此只能找到仍可接管项目的部署屏障；已移出项目的屏障需先恢复其项目表启用状态。
+人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`selftest --live` 运行一次发现。`resume-deployment` 不运行发现（OF-44）：它不联立飞书项目表、不跑流水线 check，而是直接枚举本机 Orca 仓库清单中每个 `agent-graph.env` 可读且声明飞书账本（`AGENT_ISSUE_BACKEND=feishu` 且 `AGENT_FEISHU_BASE` 非空）的仓库。项目移出可接管集合后（未启用、项目表无对应行、check 变红等任意原因），只要其 `agent-graph.env` 还在且声明飞书账本，`resume-deployment` 仍能找到并处置其部署屏障，不必先恢复项目表启用状态。
 
 ## 启动检查
 
