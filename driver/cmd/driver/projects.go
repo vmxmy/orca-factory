@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -18,12 +19,32 @@ import (
 
 func init() { Register("projects", runProjects) }
 
+// checkExitBehind is `orca-factory check`'s exit code when every drift is a
+// lagging core copy (OF-53).
+const checkExitBehind = 3
+
 // factoryChecker is the production projects.Checker (OF-42): it runs this
-// machine's own orca-factory binary against a candidate repository.
+// machine's own orca-factory binary against a candidate repository and reads
+// its `check: BEHIND   <file>` lines when it exits checkExitBehind.
 func factoryChecker(factoryRoot string) projects.Checker {
-	return func(ctx context.Context, path string) error {
-		_, err := runx.Run(ctx, runx.Spec{Path: filepath.Join(factoryRoot, "bin", "orca-factory"), Args: []string{"check", path}, Timeout: 2 * time.Minute})
-		return err
+	return func(ctx context.Context, path string) ([]string, error) {
+		out, err := runx.Run(ctx, runx.Spec{Path: filepath.Join(factoryRoot, "bin", "orca-factory"), Args: []string{"check", path}, Timeout: 2 * time.Minute})
+		if err == nil {
+			return nil, nil
+		}
+		if exitCode(err) != checkExitBehind {
+			return nil, err
+		}
+		var behind []string
+		for _, line := range strings.Split(string(out), "\n") {
+			if file, ok := strings.CutPrefix(line, "check: BEHIND"); ok {
+				behind = append(behind, strings.TrimSpace(file))
+			}
+		}
+		if len(behind) == 0 {
+			return nil, errors.New("orca-factory check reported core behind without files")
+		}
+		return behind, nil
 	}
 }
 

@@ -218,3 +218,36 @@ func TestDiscoverFailureKeepsPreviousProjects(t *testing.T) {
 		t.Fatalf("launches=%v, want both previously discovered projects still claimable", got)
 	}
 }
+
+// TestRefreshProjectsCoreBehindTakenOverAndSynced is OF-53: an eligible
+// project whose core copy lags stays taken over, its lag is warned once per
+// distinct file list, and every discovery hands it to SyncCore (whose own
+// remote checks keep one PR per factory version); a project in step is not.
+func TestRefreshProjectsCoreBehindTakenOverAndSynced(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	result := eligible("/a", "/b")
+	result.Eligible[0].CoreBehind = []string{"install.sh"}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	var synced []string
+	s.SyncCore = func(_ context.Context, p projects.Project) error {
+		synced = append(synced, p.Path+":"+strings.Join(p.CoreBehind, ","))
+		return nil
+	}
+	for range 2 {
+		if err := s.RefreshProjects(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		now = now.Add(time.Minute)
+	}
+	if paths := []string{s.Repositories[0].Path, s.Repositories[1].Path}; !reflect.DeepEqual(paths, []string{"/a", "/b"}) || len(s.retired) != 0 {
+		t.Fatalf("repositories=%v retired=%v, want both taken over", paths, s.retired)
+	}
+	if !reflect.DeepEqual(synced, []string{"/a:install.sh", "/a:install.sh"}) {
+		t.Fatalf("synced=%v", synced)
+	}
+	if n := strings.Count(logs.String(), `msg="project core behind" path=/a files=[install.sh]`); n != 1 {
+		t.Fatalf("core behind warned %d times, want once:\n%s", n, logs.String())
+	}
+}

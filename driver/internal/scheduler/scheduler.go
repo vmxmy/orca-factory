@@ -87,9 +87,14 @@ type Scheduler struct {
 	// RefreshProjects re-runs it every DiscoverEvery (OF-43).
 	Discover      func(context.Context) (projects.Result, error)
 	DiscoverEvery time.Duration
-	retired       map[string]bool
-	nextDiscover  time.Time
-	rejections    string
+	// SyncCore, when set, opens the core sync PR for a taken-over project
+	// whose core copy lags the factory (OF-53); it is idempotent per factory
+	// version, so RefreshProjects calls it on every discovery.
+	SyncCore     func(context.Context, projects.Project) error
+	retired      map[string]bool
+	nextDiscover time.Time
+	rejections   string
+	coreBehind   string
 	// identityDrift remembers the last-logged ledger-identity change per
 	// repository path so RefreshProjects (OF-45) warns once per distinct drift.
 	identityDrift    map[string]string

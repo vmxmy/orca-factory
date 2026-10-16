@@ -8,6 +8,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
 
 // projectTracker is the optional Backend capability that prepares a newly
@@ -63,6 +64,7 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 		eligible[p.Path] = true
 		repositories = append(repositories, p.Repository)
 	}
+	s.syncCore(ctx, result.Eligible, eligible)
 	retired := map[string]bool{}
 	for _, r := range repositories {
 		if !eligible[r.Path] {
@@ -121,6 +123,35 @@ func (s *Scheduler) warnIdentityDrift(path string, changed []string) {
 	}
 	s.identityDrift[path] = fingerprint
 	s.logger().Warn("ledger identity changed; restart required", "path", path, "changed", changed)
+}
+
+// syncCore warns once per distinct set of lagging core copies among the
+// taken-over projects, and hands each lagging one to SyncCore. A failed sync
+// only warns: the project stays taken over and the next discovery retries.
+func (s *Scheduler) syncCore(ctx context.Context, found []projects.Project, eligible map[string]bool) {
+	var lines []string
+	var lagging []projects.Project
+	for _, p := range found {
+		if eligible[p.Path] && len(p.CoreBehind) > 0 {
+			lines = append(lines, p.Path+"\x00"+strings.Join(p.CoreBehind, "\x00"))
+			lagging = append(lagging, p)
+		}
+	}
+	sort.Strings(lines)
+	if fingerprint := strings.Join(lines, "\n"); fingerprint != s.coreBehind {
+		s.coreBehind = fingerprint
+		for _, p := range lagging {
+			s.logger().Warn("project core behind", "path", p.Path, "files", p.CoreBehind)
+		}
+	}
+	if s.SyncCore == nil {
+		return
+	}
+	for _, p := range lagging {
+		if err := s.SyncCore(ctx, p); err != nil {
+			s.logger().Warn("core sync failed", "path", p.Path, "err", err)
+		}
+	}
 }
 
 // logRejections warns once per repository whenever the rejected set changes.
