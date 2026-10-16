@@ -73,6 +73,10 @@ type LiveRemote func(ctx context.Context, path string) (string, error)
 type Rejection struct {
 	Path, Remote string
 	Reason       Reason
+	// Repository is this repository's own profile when ReadableRepositories
+	// would accept it, nil otherwise: serve still reads such a repository's
+	// ledger for driver-owned in-flight tickets (OF-98).
+	Repository *config.Repository `json:"-"`
 }
 
 // Result is every repository Discover considered, split into what this
@@ -111,7 +115,11 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 	}
 	for _, repo := range repos {
 		reject := func(reason Reason) {
-			result.Rejected = append(result.Rejected, Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason})
+			rejection := Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason}
+			if repository, ok := readable(repo.Path); ok {
+				rejection.Repository = &repository
+			}
+			result.Rejected = append(result.Rejected, rejection)
 		}
 		gatesDir := filepath.Join(repo.Path, "scripts", "agent-gates")
 		if _, err := os.Stat(gatesDir); err != nil {
@@ -185,11 +193,17 @@ func remoteMismatch(ctx context.Context, path, canonicalKey string, liveRemote L
 func ReadableRepositories(repos []orca.Repo) []config.Repository {
 	result := make([]config.Repository, 0, len(repos))
 	for _, repo := range repos {
-		repository, err := config.LoadRepository(repo.Path)
-		if err != nil || repository.Env["AGENT_ISSUE_BACKEND"] != "feishu" || repository.Env["AGENT_FEISHU_BASE"] == "" {
-			continue
+		if repository, ok := readable(repo.Path); ok {
+			result = append(result, repository)
 		}
-		result = append(result, repository)
 	}
 	return result
+}
+
+func readable(path string) (config.Repository, bool) {
+	repository, err := config.LoadRepository(path)
+	if err != nil || repository.Env["AGENT_ISSUE_BACKEND"] != "feishu" || repository.Env["AGENT_FEISHU_BASE"] == "" {
+		return config.Repository{}, false
+	}
+	return repository, true
 }

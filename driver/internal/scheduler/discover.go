@@ -65,6 +65,20 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 		repositories = append(repositories, p.Repository)
 	}
 	s.syncCore(ctx, result.Eligible, eligible)
+	for _, r := range result.Rejected {
+		if r.Repository == nil || slices.ContainsFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }) {
+			continue
+		}
+		held, err := s.heldTickets(ctx, *r.Repository, tracker)
+		if err != nil {
+			rejected[r.Path] = string(r.Reason) + "; in-flight probe failed: " + err.Error()
+			continue
+		}
+		if len(held) > 0 {
+			repositories = append(repositories, *r.Repository)
+			s.logger().Warn("project not taken over but has in-flight tickets", "path", r.Path, "reason", string(r.Reason), "tickets", held)
+		}
+	}
 	retired := map[string]bool{}
 	for _, r := range repositories {
 		if !eligible[r.Path] {
@@ -80,6 +94,29 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 	sort.Strings(paths)
 	s.logger().Info("projects discovered", "eligible", paths, "retired", s.retiredPaths())
 	return nil
+}
+
+// heldTickets reads a not-takeable repository's ledger and returns the
+// identifiers of the tickets the driver still owns there (OF-98): a
+// repository that is already not takeable when serve starts never left the
+// eligible set, so without this its in-flight work would have no reader.
+func (s *Scheduler) heldTickets(ctx context.Context, repo config.Repository, tracker projectTracker) ([]string, error) {
+	if tracker != nil {
+		if err := tracker.Track(ctx, repo); err != nil {
+			return nil, err
+		}
+	}
+	tickets, err := s.Backend.Snapshot(ctx, []config.Repository{repo})
+	if err != nil {
+		return nil, err
+	}
+	var held []string
+	for _, t := range tickets {
+		if owned(t) || DeploymentBarrier(t) {
+			held = append(held, t.Identifier)
+		}
+	}
+	return held, nil
 }
 
 // reconcileRepository replaces current with fresh whenever fresh differs and

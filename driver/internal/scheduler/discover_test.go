@@ -251,3 +251,57 @@ func TestRefreshProjectsCoreBehindTakenOverAndSynced(t *testing.T) {
 		t.Fatalf("core behind warned %d times, want once:\n%s", n, logs.String())
 	}
 }
+
+// TestStartupRetiresUntakeableProjectWithInFlightTickets is OF-98: a
+// repository that is already not takeable when serve starts, but whose ledger
+// still holds driver-owned in-flight tickets, is tracked as retired so those
+// tickets keep advancing while its new tickets stay unclaimed; a not-takeable
+// repository with nothing in flight is not tracked at all.
+func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	result := eligible("/a")
+	result.Rejected = []projects.Rejection{
+		{Path: "/z", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8}},
+		{Path: "/y", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/y", MaxInFlight: 3, StaleHours: 8}},
+		{Path: "/x", Reason: projects.ReasonLedgerNotFeishu},
+	}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	f.tickets = []Ticket{
+		{ID: "z-running", Identifier: "ZCP-1", Repo: "/z", Owner: machine.OwnerExecutor, Phase: machine.PhaseWorker, Attempt: 1, Terminal: "term", UpdatedAt: now},
+		{ID: "z-merging", Identifier: "ZCP-2", Repo: "/z", Owner: machine.OwnerMerge, UpdatedAt: now},
+		{ID: "z-new", Identifier: "ZCP-3", Repo: "/z", Candidate: true, CreatedAt: now},
+		{ID: "y-new", Identifier: "YYY-1", Repo: "/y", Candidate: true, CreatedAt: now},
+		{ID: "a-new", Identifier: "AAA-1", Repo: "/a", Candidate: true, CreatedAt: now},
+	}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, r := range s.Repositories {
+		paths = append(paths, r.Path)
+	}
+	if !reflect.DeepEqual(paths, []string{"/a", "/z"}) || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
+		t.Fatalf("repositories=%v retired=%v, want /z retired and /y, /x untracked", paths, s.retiredPaths())
+	}
+
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := launchedIDs(f); !reflect.DeepEqual(got, []string{"z-running", "a-new"}) {
+		t.Fatalf("launches=%v, want the retired in-flight ticket resumed and only the eligible candidate claimed", got)
+	}
+	if len(s.MergeQueue) != 1 || s.MergeQueue[0].ID != "z-merging" {
+		t.Fatalf("merge queue=%v, want the retired project's merge to keep advancing", s.MergeQueue)
+	}
+
+	now = now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := `msg="project not taken over but has in-flight tickets" path=/z reason="check 失败" tickets="[ZCP-1 ZCP-2]"`
+	if n := strings.Count(logs.String(), want); n != 1 {
+		t.Fatalf("in-flight warning logged %d times, want once:\n%s", n, logs.String())
+	}
+}

@@ -352,3 +352,25 @@ func TestReadableRepositories(t *testing.T) {
 		t.Fatalf("ReadableRepositories=%+v, want only %s", result, readable)
 	}
 }
+
+// TestDiscoverRejectionCarriesReadableRepository is OF-98: a rejected
+// repository that ReadableRepositories would accept carries its profile, so
+// serve can still find that repository's in-flight tickets; one without a
+// Feishu base carries none.
+func TestDiscoverRejectionCarriesReadableRepository(t *testing.T) {
+	readable, bare := t.TempDir(), t.TempDir()
+	writeEnv(t, readable, "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=TEST-PLACEHOLDER-CRED\n")
+	writeEnv(t, bare, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: readable, CanonicalKey: "github.com/example/readable"}, {Path: bare, CanonicalKey: "github.com/example/bare"}}
+	failing := func(context.Context, string) ([]string, error) { return nil, errors.New("gate red") }
+	result := Discover(context.Background(), repos, nil, failing, nil)
+	if len(result.Rejected) != 2 {
+		t.Fatalf("result=%+v, want both rejected", result)
+	}
+	if r := result.Rejected[0].Repository; r == nil || r.Path != readable {
+		t.Fatalf("readable rejection repository=%+v, want %s", r, readable)
+	}
+	if r := result.Rejected[1].Repository; r != nil {
+		t.Fatalf("bare rejection repository=%+v, want nil", r)
+	}
+}
