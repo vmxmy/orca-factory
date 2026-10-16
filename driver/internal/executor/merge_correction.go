@@ -14,10 +14,10 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 )
 
-// Linear owns the correction request; executor.json only reconciles dispatches
+// The ticket backend owns the correction request; executor.json only reconciles dispatches
 // using the existing checkpoint contract. A stale open PR cannot consume it.
 func (e *Executor) restoreMergeCorrection(ctx context.Context, c Config, t Ticket, cp **checkpoint, result *Result) (bool, error) {
-	rows, err := e.Linear.ListComments(ctx, t.ID)
+	rows, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
 		return false, safeDependencyError(err)
 	}

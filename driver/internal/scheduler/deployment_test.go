@@ -27,19 +27,19 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 		}
 		return runx.Run(ctx, s)
 	}
-	b := *f.linear
+	b := *f.tracker
 	b.issue.ID = "b"
-	b.issue.Project.ID = "p-b"
-	b.rows = append([]linear.Comment(nil), f.linear.rows...)
+	b.issue.Project.ID = "o/s"
+	b.rows = append([]linear.Comment(nil), f.tracker.rows...)
 	bf := *f
-	bf.linear = &b
+	bf.tracker = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
 	dir := t.TempDir()
 	gitMergeTest(t, dir, "clone", f.repos[0].Path, ".")
-	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p-b", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
+	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
 	f.repos = append(f.repos, br)
 	f.runtime.Repositories[dir] = br
-	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
+	source := &mergeTickets{rows: []*mergeIssues{f.tracker, &b}}
 	f.runtime.Clients[dir] = source
 	f.runtime.Clients[f.repos[0].Path] = source
 	original := f.server.Config.Handler
@@ -108,12 +108,12 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 		}
 	})
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if err == nil || f.puts != 1 || bPuts != 1 || b.issue.State.Name != "Done" || f.linear.issue.State.Name != "In Progress" {
+	if err == nil || f.puts != 1 || bPuts != 1 || b.issue.State.Name != "Done" || f.tracker.issue.State.Name != "In Progress" {
 		t.Fatalf("repository isolation failed: err=%v a=%d b=%d state=%s", err, f.puts, bPuts, b.issue.State.Name)
 	}
 	// An operator may mark the issue Done or transfer ownership while waiting.
-	f.linear.issue.State.Name = "Done"
-	f.linear.rows = append(f.linear.rows, linear.Comment{ID: "operator", CreatedAt: time.Now(), Body: "归属: 无"})
+	f.tracker.issue.State.Name = "Done"
+	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "operator", CreatedAt: time.Now(), Body: "归属: 无"})
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -130,8 +130,8 @@ func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) 
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if smokes != 1 || f.puts != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"passed"`) {
-		t.Fatalf("deployment not completed: smoke=%d merges=%d receipts=%v", smokes, f.puts, f.linear.bodies)
+	if smokes != 1 || f.puts != 1 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"state":"passed"`) {
+		t.Fatalf("deployment not completed: smoke=%d merges=%d receipts=%v", smokes, f.puts, f.tracker.bodies)
 	}
 
 }
@@ -152,11 +152,11 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 		original.ServeHTTP(w, r)
 	})
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 处置Agent") {
-		t.Fatalf("failure not durably escalated: %v", f.linear.bodies)
+	if !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"state":"paused"`) || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 处置Agent") {
+		t.Fatalf("failure not durably escalated: %v", f.tracker.bodies)
 	}
 	conclusion = "success"
-	f.linear.issue.State.Name = "Done"
+	f.tracker.issue.State.Name = "Done"
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -166,21 +166,21 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 	}
 }
 
-type uncertainSmokeLinear struct {
-	*mergeLinear
+type uncertainSmokeIssues struct {
+	*mergeIssues
 	loseResult bool
 }
 
-func (l *uncertainSmokeLinear) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
+func (l *uncertainSmokeIssues) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
 	if l.loseResult && strings.Contains(body, `"state":"passed"`) {
 		return linear.Comment{}, fmt.Errorf("lost result")
 	}
-	return l.mergeLinear.CreateComment(ctx, id, body)
+	return l.mergeIssues.CreateComment(ctx, id, body)
 }
 func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) {
 	f := newMergeFixture(t)
 	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
-	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
+	l := &uncertainSmokeIssues{mergeIssues: f.tracker, loseResult: true}
 	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -203,8 +203,8 @@ func TestDeploymentSmokeUnconfirmedNeverReplaysAndCanBeReconciled(t *testing.T) 
 		rebuilt.GitHub = nil
 		_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 	}
-	if smokes != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"state":"paused"`) {
-		t.Fatalf("uncertain smoke replayed or not escalated: %d %v", smokes, f.linear.bodies)
+	if smokes != 1 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"state":"paused"`) {
+		t.Fatalf("uncertain smoke replayed or not escalated: %d %v", smokes, f.tracker.bodies)
 	}
 }
 
@@ -226,14 +226,14 @@ func TestDeploymentManualRecoveryIsPinnedAndDurable(t *testing.T) {
 	if !ok {
 		t.Fatal("no explicit deployment recovery entrypoint")
 	}
-	before := len(f.linear.bodies)
+	before := len(f.tracker.bodies)
 	if err := recovery.ResumeDeployment(context.Background(), "ENG-1", "wrong", strings.Repeat("a", 40), "confirm-passed", "operator", "checked production", false); err == nil {
 		t.Fatal("stale identity accepted")
 	}
 	if err := recovery.ResumeDeployment(context.Background(), "ENG-1", "q1", strings.Repeat("a", 40), "confirm-passed", "operator", "checked production", true); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.linear.bodies) != before || smokes != 1 {
+	if len(f.tracker.bodies) != before || smokes != 1 {
 		t.Fatal("dry-run changed recovery")
 	}
 	if err := recovery.ResumeDeployment(context.Background(), "ENG-1", "q1", strings.Repeat("a", 40), "confirm-passed", "operator", "checked production", false); err != nil {
@@ -244,8 +244,8 @@ func TestDeploymentManualRecoveryIsPinnedAndDurable(t *testing.T) {
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if smokes != 1 || f.linear.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"action":"confirm-passed"`) {
-		t.Fatalf("manual confirmation lost/replayed: smoke=%d %v", smokes, f.linear.bodies)
+	if smokes != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"action":"confirm-passed"`) {
+		t.Fatalf("manual confirmation lost/replayed: smoke=%d %v", smokes, f.tracker.bodies)
 	}
 }
 
@@ -268,7 +268,7 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			})
 			_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			var p map[string]any
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(f.tracker.bodies[len(f.tracker.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
 				t.Fatal(err)
 			}
 			switch damage {
@@ -288,8 +288,8 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 			if damage == "invalid-json" {
 				raw = []byte("{")
 			}
-			f.linear.rows = append(f.linear.rows, linear.Comment{ID: "damaged", CreatedAt: time.Now(), Body: "归属: 无\nmerge-progress-v1: " + string(raw)})
-			f.linear.issue.State.Name = "Done"
+			f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "damaged", CreatedAt: time.Now(), Body: "归属: 无\nmerge-progress-v1: " + string(raw)})
+			f.tracker.issue.State.Name = "Done"
 			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = ""
 			rebuilt := *f.runtime
 			rebuilt.GitHub = nil
@@ -303,7 +303,7 @@ func TestDeploymentDoneWithDamagedEvidenceFailsClosed(t *testing.T) {
 func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	f := newMergeFixture(t)
 	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
-	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
+	l := &uncertainSmokeIssues{mergeIssues: f.tracker, loseResult: true}
 	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -315,13 +315,13 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	}
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	// Introduce a later queue member after the first merge, preserving all external evidence.
-	next := *f.linear
+	next := *f.tracker
 	next.issue.ID = "next"
 	next.issue.Identifier = "ENG-2"
-	next.rows = append([]linear.Comment(nil), f.linear.rows[:1]...)
+	next.rows = append([]linear.Comment(nil), f.tracker.rows[:1]...)
 	next.bodies = nil
 	nf := *f
-	nf.linear = &next
+	nf.tracker = &next
 	rewriteHandoff(t, &nf, func(h map[string]any) {
 		h["ticket_id"] = "next"
 		h["identifier"] = "ENG-2"
@@ -329,7 +329,7 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 		h["queue_id"] = "q2"
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
-	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
+	source := &mergeTickets{rows: []*mergeIssues{&next, f.tracker}}
 	f.runtime.Clients[f.repos[0].Path] = source
 	nextPuts := 0
 	nextMerged := false
@@ -379,8 +379,8 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	})
 	// Config removal cannot erase the durable barrier or authorize replay.
 	f.repos[0].Env["AGENT_SMOKE_CMD"] = ""
-	f.linear.issue.State.Name = "Done"
-	f.linear.issue.Labels.Nodes = []linear.NamedID{{Name: "auto-failed"}}
+	f.tracker.issue.State.Name = "Done"
+	f.tracker.issue.Labels.Nodes = []linear.NamedID{{Name: "auto-failed"}}
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -461,8 +461,8 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 			if kind == "smoke" {
 				wantSmoke = 2
 			}
-			if f.puts != 1 || smokes != wantSmoke || f.linear.issue.State.Name != "Done" {
-				t.Fatalf("retry failed: merges=%d smoke=%d state=%s", f.puts, smokes, f.linear.issue.State.Name)
+			if f.puts != 1 || smokes != wantSmoke || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("retry failed: merges=%d smoke=%d state=%s", f.puts, smokes, f.tracker.issue.State.Name)
 			}
 		})
 	}
@@ -471,7 +471,7 @@ func TestDeploymentOnlyWorkflowManualRetryAndOnlySmokeExplicitReplay(t *testing.
 func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	f := newMergeFixture(t)
 	f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
-	l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
+	l := &uncertainSmokeIssues{mergeIssues: f.tracker, loseResult: true}
 	f.runtime.Clients[f.repos[0].Path] = l
 	smokes := 0
 	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -483,7 +483,7 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	}
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 	var p map[string]any
-	if err := json.Unmarshal([]byte(strings.TrimPrefix(f.linear.bodies[len(f.linear.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(f.tracker.bodies[len(f.tracker.bodies)-1], "merge-progress-v1: ")), &p); err != nil {
 		t.Fatal(err)
 	}
 	p["deployment"].(map[string]any)["state"] = "pending"
@@ -491,7 +491,7 @@ func TestDeploymentSmokeIntentCannotBeResetWithoutHumanReceipt(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.linear.rows = append(f.linear.rows, linear.Comment{ID: "reset", CreatedAt: time.Now(), Body: "merge-progress-v1: " + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "reset", CreatedAt: time.Now(), Body: "merge-progress-v1: " + string(raw)})
 	l.loseResult = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil

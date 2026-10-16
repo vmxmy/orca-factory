@@ -52,8 +52,8 @@ func TestStaleExecutorMustSettleBeforeResolver(t *testing.T) {
 }
 
 func TestResolverRuntimeReservesAndLaunchesRole(t *testing.T) {
-	l, o := &fakeLinear{}, &fakeOrca{}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": l}, Orca: o, DriverPath: "/bin/driver"}
+	l, o := &fakeIssues{}, &fakeOrca{}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}, Orca: o, DriverPath: "/bin/driver"}
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver}
 	if err := r.Apply(context.Background(), ticket, Action{Kind: Resolve, Phase: machine.PhaseResolver}); err != nil {
 		t.Fatal(err)
@@ -98,8 +98,8 @@ func validHandoffForResolver() merge.Handoff {
 }
 func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 	for _, barrier := range []bool{false, true} {
-		l := &fakeLinear{}
-		r := &Runtime{Clients: map[string]LinearClient{"/repo": l}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+		l := &fakeIssues{}
+		r := &Runtime{Clients: map[string]IssueClient{"/repo": l}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 		h := validHandoffForResolver()
 		if !barrier {
 			h.TicketID = "another"
@@ -128,9 +128,9 @@ func TestNewEscalationStartsAnotherResolverAttempt(t *testing.T) {
 	}
 }
 func TestFailedTicketWithoutOwnershipIsAdmittedToResolver(t *testing.T) {
-	l := &fakeLinear{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": l}}
-	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "/repo", Env: map[string]string{"AGENT_LINEAR_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}})
+	l := &fakeIssues{issues: []linear.Issue{{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}}
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "project", "AGENT_SCOPE_AVOID": "0"}}})
 	if err != nil || len(tickets) != 1 || tickets[0].Owner != machine.OwnerHuman {
 		t.Fatalf("failed ticket orphaned: %+v %v", tickets, err)
 	}
@@ -146,8 +146,8 @@ func TestResolverCanInvestigatePreservedWorkerAfterExecutorExit(t *testing.T) {
 	}
 }
 func TestRejectedDeploymentProposalReturnsToResolver(t *testing.T) {
-	l := &fakeLinear{}
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": l}}
+	l := &fakeIssues{}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": l}}
 	body, _ := json.Marshal(resolver.Resolution{Action: "retry-smoke", Reason: "checked", Queue: "wrong", SHA: strings.Repeat("a", 40)})
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo", Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)}}
 	if err := r.applyResolution(context.Background(), ticket); err != nil {
@@ -181,8 +181,8 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	l := &fakeLinear{}
-	r := &Runtime{Clients: map[string]LinearClient{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
+	l := &fakeIssues{}
+	r := &Runtime{Clients: map[string]IssueClient{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
 	ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo, Owner: machine.OwnerResolver, Run: "source-run"}
 	if err := r.ResolveTicket(context.Background(), ticket, "new-controller"); err == nil {
 		t.Fatal("expected interrupted start")
@@ -202,8 +202,8 @@ func TestResolverEvidenceRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	comments := []linear.Comment{{ID: "comment", Body: "Preserve this evidence"}}
-	l := &fakeLinear{issueComments: comments}
-	r := &Runtime{Clients: map[string]LinearClient{repo: l}, Repositories: map[string]config.Repository{
+	l := &fakeIssues{issueComments: comments}
+	r := &Runtime{Clients: map[string]IssueClient{repo: l}, Repositories: map[string]config.Repository{
 		repo:     {Path: repo, Env: map[string]string{"AGENT_GH_REPO": "owner/code-repo"}},
 		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
 	}, Orca: &resolverStartupProbe{}}

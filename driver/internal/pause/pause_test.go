@@ -70,7 +70,7 @@ func TestPauseScopeAndElapsedUnion(t *testing.T) {
 }
 func TestPauseProbeCredentialsAndQuotaReset(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	for _, dep := range []Dependency{Claude, Codex, Linear, GitHub} {
+	for _, dep := range []Dependency{Claude, Codex, GitHub} {
 		t.Run(string(dep), func(t *testing.T) {
 			p := &probeFake{calls: map[Key]int{}, fail: map[Key]bool{}}
 			k := Key{Dependency: dep, Kind: Credentials}
@@ -99,7 +99,7 @@ func TestPauseProbeCredentialsAndQuotaReset(t *testing.T) {
 	}
 	p := &probeFake{calls: map[Key]int{}, fail: map[Key]bool{}}
 	m := New(func() time.Time { return now }, p, nil)
-	k := Key{Dependency: Linear, Kind: Quota}
+	k := Key{Dependency: GitHub, Kind: Quota}
 	reset := now.Add(time.Hour)
 	m.Pause(k, reset)
 	now = now.Add(5 * time.Minute)
@@ -154,7 +154,7 @@ func TestPauseNextProbeHonorsQuotaReset(t *testing.T) {
 		t.Fatalf("next=%v", got)
 	}
 	reset := now.Add(2 * time.Minute)
-	m.Pause(Key{Dependency: Linear, Kind: Quota}, reset)
+	m.Pause(Key{Dependency: GitHub, Kind: Quota}, reset)
 	if got := m.NextProbe(); !got.Equal(reset) {
 		t.Fatalf("reset probe delayed: %v", got)
 	}

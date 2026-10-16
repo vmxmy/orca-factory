@@ -3,7 +3,7 @@ package config
 import "sort"
 
 // LedgerIdentityKeys select a repository's ledger backend and target project.
-// A repository's bound Linear/GitHub/Feishu client keeps using the value it
+// A repository's bound GitHub/Feishu client keeps using the value it
 // started with, so a hot reload of agent-graph.env (OF-45) must never swap
 // one of these underneath a live client; the repository keeps its old
 // configuration until serve restarts.
@@ -11,7 +11,6 @@ var LedgerIdentityKeys = []string{
 	"AGENT_ISSUE_BACKEND",
 	"AGENT_FEISHU_BASE",
 	"AGENT_FEISHU_PROJECT",
-	"AGENT_LINEAR_TEAM",
 	"AGENT_GH_REPO",
 }
 

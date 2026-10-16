@@ -18,7 +18,6 @@ type Dep string
 const (
 	Claude Dep = "Claude"
 	Codex  Dep = "Codex"
-	Linear Dep = "Linear"
 	GitHub Dep = "GitHub"
 	Orca   Dep = "Orca"
 )

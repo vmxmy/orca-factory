@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,18 +16,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
-
-type linearGuardTransport struct {
-	t    *testing.T
-	next http.RoundTripper
-}
-
-func (g linearGuardTransport) RoundTrip(r *http.Request) (*http.Response, error) {
-	if strings.Contains(r.URL.Host, "linear.app") {
-		g.t.Fatalf("GitHub pipeline reached Linear endpoint %s", r.URL)
-	}
-	return g.next.RoundTrip(r)
-}
 
 type e2eExecutorOrca struct {
 	*recoveredMergeOrca
@@ -104,7 +91,6 @@ func (o *e2eSchedulerOrca) WorktreeSet(_ context.Context, card orca.BoardCard) (
 }
 
 func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
-	t.Setenv("LINEAR_API_KEY", "")
 	ctx := context.Background()
 	f := newMergeFixture(t)
 	repo := f.repos[0]
@@ -117,9 +103,6 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	g := githubSafetyFixture(t, f)
-	previous := http.DefaultTransport
-	http.DefaultTransport = linearGuardTransport{t: t, next: previous}
-	t.Cleanup(func() { http.DefaultTransport = previous })
 
 	meta, err := json.Marshal(issues.Metadata{ID: safetyID, Identifier: "ENG-1", Project: "o/r", State: "Todo", Complete: true, Blockers: []string{}, Related: []string{}})
 	if err != nil {
@@ -134,13 +117,11 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 	g.mu.Unlock()
 
 	client := f.runtime.Clients[repo.Path].(*issues.GitHub)
-	if err = f.runtime.initialize(ctx, f.repos, func(context.Context, string) (LinearClient, error) {
-		t.Fatal("GitHub pipeline initialized a Linear client")
-		return nil, nil
+	if err = f.runtime.initialize(ctx, f.repos, func(context.Context, map[string]string) (IssueClient, error) {
+		return client, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	f.runtime.Clients[repo.Path] = client
 	f.runtime.DriverPath = "/opt/driver/bin/driver"
 
 	var pr github.PullRequest
@@ -165,7 +146,7 @@ func TestGitHubIsolatedPipelineEndToEnd(t *testing.T) {
 		if parseErr != nil {
 			return parseErr
 		}
-		e := &executor.Executor{Orca: execOrca, Linear: client, GitHub: prs, Tools: e2eExecutorTools{&recoveredMergeTools{head: f.head, base: f.main}}, Config: executor.Config{Repo: repo.Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: t.TempDir(), PollInterval: time.Millisecond}, Now: time.Now}
+		e := &executor.Executor{Orca: execOrca, Issues: client, GitHub: prs, Tools: e2eExecutorTools{&recoveredMergeTools{head: f.head, base: f.main}}, Config: executor.Config{Repo: repo.Path, Owner: "o", Repository: "r", Unit: "executor", Terminal: "term_new", Root: t.TempDir(), PollInterval: time.Millisecond}, Now: time.Now}
 		result, startErr := e.Start(ctx, ticket)
 		results = append(results, result)
 		return startErr

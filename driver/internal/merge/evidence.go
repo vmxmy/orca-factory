@@ -5,7 +5,7 @@ import "time"
 const HandoffPrefix = "merge-handoff-v1: "
 const ProgressPrefix = "merge-progress-v1: "
 
-// Handoff is frozen in the Linear ownership comment. Never reconstruct its
+// Handoff is frozen in the ticket ownership comment. Never reconstruct its
 // timestamp from mutable issue metadata or infer validation from an open PR.
 type Handoff struct {
 	Version       int       `json:"version"`

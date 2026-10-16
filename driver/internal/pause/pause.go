@@ -14,7 +14,6 @@ type Dependency string
 const (
 	Claude Dependency = "Claude"
 	Codex  Dependency = "Codex"
-	Linear Dependency = "Linear"
 	GitHub Dependency = "GitHub"
 	Orca   Dependency = "Orca"
 )
@@ -167,7 +166,7 @@ func (m *Manager) Poll(ctx context.Context) error {
 	m.mu.Lock()
 	var due []Key
 	if !now.Before(m.nextCredentials) && m.probe != nil {
-		for _, d := range []Dependency{Claude, Codex, Linear, GitHub, Orca} {
+		for _, d := range []Dependency{Claude, Codex, GitHub, Orca} {
 			kind := Credentials
 			if d == Orca {
 				kind = ""

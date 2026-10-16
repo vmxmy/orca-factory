@@ -142,7 +142,7 @@ func TestResolverOpenPR(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtime := &Runtime{GitHub: gh, Clients: map[string]LinearClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+			runtime := &Runtime{GitHub: gh, Clients: map[string]IssueClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 			raw, _ := json.Marshal(map[string]string{"action": "open-pr", "branch": "agent/OF-5/executor", "head": head, "title": "Recover PR", "body": "Verified fix", "reason": "gate passed"})
 			ticket := Ticket{ID: task.ID, Identifier: task.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
 			if mode == "ticket-identity-mismatch" {

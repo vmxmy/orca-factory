@@ -27,29 +27,10 @@ func GitHubCleanupAllowed(task issues.Task, comments []linear.Comment) bool {
 	return ticket.Handoff == nil || ticket.Progress != nil && ticket.Progress.Phase == "merged" && ticket.Progress.QueueID == ticket.Handoff.QueueID && ticket.Progress.TicketID == task.ID
 }
 
-// forgetProjection makes the next snapshot reread a ticket whose cached
-// comments failed a fresh decision or are about to be superseded by a write.
-func (r *Runtime) forgetProjection(t Ticket) {
-	delete(r.projections[r.Clients[t.Repo]], t.ID)
-}
-
 // Revalidate the selected ticket immediately before a decision can mutate it.
-// The snapshot cache helps discovery only; comments may change independently of
-// the issue timestamp, including human cancellation and edited merge receipts.
+// Comments may change independently of the issue timestamp, including human
+// cancellation and edited merge receipts.
 func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action ActionKind) error {
-	if client, ok := r.Clients[t.Repo].(*linear.Client); ok && action != Claim {
-		issue, err := r.verifyFreshOwnership(ctx, client, t)
-		if err != nil {
-			return err
-		}
-		if action == Resume && t.Owner == machine.OwnerResolver || action != Resume && action != Merge && action != githubSquash {
-			return nil
-		}
-		if _, _, failed := issueEligibility(issue); failed {
-			return errors.New("failed task requires human recovery")
-		}
-		return nil
-	}
 	c, ok := r.Clients[t.Repo].(issues.Store)
 	if !ok {
 		return nil
@@ -136,16 +117,6 @@ func githubExecutionAllowed(task issues.Task) error {
 func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	client := r.Clients[t.Repo]
 	switch c := client.(type) {
-	case *linear.Client:
-		if t.Owner != machine.OwnerResolver {
-			issue, err := r.claimIssue(ctx, c, t)
-			if err != nil {
-				return err
-			}
-			if _, _, failed := issueEligibility(issue); failed {
-				return errors.New("failed task requires human recovery")
-			}
-		}
 	case issues.Store:
 		task, err := c.Read(ctx, t.ID)
 		if err != nil {

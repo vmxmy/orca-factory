@@ -34,7 +34,7 @@ Commands:
          [--add-label <名>] [--remove-label <名>] [--apply] [--json]
       [写入] 票据主账本 CLI，需要先加载 scripts/agent-gates/agent-graph.env。
       只读：snapshot、read、validate、backend、preview。
-      写入：create、adopt、update、comment；迁移专用：export、import、release-hold。
+      写入：create、adopt、update、comment；迁移专用：import、release-hold。
   exec [--merging] <票号>
       [写入] 单票执行器。由 serve 派发，通常不手动运行。
   resolve <票号>

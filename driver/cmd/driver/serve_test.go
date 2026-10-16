@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
@@ -21,24 +21,24 @@ type statusFakeBackend struct {
 	scheduler.Backend
 	snapshots int
 	tickets   []scheduler.Ticket
-	limits    []linear.RateLimit
+	limits    []github.Usage
 }
 
 func (b *statusFakeBackend) Snapshot(context.Context, []config.Repository) ([]scheduler.Ticket, error) {
 	b.snapshots++
 	return b.tickets, nil
 }
-func (b *statusFakeBackend) LinearLimits() []linear.RateLimit { return b.limits }
+func (b *statusFakeBackend) GitHubLimits() []github.Usage { return b.limits }
 func (b *statusFakeBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error) {
 	return []string{"actual.go"}, true, nil
 }
 
 type statusFakeClient struct {
-	scheduler.LinearClient
-	usage linear.Usage
+	scheduler.IssueClient
+	usage github.Usage
 }
 
-func (c *statusFakeClient) Usage() linear.Usage { return c.usage }
+func (c *statusFakeClient) Usage() github.Usage { return c.usage }
 
 func TestStatusSnapshotServe(t *testing.T) {
 	for _, fail := range []bool{false, true} {
@@ -104,24 +104,24 @@ func TestStatusSnapshotServe(t *testing.T) {
 
 func TestStatusSnapshotCollection(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
-	a := &statusFakeClient{usage: linear.Usage{Hour: now, Requests: 3, Complexity: 7, RequestLimit: linear.RateLimit{Limit: 100, Remaining: 97, Reset: now.Add(time.Hour)}, ComplexityLimit: linear.RateLimit{Limit: 1000, Remaining: 993, Reset: now.Add(time.Hour)}}}
-	b := &statusFakeClient{usage: linear.Usage{Hour: now, Requests: 5, Complexity: 11}}
-	runtime := &scheduler.Runtime{Clients: map[string]scheduler.LinearClient{"/b": b, "/a": a, "/shared": a}}
+	a := &statusFakeClient{usage: github.Usage{Hour: now, Requests: 3, Limit: 100, Remaining: 97, Reset: now.Add(time.Hour)}}
+	b := &statusFakeClient{usage: github.Usage{Hour: now, Requests: 5}}
+	runtime := &scheduler.Runtime{Clients: map[string]scheduler.IssueClient{"/b": b, "/a": a, "/shared": a}}
 	backend := &statusBackend{Backend: &statusFakeBackend{}}
 	s := &scheduler.Scheduler{}
 	snapshot := collectStatus(s, backend, runtime, now)
 	if len(snapshot.Pauses) != 0 {
 		t.Fatal(snapshot.Pauses)
 	}
-	if snapshot.Linear.Requests != 8 || snapshot.Linear.Complexity != 18 || !snapshot.Linear.Hour.Equal(now) {
-		t.Fatalf("usage: %+v", snapshot.Linear)
+	if snapshot.GitHub.Requests != 8 || !snapshot.GitHub.Hour.Equal(now) {
+		t.Fatalf("usage: %+v", snapshot.GitHub)
 	}
-	if len(snapshot.Linear.Limits) != 3 || snapshot.Linear.Limits[0].Repo != "/a" || snapshot.Linear.Limits[0].Requests.Remaining != 97 || snapshot.Linear.Limits[0].Complexity.Remaining != 993 {
-		t.Fatalf("limits: %+v", snapshot.Linear.Limits)
+	if len(snapshot.GitHub.Limits) != 3 || snapshot.GitHub.Limits[0].Repo != "/a" || snapshot.GitHub.Limits[0].Requests.Remaining != 97 {
+		t.Fatalf("limits: %+v", snapshot.GitHub.Limits)
 	}
 	start := now.Add(-time.Minute)
 	s.Pauses = pause.New(func() time.Time { return start }, nil, nil)
-	keys := []pause.Key{{Dependency: pause.Linear, Repo: "/b", Kind: pause.Quota}, {Dependency: pause.Codex, Kind: pause.Credentials}, {Dependency: pause.Linear, Repo: "/a", Kind: pause.Quota}, {Dependency: pause.Linear, Repo: "/a", Kind: pause.Credentials}}
+	keys := []pause.Key{{Dependency: pause.GitHub, Repo: "/b", Kind: pause.Quota}, {Dependency: pause.Codex, Kind: pause.Credentials}, {Dependency: pause.GitHub, Repo: "/a", Kind: pause.Quota}, {Dependency: pause.GitHub, Repo: "/a", Kind: pause.Credentials}}
 	for _, key := range keys {
 		s.Pauses.Pause(key, time.Time{})
 	}
@@ -151,7 +151,7 @@ func TestStatusSnapshotPausedTick(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(dir, "status.json"))
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
-	backend := &statusFakeBackend{limits: []linear.RateLimit{{Limit: 100, Remaining: 1, Reset: now.Add(time.Hour)}}}
+	backend := &statusFakeBackend{limits: []github.Usage{{Limit: 100, Remaining: 1, Reset: now.Add(time.Hour)}}}
 	s := &scheduler.Scheduler{Backend: backend, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -166,7 +166,7 @@ func TestStatusSnapshotPausedTick(t *testing.T) {
 		if err := json.Unmarshal(data, &snapshot); err != nil {
 			t.Fatal(err)
 		}
-		if len(snapshot.Pauses) != 1 || snapshot.Pauses[0].Dependency != "Linear" || backend.snapshots != 0 {
+		if len(snapshot.Pauses) != 1 || snapshot.Pauses[0].Dependency != "GitHub" || backend.snapshots != 0 {
 			t.Fatalf("paused snapshot=%+v reads=%d", snapshot, backend.snapshots)
 		}
 		cancel()

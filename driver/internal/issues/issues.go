@@ -1,5 +1,5 @@
-// Package issues selects exactly one task backend per repository. Legacy model
-// types remain shared with Linear so shipped executor state retains its identity.
+// Package issues selects exactly one task backend per repository. The shared
+// model types keep their historical shape so shipped executor state retains its identity.
 package issues
 
 import (
@@ -30,7 +30,7 @@ type Client interface {
 }
 
 // Store is a backend that keeps canonical task records with driver metadata.
-// Callers depend on it instead of a concrete backend; legacy Linear is not one.
+// Callers depend on it instead of a concrete backend.
 type Store interface {
 	Client
 	Repository() string
@@ -53,22 +53,12 @@ type Importer interface {
 
 var _ Importer = (*GitHub)(nil)
 
-// Native reports whether the selected backend is a Store rather than legacy Linear.
-func Native(env map[string]string) bool {
-	backend, err := Backend(env)
-	return err == nil && backend != "linear"
-}
-
 func Backend(env map[string]string) (string, error) {
-	switch env["AGENT_ISSUE_BACKEND"] {
-	case "", "linear":
-		return "linear", nil
-	case "github":
-		return "github", nil
-	case "feishu":
-		return "feishu", nil
+	switch backend := env["AGENT_ISSUE_BACKEND"]; backend {
+	case "github", "feishu":
+		return backend, nil
 	default:
-		return "", errors.New("unknown AGENT_ISSUE_BACKEND")
+		return "", errors.New("AGENT_ISSUE_BACKEND must be github or feishu")
 	}
 }
 func Project(env map[string]string) string {
@@ -79,15 +69,12 @@ func Project(env map[string]string) string {
 	case "feishu":
 		return env["AGENT_FEISHU_PROJECT"]
 	}
-	return env["AGENT_LINEAR_PROJECT"]
+	return ""
 }
-func New(ctx context.Context, env map[string]string, tuning config.Tuning) (Client, error) {
+func New(ctx context.Context, env map[string]string, tuning config.Tuning) (Store, error) {
 	b, err := Backend(env)
 	if err != nil {
 		return nil, err
-	}
-	if b == "linear" {
-		return linear.New(ctx, linear.Options{TeamID: env["AGENT_LINEAR_TEAM"], HTTPTimeout: tuning.Linear.HTTPTimeout})
 	}
 	if b == "feishu" {
 		return newFeishuFromEnv(ctx, env)
@@ -623,7 +610,7 @@ func (c *GitHub) awaitListed(ctx context.Context, id string) error {
 	return fmt.Errorf("created task not listed by GitHub within bounded retries: %w", infra.ErrWriteUnconfirmed)
 }
 
-// GitHubUsage is additive to the legacy usage contract and never probes Linear.
+// GitHubUsage reports the GitHub client's rate-limit usage.
 func (c *GitHub) GitHubUsage() github.Usage { return c.gh.Usage() }
 
 // Comment edits need not change the issue timestamp; each page revalidates its ETag.

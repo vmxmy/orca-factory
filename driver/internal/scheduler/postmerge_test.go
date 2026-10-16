@@ -13,13 +13,13 @@ import (
 
 type postmergeOrca struct {
 	fakeOrca
-	linear *mergeLinear
-	fail   string
-	calls  []string
+	tracker *mergeIssues
+	fail    string
+	calls   []string
 }
 
 func (o *postmergeOrca) check(step string) error {
-	if o.linear.issue.State.Name != "Done" {
+	if o.tracker.issue.State.Name != "Done" {
 		return fmt.Errorf("cleanup before Done")
 	}
 	o.calls = append(o.calls, step)
@@ -53,15 +53,15 @@ func TestPostmergeCleanupPreservesDone(t *testing.T) {
 	for _, failure := range []string{"", "list", "release:ctx_done", "board", "lookup", "delete", "comment", "done"} {
 		t.Run(failure, func(t *testing.T) {
 			f := newMergeFixture(t)
-			o := &postmergeOrca{linear: f.linear, fail: failure}
+			o := &postmergeOrca{tracker: f.tracker, fail: failure}
 			o.automations = receipt(`{"automations":[]}`)
 			f.runtime.Orca = o
-			f.linear.failDone = failure == "done"
-			f.linear.failFinal = failure == "comment"
+			f.tracker.failDone = failure == "done"
+			f.tracker.failFinal = failure == "comment"
 			var gitCalls []string
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if len(s.Args) > 0 && (s.Args[0] == "ls-remote" || s.Args[0] == "push") {
-					if f.linear.issue.State.Name != "Done" {
+					if f.tracker.issue.State.Name != "Done" {
 						t.Fatal("branch cleanup before Done")
 					}
 					call := strings.Join(s.Args, " ")
@@ -86,8 +86,8 @@ func TestPostmergeCleanupPreservesDone(t *testing.T) {
 				}
 				return
 			}
-			if f.puts != 1 || f.linear.issue.State.Name != "Done" || (failure != "comment" && err != nil) {
-				t.Fatalf("cleanup changed completion: puts=%d state=%s err=%v", f.puts, f.linear.issue.State.Name, err)
+			if f.puts != 1 || f.tracker.issue.State.Name != "Done" || (failure != "comment" && err != nil) {
+				t.Fatalf("cleanup changed completion: puts=%d state=%s err=%v", f.puts, f.tracker.issue.State.Name, err)
 			}
 			want := []string{"list", "release:ctx_done", "release:ctx_failed", "board"}
 			if failure == "list" {
@@ -103,7 +103,7 @@ func TestPostmergeCleanupPreservesDone(t *testing.T) {
 			if !reflect.DeepEqual(gitCalls, wantGit) {
 				t.Fatalf("git=%v want=%v", gitCalls, wantGit)
 			}
-			if failure != "comment" && !strings.Contains(strings.Join(f.linear.bodies, "\n"), "已合并: PR #1 squash "+strings.Repeat("a", 40)) {
+			if failure != "comment" && !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "已合并: PR #1 squash "+strings.Repeat("a", 40)) {
 				t.Fatal("lost published merge comment")
 			}
 		})

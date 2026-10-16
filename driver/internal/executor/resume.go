@@ -86,7 +86,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if c.Unit == "" {
 		c.Unit = "executor"
 	}
-	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || e.Tools == nil || e.GitHub == nil || e.Orca == nil || e.Linear == nil {
+	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || e.Tools == nil || e.GitHub == nil || e.Orca == nil || e.Issues == nil {
 		return result, errors.New("invalid recovery configuration")
 	}
 	if c.Root == "" {
@@ -100,7 +100,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	configured.Config = c
 	e = &configured
 	branch := "agent/" + t.Identifier + "/" + c.Unit
-	if client, ok := e.Linear.(issues.Store); ok {
+	if client, ok := e.Issues.(issues.Store); ok {
 		task, readErr := client.Read(ctx, t.ID)
 		if readErr != nil {
 			return result, readErr

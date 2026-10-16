@@ -2,15 +2,50 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// pruneTaskServer serves TEST-1 as a managed GitHub task in the selected state;
+// an empty state means the repository has no tasks.
+func pruneTaskServer(t *testing.T, state *atomic.Value) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("prune wrote %s %s", r.Method, r.URL.Path)
+			http.Error(w, "read only", http.StatusMethodNotAllowed)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/comments") {
+			_, _ = fmt.Fprint(w, "[]")
+			return
+		}
+		rows := []any{}
+		if name, _ := state.Load().(string); name != "" {
+			native := "open"
+			if name == "Done" {
+				native = "closed"
+			}
+			meta := fmt.Sprintf(`{"id":"01234567-1234-1234-1234-012345678901","identifier":"TEST-1","project":"test/repo","state":%q,"complete":true,"blockers":[],"related":[]}`, name)
+			rows = append(rows, map[string]any{"number": 1, "state": native, "body": "<!-- orca-task-v1: " + meta + " -->"})
+		}
+		if err := json.NewEncoder(w).Encode(rows); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
 
 func TestPruneWorktreesPublicEntry(t *testing.T) {
 	factory, err := filepath.Abs("../../..")
@@ -26,6 +61,10 @@ func TestPruneWorktreesPublicEntry(t *testing.T) {
 		}
 	}
 	write(driver, fmt.Sprintf("#!/bin/sh\nDRIVER_TEST_PROCESS=1 exec %q -test.run=^TestCLIProcess$ -- \"$@\"\n", os.Args[0]))
+	var taskState atomic.Value
+	taskState.Store("")
+	server := pruneTaskServer(t, &taskState)
+	write(filepath.Join(dir, "gh"), "#!/bin/sh\ncase \"$1 $2\" in\n'auth token') printf test ;;\n*) printf '[]\\n' ;;\nesac\n")
 	repo := filepath.Join(dir, "repo")
 	git := func(args ...string) string {
 		t.Helper()
@@ -49,13 +88,11 @@ func TestPruneWorktreesPublicEntry(t *testing.T) {
 	write(filepath.Join(dir, "orca"), `#!/bin/sh
 case "$1 $2" in
 'worktree list') jq -nc --arg p "$PRUNE_WORKER" '{ok:true,result:{worktrees:[{path:$p,createdAt:1}]}}' ;;
-'linear list-issues') printf '%s\n' '{"ok":true,"result":{"issues":[]}}' ;;
 'worktree rm') printf '%s\n' "$*" >> "$PRUNE_CALLS"; printf '%s\n' '{"ok":false}'; exit 7 ;;
 esac
 `)
 	entry := filepath.Join(factory, "core/prune-run-worktrees.sh")
 	cancelProcess := false
-	ghRepo := ""
 	invoke := func(pipe bool, args ...string) (int, string, string) {
 		t.Helper()
 		c := exec.Command("bash", append([]string{entry}, args...)...)
@@ -68,7 +105,7 @@ esac
 			c.Stdin = bytes.NewReader(body)
 		}
 		c.Dir = dir
-		c.Env = append(os.Environ(), "AGENT_DRIVER_BIN="+driver, "PATH="+dir+":"+os.Getenv("PATH"), "AGENT_REPO_PATH="+repo, "AGENT_RUN_WORKTREE_PREFIX=run-", "AGENT_LINEAR_TEAM=TEST", "AGENT_LINEAR_PROJECT=test", "AGENT_GH_REPO="+ghRepo, "AGENT_SNAPSHOT_FILE="+filepath.Join(dir, "none"), "AGENT_LINEAR_COUNT_FILE="+filepath.Join(dir, "count"), "PRUNE_WORKER="+worker, "PRUNE_CALLS="+filepath.Join(dir, "calls"))
+		c.Env = append(os.Environ(), "AGENT_DRIVER_BIN="+driver, "PATH="+dir+":"+os.Getenv("PATH"), "AGENT_REPO_PATH="+repo, "AGENT_RUN_WORKTREE_PREFIX=run-", "HOME="+dir, "AGENT_DRIVER_STATE_ROOT="+filepath.Join(dir, "state"), "AGENT_ISSUE_BACKEND=github", "AGENT_GH_REPO=test/repo", "AGENT_GH_API_URL="+server.URL, "PRUNE_WORKER="+worker, "PRUNE_CALLS="+filepath.Join(dir, "calls"))
 		var out, warnings bytes.Buffer
 		c.Stdout = &out
 		c.Stderr = &warnings
@@ -121,7 +158,7 @@ esac
 		t.Fatal(e)
 	}
 	code, out, warnings = invoke(true)
-	if code != 7 || out != "pruned "+worker+" ok=false\n" || !strings.Contains(warnings, "prune_linear_calls=1") {
+	if code != 7 || out != "pruned "+worker+" ok=false\n" {
 		t.Fatalf("failed removal: %d %q %q", code, out, warnings)
 	}
 	if _, e := os.Stat(worker); e != nil {
@@ -136,7 +173,6 @@ esac
 	write(filepath.Join(dir, "orca"), `#!/bin/sh
 case "$1 $2" in
 'worktree list') jq -nc --arg p "$PRUNE_WORKER" '{ok:true,result:{worktrees:[{path:$p,createdAt:9999999999999}]}}' ;;
-'linear list-issues') printf '%s\n' '{"ok":true,"result":{"issues":[]}}' ;;
 'worktree rm') printf '%s\n' '{"ok":false}'; exit 7 ;;
 esac
 `)
@@ -158,7 +194,6 @@ esac
 	write(filepath.Join(dir, "orca"), `#!/bin/sh
 case "$1 $2" in
 'worktree list') jq -nc --arg p "$PRUNE_WORKER" '{ok:true,result:{worktrees:[{path:$p,createdAt:9999999999999}]}}' ;;
-'linear list-issues') printf '%s\n' '{"ok":true,"result":{"issues":[]}}' ;;
 'worktree rm') case "$*" in *--force*) printf '%s\n' '{"ok":true}'; exit 0 ;; esac; printf '%s\n' '{"ok":false}'; exit 7 ;;
 esac
 `)
@@ -166,12 +201,12 @@ esac
 	if code != 7 {
 		t.Fatalf("legacy removal must not force newly dirty checkout: %d %q %q", code, out, warnings)
 	}
+	taskState.Store("In Progress")
 	write(filepath.Join(dir, "orca"), `#!/bin/sh
 case "$1 $2" in
 'worktree list')
  count="$PRUNE_CALLS.list"; if [ -f "$count" ]; then ticket=TEST-1; else ticket=''; touch "$count"; fi
  jq -nc --arg p "$PRUNE_WORKER" --arg ticket "$ticket" '{ok:true,result:{worktrees:[{path:$p,createdAt:9999999999999,linkedLinearIssue:$ticket}]}}' ;;
-'linear list-issues') printf '%s\n' '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"started"}}]}}' ;;
 'worktree rm') printf '%s\n' '{"ok":false}'; exit 7 ;;
 esac
 `)
@@ -189,15 +224,14 @@ esac
 		t.Fatalf("clone: %s %v", b, e)
 	}
 	git("worktree", "lock", worker)
-	write(filepath.Join(dir, "gh"), fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' '%s'\n", `[{"merged_at":"2026-01-01","head":{"sha":"`+git("rev-parse", "HEAD")+`","repo":{"full_name":"test/repo"}}}]`))
+	taskState.Store("Done")
+	write(filepath.Join(dir, "gh"), fmt.Sprintf("#!/bin/sh\ncase \"$1 $2\" in\n'auth token') printf test ;;\n*) printf '%%s\\n' '%s' ;;\nesac\n", `[{"merged_at":"2026-01-01","head":{"sha":"`+git("rev-parse", "HEAD")+`","repo":{"full_name":"test/repo"}}}]`))
 	write(filepath.Join(dir, "orca"), fmt.Sprintf(`#!/bin/sh
 case "$1 $2" in
 'worktree list') jq -nc --arg p %q --arg q %q --arg r "$PRUNE_WORKER" '{ok:true,result:{worktrees:[$p,$q,$r]|map({path:.,linkedLinearIssue:"TEST-1",createdAt:9999999999999})}}' ;;
-'linear list-issues') printf '%%s\n' '{"ok":true,"result":{"issues":[{"identifier":"TEST-1","state":{"type":"completed"}}]}}' ;;
 'worktree rm') printf '%%s\n' "$*" >> "$PRUNE_CALLS.protected"; printf '%%s\n' '{"ok":false}'; exit 7 ;;
 esac
 `, alias, foreign))
-	ghRepo = "test/repo"
 	code, out, warnings = invoke(true)
 	if code != 0 {
 		t.Fatalf("protected linked candidates: %d %q %q", code, out, warnings)

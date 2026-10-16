@@ -28,7 +28,7 @@ func (m mergeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return (&http.Transport{}).RoundTrip(c)
 }
 
-type mergeLinear struct {
+type mergeIssues struct {
 	issues.Store
 	issue     linear.Issue
 	rows      []linear.Comment
@@ -37,17 +37,17 @@ type mergeLinear struct {
 	failFinal bool
 }
 
-func (m *mergeLinear) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
+func (m *mergeIssues) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
 	return []linear.Issue{m.issue}, nil
 }
-func (m *mergeLinear) Repository() string { return "o/r" }
-func (m *mergeLinear) Read(context.Context, string) (issues.Task, error) {
+func (m *mergeIssues) Repository() string { return "o/r" }
+func (m *mergeIssues) Read(context.Context, string) (issues.Task, error) {
 	return issues.Task{Issue: m.issue, URL: "https://tickets.example/" + m.issue.ID, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
 }
-func (m *mergeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (m *mergeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return m.rows, nil
 }
-func (m *mergeLinear) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
+func (m *mergeIssues) CreateComment(_ context.Context, _ string, b string) (linear.Comment, error) {
 	if m.failFinal && strings.Contains(b, "归属: 无") {
 		return linear.Comment{}, fmt.Errorf("offline")
 	}
@@ -56,7 +56,7 @@ func (m *mergeLinear) CreateComment(_ context.Context, _ string, b string) (line
 	m.bodies = append(m.bodies, b)
 	return c, nil
 }
-func (m *mergeLinear) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
+func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
 	if m.failDone {
 		return linear.Issue{}, fmt.Errorf("offline")
 	}
@@ -85,7 +85,7 @@ type mergeFixture struct {
 	runtime      *Runtime
 	config       config.Config
 	repos        []config.Repository
-	linear       *mergeLinear
+	tracker      *mergeIssues
 	head, main   string
 	puts         int
 	merged       bool
@@ -218,11 +218,11 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 	if bMarshalErr != nil {
 		t.Fatal(bMarshalErr)
 	}
-	f.linear = &mergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "p"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
-	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
+	f.tracker = &mergeIssues{issue: linear.Issue{ID: "id", Identifier: "ENG-1", Project: linear.NamedID{ID: "o/r"}, State: linear.NamedID{Name: "In Progress"}}, rows: []linear.Comment{{ID: "handoff", CreatedAt: time.Now(), Body: "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(b)}}}
+	repo := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 	f.repos = []config.Repository{repo}
 	f.config = config.Config{MaxInFlight: 3, TokenBucket: config.TokenBucket{Capacity: 3, RefillPerSecond: 1}}
-	f.runtime = &Runtime{Clients: map[string]LinearClient{dir: f.linear}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
+	f.runtime = &Runtime{Clients: map[string]IssueClient{dir: f.tracker}, Repositories: map[string]config.Repository{dir: repo}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
 	return f
 }
 func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
@@ -231,17 +231,17 @@ func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || !f.merged || f.linear.issue.State.Name != "Done" {
-		t.Fatalf("merge not completed: squash=%d merged=%v state=%s", f.puts, f.merged, f.linear.issue.State.Name)
+	if f.puts != 1 || !f.merged || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("merge not completed: squash=%d merged=%v state=%s", f.puts, f.merged, f.tracker.issue.State.Name)
 	}
-	if !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 无") {
-		t.Fatalf("ownership not released: %v", f.linear.bodies)
+	if !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 无") {
+		t.Fatalf("ownership not released: %v", f.tracker.bodies)
 	}
 }
 
 func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 	t.Helper()
-	parts := strings.Split(f.linear.rows[0].Body, "merge-handoff-v1: ")
+	parts := strings.Split(f.tracker.rows[0].Body, "merge-handoff-v1: ")
 	var h map[string]any
 	if err := json.Unmarshal([]byte(parts[1]), &h); err != nil {
 		t.Fatal(err)
@@ -251,7 +251,7 @@ func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 	if bMarshalErr != nil {
 		t.Fatal(bMarshalErr)
 	}
-	f.linear.rows[0].Body = parts[0] + "merge-handoff-v1: " + string(b)
+	f.tracker.rows[0].Body = parts[0] + "merge-handoff-v1: " + string(b)
 }
 func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 	for _, kind := range []string{"gate-red", "review-red", "manual", "lane2-disabled", "lane3-path", "wrong-spec", "missing-orca", "multiple-pr"} {
@@ -283,8 +283,8 @@ func TestRuntimeMergeRequiresValidationAndPolicy(t *testing.T) {
 			}
 			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 			err := s.Tick(context.Background())
-			if f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
-				t.Fatalf("unsafe merge %s: puts=%d state=%s", kind, f.puts, f.linear.issue.State.Name)
+			if f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+				t.Fatalf("unsafe merge %s: puts=%d state=%s", kind, f.puts, f.tracker.issue.State.Name)
 			}
 			if err == nil {
 				t.Fatal("waiting must explain missing evidence")
@@ -297,8 +297,8 @@ func TestRuntimeMergeRetainsOwnershipUntilCompletionConfirmed(t *testing.T) {
 	for _, failure := range []string{"done", "final-comment"} {
 		t.Run(failure, func(t *testing.T) {
 			f := newMergeFixture(t)
-			f.linear.failDone = failure == "done"
-			f.linear.failFinal = failure == "final-comment"
+			f.tracker.failDone = failure == "done"
+			f.tracker.failFinal = failure == "final-comment"
 			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 			if err := s.Tick(context.Background()); err == nil {
 				t.Fatal("expected unconfirmed completion")
@@ -306,16 +306,16 @@ func TestRuntimeMergeRetainsOwnershipUntilCompletionConfirmed(t *testing.T) {
 			if f.puts != 1 {
 				t.Fatalf("squash=%d", f.puts)
 			}
-			f.linear.failDone = false
-			f.linear.failFinal = false
+			f.tracker.failDone = false
+			f.tracker.failFinal = false
 			rebuilt := *f.runtime
 			rebuilt.GitHub = nil
 			s = &Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}
 			if err := s.Tick(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if f.puts != 1 || f.linear.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.linear.bodies, "\n"), "归属: 无") {
-				t.Fatalf("completion lost/replayed: puts=%d state=%s comments=%v", f.puts, f.linear.issue.State.Name, f.linear.bodies)
+			if f.puts != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 无") {
+				t.Fatalf("completion lost/replayed: puts=%d state=%s comments=%v", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
 			}
 		})
 	}
@@ -358,17 +358,17 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 			case "changed-head":
 				f.prBody["head"].(map[string]any)["sha"] = strings.Repeat("f", 40)
 			case "missing-handoff":
-				f.linear.rows[0].Body = "归属: 合并通道"
+				f.tracker.rows[0].Body = "归属: 合并通道"
 			case "malformed-handoff":
-				f.linear.rows[0].Body = "归属: 合并通道\nmerge-handoff-v1: {"
+				f.tracker.rows[0].Body = "归属: 合并通道\nmerge-handoff-v1: {"
 			case "missing-main":
 				f.main = ""
 			case "unknown-mergeability":
 				delete(f.prBody, "mergeable")
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			if err == nil || f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
-				t.Fatalf("unsafe evidence %s: err=%v puts=%d state=%s", kind, err, f.puts, f.linear.issue.State.Name)
+			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+				t.Fatalf("unsafe evidence %s: err=%v puts=%d state=%s", kind, err, f.puts, f.tracker.issue.State.Name)
 			}
 		})
 	}
@@ -376,15 +376,15 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 
 func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	f := newMergeFixture(t)
-	f.linear.failDone = true
+	f.tracker.failDone = true
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	f.linear.failDone = false
+	f.tracker.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range f.linear.bodies {
+	for _, body := range f.tracker.bodies {
 		for _, line := range strings.Split(body, "\n") {
 			if strings.HasPrefix(line, "merge-progress-v1: ") {
 				var p map[string]any
@@ -399,7 +399,7 @@ func TestRuntimeMergeRecoveryPreservesFixedMainReceipt(t *testing.T) {
 	}
 }
 
-type mergeTickets struct{ rows []*mergeLinear }
+type mergeTickets struct{ rows []*mergeIssues }
 
 func (m *mergeTickets) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
 	var issues []linear.Issue
@@ -408,7 +408,7 @@ func (m *mergeTickets) Snapshot(context.Context, []string, time.Time) ([]linear.
 	}
 	return issues, nil
 }
-func (m *mergeTickets) row(id string) *mergeLinear {
+func (m *mergeTickets) row(id string) *mergeIssues {
 	for _, r := range m.rows {
 		if r.issue.ID == id {
 			return r
@@ -428,14 +428,14 @@ func (m *mergeTickets) UpdateIssue(ctx context.Context, id, state string, add, r
 
 func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 	f := newMergeFixture(t)
-	next := *f.linear
+	next := *f.tracker
 	next.issue.ID = "next"
 	next.issue.Identifier = "ENG-2"
-	next.rows = append([]linear.Comment(nil), f.linear.rows...)
+	next.rows = append([]linear.Comment(nil), f.tracker.rows...)
 	next.issue.UpdatedAt = time.Now().Add(-48 * time.Hour)
-	f.linear.issue.UpdatedAt = time.Now()
+	f.tracker.issue.UpdatedAt = time.Now()
 	nf := *f
-	nf.linear = &next
+	nf.tracker = &next
 	rewriteHandoff(t, &nf, func(h map[string]any) {
 		h["ticket_id"] = "next"
 		h["identifier"] = "ENG-2"
@@ -443,7 +443,7 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 		h["queue_id"] = "q2"
 		h["enqueued_at"] = "2026-10-06T02:00:00Z"
 	})
-	source := &mergeTickets{rows: []*mergeLinear{&next, f.linear}}
+	source := &mergeTickets{rows: []*mergeIssues{&next, f.tracker}}
 	f.runtime.Clients[f.repos[0].Path] = source
 	// Waiting head blocks the later PR, even when snapshot and updatedAt favor it.
 	f.checkState = "pending"
@@ -456,16 +456,16 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 		}
 	}
 	f.checkState = "success"
-	f.linear.failDone = true
+	f.tracker.failDone = true
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	f.linear.failDone = false
+	f.tracker.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || f.linear.issue.State.Name != "Done" || next.issue.State.Name != "In Progress" {
-		t.Fatalf("FIFO completion: puts=%d first=%s next=%s", f.puts, f.linear.issue.State.Name, next.issue.State.Name)
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" || next.issue.State.Name != "In Progress" {
+		t.Fatalf("FIFO completion: puts=%d first=%s next=%s", f.puts, f.tracker.issue.State.Name, next.issue.State.Name)
 	}
 	for _, request := range f.requests {
 		if strings.HasSuffix(request, "/pulls/2") {
@@ -477,19 +477,19 @@ func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {
 func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) {
 	f := newMergeFixture(t)
 	f.checkState = "pending"
-	b := *f.linear
+	b := *f.tracker
 	b.issue.ID = "b"
-	b.issue.Project.ID = "p-b"
-	b.rows = append([]linear.Comment(nil), f.linear.rows...)
+	b.issue.Project.ID = "o/s"
+	b.rows = append([]linear.Comment(nil), f.tracker.rows...)
 	bf := *f
-	bf.linear = &b
+	bf.tracker = &b
 	rewriteHandoff(t, &bf, func(h map[string]any) { h["repository"] = "o/s"; h["ticket_id"] = "b"; h["queue_id"] = "b" })
 	dir := t.TempDir()
 	gitMergeTest(t, dir, "clone", f.repos[0].Path, ".")
-	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p-b", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
+	br := config.Repository{Path: dir, StaleHours: 8, MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
 	f.repos = append(f.repos, br)
 	f.runtime.Repositories[dir] = br
-	source := &mergeTickets{rows: []*mergeLinear{f.linear, &b}}
+	source := &mergeTickets{rows: []*mergeIssues{f.tracker, &b}}
 	f.runtime.Clients[dir] = source
 	f.runtime.Clients[f.repos[0].Path] = source
 	original := f.server.Config.Handler
@@ -548,7 +548,7 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 		}
 	})
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if err == nil || f.puts != 0 || bPuts != 1 || b.issue.State.Name != "Done" || f.linear.issue.State.Name != "In Progress" {
+	if err == nil || f.puts != 0 || bPuts != 1 || b.issue.State.Name != "Done" || f.tracker.issue.State.Name != "In Progress" {
 		t.Fatalf("repository isolation failed: err=%v a=%d b=%d state=%s", err, f.puts, bPuts, b.issue.State.Name)
 	}
 }
@@ -556,11 +556,11 @@ func TestRuntimeMergeBlockedRepositoryDoesNotBlockOtherRepository(t *testing.T) 
 func TestRuntimeMergeObservedWithoutIntentSurvivesCompletionFailure(t *testing.T) {
 	f := newMergeFixture(t)
 	f.merged = true
-	f.linear.failDone = true
+	f.tracker.failDone = true
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 		t.Fatal("expected Done failure")
 	}
-	f.linear.failDone = false
+	f.tracker.failDone = false
 	for i := 0; i < 2; i++ {
 		rebuilt := *f.runtime
 		rebuilt.GitHub = nil
@@ -568,8 +568,8 @@ func TestRuntimeMergeObservedWithoutIntentSurvivesCompletionFailure(t *testing.T
 			t.Fatalf("observed merged recovery stuck: %v", err)
 		}
 	}
-	if f.puts != 0 || f.linear.issue.State.Name != "Done" {
-		t.Fatalf("replayed/unfinished: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
+	if f.puts != 0 || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("replayed/unfinished: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
 	}
 }
 func TestRuntimeMergeLostResponseAndReadbackRetainsIntent(t *testing.T) {
@@ -578,20 +578,20 @@ func TestRuntimeMergeLostResponseAndReadbackRetainsIntent(t *testing.T) {
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
 		t.Fatal("expected readback failure")
 	}
-	if f.puts != 1 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"phase":"merge-intent"`) {
-		t.Fatalf("missing durable pre-write intent: puts=%d bodies=%v", f.puts, f.linear.bodies)
+	if f.puts != 1 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"phase":"merge-intent"`) {
+		t.Fatalf("missing durable pre-write intent: puts=%d bodies=%v", f.puts, f.tracker.bodies)
 	}
 	f.loseReadback = false
-	f.linear.failDone = true
+	f.tracker.failDone = true
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	f.linear.failDone = false
+	f.tracker.failDone = false
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 1 || f.linear.issue.State.Name != "Done" {
-		t.Fatalf("uncertain write replayed: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("uncertain write replayed: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
 	}
 }
 
@@ -627,11 +627,11 @@ func TestRuntimeMergeIncompleteHandoffAndUnknownProgressWait(t *testing.T) {
 			case "progress":
 				f.merged = true
 				raw := fmt.Sprintf(`{"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"unknown"}`, f.head, f.main, strings.Repeat("a", 40))
-				f.linear.rows = append(f.linear.rows, linear.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
+				f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "progress", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			if err == nil || f.puts != 0 || f.linear.issue.State.Name != "In Progress" {
-				t.Fatalf("invalid evidence accepted: %v puts=%d state=%s", err, f.puts, f.linear.issue.State.Name)
+			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+				t.Fatalf("invalid evidence accepted: %v puts=%d state=%s", err, f.puts, f.tracker.issue.State.Name)
 			}
 		})
 	}
@@ -642,18 +642,18 @@ func TestRuntimeMergedPRWithAnotherCandidateDoesNotCompleteTicket(t *testing.T) 
 	f.merged = true
 	f.duplicatePR = true
 	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	if err == nil || f.linear.issue.State.Name != "In Progress" {
-		t.Fatalf("ambiguous ticket completed after first PR: %v state=%s", err, f.linear.issue.State.Name)
+	if err == nil || f.tracker.issue.State.Name != "In Progress" {
+		t.Fatalf("ambiguous ticket completed after first PR: %v state=%s", err, f.tracker.issue.State.Name)
 	}
 }
 
 func TestRuntimeMergeCanceledTicketIsNotAdvanced(t *testing.T) {
 	f := newMergeFixture(t)
-	f.linear.issue.State.Name = "Canceled"
+	f.tracker.issue.State.Name = "Canceled"
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if f.puts != 0 || f.linear.issue.State.Name != "Canceled" {
-		t.Fatalf("canceled ticket advanced: puts=%d state=%s", f.puts, f.linear.issue.State.Name)
+	if f.puts != 0 || f.tracker.issue.State.Name != "Canceled" {
+		t.Fatalf("canceled ticket advanced: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
 	}
 }

@@ -1,9 +1,0 @@
-{
-  "capturedAt": "2026-10-07T16:47:15.514083+00:00",
-  "source": "https://api.linear.app/graphql",
-  "httpStatus": 200,
-  "requestRemaining": "231",
-  "querySourceCommit": "a3a4864",
-  "synthetic": false,
-  "sanitization": "IDs and identifiers consistently pseudonymized; comment bodies and project name redacted; endCursor values pseudonymized; all field presence, nulls, arrays, counts, types and pagination flags preserved."
-}

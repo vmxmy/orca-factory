@@ -121,31 +121,31 @@ func (r *recoveryService) Worktree(context.Context, string, string) (string, err
 	return "/original/worktree", nil
 }
 
-type budgetLinear struct {
-	fakeLinear
+type budgetIssues struct {
+	fakeIssues
 	updates []struct {
 		state       string
 		add, remove []string
 	}
 }
 
-func (l *budgetLinear) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
+func (l *budgetIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (linear.Issue, error) {
 	l.updates = append(l.updates, struct {
 		state       string
 		add, remove []string
 	}{state, add, remove})
-	return l.fakeLinear.UpdateIssue(ctx, id, state, add, remove)
+	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
 }
-func recoveryFixture(t *testing.T) (*Executor, *recoveryOrca, *recoveryTools, *recoveryService, *budgetLinear, Ticket) {
+func recoveryFixture(t *testing.T) (*Executor, *recoveryOrca, *recoveryTools, *recoveryService, *budgetIssues, Ticket) {
 	e, _, _, _, _, ticket := fixture(t, "new-sha")
 	o := &recoveryOrca{}
 	tools := &recoveryTools{fakeTools: fakeTools{head: "new-sha"}}
 	service := &recoveryService{}
-	l := &budgetLinear{}
+	l := &budgetIssues{}
 	e.Orca = o
 	e.Tools = tools
 	e.Recovery = service
-	e.Linear = l
+	e.Issues = l
 	e.Sleep = func(context.Context, time.Duration) error { return nil }
 	return e, o, tools, service, l, ticket
 }
@@ -229,7 +229,7 @@ func TestInfraBudgetExhaustion(t *testing.T) {
 	}
 	assertBudgetHandoff(t, l)
 }
-func assertBudgetHandoff(t *testing.T, l *budgetLinear) {
+func assertBudgetHandoff(t *testing.T, l *budgetIssues) {
 	t.Helper()
 	last := l.updates[len(l.updates)-1]
 	if last.state != "In Progress" || !reflect.DeepEqual(last.add, []string{"auto-impl", "auto-failed"}) || !reflect.DeepEqual(last.remove, []string{"ready-for-agent"}) {

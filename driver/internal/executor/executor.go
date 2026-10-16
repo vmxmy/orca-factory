@@ -34,7 +34,7 @@ type Orca interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
 }
-type Linear interface {
+type Issues interface {
 	ListComments(context.Context, string) ([]linear.Comment, error)
 	CreateComment(context.Context, string, string) (linear.Comment, error)
 	UpdateIssue(context.Context, string, string, []string, []string) (linear.Issue, error)
@@ -57,7 +57,7 @@ type Ticket struct {
 	Estimate                                             *float64
 	ID, Identifier, Title, Todo, Check, Scope, TestFiles string
 	Lane                                                 int
-	// Number is the GitHub issue number; 0 under the Linear backend.
+	// Number is the GitHub issue number; 0 for other backends.
 	Number  int
 	NewTest bool
 }
@@ -74,16 +74,14 @@ type Config struct {
 	Tier                                                                string
 }
 type Executor struct {
-	Followups     FollowupLinear
-	FollowupTools FollowupTools
-	Orca          Orca
-	Linear        Linear
-	GitHub        GitHub
-	Tools         Tools
-	Config        Config
-	Now           func() time.Time
-	Recovery      Recovery
-	Sleep         func(context.Context, time.Duration) error
+	Orca     Orca
+	Issues   Issues
+	GitHub   GitHub
+	Tools    Tools
+	Config   Config
+	Now      func() time.Time
+	Recovery Recovery
+	Sleep    func(context.Context, time.Duration) error
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -148,7 +146,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || c.Repo == "" || c.Terminal == "" || t.ID == "" || t.Todo == "" || t.Check == "" || t.Scope == "" || strings.ContainsAny(t.Check+t.Scope+t.TestFiles, "\r\n") || (t.NewTest && t.TestFiles == "") || t.Lane < 1 || t.Lane > 2 {
 		return result, errors.New("invalid executor configuration or ticket brief")
 	}
-	if e.Orca == nil || e.Linear == nil || e.GitHub == nil || e.Tools == nil {
+	if e.Orca == nil || e.Issues == nil || e.GitHub == nil || e.Tools == nil {
 		return result, errors.New("missing executor dependency")
 	}
 	if c.Root == "" {
@@ -256,7 +254,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			}
 		}
 		if commentErr := e.comment(ctx, t.ID, body); commentErr != nil {
-			return errors.New("Linear transition comment failed")
+			return errors.New("ticket transition comment failed")
 		}
 		e.board(ctx, t, cp.Worktree, next.Phase, "", result.PR.Number)
 		return nil
@@ -303,9 +301,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			// current main, or the gate runs against a stale base and fails driver-wired.
 			cp.Baseline = baseline
 		}
-		issue, callErr := e.Linear.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
+		issue, callErr := e.Issues.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if callErr != nil {
-			return errors.New("Linear claim failed")
+			return errors.New("ticket claim failed")
 		}
 		claimed := false
 		for _, label := range issue.Labels.Nodes {
@@ -314,7 +312,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			}
 		}
 		if !claimed {
-			return errors.New("Linear claim was not confirmed")
+			return errors.New("ticket claim was not confirmed")
 		}
 		rendered, gate, writeErr := writeArtifacts(c, t, branch)
 		if writeErr != nil {
@@ -433,8 +431,6 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
 			event = machine.EvWorkerFail
-		} else {
-			e.processFollowups(ctx, t, report.Body)
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err

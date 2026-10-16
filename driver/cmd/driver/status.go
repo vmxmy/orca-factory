@@ -24,8 +24,8 @@ func showStatus(args []string) int {
 			return 1
 		}
 	} else {
-		fmt.Printf("Driver %s · tickets %d · global pause %t (%ds) · Linear requests %d complexity %d\n",
-			view.State, len(view.Tickets), view.GlobalPause.Active, view.GlobalPause.DurationSeconds, view.Linear.Requests, view.Linear.Complexity)
+		fmt.Printf("Driver %s · tickets %d · global pause %t (%ds)\n",
+			view.State, len(view.Tickets), view.GlobalPause.Active, view.GlobalPause.DurationSeconds)
 		fmt.Printf("GitHub requests %d\n", view.GitHub.Requests)
 		for _, t := range view.Tickets {
 			if d := t.Deployment; d != nil {

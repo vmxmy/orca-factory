@@ -19,12 +19,12 @@ import (
 )
 
 type movingDeploymentIntent struct {
-	*mergeLinear
+	*mergeIssues
 	move func()
 }
 
 func (l *movingDeploymentIntent) CreateComment(ctx context.Context, id, body string) (linear.Comment, error) {
-	c, err := l.mergeLinear.CreateComment(ctx, id, body)
+	c, err := l.mergeIssues.CreateComment(ctx, id, body)
 	if err == nil && strings.Contains(body, `"phase":"merge-intent"`) && l.move != nil {
 		move := l.move
 		l.move = nil
@@ -49,7 +49,7 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 			gitMergeTest(t, dir, "add", ".")
 			gitMergeTest(t, dir, "commit", "-m", "advance main")
 			nextMain := gitMergeTest(t, dir, "rev-parse", "HEAD")
-			l := &movingDeploymentIntent{mergeLinear: f.linear, move: func() { f.main = nextMain }}
+			l := &movingDeploymentIntent{mergeIssues: f.tracker, move: func() { f.main = nextMain }}
 			f.runtime.Clients[dir] = l
 			var smokes []string
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -59,8 +59,8 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil || f.puts != 0 || !strings.Contains(strings.Join(f.linear.bodies, "\n"), `"phase":"merge-intent"`) {
-				t.Fatalf("expected durable intent followed by moved main: %v merges=%d receipts=%v", err, f.puts, f.linear.bodies)
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil || f.puts != 0 || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"phase":"merge-intent"`) {
+				t.Fatalf("expected durable intent followed by moved main: %v merges=%d receipts=%v", err, f.puts, f.tracker.bodies)
 			}
 			if change == "remove" {
 				delete(env, "AGENT_SMOKE_CMD")
@@ -78,7 +78,7 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 			if change == "add" {
 				want = ""
 			}
-			for _, body := range f.linear.bodies {
+			for _, body := range f.tracker.bodies {
 				for _, line := range strings.Split(body, "\n") {
 					if strings.HasPrefix(line, merge.ProgressPrefix) {
 						var p merge.Progress
@@ -95,8 +95,8 @@ func TestDeploymentRetryKeepsFrozenIntentConfiguration(t *testing.T) {
 					}
 				}
 			}
-			if f.puts != 1 || strings.Join(smokes, ",") != want || f.linear.issue.State.Name != "Done" {
-				t.Fatalf("wrong execution after restart: merges=%d smoke=%v state=%s", f.puts, smokes, f.linear.issue.State.Name)
+			if f.puts != 1 || strings.Join(smokes, ",") != want || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("wrong execution after restart: merges=%d smoke=%v state=%s", f.puts, smokes, f.tracker.issue.State.Name)
 			}
 		})
 	}
@@ -203,8 +203,8 @@ func TestDeploymentSmokePreservesSafeErrorAndNeverReplays(t *testing.T) {
 				rebuilt.GitHub = nil
 				_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
 			}
-			if count != 1 || f.linear.issue.State.Name == "Done" {
-				t.Fatalf("unknown smoke replayed/released: count=%d state=%s", count, f.linear.issue.State.Name)
+			if count != 1 || f.tracker.issue.State.Name == "Done" {
+				t.Fatalf("unknown smoke replayed/released: count=%d state=%s", count, f.tracker.issue.State.Name)
 			}
 		})
 	}
@@ -218,7 +218,7 @@ func TestDeploymentHistoryRequiresHumanRecovery(t *testing.T) {
 					f := newMergeFixture(t)
 					f.merged = true
 					f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
-					l := &uncertainSmokeLinear{mergeLinear: f.linear, loseResult: true}
+					l := &uncertainSmokeIssues{mergeIssues: f.tracker, loseResult: true}
 					f.runtime.Clients[f.repos[0].Path] = l
 					count := 0
 					f.runtime.Run = func(context.Context, runx.Spec) ([]byte, error) { count++; return nil, nil }
@@ -257,12 +257,12 @@ func TestDeploymentHistoryRequiresHumanRecovery(t *testing.T) {
 					if rawMarshalErr != nil {
 						t.Fatal(rawMarshalErr)
 					}
-					f.linear.rows = append(f.linear.rows, linear.Comment{ID: "unauthorized", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
+					f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "unauthorized", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 					rebuilt := *f.runtime
 					rebuilt.GitHub = nil
 					err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
-					if err == nil || count != 1 || f.linear.issue.State.Name == "Done" {
-						t.Fatalf("unauthorized %s -> %s accepted: err=%v smoke=%d state=%s", from, to, err, count, f.linear.issue.State.Name)
+					if err == nil || count != 1 || f.tracker.issue.State.Name == "Done" {
+						t.Fatalf("unauthorized %s -> %s accepted: err=%v smoke=%d state=%s", from, to, err, count, f.tracker.issue.State.Name)
 					}
 				})
 			}
@@ -295,7 +295,7 @@ func TestDeploymentOldRecoveryCannotAuthorizeAnotherSmoke(t *testing.T) {
 	if rawMarshalErr != nil {
 		t.Fatal(rawMarshalErr)
 	}
-	f.linear.rows = append(f.linear.rows, linear.Comment{ID: "replayed-proof", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
+	f.tracker.rows = append(f.tracker.rows, linear.Comment{ID: "replayed-proof", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
 	rebuilt := *f.runtime
 	rebuilt.GitHub = nil
 	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil || count != 2 {
@@ -315,11 +315,11 @@ func TestDeploymentRecoveryRejectsStaleTimestampBeforeWriting(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-	before := len(f.linear.bodies)
+	before := len(f.tracker.bodies)
 	if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", strings.Repeat("a", 40), "retry-smoke", "Alice", "second reconciliation", false); err == nil {
 		t.Fatal("stale recovery time accepted")
 	}
-	if len(f.linear.bodies) != before {
+	if len(f.tracker.bodies) != before {
 		t.Fatal("invalid recovery poisoned durable history")
 	}
 	now = now.Add(time.Second)

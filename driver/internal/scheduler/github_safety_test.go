@@ -47,7 +47,7 @@ func githubSafetyFixture(t *testing.T, f *mergeFixture) *safetyIssues {
 		t.Fatal(err)
 	}
 	g := &safetyIssues{row: map[string]any{"number": 42, "title": "execution", "body": "<!-- orca-task-v1: " + string(raw) + " -->", "state": "open", "labels": []any{}, "updated_at": time.Now()}}
-	for _, c := range f.linear.rows {
+	for _, c := range f.tracker.rows {
 		g.comment(c.Body)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,9 +112,8 @@ func githubSafetyFixture(t *testing.T, f *mergeFixture) *safetyIssues {
 	}
 	repo := f.repos[0]
 	repo.Env["AGENT_ISSUE_BACKEND"] = "github"
-	delete(repo.Env, "AGENT_LINEAR_PROJECT")
 	f.repos[0] = repo
-	f.runtime.Clients = map[string]LinearClient{repo.Path: client}
+	f.runtime.Clients = map[string]IssueClient{repo.Path: client}
 	f.runtime.Repositories[repo.Path] = repo
 	return g
 }

@@ -233,7 +233,6 @@ func TestIdleNudge(t *testing.T) {
 		}
 		e.Orca = o
 		state := machine.Initial()
-		state.Paused[machine.DepLinear] = false
 		state.Paused[machine.DepGitHub] = true
 		var idle workerIdle
 		for i := 0; i < 3; i++ {

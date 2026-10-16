@@ -2,7 +2,6 @@ package scheduler
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -24,7 +23,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-type LinearClient = issues.Client
+type IssueClient = issues.Client
 type OrcaClient interface {
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
@@ -34,7 +33,7 @@ type OrcaClient interface {
 }
 type Runtime struct {
 	GitHub               *github.Client
-	Clients              map[string]LinearClient
+	Clients              map[string]IssueClient
 	Repositories         map[string]config.Repository
 	Orca                 OrcaClient
 	OrcaPath, DriverPath string
@@ -43,16 +42,18 @@ type Runtime struct {
 	Tuning               config.Tuning
 	Runners              *runnerhealth.Monitor
 	refused              map[string]error
-	newLinear            func(context.Context, string) (LinearClient, error)
+	// newClient binds a ledger client for a repository's env; Track calls it
+	// for every repository discovery hands over.
+	newClient func(context.Context, map[string]string) (IssueClient, error)
 	// runnerState is the isolated CI runners' state directory on the host that
 	// runs them; Track starts Runners once their repository is bound.
 	runnerState string
-	projections map[LinearClient]map[string]commentProjection
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
-// any Linear initialization; Tick repeats the check before each inspection.
-// serve passes no repos and lets the scheduler Track what discovery finds.
+// any issue backend initialization; Tick repeats the check before each
+// inspection. serve passes no repos and lets the scheduler Track what
+// discovery finds.
 func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository) (*Runtime, error) {
 	path, err := runx.OrcaPath()
 	if err != nil {
@@ -65,16 +66,13 @@ func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository)
 	r := &Runtime{
 		runnerState:  runnerStateDir(),
 		Tuning:       c.Tuning,
-		Clients:      map[string]LinearClient{},
+		Clients:      map[string]IssueClient{},
 		Repositories: map[string]config.Repository{},
 		Orca:         &orca.Client{Path: path, WorkerStartWait: c.Tuning.Orca.WorkerStartWait, Timeout: c.Tuning.Orca.CallTimeout},
 		OrcaPath:     path,
 		DriverPath:   binary,
 	}
-	err = r.initialize(ctx, repos, func(ctx context.Context, team string) (LinearClient, error) {
-		return linear.New(ctx, linear.Options{TeamID: team, DiscoveryPauseFraction: c.Tuning.Scheduler.PauseFraction, HTTPTimeout: c.Tuning.Linear.HTTPTimeout})
-	})
-	if err != nil {
+	if err = r.initialize(ctx, repos, r.newIssueClient); err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -137,11 +135,11 @@ func (r *Runtime) githubClient() (*github.Client, error) {
 	return gh, nil
 }
 
-func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, newClient func(context.Context, string) (LinearClient, error)) error {
-	r.Clients = map[string]LinearClient{}
+func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, newClient func(context.Context, map[string]string) (IssueClient, error)) error {
+	r.Clients = map[string]IssueClient{}
 	r.Repositories = map[string]config.Repository{}
 	r.refused = map[string]error{}
-	r.newLinear = newClient
+	r.newClient = newClient
 	var refusals []error
 	for _, repo := range repos {
 		if err := r.Track(ctx, repo); err != nil {
@@ -173,33 +171,14 @@ func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 		return err
 	}
 	project := issues.Project(repo.Env)
-	var shared LinearClient
-	for path, known := range r.Repositories {
+	for _, known := range r.Repositories {
 		if issues.Project(known.Env) == project {
 			return errors.New("duplicate issue repository")
 		}
-		if !issues.Native(known.Env) && known.Env["AGENT_LINEAR_TEAM"] == repo.Env["AGENT_LINEAR_TEAM"] {
-			shared = r.Clients[path]
-		}
 	}
-	var client LinearClient
-	var err error
-	switch {
-	case issues.Native(repo.Env):
-		if client, err = r.newIssueClient(ctx, repo.Env); err != nil {
-			return err
-		}
-	case repo.Env["AGENT_LINEAR_TEAM"] == "" || project == "":
-		return errors.New("repository requires distinct Linear project and team")
-	case shared != nil:
-		client = shared
-	default:
-		bounded, cancel := context.WithTimeout(ctx, 30*time.Second)
-		client, err = r.newLinear(bounded, repo.Env["AGENT_LINEAR_TEAM"])
-		cancel()
-		if err != nil {
-			return errors.New("linear initialization failed")
-		}
+	client, err := r.newClient(ctx, repo.Env)
+	if err != nil {
+		return err
 	}
 	r.Clients[repo.Path] = client
 	r.Repositories[repo.Path] = repo
@@ -209,7 +188,7 @@ func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 
 // UpdateRepository replaces repo's stored configuration (OF-45). RefreshProjects
 // calls this only after confirming repo's ledger identity keys match the
-// previous configuration, so no bound Linear/GitHub/Feishu client is rebound.
+// previous configuration, so no bound GitHub/Feishu client is rebound.
 func (r *Runtime) UpdateRepository(repo config.Repository) {
 	r.Repositories[repo.Path] = repo
 }
@@ -223,8 +202,8 @@ func (e *SnapshotEvidenceError) Error() string { return e.Err.Error() }
 func (e *SnapshotEvidenceError) Unwrap() error { return e.Err }
 
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
-	groups := map[LinearClient][]config.Repository{}
-	order := []LinearClient{}
+	groups := map[IssueClient][]config.Repository{}
+	order := []IssueClient{}
 	for _, repo := range repos {
 		if r.refused[repo.Path] != nil {
 			continue
@@ -258,7 +237,7 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 	return tickets, nil
 }
 
-func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos []config.Repository) ([]Ticket, error) {
+func (r *Runtime) snapshotClient(ctx context.Context, reader IssueClient, repos []config.Repository) ([]Ticket, error) {
 	if len(repos) == 0 {
 		return nil, nil
 	}
@@ -276,11 +255,11 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 	}
 	issues, err := reader.Snapshot(ctx, projects, time.Time{})
 	if err != nil {
-		return nil, fmt.Errorf("linear snapshot failed: %w", err)
+		return nil, fmt.Errorf("issue snapshot failed: %w", err)
 	}
 	// Batch only within each configured client's authorization boundary.
 	commentsByID := map[string][]linear.Comment{}
-	groups := map[LinearClient][]linear.Issue{}
+	groups := map[IssueClient][]linear.Issue{}
 	for _, issue := range issues {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
@@ -291,17 +270,13 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 		}
 		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
 	}
-	pending := map[LinearClient]map[string]commentProjection{}
 	for client, rows := range groups {
-		comments, projection, err := r.snapshotComments(ctx, client, rows)
-		if err != nil {
-			return nil, fmt.Errorf("ownership snapshot failed: %w", err)
-		}
-		for id, history := range comments {
-			commentsByID[id] = history
-		}
-		if projection != nil {
-			pending[client] = projection
+		for _, issue := range rows {
+			history, err := client.ListComments(ctx, issue.ID)
+			if err != nil {
+				return nil, fmt.Errorf("ownership snapshot failed: %w", err)
+			}
+			commentsByID[issue.ID] = history
 		}
 	}
 	tickets := []Ticket{}
@@ -375,12 +350,6 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader LinearClient, repos
 	}
 	if len(problems) != 0 {
 		return nil, &SnapshotEvidenceError{Tickets: tickets, Err: errors.Join(problems...)}
-	}
-	if r.projections == nil {
-		r.projections = map[LinearClient]map[string]commentProjection{}
-	}
-	for client, projection := range pending {
-		r.projections[client] = projection
 	}
 	return tickets, nil
 }
@@ -476,7 +445,6 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		}
 		defer release()
 	}
-	r.forgetProjection(t)
 	if err := r.verifyFreshDecision(ctx, t, a.Kind); err != nil {
 		return err
 	}
@@ -513,18 +481,18 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 		}
 		issue, err = client.UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl"}, nil)
 		if err != nil {
-			return errors.New("linear claim failed")
+			return errors.New("ticket claim update failed")
 		}
 		_, claimed, _ := issueEligibility(issue)
 		if !claimed {
-			return errors.New("linear claim not confirmed")
+			return errors.New("ticket claim not confirmed")
 		}
 	case Resume:
 	case Merge:
 		owner = machine.OwnerMerge
 	case Release:
 		if _, err := client.UpdateIssue(ctx, t.ID, "Todo", nil, []string{"auto-impl"}); err != nil {
-			return errors.New("linear release failed")
+			return errors.New("ticket release failed")
 		}
 		owner = machine.OwnerNone
 	case Resolve:
@@ -551,38 +519,20 @@ func (r *Runtime) Apply(ctx context.Context, t Ticket, a Action) error {
 	return nil
 }
 
-// Adapters predating targeted reads retain a live Snapshot fallback; absence is
-// unknown, never permission to reuse the ticket supplied by discovery.
-func (r *Runtime) claimIssue(ctx context.Context, client LinearClient, t Ticket) (linear.Issue, error) {
+// claimIssue rereads the ticket itself; absence is unknown, never permission
+// to reuse the ticket supplied by discovery.
+func (r *Runtime) claimIssue(ctx context.Context, client IssueClient, t Ticket) (linear.Issue, error) {
 	repo := r.Repositories[t.Repo]
 	project := issues.Project(repo.Env)
-	var issue linear.Issue
-	if reader, ok := client.(interface {
+	reader, ok := client.(interface {
 		FreshIssue(context.Context, string) (linear.Issue, error)
-	}); ok {
-		var err error
-		issue, err = reader.FreshIssue(ctx, t.ID)
-		if err != nil {
-			return linear.Issue{}, errors.New("claim issue unavailable")
-		}
-	} else {
-		if project == "" {
-			return linear.Issue{}, errors.New("claim project unavailable")
-		}
-		rows, err := client.Snapshot(ctx, []string{project}, time.Time{})
-		if err != nil {
-			return linear.Issue{}, errors.New("claim issue unavailable")
-		}
-		found := false
-		for _, row := range rows {
-			if row.ID == t.ID {
-				if found {
-					return linear.Issue{}, errors.New("ambiguous claim issue")
-				}
-				issue = row
-				found = true
-			}
-		}
+	})
+	if !ok {
+		return linear.Issue{}, errors.New("claim issue unavailable")
+	}
+	issue, err := reader.FreshIssue(ctx, t.ID)
+	if err != nil {
+		return linear.Issue{}, errors.New("claim issue unavailable")
 	}
 	if issue.ID != t.ID || issue.Identifier != t.Identifier || project == "" || (issue.Project.ID != project && issue.Project.Name != project) {
 		return linear.Issue{}, errors.New("claim issue identity changed")
@@ -599,7 +549,6 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		return err
 	}
 	defer release()
-	r.forgetProjection(t)
 	if err := r.verifyFreshLaunch(ctx, t); err != nil {
 		return err
 	}
@@ -631,32 +580,20 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 	return run(ctx, runx.Spec{Path: path, Args: args, Dir: dir, Timeout: 30 * time.Second})
 }
 
-// ticketScope stays local to the scheduler because the shared Linear snapshot
+// ticketScope stays local to the scheduler because the shared snapshot
 // deliberately carries only scheduling metadata, not issue descriptions.
 func (r *Runtime) ticketScope(ctx context.Context, t Ticket) ([]string, error) {
-	if client, ok := r.Clients[t.Repo].(issues.Store); ok {
-		description, err := client.Description(ctx, t.ID)
-		if err != nil {
-			return nil, err
-		}
-		return declaredScope(description), nil
+	client, ok := r.Clients[t.Repo].(interface {
+		Description(context.Context, string) (string, error)
+	})
+	if !ok {
+		return nil, errors.New("ticket scope unavailable")
 	}
-	raw, err := r.command(ctx, t.Repo, r.OrcaPath, "linear", "issue", t.Identifier, "--json")
+	description, err := client.Description(ctx, t.ID)
 	if err != nil {
-		return nil, errors.New("ticket scope read failed")
+		return nil, err
 	}
-	var envelope struct {
-		OK     bool `json:"ok"`
-		Result struct {
-			Issue *struct {
-				Description string `json:"description"`
-			} `json:"issue"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(raw, &envelope) != nil || !envelope.OK || envelope.Result.Issue == nil {
-		return nil, errors.New("invalid ticket scope response")
-	}
-	return declaredScope(envelope.Result.Issue.Description), nil
+	return declaredScope(description), nil
 }
 
 // ActualChanges replaces declared scope only after every remote unit diff was
@@ -706,15 +643,4 @@ func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, 
 // start leaves evidence. The identifier is validated before it reaches the shell.
 func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
-}
-
-// ProbeLinearQuota refreshes the usage headers of every Linear client with one cheap query.
-func (r *Runtime) ProbeLinearQuota(ctx context.Context) error {
-	var errs []error
-	for _, client := range r.Clients {
-		if prober, ok := client.(interface{ ProbeQuota(context.Context) error }); ok {
-			errs = append(errs, prober.ProbeQuota(ctx))
-		}
-	}
-	return errors.Join(errs...)
 }

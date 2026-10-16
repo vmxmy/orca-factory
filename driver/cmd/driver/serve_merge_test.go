@@ -20,26 +20,26 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
-type serveMergeLinear struct {
-	scheduler.LinearClient
+type serveMergeIssues struct {
+	scheduler.IssueClient
 	issue    linear.Issue
 	comments []linear.Comment
 	writes   int
 }
 
-func (l *serveMergeLinear) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
+func (l *serveMergeIssues) Snapshot(context.Context, []string, time.Time) ([]linear.Issue, error) {
 	return []linear.Issue{l.issue}, nil
 }
-func (l *serveMergeLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *serveMergeIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	return l.comments, nil
 }
-func (l *serveMergeLinear) CreateComment(_ context.Context, _ string, body string) (linear.Comment, error) {
+func (l *serveMergeIssues) CreateComment(_ context.Context, _ string, body string) (linear.Comment, error) {
 	l.writes++
 	c := linear.Comment{ID: fmt.Sprint(l.writes), CreatedAt: time.Now(), Body: body}
 	l.comments = append(l.comments, c)
 	return c, nil
 }
-func (l *serveMergeLinear) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
+func (l *serveMergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (linear.Issue, error) {
 	l.writes++
 	l.issue.State.Name = state
 	return l.issue, nil
@@ -137,10 +137,10 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 			if rawMarshalErr != nil {
 				t.Fatal(rawMarshalErr)
 			}
-			l := &serveMergeLinear{issue: linear.Issue{ID: "id", Identifier: "ENG-1", State: linear.NamedID{Name: "In Progress"}, Project: linear.NamedID{ID: "p"}}, comments: []linear.Comment{{ID: "handoff", Body: "归属: 合并通道\nmerge-handoff-v1: " + string(raw)}}}
-			repo := config.Repository{Path: dir, MaxInFlight: 2, StaleHours: 8, Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
+			l := &serveMergeIssues{issue: linear.Issue{ID: "id", Identifier: "ENG-1", State: linear.NamedID{Name: "In Progress"}, Project: linear.NamedID{ID: "o/r"}}, comments: []linear.Comment{{ID: "handoff", Body: "归属: 合并通道\nmerge-handoff-v1: " + string(raw)}}}
+			repo := config.Repository{Path: dir, MaxInFlight: 2, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
 			cfg, repos := config.Config{MaxInFlight: 2, TokenBucket: config.TokenBucket{Capacity: 2, RefillPerSecond: 1}}, []config.Repository{repo}
-			runtime := &scheduler.Runtime{GitHub: gh, Clients: map[string]scheduler.LinearClient{dir: l}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+			runtime := &scheduler.Runtime{GitHub: gh, Clients: map[string]scheduler.IssueClient{dir: l}, Repositories: map[string]config.Repository{dir: repo}, Orca: &serveMergeOrca{}, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path != "git" || s.Dir != dir || s.Timeout <= 0 {
 					t.Fatalf("unsafe command: %+v", s)
 				}
@@ -179,7 +179,7 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 			}
 			if dry {
 				if puts != 0 || fetches != 0 || l.writes != 0 {
-					t.Fatalf("dry-run wrote: merges=%d fetches=%d linear=%d", puts, fetches, l.writes)
+					t.Fatalf("dry-run wrote: merges=%d fetches=%d ticket writes=%d", puts, fetches, l.writes)
 				}
 			} else {
 				if puts != 1 || l.issue.State.Name != "Done" || !strings.Contains(l.comments[len(l.comments)-1].Body, "归属: 无") {

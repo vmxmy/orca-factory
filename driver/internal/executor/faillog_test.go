@@ -14,13 +14,13 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-type failLogLinear struct {
-	fakeLinear
+type failLogIssues struct {
+	fakeIssues
 	readErr error
 	reads   int
 }
 
-func (l *failLogLinear) ListComments(context.Context, string) ([]linear.Comment, error) {
+func (l *failLogIssues) ListComments(context.Context, string) ([]linear.Comment, error) {
 	l.reads++
 	var comments []linear.Comment
 	for _, body := range l.comments {
@@ -101,8 +101,8 @@ func TestFailLogStageComments(t *testing.T) {
 			e, o, tools, _, _, ticket := recoveryFixture(t)
 			e.Config.Escalate = "0"
 			f := failLogToolFixture(e, tools)
-			l := &failLogLinear{}
-			e.Linear = l
+			l := &failLogIssues{}
+			e.Issues = l
 			switch tc.cause {
 			case "worker failed":
 				o.failFirst = true
@@ -162,8 +162,8 @@ func TestFailLogStageComments(t *testing.T) {
 }
 func TestFailLogFormatLimit(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
-	l := &failLogLinear{}
-	e.Linear = l
+	l := &failLogIssues{}
+	e.Issues = l
 	e.Config.Escalate = "0"
 	f := failLogToolFixture(e, tools)
 	f.files = append(f.files, strings.Repeat("a", 600))
@@ -186,8 +186,8 @@ func TestFailLogAllHistory(t *testing.T) {
 	e.Config.Escalate = "0"
 	o.failFirst = true
 	tools.gateReds, tools.reviewReds = 1, 1
-	l, r := &failLogLinear{}, &failLogRecovery{}
-	e.Linear, e.Recovery = l, r
+	l, r := &failLogIssues{}, &failLogRecovery{}
+	e.Issues, e.Recovery = l, r
 	if _, err := e.Execute(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
@@ -217,8 +217,8 @@ func TestFailLogAllHistory(t *testing.T) {
 func TestFailLogRebuild(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
 	e.Config.Escalate = "0"
-	l := &failLogLinear{}
-	e.Linear = l
+	l := &failLogIssues{}
+	e.Issues = l
 	tools.gateReds = 1
 	if _, err := e.Execute(context.Background(), ticket); err != nil {
 		t.Fatal(err)
@@ -249,7 +249,7 @@ func TestFailLogRebuild(t *testing.T) {
 }
 func TestFailLogReadFailure(t *testing.T) {
 	e, o, _, _, _, ticket := recoveryFixture(t)
-	e.Linear = &failLogLinear{readErr: errors.New("credential-secret")}
+	e.Issues = &failLogIssues{readErr: errors.New("credential-secret")}
 	_, err := e.Execute(context.Background(), ticket)
 	if err == nil || strings.Contains(err.Error(), "credential-secret") || len(o.starts) != 0 {
 		t.Fatalf("err=%v starts=%d", err, len(o.starts))
@@ -259,8 +259,8 @@ func TestFailLogReadFailure(t *testing.T) {
 func TestFailLogDifferentAttempts(t *testing.T) {
 	e, _, tools, _, _, ticket := recoveryFixture(t)
 	e.Config.Escalate = "0"
-	l := &failLogLinear{}
-	e.Linear = l
+	l := &failLogIssues{}
+	e.Issues = l
 	f := failLogToolFixture(e, tools)
 	f.heads = []string{"abc1234567890", "def5678901234", "def5678901234"}
 	f.gateReds = 2
@@ -277,8 +277,8 @@ func TestFailLogEvidenceSanitization(t *testing.T) {
 		t.Run(cause, func(t *testing.T) {
 			e, _, tools, _, _, ticket := recoveryFixture(t)
 			e.Config.Escalate = "0"
-			l := &failLogLinear{}
-			e.Linear = l
+			l := &failLogIssues{}
+			e.Issues = l
 			f := failLogToolFixture(e, tools)
 			want := ""
 			switch cause {

@@ -43,7 +43,7 @@ func TestStartCorrectionAfterMainAdvances(t *testing.T) {
 			name = "repair_is_reviewed_against_current_main"
 		}
 		t.Run(name, func(t *testing.T) {
-			e, o, tools, recovery, linear, ticket := recoveryFixture(t)
+			e, o, tools, recovery, tracker, ticket := recoveryFixture(t)
 			oldMain, currentMain := strings.Repeat("a", 40), strings.Repeat("b", 40)
 			tools.head = currentMain
 			if repaired {
@@ -85,7 +85,7 @@ func TestStartCorrectionAfterMainAdvances(t *testing.T) {
 				t.Fatalf("repair must validate against current main: result=%+v gates=%d reviews=%d reviewBase=%q", result, tools.gateCalls, tools.reviewCalls, tools.reviewBase)
 			}
 			var handoff merge.Handoff
-			for _, body := range linear.comments {
+			for _, body := range tracker.comments {
 				for _, line := range strings.Split(body, "\n") {
 					if raw, ok := strings.CutPrefix(line, merge.HandoffPrefix); ok {
 						if err := json.Unmarshal([]byte(raw), &handoff); err != nil {

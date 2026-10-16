@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -21,7 +22,7 @@ import (
 )
 
 type notifyStore struct {
-	fakeLinear
+	fakeIssues
 	writeErr, readErr error
 	reads, writes     int
 	commentsByID      map[string][]linear.Comment
@@ -131,7 +132,7 @@ func TestFeishuNotifyDurable(t *testing.T) {
 				for _, event := range store.issueComments {
 					ticket.NotifyEvents[event.Body] = true
 				}
-				r := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+				r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 				if err := r.NotifyFeishu(ctx, ticket); err != nil {
 					t.Fatal(err)
 				}
@@ -181,7 +182,7 @@ func TestFeishuNotifyFailureAndDisabled(t *testing.T) {
 			case "other backend":
 				repo.Env["AGENT_ISSUE_BACKEND"] = "github"
 			}
-			r := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 			err := r.NotifyFeishu(ctx, ticket)
 			wantErr := scenario == "send" || scenario == "write"
 			if (err != nil) != wantErr {
@@ -232,7 +233,10 @@ type notifyTickBackend struct {
 	fakeBackend
 	runtime  *Runtime
 	snapshot func() ([]Ticket, error)
+	limits   []github.Usage
 }
+
+func (f *notifyTickBackend) GitHubLimits() []github.Usage { return f.limits }
 
 func (f *notifyTickBackend) Snapshot(context.Context, []config.Repository) ([]Ticket, error) {
 	f.snapshots++
@@ -249,11 +253,11 @@ func TestFeishuNotifyPausedSkips(t *testing.T) {
 			sender := &notifySender{store: store}
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 1, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
-			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
+			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
 			s := setup(&f.fakeBackend)
 			s.Backend = f
 			s.Repositories = []config.Repository{repo}
-			low := []linear.RateLimit{{Limit: 100, Remaining: 1, Reset: s.Now().Add(time.Hour)}}
+			low := []github.Usage{{Limit: 100, Remaining: 1, Reset: s.Now().Add(time.Hour)}}
 			if timing == "before snapshot" {
 				f.limits = low
 			}
@@ -283,12 +287,12 @@ func TestFeishuNotifySnapshotConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, body := range []string{"归属: unknown", resolver.Prefix + "{}"} {
 		t.Run(body, func(t *testing.T) {
-			store := &notifyStore{fakeLinear: fakeLinear{issueComments: []linear.Comment{{ID: "bad", Body: body}}, issues: []linear.Issue{{ID: "id", Identifier: "OF-9", Title: "conflicting ticket", URL: "https://example.feishu.cn/base/base?record=rec", Project: linear.NamedID{ID: "project"}}}}}
+			store := &notifyStore{fakeIssues: fakeIssues{issueComments: []linear.Comment{{ID: "bad", Body: body}}, issues: []linear.Issue{{ID: "id", Identifier: "OF-9", Title: "conflicting ticket", URL: "https://example.feishu.cn/base/base?record=rec", Project: linear.NamedID{ID: "project"}}}}}
 			sender := &notifySender{store: store}
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 1, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
 
-			r := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 			rows, err := r.Snapshot(context.Background(), []config.Repository{repo})
 			var evidence *SnapshotEvidenceError
 			if !errors.As(err, &evidence) || len(rows) != 0 || len(evidence.Tickets) != 1 {
@@ -340,9 +344,9 @@ func TestFeishuNotifySnapshotReason(t *testing.T) {
 		{"default", nil, "等待处置"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &notifyStore{fakeLinear: fakeLinear{issueComments: tc.comments, issues: []linear.Issue{{ID: "id", Project: linear.NamedID{ID: "p"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}}
-			repo := config.Repository{Path: "a", Env: map[string]string{"AGENT_LINEAR_PROJECT": "p", "AGENT_SCOPE_AVOID": "0"}}
-			r := &Runtime{Clients: map[string]LinearClient{repo.Path: store}}
+			store := &notifyStore{fakeIssues: fakeIssues{issueComments: tc.comments, issues: []linear.Issue{{ID: "id", Project: linear.NamedID{ID: "p"}, Labels: linear.Connection[linear.NamedID]{Nodes: []linear.NamedID{{Name: "auto-failed"}}}}}}}
+			repo := config.Repository{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}
+			r := &Runtime{Clients: map[string]IssueClient{repo.Path: store}}
 			tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
 			if err != nil || len(tickets) != 1 {
 				t.Fatalf("tickets=%v err=%v", tickets, err)
@@ -421,7 +425,7 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 			sender.start(t)
 			repo := config.Repository{Path: "a", MaxInFlight: 3, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
 			for range 2 {
-				runtime := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+				runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 				backend := &notifyTickBackend{runtime: runtime}
 				backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 				s := setup(&backend.fakeBackend)
@@ -467,14 +471,14 @@ func TestFeishuNotifyTwoTicks(t *testing.T) {
 
 func TestFeishuNotifyUnownedConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	store := &notifyStore{fakeLinear: fakeLinear{
+	store := &notifyStore{fakeIssues: fakeIssues{
 		issues:        []linear.Issue{{ID: "id", Identifier: "OF-9", Project: linear.NamedID{ID: "project"}, State: linear.NamedID{Name: "In Progress"}}},
 		issueComments: []linear.Comment{{ID: "bad", Body: merge.HandoffPrefix + "invalid"}},
 	}}
 	sender := &notifySender{store: store}
 	sender.start(t)
 	repo := config.Repository{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_FEISHU_PROJECT": "project", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Clients: map[string]LinearClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
 	backend := &notifyTickBackend{runtime: runtime}
 	backend.snapshot = func() ([]Ticket, error) { return runtime.Snapshot(context.Background(), []config.Repository{repo}) }
 	s := setup(&backend.fakeBackend)

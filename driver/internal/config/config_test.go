@@ -40,7 +40,7 @@ func TestMachineAndRepositoryConfig(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts", "agent-gates"), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env"), []byte("AGENT_MAX_IN_FLIGHT=2\nAGENT_STALE_HOURS=8\nAGENT_LINEAR_PROJECT=project-id\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env"), []byte("AGENT_MAX_IN_FLIGHT=2\nAGENT_STALE_HOURS=8\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(home, ".config", "orca-factory")
@@ -92,7 +92,7 @@ func TestTuningOverridesNamedFields(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := "max_in_flight=4\nrepositories=[]\n[scheduler]\npause_fraction=0.02\nresume_fraction=0.01\nquota_probe_backoff=\"2m\"\n[orca]\nworker_start_wait=\"3m\"\n"
+	body := "max_in_flight=4\nrepositories=[]\n[scheduler]\npause_fraction=0.02\nquota_probe_backoff=\"2m\"\n[orca]\nworker_start_wait=\"3m\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "driver.toml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestTuningOverridesNamedFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Tuning.Scheduler.PauseFraction != 0.02 || c.Tuning.Scheduler.ResumeFraction != 0.01 {
+	if c.Tuning.Scheduler.PauseFraction != 0.02 {
 		t.Fatalf("scheduler tuning: %+v", c.Tuning.Scheduler)
 	}
 	if c.Tuning.Scheduler.QuotaProbeBackoff != 2*time.Minute {
@@ -112,7 +112,7 @@ func TestTuningOverridesNamedFields(t *testing.T) {
 	if c.Tuning.Orca.WorkerStartWait != 3*time.Minute || c.Tuning.Orca.CallTimeout != 30*time.Second {
 		t.Fatalf("orca tuning: %+v", c.Tuning.Orca)
 	}
-	if c.Tuning.Linear.HTTPTimeout != 30*time.Second || c.Tuning.Ledger.FlushInterval != 10*time.Minute {
+	if c.Tuning.GitHub.HTTPTimeout != 30*time.Second || c.Tuning.Ledger.FlushInterval != 10*time.Minute {
 		t.Fatalf("untouched sections must keep defaults: %+v", c.Tuning)
 	}
 }
@@ -131,7 +131,7 @@ func TestTuningDefaultsWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Tuning.Scheduler.PauseFraction != .05 || c.Tuning.Scheduler.ResumeFraction != .10 {
+	if c.Tuning.Scheduler.PauseFraction != .05 {
 		t.Fatalf("scheduler defaults: %+v", c.Tuning.Scheduler)
 	}
 	if c.Tuning.Status.StaleAfter != 5*time.Minute || c.Tuning.Runx.WaitDelay != 100*time.Millisecond {

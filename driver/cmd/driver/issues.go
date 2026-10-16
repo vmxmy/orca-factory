@@ -14,7 +14,6 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
@@ -22,7 +21,7 @@ import (
 func init() { Register("issues", runIssues) }
 func issueEnvironment() map[string]string {
 	env := map[string]string{}
-	for _, k := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_GH_API_URL", "AGENT_LINEAR_TEAM", "AGENT_LINEAR_PROJECT", "AGENT_FEISHU_BASE", "AGENT_FEISHU_PROJECT"} {
+	for _, k := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_GH_API_URL", "AGENT_FEISHU_BASE", "AGENT_FEISHU_PROJECT"} {
 		env[k] = os.Getenv(k)
 	}
 	return env
@@ -59,7 +58,7 @@ func issueInput(path string) ([]byte, error) {
 }
 func runIssues(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|export|preview|import|release-hold|validate|backend")
+		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|preview|import|release-hold|validate|backend")
 		return 2
 	}
 	fs := flag.NewFlagSet("issues", flag.ContinueOnError)
@@ -103,8 +102,8 @@ func runIssues(args []string) int {
 		}
 		return 0
 	}
-	if err != nil || (!issues.Native(env) && args[0] != "export") {
-		fmt.Fprintln(os.Stderr, "issues: AGENT_ISSUE_BACKEND must select a task store such as github")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "issues:", err)
 		return 2
 	}
 	if *apply && (args[0] == "import" || args[0] == "release-hold") {
@@ -127,31 +126,10 @@ func runIssues(args []string) int {
 		fmt.Fprintln(os.Stderr, "issues: driver configuration could not be loaded")
 		return 1
 	}
-	client, err := issues.New(ctx, env, cfg.Tuning)
+	gh, err := issues.New(ctx, env, cfg.Tuning)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "issues: backend initialization failed")
 		return 1
-	}
-	if args[0] == "export" {
-		source, ok := client.(*linear.Client)
-		if !ok {
-			fmt.Fprintln(os.Stderr, "export requires explicitly selected authorized Linear source")
-			return 2
-		}
-		manifest, exportErr := issues.Export(ctx, source, env["AGENT_GH_REPO"], env["AGENT_LINEAR_PROJECT"])
-		if exportErr != nil {
-			fmt.Fprintln(os.Stderr, exportErr)
-			return 1
-		}
-		if json.NewEncoder(os.Stdout).Encode(manifest) != nil {
-			return 1
-		}
-		return 0
-	}
-	gh, ok := client.(issues.Store)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "issues: backend keeps no canonical task records")
-		return 2
 	}
 	importer, _ := gh.(issues.Importer)
 	var result any

@@ -60,7 +60,6 @@ type Dependency string
 const (
 	DepClaude Dependency = "Claude"
 	DepCodex  Dependency = "Codex"
-	DepLinear Dependency = "Linear"
 	DepGitHub Dependency = "GitHub"
 )
 
@@ -191,8 +190,6 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		switch {
 		case s.Phase != PhaseUnclaimed:
 			return reject("票不在待领状态")
-		case s.Paused[DepLinear]:
-			return reject("Linear 暂停中")
 		case s.Paused[DepCodex]:
 			return reject("Codex 暂停中")
 		}
@@ -294,7 +291,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			return reject("GitHub 暂停中")
 		}
 		s.Phase, s.Owner = PhaseMerged, OwnerNone
-		fx = append(fx, "squash-merge-read-back", "linear-done", "ledger-append", "worktree-rm")
+		fx = append(fx, "squash-merge-read-back", "issue-done", "ledger-append", "worktree-rm")
 	case EvConflict:
 		if s.Phase != PhaseMergeQueue {
 			return reject("不在合并通道")

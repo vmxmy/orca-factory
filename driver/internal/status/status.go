@@ -13,7 +13,6 @@ type Snapshot struct {
 	GeneratedAt time.Time `json:"generatedAt"`
 	Tickets     []Ticket  `json:"tickets"`
 	Pauses      []Pause   `json:"pauses"`
-	Linear      Usage     `json:"linear"`
 	GitHub      Usage     `json:"github,omitzero"`
 }
 
@@ -91,9 +90,6 @@ func Write(snapshot Snapshot) error {
 	if snapshot.Pauses == nil {
 		snapshot.Pauses = []Pause{}
 	}
-	if snapshot.Linear.Limits == nil {
-		snapshot.Linear.Limits = []ClientLimits{}
-	}
 	writeErr := json.NewEncoder(file).Encode(snapshot)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {
@@ -115,7 +111,6 @@ type View struct {
 	GeneratedAt time.Time   `json:"generatedAt"`
 	Tickets     []Ticket    `json:"tickets"`
 	GlobalPause GlobalPause `json:"globalPause"`
-	Linear      Usage       `json:"linear"`
 	GitHub      Usage       `json:"github,omitzero"`
 }
 
@@ -143,8 +138,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 			}
 		}
 	}
-	hour := now.UTC().Truncate(time.Hour)
-	view := View{State: "unknown", Tickets: []Ticket{}, Linear: Usage{Hour: hour, Limits: []ClientLimits{}}}
+	view := View{State: "unknown", Tickets: []Ticket{}}
 	data, err := os.ReadFile(Path())
 	if err != nil {
 		return view
@@ -162,16 +156,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 		view.Tickets = snapshot.Tickets
 	}
 	view.GitHub = snapshot.GitHub
-	view.Linear = snapshot.Linear
 	normalize(&view, now)
-	if !view.Linear.Hour.Equal(hour) {
-		view.Linear.Hour = hour
-		view.Linear.Requests = 0
-		view.Linear.Complexity = 0
-	}
-	if view.Linear.Limits == nil {
-		view.Linear.Limits = []ClientLimits{}
-	}
 	for _, pause := range snapshot.Pauses {
 		if pause.Repo == "" {
 			view.GlobalPause.Active = true

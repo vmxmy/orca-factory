@@ -51,7 +51,7 @@ func TestStoreClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed = true
-	r := &Runtime{Clients: map[string]LinearClient{"/repo": wrappedStore{client}}}
+	r := &Runtime{Clients: map[string]IssueClient{"/repo": wrappedStore{client}}}
 	err := r.Apply(ctx, Ticket{ID: "01234567-1234-1234-1234-012345678901", Identifier: "ZII-42", Repo: "/repo", Candidate: true}, Action{Kind: Claim})
 	if err == nil || !strings.Contains(err.Error(), "ownership") || writes != 0 {
 		t.Fatalf("claim used cached ownership: error=%v writes=%d", err, writes)
@@ -61,7 +61,7 @@ func TestStoreClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 // The runner alert follows the code repository, whichever ledger holds tickets.
 func TestRunnerMonitorFollowsCodeRepository(t *testing.T) {
 	env := map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_GH_REPO": runnerhealth.Repository, "AGENT_FEISHU_PROJECT": "github.com/" + runnerhealth.Repository}
-	r := &Runtime{runnerState: t.TempDir(), Clients: map[string]LinearClient{"/repo": wrappedStore{}}}
+	r := &Runtime{runnerState: t.TempDir(), Clients: map[string]IssueClient{"/repo": wrappedStore{}}}
 	r.watchRunners(config.Repository{Path: "/repo", Env: env})
 	if r.Runners == nil {
 		t.Fatal("runner monitor disabled for a non-GitHub ledger")
