@@ -110,3 +110,22 @@ esac
 		t.Fatalf("check.Detail=%q echoes the raw origin", check.Detail)
 	}
 }
+
+// A stale Orca canonicalKey must be reported before the push-permission
+// probe: the probe targets the stale repository, so its failure (no push to
+// someone else's upstream) would hide the real cause.
+func TestCheckOnboardRepoAccessReportsMismatchBeforePush(t *testing.T) {
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "gh"), `case "$1 $2" in
+"api repos/dujiao-next/dujiao-next") echo '{"permissions":{"push":false}}' ;;
+*) exit 9 ;;
+esac
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	path := repoWithOrigin(t, "https://github.com/vmxmy/dujiao-next.git")
+	plan := onboardPlan{Repo: path, Remote: "github.com/dujiao-next/dujiao-next"}
+	check := checkOnboardRepoAccess(context.Background(), onboarder{}, plan)
+	if check.OK || !strings.Contains(check.Detail, "github.com/vmxmy/dujiao-next") || strings.Contains(check.Detail, "permissions.push") {
+		t.Fatalf("check=%+v, want the Orca/origin mismatch reported instead of the push probe", check)
+	}
+}
