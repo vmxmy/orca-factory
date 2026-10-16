@@ -362,6 +362,9 @@ func checkOnboardRepoAccess(ctx context.Context, o onboarder, plan onboardPlan) 
 	if m == nil {
 		return preflightCheck{Name: name, OK: false, Detail: "远端不是 GitHub 仓库"}
 	}
+	if ok, detail := remoteIdentityCheck(ctx, plan.Repo, plan.Remote); !ok {
+		return preflightCheck{Name: name, OK: false, Detail: detail}
+	}
 	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"api", "repos/" + m[1]}, Timeout: 30 * time.Second})
 	if err != nil {
 		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("gh api repos/%s 退出码 %d；补法：确认 gh 已登录且有该仓库访问权限", m[1], exitCode(err))}
@@ -376,9 +379,6 @@ func checkOnboardRepoAccess(ctx context.Context, o onboarder, plan onboardPlan) 
 	}
 	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "ls-remote", "--exit-code", "origin", "main"}, Timeout: 30 * time.Second}); err != nil {
 		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("git ls-remote origin main 退出码 %d；补法：确认本机能访问该仓库远端", exitCode(err))}
-	}
-	if ok, detail := remoteIdentityCheck(ctx, plan.Repo, plan.Remote); !ok {
-		return preflightCheck{Name: name, OK: false, Detail: detail}
 	}
 	return preflightCheck{Name: name, OK: true, Detail: "gh 有 push 权限，origin main 可达，Orca 标识与 origin 一致"}
 }
