@@ -195,12 +195,26 @@ func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, erro
 // (the live Orca repository list or the ledger project table could not be
 // read): there is then no row to report anything against, so the caller
 // must not install an empty project set over an already-working one.
-func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, error) {
+func discoverIntakeProjects(ctx context.Context, cfg config.Config, client *orca.Client, runtime *projectRuntime) ([]intake.Project, []intake.Onboardable, error) {
 	result, rows, err := discoverProjects(ctx, cfg, client)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resolveIntakeProjects(ctx, result, rows, runtime), nil
+	return resolveIntakeProjects(ctx, result, rows, runtime), resolveOnboardable(result), nil
+}
+
+// resolveOnboardable extracts OF-49's discovery result: repositories Orca
+// knows about but this driver has never onboarded (scripts/agent-gates/ does
+// not exist at all), named by their local checkout's own directory.
+func resolveOnboardable(result projects.Result) []intake.Onboardable {
+	var out []intake.Onboardable
+	for _, r := range result.Rejected {
+		if r.Reason != projects.ReasonOnboardable {
+			continue
+		}
+		out = append(out, intake.Onboardable{Name: filepath.Base(r.Path), Remote: r.Remote})
+	}
+	return out
 }
 
 // resolveIntakeProjects maps one discovery round's eligible/rejected
@@ -242,7 +256,7 @@ func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []i
 // gateway's existing projects untouched: a transient Orca or ledger error
 // must not drop an already-working project out of the picker.
 func refreshIntakeProjects(ctx context.Context, gateway *intake.Gateway, cfg config.Config, client *orca.Client, runtime *projectRuntime) {
-	fresh, err := discoverIntakeProjects(ctx, cfg, client, runtime)
+	fresh, onboardable, err := discoverIntakeProjects(ctx, cfg, client, runtime)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "intake gateway: project discovery failed:", err)
 		return
@@ -250,6 +264,7 @@ func refreshIntakeProjects(ctx context.Context, gateway *intake.Gateway, cfg con
 	if err := gateway.SetProjects(fresh); err != nil {
 		fmt.Fprintln(os.Stderr, "intake gateway: invalid discovered projects:", err)
 	}
+	gateway.SetOnboardable(onboardable)
 }
 
 // isNewIntakeTopic reports whether event opens a new thread rather than

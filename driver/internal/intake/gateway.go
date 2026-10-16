@@ -115,7 +115,14 @@ type Gateway struct {
 	// project (OF-48). defaultRemote is the configured group default,
 	// compared against each Project's Remote and only preselected on the
 	// picker card (OF-47), never chosen on the requester's behalf.
-	projects      []Project
+	projects []Project
+	// onboardable is every repository discovery found in Orca's inventory but
+	// this driver has never onboarded (OF-49): shown read-only in the picker
+	// card so the requester knows it exists, with no selectable option since
+	// onboarding itself needs an approver. Unlike projects, nothing in a
+	// thread ever commits to one of these, so SetOnboardable just replaces
+	// the set wholesale.
+	onboardable   []Onboardable
 	defaultRemote string
 	agent         func(context.Context, Turn) (string, error)
 	reply         func(context.Context, string, string) error
@@ -205,6 +212,21 @@ func (g *Gateway) projectsSnapshot() []Project {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.projects
+}
+
+// SetOnboardable replaces the gateway's OF-49 onboardable set with fresh, a
+// fresh discovery round's repositories that exist in Orca's inventory but
+// have never been onboarded (scripts/agent-gates/ does not exist at all).
+func (g *Gateway) SetOnboardable(fresh []Onboardable) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.onboardable = fresh
+}
+
+func (g *Gateway) onboardableSnapshot() []Onboardable {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.onboardable
 }
 
 func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) error {

@@ -27,6 +27,13 @@ type Project struct {
 
 func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
 
+// Onboardable is one repository discovery found in Orca's inventory but this
+// driver has never onboarded (OF-49: no scripts/agent-gates/ at all). It
+// carries no Prefix because it was never assigned one in the Feishu ledger's
+// 项目 table; Name is the local checkout's own directory name, so the
+// requester can recognize it even without a ledger row.
+type Onboardable struct{ Name, Remote string }
+
 var (
 	markerPrefix = regexp.MustCompile(`^\s*#([A-Z][A-Z0-9]*)(?:\s|$)`)
 	markerName   = regexp.MustCompile(`^\s*项目:(\S+)(?:\s|$)`)

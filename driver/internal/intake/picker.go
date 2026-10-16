@@ -110,7 +110,7 @@ func (g *Gateway) projectPicker(thread string) string {
 			preselect = p.Prefix
 		}
 	}
-	return pickerCard(thread, usable, unavailable, preselect)
+	return pickerCard(thread, usable, unavailable, g.onboardableSnapshot(), preselect)
 }
 
 func selectedText(p Project) string { return "已选择 " + p.Prefix + " " + p.Name }
@@ -140,9 +140,12 @@ func cardJSON(title, template string, elements []any) string {
 // pickerCard is the JSON 2.0 card asking the requester of thread to choose a
 // project: a form with a dropdown of the usable projects (preselect chosen
 // when non-empty) and a submit button, then every unavailable project with
-// its reason. A form plus button rather than submit-on-select, because a
-// preselected default must be confirmable without changing the selection.
-func pickerCard(thread string, usable, unavailable []Project, preselect string) string {
+// its reason, then every onboardable repository (OF-49: known to Orca but
+// never onboarded) with a fixed "需审批人接入后可用" note — read-only, no
+// button, since onboarding itself needs an approver. A form plus button
+// rather than submit-on-select, because a preselected default must be
+// confirmable without changing the selection.
+func pickerCard(thread string, usable, unavailable []Project, onboardable []Onboardable, preselect string) string {
 	elements := []any{markdown("请选择本需求所属的项目，然后点“开始”。")}
 	if len(usable) == 0 {
 		elements[0] = markdown("暂无可接管的项目。")
@@ -164,6 +167,14 @@ func pickerCard(thread string, usable, unavailable []Project, preselect string) 
 		b.WriteString("暂不可用：")
 		for _, p := range unavailable {
 			b.WriteString("\n- " + p.Prefix + " " + p.Name + "：" + unavailableReason(p))
+		}
+		elements = append(elements, markdown(b.String()))
+	}
+	if len(onboardable) > 0 {
+		var b strings.Builder
+		b.WriteString("可接入：")
+		for _, o := range onboardable {
+			b.WriteString("\n- " + o.Name + "（" + o.Remote + "）：需审批人接入后可用")
 		}
 		elements = append(elements, markdown(b.String()))
 	}

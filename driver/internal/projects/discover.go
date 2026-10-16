@@ -28,6 +28,7 @@ type Reason string
 
 const (
 	ReasonFactoryRootUnconfigured Reason = "factory_root 未配置"
+	ReasonOnboardable             Reason = "可接入"
 	ReasonPipelineNotInstalled    Reason = "未装流水线"
 	ReasonCheckFailed             Reason = "check 失败"
 	ReasonLedgerNotFeishu         Reason = "账本不是飞书"
@@ -60,8 +61,12 @@ type Result struct {
 
 // Discover joins repos (Orca's repository inventory), rows (the Feishu
 // ledger's 项目 table, possibly empty) and check (each repository's own
-// pipeline check) into a Result. For each repo, in order: its pipeline must
-// be installed (scripts/agent-gates/agent-graph.env present), check must
+// pipeline check) into a Result. For each repo, in order: scripts/agent-gates/
+// itself must exist at all (OF-49: a repository Orca knows about but this
+// driver has never onboarded is rejected as ReasonOnboardable instead of
+// ReasonPipelineNotInstalled, so the intake gateway can surface it as
+// something an approver could set up rather than hide it), its pipeline must
+// be installed (agent-graph.env present inside that directory), check must
 // pass, its own profile's AGENT_ISSUE_BACKEND must be "feishu", rows must
 // have a row whose 仓库远端 equals its CanonicalKey, and that row must be
 // enabled. The first unmet condition is recorded as the Reason; no
@@ -82,7 +87,16 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 		reject := func(reason Reason) {
 			result.Rejected = append(result.Rejected, Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason})
 		}
-		if _, err := os.Stat(filepath.Join(repo.Path, "scripts", "agent-gates", "agent-graph.env")); err != nil {
+		gatesDir := filepath.Join(repo.Path, "scripts", "agent-gates")
+		if _, err := os.Stat(gatesDir); err != nil {
+			if os.IsNotExist(err) {
+				reject(ReasonOnboardable)
+			} else {
+				reject(ReasonPipelineNotInstalled)
+			}
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(gatesDir, "agent-graph.env")); err != nil {
 			reject(ReasonPipelineNotInstalled)
 			continue
 		}
