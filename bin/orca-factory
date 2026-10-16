@@ -7,11 +7,13 @@
 #                                      swarm-board mod registration from <repo>/.claude/settings.json.
 #   orca-factory update <repo-path>    overwrite only the core files (incl. constitution/ roles/) in
 #                                      <repo>/scripts/agent-gates/, print a diff summary. local-*.md untouched.
+#                                      Removes released copies of files core/ no longer ships; edited ones stay.
 #                                      Also removes the retired swarm-board mod registration.
 #   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
 #                                      clauses constitution/{engineering,workflow,handoffs}.md must be byte-identical
 #                                      (reported as OVERRIDDEN otherwise). A core file that is missing or equals a
-#                                      version of core/ in this repository's git history is BEHIND. Exit 3 when
+#                                      version of core/ in this repository's git history is BEHIND, and so is a
+#                                      released copy of a file core/ no longer ships (update removes it). Exit 3 when
 #                                      every drift is BEHIND (fixed by update), 1 on any other drift.
 #   orca-factory doctor [--json]       read-only environment checks and recommended setup profile (A or B).
 #   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
@@ -27,11 +29,18 @@ DEST_REL="scripts/agent-gates"
 PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
 PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitution/handoffs.md)
 
-usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
 core_files() { (cd "$CORE" && find . -type f | sed 's#^\./##' | sort); }
+
+# Paths that core/ shipped at some point in this factory's git history but no longer ships.
+retired_core_files() {
+  LC_ALL=C comm -23 \
+    <(git -C "$FACTORY" log --format= --name-only --no-renames -- core/ | sed -n 's#^core/##p' | LC_ALL=C sort -u) \
+    <(core_files | LC_ALL=C sort)
+}
 
 # True if <file> still has a {{placeholder}}. Full-line comments in env/sh files are guidance text, not values.
 has_placeholder() {
@@ -151,7 +160,7 @@ cmd_init() {
 }
 
 cmd_update() {
-  local repo dest f changed=0 added=0 same=0 n
+  local repo dest f changed=0 added=0 same=0 removed=0 n
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
   [[ -d "$dest" ]] || fail "$dest does not exist; run: orca-factory init $repo"
@@ -190,8 +199,16 @@ cmd_update() {
     cp "$CORE/$f" "$dest/$f"
     if [[ "$f" == *.sh ]]; then chmod +x "$dest/$f"; fi
   done < <(core_files)
+  while IFS= read -r f; do
+    [[ -e "$dest/$f" ]] || continue
+    if released_core_version "$f" "$dest/$f"; then
+      rm "$dest/$f"; removed=$((removed + 1)); echo "update: - $f (retired from core)"
+    else
+      echo "update: ! $f retired from core but locally modified; left in place"
+    fi
+  done < <(retired_core_files)
   retire_mod_settings "$repo"
-  echo "update: changed=$changed added=$added unchanged=$same; project files and local-*.md untouched (${PROJECT_FILES[*]})"
+  echo "update: changed=$changed added=$added removed=$removed unchanged=$same; project files and local-*.md untouched (${PROJECT_FILES[*]})"
 }
 
 # True if <file> is byte-identical to a version of core/<rel> committed in this factory's git history.
@@ -222,6 +239,14 @@ cmd_check() {
       echo "check: DIFFERS  $f"; rc=1
     fi
   done < <(core_files)
+  while IFS= read -r f; do
+    [[ -e "$dest/$f" ]] || continue
+    if released_core_version "$f" "$dest/$f"; then
+      echo "check: BEHIND   $f"; behind=1
+    else
+      echo "check: DIFFERS  $f (retired from core, locally modified; remove it by hand)"; rc=1
+    fi
+  done < <(retired_core_files)
   for f in "${PROJECT_FILES[@]}"; do
     if [[ ! -e "$dest/$f" ]]; then
       echo "check: project file missing: $f"; rc=1
@@ -546,6 +571,25 @@ FAKE
   { [[ "$rc" == 1 ]] && grep -qx 'check: DIFFERS  gate.sh' "$lag/check.out"; } \
     || { cat "$lag/check.out"; fail "selftest: locally edited core file not reported as DIFFERS with exit 1 (got $rc)"; }
   echo "selftest: lagging core copy is BEHIND, local edit is DIFFERS"
+  # A file core/ no longer ships: a released copy is BEHIND and update removes it; an edited copy is DIFFERS and stays.
+  cp "$CORE/gate.sh" "$lag/$DEST_REL/gate.sh"
+  previous="$(git -C "$FACTORY" rev-list -1 HEAD -- core/linear-precheck.sh)"
+  git -C "$FACTORY" show "$previous^:core/linear-precheck.sh" > "$lag/$DEST_REL/linear-precheck.sh"
+  rc=0; cmd_check "$lag" > "$lag/check.out" || rc=$?
+  { [[ "$rc" == 3 ]] && grep -qx 'check: BEHIND   linear-precheck.sh' "$lag/check.out"; } \
+    || { cat "$lag/check.out"; fail "selftest: released copy of a retired core file not reported as BEHIND with exit 3 (got $rc)"; }
+  cmd_update "$lag" > "$lag/update.out"
+  [[ ! -e "$lag/$DEST_REL/linear-precheck.sh" ]] && grep -qx 'update: - linear-precheck.sh (retired from core)' "$lag/update.out" \
+    || { cat "$lag/update.out"; fail "selftest: update did not remove the released copy of a retired core file"; }
+  cmd_check "$lag" > "$lag/check.out" || { cat "$lag/check.out"; fail "selftest: check not clean after update removed a retired core file"; }
+  git -C "$FACTORY" show "$previous^:core/linear-precheck.sh" > "$lag/$DEST_REL/linear-precheck.sh"
+  echo '# local edit' >> "$lag/$DEST_REL/linear-precheck.sh"
+  rc=0; cmd_check "$lag" > "$lag/check.out" || rc=$?
+  { [[ "$rc" == 1 ]] && grep -qx 'check: DIFFERS  linear-precheck.sh (retired from core, locally modified; remove it by hand)' "$lag/check.out"; } \
+    || { cat "$lag/check.out"; fail "selftest: edited copy of a retired core file not reported as DIFFERS with exit 1 (got $rc)"; }
+  cmd_update "$lag" > "$lag/update.out"
+  [[ -e "$lag/$DEST_REL/linear-precheck.sh" ]] || fail "selftest: update removed a locally modified retired core file"
+  echo "selftest: retired core file is BEHIND and removed by update, edited copy is DIFFERS and kept"
   if jq -e '.enabledPlugins["swarm-board@orca-factory"]' "$SELFTEST_TMP/.claude/settings.json" >/dev/null 2>&1; then
     fail "selftest: init still enables the retired swarm-board mod"
   fi

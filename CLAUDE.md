@@ -20,7 +20,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `make check` | 顺序执行 build、vet、lint、test、race、vuln，遇失败停止 |
 | `make dev-tools` | 安装锁定的开发工具到 `.omc/tools/bin` |
 | `bin/orca-factory check .` | 只读检查 core 安装副本、项目占位符和插件登记 |
-| `bin/orca-factory selftest` | 在临时仓库运行安装、gate 回归及 CLI 检查；存在 `claude` 时还运行插件 validate/test |
+| `bin/orca-factory selftest` | 在临时仓库运行安装、gate 回归、`issues.test.sh` 及 CLI 检查 |
 
 命令定义见 [Makefile](Makefile) 和 [bin/orca-factory](bin/orca-factory)。工具、报告及定向检查的细节见 [driver/DEVELOPMENT.md](driver/DEVELOPMENT.md)。`make check` 不替代 project gate 的范围、契约和部署门禁。
 

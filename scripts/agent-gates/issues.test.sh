@@ -60,6 +60,12 @@ JSON
 bash "$entry" issues list-issues --json > "$tmp/out"
 jq -e '.ok and .result.complete and .result.issues[0].identifier == "ZII-1" and .result.issues[0].labels[1].name == "auto-failed"' "$tmp/out" >/dev/null || fail 'normalized snapshot lost identity or hold'
 [[ "$(bash "$entry" ledger stats)" == runs=7 ]] || fail 'GitHub ledger did not delegate'
+[[ "$(AGENT_ISSUE_BACKEND=feishu AGENT_FEISHU_BASE=BASE_TOKEN bash "$entry" ledger stats)" == runs=7 ]] || fail 'Feishu ledger did not delegate'
+for backend in linear ''; do
+  : > "$TEST_CALLS"; rc=0
+  AGENT_ISSUE_BACKEND="$backend" bash "${entry%/*}/ledger.sh" stats > "$tmp/out" 2> "$tmp/err" || rc=$?
+  { [[ "$rc" == 2 && ! -s "$TEST_CALLS" ]] && grep -q 'must be github or feishu' "$tmp/err"; } || fail "ledger backend '$backend' must exit 2 before calling the driver"
+done
 rc=0
 DRIVER_FAIL=23 bash "$entry" issues list-issues --json > "$tmp/out" 2> "$tmp/err" || rc=$?
 [[ "$rc" == 23 ]] || fail 'driver failure exit status lost'
