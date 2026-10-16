@@ -187,7 +187,9 @@ $FACTORY/bin/orca-factory init $REPO
 - `roles/local-worker.md`（来自 `local-worker.md.example`）：正确的类型检查/测试跑法、禁用跑法、i18n/文案规矩。coordinator 拼 task spec 时接在 `roles/worker.md` 之后。
 - `constitution/engineering.md`、`workflow.md`、`handoffs.md` 三个名字为共享条款保留；项目目录里的这三份必须与 core 一致，`orca-factory check` 不一致会报 `OVERRIDDEN`。需要别的工作流/交接规矩就写 `local-workflow.md` / `local-handoffs.md`。
 
-验收：`grep -rn '{{' $REPO/scripts/agent-gates/` 无输出；`bash -n $REPO/scripts/agent-gates/gate.project.sh` 通过；`$FACTORY/bin/orca-factory check $REPO` 全部 ok（无 `DIFFERS` / `OVERRIDDEN`）。
+验收：`grep -rn '{{' $REPO/scripts/agent-gates/` 无输出；`bash -n $REPO/scripts/agent-gates/gate.project.sh` 通过；`$FACTORY/bin/orca-factory check $REPO` 全部 ok（无 `BEHIND` / `DIFFERS` / `OVERRIDDEN`）。
+
+`check` 的退出码分三态（OF-53）：0 为一致；3 为 core 落后，副本里不一致的文件都是 factory git 历史中的已提交版本或 core 新增文件，输出 `BEHIND`，`orca-factory update` 即可修复；1 为本地改动（`DIFFERS` / `OVERRIDDEN`）或项目文件问题。接入后 factory 再改 core，项目只会落后，不会被移出 driver 接管。driver serve 自动给该仓库开 `chore/orca-factory-core-sync-<factory短SHA>` 同步 PR（只含 `scripts/agent-gates/`，不自动合并），合并它即回到一致。流程见 [driver/README.md](driver/README.md) 的“调度范围（项目发现）”。
 
 ## 5. 验收
 
@@ -248,7 +250,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 
 ## 附：自接入（`$REPO` 就是 `$FACTORY`）
 
-- `core/` 是源，`scripts/agent-gates/` 是它的安装副本，两者必须一致。`gate.project.sh` 加 `drift` 步：`bin/orca-factory check .`。`roles/local-worker.md` 写明：改了 `core/` 必须再跑 `bin/orca-factory update .`，不手改 `scripts/agent-gates/` 里由 core 分发的文件。
+- `core/` 是源，`scripts/agent-gates/` 是它的安装副本，两者必须一致。`gate.project.sh` 加 `drift` 步：`bin/orca-factory check .`（`BEHIND` 的退出码 3 同样使该步失败，自接入仓库必须保持一致）。`roles/local-worker.md` 写明：改了 `core/` 必须再跑 `bin/orca-factory update .`，不手改 `scripts/agent-gates/` 里由 core 分发的文件。
 - 验证命令 `bin/orca-factory selftest` 写进票的 `CHECK`，不放进 `gate.project.sh`（嵌套抢锁）。
 - 范例：本仓库自己的 `scripts/agent-gates/`。
 - `core/`、`bin/`、`templates/`、`ONBOARD.md` 是流水线本体，按 lane 2 走 PR。

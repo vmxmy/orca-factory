@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -44,7 +45,7 @@ func eligible(result Result, remote string) (Project, bool) {
 }
 
 // alwaysPass is the Checker for repos whose pipeline check succeeds.
-func alwaysPass(context.Context, string) error { return nil }
+func alwaysPass(context.Context, string) ([]string, error) { return nil, nil }
 
 // TestDiscoverRecordedSample replays the real `orca-ide repo list --json`
 // recording (testdata/recorded/orca-repo-list.json, OF-42): 5 registered
@@ -151,11 +152,29 @@ func TestDiscoverCheckFailed(t *testing.T) {
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/failing"}}
 	rows := []issues.LedgerProject{{Name: "failing", Remote: "github.com/example/failing", Prefix: "FAI", Enabled: true}}
-	failing := func(context.Context, string) error { return errors.New("gate red") }
+	failing := func(context.Context, string) ([]string, error) { return nil, errors.New("gate red") }
 	result := Discover(context.Background(), repos, rows, failing)
 	reason, ok := rejection(result, "github.com/example/failing")
 	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {
 		t.Fatalf("result=%+v, want ReasonCheckFailed", result)
+	}
+}
+
+// TestDiscoverCoreBehindStillEligible is OF-53: a repository whose installed
+// core copy only lags the factory (every differing file is a released core
+// version) stays eligible and carries the lagging files.
+func TestDiscoverCoreBehindStillEligible(t *testing.T) {
+	path := t.TempDir()
+	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
+	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/behind"}}
+	rows := []issues.LedgerProject{{Name: "behind", Remote: "github.com/example/behind", Prefix: "BEH", Enabled: true}}
+	behind := func(context.Context, string) ([]string, error) {
+		return []string{"install.sh", "roles/onboard.md"}, nil
+	}
+	result := Discover(context.Background(), repos, rows, behind)
+	p, ok := eligible(result, "github.com/example/behind")
+	if !ok || len(result.Rejected) != 0 || !slices.Equal(p.CoreBehind, []string{"install.sh", "roles/onboard.md"}) {
+		t.Fatalf("result=%+v, want eligible with CoreBehind", result)
 	}
 }
 
@@ -197,7 +216,7 @@ func TestDiscoverCheckFailedIsNotOnboardable(t *testing.T) {
 	path := t.TempDir()
 	writeEnv(t, path, "AGENT_ISSUE_BACKEND=feishu\n")
 	repos := []orca.Repo{{Path: path, CanonicalKey: "github.com/example/installed-failing"}}
-	failing := func(context.Context, string) error { return errors.New("gate red") }
+	failing := func(context.Context, string) ([]string, error) { return nil, errors.New("gate red") }
 	result := Discover(context.Background(), repos, nil, failing)
 	reason, ok := rejection(result, "github.com/example/installed-failing")
 	if !ok || reason != ReasonCheckFailed || len(result.Eligible) != 0 {

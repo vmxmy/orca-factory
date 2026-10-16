@@ -64,6 +64,13 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, err
 		}
 		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval}
+		if cfg.FactoryRoot != "" {
+			cacheDir, err := os.UserCacheDir()
+			if err != nil {
+				return nil, nil, err
+			}
+			s.SyncCore = coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}.sync
+		}
 		// Without a first project set serve has nothing to schedule; exit so
 		// the service manager restarts it instead of idling on an empty set.
 		if err := s.RefreshProjects(ctx); err != nil {

@@ -16,10 +16,15 @@ import (
 )
 
 // Checker runs a repository's own pipeline check (production: `<factory
-// root>/bin/orca-factory check <path>`) and reports whether it passed. A nil
-// Checker means factory_root is not configured: Discover then rejects every
-// repository without evaluating any other condition.
-type Checker func(ctx context.Context, path string) error
+// root>/bin/orca-factory check <path>`). It has three outcomes (OF-53): a
+// nil error and no files means the core copy matches the factory; a nil
+// error with files means the copy only lags (each listed core file is a
+// released factory version or newly added), which `orca-factory update`
+// fixes; an error means the check failed (a locally modified core file, a
+// leftover placeholder, a missing project file). A nil Checker means
+// factory_root is not configured: Discover then rejects every repository
+// without evaluating any other condition.
+type Checker func(ctx context.Context, path string) (behind []string, err error)
 
 // Reason is why a repository cannot be taken over right now. Discover
 // evaluates conditions in a fixed order and stops at the first unmet one, so
@@ -44,6 +49,9 @@ type Project struct {
 	// already parsed: MaxInFlight, StaleHours and Env (for OF-43's scheduler
 	// migration and the intake gateway's per-project tiering).
 	Repository config.Repository
+	// CoreBehind is every core file whose installed copy lags the factory
+	// (OF-53); empty when the copy is in step.
+	CoreBehind []string `json:",omitempty"`
 }
 
 // Rejection is one repository this driver cannot take over right now.
@@ -67,7 +75,8 @@ type Result struct {
 // ReasonPipelineNotInstalled, so the intake gateway can surface it as
 // something an approver could set up rather than hide it), its pipeline must
 // be installed (agent-graph.env present inside that directory), check must
-// pass, its own profile's AGENT_ISSUE_BACKEND must be "feishu", rows must
+// pass or report only lagging core files (kept on Project.CoreBehind),
+// its own profile's AGENT_ISSUE_BACKEND must be "feishu", rows must
 // have a row whose 仓库远端 equals its CanonicalKey, and that row must be
 // enabled. The first unmet condition is recorded as the Reason; no
 // repository is silently skipped.
@@ -100,7 +109,8 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 			reject(ReasonPipelineNotInstalled)
 			continue
 		}
-		if err := check(ctx, repo.Path); err != nil {
+		behind, err := check(ctx, repo.Path)
+		if err != nil {
 			reject(ReasonCheckFailed)
 			continue
 		}
@@ -122,7 +132,7 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 			reject(ReasonProjectDisabled)
 			continue
 		}
-		result.Eligible = append(result.Eligible, Project{Path: repo.Path, Remote: repo.CanonicalKey, Prefix: row.Prefix, Name: row.Name, Repository: repository})
+		result.Eligible = append(result.Eligible, Project{Path: repo.Path, Remote: repo.CanonicalKey, Prefix: row.Prefix, Name: row.Name, Repository: repository, CoreBehind: behind})
 	}
 	return result
 }

@@ -10,7 +10,9 @@
 #                                      Also removes the retired swarm-board mod registration.
 #   orca-factory check <repo-path>     compare the core files in <repo> with this repository (cmp). The shared
 #                                      clauses constitution/{engineering,workflow,handoffs}.md must be byte-identical
-#                                      (reported as OVERRIDDEN otherwise). Exit 1 on any drift.
+#                                      (reported as OVERRIDDEN otherwise). A core file that is missing or equals a
+#                                      version of core/ in this repository's git history is BEHIND. Exit 3 when
+#                                      every drift is BEHIND (fixed by update), 1 on any other drift.
 #   orca-factory doctor [--json]       read-only environment checks and recommended setup profile (A or B).
 #   orca-factory selftest              init into a temporary git repo, run gate.test.sh, check, and verify that
 #                                      an edited shared clause is reported as overridden.
@@ -25,7 +27,7 @@ DEST_REL="scripts/agent-gates"
 PROJECT_FILES=(agent-graph.env gate.project.sh COORDINATOR.project.md)
 PROTECTED_CLAUSES=(constitution/engineering.md constitution/workflow.md constitution/handoffs.md)
 
-usage() { sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2; }
 fail() { echo "orca-factory: $*" >&2; exit 1; }
 
 # Relative paths of every distributable core file, including constitution/ and roles/ subtrees.
@@ -192,16 +194,26 @@ cmd_update() {
   echo "update: changed=$changed added=$added unchanged=$same; project files and local-*.md untouched (${PROJECT_FILES[*]})"
 }
 
+# True if <file> is byte-identical to a version of core/<rel> committed in this factory's git history.
+released_core_version() {
+  local blob
+  blob="$(git hash-object --no-filters "$2" 2>/dev/null)" || return 1
+  git -C "$FACTORY" log --format= --raw --no-abbrev --no-renames -- "core/$1" 2>/dev/null \
+    | awk -v blob="$blob" '$4 == blob { found = 1 } END { exit !found }'
+}
+
 cmd_check() {
-  local repo dest f rc=0
+  local repo dest f rc=0 behind=0
   repo="$(resolve_repo "${1:-}")"
   dest="$repo/$DEST_REL"
   [[ -d "$dest" ]] || fail "$dest does not exist"
   while IFS= read -r f; do
     if [[ ! -e "$dest/$f" ]]; then
-      echo "check: MISSING  $f"; rc=1
+      echo "check: BEHIND   $f"; behind=1
     elif cmp -s "$CORE/$f" "$dest/$f"; then
       echo "check: ok       $f"
+    elif released_core_version "$f" "$dest/$f"; then
+      echo "check: BEHIND   $f"; behind=1
     elif is_protected "$f"; then
       # The three shared clauses are reserved names: a project may add constitution/local-*.md but never
       # ship its own engineering.md / workflow.md / handoffs.md.
@@ -221,8 +233,12 @@ cmd_check() {
   while IFS= read -r f; do
     if grep -q '{{' "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
   done < <(find "$dest/constitution" "$dest/roles" -maxdepth 1 -type f -name 'local-*.md' 2>/dev/null | sort)
-  (( rc == 0 )) && echo "check: core files match $FACTORY/core"
-  return $rc
+  (( rc == 0 )) || return $rc
+  if (( behind )); then
+    echo "check: core copy behind $FACTORY/core; run: orca-factory update $repo"
+    return 3
+  fi
+  echo "check: core files match $FACTORY/core"
 }
 
 # JSON output uses only bash printf; jq is itself an optional diagnostic target.
@@ -1609,6 +1625,24 @@ FAKE
   cmd_update "$SELFTEST_TMP" > /dev/null
   cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
   echo "selftest: update restored shared clause"
+  # check: a copy that only lags core (a released older version, a file new in core) is BEHIND with exit 3;
+  # a local edit on top of that is DIFFERS with exit 1.
+  local lag="$SELFTEST_TMP/lag" previous rc
+  mkdir -p "$lag/$DEST_REL"
+  cp -R "$CORE/." "$lag/$DEST_REL/"
+  for f in "${PROJECT_FILES[@]}"; do echo 'A=1' > "$lag/$DEST_REL/$f"; done
+  previous="$(git -C "$FACTORY" log --format=%H -- core/gate.sh | sed -n 2p)"
+  [[ -n "$previous" ]] || fail "selftest: factory git history has no earlier core/gate.sh"
+  git -C "$FACTORY" show "$previous:core/gate.sh" > "$lag/$DEST_REL/gate.sh"
+  rm "$lag/$DEST_REL/roles/onboard.md"
+  rc=0; cmd_check "$lag" > "$lag/check.out" || rc=$?
+  { [[ "$rc" == 3 ]] && grep -qx 'check: BEHIND   gate.sh' "$lag/check.out" && grep -qx 'check: BEHIND   roles/onboard.md' "$lag/check.out"; } \
+    || { cat "$lag/check.out"; fail "selftest: lagging core copy not reported as BEHIND with exit 3 (got $rc)"; }
+  echo '# local edit' >> "$lag/$DEST_REL/gate.sh"
+  rc=0; cmd_check "$lag" > "$lag/check.out" || rc=$?
+  { [[ "$rc" == 1 ]] && grep -qx 'check: DIFFERS  gate.sh' "$lag/check.out"; } \
+    || { cat "$lag/check.out"; fail "selftest: locally edited core file not reported as DIFFERS with exit 1 (got $rc)"; }
+  echo "selftest: lagging core copy is BEHIND, local edit is DIFFERS"
   if jq -e '.enabledPlugins["swarm-board@orca-factory"]' "$SELFTEST_TMP/.claude/settings.json" >/dev/null 2>&1; then
     fail "selftest: init still enables the retired swarm-board mod"
   fi
