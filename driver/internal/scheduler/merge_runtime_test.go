@@ -442,11 +442,10 @@ func TestRuntimeMergeSnapshotReasonNamesFailureStep(t *testing.T) {
 				return runx.Run(ctx, spec)
 			}
 		}},
-		// AGENT_LANE2_GLOBS on a lane-1 ticket still falls through to the
-		// generic policy SnapshotError; AGENT_LANE2_MANUAL_GLOBS and
-		// AGENT_LANE3_GLOBS now return their own sentinels (OF-103) and
-		// never reach this generic reason path.
-		{"policy", "policy", func(f *mergeFixture) { f.repos[0].Env["AGENT_LANE2_GLOBS"] = "feat*" }},
+		// AGENT_LANE2_GLOBS/AGENT_LANE2_MANUAL_GLOBS/AGENT_LANE3_GLOBS matches
+		// now return their own sentinels (OF-102, OF-103, OF-104) and never
+		// reach this generic reason path; an invalid glob pattern still does.
+		{"policy", "policy", func(f *mergeFixture) { f.repos[0].Env["AGENT_LANE2_GLOBS"] = "[" }},
 		{"checks", "checks", func(f *mergeFixture) { f.checksBody = "{not-json" }},
 	}
 	seen := map[string]bool{}

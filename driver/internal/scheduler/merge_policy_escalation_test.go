@@ -106,6 +106,24 @@ func TestRuntimeMergeManualGlobReviewLeavesQueue(t *testing.T) {
 	}
 }
 
+// TestRuntimeMergeLane2GlobOnLane1TicketReviewsAndLeavesQueue is OF-104's
+// acceptance assertion: a lane 1 handoff whose PR diff hits AGENT_LANE2_GLOBS
+// (needing lane 2 validation it never got) transfers to the disposition
+// agent for review, the same mechanism as OF-102's lane 2 review and OF-103's
+// manual-glob review, instead of waiting on the merge queue forever.
+func TestRuntimeMergeLane2GlobOnLane1TicketReviewsAndLeavesQueue(t *testing.T) {
+	f := newMergeFixture(t)
+	blocked := policyBlockedFixture(t, f, "lane2-change")
+	f.repos[0].Env["AGENT_LANE2_GLOBS"] = "lane2-change"
+	for i := 0; i < 2; i++ {
+		_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+	}
+	assertLane2Review(t, blocked.bodies)
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" || blocked.issue.State.Name == "Done" {
+		t.Fatalf("lane 1 blocked behind lane 2 glob review: puts=%d lane1=%s blocked=%s", f.puts, f.tracker.issue.State.Name, blocked.issue.State.Name)
+	}
+}
+
 // TestRuntimeMergeLane3EscalatesDirectlyToHuman is OF-103's second
 // acceptance assertion: a PR that hits AGENT_LANE3_GLOBS transfers straight
 // to a human (no resolver review, lane 3 is excluded from automerge
