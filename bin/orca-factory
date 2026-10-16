@@ -43,11 +43,13 @@ retired_core_files() {
 }
 
 # True if <file> still has a {{placeholder}}. Full-line comments in env/sh files are guidance text, not values.
+# Go template actions ({{.Field}}, {{join .Deps " "}}, {{range …}}) are code, not template placeholders.
 has_placeholder() {
-  case "$1" in
-    *.md) grep -q '{{' "$1" ;;
-    *) awk '!/^[[:space:]]*#/ && /\{\{/ { found = 1 } END { exit !found }' "$1" ;;
-  esac
+  awk -v md="$([[ "$1" == *.md ]] && echo 1)" '
+    !md && /^[[:space:]]*#/ { next }
+    { gsub(/\{\{-?[[:space:]]*(\.|(join|range|if|else|end|with|printf|print|index|len|define|template|block)[[:space:]}])[^}]*\}\}/, "") }
+    /\{\{/ { found = 1 }
+    END { exit !found }' "$1"
 }
 
 is_protected() { local f="$1" p; for p in "${PROTECTED_CLAUSES[@]}"; do [[ "$f" == "$p" ]] && return 0; done; return 1; }
@@ -256,7 +258,7 @@ cmd_check() {
   done
   # Optional project overlays: constitution/local-*.md and roles/local-*.md. Only checked for leftover placeholders.
   while IFS= read -r f; do
-    if grep -q '{{' "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
+    if has_placeholder "$f"; then echo "check: local file still has {{placeholders}}: ${f#"$dest/"}"; rc=1; fi
   done < <(find "$dest/constitution" "$dest/roles" -maxdepth 1 -type f -name 'local-*.md' 2>/dev/null | sort)
   (( rc == 0 )) || return $rc
   if (( behind )); then
@@ -549,6 +551,10 @@ FAKE
   printf 'A={{value}}\n' > "$SELFTEST_TMP/value.env"
   has_placeholder "$SELFTEST_TMP/comment.env" && fail "selftest: placeholder in a full-line comment was flagged"
   has_placeholder "$SELFTEST_TMP/value.env" || fail "selftest: placeholder in a value was missed"
+  printf '%s\n' "go list -f '{{.ImportPath}}|{{join .Deps \" \"}}' ./..." > "$SELFTEST_TMP/gotemplate.sh"
+  has_placeholder "$SELFTEST_TMP/gotemplate.sh" && fail "selftest: Go template action was flagged as a placeholder"
+  printf 'x={{.ImportPath}} y={{value}}\n' > "$SELFTEST_TMP/mixed.sh"
+  has_placeholder "$SELFTEST_TMP/mixed.sh" || fail "selftest: placeholder next to a Go template action was missed"
   echo "selftest: placeholder check ignores comment lines only"
   cmd_update "$SELFTEST_TMP" > /dev/null
   cmp -s "$CORE/constitution/engineering.md" "$SELFTEST_TMP/$DEST_REL/constitution/engineering.md" || fail "selftest: update did not restore engineering.md"
