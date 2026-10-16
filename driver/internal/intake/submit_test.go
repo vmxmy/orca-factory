@@ -12,7 +12,7 @@ import (
 
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // fakeLedger stands in for the project's issues.Store. Create mirrors the
@@ -56,10 +56,10 @@ func (l *fakeLedger) Read(_ context.Context, id string) (issues.Task, error) {
 	return l.tasks[i], nil
 }
 
-func (l *fakeLedger) UpdateIssue(_ context.Context, id, state string, add, _ []string) (linear.Issue, error) {
+func (l *fakeLedger) UpdateIssue(_ context.Context, id, state string, add, _ []string) (task.Issue, error) {
 	i, err := l.index(id)
 	if err != nil {
-		return linear.Issue{}, err
+		return task.Issue{}, err
 	}
 	l.updates = append(l.updates, ledgerUpdate{id: id, state: state, add: strings.Join(add, ",")})
 	t := &l.tasks[i]
@@ -67,25 +67,25 @@ func (l *fakeLedger) UpdateIssue(_ context.Context, id, state string, add, _ []s
 		t.Metadata.State = state
 	}
 	for _, label := range add {
-		t.Labels.Nodes = append(t.Labels.Nodes, linear.NamedID{ID: label, Name: label})
+		t.Labels.Nodes = append(t.Labels.Nodes, task.NamedID{ID: label, Name: label})
 	}
 	return t.Issue, nil
 }
 
-func (l *fakeLedger) ListComments(_ context.Context, id string) ([]linear.Comment, error) {
-	var out []linear.Comment
+func (l *fakeLedger) ListComments(_ context.Context, id string) ([]task.Comment, error) {
+	var out []task.Comment
 	for _, body := range l.events[id] {
-		out = append(out, linear.Comment{Body: body})
+		out = append(out, task.Comment{Body: body})
 	}
 	return out, nil
 }
 
-func (l *fakeLedger) CreateComment(_ context.Context, id, body string) (linear.Comment, error) {
+func (l *fakeLedger) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
 	if l.events == nil {
 		l.events = map[string][]string{}
 	}
 	l.events[id] = append(l.events[id], body)
-	return linear.Comment{Body: body}, nil
+	return task.Comment{Body: body}, nil
 }
 
 func existingLedger() *fakeLedger {

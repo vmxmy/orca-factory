@@ -12,9 +12,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // A serve restart leaves Runtime.GitHub nil until the merge lane first runs;
@@ -41,7 +41,7 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 	if err != nil || len(tasks) != 1 {
 		t.Fatalf("ticket list: %+v %v", tasks, err)
 	}
-	task := tasks[0]
+	issue := tasks[0]
 
 	lookups, creates := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -74,9 +74,9 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 		return github.New(o)
 	}
 
-	runtime := &Runtime{GitHub: nil, Clients: map[string]IssueClient{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+	runtime := &Runtime{GitHub: nil, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 	record := &resolver.Record{Version: 1, Attempt: 2, Phase: "result"}
-	ticket := Ticket{ID: task.ID, Identifier: task.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: record}
+	ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: record}
 	proposal := resolver.Resolution{Action: "open-pr", Branch: "agent/OF-5/executor", Head: pr.Head.SHA, Title: "Recover PR", Body: "Verified fix", Reason: "gate passed"}
 	if err := runtime.openResolutionPR(ctx, ticket, record, proposal); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 	if !strings.Contains(body, "阶段: Agent处置\n归属: 处置Agent\n") {
 		t.Fatalf("resolution handed to human: %q", body)
 	}
-	got, err := readResolution([]linear.Comment{{Body: body}})
+	got, err := readResolution([]task.Comment{{Body: body}})
 	if err != nil || got == nil || got.Phase != "waiting" || got.Outcome != "succeeded" {
 		t.Fatalf("resolution receipt: %+v %v", got, err)
 	}

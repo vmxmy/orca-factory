@@ -517,7 +517,7 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
 
 // Adapters return fixed-text errors, except decoding imported comment history
-// into linear.Comment: its encoding/json and time errors quote the rejected input.
+// into task.Comment: its encoding/json and time errors quote the rejected input.
 func snapshotReason(err error) string {
 	text := err.Error()
 	root := err

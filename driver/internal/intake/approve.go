@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const (
@@ -61,7 +61,7 @@ func (r review) check(t issues.Task) (refusal string, done bool) {
 	if _, _, ok := intakeMarker(t.Description); !ok {
 		return fmt.Sprintf("%s 不是需求助手提交的票，不处理", r.ticket), false
 	}
-	ready := slices.ContainsFunc(t.Labels.Nodes, func(l linear.NamedID) bool { return l.Name == readyForAgent })
+	ready := slices.ContainsFunc(t.Labels.Nodes, func(l task.NamedID) bool { return l.Name == readyForAgent })
 	state := t.Metadata.State
 	switch {
 	case r.approve && ready:
@@ -145,7 +145,7 @@ func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender
 	if err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(events, func(c linear.Comment) bool { return strings.HasPrefix(c.Body, prefix) }) {
+	if !slices.ContainsFunc(events, func(c task.Comment) bool { return strings.HasPrefix(c.Body, prefix) }) {
 		body := fmt.Sprintf("%s%s %s", prefix, sender, g.now().Format(time.RFC3339))
 		if !r.approve {
 			body += "\n理由：" + r.reason

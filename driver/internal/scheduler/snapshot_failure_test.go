@@ -14,8 +14,8 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/linear"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type failingSnapshotBackend struct {
@@ -49,7 +49,7 @@ func TestRecordedSnapshotFailureKeepsCause(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := config.Repository{Path: "/fixture", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r", "AGENT_SCOPE_AVOID": "0"}}
-	runtime := &Runtime{Clients: map[string]IssueClient{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: client}, Repositories: map[string]config.Repository{repo.Path: repo}}
 	f := &failingSnapshotBackend{snapshot: func(ctx context.Context, _ []config.Repository) ([]Ticket, error) {
 		return runtime.Snapshot(ctx, []config.Repository{repo})
 	}}
@@ -77,7 +77,7 @@ func TestRecordedSnapshotFailureKeepsCause(t *testing.T) {
 
 func TestSnapshotFailureKeepsCause(t *testing.T) {
 	imported := func(envelope string) error {
-		_, err := issues.DecodeImportedComments(linear.Comment{Body: "<!-- orca-import-comments-v1: " + envelope + " -->\n\n"})
+		_, err := issues.DecodeImportedComments(task.Comment{Body: "<!-- orca-import-comments-v1: " + envelope + " -->\n\n"})
 		if err == nil {
 			t.Fatalf("imported envelope accepted: %s", envelope)
 		}
