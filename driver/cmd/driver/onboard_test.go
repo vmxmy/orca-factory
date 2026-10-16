@@ -58,7 +58,27 @@ func newOnboardFixture(t *testing.T) onboardFixture {
 	t.Setenv("HOME", f.home)
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", f.state)
 	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, f.repo, onboardRemote))
+	// OF-50/51 tests exercise plan derivation, agent invocation and lock
+	// handling, not OF-52's own preflight checks: stand in a passing result
+	// for all of them so none shells out to a real orca-factory, install.sh,
+	// gh or git. A dedicated OF-52 test overrides one field to see it block.
+	original := defaultPreflight
+	defaultPreflight = passingPreflightFuncs()
+	t.Cleanup(func() { defaultPreflight = original })
 	return f
+}
+
+// passingPreflightFuncs is every existing onboard test's default (see
+// newOnboardFixture): every OF-52 preflight check passes without running
+// the real tool it stands in for.
+func passingPreflightFuncs() preflightFuncs {
+	pass := func(name string) preflightCheck { return preflightCheck{Name: name, OK: true, Detail: "stand-in: ok"} }
+	return preflightFuncs{
+		tools:   func(context.Context, onboarder) preflightCheck { return pass("本机工具") },
+		factory: func(context.Context, onboarder) preflightCheck { return pass("factory 自身") },
+		repo:    func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("目标仓库") },
+		scene:   func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("现场") },
+	}
 }
 
 // TestOnboardDryRun covers OF-50's `onboard --repo <path> --dry-run`: for an
@@ -105,6 +125,16 @@ func TestOnboardDryRun(t *testing.T) {
 	for _, path := range []string{plan.Worktree, filepath.Join(f.state, "onboard")} {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("dry run created %s (err=%v)", path, err)
+		}
+	}
+	// OF-52: the dry-run plan also carries every preflight check, all
+	// passing here since newOnboardFixture stands in a passing result.
+	if len(plan.Preflight) != 5 {
+		t.Fatalf("preflight=%+v, want 5 checks", plan.Preflight)
+	}
+	for _, c := range plan.Preflight {
+		if !c.OK || c.Name == "" || c.Detail == "" {
+			t.Fatalf("preflight check %+v, want ok with a name and detail", c)
 		}
 	}
 }
@@ -196,7 +226,7 @@ func TestOnboardRunsAgentInWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rows []issues.LedgerProject
-	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
+	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(), preflight: defaultPreflight,
 		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
 			rows = append(rows, row)
 			return row, os.WriteFile(rowMarker, nil, 0o600)
@@ -306,12 +336,103 @@ func TestOnboardReportsAgentResultWhenPRMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(),
+	o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: claude, stateRoot: f.state, cacheDir: t.TempDir(), preflight: defaultPreflight,
 		writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
 			return row, nil
 		}}
 	req := intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote}
 	if _, err := o.run(context.Background(), req); err == nil || !strings.Contains(err.Error(), explanation) {
 		t.Fatalf("err=%v, want it to carry the agent's final explanation %q", err, explanation)
+	}
+}
+
+// failingPreflightCheck is a stand-in for one OF-52 preflight group that
+// always reports a deterministic failure with a fix.
+func failingPreflightCheck(name, detail string) preflightCheck {
+	return preflightCheck{Name: name, OK: false, Detail: detail}
+}
+
+// TestOnboardPreflightBlocksOnFailure covers OF-52: whichever single
+// preflight group fails (本机工具 reusing `doctor --json`, factory 自身
+// running install.sh --dry-run, 目标仓库 的 gh 权限与 ls-remote, or 现场
+// worktree/分支/锁残留), `--dry-run` marks exactly that check and exits
+// non-zero, and the real run refuses before writing the ledger row,
+// creating the worktree, or starting the onboarding agent.
+func TestOnboardPreflightBlocksOnFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		fail func(*preflightFuncs)
+	}{
+		{"本机工具", func(pf *preflightFuncs) {
+			pf.tools = func(context.Context, onboarder) preflightCheck {
+				return failingPreflightCheck("本机工具", "orca-factory doctor 未就绪：orca ready=false；补法：先启动 Orca 并重试")
+			}
+		}},
+		{"factory 自身", func(pf *preflightFuncs) {
+			pf.factory = func(context.Context, onboarder) preflightCheck {
+				return failingPreflightCheck("factory 自身", "install.sh --dry-run 退出码 1；补法：核对 factory 自身 agent-graph.env")
+			}
+		}},
+		{"目标仓库", func(pf *preflightFuncs) {
+			pf.repo = func(context.Context, onboarder, onboardPlan) preflightCheck {
+				return failingPreflightCheck("目标仓库", "gh api repos/vmxmy/ziikoo-control-plane 的 permissions.push 不为 true；补法：申请该仓库 push 权限")
+			}
+		}},
+		{"现场", func(pf *preflightFuncs) {
+			pf.scene = func(context.Context, onboarder, onboardPlan) preflightCheck {
+				return failingPreflightCheck("现场", "worktree 已存在；补法：清理残留 worktree 后重试")
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newOnboardFixture(t)
+			broken := defaultPreflight
+			c.fail(&broken)
+			original := defaultPreflight
+			defaultPreflight = broken
+			t.Cleanup(func() { defaultPreflight = original })
+
+			stdout := captureStdout(t, func() {
+				if code := runOnboard([]string{"--repo", f.repo, "--dry-run"}); code == 0 {
+					t.Fatalf("exit code = 0, want non-zero when %s fails", c.name)
+				}
+			})
+			var plan onboardPlan
+			if err := json.Unmarshal(stdout, &plan); err != nil {
+				t.Fatalf("invalid JSON %s: %v", stdout, err)
+			}
+			var failed []string
+			for _, check := range plan.Preflight {
+				if !check.OK {
+					failed = append(failed, check.Name)
+				}
+			}
+			if !slices.Equal(failed, []string{c.name}) {
+				t.Fatalf("failed preflight=%v, want exactly [%s] (full=%+v)", failed, c.name, plan.Preflight)
+			}
+
+			cfg, err := config.Load(f.home)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows []issues.LedgerProject
+			o := onboarder{cfg: cfg, orca: &orca.Client{}, claude: filepath.Join(t.TempDir(), "claude-never-run"), stateRoot: f.state, cacheDir: t.TempDir(), preflight: defaultPreflight,
+				writeRow: func(_ context.Context, row issues.LedgerProject) (issues.LedgerProject, error) {
+					rows = append(rows, row)
+					return row, nil
+				}}
+			_, err = o.run(context.Background(), intake.OnboardRequest{Repo: f.repo, Remote: onboardRemote})
+			if err == nil || !strings.Contains(err.Error(), "接入前置检查未通过") || !strings.Contains(err.Error(), c.name) {
+				t.Fatalf("run err=%v, want it to name the failed preflight check %q", err, c.name)
+			}
+			if len(rows) != 0 {
+				t.Fatalf("writeRow called despite failing preflight: %+v", rows)
+			}
+			worktree := filepath.Join(o.cacheDir, "orca-factory", "onboard", onboardKey(onboardRemote), "worktree")
+			if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+				t.Fatalf("worktree created despite failing preflight (err=%v)", err)
+			}
+		})
 	}
 }

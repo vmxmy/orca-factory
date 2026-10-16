@@ -65,7 +65,46 @@ type onboardPlan struct {
 	RowExists bool     `json:"row_exists"`
 	Pending   []string `json:"pending"`
 	Steps     []string `json:"steps"`
+	// Preflight is OF-52's deterministic go/no-go judgments, filled in after
+	// the plan itself: `onboard --dry-run` prints them and exits non-zero on
+	// any failure; the real run (CLI or the picker card's 接入 button, which
+	// share onboarder.run) refuses before writing the ledger row, creating
+	// the worktree, or starting the onboarding agent when any fails.
+	Preflight []preflightCheck `json:"preflight"`
 }
+
+// preflightCheck is one deterministic judgment an onboarding run must pass
+// before it writes anything (OF-52). Detail is the fix a person applies on
+// failure; it never carries a credential, environment variable value, or
+// raw tool output — only key names, booleans and exit codes.
+type preflightCheck struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
+}
+
+// preflightFuncs are onboarding's externally-checked preflight groups
+// (OF-52): tools (a, reusing `orca-factory doctor --json` plus
+// resolveClaude), factory (b, the factory's own install.sh --dry-run), repo
+// (c, the target repository's push access) and scene (d, worktree/branch/
+// lock residue). The fifth group, the ledger (e), is derived from the plan
+// this onboarding already computed (a successful plan already proved the
+// ledger readable with a non-conflicting prefix) and needs no check of its
+// own. Each func takes the onboarder by value so a test can swap in a
+// stand-in without running the real tool, while production wiring always
+// sees the onboarder's current fields (claude, cfg, stateRoot).
+type preflightFuncs struct {
+	tools   func(ctx context.Context, o onboarder) preflightCheck
+	factory func(ctx context.Context, o onboarder) preflightCheck
+	repo    func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
+	scene   func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
+}
+
+// defaultPreflight is OF-52's production preflight checks, wired at both
+// onboarder construction sites (the onboard command and the picker card's
+// 接入 button, which share onboarder.run). A test driving runOnboard as a
+// black box swaps this package var for a stand-in and restores it after.
+var defaultPreflight = preflightFuncs{tools: checkOnboardTools, factory: checkOnboardFactory, repo: checkOnboardRepoAccess, scene: checkOnboardScene}
 
 // onboarder onboards one Orca repository (OF-50): the agent works only in a
 // fresh worktree of it; the driver itself writes the ledger 项目 row.
@@ -75,6 +114,7 @@ type onboarder struct {
 	claude              string
 	stateRoot, cacheDir string
 	writeRow            func(context.Context, issues.LedgerProject) (issues.LedgerProject, error)
+	preflight           preflightFuncs
 }
 
 // onboardKey names a repository's onboarding lock and worktree directory.
@@ -159,10 +199,23 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 		Model: model, Effort: effort, Env: env, RowExists: existing != "", Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
 }
 
-// run onboards req.Repo under its repository's single-instance lock,
-// <state root>/onboard/<remote key>.lock, held across processes (the
-// onboard command and the intake gateway) until the run ends.
+// run onboards req.Repo (OF-52: only after every preflight check passes,
+// so a blocking tool, factory or target-repository problem never writes
+// the ledger row, creates the worktree, or starts the onboarding agent)
+// under its repository's single-instance lock, <state root>/onboard/<remote
+// key>.lock, held across processes (the onboard command and the intake
+// gateway) until the run ends.
 func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.OnboardResult, error) {
+	plan, err := o.plan(ctx, req.Repo)
+	if err != nil {
+		return intake.OnboardResult{}, err
+	}
+	if plan.Remote != req.Remote {
+		return intake.OnboardResult{}, fmt.Errorf("%s 的远端已变为 %s", req.Repo, plan.Remote)
+	}
+	if summary := failedPreflightSummary(o.runPreflight(ctx, plan)); summary != "" {
+		return intake.OnboardResult{}, fmt.Errorf("接入前置检查未通过：%s", summary)
+	}
 	lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(req.Remote)+".lock"))
 	if errors.Is(err, syscall.EWOULDBLOCK) {
 		return intake.OnboardResult{}, fmt.Errorf("%s 已有进行中的接入", req.Remote)
@@ -171,13 +224,6 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 		return intake.OnboardResult{}, fmt.Errorf("接入锁不可用：%w", err)
 	}
 	defer func() { _ = lock.Close() }()
-	plan, err := o.plan(ctx, req.Repo)
-	if err != nil {
-		return intake.OnboardResult{}, err
-	}
-	if plan.Remote != req.Remote {
-		return intake.OnboardResult{}, fmt.Errorf("%s 的远端已变为 %s", req.Repo, plan.Remote)
-	}
 	row := issues.LedgerProject{Name: plan.Name, Remote: plan.Remote, Prefix: plan.Prefix}
 	if !plan.RowExists {
 		if row, err = o.writeRow(ctx, row); err != nil {
@@ -194,12 +240,177 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 	return intake.OnboardResult{PR: pr, Row: row}, nil
 }
 
-// addWorktree creates the agent's working directory. An existing one is
-// left for a person to inspect rather than reused or removed.
-func (o onboarder) addWorktree(ctx context.Context, plan onboardPlan) error {
-	if _, err := os.Stat(plan.Worktree); !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("接入 worktree %s 已存在，核对后清理再重试", plan.Worktree)
+// runPreflight runs OF-52's five preflight groups in order (a–e) and
+// returns every result; it never stops at the first failure, so a person
+// reading `onboard --dry-run` or a failed run's error sees every blocking
+// problem at once instead of discovering the next one five minutes later.
+func (o onboarder) runPreflight(ctx context.Context, plan onboardPlan) []preflightCheck {
+	return []preflightCheck{
+		o.preflight.tools(ctx, o),
+		o.preflight.factory(ctx, o),
+		o.preflight.repo(ctx, o, plan),
+		o.preflight.scene(ctx, o, plan),
+		ledgerPreflightCheck(plan),
 	}
+}
+
+// failedPreflightSummary joins every failing check's name and detail, or
+// "" when all passed.
+func failedPreflightSummary(checks []preflightCheck) string {
+	var failed []string
+	for _, c := range checks {
+		if !c.OK {
+			failed = append(failed, c.Name+"："+c.Detail)
+		}
+	}
+	return strings.Join(failed, "；")
+}
+
+// ledgerPreflightCheck is preflight group (e): the plan this onboarding
+// already computed only exists because discoverProjects read the Feishu
+// ledger's project table and resolved a prefix that does not conflict
+// (reusing the remote's existing row, or generating a fresh one from the
+// rows already taken) — a ledger failure surfaces as a plan() error before
+// preflight ever runs, so by the time this executes the group is already
+// proven.
+func ledgerPreflightCheck(plan onboardPlan) preflightCheck {
+	detail := "飞书项目表已读取，编号前缀 " + plan.Prefix + " 不冲突"
+	if plan.RowExists {
+		detail += "（沿用该远端已有行）"
+	} else {
+		detail += "（新行）"
+	}
+	return preflightCheck{Name: "账本", OK: true, Detail: detail}
+}
+
+// exitCode reports a failed runx.Run's process exit code, or -1 when the
+// command never produced one (lookup failure, timeout).
+func exitCode(err error) int {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+// doctorReport is the subset of `orca-factory doctor --json` preflight (a)
+// reads: only booleans, never raw tool output or credentials.
+type doctorReport struct {
+	Tools map[string]struct {
+		Present  bool `json:"present"`
+		Ready    bool `json:"ready"`
+		LoggedIn bool `json:"logged_in"`
+	} `json:"tools"`
+}
+
+// checkOnboardTools is preflight group (a): reuses the factory's own
+// `doctor --json` for orca (running), gh (logged in), git and jq, plus
+// resolveClaude for the onboarding agent's binary.
+func checkOnboardTools(ctx context.Context, o onboarder) preflightCheck {
+	const name = "本机工具"
+	out, err := runx.Run(ctx, runx.Spec{Path: filepath.Join(o.cfg.FactoryRoot, "bin", "orca-factory"), Args: []string{"doctor", "--json"}, Timeout: 30 * time.Second})
+	if err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("orca-factory doctor --json 退出码 %d；补法：手动运行 orca-factory doctor 排查", exitCode(err))}
+	}
+	var report doctorReport
+	if json.Unmarshal(out, &report) != nil {
+		return preflightCheck{Name: name, OK: false, Detail: "orca-factory doctor --json 输出不可解析；补法：手动运行 orca-factory doctor 排查"}
+	}
+	var missing []string
+	if t := report.Tools["orca"]; !t.Present || !t.Ready {
+		missing = append(missing, "orca")
+	}
+	if t := report.Tools["gh"]; !t.Present || !t.LoggedIn {
+		missing = append(missing, "gh")
+	}
+	if !report.Tools["git"].Present {
+		missing = append(missing, "git")
+	}
+	if !report.Tools["jq"].Present {
+		missing = append(missing, "jq")
+	}
+	claude := o.claude
+	if claude == "" {
+		claude, err = resolveClaude(os.Getenv("AGENT_INTAKE_CLAUDE"))
+	}
+	if claude == "" || err != nil {
+		missing = append(missing, "claude")
+	}
+	if len(missing) > 0 {
+		return preflightCheck{Name: name, OK: false, Detail: "未就绪：" + strings.Join(missing, ",") + "；补法：运行 orca-factory doctor 核对并修复"}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "orca 运行中、gh 已登录、git/jq 就绪、claude 可解析"}
+}
+
+// checkOnboardFactory is preflight group (b): the factory's own install.sh
+// --dry-run, run in factory_root, must exit 0.
+func checkOnboardFactory(ctx context.Context, o onboarder) preflightCheck {
+	const name = "factory 自身"
+	script := filepath.Join(o.cfg.FactoryRoot, "scripts/agent-gates/install.sh")
+	if _, err := runx.Run(ctx, runx.Spec{Path: script, Args: []string{"--dry-run"}, Dir: o.cfg.FactoryRoot, Timeout: 2 * time.Minute}); err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("install.sh --dry-run 退出码 %d；补法：核对 factory 自身 agent-graph.env 与账本后端配置", exitCode(err))}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "install.sh --dry-run 退出码 0"}
+}
+
+// checkOnboardRepoAccess is preflight group (c): the target repository's
+// GitHub remote (already confirmed by plan()) must give this machine push
+// access, and its main branch must be fetchable.
+func checkOnboardRepoAccess(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck {
+	const name = "目标仓库"
+	m := githubRemote.FindStringSubmatch(plan.Remote)
+	if m == nil {
+		return preflightCheck{Name: name, OK: false, Detail: "远端不是 GitHub 仓库"}
+	}
+	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"api", "repos/" + m[1]}, Timeout: 30 * time.Second})
+	if err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("gh api repos/%s 退出码 %d；补法：确认 gh 已登录且有该仓库访问权限", m[1], exitCode(err))}
+	}
+	var repo struct {
+		Permissions struct {
+			Push bool `json:"push"`
+		} `json:"permissions"`
+	}
+	if json.Unmarshal(out, &repo) != nil || !repo.Permissions.Push {
+		return preflightCheck{Name: name, OK: false, Detail: "gh api repos/" + m[1] + " 的 permissions.push 不为 true；补法：申请该仓库的 push 权限"}
+	}
+	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "ls-remote", "--exit-code", "origin", "main"}, Timeout: 30 * time.Second}); err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("git ls-remote origin main 退出码 %d；补法：确认本机能访问该仓库远端", exitCode(err))}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "gh 有 push 权限，origin main 可达"}
+}
+
+// checkOnboardScene is preflight group (d): the onboarding worktree path,
+// the feat/agent-graph branch (local and remote), and the onboarding lock
+// must all be clear — a residue from an earlier attempt is a person's job
+// to clean up, never this run's.
+func checkOnboardScene(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck {
+	const name = "现场"
+	var problems []string
+	if _, err := os.Stat(plan.Worktree); !errors.Is(err, os.ErrNotExist) {
+		problems = append(problems, "worktree 已存在")
+	}
+	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "show-ref", "--quiet", "refs/heads/" + plan.Branch}, Timeout: 10 * time.Second}); err == nil {
+		problems = append(problems, "本地分支 "+plan.Branch+" 已存在")
+	}
+	if out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "ls-remote", "--heads", "origin", plan.Branch}, Timeout: 30 * time.Second}); err == nil && strings.TrimSpace(string(out)) != "" {
+		problems = append(problems, "远端分支 "+plan.Branch+" 已存在")
+	}
+	if lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(plan.Remote)+".lock")); err != nil {
+		problems = append(problems, "接入锁被占用：已有进行中的接入")
+	} else {
+		_ = lock.Close()
+	}
+	if len(problems) > 0 {
+		return preflightCheck{Name: name, OK: false, Detail: strings.Join(problems, "；") + "；补法：清理残留 worktree/分支，或等待进行中的接入结束"}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "worktree 与分支均不存在，接入锁空闲"}
+}
+
+// addWorktree creates the agent's working directory; OF-52's 现场 preflight
+// check already proved the path and branch are clear before run() ever
+// reaches here.
+func (o onboarder) addWorktree(ctx context.Context, plan onboardPlan) error {
 	if err := os.MkdirAll(filepath.Dir(plan.Worktree), 0o700); err != nil {
 		return err
 	}
@@ -338,24 +549,33 @@ func runOnboard(args []string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	o := onboarder{cfg: cfg, orca: &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg)}
+	o := onboarder{cfg: cfg, orca: &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}
 	plan, err := o.plan(ctx, *repo)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	out := any(plan)
-	if !*dryRun {
-		if o.claude, err = resolveClaude(os.Getenv("AGENT_INTAKE_CLAUDE")); err != nil {
+	if *dryRun {
+		plan.Preflight = o.runPreflight(ctx, plan)
+		if err := json.NewEncoder(os.Stdout).Encode(plan); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
-		if out, err = o.run(ctx, intake.OnboardRequest{Repo: plan.Repo, Remote: plan.Remote}); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		if failedPreflightSummary(plan.Preflight) != "" {
 			return 1
 		}
+		return 0
 	}
-	if err := json.NewEncoder(os.Stdout).Encode(out); err != nil {
+	if o.claude, err = resolveClaude(os.Getenv("AGENT_INTAKE_CLAUDE")); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	result, err := o.run(ctx, intake.OnboardRequest{Repo: plan.Repo, Remote: plan.Remote})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
