@@ -478,6 +478,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerResolver {
 			return result, err
 		}
+		if cp.MergeSpec == "" {
+			if err = e.honorGateSpecRefresh(ctx, t, &result); err != nil {
+				return result, err
+			}
+		}
 		var output, verdict string
 		var gateErr, parseErr error
 		err = e.retryRead(ctx, t, &result, "gate output", func() error {
@@ -574,6 +579,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			continue
 		}
 		break
+	}
+	if err = e.reportFrozenGateSpecRefresh(ctx, t, &result); err != nil {
+		return result, err
 	}
 	err = transition(machine.EvOpenPR, func(fx []machine.Effect) (err error) {
 		done := e.external("open-pr")
