@@ -149,7 +149,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 - 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：写 `paused` 并 resume，不回滚。
 - 第 8 步 smoke 失败：先写 `paused`，再从备份恢复二进制，resume，重启。恢复后的 serve 读到 `paused`，交给处置 Agent，不再部署。
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
-- 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，写 `paused` 并 resume。
+- 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元阻塞取得 `deploy.lock`，锁内确认仍无 `smoke-passed` 标记后换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，停看守、写 `paused`、resume 并删除标记。serve 的 smoke 与标记写入都在锁内，看守不会在 smoke 进行中换回旧二进制。
 
 处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）没有自动重试动作：人工用 `deploy.sh` 部署后，用 `confirm-passed` 放行。
 
