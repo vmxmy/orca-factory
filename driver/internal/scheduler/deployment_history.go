@@ -35,7 +35,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		case "retry-workflow":
 			return d.Workflow != "" && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
 		case "retry-smoke":
-			return d.Smoke != "" && d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
+			return d.Smoke != "" && d.SmokeStarted && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
 		default:
 			return false
 		}
@@ -79,4 +79,12 @@ func sameDeploymentRecovery(a, b *merge.DeploymentRecovery) bool {
 		return a == b
 	}
 	return a.Action == b.Action && a.Operator == b.Operator && a.Reason == b.Reason && a.At.Equal(b.At)
+}
+
+// A self deployment retries only its smoke; pending would reinstall it.
+func retrySmokeState(self bool) string {
+	if self {
+		return "deploy-intent"
+	}
+	return "pending"
 }

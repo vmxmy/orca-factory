@@ -23,5 +23,5 @@
 
 - lane 1 合并策略：coordinator 自合（squash）。依据：用户答复。
 - lane 2 合并策略：按通用流程第 6 步及当前 `agent-graph.env` 推进；审批等待、路径复核及其他未满足的前提交给第 7 步 resolver 处置。resolver 提案仍须绑定当前 head，并通过 gate、独立审查和 CI；lane 3 保持授权边界。
-- 自部署（OF-152）：`AGENT_SELF_DEPLOY=1`，合并后 driver 在部署屏障中构建、安装并重启自身，重启后核对版本、跑 `AGENT_SMOKE_CMD`（doctor），通过才写 Done；失败回滚并转处置 Agent。流程见 `driver/README.md`「部署顺序」。合并前同步最新 main 并重跑相关检查；必须等待远端五项 Driver CI 检查通过，不能用本地 gate 替代。
+- 自部署（OF-152）：`AGENT_SELF_DEPLOY=1`，合并后 driver 在部署屏障中构建、安装并重启自身，重启后核对版本、跑 `AGENT_SMOKE_CMD`（`doctor --json`，只判定与本次部署相关的项），通过才写 Done；失败回滚并转处置 Agent，新二进制起不来时由看守单元回滚。流程见 `driver/README.md`「自部署」。合并前同步最新 main 并重跑相关检查；必须等待远端五项 Driver CI 检查通过，不能用本地 gate 替代。
 - 本仓库的验证命令是 `bin/orca-factory selftest`（约 7 秒）。写 spec 时把它放进 `CHECK`，不要放进 `gate.project.sh`（嵌套抢重型锁，见该文件头注释）。
