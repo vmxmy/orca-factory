@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -138,5 +139,34 @@ func TestRuntimeMergeLane2ResolverApprovalMerges(t *testing.T) {
 				t.Fatalf("resolver approval did not merge: puts=%d state=%s bodies=%q", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
 			}
 		})
+	}
+}
+
+// A merge proposal whose PR the merge lane can never accept goes back to the
+// resolver with the branch it must use instead of waiting in the queue forever.
+func TestResolverMergeProposalRejectsForeignPRBranch(t *testing.T) {
+	f := newMergeFixture(t)
+	lane2Automerge(t, f, "unset")
+	rewriteHandoff(t, f, lane2Handoff)
+	var h merge.Handoff
+	if err := json.Unmarshal([]byte(strings.Split(f.tracker.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
+		t.Fatal(err)
+	}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.prBody["head"].(map[string]any)["ref"] = "vmxmy/ENG-1-resolver-2"
+	proposal, _ := json.Marshal(resolver.Resolution{Action: "merge", Reason: "lane 2 reviewed", Handoff: &h})
+	record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "result", CreatedAt: time.Now(), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
+	for range 3 {
+		_ = s.Tick(context.Background())
+	}
+	if f.puts != 0 {
+		t.Fatalf("foreign branch merged: puts=%d", f.puts)
+	}
+	if !slices.ContainsFunc(f.tracker.bodies, func(b string) bool { return strings.Contains(b, "agent/ENG-1/"+h.Unit) && strings.Contains(b, `"phase":"waiting"`) }) {
+		t.Fatalf("proposal not returned to resolver with the required branch: %q", f.tracker.bodies)
 	}
 }
