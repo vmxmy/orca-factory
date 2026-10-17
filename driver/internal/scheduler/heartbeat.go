@@ -2,9 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -112,6 +114,7 @@ func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
 
 // ReapDead abandons every unsettled dispatch of the dead process's own Run
 // (fencing without claiming the process stopped), closes the leftover terminal
+// and every worker terminal the abandon receipts report Orca kept open,
 // and removes the stale heartbeat so the relaunched process starts clean. A
 // resolver owns t.Resolution.Run; t.Run is the executor Run it was handed. Any
 // uncertain read stops the reap before a write.
@@ -145,18 +148,32 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 			}
 		}
 	}
+	var leftover []string
+	if !absent {
+		leftover = append(leftover, t.Terminal)
+	}
 	for _, id := range active {
 		if id == "" {
 			return errors.New("active dispatch without ID")
 		}
-		if _, err := r.Orca.WorkerAbandon(ctx, orca.RequestID(t.Identifier, "scheduler", "abandon-"+id, 1), id); err != nil {
+		receipt, err := r.Orca.WorkerAbandon(ctx, orca.RequestID(t.Identifier, "scheduler", "abandon-"+id, 1), id)
+		if err != nil {
 			return err
 		}
+		residual, err := abandonedTerminals(receipt)
+		if err != nil {
+			return err
+		}
+		for _, terminal := range residual {
+			if !slices.Contains(leftover, terminal) {
+				leftover = append(leftover, terminal)
+			}
+		}
 	}
-	if !absent {
+	for _, terminal := range leftover {
 		// A handle Orca no longer knows is already closed.
 		var rejected *orca.RejectedError
-		if err := r.Orca.TerminalClose(ctx, t.Terminal); err != nil && (!errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale") {
+		if err := r.Orca.TerminalClose(ctx, terminal); err != nil && (!errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale") {
 			return err
 		}
 	}
@@ -164,4 +181,24 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 		return errors.New("cannot remove stale heartbeat")
 	}
 	return nil
+}
+
+// abandonedTerminals confirms an abandon receipt and returns the terminals
+// Orca retained (orca-worker-abandon.json: processAction none).
+func abandonedTerminals(receipt orca.Receipt) ([]string, error) {
+	var state string
+	if json.Unmarshal(receipt["state"], &state) != nil || state != "abandoned" {
+		return nil, errors.New("worker abandon not confirmed")
+	}
+	var residual []struct{ Kind, ID string }
+	if raw, ok := receipt["residualResources"]; ok && json.Unmarshal(raw, &residual) != nil {
+		return nil, errors.New("invalid abandon residual resources")
+	}
+	var terminals []string
+	for _, resource := range residual {
+		if resource.Kind == "terminal" && resource.ID != "" {
+			terminals = append(terminals, resource.ID)
+		}
+	}
+	return terminals, nil
 }
