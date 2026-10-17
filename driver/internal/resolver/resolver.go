@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -165,6 +166,17 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		listed, status := false, ""
+		if slices.ContainsFunc(tasks, func(t orca.Task) bool { return t.ID == p.Task && AwaitsDispatch(t) }) {
+			if listed, status, err = c.dispatchStatus(ctx, p); err != nil {
+				return nil, err
+			}
+			// The dispatch may report between the two reads; only a task read
+			// after the worker read can confirm loss.
+			if tasks, err = c.Orca.TaskList(ctx, p.Run); err != nil {
+				return nil, err
+			}
+		}
 		found := false
 		for _, task := range tasks {
 			if task.ID != p.Task {
@@ -179,10 +191,6 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 				return nil, err
 			}
 			if report == nil && AwaitsDispatch(task) {
-				listed, status, err := c.dispatchStatus(ctx, p)
-				if err != nil {
-					return nil, err
-				}
 				if reason, lost := LostDispatch(task, p.Dispatch, listed, status); lost {
 					// Nothing of this round remains to release; the scheduler's
 					// failure rules open the next round with a fresh request.
@@ -251,7 +259,7 @@ func LostDispatch(task orca.Task, dispatch string, listed bool, status string) (
 
 func dispatchEnded(status string) bool {
 	switch status {
-	case "completed", "failed", "abandoned", "cancelled":
+	case "completed", "failed", "abandoned", "cancelled", "canceled":
 		return true
 	}
 	return false

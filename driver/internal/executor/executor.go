@@ -698,6 +698,16 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				break
 			}
 		}
+		if awaiting != nil {
+			// The dispatch may report between the two reads; only a task read
+			// after the worker read can confirm loss.
+			if report, completed, awaiting, err = readReport(); err != nil {
+				return nil, err
+			}
+			if report != nil {
+				return report, nil
+			}
+		}
 		if worker != nil && watch.observe != nil {
 			if err := watch.observe(*worker); err != nil {
 				return nil, err

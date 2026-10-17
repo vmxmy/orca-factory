@@ -388,14 +388,14 @@ func (c *Client) Workers(ctx context.Context, o ListOptions) ([]Worker, error) {
 		}
 		var rows []Worker
 		var page struct {
-			HasMore    bool   `json:"hasMore"`
+			HasMore    *bool  `json:"hasMore"`
 			NextCursor string `json:"nextCursor"`
 		}
-		if json.Unmarshal(receipt["workers"], &rows) != nil || json.Unmarshal(receipt["page"], &page) != nil {
+		if json.Unmarshal(receipt["workers"], &rows) != nil || rows == nil || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil {
 			return nil, invalid("invalid worker list")
 		}
 		workers = append(workers, rows...)
-		if !page.HasMore {
+		if !*page.HasMore {
 			return workers, nil
 		}
 		if page.NextCursor == "" || seen[page.NextCursor] {

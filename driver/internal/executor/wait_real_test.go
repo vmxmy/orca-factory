@@ -76,3 +76,27 @@ func TestWaitKeepsRecordedQueuedDispatch(t *testing.T) {
 		t.Fatalf("queued dispatch judged lost: report=%+v err=%v", report, err)
 	}
 }
+
+type settlesDuringWorkerRead struct {
+	recordedTasks
+	settled []orca.Task
+}
+
+func (s *settlesDuringWorkerRead) Workers(context.Context, orca.ListOptions) ([]orca.Worker, error) {
+	s.tasks = s.settled
+	return nil, nil
+}
+
+// The dispatch may finish and report between the task read and the worker read;
+// only a task read after the worker read can confirm loss.
+func TestWaitRereadsTasksBeforeJudgingLost(t *testing.T) {
+	o := &settlesDuringWorkerRead{
+		recordedTasks: recordedTasks{tasks: []orca.Task{{ID: "task_one", RunID: "run_one", Status: "ready"}}},
+		settled:       []orca.Task{{ID: "task_one", RunID: "run_one", Status: "completed", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"succeeded","body":"done"}`)}},
+	}
+	e := &Executor{Orca: o, Sleep: func(context.Context, time.Duration) error { return errors.New("polled again") }}
+	report, err := e.wait(context.Background(), "run_one", "task_one", "ctx_one", time.Millisecond, &workerWatch{}, func() error { return nil })
+	if err != nil || report == nil || report.Outcome != "succeeded" || report.Body != "done" {
+		t.Fatalf("settled dispatch judged lost: report=%+v err=%v", report, err)
+	}
+}

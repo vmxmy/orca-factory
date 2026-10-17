@@ -44,6 +44,9 @@ type fakeOrca struct {
 	readErr    error
 	status     string
 	startErr   error
+	// settled replaces tasks once a worker read happens, as when the dispatch
+	// reports between the controller's task read and worker read.
+	settled []orca.Task
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -244,6 +247,9 @@ func TestReplacementControllerReconcilesLostWorkerReceipt(t *testing.T) {
 }
 
 func (o *fakeOrca) WorkerList(_ context.Context, opts orca.ListOptions) (orca.Receipt, error) {
+	if o.settled != nil {
+		o.tasks = o.settled
+	}
 	if o.workers != nil {
 		return o.workers, nil
 	}
@@ -298,6 +304,37 @@ func TestLostDispatchEndsRoundAsFailed(t *testing.T) {
 		if o.releases != 0 || o.startCalls != 1 {
 			t.Fatalf("lost dispatch released or replayed: releases=%d starts=%d", o.releases, o.startCalls)
 		}
+	}
+}
+
+func TestCanceledDispatchIsLost(t *testing.T) {
+	c, s, o := setupController()
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(`[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"canceled"}]`)}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.record.Outcome != "failed" || s.record.Result != "dispatch lost: task task_1 is ready without dispatch ctx_1" {
+		t.Fatalf("canceled dispatch not judged lost: %+v", s.record)
+	}
+}
+
+func TestReportBetweenReadsIsNotLost(t *testing.T) {
+	c, s, o := setupController()
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+	o.settled = []orca.Task{{ID: "task_1", RunID: "run_1", DispatchID: "ctx_1", Status: "completed", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"succeeded","body":"fixed"}`)}}
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(`[]`)}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.record.Outcome != "succeeded" || s.record.Result != "fixed" {
+		t.Fatalf("dispatch that reported between reads judged lost: %+v", s.record)
 	}
 }
 
