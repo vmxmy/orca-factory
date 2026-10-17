@@ -302,7 +302,7 @@ func TestLostDispatchEndsRoundAsFailed(t *testing.T) {
 	}
 }
 
-func TestLostDispatchRequiresCompleteRead(t *testing.T) {
+func TestIncompleteReadNeverJudgesDispatchLost(t *testing.T) {
 	c, s, o := setupController()
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
