@@ -303,3 +303,30 @@ func TestResolutionSaveRevisitsEarlierState(t *testing.T) {
 		t.Fatalf("writes=%d, want 3 (a repeated latest state is not rewritten)", len(l.comments))
 	}
 }
+
+// A save whose create call errors but did land is confirmed even when another
+// writer appended a newer record afterwards; retrying would bury that record.
+func TestResolutionSaveConfirmsLandedWriteBehindNewerRecord(t *testing.T) {
+	l := &racingIssues{}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": l}}
+	store := resolutionStore{r, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}}
+	if err := store.Save(context.Background(), resolver.Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "mine"}); err != nil {
+		t.Fatalf("landed write reported unconfirmed: %v", err)
+	}
+	if len(l.comments) != 2 {
+		t.Fatalf("writes=%d, want only ours and the other writer's", len(l.comments))
+	}
+}
+
+// racingIssues stores a create, then lets another writer append a newer
+// record and reports the create as failed.
+type racingIssues struct{ fakeIssues }
+
+func (f *racingIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if _, err := f.fakeIssues.CreateComment(ctx, id, body); err != nil {
+		return task.Comment{}, err
+	}
+	other, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "other"})
+	_, _ = f.fakeIssues.CreateComment(ctx, id, resolver.Prefix+string(other))
+	return task.Comment{}, errors.New("write uncertain")
+}

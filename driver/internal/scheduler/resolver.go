@@ -84,30 +84,36 @@ func (s resolutionStore) Save(ctx context.Context, p resolver.Record) error {
 	if err != nil {
 		return errors.New("resolver receipt read failed")
 	}
-	if latestResolutionLine(comments) == line {
+	before := resolutionLines(comments)
+	if len(before) > 0 && before[len(before)-1] == line {
 		return nil
 	}
 	if _, err = client.CreateComment(ctx, s.ticket.ID, line); err == nil {
 		return nil
 	}
-	if comments, err = client.ListComments(ctx, s.ticket.ID); err == nil && latestResolutionLine(comments) == line {
-		return nil
+	// A newer record from another writer may follow ours; finding ours after
+	// the records read before the write still confirms it landed.
+	if comments, err = client.ListComments(ctx, s.ticket.ID); err == nil {
+		if after := resolutionLines(comments); len(after) > len(before) && slices.Contains(after[len(before):], line) {
+			return nil
+		}
 	}
 	return errors.New("resolver receipt write unconfirmed")
 }
 
-func latestResolutionLine(comments []task.Comment) string {
+// resolutionLines lists every resolver record line in ledger time order.
+func resolutionLines(comments []task.Comment) []string {
 	rows := append([]task.Comment(nil), comments...)
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
-	latest := ""
+	var lines []string
 	for _, c := range rows {
 		for _, line := range strings.Split(c.Body, "\n") {
 			if strings.HasPrefix(line, resolver.Prefix) {
-				latest = line
+				lines = append(lines, line)
 			}
 		}
 	}
-	return latest
+	return lines
 }
 
 // ResolveTicket runs in its own terminal; only the scheduler applies proposals.
