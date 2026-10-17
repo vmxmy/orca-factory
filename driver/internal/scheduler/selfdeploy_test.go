@@ -54,7 +54,7 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 		h.builds++
 		out := s.Args[slices.Index(s.Args, "-o")+1]
 		ldflags := s.Args[slices.Index(s.Args, "-ldflags")+1]
-		return nil, os.WriteFile(out, []byte(strings.TrimPrefix(ldflags, "-X main.version=")), 0700)
+		return nil, os.WriteFile(out, fakeDriver(strings.TrimPrefix(ldflags, "-X main.version=")), 0700)
 	case s.Path == "systemd-run":
 		h.guard = s.Args
 		return nil, h.guardErr
@@ -74,7 +74,7 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 		return nil, nil
 	case s.Path == h.driver:
 		installed, err := os.ReadFile(h.driver)
-		return []byte("orca-factory-driver " + string(installed) + "\n"), err
+		return []byte("orca-factory-driver " + driverVersion(installed) + "\n"), err
 	case s.Path == "bash":
 		if h.killed("smoke") {
 			return nil, context.Canceled
@@ -93,7 +93,7 @@ func newSelfDeployFixture(t *testing.T) (*mergeFixture, *selfDeployHost) {
 	root := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)
 	h := &selfDeployHost{driver: filepath.Join(t.TempDir(), "orca-factory-driver"), smokeOut: []byte(unrelatedDoctorFails), smokeErr: errors.New("exit status 1"), cancel: func() {}}
-	if err := os.WriteFile(h.driver, []byte("old"), 0700); err != nil {
+	if err := os.WriteFile(h.driver, fakeDriver("old"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	f.runtime.StateRoot = root
@@ -127,13 +127,24 @@ func firstServe(t *testing.T, f *mergeFixture, h *selfDeployHost) {
 	}
 }
 
+// fakeDriver is an executable that answers version like the real binary, so
+// the guard script can run it.
+func fakeDriver(version string) []byte {
+	return []byte("#!/bin/sh\necho orca-factory-driver " + version + "\n")
+}
+
+func driverVersion(script []byte) string {
+	_, version, _ := strings.Cut(string(script), "echo orca-factory-driver ")
+	return strings.TrimSpace(version)
+}
+
 func installed(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return string(b)
+	return driverVersion(b)
 }
 
 func maintenanceMode(t *testing.T) string {
@@ -190,9 +201,14 @@ func TestSelfDeploySmokeFailureRollsBack(t *testing.T) {
 	if err := serveAs(f, h, selfSHA); err == nil {
 		t.Fatal("failed smoke completed the deployment")
 	}
+	// The failed binary must not resume claims before the restart replaces it.
+	if installed(t, h.driver) != "old" || h.restarts != 2 || lastState(f) != "smoke-intent" || !markerExists(f, selfSHA, "rolled-back") || maintenanceMode(t) != "draining" {
+		t.Fatalf("rollback: installed=%q restarts=%d mode=%s ledger=%s", installed(t, h.driver), h.restarts, maintenanceMode(t), lastState(f))
+	}
+	_ = serveAs(f, h, "old")
 	receipts := strings.Join(f.tracker.bodies, "\n")
-	if installed(t, h.driver) != "old" || h.restarts != 2 || lastState(f) != "paused" || !strings.Contains(receipts, "归属: 处置Agent") || f.tracker.issue.State.Name == "Done" || maintenanceMode(t) != "running" {
-		t.Fatalf("rollback: installed=%q restarts=%d mode=%s state=%s ledger=%s", installed(t, h.driver), h.restarts, maintenanceMode(t), f.tracker.issue.State.Name, lastState(f))
+	if lastState(f) != "paused" || !strings.Contains(receipts, "smoke failed") || !strings.Contains(receipts, "归属: 处置Agent") || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "rolled-back") {
+		t.Fatalf("restored serve: mode=%s ledger=%s", maintenanceMode(t), lastState(f))
 	}
 	err := serveAs(f, h, "old")
 	if h.builds != 1 || h.smokes != 1 || h.restarts != 2 || f.tracker.issue.State.Name == "Done" || maintenanceMode(t) != "running" {
@@ -291,6 +307,74 @@ func TestSelfDeployGuardWaitsForDeployLock(t *testing.T) {
 	}
 }
 
+// The guard never swaps out a binary another deployment installed or holds:
+// it gives up on a busy deploy.lock and on a version that is not its own.
+func TestSelfDeployGuardLeavesOthersBinary(t *testing.T) {
+	t.Run("version differs", func(t *testing.T) {
+		f, h := newSelfDeployFixture(t)
+		firstServe(t, f, h)
+		if err := os.WriteFile(h.driver, fakeDriver("other"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		log := filepath.Join(t.TempDir(), "systemctl.log")
+		runGuard(t, h, log)
+		if _, err := os.Stat(log); installed(t, h.driver) != "other" || markerExists(f, selfSHA, "rolled-back") || err == nil {
+			t.Fatalf("guard replaced a manually deployed driver: installed=%q", installed(t, h.driver))
+		}
+	})
+	t.Run("lock timeout", func(t *testing.T) {
+		f, h := newSelfDeployFixture(t)
+		firstServe(t, f, h)
+		held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := held.Close(); err != nil {
+				t.Error(err)
+			}
+		})
+		if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+		h.guard[slices.Index(h.guard, "self-deploy-guard")+2] = "1"
+		guard := guardCommand(t, h, filepath.Join(t.TempDir(), "systemctl.log"))
+		if err = guard.Start(); err != nil {
+			t.Fatal(err)
+		}
+		done := make(chan error, 1)
+		go func() { done <- guard.Wait() }()
+		select {
+		case err = <-done:
+		case <-time.After(10 * time.Second):
+			err = errors.Join(errors.New("guard still waiting for deploy.lock"), guard.Process.Kill(), <-done)
+		}
+		if err != nil || installed(t, h.driver) != selfSHA || markerExists(f, selfSHA, "rolled-back") {
+			t.Fatalf("guard on a busy lock: err=%v installed=%q", err, installed(t, h.driver))
+		}
+	})
+}
+
+// A failed resume after smoke pauses without claiming the smoke passed.
+func TestSelfDeployResumeFailurePauses(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	firstServe(t, f, h)
+	drained := filepath.Join(f.runtime.StateRoot, "self-deploy", selfSHA+".drained")
+	if err := os.Remove(drained); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(drained, "undeletable"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := serveAs(f, h, selfSHA)
+	if err == nil || lastState(f) != "paused" || maintenanceMode(t) != "running" || f.tracker.issue.State.Name == "Done" || strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"smoke_passed":true`) {
+		t.Fatalf("resume failure: err=%v ledger=%s mode=%s", err, lastState(f), maintenanceMode(t))
+	}
+	if err = serveAs(f, h, selfSHA); err != nil && strings.Contains(err.Error(), "conflicting") {
+		t.Fatalf("paused record conflicts with history: %v", err)
+	}
+}
+
 func TestSelfDeployGuardFailureAbortsBeforeRestart(t *testing.T) {
 	f, h := newSelfDeployFixture(t)
 	h.guardErr = errors.New("systemd-run failed")
@@ -342,7 +426,7 @@ func TestSelfDeployConvergesAfterCrash(t *testing.T) {
 		f, h := newSelfDeployFixture(t)
 		firstServe(t, f, h)
 		// A manual deploy.sh installed another version in the restart gap.
-		if err := os.WriteFile(h.driver, []byte("other"), 0700); err != nil {
+		if err := os.WriteFile(h.driver, fakeDriver("other"), 0700); err != nil {
 			t.Fatal(err)
 		}
 		_ = serveAs(f, h, "other")

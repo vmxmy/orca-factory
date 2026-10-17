@@ -31,6 +31,9 @@ const (
 	// selfDeployGuardWindow covers the new serve's startup, which waits for
 	// Orca, plus its smoke.
 	selfDeployGuardWindow = 10 * time.Minute
+	// selfDeployGuardLockWait outlasts a serve smoking under deploy.lock; a
+	// lock held longer belongs to a manual deploy.sh, which owns the binary.
+	selfDeployGuardLockWait = selfDeploySmokeTimeout + 2*time.Minute
 )
 
 // Variables so tests can shorten the one-hour idle wait.
@@ -42,7 +45,8 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 
 // Markers under <state root>/self-deploy/<sha>.<kind>. drained means this
 // deployment set maintenance draining and owes the resume; the guard reads
-// smoke-passed and leaves rolled-back for the restored serve.
+// smoke-passed; rolled-back tells the restored serve to pause and resume, and
+// holds the reason when serve itself rolled back.
 const (
 	markerDrained     = "drained"
 	markerSmokePassed = "smoke-passed"
@@ -52,10 +56,15 @@ const (
 // selfDeployGuardScript runs in its own transient unit, so it outlives the
 // driver unit's restart and acts even when the new binary cannot start. It
 // judges smoke-passed under deploy.lock: serve writes that marker under the
-// same lock, so a smoke in progress finishes before the guard decides.
-const selfDeployGuardScript = `exec 9>>"$1" && flock 9 || exit 1
-[ -e "$2" ] && exit 0
-cp -f "$3" "$4.guard" && mv -f "$4.guard" "$4" && : > "$5" && exec 9>&- && exec systemctl --user restart "$6" "$7"`
+// same lock, so a smoke in progress finishes before the guard decides. It
+// restores the backup only over the binary this deployment installed.
+const selfDeployGuardScript = `lock=$1 wait=$2 sha=$3 passed=$4 backup=$5 driver=$6 rolled=$7
+shift 7
+exec 9>>"$lock" || exit 1
+flock -w "$wait" 9 || { echo "deploy.lock still held after ${wait}s; no rollback" >&2; exit 0; }
+[ -e "$passed" ] && exit 0
+[ "$("$driver" version)" = "orca-factory-driver $sha" ] || { echo "installed driver is not $sha; no rollback" >&2; exit 0; }
+cp -f "$backup" "$driver.guard" && mv -f "$driver.guard" "$driver" && : > "$rolled" && exec 9>&- && exec systemctl --user restart "$@"`
 
 // errSelfDeployRestarting ends the tick after the restart is queued: systemd is
 // about to stop this serve, and the next serve continues the deployment.
@@ -146,7 +155,7 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	if replaced {
-		return errors.Join(err, r.rollbackSelf(ctx, t, p, "self deployment failed before restart"))
+		return errors.Join(err, r.rollbackSelf(ctx, p, "self deployment failed before restart"))
 	}
 	return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
 }
@@ -245,7 +254,8 @@ func (r *Runtime) restartServices(ctx context.Context) error {
 // the smoke-passed marker appears within the window.
 func (r *Runtime) startGuard(ctx context.Context, sha string) error {
 	args := []string{"--user", "--unit=" + guardUnit(sha), fmt.Sprintf("--on-active=%d", int(selfDeployGuardWindow.Seconds())), "--timer-property=AccuracySec=1s",
-		"/bin/sh", "-c", selfDeployGuardScript, "self-deploy-guard", filepath.Join(r.StateRoot, "deploy.lock"), r.selfMarker(sha, markerSmokePassed), r.selfBackup(sha), r.DriverPath, r.selfMarker(sha, markerRolledBack)}
+		"/bin/sh", "-c", selfDeployGuardScript, "self-deploy-guard", filepath.Join(r.StateRoot, "deploy.lock"), strconv.Itoa(int(selfDeployGuardLockWait.Seconds())), sha,
+		r.selfMarker(sha, markerSmokePassed), r.selfBackup(sha), r.DriverPath, r.selfMarker(sha, markerRolledBack)}
 	_, err := r.runFor(ctx, time.Minute, "", "systemd-run", append(args, selfDeployServices...)...)
 	return err
 }
@@ -319,12 +329,15 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	}
 	defer unlock()
 	sha := p.MergeSHA
-	rolled, err := fileExists(r.selfMarker(sha, markerRolledBack))
-	if err != nil {
-		return err
+	reason, err := os.ReadFile(r.selfMarker(sha, markerRolledBack))
+	if err == nil {
+		if len(reason) == 0 {
+			reason = []byte("guard restored the previous driver: the new serve did not pass smoke within the window")
+		}
+		return r.pauseSelf(ctx, t, p, string(reason))
 	}
-	if rolled {
-		return r.pauseSelf(ctx, t, p, "guard restored the previous driver: the new serve did not pass smoke within the window")
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	ok, err := r.verifyInstalled(ctx, sha)
 	if err != nil {
@@ -344,9 +357,8 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		if ctx.Err() != nil {
 			return errors.Join(err, ctx.Err())
 		}
-		return errors.Join(err, r.rollbackSelf(ctx, t, p, "self deployment smoke failed; previous driver restored"))
+		return errors.Join(err, r.rollbackSelf(ctx, p, "self deployment smoke failed; previous driver restored"))
 	}
-	d.SmokePassed = true
 	if err = touch(r.selfMarker(sha, markerSmokePassed)); err != nil {
 		return err
 	}
@@ -356,8 +368,15 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = r.settleSelf(sha); err != nil {
 		return errors.Join(err, r.pauseDeployment(ctx, t, p, "smoke passed but maintenance resume failed"))
 	}
-	d.State = "passed"
-	return r.deploymentReceipt(ctx, t, p)
+	passed := *d
+	passed.State, passed.SmokePassed = "passed", true
+	next := *p
+	next.Deployment = &passed
+	if err = r.deploymentReceipt(ctx, t, &next); err != nil {
+		return err
+	}
+	p.Deployment = &passed
+	return nil
 }
 
 // selfSmoke judges only what this deployment can break: the version (checked
@@ -413,15 +432,20 @@ func (r *Runtime) serveReady(ctx context.Context) error {
 	return nil
 }
 
-// rollbackSelf pauses, then restores the binary this deployment replaced and
-// restarts. The paused receipt comes first, so the restored serve hands the
-// barrier to the resolver instead of deploying again.
-func (r *Runtime) rollbackSelf(ctx context.Context, t Ticket, p *merge.Progress, reason string) error {
-	paused := r.pauseSelf(ctx, t, p, reason)
-	if err := copyAtomic(r.selfBackup(p.MergeSHA), r.DriverPath); err != nil {
-		return errors.Join(paused, fmt.Errorf("rollback: %w", err))
+// rollbackSelf restores the binary this deployment replaced and restarts,
+// still drained, so the failed binary never claims work. The restored serve
+// reads the rolled-back marker, pauses for the resolver and resumes. If the
+// marker is lost, it finds a version that is not the squash SHA and pauses too.
+func (r *Runtime) rollbackSelf(ctx context.Context, p *merge.Progress, reason string) error {
+	sha := p.MergeSHA
+	if err := r.stopGuard(ctx, sha); err != nil {
+		return err
 	}
-	return errors.Join(paused, r.restartServices(ctx))
+	if err := copyAtomic(r.selfBackup(sha), r.DriverPath); err != nil {
+		return fmt.Errorf("rollback: %w", err)
+	}
+	marked := os.WriteFile(r.selfMarker(sha, markerRolledBack), []byte(reason), 0600)
+	return errors.Join(marked, r.restartServices(ctx))
 }
 
 // copyAtomic writes to a temporary sibling first, so dst is either the old
