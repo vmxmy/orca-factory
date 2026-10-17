@@ -40,7 +40,7 @@ type Verdict struct {
 }
 
 // closedTicket is a ticket the ledger reports Done or Canceled. Head is its
-// frozen merge handoff head: a checkout at that head has been pushed and merged
+// frozen merge handoff head: a checkout at or behind that head has been pushed and merged
 // even after the agent branch and its remote-tracking ref are gone.
 type closedTicket struct{ State, Head string }
 
@@ -154,9 +154,12 @@ func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, t
 	case strings.TrimSpace(string(status)) != "":
 		blocks = append(blocks, "dirty")
 	}
-	head, err := r.command(ctx, w.Path, "git", "rev-parse", "--verify", "HEAD")
-	if err == nil && mergedHead != "" && strings.TrimSpace(string(head)) == mergedHead {
-		return blocks
+	// A resolver may push corrections from another workspace, leaving this
+	// checkout at an ancestor of the merged head.
+	if mergedHead != "" {
+		if _, err := r.command(ctx, w.Path, "git", "merge-base", "--is-ancestor", "HEAD", mergedHead); err == nil {
+			return blocks
+		}
 	}
 	ahead, err := r.command(ctx, w.Path, "git", "rev-list", "--count", "HEAD", "--not", "--remotes")
 	switch {
