@@ -12,8 +12,9 @@ import (
 )
 
 func (r *Runtime) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
-	// Startup refusals persist until restart: no client was initialized for
-	// these repositories, so a later disabled automation cannot admit them.
+	// Enabled-automation refusals persist until restart: no client was
+	// initialized for these repositories, so a later disabled automation
+	// cannot admit them. Track does not record unverifiable reads (OF-122).
 	if err := r.refused[repo.Path]; err != nil {
 		return false, err
 	}
