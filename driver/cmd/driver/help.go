@@ -42,6 +42,8 @@ Commands:
       [写入] 票据主账本 CLI，需要先加载 scripts/agent-gates/agent-graph.env。
       只读：snapshot、read、validate、backend、preview。
       写入：create、adopt、update、comment；迁移专用：import、release-hold。
+      purge-empty --id <票号>：只读列出只关联本票的空正文事件数量与时间范围；
+      加 --apply 先写审计事件再删除并回读确认，失败后重跑只删剩余空记录（仅飞书）。
   exec [--merging] <票号>
       [写入] 单票执行器。由 serve 派发，通常不手动运行。
   resolve <票号>

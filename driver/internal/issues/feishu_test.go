@@ -72,6 +72,7 @@ type feishuFake struct {
 	afterWrite      func(f *feishuFake)
 	writes          []feishuWrite
 	batchGets       [][]string
+	deletes         [][]string
 	created         int
 }
 
@@ -210,6 +211,16 @@ func (f *feishuFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.list(w, r, table)
 	case len(parts) == 3 && (parts[2] == "batch_update" || parts[2] == "batch_create"):
 		f.write(w, r, table, parts[2])
+	case len(parts) == 3 && parts[2] == "batch_delete":
+		var in struct {
+			IDs []string `json:"record_id_list"`
+		}
+		if json.NewDecoder(r.Body).Decode(&in) != nil {
+			f.t.Error("batch_delete body")
+		}
+		f.deletes = append(f.deletes, in.IDs)
+		f.rows[table] = slices.DeleteFunc(f.rows[table], func(row feishuRow) bool { return slices.Contains(in.IDs, row["_id"].(string)) })
+		f.reply(w, map[string]any{"record_id_list": in.IDs})
 	default:
 		f.t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 	}

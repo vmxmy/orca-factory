@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,7 +59,7 @@ func issueInput(path string) ([]byte, error) {
 }
 func runIssues(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|preview|import|release-hold|validate|backend")
+		fmt.Fprintln(os.Stderr, "usage: driver issues snapshot|read|create|adopt|update|comment|preview|import|release-hold|purge-empty|validate|backend")
 		return 2
 	}
 	fs := flag.NewFlagSet("issues", flag.ContinueOnError)
@@ -231,6 +232,17 @@ func runIssues(args []string) int {
 		if err == nil {
 			result, err = issues.Import(ctx, importer, raw, *apply)
 		}
+	case "purge-empty":
+		ledger, ok := gh.(*issues.Feishu)
+		if !ok {
+			err = errors.New("purge-empty requires the feishu backend")
+			break
+		}
+		var operator string
+		operator, err = operatorIdentity()
+		if err == nil {
+			result, err = ledger.PurgeEmptyEvents(ctx, *id, operator, *apply)
+		}
 	case "validate":
 		_, err = gh.List(ctx)
 		result = map[string]any{"repository": gh.Repository(), "backend": backend, "complete": true}
@@ -246,6 +258,17 @@ func runIssues(args []string) int {
 		return 1
 	}
 	return 0
+}
+func operatorIdentity() (string, error) {
+	who, err := user.Current()
+	if err != nil {
+		return "", fmt.Errorf("operator identity unavailable: %w", err)
+	}
+	host, err := os.Hostname()
+	if err != nil {
+		return "", fmt.Errorf("operator identity unavailable: %w", err)
+	}
+	return who.Username + "@" + host, nil
 }
 func publicIssue(ctx context.Context, c issues.Store, t issues.Task, withComments bool) (map[string]any, error) {
 	var ownership scheduler.Ticket

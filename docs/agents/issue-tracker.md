@@ -13,6 +13,7 @@
 - `issues create --input <JSON>`：建票；driver 生成 UUID 作规范 ID，票号由飞书自动编号生成。
 - `issues adopt --id <ID> --input <JSON>`：显式纳管；输入必须有完整 `blockers`、`related` 数组，正文的 `DEPENDENCIES` 必须与输入一致。
 - `issues update` / `issues comment`：管理状态、标签和评论。未纳管票不能经管理更新入口写入。
+- `issues purge-empty --id <票号> [--apply]`：清理「票据」恰好只关联本票、「正文」为空或只含空白的事件。不带 `--apply` 只读，输出数量和最早、最晚创建时间，不输出正文。带 `--apply` 先写一条审计事件（数量、时间范围、`用户@主机` 操作者），再批量删除，最后回读确认。中途失败可重跑，重跑只删剩余空记录。
 
 依赖使用 canonical ID。未纳管行可见但不领取。`auto-failed` 只由合法 resolver 处理，不清空预算后普通重试。任务 PR 首行引用飞书票的记录链接；部署与 smoke 确认后才 Done。人工讨论写在飞书记录评论里，driver 不读取记录评论。
 

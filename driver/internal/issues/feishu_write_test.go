@@ -555,3 +555,69 @@ func TestCreateRejectsInvalidCheckRed(t *testing.T) {
 		}
 	}
 }
+
+func TestFeishuPurgeEmptyEvents(t *testing.T) {
+	f := newFeishuFake(t)
+	event := func(id, created string, tickets []string, body any) feishuRow {
+		row := feishuRow{"_id": id, "摘要": "e", "票据": linkRefs(tickets...), "来源": []string{"driver"}, "创建时间": created, "修改时间": created}
+		if body != nil {
+			row["正文"] = body
+		}
+		return row
+	}
+	f.rows["tblE"] = []feishuRow{
+		event("recEmpty", "2026-10-15T00:09:41.000+08:00", []string{"recB"}, ""),
+		event("recBlank", "2026-10-15T00:09:45.000+08:00", []string{"recB"}, " \n\t "),
+		event("recNull", "2026-10-15T00:09:43.000+08:00", []string{"recB"}, nil),
+		event("recProgress", "2026-10-15T00:09:42.000+08:00", []string{"recB"}, "merge-progress-v1: {}"),
+		event("recResolver", "2026-10-15T00:09:44.000+08:00", []string{"recB"}, "resolver-state: {}"),
+		event("recShared", "2026-10-15T00:09:40.000+08:00", []string{"recB", "recA"}, ""),
+		event("recOther", "2026-10-15T00:09:39.000+08:00", []string{"recA"}, ""),
+	}
+	c := newFeishuTest(t, f)
+	fastReadBack(c)
+	ctx := context.Background()
+	earliest := time.Date(2026, 10, 15, 0, 9, 41, 0, time.FixedZone("", 8*3600))
+	latest := earliest.Add(4 * time.Second)
+
+	dry, err := c.PurgeEmptyEvents(ctx, "OF-2", "tester@host", false)
+	if err != nil || dry.Count != 3 || dry.Applied || !dry.Earliest.Equal(earliest) || !dry.Latest.Equal(latest) {
+		t.Fatalf("dry-run=%+v err=%v", dry, err)
+	}
+	if len(f.writes) != 0 || len(f.deletes) != 0 {
+		t.Fatalf("dry-run wrote: writes=%+v deletes=%v", f.writes, f.deletes)
+	}
+
+	applied, err := c.PurgeEmptyEvents(ctx, "OF-2", "tester@host", true)
+	if err != nil || applied.Count != 3 || !applied.Applied {
+		t.Fatalf("apply=%+v err=%v", applied, err)
+	}
+	if len(f.deletes) != 1 || !slices.Equal(slices.Sorted(slices.Values(f.deletes[0])), []string{"recBlank", "recEmpty", "recNull"}) {
+		t.Fatalf("deleted %v", f.deletes)
+	}
+	if len(f.writes) != 1 || f.writes[0].table != "tblE" || f.writes[0].action != "batch_create" {
+		t.Fatalf("audit writes=%+v", f.writes)
+	}
+	var audit feishuRow
+	for _, row := range f.rows["tblE"] {
+		if row["_id"] == "recNew1" {
+			audit = row
+		}
+	}
+	body, _ := audit["正文"].(string)
+	if audit["操作者"] != "tester@host" || !slices.Equal(audit["票据"].([]feishu.LinkRef), linkRefs("recB")) || !strings.Contains(body, "3 条") || !strings.Contains(body, earliest.Format(time.RFC3339)) || !strings.Contains(body, latest.Format(time.RFC3339)) || !strings.Contains(body, "tester@host") {
+		t.Fatalf("audit event=%+v", audit)
+	}
+	remaining := []string{}
+	for _, row := range f.rows["tblE"] {
+		remaining = append(remaining, row["_id"].(string))
+	}
+	if !slices.Equal(remaining, []string{"recProgress", "recResolver", "recShared", "recOther", "recNew1"}) {
+		t.Fatalf("remaining events %v", remaining)
+	}
+
+	again, err := c.PurgeEmptyEvents(ctx, "OF-2", "tester@host", true)
+	if err != nil || again.Count != 0 || len(f.writes) != 1 || len(f.deletes) != 1 {
+		t.Fatalf("rerun=%+v err=%v writes=%d deletes=%d", again, err, len(f.writes), len(f.deletes))
+	}
+}
