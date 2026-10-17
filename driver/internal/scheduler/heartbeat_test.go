@@ -155,6 +155,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			{"beat from another terminal", &orca.Beat{PID: 7, Terminal: "term_old", At: now.Add(-6 * time.Minute)}, false, orca.LivenessNone},
 			{"unregistered claim with fresh beat", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Minute)}, true, orca.LivenessAlive},
 			{"unregistered claim with stale beat", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-6 * time.Minute)}, false, orca.LivenessDead},
+			// A clean exit leaves its last beat behind; it never speaks for the next claim.
+			{"unregistered claim with a beat older than the claim", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-20 * time.Minute)}, false, orca.LivenessNone},
 		} {
 			_ = os.Remove(path)
 			if tc.beat != nil {
@@ -165,7 +167,7 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			r.PIDAlive = func(int) bool { return tc.pidExists }
 			subject := ticket
 			if strings.HasPrefix(tc.name, "unregistered") {
-				subject.Terminal = "-"
+				subject.Terminal, subject.UpdatedAt = "-", now.Add(-10*time.Minute)
 			}
 			got, err := r.Liveness(context.Background(), subject)
 			if err != nil || got != tc.want {

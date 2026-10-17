@@ -75,7 +75,9 @@ func (r *Runtime) beatPath(t Ticket) (string, error) {
 
 // Liveness judges the ticket's executor or resolver from its heartbeat file.
 // A missing file, or a beat written by another terminal, is no evidence. A
-// claim not yet bound to a terminal has no handle to compare, so its beat counts.
+// claim not yet bound to a terminal has no handle to compare, so its beat counts
+// only when written after the claim: a process that exited cleanly leaves its
+// last beat behind.
 func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
 	if r.StateRoot == "" {
 		return orca.LivenessNone, nil
@@ -96,6 +98,9 @@ func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
 
 func (r *Runtime) judge(t Ticket, beat orca.Beat) orca.Liveness {
 	if registered(t) && beat.Terminal != "" && beat.Terminal != t.Terminal {
+		return orca.LivenessNone
+	}
+	if !registered(t) && beat.At.Before(t.UpdatedAt) {
 		return orca.LivenessNone
 	}
 	timeout := r.HeartbeatTimeout
