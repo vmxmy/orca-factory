@@ -31,6 +31,7 @@
 每张票发出前过一遍自检清单，结果写进票末尾「intake 自检」小节：
 
 - CHECK 在 main 上能执行（命令存在、路径对），且语义上会红（断言的是尚不存在的行为）。
+- CHECK 在 main 上实际运行一次，记录红因。只有断言失败算有效红。参数错误（unknown option、Usage）、路径或工作目录不对、零测试匹配（No test files found、0 tests、no tests to run）、命令不存在（command not found）都是无效红：不得建票，改写 CHECK 后重跑。建票入口按自检的 `CHECK 红因` 行拒绝这些信号。
 - SCOPE 的每个路径或 glob 在仓库里真实存在（新建文件写到已存在的目录下）。
 - lane 预判与 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 逐条比对一致。
 - 票属于配置选定的仓库围栏；状态 Todo；带 `ready-for-agent`；GitHub 票已纳管。
@@ -70,6 +71,7 @@ DEPENDENCIES: {"blockers":[],"related":[]}
 
 ## intake 自检
 - CHECK 可执行且会红：<是/否 + 怎么验的>
+- CHECK 红因：<断言失败 + 失败输出摘录一行>
 - SCOPE 路径存在：<是>
 - lane 预判与 glob 一致：<是>
 - project / Todo / ready-for-agent：<是>
