@@ -86,6 +86,7 @@ echo stray > "$2/outside.txt"
 case "$1 $2" in
 "pr list") cat `+f.prList+` ;;
 "pr create") echo https://github.com/example/repo/pull/9 ;;
+"pr close") ;;
 *) exit 9 ;;
 esac
 `)
@@ -141,20 +142,25 @@ func TestCoreSyncOpensOnePRPerFactoryVersion(t *testing.T) {
 	}
 }
 
-// TestCoreSyncSkipsWhileSyncPROpen is OF-53: an unmerged sync PR from an
-// earlier factory version blocks a new one; nothing is pushed.
-func TestCoreSyncSkipsWhileSyncPROpen(t *testing.T) {
+// TestCoreSyncSupersedesOlderSyncPR: an unmerged sync PR from an earlier
+// factory version is closed with its branch, so the project is not stuck on
+// stale core while nobody merges it; the current version still opens once.
+func TestCoreSyncSupersedesOlderSyncPR(t *testing.T) {
 	f := newCoreSyncFixture(t)
-	if err := os.WriteFile(f.prList, []byte(`[{"headRefName":"chore/orca-factory-core-sync-0ld5a1"}]`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(f.prList, []byte(`[{"headRefName":"chore/orca-factory-core-sync-0ld5a1"},{"headRefName":"feature/x"}]`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.syncer.sync(context.Background(), f.project()); err != nil {
 		t.Fatal(err)
 	}
-	if n := f.prCreates(t); n != 0 {
-		t.Fatalf("pr create called %d times, want none", n)
+	b, err := os.ReadFile(f.ghLog)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if heads := gitIn(t, f.origin, "branch", "--list", "chore/*"); heads != "" {
-		t.Fatalf("pushed %q", heads)
+	if log := string(b); !strings.Contains(log, "pr close chore/orca-factory-core-sync-0ld5a1 --delete-branch") || strings.Contains(log, "pr close feature/x") {
+		t.Fatalf("gh calls %q", log)
+	}
+	if n := f.prCreates(t); n != 1 {
+		t.Fatalf("pr create called %d times, want once", n)
 	}
 }

@@ -126,7 +126,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 7. check 结果分三态（OF-53）。退出 0 表示 core 副本一致。退出 3 表示 core 落后：每个与当前 `core/` 不一致的文件都等于 factory git 历史中该路径的某个已提交版本，或是 core 新增而副本缺失，或是 core 已删除而副本仍等于某个已提交版本（`update` 删除它），`check` 对这些文件输出 `check: BEHIND   <文件>`。其他非零退出（本地改动的 `DIFFERS`/`OVERRIDDEN`、遗留占位、缺项目文件）判为「check 失败」，不接管。core 落后的项目仍可接管，`projects --json` 的 `CoreBehind` 列出落后文件；落后文件集合变化时每个项目写一条 WARN `project core behind`，不变不重复写。
 8. serve 对 core 落后的已接管项目自动开同步 PR（OF-53）。每次发现都执行，以下判定保证同一 factory 版本只开一次：
    1. 取 factory 检出的短 SHA，分支名为 `chore/orca-factory-core-sync-<短SHA>`。
-   2. 该仓库 origin 已有这个分支，或有任何 `chore/orca-factory-core-sync-` 开头的未合并 PR，则跳过。
+   2. 该仓库 origin 已有这个分支，或该分支已有未合并 PR，则跳过。其他 `chore/orca-factory-core-sync-` 开头的未合并 PR 属于旧 factory 版本，先 `gh pr close --delete-branch` 关闭再继续（OF-120：无人合并时旧同步 PR 不再让项目永远停在旧 core）。
    3. 在 `~/.cache/orca-factory/core-sync/<远端键>/` 以 origin/main 建分离头 worktree，运行 `<factory_root>/bin/orca-factory update`，只 `git add scripts/agent-gates`。没有改动则跳过（origin/main 已同步）。
    4. 提交、push 该分支、`gh pr create`。driver 不合并该 PR。
    5. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。

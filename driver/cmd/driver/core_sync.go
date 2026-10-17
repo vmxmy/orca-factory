@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -21,7 +20,7 @@ const coreSyncBranchPrefix = "chore/orca-factory-core-sync-"
 // lags the factory (OF-53): `orca-factory update` in a throwaway worktree of
 // the project at origin/main, only scripts/agent-gates/ committed, pushed as
 // chore/orca-factory-core-sync-<factory short SHA>, never merged. The remote
-// branch or any open sync PR makes a later call for the same project a no-op.
+// branch or its open PR makes a later call for the same version a no-op.
 type coreSyncer struct{ factoryRoot, cacheDir string }
 
 func runGit(ctx context.Context, dir string, timeout time.Duration, args ...string) (string, error) {
@@ -77,7 +76,9 @@ func (c coreSyncer) sync(ctx context.Context, p projects.Project) (err error) {
 }
 
 // syncPending reports whether this factory version's sync branch already
-// exists on origin, or any sync PR is still open.
+// exists on origin or has an open PR. An open sync PR for an older factory
+// version is closed with its branch: nobody merges it once core moves on, and
+// it would otherwise keep the project on stale core.
 func (c coreSyncer) syncPending(ctx context.Context, repo, branch string) (bool, error) {
 	heads, err := runGit(ctx, repo, 30*time.Second, "ls-remote", "--heads", "origin", branch)
 	if err != nil {
@@ -97,7 +98,18 @@ func (c coreSyncer) syncPending(ctx context.Context, repo, branch string) (bool,
 	if err := json.Unmarshal(out, &prs); err != nil {
 		return false, fmt.Errorf("gh pr list 输出不可解析: %w", err)
 	}
-	return slices.ContainsFunc(prs, func(pr openPR) bool { return strings.HasPrefix(pr.HeadRefName, coreSyncBranchPrefix) }), nil
+	for _, pr := range prs {
+		if pr.HeadRefName == branch {
+			return true, nil
+		}
+		if !strings.HasPrefix(pr.HeadRefName, coreSyncBranchPrefix) {
+			continue
+		}
+		if _, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "close", pr.HeadRefName, "--delete-branch", "--comment", "已被 " + branch + " 取代。"}, Dir: repo, Timeout: time.Minute}); err != nil {
+			return false, fmt.Errorf("关闭过期同步 PR %s 失败: %w", pr.HeadRefName, err)
+		}
+	}
+	return false, nil
 }
 
 // removeSyncWorktree drops a sync worktree, including one a crashed earlier
