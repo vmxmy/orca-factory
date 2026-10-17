@@ -94,6 +94,10 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, err
 	}
+	e.Heartbeat, err = orca.StartHeartbeat(ctx, orca.HeartbeatPath(e.Config.Root, name, identifier, "executor"), terminal, orca.HeartbeatInterval, nil)
+	if err != nil {
+		return Result{}, err
+	}
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[5]

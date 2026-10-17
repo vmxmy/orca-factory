@@ -78,6 +78,8 @@ type Executor struct {
 	Now      func() time.Time
 	Recovery Recovery
 	Sleep    func(context.Context, time.Duration) error
+	// Heartbeat is the process-level liveness evidence the scheduler reads; nil writes none.
+	Heartbeat *orca.Heartbeat
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -273,6 +275,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
 			result.RunID = cp.Run
+			e.Heartbeat.SetRun(result.RunID)
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
@@ -282,6 +285,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.RunID == "" {
 				return errors.New("Orca run receipt missing ID")
 			}
+			e.Heartbeat.SetRun(result.RunID)
 		}
 		callErr = e.retryRead(ctx, t, &result, "baseline lookup", func() error {
 			var readErr error

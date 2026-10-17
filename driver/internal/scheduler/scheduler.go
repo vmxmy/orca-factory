@@ -296,9 +296,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				continue
 			}
 			if (t.Resolution == nil || (t.Resolution.Phase != "result" && t.Resolution.Phase != "waiting")) && t.Terminal != "" && t.Terminal != "-" {
-				absent, readErr := s.Backend.TerminalAbsent(ctx, t)
-				if readErr != nil || !absent {
+				switch s.heartbeat(ctx, t, &problems) {
+				case beatSkip:
 					continue
+				case beatLegacy:
+					absent, readErr := s.Backend.TerminalAbsent(ctx, t)
+					if readErr != nil || !absent {
+						continue
+					}
 				}
 			}
 			if (t.Resolution == nil || t.Resolution.Phase != "result") && t.Terminal == "-" && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
@@ -321,11 +326,16 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					continue
 				}
 			} else {
-				absent, e1 := s.Backend.TerminalAbsent(ctx, t)
-				inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
-				s.ownership(t, absent, inactive, e1, e2)
-				if e1 != nil || e2 != nil || !absent || !inactive {
+				switch s.heartbeat(ctx, t, &problems) {
+				case beatSkip:
 					continue
+				case beatLegacy:
+					absent, e1 := s.Backend.TerminalAbsent(ctx, t)
+					inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
+					s.ownership(t, absent, inactive, e1, e2)
+					if e1 != nil || e2 != nil || !absent || !inactive {
+						continue
+					}
 				}
 			}
 			if !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {

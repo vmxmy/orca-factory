@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -23,6 +24,9 @@ func resolveTicket(args []string) int {
 	return loggedCommand("resolver", filepath.Join(logStateRoot(), executorLogRepository(), args[0], "resolver.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
+		if _, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil); err != nil {
+			return 1, err
+		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return 1, err

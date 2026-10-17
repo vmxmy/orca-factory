@@ -219,3 +219,31 @@ func TestWaitNeverStartedAfterLateReport(t *testing.T) {
 		t.Fatalf("state=%+v err=%v corrections=%+v stops=%d", result.State, err, r.requests, o.stops)
 	}
 }
+
+// The scheduler reads this file as process-level liveness evidence: it must
+// carry this process's pid, the Orca Run once known, and a fresh time.
+func TestExecutorHeartbeatLiveness(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	e.Orca = livenessFixture(t, "exited", "")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.Recovery = &livenessRecovery{cancel: cancel}
+	path := orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
+	hb, err := orca.StartHeartbeat(ctx, path, e.Config.Terminal, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Heartbeat = hb
+	first, found, err := orca.ReadBeat(path)
+	if err != nil || !found || first.PID != os.Getpid() || first.Run != "" || first.Terminal != e.Config.Terminal {
+		t.Fatalf("first beat=%+v found=%v err=%v", first, found, err)
+	}
+	result, _ := e.Execute(ctx, ticket)
+	beat, found, err := orca.ReadBeat(path)
+	if err != nil || !found || result.RunID == "" || beat.Run != result.RunID || beat.PID != os.Getpid() || !beat.At.After(first.At.Add(-time.Second)) {
+		t.Fatalf("beat=%+v found=%v err=%v run=%q", beat, found, err, result.RunID)
+	}
+	if beat.Judge(time.Now(), orca.DefaultHeartbeatTimeout, orca.PIDAlive) != orca.LivenessAlive {
+		t.Fatalf("own beat not alive: %+v", beat)
+	}
+}

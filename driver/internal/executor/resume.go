@@ -199,6 +199,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		if run == "" {
 			return result, errors.New("resume run receipt missing ID")
 		}
+		e.Heartbeat.SetRun(run)
 		var tasks []orca.Task
 		callErr = e.retryRead(ctx, t, &result, "resume old task lookup", func() error {
 			var readErr error
