@@ -196,7 +196,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				// start it with a fresh agent under a distinct request scope.
 				freshOpts := orca.StartOptions{Run: result.RunID, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}
 				freshOpts.Task = cp.Task
-				if err := e.startDispatchWithRequest(ctx, c, t, cp, freshOpts, scopedRequest(t, c, "worker-fallback", cp.Corrections+1)); err != nil {
+				if err := e.startDispatchWithRequest(ctx, c, t, cp, freshOpts, workerRequest(t, c, cp, "worker-fallback")); err != nil {
 					return err
 				}
 				cp.Terminal = ""

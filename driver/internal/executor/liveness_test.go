@@ -433,3 +433,41 @@ func TestStartUnobservedWorkerIsStoppedAfterWindow(t *testing.T) {
 		}
 	}
 }
+
+// A restart mid-window resumes the persisted start, and stopping a worker
+// whose turn never started charges infra, not the correction budget (OF-161).
+func TestExecutorStartUnobservedSurvivesRestart(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	e.Config.PollInterval = time.Second
+	o := livenessFixture(t, "unverifiable", "")
+	o.worker.DispatchStatus, o.worker.Projection.Stage.Detail = "pending", "turn_start_unobserved"
+	stopped := livenessFixture(t, "exited", "").worker
+	stopped.DispatchStatus = "failed"
+	o.stopped = &stopped
+	e.Orca = o
+	now := e.Now()
+	e.Now = func() time.Time { return now }
+	polls := 0
+	e.Sleep = func(ctx context.Context, interval time.Duration) error {
+		if interval != e.Config.PollInterval {
+			return ctx.Err()
+		}
+		polls++
+		now = now.Add(resolver.StartUnobservedWindow * 3 / 5)
+		if polls == 1 || polls >= 3 {
+			return context.Canceled
+		}
+		return nil
+	}
+	if _, err := e.Start(context.Background(), ticket); !errors.Is(err, context.Canceled) || o.stops != 0 {
+		t.Fatalf("first executor err=%v stops=%d", err, o.stops)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &livenessRecovery{cancel: cancel}
+	e.Recovery = r
+	result, err := e.Start(ctx, ticket)
+	if !errors.Is(err, context.Canceled) || o.stops != 1 || result.State.Corrections != 0 || result.State.Infra != 1 || len(r.requests) != 1 {
+		t.Fatalf("state=%+v err=%v stops=%d corrections=%+v", result.State, err, o.stops, r.requests)
+	}
+}

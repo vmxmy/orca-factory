@@ -87,6 +87,10 @@ const (
 	EvReadFail     Event = "readFail"
 	EvTick         Event = "tick"
 	EvRequeue      Event = "requeue"
+
+	// EvWorkerUnstarted is a stopped dispatch whose turn never started: an
+	// infra fault, so it is redone through correction without charging it.
+	EvWorkerUnstarted Event = "workerUnstarted"
 )
 
 type Limits struct{ Corrections, Infra, ExecFailures int }
@@ -211,6 +215,15 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			return reject("没有在运行且有人接收的 worker")
 		}
 		correction("worker failed")
+	case EvWorkerUnstarted:
+		if s.Phase != PhaseWorker || !s.ExecAlive {
+			return reject("没有在运行且有人接收的 worker")
+		}
+		infra("worker turn did not start")
+		if s.Phase == PhaseWorker {
+			s.Phase = PhaseCorrection
+			fx = append(fx, "start-coordinator-session-for-correction")
+		}
 	case EvWorkerStall:
 		if s.Phase != PhaseWorker || !s.ExecAlive {
 			return reject("没有在运行的 worker")
