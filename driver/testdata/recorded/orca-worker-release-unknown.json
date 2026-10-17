@@ -1,0 +1,7 @@
+{
+ "ok": true,
+ "result": {
+  "state": "release_unknown",
+  "lastError": "The recorded terminal no longer resolves; whether its process is gone cannot be proven."
+ }
+}

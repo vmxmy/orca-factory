@@ -66,6 +66,25 @@ func IsTerminalStale(err error) bool {
 	return errors.As(err, &rejected) && rejected.Code == "terminal_handle_stale"
 }
 
+// StateError is a receipt Orca accepted but answered with a nonzero exit, such
+// as worker-release's release_unknown. Err keeps the exit's classification;
+// State is the receipt's own safe category, so logs need no raw output.
+type StateError struct {
+	State string
+	Err   error
+}
+
+func (e *StateError) Error() string { return "orca command exited with state " + e.State }
+
+func (e *StateError) Unwrap() error { return e.Err }
+
+// IsReleaseUnknown reports a release Orca could not prove: the terminal no
+// longer resolves, so whether its process is gone stays unknown.
+func IsReleaseUnknown(err error) bool {
+	var state *StateError
+	return errors.As(err, &state) && state.State == "release_unknown"
+}
+
 var globalCodes = map[string]infra.Reason{
 	"runtime_unavailable":     infra.RuntimeUnavailable,
 	"runtime_access_denied":   infra.PermissionDenied,
@@ -151,6 +170,11 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	}
 	// worker-start can emit a valid receipt but exit nonzero (failed or unknown).
 	if runErr != nil {
+		var state string
+		if json.Unmarshal(envelope.Result["state"], &state) == nil && validCode(state) {
+			result = state
+			return envelope.Result, &StateError{State: state, Err: infra.Classify(runErr)}
+		}
 		return envelope.Result, infra.Classify(runErr)
 	}
 	if envelope.Result == nil {
