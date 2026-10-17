@@ -27,8 +27,9 @@ const unrelatedDoctorFails = `{"checks":{"version":{"status":"warn","reason":"ru
 type selfDeployHost struct {
 	driver                   string
 	builds, restarts, smokes int
-	guardStops               int
+	guardStops               []string
 	guard                    []string
+	guardErr                 error
 	smokeOut                 []byte
 	smokeErr                 error
 	kill                     string
@@ -56,11 +57,11 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 		return nil, os.WriteFile(out, []byte(strings.TrimPrefix(ldflags, "-X main.version=")), 0700)
 	case s.Path == "systemd-run":
 		h.guard = s.Args
-		return nil, nil
+		return nil, h.guardErr
 	case s.Path == "systemctl" && slices.Contains(s.Args, "show"):
 		return fmt.Appendf(nil, "MainPID=%d\nActiveState=active\n", os.Getpid()), nil
 	case s.Path == "systemctl" && slices.Contains(s.Args, "stop"):
-		h.guardStops++
+		h.guardStops = append(h.guardStops, s.Args[slices.Index(s.Args, "stop")+1:]...)
 		return nil, nil
 	case s.Path == "systemctl":
 		if !slices.Contains(s.Args, "--no-block") || !slices.Contains(s.Args, "orca-factory-driver") {
@@ -177,8 +178,8 @@ func TestSelfDeployCompletesAcrossRestart(t *testing.T) {
 	if err := serveAs(f, h, selfSHA); err != nil {
 		t.Fatal(err)
 	}
-	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || h.guardStops != 1 || !markerExists(f, selfSHA, "smoke-passed") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
-		t.Fatalf("deployment after restart: builds=%d restarts=%d smokes=%d guardStops=%d state=%s ledger=%s mode=%s", h.builds, h.restarts, h.smokes, h.guardStops, f.tracker.issue.State.Name, lastState(f), maintenanceMode(t))
+	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || !guardStopped(h) || !markerExists(f, selfSHA, "smoke-passed") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
+		t.Fatalf("deployment after restart: builds=%d restarts=%d smokes=%d guardStops=%v state=%s ledger=%s mode=%s", h.builds, h.restarts, h.smokes, h.guardStops, f.tracker.issue.State.Name, lastState(f), maintenanceMode(t))
 	}
 }
 
@@ -199,8 +200,13 @@ func TestSelfDeploySmokeFailureRollsBack(t *testing.T) {
 	}
 }
 
-// runGuard executes the guard unit's command as systemd would after the window.
-func runGuard(t *testing.T, h *selfDeployHost, systemctlLog string) {
+func guardStopped(h *selfDeployHost) bool {
+	unit := "orca-factory-self-deploy-guard-" + selfSHA[:12]
+	return slices.Contains(h.guardStops, unit+".timer") && slices.Contains(h.guardStops, unit+".service")
+}
+
+// guardCommand builds the guard unit's command as systemd runs it after the window.
+func guardCommand(t *testing.T, h *selfDeployHost, systemctlLog string) *exec.Cmd {
 	t.Helper()
 	i := slices.Index(h.guard, "/bin/sh")
 	if i < 0 {
@@ -212,7 +218,12 @@ func runGuard(t *testing.T, h *selfDeployHost, systemctlLog string) {
 	}
 	cmd := exec.Command(h.guard[i], h.guard[i+1:]...)
 	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"))
-	if out, err := cmd.CombinedOutput(); err != nil {
+	return cmd
+}
+
+func runGuard(t *testing.T, h *selfDeployHost, systemctlLog string) {
+	t.Helper()
+	if out, err := guardCommand(t, h, systemctlLog).CombinedOutput(); err != nil {
 		t.Fatalf("guard: %v %s", err, out)
 	}
 }
@@ -241,8 +252,51 @@ func TestSelfDeployGuardRestoresCrashingBinary(t *testing.T) {
 	if err := serveAs(f, h, "old"); err == nil {
 		t.Fatal("restored serve ignored the rollback")
 	}
-	if lastState(f) != "paused" || maintenanceMode(t) != "running" || h.smokes != 0 || markerExists(f, selfSHA, "rolled-back") {
-		t.Fatalf("after guard rollback: state=%s mode=%s smokes=%d", lastState(f), maintenanceMode(t), h.smokes)
+	if lastState(f) != "paused" || maintenanceMode(t) != "running" || h.smokes != 0 || markerExists(f, selfSHA, "rolled-back") || !guardStopped(h) {
+		t.Fatalf("after guard rollback: state=%s mode=%s smokes=%d guardStops=%v", lastState(f), maintenanceMode(t), h.smokes, h.guardStops)
+	}
+}
+
+// The guard judges smoke-passed under deploy.lock, so a serve still smoking
+// cannot write passed while the guard swaps the binary back.
+func TestSelfDeployGuardWaitsForDeployLock(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	firstServe(t, f, h)
+	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	guard := guardCommand(t, h, filepath.Join(t.TempDir(), "systemctl.log"))
+	if err = guard.Start(); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if installed(t, h.driver) != selfSHA || markerExists(f, selfSHA, "rolled-back") {
+		t.Fatal("guard rolled back while serve held deploy.lock")
+	}
+	if err = os.WriteFile(filepath.Join(f.runtime.StateRoot, "self-deploy", selfSHA+".smoke-passed"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = guard.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	if installed(t, h.driver) != selfSHA || markerExists(f, selfSHA, "rolled-back") {
+		t.Fatal("guard rolled back a deployment that passed under the lock")
+	}
+}
+
+func TestSelfDeployGuardFailureAbortsBeforeRestart(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.guardErr = errors.New("systemd-run failed")
+	firstServe(t, f, h)
+	if h.restarts != 0 || installed(t, h.driver) != "old" || lastState(f) != "paused" || maintenanceMode(t) != "running" {
+		t.Fatalf("guard failure: restarts=%d installed=%q state=%s mode=%s", h.restarts, installed(t, h.driver), lastState(f), maintenanceMode(t))
 	}
 }
 
@@ -292,8 +346,8 @@ func TestSelfDeployConvergesAfterCrash(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = serveAs(f, h, "other")
-		if lastState(f) != "paused" || maintenanceMode(t) != "running" || installed(t, h.driver) != "other" || h.smokes != 0 {
-			t.Fatalf("version differs: state=%s mode=%s installed=%q smokes=%d", lastState(f), maintenanceMode(t), installed(t, h.driver), h.smokes)
+		if lastState(f) != "paused" || maintenanceMode(t) != "running" || installed(t, h.driver) != "other" || h.smokes != 0 || !guardStopped(h) {
+			t.Fatalf("version differs: state=%s mode=%s installed=%q smokes=%d guardStops=%v", lastState(f), maintenanceMode(t), installed(t, h.driver), h.smokes, h.guardStops)
 		}
 	})
 }
