@@ -118,8 +118,9 @@ func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
 // without claiming the process stopped. It closes the leftover terminal and
 // every worker terminal the abandon receipts report Orca kept open, and
 // removes the stale heartbeat so the relaunched process starts clean. A
-// resolver owns t.Resolution.Run; t.Run is the executor Run it was handed. Any
-// uncertain read stops the reap before a write.
+// resolver owns t.Resolution.Run; t.Run is the executor Run it was handed, and
+// a resolver killed before its first Resolution save is known only by its beat.
+// Any uncertain read stops the reap before a write.
 func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	path, err := r.beatPath(t)
 	if err != nil {
@@ -134,10 +135,10 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	}
 	recorded := t.Run
 	if t.Owner == machine.OwnerResolver {
-		if t.Resolution == nil {
-			return errors.New("resolver record missing")
+		recorded = ""
+		if t.Resolution != nil {
+			recorded = t.Resolution.Run
 		}
-		recorded = t.Resolution.Run
 	}
 	absent := true
 	if registered(t) {

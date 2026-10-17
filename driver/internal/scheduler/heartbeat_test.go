@@ -274,9 +274,20 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if strings.Join(o.abandoned, ",") != "ctx_res" || strings.Join(o.closed, ",") != residualTerminal {
 			t.Fatalf("abandoned=%v closed=%v", o.abandoned, o.closed)
 		}
+		// Killed before its first Resolution save: the beat alone names its Run.
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_res", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
 		ticket.Resolution = nil
-		if err := r.ReapDead(context.Background(), ticket); err == nil {
-			t.Fatal("resolver reap without a resolution record succeeded")
+		o.page, o.abandoned, o.closed = 0, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err != nil {
+			t.Fatalf("resolver reap before its first resolution record: %v", err)
+		}
+		if strings.Join(o.abandoned, ",") != "ctx_res" {
+			t.Fatalf("abandoned=%v", o.abandoned)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale heartbeat kept: %v", err)
 		}
 	})
 }
