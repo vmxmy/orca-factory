@@ -128,24 +128,30 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 ### 自部署（OF-152）
 
-仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor`。
+仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor --json`。状态目录指 `~/.local/state/orca-factory/`。
 
-1. 取得 `~/.local/state/orca-factory/deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
+1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
 2. 账本写 `deployment.state=deploy-intent`。此后 serve 不会再次安装这个 SHA。
-3. drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
-4. 把当前二进制备份到 `~/.local/state/orca-factory/deploy-backups/self-<sha>/`。
-5. 在 `~/.local/state/orca-factory/self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`，再用 rename 原子替换。
-6. 运行 `systemctl --user --no-block restart orca-factory-feishu-gateway orca-factory-driver`。driver 单元停止时会结束当前 serve。
-7. 新 serve 读到 `deploy-intent` 后重新取锁，核对 `orca-factory-driver version` 等于 squash SHA，再按 smoke-intent 规则跑 smoke（超时 5 分钟）。smoke 通过后运行 `maintenance resume`，写 `passed`，写 Done，放行下一 PR。
+3. 写 `self-deploy/<sha>.drained` 标记，drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
+5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。
+6. 用 `systemd-run --user --on-active=600` 起看守单元 `orca-factory-self-deploy-guard-<sha前12位>`，再用 rename 原子替换二进制。
+7. 运行 `systemctl --user --no-block restart orca-factory-feishu-gateway orca-factory-driver`。两个单元同时重启，不保证先后；driver 单元停止时结束当前 serve。
+8. 新 serve 读到 `deploy-intent` 后重新取锁，确认自身 `main.version` 等于 squash SHA，写 `smoke-intent`，跑 smoke（超时 5 分钟）。smoke 只判定版本、serve 已就绪（systemd 的 MainPID 是本进程）、doctor 能输出报告（配置能加载）、Orca 可达；doctor 的其他 fail 只记 WARN。通过后写 `smoke-passed` 标记，停掉看守单元，`maintenance resume`，写 `passed`，写 Done，放行下一 PR。
 
-失败处理：
+失败与崩溃：
 
-- 第 3 到 5 步失败（含等待空闲超时）：resume，写 `paused`，转处置 Agent。二进制未被替换，不重启。
-- 第 6 步失败：写 `paused`，从备份恢复二进制，resume，重启。
-- 第 7 步版本不符：resume，写 `paused`。不回滚，因为装的不是这次部署的二进制，例如人工 `deploy.sh` 在重启空档装了更新的版本。
-- 第 7 步 smoke 失败：先写 `paused`，再从备份恢复二进制，resume，重启。恢复后的 serve 读到 `paused`，交给处置 Agent，不再部署。
+- 第 3 到 6 步失败（含等待空闲超时）：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
+- 第 7 步失败：写 `paused`，从备份恢复二进制，resume，重启。
+- 第 2 到 5 步中 serve 被杀：新 serve 的版本和磁盘二进制都不是 squash SHA，写 `paused` 并 resume，不回滚。
+- 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
+- `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
+- 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：写 `paused` 并 resume，不回滚。
+- 第 8 步 smoke 失败：先写 `paused`，再从备份恢复二进制，resume，重启。恢复后的 serve 读到 `paused`，交给处置 Agent，不再部署。
+- smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
+- 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，写 `paused` 并 resume。
 
-处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。smoke 已开始后暂停的，`retry-smoke` 回到 `pending`，会重新执行整套自部署。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）没有自动重试动作：人工用 `deploy.sh` 部署后，用 `confirm-passed` 放行。
+处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）没有自动重试动作：人工用 `deploy.sh` 部署后，用 `confirm-passed` 放行。
 
 ## 调度范围（项目发现）
 

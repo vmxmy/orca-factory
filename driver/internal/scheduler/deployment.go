@@ -64,21 +64,17 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 	if d.State == "passed" {
 		return nil
 	}
-	if d.Self && d.State == "pending" {
-		return r.deploySelf(ctx, t, p)
-	}
-	if d.State != "pending" && (!d.Self || d.State != "deploy-intent") {
-		return r.pauseDeployment(ctx, t, p, "deployment requires agent reconciliation")
-	}
 	if d.Self {
-		unlock, err := r.deployLock()
-		if err != nil {
-			return err
+		switch d.State {
+		case "pending":
+			return r.deploySelf(ctx, t, p)
+		case "deploy-intent", "smoke-intent":
+			return r.finishSelf(ctx, t, p)
 		}
-		defer unlock()
-		if err := r.verifyInstalled(ctx, p.MergeSHA); err != nil {
-			return errors.Join(err, maintenance.SetWithin("running", maintenanceWait), r.pauseDeployment(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's"))
-		}
+		return r.pauseSelf(ctx, t, p, "deployment requires agent reconciliation")
+	}
+	if d.State != "pending" {
+		return r.pauseDeployment(ctx, t, p, "deployment requires agent reconciliation")
 	}
 	owner, repo, _ := strings.Cut(p.Repository, "/")
 	if d.Workflow != "" {
@@ -110,18 +106,9 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 			if ctx.Err() != nil {
 				return errors.Join(safe, ctx.Err())
 			}
-			paused := r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery")
-			if d.Self {
-				return errors.Join(safe, paused, r.rollbackSelf(ctx, p.MergeSHA))
-			}
-			return errors.Join(safe, paused)
+			return errors.Join(safe, r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery"))
 		}
 		d.SmokePassed = true
-	}
-	if d.Self {
-		if err := maintenance.SetWithin("running", maintenanceWait); err != nil {
-			return errors.Join(err, r.pauseDeployment(ctx, t, p, "smoke passed but maintenance resume failed"))
-		}
 	}
 	d.State = "passed"
 	return r.deploymentReceipt(ctx, t, p)
@@ -229,7 +216,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 		if d.Smoke == "" || !d.SmokeStarted {
 			return rejectDeploymentProposal("no smoke execution to reconcile")
 		}
-		d.State = "pending"
+		d.State = retrySmokeState(d.Self)
 		d.SmokeStarted = false
 		d.SmokePassed = false
 	default:
