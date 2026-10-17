@@ -28,12 +28,16 @@ import (
 func init() { Register("doctor", runDoctor) }
 
 const (
-	healthOK   = "ok"
-	healthWarn = "warn"
-	healthFail = "fail"
+	healthOK      = "ok"
+	healthWarn    = "warn"
+	healthUnknown = "unknown"
+	healthFail    = "fail"
 
 	doctorLaunchWindow   = 30 * time.Minute
 	doctorLaunchRepeats  = 3
+	doctorFetchStale     = 30 * time.Minute
+	doctorDeployGrace    = 60 * time.Minute
+	doctorSyncPRStale    = 24 * time.Hour
 	doctorServiceUnit    = "orca-factory-driver.service"
 	doctorCommandTimeout = 30 * time.Second
 )
@@ -45,13 +49,16 @@ var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
 var doctorCredentialNames = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET"}
 
+// doctorDeferredExits mark launch exits that postpone work without failing it.
+var doctorDeferredExits = []string{"maintenance refused", "deferred", "recovery evidence changed"}
+
 // healthCheck is one doctor finding. Reason and Details never carry raw
 // command output or environment values: either can hold a credential.
 type healthCheck struct {
 	Status  string `json:"status"`
 	Reason  string `json:"reason"`
 	Details any    `json:"details,omitempty"`
-	// unprobed marks a check whose data could not be read; it is reported in
+	// unprobed marks a check with data it could not read; it is reported in
 	// errors as well, like `orca-factory doctor` reports failed probes.
 	unprobed bool
 }
@@ -78,14 +85,18 @@ type doctorProbe struct {
 	ledger      func(context.Context, projects.Project) (doctorLedger, error)
 }
 
+// unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
+// and an unreachable dependency is no finding anyone can act on.
 func unprobed(reason string) healthCheck {
-	return healthCheck{Status: healthFail, Reason: reason, unprobed: true}
+	return healthCheck{Status: healthUnknown, Reason: reason, unprobed: true}
 }
 
 func worst(statuses ...string) string {
 	switch {
 	case slices.Contains(statuses, healthFail):
 		return healthFail
+	case slices.Contains(statuses, healthUnknown):
+		return healthUnknown
 	case slices.Contains(statuses, healthWarn):
 		return healthWarn
 	}
@@ -147,10 +158,11 @@ func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int
 func (p doctorProbe) run(ctx context.Context) healthReport {
 	env, envErr := p.serviceEnv(ctx)
 	eligible, projectsErr := p.projects(ctx)
+	state, stateErr := maintenance.Read()
 	checks := map[string]healthCheck{
 		"service_path": checkServicePath(env, envErr),
-		"version":      p.checkVersion(ctx),
-		"maintenance":  checkMaintenance(),
+		"version":      p.checkVersion(ctx, state, stateErr),
+		"maintenance":  p.checkMaintenance(state, stateErr),
 		"credentials":  checkCredentials(ctx, env, envErr),
 		"launches":     p.checkLaunches(),
 	}
@@ -159,7 +171,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 			checks[name] = unprobed("项目发现失败，无法列出已接管项目")
 		}
 	} else {
-		checks["checkouts"] = checkCheckouts(ctx, eligible)
+		checks["checkouts"] = p.checkCheckouts(ctx, eligible)
 		checks["sync_prs"] = p.checkSyncPRs(ctx, eligible)
 		checks["ledger"] = p.checkLedger(ctx, eligible)
 	}
@@ -177,9 +189,9 @@ func writeHealth(out io.Writer, report healthReport, asJSON bool) error {
 		return json.NewEncoder(out).Encode(report)
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%-13s %-6s %s\n", "CHECK", "STATUS", "REASON")
+	fmt.Fprintf(&b, "%-13s %-8s %s\n", "CHECK", "STATUS", "REASON")
 	for _, name := range doctorChecks {
-		fmt.Fprintf(&b, "%-13s %-6s %s\n", name, report.Checks[name].Status, report.Checks[name].Reason)
+		fmt.Fprintf(&b, "%-13s %-8s %s\n", name, report.Checks[name].Status, report.Checks[name].Reason)
 	}
 	fmt.Fprintf(&b, "Errors [%s]\n", strings.Join(report.Errors, "; "))
 	_, err := io.WriteString(out, b.String())
@@ -290,7 +302,42 @@ func (p doctorProbe) runningVersion() (string, error) {
 	return "", errors.New("scheduler.log 中没有 serve 启动记录")
 }
 
-func (p doctorProbe) checkVersion(ctx context.Context) healthCheck {
+// doctorFreshness tells the caller how old origin/main may be: doctor never
+// fetches, so origin/main is only as new as the last fetch.
+type doctorFreshness struct {
+	mainCommitted, fetched time.Time
+}
+
+func readFreshness(ctx context.Context, dir string) (doctorFreshness, error) {
+	committed, err := runGit(ctx, dir, doctorCommandTimeout, "log", "-1", "--format=%cI", "origin/main")
+	if err != nil {
+		return doctorFreshness{}, errors.New(commandFailure("git log origin/main", err))
+	}
+	fresh := doctorFreshness{}
+	if fresh.mainCommitted, err = time.Parse(time.RFC3339, committed); err != nil {
+		return doctorFreshness{}, errors.New("origin/main 提交时间不可解析")
+	}
+	fetchHead, err := runGit(ctx, dir, doctorCommandTimeout, "rev-parse", "--git-path", "FETCH_HEAD")
+	if err != nil {
+		return doctorFreshness{}, errors.New(commandFailure("git rev-parse FETCH_HEAD", err))
+	}
+	if !filepath.IsAbs(fetchHead) {
+		fetchHead = filepath.Join(dir, fetchHead)
+	}
+	if info, err := os.Stat(fetchHead); err == nil {
+		fresh.fetched = info.ModTime()
+	}
+	return fresh, nil
+}
+
+func formatDoctorTime(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return at.Format(time.RFC3339)
+}
+
+func (p doctorProbe) checkVersion(ctx context.Context, state maintenance.State, stateErr error) healthCheck {
 	running, err := p.runningVersion()
 	if err != nil {
 		return unprobed("读取运行版本失败: " + err.Error())
@@ -302,31 +349,48 @@ func (p doctorProbe) checkVersion(ctx context.Context) healthCheck {
 	if err != nil {
 		return unprobed(commandFailure("git rev-parse origin/main", err))
 	}
-	details := map[string]string{"running": running, "factory_main": factoryMain}
-	if running == "" || !strings.HasPrefix(factoryMain, running) {
-		return healthCheck{Status: healthFail, Reason: fmt.Sprintf("运行版本 %s 与 factory origin/main %.7s 不一致", running, factoryMain), Details: details}
+	fresh, err := readFreshness(ctx, p.factoryRoot)
+	if err != nil {
+		return unprobed(err.Error())
 	}
-	return healthCheck{Status: healthOK, Reason: "运行版本与 factory origin/main 一致", Details: details}
+	details := map[string]string{"running": running, "factory_main": factoryMain, "factory_main_committed_at": formatDoctorTime(fresh.mainCommitted), "factory_fetched_at": formatDoctorTime(fresh.fetched)}
+	if running != "" && strings.HasPrefix(factoryMain, running) {
+		return healthCheck{Status: healthOK, Reason: "运行版本与 factory origin/main 一致", Details: details}
+	}
+	reason := fmt.Sprintf("运行版本 %s 与 factory origin/main %.7s 不一致", running, factoryMain)
+	switch {
+	case stateErr == nil && state.Mode != "running":
+		return healthCheck{Status: healthWarn, Reason: reason + "，维护状态为 " + state.Mode + "，部署可能在进行", Details: details}
+	case p.now.Sub(fresh.mainCommitted) < doctorDeployGrace:
+		return healthCheck{Status: healthWarn, Reason: reason + "，origin/main 最新提交不到 60 分钟，可能尚未部署", Details: details}
+	}
+	return healthCheck{Status: healthFail, Reason: reason, Details: details}
 }
 
-func checkMaintenance() healthCheck {
-	state, err := maintenance.Read()
+func (p doctorProbe) checkMaintenance(state maintenance.State, err error) healthCheck {
 	if err != nil {
 		return unprobed("读取维护状态失败")
 	}
-	details := map[string]string{"mode": state.Mode}
-	if state.Mode != "running" {
-		return healthCheck{Status: healthFail, Reason: "维护状态为 " + state.Mode + "，不是 running", Details: details}
+	details := map[string]string{"mode": state.Mode, "updated_at": formatDoctorTime(state.UpdatedAt)}
+	if state.Mode == "running" {
+		return healthCheck{Status: healthOK, Reason: "维护状态为 running", Details: details}
 	}
-	return healthCheck{Status: healthOK, Reason: "维护状态为 running", Details: details}
+	reason := fmt.Sprintf("维护状态为 %s，不是 running，更新于 %s", state.Mode, formatDoctorTime(state.UpdatedAt))
+	if p.now.Sub(state.UpdatedAt) <= doctorDeployGrace {
+		return healthCheck{Status: healthWarn, Reason: reason + "，部署可能在进行", Details: details}
+	}
+	return healthCheck{Status: healthFail, Reason: reason + "，已超过 60 分钟", Details: details}
 }
 
 type doctorCheckout struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Branch string `json:"branch"`
-	Clean  bool   `json:"clean"`
-	Behind int    `json:"behind"`
+	Name            string `json:"name"`
+	Path            string `json:"path"`
+	Branch          string `json:"branch"`
+	Clean           bool   `json:"clean"`
+	Behind          int    `json:"behind"`
+	MainCommittedAt string `json:"origin_main_committed_at"`
+	FetchedAt       string `json:"fetched_at"`
+	fetched         time.Time
 }
 
 func readCheckout(ctx context.Context, p projects.Project) (doctorCheckout, error) {
@@ -339,30 +403,48 @@ func readCheckout(ctx context.Context, p projects.Project) (doctorCheckout, erro
 	if err != nil {
 		return row, errors.New(commandFailure("git status", err))
 	}
+	fresh, err := readFreshness(ctx, p.Path)
+	if err != nil {
+		return row, err
+	}
+	row.Branch, row.Clean = branch, status == ""
+	row.MainCommittedAt, row.FetchedAt, row.fetched = formatDoctorTime(fresh.mainCommitted), formatDoctorTime(fresh.fetched), fresh.fetched
+	if branch != "main" {
+		return row, nil
+	}
 	behind, err := runGit(ctx, p.Path, doctorCommandTimeout, "rev-list", "--count", "HEAD..origin/main")
 	if err != nil {
 		return row, errors.New(commandFailure("git rev-list", err))
 	}
-	row.Branch, row.Clean = branch, status == ""
 	row.Behind, err = strconv.Atoi(behind)
 	return row, err
 }
 
-func checkCheckouts(ctx context.Context, eligible []projects.Project) healthCheck {
+// checkCheckouts only fails a checkout that stayed behind past a fetch older
+// than doctorFetchStale; right after a merge, behind is the normal state.
+func (p doctorProbe) checkCheckouts(ctx context.Context, eligible []projects.Project) healthCheck {
 	rows, statuses, problems := []doctorCheckout{}, []string{healthOK}, []string{}
-	for _, p := range eligible {
-		row, err := readCheckout(ctx, p)
+	for _, project := range eligible {
+		row, err := readCheckout(ctx, project)
 		if err != nil {
-			return unprobed(p.Name + ": " + err.Error())
+			return unprobed(project.Name + ": " + err.Error())
 		}
 		rows = append(rows, row)
-		switch {
-		case row.Behind > 0:
-			statuses = append(statuses, healthFail)
-			problems = append(problems, fmt.Sprintf("%s 落后 origin/main %d 个提交", p.Name, row.Behind))
-		case row.Branch != "main" || !row.Clean:
+		if row.Branch != "main" {
 			statuses = append(statuses, healthWarn)
-			problems = append(problems, fmt.Sprintf("%s 检出在 %s，干净=%t", p.Name, row.Branch, row.Clean))
+			problems = append(problems, fmt.Sprintf("%s 检出在 %s，不在 main", project.Name, row.Branch))
+		}
+		if row.Behind > 0 {
+			status, note := healthWarn, "最后 fetch 不到 30 分钟"
+			if row.fetched.IsZero() || p.now.Sub(row.fetched) > doctorFetchStale {
+				status, note = healthFail, "最后 fetch 早于 30 分钟"
+			}
+			statuses = append(statuses, status)
+			problems = append(problems, fmt.Sprintf("%s 落后 origin/main %d 个提交，%s", project.Name, row.Behind, note))
+		}
+		if !row.Clean {
+			statuses = append(statuses, healthWarn)
+			problems = append(problems, project.Name+" 有未提交改动")
 		}
 	}
 	reason := "全部检出在 main、干净且不落后 origin/main"
@@ -373,22 +455,25 @@ func checkCheckouts(ctx context.Context, eligible []projects.Project) healthChec
 }
 
 type doctorSyncPR struct {
-	Project string `json:"project"`
-	Number  int    `json:"number"`
-	Branch  string `json:"branch"`
-	URL     string `json:"url"`
-	Behind  int    `json:"behind"`
+	Project   string `json:"project"`
+	Number    int    `json:"number"`
+	Branch    string `json:"branch"`
+	URL       string `json:"url"`
+	Behind    int    `json:"behind"`
+	CreatedAt string `json:"created_at"`
+	created   time.Time
 }
 
 func (p doctorProbe) openSyncPRs(ctx context.Context, project projects.Project) ([]doctorSyncPR, error) {
-	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "list", "--state", "open", "--json", "number,headRefName,url", "--limit", "100"}, Dir: project.Path, Timeout: doctorCommandTimeout})
+	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "list", "--state", "open", "--json", "number,headRefName,url,createdAt", "--limit", "100"}, Dir: project.Path, Timeout: doctorCommandTimeout})
 	if err != nil {
 		return nil, errors.New(commandFailure("gh pr list", err))
 	}
 	var open []struct {
-		Number      int    `json:"number"`
-		HeadRefName string `json:"headRefName"`
-		URL         string `json:"url"`
+		Number      int       `json:"number"`
+		HeadRefName string    `json:"headRefName"`
+		URL         string    `json:"url"`
+		CreatedAt   time.Time `json:"createdAt"`
 	}
 	if err := json.Unmarshal(out, &open); err != nil {
 		return nil, errors.New("gh pr list 输出不可解析")
@@ -403,7 +488,7 @@ func (p doctorProbe) openSyncPRs(ctx context.Context, project projects.Project) 
 		if err != nil {
 			return nil, errors.New(commandFailure("git rev-list "+version, err))
 		}
-		row := doctorSyncPR{Project: project.Name, Number: pr.Number, Branch: pr.HeadRefName, URL: pr.URL}
+		row := doctorSyncPR{Project: project.Name, Number: pr.Number, Branch: pr.HeadRefName, URL: pr.URL, CreatedAt: formatDoctorTime(pr.CreatedAt), created: pr.CreatedAt}
 		if row.Behind, err = strconv.Atoi(behind); err != nil {
 			return nil, err
 		}
@@ -424,13 +509,12 @@ func (p doctorProbe) checkSyncPRs(ctx context.Context, eligible []projects.Proje
 		}
 		for _, pr := range open {
 			rows = append(rows, pr)
-			if pr.Behind > 0 {
-				statuses = append(statuses, healthFail)
-				problems = append(problems, fmt.Sprintf("%s #%d 落后 factory %d 个版本", pr.Project, pr.Number, pr.Behind))
-			} else {
-				statuses = append(statuses, healthWarn)
-				problems = append(problems, fmt.Sprintf("%s #%d 待合并", pr.Project, pr.Number))
+			status, note := healthWarn, "待合并"
+			if p.now.Sub(pr.created) > doctorSyncPRStale {
+				status, note = healthFail, "开启超过 24 小时未合并"
 			}
+			statuses = append(statuses, status)
+			problems = append(problems, fmt.Sprintf("%s #%d %s，落后 factory %d 个提交", pr.Project, pr.Number, note, pr.Behind))
 		}
 	}
 	reason := "没有未合并的 core 同步 PR"
@@ -489,13 +573,13 @@ func (p doctorProbe) checkLedger(ctx context.Context, eligible []projects.Projec
 		}
 		for _, t := range tickets {
 			rows = append(rows, t)
-			switch {
-			case t.Empty > 0:
+			if t.Headroom < issues.FeishuBodyRunes/10 {
 				statuses = append(statuses, healthFail)
-				problems = append(problems, fmt.Sprintf("%s 有 %d 条空正文评论", t.Identifier, t.Empty))
-			case t.Headroom < issues.FeishuBodyRunes/10:
-				statuses = append(statuses, healthWarn)
 				problems = append(problems, fmt.Sprintf("%s 最长正文离上限只剩 %d 字", t.Identifier, t.Headroom))
+			}
+			if t.Empty > 0 {
+				statuses = append(statuses, healthWarn)
+				problems = append(problems, fmt.Sprintf("%s 有 %d 条空正文评论（历史遗留）", t.Identifier, t.Empty))
 			}
 		}
 	}
@@ -524,7 +608,9 @@ func readLaunch(path string, cutoff time.Time) (doctorLaunch, error) {
 		case "start":
 			row.Starts++
 		case "exit":
-			if code := string(fields["exit_code"]); code != "" && code != "0" {
+			code, reason := string(fields["exit_code"]), logsString(fields["err"])
+			deferred := slices.ContainsFunc(doctorDeferredExits, func(marker string) bool { return strings.Contains(reason, marker) })
+			if code != "" && code != "0" && !deferred {
 				row.Failures++
 			}
 		}
@@ -582,15 +668,17 @@ func checkCredentials(ctx context.Context, env map[string]string, envErr error) 
 	}
 	_, authErr := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"auth", "status"}, Timeout: doctorCommandTimeout})
 	details := map[string]any{"variables": present, "gh_auth": authErr == nil}
-	var problems []string
+	statuses, problems := []string{healthOK}, []string{}
 	if len(missing) > 0 {
+		statuses = append(statuses, healthFail)
 		problems = append(problems, "服务环境缺少 "+strings.Join(missing, ", "))
 	}
 	if authErr != nil {
-		problems = append(problems, commandFailure("gh auth status", authErr))
+		statuses = append(statuses, healthUnknown)
+		problems = append(problems, commandFailure("gh auth status", authErr)+"，无法区分未登录与网络故障")
 	}
-	if len(problems) > 0 {
-		return healthCheck{Status: healthFail, Reason: strings.Join(problems, "；"), Details: details}
+	if len(problems) == 0 {
+		return healthCheck{Status: healthOK, Reason: "凭证变量齐全，gh 已认证", Details: details}
 	}
-	return healthCheck{Status: healthOK, Reason: "凭证变量齐全，gh 已认证", Details: details}
+	return healthCheck{Status: worst(statuses...), Reason: strings.Join(problems, "；"), Details: details, unprobed: authErr != nil}
 }

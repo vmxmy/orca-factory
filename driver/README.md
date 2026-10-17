@@ -183,20 +183,27 @@ flowchart LR
 
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
-- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：只读的运行态健康自检，不 fetch。每项给出 `ok`、`warn` 或 `fail` 与原因，任一 `fail` 时退出 1。
+- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：只读的运行态健康自检。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟调用一次，所以只有现在需要人或 Agent 处理的问题才报 `fail`。
+
+  | 状态 | 含义 | 退出码 |
+  | --- | --- | --- |
+  | `ok` | 检查通过 | 不影响 |
+  | `warn` | 有异常，但属于部署中、刚合并、历史遗留等会自行消失或无法清除的情况，暂不需要处理 | 不影响 |
+  | `unknown` | 依赖不可达（服务进程、Orca、飞书、gh、git 命令失败），无法判断；同时列入 `errors` | 不影响 |
+  | `fail` | 确认存在需要处理的问题 | 任一项为 `fail` 时退出 1 |
 
   | 检查项 | 数据来源 | 判定 |
   | --- | --- | --- |
   | `service_path` | 运行中服务进程的 `/proc/<MainPID>/environ` 中的 PATH | 缺 go、gh、git、orca 之一，或 claude 与 codex 都缺：fail |
-  | `version` | `scheduler.log`（含轮转）最近一条 serve 启动记录的 version；factory 本地 `origin/main` | 不一致：fail |
-  | `maintenance` | `maintenance.json` | 不是 `running`：fail |
-  | `checkouts` | 每个已接管项目检出的分支、未提交改动、落后 `origin/main` 的提交数 | 落后：fail；不在 main 或不干净：warn |
-  | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR，及其版本落后 factory `origin/main` 的提交数 | 落后：fail；当前版本待合并：warn |
-  | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 有空正文：fail；距离不足上限 10%：warn |
-  | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
-  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量或 gh 未认证：fail |
+  | `version` | `scheduler.log`（含轮转）最近一条 serve 启动记录的 version；factory 本地 `origin/main` 及其提交时间 | 不一致：维护状态不是 `running`，或 `origin/main` 最新提交不到 60 分钟时 warn，否则 fail |
+  | `maintenance` | `maintenance.json` 的 mode 与 updatedAt | 不是 `running`：updatedAt 在 60 分钟内 warn，否则 fail |
+  | `checkouts` | 每个已接管项目检出的分支、未提交改动、落后 `origin/main` 的提交数、`FETCH_HEAD` 修改时间 | 不在 main：warn，不计算落后数；在 main 且落后：warn，最后一次 fetch 早于 30 分钟（或从未 fetch）时 fail；不干净：warn |
+  | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
+  | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
+  | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
+  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量：fail；gh 认证检查失败：unknown |
 
-  `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针（此时该项也为 `fail`）。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
+  `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
 
 ## Orca 看板
 
