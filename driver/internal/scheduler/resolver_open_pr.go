@@ -15,6 +15,9 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 	stop := func(reason string) error {
 		return r.escalateResolution(ctx, t, p, "open-pr "+reason, fmt.Sprintf("branch=%s head=%s", proposal.Branch, proposal.Head))
 	}
+	if !strings.HasPrefix(proposal.Branch, "agent/"+t.Identifier+"/") {
+		return r.retryResolution(ctx, t, p, fmt.Sprintf("open-pr 分支必须是 agent/<票号>/<单元>，先把 head 推到该分支: branch=%s want=agent/%s/<单元>", proposal.Branch, t.Identifier))
+	}
 	if DeploymentBarrier(t) || t.MergeProblem != "" {
 		return stop("existing deployment or merge evidence requires reconciliation")
 	}

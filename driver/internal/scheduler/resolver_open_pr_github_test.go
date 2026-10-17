@@ -46,7 +46,7 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 	lookups, creates := 0, 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/commits/agent/OF-5/executor"):
+		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/commits/agent/OF-1/executor"):
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": pr.Head.SHA})
 		case r.Method == "GET" && strings.HasSuffix(r.URL.Path, "/pulls"):
 			lookups++
@@ -77,7 +77,7 @@ func TestResolverOpenPRInitializesGitHub(t *testing.T) {
 	runtime := &Runtime{GitHub: nil, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 	record := &resolver.Record{Version: 1, Attempt: 2, Phase: "result"}
 	ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: record}
-	proposal := resolver.Resolution{Action: "open-pr", Branch: "agent/OF-5/executor", Head: pr.Head.SHA, Title: "Recover PR", Body: "Verified fix", Reason: "gate passed"}
+	proposal := resolver.Resolution{Action: "open-pr", Branch: "agent/OF-1/executor", Head: pr.Head.SHA, Title: "Recover PR", Body: "Verified fix", Reason: "gate passed"}
 	if err := runtime.openResolutionPR(ctx, ticket, record, proposal); err != nil {
 		t.Fatal(err)
 	}

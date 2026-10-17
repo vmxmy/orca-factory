@@ -141,15 +141,18 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if p := t.Progress; p != nil && p.QueueID == h.QueueID && p.Phase != "merge-intent" && p.Phase != "merged" && p.Phase != "waiting" && p.Phase != "correction" && p.Phase != "human" {
 		return errors.New("unknown merge progress")
 	}
-	pr, err := a.readPR(ctx)
-	if err != nil {
-		return err
-	}
-	sha := ""
 	rounds, progressErr := mergeRounds(t)
 	if progressErr != nil {
 		return progressErr
 	}
+	pr, err := a.readPR(ctx)
+	if errors.Is(err, errHeadRef) {
+		return r.mergeDecision(ctx, t, "", merge.Result{Status: merge.Review, Reason: err.Error(), Rounds: rounds})
+	}
+	if err != nil {
+		return err
+	}
+	sha := ""
 	if pr.Merged {
 		sha = pr.MergeSHA
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
@@ -235,6 +238,10 @@ func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error
 	return errors.New("merge receipt write unconfirmed")
 }
 
+// errHeadRef marks a frozen PR whose head is not the sole agent push target;
+// only the resolver can move the head, so the queue hands it over for review.
+var errHeadRef = errors.New("head ref 复核")
+
 type mergeAdapter struct {
 	runtime           *Runtime
 	ticket            Ticket
@@ -247,8 +254,11 @@ func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
 	if err != nil {
 		return p, err
 	}
-	if !prMatchesHandoff(p, h) {
+	if p.Number != h.PR || p.Head.SHA != h.Head || p.Head.Repo.FullName != h.Repository || p.Base.Ref != "main" || p.Base.Repo.FullName != h.Repository {
 		return p, errors.New("PR identity changed")
+	}
+	if want := handoffBranch(h); p.Head.Ref != want {
+		return p, fmt.Errorf("%w: head ref %s, want %s", errHeadRef, p.Head.Ref, want)
 	}
 	return p, nil
 }

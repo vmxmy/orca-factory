@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -41,7 +42,9 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 			body = "转人: " + p.Reason + "\n证据: merge policy\n阶段: " + string(machine.PhaseHuman) + "\n归属: " + string(machine.OwnerHuman) + "\n" + body
 		} else {
 			event, evidence, demand := p.Reason, "merge validation", "检查合并结果并重新排队"
-			if review {
+			if review && strings.HasPrefix(p.Reason, errHeadRef.Error()) {
+				event, evidence, demand = p.Reason, "PR head ref", "把 head 推到 agent/<票号>/<单元>，open-pr 后提交新的 merge handoff"
+			} else if review {
 				event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
 			}
 			body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
