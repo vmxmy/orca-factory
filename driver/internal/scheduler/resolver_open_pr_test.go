@@ -31,7 +31,7 @@ func TestResolverOpenPR(t *testing.T) {
 	if err := json.Unmarshal(recorded(t, "github-commit-main.json"), &commit); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []string{"create", "existing", "existing-no-reference", "existing-wrong-ticket", "existing-wrong-canonical", "create-raced-no-reference", "create-recovered-no-reference", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch"} {
+	for _, mode := range []string{"create", "existing", "existing-no-reference", "existing-wrong-ticket", "existing-wrong-canonical", "create-raced-no-reference", "create-recovered-no-reference", "mismatch", "missing", "create-failed", "lookup-failed", "pr-head-changed", "ticket-identity-mismatch", "non-agent-branch"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx := context.Background()
 			base := newFeishuClaimBase(t, true)
@@ -54,7 +54,15 @@ func TestResolverOpenPR(t *testing.T) {
 				t.Fatalf("ticket link: %q", created.URL)
 			}
 			head := pr.Head.SHA
-			creates, lookups := 0, 0
+			creates, lookups, branchReads := 0, 0, 0
+			identifier := created.Identifier
+			if mode == "ticket-identity-mismatch" {
+				identifier += "-changed"
+			}
+			branch := "agent/" + identifier + "/executor"
+			if mode == "non-agent-branch" {
+				branch = "vmxmy/" + identifier + "-resolver-2"
+			}
 			prResponse := prRaw
 			if strings.HasPrefix(mode, "existing") {
 				existing := pr
@@ -87,6 +95,7 @@ func TestResolverOpenPR(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case strings.Contains(r.URL.Path, "/commits/"):
+					branchReads++
 					if mode == "missing" {
 						http.NotFound(w, r)
 						return
@@ -115,7 +124,7 @@ func TestResolverOpenPR(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 						t.Error(err)
 					}
-					if input.Head != "agent/OF-5/executor" || input.Base != "main" || input.Title != "Recover PR" ||
+					if input.Head != branch || input.Base != "main" || input.Title != "Recover PR" ||
 						!strings.HasPrefix(input.Body, "关联票: "+created.URL+"\n") ||
 						!strings.Contains(input.Body, "Canonical identifier: "+created.Identifier+"\n") ||
 						!strings.Contains(input.Body, "Canonical ID: "+created.ID+"\n") ||
@@ -143,11 +152,8 @@ func TestResolverOpenPR(t *testing.T) {
 				t.Fatal(err)
 			}
 			runtime := &Runtime{GitHub: gh, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
-			raw, _ := json.Marshal(map[string]string{"action": "open-pr", "branch": "agent/OF-5/executor", "head": head, "title": "Recover PR", "body": "Verified fix", "reason": "gate passed"})
-			ticket := Ticket{ID: created.ID, Identifier: created.Identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
-			if mode == "ticket-identity-mismatch" {
-				ticket.Identifier += "-changed"
-			}
+			raw, _ := json.Marshal(map[string]string{"action": "open-pr", "branch": branch, "head": head, "title": "Recover PR", "body": "Verified fix", "reason": "gate passed"})
+			ticket := Ticket{ID: created.ID, Identifier: identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
 			initial, err := json.Marshal(ticket.Resolution)
 			if err != nil {
 				t.Fatal(err)
@@ -179,7 +185,14 @@ func TestResolverOpenPR(t *testing.T) {
 				t.Fatalf("missing receipt: %q %v", body, err)
 			}
 			success := mode == "create" || mode == "existing"
-			if success {
+			if mode == "non-agent-branch" {
+				if record.Phase != "waiting" || record.Outcome != "failed" || !strings.Contains(record.Result, "agent/<票号>/<单元>") || strings.Contains(body, "归属: 人") {
+					t.Fatalf("non-agent branch not retried: %+v %q", record, body)
+				}
+				if branchReads != 0 {
+					t.Fatalf("read non-agent branch: %d", branchReads)
+				}
+			} else if success {
 				if record.Phase != "waiting" || !record.RetryAt.IsZero() || record.Attempt != 2 || record.Outcome != "succeeded" {
 					t.Fatalf("next attempt not ready: %+v", record)
 				}

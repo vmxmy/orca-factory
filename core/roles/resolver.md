@@ -9,6 +9,7 @@
 - 在分配的独立 worktree 中工作。遵守仓库 AGENTS、constitution、项目规则与测试先行要求。
 - 对原先等待审批的改动执行独立复核，记录当前 PR head 的检查和审查证据。
 - `Agent处置: lane 2 复核` 事件表示 lane 2 未自动合并，合并通道已把票移出队列交你复核。核对 PR head 仍等于冻结 handoff 的 head，读完整 diff，确认 gate 与独立 reviewer 均为 green、CI 全绿、改动不碰 lane 3 路径。全部满足时原样提交该 handoff 的 merge 提案；head 已变或任一条件不满足时，修复后重新验证并使用新 queue_id，权限内无法解决时 escalate。
+- `Agent处置: head ref 复核` 事件表示冻结 handoff 的 PR 分支不是 `agent/<票号>/<单元>`，合并通道已把票移出队列。把 head 推到该分支，提交 open-pr，CI 通过后用新 queue_id 提交新的 merge handoff。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
 
@@ -25,7 +26,7 @@
 
 - 先读 `scripts/agent-gates/roles/worker.md` 的检查约束；安装依赖，针对行为修改先运行失败断言，再实现并跑绿。
 - 在真实 PR head 上运行 gate；lane 2 使用仓库配置的独立 reviewer。保留原始完整输出，不伪造 green。
-- 确认推送成功、head 与提交一致。没有 PR 时可先提交 open-pr；调度器创建或复用 PR 后会开启下一次处置，届时核对票据关联、等待 CI，再提交 merge handoff。已有 PR 的检查未通过就修复，不能提交 merge 决策。
+- 推送目标必须是 `agent/<票号>/<单元>`（Orca 本地分支如 `vmxmy/<票号>-resolver-2` 不能直接作为 PR 分支）；open-pr 的 branch 和 merge handoff 的 unit 必须与之一致。确认推送成功、head 与提交一致。没有 PR 时可先提交 open-pr；调度器创建或复用 PR 后会开启下一次处置，届时核对票据关联、等待 CI，再提交 merge handoff。已有 PR 的检查未通过就修复，不能提交 merge 决策。
 - 新 handoff 按 `driver/internal/merge/evidence.go` 的字段和 `validation.go` 的证据格式填写，ticket_id、identifier、repository 必须与输入一致。
 - merge handoff 的 `repository` 填处置证据顶层的 `Repository`，即仓库配置的 `AGENT_GH_REPO`，不是本机路径。
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。
@@ -35,7 +36,7 @@
 ## Handoff
 
 - 通过 Orca `worker_done` 提交结果。成功 body 必须是一个 JSON 对象，不附 Markdown 围栏。
-- 开 PR 提案：`{"action":"open-pr","branch":"已推送分支","head":"40 位完整提交 SHA","title":"PR 标题","body":"PR 正文","reason":"已完成检查与开 PR 原因"}`；所有字段必填，reason 为单行。统一票据存储由调度器在正文首行添加票据关联链接，与执行器一致。远端 head 不符、分支不存在或建 PR 失败会记录证据并转人，不自动重试。
+- 开 PR 提案：`{"action":"open-pr","branch":"已推送分支","head":"40 位完整提交 SHA","title":"PR 标题","body":"PR 正文","reason":"已完成检查与开 PR 原因"}`；所有字段必填，reason 为单行。统一票据存储由调度器在正文首行添加票据关联链接，与执行器一致。branch 不以 `agent/<票号>/` 开头时调度器不建 PR，退回重试处置。远端 head 不符、分支不存在或建 PR 失败会记录证据并转人，不自动重试。
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。

@@ -166,7 +166,27 @@ func TestResolverMergeProposalRejectsForeignPRBranch(t *testing.T) {
 	if f.puts != 0 {
 		t.Fatalf("foreign branch merged: puts=%d", f.puts)
 	}
-	if !slices.ContainsFunc(f.tracker.bodies, func(b string) bool { return strings.Contains(b, "agent/ENG-1/"+h.Unit) && strings.Contains(b, `"phase":"waiting"`) }) {
+	if !slices.ContainsFunc(f.tracker.bodies, func(b string) bool {
+		return strings.Contains(b, "agent/ENG-1/"+h.Unit) && strings.Contains(b, `"phase":"waiting"`)
+	}) {
 		t.Fatalf("proposal not returned to resolver with the required branch: %q", f.tracker.bodies)
 	}
+}
+
+func TestMergeHeadRefRequiresReview(t *testing.T) {
+	f := newMergeFixture(t)
+	f.prBody["head"].(map[string]any)["ref"] = "vmxmy/ENG-1-resolver-2"
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("head ref mismatch kept merge waiting: %v", err)
+	}
+	for _, b := range f.tracker.bodies {
+		if strings.HasPrefix(b, "Agent处置: head ref 复核") && strings.Contains(b, "vmxmy/ENG-1-resolver-2") && strings.Contains(b, "agent/ENG-1/executor") && strings.Contains(b, "\n阶段: Agent处置\n归属: 处置Agent\nmerge-progress-v1: ") {
+			if f.puts != 0 || f.tracker.issue.State.Name == "Done" {
+				t.Fatalf("mismatched head ref merged: puts=%d", f.puts)
+			}
+			return
+		}
+	}
+	t.Fatalf("head ref mismatch not transferred to resolver: %q", f.tracker.bodies)
 }
