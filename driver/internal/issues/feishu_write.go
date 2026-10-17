@@ -550,6 +550,99 @@ func (c *Feishu) recordProjectEvent(ctx context.Context, summary, body, operator
 	return checkWrite(res, 1)
 }
 
+// PurgeEmptyReport describes one ticket's 事件 rows whose 正文 is blank.
+type PurgeEmptyReport struct {
+	Ticket   string    `json:"ticket"`
+	Count    int       `json:"count"`
+	Earliest time.Time `json:"earliest,omitzero"`
+	Latest   time.Time `json:"latest,omitzero"`
+	Applied  bool      `json:"applied"`
+}
+
+// PurgeEmptyEvents finds the ticket's 事件 rows linked to it alone whose 正文
+// is empty or whitespace (OF-114: bodies over the cell limit were stored
+// empty). With apply it records an audit event, deletes them and reads back
+// until they are gone. A rerun re-reads, so an interrupted purge resumes.
+func (c *Feishu) PurgeEmptyEvents(ctx context.Context, id, operator string, apply bool) (PurgeEmptyReport, error) {
+	t, err := c.Read(ctx, id)
+	if err != nil {
+		return PurgeEmptyReport{}, err
+	}
+	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: linkRefs(t.nativeID)}}}
+	records, err := c.readAll(ctx, "事件", &filter)
+	if err != nil {
+		return PurgeEmptyReport{}, err
+	}
+	report := PurgeEmptyReport{Ticket: t.Identifier}
+	empty := []string{}
+	for _, r := range records {
+		owners, err := c.links("事件", r, "票据")
+		if err != nil {
+			return PurgeEmptyReport{}, err
+		}
+		body, err := c.text("事件", r, "正文")
+		if err != nil {
+			return PurgeEmptyReport{}, err
+		}
+		if !slices.Equal(owners, []string{t.nativeID}) || strings.TrimSpace(body) != "" {
+			continue
+		}
+		created, err := c.timestamp("事件", r, "创建时间")
+		if err != nil {
+			return PurgeEmptyReport{}, err
+		}
+		if report.Count == 0 || created.Before(report.Earliest) {
+			report.Earliest = created
+		}
+		if report.Count == 0 || created.After(report.Latest) {
+			report.Latest = created
+		}
+		report.Count++
+		empty = append(empty, r.ID)
+	}
+	if !apply || report.Count == 0 {
+		return report, nil
+	}
+	body := fmt.Sprintf("purge-empty：删除 %d 条空正文事件，创建时间 %s 至 %s，操作者 %s", report.Count, report.Earliest.Format(time.RFC3339), report.Latest.Format(time.RFC3339), operator)
+	row := c.cells("事件", map[string]any{"摘要": body, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{"operator"}, "操作者": operator})
+	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
+	if err != nil {
+		return PurgeEmptyReport{}, err
+	}
+	if err = checkWrite(res, 1); err != nil {
+		return PurgeEmptyReport{}, err
+	}
+	table := c.tables["事件"].id
+	// batch_delete skips rows not yet visible (record_not_found), so every
+	// round deletes whatever batch_get still returns until nothing remains.
+	err = c.readBack(ctx, func() (bool, error) {
+		done := true
+		for chunk := range slices.Chunk(empty, feishuBatchLimit) {
+			page, err := c.client.BatchGet(ctx, c.base, table, chunk)
+			if err != nil {
+				return false, err
+			}
+			if len(page.Records) == 0 {
+				continue
+			}
+			done = false
+			remaining := make([]string, 0, len(page.Records))
+			for _, r := range page.Records {
+				remaining = append(remaining, r.ID)
+			}
+			if _, err = c.client.BatchDelete(ctx, c.base, table, remaining); err != nil {
+				return false, err
+			}
+		}
+		return done, nil
+	})
+	if err != nil {
+		return PurgeEmptyReport{}, err
+	}
+	report.Applied = true
+	return report, nil
+}
+
 // dependencyCells adds the dependency links and the adoption fingerprint.
 func (c *Feishu) dependencyCells(ctx context.Context, row map[string]any, self string, brief FeishuBrief, blockers, related []string) error {
 	x, err := c.ticketIndex(ctx)
