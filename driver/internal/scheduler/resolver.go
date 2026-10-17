@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -78,6 +79,11 @@ func (s resolutionStore) Save(ctx context.Context, p resolver.Record) error {
 
 // ResolveTicket runs in its own terminal; only the scheduler applies proposals.
 func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) error {
+	session, err := maintenance.Session()
+	if err != nil {
+		return err
+	}
+	defer session()
 	if err := r.verifyFreshDecision(ctx, t, Resolve); err != nil {
 		return err
 	}

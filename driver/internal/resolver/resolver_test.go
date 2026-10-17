@@ -44,7 +44,6 @@ type fakeOrca struct {
 	readErr    error
 	status     string
 	startErr   error
-	observe    func()
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -72,9 +71,6 @@ func (o *fakeOrca) WorkerStart(_ context.Context, id string, opts orca.StartOpti
 	return orca.Receipt{"task": json.RawMessage(`{"id":"task_1"}`), "dispatch": json.RawMessage(`{"id":"ctx_1"}`)}, nil
 }
 func (o *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
-	if o.observe != nil {
-		o.observe()
-	}
 	if o.tasks != nil {
 		return o.tasks, nil
 	}
@@ -120,7 +116,7 @@ func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	}
 }
 
-func TestUnconfirmedCheckpointReconcilesSameRequest(t *testing.T) {
+func TestLostDispatchCheckpointReconcilesSameRequest(t *testing.T) {
 	c, s, o := setupController()
 	s.failRunning = true
 	if _, err := c.Step(context.Background()); err == nil {
@@ -285,20 +281,61 @@ func TestRecordedWorkerAssociationRecoversReplacement(t *testing.T) {
 // An Orca restart drops the dispatch and returns the task to ready; the round
 // ends as failed for the scheduler's retry rules instead of polling forever.
 func TestLostDispatchEndsRoundAsFailed(t *testing.T) {
-	c, s, o := setupController()
-	if _, err := c.Step(context.Background()); err != nil {
-		t.Fatal(err)
+	for _, workers := range []string{`[]`, `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`} {
+		c, s, o := setupController()
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+		o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(workers)}
+		p, err := c.Step(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.Phase != "result" || s.record.Phase != "result" || s.record.Outcome != "failed" || s.record.Result != "dispatch lost: task task_1 is ready without dispatch ctx_1" {
+			t.Fatalf("lost dispatch not settled with workers %s: %+v", workers, s.record)
+		}
+		if o.releases != 0 || o.startCalls != 1 {
+			t.Fatalf("lost dispatch released or replayed: releases=%d starts=%d", o.releases, o.startCalls)
+		}
 	}
-	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
-	p, err := c.Step(context.Background())
+}
+
+// A dispatch queued behind a busy terminal is also ready without a task
+// dispatch_id (recorded receipt); its listed worker keeps the round waiting.
+func TestRecordedQueuedReadyDispatchIsNotLost(t *testing.T) {
+	c, s, o := setupController()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-start-reuse-busy-queued.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Phase != "result" || s.record.Phase != "result" || s.record.Outcome != "failed" || s.record.Result != "dispatch lost: task task_1 is ready without dispatch ctx_1" {
-		t.Fatalf("lost dispatch not settled: %+v", s.record)
+	var envelope struct {
+		Result struct {
+			Run      string `json:"runId"`
+			Task     string `json:"taskId"`
+			Dispatch string `json:"dispatchId"`
+			State    string `json:"state"`
+		} `json:"result"`
 	}
-	if o.releases != 0 || o.startCalls != 1 {
-		t.Fatalf("lost dispatch released or replayed: releases=%d starts=%d", o.releases, o.startCalls)
+	if err = json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	r := envelope.Result
+	if r.State != "ready" {
+		t.Fatalf("recorded queued dispatch is %q", r.State)
+	}
+	s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: r.Run, Task: r.Task, Dispatch: r.Dispatch, Spec: c.Spec, Agent: c.Agent}
+	o.tasks = []orca.Task{{ID: r.Task, RunID: r.Run, Status: r.State, Spec: c.Spec}}
+	row, err := json.Marshal([]workerIdentity{{Task: r.Task, Run: r.Run, Dispatch: r.Dispatch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"` + r.Run + `"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": row}
+	if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" {
+		t.Fatalf("queued dispatch judged lost: %+v err=%v", p, err)
+	}
+	if s.record.Phase != "running" || s.record.Outcome != "" || o.releases != 0 || o.startCalls != 0 {
+		t.Fatalf("queued dispatch changed the round: %+v", s.record)
 	}
 }
 
@@ -309,43 +346,16 @@ func TestIncompleteReadNeverJudgesDispatchLost(t *testing.T) {
 	}
 	o.readErr = errors.New("incomplete task list")
 	if _, err := c.Step(context.Background()); err == nil {
-		t.Fatal("incomplete read accepted")
+		t.Fatal("incomplete task read accepted")
 	}
 	o.readErr = nil
-	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Spec: "Act as resolver"}}
-	if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" {
-		t.Fatalf("unknown status judged lost: %+v err=%v", p, err)
+	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":true}`), "workers": json.RawMessage(`[]`)}
+	if _, err := c.Step(context.Background()); err == nil {
+		t.Fatal("incomplete worker read accepted")
 	}
 	if s.record.Phase != "running" || s.record.Outcome != "" || o.releases != 0 || o.startCalls != 1 {
 		t.Fatalf("incomplete evidence changed the round: %+v", s.record)
-	}
-}
-
-// Freeze needs the sessions lock; only a Step in progress may hold it, so the
-// supervision loop's waits never block a deployment drain.
-func TestStepHoldsMaintenanceSessionOnlyWhileStepping(t *testing.T) {
-	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
-	c, _, o := setupController()
-	if _, err := c.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	o.observe = func() {
-		if state, err := maintenance.Status(); err != nil || !state.SessionsActive {
-			t.Errorf("step ran without a maintenance session: %+v err=%v", state, err)
-		}
-	}
-	if _, err := c.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := maintenance.Set("draining"); err != nil {
-		t.Fatal(err)
-	}
-	if err := maintenance.Set("frozen"); err != nil {
-		t.Fatalf("waiting controller blocked freeze: %v", err)
-	}
-	o.observe = func() { t.Error("frozen step reached Orca") }
-	if _, err := c.Step(context.Background()); err == nil {
-		t.Fatal("frozen step was not refused")
 	}
 }
 

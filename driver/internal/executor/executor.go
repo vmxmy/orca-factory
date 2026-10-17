@@ -647,17 +647,17 @@ type workerWatch struct {
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
-	readReport := func() (*orca.WorkerReport, bool, error) {
+	// readReport also returns the task when it awaits a dispatch, a candidate
+	// for loss that only the worker read can confirm.
+	readReport := func() (*orca.WorkerReport, bool, *orca.Task, error) {
 		tasks, err := e.taskList(ctx, run)
 		if err != nil {
-			return nil, false, safeDependencyError(err)
+			return nil, false, nil, safeDependencyError(err)
 		}
 		completed := false
+		var awaiting *orca.Task
 		var report *orca.WorkerReport
 		for _, t := range tasks {
-			if reason, lost := resolver.LostDispatch(t, dispatch); lost && t.ID == task && (t.RunID == "" || t.RunID == run) {
-				return livenessFailure(reason), false, nil
-			}
 			// task-list rows carry no dispatch_id; match it only when supplied.
 			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
 				continue
@@ -665,19 +665,22 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			completed = completed || t.Status == "completed"
 			report, err = t.WorkerReport()
 			if err != nil {
-				return nil, false, errors.New("invalid worker report")
+				return nil, false, nil, errors.New("invalid worker report")
 			}
 			if report != nil {
 				if report.Outcome != "succeeded" && report.Outcome != "failed" {
-					return nil, false, errors.New("invalid worker outcome")
+					return nil, false, nil, errors.New("invalid worker outcome")
 				}
 				break
 			}
+			if resolver.AwaitsDispatch(t) {
+				awaiting = &t
+			}
 		}
-		return report, completed, nil
+		return report, completed, awaiting, nil
 	}
 	for {
-		report, completed, err := readReport()
+		report, completed, awaiting, err := readReport()
 		if err != nil {
 			return nil, err
 		}
@@ -701,7 +704,7 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			}
 		}
 		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
-			report, _, err := readReport()
+			report, _, _, err := readReport()
 			if err != nil {
 				return nil, err
 			}
@@ -709,6 +712,15 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return report, nil
 			}
 			return livenessFailure("worker exited without worker_done"), nil
+		}
+		if awaiting != nil {
+			listed, status := worker != nil, ""
+			if listed {
+				status = worker.DispatchStatus
+			}
+			if reason, lost := resolver.LostDispatch(*awaiting, dispatch, listed, status); lost {
+				return livenessFailure(reason), nil
+			}
 		}
 		if !completed {
 			if err := observeIdle(); err != nil {

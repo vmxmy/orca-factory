@@ -63,13 +63,6 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	if c.Store == nil || c.Orca == nil || c.Ticket == "" || c.Repo == "" || c.Spec == "" || c.Agent == "" || c.Terminal == "" {
 		return nil, errors.New("invalid resolver configuration")
 	}
-	// The session spans one Step, never the supervision loop's wait, so a
-	// deployment freeze is delayed by at most one Step's bounded calls.
-	session, err := maintenance.Session()
-	if err != nil {
-		return nil, err
-	}
-	defer session()
 	now := time.Now()
 	if c.Now != nil {
 		now = c.Now()
@@ -177,7 +170,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			if task.ID != p.Task {
 				continue
 			}
-			if found || (task.RunID != "" && task.RunID != p.Run) {
+			if found || (task.RunID != "" && task.RunID != p.Run) || (task.DispatchID != "" && task.DispatchID != p.Dispatch) {
 				return nil, errors.New("resolver task identity mismatch")
 			}
 			found = true
@@ -185,14 +178,17 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			if err != nil {
 				return nil, err
 			}
-			if reason, lost := LostDispatch(task, p.Dispatch); lost && report == nil {
-				// Nothing of this round remains to release; the scheduler's
-				// failure rules open the next round with a fresh request.
-				p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+			if report == nil && AwaitsDispatch(task) {
+				listed, status, err := c.dispatchStatus(ctx, p)
+				if err != nil {
+					return nil, err
+				}
+				if reason, lost := LostDispatch(task, p.Dispatch, listed, status); lost {
+					// Nothing of this round remains to release; the scheduler's
+					// failure rules open the next round with a fresh request.
+					p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+				}
 				continue
-			}
-			if task.DispatchID != "" && task.DispatchID != p.Dispatch {
-				return nil, errors.New("resolver task identity mismatch")
 			}
 			if report == nil {
 				if task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled" {
@@ -237,14 +233,28 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	return p, nil
 }
 
-// LostDispatch reports a task from a complete read that Orca no longer runs
-// for dispatch: it waits to be dispatched again, as after an Orca restart.
-// Real task-list rows omit dispatch_id, so the status alone carries the fact.
-func LostDispatch(task orca.Task, dispatch string) (string, bool) {
-	if (task.Status != "pending" && task.Status != "ready") || (task.DispatchID != "" && task.DispatchID == dispatch) {
+// AwaitsDispatch reports a task Orca holds without a dispatch. That alone never
+// proves loss: a dispatch queued behind a busy terminal looks the same.
+func AwaitsDispatch(task orca.Task) bool {
+	return (task.Status == "pending" || task.Status == "ready") && task.DispatchID == ""
+}
+
+// LostDispatch needs positive evidence from complete reads: the task awaits a
+// dispatch and the recorded dispatch is absent from the workers or ended, as
+// after an Orca restart drops it.
+func LostDispatch(task orca.Task, dispatch string, listed bool, status string) (string, bool) {
+	if !AwaitsDispatch(task) || (listed && !dispatchEnded(status)) {
 		return "", false
 	}
 	return fmt.Sprintf("dispatch lost: task %s is %s without dispatch %s", task.ID, task.Status, dispatch), true
+}
+
+func dispatchEnded(status string) bool {
+	switch status {
+	case "completed", "failed", "abandoned", "cancelled":
+		return true
+	}
+	return false
 }
 
 func receiptID(receipt orca.Receipt, key string) string {
