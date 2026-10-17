@@ -1,0 +1,31 @@
+{
+  "id": "a5db38da-20c8-4b9b-9c2b-9cdf94da39f9",
+  "ok": true,
+  "result": {
+    "runId": "run_4eb9fdf9ecdc",
+    "legacyReadOnly": false,
+    "tasks": [
+      {
+        "id": "task_467434b620d4",
+        "run_id": "run_4eb9fdf9ecdc",
+        "parent_id": null,
+        "created_by_terminal_handle": "term_e8f88213-218e-486e-9564-6e0accaf0fb4",
+        "created_by_pane_key": "639923e1-64a7-4ae3-ab1f-09827a92b09a:71ca0b7e-1d43-489e-8cfa-84eb0358bc1b",
+        "created_by_process_incarnation": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-22-executor@@b5d68860:56e50c05-ec54-40d4-9baa-103d6dd7e1c9",
+        "created_by_run_generation": 1,
+        "task_title": "OF-22 probe. Do nothing: run no commands, edit no files, send no messages. Ju...",
+        "display_name": "OF-22 probe. Do nothing: run no commands, edit no files, send no messages. Ju...",
+        "spec": "OF-22 probe. Do nothing: run no commands, edit no files, send no messages. Just wait.",
+        "status": "blocked",
+        "deps": "[]",
+        "result": null,
+        "created_at": "2026-10-17 11:49:31",
+        "completed_at": null
+      }
+    ],
+    "count": 1
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

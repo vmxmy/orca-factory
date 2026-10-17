@@ -6,10 +6,12 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -94,5 +96,63 @@ func TestRecordedSchedulerBlockerIdentifiers(t *testing.T) {
 	}
 	if len(tickets) != 1 || !tickets[0].Blocked || tickets[0].BlockersIncomplete || !reflect.DeepEqual(tickets[0].Blockers, []string{"ZII-893"}) {
 		t.Fatalf("lost recorded blocker identifiers: %+v", tickets)
+	}
+}
+
+// The fixture is the real worker-list of Run run_9714ea9b8576: dispatch IDs
+// and statuses must parse as recorded, and no settled row may be abandoned.
+func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-list-liveness.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{Orca: &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{envelope.Result, envelope.Result}}}}
+	rows, err := r.dispatches(context.Background(), "run_9714ea9b8576")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []dispatchRow{{"ctx_f9e3c9ac102a", "failed", ""}, {"ctx_6d1316722a7c", "failed", ""}, {"ctx_a93f6b74d60d", "failed", ""}, {"ctx_2ec61f77c499", "completed", ""}}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows=%+v", rows)
+	}
+	for _, row := range rows {
+		if !settledDispatch(row.Status) {
+			t.Fatalf("recorded row %+v counted as unsettled", row)
+		}
+	}
+	r.StateRoot = t.TempDir()
+	r.PIDAlive = func(int) bool { return false }
+	r.Repositories = map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}}
+	ticket, ledger := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=run_9714ea9b8576 attempt=1")
+	r.Clients = ledger
+	if err := orca.WriteBeat(orca.HeartbeatPath(r.StateRoot, "proj", "OF-1", "executor"), orca.Beat{PID: 7, Run: "run_9714ea9b8576", At: time.Unix(0, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ReapDead(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if abandoned := r.Orca.(*reapOrca).abandoned; len(abandoned) != 0 {
+		t.Fatalf("settled dispatches abandoned: %v", abandoned)
+	}
+}
+
+// An abandoned dispatch reads as dispatchStatus failed; only workerState names
+// the abandon a failed terminal close must retry (orca-worker-list-abandoned.json).
+func TestRecordedDispatchesWorkerListAbandoned(t *testing.T) {
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-list-abandoned.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{Orca: &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{envelope.Result}}}}
+	rows, err := r.dispatches(context.Background(), "run_4eb9fdf9ecdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []dispatchRow{{"ctx_ee6da2ada658", "failed", "abandoned"}}; !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows=%+v", rows)
 	}
 }

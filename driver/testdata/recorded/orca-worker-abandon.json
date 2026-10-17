@@ -1,0 +1,28 @@
+{
+  "id": "0c8a95d4-1e8d-4967-a855-f4db9b5a2afd",
+  "ok": true,
+  "result": {
+    "dispatchId": "ctx_ee6da2ada658",
+    "state": "abandoned",
+    "alreadySettled": false,
+    "stale": false,
+    "processAction": "none",
+    "warning": "Possibly-live resources were retained; no process was stopped or deleted.",
+    "residualResources": [
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "created",
+        "id": "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d",
+        "surface": "visible"
+      }
+    ],
+    "mutation": {
+      "requestId": "46462202-4380-49b4-ad5f-e3530235bc26",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

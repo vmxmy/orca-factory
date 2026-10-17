@@ -376,6 +376,7 @@ type ListOptions struct {
 // Unverifiable means unknown, never proof of process exit.
 type Worker struct {
 	DispatchID          string `json:"dispatchId"`
+	TaskID              string `json:"taskId"`
 	DispatchStatus      string `json:"dispatchStatus"`
 	AgentTerminalHandle string `json:"agentTerminalHandle"`
 	Resource            struct {
@@ -445,6 +446,25 @@ func (c *Client) WorkerList(ctx context.Context, o ListOptions) (Receipt, error)
 }
 func (c *Client) WorkerStop(ctx context.Context, request, dispatch string) (Receipt, error) {
 	return c.mutate(ctx, request, []string{"orchestration", "worker-stop", "--dispatch", dispatch})
+}
+
+// WorkerAbandon fences a dispatch without claiming its process stopped.
+func (c *Client) WorkerAbandon(ctx context.Context, request, dispatch string) (Receipt, error) {
+	return c.mutate(ctx, request, []string{"orchestration", "worker-abandon", "--dispatch", dispatch})
+}
+
+// TerminalClose closes one terminal pane.
+func (c *Client) TerminalClose(ctx context.Context, terminal string) error {
+	release, err := maintenance.Write()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if terminal == "" || terminal == "-" {
+		return invalid("terminal close requires a handle")
+	}
+	_, err = c.call(ctx, []string{"terminal", "close", "--terminal", terminal})
+	return err
 }
 
 func (c *Client) WorkerRelease(ctx context.Context, request, dispatch string) (Receipt, error) {

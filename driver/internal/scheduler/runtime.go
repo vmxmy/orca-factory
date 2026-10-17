@@ -29,6 +29,8 @@ type OrcaClient interface {
 	AutomationsList(context.Context) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
 	TerminalCreate(context.Context, orca.TerminalOptions) (orca.Receipt, error)
+	WorkerAbandon(context.Context, string, string) (orca.Receipt, error)
+	TerminalClose(context.Context, string) error
 }
 type Runtime struct {
 	GitHub               *github.Client
@@ -37,11 +39,16 @@ type Runtime struct {
 	Orca                 OrcaClient
 	Workspaces           WorkspaceClient
 	OrcaPath, DriverPath string
-	Run                  func(context.Context, runx.Spec) ([]byte, error)
-	Now                  func() time.Time
-	Tuning               config.Tuning
-	Runners              *runnerhealth.Monitor
-	refused              map[string]error
+	// StateRoot holds the per-ticket heartbeat files; HeartbeatTimeout is how
+	// stale a beat may be; PIDAlive overrides the process check in tests.
+	StateRoot        string
+	HeartbeatTimeout time.Duration
+	PIDAlive         func(int) bool
+	Run              func(context.Context, runx.Spec) ([]byte, error)
+	Now              func() time.Time
+	Tuning           config.Tuning
+	Runners          *runnerhealth.Monitor
+	refused          map[string]error
 	// newClient binds a ledger client for a repository's env; Track calls it
 	// for every repository discovery hands over.
 	newClient func(context.Context, map[string]string) (issues.Store, error)
@@ -77,11 +84,26 @@ func NewRuntime(ctx context.Context, c config.Config, repos []config.Repository)
 		Workspaces:   client,
 		OrcaPath:     path,
 		DriverPath:   binary,
+
+		StateRoot:        stateRoot(),
+		HeartbeatTimeout: orca.HeartbeatTimeout(),
 	}
 	if err = r.initialize(ctx, repos, r.newIssueStore); err != nil {
 		return nil, err
 	}
 	return r, nil
+}
+
+// stateRoot is where `driver exec` and `driver resolve` write heartbeats.
+func stateRoot() string {
+	if root := os.Getenv("AGENT_DRIVER_STATE_ROOT"); root != "" {
+		return root
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "orca-factory")
 }
 
 // runnerStateDir is the isolated CI runners' state directory, or "" on a host

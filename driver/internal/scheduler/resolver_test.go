@@ -197,7 +197,7 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 	l := &fakeIssues{issueComments: comments}
 	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
 	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-	if err := r.ResolveTicket(context.Background(), ticket, "new-controller"); err == nil {
+	if err := r.ResolveTicket(context.Background(), ticket, "new-controller", nil); err == nil {
 		t.Fatal("expected interrupted start")
 	}
 	if len(l.comments) == 0 || !strings.Contains(l.comments[0], "run=source-run") {
@@ -265,7 +265,7 @@ func resolverRecord(t *testing.T, comments []task.Comment) (Ticket, resolver.Rec
 		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
 	}, Orca: &resolverStartupProbe{}}
 	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-	if err := r.ResolveTicket(context.Background(), ticket, "controller"); err == nil || err.Error() != "stop after durable registration" {
+	if err := r.ResolveTicket(context.Background(), ticket, "controller", nil); err == nil || err.Error() != "stop after durable registration" {
 		t.Fatalf("expected interrupted start, got %v", err)
 	}
 	for _, body := range l.comments {

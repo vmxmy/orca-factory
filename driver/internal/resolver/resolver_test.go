@@ -110,18 +110,36 @@ func setupController() (*Controller, *memoryStore, *fakeOrca) {
 // controller starts a fresh run instead of awaiting a task that cannot exist.
 func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	c, s, o := setupController()
+	path := filepath.Join(t.TempDir(), "resolver.heartbeat.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hb, err := orca.StartHeartbeat(ctx, path, "first", time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Heartbeat = hb
+	beatRun := func() string {
+		beat, found, err := orca.ReadBeat(path)
+		if err != nil || !found {
+			t.Fatalf("beat found=%v err=%v", found, err)
+		}
+		return beat.Run
+	}
 	o.startErr = fmt.Errorf("worker start: %w", maintenance.ErrRefused)
 	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
 		t.Fatalf("refusal not reported: %v", err)
 	}
-	if s.record.Phase != "pending" || s.record.Run != "" {
-		t.Fatalf("refused dispatch kept run: %+v", s.record)
+	if s.record.Phase != "pending" || s.record.Run != "" || beatRun() != "" {
+		t.Fatalf("refused dispatch kept run: %+v beat run=%q", s.record, beatRun())
 	}
 	o.tasks = []orca.Task{}
 	c.Terminal = "second"
 	p, err := c.Step(context.Background())
 	if err != nil || p.Phase != "running" || o.startCalls != 2 {
 		t.Fatalf("replacement did not dispatch: phase=%v starts=%d err=%v", p, o.startCalls, err)
+	}
+	if beatRun() != "run_1" {
+		t.Fatalf("beat run=%q, want the resolver Run", beatRun())
 	}
 }
 
@@ -411,6 +429,42 @@ func TestReplacementCannotRedispatchWhenOriginalRequestIsUnknown(t *testing.T) {
 	}
 	if o.startCalls != 0 || o.releases != 0 {
 		t.Fatal("unconfirmed request replayed")
+	}
+}
+
+// The scheduler abandoned a dead resolver's worker: Orca returns the task to
+// blocked with no dispatch or report and lists the worker abandoned. The
+// replacement controller settles it as failed instead of polling forever.
+func TestReplacementControllerSettlesAbandonedWorker(t *testing.T) {
+	c, s, o := setupController()
+	var tasks struct {
+		Result struct {
+			Tasks []orca.Task `json:"tasks"`
+		} `json:"result"`
+	}
+	var workers struct {
+		Result orca.Receipt `json:"result"`
+	}
+	for sample, into := range map[string]any{"orca-task-list-abandoned.json": &tasks, "orca-worker-list-abandoned.json": &workers} {
+		raw, err := os.ReadFile("../../testdata/recorded/" + sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(raw, into); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := tasks.Result.Tasks[0]
+	if task.Status != "blocked" || task.DispatchID != "" {
+		t.Fatalf("recording must exercise an abandoned task: %+v", task)
+	}
+	s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Run: task.RunID, Task: task.ID, Dispatch: "ctx_ee6da2ada658", Spec: c.Spec, Agent: c.Agent}
+	o.tasks, o.workers = tasks.Result.Tasks, workers.Result
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.record.Phase != "result" || s.record.Outcome != "failed" || o.releases != 1 {
+		t.Fatalf("abandoned worker not settled: %+v releases=%d", s.record, o.releases)
 	}
 }
 

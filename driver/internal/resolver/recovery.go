@@ -12,6 +12,7 @@ type workerIdentity struct {
 	Task     string `json:"taskId"`
 	Run      string `json:"runId"`
 	Dispatch string `json:"dispatchId"`
+	State    string `json:"workerState"`
 	Status   string `json:"dispatchStatus"`
 	Resource struct {
 		ReleaseState string `json:"releaseState"`

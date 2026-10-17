@@ -103,6 +103,20 @@ orca-factory-driver status --json
 
 配额低于暂停阈值时，调度器暂停到 reset 时间，或无 reset 时等到退避期限后再允许一次发现刷新；暂停期间不应通过重启或完整评论扫描来试探额度。无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
+### 守护进程被杀后的恢复
+
+终端句柄存在或派工显示 active 都不能证明执行器进程还活着：进程被外部 `kill` 后，终端和派工记录可能长时间保持原样。调度器因此读取 `driver exec`（处置 Agent 为 `driver resolve`）每 30 秒写入的心跳文件 `<状态根>/<仓库名>/<票号>/executor.heartbeat.json`（处置 Agent 为 `resolver.heartbeat.json`），字段与判定见 [CONTRACTS.md](CONTRACTS.md)。
+
+1. 查看调度日志里 `event=heartbeat` 的行，`result` 为 `alive`、`dead` 或 `uncertain`。
+2. `dead`（心跳超过 5 分钟未更新且 pid 不存在）：调度器复读心跳并重新判定、复读票据归属，仍为 `dead` 且归属未变才对该 Run 内未结算或 `workerState=abandoned` 的派工执行 `worker-abandon`（已 abandoned 的重调回执仍列出残留终端，上次关终端失败可在下一轮补关），关闭执行器的残留终端，同时关闭 abandon 回执 `residualResources` 列出的 worker 残留终端（Orca 只隔离派工、不关 worker 终端），删除过期心跳，再从 checkpoint 重启执行器。重启后的执行器看到 worker 为 `abandoned` 且无报告，按 worker 退出转 correction；处置 Agent 看到同样状态时把这次处置记为 failed。同一轮日志随后出现 `event=launch`。处置 Agent 回收的是它自己的 Run（处置记录中的 `run`；首次保存处置记录前被杀时只用心跳中的 `run`），不碰原执行器的 Run。
+   票面仍是 `term=-`（执行器已写心跳、尚未登记终端）时同样先看心跳：`alive` 或 `uncertain` 不重派；没有心跳，或心跳早于本轮认领（上一轮正常退出留下），按登记宽限期判断；回收时不列执行器终端，改关闭心跳 `terminal` 记录的执行器终端和 abandon 回执列出的 worker 残留终端。
+3. `uncertain`（心跳新鲜但 pid 不存在，或心跳过期但 pid 存在）：调度器只记录，不重派。pid 复用、时钟漂移或心跳目录不可写都可能造成。不要删除心跳文件：删除后调度器回到终端与派工证据，残留终端或 active 派工会让票一直等待，也失去随后判 `dead` 的证据。
+   - 心跳新鲜但 pid 不存在：通常是进程刚被杀。保留心跳，超时后下一轮判 `dead`，按第 2 步回收。
+   - 心跳过期但 pid 存在：用 `ps -p <pid> -o args=` 核对。是卡住的 `driver exec` 或 `driver resolve` 时结束该进程，下一轮判 `dead` 回收。pid 已被其他进程复用时，心跳不会再变为 `dead`；人工按第 2 步对该 Run 执行 `worker-abandon` 并关闭残留终端，之后再删除心跳。
+4. 回收失败时日志出现 `dead process reap failed`，票保持原状，下一轮重试。
+5. 阈值调整：给 `driver serve` 设置 `AGENT_HEARTBEAT_TIMEOUT_MINUTES`（整数分钟，默认 5）。
+6. 没有心跳文件的在途执行器（升级前启动的）仍按终端与派工证据判断，不会被误判为 `dead`。
+
 上线时先完成检查与审查，保存旧二进制及其提交信息。部署顺序：
 
 1. 运行 `orca-factory-driver maintenance drain`。

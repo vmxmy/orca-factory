@@ -298,13 +298,20 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			if !owned(t) && (total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight) {
 				continue
 			}
-			if (t.Resolution == nil || (t.Resolution.Phase != "result" && t.Resolution.Phase != "waiting")) && t.Terminal != "" && t.Terminal != "-" {
-				absent, readErr := s.Backend.TerminalAbsent(ctx, t)
-				if readErr != nil || !absent {
+			beat := beatLegacy
+			if (t.Resolution == nil || (t.Resolution.Phase != "result" && t.Resolution.Phase != "waiting")) && t.Terminal != "" {
+				beat = s.heartbeat(ctx, t, &problems)
+				if beat == beatSkip {
 					continue
 				}
+				if beat == beatLegacy && !unregistered(t) {
+					absent, readErr := s.Backend.TerminalAbsent(ctx, t)
+					if readErr != nil || !absent {
+						continue
+					}
+				}
 			}
-			if (t.Resolution == nil || t.Resolution.Phase != "result") && t.Terminal == "-" && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+			if beat == beatLegacy && (t.Resolution == nil || t.Resolution.Phase != "result") && unregistered(t) && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
 				continue
 			}
 			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
@@ -313,22 +320,33 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			continue
 		} else if t.Owner == machine.OwnerExecutor {
 			if unregistered(t) {
-				// The claim never gained an executor terminal; after the grace period no
-				// executor exists to provide evidence, so treat the claim as a failed executor.
-				result := "dead"
-				if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
-					result = "uncertain"
-				}
-				s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
-				if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+				// An executor beats before it registers its terminal, so a heartbeat
+				// decides first. Without one, after the grace period no executor exists
+				// to provide evidence, so treat the claim as a failed executor.
+				switch s.heartbeat(ctx, t, &problems) {
+				case beatSkip:
 					continue
+				case beatLegacy:
+					result := "dead"
+					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+						result = "uncertain"
+					}
+					s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
+					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+						continue
+					}
 				}
 			} else {
-				absent, e1 := s.Backend.TerminalAbsent(ctx, t)
-				inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
-				s.ownership(t, absent, inactive, e1, e2)
-				if e1 != nil || e2 != nil || !absent || !inactive {
+				switch s.heartbeat(ctx, t, &problems) {
+				case beatSkip:
 					continue
+				case beatLegacy:
+					absent, e1 := s.Backend.TerminalAbsent(ctx, t)
+					inactive, e2 := s.Backend.NoActiveDispatch(ctx, t)
+					s.ownership(t, absent, inactive, e1, e2)
+					if e1 != nil || e2 != nil || !absent || !inactive {
+						continue
+					}
 				}
 			}
 			if !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {

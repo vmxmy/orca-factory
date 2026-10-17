@@ -79,6 +79,10 @@ type Executor struct {
 	Now      func() time.Time
 	Recovery Recovery
 	Sleep    func(context.Context, time.Duration) error
+	// Heartbeat is the process-level liveness evidence the scheduler reads; nil writes none.
+	Heartbeat *orca.Heartbeat
+	// HeartbeatPath, when set, starts Heartbeat once Start accepts the reservation.
+	HeartbeatPath string
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -274,6 +278,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				return fmt.Errorf("Orca run takeover failed; reconcile request before retry: %w", safeDependencyError(callErr))
 			}
 			result.RunID = cp.Run
+			e.Heartbeat.SetRun(result.RunID)
 		} else {
 			receipt, callErr = e.Orca.RunCreate(ctx, runRequest(t, c, "run"), t.Identifier+" "+t.Title)
 			if callErr != nil {
@@ -283,6 +288,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.RunID == "" {
 				return errors.New("Orca run receipt missing ID")
 			}
+			e.Heartbeat.SetRun(result.RunID)
 		}
 		callErr = e.retryRead(ctx, t, &result, "baseline lookup", func() error {
 			var readErr error
@@ -713,13 +719,18 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return nil, err
 			}
 		}
-		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
+		// An abandoned worker (orca-worker-list-abandoned.json) is fenced and
+		// reports no liveness verdict; like an exited one it never reports.
+		if worker != nil && (worker.Projection.Liveness.Verdict == "exited" || worker.Projection.Stage.Worker == "abandoned") {
 			report, _, _, err := readReport()
 			if err != nil {
 				return nil, err
 			}
 			if report != nil {
 				return report, nil
+			}
+			if worker.Projection.Stage.Worker == "abandoned" {
+				return livenessFailure("worker abandoned without worker_done"), nil
 			}
 			return livenessFailure("worker exited without worker_done"), nil
 		}

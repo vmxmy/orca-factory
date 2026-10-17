@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -221,6 +222,22 @@ func (b *statusBackend) NotifyFeishu(ctx context.Context, ticket scheduler.Ticke
 		return source.NotifyFeishu(ctx, ticket)
 	}
 	return nil
+}
+
+// Liveness and ReapDead keep the Runtime's heartbeat evidence visible through
+// the wrapper; a backend without it leaves terminal and dispatch evidence.
+func (b *statusBackend) Liveness(ctx context.Context, ticket scheduler.Ticket) (orca.Liveness, error) {
+	if source, ok := b.Backend.(scheduler.LivenessBackend); ok {
+		return source.Liveness(ctx, ticket)
+	}
+	return orca.LivenessNone, nil
+}
+
+func (b *statusBackend) ReapDead(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(scheduler.LivenessBackend); ok {
+		return source.ReapDead(ctx, ticket)
+	}
+	return errors.New("backend has no heartbeat evidence")
 }
 
 func serveWithStatus(ctx context.Context, lockPath string, initialize func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error), wait func(context.Context) error, report func(error)) error {

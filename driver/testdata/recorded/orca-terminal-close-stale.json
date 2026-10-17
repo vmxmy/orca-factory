@@ -1,0 +1,11 @@
+{
+  "id": "96a10003-c9d6-45e2-81bd-2562ab5acb86",
+  "ok": false,
+  "error": {
+    "code": "terminal_handle_stale",
+    "message": "terminal_handle_stale"
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

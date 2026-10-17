@@ -88,15 +88,40 @@ func (r *Runtime) TerminalAbsent(ctx context.Context, t Ticket) (bool, error) {
 	return true, nil
 }
 func (r *Runtime) NoActiveDispatch(ctx context.Context, t Ticket) (bool, error) {
-	if t.Run == "" {
-		return false, errors.New("executor run unknown")
+	rows, err := r.dispatches(ctx, t.Run)
+	if err != nil {
+		return false, err
 	}
+	for _, row := range rows {
+		if !settledDispatch(row.Status) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func settledDispatch(status string) bool {
+	switch status {
+	case "completed", "failed", "abandoned", "cancelled":
+		return true
+	}
+	return false
+}
+
+type dispatchRow struct{ ID, Status, WorkerState string }
+
+// dispatches enumerates every dispatch of a Run; an incomplete enumeration is an error.
+func (r *Runtime) dispatches(ctx context.Context, run string) ([]dispatchRow, error) {
+	if run == "" {
+		return nil, errors.New("executor run unknown")
+	}
+	var rows []dispatchRow
 	cursor := ""
 	seen := map[string]bool{}
 	for {
-		receipt, err := r.Orca.WorkerList(ctx, orca.ListOptions{Run: t.Run, Cursor: cursor, Limit: 100, IncludeRemote: true})
+		receipt, err := r.Orca.WorkerList(ctx, orca.ListOptions{Run: run, Cursor: cursor, Limit: 100, IncludeRemote: true})
 		if err != nil {
-			return false, errors.New("dispatch read failed")
+			return nil, errors.New("dispatch read failed")
 		}
 		var scope struct {
 			Run string `json:"run"`
@@ -106,23 +131,21 @@ func (r *Runtime) NoActiveDispatch(ctx context.Context, t Ticket) (bool, error) 
 			NextCursor string `json:"nextCursor"`
 		}
 		var workers []struct {
-			Status string `json:"dispatchStatus"`
+			ID          string `json:"dispatchId"`
+			Status      string `json:"dispatchStatus"`
+			WorkerState string `json:"workerState"`
 		}
-		if json.Unmarshal(receipt["scope"], &scope) != nil || scope.Run != t.Run || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil || json.Unmarshal(receipt["workers"], &workers) != nil || string(receipt["workers"]) == "null" {
-			return false, errors.New("incomplete dispatch enumeration")
+		if json.Unmarshal(receipt["scope"], &scope) != nil || scope.Run != run || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil || json.Unmarshal(receipt["workers"], &workers) != nil || string(receipt["workers"]) == "null" {
+			return nil, errors.New("incomplete dispatch enumeration")
 		}
 		for _, worker := range workers {
-			switch worker.Status {
-			case "completed", "failed", "abandoned", "cancelled":
-			default:
-				return false, nil
-			}
+			rows = append(rows, dispatchRow{ID: worker.ID, Status: worker.Status, WorkerState: worker.WorkerState})
 		}
 		if !*page.HasMore {
-			return true, nil
+			return rows, nil
 		}
 		if page.NextCursor == "" || seen[page.NextCursor] {
-			return false, errors.New("invalid dispatch cursor")
+			return nil, errors.New("invalid dispatch cursor")
 		}
 		cursor = page.NextCursor
 		seen[cursor] = true

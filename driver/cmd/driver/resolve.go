@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
@@ -51,6 +52,11 @@ func resolveTicket(args []string) int {
 				logger.Error("resolver lock close", "err", err)
 			}
 		}()
+		// Only the lock holder may publish: a rejected duplicate must not overwrite the running resolver's beat.
+		heartbeat, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil)
+		if err != nil {
+			return 1, err
+		}
 		runtime, err := scheduler.NewRuntime(ctx, cfg, repos)
 		if err != nil {
 			return 1, err
@@ -61,7 +67,7 @@ func resolveTicket(args []string) int {
 		}
 		for _, ticket := range tickets {
 			if ticket.Identifier == args[0] {
-				err = runtime.ResolveTicket(runx.WithLogger(ctx, logger), ticket, os.Getenv("ORCA_TERMINAL_HANDLE"))
+				err = runtime.ResolveTicket(runx.WithLogger(ctx, logger), ticket, os.Getenv("ORCA_TERMINAL_HANDLE"), heartbeat)
 				if err != nil {
 					return 1, err
 				}

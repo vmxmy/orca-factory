@@ -13,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -175,5 +176,25 @@ func TestStatusSnapshotPausedTick(t *testing.T) {
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// serve wraps the Runtime for status snapshots; the wrapper must still expose
+// heartbeat liveness, or a killed executor is never judged dead (OF-22).
+func TestStatusBackendForwardsHeartbeatLiveness(t *testing.T) {
+	root := t.TempDir()
+	if err := orca.WriteBeat(orca.HeartbeatPath(root, "proj", "OF-1", "executor"), orca.Beat{PID: 7, At: time.Unix(0, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &scheduler.Runtime{StateRoot: root, PIDAlive: func(int) bool { return false },
+		Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}}}
+	var backend scheduler.Backend = &statusBackend{Backend: runtime}
+	liveness, ok := backend.(scheduler.LivenessBackend)
+	if !ok {
+		t.Fatal("status wrapper hides heartbeat liveness")
+	}
+	got, err := liveness.Liveness(context.Background(), scheduler.Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-"})
+	if err != nil || got != orca.LivenessDead {
+		t.Fatalf("liveness=%q err=%v, want dead", got, err)
 	}
 }
