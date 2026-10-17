@@ -148,14 +148,18 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		if err = c.recoverStart(ctx, p); err != nil {
 			return nil, err
 		}
+		if p.Phase == "waiting" {
+			return p, nil
+		}
 	}
 	if p.Phase == "pending" {
 		receipt, err := c.Orca.WorkerStart(ctx, request("dispatch"), orca.StartOptions{Run: p.Run, Spec: p.Spec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: "origin/main", Name: fmt.Sprintf("%s-resolver-%d", c.Ticket, p.Attempt), Setup: "skip", Agent: p.Agent, Model: p.Model, Effort: p.Effort})
 		callErr := err
 		if errors.Is(callErr, maintenance.ErrRefused) {
-			// Nothing reached Orca: drop the run so a replacement controller
-			// starts a fresh one instead of awaiting a task that cannot exist.
-			p.Run = ""
+			// Nothing reached Orca: end the round so the next one starts a fresh
+			// Run. Clearing only the Run left a record equal to the first pending
+			// one, which a stale pre-write read could swallow (ZCP-141).
+			p.Phase, p.Result = "waiting", "maintenance refused dispatch before it reached Orca"
 			c.Heartbeat.SetRun("")
 			return nil, errors.Join(callErr, c.Store.Save(ctx, *p))
 		}

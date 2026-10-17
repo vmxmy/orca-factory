@@ -132,8 +132,8 @@ func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
 		t.Fatalf("refusal not reported: %v", err)
 	}
-	if s.record.Phase != "pending" || s.record.Run != "" || beatRun() != "" {
-		t.Fatalf("refused dispatch kept run: %+v beat run=%q", s.record, beatRun())
+	if s.record.Phase != "waiting" || beatRun() != "" {
+		t.Fatalf("refused dispatch did not end the round: %+v beat run=%q", s.record, beatRun())
 	}
 	o.tasks = []orca.Task{}
 	c.Terminal = "second"

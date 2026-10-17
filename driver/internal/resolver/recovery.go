@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -111,6 +112,18 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 		found = &copy
 	}
 	if found == nil {
+		if len(tasks) == 0 {
+			workers, err := c.workers(ctx, p.Run)
+			if err != nil {
+				return err
+			}
+			// Complete reads of the Run hold no task and no worker: the original
+			// controller stopped before dispatch (ZCP-141), so nothing awaits it.
+			if len(workers) == 0 {
+				p.Phase, p.Result = "waiting", fmt.Sprintf("resolver run %s has no task or worker; dispatch never started", p.Run)
+				return c.Store.Save(ctx, *p)
+			}
+		}
 		return errors.New("uncertain resolver dispatch; awaiting original task evidence")
 	}
 	p.Task = found.ID
