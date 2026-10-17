@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -52,13 +53,16 @@ func TestFactoryCheckerThreeStates(t *testing.T) {
 // that answers `pr list` from prList and records every call.
 type coreSyncFixture struct {
 	origin, repo, factory, ghLog, prList string
-	syncer                               coreSyncer
+	prView, prChecks, merged             string
+	syncer                               *coreSyncer
 }
+
+const sameRepoFields = `"isCrossRepository":false,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"example"}`
 
 func newCoreSyncFixture(t *testing.T) coreSyncFixture {
 	t.Helper()
 	root := t.TempDir()
-	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json")}
+	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged")}
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(root, "state"))
 	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
 		t.Setenv(key, "t")
@@ -87,14 +91,20 @@ case "$1 $2" in
 "pr list") cat `+f.prList+` ;;
 "pr create") echo https://github.com/example/repo/pull/9 ;;
 "pr close") ;;
+"pr view") if [ -e `+f.merged+` ]; then echo '{"state":"MERGED",`+sameRepoFields+`}'; else cat `+f.prView+`; fi ;;
+"pr checks") cat `+f.prChecks+` ;;
+"pr merge") touch `+f.merged+` ;;
 *) exit 9 ;;
 esac
 `)
 	if err := os.WriteFile(f.prList, []byte("[]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(f.prView, []byte(`{"state":"MERGED",`+sameRepoFields+`}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	f.syncer = coreSyncer{factoryRoot: f.factory, cacheDir: filepath.Join(root, "cache")}
+	f.syncer = &coreSyncer{factoryRoot: f.factory, cacheDir: filepath.Join(root, "cache")}
 	return f
 }
 
@@ -147,7 +157,7 @@ func TestCoreSyncOpensOnePRPerFactoryVersion(t *testing.T) {
 // stale core while nobody merges it; the current version still opens once.
 func TestCoreSyncSupersedesOlderSyncPR(t *testing.T) {
 	f := newCoreSyncFixture(t)
-	if err := os.WriteFile(f.prList, []byte(`[{"headRefName":"chore/orca-factory-core-sync-0ld5a1"},{"headRefName":"feature/x"}]`+"\n"), 0o644); err != nil {
+	if err := os.WriteFile(f.prList, []byte(`[{"number":7,"headRefName":"chore/orca-factory-core-sync-0ld5a1",`+sameRepoFields+`},{"number":8,"headRefName":"feature/x",`+sameRepoFields+`}]`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.syncer.sync(context.Background(), f.project()); err != nil {
@@ -157,10 +167,115 @@ func TestCoreSyncSupersedesOlderSyncPR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if log := string(b); !strings.Contains(log, "pr close chore/orca-factory-core-sync-0ld5a1 --delete-branch") || strings.Contains(log, "pr close feature/x") {
+	if log := string(b); !strings.Contains(log, "pr close 7 --delete-branch") || strings.Contains(log, "pr close 8") {
 		t.Fatalf("gh calls %q", log)
 	}
 	if n := f.prCreates(t); n != 1 {
 		t.Fatalf("pr create called %d times, want once", n)
+	}
+}
+
+// TestCoreSyncAutoMerge is OF-133: once the current factory version's sync PR
+// touches only scripts/agent-gates/, every required check has passed and it
+// is mergeable, the next sync squash-merges it at the checked head and reads
+// back MERGED; any unmet condition leaves it open with an error (WARN, retry
+// on the next discovery), and an already merged PR is a no-op.
+func TestCoreSyncAutoMerge(t *testing.T) {
+	const passed = `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"pass"}]`
+	for _, tc := range []struct {
+		name, files, checks, head string
+		changed                   int
+		merge                     bool
+	}{
+		{"all conditions met", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, sameRepoFields, 1, true},
+		{"file outside agent-gates", `[{"path":"scripts/agent-gates/install.sh"},{"path":"outside.txt"}]`, passed, sameRepoFields, 2, false},
+		{"check not passed", `[{"path":"scripts/agent-gates/install.sh"}]`, `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"pending"}]`, sameRepoFields, 1, false},
+		{"no required checks", `[{"path":"scripts/agent-gates/install.sh"}]`, `[]`, sameRepoFields, 1, false},
+		{"fork head", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, `"isCrossRepository":true,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"forker"}`, 1, false},
+		{"head repository differs", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, `"isCrossRepository":false,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"other"}`, 1, false},
+		{"file list truncated", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, sameRepoFields, 101, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCoreSyncFixture(t)
+			if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+				t.Fatal(err)
+			}
+			branch := "chore/orca-factory-core-sync-" + gitIn(t, f.factory, "rev-parse", "--short", "HEAD")
+			view := fmt.Sprintf(`{"number":9,"state":"OPEN","headRefName":%q,"headRefOid":"abc123","mergeable":"MERGEABLE",%s,"changedFiles":%d,"files":%s}`+"\n", branch, tc.head, tc.changed, tc.files)
+			if err := os.WriteFile(f.prView, []byte(view), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.prChecks, []byte(tc.checks+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := f.syncer.sync(context.Background(), f.project())
+			b, readErr := os.ReadFile(f.ghLog)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !tc.merge {
+				if err == nil || strings.Contains(string(b), "pr merge") {
+					t.Fatalf("err=%v gh calls %q, want no merge and an error", err, b)
+				}
+				return
+			}
+			if err != nil || strings.Count(string(b), "pr merge 9 --squash --match-head-commit abc123") != 1 {
+				t.Fatalf("err=%v gh calls %q, want one squash merge at the checked head", err, b)
+			}
+			if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+				t.Fatalf("sync after merge: %v", err)
+			}
+			if b, _ := os.ReadFile(f.ghLog); strings.Count(string(b), "pr merge") != 1 {
+				t.Fatalf("merged PR merged again: %q", b)
+			}
+		})
+	}
+}
+
+// TestCoreSyncAutoMergeIgnoresForkPR: gh matches PRs by head branch name only,
+// so a fork PR named like this or an older version's sync branch is neither
+// the existing sync PR nor closed as superseded; the real sync PR still opens.
+func TestCoreSyncAutoMergeIgnoresForkPR(t *testing.T) {
+	f := newCoreSyncFixture(t)
+	branch := "chore/orca-factory-core-sync-" + gitIn(t, f.factory, "rev-parse", "--short", "HEAD")
+	fork := `"isCrossRepository":true,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"forker"}`
+	list := fmt.Sprintf(`[{"number":5,"headRefName":%q,%s},{"number":6,"headRefName":"chore/orca-factory-core-sync-0ld5a1",%s}]`+"\n", branch, fork, fork)
+	if err := os.WriteFile(f.prList, []byte(list), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(f.ghLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if log := string(b); strings.Contains(log, "pr close") || strings.Contains(log, "pr merge") || f.prCreates(t) != 1 {
+		t.Fatalf("gh calls %q, want the sync PR opened and no fork PR closed or merged", log)
+	}
+}
+
+// TestCoreSyncAutoMergeWarnsOncePerReason: a sync PR that stays unmergeable
+// for the same reason is reported once, not on every discovery; a new reason
+// is reported again.
+func TestCoreSyncAutoMergeWarnsOncePerReason(t *testing.T) {
+	f := newCoreSyncFixture(t)
+	if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+		t.Fatal(err)
+	}
+	branch := "chore/orca-factory-core-sync-" + gitIn(t, f.factory, "rev-parse", "--short", "HEAD")
+	view := fmt.Sprintf(`{"number":9,"state":"OPEN","headRefName":%q,"headRefOid":"abc123","mergeable":"MERGEABLE",%s,"changedFiles":1,"files":[{"path":"scripts/agent-gates/install.sh"}]}`+"\n", branch, sameRepoFields)
+	if err := os.WriteFile(f.prView, []byte(view), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reported []bool
+	for _, checks := range []string{`[{"name":"go","bucket":"pending"}]`, `[{"name":"go","bucket":"pending"}]`, `[{"name":"go","bucket":"fail"}]`} {
+		if err := os.WriteFile(f.prChecks, []byte(checks+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reported = append(reported, f.syncer.sync(context.Background(), f.project()) != nil)
+	}
+	if !slices.Equal(reported, []bool{true, false, true}) {
+		t.Fatalf("reported=%v, want the repeated pending reason reported once", reported)
 	}
 }

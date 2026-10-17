@@ -72,7 +72,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			if err != nil {
 				return nil, nil, err
 			}
-			s.SyncCore = coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}.sync
+			s.SyncCore = (&coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}).sync
 		}
 		if err := s.AwaitProjects(ctx, sleepContext); err != nil {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
