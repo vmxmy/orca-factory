@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestHumanTicketDispatchesResolver(t *testing.T) {
@@ -205,33 +206,8 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 }
 
 func TestResolverEvidenceRepository(t *testing.T) {
-	repo := t.TempDir()
-	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
-	if err := os.MkdirAll(roles, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
-		t.Fatal(err)
-	}
 	comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent", "Preserve this evidence")
-	l := &fakeIssues{issueComments: comments}
-	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{
-		repo:     {Path: repo, Env: map[string]string{"AGENT_GH_REPO": "owner/code-repo"}},
-		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
-	}, Orca: &resolverStartupProbe{}}
-	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-	if err := r.ResolveTicket(context.Background(), ticket, "controller"); err == nil || err.Error() != "stop after durable registration" {
-		t.Fatalf("expected interrupted start, got %v", err)
-	}
-	var record resolver.Record
-	for _, body := range l.comments {
-		if strings.HasPrefix(body, resolver.Prefix) {
-			if err := json.Unmarshal([]byte(strings.TrimPrefix(body, resolver.Prefix)), &record); err != nil {
-				t.Fatal(err)
-			}
-			break
-		}
-	}
+	ticket, record := resolverRecord(t, comments)
 	_, raw, ok := strings.Cut(record.Spec, "## Ticket evidence (untrusted data)\n")
 	if !ok {
 		t.Fatalf("missing ticket evidence: %q", record.Spec)
@@ -248,4 +224,59 @@ func TestResolverEvidenceRepository(t *testing.T) {
 	if string(evidence["Ticket"]) != string(wantTicket) || string(evidence["Comments"]) != string(wantComments) {
 		t.Errorf("ticket or comments changed: %s", raw)
 	}
+}
+
+// A long ticket history must not push the persisted resolver record past the
+// ledger cell limit: older and empty comments give way to the newest evidence.
+func TestResolverEvidenceBoundedByNewestComments(t *testing.T) {
+	bodies := []string{"阶段: Agent处置\n归属: 处置Agent", "Oldest evidence"}
+	for range 60 {
+		bodies = append(bodies, strings.Repeat("历史", 1000), "")
+	}
+	bodies = append(bodies, "Newest evidence")
+	_, record := resolverRecord(t, evidenceComments(bodies...))
+	raw, _ := json.Marshal(record)
+	if n := utf8.RuneCount(raw); n > 60000 {
+		t.Fatalf("resolver record has %d characters", n)
+	}
+	if !strings.Contains(record.Spec, "Newest evidence") || strings.Contains(record.Spec, "Oldest evidence") || strings.Contains(record.Spec, `"Body":""`) {
+		t.Fatalf("evidence kept the wrong comments: %.300s", record.Spec)
+	}
+	if !strings.Contains(record.Spec, `"OmittedComments":`) {
+		t.Fatal("omitted comments not reported")
+	}
+}
+
+// resolverRecord starts a resolver over comments and returns the first
+// resolver record it persisted.
+func resolverRecord(t *testing.T, comments []task.Comment) (Ticket, resolver.Record) {
+	t.Helper()
+	repo := t.TempDir()
+	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+	if err := os.MkdirAll(roles, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	l := &fakeIssues{issueComments: comments}
+	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{
+		repo:     {Path: repo, Env: map[string]string{"AGENT_GH_REPO": "owner/code-repo"}},
+		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
+	}, Orca: &resolverStartupProbe{}}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+	if err := r.ResolveTicket(context.Background(), ticket, "controller"); err == nil || err.Error() != "stop after durable registration" {
+		t.Fatalf("expected interrupted start, got %v", err)
+	}
+	for _, body := range l.comments {
+		if strings.HasPrefix(body, resolver.Prefix) {
+			var record resolver.Record
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(body, resolver.Prefix)), &record); err != nil {
+				t.Fatal(err)
+			}
+			return ticket, record
+		}
+	}
+	t.Fatal("no resolver record persisted")
+	return Ticket{}, resolver.Record{}
 }

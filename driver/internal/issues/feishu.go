@@ -29,8 +29,12 @@ var errFeishuTaskNotFound = errors.New("task not found")
 // Such a row is not yet a task: reads skip it and retry on a later round.
 var errFeishuRowUnsettled = errors.New("feishu ticket row has no 序号 yet")
 
+// errFeishuTableChanged marks a listing whose pages carried different table revs.
+var errFeishuTableChanged = errors.New("feishu table changed between pages")
+
 const (
-	feishuPageLimit = 500
+	feishuPageLimit    = 500
+	feishuReadAttempts = 3
 	// feishuBatchLimit is the base/v3 per-request record limit.
 	feishuBatchLimit       = 200
 	feishuReadBackTimeout  = 60 * time.Second
@@ -274,7 +278,19 @@ func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo s
 func (c *Feishu) Repository() string { return c.repo }
 
 // readAll pages through one listing; every page must carry the same table rev.
+// A write landing mid-read restarts the listing, a bounded number of times.
 func (c *Feishu) readAll(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, error) {
+	var err error
+	for range feishuReadAttempts {
+		var records []feishu.Record
+		if records, err = c.readPages(ctx, table, filter); !errors.Is(err, errFeishuTableChanged) {
+			return records, err
+		}
+	}
+	return nil, err
+}
+
+func (c *Feishu) readPages(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, error) {
 	id := c.tables[table].id
 	records := []feishu.Record{}
 	var rev int64
@@ -292,7 +308,7 @@ func (c *Feishu) readAll(ctx context.Context, table string, filter *feishu.Filte
 		if offset == 0 {
 			rev = page.Rev
 		} else if page.Rev != rev {
-			return nil, fmt.Errorf("feishu table %s changed between pages (rev %d, %d)", table, rev, page.Rev)
+			return nil, fmt.Errorf("%w: %s (rev %d, %d)", errFeishuTableChanged, table, rev, page.Rev)
 		}
 		records = append(records, page.Records...)
 		if !page.HasMore {

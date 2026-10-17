@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -123,12 +125,14 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 		}
 		contextComments[i].Body = strings.Join(lines, "\n")
 	}
+	contextComments, omitted := newestEvidence(contextComments)
 	env := r.Repositories[t.Repo].Env
 	evidence, err := json.Marshal(struct {
-		Repository string
-		Ticket     Ticket
-		Comments   []task.Comment
-	}{env["AGENT_GH_REPO"], contextTicket, contextComments})
+		Repository      string
+		Ticket          Ticket
+		Comments        []task.Comment
+		OmittedComments int `json:",omitempty"`
+	}{env["AGENT_GH_REPO"], contextTicket, contextComments, omitted})
 	if err != nil {
 		return err
 	}
@@ -263,6 +267,7 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	r.board(ctx, t, machine.PhaseMergeQueue, decision.Reason)
 	return nil
 }
+
 const resolverFailureLimit = 3
 
 func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Record, reason string) error {
@@ -309,4 +314,28 @@ func resolverApproved(t Ticket) bool {
 	}
 	p, err := resolver.ParseResult(t.Resolution.Result)
 	return err == nil && p.Action == "merge" && p.Handoff.QueueID == t.Handoff.QueueID && p.Handoff.Head == t.Handoff.Head && p.Handoff.PR == t.Handoff.PR
+}
+
+// resolverEvidenceRunes bounds the comment evidence embedded in the resolver
+// spec. Every resolver record persists that spec in one ledger cell, so an
+// unbounded ticket history would overflow it.
+const resolverEvidenceRunes = 40000
+
+// newestEvidence keeps the newest non-empty comments that fit the evidence
+// budget and reports how many it left out.
+func newestEvidence(comments []task.Comment) ([]task.Comment, int) {
+	kept := []task.Comment{}
+	budget := resolverEvidenceRunes
+	for i := len(comments) - 1; i >= 0; i-- {
+		if strings.TrimSpace(comments[i].Body) == "" {
+			continue
+		}
+		raw, _ := json.Marshal(comments[i])
+		if budget -= utf8.RuneCount(raw); budget < 0 {
+			break
+		}
+		kept = append(kept, comments[i])
+	}
+	slices.Reverse(kept)
+	return kept, len(comments) - len(kept)
 }
