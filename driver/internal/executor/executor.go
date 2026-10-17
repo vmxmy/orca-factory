@@ -381,9 +381,17 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
-		watch := workerWatch{stop: func(dispatch string) error {
+		watch := workerWatch{unobservedSince: cp.UnobservedSince, stop: func(dispatch string) error {
 			_, err := e.Orca.WorkerStop(ctx, scopedRequest(t, c, "stop-"+dispatch, 1), dispatch)
 			return err
+		}, persist: func(since time.Time) error {
+			next := cp
+			next.UnobservedSince = since
+			if err := saveCheckpoint(c, t, next); err != nil {
+				return err
+			}
+			cp = next
+			return nil
 		}, observe: func(w orca.Worker) error {
 			if cp.Worktree != "" || w.WorktreePath() == "" {
 				return nil
@@ -426,7 +434,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.State.Owner == machine.OwnerResolver {
 				return result, waitErr
 			}
-			releaseAllowed = report.Provenance != provenanceExecutorLiveness
+			releaseAllowed = report.Provenance != provenanceExecutorLiveness && report.Provenance != provenanceExecutorUnstarted
 		}
 		if cp.Completed {
 			releaseAllowed = cp.Settled
@@ -436,13 +444,22 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, waitErr
 		}
 		failureCause := "worker failed"
-		if report.Provenance == provenanceExecutorLiveness {
+		if report.Provenance == provenanceExecutorLiveness || report.Provenance == provenanceExecutorUnstarted {
 			failureCause = report.Body
 			failureOutput = report.Body
 		}
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
 			event = machine.EvWorkerFail
+		}
+		if report.Provenance == provenanceExecutorUnstarted {
+			event = machine.EvWorkerUnstarted
+			next := cp
+			next.Restarts++
+			if err = saveCheckpoint(c, t, next); err != nil {
+				return result, err
+			}
+			cp = next
 		}
 		if err = transition(event, nil); err != nil {
 			return result, err
@@ -650,14 +667,26 @@ func nestedString(r orca.Receipt, key, field string) string {
 	return receiptString(inner, field)
 }
 
-const provenanceExecutorLiveness = "executor_liveness"
+const (
+	provenanceExecutorLiveness  = "executor_liveness"
+	provenanceExecutorUnstarted = "executor_unstarted"
+)
 
 type workerWatch struct {
-	observe func(orca.Worker) error
-	stop    func(dispatch string) error
-	// unobservedSince spans read retries of one dispatch, never a restart: a
-	// restarted executor opens a fresh, still bounded window.
+	observe         func(orca.Worker) error
+	stop            func(dispatch string) error
+	persist         func(unobservedSince time.Time) error
 	unobservedSince time.Time
+}
+
+func (w *workerWatch) markUnobserved(since time.Time) error {
+	if w.persist != nil {
+		if err := w.persist(since); err != nil {
+			return err
+		}
+	}
+	w.unobservedSince = since
+	return nil
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
@@ -746,8 +775,10 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			if stopped, err := e.stopUnstarted(ctx, run, dispatch, watch); err != nil || stopped != nil {
 				return stopped, err
 			}
-		} else {
-			watch.unobservedSince = time.Time{}
+		} else if !watch.unobservedSince.IsZero() {
+			if err := watch.markUnobserved(time.Time{}); err != nil {
+				return nil, err
+			}
 		}
 		if awaiting != nil {
 			listed, status := worker != nil, ""
@@ -778,7 +809,9 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 func (e *Executor) stopUnstarted(ctx context.Context, run, dispatch string, watch *workerWatch) (*orca.WorkerReport, error) {
 	now := e.Now()
 	if watch.unobservedSince.IsZero() {
-		watch.unobservedSince = now
+		if err := watch.markUnobserved(now); err != nil {
+			return nil, err
+		}
 	}
 	if now.Sub(watch.unobservedSince) < resolver.StartUnobservedWindow {
 		return nil, nil
@@ -792,7 +825,7 @@ func (e *Executor) stopUnstarted(ctx context.Context, run, dispatch string, watc
 	}
 	for _, w := range workers {
 		if w.DispatchID == dispatch && resolver.DispatchEnded(w.DispatchStatus) {
-			return livenessFailure(fmt.Sprintf("worker turn did not start within %s; dispatch %s stopped", resolver.StartUnobservedWindow, dispatch)), nil
+			return &orca.WorkerReport{Provenance: provenanceExecutorUnstarted, Outcome: "failed", Body: fmt.Sprintf("worker turn did not start within %s; dispatch %s stopped", resolver.StartUnobservedWindow, dispatch)}, nil
 		}
 	}
 	return nil, nil

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
@@ -25,6 +26,12 @@ type checkpoint struct {
 	Pending                                      bool
 	Completed                                    bool
 	PendingParent                                string `json:",omitempty"`
+	// UnobservedSince is when the current dispatch was first seen pending
+	// without a started turn, kept so a restart resumes the window (OF-161).
+	UnobservedSince time.Time `json:",omitzero"`
+	// Restarts counts unstarted workers redone without a correction charge;
+	// it keeps their request IDs apart from the dispatch they replace.
+	Restarts int `json:",omitempty"`
 }
 
 func checkpointPath(c Config, t Ticket) string {

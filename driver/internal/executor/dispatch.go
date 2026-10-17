@@ -17,7 +17,16 @@ import (
 // Persist intent before I/O, then preserve every usable association even when
 // the command returns an error. Completion belongs only to this dispatch.
 func (e *Executor) startDispatch(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions) error {
-	return e.startDispatchWithRequest(ctx, c, t, cp, opts, scopedRequest(t, c, "worker", cp.Corrections+1))
+	return e.startDispatchWithRequest(ctx, c, t, cp, opts, workerRequest(t, c, cp, "worker"))
+}
+
+// workerRequest scopes a dispatch mutation to its correction round and, after
+// an unstarted worker was redone in the same round, to that restart.
+func workerRequest(t Ticket, c Config, cp *checkpoint, step string) string {
+	if cp.Restarts > 0 {
+		step = fmt.Sprintf("%s-restart%d", step, cp.Restarts)
+	}
+	return scopedRequest(t, c, step, cp.Corrections+1)
 }
 
 func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Ticket, cp *checkpoint, opts orca.StartOptions, request string) error {
@@ -36,6 +45,7 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
+	cp.UnobservedSince = time.Time{}
 	if cp.StartedAt == "" {
 		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
 	}
@@ -172,7 +182,7 @@ func (e *Executor) startCorrectionDispatch(ctx context.Context, c Config, t Tick
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
-	child, err := e.recovery().ChildTask(ctx, cp.Run, parent, spec, scopedRequest(t, c, "child", cp.Corrections+1))
+	child, err := e.recovery().ChildTask(ctx, cp.Run, parent, spec, workerRequest(t, c, cp, "child"))
 	if err != nil {
 		return fmt.Errorf("child task creation uncertain; reconcile request before retry: %w", safeDependencyError(err))
 	}
