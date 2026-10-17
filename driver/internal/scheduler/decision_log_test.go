@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/pause"
 )
 
@@ -233,5 +235,65 @@ func TestSchedulerLaunchDeferredOnEvidenceChange(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), `"result":"deferred"`) {
 		t.Fatalf("deferred launch not logged: %s", output.String())
+	}
+}
+
+type refusingLaunchBackend struct {
+	fakeBackend
+	launchErr error
+}
+
+func (f *refusingLaunchBackend) Launch(context.Context, Ticket) error {
+	return f.launchErr
+}
+
+func deferredEvents(t *testing.T, output string) map[string]bool {
+	t.Helper()
+	events := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatal(err)
+		}
+		if row["result"] == "deferred" {
+			if row["err"] == nil || row["err"] == "" {
+				t.Fatalf("deferred decision lost its reason: %v", row)
+			}
+			events[row["event"].(string)] = true
+		}
+	}
+	return events
+}
+
+// A maintenance refusal is known not to have reached any external system, so
+// claim, recovery and launch wait for the next round instead of failing the tick.
+func TestSchedulerMaintenanceRefusalDeferred(t *testing.T) {
+	refused := fmt.Errorf("apply: %w", maintenance.ErrRefused)
+	s := setup(nil)
+	tickets := []Ticket{
+		{ID: "one", Identifier: "ZII-1", Repo: "b", Candidate: true},
+		{ID: "two", Identifier: "ZII-2", Repo: "b", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now()},
+	}
+	var applyOutput bytes.Buffer
+	s.Backend = &fakeBackend{tickets: tickets, absent: true, inactive: true, applyErr: refused}
+	s.Logger = logx.New("scheduler", &applyOutput)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("refused apply reported as failure: %v", err)
+	}
+	if events := deferredEvents(t, applyOutput.String()); !events["claim"] || !events["apply"] {
+		t.Fatalf("refused apply not deferred: %v\n%s", events, applyOutput.String())
+	}
+
+	for _, launchErr := range []error{fmt.Errorf("launch: %w", maintenance.ErrRefused), errReservationChanged} {
+		var output bytes.Buffer
+		s := setup(nil)
+		s.Backend = &refusingLaunchBackend{fakeBackend: fakeBackend{tickets: tickets, absent: true, inactive: true}, launchErr: launchErr}
+		s.Logger = logx.New("scheduler", &output)
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatalf("launch %v reported as failure: %v", launchErr, err)
+		}
+		if events := deferredEvents(t, output.String()); !events["launch"] {
+			t.Fatalf("launch %v not deferred:\n%s", launchErr, output.String())
+		}
 	}
 }

@@ -369,7 +369,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			count[t.Repo]++
 		}
 		if err := s.Backend.Apply(ctx, t, action); err != nil {
-			problems = append(problems, fmt.Errorf("ownership update failed: %s %s: %s", t.Identifier, action.Kind, applyReason(err)))
+			result := outcome(err)
+			s.decision(t, "apply", "", "action", action.Kind, "result", result, "err", err)
+			if result != "deferred" {
+				problems = append(problems, fmt.Errorf("ownership update failed: %s %s: %s", t.Identifier, action.Kind, applyReason(err)))
+			}
 			continue
 		}
 		s.pushTicket(t, action)
@@ -454,13 +458,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		// An uncertain claim still reserves its scope for this tick.
 		conflicts[t.Repo] = append(conflicts[t.Repo], t.Scope...)
 		err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase})
-		result := "success"
-		if err != nil {
-			result = "uncertain"
-		}
+		result := outcome(err)
 		s.decision(t, "claim", "", "result", result, "err", err)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("ticket claim failed: %s %s: %s", t.Identifier, Claim, applyReason(err)))
+			if result != "deferred" {
+				problems = append(problems, fmt.Errorf("ticket claim failed: %s %s: %s", t.Identifier, Claim, applyReason(err)))
+			}
 			continue
 		}
 		s.pushTicket(t, Action{Kind: Claim, Phase: state.Phase})
