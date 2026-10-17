@@ -88,10 +88,16 @@ func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
 	if err != nil {
 		return orca.LivenessUncertain, err
 	}
-	if !found || (registered(t) && beat.Terminal != "" && beat.Terminal != t.Terminal) {
+	if !found {
 		return orca.LivenessNone, nil
 	}
-	now := r.clock()
+	return r.judge(t, beat), nil
+}
+
+func (r *Runtime) judge(t Ticket, beat orca.Beat) orca.Liveness {
+	if registered(t) && beat.Terminal != "" && beat.Terminal != t.Terminal {
+		return orca.LivenessNone
+	}
 	timeout := r.HeartbeatTimeout
 	if timeout <= 0 {
 		timeout = orca.DefaultHeartbeatTimeout
@@ -100,7 +106,7 @@ func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
 	if alive == nil {
 		alive = orca.PIDAlive
 	}
-	return beat.Judge(now, timeout, alive), nil
+	return beat.Judge(r.clock(), timeout, alive)
 }
 
 func (r *Runtime) clock() time.Time {
@@ -117,10 +123,14 @@ func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
 // new Run, leaves the process's live workers only in the beat. Abandon fences
 // without claiming the process stopped. It closes the leftover terminal and
 // every worker terminal the abandon receipts report Orca kept open, and
-// removes the stale heartbeat so the relaunched process starts clean. A
-// resolver owns t.Resolution.Run; t.Run is the executor Run it was handed, and
-// a resolver killed before its first Resolution save is known only by its beat.
-// Any uncertain read stops the reap before a write.
+// removes the stale heartbeat so the relaunched process starts clean. An
+// already abandoned dispatch is fenced again: a reap that failed after its
+// abandon learns the retained terminals only from the repeat receipt
+// (orca-worker-abandon-settled.json). A resolver owns t.Resolution.Run; t.Run is
+// the executor Run it was handed, and a resolver killed before its first
+// Resolution save is known only by its beat. The beat is judged again, so one a
+// relaunched process replaced is never reaped. Any uncertain read stops the
+// reap before a write.
 func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	path, err := r.beatPath(t)
 	if err != nil {
@@ -132,6 +142,9 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	}
 	if !found {
 		return errors.New("heartbeat vanished before reap")
+	}
+	if r.judge(t, beat) != orca.LivenessDead {
+		return errors.New("heartbeat no longer dead")
 	}
 	recorded := t.Run
 	if t.Owner == machine.OwnerResolver {
@@ -158,7 +171,7 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 			return err
 		}
 		for _, row := range rows {
-			if !settledDispatch(row.Status) && !slices.Contains(active, row.ID) {
+			if (!settledDispatch(row.Status) || row.Status == "abandoned") && !slices.Contains(active, row.ID) {
 				active = append(active, row.ID)
 			}
 		}

@@ -160,6 +160,7 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	}
 	if cp != nil {
 		result.State.Corrections = cp.Corrections
+		e.Heartbeat.SetRun(cp.Run)
 	}
 	mergeRepair, repairErr := e.restoreMergeCorrection(ctx, c, t, &cp, &result)
 	if repairErr != nil {

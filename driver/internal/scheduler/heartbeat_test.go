@@ -52,12 +52,12 @@ func (f *reapOrca) TerminalClose(_ context.Context, terminal string) error {
 	return f.closeErr
 }
 
-// abandonReceipt is the result object WorkerAbandon returns for the recorded
-// orca-worker-abandon.json: Orca keeps the worker's agent terminal open.
-func abandonReceipt(t *testing.T) orca.Receipt {
+// abandonReceipt is the result object WorkerAbandon returns for a recorded
+// abandon sample: Orca keeps the worker's agent terminal open.
+func abandonReceipt(t *testing.T, sample string) orca.Receipt {
 	t.Helper()
 	var envelope struct{ Result orca.Receipt }
-	if err := json.Unmarshal(recorded(t, "orca-worker-abandon.json"), &envelope); err != nil || envelope.Result == nil {
+	if err := json.Unmarshal(recorded(t, sample), &envelope); err != nil || envelope.Result == nil {
 		t.Fatalf("abandon sample: %v", err)
 	}
 	return envelope.Result
@@ -164,8 +164,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
-		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"running"},{"dispatchId":"ctx_done","dispatchStatus":"completed"}]}`)}}, abandon: abandonReceipt(t)}
-		r := &Runtime{Orca: o, StateRoot: root, OrcaPath: "/orca", Now: func() time.Time { return now },
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"running"},{"dispatchId":"ctx_done","dispatchStatus":"completed"}]}`)}}, abandon: abandonReceipt(t, "orca-worker-abandon.json")}
+		r := &Runtime{Orca: o, StateRoot: root, OrcaPath: "/orca", Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
 			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
 			Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
 				if strings.Join(spec.Args, " ") != "terminal list --limit 10000 --json" {
@@ -211,13 +211,45 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			t.Fatalf("unconfirmed abandon reaped: heartbeat err=%v closed=%v", err, o.closed)
 		}
 	})
+	t.Run("reap retries the terminal close of a dispatch it already abandoned", func(t *testing.T) {
+		root := t.TempDir()
+		path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_1", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{
+			receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"running"}]}`),
+			receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"abandoned"}]}`),
+		}}, abandon: abandonReceipt(t, "orca-worker-abandon.json"), closeErr: &orca.RejectedError{Code: "runtime_error"}}
+		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
+			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
+			Run: func(context.Context, runx.Spec) ([]byte, error) {
+				t.Fatal("unregistered executor has no terminal to list")
+				return nil, nil
+			}}
+		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-"}
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("failed terminal close accepted")
+		}
+		// The next round sees the dispatch abandoned; the repeat abandon (orca-worker-abandon-settled.json) still names its terminal.
+		o.abandon, o.closeErr, o.abandoned, o.closed = abandonReceipt(t, "orca-worker-abandon-settled.json"), nil, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(o.abandoned, ",") != "ctx_live" || strings.Join(o.closed, ",") != residualTerminal {
+			t.Fatalf("abandoned=%v closed=%v", o.abandoned, o.closed)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale heartbeat kept: %v", err)
+		}
+	})
 	t.Run("reap fences the run the dead process last beat", func(t *testing.T) {
 		root := t.TempDir()
 		path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
 		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", At: now.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
-		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_beat"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_beat","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t)}
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_beat"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_beat","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t, "orca-worker-abandon.json")}
 		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
 			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
 			Run: func(context.Context, runx.Spec) ([]byte, error) {
@@ -243,10 +275,20 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if got, err := r.Liveness(context.Background(), ticket); err != nil || got != orca.LivenessDead {
 			t.Fatalf("liveness got %q err=%v, want dead", got, err)
 		}
-		if err := os.Remove(path); err != nil {
+		// A relaunched process replaced the beat after the dead verdict: its Run is not reaped.
+		if err := orca.WriteBeat(path, orca.Beat{PID: 8, Run: "run_new", At: now}); err != nil {
 			t.Fatal(err)
 		}
 		o.page, o.abandoned, o.closed = 0, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("reap of a heartbeat no longer dead succeeded")
+		}
+		if beat, found, err := orca.ReadBeat(path); err != nil || !found || beat.Run != "run_new" || len(o.abandoned) != 0 || len(o.closed) != 0 || o.page != 0 {
+			t.Fatalf("replaced heartbeat reaped: beat=%+v found=%v err=%v abandoned=%v closed=%v pages=%d", beat, found, err, o.abandoned, o.closed, o.page)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
 		if err := r.ReapDead(context.Background(), ticket); err == nil {
 			t.Fatal("reap after the heartbeat vanished succeeded")
 		}
@@ -260,8 +302,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_res", At: now.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
-		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_res"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_res","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t)}
-		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now },
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_res"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_res","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t, "orca-worker-abandon.json")}
+		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
 			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
 			Run: func(context.Context, runx.Spec) ([]byte, error) {
 				t.Fatal("unregistered resolver has no terminal to list")

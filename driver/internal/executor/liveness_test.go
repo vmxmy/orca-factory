@@ -263,3 +263,43 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		t.Fatalf("own beat not alive: %+v", beat)
 	}
 }
+
+type checkpointRunOrca struct {
+	livenessOrca
+	path   string
+	cancel context.CancelFunc
+	seen   string
+}
+
+func (o *checkpointRunOrca) TaskList(ctx context.Context, run string) ([]orca.Task, error) {
+	if beat, found, err := orca.ReadBeat(o.path); err == nil && found {
+		o.seen = beat.Run
+	}
+	o.cancel()
+	return nil, ctx.Err()
+}
+
+// A process killed while recovering a checkpoint must already name the
+// checkpoint Run, or the scheduler cannot fence that Run's dispatches.
+func TestExecutorHeartbeatNamesCheckpointRun(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_ckpt", Task: "task_ckpt"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	path := orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
+	hb, err := orca.StartHeartbeat(ctx, path, e.Config.Terminal, time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Heartbeat = hb
+	o := &checkpointRunOrca{path: path, cancel: cancel}
+	e.Orca = o
+	if _, err := e.Start(ctx, ticket); err == nil {
+		t.Fatal("cancelled recovery succeeded")
+	}
+	if o.seen != "run_ckpt" {
+		t.Fatalf("beat run during checkpoint task lookup = %q, want run_ckpt", o.seen)
+	}
+}

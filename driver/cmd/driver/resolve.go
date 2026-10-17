@@ -24,10 +24,6 @@ func resolveTicket(args []string) int {
 	return loggedCommand("resolver", filepath.Join(logStateRoot(), executorLogRepository(), args[0], "resolver.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		heartbeat, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil)
-		if err != nil {
-			return 1, err
-		}
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return 1, err
@@ -55,6 +51,11 @@ func resolveTicket(args []string) int {
 				logger.Error("resolver lock close", "err", err)
 			}
 		}()
+		// Only the lock holder may publish: a rejected duplicate must not overwrite the running resolver's beat.
+		heartbeat, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil)
+		if err != nil {
+			return 1, err
+		}
 		runtime, err := scheduler.NewRuntime(ctx, cfg, repos)
 		if err != nil {
 			return 1, err
