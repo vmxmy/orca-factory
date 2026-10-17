@@ -479,17 +479,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if cp.MergeSpec == "" {
-			var refresh bool
-			err = e.retryRead(ctx, t, &result, "gate spec refresh lookup", func() error {
-				var readErr error
-				refresh, readErr = e.gateSpecRefreshRequested(ctx, t)
-				return readErr
-			})
-			if err != nil {
+			if err = e.honorGateSpecRefresh(ctx, t, &result); err != nil {
 				return result, err
-			}
-			if refresh {
-				return result, errGateSpecRefresh
 			}
 		}
 		var output, verdict string
@@ -588,6 +579,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			continue
 		}
 		break
+	}
+	if err = e.reportFrozenGateSpecRefresh(ctx, t, &result); err != nil {
+		return result, err
 	}
 	err = transition(machine.EvOpenPR, func(fx []machine.Effect) (err error) {
 		done := e.external("open-pr")

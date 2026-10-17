@@ -48,8 +48,8 @@ type Ticket struct {
 	// MaintenanceRefused marks an executor that exited on a maintenance
 	// refusal after its latest ownership line; it resumes without a failure.
 	MaintenanceRefused bool
-	// GateSpecRefresh marks an owner directive to rebuild gate.spec after the
-	// latest ownership line; the stage resumes without a failure.
+	// GateSpecRefresh marks an executor that exited on a refresh receipt after
+	// its latest ownership line; the stage resumes without a failure.
 	GateSpecRefresh bool
 }
 type Legacy struct{ HasPR, Complete bool }

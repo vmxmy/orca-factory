@@ -475,7 +475,7 @@ func readOwnership(t *Ticket, comments []task.Comment) error {
 		}
 	}
 	t.Attempt = max(t.Attempt, schedulerAttempt)
-	t.GateSpecRefresh = task.GateSpecRefreshRequested(comments)
+	t.GateSpecRefresh = task.ReadGateSpecRefresh(comments).Exited
 	return nil
 }
 
