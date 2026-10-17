@@ -280,3 +280,26 @@ func resolverRecord(t *testing.T, comments []task.Comment) (Ticket, resolver.Rec
 	t.Fatal("no resolver record persisted")
 	return Ticket{}, resolver.Record{}
 }
+
+// A record that returns to an earlier value (a refused dispatch clearing its
+// run) must still become the latest record instead of matching the old copy.
+func TestResolutionSaveRevisitsEarlierState(t *testing.T) {
+	l := &fakeIssues{}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": l}}
+	store := resolutionStore{r, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}}
+	pending := resolver.Record{Version: 1, Attempt: 2, Phase: "pending", Creator: "controller"}
+	withRun := pending
+	withRun.Run = "run_1"
+	for _, p := range []resolver.Record{pending, withRun, pending, pending} {
+		if err := store.Save(context.Background(), p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := store.Load(context.Background())
+	if err != nil || got == nil || got.Run != "" {
+		t.Fatalf("latest record %+v err=%v, want the cleared run", got, err)
+	}
+	if len(l.comments) != 3 {
+		t.Fatalf("writes=%d, want 3 (a repeated latest state is not rewritten)", len(l.comments))
+	}
+}
