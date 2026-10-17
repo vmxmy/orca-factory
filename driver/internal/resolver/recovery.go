@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -111,6 +112,17 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 		found = &copy
 	}
 	if found == nil {
+		if len(tasks) == 0 {
+			empty, err := c.runEmpty(ctx, p.Run)
+			if err != nil {
+				return err
+			}
+			if empty {
+				p.Phase, p.Outcome = "waiting", Undispatched
+				p.Result = fmt.Sprintf("resolver run %s has no task or worker; dispatch never started", p.Run)
+				return c.Store.Save(ctx, *p)
+			}
+		}
 		return errors.New("uncertain resolver dispatch; awaiting original task evidence")
 	}
 	p.Task = found.ID
@@ -124,4 +136,24 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 	p.Dispatch = worker.Dispatch
 	p.Phase = "running"
 	return c.Store.Save(ctx, *p)
+}
+
+// runEmpty proves the original controller stopped before dispatch (ZCP-141):
+// complete worker and task reads are empty twice over, so a dispatch landing
+// between the first reads cannot pass as one that never started. A legacy
+// read-only run, or an empty list without its count, proves nothing.
+func (c *Controller) runEmpty(ctx context.Context, run string) (bool, error) {
+	workers, err := c.workers(ctx, run)
+	if err != nil || len(workers) > 0 {
+		return false, err
+	}
+	listing, err := c.Orca.TaskListing(ctx, run)
+	if err != nil || len(listing.Tasks) > 0 {
+		return false, err
+	}
+	if listing.LegacyReadOnly || !listing.Counted {
+		return false, errors.New("incomplete resolver task list; awaiting original task evidence")
+	}
+	workers, err = c.workers(ctx, run)
+	return len(workers) == 0, err
 }

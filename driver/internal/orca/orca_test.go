@@ -134,6 +134,24 @@ func TestTaskListWorkerReport(t *testing.T) {
 	}
 	argv(t, log, []string{"orchestration", "task-list", "--run", "run_one", "--json", "END"})
 }
+
+// Legacy or uncounted task lists stay readable for every caller; only the
+// resolver's empty-run judgement treats them as incomplete evidence.
+func TestTaskListAcceptsLegacyOutput(t *testing.T) {
+	for _, scenario := range []string{"legacy", "uncounted"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, _ := fake(t)
+			t.Setenv("ORCA_TEST_SCENARIO", scenario)
+			if _, err := c.TaskList(context.Background(), "run_one"); err != nil {
+				t.Fatalf("legacy output rejected: %v", err)
+			}
+			listing, err := c.TaskListing(context.Background(), "run_one")
+			if err != nil || listing.LegacyReadOnly != (scenario == "legacy") || listing.Counted != (scenario == "legacy") {
+				t.Fatalf("listing %+v err=%v", listing, err)
+			}
+		})
+	}
+}
 func TestReconcile(t *testing.T) {
 	for _, state := range []string{"completed", "pending", "absent"} {
 		t.Run(state, func(t *testing.T) {

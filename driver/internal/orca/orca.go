@@ -311,31 +311,49 @@ func (t Task) WorkerReport() (*WorkerReport, error) {
 	return &report, nil
 }
 
+// TaskListing carries the metadata a caller needs to judge whether an empty
+// list proves that no task exists; TaskList itself accepts older CLI output.
+type TaskListing struct {
+	Tasks          []Task
+	LegacyReadOnly bool
+	Counted        bool
+}
+
 func (c *Client) TaskList(ctx context.Context, run string) ([]Task, error) {
+	listing, err := c.TaskListing(ctx, run)
+	return listing.Tasks, err
+}
+
+func (c *Client) TaskListing(ctx context.Context, run string) (TaskListing, error) {
 	if run == "" {
-		return nil, invalid("task list requires run")
+		return TaskListing{}, invalid("task list requires run")
 	}
 	receipt, err := c.call(ctx, []string{"orchestration", "task-list", "--run", run})
 	if err != nil {
-		return nil, err
+		return TaskListing{}, err
 	}
 	var tasks []Task
 	if json.Unmarshal(receipt["tasks"], &tasks) != nil || tasks == nil {
-		return nil, invalid("invalid task list")
+		return TaskListing{}, invalid("invalid task list")
 	}
+	listing := TaskListing{Tasks: tasks}
+	if raw, ok := receipt["legacyReadOnly"]; ok {
+		listing.LegacyReadOnly = json.Unmarshal(raw, &listing.LegacyReadOnly) != nil || listing.LegacyReadOnly
+	}
+	_, listing.Counted = receipt["count"]
 	// A partial enumeration cannot authorize dispatch recovery. Older CLI
 	// versions omit metadata; retain that contract while checking any supplied.
 	if raw, ok := receipt["truncated"]; ok {
 		var truncated bool
 		if json.Unmarshal(raw, &truncated) != nil || truncated {
-			return nil, invalid("incomplete task list")
+			return TaskListing{}, invalid("incomplete task list")
 		}
 	}
 	for _, key := range []string{"count", "totalCount"} {
 		if raw, ok := receipt[key]; ok {
 			var count int
 			if json.Unmarshal(raw, &count) != nil || count != len(tasks) {
-				return nil, invalid("incomplete task list")
+				return TaskListing{}, invalid("incomplete task list")
 			}
 		}
 	}
@@ -345,10 +363,10 @@ func (c *Client) TaskList(ctx context.Context, run string) ([]Task, error) {
 			NextCursor string `json:"nextCursor"`
 		}
 		if json.Unmarshal(raw, &page) != nil || page.HasMore || page.NextCursor != "" {
-			return nil, invalid("incomplete task list")
+			return TaskListing{}, invalid("incomplete task list")
 		}
 	}
-	return tasks, nil
+	return listing, nil
 }
 
 type ReadOptions struct {

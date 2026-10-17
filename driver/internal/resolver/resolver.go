@@ -45,6 +45,11 @@ type Record struct {
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
 }
+
+// Undispatched marks a waiting round that ended before any dispatch reached
+// Orca; it neither counts as a failure nor resets the failure count.
+const Undispatched = "undispatched"
+
 type Store interface {
 	Load(context.Context) (*Record, error)
 	Save(context.Context, Record) error
@@ -54,6 +59,7 @@ type Orca interface {
 	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
+	TaskListing(context.Context, string) (orca.TaskListing, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
 	WorkerStop(context.Context, string, string) (orca.Receipt, error)
@@ -148,14 +154,18 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		if err = c.recoverStart(ctx, p); err != nil {
 			return nil, err
 		}
+		if p.Phase == "waiting" {
+			return p, nil
+		}
 	}
 	if p.Phase == "pending" {
 		receipt, err := c.Orca.WorkerStart(ctx, request("dispatch"), orca.StartOptions{Run: p.Run, Spec: p.Spec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: "origin/main", Name: fmt.Sprintf("%s-resolver-%d", c.Ticket, p.Attempt), Setup: "skip", Agent: p.Agent, Model: p.Model, Effort: p.Effort})
 		callErr := err
 		if errors.Is(callErr, maintenance.ErrRefused) {
-			// Nothing reached Orca: drop the run so a replacement controller
-			// starts a fresh one instead of awaiting a task that cannot exist.
-			p.Run = ""
+			// Nothing reached Orca: end the round so the next one starts a fresh
+			// Run. Clearing only the Run left a record equal to the first pending
+			// one, which a stale pre-write read could swallow (ZCP-141).
+			p.Phase, p.Outcome, p.Result = "waiting", Undispatched, "maintenance refused dispatch before it reached Orca"
 			c.Heartbeat.SetRun("")
 			return nil, errors.Join(callErr, c.Store.Save(ctx, *p))
 		}

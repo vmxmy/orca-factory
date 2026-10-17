@@ -56,6 +56,8 @@ type fakeOrca struct {
 	stops   int
 	// stopped replaces workers once WorkerStop is called.
 	stopped orca.Receipt
+	// legacyTasks and uncountedTasks shape the metadata TaskListing reports.
+	legacyTasks, uncountedTasks bool
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -99,6 +101,10 @@ func (o *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	b, _ := json.Marshal(o.report)
 	return []orca.Task{{ID: "task_1", RunID: "run_1", DispatchID: "ctx_1", Status: "completed", Result: b}}, nil
 }
+func (o *fakeOrca) TaskListing(ctx context.Context, run string) (orca.TaskListing, error) {
+	tasks, err := o.TaskList(ctx, run)
+	return orca.TaskListing{Tasks: tasks, LegacyReadOnly: o.legacyTasks, Counted: !o.uncountedTasks}, err
+}
 func (o *fakeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {
 	o.releases++
 	return orca.Receipt{}, o.releaseErr
@@ -132,8 +138,8 @@ func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
 		t.Fatalf("refusal not reported: %v", err)
 	}
-	if s.record.Phase != "pending" || s.record.Run != "" || beatRun() != "" {
-		t.Fatalf("refused dispatch kept run: %+v beat run=%q", s.record, beatRun())
+	if s.record.Phase != "waiting" || s.record.Outcome != "undispatched" || beatRun() != "" {
+		t.Fatalf("refused dispatch did not end the round: %+v beat run=%q", s.record, beatRun())
 	}
 	o.tasks = []orca.Task{}
 	c.Terminal = "second"
@@ -603,4 +609,70 @@ func TestStartUnobservedWorkerIsStoppedAfterWindow(t *testing.T) {
 			t.Fatalf("started turn stopped: stops=%d record=%+v", o.stops, s.record)
 		}
 	})
+}
+
+// ZCP-141: maintenance refused the dispatch after run-create, leaving a Run
+// with no task or worker. Complete empty reads prove nothing was dispatched,
+// so the round ends as waiting instead of awaiting evidence forever.
+func TestResolverEmptyRunIsNotUncertain(t *testing.T) {
+	var tasks struct {
+		Result struct {
+			RunID string      `json:"runId"`
+			Tasks []orca.Task `json:"tasks"`
+		} `json:"result"`
+	}
+	var workers struct {
+		Result orca.Receipt `json:"result"`
+	}
+	for path, out := range map[string]any{"orca-task-list-empty-run.json": &tasks, "orca-worker-list-empty-run.json": &workers} {
+		raw, err := os.ReadFile("../../testdata/recorded/" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(raw, out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := tasks.Result.RunID
+	pending := func(c *Controller) *Record {
+		return &Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "old-terminal", Run: run, Spec: c.Spec, Agent: c.Agent}
+	}
+
+	c, s, o := setupController()
+	s.record, o.tasks, o.workers = pending(c), tasks.Result.Tasks, workers.Result
+	p, err := c.Step(context.Background())
+	if err != nil || p.Phase != "waiting" || s.record.Phase != "waiting" || s.record.Outcome != "undispatched" || o.startCalls != 0 {
+		t.Fatalf("empty run not settled as never dispatched: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+
+	c, s, o = setupController()
+	s.record, o.tasks = pending(c), tasks.Result.Tasks
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"` + run + `"}`), "page": json.RawMessage(`{"hasMore":true}`), "workers": json.RawMessage(`[]`)}
+	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+		t.Fatalf("incomplete worker read ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+
+	c, s, o = setupController()
+	s.record, o.tasks, o.workers = pending(c), tasks.Result.Tasks, workers.Result
+	o.settled = []orca.Task{{ID: "task_1", RunID: run, Status: "pending", Spec: c.Spec}}
+	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+		t.Fatalf("task created between reads ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+}
+
+// An empty task list proves no dispatch only when the read is current and
+// complete: a legacy read-only run or an empty list without a count is not.
+func TestResolverEmptyRunRejectsLegacyOrUncountedTasks(t *testing.T) {
+	for _, scenario := range []string{"legacy", "uncounted"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, s, o := setupController()
+			s.record = &Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "old-terminal", Run: "run_1", Spec: c.Spec, Agent: c.Agent}
+			o.tasks = []orca.Task{}
+			o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(`[]`)}
+			o.legacyTasks, o.uncountedTasks = scenario == "legacy", scenario == "uncounted"
+			if _, err := c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+				t.Fatalf("incomplete task evidence ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+			}
+		})
+	}
 }

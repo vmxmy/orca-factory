@@ -1,0 +1,21 @@
+{
+  "id": "9b670954-8a53-4aee-b3eb-a477ffbb0573",
+  "ok": true,
+  "result": {
+    "workers": [],
+    "counts": {},
+    "page": {
+      "limit": 100,
+      "total": 0,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_dbe8c0966ab8",
+      "source": "flag"
+    }
+  },
+  "_meta": {
+    "runtimeId": "78f3d5b7-5f82-4595-8395-4f14375d65bd"
+  }
+}
