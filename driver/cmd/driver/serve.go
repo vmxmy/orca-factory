@@ -74,9 +74,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			}
 			s.SyncCore = coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}.sync
 		}
-		// Without a first project set serve has nothing to schedule; exit so
-		// the service manager restarts it instead of idling on an empty set.
-		if err := s.RefreshProjects(ctx); err != nil {
+		if err := s.AwaitProjects(ctx, sleepContext); err != nil {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
 		}
 		served = runtime
@@ -88,14 +86,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 				logger.Warn("workspace reclaim incomplete", "err", err)
 			}
 		}
-		timer := time.NewTimer(30 * time.Second)
-		defer timer.Stop()
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-timer.C:
-			return nil
-		}
+		return sleepContext(ctx, 30*time.Second)
 	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
 	if err != nil {
 		return 1, err
@@ -106,6 +97,17 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 // projectDiscoveryInterval spaces serve's project rediscovery: each run reads
 // Orca, the Feishu project table and every candidate's pipeline check.
 const projectDiscoveryInterval = 10 * time.Minute
+
+func sleepContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 // workspaceReclaimInterval spaces serve's workspace reclaim (OF-96): each run
 // lists the Orca workspaces of every tracked repository.

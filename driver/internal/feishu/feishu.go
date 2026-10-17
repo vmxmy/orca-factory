@@ -81,7 +81,7 @@ func New(o Options) (*Client, error) {
 		return nil, infra.Classify(errors.New("invalid Feishu endpoint"))
 	}
 	if strings.TrimSpace(o.AppID) == "" || strings.TrimSpace(o.AppSecret) == "" {
-		return nil, &infra.Global{Dep: Dep, Err: errors.New("feishu app credentials missing")}
+		return nil, &infra.Global{Dep: Dep, Reason: infra.CredentialsMissing, Err: errors.New("feishu app credentials missing")}
 	}
 	timeout := o.HTTPTimeout
 	if timeout == 0 {
@@ -133,7 +133,7 @@ func (c *Client) tenantToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	if out.Code != 0 || out.Token == "" || out.Expire <= 0 {
-		return "", &infra.Global{Dep: Dep, Err: errors.New("feishu authentication failed")}
+		return "", &infra.Global{Dep: Dep, Reason: infra.AuthenticationFailed, Err: errors.New("feishu authentication failed")}
 	}
 	c.token, c.tokenExpiry = out.Token, c.now().Add(time.Duration(out.Expire)*time.Second)
 	return c.token, nil
@@ -164,7 +164,7 @@ func (c *Client) call(ctx context.Context, method, path string, input, data any)
 		for _, v := range out.Error.PermissionViolations {
 			apiErr.MissingScopes = append(apiErr.MissingScopes, v.Subject)
 		}
-		return &infra.Global{Dep: Dep, Err: apiErr}
+		return &infra.Global{Dep: Dep, Reason: infra.PermissionDenied, Err: apiErr}
 	case CodeWriteConflict:
 		return &infra.Transient{Err: &APIError{Code: out.Code}}
 	default:

@@ -22,9 +22,9 @@ var ErrOwnershipConflict = errors.New("feishu ticket changed by another writer")
 
 const feishuSummaryRunes = 200
 
-// feishuBodyRunes stays under the base/v3 text cell limit, past which a row is
+// FeishuBodyRunes stays under the base/v3 text cell limit, past which a row is
 // stored with an empty 正文 and no error.
-const feishuBodyRunes = 90000
+const FeishuBodyRunes = 90000
 
 func sleepContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
@@ -366,8 +366,8 @@ func (c *Feishu) conflict(ctx context.Context, id string, want, got feishuTicket
 
 // CreateComment appends one 事件 row whose 正文 is body unchanged.
 func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
-	if n := utf8.RuneCountInString(body); n > feishuBodyRunes {
-		return task.Comment{}, fmt.Errorf("feishu event body has %d characters, limit %d", n, feishuBodyRunes)
+	if n := utf8.RuneCountInString(body); n > FeishuBodyRunes {
+		return task.Comment{}, fmt.Errorf("feishu event body has %d characters, limit %d", n, FeishuBodyRunes)
 	}
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
@@ -401,6 +401,9 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 	}
 	if strings.TrimSpace(in.Title) == "" {
 		return Task{}, errors.New("invalid native create input")
+	}
+	if err := requireValidCheckRed(in.Description); err != nil {
+		return Task{}, err
 	}
 	adopt := in.Blockers != nil && in.Related != nil
 	state := in.State

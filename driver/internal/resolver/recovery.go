@@ -13,6 +13,7 @@ type workerIdentity struct {
 	Run      string `json:"runId"`
 	Dispatch string `json:"dispatchId"`
 	State    string `json:"workerState"`
+	Status   string `json:"dispatchStatus"`
 	Resource struct {
 		ReleaseState string `json:"releaseState"`
 	} `json:"resource"`
@@ -21,11 +22,47 @@ type workerIdentity struct {
 // Complete worker pages prove association; missing/ambiguous rows never grant a
 // replacement controller permission to repeat an uncertain dispatch.
 func (c *Controller) worker(ctx context.Context, p *Record) (*workerIdentity, error) {
+	rows, err := c.workers(ctx, p.Run)
+	if err != nil {
+		return nil, err
+	}
+	var found *workerIdentity
+	for _, row := range rows {
+		if row.Task != p.Task {
+			continue
+		}
+		if found != nil || row.Run != p.Run || row.Dispatch == "" || (p.Dispatch != "" && row.Dispatch != p.Dispatch) {
+			return nil, errors.New("conflicting resolver worker association")
+		}
+		copy := row
+		found = &copy
+	}
+	if found == nil {
+		return nil, errors.New("resolver worker association not yet observable")
+	}
+	return found, nil
+}
+
+// dispatchStatus finds the recorded dispatch in a complete worker read.
+func (c *Controller) dispatchStatus(ctx context.Context, p *Record) (listed bool, status string, err error) {
+	rows, err := c.workers(ctx, p.Run)
+	if err != nil {
+		return false, "", err
+	}
+	for _, row := range rows {
+		if row.Dispatch == p.Dispatch {
+			return true, row.Status, nil
+		}
+	}
+	return false, "", nil
+}
+
+func (c *Controller) workers(ctx context.Context, run string) ([]workerIdentity, error) {
 	cursor := ""
 	seen := map[string]bool{}
-	var found *workerIdentity
+	var all []workerIdentity
 	for {
-		receipt, err := c.Orca.WorkerList(ctx, orca.ListOptions{Run: p.Run, Cursor: cursor, Limit: 100, IncludeRemote: true})
+		receipt, err := c.Orca.WorkerList(ctx, orca.ListOptions{Run: run, Cursor: cursor, Limit: 100, IncludeRemote: true})
 		if err != nil {
 			return nil, err
 		}
@@ -37,21 +74,12 @@ func (c *Controller) worker(ctx context.Context, p *Record) (*workerIdentity, er
 			Next    string `json:"nextCursor"`
 		}
 		var rows []workerIdentity
-		if json.Unmarshal(receipt["scope"], &scope) != nil || scope.Run != p.Run || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil || json.Unmarshal(receipt["workers"], &rows) != nil || rows == nil {
+		if json.Unmarshal(receipt["scope"], &scope) != nil || scope.Run != run || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil || json.Unmarshal(receipt["workers"], &rows) != nil || rows == nil {
 			return nil, errors.New("incomplete resolver worker observation")
 		}
-		for _, row := range rows {
-			if row.Task != p.Task {
-				continue
-			}
-			if found != nil || row.Run != p.Run || row.Dispatch == "" || (p.Dispatch != "" && row.Dispatch != p.Dispatch) {
-				return nil, errors.New("conflicting resolver worker association")
-			}
-			copy := row
-			found = &copy
-		}
+		all = append(all, rows...)
 		if !*page.HasMore {
-			break
+			return all, nil
 		}
 		if page.Next == "" || seen[page.Next] {
 			return nil, errors.New("invalid resolver worker cursor")
@@ -59,10 +87,6 @@ func (c *Controller) worker(ctx context.Context, p *Record) (*workerIdentity, er
 		cursor = page.Next
 		seen[cursor] = true
 	}
-	if found == nil {
-		return nil, errors.New("resolver worker association not yet observable")
-	}
-	return found, nil
 }
 func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 	tasks, err := c.Orca.TaskList(ctx, p.Run)

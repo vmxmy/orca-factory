@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -283,16 +282,26 @@ func TestMainPathReusesPR(t *testing.T) {
 	}
 }
 
-func TestMainPathReleaseFailure(t *testing.T) {
+// The release error is the real OF-22 receipt (ok:true, exit 1) replayed
+// through the Orca client, so the warning shows what production logs show.
+func TestMainPathReleaseUnknownWarnsState(t *testing.T) {
 	e, o, _, g, tools, ticket := fixture(t, "new-sha")
-	o.releaseErr = errors.New("release_unknown")
+	fixturePath, err := filepath.Abs("../../testdata/recorded/orca-worker-release-unknown.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat '"+fixturePath+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, o.releaseErr = (&orca.Client{Path: script}).WorkerRelease(context.Background(), orca.RequestID("ZII-861", "executor", "release", 1), "ctx_one")
 	var warnings strings.Builder
 	e.Stderr = &warnings
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil || result.State.Owner != machine.OwnerMerge || o.releases != 1 || len(g.created) != 1 || tools.gateCalls != 1 {
 		t.Fatalf("release failure must not fail or replay: err=%v owner=%s calls=%d PR=%v gate=%d", err, result.State.Owner, o.releases, g.created, tools.gateCalls)
 	}
-	if !strings.Contains(warnings.String(), "worker release failed for dispatch ctx_one: release_unknown") {
+	if !strings.Contains(warnings.String(), "worker release failed for dispatch ctx_one: orca command exited with state release_unknown") {
 		t.Fatalf("warnings=%q", warnings.String())
 	}
 }

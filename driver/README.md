@@ -99,6 +99,8 @@ orca-factory-driver status --json
 
 `status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期，配额暂停期间也可能出现。`globalPause.durationSeconds` 是已经暂停的时长，不是恢复倒计时。票行的 `backend` 是所在仓库选定的账本；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整或未完成的 blocker），只是观察，不授权任何动作。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成主账本没有任务。
 
+票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
+
 配额低于暂停阈值时，调度器暂停到 reset 时间，或无 reset 时等到退避期限后再允许一次发现刷新；暂停期间不应通过重启或完整评论扫描来试探额度。无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 ### 守护进程被杀后的恢复
@@ -130,7 +132,11 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 本机 Orca 仓库清单中存在、但 `scripts/agent-gates/` 目录完全不存在的仓库，不接管的原因是「可接入」而不是「未装流水线」（OF-49）：这是从未接入过流水线的仓库，与「目录已存在但缺 `agent-graph.env`」或「已装但 check 失败」区分开，后两者仍各自保留原有原因。飞书需求助手的项目选择卡片据此在「暂不可用」之外单列一段「可接入」，列出这些仓库本机检出目录名与远端，提示「需审批人接入后可用」，每个仓库带一个「接入」按钮（OF-50，见下文“自动接入”）。流水线已安装、check 通过（或只是 OF-53 的 core 落后）但项目表行仍「启用」=false 的仓库，原因是「项目未启用」，卡片在「可接入」之外再单列一段「待启用」，每个仓库带一个「启用」按钮（OF-54，见下文“自动启用”）。
 
-1. serve 启动时运行一次发现。发现失败时 serve 退出，由 systemd 重启。
+1. serve 启动时运行一次发现，成功后才开始调度（OF-137）。开机时 driver 可能比 Orca 先启动，所以首轮发现按失败类别处理：
+   - 重试：Orca 返回 `runtime_unavailable`，或超时、网络、连接类瞬时故障。serve 不退出，按退避重试：从 5s 开始逐次翻倍，最长 60s。等待期间不读账本、不认领、不派工。依赖恢复后首轮发现成功，serve 照常进入调度。等待期间收到 SIGTERM 时 serve 立即正常退出。
+   - 退出：飞书凭证缺失、飞书认证失败、飞书项目表无权限、Orca 二进制不存在或不可执行、Orca 返回 `unauthorized`/`authentication_required`/`runtime_access_denied`，以及项目配置错误等其他错误。这些失败不会自行恢复，serve 以 1 退出，错误写明依赖与原因类别，如 `initial project discovery failed: Feishu authentication_failed`。
+   - 日志：同一依赖、同一原因只在首次和此后每满 10 分钟各写一条 WARN `project discovery waiting for dependency; scheduling not started`，字段 `dependency` 与 `reason` 只含依赖名和原因类别（如 `Orca runtime_unavailable`），不含凭证或原始响应。其余重试写 Debug。
+   `install` 生成的 serve 与飞书需求网关单元带 `RestartSec=10s` 和 `[Unit]` 段的 `StartLimitIntervalSec=0`：进程反复崩溃时 systemd 每 10s 重启一次，不因启动次数上限停在 failed。
 2. serve 每 10 分钟重新发现一次。间隔不是每轮调度，因为每次发现都要读 Orca、飞书项目表并逐个运行 check。发现失败时保留上一次的项目集合，写一条 WARN。
 3. 新加入的项目在下一次发现后开始领票。
 4. 项目移出可接管集合后，调度器停止领取该项目的新票（决策日志原因为 `retired`）。该项目的在途执行器、处置 Agent、合并通道与部署屏障照常推进到结束，不中断、不重派。该项目不再有在途票后，调度器停止读取它。
@@ -154,7 +160,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 ```mermaid
 flowchart LR
-    A[发现校验：可接入] --> P[接入前置检查<br/>本机工具/factory 自身/目标仓库/现场/账本]
+    A[发现校验：可接入] --> P[接入前置检查<br/>本机工具/factory 自身/目标仓库/现场/账本/服务环境/分支保护]
     P --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
     B --> E[driver 写飞书项目表行，启用=false<br/>已有同远端行则沿用]
     E --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
@@ -162,7 +168,7 @@ flowchart LR
     D --> F[输出 PR 链接与项目表行]
 ```
 
-- 接入前置检查（OF-52）在写任何东西之前，对每个确定性判断给出 `name`/`ok`/`detail`，`--dry-run` 和真实执行跑同一套：（a）本机工具，复用 `<factory_root>/bin/orca-factory doctor --json` 核对 orca 运行中、gh 已登录、git、jq 存在，并用 `resolveClaude` 核对 claude 可解析；（b）factory 自身，在 `factory_root` 跑 `scripts/agent-gates/install.sh --dry-run` 要求退出 0；（c）目标仓库，`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true、`git ls-remote origin main` 成功，且 `git -C <仓库> remote get-url origin` 规范化（去协议、凭据、`.git` 后缀，OF-56）后与发现阶段读到的 Orca canonicalKey 一致——不一致时该项失败，`detail` 给出两个规范化后的值与补法（重启 Orca 或在 Orca 中重新登记该仓库），从不回显原始 URL；（d）现场，接入 worktree 路径与 `feat/agent-graph` 分支（本地与远端）都不存在、接入锁空闲；（e）账本，由已经成功算出的接入计划直接证明（计算该计划本身就已读过飞书项目表并算出不冲突的编号前缀，账本不可读会在这之前就失败，不会走到这里）。`--dry-run` 的 JSON 带全部 5 项结果，任一失败即退出非 0；真实执行（命令行与卡片「接入」按钮共用同一入口）任一失败都不写项目表行、不建 worktree、不启动 Agent。检查输出只给键名、布尔值与命令退出码，不回显凭据或环境变量值。
+- 接入前置检查（OF-52）在写任何东西之前，对每个确定性判断给出 `name`/`ok`/`detail`，`--dry-run` 和真实执行跑同一套：（a）本机工具，复用 `<factory_root>/bin/orca-factory doctor --json` 核对 orca 运行中、gh 已登录、git、jq 存在，并用 `resolveClaude` 核对 claude 可解析；（b）factory 自身，在 `factory_root` 跑 `scripts/agent-gates/install.sh --dry-run` 要求退出 0；（c）目标仓库，`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true、`git ls-remote origin main` 成功，且 `git -C <仓库> remote get-url origin` 规范化（去协议、凭据、`.git` 后缀，OF-56）后与发现阶段读到的 Orca canonicalKey 一致——不一致时该项失败，`detail` 给出两个规范化后的值与补法（重启 Orca 或在 Orca 中重新登记该仓库），从不回显原始 URL；（d）现场，接入 worktree 路径与 `feat/agent-graph` 分支（本地与远端）都不存在、接入锁空闲；（e）账本，由已经成功算出的接入计划直接证明（计算该计划本身就已读过飞书项目表并算出不冲突的编号前缀，账本不可读会在这之前就失败，不会走到这里）；（f）服务环境（OF-131），从 `systemctl --user show -p Environment orca-factory-driver.service` 读出合并 drop-in 后的 `PATH` 与 `AGENT_ORCA_BIN`，要求 go、gh、git 能在 `PATH` 中找到；orca 与 driver 的 `runx.OrcaPath` 一致，服务设置了 `AGENT_ORCA_BIN` 时要求该路径可执行，未设置时才在 `PATH` 中查找。缺失时列出工具名或 `AGENT_ORCA_BIN` 路径并建议在 drop-in 中修正；systemctl 不存在或连不上 systemd user 实例时如实报告原因，并建议在该用户的登录会话中运行或确认 `XDG_RUNTIME_DIR` 与 `loginctl enable-linger`；（g）分支保护（OF-131），同时读 `gh api repos/<owner>/<repo>/branches/main`（经典分支保护的 `required_status_checks.contexts`）与 `gh api repos/<owner>/<repo>/rules/branches/main`（Ruleset 的 `required_status_checks` 规则），任一来源提供非空必需检查即通过（合并通道只在非空检查集全部成功后 squash）；都没有时失败，修复建议同时给出分支保护与 Ruleset 两种做法。两个端点只需读权限，不改仓库设置。`--dry-run` 的 JSON 带全部 7 项结果，任一失败即退出非 0；真实执行（命令行与卡片「接入」按钮共用同一入口）任一失败都不写项目表行、不建 worktree、不启动 Agent。检查输出只给键名、布尔值与命令退出码，不回显凭据或环境变量值；唯一例外是服务环境项会给出 `AGENT_ORCA_BIN` 指向的工具路径。
 - 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
 - worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。现场前置检查已确认该目录与分支都不存在；启用成功后 driver 会清理这次接入自己创建的现场，见下文“自动启用”。
 - 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
@@ -197,6 +203,39 @@ flowchart LR
 
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
+- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：只读的运行态健康自检。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟调用一次，所以只有现在需要人或 Agent 处理的问题才报 `fail`。
+
+  | 状态 | 含义 | 退出码 |
+  | --- | --- | --- |
+  | `ok` | 检查通过 | 不影响 |
+  | `warn` | 有异常，但属于部署中、刚合并、历史遗留等会自行消失或无法清除的情况，暂不需要处理 | 不影响 |
+  | `unknown` | 依赖不可达（服务进程、Orca、飞书、gh、git 命令失败），无法判断；同时列入 `errors` | 不影响 |
+  | `fail` | 确认存在需要处理的问题 | 任一项为 `fail` 时退出 1 |
+
+  | 检查项 | 数据来源 | 判定 |
+  | --- | --- | --- |
+  | `service_path` | 运行中服务进程的 `/proc/<MainPID>/environ` 中的 PATH | 缺 go、gh、git、orca 之一，或 claude 与 codex 都缺：fail |
+  | `version` | `scheduler.log`（含轮转）最近一条 serve 启动记录的 version；factory 本地 `origin/main` 及其提交时间 | 不一致：维护状态不是 `running`，或 `origin/main` 最新提交不到 60 分钟时 warn，否则 fail |
+  | `maintenance` | `maintenance.json` 的 mode 与 updatedAt | 不是 `running`：updatedAt 在 60 分钟内 warn，否则 fail |
+  | `checkouts` | 每个已接管项目检出的分支、未提交改动、落后 `origin/main` 的提交数、`FETCH_HEAD` 修改时间 | 不在 main：warn，不计算落后数；在 main 且落后：warn，最后一次 fetch 早于 30 分钟（或从未 fetch）时 fail；不干净：warn |
+  | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
+  | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
+  | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
+  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量：fail；gh 认证检查失败：unknown |
+
+  `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
+- `~/.local/bin/orca-factory-driver watch [--dry-run]`（OF-128）：无人值守巡检。每次运行在进程内跑一遍 doctor，按检查项更新状态根目录下的 `watch.json`（每项的上次状态、连续 fail 次数、本轮 fail 开始时间、上次告警成功时间），只做告警与记录状态，不修复、不合并、不部署、不重启、不建票。
+  - 只有 `fail` 计数：同一检查项连续 2 次运行为 `fail` 才告警，过滤部署时的短暂异常；任何非 `fail` 结果清零连续次数。
+  - 不建票，只告警，24 小时重复提醒：同一检查项持续 `fail` 时，距上次告警满 24 小时再提醒一次，正文写明「持续 N 小时」。只告警一次就沉默，持续的问题容易被遗忘。
+  - 该项回到 `ok` 才清除告警记录，之后再次连续 2 次 `fail` 立即重新告警。`warn` 与 `unknown` 不证明问题消失，不清除告警记录。
+  - 去重键是检查项名，不是原因文本：原因含每轮变化的计数。
+  - 告警走机器配置的飞书通知（`AGENT_FEISHU_NOTIFY_CHAT` 与应用凭证，与票据通知相同），正文只含主机名、检查项名、连续次数和 doctor 的 `reason`，不含 `details` 与凭证值。通知频道未配置时退出 1，不消耗告警。
+  - 发送成功后才记录告警时间：发送失败时该项保持待告警，退出 1，下次运行重发。`watch.json` 用临时文件加 rename 原子写入。
+  - `watch.json` 无法解析时改名为 `watch.json.corrupt-<时间>` 留作证据，写一条 WARN 日志，再以空状态继续，巡检不因坏文件停摆。
+  - 运行时对状态根目录下的 `watch.lock` 加 flock。手工运行与 timer 重叠时，后到的一次写一条日志后跳过，退出 0，不重复告警。
+  - 不建票的理由：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
+  - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，不发送、不写 `watch.json`，也不要求通知频道已配置。
+  - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 不启用 timer；启用用 `systemctl --user enable --now orca-factory-driver-watch.timer`。
 
 ## Orca 看板
 

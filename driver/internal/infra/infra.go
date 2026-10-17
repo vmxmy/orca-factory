@@ -33,9 +33,22 @@ type Ticket struct{ Err error }
 func (e *Ticket) Error() string { return "ticket failure" }
 func (e *Ticket) Unwrap() error { return e.Err }
 
+// Reason is a safe, log-friendly category of a Global failure. Only
+// RuntimeUnavailable is expected to clear without operator action.
+type Reason string
+
+const (
+	RuntimeUnavailable   Reason = "runtime_unavailable"
+	CredentialsMissing   Reason = "credentials_missing"
+	AuthenticationFailed Reason = "authentication_failed"
+	PermissionDenied     Reason = "permission_denied"
+	ExecutableMissing    Reason = "executable_missing"
+)
+
 type Global struct {
-	Dep Dep
-	Err error
+	Dep    Dep
+	Reason Reason
+	Err    error
 }
 
 func (e *Global) Error() string { return "global dependency failure" }

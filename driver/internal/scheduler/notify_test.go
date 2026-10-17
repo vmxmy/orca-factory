@@ -157,6 +157,24 @@ func TestFeishuNotifyDurable(t *testing.T) {
 	}
 }
 
+// Resolver ownership is routine agent work in unattended mode; only a ticket
+// handed to a human pages the chat.
+func TestFeishuNotifyResolverSilent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store := &notifyStore{}
+	sender := &notifySender{store: store}
+	sender.start(t)
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+	r := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	ticket := Ticket{ID: "id", Repo: repo.Path, Identifier: "OF-9", Title: "notify", Owner: machine.OwnerResolver, NotifyReason: "correction exhausted", NotifyEvents: map[string]bool{}}
+	if err := r.NotifyFeishu(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.messages) != 0 || len(store.issueComments) != 0 {
+		t.Fatalf("resolver ownership notified: messages=%v events=%v", sender.messages, store.issueComments)
+	}
+}
+
 func TestFeishuNotifyFailureAndDisabled(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "")

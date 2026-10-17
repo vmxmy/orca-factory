@@ -66,6 +66,32 @@ func IsTerminalStale(err error) bool {
 	return errors.As(err, &rejected) && rejected.Code == "terminal_handle_stale"
 }
 
+// StateError is a receipt Orca accepted but answered with a nonzero exit, such
+// as worker-release's release_unknown. Err keeps the exit's classification;
+// State is the receipt's own safe category, so logs need no raw output.
+type StateError struct {
+	State string
+	Err   error
+}
+
+func (e *StateError) Error() string { return "orca command exited with state " + e.State }
+
+func (e *StateError) Unwrap() error { return e.Err }
+
+// IsReleaseUnknown reports a release Orca could not prove: the terminal no
+// longer resolves, so whether its process is gone stays unknown.
+func IsReleaseUnknown(err error) bool {
+	var state *StateError
+	return errors.As(err, &state) && state.State == "release_unknown"
+}
+
+var globalCodes = map[string]infra.Reason{
+	"runtime_unavailable":     infra.RuntimeUnavailable,
+	"runtime_access_denied":   infra.PermissionDenied,
+	"authentication_required": infra.AuthenticationFailed,
+	"unauthorized":            infra.AuthenticationFailed,
+}
+
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
 	command := strings.Join(args[:min(2, len(args))], " ")
@@ -88,7 +114,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		var err error
 		path, err = runx.OrcaPath()
 		if err != nil {
-			return nil, &infra.Global{Dep: infra.Orca, Err: err}
+			return nil, &infra.Global{Dep: infra.Orca, Reason: infra.ExecutableMissing, Err: err}
 		}
 	}
 	if !filepath.IsAbs(path) {
@@ -107,7 +133,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, infra.Classify(runErr)
 	}
 	if errors.Is(runErr, os.ErrNotExist) || errors.Is(runErr, os.ErrPermission) {
-		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
+		return nil, &infra.Global{Dep: infra.Orca, Reason: infra.ExecutableMissing, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
 		ID     string  `json:"id"`
@@ -133,9 +159,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 			if envelope.Result == nil {
 				envelope.Result = envelope.Error.Data
 			}
-			switch envelope.Error.Code {
-			case "runtime_unavailable", "runtime_access_denied", "authentication_required", "unauthorized":
-				return envelope.Result, &infra.Global{Dep: infra.Orca, Err: errors.New("orca dependency unavailable")}
+			if reason, ok := globalCodes[envelope.Error.Code]; ok {
+				return envelope.Result, &infra.Global{Dep: infra.Orca, Reason: reason, Err: errors.New("orca dependency unavailable")}
 			}
 		}
 		if envelope.Error != nil && validCode(envelope.Error.Code) {
@@ -145,6 +170,11 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	}
 	// worker-start can emit a valid receipt but exit nonzero (failed or unknown).
 	if runErr != nil {
+		var state string
+		if json.Unmarshal(envelope.Result["state"], &state) == nil && validCode(state) {
+			result = state
+			return envelope.Result, &StateError{State: state, Err: infra.Classify(runErr)}
+		}
 		return envelope.Result, infra.Classify(runErr)
 	}
 	if envelope.Result == nil {
@@ -383,14 +413,14 @@ func (c *Client) Workers(ctx context.Context, o ListOptions) ([]Worker, error) {
 		}
 		var rows []Worker
 		var page struct {
-			HasMore    bool   `json:"hasMore"`
+			HasMore    *bool  `json:"hasMore"`
 			NextCursor string `json:"nextCursor"`
 		}
-		if json.Unmarshal(receipt["workers"], &rows) != nil || json.Unmarshal(receipt["page"], &page) != nil {
+		if json.Unmarshal(receipt["workers"], &rows) != nil || rows == nil || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil {
 			return nil, invalid("invalid worker list")
 		}
 		workers = append(workers, rows...)
-		if !page.HasMore {
+		if !*page.HasMore {
 			return workers, nil
 		}
 		if page.NextCursor == "" || seen[page.NextCursor] {
