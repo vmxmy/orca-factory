@@ -125,7 +125,8 @@ func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
 	r.StateRoot = t.TempDir()
 	r.PIDAlive = func(int) bool { return false }
 	r.Repositories = map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}}
-	ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-", Run: "run_9714ea9b8576"}
+	ticket, ledger := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=run_9714ea9b8576 attempt=1")
+	r.Clients = ledger
 	if err := orca.WriteBeat(orca.HeartbeatPath(r.StateRoot, "proj", "OF-1", "executor"), orca.Beat{PID: 7, Run: "run_9714ea9b8576", At: time.Unix(0, 0).UTC()}); err != nil {
 		t.Fatal(err)
 	}

@@ -11,10 +11,12 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type livenessBackend struct {
@@ -61,6 +63,26 @@ func abandonReceipt(t *testing.T, sample string) orca.Receipt {
 		t.Fatalf("abandon sample: %v", err)
 	}
 	return envelope.Result
+}
+
+// reapLedger is the ledger the reap rereads before its first write: the ticket
+// is parsed from the same comments, so an unchanged ledger matches it exactly.
+func reapLedger(t *testing.T, comments ...string) (Ticket, map[string]issues.Store) {
+	t.Helper()
+	rows := make([]task.Comment, len(comments))
+	for i, body := range comments {
+		rows[i] = task.Comment{Body: body, CreatedAt: time.Unix(int64(i), 0)}
+	}
+	ticket := Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}
+	if err := readOwnership(&ticket, rows); err != nil {
+		t.Fatal(err)
+	}
+	resolution, err := readResolution(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ticket.Resolution = resolution
+	return ticket, map[string]issues.Store{"/repo": &fakeIssues{issueComments: rows}}
 }
 
 const residualTerminal = "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d"
@@ -173,7 +195,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 				}
 				return []byte(terminalListWithExecutor), nil
 			}}
-		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "term_exec", Run: "run_1"}
+		ticket, ledger := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_1 attempt=1")
+		r.Clients = ledger
 		if err := r.ReapDead(context.Background(), ticket); err != nil {
 			t.Fatal(err)
 		}
@@ -227,7 +250,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 				t.Fatal("unregistered executor has no terminal to list")
 				return nil, nil
 			}}
-		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-"}
+		ticket, ledger := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1")
+		r.Clients = ledger
 		if err := r.ReapDead(context.Background(), ticket); err == nil {
 			t.Fatal("failed terminal close accepted")
 		}
@@ -246,7 +270,7 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 	t.Run("reap fences the run the dead process last beat", func(t *testing.T) {
 		root := t.TempDir()
 		path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
-		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", At: now.Add(-time.Hour)}); err != nil {
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", Terminal: "term_beat", At: now.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
 		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_beat"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_beat","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t, "orca-worker-abandon.json")}
@@ -256,15 +280,17 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 				t.Fatal("unregistered executor has no terminal to list")
 				return nil, nil
 			}}
-		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-"}
+		ticket, ledger := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1")
+		r.Clients = ledger
 		if got, err := r.Liveness(context.Background(), ticket); err != nil || got != orca.LivenessDead {
 			t.Fatalf("liveness got %q err=%v, want dead", got, err)
 		}
 		if err := r.ReapDead(context.Background(), ticket); err != nil {
 			t.Fatal(err)
 		}
-		if strings.Join(o.abandoned, ",") != "ctx_beat" {
-			t.Fatalf("abandoned=%v", o.abandoned)
+		// Killed before registering its terminal: the beat alone names it.
+		if strings.Join(o.abandoned, ",") != "ctx_beat" || strings.Join(o.closed, ",") != "term_beat,"+residualTerminal {
+			t.Fatalf("abandoned=%v closed=%v", o.abandoned, o.closed)
 		}
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale heartbeat kept: %v", err)
@@ -275,6 +301,19 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if got, err := r.Liveness(context.Background(), ticket); err != nil || got != orca.LivenessDead {
 			t.Fatalf("liveness got %q err=%v, want dead", got, err)
 		}
+		// The ledger moved after the dead verdict (a human took the ticket): nothing is fenced.
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		_, r.Clients = reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1", "阶段: 人工处理\n归属: 人 term=- run=- attempt=1")
+		o.page, o.abandoned, o.closed = 0, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("reap after the ledger moved succeeded")
+		}
+		if _, err := os.Stat(path); err != nil || len(o.abandoned) != 0 || len(o.closed) != 0 || o.page != 0 {
+			t.Fatalf("moved ledger reaped: heartbeat err=%v abandoned=%v closed=%v pages=%d", err, o.abandoned, o.closed, o.page)
+		}
+		_, r.Clients = reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1")
 		// A relaunched process replaced the beat after the dead verdict: its Run is not reaped.
 		if err := orca.WriteBeat(path, orca.Beat{PID: 8, Run: "run_new", At: now}); err != nil {
 			t.Fatal(err)
@@ -309,7 +348,12 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 				t.Fatal("unregistered resolver has no terminal to list")
 				return nil, nil
 			}}
-		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerResolver, Terminal: "-", Run: "run_src", Resolution: &resolver.Record{Run: "run_res"}}
+		ownership := "阶段: Agent处置\n归属: 处置Agent term=- run=run_src attempt=1"
+		ticket, ledger := reapLedger(t, ownership, resolver.Prefix+`{"version":1,"attempt":1,"phase":"running","run":"run_res"}`)
+		r.Clients = ledger
+		if ticket.Owner != machine.OwnerResolver || ticket.Run != "run_src" || ticket.Resolution == nil || ticket.Resolution.Run != "run_res" {
+			t.Fatalf("resolver ledger ticket=%+v", ticket)
+		}
 		if err := r.ReapDead(context.Background(), ticket); err != nil {
 			t.Fatal(err)
 		}
@@ -320,7 +364,7 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_res", At: now.Add(-time.Hour)}); err != nil {
 			t.Fatal(err)
 		}
-		ticket.Resolution = nil
+		ticket, r.Clients = reapLedger(t, ownership)
 		o.page, o.abandoned, o.closed = 0, nil, nil
 		if err := r.ReapDead(context.Background(), ticket); err != nil {
 			t.Fatalf("resolver reap before its first resolution record: %v", err)

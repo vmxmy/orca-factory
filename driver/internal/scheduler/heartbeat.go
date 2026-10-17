@@ -147,6 +147,10 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	if r.judge(t, beat) != orca.LivenessDead {
 		return errors.New("heartbeat no longer dead")
 	}
+	// The snapshot may predate a takeover; fence only what the ledger still assigns.
+	if err := r.verifyFreshDecision(ctx, t, Resume); err != nil {
+		return err
+	}
 	recorded := t.Run
 	if t.Owner == machine.OwnerResolver {
 		recorded = ""
@@ -180,6 +184,11 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	var leftover []string
 	if !absent {
 		leftover = append(leftover, t.Terminal)
+	}
+	// Killed between its first beat and terminal registration: only the beat
+	// names the executor's terminal.
+	if !registered(t) && beat.Terminal != "" {
+		leftover = append(leftover, beat.Terminal)
 	}
 	for _, id := range active {
 		if id == "" {
