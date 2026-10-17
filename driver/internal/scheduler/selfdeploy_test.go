@@ -119,7 +119,8 @@ func TestSelfDeploySmokeFailureRollsBack(t *testing.T) {
 	if installed(t, h) != "old" || h.restarts != 2 || !strings.Contains(receipts, `"state":"paused"`) || !strings.Contains(receipts, "归属: 处置Agent") || f.tracker.issue.State.Name == "Done" || maintenanceMode(t) != "running" {
 		t.Fatalf("rollback: installed=%q restarts=%d mode=%s state=%s receipts=%v", installed(t, h), h.restarts, maintenanceMode(t), f.tracker.issue.State.Name, f.tracker.bodies)
 	}
-	if err := restartServe(f); err == nil || h.builds != 1 || h.smokes != 1 || h.restarts != 2 {
-		t.Fatalf("paused deployment acted again: err=%v builds=%d smokes=%d restarts=%d", err, h.builds, h.smokes, h.restarts)
+	err := restartServe(f)
+	if h.builds != 1 || h.smokes != 1 || h.restarts != 2 || f.tracker.issue.State.Name == "Done" {
+		t.Fatalf("paused deployment acted again: err=%v builds=%d smokes=%d restarts=%d state=%s", err, h.builds, h.smokes, h.restarts, f.tracker.issue.State.Name)
 	}
 }
