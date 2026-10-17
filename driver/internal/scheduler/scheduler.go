@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -524,7 +525,7 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 			return nil
 		}
 		if !s.clock().Before(next) {
-			if err = s.Tick(ctx); err != nil && report != nil {
+			if err = s.Tick(ctx); err != nil && report != nil && !transientSnapshotFailure(err) {
 				report(err)
 			}
 			delay := s.NextInterval
@@ -565,10 +566,15 @@ func applyReason(err error) string {
 
 // Adapters return fixed-text errors, except decoding imported comment history
 // into task.Comment: its encoding/json and time errors quote the rejected input.
+// infra classification wrappers hide their cause in Error(), so the reason
+// appends each wrapped cause to keep the underlying failure visible.
 func snapshotReason(err error) string {
 	text := err.Error()
 	root := err
 	for next := errors.Unwrap(root); next != nil; next = errors.Unwrap(root) {
+		if hidesCause(root) {
+			text += ": " + next.Error()
+		}
 		root = next
 	}
 	var syntax *json.SyntaxError
@@ -579,6 +585,22 @@ func snapshotReason(err error) string {
 		text = strings.TrimSuffix(text, root.Error()) + "invalid JSON"
 	}
 	return logx.RedactText(text)
+}
+
+func hidesCause(err error) bool {
+	switch err.(type) {
+	case *infra.Ticket, *infra.Transient, *infra.Global:
+		return true
+	}
+	return false
+}
+
+// A transient snapshot failure is already logged as WARN and clears on its own;
+// reporting it would add an ERROR for a round the scheduler simply skips.
+func transientSnapshotFailure(err error) bool {
+	var snapshot *snapshotError
+	var transient *infra.Transient
+	return errors.As(err, &snapshot) && errors.As(snapshot.err, &transient)
 }
 
 // snapshotError text carries only the redacted reason; Unwrap keeps the cause.
