@@ -66,6 +66,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		runtime.Version = version
 		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()

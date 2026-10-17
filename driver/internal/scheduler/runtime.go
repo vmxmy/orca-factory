@@ -39,6 +39,9 @@ type Runtime struct {
 	Orca                 OrcaClient
 	Workspaces           WorkspaceClient
 	OrcaPath, DriverPath string
+	// Version is this process's main.version; self deployment compares it,
+	// not the file at DriverPath, with the squash SHA.
+	Version string
 	// StateRoot holds the per-ticket heartbeat files; HeartbeatTimeout is how
 	// stale a beat may be; PIDAlive overrides the process check in tests.
 	StateRoot        string
