@@ -527,3 +527,29 @@ func TestFeishuEnableLedgerProject(t *testing.T) {
 		t.Fatal("unknown remote: want an error")
 	}
 }
+
+func selfCheckDescription(redReason string) string {
+	return FeishuBrief{Todo: "1. 修", Check: "cd web && npx vitest run src/x.test.ts", Scope: "web/src", Body: "## intake 自检\n- CHECK 可执行且会红：是\n- CHECK 红因：" + redReason}.Description()
+}
+
+func TestCreateAcceptsAssertionFailureCheckRed(t *testing.T) {
+	f := newFeishuFake(t)
+	c := newFeishuTest(t, f)
+	fastReadBack(c)
+	if _, err := c.Create(context.Background(), CreateInput{Title: "有效红", Description: selfCheckDescription("断言失败 AssertionError: expected 1 to be 0")}); err != nil {
+		t.Fatalf("assertion failure red rejected: %v", err)
+	}
+}
+
+func TestCreateRejectsInvalidCheckRed(t *testing.T) {
+	for _, reason := range []string{"CACError: Unknown option `--repeat`", "Usage: vitest [options]", "No test files found, exiting with code 1", "sh: vitest: command not found", "ran 0 tests", "testing: warning: no tests to run"} {
+		f := newFeishuFake(t)
+		if _, err := newFeishuTest(t, f).Create(context.Background(), CreateInput{Title: "无效红", Description: selfCheckDescription(reason)}); err == nil || len(f.writes) != 0 {
+			t.Fatalf("feishu created ticket with invalid red %q: writes=%d err=%v", reason, len(f.writes), err)
+		}
+		gh, fake := newImportServer(t)
+		if _, err := gh.Create(context.Background(), CreateInput{Title: "无效红", Description: selfCheckDescription(reason), Labels: []string{}}); err == nil || fake.writes != 0 {
+			t.Fatalf("github created ticket with invalid red %q: writes=%d err=%v", reason, fake.writes, err)
+		}
+	}
+}

@@ -402,6 +402,9 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if strings.TrimSpace(in.Title) == "" {
 		return Task{}, errors.New("invalid native create input")
 	}
+	if err := requireValidCheckRed(in.Description); err != nil {
+		return Task{}, err
+	}
 	adopt := in.Blockers != nil && in.Related != nil
 	state := in.State
 	if state == "" {

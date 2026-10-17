@@ -141,6 +141,23 @@ type GitHub struct {
 var component = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 var uuid = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// invalidCheckRed matches CHECK failures caused by the command itself rather
+// than an assertion: such a CHECK stays red after the fix, so the gate can
+// never pass (ZY-92).
+var invalidCheckRed = regexp.MustCompile(`(?i)unknown option|\busage\b|no test files found|command not found|(^|[^0-9])0 tests|no tests to run`)
+
+// requireValidCheckRed refuses a ticket whose intake self-check records an
+// invalid red reason. Only the recorded reason is inspected; CHECK never runs here.
+func requireValidCheckRed(description string) error {
+	for _, line := range strings.Split(description, "\n") {
+		reason, ok := strings.CutPrefix(strings.TrimSpace(line), "- CHECK 红因")
+		if ok && invalidCheckRed.MatchString(reason) {
+			return fmt.Errorf("CHECK 红因 is not an assertion failure, rewrite CHECK and rerun it on main: %s", strings.TrimLeft(reason, "：: "))
+		}
+	}
+	return nil
+}
+
 const marker = "<!-- orca-task-v1: "
 
 func NewGitHub(repo string, gh *github.Client) (*GitHub, error) {
@@ -462,6 +479,9 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 	}
 	if strings.TrimSpace(in.Title) == "" || strings.Contains(in.Description, marker) {
 		return Task{}, errors.New("invalid native create input")
+	}
+	if err := requireValidCheckRed(in.Description); err != nil {
+		return Task{}, err
 	}
 	if (in.Blockers == nil || in.Related == nil) && in.State != "" && in.State != "Todo" {
 		return Task{}, errors.New("explicit adoption required for native create state")
