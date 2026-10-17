@@ -23,12 +23,13 @@ type WorkspaceClient interface {
 
 // Workspace is a driver-created Orca workspace, identified by the directory
 // name the executor (`<ticket>-executor`) or resolver (`<ticket>-resolver-<round>`)
-// gave it. Orca appends `-<n>` when a name collides.
+// gave it. Orca appends `-<n>` when a name collides; Copy is that n, 0 without a suffix.
 type Workspace struct {
 	Path   string
 	Ticket string
 	Kind   string
 	Round  int
+	Copy   int
 }
 
 // Verdict is one reclaim decision: Reason says why the workspace is
@@ -44,27 +45,37 @@ type Verdict struct {
 // even after the agent branch and its remote-tracking ref are gone.
 type closedTicket struct{ State, Head string }
 
-var workspacePattern = regexp.MustCompile(`^([A-Z][A-Z0-9]*-[0-9]+)-(executor|resolver-([1-9][0-9]*))(?:-[0-9]+)?$`)
+var workspacePattern = regexp.MustCompile(`^([A-Z][A-Z0-9]*-[0-9]+)-(executor|resolver-([1-9][0-9]*))(?:-([0-9]+))?$`)
 
 func parseWorkspace(path string) (Workspace, bool) {
 	match := workspacePattern.FindStringSubmatch(filepath.Base(path))
 	if match == nil {
 		return Workspace{}, false
 	}
+	copyNumber, _ := strconv.Atoi(match[4])
 	if match[3] == "" {
-		return Workspace{Path: path, Ticket: match[1], Kind: "executor"}, true
+		return Workspace{Path: path, Ticket: match[1], Kind: "executor", Copy: copyNumber}, true
 	}
 	round, _ := strconv.Atoi(match[3])
-	return Workspace{Path: path, Ticket: match[1], Kind: "resolver", Round: round}, true
+	return Workspace{Path: path, Ticket: match[1], Kind: "resolver", Round: round, Copy: copyNumber}, true
+}
+
+type resolverRound struct {
+	Ticket string
+	Round  int
 }
 
 // reclaimTargets selects every workspace of a closed ticket and, for any other
-// ticket, the resolver rounds older than its newest round.
+// ticket, the resolver rounds older than its newest round and the Orca
+// duplicates of a round below that round's highest copy.
 func reclaimTargets(workspaces []Workspace, closed map[string]closedTicket) []Verdict {
 	newest := map[string]int{}
+	newestCopy := map[resolverRound]int{}
 	for _, w := range workspaces {
 		if w.Kind == "resolver" {
 			newest[w.Ticket] = max(newest[w.Ticket], w.Round)
+			round := resolverRound{w.Ticket, w.Round}
+			newestCopy[round] = max(newestCopy[round], w.Copy)
 		}
 	}
 	var targets []Verdict
@@ -74,6 +85,8 @@ func reclaimTargets(workspaces []Workspace, closed map[string]closedTicket) []Ve
 			targets = append(targets, Verdict{Workspace: w, Reason: "ticket " + c.State})
 		case w.Kind == "resolver" && w.Round < newest[w.Ticket]:
 			targets = append(targets, Verdict{Workspace: w, Reason: fmt.Sprintf("superseded by resolver round %d", newest[w.Ticket])})
+		case w.Kind == "resolver" && w.Copy < newestCopy[resolverRound{w.Ticket, w.Round}]:
+			targets = append(targets, Verdict{Workspace: w, Reason: fmt.Sprintf("superseded by duplicate of resolver round %d", w.Round)})
 		}
 	}
 	return targets
