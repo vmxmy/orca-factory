@@ -6,6 +6,8 @@
 
 - 把需求变成合格票：
   - 只读调研仓库，定 `SCOPE`（真实存在的路径 glob，与 `gate.sh` 语法一致：空格分隔，`*` 可跨 `/`）。
+    - 外部契约：票新增或改变对外部系统输出（HTTP、CLI、Prometheus、云 API）的解析时，SCOPE 含对应 `*_test.go` 与同包 `testdata/` 下的录制真实样本路径；需新录制时，「要做」写明录制来源及是否需要 lane 3 凭证。
+    - 行为追踪：对简报要求改变的每条行为，追到实际产生该行为的函数所在文件（白名单、生命周期、请求构造），并纳入 SCOPE。
   - 写 `CHECK`：一条在 main 上可执行的命令 + 断言描述；最好是一条实现前会红、实现后会绿的断言。
   - 按 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 预判 lane，告诉用户；命中 lane 3 的需求不建 `ready-for-agent` 票，直接告诉用户这是人做的事。
   - 定 estimate 与档位（`workflow.md §6`）：默认只填 estimate，让映射决定；要强制档位才打 `tier:fast|default|strong` 标签。
@@ -33,6 +35,8 @@
 - CHECK 在 main 上能执行（命令存在、路径对），且语义上会红（断言的是尚不存在的行为）。
 - CHECK 在 main 上实际运行一次，记录红因。只有断言失败算有效红。参数错误（unknown option、Usage）、路径或工作目录不对、零测试匹配（No test files found、0 tests、no tests to run）、命令不存在（command not found）都是无效红：不得建票，改写 CHECK 后重跑。建票入口按自检的 `CHECK 红因` 行拒绝这些信号。
 - SCOPE 的每个路径或 glob 在仓库里真实存在（新建文件写到已存在的目录下）。
+- 外部契约：新增或改变外部系统输出解析的票，SCOPE 含 `*_test.go` 与 `testdata/` 录制真实样本路径。
+- 行为追踪：每条要改变的行为，其产生函数所在文件已纳入 SCOPE。
 - lane 预判与 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 逐条比对一致。
 - 票属于配置选定的仓库围栏；状态 Todo；带 `ready-for-agent`；GitHub 票已纳管。
 - 无阻塞，或阻塞票存在且完整 canonical 依赖已回读确认（`scripts/agent-gates/agent-graph.sh issues issue <ID> --relations --json`）。
@@ -73,6 +77,8 @@ DEPENDENCIES: {"blockers":[],"related":[]}
 - CHECK 可执行且会红：<是/否 + 怎么验的>
 - CHECK 红因：<断言失败 + 失败输出摘录一行>
 - SCOPE 路径存在：<是>
+- 外部契约样本：<不涉及 | 已含 `*_test.go` 与 `testdata/` 路径>
+- 行为追踪：<每条行为 → 所在文件>
 - lane 预判与 glob 一致：<是>
 - project / Todo / ready-for-agent：<是>
 - 依赖：<无 | 阻塞票存在且已建关系>
