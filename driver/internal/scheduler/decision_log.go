@@ -73,7 +73,7 @@ func (s *Scheduler) ownership(t Ticket, absent, inactive bool, terminalErr, disp
 // deferred errors are refusals known to have written nothing; the next round
 // decides again from fresh evidence.
 func deferred(err error) bool {
-	return errors.Is(err, maintenance.ErrRefused) || errors.Is(err, errLaunchEvidenceChanged) || errors.Is(err, errReservationChanged)
+	return errors.Is(err, maintenance.ErrRefused) || errors.Is(err, errLaunchEvidenceChanged) || errors.Is(err, errReservationChanged) || errors.Is(err, errResnapshot)
 }
 
 func outcome(err error) string {
