@@ -19,6 +19,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
@@ -121,6 +122,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			err = nil
 		}
 		e.logError(result.State.Phase, err)
+	}()
+	defer func() {
+		if errors.Is(err, maintenance.ErrRefused) {
+			err = errors.Join(err, e.comment(ctx, t.ID, maintenance.RefusedLine+"派工未发往 Orca，维护恢复后重放 term="+e.Config.Terminal))
+		}
 	}()
 	c := e.Config
 	if c.Unit == "" {

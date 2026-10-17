@@ -423,9 +423,13 @@ func readOwnership(t *Ticket, comments []task.Comment) error {
 			if strings.HasPrefix(line, "阶段: ") {
 				t.Phase = machine.Phase(strings.TrimPrefix(line, "阶段: "))
 			}
+			if strings.HasPrefix(line, maintenance.RefusedLine) {
+				t.MaintenanceRefused = true
+			}
 			if !strings.HasPrefix(line, "归属: ") {
 				continue
 			}
+			t.MaintenanceRefused = false
 			fields := strings.Fields(strings.TrimPrefix(line, "归属: "))
 			if len(fields) == 0 {
 				return errors.New("invalid ownership comment")
