@@ -3,6 +3,8 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -43,30 +45,64 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 
 // The driver can boot before Orca's runtime is ready (OF-137), so serve's
 // first discovery waits out dependency outages instead of exiting into a
-// systemd restart loop.
+// systemd restart loop. A long wait repeats its WARN only every
+// outageWarnEvery so the log stays bounded.
 const (
 	initialDiscoveryBackoff    = 5 * time.Second
 	maxInitialDiscoveryBackoff = time.Minute
+	outageWarnEvery            = 10 * time.Minute
 )
 
-// AwaitProjects runs serve's first discovery. A dependency outage
-// (infra.Global or infra.Transient) is retried with doubling backoff until
-// discovery succeeds or sleep reports ctx ended; any other error is returned
-// at once. It claims and launches nothing.
+type outage struct {
+	dep    infra.Dep
+	reason infra.Reason
+}
+
+// AwaitProjects runs serve's first discovery. A temporary outage (Orca
+// runtime_unavailable, or an infra.Transient timeout or network failure) is
+// retried with doubling backoff until discovery succeeds or sleep reports ctx
+// ended. Credential, authentication, permission and missing-executable
+// failures, and any other error, are returned at once. It claims and launches
+// nothing.
 func (s *Scheduler) AwaitProjects(ctx context.Context, sleep func(context.Context, time.Duration) error) error {
+	warned := map[outage]time.Time{}
 	for delay := initialDiscoveryBackoff; ; delay = min(2*delay, maxInitialDiscoveryBackoff) {
 		err := s.refreshProjects(ctx)
-		var global *infra.Global
-		var transient *infra.Transient
-		if err == nil || !errors.As(err, &global) && !errors.As(err, &transient) {
+		if err == nil {
+			return nil
+		}
+		cause, retry := classifyOutage(err)
+		if !retry {
+			if cause.dep != "" {
+				return fmt.Errorf("%s %s: %w", cause.dep, cause.reason, err)
+			}
 			return err
 		}
 		s.nextDiscover = time.Time{}
-		s.logger().Warn("project discovery waiting for dependency; scheduling not started", "err", err, "retryIn", delay)
+		now := s.clock()
+		level := slog.LevelDebug
+		if last, seen := warned[cause]; !seen || now.Sub(last) >= outageWarnEvery {
+			warned[cause] = now
+			level = slog.LevelWarn
+		}
+		s.logger().Log(ctx, level, "project discovery waiting for dependency; scheduling not started",
+			"dependency", cause.dep, "reason", cause.reason, "retryIn", delay)
 		if err := sleep(ctx, delay); err != nil {
 			return err
 		}
 	}
+}
+
+func classifyOutage(err error) (outage, bool) {
+	var global *infra.Global
+	if errors.As(err, &global) {
+		return outage{dep: global.Dep, reason: global.Reason}, global.Reason == infra.RuntimeUnavailable
+	}
+	var transient *infra.Transient
+	if errors.As(err, &transient) {
+		return outage{dep: "unknown", reason: "transient"}, true
+	}
+	return outage{}, false
 }
 
 func (s *Scheduler) refreshProjects(ctx context.Context) error {
