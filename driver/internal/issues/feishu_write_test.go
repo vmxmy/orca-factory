@@ -152,7 +152,7 @@ func TestFeishuWriteUnmanagedRowRejectsUpdate(t *testing.T) {
 func TestFeishuWriteCommentRejectsOversizedBody(t *testing.T) {
 	f := newFeishuFake(t)
 	c := newFeishuTest(t, f)
-	if _, err := c.CreateComment(context.Background(), "OF-2", strings.Repeat("证", feishuBodyRunes+1)); err == nil {
+	if _, err := c.CreateComment(context.Background(), "OF-2", strings.Repeat("证", FeishuBodyRunes+1)); err == nil {
 		t.Fatal("oversized body accepted")
 	}
 	if events := f.eventWrites(); len(events) != 0 {
