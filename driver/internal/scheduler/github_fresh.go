@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -27,6 +28,10 @@ func GitHubCleanupAllowed(task issues.Task, comments []task.Comment) bool {
 	return ticket.Handoff == nil || ticket.Progress != nil && ticket.Progress.Phase == "merged" && ticket.Progress.QueueID == ticket.Handoff.QueueID && ticket.Progress.TicketID == task.ID
 }
 
+// errResnapshot marks a decision withheld before any write because the ticket's
+// durable evidence moved since the snapshot.
+var errResnapshot = errors.New("resnapshot required")
+
 // Revalidate the selected ticket immediately before a decision can mutate it.
 // Comments may change independently of the issue timestamp, including human
 // cancellation and edited merge receipts.
@@ -50,10 +55,10 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 		return err
 	}
 	if !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
-		return errors.New("resolver evidence changed; resnapshot required")
+		return fmt.Errorf("resolver evidence changed: %w", errResnapshot)
 	}
 	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || fresh.MaintenanceRefused != t.MaintenanceRefused || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
-		return errors.New("task ownership or recovery evidence changed; resnapshot required")
+		return fmt.Errorf("task ownership or recovery evidence changed: %w", errResnapshot)
 	}
 	closed := task.State.Name == "Canceled" || task.State.Name == "Cancelled" || task.State.Name == "Duplicate" || (task.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)
 	if closed && !DeploymentBarrier(fresh) {

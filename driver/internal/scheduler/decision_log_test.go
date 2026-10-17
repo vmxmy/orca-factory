@@ -268,20 +268,21 @@ func deferredEvents(t *testing.T, output string) map[string]bool {
 // A maintenance refusal is known not to have reached any external system, so
 // claim, recovery and launch wait for the next round instead of failing the tick.
 func TestSchedulerMaintenanceRefusalDeferred(t *testing.T) {
-	refused := fmt.Errorf("apply: %w", maintenance.ErrRefused)
-	s := setup(nil)
 	tickets := []Ticket{
 		{ID: "one", Identifier: "ZII-1", Repo: "b", Candidate: true},
-		{ID: "two", Identifier: "ZII-2", Repo: "b", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now()},
+		{ID: "two", Identifier: "ZII-2", Repo: "b", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: setup(nil).Now()},
 	}
-	var applyOutput bytes.Buffer
-	s.Backend = &fakeBackend{tickets: tickets, absent: true, inactive: true, applyErr: refused}
-	s.Logger = logx.New("scheduler", &applyOutput)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatalf("refused apply reported as failure: %v", err)
-	}
-	if events := deferredEvents(t, applyOutput.String()); !events["claim"] || !events["apply"] {
-		t.Fatalf("refused apply not deferred: %v\n%s", events, applyOutput.String())
+	for _, applyErr := range []error{fmt.Errorf("apply: %w", maintenance.ErrRefused), errResnapshot} {
+		var applyOutput bytes.Buffer
+		s := setup(nil)
+		s.Backend = &fakeBackend{tickets: tickets, absent: true, inactive: true, applyErr: applyErr}
+		s.Logger = logx.New("scheduler", &applyOutput)
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatalf("apply %v reported as failure: %v", applyErr, err)
+		}
+		if events := deferredEvents(t, applyOutput.String()); !events["claim"] || !events["apply"] {
+			t.Fatalf("apply %v not deferred: %v\n%s", applyErr, events, applyOutput.String())
+		}
 	}
 
 	for _, launchErr := range []error{fmt.Errorf("launch: %w", maintenance.ErrRefused), errReservationChanged} {
