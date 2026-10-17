@@ -604,3 +604,45 @@ func TestStartUnobservedWorkerIsStoppedAfterWindow(t *testing.T) {
 		}
 	})
 }
+
+// ZCP-141: maintenance refused the dispatch after run-create, leaving a Run
+// with no task or worker. Complete empty reads prove nothing was dispatched,
+// so the round ends as waiting instead of awaiting evidence forever.
+func TestResolverEmptyRunIsNotUncertain(t *testing.T) {
+	var tasks struct {
+		Result struct {
+			RunID string      `json:"runId"`
+			Tasks []orca.Task `json:"tasks"`
+		} `json:"result"`
+	}
+	var workers struct {
+		Result orca.Receipt `json:"result"`
+	}
+	for path, out := range map[string]any{"orca-task-list-empty-run.json": &tasks, "orca-worker-list-empty-run.json": &workers} {
+		raw, err := os.ReadFile("../../testdata/recorded/" + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(raw, out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := tasks.Result.RunID
+	pending := func(c *Controller) *Record {
+		return &Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "old-terminal", Run: run, Spec: c.Spec, Agent: c.Agent}
+	}
+
+	c, s, o := setupController()
+	s.record, o.tasks, o.workers = pending(c), tasks.Result.Tasks, workers.Result
+	p, err := c.Step(context.Background())
+	if err != nil || p.Phase != "waiting" || s.record.Phase != "waiting" || o.startCalls != 0 {
+		t.Fatalf("empty run not settled as never dispatched: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+
+	c, s, o = setupController()
+	s.record, o.tasks = pending(c), tasks.Result.Tasks
+	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"` + run + `"}`), "page": json.RawMessage(`{"hasMore":true}`), "workers": json.RawMessage(`[]`)}
+	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+		t.Fatalf("incomplete worker read ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+}
