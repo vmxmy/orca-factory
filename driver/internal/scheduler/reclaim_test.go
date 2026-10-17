@@ -3,6 +3,7 @@ package scheduler
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"reflect"
@@ -44,12 +45,12 @@ func TestReclaimWorkspaces(t *testing.T) {
 		return task.Issue{ID: id, Identifier: id, Project: task.NamedID{ID: "p"}, State: task.NamedID{Name: state}}
 	}
 	lc := &fakeIssues{
-		issues:        []task.Issue{ticket("OF-1", "Done"), ticket("OF-2", "Canceled"), ticket("OF-3", "Canceled"), ticket("OF-4", "In Progress"), ticket("OF-5", "Done"), ticket("OF-6", "Done")},
+		issues:        []task.Issue{ticket("OF-1", "Done"), ticket("OF-2", "Canceled"), ticket("OF-3", "Canceled"), ticket("OF-4", "In Progress"), ticket("OF-5", "Done"), ticket("OF-6", "Done"), ticket("OF-7", "Done")},
 		issueComments: []task.Comment{{ID: "c", Body: `merge-handoff-v1: {"queue_id":"q","head":"` + merged + `"}`}},
 	}
 	ws := func(name string) orca.Worktree { return orca.Worktree{Path: "/ws/" + name} }
 	fake := &fakeWorkspaces{
-		trees:     []orca.Worktree{{Path: "/repo", Main: true}, ws("OF-1-executor"), ws("OF-1-resolver-1"), ws("OF-2-executor"), ws("OF-3-executor"), ws("OF-4-executor"), ws("OF-4-resolver-1"), ws("OF-4-resolver-2"), ws("OF-5-executor"), {Path: "/ws/OF-6-executor", Pinned: true}, ws("shearwater")},
+		trees:     []orca.Worktree{{Path: "/repo", Main: true}, ws("OF-1-executor"), ws("OF-1-resolver-1"), ws("OF-2-executor"), ws("OF-3-executor"), ws("OF-4-executor"), ws("OF-4-resolver-1"), ws("OF-4-resolver-2"), ws("OF-5-executor"), {Path: "/ws/OF-6-executor", Pinned: true}, ws("OF-7-executor"), ws("shearwater")},
 		terminals: []orca.Terminal{{Handle: "term_1", WorktreeID: "repo::/ws/OF-5-executor", LastOutputAt: 1}},
 	}
 	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p"}}
@@ -62,13 +63,13 @@ func TestReclaimWorkspaces(t *testing.T) {
 				return []byte(" M main.go\n"), nil
 			}
 			return nil, nil
-		case "rev-parse":
-			if name == "OF-1-executor" {
-				return []byte(merged + "\n"), nil
+		case "merge-base":
+			if (name == "OF-1-executor" || name == "OF-7-executor") && slices.Equal(s.Args[1:], []string{"--is-ancestor", "HEAD", merged}) {
+				return nil, nil
 			}
-			return []byte("2222222222222222222222222222222222222222\n"), nil
+			return nil, errors.New("exit status 1")
 		case "rev-list":
-			if name == "OF-3-executor" || name == "OF-1-executor" {
+			if name == "OF-3-executor" || name == "OF-1-executor" || name == "OF-7-executor" {
 				return []byte("1\n"), nil
 			}
 			return []byte("0\n"), nil
@@ -90,7 +91,7 @@ func TestReclaimWorkspaces(t *testing.T) {
 	for _, v := range verdicts {
 		got[filepath.Base(v.Path)] = strings.Join(v.Blocks, ",")
 	}
-	want := map[string]string{"OF-1-executor": "", "OF-1-resolver-1": "", "OF-2-executor": "dirty", "OF-3-executor": "unpushed", "OF-4-resolver-1": "", "OF-5-executor": "terminal-running", "OF-6-executor": "pinned"}
+	want := map[string]string{"OF-1-executor": "", "OF-1-resolver-1": "", "OF-2-executor": "dirty", "OF-3-executor": "unpushed", "OF-4-resolver-1": "", "OF-5-executor": "terminal-running", "OF-6-executor": "pinned", "OF-7-executor": ""}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("verdicts=%v want %v", got, want)
 	}
@@ -101,7 +102,7 @@ func TestReclaimWorkspaces(t *testing.T) {
 		}
 	}
 	sort.Strings(fake.removed)
-	if want := []string{"OF-1-executor", "OF-1-resolver-1", "OF-4-resolver-1"}; !reflect.DeepEqual(fake.removed, want) {
+	if want := []string{"OF-1-executor", "OF-1-resolver-1", "OF-4-resolver-1", "OF-7-executor"}; !reflect.DeepEqual(fake.removed, want) {
 		t.Fatalf("removed=%v want %v", fake.removed, want)
 	}
 	if n := strings.Count(log.String(), "workspace kept"); n != 4 {
