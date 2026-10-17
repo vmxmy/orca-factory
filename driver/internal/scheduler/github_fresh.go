@@ -115,6 +115,10 @@ func githubExecutionAllowed(task issues.Task) error {
 // evidence moved since the snapshot; the next round decides from fresh evidence.
 var errLaunchEvidenceChanged = errors.New("recovery evidence changed before launch")
 
+// errReservationChanged marks a launch withheld because the ownership
+// reservation moved since the snapshot; the next round decides afresh.
+var errReservationChanged = errors.New("executor reservation changed before launch")
+
 func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	client := r.Clients[t.Repo]
 	task, err := client.Read(ctx, t.ID)
@@ -154,7 +158,7 @@ func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 		expectedRun = t.Run
 	}
 	if fresh.Owner != expected || fresh.Terminal != "-" || fresh.Run != expectedRun || fresh.Phase != t.Phase || fresh.Attempt != t.Attempt {
-		return errors.New("executor reservation changed before launch")
+		return errReservationChanged
 	}
 	return nil
 }

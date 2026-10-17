@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
 
 func (s *Scheduler) logger() *slog.Logger {
@@ -69,15 +70,26 @@ func (s *Scheduler) ownership(t Ticket, absent, inactive bool, terminalErr, disp
 		"result", result, "terminal_error", terminalErr, "dispatch_error", dispatchErr)
 }
 
+// deferred errors are refusals known to have written nothing; the next round
+// decides again from fresh evidence.
+func deferred(err error) bool {
+	return errors.Is(err, maintenance.ErrRefused) || errors.Is(err, errLaunchEvidenceChanged) || errors.Is(err, errReservationChanged)
+}
+
+func outcome(err error) string {
+	switch {
+	case err == nil:
+		return "success"
+	case deferred(err):
+		return "deferred"
+	default:
+		return "uncertain"
+	}
+}
+
 func (s *Scheduler) launch(ctx context.Context, t Ticket) error {
 	err := s.Backend.Launch(ctx, t)
-	result := "success"
-	switch {
-	case errors.Is(err, errLaunchEvidenceChanged):
-		result = "deferred"
-	case err != nil:
-		result = "uncertain"
-	}
+	result := outcome(err)
 	s.decision(t, "launch", "", "attempt", t.Attempt, "result", result, "err", err)
 	if result == "deferred" {
 		return nil
