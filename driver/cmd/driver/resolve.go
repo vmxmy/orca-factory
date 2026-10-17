@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
 
@@ -60,7 +61,7 @@ func resolveTicket(args []string) int {
 		}
 		for _, ticket := range tickets {
 			if ticket.Identifier == args[0] {
-				err = runtime.ResolveTicket(ctx, ticket, os.Getenv("ORCA_TERMINAL_HANDLE"))
+				err = runtime.ResolveTicket(runx.WithLogger(ctx, logger), ticket, os.Getenv("ORCA_TERMINAL_HANDLE"))
 				if err != nil {
 					return 1, err
 				}

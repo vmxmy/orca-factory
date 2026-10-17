@@ -213,3 +213,25 @@ func TestWorkersRejectsIncompleteReceipt(t *testing.T) {
 		}
 	}
 }
+
+// Orca accepts worker-release yet exits 1 when it cannot prove the terminal's
+// process is gone (OF-149, real OF-22 receipt). The error keeps its ticket
+// classification but names the receipt state, never the raw lastError text.
+func TestRecordedWorkerReleaseUnknown(t *testing.T) {
+	fixture, err := filepath.Abs("../../testdata/recorded/orca-worker-release-unknown.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat '"+fixture+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&Client{Path: script}).WorkerRelease(context.Background(), firstID, "ctx_8c52283cac81")
+	var ticket *infra.Ticket
+	if !errors.As(err, &ticket) || !IsReleaseUnknown(err) {
+		t.Fatalf("err=%v; want ticket-classified release_unknown", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "release_unknown") || strings.Contains(msg, "terminal") {
+		t.Fatalf("message=%q; want state without raw output", msg)
+	}
+}

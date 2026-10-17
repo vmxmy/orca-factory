@@ -12,6 +12,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 const Prefix = "resolver-state "
@@ -229,7 +230,12 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			released = worker.Resource.ReleaseState == "released"
 		}
 		if !released {
-			if _, err = c.Orca.WorkerRelease(ctx, request("release"), p.Dispatch); err != nil {
+			_, err = c.Orca.WorkerRelease(ctx, request("release"), p.Dispatch)
+			// The report is already persisted; an unprovable release only
+			// leaves a terminal Orca can no longer resolve.
+			if orca.IsReleaseUnknown(err) {
+				runx.LoggerFrom(ctx).Warn("resolver worker release unknown", "dispatch", p.Dispatch, "reason", "release_unknown")
+			} else if err != nil {
 				return nil, err
 			}
 		}

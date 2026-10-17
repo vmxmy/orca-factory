@@ -1,13 +1,18 @@
 package resolver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +46,7 @@ type fakeOrca struct {
 	starts     map[string]orca.StartOptions
 	report     *orca.WorkerReport
 	releases   int
+	releaseErr error
 	readErr    error
 	status     string
 	startErr   error
@@ -92,7 +98,7 @@ func (o *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 }
 func (o *fakeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {
 	o.releases++
-	return orca.Receipt{}, nil
+	return orca.Receipt{}, o.releaseErr
 }
 func setupController() (*Controller, *memoryStore, *fakeOrca) {
 	s := &memoryStore{}
@@ -405,5 +411,50 @@ func TestReplacementCannotRedispatchWhenOriginalRequestIsUnknown(t *testing.T) {
 	}
 	if o.startCalls != 0 || o.releases != 0 {
 		t.Fatal("unconfirmed request replayed")
+	}
+}
+
+// recordedReleaseUnknown replays the real OF-22 worker-release receipt (ok:true,
+// exit 1) through the Orca client, so the error has its production shape.
+func recordedReleaseUnknown(t *testing.T) error {
+	t.Helper()
+	fixture, err := filepath.Abs("../../testdata/recorded/orca-worker-release-unknown.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat '"+fixture+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err = (&orca.Client{Path: script}).WorkerRelease(context.Background(), orca.RequestID("ENG-1", "resolver", "release", 1), "ctx_1")
+	return err
+}
+
+// After the report is persisted, release_unknown only leaves an unprovable
+// terminal behind: the controller warns and advances. Other release errors
+// still hold the settled phase.
+func TestSettledReleaseUnknownAdvancesToResult(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		phase string
+	}{
+		{"release_unknown", recordedReleaseUnknown(t), "result"},
+		{"rejected", &orca.RejectedError{Code: "invalid_argument"}, "settled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, s, o := setupController()
+			s.record = &Record{Version: 1, Attempt: 1, Phase: "settled", Run: "run_1", Task: "task_1", Dispatch: "ctx_1", Spec: c.Spec, Agent: c.Agent, Result: "done", Outcome: "succeeded"}
+			o.releaseErr = tc.err
+			var logs bytes.Buffer
+			ctx := runx.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+			_, err := c.Step(ctx)
+			if s.record.Phase != tc.phase || o.releases != 1 || (err == nil) != (tc.phase == "result") {
+				t.Fatalf("phase=%s releases=%d err=%v", s.record.Phase, o.releases, err)
+			}
+			if tc.phase == "result" && (!strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), "dispatch=ctx_1") || !strings.Contains(logs.String(), "reason=release_unknown")) {
+				t.Fatalf("logs=%q", logs.String())
+			}
+		})
 	}
 }
