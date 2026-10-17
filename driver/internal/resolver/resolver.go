@@ -17,6 +17,11 @@ import (
 
 const Prefix = "resolver-state "
 
+// StartUnobservedWindow bounds a dispatch whose turn Orca never saw start, as
+// when the brief stays in the agent's input box: polling it without end held
+// the maintenance session and blocked deploys (OF-160).
+const StartUnobservedWindow = 10 * time.Minute
+
 type Record struct {
 	SourceRun string    `json:"source_run,omitempty"`
 	Creator   string    `json:"creator,omitempty"`
@@ -33,6 +38,9 @@ type Record struct {
 	Result    string    `json:"result,omitempty"`
 	Outcome   string    `json:"outcome,omitempty"`
 	RetryAt   time.Time `json:"retry_at,omitempty"`
+	// UnobservedSince is when this dispatch was first seen pending without a
+	// started turn; the ledger keeps it so a restart does not reopen the window.
+	UnobservedSince time.Time `json:"unobserved_since,omitzero"`
 	// Failures counts consecutive failed attempts before this one. It is derived
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
@@ -48,6 +56,7 @@ type Orca interface {
 	TaskList(context.Context, string) ([]orca.Task, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
+	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 }
 type Controller struct {
 	Store                                              Store
@@ -173,8 +182,12 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		}
 		listed, status := false, ""
 		if slices.ContainsFunc(tasks, func(t orca.Task) bool { return t.ID == p.Task && AwaitsDispatch(t) }) {
-			if listed, status, err = c.dispatchStatus(ctx, p); err != nil {
+			row, err := c.dispatchRow(ctx, p)
+			if err != nil {
 				return nil, err
+			}
+			if listed = row != nil; listed {
+				status = row.Status
 			}
 			// The dispatch may report between the two reads; only a task read
 			// after the worker read can confirm loss.
@@ -229,7 +242,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			return nil, errors.New("resolver task absent from complete read")
 		}
 		if p.Phase == "running" {
-			return p, nil
+			return p, c.awaitTurnStart(ctx, p, now, request("stop"))
 		}
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err
@@ -262,6 +275,33 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	return p, nil
 }
 
+// awaitTurnStart stops a dispatch whose turn stayed unobserved for the whole
+// window and ends the round as waiting, so the scheduler dispatches afresh.
+// Only a worker read after the stop showing the dispatch ended confirms it.
+func (c *Controller) awaitTurnStart(ctx context.Context, p *Record, now time.Time, stopRequest string) error {
+	row, err := c.dispatchRow(ctx, p)
+	if err != nil || row == nil || !StartUnobserved(row.Status, row.Projection.Stage.Detail) {
+		return err
+	}
+	if p.UnobservedSince.IsZero() {
+		p.UnobservedSince = now
+		return c.Store.Save(ctx, *p)
+	}
+	if now.Sub(p.UnobservedSince) < StartUnobservedWindow {
+		return nil
+	}
+	_, stopErr := c.Orca.WorkerStop(ctx, stopRequest, p.Dispatch)
+	if row, err = c.dispatchRow(ctx, p); err != nil {
+		return errors.Join(stopErr, err)
+	}
+	if row == nil || !DispatchEnded(row.Status) {
+		return errors.Join(stopErr, errors.New("resolver stop of unstarted dispatch unconfirmed"))
+	}
+	p.Phase, p.Outcome, p.RetryAt = "waiting", "failed", now
+	p.Result = fmt.Sprintf("worker turn did not start within %s; dispatch %s stopped", StartUnobservedWindow, p.Dispatch)
+	return c.Store.Save(ctx, *p)
+}
+
 // AwaitsDispatch reports a task Orca holds without a dispatch. That alone never
 // proves loss: a dispatch queued behind a busy terminal looks the same.
 func AwaitsDispatch(task orca.Task) bool {
@@ -272,13 +312,19 @@ func AwaitsDispatch(task orca.Task) bool {
 // dispatch and the recorded dispatch is absent from the workers or ended, as
 // after an Orca restart drops it.
 func LostDispatch(task orca.Task, dispatch string, listed bool, status string) (string, bool) {
-	if !AwaitsDispatch(task) || (listed && !dispatchEnded(status)) {
+	if !AwaitsDispatch(task) || (listed && !DispatchEnded(status)) {
 		return "", false
 	}
 	return fmt.Sprintf("dispatch lost: task %s is %s without dispatch %s", task.ID, task.Status, dispatch), true
 }
 
-func dispatchEnded(status string) bool {
+// StartUnobserved reports a dispatch Orca accepted whose turn it never saw
+// start (ZCP-142: the brief stayed in the agent's input box).
+func StartUnobserved(status, detail string) bool {
+	return status == "pending" && detail == "turn_start_unobserved"
+}
+
+func DispatchEnded(status string) bool {
 	switch status {
 	case "completed", "failed", "abandoned", "cancelled", "canceled":
 		return true

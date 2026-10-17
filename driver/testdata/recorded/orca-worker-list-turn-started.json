@@ -1,0 +1,41 @@
+{
+  "id": "4304bc0f-a3a8-4a45-9428-69104ef26cbd",
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_f2a31fa3a1d2",
+        "taskId": "task_94279e67b550",
+        "runId": "run_984636b3af88",
+        "workerState": "ready",
+        "dispatchStatus": "dispatched",
+        "resource": {
+          "releaseState": "not_requested"
+        },
+        "projection": {
+          "stage": {
+            "worker": "ready",
+            "dispatch": "dispatched",
+            "detail": "input_accepted",
+            "activity": "unknown"
+          },
+          "outcome": "in_progress",
+          "liveness": {
+            "verdict": "unverifiable",
+            "reason": "missing_status"
+          }
+        }
+      }
+    ],
+    "page": {
+      "limit": 100,
+      "total": 1,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_984636b3af88",
+      "source": "flag"
+    }
+  }
+}

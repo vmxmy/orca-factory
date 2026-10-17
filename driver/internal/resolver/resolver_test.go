@@ -53,6 +53,9 @@ type fakeOrca struct {
 	// settled replaces tasks once a worker read happens, as when the dispatch
 	// reports between the controller's task read and worker read.
 	settled []orca.Task
+	stops   int
+	// stopped replaces workers once WorkerStop is called.
+	stopped orca.Receipt
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -511,4 +514,93 @@ func TestSettledReleaseUnknownAdvancesToResult(t *testing.T) {
 			}
 		})
 	}
+}
+
+func (o *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
+	o.stops++
+	if o.stopped != nil {
+		o.workers = o.stopped
+	}
+	return orca.Receipt{}, nil
+}
+
+func workerRows(run, rows string) orca.Receipt {
+	return orca.Receipt{"scope": json.RawMessage(`{"run":"` + run + `"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(rows)}
+}
+
+// ZCP-142: the brief stayed in the agent's input box, so Orca never saw the
+// turn start and the resolver held its maintenance session for 78 minutes.
+// The unobserved row is synthetic (values from that incident's worker-list);
+// the started row is recorded.
+func TestStartUnobservedWorkerIsStoppedAfterWindow(t *testing.T) {
+	unobserved := workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","workerState":"start_unknown","dispatchStatus":"pending","projection":{"stage":{"detail":"turn_start_unobserved"},"liveness":{"verdict":"unverifiable"}}}]`)
+	stopped := workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","workerState":"stopped","dispatchStatus":"failed","projection":{"stage":{"detail":"process_stopped"},"liveness":{"verdict":"exited"}}}]`)
+	steps := func(t *testing.T, c *Controller, now *time.Time) {
+		t.Helper()
+		for _, elapsed := range []time.Duration{0, StartUnobservedWindow - time.Second, time.Second} {
+			*now = now.Add(elapsed)
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Run("stops and waits once the window passes", func(t *testing.T) {
+		c, s, o := setupController()
+		now := c.Now()
+		c.Now = func() time.Time { return now }
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		o.workers, o.stopped = unobserved, stopped
+		steps(t, c, &now)
+		if o.stops != 1 || s.record.Phase != "waiting" || s.record.Outcome != "failed" || !s.record.RetryAt.Equal(now) || o.releases != 0 || o.startCalls != 1 {
+			t.Fatalf("unstarted dispatch not stopped into waiting: stops=%d record=%+v", o.stops, s.record)
+		}
+	})
+	t.Run("keeps the round when the stop is not confirmed", func(t *testing.T) {
+		c, s, o := setupController()
+		now := c.Now()
+		c.Now = func() time.Time { return now }
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		o.workers = unobserved
+		now = now.Add(StartUnobservedWindow)
+		for range 2 {
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		now = now.Add(StartUnobservedWindow)
+		if _, err := c.Step(context.Background()); err == nil || o.stops != 1 || s.record.Phase != "running" {
+			t.Fatalf("unconfirmed stop ended the round: err=%v stops=%d record=%+v", err, o.stops, s.record)
+		}
+	})
+	t.Run("a started turn keeps waiting", func(t *testing.T) {
+		c, s, o := setupController()
+		raw, err := os.ReadFile("../../testdata/recorded/orca-worker-list-turn-started.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var envelope struct {
+			Result orca.Receipt `json:"result"`
+		}
+		if err = json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		var rows []workerIdentity
+		if err = json.Unmarshal(envelope.Result["workers"], &rows); err != nil {
+			t.Fatal(err)
+		}
+		row := rows[0]
+		o.workers = envelope.Result
+		s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: row.Run, Task: row.Task, Dispatch: row.Dispatch, Spec: c.Spec, Agent: c.Agent}
+		o.tasks = []orca.Task{{ID: row.Task, RunID: row.Run, DispatchID: row.Dispatch, Status: "dispatched"}}
+		now := c.Now()
+		c.Now = func() time.Time { return now }
+		steps(t, c, &now)
+		if o.stops != 0 || s.record.Phase != "running" {
+			t.Fatalf("started turn stopped: stops=%d record=%+v", o.stops, s.record)
+		}
+	})
 }
