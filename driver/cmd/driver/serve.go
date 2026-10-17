@@ -117,6 +117,11 @@ func projectSource(cfg config.Config) func(context.Context) (projects.Result, er
 		result, _, err := discoverProjects(ctx, cfg, client)
 		if err == nil {
 			warnRemoteMismatch(ctx, result.Eligible, warned)
+			for _, p := range result.Eligible {
+				if ffErr := fastForwardCheckout(ctx, p.Path); ffErr != nil {
+					runx.LoggerFrom(ctx).Warn("checkout not fast-forwarded", "path", p.Path, "err", ffErr)
+				}
+			}
 		}
 		return result, err
 	}
