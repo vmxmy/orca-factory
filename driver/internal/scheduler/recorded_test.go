@@ -113,7 +113,7 @@ func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []dispatchRow{{"ctx_f9e3c9ac102a", "failed"}, {"ctx_6d1316722a7c", "failed"}, {"ctx_a93f6b74d60d", "failed"}, {"ctx_2ec61f77c499", "completed"}}
+	want := []dispatchRow{{"ctx_f9e3c9ac102a", "failed", ""}, {"ctx_6d1316722a7c", "failed", ""}, {"ctx_a93f6b74d60d", "failed", ""}, {"ctx_2ec61f77c499", "completed", ""}}
 	if !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows=%+v", rows)
 	}
@@ -134,5 +134,24 @@ func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
 	}
 	if abandoned := r.Orca.(*reapOrca).abandoned; len(abandoned) != 0 {
 		t.Fatalf("settled dispatches abandoned: %v", abandoned)
+	}
+}
+
+// An abandoned dispatch reads as dispatchStatus failed; only workerState names
+// the abandon a failed terminal close must retry (orca-worker-list-abandoned.json).
+func TestRecordedDispatchesWorkerListAbandoned(t *testing.T) {
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-list-abandoned.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{Orca: &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{envelope.Result}}}}
+	rows, err := r.dispatches(context.Background(), "run_4eb9fdf9ecdc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []dispatchRow{{"ctx_ee6da2ada658", "failed", "abandoned"}}; !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows=%+v", rows)
 	}
 }

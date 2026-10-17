@@ -303,3 +303,90 @@ func TestExecutorHeartbeatNamesCheckpointRun(t *testing.T) {
 		t.Fatalf("beat run during checkpoint task lookup = %q, want run_ckpt", o.seen)
 	}
 }
+
+// recordedWorkers parses a recorded worker-list through the Client's typed path.
+func recordedWorkers(t *testing.T, sample, run string) []orca.Worker {
+	t.Helper()
+	path, err := filepath.Abs("../../testdata/recorded/" + sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\ncat '"+path+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	workers, err := (&orca.Client{Path: script}).Workers(context.Background(), orca.ListOptions{Run: run, IncludeRemote: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return workers
+}
+
+// The scheduler abandoned the dead executor's worker: Orca returns the task to
+// blocked without a dispatch or report (orca-task-list-abandoned.json) and
+// lists the worker abandoned (orca-worker-list-abandoned.json).
+type abandonedOrca struct {
+	fakeOrca
+	worker orca.Worker
+}
+
+func (o *abandonedOrca) TaskList(context.Context, string) ([]orca.Task, error) {
+	return []orca.Task{{ID: "task_one", RunID: "run_one", Status: "blocked", Spec: "branch agent/ZII-861/executor"}}, nil
+}
+func (o *abandonedOrca) Workers(_ context.Context, opts orca.ListOptions) ([]orca.Worker, error) {
+	if opts.Run != "run_one" || !opts.IncludeRemote {
+		panic("wrong worker list scope")
+	}
+	return []orca.Worker{o.worker}, nil
+}
+
+// A restart after the reap resolves an uncertain worker start from the
+// worker-list and sends the abandoned worker to correction instead of waiting.
+func TestExecutorHeartbeatRecoversAbandonedPendingWorker(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	workers := recordedWorkers(t, "orca-worker-list-abandoned.json", "run_4eb9fdf9ecdc")
+	if len(workers) != 1 || workers[0].TaskID != "task_467434b620d4" || workers[0].DispatchID != "ctx_ee6da2ada658" || workers[0].Projection.Stage.Worker != "abandoned" {
+		t.Fatalf("recorded abandoned worker=%+v", workers)
+	}
+	worker := workers[0]
+	worker.TaskID, worker.DispatchID = "task_one", "ctx_one"
+	o := &abandonedOrca{worker: worker}
+	e.Orca = o
+	if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Pending: true, Worktree: "/worktrees/ZII-861-executor"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &livenessRecovery{cancel: cancel}
+	e.Recovery = r
+	e.Sleep = func(context.Context, time.Duration) error { t.Fatal("waited on an abandoned worker"); return nil }
+	if _, err := e.Start(ctx, ticket); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "worker abandoned without worker_done") {
+		t.Fatalf("corrections=%+v", r.requests)
+	}
+}
+
+// A start the ledger rejects must not overwrite the beat of the executor that
+// owns the reservation.
+func TestExecutorHeartbeatStartsAfterAcceptedStart(t *testing.T) {
+	e, _, l, _, _, ticket := fixture(t, "new-sha")
+	l.comments = []string{"归属: 执行器 term=term_old run=run_old attempt=1"}
+	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
+	if _, err := e.Start(context.Background(), ticket); err == nil || !strings.Contains(err.Error(), "another terminal") {
+		t.Fatalf("err=%v", err)
+	}
+	if _, err := os.Stat(e.HeartbeatPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected start wrote a heartbeat: %v", err)
+	}
+	l.comments = nil
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.Orca = livenessFixture(t, "exited", "")
+	e.Recovery = &livenessRecovery{cancel: cancel}
+	_, _ = e.Start(ctx, ticket)
+	if beat, found, err := orca.ReadBeat(e.HeartbeatPath); err != nil || !found || beat.PID != os.Getpid() || beat.Terminal != e.Config.Terminal {
+		t.Fatalf("accepted start beat=%+v found=%v err=%v", beat, found, err)
+	}
+}

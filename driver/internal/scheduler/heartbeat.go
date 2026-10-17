@@ -124,8 +124,9 @@ func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
 // without claiming the process stopped. It closes the leftover terminal and
 // every worker terminal the abandon receipts report Orca kept open, and
 // removes the stale heartbeat so the relaunched process starts clean. An
-// already abandoned dispatch is fenced again: a reap that failed after its
-// abandon learns the retained terminals only from the repeat receipt
+// already abandoned worker (dispatchStatus failed, workerState abandoned in
+// orca-worker-list-abandoned.json) is fenced again: a reap that failed after
+// its abandon learns the retained terminals only from the repeat receipt
 // (orca-worker-abandon-settled.json). A resolver owns t.Resolution.Run; t.Run is
 // the executor Run it was handed, and a resolver killed before its first
 // Resolution save is known only by its beat. The beat is judged again, so one a
@@ -171,7 +172,7 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 			return err
 		}
 		for _, row := range rows {
-			if (!settledDispatch(row.Status) || row.Status == "abandoned") && !slices.Contains(active, row.ID) {
+			if (!settledDispatch(row.Status) || row.WorkerState == "abandoned") && !slices.Contains(active, row.ID) {
 				active = append(active, row.ID)
 			}
 		}

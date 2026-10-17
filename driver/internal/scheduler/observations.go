@@ -108,7 +108,7 @@ func settledDispatch(status string) bool {
 	return false
 }
 
-type dispatchRow struct{ ID, Status string }
+type dispatchRow struct{ ID, Status, WorkerState string }
 
 // dispatches enumerates every dispatch of a Run; an incomplete enumeration is an error.
 func (r *Runtime) dispatches(ctx context.Context, run string) ([]dispatchRow, error) {
@@ -131,14 +131,15 @@ func (r *Runtime) dispatches(ctx context.Context, run string) ([]dispatchRow, er
 			NextCursor string `json:"nextCursor"`
 		}
 		var workers []struct {
-			ID     string `json:"dispatchId"`
-			Status string `json:"dispatchStatus"`
+			ID          string `json:"dispatchId"`
+			Status      string `json:"dispatchStatus"`
+			WorkerState string `json:"workerState"`
 		}
 		if json.Unmarshal(receipt["scope"], &scope) != nil || scope.Run != run || json.Unmarshal(receipt["page"], &page) != nil || page.HasMore == nil || json.Unmarshal(receipt["workers"], &workers) != nil || string(receipt["workers"]) == "null" {
 			return nil, errors.New("incomplete dispatch enumeration")
 		}
 		for _, worker := range workers {
-			rows = append(rows, dispatchRow{ID: worker.ID, Status: worker.Status})
+			rows = append(rows, dispatchRow{ID: worker.ID, Status: worker.Status, WorkerState: worker.WorkerState})
 		}
 		if !*page.HasMore {
 			return rows, nil

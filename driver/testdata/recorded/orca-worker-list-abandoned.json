@@ -1,0 +1,107 @@
+{
+  "id": "dec522c2-0084-481b-a5ea-60acbf8cade7",
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "dispatchId": "ctx_ee6da2ada658",
+        "taskId": "task_467434b620d4",
+        "runId": "run_4eb9fdf9ecdc",
+        "workerState": "abandoned",
+        "dispatchStatus": "failed",
+        "agentTerminalHandle": "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d",
+        "terminalState": "retained",
+        "resource": {
+          "id": "wtr_7ad6f65cd629",
+          "ownershipState": "owned",
+          "releaseState": "retained",
+          "retainedReason": "user_requested",
+          "terminalHandle": "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d",
+          "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-22-executor",
+          "endpointId": "6859a908-19e0-4e2e-a2d7-20d679c1186f",
+          "endpointIncarnation": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-22-executor@@1961b97f:ec60e31a-3b54-4bdf-91b6-994f919b817e",
+          "originDispatchId": "ctx_ee6da2ada658",
+          "ownerDispatchId": "ctx_ee6da2ada658",
+          "releaseRequestedAt": null,
+          "releaseCompletedAt": null,
+          "releaseError": null,
+          "recoveryAttemptCount": 0,
+          "lastRecoveryAt": null,
+          "archive": {
+            "source": null,
+            "status": null
+          }
+        },
+        "projection": {
+          "id": "ctx_ee6da2ada658",
+          "dispatchId": "ctx_ee6da2ada658",
+          "taskId": "task_467434b620d4",
+          "runId": "run_4eb9fdf9ecdc",
+          "role": "worker",
+          "parent": null,
+          "provider": null,
+          "host": {
+            "kind": "local",
+            "id": "local"
+          },
+          "workspace": {
+            "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-22-executor",
+            "kind": "folder_or_worktree"
+          },
+          "stage": {
+            "worker": "abandoned",
+            "dispatch": "failed",
+            "detail": "abandoned",
+            "activity": "unknown"
+          },
+          "outcome": "failed",
+          "liveness": {
+            "verdict": "unverifiable",
+            "reason": "missing_status"
+          },
+          "evidence": {
+            "durable": true,
+            "liveStatus": "unavailable",
+            "lastObservedAt": null
+          },
+          "resource": {
+            "state": "owned"
+          },
+          "nextAction": {
+            "kind": "release",
+            "argv": [
+              "orchestration",
+              "worker-release",
+              "--dispatch",
+              "ctx_ee6da2ada658"
+            ]
+          },
+          "attention": {
+            "categories": [
+              "failure",
+              "interruption",
+              "unverifiable"
+            ],
+            "requiresAction": true
+          }
+        }
+      }
+    ],
+    "counts": {
+      "retained": 1
+    },
+    "page": {
+      "limit": 100,
+      "total": 1,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_4eb9fdf9ecdc",
+      "source": "flag"
+    }
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

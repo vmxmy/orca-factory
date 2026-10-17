@@ -128,6 +128,13 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	if err = e.freshExecution(ctx, t); err != nil {
 		return result, err
 	}
+	// Only an accepted start publishes: a rejected one must not overwrite the
+	// beat of the executor that still owns the reservation.
+	if e.Heartbeat == nil && e.HeartbeatPath != "" {
+		if e.Heartbeat, err = orca.StartHeartbeat(ctx, e.HeartbeatPath, c.Terminal, orca.HeartbeatInterval, nil); err != nil {
+			return result, err
+		}
+	}
 	var head string
 	err = e.retryRead(ctx, t, &result, "resume branch lookup", func() error {
 		var readErr error
@@ -256,6 +263,14 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			if err != nil {
 				return result, err
 			}
+			if cp.Pending && cp.PendingParent == "" && cp.Task != "" {
+				err = e.retryRead(ctx, t, &result, "resume dispatch lookup", func() error {
+					return e.pendingDispatch(ctx, cp)
+				})
+				if err != nil {
+					return result, err
+				}
+			}
 		}
 		if cp.Pending {
 			return result, errors.New("unresolved worker start; reconcile request before retry")
@@ -318,4 +333,28 @@ func (c *Commands) Worktree(ctx context.Context, repo, branch string) (string, e
 		return byName, nil
 	}
 	return "", errors.New("original worktree not found")
+}
+
+// pendingDispatch settles an uncertain worker start from the worker-list: a
+// dispatch bound to the task proves the start took effect. Task rows lose the
+// dispatch once the scheduler abandons it (orca-task-list-abandoned.json).
+func (e *Executor) pendingDispatch(ctx context.Context, cp *checkpoint) error {
+	workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: cp.Run, IncludeRemote: true})
+	if err != nil {
+		return safeDependencyError(err)
+	}
+	dispatch := ""
+	for _, worker := range workers {
+		if worker.TaskID != cp.Task || worker.DispatchID == "" {
+			continue
+		}
+		if dispatch != "" {
+			return errors.New("ambiguous recovery dispatch; reconcile active dispatch")
+		}
+		dispatch = worker.DispatchID
+	}
+	if dispatch != "" {
+		cp.Dispatch, cp.Pending = dispatch, false
+	}
+	return nil
 }

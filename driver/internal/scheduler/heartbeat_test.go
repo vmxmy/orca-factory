@@ -219,7 +219,7 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		}
 		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{
 			receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"running"}]}`),
-			receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"abandoned"}]}`),
+			receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"failed","workerState":"abandoned"}]}`),
 		}}, abandon: abandonReceipt(t, "orca-worker-abandon.json"), closeErr: &orca.RejectedError{Code: "runtime_error"}}
 		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
 			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},

@@ -307,3 +307,39 @@ func TestReplacementCannotRedispatchWhenOriginalRequestIsUnknown(t *testing.T) {
 		t.Fatal("unconfirmed request replayed")
 	}
 }
+
+// The scheduler abandoned a dead resolver's worker: Orca returns the task to
+// blocked with no dispatch or report and lists the worker abandoned. The
+// replacement controller settles it as failed instead of polling forever.
+func TestReplacementControllerSettlesAbandonedWorker(t *testing.T) {
+	c, s, o := setupController()
+	var tasks struct {
+		Result struct {
+			Tasks []orca.Task `json:"tasks"`
+		} `json:"result"`
+	}
+	var workers struct {
+		Result orca.Receipt `json:"result"`
+	}
+	for sample, into := range map[string]any{"orca-task-list-abandoned.json": &tasks, "orca-worker-list-abandoned.json": &workers} {
+		raw, err := os.ReadFile("../../testdata/recorded/" + sample)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = json.Unmarshal(raw, into); err != nil {
+			t.Fatal(err)
+		}
+	}
+	task := tasks.Result.Tasks[0]
+	if task.Status != "blocked" || task.DispatchID != "" {
+		t.Fatalf("recording must exercise an abandoned task: %+v", task)
+	}
+	s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Run: task.RunID, Task: task.ID, Dispatch: "ctx_ee6da2ada658", Spec: c.Spec, Agent: c.Agent}
+	o.tasks, o.workers = tasks.Result.Tasks, workers.Result
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.record.Phase != "result" || s.record.Outcome != "failed" || o.releases != 1 {
+		t.Fatalf("abandoned worker not settled: %+v releases=%d", s.record, o.releases)
+	}
+}

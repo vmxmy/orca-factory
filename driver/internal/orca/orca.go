@@ -346,6 +346,7 @@ type ListOptions struct {
 // Unverifiable means unknown, never proof of process exit.
 type Worker struct {
 	DispatchID          string `json:"dispatchId"`
+	TaskID              string `json:"taskId"`
 	DispatchStatus      string `json:"dispatchStatus"`
 	AgentTerminalHandle string `json:"agentTerminalHandle"`
 	Resource            struct {

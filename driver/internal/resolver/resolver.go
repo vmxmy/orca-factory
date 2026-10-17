@@ -183,8 +183,19 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 				return nil, err
 			}
 			if report == nil {
-				if task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled" {
+				switch task.Status {
+				case "failed", "cancelled", "canceled":
 					p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
+				case "blocked":
+					// An abandoned worker returns its task to blocked without a
+					// dispatch or report (orca-task-list-abandoned.json).
+					worker, err := c.worker(ctx, p)
+					if err != nil {
+						return nil, err
+					}
+					if worker.State == "abandoned" {
+						p.Result, p.Outcome, p.Phase = "worker abandoned without a worker report", "failed", "settled"
+					}
 				}
 				continue
 			}
