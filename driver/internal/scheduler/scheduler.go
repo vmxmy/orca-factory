@@ -48,6 +48,9 @@ type Ticket struct {
 	// MaintenanceRefused marks an executor that exited on a maintenance
 	// refusal after its latest ownership line; it resumes without a failure.
 	MaintenanceRefused bool
+	// GateSpecRefresh marks an owner directive to rebuild gate.spec after the
+	// latest ownership line; the stage resumes without a failure.
+	GateSpecRefresh bool
 }
 type Legacy struct{ HasPR, Complete bool }
 type ActionKind string
@@ -330,7 +333,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 			if !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "in-flight ticket exceeded stale limit"}
-			} else if t.MaintenanceRefused {
+			} else if t.MaintenanceRefused || t.GateSpecRefresh {
 				action = Action{Kind: Resume, Attempt: t.Attempt, Phase: t.Phase}
 			} else {
 				state := machine.State{Owner: machine.OwnerExecutor, Phase: t.Phase, Attempt: t.Attempt, ExecFailures: max(0, t.Attempt-1)}

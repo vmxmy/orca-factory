@@ -60,6 +60,8 @@
 
 维护闸门拒绝（`maintenance.ErrRefused`）发生在请求发往 Orca 之前，结果确定为未派工（OF-124）。执行器把 `executor.json` 恢复为本次派工前的内容（之前没有则删除），不留 pending；已建的 correction 子任务仍由 `PendingParent` 经 `parent_id` 对账，重放时不再新建。执行器随即在账本写一行 `维护拒绝: … term=<终端>` 后退出，不在排空期间阻塞等待。调度器读到位于最新 `归属:` 行之后的这一行时，不计执行器失败，以原 attempt 和原阶段 Resume；Resume 本身受维护闸门约束，恢复 running 后才启动新执行器。`executor.TestCorrectionMaintenanceRefusedReplaysChild`、`scheduler.TestMaintenanceRefusedExitResumesWithoutFailure` 覆盖。
 
+负责人改正票面 CHECK 后，可在账本写一条以 `gate-spec-refresh:` 开头的评论（如 `gate-spec-refresh: 已改正 CHECK`），让执行阶段按最新票面重建 `gate.spec`（OF-130）。只有整条评论以该前缀开头才算指令；driver 写的评论在后续行引用 gate 输出，不构成指令。指令位于最新 `归属:` 行之后才生效，下一条 `归属:` 行（调度器 Resume 或新执行器认领）即消费它。执行器不修改运行中的 spec：每次 gate 运行前读取评论，遇到有效指令就在 gate 前退出，不写新结论。调度器读到指令且执行器终端与派工均已结束时，不计执行器失败，以原 attempt 和原阶段 Resume；新执行器从账本重读票面，`writeArtifacts` 重写 `gate.spec`，再按 checkpoint 对同一 head 跑 gate，`Corrections` 不增加。合并交接后归属为合并通道，调度器不读该指令；merge correction 的执行器（`cp.MergeSpec` 非空）跳过检查，继续使用冻结的 `MergeSpec`。`executor.TestGateSpecRefreshReplaysGateWithoutCorrection`、`scheduler.TestGateSpecRefreshResumesWithoutFailure` 覆盖。
+
 ## GitHub Issues（#172 / #173）
 
 - `internal/issues.Store` 选择唯一后端，复用 `internal/task` 的 `Issue/Comment` 类型（JSON 字段不变），不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。

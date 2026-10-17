@@ -478,6 +478,20 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		if err = transition(event, nil); err != nil || result.State.Owner == machine.OwnerResolver {
 			return result, err
 		}
+		if cp.MergeSpec == "" {
+			var refresh bool
+			err = e.retryRead(ctx, t, &result, "gate spec refresh lookup", func() error {
+				var readErr error
+				refresh, readErr = e.gateSpecRefreshRequested(ctx, t)
+				return readErr
+			})
+			if err != nil {
+				return result, err
+			}
+			if refresh {
+				return result, errGateSpecRefresh
+			}
+		}
 		var output, verdict string
 		var gateErr, parseErr error
 		err = e.retryRead(ctx, t, &result, "gate output", func() error {

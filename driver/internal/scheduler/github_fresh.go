@@ -57,7 +57,7 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 	if !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
 		return fmt.Errorf("resolver evidence changed: %w", errResnapshot)
 	}
-	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || fresh.MaintenanceRefused != t.MaintenanceRefused || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
+	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || fresh.MaintenanceRefused != t.MaintenanceRefused || fresh.GateSpecRefresh != t.GateSpecRefresh || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
 		return fmt.Errorf("task ownership or recovery evidence changed: %w", errResnapshot)
 	}
 	closed := task.State.Name == "Canceled" || task.State.Name == "Cancelled" || task.State.Name == "Duplicate" || (task.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)
