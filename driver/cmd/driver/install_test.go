@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,5 +160,35 @@ func TestInstallRejectsNonEnvironmentSharedDropIn(t *testing.T) {
 	}
 	if len(runner.specs) != 0 {
 		t.Fatal("rejected install ran a command")
+	}
+}
+
+func TestInstallUnitRestartPolicy(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := installWith(nil, &bytes.Buffer{}, &installFakeRunner{}); err != nil {
+		t.Fatal(err)
+	}
+	units := filepath.Join(home, ".config/systemd/user")
+	for _, name := range []string{"orca-factory-driver.service", "orca-factory-feishu-gateway.service"} {
+		raw, err := os.ReadFile(filepath.Join(units, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		sections := map[string][]string{}
+		section := ""
+		for _, line := range strings.Split(string(raw), "\n") {
+			if strings.HasPrefix(line, "[") {
+				section = line
+				continue
+			}
+			sections[section] = append(sections[section], line)
+		}
+		if !slices.Contains(sections["[Unit]"], "StartLimitIntervalSec=0") {
+			t.Errorf("%s [Unit] lacks StartLimitIntervalSec=0", name)
+		}
+		if !slices.Contains(sections["[Service]"], "RestartSec=10s") || !slices.Contains(sections["[Service]"], "Restart=on-failure") {
+			t.Errorf("%s [Service] lacks Restart=on-failure with RestartSec=10s", name)
+		}
 	}
 }

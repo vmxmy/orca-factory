@@ -495,6 +495,9 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 	defer func() { _ = lock.Close() }() // Cleanup releases the descriptor even if explicit unlock fails.
 	s, err := initialize(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
 		return err
 	}
 	var next time.Time

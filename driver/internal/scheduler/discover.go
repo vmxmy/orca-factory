@@ -2,11 +2,14 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
@@ -29,8 +32,44 @@ type repositoryUpdater interface {
 // set (OF-43). A repository that leaves the eligible set is retired: Tick keeps
 // reading it so its in-flight tickets, merges, deployment barriers and
 // resolvers finish, but claims none of its new tickets. A failed discovery
-// keeps the previous set and is returned so serve can refuse to start on it.
+// keeps the previous set and is returned.
 func (s *Scheduler) RefreshProjects(ctx context.Context) error {
+	err := s.refreshProjects(ctx)
+	if err != nil {
+		s.logger().Warn("project discovery failed; keeping previous projects", "err", err)
+	}
+	return err
+}
+
+// The driver can boot before Orca's runtime is ready (OF-137), so serve's
+// first discovery waits out dependency outages instead of exiting into a
+// systemd restart loop.
+const (
+	initialDiscoveryBackoff    = 5 * time.Second
+	maxInitialDiscoveryBackoff = time.Minute
+)
+
+// AwaitProjects runs serve's first discovery. A dependency outage
+// (infra.Global or infra.Transient) is retried with doubling backoff until
+// discovery succeeds or sleep reports ctx ended; any other error is returned
+// at once. It claims and launches nothing.
+func (s *Scheduler) AwaitProjects(ctx context.Context, sleep func(context.Context, time.Duration) error) error {
+	for delay := initialDiscoveryBackoff; ; delay = min(2*delay, maxInitialDiscoveryBackoff) {
+		err := s.refreshProjects(ctx)
+		var global *infra.Global
+		var transient *infra.Transient
+		if err == nil || !errors.As(err, &global) && !errors.As(err, &transient) {
+			return err
+		}
+		s.nextDiscover = time.Time{}
+		s.logger().Warn("project discovery waiting for dependency; scheduling not started", "err", err, "retryIn", delay)
+		if err := sleep(ctx, delay); err != nil {
+			return err
+		}
+	}
+}
+
+func (s *Scheduler) refreshProjects(ctx context.Context) error {
 	now := s.clock()
 	if s.Discover == nil || now.Before(s.nextDiscover) {
 		return nil
@@ -38,7 +77,6 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 	s.nextDiscover = now.Add(s.DiscoverEvery)
 	result, err := s.Discover(ctx)
 	if err != nil {
-		s.logger().Warn("project discovery failed; keeping previous projects", "err", err)
 		return err
 	}
 	rejected := map[string]string{}
