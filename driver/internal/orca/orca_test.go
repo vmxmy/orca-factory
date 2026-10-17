@@ -135,15 +135,19 @@ func TestTaskListWorkerReport(t *testing.T) {
 	argv(t, log, []string{"orchestration", "task-list", "--run", "run_one", "--json", "END"})
 }
 
-// An empty task list proves no dispatch only when the read is current and
-// complete: a legacy read-only run or an empty list without a count is not.
-func TestTaskListRejectsLegacyOrUncountedEmpty(t *testing.T) {
+// Legacy or uncounted task lists stay readable for every caller; only the
+// resolver's empty-run judgement treats them as incomplete evidence.
+func TestTaskListAcceptsLegacyOutput(t *testing.T) {
 	for _, scenario := range []string{"legacy", "uncounted"} {
 		t.Run(scenario, func(t *testing.T) {
 			c, _ := fake(t)
 			t.Setenv("ORCA_TEST_SCENARIO", scenario)
-			if tasks, err := c.TaskList(context.Background(), "run_one"); err == nil {
-				t.Fatalf("incomplete evidence accepted: %#v", tasks)
+			if _, err := c.TaskList(context.Background(), "run_one"); err != nil {
+				t.Fatalf("legacy output rejected: %v", err)
+			}
+			listing, err := c.TaskListing(context.Background(), "run_one")
+			if err != nil || listing.LegacyReadOnly != (scenario == "legacy") || listing.Counted != (scenario == "legacy") {
+				t.Fatalf("listing %+v err=%v", listing, err)
 			}
 		})
 	}

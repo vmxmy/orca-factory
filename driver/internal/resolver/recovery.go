@@ -140,15 +140,19 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 
 // runEmpty proves the original controller stopped before dispatch (ZCP-141):
 // complete worker and task reads are empty twice over, so a dispatch landing
-// between the first reads cannot pass as one that never started.
+// between the first reads cannot pass as one that never started. A legacy
+// read-only run, or an empty list without its count, proves nothing.
 func (c *Controller) runEmpty(ctx context.Context, run string) (bool, error) {
 	workers, err := c.workers(ctx, run)
 	if err != nil || len(workers) > 0 {
 		return false, err
 	}
-	tasks, err := c.Orca.TaskList(ctx, run)
-	if err != nil || len(tasks) > 0 {
+	listing, err := c.Orca.TaskListing(ctx, run)
+	if err != nil || len(listing.Tasks) > 0 {
 		return false, err
+	}
+	if listing.LegacyReadOnly || !listing.Counted {
+		return false, errors.New("incomplete resolver task list; awaiting original task evidence")
 	}
 	workers, err = c.workers(ctx, run)
 	return len(workers) == 0, err

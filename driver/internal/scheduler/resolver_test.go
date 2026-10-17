@@ -184,6 +184,9 @@ func (o *resolverStartupProbe) WorkerStart(context.Context, string, orca.StartOp
 func (o *resolverStartupProbe) TaskList(context.Context, string) ([]orca.Task, error) {
 	return nil, nil
 }
+func (o *resolverStartupProbe) TaskListing(context.Context, string) (orca.TaskListing, error) {
+	return orca.TaskListing{}, nil
+}
 func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) {
 	repo := t.TempDir()
 	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")

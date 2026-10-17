@@ -56,6 +56,8 @@ type fakeOrca struct {
 	stops   int
 	// stopped replaces workers once WorkerStop is called.
 	stopped orca.Receipt
+	// legacyTasks and uncountedTasks shape the metadata TaskListing reports.
+	legacyTasks, uncountedTasks bool
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -98,6 +100,10 @@ func (o *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	}
 	b, _ := json.Marshal(o.report)
 	return []orca.Task{{ID: "task_1", RunID: "run_1", DispatchID: "ctx_1", Status: "completed", Result: b}}, nil
+}
+func (o *fakeOrca) TaskListing(ctx context.Context, run string) (orca.TaskListing, error) {
+	tasks, err := o.TaskList(ctx, run)
+	return orca.TaskListing{Tasks: tasks, LegacyReadOnly: o.legacyTasks, Counted: !o.uncountedTasks}, err
 }
 func (o *fakeOrca) WorkerRelease(context.Context, string, string) (orca.Receipt, error) {
 	o.releases++
@@ -651,5 +657,22 @@ func TestResolverEmptyRunIsNotUncertain(t *testing.T) {
 	o.settled = []orca.Task{{ID: "task_1", RunID: run, Status: "pending", Spec: c.Spec}}
 	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
 		t.Fatalf("task created between reads ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+}
+
+// An empty task list proves no dispatch only when the read is current and
+// complete: a legacy read-only run or an empty list without a count is not.
+func TestResolverEmptyRunRejectsLegacyOrUncountedTasks(t *testing.T) {
+	for _, scenario := range []string{"legacy", "uncounted"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, s, o := setupController()
+			s.record = &Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "old-terminal", Run: "run_1", Spec: c.Spec, Agent: c.Agent}
+			o.tasks = []orca.Task{}
+			o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"run_1"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(`[]`)}
+			o.legacyTasks, o.uncountedTasks = scenario == "legacy", scenario == "uncounted"
+			if _, err := c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+				t.Fatalf("incomplete task evidence ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+			}
+		})
 	}
 }

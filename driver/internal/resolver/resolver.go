@@ -59,6 +59,7 @@ type Orca interface {
 	RunUse(context.Context, string, string) (orca.Receipt, error)
 	WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error)
 	TaskList(context.Context, string) ([]orca.Task, error)
+	TaskListing(context.Context, string) (orca.TaskListing, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
 	WorkerList(context.Context, orca.ListOptions) (orca.Receipt, error)
 	WorkerStop(context.Context, string, string) (orca.Receipt, error)
