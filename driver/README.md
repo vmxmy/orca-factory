@@ -137,6 +137,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
    - 退出：飞书凭证缺失、飞书认证失败、飞书项目表无权限、Orca 二进制不存在或不可执行、Orca 返回 `unauthorized`/`authentication_required`/`runtime_access_denied`，以及项目配置错误等其他错误。这些失败不会自行恢复，serve 以 1 退出，错误写明依赖与原因类别，如 `initial project discovery failed: Feishu authentication_failed`。
    - 日志：同一依赖、同一原因只在首次和此后每满 10 分钟各写一条 WARN `project discovery waiting for dependency; scheduling not started`，字段 `dependency` 与 `reason` 只含依赖名和原因类别（如 `Orca runtime_unavailable`），不含凭证或原始响应。其余重试写 Debug。
    `install` 生成的 serve 与飞书需求网关单元带 `RestartSec=10s` 和 `[Unit]` 段的 `StartLimitIntervalSec=0`：进程反复崩溃时 systemd 每 10s 重启一次，不因启动次数上限停在 failed。
+   gh 的 GitHub 凭证存在桌面 login keyring 中。机器重启后，需登录桌面会话解锁 keyring；解锁前 gh 读不到凭证，doctor 的 `credentials` 报 fail，watch 会就此发出告警。
 2. serve 每 10 分钟重新发现一次。间隔不是每轮调度，因为每次发现都要读 Orca、飞书项目表并逐个运行 check。发现失败时保留上一次的项目集合，写一条 WARN。
 3. 新加入的项目在下一次发现后开始领票。
 4. 项目移出可接管集合后，调度器停止领取该项目的新票（决策日志原因为 `retired`）。该项目的在途执行器、处置 Agent、合并通道与部署屏障照常推进到结束，不中断、不重派。该项目不再有在途票后，调度器停止读取它。
@@ -221,7 +222,7 @@ flowchart LR
   | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
   | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
   | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
-  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量：fail；gh 认证检查失败：unknown |
+  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 的结果；gh 报 token invalid 时对 `api.github.com` 的无认证请求 | 缺变量：fail；gh 报 token invalid 且 GitHub 可达（任何 HTTP 响应，含 403 限流）：fail，原因为凭证不可读（keyring 可能未解锁）；gh 其他失败或 GitHub 不可达：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
 - `~/.local/bin/orca-factory-driver watch [--dry-run]`（OF-128）：无人值守巡检。每次运行在进程内跑一遍 doctor，按检查项更新状态根目录下的 `watch.json`（每项的上次状态、连续 fail 次数、本轮 fail 开始时间、上次告警成功时间），只做告警与记录状态，不修复、不合并、不部署、不重启、不建票。

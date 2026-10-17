@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -77,12 +79,13 @@ type doctorLedger interface {
 
 // doctorProbe is every input doctor reads. git and gh run from PATH.
 type doctorProbe struct {
-	now         time.Time
-	stateRoot   string
-	factoryRoot string
-	serviceEnv  func(context.Context) (map[string]string, error)
-	projects    func(context.Context) ([]projects.Project, error)
-	ledger      func(context.Context, projects.Project) (doctorLedger, error)
+	now             time.Time
+	stateRoot       string
+	factoryRoot     string
+	serviceEnv      func(context.Context) (map[string]string, error)
+	projects        func(context.Context) ([]projects.Project, error)
+	ledger          func(context.Context, projects.Project) (doctorLedger, error)
+	githubReachable func(context.Context) error
 }
 
 // unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
@@ -139,6 +142,7 @@ func newDoctorProbe() (doctorProbe, error) {
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
 			return issues.New(ctx, p.Repository.Env, cfg.Tuning)
 		},
+		githubReachable: githubReachable,
 	}, nil
 }
 
@@ -169,7 +173,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"service_path": checkServicePath(env, envErr),
 		"version":      p.checkVersion(ctx, state, stateErr),
 		"maintenance":  p.checkMaintenance(state, stateErr),
-		"credentials":  checkCredentials(ctx, env, envErr),
+		"credentials":  p.checkCredentials(ctx, env, envErr),
 		"launches":     p.checkLaunches(),
 	}
 	if projectsErr != nil {
@@ -661,7 +665,7 @@ func (p doctorProbe) checkLaunches() healthCheck {
 
 // checkCredentials reports variable names only. Feishu authentication is
 // proven by the ledger check reading the ledger with those credentials.
-func checkCredentials(ctx context.Context, env map[string]string, envErr error) healthCheck {
+func (p doctorProbe) checkCredentials(ctx context.Context, env map[string]string, envErr error) healthCheck {
 	if envErr != nil {
 		return unprobed(envErr.Error())
 	}
@@ -672,19 +676,51 @@ func checkCredentials(ctx context.Context, env map[string]string, envErr error) 
 			missing = append(missing, name)
 		}
 	}
-	_, authErr := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"auth", "status"}, Timeout: doctorCommandTimeout})
+	authOut, authErr := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"auth", "status"}, Timeout: doctorCommandTimeout})
+	unreadable := authErr != nil && ghTokenInvalid(authOut, authErr) && p.githubReachable(ctx) == nil
 	details := map[string]any{"variables": present, "gh_auth": authErr == nil}
 	statuses, problems := []string{healthOK}, []string{}
 	if len(missing) > 0 {
 		statuses = append(statuses, healthFail)
 		problems = append(problems, "服务环境缺少 "+strings.Join(missing, ", "))
 	}
-	if authErr != nil {
+	switch {
+	case unreadable:
+		statuses = append(statuses, healthFail)
+		problems = append(problems, "GitHub 凭证不可读（keyring 可能未解锁），修法：登录桌面会话解锁 login keyring")
+	case authErr != nil:
 		statuses = append(statuses, healthUnknown)
 		problems = append(problems, commandFailure("gh auth status", authErr)+"，无法区分未登录与网络故障")
 	}
 	if len(problems) == 0 {
 		return healthCheck{Status: healthOK, Reason: "凭证变量齐全，gh 已认证", Details: details}
 	}
-	return healthCheck{Status: worst(statuses...), Reason: strings.Join(problems, "；"), Details: details, unprobed: authErr != nil}
+	return healthCheck{Status: worst(statuses...), Reason: strings.Join(problems, "；"), Details: details, unprobed: authErr != nil && !unreadable}
+}
+
+// ghTokenInvalid matches gh's "The token in <source> is invalid", which gh
+// also prints when the keyring holding the token is locked (OF-138).
+func ghTokenInvalid(stdout []byte, err error) bool {
+	text := string(stdout)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		text += string(exit.Stderr)
+	}
+	return strings.Contains(text, "The token in ") && strings.Contains(text, " is invalid")
+}
+
+// githubReachable treats any HTTP response, a 403 rate limit included, as
+// reachable: the question is the network path, not authentication.
+func githubReachable(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
 }
