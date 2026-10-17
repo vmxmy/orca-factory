@@ -150,7 +150,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
    2. 该仓库 origin 已有这个分支，或本仓库自己（非 fork，head 仓库即目标仓库）的该分支已有未合并 PR，则跳过。本仓库其他 `chore/orca-factory-core-sync-` 开头的未合并 PR 属于旧 factory 版本，先按 PR 编号 `gh pr close --delete-branch` 关闭再继续。fork 开的同名 PR 既不算已存在，也不会被关闭（OF-120：无人合并时旧同步 PR 不再让项目永远停在旧 core）。
    3. 在 `~/.cache/orca-factory/core-sync/<远端键>/` 以 origin/main 建分离头 worktree，运行 `<factory_root>/bin/orca-factory update`，只 `git add scripts/agent-gates`。没有改动则跳过（origin/main 已同步）。
    4. 提交、push 该分支、`gh pr create`。
-   5. 第 2 步发现当前版本的同步分支已存在时，driver 尝试自动合并该 PR（OF-133）。以下条件全部满足才执行 `gh pr merge --squash --match-head-commit <head>`，合并后回读 state 必须为 `MERGED`：
+   5. 第 2 步发现当前版本的同步分支已存在时，先用 `gh pr list --head <分支> --state all` 查本仓库该分支的 PR；一个都没有（分支已推送但当初 `gh pr create` 失败）就补建 PR（OF-159），补建失败写 WARN `core sync failed`，同一原因只写一次，下一次发现重试。随后 driver 尝试自动合并该 PR（OF-133）。以下条件全部满足才执行 `gh pr merge --squash --match-head-commit <head>`，合并后回读 state 必须为 `MERGED`：
       1. PR 来自本仓库：`isCrossRepository` 为 false，且 `headRepositoryOwner`/`headRepository` 等于目标仓库。gh 只按分支名匹配 PR，fork 可以开同名分支。
       2. PR 的 head 分支正是当前 factory 版本的 `chore/orca-factory-core-sync-<短SHA>`，state 为 `OPEN`。
       3. PR 改动的所有文件都在 `scripts/agent-gates/` 下。`gh pr view --json files` 最多返回 100 个文件，取到的文件数达到 100，或不等于 `changedFiles`，都不合并。

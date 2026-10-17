@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -49,7 +50,7 @@ func (c *coreSyncer) sync(ctx context.Context, p projects.Project) (err error) {
 		return err
 	}
 	if open {
-		return c.reportOnce(p.Path, autoMergeSyncPR(ctx, p.Path, target, branch))
+		return c.reportOnce(p.Path, ensureSyncPR(ctx, p, target, branch, version))
 	}
 	worktree := filepath.Join(c.cacheDir, "orca-factory", "core-sync", onboardKey(p.Remote))
 	if err := removeSyncWorktree(ctx, p.Path, worktree); err != nil {
@@ -74,16 +75,40 @@ func (c *coreSyncer) sync(ctx context.Context, p projects.Project) (err error) {
 	if _, err := runGit(ctx, worktree, time.Minute, "diff", "--cached", "--quiet"); err == nil {
 		return nil
 	}
-	title := "chore: 同步 orca-factory core 到 " + version
-	if _, err := runGit(ctx, worktree, time.Minute, "commit", "--quiet", "-m", title); err != nil {
+	if _, err := runGit(ctx, worktree, time.Minute, "commit", "--quiet", "-m", "chore: 同步 orca-factory core 到 "+version); err != nil {
 		return fmt.Errorf("提交同步改动失败: %w", err)
 	}
 	if _, err := runGit(ctx, worktree, 2*time.Minute, "push", "--quiet", "origin", "HEAD:refs/heads/"+branch); err != nil {
 		return fmt.Errorf("推送 %s 失败: %w", branch, err)
 	}
+	return createSyncPR(ctx, p, branch, version)
+}
+
+// ensureSyncPR opens the PR for a sync branch already on origin when none
+// from target exists yet (OF-159): the push succeeded but `gh pr create`
+// failed, and the branch alone would otherwise skip every later sync.
+func ensureSyncPR(ctx context.Context, p projects.Project, target githubRepo, branch, version string) error {
+	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "list", "--head", branch, "--state", "all", "--json", syncPRFields, "--limit", "100"}, Dir: p.Path, Timeout: 30 * time.Second})
+	if err != nil {
+		return fmt.Errorf("gh pr list --head %s 失败: %w", branch, err)
+	}
+	var prs []syncPR
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return fmt.Errorf("gh pr list --head %s 输出不可解析: %w", branch, err)
+	}
+	if !slices.ContainsFunc(prs, func(pr syncPR) bool { return pr.fromRepo(target) && pr.HeadRefName == branch }) {
+		if err := createSyncPR(ctx, p, branch, version); err != nil {
+			return err
+		}
+	}
+	return autoMergeSyncPR(ctx, p.Path, target, branch)
+}
+
+func createSyncPR(ctx context.Context, p projects.Project, branch, version string) error {
+	title := "chore: 同步 orca-factory core 到 " + version
 	body := fmt.Sprintf("orca-factory driver 自动开启（OF-53）：本仓库 `scripts/agent-gates/` 的 core 安装副本落后 factory %s。\n\n落后文件：\n\n- `%s`\n\n本 PR 只含 `orca-factory update` 对 `scripts/agent-gates/` 的改动。必需检查全部通过且可合并后，driver 在下一次发现时自动 squash 合并（OF-133）。\n",
 		version, strings.Join(p.CoreBehind, "`\n- `"))
-	if _, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "create", "--head", branch, "--base", "main", "--title", title, "--body", body}, Dir: worktree, Timeout: time.Minute}); err != nil {
+	if _, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "create", "--head", branch, "--base", "main", "--title", title, "--body", body}, Dir: p.Path, Timeout: time.Minute}); err != nil {
 		return fmt.Errorf("gh pr create 失败: %w", err)
 	}
 	return nil

@@ -50,10 +50,13 @@ func TestFactoryCheckerThreeStates(t *testing.T) {
 // coreSyncFixture is a target repository cloned from a local bare origin, a
 // factory checkout whose bin/orca-factory stand-in rewrites one core file
 // (and one file outside scripts/agent-gates/), and a gh stand-in on PATH
-// that answers `pr list` from prList and records every call.
+// that answers `pr list` from prList, `pr list --head` with the sync PR once
+// `pr create` succeeded, fails `pr create` while createFails exists, and
+// records every call.
 type coreSyncFixture struct {
 	origin, repo, factory, ghLog, prList string
 	prView, prChecks, merged             string
+	created, createFails                 string
 	syncer                               *coreSyncer
 }
 
@@ -62,7 +65,7 @@ const sameRepoFields = `"isCrossRepository":false,"headRepository":{"name":"repo
 func newCoreSyncFixture(t *testing.T) coreSyncFixture {
 	t.Helper()
 	root := t.TempDir()
-	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged")}
+	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged"), created: filepath.Join(root, "created"), createFails: filepath.Join(root, "create-fails")}
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(root, "state"))
 	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
 		t.Setenv(key, "t")
@@ -88,8 +91,14 @@ echo stray > "$2/outside.txt"
 	bin := filepath.Join(root, "bin")
 	writeExecutable(t, filepath.Join(bin, "gh"), `printf '%s\n' "$*" >> `+f.ghLog+`
 case "$1 $2" in
-"pr list") cat `+f.prList+` ;;
-"pr create") echo https://github.com/example/repo/pull/9 ;;
+"pr list") case "$*" in
+	*--head*)
+		prev=; for a; do [ "$prev" = --head ] && head=$a; prev=$a; done
+		if [ -e `+f.created+` ]; then echo "[{\"number\":9,\"state\":\"OPEN\",\"headRefName\":\"$head\",`+strings.ReplaceAll(sameRepoFields, `"`, `\"`)+`}]"; else echo '[]'; fi ;;
+	*) cat `+f.prList+` ;;
+	esac ;;
+"pr create") [ -e `+f.createFails+` ] && { echo 'HTTP 502' >&2; exit 1; }
+	touch `+f.created+`; echo https://github.com/example/repo/pull/9 ;;
 "pr close") ;;
 "pr view") if [ -e `+f.merged+` ]; then echo '{"state":"MERGED",`+sameRepoFields+`}'; else cat `+f.prView+`; fi ;;
 "pr checks") cat `+f.prChecks+` ;;
@@ -277,5 +286,33 @@ func TestCoreSyncAutoMergeWarnsOncePerReason(t *testing.T) {
 	}
 	if !slices.Equal(reported, []bool{true, false, true}) {
 		t.Fatalf("reported=%v, want the repeated pending reason reported once", reported)
+	}
+}
+
+// TestCoreSyncRecreatesMissingPR is OF-159: a sync branch pushed while
+// `gh pr create` failed gets its PR on a later discovery, the repeated create
+// failure is reported once, and once the PR exists it is not created again.
+func TestCoreSyncRecreatesMissingPR(t *testing.T) {
+	f := newCoreSyncFixture(t)
+	if err := os.WriteFile(f.createFails, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var reported []bool
+	for range 3 {
+		reported = append(reported, f.syncer.sync(context.Background(), f.project()) != nil)
+	}
+	if !slices.Equal(reported, []bool{true, true, false}) || f.prCreates(t) != 3 {
+		t.Fatalf("reported=%v creates=%d, want each failed create attempted and the repeated reason reported once", reported, f.prCreates(t))
+	}
+	if err := os.Remove(f.createFails); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := f.prCreates(t); n != 4 {
+		t.Fatalf("pr create called %d times, want the missing PR created once", n)
 	}
 }
