@@ -56,7 +56,7 @@ func newDoctorFixture(t *testing.T) doctorFixture {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return doctorFixture{root: root, factory: factory, previous: previous, current: current, now: time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)}
+	return doctorFixture{root: root, factory: factory, previous: previous, current: current, now: time.Now()}
 }
 
 func writeDoctorFile(t *testing.T, path, content string, mode os.FileMode) {
@@ -116,8 +116,8 @@ func runDoctorProbe(t *testing.T, probe doctorProbe) (int, map[string]string, []
 	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 		t.Fatalf("doctor --json is not JSON: %v\n%s", err, out.String())
 	}
-	if report.Errors == nil {
-		t.Fatalf("errors must be an array:\n%s", out.String())
+	if report.Errors == nil || len(report.Errors) != 0 {
+		t.Fatalf("every probe must run and errors must be an empty array:\n%s", out.String())
 	}
 	statuses := map[string]string{}
 	for name, check := range report.Checks {

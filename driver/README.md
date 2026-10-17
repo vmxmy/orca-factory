@@ -183,6 +183,20 @@ flowchart LR
 
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
+- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：只读的运行态健康自检，不 fetch。每项给出 `ok`、`warn` 或 `fail` 与原因，任一 `fail` 时退出 1。
+
+  | 检查项 | 数据来源 | 判定 |
+  | --- | --- | --- |
+  | `service_path` | 运行中服务进程的 `/proc/<MainPID>/environ` 中的 PATH | 缺 go、gh、git、orca 之一，或 claude 与 codex 都缺：fail |
+  | `version` | `scheduler.log`（含轮转）最近一条 serve 启动记录的 version；factory 本地 `origin/main` | 不一致：fail |
+  | `maintenance` | `maintenance.json` | 不是 `running`：fail |
+  | `checkouts` | 每个已接管项目检出的分支、未提交改动、落后 `origin/main` 的提交数 | 落后：fail；不在 main 或不干净：warn |
+  | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR，及其版本落后 factory `origin/main` 的提交数 | 落后：fail；当前版本待合并：warn |
+  | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 有空正文：fail；距离不足上限 10%：warn |
+  | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
+  | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量或 gh 未认证：fail |
+
+  `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针（此时该项也为 `fail`）。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
 
 ## Orca 看板
 
