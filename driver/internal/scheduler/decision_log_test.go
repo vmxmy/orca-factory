@@ -209,4 +209,29 @@ func TestSchedulerLaunchErrorLog(t *testing.T) {
 	if !found {
 		t.Fatal("missing launch error log")
 	}
+	if err := s.Tick(context.Background()); err == nil || !strings.Contains(err.Error(), "ZII-1") || !strings.Contains(err.Error(), "launch failed [REDACTED]") {
+		t.Fatalf("launch problem lacks ticket or reason: %v", err)
+	}
+}
+
+type staleLaunchBackend struct{ fakeBackend }
+
+func (f *staleLaunchBackend) Launch(context.Context, Ticket) error {
+	return errLaunchEvidenceChanged
+}
+
+// A launch refused because the ticket moved on since the snapshot is a safe
+// deferral to the next round, not a failure.
+func TestSchedulerLaunchDeferredOnEvidenceChange(t *testing.T) {
+	var output bytes.Buffer
+	f := &staleLaunchBackend{fakeBackend: fakeBackend{tickets: []Ticket{{ID: "one", Identifier: "ZII-1", Repo: "b", Candidate: true}}}}
+	s := setup(nil)
+	s.Backend = f
+	s.Logger = logx.New("scheduler", &output)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("deferred launch reported as failure: %v", err)
+	}
+	if !strings.Contains(output.String(), `"result":"deferred"`) {
+		t.Fatalf("deferred launch not logged: %s", output.String())
+	}
 }
