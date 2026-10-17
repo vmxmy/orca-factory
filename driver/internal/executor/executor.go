@@ -34,6 +34,7 @@ type Orca interface {
 	TerminalList(context.Context) ([]orca.Terminal, error)
 	TerminalSend(context.Context, string, string) (orca.Receipt, error)
 	WorkerRelease(context.Context, string, string) (orca.Receipt, error)
+	WorkerStop(context.Context, string, string) (orca.Receipt, error)
 	WorktreeSet(context.Context, orca.BoardCard) (orca.Receipt, error)
 }
 type GitHub interface {
@@ -380,7 +381,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
-		watch := workerWatch{observe: func(w orca.Worker) error {
+		watch := workerWatch{stop: func(dispatch string) error {
+			_, err := e.Orca.WorkerStop(ctx, scopedRequest(t, c, "stop-"+dispatch, 1), dispatch)
+			return err
+		}, observe: func(w orca.Worker) error {
 			if cp.Worktree != "" || w.WorktreePath() == "" {
 				return nil
 			}
@@ -650,6 +654,10 @@ const provenanceExecutorLiveness = "executor_liveness"
 
 type workerWatch struct {
 	observe func(orca.Worker) error
+	stop    func(dispatch string) error
+	// unobservedSince spans read retries of one dispatch, never a restart: a
+	// restarted executor opens a fresh, still bounded window.
+	unobservedSince time.Time
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
@@ -734,6 +742,13 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			}
 			return livenessFailure("worker exited without worker_done"), nil
 		}
+		if worker != nil && resolver.StartUnobserved(worker.DispatchStatus, worker.Projection.Stage.Detail) {
+			if stopped, err := e.stopUnstarted(ctx, run, dispatch, watch); err != nil || stopped != nil {
+				return stopped, err
+			}
+		} else {
+			watch.unobservedSince = time.Time{}
+		}
 		if awaiting != nil {
 			listed, status := worker != nil, ""
 			if listed {
@@ -756,6 +771,31 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			return nil, err
 		}
 	}
+}
+
+// stopUnstarted applies the resolver's window to a dispatch whose turn never
+// started. An unconfirmed stop keeps waiting; the next poll replays it.
+func (e *Executor) stopUnstarted(ctx context.Context, run, dispatch string, watch *workerWatch) (*orca.WorkerReport, error) {
+	now := e.Now()
+	if watch.unobservedSince.IsZero() {
+		watch.unobservedSince = now
+	}
+	if now.Sub(watch.unobservedSince) < resolver.StartUnobservedWindow {
+		return nil, nil
+	}
+	if watch.stop(dispatch) != nil {
+		e.logger().Warn("unstarted worker stop not acknowledged", "dispatch", dispatch)
+	}
+	workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: run, IncludeRemote: true})
+	if err != nil {
+		return nil, safeDependencyError(err)
+	}
+	for _, w := range workers {
+		if w.DispatchID == dispatch && resolver.DispatchEnded(w.DispatchStatus) {
+			return livenessFailure(fmt.Sprintf("worker turn did not start within %s; dispatch %s stopped", resolver.StartUnobservedWindow, dispatch)), nil
+		}
+	}
+	return nil, nil
 }
 
 func livenessFailure(reason string) *orca.WorkerReport {

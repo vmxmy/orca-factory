@@ -12,6 +12,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 )
 
 type livenessOrca struct {
@@ -20,6 +21,8 @@ type livenessOrca struct {
 	polls, stops, terminalCalls, taskCalls int
 	report                                 bool
 	reportAt                               int
+	// stopped replaces worker once WorkerStop is called.
+	stopped *orca.Worker
 }
 
 func (o *livenessOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
@@ -46,11 +49,14 @@ func (o *livenessOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
 	return nil, nil
 }
 func (o *livenessOrca) WorkerStop(_ context.Context, request, dispatch string) (orca.Receipt, error) {
-	want := scopedRequest(Ticket{Identifier: "ZII-861"}, Config{Unit: "executor", Terminal: "term_exec"}, "stop", 1)
+	want := scopedRequest(Ticket{Identifier: "ZII-861"}, Config{Unit: "executor", Terminal: "term_exec"}, "stop-ctx_one", 1)
 	if request != want || dispatch != "ctx_one" {
 		panic("wrong stop request or target")
 	}
 	o.stops++
+	if o.stopped != nil {
+		o.worker = *o.stopped
+	}
 	return nil, nil
 }
 
@@ -140,7 +146,7 @@ func TestWaitUnobservedPreservesCheckpointAcrossCancellation(t *testing.T) {
 			t.Fatalf("checkpoint changed: before=%+v after=%+v", original, cp)
 		}
 		sleeps++
-		now = now.Add(6 * time.Minute)
+		now = now.Add(3 * time.Minute)
 		if sleeps >= 3 {
 			return context.Canceled
 		}
@@ -388,5 +394,42 @@ func TestExecutorHeartbeatStartsAfterAcceptedStart(t *testing.T) {
 	_, _ = e.Start(ctx, ticket)
 	if beat, found, err := orca.ReadBeat(e.HeartbeatPath); err != nil || !found || beat.PID != os.Getpid() || beat.Terminal != e.Config.Terminal {
 		t.Fatalf("accepted start beat=%+v found=%v err=%v", beat, found, err)
+	}
+}
+
+// The executor bounds an unobserved turn start by the resolver's window: it
+// stops the dispatch and fails the round only after the stop reads back.
+func TestStartUnobservedWorkerIsStoppedAfterWindow(t *testing.T) {
+	for _, confirmed := range []bool{true, false} {
+		e, _, _, _, _, ticket := fixture(t, "new-sha")
+		o := livenessFixture(t, "unverifiable", "")
+		o.worker.DispatchStatus, o.worker.Projection.Stage.Detail = "pending", "turn_start_unobserved"
+		if confirmed {
+			stopped := livenessFixture(t, "exited", "").worker
+			stopped.DispatchStatus = "failed"
+			o.stopped = &stopped
+		}
+		e.Orca = o
+		now := e.Now()
+		e.Now = func() time.Time { return now }
+		ctx, cancel := context.WithCancel(context.Background())
+		r := &livenessRecovery{cancel: cancel}
+		e.Recovery = r
+		sleeps := 0
+		e.Sleep = func(ctx context.Context, _ time.Duration) error {
+			now = now.Add(resolver.StartUnobservedWindow / 2)
+			if sleeps++; sleeps > 4 {
+				cancel()
+			}
+			return ctx.Err()
+		}
+		result, err := e.Execute(ctx, ticket)
+		cancel()
+		if confirmed && (len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "worker turn did not start within 10m0s") || o.stops != 1 || o.releases != 0) {
+			t.Fatalf("state=%+v err=%v corrections=%+v stops=%d", result.State, err, r.requests, o.stops)
+		}
+		if !confirmed && (len(r.requests) != 0 || o.stops < 1) {
+			t.Fatalf("unconfirmed stop ended the round: corrections=%+v stops=%d err=%v", r.requests, o.stops, err)
+		}
 	}
 }

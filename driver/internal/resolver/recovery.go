@@ -17,6 +17,11 @@ type workerIdentity struct {
 	Resource struct {
 		ReleaseState string `json:"releaseState"`
 	} `json:"resource"`
+	Projection struct {
+		Stage struct {
+			Detail string `json:"detail"`
+		} `json:"stage"`
+	} `json:"projection"`
 }
 
 // Complete worker pages prove association; missing/ambiguous rows never grant a
@@ -43,18 +48,19 @@ func (c *Controller) worker(ctx context.Context, p *Record) (*workerIdentity, er
 	return found, nil
 }
 
-// dispatchStatus finds the recorded dispatch in a complete worker read.
-func (c *Controller) dispatchStatus(ctx context.Context, p *Record) (listed bool, status string, err error) {
+// dispatchRow finds the recorded dispatch in a complete worker read; nil means
+// the complete read does not list it.
+func (c *Controller) dispatchRow(ctx context.Context, p *Record) (*workerIdentity, error) {
 	rows, err := c.workers(ctx, p.Run)
 	if err != nil {
-		return false, "", err
+		return nil, err
 	}
-	for _, row := range rows {
-		if row.Dispatch == p.Dispatch {
-			return true, row.Status, nil
+	for i := range rows {
+		if rows[i].Dispatch == p.Dispatch {
+			return &rows[i], nil
 		}
 	}
-	return false, "", nil
+	return nil, nil
 }
 
 func (c *Controller) workers(ctx context.Context, run string) ([]workerIdentity, error) {

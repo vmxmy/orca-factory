@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -45,6 +46,9 @@ func (f *fakeOrca) WorkerStart(_ context.Context, request string, o orca.StartOp
 }
 func (f *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	return []orca.Task{{ID: "task_one", RunID: "run_one", DispatchID: "ctx_one", Result: json.RawMessage(`{"provenance":"worker_report","outcome":"succeeded"}`)}}, nil
+}
+func (f *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
+	return nil, errors.New("unexpected worker stop")
 }
 func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Receipt, error) {
 	if dispatch != "ctx_one" {

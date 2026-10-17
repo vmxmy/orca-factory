@@ -118,6 +118,9 @@ func (f *fakeOrca) TerminalCreate(_ context.Context, o orca.TerminalOptions) (or
 func (f *fakeOrca) WorkerAbandon(context.Context, string, string) (orca.Receipt, error) {
 	return orca.Receipt{}, nil
 }
+func (f *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{}, nil
+}
 func (f *fakeOrca) TerminalClose(context.Context, string) error { return nil }
 
 func receipt(s string) orca.Receipt { var r orca.Receipt; _ = json.Unmarshal([]byte(s), &r); return r }
