@@ -23,6 +23,7 @@ func TestGateSpecRefreshResumesWithoutFailure(t *testing.T) {
 		{"directive only", []string{ownership, "gate-spec-refresh: 已改正 CHECK"}, 2},
 		{"quoted receipt", []string{ownership, "EVIDENCE gate 输出\n" + receipt}, 2},
 		{"repeated receipt", []string{receipt, ownership, receipt}, 2},
+		{"foreign attempt receipt", []string{ownership, "gate-spec-refresh 已执行 attempt=99 term=executor_terminal"}, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeBackend{absent: true, inactive: true}

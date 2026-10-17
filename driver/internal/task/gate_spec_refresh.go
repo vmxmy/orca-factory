@@ -31,8 +31,10 @@ type GateSpecRefresh struct {
 	// Pending is a directive written after the latest ownership line.
 	Pending bool
 	// Exited is the first receipt of its attempt written after the latest
-	// ownership line: the executor exited to honor a directive.
-	Exited bool
+	// ownership line: the executor exited to honor a directive. ExitedAttempt
+	// is that receipt's attempt; it exempts an exit only for the current one.
+	Exited        bool
+	ExitedAttempt int
 	// Done holds the attempts that already wrote a receipt.
 	Done map[int]bool
 }
@@ -50,7 +52,7 @@ func ReadGateSpecRefresh(comments []Comment) GateSpecRefresh {
 			refresh.Pending = true
 		}
 		if attempt, ok := receiptAttempt(comment.Body); ok {
-			refresh.Exited = !refresh.Done[attempt]
+			refresh.Exited, refresh.ExitedAttempt = !refresh.Done[attempt], attempt
 			refresh.Done[attempt] = true
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {

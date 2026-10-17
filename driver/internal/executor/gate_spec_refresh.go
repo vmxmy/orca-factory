@@ -41,8 +41,14 @@ func (e *Executor) honorGateSpecRefresh(ctx context.Context, t Ticket, result *R
 // handoff did not run; the handoff itself is unchanged.
 func (e *Executor) reportFrozenGateSpecRefresh(ctx context.Context, t Ticket, result *Result) error {
 	refresh, err := e.gateSpecRefresh(ctx, t, result)
-	if err != nil || !refresh.Pending {
-		return err
+	if err != nil {
+		// The notice is advisory; an unreadable ledger must not fail a handoff
+		// that never read comments before.
+		e.warn("%s gate spec refresh check before handoff failed: %v", t.Identifier, err)
+		return nil
+	}
+	if !refresh.Pending {
+		return nil
 	}
 	if err := e.comment(ctx, t.ID, task.GateSpecRefreshFrozen); err != nil {
 		e.warn("%s gate spec refresh notice failed: %v", t.Identifier, err)
