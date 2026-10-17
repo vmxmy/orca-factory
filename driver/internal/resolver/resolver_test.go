@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"os"
 	"testing"
@@ -41,6 +43,7 @@ type fakeOrca struct {
 	releases   int
 	readErr    error
 	status     string
+	startErr   error
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -51,6 +54,10 @@ func (o *fakeOrca) RunUse(context.Context, string, string) (orca.Receipt, error)
 }
 func (o *fakeOrca) WorkerStart(_ context.Context, id string, opts orca.StartOptions) (orca.Receipt, error) {
 	o.startCalls++
+	if err := o.startErr; err != nil {
+		o.startErr = nil
+		return nil, err
+	}
 	if o.store.record == nil || o.store.record.Phase != "pending" {
 		return nil, errors.New("dispatch preceded durable intent")
 	}
@@ -89,6 +96,26 @@ func setupController() (*Controller, *memoryStore, *fakeOrca) {
 	o := &fakeOrca{store: s}
 	return &Controller{Store: s, Orca: o, Ticket: "ENG-1", Repo: "/repo", Spec: "Act as resolver", Terminal: "first", Agent: "codex", Model: "model", Effort: "medium", Now: func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }}, s, o
 }
+
+// A dispatch the maintenance gate refused never reached Orca, so a later
+// controller starts a fresh run instead of awaiting a task that cannot exist.
+func TestRefusedDispatchStartsFreshRun(t *testing.T) {
+	c, s, o := setupController()
+	o.startErr = fmt.Errorf("worker start: %w", maintenance.ErrRefused)
+	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
+		t.Fatalf("refusal not reported: %v", err)
+	}
+	if s.record.Phase != "pending" || s.record.Run != "" {
+		t.Fatalf("refused dispatch kept run: %+v", s.record)
+	}
+	o.tasks = []orca.Task{}
+	c.Terminal = "second"
+	p, err := c.Step(context.Background())
+	if err != nil || p.Phase != "running" || o.startCalls != 2 {
+		t.Fatalf("replacement did not dispatch: phase=%v starts=%d err=%v", p, o.startCalls, err)
+	}
+}
+
 func TestLostDispatchCheckpointReconcilesSameRequest(t *testing.T) {
 	c, s, o := setupController()
 	s.failRunning = true

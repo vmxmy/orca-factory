@@ -195,10 +195,15 @@ func Admission() (func(), error) {
 		release()
 	}, nil
 }
+
+// ErrRefused marks a claim or dispatch the gate refused before it reached any
+// external system, so its effects are known not to exist.
+var ErrRefused = errors.New("maintenance refused new claim or dispatch")
+
 func Admit() error {
 	intent, err := lock("intent", syscall.LOCK_SH)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return errors.New("maintenance change pending; new claim or dispatch refused")
+		return fmt.Errorf("%w: %s", ErrRefused, "maintenance change pending; new claim or dispatch refused")
 	}
 	if err != nil {
 		return err
@@ -211,7 +216,7 @@ func Admit() error {
 		return err
 	}
 	if state.Mode != "running" {
-		return errors.New("maintenance blocks new claim or dispatch")
+		return fmt.Errorf("%w: %s", ErrRefused, "maintenance blocks new claim or dispatch")
 	}
 	return nil
 }

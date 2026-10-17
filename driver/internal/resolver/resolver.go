@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -137,6 +138,12 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	if p.Phase == "pending" {
 		receipt, err := c.Orca.WorkerStart(ctx, request("dispatch"), orca.StartOptions{Run: p.Run, Spec: p.Spec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: "origin/main", Name: fmt.Sprintf("%s-resolver-%d", c.Ticket, p.Attempt), Setup: "skip", Agent: p.Agent, Model: p.Model, Effort: p.Effort})
 		callErr := err
+		if errors.Is(callErr, maintenance.ErrRefused) {
+			// Nothing reached Orca: drop the run so a replacement controller
+			// starts a fresh one instead of awaiting a task that cannot exist.
+			p.Run = ""
+			return nil, errors.Join(callErr, c.Store.Save(ctx, *p))
+		}
 		if path := orca.ReceiptWorktree(receipt); path != "" && c.Board != nil {
 			c.Board(ctx, path, p.Attempt)
 		}
