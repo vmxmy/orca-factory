@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,7 +230,11 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 	defer cancel()
 	e.Recovery = &livenessRecovery{cancel: cancel}
 	path := orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
-	hb, err := orca.StartHeartbeat(ctx, path, e.Config.Terminal, time.Hour, nil)
+	start := time.Now()
+	var ticks atomic.Int64
+	// Every beat is one second later, so only a new write can advance At.
+	now := func() time.Time { return start.Add(time.Duration(ticks.Add(1)) * time.Second) }
+	hb, err := orca.StartHeartbeat(ctx, path, e.Config.Terminal, 10*time.Millisecond, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,9 +243,20 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 	if err != nil || !found || first.PID != os.Getpid() || first.Run != "" || first.Terminal != e.Config.Terminal {
 		t.Fatalf("first beat=%+v found=%v err=%v", first, found, err)
 	}
+	// Before any Run exists, only the periodic writer can replace the beat.
+	for deadline := time.Now().Add(2 * time.Second); ; {
+		beat, found, err := orca.ReadBeat(path)
+		if err == nil && found && beat.Run == "" && beat.At.After(first.At) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no periodic beat after %+v: beat=%+v found=%v err=%v", first, beat, found, err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	result, _ := e.Execute(ctx, ticket)
 	beat, found, err := orca.ReadBeat(path)
-	if err != nil || !found || result.RunID == "" || beat.Run != result.RunID || beat.PID != os.Getpid() || !beat.At.After(first.At.Add(-time.Second)) {
+	if err != nil || !found || result.RunID == "" || beat.Run != result.RunID || beat.PID != os.Getpid() || !beat.At.After(first.At) {
 		t.Fatalf("beat=%+v found=%v err=%v run=%q", beat, found, err, result.RunID)
 	}
 	if beat.Judge(time.Now(), orca.DefaultHeartbeatTimeout, orca.PIDAlive) != orca.LivenessAlive {

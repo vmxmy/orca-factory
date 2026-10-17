@@ -1,0 +1,28 @@
+{
+  "id": "fdfaa3ef-8ad0-49b2-9610-c528b5d19372",
+  "ok": true,
+  "result": {
+    "dispatchId": "ctx_ee6da2ada658",
+    "state": "abandoned",
+    "alreadySettled": true,
+    "stale": false,
+    "processAction": "none",
+    "warning": "The worker was already abandoned; its terminal was left open and no process changed.",
+    "residualResources": [
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "created",
+        "id": "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d",
+        "surface": "visible"
+      }
+    ],
+    "mutation": {
+      "requestId": "27554c51-b199-48d4-9950-4d06d09fe0bb",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "6859a908-19e0-4e2e-a2d7-20d679c1186f"
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -94,5 +95,39 @@ func TestRecordedSchedulerBlockerIdentifiers(t *testing.T) {
 	}
 	if len(tickets) != 1 || !tickets[0].Blocked || tickets[0].BlockersIncomplete || !reflect.DeepEqual(tickets[0].Blockers, []string{"ZII-893"}) {
 		t.Fatalf("lost recorded blocker identifiers: %+v", tickets)
+	}
+}
+
+// The fixture is the real worker-list of Run run_9714ea9b8576: dispatch IDs
+// and statuses must parse as recorded, and no settled row may be abandoned.
+func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-list-liveness.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runtime{Orca: &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{envelope.Result, envelope.Result}}}}
+	rows, err := r.dispatches(context.Background(), "run_9714ea9b8576")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []dispatchRow{{"ctx_f9e3c9ac102a", "failed"}, {"ctx_6d1316722a7c", "failed"}, {"ctx_a93f6b74d60d", "failed"}, {"ctx_2ec61f77c499", "completed"}}
+	if !reflect.DeepEqual(rows, want) {
+		t.Fatalf("rows=%+v", rows)
+	}
+	for _, row := range rows {
+		if !settledDispatch(row.Status) {
+			t.Fatalf("recorded row %+v counted as unsettled", row)
+		}
+	}
+	r.StateRoot = t.TempDir()
+	r.Repositories = map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}}
+	ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-", Run: "run_9714ea9b8576"}
+	if err := r.ReapDead(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if abandoned := r.Orca.(*reapOrca).abandoned; len(abandoned) != 0 {
+		t.Fatalf("settled dispatches abandoned: %v", abandoned)
 	}
 }

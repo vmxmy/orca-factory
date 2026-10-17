@@ -24,7 +24,8 @@ func resolveTicket(args []string) int {
 	return loggedCommand("resolver", filepath.Join(logStateRoot(), executorLogRepository(), args[0], "resolver.log"), os.Stderr, args, func(logger *slog.Logger) (int, error) {
 		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer cancel()
-		if _, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil); err != nil {
+		heartbeat, err := orca.StartHeartbeat(ctx, orca.HeartbeatPath(logStateRoot(), executorLogRepository(), args[0], "resolver"), os.Getenv("ORCA_TERMINAL_HANDLE"), orca.HeartbeatInterval, nil)
+		if err != nil {
 			return 1, err
 		}
 		home, err := os.UserHomeDir()
@@ -64,7 +65,7 @@ func resolveTicket(args []string) int {
 		}
 		for _, ticket := range tickets {
 			if ticket.Identifier == args[0] {
-				err = runtime.ResolveTicket(ctx, ticket, os.Getenv("ORCA_TERMINAL_HANDLE"))
+				err = runtime.ResolveTicket(ctx, ticket, os.Getenv("ORCA_TERMINAL_HANDLE"), heartbeat)
 				if err != nil {
 					return 1, err
 				}

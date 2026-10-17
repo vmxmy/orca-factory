@@ -94,7 +94,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, err
 	}
-	e.Heartbeat, err = orca.StartHeartbeat(ctx, orca.HeartbeatPath(e.Config.Root, name, identifier, "executor"), terminal, orca.HeartbeatInterval, nil)
+	e.Heartbeat, err = orca.StartHeartbeat(ctx, orca.HeartbeatPath(e.Config.Root, name, ticket.Identifier, "executor"), terminal, orca.HeartbeatInterval, nil)
 	if err != nil {
 		return Result{}, err
 	}

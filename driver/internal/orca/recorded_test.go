@@ -164,6 +164,36 @@ func TestRecordedWorkerStop(t *testing.T) {
 	}
 }
 
+// The abandon fixtures are real receipts from a probe Run (OF-22, 2026-10-17):
+// fencing an unsettled dispatch, then repeating it on the now-abandoned one.
+func TestRecordedWorkerAbandon(t *testing.T) {
+	for name, settled := range map[string]bool{"orca-worker-abandon.json": false, "orca-worker-abandon-settled.json": true} {
+		receipt, err := recordedClient(t, name).WorkerAbandon(context.Background(), "46462202-4380-49b4-ad5f-e3530235bc26", "ctx_ee6da2ada658")
+		if err != nil {
+			t.Fatalf("%s err=%v", name, err)
+		}
+		var state, action string
+		var already bool
+		if json.Unmarshal(receipt["state"], &state) != nil || state != "abandoned" || json.Unmarshal(receipt["alreadySettled"], &already) != nil || already != settled || json.Unmarshal(receipt["processAction"], &action) != nil || action != "none" {
+			t.Fatalf("%s state=%q alreadySettled=%v processAction=%q", name, state, already, action)
+		}
+	}
+}
+
+// The close fixtures are real receipts from probe terminals (OF-22,
+// 2026-10-17): a close, the same close repeated, and an unknown handle.
+func TestRecordedTerminalClose(t *testing.T) {
+	for _, name := range []string{"orca-terminal-close.json", "orca-terminal-close-repeat.json"} {
+		if err := recordedClient(t, name).TerminalClose(context.Background(), "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d"); err != nil {
+			t.Fatalf("%s err=%v", name, err)
+		}
+	}
+	var rejected *RejectedError
+	if err := recordedClient(t, "orca-terminal-close-stale.json").TerminalClose(context.Background(), "term_00000000-0000-0000-0000-000000000000"); !errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale" {
+		t.Fatalf("stale close err=%v, want terminal_handle_stale", err)
+	}
+}
+
 // The list fixture is a real `orca-ide worktree list --repo ... --json`
 // recording (OF-96): the main checkout plus five driver workspaces.
 func TestRecordedWorktreeList(t *testing.T) {

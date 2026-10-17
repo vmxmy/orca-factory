@@ -8,6 +8,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -101,18 +102,36 @@ func setupController() (*Controller, *memoryStore, *fakeOrca) {
 // controller starts a fresh run instead of awaiting a task that cannot exist.
 func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	c, s, o := setupController()
+	path := filepath.Join(t.TempDir(), "resolver.heartbeat.json")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hb, err := orca.StartHeartbeat(ctx, path, "first", time.Hour, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Heartbeat = hb
+	beatRun := func() string {
+		beat, found, err := orca.ReadBeat(path)
+		if err != nil || !found {
+			t.Fatalf("beat found=%v err=%v", found, err)
+		}
+		return beat.Run
+	}
 	o.startErr = fmt.Errorf("worker start: %w", maintenance.ErrRefused)
 	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
 		t.Fatalf("refusal not reported: %v", err)
 	}
-	if s.record.Phase != "pending" || s.record.Run != "" {
-		t.Fatalf("refused dispatch kept run: %+v", s.record)
+	if s.record.Phase != "pending" || s.record.Run != "" || beatRun() != "" {
+		t.Fatalf("refused dispatch kept run: %+v beat run=%q", s.record, beatRun())
 	}
 	o.tasks = []orca.Task{}
 	c.Terminal = "second"
 	p, err := c.Step(context.Background())
 	if err != nil || p.Phase != "running" || o.startCalls != 2 {
 		t.Fatalf("replacement did not dispatch: phase=%v starts=%d err=%v", p, o.startCalls, err)
+	}
+	if beatRun() != "run_1" {
+		t.Fatalf("beat run=%q, want the resolver Run", beatRun())
 	}
 }
 

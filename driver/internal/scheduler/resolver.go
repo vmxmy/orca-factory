@@ -78,7 +78,7 @@ func (s resolutionStore) Save(ctx context.Context, p resolver.Record) error {
 }
 
 // ResolveTicket runs in its own terminal; only the scheduler applies proposals.
-func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) error {
+func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string, heartbeat *orca.Heartbeat) error {
 	session, err := maintenance.Session()
 	if err != nil {
 		return err
@@ -147,7 +147,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string) 
 	if len(parts) > 3 || (parts[0] != "codex" && parts[0] != "claude") {
 		return errors.New("invalid resolver agent tier")
 	}
-	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: parts[0], Now: r.Now, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
+	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: parts[0], Now: r.Now, Heartbeat: heartbeat, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
 	c.Board = func(ctx context.Context, worktree string, attempt int) {
 		card := orca.TicketCard(worktree, t.Identifier, t.Title, t.Number, machine.PhaseResolver, fmt.Sprintf("第 %d 次处置", attempt))
 		if t.Handoff != nil {

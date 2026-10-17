@@ -55,6 +55,8 @@ type Controller struct {
 	// Board, when set, receives the resolver worktree once Orca places it.
 	Board func(ctx context.Context, worktree string, attempt int)
 	Now   func() time.Time
+	// Heartbeat records the resolver's own Run for the scheduler; nil writes none.
+	Heartbeat *orca.Heartbeat
 }
 
 // Step performs one recoverable observation/transition. Mutations reuse frozen
@@ -127,6 +129,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			return nil, err
 		}
 	}
+	c.Heartbeat.SetRun(p.Run)
 	if _, err = c.Orca.RunUse(ctx, request("bind"), p.Run); err != nil {
 		return nil, err
 	}
@@ -142,6 +145,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			// Nothing reached Orca: drop the run so a replacement controller
 			// starts a fresh one instead of awaiting a task that cannot exist.
 			p.Run = ""
+			c.Heartbeat.SetRun("")
 			return nil, errors.Join(callErr, c.Store.Save(ctx, *p))
 		}
 		if path := orca.ReceiptWorktree(receipt); path != "" && c.Board != nil {

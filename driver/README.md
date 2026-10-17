@@ -106,7 +106,8 @@ orca-factory-driver status --json
 终端句柄存在或派工显示 active 都不能证明执行器进程还活着：进程被外部 `kill` 后，终端和派工记录可能长时间保持原样。调度器因此读取 `driver exec`（处置 Agent 为 `driver resolve`）每 30 秒写入的心跳文件 `<状态根>/<仓库名>/<票号>/executor.heartbeat.json`（处置 Agent 为 `resolver.heartbeat.json`），字段与判定见 [CONTRACTS.md](CONTRACTS.md)。
 
 1. 查看调度日志里 `event=heartbeat` 的行，`result` 为 `alive`、`dead` 或 `uncertain`。
-2. `dead`（心跳超过 5 分钟未更新且 pid 不存在）：调度器对该 Run 内未结算的派工执行 `worker-abandon`，关闭残留终端，删除过期心跳，再从 checkpoint 重启执行器。同一轮日志随后出现 `event=launch`。
+2. `dead`（心跳超过 5 分钟未更新且 pid 不存在）：调度器对该 Run 内未结算的派工执行 `worker-abandon`，关闭残留终端，删除过期心跳，再从 checkpoint 重启执行器。同一轮日志随后出现 `event=launch`。处置 Agent 回收的是它自己的 Run（处置记录中的 `run`），不碰原执行器的 Run。
+   票面仍是 `term=-`（执行器已写心跳、尚未登记终端）时同样先看心跳：`alive` 或 `uncertain` 不重派，没有心跳才按登记宽限期判断；回收时不列终端、不关终端。
 3. `uncertain`（心跳新鲜但 pid 不存在，或心跳过期但 pid 存在）：调度器只记录，不重派。pid 复用、时钟漂移或心跳目录不可写都可能造成。核对 `ps -p <pid>` 与心跳文件的 `at`，确认进程已死后删除心跳文件，下一轮按终端与派工证据判断。
 4. 回收失败时日志出现 `dead process reap failed`，票保持原状，下一轮重试。
 5. 阈值调整：给 `driver serve` 设置 `AGENT_HEARTBEAT_TIMEOUT_MINUTES`（整数分钟，默认 5）。

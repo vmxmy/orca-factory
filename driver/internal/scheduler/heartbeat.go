@@ -72,9 +72,10 @@ func (r *Runtime) beatPath(t Ticket) (string, error) {
 }
 
 // Liveness judges the ticket's executor or resolver from its heartbeat file.
-// A missing file, or a beat written by another terminal, is no evidence.
+// A missing file, or a beat written by another terminal, is no evidence. A
+// claim not yet bound to a terminal has no handle to compare, so its beat counts.
 func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
-	if t.Terminal == "" || t.Terminal == "-" || r.StateRoot == "" {
+	if r.StateRoot == "" {
 		return orca.LivenessNone, nil
 	}
 	path, err := r.beatPath(t)
@@ -85,7 +86,7 @@ func (r *Runtime) Liveness(_ context.Context, t Ticket) (orca.Liveness, error) {
 	if err != nil {
 		return orca.LivenessUncertain, err
 	}
-	if !found || (beat.Terminal != "" && beat.Terminal != t.Terminal) {
+	if !found || (registered(t) && beat.Terminal != "" && beat.Terminal != t.Terminal) {
 		return orca.LivenessNone, nil
 	}
 	now := r.clock()
@@ -107,22 +108,34 @@ func (r *Runtime) clock() time.Time {
 	return time.Now()
 }
 
-// ReapDead abandons every unsettled dispatch of the ticket's Run (fencing
-// without claiming the process stopped), closes the leftover terminal and
-// removes the stale heartbeat so the relaunched process starts clean. Any
+func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
+
+// ReapDead abandons every unsettled dispatch of the dead process's own Run
+// (fencing without claiming the process stopped), closes the leftover terminal
+// and removes the stale heartbeat so the relaunched process starts clean. A
+// resolver owns t.Resolution.Run; t.Run is the executor Run it was handed. Any
 // uncertain read stops the reap before a write.
 func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	path, err := r.beatPath(t)
 	if err != nil {
 		return err
 	}
-	absent, err := r.TerminalAbsent(ctx, t)
-	if err != nil {
-		return err
+	run := t.Run
+	if t.Owner == machine.OwnerResolver {
+		if t.Resolution == nil {
+			return errors.New("resolver record missing")
+		}
+		run = t.Resolution.Run
+	}
+	absent := true
+	if registered(t) {
+		if absent, err = r.TerminalAbsent(ctx, t); err != nil {
+			return err
+		}
 	}
 	var active []string
-	if t.Run != "" {
-		rows, err := r.dispatches(ctx, t.Run)
+	if run != "" {
+		rows, err := r.dispatches(ctx, run)
 		if err != nil {
 			return err
 		}
@@ -141,7 +154,9 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 		}
 	}
 	if !absent {
-		if err := r.Orca.TerminalClose(ctx, t.Terminal); err != nil {
+		// A handle Orca no longer knows is already closed.
+		var rejected *orca.RejectedError
+		if err := r.Orca.TerminalClose(ctx, t.Terminal); err != nil && (!errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale") {
 			return err
 		}
 	}

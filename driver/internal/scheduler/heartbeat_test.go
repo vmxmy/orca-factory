@@ -11,6 +11,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -33,6 +34,7 @@ type reapOrca struct {
 	fakeOrca
 	abandoned []string
 	closed    []string
+	closeErr  error
 }
 
 func (f *reapOrca) WorkerAbandon(_ context.Context, request, dispatch string) (orca.Receipt, error) {
@@ -44,7 +46,7 @@ func (f *reapOrca) WorkerAbandon(_ context.Context, request, dispatch string) (o
 }
 func (f *reapOrca) TerminalClose(_ context.Context, terminal string) error {
 	f.closed = append(f.closed, terminal)
-	return nil
+	return f.closeErr
 }
 
 const terminalListWithExecutor = `{"ok":true,"result":{"terminals":[{"handle":"term_exec"}],"totalCount":1,"truncated":false,"hostScope":{"omittedHostIds":[]}}}`
@@ -55,6 +57,9 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 	t.Run("tick decisions", func(t *testing.T) {
 		executor := Ticket{ID: "e", Identifier: "OF-1", Repo: "a", Owner: machine.OwnerExecutor, Phase: machine.PhaseWorker, Attempt: 1, Terminal: "term_exec", Run: "run_1", UpdatedAt: now}
 		resolverTicket := Ticket{ID: "r", Identifier: "OF-2", Repo: "a", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Attempt: 1, Terminal: "term_res", UpdatedAt: now}
+		// A claim past the unregistered grace whose executor has not yet registered its terminal.
+		unregisteredTicket := Ticket{ID: "u", Identifier: "OF-3", Repo: "a", Owner: machine.OwnerExecutor, Phase: machine.PhaseWorker, Attempt: 1, Terminal: "-", UpdatedAt: now.Add(-time.Hour)}
+		unregisteredResolver := Ticket{ID: "ur", Identifier: "OF-4", Repo: "a", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Attempt: 1, Terminal: "-", UpdatedAt: now.Add(-time.Hour)}
 		for _, tc := range []struct {
 			name     string
 			ticket   Ticket
@@ -72,6 +77,11 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			{"no heartbeat and live terminal stays", executor, orca.LivenessNone, nil, false, 0, 0},
 			{"dead resolver is resolved again", resolverTicket, orca.LivenessDead, nil, false, 1, 1},
 			{"alive resolver stays", resolverTicket, orca.LivenessAlive, nil, true, 0, 0},
+			{"alive heartbeat keeps an unregistered claim", unregisteredTicket, orca.LivenessAlive, nil, true, 0, 0},
+			{"uncertain heartbeat keeps an unregistered claim", unregisteredTicket, orca.LivenessUncertain, nil, true, 0, 0},
+			{"dead heartbeat recovers an unregistered claim", unregisteredTicket, orca.LivenessDead, nil, true, 1, 1},
+			{"no heartbeat recovers an unregistered claim after grace", unregisteredTicket, orca.LivenessNone, nil, true, 1, 0},
+			{"alive heartbeat keeps an unregistered resolver", unregisteredResolver, orca.LivenessAlive, nil, true, 0, 0},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				b := &livenessBackend{fakeBackend: fakeBackend{tickets: []Ticket{tc.ticket}, absent: tc.terminal, inactive: tc.terminal}, verdict: tc.verdict, reapErr: tc.reapErr}
@@ -105,6 +115,8 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			{"fresh but pid gone", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Minute)}, false, orca.LivenessUncertain},
 			{"stale but pid exists", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-6 * time.Minute)}, true, orca.LivenessUncertain},
 			{"beat from another terminal", &orca.Beat{PID: 7, Terminal: "term_old", At: now.Add(-6 * time.Minute)}, false, orca.LivenessNone},
+			{"unregistered claim with fresh beat", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Minute)}, true, orca.LivenessAlive},
+			{"unregistered claim with stale beat", &orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-6 * time.Minute)}, false, orca.LivenessDead},
 		} {
 			_ = os.Remove(path)
 			if tc.beat != nil {
@@ -113,7 +125,11 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 				}
 			}
 			r.PIDAlive = func(int) bool { return tc.pidExists }
-			got, err := r.Liveness(context.Background(), ticket)
+			subject := ticket
+			if strings.HasPrefix(tc.name, "unregistered") {
+				subject.Terminal = "-"
+			}
+			got, err := r.Liveness(context.Background(), subject)
 			if err != nil || got != tc.want {
 				t.Fatalf("%s: got %q err=%v, want %q", tc.name, got, err, tc.want)
 			}
@@ -150,6 +166,36 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		}
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale heartbeat kept: %v", err)
+		}
+		// Orca refuses a handle it no longer knows (orca-terminal-close-stale.json): already closed.
+		o.page, o.closeErr = 0, &orca.RejectedError{Code: "terminal_handle_stale"}
+		if err := r.ReapDead(context.Background(), ticket); err != nil {
+			t.Fatalf("stale handle close err=%v", err)
+		}
+		o.page, o.closeErr = 0, &orca.RejectedError{Code: "runtime_error"}
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("failed terminal close accepted")
+		}
+	})
+	t.Run("resolver reap fences only its own run", func(t *testing.T) {
+		root := t.TempDir()
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_res"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_res","dispatchStatus":"running"}]}`)}}}
+		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now },
+			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
+			Run: func(context.Context, runx.Spec) ([]byte, error) {
+				t.Fatal("unregistered resolver has no terminal to list")
+				return nil, nil
+			}}
+		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerResolver, Terminal: "-", Run: "run_src", Resolution: &resolver.Record{Run: "run_res"}}
+		if err := r.ReapDead(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(o.abandoned, ",") != "ctx_res" || len(o.closed) != 0 {
+			t.Fatalf("abandoned=%v closed=%v", o.abandoned, o.closed)
+		}
+		ticket.Resolution = nil
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("resolver reap without a resolution record succeeded")
 		}
 	})
 }
