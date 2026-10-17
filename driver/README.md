@@ -130,6 +130,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
    3. 在 `~/.cache/orca-factory/core-sync/<远端键>/` 以 origin/main 建分离头 worktree，运行 `<factory_root>/bin/orca-factory update`，只 `git add scripts/agent-gates`。没有改动则跳过（origin/main 已同步）。
    4. 提交、push 该分支、`gh pr create`。driver 不合并该 PR。
    5. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。
+9. serve 每次发现后，把每个已接管项目自己的检出快进到 origin/main（OF-121）：只在检出位于 `main` 且无已跟踪改动时 `git merge --ff-only`，否则写 WARN `checkout not fast-forwarded` 并保持原样。处置 Agent 的角色文件与 core 检查都读这个检出，过期检出会让已合并的角色改动不生效，并让 check 误报 core 落后。
 
 人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`selftest --live` 运行一次发现。`resume-deployment` 不运行发现（OF-44）：它不联立飞书项目表、不跑流水线 check，而是直接枚举本机 Orca 仓库清单中每个 `agent-graph.env` 可读且声明飞书账本（`AGENT_ISSUE_BACKEND=feishu` 且 `AGENT_FEISHU_BASE` 非空）的仓库。项目移出可接管集合后（未启用、项目表无对应行、check 变红等任意原因），只要其 `agent-graph.env` 还在且声明飞书账本，`resume-deployment` 仍能找到并处置其部署屏障，不必先恢复项目表启用状态。
 
