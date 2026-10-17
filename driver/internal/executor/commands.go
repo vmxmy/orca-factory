@@ -136,7 +136,11 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	// The role, the brief and the diff all travel on stdin: claude's
 	// --allowedTools is variadic and swallows a trailing positional prompt.
 	input := "```diff\n" + string(diff) + "```\n"
-	if brief, ok := reviewBriefFrom(ctx); ok && strings.TrimSpace(brief.Text) != "" {
+	brief, hasBrief := reviewBriefFrom(ctx)
+	if brief.Prior != "" {
+		input = "## 上一轮 reviewer 意见\n" + brief.Prior + "\n\n" + input
+	}
+	if hasBrief && strings.TrimSpace(brief.Text) != "" {
 		// reviewer.md judges the diff against the ticket brief, and expects the
 		// lane-3 globs on the line before it. Without them every change outside the
 		// ticket's SCOPE (wiring, central types) is flagged as a defect.
@@ -180,8 +184,9 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	return string(b), tier, err
 }
 
-// ReviewBrief is the ticket brief the reviewer judges the diff against.
-type ReviewBrief struct{ Text, Lane3Globs string }
+// ReviewBrief is the ticket brief the reviewer judges the diff against, plus the
+// previous red findings when this review is a re-review.
+type ReviewBrief struct{ Text, Lane3Globs, Prior string }
 
 type reviewBriefKey struct{}
 

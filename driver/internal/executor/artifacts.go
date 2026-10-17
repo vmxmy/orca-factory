@@ -100,9 +100,16 @@ func gateVerdict(output string) (string, error) {
 	return verdict, nil
 }
 
+type reviewResult struct {
+	Verdict  string          `json:"verdict"`
+	Step     string          `json:"step"`
+	Reason   string          `json:"reason"`
+	Evidence json.RawMessage `json:"evidence"`
+}
+
 // Only a complete JSON object at the end of stdout is authoritative; an earlier
 // green object followed by prose or another result cannot approve a diff.
-func reviewVerdict(output string) (string, error) {
+func parseReviewResult(output string) (reviewResult, error) {
 	output = strings.TrimSpace(output)
 	// Reviewers often wrap the final object in a Markdown fence; only the closing fence may follow it.
 	output = strings.TrimSpace(strings.TrimSuffix(output, "```"))
@@ -110,15 +117,30 @@ func reviewVerdict(output string) (string, error) {
 		if output[i] != '{' {
 			continue
 		}
-		var result struct {
-			Verdict string `json:"verdict"`
-			Step    string `json:"step"`
-		}
+		var result reviewResult
 		if json.Unmarshal([]byte(output[i:]), &result) == nil && result.Step == "review" && (result.Verdict == "green" || result.Verdict == "red") {
-			return result.Verdict, nil
+			return result, nil
 		}
 	}
-	return "", errors.New("missing reviewer verdict JSON")
+	return reviewResult{}, errors.New("missing reviewer verdict JSON")
+}
+func reviewVerdict(output string) (string, error) {
+	result, err := parseReviewResult(output)
+	return result.Verdict, err
+}
+
+// reviewFindings keeps only reason and evidence of a parsed red: the reviewer's
+// prose before the JSON is not part of its verdict.
+func reviewFindings(output string) string {
+	result, err := parseReviewResult(output)
+	if err != nil || result.Verdict != "red" {
+		return ""
+	}
+	findings := "reason: " + result.Reason
+	if len(result.Evidence) > 0 {
+		findings += "\nevidence: " + string(result.Evidence)
+	}
+	return findings
 }
 
 // ParseTicket reads explicit ticket fields without interpreting ticket text as

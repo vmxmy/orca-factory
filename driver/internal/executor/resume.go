@@ -32,6 +32,18 @@ type checkpoint struct {
 	// Restarts counts unstarted workers redone without a correction charge;
 	// it keeps their request IDs apart from the dispatch they replace.
 	Restarts int `json:",omitempty"`
+	// PriorReview is the latest reviewer red of PriorReviewAttempt; the next
+	// re-review in that attempt receives it so reviewer.md applies its narrower
+	// re-review scope (OF-167).
+	PriorReview        string `json:",omitempty"`
+	PriorReviewAttempt int    `json:",omitempty"`
+}
+
+func priorReview(cp checkpoint, attempt int) string {
+	if cp.PriorReviewAttempt != attempt {
+		return ""
+	}
+	return cp.PriorReview
 }
 
 func checkpointPath(c Config, t Ticket) string {
