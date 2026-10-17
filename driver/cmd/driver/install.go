@@ -19,6 +19,7 @@ import (
 const installUnit = `[Unit]
 Description=Orca Factory Driver
 After=orca-serve.service network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -26,6 +27,7 @@ ExecStart=%h/.local/bin/orca-factory-driver serve
 Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
+RestartSec=10s
 
 [Install]
 WantedBy=default.target
@@ -34,6 +36,7 @@ WantedBy=default.target
 const gatewayInstallUnit = `[Unit]
 Description=Orca Factory Feishu Gateway
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -41,7 +44,7 @@ ExecStart=%h/.local/bin/orca-factory-driver feishu-gateway
 EnvironmentFile=-%h/.config/orca-factory/driver.env
 Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
-RestartSec=5
+RestartSec=10s
 
 [Install]
 WantedBy=default.target

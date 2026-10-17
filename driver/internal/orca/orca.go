@@ -66,6 +66,13 @@ func IsTerminalStale(err error) bool {
 	return errors.As(err, &rejected) && rejected.Code == "terminal_handle_stale"
 }
 
+var globalCodes = map[string]infra.Reason{
+	"runtime_unavailable":     infra.RuntimeUnavailable,
+	"runtime_access_denied":   infra.PermissionDenied,
+	"authentication_required": infra.AuthenticationFailed,
+	"unauthorized":            infra.AuthenticationFailed,
+}
+
 func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 	started := time.Now()
 	command := strings.Join(args[:min(2, len(args))], " ")
@@ -88,7 +95,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		var err error
 		path, err = runx.OrcaPath()
 		if err != nil {
-			return nil, &infra.Global{Dep: infra.Orca, Err: err}
+			return nil, &infra.Global{Dep: infra.Orca, Reason: infra.ExecutableMissing, Err: err}
 		}
 	}
 	if !filepath.IsAbs(path) {
@@ -107,7 +114,7 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 		return nil, infra.Classify(runErr)
 	}
 	if errors.Is(runErr, os.ErrNotExist) || errors.Is(runErr, os.ErrPermission) {
-		return nil, &infra.Global{Dep: infra.Orca, Err: errors.New("orca executable unavailable")}
+		return nil, &infra.Global{Dep: infra.Orca, Reason: infra.ExecutableMissing, Err: errors.New("orca executable unavailable")}
 	}
 	var envelope struct {
 		ID     string  `json:"id"`
@@ -133,9 +140,8 @@ func (c *Client) call(ctx context.Context, args []string) (Receipt, error) {
 			if envelope.Result == nil {
 				envelope.Result = envelope.Error.Data
 			}
-			switch envelope.Error.Code {
-			case "runtime_unavailable", "runtime_access_denied", "authentication_required", "unauthorized":
-				return envelope.Result, &infra.Global{Dep: infra.Orca, Err: errors.New("orca dependency unavailable")}
+			if reason, ok := globalCodes[envelope.Error.Code]; ok {
+				return envelope.Result, &infra.Global{Dep: infra.Orca, Reason: reason, Err: errors.New("orca dependency unavailable")}
 			}
 		}
 		if envelope.Error != nil && validCode(envelope.Error.Code) {

@@ -2,11 +2,16 @@ package scheduler
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
@@ -29,8 +34,78 @@ type repositoryUpdater interface {
 // set (OF-43). A repository that leaves the eligible set is retired: Tick keeps
 // reading it so its in-flight tickets, merges, deployment barriers and
 // resolvers finish, but claims none of its new tickets. A failed discovery
-// keeps the previous set and is returned so serve can refuse to start on it.
+// keeps the previous set and is returned.
 func (s *Scheduler) RefreshProjects(ctx context.Context) error {
+	err := s.refreshProjects(ctx)
+	if err != nil {
+		s.logger().Warn("project discovery failed; keeping previous projects", "err", err)
+	}
+	return err
+}
+
+// The driver can boot before Orca's runtime is ready (OF-137), so serve's
+// first discovery waits out dependency outages instead of exiting into a
+// systemd restart loop. A long wait repeats its WARN only every
+// outageWarnEvery so the log stays bounded.
+const (
+	initialDiscoveryBackoff    = 5 * time.Second
+	maxInitialDiscoveryBackoff = time.Minute
+	outageWarnEvery            = 10 * time.Minute
+)
+
+type outage struct {
+	dep    infra.Dep
+	reason infra.Reason
+}
+
+// AwaitProjects runs serve's first discovery. A temporary outage (Orca
+// runtime_unavailable, or an infra.Transient timeout or network failure) is
+// retried with doubling backoff until discovery succeeds or sleep reports ctx
+// ended. Credential, authentication, permission and missing-executable
+// failures, and any other error, are returned at once. It claims and launches
+// nothing.
+func (s *Scheduler) AwaitProjects(ctx context.Context, sleep func(context.Context, time.Duration) error) error {
+	warned := map[outage]time.Time{}
+	for delay := initialDiscoveryBackoff; ; delay = min(2*delay, maxInitialDiscoveryBackoff) {
+		err := s.refreshProjects(ctx)
+		if err == nil {
+			return nil
+		}
+		cause, retry := classifyOutage(err)
+		if !retry {
+			if cause.dep != "" {
+				return fmt.Errorf("%s %s: %w", cause.dep, cause.reason, err)
+			}
+			return err
+		}
+		s.nextDiscover = time.Time{}
+		now := s.clock()
+		level := slog.LevelDebug
+		if last, seen := warned[cause]; !seen || now.Sub(last) >= outageWarnEvery {
+			warned[cause] = now
+			level = slog.LevelWarn
+		}
+		s.logger().Log(ctx, level, "project discovery waiting for dependency; scheduling not started",
+			"dependency", cause.dep, "reason", cause.reason, "retryIn", delay)
+		if err := sleep(ctx, delay); err != nil {
+			return err
+		}
+	}
+}
+
+func classifyOutage(err error) (outage, bool) {
+	var global *infra.Global
+	if errors.As(err, &global) {
+		return outage{dep: global.Dep, reason: global.Reason}, global.Reason == infra.RuntimeUnavailable
+	}
+	var transient *infra.Transient
+	if errors.As(err, &transient) {
+		return outage{dep: "unknown", reason: "transient"}, true
+	}
+	return outage{}, false
+}
+
+func (s *Scheduler) refreshProjects(ctx context.Context) error {
 	now := s.clock()
 	if s.Discover == nil || now.Before(s.nextDiscover) {
 		return nil
@@ -38,7 +113,6 @@ func (s *Scheduler) RefreshProjects(ctx context.Context) error {
 	s.nextDiscover = now.Add(s.DiscoverEvery)
 	result, err := s.Discover(ctx)
 	if err != nil {
-		s.logger().Warn("project discovery failed; keeping previous projects", "err", err)
 		return err
 	}
 	rejected := map[string]string{}
