@@ -74,10 +74,12 @@ func newOnboardFixture(t *testing.T) onboardFixture {
 func passingPreflightFuncs() preflightFuncs {
 	pass := func(name string) preflightCheck { return preflightCheck{Name: name, OK: true, Detail: "stand-in: ok"} }
 	return preflightFuncs{
-		tools:   func(context.Context, onboarder) preflightCheck { return pass("本机工具") },
-		factory: func(context.Context, onboarder) preflightCheck { return pass("factory 自身") },
-		repo:    func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("目标仓库") },
-		scene:   func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("现场") },
+		tools:      func(context.Context, onboarder) preflightCheck { return pass("本机工具") },
+		factory:    func(context.Context, onboarder) preflightCheck { return pass("factory 自身") },
+		repo:       func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("目标仓库") },
+		scene:      func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("现场") },
+		service:    func(context.Context, onboarder) preflightCheck { return pass("服务环境") },
+		protection: func(context.Context, onboarder, onboardPlan) preflightCheck { return pass("分支保护") },
 	}
 }
 
@@ -129,8 +131,8 @@ func TestOnboardDryRun(t *testing.T) {
 	}
 	// OF-52: the dry-run plan also carries every preflight check, all
 	// passing here since newOnboardFixture stands in a passing result.
-	if len(plan.Preflight) != 5 {
-		t.Fatalf("preflight=%+v, want 5 checks", plan.Preflight)
+	if len(plan.Preflight) != 7 {
+		t.Fatalf("preflight=%+v, want 7 checks", plan.Preflight)
 	}
 	for _, c := range plan.Preflight {
 		if !c.OK || c.Name == "" || c.Detail == "" {

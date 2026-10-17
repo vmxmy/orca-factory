@@ -90,21 +90,25 @@ type preflightCheck struct {
 // lock residue). The fifth group, the ledger (e), is derived from the plan
 // this onboarding already computed (a successful plan already proved the
 // ledger readable with a non-conflicting prefix) and needs no check of its
-// own. Each func takes the onboarder by value so a test can swap in a
+// own. OF-131 adds service (f, the driver service's PATH) and protection (g,
+// the target repository's main branch protection). Each func takes the onboarder by value so a test can swap in a
 // stand-in without running the real tool, while production wiring always
 // sees the onboarder's current fields (claude, cfg, stateRoot).
 type preflightFuncs struct {
-	tools   func(ctx context.Context, o onboarder) preflightCheck
-	factory func(ctx context.Context, o onboarder) preflightCheck
-	repo    func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
-	scene   func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
+	tools      func(ctx context.Context, o onboarder) preflightCheck
+	factory    func(ctx context.Context, o onboarder) preflightCheck
+	repo       func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
+	scene      func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
+	service    func(ctx context.Context, o onboarder) preflightCheck
+	protection func(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck
 }
 
 // defaultPreflight is OF-52's production preflight checks, wired at both
 // onboarder construction sites (the onboard command and the picker card's
 // 接入 button, which share onboarder.run). A test driving runOnboard as a
 // black box swaps this package var for a stand-in and restores it after.
-var defaultPreflight = preflightFuncs{tools: checkOnboardTools, factory: checkOnboardFactory, repo: checkOnboardRepoAccess, scene: checkOnboardScene}
+var defaultPreflight = preflightFuncs{tools: checkOnboardTools, factory: checkOnboardFactory, repo: checkOnboardRepoAccess, scene: checkOnboardScene,
+	service: checkOnboardServicePath, protection: checkOnboardBranchProtection}
 
 // onboarder onboards one Orca repository (OF-50): the agent works only in a
 // fresh worktree of it; the driver itself writes the ledger 项目 row.
@@ -240,7 +244,7 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 	return intake.OnboardResult{PR: pr, Row: row}, nil
 }
 
-// runPreflight runs OF-52's five preflight groups in order (a–e) and
+// runPreflight runs every preflight group in order (OF-52's a–e, OF-131's f–g) and
 // returns every result; it never stops at the first failure, so a person
 // reading `onboard --dry-run` or a failed run's error sees every blocking
 // problem at once instead of discovering the next one five minutes later.
@@ -251,6 +255,8 @@ func (o onboarder) runPreflight(ctx context.Context, plan onboardPlan) []preflig
 		o.preflight.repo(ctx, o, plan),
 		o.preflight.scene(ctx, o, plan),
 		ledgerPreflightCheck(plan),
+		o.preflight.service(ctx, o),
+		o.preflight.protection(ctx, o, plan),
 	}
 }
 
@@ -434,6 +440,85 @@ func checkOnboardScene(ctx context.Context, o onboarder, plan onboardPlan) prefl
 		return preflightCheck{Name: name, OK: false, Detail: strings.Join(problems, "；") + "；补法：清理残留 worktree/分支，或等待进行中的接入结束"}
 	}
 	return preflightCheck{Name: name, OK: true, Detail: "worktree 与分支均不存在，接入锁空闲"}
+}
+
+// onboardServiceTools are the binaries the driver service's gates, merge
+// lane and executor run from its own PATH; a drop-in that drops one (the
+// linuxbrew gh once) only surfaces later as a failed ticket.
+var onboardServiceTools = []string{"go", "gh", "git", "orca"}
+
+// checkOnboardServicePath is preflight group (f): every onboardServiceTools
+// entry must resolve on orca-factory-driver.service's effective PATH, which
+// `systemctl --user show -p Environment` reports after merging the unit and
+// its drop-ins. Only the PATH entry is read; other values never reach detail.
+func checkOnboardServicePath(ctx context.Context, _ onboarder) preflightCheck {
+	const name = "服务环境"
+	out, err := runx.Run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "show", "-p", "Environment", "orca-factory-driver.service"}, Timeout: 10 * time.Second})
+	if err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("systemctl --user show orca-factory-driver.service 退出码 %d；补法：确认已运行 orca-factory-driver install 安装服务", exitCode(err))}
+	}
+	var dirs []string
+	for _, field := range strings.Fields(strings.TrimPrefix(strings.TrimSpace(string(out)), "Environment=")) {
+		if value, ok := strings.CutPrefix(field, "PATH="); ok {
+			dirs = filepath.SplitList(value)
+		}
+	}
+	if len(dirs) == 0 {
+		return preflightCheck{Name: name, OK: false, Detail: "orca-factory-driver.service 未设置 PATH；补法：在该服务的 drop-in 中设置 Environment=PATH，然后 systemctl --user daemon-reload 并重启服务"}
+	}
+	var missing []string
+	for _, tool := range onboardServiceTools {
+		if !slices.ContainsFunc(dirs, func(dir string) bool { return isExecutableFile(filepath.Join(dir, tool)) }) {
+			missing = append(missing, tool)
+		}
+	}
+	if len(missing) > 0 {
+		return preflightCheck{Name: name, OK: false, Detail: "orca-factory-driver.service 的 PATH 找不到：" + strings.Join(missing, ",") + "；补法：在该服务的 drop-in 中把这些工具所在目录加入 Environment=PATH，然后 systemctl --user daemon-reload 并重启服务"}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "orca-factory-driver.service 的 PATH 能找到 " + strings.Join(onboardServiceTools, ",")}
+}
+
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
+}
+
+// checkOnboardBranchProtection is preflight group (g): the target
+// repository's main must be protected with at least one required status
+// check, because the merge lane only squashes once a nonempty set of checks
+// succeeded at the pinned head. It reads branches/main, which needs only
+// read access (the /protection endpoint needs admin), and never changes
+// repository settings.
+func checkOnboardBranchProtection(ctx context.Context, _ onboarder, plan onboardPlan) preflightCheck {
+	const name = "分支保护"
+	m := githubRemote.FindStringSubmatch(plan.Remote)
+	if m == nil {
+		return preflightCheck{Name: name, OK: false, Detail: "远端不是 GitHub 仓库"}
+	}
+	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"api", "repos/" + m[1] + "/branches/main"}, Timeout: 30 * time.Second})
+	if err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: fmt.Sprintf("gh api repos/%s/branches/main 退出码 %d；补法：确认 gh 已登录且能读取该仓库", m[1], exitCode(err))}
+	}
+	var branch struct {
+		Protected  bool `json:"protected"`
+		Protection struct {
+			RequiredStatusChecks struct {
+				EnforcementLevel string   `json:"enforcement_level"`
+				Contexts         []string `json:"contexts"`
+			} `json:"required_status_checks"`
+		} `json:"protection"`
+	}
+	if json.Unmarshal(out, &branch) != nil {
+		return preflightCheck{Name: name, OK: false, Detail: "gh api repos/" + m[1] + "/branches/main 输出不可解析；补法：手动运行该命令排查"}
+	}
+	if !branch.Protected {
+		return preflightCheck{Name: name, OK: false, Detail: m[1] + " 的 main 没有分支保护；补法：在 GitHub 仓库设置为 main 添加分支保护，并把 CI 作业设为必需检查"}
+	}
+	required := branch.Protection.RequiredStatusChecks
+	if required.EnforcementLevel == "off" || len(required.Contexts) == 0 {
+		return preflightCheck{Name: name, OK: false, Detail: m[1] + " 的 main 没有必需检查，合并通道等不到成功检查无法 squash；补法：在 main 的分支保护中开启 Require status checks 并选中 CI 作业"}
+	}
+	return preflightCheck{Name: name, OK: true, Detail: "main 已保护，必需检查：" + strings.Join(required.Contexts, ",")}
 }
 
 // addWorktree creates the agent's working directory; OF-52's 现场 preflight
