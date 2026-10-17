@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -45,6 +46,31 @@ RestartSec=5
 WantedBy=default.target
 `
 
+// The watch service reads serve's drop-in directory through a symlink, so
+// both always run with the same environment overrides.
+const watchInstallUnit = `[Unit]
+Description=Orca Factory Driver Watch
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/orca-factory-driver watch
+Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+`
+
+const watchInstallTimer = `[Unit]
+Description=Run Orca Factory Driver Watch every 30 minutes
+
+[Timer]
+OnCalendar=*:0/30
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+`
+
 type installRunner interface {
 	Run(context.Context, runx.Spec) ([]byte, error)
 }
@@ -82,8 +108,10 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	binary := filepath.Join(home, ".local", "bin", "orca-factory-driver")
 	unit := filepath.Join(home, ".config", "systemd", "user", "orca-factory-driver.service")
 	gatewayUnit := filepath.Join(filepath.Dir(unit), "orca-factory-feishu-gateway.service")
+	watchUnit := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.service")
+	watchTimer := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.timer")
 	if *dryRun {
-		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nWrite gateway service unit to %s\nCopy existing driver proxy.conf if gateway proxy.conf is absent\nRun systemctl --user daemon-reload\n", binary, unit, gatewayUnit)
+		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nWrite gateway service unit to %s\nCopy existing driver proxy.conf if gateway proxy.conf is absent\nWrite watch service unit to %s\nWrite watch timer to %s (every 30 minutes, RandomizedDelaySec=5min)\nLink %s.d to %s.d\nRun systemctl --user daemon-reload\n", binary, unit, gatewayUnit, watchUnit, watchTimer, watchUnit, unit)
 		return err
 	}
 	executable, err := os.Executable()
@@ -145,10 +173,33 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	} else if err != nil {
 		return err
 	}
+	if err := os.WriteFile(watchUnit, []byte(watchInstallUnit), 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(watchTimer, []byte(watchInstallTimer), 0644); err != nil {
+		return err
+	}
+	if err := linkWatchDropIns(unit+".d", watchUnit+".d"); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if _, err := runner.Run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "daemon-reload"}, Timeout: 30 * time.Second}); err != nil {
 		return fmt.Errorf("reload user service units: %w", err)
 	}
 	return nil
+}
+
+func linkWatchDropIns(serveDir, watchDir string) error {
+	if err := os.MkdirAll(serveDir, 0755); err != nil {
+		return err
+	}
+	target, err := os.Readlink(watchDir)
+	switch {
+	case err == nil && target == serveDir:
+		return nil
+	case err == nil || !errors.Is(err, os.ErrNotExist):
+		return fmt.Errorf("%s exists and is not a link to %s; move it aside so watch shares serve's drop-ins", watchDir, serveDir)
+	}
+	return os.Symlink(serveDir, watchDir)
 }

@@ -34,7 +34,7 @@ func TestInstallDryRun(t *testing.T) {
 	if err := installWith([]string{"--dry-run"}, &out, runner); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{filepath.Join(home, ".local/bin/orca-factory-driver"), filepath.Join(home, ".config/systemd/user/orca-factory-driver.service"), "systemctl --user daemon-reload"} {
+	for _, want := range []string{filepath.Join(home, ".local/bin/orca-factory-driver"), filepath.Join(home, ".config/systemd/user/orca-factory-driver.service"), filepath.Join(home, ".config/systemd/user/orca-factory-driver-watch.timer"), "systemctl --user daemon-reload"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("output missing %q: %s", want, out.String())
 		}
@@ -73,6 +73,14 @@ func TestInstallWritesUnitAndBinary(t *testing.T) {
 		if !strings.Contains(string(unit), want) {
 			t.Errorf("unit missing %q", want)
 		}
+	}
+	units := filepath.Join(home, ".config/systemd/user")
+	timer, err := os.ReadFile(filepath.Join(units, "orca-factory-driver-watch.timer"))
+	if err != nil || !strings.Contains(string(timer), "OnCalendar=*:0/30") || !strings.Contains(string(timer), "RandomizedDelaySec=") {
+		t.Fatalf("watch timer: %v %s", err, timer)
+	}
+	if link, err := os.Readlink(filepath.Join(units, "orca-factory-driver-watch.service.d")); err != nil || link != filepath.Join(units, "orca-factory-driver.service.d") {
+		t.Fatalf("watch drop-in link: %q %v", link, err)
 	}
 	executable, err := os.Executable()
 	if err != nil {

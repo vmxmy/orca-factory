@@ -108,19 +108,26 @@ func commandFailure(what string, err error) string {
 }
 
 func runDoctor(args []string) int {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	cfg, err := config.Load(home)
+	probe, err := newDoctorProbe()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	probe := doctorProbe{
+	return probe.main(ctx, args, os.Stdout)
+}
+
+func newDoctorProbe() (doctorProbe, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return doctorProbe{}, err
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		return doctorProbe{}, err
+	}
+	return doctorProbe{
 		now:         time.Now(),
 		stateRoot:   logStateRoot(),
 		factoryRoot: cfg.FactoryRoot,
@@ -132,8 +139,7 @@ func runDoctor(args []string) int {
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
 			return issues.New(ctx, p.Repository.Env, cfg.Tuning)
 		},
-	}
-	return probe.main(ctx, args, os.Stdout)
+	}, nil
 }
 
 func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int {
