@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"time"
@@ -71,9 +72,15 @@ func (s *Scheduler) ownership(t Ticket, absent, inactive bool, terminalErr, disp
 func (s *Scheduler) launch(ctx context.Context, t Ticket) error {
 	err := s.Backend.Launch(ctx, t)
 	result := "success"
-	if err != nil {
+	switch {
+	case errors.Is(err, errLaunchEvidenceChanged):
+		result = "deferred"
+	case err != nil:
 		result = "uncertain"
 	}
 	s.decision(t, "launch", "", "attempt", t.Attempt, "result", result, "err", err)
+	if result == "deferred" {
+		return nil
+	}
 	return err
 }

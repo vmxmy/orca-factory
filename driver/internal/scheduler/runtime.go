@@ -583,7 +583,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
-		return errors.New("executor launch uncertain")
+		return fmt.Errorf("executor launch uncertain: %w", err)
 	}
 	return nil
 }

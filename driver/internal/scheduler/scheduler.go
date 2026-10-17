@@ -380,14 +380,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		case Resolve:
 			t.Owner, t.Phase = machine.OwnerResolver, machine.PhaseResolver
 			if err := s.launch(ctx, t); err != nil {
-				problems = append(problems, errors.New("resolver launch uncertain; ownership retained"))
+				problems = append(problems, fmt.Errorf("resolver launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		case Resume:
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
 			if err := s.launch(ctx, t); err != nil {
-				problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
+				problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		}
 	}
@@ -468,7 +468,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		t.Phase = state.Phase
 		t.Owner = state.Owner
 		if err = s.launch(ctx, t); err != nil {
-			problems = append(problems, errors.New("executor launch uncertain; ownership retained"))
+			problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 		}
 	}
 	return errors.Join(problems...)

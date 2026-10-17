@@ -111,6 +111,10 @@ func githubExecutionAllowed(task issues.Task) error {
 	return nil
 }
 
+// errLaunchEvidenceChanged marks a launch withheld because the ticket's durable
+// evidence moved since the snapshot; the next round decides from fresh evidence.
+var errLaunchEvidenceChanged = errors.New("recovery evidence changed before launch")
+
 func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 	client := r.Clients[t.Repo]
 	task, err := client.Read(ctx, t.ID)
@@ -138,7 +142,7 @@ func (r *Runtime) verifyFreshLaunch(ctx context.Context, t Ticket) error {
 		return err
 	}
 	if fresh.MergeProblem != t.MergeProblem || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
-		return errors.New("recovery evidence changed before launch")
+		return errLaunchEvidenceChanged
 	}
 	expected := machine.OwnerExecutor
 	expectedRun := ""
