@@ -51,7 +51,7 @@ func newDoctorFixture(t *testing.T) doctorFixture {
 	current := gitIn(t, factory, "rev-parse", "--short", "HEAD")
 
 	bin := filepath.Join(root, "bin")
-	gh := "#!/bin/sh\ncase \"$1 $2\" in\n\"pr list\") cat \"$DOCTOR_GH_PRS\" ;;\n\"auth status\") exit \"$DOCTOR_GH_AUTH\" ;;\n*) exit 9 ;;\nesac\n"
+	gh := "#!/bin/sh\ncase \"$1 $2\" in\n\"pr list\") cat \"$DOCTOR_GH_PRS\" ;;\n\"auth status\") printf '%s' \"$DOCTOR_GH_AUTH_STDERR\" >&2; exit \"$DOCTOR_GH_AUTH\" ;;\n*) exit 9 ;;\nesac\n"
 	writeDoctorFile(t, filepath.Join(bin, "gh"), gh, 0o755)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	state := filepath.Join(root, "state")
@@ -88,7 +88,8 @@ func (f doctorFixture) probe(t *testing.T, serviceTools []string, ledger doctorF
 		projects: func(context.Context) ([]projects.Project, error) {
 			return []projects.Project{{Path: f.factory, Prefix: "OF", Name: "orca-factory"}}, nil
 		},
-		ledger: func(context.Context, projects.Project) (doctorLedger, error) { return ledger, nil },
+		ledger:          func(context.Context, projects.Project) (doctorLedger, error) { return ledger, nil },
+		githubReachable: func(context.Context) error { return nil },
 	}
 }
 
@@ -310,4 +311,42 @@ func TestDriverDoctorReportsUnknownForUnreachableDependencies(t *testing.T) {
 	probe.serviceEnv = func(context.Context) (map[string]string, error) { return nil, errors.New("systemctl unreachable") }
 	probe.projects = func(context.Context) ([]projects.Project, error) { return nil, errors.New("orca unreachable") }
 	runDoctorProbe(t, probe).want(t, 0, map[string]string{"service_path": "unknown", "checkouts": "unknown", "sync_prs": "unknown", "ledger": "unknown", "credentials": "unknown"})
+}
+
+// tokenInvalidFixture is a healthy runtime whose gh reports the stored token
+// invalid, as after a reboot with the login keyring still locked (OF-138).
+func tokenInvalidFixture(t *testing.T) doctorProbe {
+	t.Helper()
+	f := newDoctorFixture(t)
+	writeDoctorFile(t, filepath.Join(f.root, "prs.json"), `[]`, 0o600)
+	t.Setenv("DOCTOR_GH_PRS", filepath.Join(f.root, "prs.json"))
+	t.Setenv("DOCTOR_GH_AUTH", "1")
+	t.Setenv("DOCTOR_GH_AUTH_STDERR", "github.com\n  X Failed to log in to github.com account TEST-PLACEHOLDER-CRED (default)\n  - The token in default is invalid.\n")
+	f.logLine(t, "scheduler.log", f.now.Add(-time.Hour), `"msg":"command started","component":"scheduler","event":"start","version":"`+f.current+`"`)
+	return f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))
+}
+
+func TestDriverDoctorReportsUnreadableCredentials(t *testing.T) {
+	result := runDoctorProbe(t, tokenInvalidFixture(t))
+
+	result.want(t, 1, map[string]string{"credentials": "fail"})
+	out := string(result.out)
+	if !strings.Contains(out, "GitHub 凭证不可读（keyring 可能未解锁）") || !strings.Contains(out, "登录桌面会话解锁 login keyring") {
+		t.Fatalf("credentials must name the locked keyring and its fix:\n%s", out)
+	}
+	if strings.Contains(out, "is invalid") || len(result.errors) != 0 {
+		t.Fatalf("an unreadable credential is a finding, not raw gh output or an unreadable probe:\n%s", out)
+	}
+}
+
+func TestDriverDoctorReportsUnknownCredentialsWhenGitHubUnreachable(t *testing.T) {
+	probe := tokenInvalidFixture(t)
+	probe.githubReachable = func(context.Context) error { return errors.New("dial tcp: network is unreachable") }
+
+	result := runDoctorProbe(t, probe)
+
+	result.want(t, 0, map[string]string{"credentials": "unknown"})
+	if len(result.errors) != 1 || !strings.HasPrefix(result.errors[0], "credentials: ") {
+		t.Fatalf("errors = %v, want the unreadable credentials probe", result.errors)
+	}
 }
