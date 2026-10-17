@@ -147,8 +147,13 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	if r.judge(t, beat) != orca.LivenessDead {
 		return errors.New("heartbeat no longer dead")
 	}
-	// The snapshot may predate a takeover; fence only what the ledger still assigns.
-	if err := r.verifyFreshDecision(ctx, t, Resume); err != nil {
+	// The snapshot may predate a takeover; fence only what the ledger still
+	// assigns. A resolver ticket passes the held and managed checks of Resolve.
+	action := Resume
+	if t.Owner == machine.OwnerResolver {
+		action = Resolve
+	}
+	if err := r.verifyFreshDecision(ctx, t, action); err != nil {
 		return err
 	}
 	recorded := t.Run

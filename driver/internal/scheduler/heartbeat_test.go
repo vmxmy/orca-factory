@@ -375,5 +375,26 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("stale heartbeat kept: %v", err)
 		}
+		// A held ticket stops the resolver before any write, as Resolve would.
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_res", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		ticket, ledger = reapLedger(t, ownership)
+		r.Clients = map[string]issues.Store{"/repo": heldIssues{ledger["/repo"].(*fakeIssues)}}
+		o.page, o.abandoned, o.closed = 0, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("reap of a held resolver ticket succeeded")
+		}
+		if _, err := os.Stat(path); err != nil || len(o.abandoned) != 0 || len(o.closed) != 0 || o.page != 0 {
+			t.Fatalf("held ticket reaped: heartbeat err=%v abandoned=%v closed=%v pages=%d", err, o.abandoned, o.closed, o.page)
+		}
 	})
+}
+
+type heldIssues struct{ *fakeIssues }
+
+func (f heldIssues) Read(ctx context.Context, id string) (issues.Task, error) {
+	record, err := f.fakeIssues.Read(ctx, id)
+	record.Metadata.ImportHold = true
+	return record, err
 }
