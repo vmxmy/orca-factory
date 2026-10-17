@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
@@ -20,6 +21,10 @@ import (
 var ErrOwnershipConflict = errors.New("feishu ticket changed by another writer")
 
 const feishuSummaryRunes = 200
+
+// feishuBodyRunes stays under the base/v3 text cell limit, past which a row is
+// stored with an empty 正文 and no error.
+const feishuBodyRunes = 90000
 
 func sleepContext(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
@@ -361,6 +366,9 @@ func (c *Feishu) conflict(ctx context.Context, id string, want, got feishuTicket
 
 // CreateComment appends one 事件 row whose 正文 is body unchanged.
 func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if n := utf8.RuneCountInString(body); n > feishuBodyRunes {
+		return task.Comment{}, fmt.Errorf("feishu event body has %d characters, limit %d", n, feishuBodyRunes)
+	}
 	t, err := c.cachedTask(ctx, id)
 	if err != nil {
 		return task.Comment{}, err

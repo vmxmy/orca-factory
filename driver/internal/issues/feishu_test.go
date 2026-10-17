@@ -58,6 +58,9 @@ type feishuFake struct {
 	rows     map[string][]feishuRow
 	pageSize int
 	revs     []int64
+	// revQueue, when set for a table, serves one rev per page request of that
+	// table before falling back to revs, as a concurrent write bumps it mid-read.
+	revQueue map[string][]int64
 	filters  []string
 	// staleReads serves the rows from before the last write to that many
 	// later reads, as base/v3 does right after a write (R2).
@@ -341,6 +344,9 @@ func (f *feishuFake) list(w http.ResponseWriter, r *http.Request, table string) 
 	}
 	page := offset / f.pageSize
 	rev := f.revs[min(page, len(f.revs)-1)]
+	if queue := f.revQueue[table]; len(queue) > 0 {
+		rev, f.revQueue[table] = queue[0], queue[1:]
+	}
 	f.page(w, table, rows[offset:end], end < len(rows), rev)
 }
 
@@ -424,6 +430,16 @@ func TestFeishuReadSnapshotFailsWhenPageRevDiffers(t *testing.T) {
 	f.revs = []int64{6}
 	if rows, err := c.Snapshot(context.Background(), []string{feishuRepo}, time.Time{}); err != nil || len(rows) != 2 {
 		t.Fatalf("consistent pages rejected: %v", err)
+	}
+}
+
+func TestFeishuReadRetriesWhenTableChangesMidRead(t *testing.T) {
+	f := newFeishuFake(t)
+	f.pageSize = 1
+	f.revQueue = map[string][]int64{"tblT": {4, 5, 6, 6}}
+	c := newFeishuTest(t, f)
+	if rows, err := c.Snapshot(context.Background(), []string{feishuRepo}, time.Time{}); err != nil || len(rows) != 2 {
+		t.Fatalf("read after a concurrent write rejected: rows=%d err=%v", len(rows), err)
 	}
 }
 
