@@ -536,8 +536,10 @@ func TestCreateAcceptsAssertionFailureCheckRed(t *testing.T) {
 	f := newFeishuFake(t)
 	c := newFeishuTest(t, f)
 	fastReadBack(c)
-	if _, err := c.Create(context.Background(), CreateInput{Title: "有效红", Description: selfCheckDescription("断言失败 AssertionError: expected 1 to be 0")}); err != nil {
-		t.Fatalf("assertion failure red rejected: %v", err)
+	for _, reason := range []string{"断言失败 AssertionError: expected 1 to be 0", "断言失败：LiteLLM usage 记录缺失，expected 10 tests to report usage"} {
+		if _, err := c.Create(context.Background(), CreateInput{Title: "有效红", Description: selfCheckDescription(reason)}); err != nil {
+			t.Fatalf("assertion failure red %q rejected: %v", reason, err)
+		}
 	}
 }
 

@@ -144,7 +144,7 @@ var uuid = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
 // invalidCheckRed matches CHECK failures caused by the command itself rather
 // than an assertion: such a CHECK stays red after the fix, so the gate can
 // never pass (ZY-92).
-var invalidCheckRed = regexp.MustCompile(`(?i)unknown option|\busage\b|no test files found|command not found|(^|[^0-9])0 tests|no tests to run`)
+var invalidCheckRed = regexp.MustCompile(`(?i)unknown option|\busage:|no test files found|command not found|(^|[^0-9])0 tests|no tests to run`)
 
 // requireValidCheckRed refuses a ticket whose intake self-check records an
 // invalid red reason. Only the recorded reason is inspected; CHECK never runs here.
