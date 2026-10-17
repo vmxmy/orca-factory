@@ -196,3 +196,20 @@ func TestRecordedWorktreeRemove(t *testing.T) {
 		t.Error("relative path accepted")
 	}
 }
+
+// A receipt without page.hasMore or with workers:null is an incomplete read, never
+// a last page or an empty fleet that would let a caller judge a dispatch lost.
+func TestWorkersRejectsIncompleteReceipt(t *testing.T) {
+	for _, receipt := range []string{
+		`{"ok":true,"result":{"workers":[],"page":{"nextCursor":null}}}`,
+		`{"ok":true,"result":{"workers":null,"page":{"hasMore":false,"nextCursor":null}}}`,
+	} {
+		script := filepath.Join(t.TempDir(), "orca")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '%s\\n' '"+receipt+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if workers, err := (&Client{Path: script}).Workers(context.Background(), ListOptions{Run: "run_one"}); err == nil {
+			t.Fatalf("incomplete receipt %s accepted as workers=%+v", receipt, workers)
+		}
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -165,6 +166,17 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		if err != nil {
 			return nil, err
 		}
+		listed, status := false, ""
+		if slices.ContainsFunc(tasks, func(t orca.Task) bool { return t.ID == p.Task && AwaitsDispatch(t) }) {
+			if listed, status, err = c.dispatchStatus(ctx, p); err != nil {
+				return nil, err
+			}
+			// The dispatch may report between the two reads; only a task read
+			// after the worker read can confirm loss.
+			if tasks, err = c.Orca.TaskList(ctx, p.Run); err != nil {
+				return nil, err
+			}
+		}
 		found := false
 		for _, task := range tasks {
 			if task.ID != p.Task {
@@ -177,6 +189,14 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			report, err := task.WorkerReport()
 			if err != nil {
 				return nil, err
+			}
+			if report == nil && AwaitsDispatch(task) {
+				if reason, lost := LostDispatch(task, p.Dispatch, listed, status); lost {
+					// Nothing of this round remains to release; the scheduler's
+					// failure rules open the next round with a fresh request.
+					p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+				}
+				continue
 			}
 			if report == nil {
 				if task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled" {
@@ -220,6 +240,31 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	}
 	return p, nil
 }
+
+// AwaitsDispatch reports a task Orca holds without a dispatch. That alone never
+// proves loss: a dispatch queued behind a busy terminal looks the same.
+func AwaitsDispatch(task orca.Task) bool {
+	return (task.Status == "pending" || task.Status == "ready") && task.DispatchID == ""
+}
+
+// LostDispatch needs positive evidence from complete reads: the task awaits a
+// dispatch and the recorded dispatch is absent from the workers or ended, as
+// after an Orca restart drops it.
+func LostDispatch(task orca.Task, dispatch string, listed bool, status string) (string, bool) {
+	if !AwaitsDispatch(task) || (listed && !dispatchEnded(status)) {
+		return "", false
+	}
+	return fmt.Sprintf("dispatch lost: task %s is %s without dispatch %s", task.ID, task.Status, dispatch), true
+}
+
+func dispatchEnded(status string) bool {
+	switch status {
+	case "completed", "failed", "abandoned", "cancelled", "canceled":
+		return true
+	}
+	return false
+}
+
 func receiptID(receipt orca.Receipt, key string) string {
 	var row struct {
 		ID string `json:"id"`

@@ -21,6 +21,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
@@ -646,12 +647,15 @@ type workerWatch struct {
 }
 
 func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interval time.Duration, watch *workerWatch, observeIdle func() error) (*orca.WorkerReport, error) {
-	readReport := func() (*orca.WorkerReport, bool, error) {
+	// readReport also returns the task when it awaits a dispatch, a candidate
+	// for loss that only the worker read can confirm.
+	readReport := func() (*orca.WorkerReport, bool, *orca.Task, error) {
 		tasks, err := e.taskList(ctx, run)
 		if err != nil {
-			return nil, false, safeDependencyError(err)
+			return nil, false, nil, safeDependencyError(err)
 		}
 		completed := false
+		var awaiting *orca.Task
 		var report *orca.WorkerReport
 		for _, t := range tasks {
 			// task-list rows carry no dispatch_id; match it only when supplied.
@@ -661,19 +665,22 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			completed = completed || t.Status == "completed"
 			report, err = t.WorkerReport()
 			if err != nil {
-				return nil, false, errors.New("invalid worker report")
+				return nil, false, nil, errors.New("invalid worker report")
 			}
 			if report != nil {
 				if report.Outcome != "succeeded" && report.Outcome != "failed" {
-					return nil, false, errors.New("invalid worker outcome")
+					return nil, false, nil, errors.New("invalid worker outcome")
 				}
 				break
 			}
+			if resolver.AwaitsDispatch(t) {
+				awaiting = &t
+			}
 		}
-		return report, completed, nil
+		return report, completed, awaiting, nil
 	}
 	for {
-		report, completed, err := readReport()
+		report, completed, awaiting, err := readReport()
 		if err != nil {
 			return nil, err
 		}
@@ -691,13 +698,23 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				break
 			}
 		}
+		if awaiting != nil {
+			// The dispatch may report between the two reads; only a task read
+			// after the worker read can confirm loss.
+			if report, completed, awaiting, err = readReport(); err != nil {
+				return nil, err
+			}
+			if report != nil {
+				return report, nil
+			}
+		}
 		if worker != nil && watch.observe != nil {
 			if err := watch.observe(*worker); err != nil {
 				return nil, err
 			}
 		}
 		if worker != nil && worker.Projection.Liveness.Verdict == "exited" {
-			report, _, err := readReport()
+			report, _, _, err := readReport()
 			if err != nil {
 				return nil, err
 			}
@@ -705,6 +722,15 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				return report, nil
 			}
 			return livenessFailure("worker exited without worker_done"), nil
+		}
+		if awaiting != nil {
+			listed, status := worker != nil, ""
+			if listed {
+				status = worker.DispatchStatus
+			}
+			if reason, lost := resolver.LostDispatch(*awaiting, dispatch, listed, status); lost {
+				return livenessFailure(reason), nil
+			}
 		}
 		if !completed {
 			if err := observeIdle(); err != nil {
