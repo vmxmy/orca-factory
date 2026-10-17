@@ -52,13 +52,14 @@ func TestFactoryCheckerThreeStates(t *testing.T) {
 // that answers `pr list` from prList and records every call.
 type coreSyncFixture struct {
 	origin, repo, factory, ghLog, prList string
+	prView, prChecks, merged             string
 	syncer                               coreSyncer
 }
 
 func newCoreSyncFixture(t *testing.T) coreSyncFixture {
 	t.Helper()
 	root := t.TempDir()
-	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json")}
+	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged")}
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(root, "state"))
 	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
 		t.Setenv(key, "t")
@@ -87,10 +88,16 @@ case "$1 $2" in
 "pr list") cat `+f.prList+` ;;
 "pr create") echo https://github.com/example/repo/pull/9 ;;
 "pr close") ;;
+"pr view") if [ -e `+f.merged+` ]; then echo '{"state":"MERGED"}'; else cat `+f.prView+`; fi ;;
+"pr checks") cat `+f.prChecks+` ;;
+"pr merge") touch `+f.merged+` ;;
 *) exit 9 ;;
 esac
 `)
 	if err := os.WriteFile(f.prList, []byte("[]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(f.prView, []byte(`{"state":"MERGED"}`+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -162,5 +169,58 @@ func TestCoreSyncSupersedesOlderSyncPR(t *testing.T) {
 	}
 	if n := f.prCreates(t); n != 1 {
 		t.Fatalf("pr create called %d times, want once", n)
+	}
+}
+
+// TestCoreSyncAutoMerge is OF-133: once the current factory version's sync PR
+// touches only scripts/agent-gates/, every required check has passed and it
+// is mergeable, the next sync squash-merges it at the checked head and reads
+// back MERGED; any unmet condition leaves it open with an error (WARN, retry
+// on the next discovery), and an already merged PR is a no-op.
+func TestCoreSyncAutoMerge(t *testing.T) {
+	const passed = `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"pass"}]`
+	for _, tc := range []struct {
+		name, files, checks string
+		merge               bool
+	}{
+		{"all conditions met", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, true},
+		{"file outside agent-gates", `[{"path":"scripts/agent-gates/install.sh"},{"path":"outside.txt"}]`, passed, false},
+		{"check not passed", `[{"path":"scripts/agent-gates/install.sh"}]`, `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"pending"}]`, false},
+		{"no required checks", `[{"path":"scripts/agent-gates/install.sh"}]`, `[]`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCoreSyncFixture(t)
+			if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+				t.Fatal(err)
+			}
+			branch := "chore/orca-factory-core-sync-" + gitIn(t, f.factory, "rev-parse", "--short", "HEAD")
+			view := `{"state":"OPEN","headRefName":"` + branch + `","headRefOid":"abc123","mergeable":"MERGEABLE","files":` + tc.files + "}\n"
+			if err := os.WriteFile(f.prView, []byte(view), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(f.prChecks, []byte(tc.checks+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := f.syncer.sync(context.Background(), f.project())
+			b, readErr := os.ReadFile(f.ghLog)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if !tc.merge {
+				if err == nil || strings.Contains(string(b), "pr merge") {
+					t.Fatalf("err=%v gh calls %q, want no merge and an error", err, b)
+				}
+				return
+			}
+			if err != nil || strings.Count(string(b), "pr merge "+branch+" --squash --match-head-commit abc123") != 1 {
+				t.Fatalf("err=%v gh calls %q, want one squash merge at the checked head", err, b)
+			}
+			if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+				t.Fatalf("sync after merge: %v", err)
+			}
+			if b, _ := os.ReadFile(f.ghLog); strings.Count(string(b), "pr merge") != 1 {
+				t.Fatalf("merged PR merged again: %q", b)
+			}
+		})
 	}
 }

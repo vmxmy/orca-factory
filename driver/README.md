@@ -149,8 +149,15 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
    1. 取 factory 检出的短 SHA，分支名为 `chore/orca-factory-core-sync-<短SHA>`。
    2. 该仓库 origin 已有这个分支，或该分支已有未合并 PR，则跳过。其他 `chore/orca-factory-core-sync-` 开头的未合并 PR 属于旧 factory 版本，先 `gh pr close --delete-branch` 关闭再继续（OF-120：无人合并时旧同步 PR 不再让项目永远停在旧 core）。
    3. 在 `~/.cache/orca-factory/core-sync/<远端键>/` 以 origin/main 建分离头 worktree，运行 `<factory_root>/bin/orca-factory update`，只 `git add scripts/agent-gates`。没有改动则跳过（origin/main 已同步）。
-   4. 提交、push 该分支、`gh pr create`。driver 不合并该 PR。
-   5. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。
+   4. 提交、push 该分支、`gh pr create`。
+   5. 第 2 步发现当前版本的同步分支已存在时，driver 尝试自动合并该 PR（OF-133）。以下条件全部满足才执行 `gh pr merge --squash --match-head-commit <head>`，合并后回读 state 必须为 `MERGED`：
+      1. PR 的 head 分支正是当前 factory 版本的 `chore/orca-factory-core-sync-<短SHA>`，state 为 `OPEN`。
+      2. PR 改动的所有文件都在 `scripts/agent-gates/` 下。
+      3. `mergeable` 为 `MERGEABLE`。
+      4. `gh pr checks --required` 至少返回一项，且每一项都是 `pass`。检查还没开始跑、仍在运行、失败，或基线分支没有必需检查，都不算通过。
+
+      任一条件不满足就不合并，写 WARN `core sync failed` 说明原因，下一次发现重试。PR 已是 `MERGED` 时直接返回，不报错。
+   6. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。
 9. serve 每次发现后，把每个已接管项目自己的检出快进到 origin/main（OF-121）：只在检出位于 `main` 且无已跟踪改动时 `git merge --ff-only`，否则写 WARN `checkout not fast-forwarded` 并保持原样。处置 Agent 的角色文件与 core 检查都读这个检出，过期检出会让已合并的角色改动不生效，并让 check 误报 core 落后。
 
 人工核对用 `orca-factory-driver projects --json`：它运行同一发现函数，结果即调度器下一次发现得到的接管集合。`serve --dry-run` 先打印 `project eligible` / `project rejected` 行，再推演一轮。`resolve` 读取当前目录仓库的 `agent-graph.env`；`selftest --live` 运行一次发现。`resume-deployment` 不运行发现（OF-44）：它不联立飞书项目表、不跑流水线 check，而是直接枚举本机 Orca 仓库清单中每个 `agent-graph.env` 可读且声明飞书账本（`AGENT_ISSUE_BACKEND=feishu` 且 `AGENT_FEISHU_BASE` 非空）的仓库。项目移出可接管集合后（未启用、项目表无对应行、check 变红等任意原因），只要其 `agent-graph.env` 还在且声明飞书账本，`resume-deployment` 仍能找到并处置其部署屏障，不必先恢复项目表启用状态。
