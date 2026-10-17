@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -28,6 +29,10 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	if err = e.freshExecution(ctx, t); err != nil {
 		return err
 	}
+	prior, err := readCheckpoint(c, t)
+	if err != nil {
+		return err
+	}
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
@@ -38,6 +43,11 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 		return err
 	}
 	receipt, callErr := e.workerStart(ctx, request, opts)
+	if errors.Is(callErr, maintenance.ErrRefused) {
+		// Refused before reaching Orca: drop the uncertain intent so a later
+		// executor replays from the prior state instead of awaiting evidence.
+		return errors.Join(callErr, restoreCheckpoint(c, t, prior))
+	}
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
 	}
@@ -62,6 +72,16 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	}
 	if cp.Pending {
 		return errors.New("worker receipt missing task or dispatch")
+	}
+	return nil
+}
+
+func restoreCheckpoint(c Config, t Ticket, prior *checkpoint) error {
+	if prior != nil {
+		return saveCheckpoint(c, t, *prior)
+	}
+	if err := os.Remove(checkpointPath(c, t)); err != nil {
+		return errors.New("cannot remove recovery state")
 	}
 	return nil
 }

@@ -52,7 +52,7 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 	if !reflect.DeepEqual(fresh.Resolution, t.Resolution) {
 		return errors.New("resolver evidence changed; resnapshot required")
 	}
-	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
+	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || fresh.MaintenanceRefused != t.MaintenanceRefused || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
 		return errors.New("task ownership or recovery evidence changed; resnapshot required")
 	}
 	closed := task.State.Name == "Canceled" || task.State.Name == "Cancelled" || task.State.Name == "Duplicate" || (task.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)

@@ -58,6 +58,8 @@
 
 当前 task 的权威报告优先于旧提交的 `agent-status: complete`。pending 派工不能由旧 complete 或已有 PR 放行；缺失、歧义或显式截断的任务证据只允许停止对账，不授权重放旧终端请求。`task-list` 缺失 `dispatch_id` 时仍可根据 task 报告恢复，但不会臆造 dispatch 来释放 worker。子任务通过真实 `parent_id` 与 pending parent 对账；尚无权威报告的未确认派工保持 pending，待后续重新启动对账。
 
+维护闸门拒绝（`maintenance.ErrRefused`）发生在请求发往 Orca 之前，结果确定为未派工（OF-124）。执行器把 `executor.json` 恢复为本次派工前的内容（之前没有则删除），不留 pending；已建的 correction 子任务仍由 `PendingParent` 经 `parent_id` 对账，重放时不再新建。执行器随即在账本写一行 `维护拒绝: … term=<终端>` 后退出，不在排空期间阻塞等待。调度器读到位于最新 `归属:` 行之后的这一行时，不计执行器失败，以原 attempt 和原阶段 Resume；Resume 本身受维护闸门约束，恢复 running 后才启动新执行器。`executor.TestCorrectionMaintenanceRefusedReplaysChild`、`scheduler.TestMaintenanceRefusedExitResumesWithoutFailure` 覆盖。
+
 ## GitHub Issues（#172 / #173）
 
 - `internal/issues.Store` 选择唯一后端，复用 `internal/task` 的 `Issue/Comment` 类型（JSON 字段不变），不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。

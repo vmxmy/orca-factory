@@ -200,6 +200,10 @@ func Admission() (func(), error) {
 // external system, so its effects are known not to exist.
 var ErrRefused = errors.New("maintenance refused new claim or dispatch")
 
+// RefusedLine starts the ledger line an executor writes when it exits on
+// ErrRefused; the scheduler resumes it without counting an executor failure.
+const RefusedLine = "维护拒绝: "
+
 func Admit() error {
 	intent, err := lock("intent", syscall.LOCK_SH)
 	if errors.Is(err, syscall.EWOULDBLOCK) {
