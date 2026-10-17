@@ -44,6 +44,7 @@ type fakeOrca struct {
 	readErr    error
 	status     string
 	startErr   error
+	observe    func()
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -71,6 +72,9 @@ func (o *fakeOrca) WorkerStart(_ context.Context, id string, opts orca.StartOpti
 	return orca.Receipt{"task": json.RawMessage(`{"id":"task_1"}`), "dispatch": json.RawMessage(`{"id":"ctx_1"}`)}, nil
 }
 func (o *fakeOrca) TaskList(context.Context, string) ([]orca.Task, error) {
+	if o.observe != nil {
+		o.observe()
+	}
 	if o.tasks != nil {
 		return o.tasks, nil
 	}
@@ -116,7 +120,7 @@ func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	}
 }
 
-func TestLostDispatchCheckpointReconcilesSameRequest(t *testing.T) {
+func TestUnconfirmedCheckpointReconcilesSameRequest(t *testing.T) {
 	c, s, o := setupController()
 	s.failRunning = true
 	if _, err := c.Step(context.Background()); err == nil {
@@ -277,6 +281,74 @@ func TestRecordedWorkerAssociationRecoversReplacement(t *testing.T) {
 		t.Fatalf("recorded association ignored: %+v starts=%d", s.record, o.startCalls)
 	}
 }
+
+// An Orca restart drops the dispatch and returns the task to ready; the round
+// ends as failed for the scheduler's retry rules instead of polling forever.
+func TestLostDispatchEndsRoundAsFailed(t *testing.T) {
+	c, s, o := setupController()
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+	p, err := c.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Phase != "result" || s.record.Phase != "result" || s.record.Outcome != "failed" || s.record.Result != "dispatch lost: task task_1 is ready without dispatch ctx_1" {
+		t.Fatalf("lost dispatch not settled: %+v", s.record)
+	}
+	if o.releases != 0 || o.startCalls != 1 {
+		t.Fatalf("lost dispatch released or replayed: releases=%d starts=%d", o.releases, o.startCalls)
+	}
+}
+
+func TestLostDispatchRequiresCompleteRead(t *testing.T) {
+	c, s, o := setupController()
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.readErr = errors.New("incomplete task list")
+	if _, err := c.Step(context.Background()); err == nil {
+		t.Fatal("incomplete read accepted")
+	}
+	o.readErr = nil
+	o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Spec: "Act as resolver"}}
+	if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" {
+		t.Fatalf("unknown status judged lost: %+v err=%v", p, err)
+	}
+	if s.record.Phase != "running" || s.record.Outcome != "" || o.releases != 0 || o.startCalls != 1 {
+		t.Fatalf("incomplete evidence changed the round: %+v", s.record)
+	}
+}
+
+// Freeze needs the sessions lock; only a Step in progress may hold it, so the
+// supervision loop's waits never block a deployment drain.
+func TestStepHoldsMaintenanceSessionOnlyWhileStepping(t *testing.T) {
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	c, _, o := setupController()
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.observe = func() {
+		if state, err := maintenance.Status(); err != nil || !state.SessionsActive {
+			t.Errorf("step ran without a maintenance session: %+v err=%v", state, err)
+		}
+	}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if err := maintenance.Set("frozen"); err != nil {
+		t.Fatalf("waiting controller blocked freeze: %v", err)
+	}
+	o.observe = func() { t.Error("frozen step reached Orca") }
+	if _, err := c.Step(context.Background()); err == nil {
+		t.Fatal("frozen step was not refused")
+	}
+}
+
 func TestReplacementCannotRedispatchWhenOriginalRequestIsUnknown(t *testing.T) {
 	c, s, o := setupController()
 	s.record = &Record{Version: 1, Attempt: 1, Phase: "pending", Creator: "old-terminal", Run: "run_1", Spec: c.Spec, Agent: c.Agent}

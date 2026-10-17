@@ -21,6 +21,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
@@ -654,6 +655,9 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 		completed := false
 		var report *orca.WorkerReport
 		for _, t := range tasks {
+			if reason, lost := resolver.LostDispatch(t, dispatch); lost && t.ID == task && (t.RunID == "" || t.RunID == run) {
+				return livenessFailure(reason), false, nil
+			}
 			// task-list rows carry no dispatch_id; match it only when supplied.
 			if t.ID != task || (t.DispatchID != "" && t.DispatchID != dispatch) || (t.RunID != "" && t.RunID != run) {
 				continue

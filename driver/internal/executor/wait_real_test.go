@@ -30,3 +30,15 @@ func TestWaitAcceptsTaskWithoutDispatchID(t *testing.T) {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
 }
+
+func TestWaitEndsOnLostDispatch(t *testing.T) {
+	o := &recordedTasks{tasks: []orca.Task{{ID: "task_one", RunID: "run_one", Status: "ready"}}}
+	e := &Executor{Orca: o, Sleep: func(context.Context, time.Duration) error {
+		t.Fatal("wait kept polling a task whose dispatch is lost")
+		return nil
+	}}
+	report, err := e.wait(context.Background(), "run_one", "task_one", "ctx_one", time.Millisecond, &workerWatch{}, func() error { return nil })
+	if err != nil || report == nil || report.Outcome != "failed" || report.Provenance != provenanceExecutorLiveness || report.Body != "dispatch lost: task task_one is ready without dispatch ctx_one" {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+}
