@@ -112,10 +112,12 @@ func (r *Runtime) clock() time.Time {
 
 func registered(t Ticket) bool { return t.Terminal != "" && t.Terminal != "-" }
 
-// ReapDead abandons every unsettled dispatch of the dead process's own Run
-// (fencing without claiming the process stopped), closes the leftover terminal
-// and every worker terminal the abandon receipts report Orca kept open,
-// and removes the stale heartbeat so the relaunched process starts clean. A
+// ReapDead fences unsettled dispatches of the Run the dead process last beat
+// and of the recorded Run: a claim still at run=-, or a resume that opened a
+// new Run, leaves the process's live workers only in the beat. Abandon fences
+// without claiming the process stopped. It closes the leftover terminal and
+// every worker terminal the abandon receipts report Orca kept open, and
+// removes the stale heartbeat so the relaunched process starts clean. A
 // resolver owns t.Resolution.Run; t.Run is the executor Run it was handed. Any
 // uncertain read stops the reap before a write.
 func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
@@ -123,12 +125,19 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 	if err != nil {
 		return err
 	}
-	run := t.Run
+	beat, found, err := orca.ReadBeat(path)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return errors.New("heartbeat vanished before reap")
+	}
+	recorded := t.Run
 	if t.Owner == machine.OwnerResolver {
 		if t.Resolution == nil {
 			return errors.New("resolver record missing")
 		}
-		run = t.Resolution.Run
+		recorded = t.Resolution.Run
 	}
 	absent := true
 	if registered(t) {
@@ -136,14 +145,19 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 			return err
 		}
 	}
-	var active []string
-	if run != "" {
+	var runs, active []string
+	for _, run := range []string{beat.Run, recorded} {
+		if run != "" && !slices.Contains(runs, run) {
+			runs = append(runs, run)
+		}
+	}
+	for _, run := range runs {
 		rows, err := r.dispatches(ctx, run)
 		if err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if !settledDispatch(row.Status) {
+			if !settledDispatch(row.Status) && !slices.Contains(active, row.ID) {
 				active = append(active, row.ID)
 			}
 		}

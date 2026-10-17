@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -124,6 +125,9 @@ func TestRecordedDispatchesWorkerListLiveness(t *testing.T) {
 	r.StateRoot = t.TempDir()
 	r.Repositories = map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}}
 	ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-", Run: "run_9714ea9b8576"}
+	if err := orca.WriteBeat(orca.HeartbeatPath(r.StateRoot, "proj", "OF-1", "executor"), orca.Beat{PID: 7, Run: "run_9714ea9b8576", At: time.Unix(0, 0).UTC()}); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.ReapDead(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}

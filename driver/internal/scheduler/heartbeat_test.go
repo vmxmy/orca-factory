@@ -184,9 +184,15 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			t.Fatalf("stale heartbeat kept: %v", err)
 		}
 		// Orca refuses a handle it no longer knows (orca-terminal-close-stale.json): already closed.
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
 		o.page, o.closeErr = 0, &orca.RejectedError{Code: "terminal_handle_stale"}
 		if err := r.ReapDead(context.Background(), ticket); err != nil {
 			t.Fatalf("stale handle close err=%v", err)
+		}
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Terminal: "term_exec", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
 		}
 		o.page, o.closeErr = 0, &orca.RejectedError{Code: "runtime_error"}
 		if err := r.ReapDead(context.Background(), ticket); err == nil {
@@ -205,8 +211,55 @@ func TestExecutorHeartbeatLiveness(t *testing.T) {
 			t.Fatalf("unconfirmed abandon reaped: heartbeat err=%v closed=%v", err, o.closed)
 		}
 	})
+	t.Run("reap fences the run the dead process last beat", func(t *testing.T) {
+		root := t.TempDir()
+		path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_beat"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_beat","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t)}
+		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
+			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
+			Run: func(context.Context, runx.Spec) ([]byte, error) {
+				t.Fatal("unregistered executor has no terminal to list")
+				return nil, nil
+			}}
+		ticket := Ticket{Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerExecutor, Terminal: "-"}
+		if got, err := r.Liveness(context.Background(), ticket); err != nil || got != orca.LivenessDead {
+			t.Fatalf("liveness got %q err=%v, want dead", got, err)
+		}
+		if err := r.ReapDead(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(o.abandoned, ",") != "ctx_beat" {
+			t.Fatalf("abandoned=%v", o.abandoned)
+		}
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("stale heartbeat kept: %v", err)
+		}
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_beat", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := r.Liveness(context.Background(), ticket); err != nil || got != orca.LivenessDead {
+			t.Fatalf("liveness got %q err=%v, want dead", got, err)
+		}
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		o.page, o.abandoned, o.closed = 0, nil, nil
+		if err := r.ReapDead(context.Background(), ticket); err == nil {
+			t.Fatal("reap after the heartbeat vanished succeeded")
+		}
+		if len(o.abandoned) != 0 || len(o.closed) != 0 {
+			t.Fatalf("vanished heartbeat reaped: abandoned=%v closed=%v", o.abandoned, o.closed)
+		}
+	})
 	t.Run("resolver reap fences only its own run", func(t *testing.T) {
 		root := t.TempDir()
+		path := orca.HeartbeatPath(root, "proj", "OF-1", "resolver")
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Run: "run_res", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
 		o := &reapOrca{fakeOrca: fakeOrca{pages: []orca.Receipt{receipt(`{"scope":{"run":"run_res"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_res","dispatchStatus":"running"}]}`)}}, abandon: abandonReceipt(t)}
 		r := &Runtime{Orca: o, StateRoot: root, Now: func() time.Time { return now },
 			Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/proj"}}},
