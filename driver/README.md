@@ -126,6 +126,27 @@ orca-factory-driver status --json
 
 drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继续收敛。drain 与 resume 只等待已准入的认领与派工结束，不等待普通外部写入；默认最多等 2 分钟，用 `--wait 30s` 等时长调整。等待期间新认领与派工被拒绝；超时报错且状态不变。保留 driver.toml、凭据、账本和在途执行器；失败时恢复旧二进制，不删除数据库、不清空 checkpoint、不强行解除配额暂停。验证服务存活、旧 Automation 关闭、连续调度周期和配额探测日志；单次 `status` 成功不代表端到端验收通过。
 
+### 自部署（OF-152）
+
+仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor`。
+
+1. 取得 `~/.local/state/orca-factory/deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
+2. 账本写 `deployment.state=deploy-intent`。此后 serve 不会再次安装这个 SHA。
+3. drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+4. 把当前二进制备份到 `~/.local/state/orca-factory/deploy-backups/self-<sha>/`。
+5. 在 `~/.local/state/orca-factory/self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`，再用 rename 原子替换。
+6. 运行 `systemctl --user --no-block restart orca-factory-feishu-gateway orca-factory-driver`。driver 单元停止时会结束当前 serve。
+7. 新 serve 读到 `deploy-intent` 后重新取锁，核对 `orca-factory-driver version` 等于 squash SHA，再按 smoke-intent 规则跑 smoke（超时 5 分钟）。smoke 通过后运行 `maintenance resume`，写 `passed`，写 Done，放行下一 PR。
+
+失败处理：
+
+- 第 3 到 5 步失败（含等待空闲超时）：resume，写 `paused`，转处置 Agent。二进制未被替换，不重启。
+- 第 6 步失败：写 `paused`，从备份恢复二进制，resume，重启。
+- 第 7 步版本不符：resume，写 `paused`。不回滚，因为装的不是这次部署的二进制，例如人工 `deploy.sh` 在重启空档装了更新的版本。
+- 第 7 步 smoke 失败：先写 `paused`，再从备份恢复二进制，resume，重启。恢复后的 serve 读到 `paused`，交给处置 Agent，不再部署。
+
+处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。smoke 已开始后暂停的，`retry-smoke` 回到 `pending`，会重新执行整套自部署。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）没有自动重试动作：人工用 `deploy.sh` 部署后，用 `confirm-passed` 放行。
+
 ## 调度范围（项目发现）
 
 调度器不读 `driver.toml` 的仓库清单。它与飞书需求网关共用项目发现（`driver/internal/projects` 的 `Discover`，OF-42）：联立本机 Orca 仓库清单、飞书项目表与各仓库的流水线 check，得到可接管项目。规则如下（OF-43）：

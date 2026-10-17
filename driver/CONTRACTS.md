@@ -107,9 +107,10 @@
 - 新部署字段在 squash intent 之前持久；实际 SHA 只来自 GitHub 已合并 PR 回读。smoke 必须在其 intent 写回确认后执行，执行成功但通过回执无法确认时保留屏障，重建调度器要求人工对账。
 - 从项目全量分页 Snapshot 及 ListComments 重建屏障，先读取持久证据再筛选活动票。Done、auto-failed、归属为人或无的票，只要仍有未完成/冲突的部署证据便继续参与该仓库 FIFO。部署字段消失、配置不一致或身份冲突不会静默放行。
 - GitHub 使用 [workflow runs REST API](https://docs.github.com/en/rest/actions/workflow-runs)：固定 workflow 与 `head_sha=<实际 squash SHA>`，显式核对响应身份和完整分页。显示名从 workflows 集合唯一解析。空/缺失/未知/仍运行的回执等待，已完成的明确失败转人；成功才 smoke。多个历史 run 以最新 run 的完成结论为准，但仍运行的旧 run 保守等待。
+- 自部署（OF-152）：`deployment.self=true` 来自 `AGENT_SELF_DEPLOY=1`，与 workflow/smoke 一样在 intent 时冻结；要求 smoke 非空且 workflow 为空。`state` 增加 `deploy-intent`：`pending → deploy-intent` 只允许 self 策略，self 策略不能从 `pending` 直接进入 `smoke-intent`；`deploy-intent` 可转 `paused` 或 `smoke-intent`。`deploy-intent` 在 drain、备份、构建、替换和重启之前写入并确认；重启后的 serve 读到它只核对已安装版本，不重复安装。版本等于 squash SHA 才 smoke；smoke 失败先写 `paused` 再回滚；版本不符只写 `paused`、不回滚。流程与失败处理见 `driver/README.md`「自部署」。
 - status 与 dry-run 仅展示 queue/SHA/workflow/state/reason，不暴露 smoke 命令。status 是观察缓存，不是恢复授权；人工恢复命令与 serve 共用锁，dry-run 不取锁、不写日志或评论、不执行 smoke。
 
-合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和票据替身，无真实部署或票面变更。
+合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`、`TestSelfDeployCompletesAcrossRestart`、`TestSelfDeploySmokeFailureRollsBack`。使用已有 HTTP、命令和票据替身，无真实部署或票面变更。
 
 ## 合并结果验证与 correction（#142）
 

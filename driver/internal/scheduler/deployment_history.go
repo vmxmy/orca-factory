@@ -21,7 +21,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		return n.State == "pending" && !n.SmokeStarted && !n.SmokePassed && n.Recovery == nil
 	}
 	d := old.Deployment
-	if n == nil || old.QueueID != next.QueueID || old.TicketID != next.TicketID || old.Repository != next.Repository || old.PR != next.PR || old.Head != next.Head || (old.MergeSHA != "" && old.MergeSHA != next.MergeSHA) || d.Workflow != n.Workflow || d.Smoke != n.Smoke {
+	if n == nil || old.QueueID != next.QueueID || old.TicketID != next.TicketID || old.Repository != next.Repository || old.PR != next.PR || old.Head != next.Head || (old.MergeSHA != "" && old.MergeSHA != next.MergeSHA) || d.Workflow != n.Workflow || d.Smoke != n.Smoke || d.Self != n.Self {
 		return false
 	}
 	if !sameDeploymentRecovery(d.Recovery, n.Recovery) {
@@ -49,10 +49,19 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		switch n.State {
 		case "pending", "paused":
 			return !n.SmokeStarted && !n.SmokePassed
+		case "deploy-intent":
+			return n.Self && !n.SmokeStarted && !n.SmokePassed
 		case "smoke-intent":
-			return n.Smoke != "" && n.SmokeStarted && !n.SmokePassed
+			return !n.Self && n.Smoke != "" && n.SmokeStarted && !n.SmokePassed
 		case "passed":
 			return n.Smoke == "" && !n.SmokeStarted && !n.SmokePassed
+		}
+	case "deploy-intent":
+		switch n.State {
+		case "deploy-intent", "paused":
+			return !n.SmokeStarted && !n.SmokePassed
+		case "smoke-intent":
+			return n.SmokeStarted && !n.SmokePassed
 		}
 	case "smoke-intent":
 		if n.State == "passed" {

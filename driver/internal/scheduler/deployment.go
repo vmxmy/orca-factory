@@ -23,19 +23,22 @@ import (
 func DeploymentBarrier(t Ticket) bool {
 	return (t.Handoff != nil && t.MergeProblem != "") || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State != "passed" && t.Progress.Phase != "correction" && t.Progress.Phase != "human")
 }
+
+// A self deployment has no workflow to wait for and must be smoked: the smoke
+// is the only check of the binary the restarted serve runs.
 func deploymentConfig(env map[string]string) error {
-	w, s := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
-	if (w != "" && !github.ValidWorkflow(w)) || (s != "" && strings.TrimSpace(s) == "") || strings.ContainsRune(s, 0) {
+	w, s, self := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"], env["AGENT_SELF_DEPLOY"]
+	if (w != "" && !github.ValidWorkflow(w)) || (s != "" && strings.TrimSpace(s) == "") || strings.ContainsRune(s, 0) || (self != "" && (self != "1" || w != "" || s == "")) {
 		return errors.New("invalid deployment configuration")
 	}
 	return nil
 }
 func newDeployment(env map[string]string) *merge.DeploymentProgress {
-	w, s := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"]
-	if w == "" && s == "" {
+	w, s, self := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"], env["AGENT_SELF_DEPLOY"] == "1"
+	if w == "" && s == "" && !self {
 		return nil
 	}
-	return &merge.DeploymentProgress{Workflow: w, Smoke: s, State: "pending"}
+	return &merge.DeploymentProgress{Workflow: w, Smoke: s, Self: self, State: "pending"}
 }
 
 // A same-queue intent freezes even the absence of deployment configuration.
@@ -61,8 +64,21 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 	if d.State == "passed" {
 		return nil
 	}
-	if d.State != "pending" {
+	if d.Self && d.State == "pending" {
+		return r.deploySelf(ctx, t, p)
+	}
+	if d.State != "pending" && (!d.Self || d.State != "deploy-intent") {
 		return r.pauseDeployment(ctx, t, p, "deployment requires agent reconciliation")
+	}
+	if d.Self {
+		unlock, err := r.deployLock()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+		if err := r.verifyInstalled(ctx, p.MergeSHA); err != nil {
+			return errors.Join(err, maintenance.SetWithin("running", maintenanceWait), r.pauseDeployment(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's"))
+		}
 	}
 	owner, repo, _ := strings.Cut(p.Repository, "/")
 	if d.Workflow != "" {
@@ -94,9 +110,18 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 			if ctx.Err() != nil {
 				return errors.Join(safe, ctx.Err())
 			}
-			return errors.Join(safe, r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery"))
+			paused := r.pauseDeployment(ctx, t, p, "smoke failed or execution result uncertain; reconcile before recovery")
+			if d.Self {
+				return errors.Join(safe, paused, r.rollbackSelf(ctx, p.MergeSHA))
+			}
+			return errors.Join(safe, paused)
 		}
 		d.SmokePassed = true
+	}
+	if d.Self {
+		if err := maintenance.SetWithin("running", maintenanceWait); err != nil {
+			return errors.Join(err, r.pauseDeployment(ctx, t, p, "smoke passed but maintenance resume failed"))
+		}
 	}
 	d.State = "passed"
 	return r.deploymentReceipt(ctx, t, p)
@@ -137,7 +162,11 @@ func (r *Runtime) runSmoke(ctx context.Context, t Ticket, p *merge.Progress) ([]
 	if run == nil {
 		run = runx.Run
 	}
-	return run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", p.Deployment.Smoke}, Dir: t.Repo, Env: env, Timeout: 30 * time.Second})
+	timeout := 30 * time.Second
+	if p.Deployment.Self {
+		timeout = selfDeploySmokeTimeout
+	}
+	return run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", p.Deployment.Smoke}, Dir: t.Repo, Env: env, Timeout: timeout})
 }
 
 // ResumeDeployment records an explicit reconciled decision. The caller must
@@ -233,7 +262,7 @@ func deploymentIdentity(t Ticket) error {
 	p, h := t.Progress, t.Handoff
 	if p != nil && p.Deployment != nil {
 		d := p.Deployment
-		if (d.Workflow == "" && d.Smoke == "") || deploymentConfig(map[string]string{"AGENT_DEPLOY_WORKFLOW": d.Workflow, "AGENT_SMOKE_CMD": d.Smoke}) != nil || (d.State == "pending" && d.SmokeStarted) {
+		if (d.Workflow == "" && d.Smoke == "") || deploymentConfig(map[string]string{"AGENT_DEPLOY_WORKFLOW": d.Workflow, "AGENT_SMOKE_CMD": d.Smoke, "AGENT_SELF_DEPLOY": selfDeployFlag(d.Self)}) != nil || (d.State == "pending" && d.SmokeStarted) {
 			return errors.New("invalid deployment policy or smoke intent")
 		}
 	}
