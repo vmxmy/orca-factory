@@ -132,52 +132,76 @@ func (f *startupOrca) AutomationsList(context.Context) (orca.Receipt, error) {
 }
 
 func TestStartupRefusesOnlyEnabledRepository(t *testing.T) {
-	for _, failedRead := range []bool{false, true} {
-		for _, badFirst := range []bool{false, true} {
-			name := fmt.Sprintf("readFailure=%v/badFirst=%v", failedRead, badFirst)
-			t.Run(name, func(t *testing.T) {
-				base := setup(nil)
-				cfg, repos := base.Config, base.Repositories
-				repos[0].Path = "/a"
-				repos[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-a"}
-				repos[1].Path = "/b"
-				repos[1].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-b"}
-				oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":false,"runContext":{"path":"/a"}},{"enabled":true,"runContext":{"path":"/b"}}]}`)}}
-				if failedRead {
-					oc.failRead = 2
-				}
-				if badFirst {
-					repos[0], repos[1] = repos[1], repos[0]
-					if failedRead {
-						oc.failRead = 1
-					}
-				}
-				lc := &fakeIssues{issues: []task.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: task.NamedID{ID: "p-a"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
-				r := &Runtime{Orca: oc, DriverPath: "/driver"}
-				var initialized []string
-				err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (issues.Store, error) {
-					initialized = append(initialized, env["AGENT_GH_REPO"])
-					return lc, nil
-				})
-				if err != nil {
-					t.Fatalf("startup rejected healthy repository: %v", err)
-				}
-				if !reflect.DeepEqual(initialized, []string{"p-a"}) {
-					t.Fatalf("initialized clients for refused repository: %v", initialized)
-				}
-				// Even after B's automation is disabled, it needs a restart to
-				// acquire its client; A must still be inspected and claimed.
-				oc.automations = receipt(`{"automations":[]}`)
-				s := &Scheduler{Config: cfg, Repositories: repos, Backend: r}
-				err = s.Tick(context.Background())
-				if err == nil || !strings.Contains(err.Error(), "repository refused") {
-					t.Fatalf("refusal was not reported: %v", err)
-				}
-				if !reflect.DeepEqual(lc.projects, []string{"p-a"}) || lc.updates != 1 || len(lc.comments) != 1 || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/a" {
-					t.Fatalf("healthy repository not served: projects=%v updates=%d comments=%v launches=%v", lc.projects, lc.updates, lc.comments, oc.launches)
-				}
+	for _, badFirst := range []bool{false, true} {
+		t.Run(fmt.Sprintf("badFirst=%v", badFirst), func(t *testing.T) {
+			base := setup(nil)
+			cfg, repos := base.Config, base.Repositories
+			repos[0].Path = "/a"
+			repos[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-a"}
+			repos[1].Path = "/b"
+			repos[1].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-b"}
+			oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":false,"runContext":{"path":"/a"}},{"enabled":true,"runContext":{"path":"/b"}}]}`)}}
+			if badFirst {
+				repos[0], repos[1] = repos[1], repos[0]
+			}
+			lc := &fakeIssues{issues: []task.Issue{{ID: "a-ticket", Identifier: "ENG-1", Project: task.NamedID{ID: "p-a"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+			r := &Runtime{Orca: oc, DriverPath: "/driver"}
+			var initialized []string
+			err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (issues.Store, error) {
+				initialized = append(initialized, env["AGENT_GH_REPO"])
+				return lc, nil
 			})
-		}
+			if err != nil {
+				t.Fatalf("startup rejected healthy repository: %v", err)
+			}
+			if !reflect.DeepEqual(initialized, []string{"p-a"}) {
+				t.Fatalf("initialized clients for refused repository: %v", initialized)
+			}
+			// Even after B's automation is disabled, it needs a restart to
+			// acquire its client; A must still be inspected and claimed.
+			oc.automations = receipt(`{"automations":[]}`)
+			s := &Scheduler{Config: cfg, Repositories: repos, Backend: r}
+			err = s.Tick(context.Background())
+			if err == nil || !strings.Contains(err.Error(), "repository refused") {
+				t.Fatalf("refusal was not reported: %v", err)
+			}
+			if !reflect.DeepEqual(lc.projects, []string{"p-a"}) || lc.updates != 1 || len(lc.comments) != 1 || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/a" {
+				t.Fatalf("healthy repository not served: projects=%v updates=%d comments=%v launches=%v", lc.projects, lc.updates, lc.comments, oc.launches)
+			}
+		})
+	}
+}
+
+func TestTrackRetriesUnverifiableAutomation(t *testing.T) {
+	base := setup(nil)
+	cfg, repos := base.Config, base.Repositories
+	repos[0].Path = "/a"
+	repos[0].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-a"}
+	repos[1].Path = "/b"
+	repos[1].Env = map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p-b"}
+	oc := &startupOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[{"enabled":true,"runContext":{"path":"/a"}},{"enabled":false,"runContext":{"path":"/b"}}]}`)}, failRead: 2}
+	lc := &fakeIssues{issues: []task.Issue{{ID: "b-ticket", Identifier: "ENG-2", Project: task.NamedID{ID: "p-b"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+	r := &Runtime{Orca: oc, DriverPath: "/driver"}
+	var initialized []string
+	err := r.initialize(context.Background(), repos, func(_ context.Context, env map[string]string) (issues.Store, error) {
+		initialized = append(initialized, env["AGENT_GH_REPO"])
+		return lc, nil
+	})
+	if err != nil {
+		t.Fatalf("unverifiable automation failed startup: %v", err)
+	}
+	if len(initialized) != 0 {
+		t.Fatalf("initialized clients before automation was verified: %v", initialized)
+	}
+	// /a stays refused even once its automation is gone; /b is retried.
+	oc.automations = receipt(`{"automations":[]}`)
+	s := &Scheduler{Config: cfg, Repositories: repos, Backend: r}
+	err = s.Tick(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "repository refused") {
+		t.Fatalf("enabled automation refusal was not reported: %v", err)
+	}
+	if !reflect.DeepEqual(initialized, []string{"p-b"}) || !reflect.DeepEqual(lc.projects, []string{"p-b"}) || len(oc.launches) != 1 || oc.launches[0].Worktree != "path:/b" {
+		t.Fatalf("unverifiable repository not taken over: initialized=%v projects=%v launches=%v", initialized, lc.projects, oc.launches)
 	}
 }
 

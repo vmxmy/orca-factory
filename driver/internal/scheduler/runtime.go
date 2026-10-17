@@ -147,29 +147,42 @@ func (r *Runtime) initialize(ctx context.Context, repos []config.Repository, new
 	r.refused = map[string]error{}
 	r.newClient = newClient
 	var refusals []error
+	deferred := false
 	for _, repo := range repos {
 		if err := r.Track(ctx, repo); err != nil {
+			if errors.Is(err, errAutomationUnverifiable) {
+				deferred = true
+				continue
+			}
 			if r.refused[repo.Path] == nil {
 				return err
 			}
 			refusals = append(refusals, err)
 		}
 	}
-	if len(r.Clients) == 0 {
+	if len(r.Clients) == 0 && !deferred {
 		return errors.Join(refusals...)
 	}
 	return nil
 }
 
+var errAutomationUnverifiable = errors.New("automation unverifiable")
+
 // Track binds a ledger client for repo unless one is already bound. A
-// repository whose Orca Automation is enabled or unverifiable is refused
-// until restart; every other error leaves the runtime unchanged.
+// repository whose Orca Automation is enabled is refused until restart. An
+// unverifiable Automation read is not remembered (OF-122): Snapshot and
+// discovery call Track again on a later round. Every other error leaves the
+// runtime unchanged.
 func (r *Runtime) Track(ctx context.Context, repo config.Repository) error {
 	if r.Clients[repo.Path] != nil {
 		return nil
 	}
-	if ok, err := r.AutomationDisabled(ctx, repo); err != nil || !ok {
-		refusal := fmt.Errorf("repository refused: %s: automation enabled or unverifiable; restart required", repo.Path)
+	ok, err := r.AutomationDisabled(ctx, repo)
+	if err != nil && r.refused[repo.Path] == nil {
+		return fmt.Errorf("repository deferred: %s: %w; retrying next round: %v", repo.Path, errAutomationUnverifiable, err)
+	}
+	if err != nil || !ok {
+		refusal := fmt.Errorf("repository refused: %s: automation enabled; restart required", repo.Path)
 		r.refused[repo.Path] = refusal
 		return refusal
 	}
@@ -214,10 +227,13 @@ func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ti
 		if r.refused[repo.Path] != nil {
 			continue
 		}
-		client := r.Clients[repo.Path]
-		if client == nil {
-			return nil, errors.New("missing repository client")
+		if err := r.Track(ctx, repo); err != nil {
+			if errors.Is(err, errAutomationUnverifiable) || r.refused[repo.Path] != nil {
+				continue
+			}
+			return nil, err
 		}
+		client := r.Clients[repo.Path]
 		if _, ok := groups[client]; !ok {
 			order = append(order, client)
 		}
