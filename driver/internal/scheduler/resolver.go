@@ -51,6 +51,7 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 				if next.Attempt != failedAttempt {
 					failures, failedAttempt = failures+1, next.Attempt
 				}
+			case next.Phase == "waiting" && next.Outcome == resolver.Undispatched:
 			case next.Phase == "waiting" || next.Phase == "applied":
 				failures, failedAttempt = 0, 0
 			}

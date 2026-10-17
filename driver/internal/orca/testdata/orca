@@ -10,6 +10,8 @@ case "${ORCA_TEST_SCENARIO:-}:$1:$2" in
   *:orchestration:run-create) result='{"run":{"id":"run_one","objective":"build it"}}' ;;
   failed:orchestration:worker-start) printf '%s\n' '{"ok":true,"result":{"taskId":"task_one","dispatchId":"ctx_failed","status":"failed","failedStage":"launch","residualResources":{"terminalHandle":"term_one"}}}'; exit 1 ;;
   *:orchestration:worker-start) result='{"taskId":"task_one","dispatchId":"ctx_one","status":"ready","terminalHandle":"term_one"}' ;;
+  legacy:orchestration:task-list) result='{"runId":"run_one","legacyReadOnly":true,"tasks":[],"count":0}' ;;
+  uncounted:orchestration:task-list) result='{"runId":"run_one","legacyReadOnly":false,"tasks":[]}' ;;
   *:orchestration:task-list) result='{"tasks":[{"id":"task_one","run_id":"run_one","dispatch_id":"ctx_one","status":"completed","result":"{\"provenance\":\"worker_report\",\"outcome\":\"succeeded\",\"body\":\"done\",\"filesModified\":[\"a.go\"]}"}]}' ;;
   *:orchestration:worker-read) result='{"dispatchId":"ctx_one","source":"transcript","cursor":"next","transcript":{"messages":[{"role":"assistant"}]}}' ;;
   *:orchestration:worker-list)

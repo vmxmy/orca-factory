@@ -134,6 +134,20 @@ func TestTaskListWorkerReport(t *testing.T) {
 	}
 	argv(t, log, []string{"orchestration", "task-list", "--run", "run_one", "--json", "END"})
 }
+
+// An empty task list proves no dispatch only when the read is current and
+// complete: a legacy read-only run or an empty list without a count is not.
+func TestTaskListRejectsLegacyOrUncountedEmpty(t *testing.T) {
+	for _, scenario := range []string{"legacy", "uncounted"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, _ := fake(t)
+			t.Setenv("ORCA_TEST_SCENARIO", scenario)
+			if tasks, err := c.TaskList(context.Background(), "run_one"); err == nil {
+				t.Fatalf("incomplete evidence accepted: %#v", tasks)
+			}
+		})
+	}
+}
 func TestReconcile(t *testing.T) {
 	for _, state := range []string{"completed", "pending", "absent"} {
 		t.Run(state, func(t *testing.T) {

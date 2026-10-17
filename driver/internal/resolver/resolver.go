@@ -45,6 +45,11 @@ type Record struct {
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
 }
+
+// Undispatched marks a waiting round that ended before any dispatch reached
+// Orca; it neither counts as a failure nor resets the failure count.
+const Undispatched = "undispatched"
+
 type Store interface {
 	Load(context.Context) (*Record, error)
 	Save(context.Context, Record) error
@@ -159,7 +164,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			// Nothing reached Orca: end the round so the next one starts a fresh
 			// Run. Clearing only the Run left a record equal to the first pending
 			// one, which a stale pre-write read could swallow (ZCP-141).
-			p.Phase, p.Result = "waiting", "maintenance refused dispatch before it reached Orca"
+			p.Phase, p.Outcome, p.Result = "waiting", Undispatched, "maintenance refused dispatch before it reached Orca"
 			c.Heartbeat.SetRun("")
 			return nil, errors.Join(callErr, c.Store.Save(ctx, *p))
 		}

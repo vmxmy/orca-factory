@@ -113,14 +113,13 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 	}
 	if found == nil {
 		if len(tasks) == 0 {
-			workers, err := c.workers(ctx, p.Run)
+			empty, err := c.runEmpty(ctx, p.Run)
 			if err != nil {
 				return err
 			}
-			// Complete reads of the Run hold no task and no worker: the original
-			// controller stopped before dispatch (ZCP-141), so nothing awaits it.
-			if len(workers) == 0 {
-				p.Phase, p.Result = "waiting", fmt.Sprintf("resolver run %s has no task or worker; dispatch never started", p.Run)
+			if empty {
+				p.Phase, p.Outcome = "waiting", Undispatched
+				p.Result = fmt.Sprintf("resolver run %s has no task or worker; dispatch never started", p.Run)
 				return c.Store.Save(ctx, *p)
 			}
 		}
@@ -137,4 +136,20 @@ func (c *Controller) recoverStart(ctx context.Context, p *Record) error {
 	p.Dispatch = worker.Dispatch
 	p.Phase = "running"
 	return c.Store.Save(ctx, *p)
+}
+
+// runEmpty proves the original controller stopped before dispatch (ZCP-141):
+// complete worker and task reads are empty twice over, so a dispatch landing
+// between the first reads cannot pass as one that never started.
+func (c *Controller) runEmpty(ctx context.Context, run string) (bool, error) {
+	workers, err := c.workers(ctx, run)
+	if err != nil || len(workers) > 0 {
+		return false, err
+	}
+	tasks, err := c.Orca.TaskList(ctx, run)
+	if err != nil || len(tasks) > 0 {
+		return false, err
+	}
+	workers, err = c.workers(ctx, run)
+	return len(workers) == 0, err
 }

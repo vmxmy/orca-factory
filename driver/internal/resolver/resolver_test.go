@@ -132,7 +132,7 @@ func TestRefusedDispatchStartsFreshRun(t *testing.T) {
 	if _, err := c.Step(context.Background()); !errors.Is(err, maintenance.ErrRefused) {
 		t.Fatalf("refusal not reported: %v", err)
 	}
-	if s.record.Phase != "waiting" || beatRun() != "" {
+	if s.record.Phase != "waiting" || s.record.Outcome != "undispatched" || beatRun() != "" {
 		t.Fatalf("refused dispatch did not end the round: %+v beat run=%q", s.record, beatRun())
 	}
 	o.tasks = []orca.Task{}
@@ -635,7 +635,7 @@ func TestResolverEmptyRunIsNotUncertain(t *testing.T) {
 	c, s, o := setupController()
 	s.record, o.tasks, o.workers = pending(c), tasks.Result.Tasks, workers.Result
 	p, err := c.Step(context.Background())
-	if err != nil || p.Phase != "waiting" || s.record.Phase != "waiting" || o.startCalls != 0 {
+	if err != nil || p.Phase != "waiting" || s.record.Phase != "waiting" || s.record.Outcome != "undispatched" || o.startCalls != 0 {
 		t.Fatalf("empty run not settled as never dispatched: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
 	}
 
@@ -644,5 +644,12 @@ func TestResolverEmptyRunIsNotUncertain(t *testing.T) {
 	o.workers = orca.Receipt{"scope": json.RawMessage(`{"run":"` + run + `"}`), "page": json.RawMessage(`{"hasMore":true}`), "workers": json.RawMessage(`[]`)}
 	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
 		t.Fatalf("incomplete worker read ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+	}
+
+	c, s, o = setupController()
+	s.record, o.tasks, o.workers = pending(c), tasks.Result.Tasks, workers.Result
+	o.settled = []orca.Task{{ID: "task_1", RunID: run, Status: "pending", Spec: c.Spec}}
+	if _, err = c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
+		t.Fatalf("task created between reads ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
 	}
 }

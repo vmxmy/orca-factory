@@ -330,3 +330,22 @@ func (f *racingIssues) CreateComment(ctx context.Context, id, body string) (task
 	_, _ = f.fakeIssues.CreateComment(ctx, id, resolver.Prefix+string(other))
 	return task.Comment{}, errors.New("write uncertain")
 }
+
+// OF-162: a round that never dispatched neither fails nor succeeds, so its
+// waiting record keeps the consecutive failure count unchanged.
+func TestResolverEmptyRunIsNotUncertainKeepsFailures(t *testing.T) {
+	var comments []task.Comment
+	for i, r := range []resolver.Record{
+		{Version: 1, Attempt: 1, Phase: "waiting", Outcome: "failed"},
+		{Version: 1, Attempt: 2, Phase: "waiting", Outcome: "undispatched"},
+		{Version: 1, Attempt: 3, Phase: "waiting", Outcome: "failed"},
+		{Version: 1, Attempt: 4, Phase: "waiting", Outcome: "undispatched"},
+	} {
+		raw, _ := json.Marshal(r)
+		comments = append(comments, task.Comment{Body: resolver.Prefix + string(raw), CreatedAt: time.Unix(int64(i+1), 0)})
+	}
+	p, err := readResolution(comments)
+	if err != nil || p == nil || p.Failures != 2 {
+		t.Fatalf("undispatched round changed failures: %+v %v", p, err)
+	}
+}

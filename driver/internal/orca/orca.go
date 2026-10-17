@@ -324,7 +324,17 @@ func (c *Client) TaskList(ctx context.Context, run string) ([]Task, error) {
 		return nil, invalid("invalid task list")
 	}
 	// A partial enumeration cannot authorize dispatch recovery. Older CLI
-	// versions omit metadata; retain that contract while checking any supplied.
+	// versions omit metadata; retain that contract while checking any supplied,
+	// except that an empty list must carry its count to prove no task exists.
+	if raw, ok := receipt["legacyReadOnly"]; ok {
+		var legacy bool
+		if json.Unmarshal(raw, &legacy) != nil || legacy {
+			return nil, invalid("legacy read-only task list")
+		}
+	}
+	if _, ok := receipt["count"]; !ok && len(tasks) == 0 {
+		return nil, invalid("incomplete task list")
+	}
 	if raw, ok := receipt["truncated"]; ok {
 		var truncated bool
 		if json.Unmarshal(raw, &truncated) != nil || truncated {
