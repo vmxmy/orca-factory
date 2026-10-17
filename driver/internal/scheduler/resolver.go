@@ -235,6 +235,18 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if h.Version != 1 || h.TicketID != t.ID || h.Identifier != t.Identifier || h.Repository != r.Repositories[t.Repo].Env["AGENT_GH_REPO"] || !commitID(h.Head) || !commitID(h.Baseline) || h.PR < 1 || !identifier.MatchString(h.Unit) || h.EnqueuedAt.IsZero() || h.Attempt < 1 || h.Run == "" || h.Task == "" || !filepath.IsAbs(h.Worktree) || h.Corrections < 0 || h.Infra < 0 || h.CatchupRounds < 0 {
 		return r.retryResolution(ctx, t, p, "merge handoff identity is incomplete or differs from ticket")
 	}
+	gh, err := r.githubClient()
+	if err != nil {
+		return err
+	}
+	owner, repo, _ := strings.Cut(h.Repository, "/")
+	pr, err := gh.GetPR(ctx, owner, repo, h.PR)
+	if err != nil {
+		return err
+	}
+	if !prMatchesHandoff(pr, h) {
+		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, handoffBranch(h), h.Head, h.Repository))
+	}
 	if t.Handoff != nil && h.QueueID == t.Handoff.QueueID {
 		if t.Progress != nil && (t.Progress.Phase == "human" || t.Progress.Phase == "correction") {
 			return r.retryResolution(ctx, t, p, "exhausted queue requires a new validated handoff")

@@ -247,11 +247,18 @@ func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
 	if err != nil {
 		return p, err
 	}
-	if p.Number != h.PR || p.Head.SHA != h.Head || p.Head.Ref != "agent/"+h.Identifier+"/"+h.Unit || p.Head.Repo.FullName != h.Repository || p.Base.Ref != "main" || p.Base.Repo.FullName != h.Repository {
+	if !prMatchesHandoff(p, h) {
 		return p, errors.New("PR identity changed")
 	}
 	return p, nil
 }
+
+// prMatchesHandoff is the PR identity the merge lane accepts for a handoff.
+func prMatchesHandoff(p github.PullRequest, h *merge.Handoff) bool {
+	return p.Number == h.PR && p.Head.SHA == h.Head && p.Head.Ref == handoffBranch(h) && p.Head.Repo.FullName == h.Repository && p.Base.Ref == "main" && p.Base.Repo.FullName == h.Repository
+}
+
+func handoffBranch(h *merge.Handoff) string { return "agent/" + h.Identifier + "/" + h.Unit }
 func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Snapshot, error) {
 	p, err := a.readPR(ctx)
 	if err != nil {
