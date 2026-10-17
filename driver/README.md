@@ -147,16 +147,17 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 7. check 结果分三态（OF-53）。退出 0 表示 core 副本一致。退出 3 表示 core 落后：每个与当前 `core/` 不一致的文件都等于 factory git 历史中该路径的某个已提交版本，或是 core 新增而副本缺失，或是 core 已删除而副本仍等于某个已提交版本（`update` 删除它），`check` 对这些文件输出 `check: BEHIND   <文件>`。其他非零退出（本地改动的 `DIFFERS`/`OVERRIDDEN`、遗留占位、缺项目文件）判为「check 失败」，不接管。core 落后的项目仍可接管，`projects --json` 的 `CoreBehind` 列出落后文件；落后文件集合变化时每个项目写一条 WARN `project core behind`，不变不重复写。
 8. serve 对 core 落后的已接管项目自动开同步 PR（OF-53）。每次发现都执行，以下判定保证同一 factory 版本只开一次：
    1. 取 factory 检出的短 SHA，分支名为 `chore/orca-factory-core-sync-<短SHA>`。
-   2. 该仓库 origin 已有这个分支，或该分支已有未合并 PR，则跳过。其他 `chore/orca-factory-core-sync-` 开头的未合并 PR 属于旧 factory 版本，先 `gh pr close --delete-branch` 关闭再继续（OF-120：无人合并时旧同步 PR 不再让项目永远停在旧 core）。
+   2. 该仓库 origin 已有这个分支，或本仓库自己（非 fork，head 仓库即目标仓库）的该分支已有未合并 PR，则跳过。本仓库其他 `chore/orca-factory-core-sync-` 开头的未合并 PR 属于旧 factory 版本，先按 PR 编号 `gh pr close --delete-branch` 关闭再继续。fork 开的同名 PR 既不算已存在，也不会被关闭（OF-120：无人合并时旧同步 PR 不再让项目永远停在旧 core）。
    3. 在 `~/.cache/orca-factory/core-sync/<远端键>/` 以 origin/main 建分离头 worktree，运行 `<factory_root>/bin/orca-factory update`，只 `git add scripts/agent-gates`。没有改动则跳过（origin/main 已同步）。
    4. 提交、push 该分支、`gh pr create`。
    5. 第 2 步发现当前版本的同步分支已存在时，driver 尝试自动合并该 PR（OF-133）。以下条件全部满足才执行 `gh pr merge --squash --match-head-commit <head>`，合并后回读 state 必须为 `MERGED`：
-      1. PR 的 head 分支正是当前 factory 版本的 `chore/orca-factory-core-sync-<短SHA>`，state 为 `OPEN`。
-      2. PR 改动的所有文件都在 `scripts/agent-gates/` 下。
-      3. `mergeable` 为 `MERGEABLE`。
-      4. `gh pr checks --required` 至少返回一项，且每一项都是 `pass`。检查还没开始跑、仍在运行、失败，或基线分支没有必需检查，都不算通过。
+      1. PR 来自本仓库：`isCrossRepository` 为 false，且 `headRepositoryOwner`/`headRepository` 等于目标仓库。gh 只按分支名匹配 PR，fork 可以开同名分支。
+      2. PR 的 head 分支正是当前 factory 版本的 `chore/orca-factory-core-sync-<短SHA>`，state 为 `OPEN`。
+      3. PR 改动的所有文件都在 `scripts/agent-gates/` 下。`gh pr view --json files` 最多返回 100 个文件，取到的文件数达到 100，或不等于 `changedFiles`，都不合并。
+      4. `mergeable` 为 `MERGEABLE`。
+      5. `gh pr checks --required` 至少返回一项，且每一项都是 `pass`。检查还没开始跑、仍在运行、失败，或基线分支没有必需检查，都不算通过。
 
-      任一条件不满足就不合并，写 WARN `core sync failed` 说明原因，下一次发现重试。PR 已是 `MERGED` 时直接返回，不报错。
+      第 1 条核对过后，检查、合并与回读都按 PR 编号进行。任一条件不满足就不合并，写 WARN `core sync failed` 说明原因，下一次发现重试；同一项目、同一 PR、同一原因只写一次 WARN，原因变化或合并成功后重新计。PR 已是 `MERGED` 时直接返回，不报错。
    6. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。
 9. serve 每次发现后，把每个已接管项目自己的检出快进到 origin/main（OF-121）：只在检出位于 `main` 且无已跟踪改动时 `git merge --ff-only`，否则写 WARN `checkout not fast-forwarded` 并保持原样。处置 Agent 的角色文件与 core 检查都读这个检出，过期检出会让已合并的角色改动不生效，并让 check 误报 core 落后。
 
