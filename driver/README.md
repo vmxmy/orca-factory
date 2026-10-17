@@ -206,15 +206,18 @@ flowchart LR
   | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 退出码 | 缺变量：fail；gh 认证检查失败：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
-- `~/.local/bin/orca-factory-driver watch [--dry-run]`（OF-128）：无人值守巡检。每次运行在进程内跑一遍 doctor，按检查项更新状态根目录下的 `watch.json`（每项的上次状态、连续 fail 次数、是否已告警），只做告警与记录状态，不修复、不合并、不部署、不重启、不建票。
+- `~/.local/bin/orca-factory-driver watch [--dry-run]`（OF-128）：无人值守巡检。每次运行在进程内跑一遍 doctor，按检查项更新状态根目录下的 `watch.json`（每项的上次状态、连续 fail 次数、本轮 fail 开始时间、上次告警成功时间），只做告警与记录状态，不修复、不合并、不部署、不重启、不建票。
   - 只有 `fail` 计数：同一检查项连续 2 次运行为 `fail` 才告警，过滤部署时的短暂异常；任何非 `fail` 结果清零连续次数。
-  - 已告警的检查项在问题持续期间不再告警；只有该项回到 `ok` 才清除已告警标记，之后再次连续 2 次 `fail` 会重新告警。`warn` 与 `unknown` 不证明问题消失，不清除标记。
+  - 不建票，只告警，24 小时重复提醒：同一检查项持续 `fail` 时，距上次告警满 24 小时再提醒一次，正文写明「持续 N 小时」。只告警一次就沉默，持续的问题容易被遗忘。
+  - 该项回到 `ok` 才清除告警记录，之后再次连续 2 次 `fail` 立即重新告警。`warn` 与 `unknown` 不证明问题消失，不清除告警记录。
   - 去重键是检查项名，不是原因文本：原因含每轮变化的计数。
   - 告警走机器配置的飞书通知（`AGENT_FEISHU_NOTIFY_CHAT` 与应用凭证，与票据通知相同），正文只含主机名、检查项名、连续次数和 doctor 的 `reason`，不含 `details` 与凭证值。通知频道未配置时退出 1，不消耗告警。
-  - 与票据通知一样先写 `watch.json` 再发送：发送失败或结果不确定时这一条不重发，退出 1。不要为重发而清空 `watch.json`。
-  - 不建票：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
+  - 发送成功后才记录告警时间：发送失败时该项保持待告警，退出 1，下次运行重发。`watch.json` 用临时文件加 rename 原子写入。
+  - `watch.json` 无法解析时改名为 `watch.json.corrupt-<时间>` 留作证据，写一条 WARN 日志，再以空状态继续，巡检不因坏文件停摆。
+  - 运行时对状态根目录下的 `watch.lock` 加 flock。手工运行与 timer 重叠时，后到的一次写一条日志后跳过，退出 0，不重复告警。
+  - 不建票的理由：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
   - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，不发送、不写 `watch.json`，也不要求通知频道已配置。
-  - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。`install` 不启用 timer；启用用 `systemctl --user enable --now orca-factory-driver-watch.timer`。
+  - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 不启用 timer；启用用 `systemctl --user enable --now orca-factory-driver-watch.timer`。
 
 ## Orca 看板
 

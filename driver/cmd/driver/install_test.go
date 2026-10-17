@@ -133,3 +133,31 @@ func TestInstallRejectsArguments(t *testing.T) {
 		t.Fatal("invalid arguments changed HOME")
 	}
 }
+
+func TestInstallRejectsNonEnvironmentSharedDropIn(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dropIns := filepath.Join(home, ".config/systemd/user/orca-factory-driver.service.d")
+	if err := os.MkdirAll(dropIns, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dropIns, "env.conf"), []byte("[Service]\nEnvironmentFile=%h/driver.env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dropIns, "restart.conf"), []byte("# serve only\n[Service]\nEnvironment=A=1\nRestart=always\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runner := &installFakeRunner{}
+	err := installWith(nil, &bytes.Buffer{}, runner)
+	if err == nil || !strings.Contains(err.Error(), "restart.conf") || !strings.Contains(err.Error(), "Restart") {
+		t.Fatalf("install accepted non-environment drop-in: %v", err)
+	}
+	for _, path := range []string{".local/bin/orca-factory-driver", ".config/systemd/user/orca-factory-driver.service", ".config/systemd/user/orca-factory-driver-watch.service.d"} {
+		if _, statErr := os.Lstat(filepath.Join(home, path)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Errorf("rejected install wrote %s: %v", path, statErr)
+		}
+	}
+	if len(runner.specs) != 0 {
+		t.Fatal("rejected install ran a command")
+	}
+}

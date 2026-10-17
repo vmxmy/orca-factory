@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -110,6 +111,9 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	gatewayUnit := filepath.Join(filepath.Dir(unit), "orca-factory-feishu-gateway.service")
 	watchUnit := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.service")
 	watchTimer := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.timer")
+	if err := checkSharedDropIns(unit + ".d"); err != nil {
+		return err
+	}
 	if *dryRun {
 		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nWrite gateway service unit to %s\nCopy existing driver proxy.conf if gateway proxy.conf is absent\nWrite watch service unit to %s\nWrite watch timer to %s (every 30 minutes, RandomizedDelaySec=5min)\nLink %s.d to %s.d\nRun systemctl --user daemon-reload\n", binary, unit, gatewayUnit, watchUnit, watchTimer, watchUnit, unit)
 		return err
@@ -186,6 +190,37 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	defer cancel()
 	if _, err := runner.Run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "daemon-reload"}, Timeout: 30 * time.Second}); err != nil {
 		return fmt.Errorf("reload user service units: %w", err)
+	}
+	return nil
+}
+
+// checkSharedDropIns refuses serve drop-ins that would change watch's
+// behaviour: the directory is shared, so only environment may live there.
+func checkSharedDropIns(dir string) error {
+	confs, err := filepath.Glob(filepath.Join(dir, "*.conf"))
+	if err != nil {
+		return err
+	}
+	for _, conf := range confs {
+		raw, err := os.ReadFile(conf)
+		if err != nil {
+			return err
+		}
+		section := ""
+		for _, line := range strings.Split(string(raw), "\n") {
+			line = strings.TrimSpace(line)
+			switch {
+			case line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";"):
+			case strings.HasPrefix(line, "["):
+				section = strings.Trim(line, "[]")
+			default:
+				key, _, _ := strings.Cut(line, "=")
+				key = strings.TrimSpace(key)
+				if section != "Service" || (key != "Environment" && key != "EnvironmentFile") {
+					return fmt.Errorf("%s: [%s] %s is not an environment directive; %s is shared with orca-factory-driver-watch.service, so it may only hold [Service] Environment/EnvironmentFile. Move this directive to a separate drop-in outside the shared directory", conf, section, key, dir)
+				}
+			}
+		}
 	}
 	return nil
 }
