@@ -305,6 +305,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 	// Batch only within each configured client's authorization boundary.
 	commentsByID := map[string][]task.Comment{}
 	groups := map[issues.Store][]task.Issue{}
+	repoOf := map[string]string{}
 	for _, issue := range snapshot {
 		path, ok := paths[issue.Project.ID]
 		if !ok {
@@ -314,12 +315,13 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
 		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
+		repoOf[issue.ID] = path
 	}
 	for client, rows := range groups {
 		for _, issue := range rows {
 			history, err := client.ListComments(ctx, issue.ID)
 			if err != nil {
-				return nil, fmt.Errorf("ownership snapshot failed: %w", err)
+				return nil, fmt.Errorf("ownership snapshot failed: %s (%s): %w", issue.Identifier, repoOf[issue.ID], err)
 			}
 			commentsByID[issue.ID] = history
 		}

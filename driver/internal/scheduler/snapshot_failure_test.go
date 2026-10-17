@@ -146,3 +146,54 @@ func TestSnapshotFailureKeepsCause(t *testing.T) {
 		})
 	}
 }
+
+func TestSnapshotFailureLogsCause(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		inner     string
+		cause     func(error) error
+		wantError bool
+	}{
+		{name: "ticket", inner: "feishu API code 1254040", cause: func(err error) error { return &infra.Ticket{Err: err} }, wantError: true},
+		{name: "transient", inner: "feishu API code 1254290", cause: func(err error) error { return &infra.Transient{Err: err} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := config.Repository{Path: "/fixture", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/r"}}
+			cause := tc.cause(errors.New(tc.inner))
+			store := &notifyStore{readErr: cause}
+			store.issues = []task.Issue{{ID: "rec1", Identifier: "OF-7", Project: task.NamedID{ID: "o/r"}}}
+			runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			f := &failingSnapshotBackend{snapshot: func(ctx context.Context, _ []config.Repository) ([]Ticket, error) {
+				return runtime.Snapshot(ctx, []config.Repository{repo})
+			}}
+			s := setup(&f.fakeBackend)
+			s.Backend = f
+			var logs bytes.Buffer
+			s.Logger = logx.New("scheduler", &logs)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var reported []error
+
+			err := Serve(ctx, t.TempDir()+"/serve.lock", func(context.Context) (*Scheduler, error) { return s, nil }, func(context.Context) error {
+				cancel()
+				return nil
+			}, func(err error) { reported = append(reported, err) })
+
+			if err != nil {
+				t.Fatal(err)
+			}
+			warn, _, _ := strings.Cut(logs.String(), "\n")
+			for _, want := range []string{`"level":"WARN"`, "OF-7", "/fixture", tc.inner} {
+				if !strings.Contains(warn, want) {
+					t.Fatalf("WARN missing %q: %s", want, warn)
+				}
+			}
+			if got := len(reported) > 0; got != tc.wantError {
+				t.Fatalf("reported=%v, want ERROR report %v", reported, tc.wantError)
+			}
+			if tc.wantError && !errors.Is(reported[0], cause) {
+				t.Fatalf("reported cause lost: %v", reported[0])
+			}
+		})
+	}
+}
