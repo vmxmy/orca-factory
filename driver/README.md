@@ -384,6 +384,15 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
 
+## 模型代理（AGENT_MODEL_PROXY_URL）
+
+reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_MODEL_PROXY_URL=http://<主机>:<端口>`，不要把地址写进仓库 `agent-graph.env` 的审查命令。
+
+- 进程环境中的值优先；为空时读 `driver.env`。`driver exec` 运行在 Orca 终端中，不继承服务的 `EnvironmentFile`，所以必须能从文件读到。
+- 设置后，执行器和 `driver selftest` 启动 reviewer 子进程时注入 `ANTHROPIC_BASE_URL=<该值>`。未设置时，reviewer 子进程的环境与 driver 进程相同。
+- 值必须是 http(s) URL，否则 `driver exec` 启动失败。
+- worker 由 Orca `worker-start` 启动，driver 不向它传环境。worker 的 claude 从该机 `~/.claude/settings.json` 的 `env.ANTHROPIC_BASE_URL` 取代理地址。
+
 ## 可调参数（driver.toml）
 
 `~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。已部署 driver.toml 中残留的 `[linear]` 节不再被读取，加载时忽略，可以删除。

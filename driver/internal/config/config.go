@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -138,6 +139,36 @@ func positive(env map[string]string, key string, fallback int) (int, error) {
 		return 0, errors.New("repository limit must be positive")
 	}
 	return n, nil
+}
+
+// ModelProxyURL returns AGENT_MODEL_PROXY_URL from the process environment,
+// falling back to the machine driver.env: executors start in Orca terminals that
+// do not inherit the service EnvironmentFile. Empty means no proxy.
+func ModelProxyURL(home string) (string, error) {
+	value := os.Getenv("AGENT_MODEL_PROXY_URL")
+	if value == "" {
+		f, err := os.Open(filepath.Join(home, ".config", "orca-factory", "driver.env"))
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		if err != nil {
+			return "", errors.New("driver.env could not be read")
+		}
+		env, parseErr := ParseEnv(f)
+		closeErr := f.Close()
+		if parseErr != nil || closeErr != nil {
+			return "", errors.New("driver.env is invalid")
+		}
+		value = env["AGENT_MODEL_PROXY_URL"]
+	}
+	if value == "" {
+		return "", nil
+	}
+	u, err := url.Parse(value)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", errors.New("AGENT_MODEL_PROXY_URL must be an http(s) URL")
+	}
+	return value, nil
 }
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)

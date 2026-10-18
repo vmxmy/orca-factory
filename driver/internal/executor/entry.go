@@ -67,6 +67,10 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
 	}
+	proxy, err := config.ModelProxyURL(home())
+	if err != nil {
+		return Result{}, err
+	}
 	store, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[9], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[10], "AGENT_FEISHU_BASE": values[11], "AGENT_FEISHU_PROJECT": values[12]}, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
@@ -89,7 +93,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
-	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[6], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[13]}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
+	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[6], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[13], ModelProxyURL: proxy}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err

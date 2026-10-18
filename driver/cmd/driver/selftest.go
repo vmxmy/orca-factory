@@ -126,8 +126,16 @@ func liveReviewer(ctx context.Context, repo config.Repository) error {
 	if repo.Env["AGENT_ROLE_REVIEWER_CMD"] == "" {
 		return fmt.Errorf("no reviewer command configured")
 	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	proxy, err := config.ModelProxyURL(home)
+	if err != nil {
+		return err
+	}
 	small := 1.0
-	tools := &executor.Commands{ReviewerCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD"], ReviewerSmallCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD_SMALL"], ReviewerSmallMaxEstimate: &small, InstallCommand: repo.Env["AGENT_INSTALL_CMD"]}
+	tools := &executor.Commands{ReviewerCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD"], ReviewerSmallCommand: repo.Env["AGENT_ROLE_REVIEWER_CMD_SMALL"], ReviewerSmallMaxEstimate: &small, InstallCommand: repo.Env["AGENT_INSTALL_CMD"], ModelProxyURL: proxy}
 	// An empty diff (origin/main against itself) drives the production reviewer path.
 	out, _, err := tools.Review(ctx, repo.Path, "origin/main", "origin/main", &small)
 	if err != nil {
