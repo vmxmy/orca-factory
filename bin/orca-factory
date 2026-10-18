@@ -831,10 +831,11 @@ cmd_bootstrap() {
   # user's go env file. Go writes downloaded toolchains read-only, hence chmod.
   probe="$(mktemp -d)"
   trap "chmod -R u+w $(printf %q "$probe"); rm -rf $(printf %q "$probe")" EXIT
-  # deploy.sh stamps the same short SHA, so install --dry-run sees no replace once deployed.
+  # deploy.sh stamps the same short SHA and both build with -trimpath, so the bytes match and
+  # install --dry-run sees no replace once deployed.
   (cd "$root/driver" && GOENV="${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}" \
     GOPATH="$probe/gopath" GOMODCACHE="$probe/gopath/pkg/mod" GOCACHE="$probe/gocache" XDG_CONFIG_HOME="$probe/config" \
-    go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o "$probe/orca-factory-driver" ./cmd/driver) \
+    go build -trimpath -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o "$probe/orca-factory-driver" ./cmd/driver) \
     || fail 'bootstrap: 构建 driver 失败'
   if ! (cd "$root" && "$probe/orca-factory-driver" doctor --bootstrap); then
     echo 'bootstrap: 人工清单：按上表 fix 列处理 fail 与 human 项，然后重跑本命令'
