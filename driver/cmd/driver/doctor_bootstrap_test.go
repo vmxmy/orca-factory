@@ -100,6 +100,18 @@ func TestDoctorBootstrapReportsMissingPrerequisites(t *testing.T) {
 			t.Errorf("output leaks a variable value:\n%s", out)
 		}
 	})
+	t.Run("reviewer proxy", func(t *testing.T) {
+		f := newBootstrapFixture(t)
+		f.config(t, "driver.env", "AGENT_MODEL_PROXY_URL=http://127.0.0.1:9/TEST-PLACEHOLDER-CRED\n")
+		report, out, _ := runBootstrapProbe(t, f.probe(errors.New("connection refused")))
+		check := report.Checks["model_proxy"]
+		if check.Status != healthFail || !strings.Contains(check.Reason, "AGENT_MODEL_PROXY_URL") {
+			t.Errorf("model_proxy = %+v, want fail naming AGENT_MODEL_PROXY_URL", check)
+		}
+		if strings.Contains(out, "TEST-PLACEHOLDER-CRED") {
+			t.Errorf("output leaks a variable value:\n%s", out)
+		}
+	})
 	t.Run("complete", func(t *testing.T) {
 		f := newBootstrapFixture(t)
 		f.replay(t, "go", "go-version.txt", "", "")

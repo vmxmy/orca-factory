@@ -254,17 +254,25 @@ func (b bootstrapProbe) checkOrca(ctx context.Context) healthCheck {
 // checkModelProxy prefers driver.env, which the service loads, over the
 // caller's shell. The URL can embed a credential, so no output carries it.
 func (b bootstrapProbe) checkModelProxy(ctx context.Context, env map[string]string) healthCheck {
-	source, url := "driver.env 中", env["ANTHROPIC_BASE_URL"]
-	if url == "" {
-		source, url = "当前环境变量中", b.getenv("ANTHROPIC_BASE_URL")
+	// AGENT_MODEL_PROXY_URL is what the executor injects for the reviewer (OF-174).
+	var source, name, url string
+	for _, key := range []string{"AGENT_MODEL_PROXY_URL", "ANTHROPIC_BASE_URL"} {
+		if url = env[key]; url != "" {
+			source, name = "driver.env 中", key
+			break
+		}
+		if url = b.getenv(key); url != "" {
+			source, name = "当前环境变量中", key
+			break
+		}
 	}
 	if url == "" {
-		return bootstrapFinding(healthOK, "未配置 ANTHROPIC_BASE_URL，不经模型代理", "")
+		return bootstrapFinding(healthOK, "未配置 AGENT_MODEL_PROXY_URL 或 ANTHROPIC_BASE_URL，不经模型代理", "")
 	}
 	if err := b.reachable(ctx, url); err != nil {
-		return bootstrapFinding(healthFail, source+" ANTHROPIC_BASE_URL 指向的模型代理不可达", "启动模型代理，或修正"+source+"的 ANTHROPIC_BASE_URL")
+		return bootstrapFinding(healthFail, source+" "+name+" 指向的模型代理不可达", "启动模型代理，或修正"+source+"的 "+name)
 	}
-	return bootstrapFinding(healthOK, source+" ANTHROPIC_BASE_URL 指向的模型代理可达", "")
+	return bootstrapFinding(healthOK, source+" "+name+" 指向的模型代理可达", "")
 }
 
 func (b bootstrapProbe) driverEnv() (env map[string]string, err error) {
