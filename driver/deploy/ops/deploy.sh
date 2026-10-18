@@ -18,7 +18,7 @@ timeout 3600 bash -c "$idle" "$D" || { echo "sessions still active; resuming"; "
 B="$STATE/deploy-backups/$(date -u +%Y%m%dT%H%M%SZ)-$SHA"
 mkdir -p "$B"
 cp -p "$D" "$B/"
-(cd driver && go build -ldflags "-X main.version=$SHA" -o "$D.new" ./cmd/driver)
+(cd driver && go build -trimpath -ldflags "-X main.version=$SHA" -o "$D.new" ./cmd/driver)
 mv "$D.new" "$D"
 systemctl --user restart orca-factory-driver orca-factory-feishu-gateway
 sleep 5

@@ -239,7 +239,7 @@ func (r *Runtime) buildSelf(ctx context.Context, repo, sha, out string) (err err
 		_, pruneErr := r.runFor(context.WithoutCancel(ctx), time.Minute, repo, "git", "worktree", "prune")
 		err = errors.Join(err, pruneErr)
 	}()
-	_, err = r.runFor(ctx, selfDeployBuildTimeout, filepath.Join(src, "driver"), "go", "build", "-ldflags", "-X main.version="+sha, "-o", out, "./cmd/driver")
+	_, err = r.runFor(ctx, selfDeployBuildTimeout, filepath.Join(src, "driver"), "go", "build", "-trimpath", "-ldflags", "-X main.version="+sha, "-o", out, "./cmd/driver")
 	return err
 }
 
