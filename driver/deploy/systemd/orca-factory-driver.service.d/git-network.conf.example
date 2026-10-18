@@ -1,0 +1,9 @@
+# Template: copy to git-network.conf and fill in the values. This directory is
+# shared with orca-factory-driver-watch.service, so keep only Environment lines.
+[Service]
+Environment=GIT_CONFIG_COUNT=
+Environment=GIT_CONFIG_KEY_0=
+Environment=GIT_CONFIG_VALUE_0=
+Environment=HTTPS_PROXY=
+Environment=HTTP_PROXY=
+Environment=NO_PROXY=

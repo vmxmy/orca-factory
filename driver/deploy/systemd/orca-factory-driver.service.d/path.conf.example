@@ -1,0 +1,5 @@
+# Template: copy to path.conf and fill in the value.
+# The merge lane runs project gates inside the driver process, so PATH must
+# expose the same toolchain as worker terminals (for example PostgreSQL initdb/pg_ctl).
+[Service]
+Environment=PATH=

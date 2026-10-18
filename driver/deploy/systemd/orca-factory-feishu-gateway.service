@@ -1,0 +1,15 @@
+[Unit]
+Description=Orca Factory Feishu Gateway
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/orca-factory-driver feishu-gateway
+EnvironmentFile=-%h/.config/orca-factory/driver.env
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=default.target

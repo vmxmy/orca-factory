@@ -117,7 +117,7 @@ orca-factory-driver status --json
 5. 阈值调整：给 `driver serve` 设置 `AGENT_HEARTBEAT_TIMEOUT_MINUTES`（整数分钟，默认 5）。
 6. 没有心跳文件的在途执行器（升级前启动的）仍按终端与派工证据判断，不会被误判为 `dead`。
 
-上线时先完成检查与审查，保存旧二进制及其提交信息。部署顺序：
+上线时先完成检查与审查，保存旧二进制及其提交信息。人工部署使用仓库内的 [deploy/ops/deploy.sh](deploy/ops/deploy.sh)，`install` 把它装到 `~/.local/share/orca-factory-ops/deploy.sh`。脚本按下列顺序执行，备份旧二进制到 `~/.local/state/orca-factory/deploy-backups/`，并与自部署共用 `deploy.lock`。构建用的检出由环境变量 `ORCA_FACTORY_REPO` 指定，默认 `$HOME/github/orca-factory`。部署顺序：
 
 1. 运行 `orca-factory-driver maintenance drain`。
 2. 运行 `orca-factory-driver maintenance status`，等 `writersActive` 与 `sessionsActive` 都为 false（没有正在运行的执行器、处置 Agent 和已准入写入）。不要求在途票归零：drain 拒绝重新派工，在途票（例如等待 correction 重新派工的票）可能永远不归零；重启后执行器从 checkpoint 恢复。等待超时（建议 1 小时）时先运行 `maintenance resume`，放弃本次部署。
@@ -125,6 +125,22 @@ orca-factory-driver status --json
 4. 运行 `orca-factory-driver maintenance resume`。
 
 drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继续收敛。drain 与 resume 只等待已准入的认领与派工结束，不等待普通外部写入；默认最多等 2 分钟，用 `--wait 30s` 等时长调整。等待期间新认领与派工被拒绝；超时报错且状态不变。保留 driver.toml、凭据、账本和在途执行器；失败时恢复旧二进制，不删除数据库、不清空 checkpoint、不强行解除配额暂停。验证服务存活、旧 Automation 关闭、连续调度周期和配额探测日志；单次 `status` 成功不代表端到端验收通过。
+
+### 运维资产安装
+
+`orca-factory-driver install` 从二进制内嵌的 [deploy/](deploy/) 写入下列文件：
+
+| 仓库来源 | 安装位置 |
+| --- | --- |
+| `deploy/systemd/*.service`、`*.timer` | `~/.config/systemd/user/` |
+| `deploy/systemd/orca-factory-driver.service.d/env.conf` | 同名 drop-in，读取 `~/.config/orca-factory/driver.env` |
+| `deploy/systemd/orca-factory-driver.service.d/*.conf.example` | 同目录模板，只列环境变量名；复制为 `.conf` 并填值后才生效 |
+| `deploy/systemd/orca-ci-proxy.socket.d/freebind.conf` | `orca-ci-proxy.socket` 的 drop-in |
+| `deploy/ops/deploy.sh`、`merge.sh` | `~/.local/share/orca-factory-ops/`，可执行 |
+
+每个文件按内容决定动作：不存在时 `create`；内容相同时 `unchanged`，不写入；内容不同时 `replace`，先把旧文件改名为 `<文件>.bak-<UTC 时间>` 再写入。二进制只做 `create`、`unchanged` 或 `replace`，不留备份，备份由 `deploy.sh` 负责。`install --dry-run` 逐个列出动作和路径，不写文件、不运行命令。写完后运行 `systemctl --user daemon-reload` 和 `systemctl --user enable orca-factory-driver-watch.timer`。连续运行两次，第二次不写任何文件。
+
+`merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，清理 worktree 与分支，再把票标为 Done。检出同样由 `ORCA_FACTORY_REPO` 指定。
 
 ### 自部署（OF-152）
 
@@ -272,7 +288,7 @@ flowchart LR
   - 运行时对状态根目录下的 `watch.lock` 加 flock。手工运行与 timer 重叠时，后到的一次写一条日志后跳过，退出 0，不重复告警。
   - 不建票的理由：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
   - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，不发送、不写 `watch.json`，也不要求通知频道已配置。
-  - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 不启用 timer；启用用 `systemctl --user enable --now orca-factory-driver-watch.timer`。
+  - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 会 `systemctl --user enable` 这个 timer，但不启动它；需要立即生效时运行 `systemctl --user start orca-factory-driver-watch.timer`。
 
 ## Orca 看板
 
@@ -596,7 +612,7 @@ journalctl --user -u orca-factory-feishu-gateway.service -f
 systemctl --user stop orca-factory-feishu-gateway.service
 ```
 
-`install` 仅安装二进制、写服务并 daemon-reload，不启动网关。网关通过
+`install` 安装二进制和运维资产、daemon-reload，不启动网关。网关通过
 `EnvironmentFile` 读取上述机器配置。代理与 serve 一样使用 systemd drop-in：
 `~/.config/systemd/user/orca-factory-feishu-gateway.service.d/proxy.conf`。
 首次安装时，若已有 `orca-factory-driver.service.d/proxy.conf`，安装器复制其内容；

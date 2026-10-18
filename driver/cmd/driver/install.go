@@ -1,79 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/deploy"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
-
-// Keep this identical to deploy/systemd/orca-factory-driver.service.
-// TestInstallWritesUnitAndBinary verifies the installed content against it.
-const installUnit = `[Unit]
-Description=Orca Factory Driver
-After=orca-serve.service network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/orca-factory-driver serve
-Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Restart=on-failure
-RestartSec=10s
-
-[Install]
-WantedBy=default.target
-`
-
-const gatewayInstallUnit = `[Unit]
-Description=Orca Factory Feishu Gateway
-After=network-online.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-ExecStart=%h/.local/bin/orca-factory-driver feishu-gateway
-EnvironmentFile=-%h/.config/orca-factory/driver.env
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-Restart=on-failure
-RestartSec=10s
-
-[Install]
-WantedBy=default.target
-`
-
-// The watch service reads serve's drop-in directory through a symlink, so
-// both always run with the same environment overrides.
-const watchInstallUnit = `[Unit]
-Description=Orca Factory Driver Watch
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=%h/.local/bin/orca-factory-driver watch
-Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
-Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
-`
-
-const watchInstallTimer = `[Unit]
-Description=Run Orca Factory Driver Watch every 30 minutes
-
-[Timer]
-OnCalendar=*:0/30
-RandomizedDelaySec=5min
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-`
 
 type installRunner interface {
 	Run(context.Context, runx.Spec) ([]byte, error)
@@ -98,7 +40,7 @@ func install(args []string) int {
 func installWith(args []string, out io.Writer, runner installRunner) error {
 	flags := flag.NewFlagSet("install", flag.ContinueOnError)
 	flags.SetOutput(out)
-	dryRun := flags.Bool("dry-run", false, "print installation steps without making changes")
+	dryRun := flags.Bool("dry-run", false, "print the action for every installed file without making changes")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -109,92 +51,159 @@ func installWith(args []string, out io.Writer, runner installRunner) error {
 	if err != nil {
 		return fmt.Errorf("cannot resolve home directory: %w", err)
 	}
-	binary := filepath.Join(home, ".local", "bin", "orca-factory-driver")
-	unit := filepath.Join(home, ".config", "systemd", "user", "orca-factory-driver.service")
-	gatewayUnit := filepath.Join(filepath.Dir(unit), "orca-factory-feishu-gateway.service")
-	watchUnit := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.service")
-	watchTimer := filepath.Join(filepath.Dir(unit), "orca-factory-driver-watch.timer")
+	units := filepath.Join(home, ".config", "systemd", "user")
+	unit := filepath.Join(units, "orca-factory-driver.service")
+	gatewayUnit := filepath.Join(units, "orca-factory-feishu-gateway.service")
+	watchUnit := filepath.Join(units, "orca-factory-driver-watch.service")
 	if err := checkSharedDropIns(unit + ".d"); err != nil {
-		return err
-	}
-	if *dryRun {
-		_, err := fmt.Fprintf(out, "Install current binary to %s\nWrite service unit to %s\nWrite gateway service unit to %s\nCopy existing driver proxy.conf if gateway proxy.conf is absent\nWrite watch service unit to %s\nWrite watch timer to %s (every 30 minutes, RandomizedDelaySec=5min)\nLink %s.d to %s.d\nRun systemctl --user daemon-reload\n", binary, unit, gatewayUnit, watchUnit, watchTimer, watchUnit, unit)
 		return err
 	}
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve current binary: %w", err)
 	}
-	source, err := os.Open(executable)
+	binary, err := os.ReadFile(executable)
 	if err != nil {
-		return fmt.Errorf("open current binary: %w", err)
+		return fmt.Errorf("read current binary: %w", err)
 	}
-	defer func() { _ = source.Close() }() // Read-only source; copy errors are handled below.
-	if err := os.MkdirAll(filepath.Dir(binary), 0755); err != nil {
-		return err
-	}
-	// A sibling temporary file permits replacement even when the installed
-	// executable is the currently running binary.
-	temp, err := os.CreateTemp(filepath.Dir(binary), ".orca-factory-driver-*")
+	// The binary is replaced without a backup: deploy.sh keeps binary backups.
+	files := []installFile{{path: filepath.Join(home, ".local", "bin", "orca-factory-driver"), data: binary, mode: 0755}}
+	assets, err := opsAssets(units, filepath.Join(home, ".local", "share", "orca-factory-ops"))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(temp.Name()) }() // Cleanup only; successful rename removes this path.
-	if _, err := io.Copy(temp, source); err != nil {
-		_ = temp.Close() // Preserve the copy/chmod error; temporary output is discarded.
-		return fmt.Errorf("copy current binary: %w", err)
-	}
-	if err := temp.Chmod(0755); err != nil {
-		_ = temp.Close() // Preserve the copy/chmod error; temporary output is discarded.
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(temp.Name(), binary); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(unit), 0755); err != nil {
-		return err
-	}
-	if err := os.WriteFile(unit, []byte(installUnit), 0644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(gatewayUnit, []byte(gatewayInstallUnit), 0644); err != nil {
-		return err
-	}
-	gatewayProxy := gatewayUnit + ".d/proxy.conf"
-	if _, err := os.Stat(gatewayProxy); os.IsNotExist(err) {
-		proxy, readErr := os.ReadFile(unit + ".d/proxy.conf")
-		if readErr != nil && !os.IsNotExist(readErr) {
-			return readErr
+	files = append(files, assets...)
+	for i := range files {
+		if files[i].action, err = plannedAction(files[i].path, files[i].data); err != nil {
+			return err
 		}
-		if readErr == nil {
-			if err := os.MkdirAll(filepath.Dir(gatewayProxy), 0755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(gatewayProxy, proxy, 0600); err != nil {
+	}
+	if *dryRun {
+		for _, file := range files {
+			if _, err := fmt.Fprintf(out, "%s %s\n", file.action, file.path); err != nil {
 				return err
 			}
 		}
-	} else if err != nil {
+		_, err := fmt.Fprintf(out, "Copy existing driver proxy.conf if gateway proxy.conf is absent\nLink %s.d to %s.d\nRun systemctl --user daemon-reload\nRun systemctl --user enable %s\n", watchUnit, unit, watchTimerName)
 		return err
 	}
-	if err := os.WriteFile(watchUnit, []byte(watchInstallUnit), 0644); err != nil {
-		return err
+	for _, file := range files {
+		if err := file.apply(); err != nil {
+			return err
+		}
 	}
-	if err := os.WriteFile(watchTimer, []byte(watchInstallTimer), 0644); err != nil {
+	if err := copyGatewayProxy(unit+".d/proxy.conf", gatewayUnit+".d/proxy.conf"); err != nil {
 		return err
 	}
 	if err := linkWatchDropIns(unit+".d", watchUnit+".d"); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if _, err := runner.Run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "daemon-reload"}, Timeout: 30 * time.Second}); err != nil {
-		return fmt.Errorf("reload user service units: %w", err)
+	for _, args := range [][]string{{"--user", "daemon-reload"}, {"--user", "enable", watchTimerName}} {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := runner.Run(ctx, runx.Spec{Path: "systemctl", Args: args, Timeout: 30 * time.Second})
+		cancel()
+		if err != nil {
+			return fmt.Errorf("systemctl %s: %w", strings.Join(args, " "), err)
+		}
 	}
 	return nil
+}
+
+const watchTimerName = "orca-factory-driver-watch.timer"
+
+type installFile struct {
+	path   string
+	data   []byte
+	mode   os.FileMode
+	action string
+	backup bool
+}
+
+// opsAssets maps the embedded systemd/ tree onto the user unit directory and
+// ops/ onto the ops script directory.
+func opsAssets(units, ops string) ([]installFile, error) {
+	var files []installFile
+	err := fs.WalkDir(deploy.Assets, ".", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		data, err := deploy.Assets.ReadFile(name)
+		if err != nil {
+			return err
+		}
+		root, rel, _ := strings.Cut(name, "/")
+		file := installFile{path: filepath.Join(units, filepath.FromSlash(rel)), data: data, mode: 0644, backup: true}
+		if root == "ops" {
+			file.path, file.mode = filepath.Join(ops, filepath.FromSlash(rel)), 0755
+		}
+		files = append(files, file)
+		return nil
+	})
+	return files, err
+}
+
+func plannedAction(path string, data []byte) (string, error) {
+	current, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return "create", nil
+	case err != nil:
+		return "", err
+	case bytes.Equal(current, data):
+		return "unchanged", nil
+	}
+	return "replace", nil
+}
+
+func (f installFile) apply() error {
+	if f.action == "unchanged" {
+		return nil
+	}
+	dir := filepath.Dir(f.path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	if f.action == "replace" && f.backup {
+		if err := os.Rename(f.path, f.path+".bak-"+time.Now().UTC().Format("20060102T150405Z")); err != nil {
+			return err
+		}
+	}
+	// A sibling temporary file permits replacement even when the installed
+	// executable is the currently running binary.
+	temp, err := os.CreateTemp(dir, "."+filepath.Base(f.path)+"-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(temp.Name()) }() // Cleanup only; successful rename removes this path.
+	if _, err := temp.Write(f.data); err != nil {
+		_ = temp.Close() // Preserve the write error; temporary output is discarded.
+		return fmt.Errorf("write %s: %w", f.path, err)
+	}
+	if err := temp.Chmod(f.mode); err != nil {
+		_ = temp.Close() // Preserve the chmod error; temporary output is discarded.
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temp.Name(), f.path)
+}
+
+func copyGatewayProxy(driverProxy, gatewayProxy string) error {
+	if _, err := os.Stat(gatewayProxy); !os.IsNotExist(err) {
+		return err
+	}
+	proxy, err := os.ReadFile(driverProxy)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(gatewayProxy), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(gatewayProxy, proxy, 0600)
 }
 
 // checkSharedDropIns refuses serve drop-ins that would change watch's
