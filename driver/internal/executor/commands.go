@@ -22,15 +22,20 @@ type Commands struct {
 	// InstallCommand comes from the primary checkout's profile, never from the
 	// head under verification. Gate runs it in the verify checkout first.
 	InstallCommand string
-	Run            func(context.Context, runx.Spec) ([]byte, error)
+	// ModelProxyURL, when set, reaches the reviewer as ANTHROPIC_BASE_URL.
+	ModelProxyURL string
+	Run           func(context.Context, runx.Spec) ([]byte, error)
 }
 
 func (c *Commands) run(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
+	return c.runSpec(ctx, runx.Spec{Path: path, Args: args, Dir: dir, Timeout: 10 * time.Minute})
+}
+func (c *Commands) runSpec(ctx context.Context, spec runx.Spec) ([]byte, error) {
 	run := c.Run
 	if run == nil {
 		run = runx.Run
 	}
-	return run(ctx, runx.Spec{Path: path, Args: args, Dir: dir, Timeout: 10 * time.Minute})
+	return run(ctx, spec)
 }
 func (c *Commands) Baseline(ctx context.Context, repo string) (string, error) {
 	b, err := c.run(ctx, repo, "git", "rev-parse", "--verify", "origin/main^{commit}")
@@ -180,7 +185,11 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err = os.WriteFile(name, []byte(input), 0o600); err != nil {
 		return "", tier, errors.New("review input write failed")
 	}
-	b, err := c.run(ctx, dir, "/bin/sh", "-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name)
+	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
+	if c.ModelProxyURL != "" {
+		spec.Env = append(os.Environ(), "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
+	}
+	b, err := c.runSpec(ctx, spec)
 	return string(b), tier, err
 }
 
