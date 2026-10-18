@@ -155,7 +155,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
       2. PR 的 head 分支正是当前 factory 版本的 `chore/orca-factory-core-sync-<短SHA>`，state 为 `OPEN`。
       3. PR 改动的所有文件都在 `scripts/agent-gates/` 下。`gh pr view --json files` 最多返回 100 个文件，取到的文件数达到 100，或不等于 `changedFiles`，都不合并。
       4. `mergeable` 为 `MERGEABLE`。
-      5. `gh pr checks --required` 至少返回一项，且每一项都是 `pass`。检查还没开始跑、仍在运行、失败，或基线分支没有必需检查，都不算通过。
+      5. `gh pr checks --required` 至少返回一项，且每一项都是 `pass`。基线分支没有必需检查时，改看该 PR 的全部检查：至少一项，每一项是 `pass` 或 `skipping`（OF-168）。检查仍在运行时记「core sync 等待 CI」，下一轮再判；检查失败或没有任何检查都不算通过。
 
       第 1 条核对过后，检查、合并与回读都按 PR 编号进行。任一条件不满足就不合并，写 WARN `core sync failed` 说明原因，下一次发现重试；同一项目、同一 PR、同一原因只写一次 WARN，原因变化或合并成功后重新计。PR 已是 `MERGED` 时直接返回，不报错。
    6. 删除本地 worktree。失败只写 WARN `core sync failed`，下一次发现重试。
