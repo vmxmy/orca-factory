@@ -2,6 +2,16 @@
 
 你是在 Orca 里运行的 agent（Claude 或 Codex）。用户交给你目标仓库路径后，先按下面的 GitHub 接入流程安装并验收。验收不过就停下，报告缺项，不绕过。下文第 0–7 步给出调研、提问、生成与验收的细节。
 
+## 新机器搭建
+
+在新机器上搭建本地流水线只用一条命令：
+
+```sh
+bin/orca-factory bootstrap <factory 仓库地址或本地路径>
+```
+
+参数为本地路径时复用该检出。命令依次 clone 或复用 factory（URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`）、构建 driver、运行 `orca-factory-driver doctor --bootstrap`、`install`、`board-columns`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 全绿。前提不全时打印人工清单并以非 0 退出；它不安装系统包，不代替人登录。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目仍用 `orca-factory-driver onboard`。
+
 ## 接入流程（当前入口）
 
 1. 只读调研目标仓库。确认 `owner/repo`、main、安装/检查命令、lane glob、部署 workflow、smoke 和角色档位，沿用下文第 1 步的推导表。不读取密钥文件。

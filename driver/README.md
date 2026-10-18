@@ -6,6 +6,16 @@
 
 `driver serve --dry-run` 不合并、不写回、不 fetch；scope 使用已读取的声明。旧票检查若需要 fetch 会打印省略原因并报告等待，不据此推断可以释放或重派。
 
+## 新机器搭建
+
+在新机器上搭建本地流水线只用一条命令：
+
+```sh
+bin/orca-factory bootstrap <factory 仓库地址或本地路径>
+```
+
+参数为本地路径时复用该检出。命令依次 clone 或复用 factory（URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`）、构建 driver、运行 `orca-factory-driver doctor --bootstrap`、`install`、`board-columns`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 全绿。前提不全时打印人工清单并以非 0 退出；它不安装系统包，不代替人登录。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目仍用 `orca-factory-driver onboard`。
+
 ## GitHub Issues 主账本
 
 项目配置必须显式设置 `AGENT_ISSUE_BACKEND=github`（配 `AGENT_GH_REPO=owner/repo`）或 `feishu`。空值或 `linear` 直接报错，不静默选择默认后端；无双写或自动 fallback。
