@@ -10,7 +10,7 @@
 bin/orca-factory bootstrap <factory 仓库地址或本地路径>
 ```
 
-参数为本地路径时复用该检出；检出有未提交改动时拒绝构建。参数为 URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`；该目录已存在而 origin 与 URL 不一致时拒绝。命令先在临时目录构建 driver 并运行 `orca-factory-driver doctor --bootstrap`，前提不全时打印人工清单并以非 0 退出，不留下任何文件；它不安装系统包，不代替人登录。前提齐全后运行 `install`、`board-columns`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 全绿。driver 正在运行且 `install --dry-run` 有 `replace` 时，它不替换文件，提示改用 `deploy.sh`（先 drain 再备份）升级并以非 0 退出。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目仍用 `orca-factory-driver onboard`。
+参数为本地路径时复用该检出；检出有未提交改动时拒绝构建。参数为 URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`；该目录已存在而 origin 与 URL 不一致时拒绝。命令先在临时目录构建 driver 并运行 `orca-factory-driver doctor --bootstrap`，前提不全时打印人工清单并以非 0 退出，不留下任何文件；它不安装系统包，不代替人登录。前提齐全后先用 `board-columns --check` 核对 Orca 看板的阶段列：缺列时提示退出 Orca、运行 `board-columns`、再启动 Orca，并以非 0 退出，不写文件（运行中的 Orca 会覆盖写入的列）。随后运行 `install`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 没有 `fail` 与 `unknown`（服务启动后崩溃时为 `unknown`）。go 必须在 driver 服务的 PATH 中（如 `/usr/local/bin/go`）；服务 PATH 不含 `/usr/local/go/bin`。driver 正在运行且 `install --dry-run` 有 `replace` 时，它不替换文件，提示改用 `deploy.sh`（先 drain 再备份）升级并以非 0 退出。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目仍用 `orca-factory-driver onboard`。
 
 ## 接入流程（当前入口）
 

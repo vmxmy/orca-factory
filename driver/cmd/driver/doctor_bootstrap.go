@@ -114,11 +114,15 @@ func (b bootstrapProbe) run(ctx context.Context) healthReport {
 }
 
 func (b bootstrapProbe) output(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return b.outputEnv(ctx, nil, name, args...)
+}
+
+func (b bootstrapProbe) outputEnv(ctx context.Context, env []string, name string, args ...string) ([]byte, error) {
 	path := lookPathIn(b.path, name)
 	if path == "" {
 		return nil, errBootstrapNotOnPath
 	}
-	return runx.Run(ctx, runx.Spec{Path: path, Args: args, Timeout: doctorCommandTimeout})
+	return runx.Run(ctx, runx.Spec{Path: path, Args: args, Env: env, Timeout: doctorCommandTimeout})
 }
 
 func bootstrapFinding(status, reason, fix string) healthCheck {
@@ -151,8 +155,16 @@ func (b bootstrapProbe) checkGo(ctx context.Context) healthCheck {
 	if err != nil {
 		return bootstrapFinding(healthUnknown, "读不到 driver/go.mod", "cd <orca-factory 仓库根> && orca-factory-driver doctor --bootstrap")
 	}
-	fix := fmt.Sprintf("curl -fsSL https://go.dev/dl/%s.%s-%s.tar.gz | sudo tar -C /usr/local -xz && export PATH=/usr/local/go/bin:$PATH", toolchain, runtime.GOOS, runtime.GOARCH)
-	out, err := b.output(ctx, "go", "version")
+	// /usr/local/bin is on the PATH the driver unit sets; /usr/local/go/bin is not.
+	fix := fmt.Sprintf("curl -fsSL https://go.dev/dl/%s.%s-%s.tar.gz | sudo tar -C /usr/local -xz && sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go", toolchain, runtime.GOOS, runtime.GOARCH)
+	// go counts every run into telemetry under the user config dir; a scratch
+	// one keeps a rejected machine untouched.
+	scratch, err := os.MkdirTemp("", "orca-factory-bootstrap-go-")
+	if err != nil {
+		return bootstrapFinding(healthUnknown, "无法创建临时目录", "go version")
+	}
+	defer func() { _ = os.RemoveAll(scratch) }()
+	out, err := b.outputEnv(ctx, append(os.Environ(), "XDG_CONFIG_HOME="+scratch), "go", "version")
 	switch {
 	case errors.Is(err, errBootstrapNotOnPath):
 		return bootstrapFinding(healthFail, "PATH 中没有 go", fix)
