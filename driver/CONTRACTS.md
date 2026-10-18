@@ -107,9 +107,13 @@
 - 新部署字段在 squash intent 之前持久；实际 SHA 只来自 GitHub 已合并 PR 回读。smoke 必须在其 intent 写回确认后执行，执行成功但通过回执无法确认时保留屏障，重建调度器要求人工对账。
 - 从项目全量分页 Snapshot 及 ListComments 重建屏障，先读取持久证据再筛选活动票。Done、auto-failed、归属为人或无的票，只要仍有未完成/冲突的部署证据便继续参与该仓库 FIFO。部署字段消失、配置不一致或身份冲突不会静默放行。
 - GitHub 使用 [workflow runs REST API](https://docs.github.com/en/rest/actions/workflow-runs)：固定 workflow 与 `head_sha=<实际 squash SHA>`，显式核对响应身份和完整分页。显示名从 workflows 集合唯一解析。空/缺失/未知/仍运行的回执等待，已完成的明确失败转人；成功才 smoke。多个历史 run 以最新 run 的完成结论为准，但仍运行的旧 run 保守等待。
+- 自部署（OF-152）：`deployment.self=true` 来自 `AGENT_SELF_DEPLOY=1`，与 workflow/smoke 一样在 intent 时冻结；要求 smoke 非空且 workflow 为空。`state` 增加 `deploy-intent`：`pending → deploy-intent` 只允许 self 策略，self 策略不能从 `pending` 直接进入 `smoke-intent`；`deploy-intent` 可转 `paused` 或 `smoke-intent`；self 的 `smoke-intent` 可再转 `smoke-intent`（重跑 smoke）。`deploy-intent` 在 drain、备份、构建、替换和重启之前写入并确认，之后同一 SHA 不再安装。self 的 `retry-smoke` 回到 `deploy-intent`，不回到 `pending`。
+- 自部署收敛：serve 重启后读到 `deploy-intent` 或 `smoke-intent` 都重新取锁、核对、smoke（幂等），结果只有 `passed` 或 `paused`；进入 `paused` 或 `passed` 时，本次部署设过的 draining 一律恢复为 running（以 `self-deploy/<sha>.drained` 标记为凭，不改人工设的维护状态）。已安装判定看当前进程自身的 `main.version`：进程版本等于 squash SHA 才 smoke；进程版本不符但磁盘二进制相符，视为重启尚未生效，等待；两者都不符写 `paused`，不回滚。
+- 自部署 smoke 判定项：① 进程 `main.version` 等于 squash SHA；② `systemctl --user show orca-factory-driver` 为 `ActiveState=active` 且 `MainPID` 是本进程（serve 已就绪）；③ `AGENT_SMOKE_CMD`（`orca-factory-driver doctor --json`）输出可解析的 doctor 报告（配置能加载；doctor 因其他项 fail 的非零退出不计）；④ Orca `automations list` 可达。doctor 其余 fail（如 `sync_prs`、`checkouts` 的 fetch 过旧、`credentials`、`maintenance` draining 超时）只记 WARN，不回滚。smoke 失败先换回备份并重启，保持 draining；恢复后的 serve 再写 `paused` 并 resume。`smoke_passed=true` 只出现在 `passed` 记录里；smoke 通过后 resume 失败写的 `paused` 保持 `smoke_passed=false`。
+- 自部署看守：替换二进制之前用 `systemd-run --user --unit=orca-factory-self-deploy-guard-<sha前12位> --on-active=600` 起独立临时单元。到期时看守最多等 7 分钟取得同一把 `deploy.lock`（smoke 超时加 2 分钟），超时只记日志退出，不回滚。取得锁后，`self-deploy/<sha>.smoke-passed` 不存在且已安装二进制的 `version` 等于 squash SHA，才把 `deploy-backups/self-<sha>/` 的备份换回、写 `self-deploy/<sha>.rolled-back`、重启 gateway 与 driver；版本不等说明二进制已被他人替换，看守只记日志退出。恢复后的 serve 读到该标记，先停看守，再写 `paused`、恢复 running 并删除该标记；serve 自己回滚时把原因写进该标记。serve 在持锁期间写 smoke-passed 标记；passed、paused 与 serve 自己的回滚都先停看守单元（`.timer` 与 `.service`，单元未加载视为已停），再写账本；停不掉就本轮报错，下一轮重试。备份已存在时不覆盖。流程见 `driver/README.md`「自部署」。
 - status 与 dry-run 仅展示 queue/SHA/workflow/state/reason，不暴露 smoke 命令。status 是观察缓存，不是恢复授权；人工恢复命令与 serve 共用锁，dry-run 不取锁、不写日志或评论、不执行 smoke。
 
-合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`。使用已有 HTTP、命令和票据替身，无真实部署或票面变更。
+合成验证：`TestDeployment*`（scheduler/GitHub/command）、`TestResumeDeployment*`、`TestServeDryRunDoesNotWriteLogs`、`TestSelfDeploy*`（含崩溃点收敛、看守回滚、retry-smoke 不重装、锁与空闲等待、看守不替换他人二进制、resume 失败转 paused）。使用已有 HTTP、命令和票据替身，无真实部署或票面变更。
 
 ## 合并结果验证与 correction（#142）
 

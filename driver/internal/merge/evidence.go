@@ -61,10 +61,13 @@ type DeploymentProgress struct {
 	Recovery     *DeploymentRecovery `json:"recovery,omitempty"`
 	SmokeStarted bool                `json:"smoke_started,omitempty"`
 	SmokePassed  bool                `json:"smoke_passed,omitempty"`
-	Workflow     string              `json:"workflow,omitempty"`
-	Smoke        string              `json:"smoke,omitempty"`
-	State        string              `json:"state"`
-	Reason       string              `json:"reason,omitempty"`
+	// Self means serve builds and installs its own binary from the squash SHA,
+	// then restarts; the next serve verifies and smokes it.
+	Self     bool   `json:"self,omitempty"`
+	Workflow string `json:"workflow,omitempty"`
+	Smoke    string `json:"smoke,omitempty"`
+	State    string `json:"state"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 // Recovery records the operator's reconciliation, not inferred credential health.
