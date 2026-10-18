@@ -1,0 +1,30 @@
+{
+  "id": "c5e2794e-7486-4d96-9b19-4bf08bc13365",
+  "ok": false,
+  "error": {
+    "code": "agent_unconfigured",
+    "message": "Terminal term_d7a8c5cd-955a-41a2-b611-0fc00c906910 is not running a recognized agent. Orchestration mutation request ID: c49f0e90-533f-4aaa-aec5-d75f882db0d8.",
+    "data": {
+      "orchestrationRequestId": "c49f0e90-533f-4aaa-aec5-d75f882db0d8",
+      "originalCommand": [
+        "orca-ide",
+        "orchestration",
+        "worker-start",
+        "--run",
+        "run_13e41ba61651",
+        "--task",
+        "task_380a8df7dc39",
+        "--worktree",
+        "path:/home/laoxu/orca/workspaces/orca-factory/of-186-probe",
+        "--terminal",
+        "term_d7a8c5cd-955a-41a2-b611-0fc00c906910",
+        "--timeout-ms",
+        "60000",
+        "--json"
+      ]
+    }
+  },
+  "_meta": {
+    "runtimeId": "78f3d5b7-5f82-4595-8395-4f14375d65bd"
+  }
+}

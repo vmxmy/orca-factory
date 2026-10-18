@@ -13,13 +13,16 @@ import (
 )
 
 // The recorded reuse receipts (see CONTRACTS.md): a reused terminal accepts the
-// dispatch, and a stale handle is rejected with terminal_handle_stale.
+// dispatch; a stale handle is rejected with terminal_handle_stale and a released
+// terminal with agent_unconfigured.
 func TestRecordedWorkerStartReuseTerminal(t *testing.T) {
-	for name, wantOK := range map[string]bool{
-		"orca-worker-start-reuse-terminal.json":    true,
-		"orca-worker-start-reuse-busy-queued.json": true,
-		"orca-worker-start-reuse-rejected.json":    false,
+	for name, wantCode := range map[string]string{
+		"orca-worker-start-reuse-terminal.json":           "",
+		"orca-worker-start-reuse-busy-queued.json":        "",
+		"orca-worker-start-reuse-rejected.json":           "terminal_handle_stale",
+		"orca-worker-start-reuse-agent-unconfigured.json": "agent_unconfigured",
 	} {
+		wantOK := wantCode == ""
 		t.Run(name, func(t *testing.T) {
 			data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", name))
 			if err != nil {
@@ -48,8 +51,8 @@ func TestRecordedWorkerStartReuseTerminal(t *testing.T) {
 				if envelope.Result.DispatchID == "" || envelope.Result.Stage != "input_accepted" {
 					t.Fatalf("reuse receipt missing dispatch/stage: %s", data)
 				}
-			} else if envelope.Error == nil || envelope.Error.Code != "terminal_handle_stale" {
-				t.Fatalf("expected terminal_handle_stale: %s", data)
+			} else if envelope.Error == nil || envelope.Error.Code != wantCode || !orca.IsTerminalStale(&orca.RejectedError{Code: envelope.Error.Code}) {
+				t.Fatalf("expected reuse rejection %s: %s", wantCode, data)
 			}
 		})
 	}
@@ -57,19 +60,19 @@ func TestRecordedWorkerStartReuseTerminal(t *testing.T) {
 
 type reuseOrca struct {
 	*recoveryOrca
-	started       []orca.StartOptions
-	requests      []string
-	releases      int
-	sequence      int
-	reuseRejected bool
-	handles       map[string]string
+	started    []orca.StartOptions
+	requests   []string
+	releases   int
+	sequence   int
+	rejectCode string
+	handles    map[string]string
 }
 
 func (o *reuseOrca) WorkerStart(ctx context.Context, request string, opts orca.StartOptions) (orca.Receipt, error) {
 	o.requests = append(o.requests, request)
 	o.started = append(o.started, opts)
-	if o.reuseRejected && opts.Terminal != "" {
-		return nil, &orca.RejectedError{Code: "terminal_handle_stale"}
+	if o.rejectCode != "" && opts.Terminal != "" {
+		return nil, &orca.RejectedError{Code: o.rejectCode}
 	}
 	receipt, err := o.recoveryOrca.WorkerStart(ctx, request, opts)
 	if err == nil {
@@ -161,7 +164,7 @@ func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 func TestCorrectionReuseRejectedFallsBack(t *testing.T) {
 	e, o, tools, service, _, ticket := recoveryFixture(t)
 	tools.gateReds = 1
-	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}, reuseRejected: true}
+	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}, rejectCode: "terminal_handle_stale"}
 	e.Orca = ro
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil || result.State.Owner != machine.OwnerMerge {
@@ -187,5 +190,23 @@ func TestCorrectionReuseRejectedFallsBack(t *testing.T) {
 	}
 	if len(ro.requests) < 3 || ro.requests[1] == ro.requests[2] {
 		t.Fatalf("fallback must use a distinct request scope after terminal rejection: requests=%v", ro.requests)
+	}
+}
+
+// A released worker terminal no longer runs an agent: Orca refuses the reuse
+// with agent_unconfigured (recorded sample), so the same correction starts a
+// fresh agent instead of reporting an uncertain dispatch.
+func TestCorrectionStartsFreshTerminalWhenAgentUnconfigured(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.gateReds = 1
+	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}, rejectCode: "agent_unconfigured"}
+	e.Orca = ro
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 1 {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	last := ro.started[len(ro.started)-1]
+	if len(ro.started) != 3 || ro.started[1].Terminal != "term_reuse" || last.Terminal != "" || last.Agent == "" || last.Task != ro.started[1].Task {
+		t.Fatalf("correction must fall back to a fresh agent terminal: %+v", ro.started)
 	}
 }
