@@ -277,6 +277,19 @@ flowchart LR
   | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 的结果；gh 报 token invalid 时对 `api.github.com` 的无认证请求 | 缺变量：fail；gh 报 token invalid 且 GitHub 可达（任何 HTTP 响应，含 403 限流）：fail，原因为凭证不可读（keyring 可能未解锁）；gh 其他失败或 GitHub 不可达：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出只含变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
+- `orca-factory-driver doctor --bootstrap [--json]`（OF-173）：空机器的前提检查，只读，不安装任何东西。在 orca-factory 仓库根运行，Go 版本要求取自 `driver/go.mod`。不依赖服务已安装或 driver.toml 已存在。每项除 `status`、`reason` 外给出 `fix`：一条可直接执行的修法命令，或需要人做的动作。`status` 在 doctor 的取值外另有 `human`，表示只有人能完成（登录、凭证、桌面端安装）。任一项为 `fail` 或 `human` 时退出 1。
+
+  | 检查项 | 判定 |
+  | --- | --- |
+  | `go` | PATH 中没有 go，或 `go version` 低于 go.mod 的 `go` 指令：fail，修法下载 go.mod `toolchain` 版本 |
+  | `gh`、`git`、`jq`、`claude` | 不在 PATH：fail |
+  | `gh_auth` | `gh auth status` 退出 0：ok；未登录或 keyring 未解锁（gh 报 token invalid）：human；其他失败：unknown |
+  | `systemd_user` | `systemctl --user show --property=SystemState` 失败（连不上用户实例）：fail |
+  | `linger` | `loginctl show-user` 的 Linger 不是 `yes` 或查不到用户：fail，修法 `loginctl enable-linger "$USER"` |
+  | `orca` | 没有 orca、`orca status --json` 失败或运行时未就绪：human |
+  | `model_proxy` | driver.env（优先）或当前环境配置了 `ANTHROPIC_BASE_URL` 且无 HTTP 响应：fail；未配置：ok |
+  | `driver_env` | `~/.config/orca-factory/driver.env` 缺少或空着 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET`：human，只列变量名 |
+  | `driver_toml` | 没有 driver.toml、无效或未设置 `factory_root`：fail |
 - `~/.local/bin/orca-factory-driver watch [--dry-run]`（OF-128）：无人值守巡检。每次运行在进程内跑一遍 doctor，按检查项更新状态根目录下的 `watch.json`（每项的上次状态、连续 fail 次数、本轮 fail 开始时间、上次告警成功时间），只做告警与记录状态，不修复、不合并、不部署、不重启、不建票。
   - 只有 `fail` 计数：同一检查项连续 2 次运行为 `fail` 才告警，过滤部署时的短暂异常；任何非 `fail` 结果清零连续次数。
   - 不建票，只告警，24 小时重复提醒：同一检查项持续 `fail` 时，距上次告警满 24 小时再提醒一次，正文写明「持续 N 小时」。只告警一次就沉默，持续的问题容易被遗忘。

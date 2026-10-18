@@ -34,6 +34,9 @@ const (
 	healthWarn    = "warn"
 	healthUnknown = "unknown"
 	healthFail    = "fail"
+	// healthHuman marks a bootstrap prerequisite only a person can satisfy:
+	// a login, a credential, a desktop install.
+	healthHuman = "human"
 
 	doctorLaunchWindow   = 30 * time.Minute
 	doctorLaunchRepeats  = 3
@@ -43,6 +46,8 @@ const (
 	doctorServiceUnit    = "orca-factory-driver.service"
 	doctorCommandTimeout = 30 * time.Second
 )
+
+const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
 var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "credentials"}
@@ -60,6 +65,7 @@ type healthCheck struct {
 	Status  string `json:"status"`
 	Reason  string `json:"reason"`
 	Details any    `json:"details,omitempty"`
+	Fix     string `json:"fix,omitempty"`
 	// unprobed marks a check with data it could not read; it is reported in
 	// errors as well, like `orca-factory doctor` reports failed probes.
 	unprobed bool
@@ -111,6 +117,9 @@ func commandFailure(what string, err error) string {
 }
 
 func runDoctor(args []string) int {
+	if slices.Contains(args, "--bootstrap") {
+		return runBootstrap(args)
+	}
 	probe, err := newDoctorProbe()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -142,18 +151,18 @@ func newDoctorProbe() (doctorProbe, error) {
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
 			return issues.New(ctx, p.Repository.Env, cfg.Tuning)
 		},
-		githubReachable: githubReachable,
+		githubReachable: func(ctx context.Context) error { return httpReachable(ctx, "https://api.github.com/") },
 	}, nil
 }
 
 func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int {
 	asJSON := len(args) == 1 && args[0] == "--json"
 	if len(args) != 0 && !asJSON {
-		fmt.Fprintln(os.Stderr, "Usage: orca-factory-driver doctor [--json]")
+		fmt.Fprintln(os.Stderr, doctorUsage)
 		return 2
 	}
 	report := p.run(ctx)
-	if err := writeHealth(out, report, asJSON); err != nil {
+	if err := writeHealth(out, report, asJSON, doctorChecks); err != nil {
 		fmt.Fprintln(os.Stderr, "cannot output doctor report")
 		return 1
 	}
@@ -194,14 +203,18 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 	return report
 }
 
-func writeHealth(out io.Writer, report healthReport, asJSON bool) error {
+func writeHealth(out io.Writer, report healthReport, asJSON bool, names []string) error {
 	if asJSON {
 		return json.NewEncoder(out).Encode(report)
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%-13s %-8s %s\n", "CHECK", "STATUS", "REASON")
-	for _, name := range doctorChecks {
-		fmt.Fprintf(&b, "%-13s %-8s %s\n", name, report.Checks[name].Status, report.Checks[name].Reason)
+	for _, name := range names {
+		check := report.Checks[name]
+		fmt.Fprintf(&b, "%-13s %-8s %s\n", name, check.Status, check.Reason)
+		if check.Fix != "" {
+			fmt.Fprintf(&b, "%-13s %-8s 修法: %s\n", "", "", check.Fix)
+		}
 	}
 	fmt.Fprintf(&b, "Errors [%s]\n", strings.Join(report.Errors, "; "))
 	_, err := io.WriteString(out, b.String())
@@ -701,20 +714,25 @@ func (p doctorProbe) checkCredentials(ctx context.Context, env map[string]string
 // ghTokenInvalid matches gh's "The token in <source> is invalid", which gh
 // also prints when the keyring holding the token is locked (OF-138).
 func ghTokenInvalid(stdout []byte, err error) bool {
+	text := commandText(stdout, err)
+	return strings.Contains(text, "The token in ") && strings.Contains(text, " is invalid")
+}
+
+func commandText(stdout []byte, err error) string {
 	text := string(stdout)
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		text += string(exit.Stderr)
 	}
-	return strings.Contains(text, "The token in ") && strings.Contains(text, " is invalid")
+	return text
 }
 
-// githubReachable treats any HTTP response, a 403 rate limit included, as
+// httpReachable treats any HTTP response, a 403 rate limit included, as
 // reachable: the question is the network path, not authentication.
-func githubReachable(ctx context.Context) error {
+func httpReachable(ctx context.Context, url string) error {
 	ctx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.github.com/", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
