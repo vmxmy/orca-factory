@@ -59,11 +59,13 @@ func (e *RejectedError) Error() string { return "orca command rejected: " + e.Co
 
 func (e *RejectedError) Unwrap() error { return &infra.Ticket{Err: errors.New(e.Code)} }
 
-// IsTerminalStale reports a terminal-reuse rejection: the handle is gone, so the
-// caller must fall back to a fresh agent instead of replaying the request.
+// IsTerminalStale reports a terminal-reuse rejection: the handle is gone, or a
+// released worker terminal no longer runs an agent (agent_unconfigured). Orca
+// creates no dispatch for either, so the caller must fall back to a fresh agent
+// instead of replaying the request.
 func IsTerminalStale(err error) bool {
 	var rejected *RejectedError
-	return errors.As(err, &rejected) && rejected.Code == "terminal_handle_stale"
+	return errors.As(err, &rejected) && (rejected.Code == "terminal_handle_stale" || rejected.Code == "agent_unconfigured")
 }
 
 // StateError is a receipt Orca accepted but answered with a nonzero exit, such

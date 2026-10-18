@@ -73,8 +73,9 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 		return err
 	}
 	if callErr != nil {
-		// A stale-terminal rejection is a definite outcome, not an uncertain one:
-		// pass it through so the correction can fall back to a fresh agent.
+		// A terminal-reuse rejection (stale handle or no agent) is a definite
+		// outcome, not an uncertain one: pass it through so the correction can
+		// fall back to a fresh agent.
 		if orca.IsTerminalStale(callErr) {
 			return callErr
 		}
