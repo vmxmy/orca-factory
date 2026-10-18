@@ -5,9 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/vmxmy/orca-factory/driver/deploy"
 )
 
 type bootstrapFixture struct {
@@ -134,4 +137,41 @@ func TestDoctorBootstrapReportsMissingPrerequisites(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestDoctorBootstrapGoFixReachesServicePath: the go fix must put go on the PATH
+// the driver unit sets, or a machine set up by the checklist fails service_path.
+func TestDoctorBootstrapGoFixReachesServicePath(t *testing.T) {
+	unit, err := deploy.Assets.ReadFile("systemd/orca-factory-driver.service")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var servicePath []string
+	for line := range strings.Lines(string(unit)) {
+		if value, ok := strings.CutPrefix(strings.TrimSpace(line), "Environment=PATH="); ok {
+			servicePath = strings.Split(value, ":")
+		}
+	}
+	fix := newBootstrapFixture(t).probe(nil).checkGo(context.Background()).Fix
+	for _, dir := range servicePath {
+		if !strings.HasPrefix(dir, "%h") && strings.Contains(fix, " "+dir+"/go") {
+			return
+		}
+	}
+	t.Errorf("go fix %q puts go on none of the service PATH %v", fix, servicePath)
+}
+
+// TestDoctorBootstrapGoLeavesNoTelemetry: go counts each invocation under the
+// user config dir, so probing go on a machine bootstrap rejects must not reach it.
+func TestDoctorBootstrapGoLeavesNoTelemetry(t *testing.T) {
+	f := newBootstrapFixture(t)
+	t.Setenv("HOME", f.home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	f.tool(t, "go", `mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/go/telemetry" && cat `+recordedPath(t, "go-version.txt"))
+	if check := f.probe(nil).checkGo(context.Background()); check.Status != healthOK {
+		t.Fatalf("go = %+v, want ok", check)
+	}
+	if _, err := os.Stat(filepath.Join(f.home, ".config", "go")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("go version wrote under the user config dir: %v", err)
+	}
 }

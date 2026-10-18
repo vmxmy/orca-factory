@@ -456,6 +456,16 @@ cmd_board_columns() {
   case "$mode" in ''|--check) ;; *) usage ;; esac
   command -v jq >/dev/null || fail 'board-columns requires jq'
   [[ -f "$file" ]] || fail "Orca data file not found: $file"
+  # --check runs on every bootstrap rerun, so it must not touch the profile directory.
+  if [[ "$mode" == --check ]]; then
+    if jq -e --slurpfile laid <(jq --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" --argjson retired "$BOARD_RETIRED" "$BOARD_LAYOUT" "$file") \
+      '.ui.workspaceStatuses == $laid[0].ui.workspaceStatuses and .worktreeMeta == $laid[0].worktreeMeta' "$file" > /dev/null; then
+      echo "board-columns: driver phase columns present in $file"
+      return 0
+    fi
+    echo "board-columns: $file differs from the driver phase layout" >&2
+    return 1
+  fi
   tmp=$(mktemp "$file.XXXXXX")
   jq --argjson want "$BOARD_COLUMNS" --argjson defaults "$BOARD_DEFAULTS" --argjson retired "$BOARD_RETIRED" "$BOARD_LAYOUT" "$file" > "$tmp" \
     || { rm -f -- "$tmp"; fail "unreadable Orca data file: $file"; }
@@ -463,11 +473,6 @@ cmd_board_columns() {
     rm -f -- "$tmp"
     echo "board-columns: driver phase columns present in $file"
     return 0
-  fi
-  if [[ "$mode" == --check ]]; then
-    rm -f -- "$tmp"
-    echo "board-columns: $file differs from the driver phase layout" >&2
-    return 1
   fi
   # A running Orca keeps its settings in memory and writes them back over this file.
   if [[ -z "${ORCA_DATA_FILE:-}" ]] && orca_app_running; then
@@ -728,8 +733,9 @@ DOCTOR_LARK_UTF8
 selftest_bootstrap() (
   local bs="$SELFTEST_TMP/bootstrap" rc=0
   mkdir -p "$bs/bin" "$bs/home"
-  export HOME="$bs/home" BS="$bs" ORCA_DATA_FILE="$bs/orca-data.json"
+  export HOME="$bs/home" BS="$bs" ORCA_DATA_FILE="$bs/orca/orca-data.json"
   unset XDG_CACHE_HOME ORCA_FACTORY_REPO
+  mkdir -p "$bs/orca"
   echo '{}' > "$ORCA_DATA_FILE"
   cat > "$bs/driver" <<'FAKE'
 #!/usr/bin/env bash
@@ -744,6 +750,9 @@ case "$*" in
     else echo "create $HOME/.local/bin/orca-factory-driver"; fi ;;
   install) touch "$BS/installed" ;;
   doctor) echo 'version  ok' ;;
+  'doctor --json')
+    if [[ -f "$BS/unknown" ]]; then echo '{"checks":{"service_path":{"status":"unknown"}}}'
+    else echo '{"checks":{"version":{"status":"ok"}}}'; fi ;;
   *) exit 2 ;;
 esac
 FAKE
@@ -775,7 +784,13 @@ FAKE
   ! grep -Eq '^driver install|^systemctl --user enable' "$bs/log" || fail "selftest: bootstrap installed with a missing prerequisite"
   [[ -z "$(find "$HOME" -mindepth 1)" ]] || { find "$HOME"; fail "selftest: bootstrap wrote files with a missing prerequisite"; }
 
-  rm "$bs/missing"; : > "$bs/log"
+  # A running Orca rewrites its data file, so bootstrap cannot lay the columns itself.
+  rm "$bs/missing"; : > "$bs/log"; rc=0
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || rc=$?
+  [[ "$rc" != 0 ]] && grep -q 'board-columns' "$bs/out" && ! grep -Fxq 'driver install' "$bs/log" && [[ -z "$(find "$HOME" -mindepth 1)" ]] \
+    || { cat "$bs/out" "$bs/log"; find "$HOME"; fail "selftest: bootstrap must stop before writing when the Orca board lacks driver columns"; }
+
+  cmd_board_columns > /dev/null; : > "$bs/log"
   "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap failed with all prerequisites present"; }
   grep -Fxq 'driver install' "$bs/log" && grep -q '^systemctl --user enable --now' "$bs/log" && grep -Fxq 'driver doctor' "$bs/log" \
     || { cat "$bs/log"; fail "selftest: bootstrap did not build, install, start and run doctor"; }
@@ -783,8 +798,14 @@ FAKE
 
   : > "$bs/log"; touch "$bs/marker"
   "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap rerun failed"; }
-  [[ -z "$(find "$HOME" "$ORCA_DATA_FILE" "$bs/installed" "$bs/active" -newer "$bs/marker")" ]] && ! grep -Eq '^driver install$|^systemctl --user enable' "$bs/log" \
-    || { cat "$bs/log"; fail "selftest: bootstrap rerun wrote again"; }
+  [[ -z "$(find "$HOME" "$bs/orca" "$bs/installed" "$bs/active" -newer "$bs/marker")" ]] && ! grep -Eq '^driver install$|^systemctl --user enable' "$bs/log" \
+    || { cat "$bs/log"; find "$HOME" "$bs/orca" "$bs/installed" "$bs/active" -newer "$bs/marker"; fail "selftest: bootstrap rerun wrote again"; }
+
+  touch "$bs/unknown"; rc=0
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || rc=$?
+  [[ "$rc" != 0 ]] && ! grep -q 'onboard' "$bs/out" \
+    || { cat "$bs/out"; fail "selftest: bootstrap reported success while doctor could not probe a check"; }
+  rm "$bs/unknown"
 
   : > "$bs/log"; touch "$bs/stale"; rc=0
   "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || rc=$?
@@ -824,7 +845,7 @@ cmd_bootstrap() {
       git clone -q -- "$source" "$root" || fail "bootstrap: git clone $source 失败"
     fi
   fi
-  command -v go > /dev/null || { printf 'bootstrap: 人工清单\n- 安装 go（版本见 %s/driver/go.mod），然后重跑本命令\n' "$root"; exit 1; }
+  command -v go > /dev/null || { printf 'bootstrap: 人工清单\n- 安装 go（版本见 %s/driver/go.mod），并链接到 /usr/local/bin/go（driver 服务的 PATH 不含 /usr/local/go/bin），然后重跑本命令\n' "$root"; exit 1; }
   # doctor --bootstrap is driver code, so it runs from a throwaway build. GOPATH
   # (module and sumdb caches), GOCACHE and XDG_CONFIG_HOME (telemetry) point
   # into it, so a missing prerequisite leaves nothing on disk; GOENV keeps the
@@ -841,6 +862,11 @@ cmd_bootstrap() {
     echo 'bootstrap: 人工清单：按上表 fix 列处理 fail 与 human 项，然后重跑本命令'
     exit 1
   fi
+  # doctor --bootstrap needs Orca running, and a running Orca overwrites the columns board-columns writes.
+  if ! "$root/bin/orca-factory" board-columns --check; then
+    printf 'bootstrap: 人工清单\n- 退出 Orca（桌面端与 orca serve），运行 %s/bin/orca-factory board-columns，再启动 Orca，然后重跑本命令\n' "$root"
+    exit 1
+  fi
   bin="${XDG_CACHE_HOME:-$HOME/.cache}/orca-factory/orca-factory-driver"
   cmp -s "$probe/orca-factory-driver" "$bin" || install -D -m 755 "$probe/orca-factory-driver" "$bin"
   plan="$("$bin" install --dry-run)" || fail 'bootstrap: orca-factory-driver install --dry-run 失败'
@@ -855,7 +881,6 @@ cmd_bootstrap() {
   else
     echo 'bootstrap: 跳过 install，文件均已是最新'
   fi
-  "$root/bin/orca-factory" board-columns --check > /dev/null 2>&1 || "$root/bin/orca-factory" board-columns
   for unit in "${DRIVER_SERVICES[@]}"; do
     if systemctl --user is-active --quiet "$unit"; then
       echo "bootstrap: 跳过启动，$unit 已在运行"
@@ -864,6 +889,9 @@ cmd_bootstrap() {
     fi
   done
   "$bin" doctor || fail 'bootstrap: doctor 未全绿，按上表处理后重跑本命令'
+  # doctor exits 0 on unknown, which is what a crash-looping service reports.
+  "$bin" doctor --json | jq -e 'all(.checks[]; .status != "unknown")' > /dev/null \
+    || fail 'bootstrap: doctor 有 unknown 项，按上表处理后重跑本命令'
   echo "bootstrap: 完成。接入下游项目：orca-factory-driver onboard --repo <本机检出路径> --dry-run（见 $root/ONBOARD.md）"
 }
 
