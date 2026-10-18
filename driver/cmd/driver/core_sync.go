@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -287,6 +288,11 @@ func syncPRChecksPassed(ctx context.Context, repo, branch, number string) error 
 	if !required {
 		out, err = runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "checks", number, "--json", "name,bucket"}, Dir: repo, Timeout: 30 * time.Second})
 	}
+	// gh exits 8 while checks are pending and 1 when one failed; the JSON still
+	// lists every check, so the per-check verdict below names the cause.
+	if errors.As(err, &exit) && (exit.ExitCode() == 8 || exit.ExitCode() == 1) && json.Valid(out) && len(bytes.TrimSpace(out)) > 0 {
+		err = nil
+	}
 	if err != nil {
 		return fmt.Errorf("同步 PR %s 不自动合并: 检查未全部通过（required=%t）: %w", branch, required, err)
 	}
@@ -301,11 +307,11 @@ func syncPRChecksPassed(ctx context.Context, repo, branch, number string) error 
 	for _, check := range checks {
 		switch {
 		case check.Bucket == "pass":
+		case check.Bucket == "pending":
+			pending = append(pending, check.Name)
 		case required:
 			return fmt.Errorf("同步 PR %s 不自动合并: 必需检查 %s 为 %s", branch, check.Name, check.Bucket)
 		case check.Bucket == "skipping":
-		case check.Bucket == "pending":
-			pending = append(pending, check.Name)
 		default:
 			return fmt.Errorf("同步 PR %s 不自动合并: 检查 %s 为 %s", branch, check.Name, check.Bucket)
 		}

@@ -105,7 +105,10 @@ case "$1 $2" in
 "pr close") ;;
 "pr view") if [ -e `+f.merged+` ]; then echo '{"state":"MERGED",`+sameRepoFields+`}'; else cat `+f.prView+`; fi ;;
 "pr checks") case "$*" in *--required*) [ -e `+f.requiredNone+` ] && { cat `+recordedPath(t, "gh-pr-checks-required-none.stderr")+` >&2; exit "$(cat `+recordedPath(t, "gh-pr-checks-required-none.exit")+`)"; } ;; esac
-	cat `+f.prChecks+` ;;
+	cat `+f.prChecks+`
+	grep -q '"pending"' `+f.prChecks+` && exit 8
+	grep -q '"fail"' `+f.prChecks+` && exit 1
+	exit 0 ;;
 "pr merge") touch `+f.merged+` ;;
 *) exit 9 ;;
 esac
@@ -202,7 +205,7 @@ func TestCoreSyncAutoMerge(t *testing.T) {
 	}{
 		{"all conditions met", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, sameRepoFields, 1, true},
 		{"file outside agent-gates", `[{"path":"scripts/agent-gates/install.sh"},{"path":"outside.txt"}]`, passed, sameRepoFields, 2, false},
-		{"check not passed", `[{"path":"scripts/agent-gates/install.sh"}]`, `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"pending"}]`, sameRepoFields, 1, false},
+		{"check not passed", `[{"path":"scripts/agent-gates/install.sh"}]`, `[{"name":"go","bucket":"pass"},{"name":"gate","bucket":"fail"}]`, sameRepoFields, 1, false},
 		{"no required checks", `[{"path":"scripts/agent-gates/install.sh"}]`, `[]`, sameRepoFields, 1, false},
 		{"fork head", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, `"isCrossRepository":true,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"forker"}`, 1, false},
 		{"head repository differs", `[{"path":"scripts/agent-gates/install.sh"}]`, passed, `"isCrossRepository":false,"headRepository":{"name":"repo"},"headRepositoryOwner":{"login":"other"}`, 1, false},
@@ -339,14 +342,14 @@ func TestCoreSyncAutoMergeWarnsOncePerReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	var reported []bool
-	for _, checks := range []string{`[{"name":"go","bucket":"pending"}]`, `[{"name":"go","bucket":"pending"}]`, `[{"name":"go","bucket":"fail"}]`} {
+	for _, checks := range []string{`[{"name":"go","bucket":"fail"}]`, `[{"name":"go","bucket":"fail"}]`, `[{"name":"gate","bucket":"fail"}]`} {
 		if err := os.WriteFile(f.prChecks, []byte(checks+"\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		reported = append(reported, f.syncer.sync(context.Background(), f.project()) != nil)
 	}
 	if !slices.Equal(reported, []bool{true, false, true}) {
-		t.Fatalf("reported=%v, want the repeated pending reason reported once", reported)
+		t.Fatalf("reported=%v, want the repeated failure reason reported once", reported)
 	}
 }
 
