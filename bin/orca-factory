@@ -738,7 +738,10 @@ case "$*" in
   'doctor --bootstrap')
     [[ -f "$BS/missing" ]] && { echo 'gh_auth  human  gh 未登录 GitHub  fix: gh auth login'; exit 1; }
     echo 'go  ok' ;;
-  'install --dry-run') [[ -f "$BS/installed" ]] && echo "unchanged $HOME/.local/bin/orca-factory-driver" || echo "create $HOME/.local/bin/orca-factory-driver" ;;
+  'install --dry-run')
+    if [[ -f "$BS/stale" ]]; then echo "replace $HOME/.local/bin/orca-factory-driver"
+    elif [[ -f "$BS/installed" ]]; then echo "unchanged $HOME/.local/bin/orca-factory-driver"
+    else echo "create $HOME/.local/bin/orca-factory-driver"; fi ;;
   install) touch "$BS/installed" ;;
   doctor) echo 'version  ok' ;;
   *) exit 2 ;;
@@ -762,53 +765,91 @@ esac
 FAKE
   chmod +x "$bs/driver" "$bs/bin/go" "$bs/bin/systemctl"
   export PATH="$bs/bin:/usr/bin:/bin"
+  git clone -q "$FACTORY" "$bs/factory"
 
   touch "$bs/missing"
-  "$FACTORY/bin/orca-factory" bootstrap "$FACTORY" > "$bs/out" 2>&1 || rc=$?
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || rc=$?
   [[ "$rc" != 0 ]] || { cat "$bs/out"; fail "selftest: bootstrap must exit non-zero when a prerequisite is missing"; }
   grep -q '人工清单' "$bs/out" && grep -q 'gh auth login' "$bs/out" \
     || { cat "$bs/out"; fail "selftest: bootstrap must print the manual checklist"; }
   ! grep -Eq '^driver install|^systemctl --user enable' "$bs/log" || fail "selftest: bootstrap installed with a missing prerequisite"
+  [[ -z "$(find "$HOME" -mindepth 1)" ]] || { find "$HOME"; fail "selftest: bootstrap wrote files with a missing prerequisite"; }
 
   rm "$bs/missing"; : > "$bs/log"
-  "$FACTORY/bin/orca-factory" bootstrap "$FACTORY" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap failed with all prerequisites present"; }
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap failed with all prerequisites present"; }
   grep -Fxq 'driver install' "$bs/log" && grep -q '^systemctl --user enable --now' "$bs/log" && grep -Fxq 'driver doctor' "$bs/log" \
     || { cat "$bs/log"; fail "selftest: bootstrap did not build, install, start and run doctor"; }
   grep -q 'onboard' "$bs/out" || { cat "$bs/out"; fail "selftest: bootstrap did not point at onboard"; }
 
   : > "$bs/log"; touch "$bs/marker"
-  "$FACTORY/bin/orca-factory" bootstrap "$FACTORY" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap rerun failed"; }
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || { cat "$bs/out"; fail "selftest: bootstrap rerun failed"; }
   [[ -z "$(find "$HOME" "$ORCA_DATA_FILE" "$bs/installed" "$bs/active" -newer "$bs/marker")" ]] && ! grep -Eq '^driver install$|^systemctl --user enable' "$bs/log" \
     || { cat "$bs/log"; fail "selftest: bootstrap rerun wrote again"; }
+
+  : > "$bs/log"; touch "$bs/stale"; rc=0
+  "$FACTORY/bin/orca-factory" bootstrap "$bs/factory" > "$bs/out" 2>&1 || rc=$?
+  [[ "$rc" != 0 ]] && ! grep -Fxq 'driver install' "$bs/log" && grep -q 'deploy.sh' "$bs/out" \
+    || { cat "$bs/out" "$bs/log"; fail "selftest: bootstrap replaced a running driver instead of pointing at deploy.sh"; }
   echo "bootstrap: PASS"
 )
 
 DRIVER_SERVICES=(orca-factory-driver.service orca-factory-driver-watch.timer)
 
+# Reduces https, ssh and scp-style remotes to host/owner/repo so equivalent URLs compare equal.
+normalize_git_url() {
+  local url="${1%/}"
+  url="${url%.git}"
+  url="${url#*://}"
+  url="${url#*@}"
+  printf '%s\n' "${url/://}"
+}
+
 cmd_bootstrap() {
-  local source="${1:-}" root bin unit
+  local source="${1:-}" root bin unit probe origin plan
   [[ -n "$source" ]] || usage
   if [[ -d "$source" ]]; then
     root="$(cd "$source" && pwd -P)"
+    git -C "$root" rev-parse --git-dir > /dev/null 2>&1 || fail "bootstrap: $root 不是 git 仓库"
+    [[ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ]] \
+      || fail "bootstrap: $root 有未提交改动，先提交或丢弃改动再重跑本命令"
     echo "bootstrap: 复用 factory $root"
   else
     root="${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}"
-    if [[ -d "$root/.git" ]]; then
+    if [[ -e "$root" ]]; then
+      origin="$(git -C "$root" remote get-url origin 2>/dev/null)" || fail "bootstrap: $root 已存在但读不到 origin"
+      [[ "$(normalize_git_url "$origin")" == "$(normalize_git_url "$source")" ]] \
+        || fail "bootstrap: $root 的 origin 是 $origin，与 $source 不一致"
       echo "bootstrap: 跳过 clone，已有 $root"
     else
       git clone -q -- "$source" "$root" || fail "bootstrap: git clone $source 失败"
     fi
   fi
-  git -C "$root" rev-parse --git-dir > /dev/null 2>&1 || fail "bootstrap: $root 不是 git 仓库"
   command -v go > /dev/null || { printf 'bootstrap: 人工清单\n- 安装 go（版本见 %s/driver/go.mod），然后重跑本命令\n' "$root"; exit 1; }
-  # deploy.sh stamps the same version, so doctor's version check matches origin/main.
-  bin="${XDG_CACHE_HOME:-$HOME/.cache}/orca-factory/orca-factory-driver"
-  (cd "$root/driver" && go build -ldflags "-X main.version=$(git rev-parse HEAD)" -o "$bin" ./cmd/driver) || fail 'bootstrap: 构建 driver 失败'
-  if ! (cd "$root" && "$bin" doctor --bootstrap); then
+  # doctor --bootstrap is driver code, so it runs from a throwaway build. GOPATH
+  # (module and sumdb caches), GOCACHE and XDG_CONFIG_HOME (telemetry) point
+  # into it, so a missing prerequisite leaves nothing on disk; GOENV keeps the
+  # user's go env file. Go writes downloaded toolchains read-only, hence chmod.
+  probe="$(mktemp -d)"
+  trap "chmod -R u+w $(printf %q "$probe"); rm -rf $(printf %q "$probe")" EXIT
+  # deploy.sh stamps the same short SHA, so install --dry-run sees no replace once deployed.
+  (cd "$root/driver" && GOENV="${GOENV:-${XDG_CONFIG_HOME:-$HOME/.config}/go/env}" \
+    GOPATH="$probe/gopath" GOMODCACHE="$probe/gopath/pkg/mod" GOCACHE="$probe/gocache" XDG_CONFIG_HOME="$probe/config" \
+    go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o "$probe/orca-factory-driver" ./cmd/driver) \
+    || fail 'bootstrap: 构建 driver 失败'
+  if ! (cd "$root" && "$probe/orca-factory-driver" doctor --bootstrap); then
     echo 'bootstrap: 人工清单：按上表 fix 列处理 fail 与 human 项，然后重跑本命令'
     exit 1
   fi
-  if "$bin" install --dry-run | grep -Eq '^(create|replace) '; then
+  bin="${XDG_CACHE_HOME:-$HOME/.cache}/orca-factory/orca-factory-driver"
+  cmp -s "$probe/orca-factory-driver" "$bin" || install -D -m 755 "$probe/orca-factory-driver" "$bin"
+  plan="$("$bin" install --dry-run)" || fail 'bootstrap: orca-factory-driver install --dry-run 失败'
+  # install replaces without drain or backup; a running driver is upgraded by deploy.sh instead.
+  if systemctl --user is-active --quiet "${DRIVER_SERVICES[0]}" && grep -q '^replace ' <<< "$plan"; then
+    grep '^replace ' <<< "$plan"
+    echo "bootstrap: ${DRIVER_SERVICES[0]} 正在运行，上列文件需替换。用 $root/driver/deploy/ops/deploy.sh 升级（先 drain 再备份），然后重跑本命令"
+    exit 1
+  fi
+  if grep -Eq '^(create|replace) ' <<< "$plan"; then
     "$bin" install || fail 'bootstrap: orca-factory-driver install 失败'
   else
     echo 'bootstrap: 跳过 install，文件均已是最新'
