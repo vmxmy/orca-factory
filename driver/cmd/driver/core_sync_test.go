@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 // writeExecutable writes an executable stand-in script.
@@ -57,6 +59,7 @@ type coreSyncFixture struct {
 	origin, repo, factory, ghLog, prList string
 	prView, prChecks, merged             string
 	created, createFails                 string
+	requiredNone                         string
 	syncer                               *coreSyncer
 }
 
@@ -65,7 +68,7 @@ const sameRepoFields = `"isCrossRepository":false,"headRepository":{"name":"repo
 func newCoreSyncFixture(t *testing.T) coreSyncFixture {
 	t.Helper()
 	root := t.TempDir()
-	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged"), created: filepath.Join(root, "created"), createFails: filepath.Join(root, "create-fails")}
+	f := coreSyncFixture{origin: filepath.Join(root, "origin.git"), repo: filepath.Join(root, "repo"), factory: filepath.Join(root, "factory"), ghLog: filepath.Join(root, "gh.log"), prList: filepath.Join(root, "pr-list.json"), prView: filepath.Join(root, "pr-view.json"), prChecks: filepath.Join(root, "pr-checks.json"), merged: filepath.Join(root, "merged"), created: filepath.Join(root, "created"), createFails: filepath.Join(root, "create-fails"), requiredNone: filepath.Join(root, "required-none")}
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", filepath.Join(root, "state"))
 	for _, key := range []string{"GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"} {
 		t.Setenv(key, "t")
@@ -101,7 +104,8 @@ case "$1 $2" in
 	touch `+f.created+`; echo https://github.com/example/repo/pull/9 ;;
 "pr close") ;;
 "pr view") if [ -e `+f.merged+` ]; then echo '{"state":"MERGED",`+sameRepoFields+`}'; else cat `+f.prView+`; fi ;;
-"pr checks") cat `+f.prChecks+` ;;
+"pr checks") case "$*" in *--required*) [ -e `+f.requiredNone+` ] && { cat `+recordedPath(t, "gh-pr-checks-required-none.stderr")+` >&2; exit "$(cat `+recordedPath(t, "gh-pr-checks-required-none.exit")+`)"; } ;; esac
+	cat `+f.prChecks+` ;;
 "pr merge") touch `+f.merged+` ;;
 *) exit 9 ;;
 esac
@@ -236,6 +240,63 @@ func TestCoreSyncAutoMerge(t *testing.T) {
 			}
 			if b, _ := os.ReadFile(f.ghLog); strings.Count(string(b), "pr merge") != 1 {
 				t.Fatalf("merged PR merged again: %q", b)
+			}
+		})
+	}
+}
+
+func recordedPath(t *testing.T, name string) string {
+	t.Helper()
+	path, err := filepath.Abs(filepath.Join("..", "..", "testdata", "recorded", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestCoreSyncAutoMergeWithoutRequiredChecks is OF-168: when the base branch
+// requires no checks, `gh pr checks --required` exits 1 (recorded from
+// ziikoo-control-plane #253) and the PR's full check list decides instead:
+// all passed or skipped merges, pending waits for CI without an error, and
+// no checks at all stays unmerged with an error.
+func TestCoreSyncAutoMergeWithoutRequiredChecks(t *testing.T) {
+	recorded, err := os.ReadFile(recordedPath(t, "gh-pr-checks-all-pass.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, checks  string
+		merge, failed bool
+	}{
+		{"all passed", strings.Replace(string(recorded), `{"bucket":"pass","name":"go-image"}`, `{"bucket":"skipping","name":"go-image"}`, 1), true, false},
+		{"pending", `[{"bucket":"pass","name":"gate"},{"bucket":"pending","name":"go"}]`, false, false},
+		{"no checks", `[]`, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newCoreSyncFixture(t)
+			if err := f.syncer.sync(context.Background(), f.project()); err != nil {
+				t.Fatal(err)
+			}
+			branch := "chore/orca-factory-core-sync-" + gitIn(t, f.factory, "rev-parse", "--short", "HEAD")
+			view := fmt.Sprintf(`{"number":9,"state":"OPEN","headRefName":%q,"headRefOid":"abc123","mergeable":"MERGEABLE",%s,"changedFiles":1,"files":[{"path":"scripts/agent-gates/install.sh"}]}`+"\n", branch, sameRepoFields)
+			for path, body := range map[string]string{f.prView: view, f.prChecks: tc.checks + "\n", f.requiredNone: ""} {
+				if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var logs strings.Builder
+			ctx := runx.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+			err := f.syncer.sync(ctx, f.project())
+			b, readErr := os.ReadFile(f.ghLog)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			merged := strings.Contains(string(b), "pr merge 9 --squash --match-head-commit abc123")
+			if merged != tc.merge || (err != nil) != tc.failed {
+				t.Fatalf("merged=%t err=%v, want merged=%t failed=%t; gh calls %q", merged, err, tc.merge, tc.failed, b)
+			}
+			if tc.name == "pending" && !strings.Contains(logs.String(), "等待 CI") {
+				t.Fatalf("logs %q, want 等待 CI", logs.String())
 			}
 		})
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -50,7 +51,12 @@ func (c *coreSyncer) sync(ctx context.Context, p projects.Project) (err error) {
 		return err
 	}
 	if open {
-		return c.reportOnce(p.Path, ensureSyncPR(ctx, p, target, branch, version))
+		err := ensureSyncPR(ctx, p, target, branch, version)
+		if errors.Is(err, errSyncWaitingCI) {
+			runx.LoggerFrom(ctx).Info("core sync 等待 CI", "path", p.Path, "reason", err)
+			err = nil
+		}
+		return c.reportOnce(p.Path, err)
 	}
 	worktree := filepath.Join(c.cacheDir, "orca-factory", "core-sync", onboardKey(p.Remote))
 	if err := removeSyncWorktree(ctx, p.Path, worktree); err != nil {
@@ -220,8 +226,8 @@ const maxPRFiles = 100
 
 // autoMergeSyncPR squash-merges this factory version's sync PR (OF-133) only
 // when its head is in target itself, it touches nothing outside
-// scripts/agent-gates/, is mergeable, and has at least one required check
-// with every one passed. Checks, merge and read-back address the PR by the
+// scripts/agent-gates/, is mergeable, and its checks passed
+// (syncPRChecksPassed). Checks, merge and read-back address the PR by the
 // number just verified. Any unmet condition is returned as an error so
 // discovery logs a WARN and retries next time; an already merged PR is a
 // no-op.
@@ -251,23 +257,8 @@ func autoMergeSyncPR(ctx context.Context, repo string, target githubRepo, branch
 		return fmt.Errorf("同步 PR %s 不自动合并: mergeable=%s", branch, pr.Mergeable)
 	}
 	number := strconv.Itoa(pr.Number)
-	// gh exits non-zero while a required check is pending or failed and when
-	// the base branch requires none; all of these mean "not passed".
-	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "checks", number, "--required", "--json", "name,bucket"}, Dir: repo, Timeout: 30 * time.Second})
-	if err != nil {
-		return fmt.Errorf("同步 PR %s 不自动合并: 必需检查未全部通过: %w", branch, err)
-	}
-	var checks []struct{ Name, Bucket string }
-	if err := json.Unmarshal(out, &checks); err != nil {
-		return fmt.Errorf("gh pr checks %s 输出不可解析: %w", branch, err)
-	}
-	if len(checks) == 0 {
-		return fmt.Errorf("同步 PR %s 不自动合并: 没有必需检查结果", branch)
-	}
-	for _, check := range checks {
-		if check.Bucket != "pass" {
-			return fmt.Errorf("同步 PR %s 不自动合并: 必需检查 %s 为 %s", branch, check.Name, check.Bucket)
-		}
+	if err := syncPRChecksPassed(ctx, repo, branch, number); err != nil {
+		return err
 	}
 	if _, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "merge", number, "--squash", "--match-head-commit", pr.HeadRefOid}, Dir: repo, Timeout: time.Minute}); err != nil {
 		return fmt.Errorf("gh pr merge %s 失败: %w", branch, err)
@@ -277,6 +268,50 @@ func autoMergeSyncPR(ctx context.Context, repo string, target githubRepo, branch
 	}
 	if pr.State != "MERGED" {
 		return fmt.Errorf("同步 PR %s 合并后回读 state=%s", branch, pr.State)
+	}
+	return nil
+}
+
+var errSyncWaitingCI = errors.New("等待 CI")
+
+// syncPRChecksPassed requires every required check of the PR to pass. gh
+// exits non-zero while a required check is pending or failed; all of these
+// mean "not passed". A base branch that requires no checks (OF-168: gh exits
+// 1 with "no required checks reported") falls back to all of the PR's
+// checks: at least one, each passed or skipped, and pending ones wait for CI
+// rather than count as a refusal.
+func syncPRChecksPassed(ctx context.Context, repo, branch, number string) error {
+	out, err := runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "checks", number, "--required", "--json", "name,bucket"}, Dir: repo, Timeout: 30 * time.Second})
+	var exit *exec.ExitError
+	required := !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(exit.Stderr), "no required checks reported")
+	if !required {
+		out, err = runx.Run(ctx, runx.Spec{Path: "gh", Args: []string{"pr", "checks", number, "--json", "name,bucket"}, Dir: repo, Timeout: 30 * time.Second})
+	}
+	if err != nil {
+		return fmt.Errorf("同步 PR %s 不自动合并: 检查未全部通过（required=%t）: %w", branch, required, err)
+	}
+	var checks []struct{ Name, Bucket string }
+	if err := json.Unmarshal(out, &checks); err != nil {
+		return fmt.Errorf("gh pr checks %s 输出不可解析: %w", branch, err)
+	}
+	if len(checks) == 0 {
+		return fmt.Errorf("同步 PR %s 不自动合并: 没有检查结果（required=%t）", branch, required)
+	}
+	var pending []string
+	for _, check := range checks {
+		switch {
+		case check.Bucket == "pass":
+		case required:
+			return fmt.Errorf("同步 PR %s 不自动合并: 必需检查 %s 为 %s", branch, check.Name, check.Bucket)
+		case check.Bucket == "skipping":
+		case check.Bucket == "pending":
+			pending = append(pending, check.Name)
+		default:
+			return fmt.Errorf("同步 PR %s 不自动合并: 检查 %s 为 %s", branch, check.Name, check.Bucket)
+		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("同步 PR %s %w: %s", branch, errSyncWaitingCI, strings.Join(pending, ", "))
 	}
 	return nil
 }
