@@ -1,0 +1,9 @@
+[Unit]
+Description=Orca Factory Driver Watch
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/orca-factory-driver watch
+Environment=AGENT_ORCA_BIN=%h/.local/bin/orca
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
