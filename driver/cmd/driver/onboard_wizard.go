@@ -47,9 +47,9 @@ func runOnboard(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	// SIGTERM and SIGHUP only: Ctrl-C stays the shell's default kill so a
-	// stray press during a line prompt exits immediately (the wizard holds no
-	// lock then), instead of cancelling a context the agent stage still needs.
+	// SIGTERM and SIGHUP only: at a line prompt Ctrl-C keeps its default kill
+	// and exits at once, since nothing is held then. wizard.session catches it
+	// only while the agent runs.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	o := onboarder{cfg: cfg, orca: &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}
@@ -239,8 +239,19 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 	if ok, code := w.confirm("回车进入接入会话"); !ok {
 		return false, code
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "无人值守接入 Agent 运行中，最长 2h。")
-	if _, err := w.o.session(ctx, plan, w.o.runAgent); err != nil {
+	_, _ = fmt.Fprintln(os.Stdout, "无人值守接入 Agent 运行中，最长 2h，Ctrl-C 中断。")
+	// The agent runs in its own process group (runx), out of reach of the
+	// terminal's Ctrl-C. Cancelling agentCtx is what makes runx kill that
+	// group; a default-killed driver would orphan the agent and free the lock.
+	agentCtx, stopAgent := signal.NotifyContext(ctx, os.Interrupt)
+	_, err = w.o.session(agentCtx, plan, w.o.runAgent)
+	interrupted := agentCtx.Err() != nil
+	stopAgent()
+	if interrupted {
+		_, _ = fmt.Fprintln(os.Stdout, "\n[接入会话] 已中断，Agent 已停止。重跑 `orca-factory-driver onboard --repo <path>` 会续接 worktree。")
+		return false, 1
+	}
+	if err != nil {
 		_, _ = fmt.Fprintln(os.Stdout, err)
 		if ok, code := w.confirm("回车重试，q 退出"); !ok {
 			return false, code
