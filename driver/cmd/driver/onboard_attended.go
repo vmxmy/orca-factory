@@ -15,6 +15,10 @@ import (
 // forwarded SIGTERM before it is killed.
 const onboardTermGrace = 10 * time.Second
 
+// errOnboardInterrupted marks a session ended because the driver itself got
+// SIGTERM or SIGHUP: the wizard then exits instead of offering a retry.
+var errOnboardInterrupted = errors.New("接入会话已中断")
+
 // runAttendedAgent runs the onboarding agent as an interactive Claude Code
 // session that owns this terminal until the person exits it (OF-201). It is
 // not runx: runx's own process group would leave claude in a background
@@ -38,9 +42,11 @@ func (o onboarder) runAttendedAgent(_ context.Context, plan onboardPlan) (string
 	exited := make(chan error, 1)
 	go func() { exited <- cmd.Wait() }()
 	var kill <-chan time.Time
+	stopping := false
 	for {
 		select {
 		case sig := <-signals:
+			stopping = stopping || sig == syscall.SIGTERM || sig == syscall.SIGHUP
 			if sig == syscall.SIGTERM && kill == nil {
 				_ = cmd.Process.Signal(syscall.SIGTERM)
 				kill = time.After(onboardTermGrace)
@@ -48,16 +54,19 @@ func (o onboarder) runAttendedAgent(_ context.Context, plan onboardPlan) (string
 		case <-kill:
 			_ = cmd.Process.Kill()
 		case err := <-exited:
-			if err == nil {
-				return "", nil
-			}
 			// A claude killed by a signal never restores the raw mode its TUI set.
 			if status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && status.Signaled() {
 				stty := exec.Command("stty", "sane")
 				stty.Stdin = os.Stdin
 				err = errors.Join(err, stty.Run())
 			}
-			return "", fmt.Errorf("接入会话异常结束：%w", err)
+			switch {
+			case stopping:
+				return "", errors.Join(errOnboardInterrupted, err)
+			case err != nil:
+				return "", fmt.Errorf("接入会话异常结束：%w", err)
+			}
+			return "", nil
 		}
 	}
 }

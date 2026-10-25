@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -246,7 +247,10 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 	if ok, code := w.confirm("进入接入会话"); !ok {
 		return false, code
 	}
-	if _, err = w.o.session(ctx, plan, w.o.runAttendedAgent); err != nil {
+	if _, err = w.o.session(ctx, plan, w.o.runAttendedAgent); errors.Is(err, errOnboardInterrupted) {
+		_, _ = fmt.Fprintln(os.Stdout, "\n[接入会话] 已中断。重跑 `orca-factory-driver onboard --repo <path>` 会续接 worktree。")
+		return false, 1
+	} else if err != nil {
 		_, _ = fmt.Fprintln(os.Stdout, err)
 		if ok, _ := w.confirm("重试接入会话"); !ok {
 			return false, 1
