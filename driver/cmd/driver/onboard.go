@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -65,6 +63,11 @@ type onboardPlan struct {
 	RowExists bool     `json:"row_exists"`
 	Pending   []string `json:"pending"`
 	Steps     []string `json:"steps"`
+	// Resume is set only by the wizard when deriveStage said Resume: the
+	// scene check then accepts our own leftover worktree and session skips
+	// addWorktree. The gateway never sets it, so its check stays exactly as
+	// strict as before (OF-197).
+	Resume bool `json:"-"`
 	// Preflight is OF-52's deterministic go/no-go judgments, filled in after
 	// the plan itself: `onboard --dry-run` prints them and exits non-zero on
 	// any failure; the real run (CLI or the picker card's 接入 button, which
@@ -123,6 +126,13 @@ type onboarder struct {
 
 // onboardKey names a repository's onboarding lock and worktree directory.
 func onboardKey(remote string) string { return strings.ReplaceAll(remote, "/", "_") }
+
+// onboardWorktree is the single source of the onboarding worktree path:
+// plan(), enable's cleanup and the wizard's scene probe all read it here, so
+// the path one run created is exactly the path the next run resumes.
+func onboardWorktree(cacheDir, remote string) string {
+	return filepath.Join(cacheDir, "orca-factory", "onboard", onboardKey(remote), "worktree")
+}
 
 // plan validates that repo is an onboardable repository in the live
 // discovery result and derives its defaults from the factory's own profile.
@@ -190,7 +200,7 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 	if existing != "" {
 		rowStep = fmt.Sprintf("飞书项目表已有 %s 的行（编号前缀=%s），沿用不新增", target.Remote, prefix)
 	}
-	worktree := filepath.Join(o.cacheDir, "orca-factory", "onboard", onboardKey(target.Remote), "worktree")
+	worktree := onboardWorktree(o.cacheDir, target.Remote)
 	steps := []string{
 		rowStep,
 		fmt.Sprintf("git -C %s fetch origin main && git -C %s worktree add -b %s %s origin/main", repo, repo, onboardBranch, worktree),
@@ -220,9 +230,19 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 	if summary := failedPreflightSummary(o.runPreflight(ctx, plan)); summary != "" {
 		return intake.OnboardResult{}, fmt.Errorf("接入前置检查未通过：%s", summary)
 	}
-	lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(req.Remote)+".lock"))
+	return o.session(ctx, plan, o.runAgent)
+}
+
+// session is run()'s write tail under the repository's single-instance lock,
+// <state root>/onboard/<remote key>.lock, held across processes (the gateway
+// and the wizard) until the agent returns: row write (skipped when the plan
+// reuses one), worktree (skipped when plan.Resume continues ours), then the
+// agent. The wizard passes its own agent and discards the returned PR — its
+// PR fact comes only from the gh read-back in observe.
+func (o onboarder) session(ctx context.Context, plan onboardPlan, agent func(context.Context, onboardPlan) (string, error)) (intake.OnboardResult, error) {
+	lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(plan.Remote)+".lock"))
 	if errors.Is(err, syscall.EWOULDBLOCK) {
-		return intake.OnboardResult{}, fmt.Errorf("%s 已有进行中的接入", req.Remote)
+		return intake.OnboardResult{}, fmt.Errorf("%s 已有进行中的接入", plan.Remote)
 	}
 	if err != nil {
 		return intake.OnboardResult{}, fmt.Errorf("接入锁不可用：%w", err)
@@ -234,10 +254,12 @@ func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.O
 			return intake.OnboardResult{}, fmt.Errorf("项目表写入失败：%w", err)
 		}
 	}
-	if err := o.addWorktree(ctx, plan); err != nil {
-		return intake.OnboardResult{}, err
+	if !plan.Resume {
+		if err := o.addWorktree(ctx, plan); err != nil {
+			return intake.OnboardResult{}, err
+		}
 	}
-	pr, err := o.runAgent(ctx, plan)
+	pr, err := agent(ctx, plan)
 	if err != nil {
 		return intake.OnboardResult{}, err
 	}
@@ -415,29 +437,42 @@ func remoteIdentityCheck(ctx context.Context, path, canonicalKey string) (ok boo
 	return true, "Orca 标识与 origin 一致：" + canonicalKey
 }
 
-// checkOnboardScene is preflight group (d): the onboarding worktree path,
-// the feat/agent-graph branch (local and remote), and the onboarding lock
-// must all be clear — a residue from an earlier attempt is a person's job
-// to clean up, never this run's.
+// checkOnboardScene is preflight group (d): the scene must be clear — or,
+// only when the wizard set plan.Resume (OF-197), this machine's own leftover
+// worktree counts as ours to continue. classifyScene is the same interpreter
+// deriveStage uses, so the two can never disagree on what residue is. Any
+// other residue is a person's job to clean up, never this run's; the lock
+// must be free either way.
 func checkOnboardScene(ctx context.Context, o onboarder, plan onboardPlan) preflightCheck {
 	const name = "现场"
-	var problems []string
-	if _, err := os.Stat(plan.Worktree); !errors.Is(err, os.ErrNotExist) {
-		problems = append(problems, "worktree 已存在")
+	probe, err := probeScene(ctx, o, plan.Repo, plan.Remote)
+	if err != nil {
+		return preflightCheck{Name: name, OK: false, Detail: err.Error()}
 	}
-	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "show-ref", "--quiet", "refs/heads/" + plan.Branch}, Timeout: 10 * time.Second}); err == nil {
-		problems = append(problems, "本地分支 "+plan.Branch+" 已存在")
-	}
-	if out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", plan.Repo, "ls-remote", "--heads", "origin", plan.Branch}, Timeout: 30 * time.Second}); err == nil && strings.TrimSpace(string(out)) != "" {
-		problems = append(problems, "远端分支 "+plan.Branch+" 已存在")
+	scene := classifyScene(probe)
+	problems := ""
+	switch {
+	case scene == sceneClear, plan.Resume && scene == sceneOurs:
+	case scene == sceneResidue:
+		problems = sceneResidueDetail(probe)
+	default:
+		problems = "现场不可续接（worktree 与本地分支不完整）"
 	}
 	if lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(plan.Remote)+".lock")); err != nil {
-		problems = append(problems, "接入锁被占用：已有进行中的接入")
+		busy := "接入锁被占用：已有进行中的接入"
+		if problems != "" {
+			problems += "；" + busy
+		} else {
+			problems = busy
+		}
 	} else {
 		_ = lock.Close()
 	}
-	if len(problems) > 0 {
-		return preflightCheck{Name: name, OK: false, Detail: strings.Join(problems, "；") + "；补法：清理残留 worktree/分支，或等待进行中的接入结束"}
+	if problems != "" {
+		return preflightCheck{Name: name, OK: false, Detail: problems + "；补法：清理残留 worktree/分支，或等待进行中的接入结束"}
+	}
+	if plan.Resume {
+		return preflightCheck{Name: name, OK: true, Detail: "续接本机接入 worktree，接入锁空闲"}
 	}
 	return preflightCheck{Name: name, OK: true, Detail: "worktree 与分支均不存在，接入锁空闲"}
 }
@@ -638,6 +673,9 @@ func truncateOnboardResult(s string) string {
 func onboardPrompt(plan onboardPlan, factoryRoot string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "按 roles/onboard.md 接入目标仓库。\n工作目录（目标仓库独立 worktree，分支 %s，基于 origin/main）：%s\n", plan.Branch, plan.Worktree)
+	if plan.Resume {
+		b.WriteString("续接：工作目录里可能已有上一轮的提交与产物，先按角色文件的续接条款判断从哪一步继续，不重做已有工作。\n")
+	}
 	fmt.Fprintf(&b, "目标仓库主检出（只读）：%s\norca-factory 根目录：%s\n仓库远端：%s\n编号前缀（driver 写项目表用，已定）：%s\n", plan.Repo, factoryRoot, plan.Remote, plan.Prefix)
 	b.WriteString("agent-graph.env 默认值：\n")
 	for _, key := range append([]string{"AGENT_GH_REPO", "AGENT_FEISHU_PROJECT"}, onboardDefaultKeys...) {
@@ -680,62 +718,4 @@ func resolveClaude(configured string) (string, error) {
 		return "", errors.New("AGENT_INTAKE_CLAUDE must be an absolute path to claude")
 	}
 	return configured, nil
-}
-
-func runOnboard(args []string) int {
-	flags := flag.NewFlagSet("onboard", flag.ContinueOnError)
-	repo := flags.String("repo", "", "目标仓库本机检出路径")
-	dryRun := flags.Bool("dry-run", false, "只打印步骤与默认值")
-	if flags.Parse(args) != nil || *repo == "" || flags.NArg() != 0 {
-		fmt.Fprintln(os.Stderr, "usage: orca-factory-driver onboard --repo <path> [--dry-run]")
-		return 2
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	cfg, err := config.Load(home)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
-	defer stop()
-	o := onboarder{cfg: cfg, orca: &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}
-	plan, err := o.plan(ctx, *repo)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if *dryRun {
-		plan.Preflight = o.runPreflight(ctx, plan)
-		if err := json.NewEncoder(os.Stdout).Encode(plan); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		if failedPreflightSummary(plan.Preflight) != "" {
-			return 1
-		}
-		return 0
-	}
-	if o.claude, err = resolveClaude(os.Getenv("AGENT_INTAKE_CLAUDE")); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	result, err := o.run(ctx, intake.OnboardRequest{Repo: plan.Repo, Remote: plan.Remote})
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 1
-	}
-	return 0
 }

@@ -168,7 +168,7 @@ func runEnable(args []string) int {
 // the scene is fully clean.
 func cleanupOnboardScene(ctx context.Context, repo, remote, cacheDir string) string {
 	var notes []string
-	worktree := filepath.Join(cacheDir, "orca-factory", "onboard", onboardKey(remote), "worktree")
+	worktree := onboardWorktree(cacheDir, remote)
 	switch _, err := os.Stat(worktree); {
 	case err == nil:
 		if _, rmErr := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", repo, "worktree", "remove", worktree}, Timeout: 30 * time.Second}); rmErr != nil {

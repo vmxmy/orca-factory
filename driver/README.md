@@ -14,7 +14,7 @@
 bin/orca-factory bootstrap <factory 仓库地址或本地路径>
 ```
 
-参数为本地路径时复用该检出；检出有未提交改动时拒绝构建。参数为 URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`；该目录已存在而 origin 与 URL 不一致时拒绝。命令先在临时目录构建 driver 并运行 `orca-factory-driver doctor --bootstrap`，前提不全时打印人工清单并以非 0 退出，不留下任何文件；它不安装系统包，不代替人登录。前提齐全后先用 `board-columns --check` 核对 Orca 看板的阶段列：缺列时提示退出 Orca、运行 `board-columns`、再启动 Orca，并以非 0 退出，不写文件（运行中的 Orca 会覆盖写入的列）。随后运行 `install`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 没有 `fail` 与 `unknown`（服务启动后崩溃时为 `unknown`）。go 必须在 driver 服务的 PATH 中（如 `/usr/local/bin/go`）；服务 PATH 不含 `/usr/local/go/bin`。driver 正在运行且 `install --dry-run` 有 `replace` 时，它不替换文件，提示改用 `deploy.sh`（先 drain 再备份）升级并以非 0 退出。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目仍用 `orca-factory-driver onboard`。
+参数为本地路径时复用该检出；检出有未提交改动时拒绝构建。参数为 URL 时 clone 到 `${ORCA_FACTORY_REPO:-$HOME/github/orca-factory}`；该目录已存在而 origin 与 URL 不一致时拒绝。命令先在临时目录构建 driver 并运行 `orca-factory-driver doctor --bootstrap`，前提不全时打印人工清单并以非 0 退出，不留下任何文件；它不安装系统包，不代替人登录。前提齐全后先用 `board-columns --check` 核对 Orca 看板的阶段列：缺列时提示退出 Orca、运行 `board-columns`、再启动 Orca，并以非 0 退出，不写文件（运行中的 Orca 会覆盖写入的列）。随后运行 `install`，启动 `orca-factory-driver.service` 与 watch timer，最后要求 `orca-factory-driver doctor` 没有 `fail` 与 `unknown`（服务启动后崩溃时为 `unknown`）。go 必须在 driver 服务的 PATH 中（如 `/usr/local/bin/go`）；服务 PATH 不含 `/usr/local/go/bin`。driver 正在运行且 `install --dry-run` 有 `replace` 时，它不替换文件，提示改用 `deploy.sh`（先 drain 再备份）升级并以非 0 退出。每步先检查是否已完成，重跑从第一个未完成的步骤继续。飞书需求网关不由它启动。接入下游项目用 `orca-factory-driver onboard`（终端向导，阶段由外部事实推导并可续接，OF-197）。
 
 ## GitHub Issues 主账本
 
@@ -219,26 +219,31 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 ### 自动接入
 
-`orca-factory-driver onboard --repo <本机检出路径> [--dry-run]` 接入一个「可接入」仓库（OF-50）。命令先重跑项目发现：路径不在 Orca 清单、或原因不是「可接入」（已接入、半装、check 失败等）时拒绝。`--dry-run` 打印 JSON 计划：步骤、worktree 路径、编号前缀，`agent-graph.env` 默认值（`AGENT_ISSUE_BACKEND`、`AGENT_FEISHU_BASE`、档位 `AGENT_TIER_*`/`AGENT_ROLE_INTAKE` 取自 `factory_root` 的 `agent-graph.env`；`AGENT_FEISHU_PROJECT` 取 Orca canonicalKey；`AGENT_GH_REPO` 取远端）与 `pending`（只有人知道、留空待确认的键），以及 `preflight` 数组（OF-52，见下文）。不加 `--dry-run` 时：
+`orca-factory-driver onboard [--repo <本机检出路径>] [--dry-run]` 是接入终端向导（OF-197）。阶段只从外部事实推导（项目表行、origin/main、`gh pr list` 回读、本机 worktree/分支现场、接入锁），不写进度文件；中断后重跑同一命令，从第一个未完成阶段续接。无参数进入向导选单，列出发现结果中「可接入」与「项目未启用」的仓库；`--repo` 跳过选单。`--repo --dry-run` 保持打印 JSON 计划与 `preflight` 数组（OF-52）：步骤、worktree 路径、编号前缀、`agent-graph.env` 默认值、`pending` 键与全部检查结果，任一失败以非 0 退出。
+
+向导每轮观察后按序判定阶段（先命中先生效）：行已启用 → 完成；锁被占 → 受阻；origin/main 已有 `agent-graph.env` 但项目表没有行 → 受阻；已安装 → 启用；PR OPEN → 等待合并；PR MERGED 但 origin/main 没有 env → 受阻；PR CLOSED 且现场不干净 → 受阻；现场是本机自己的接入 worktree（`feat/agent-graph` 且与主检出同一 git 目录）→ 续接；现场干净 → 开始接入；其余 → 受阻并列出残留与补法。已关闭的 PR 在现场干净时不挡路，重跑会开新 PR。发现原因不参与路由：合并后主检出未快进时发现仍报「可接入」，向导照样进入启用阶段。
 
 ```mermaid
 flowchart LR
-    A[发现校验：可接入] --> P[接入前置检查<br/>本机工具/factory 自身/目标仓库/现场/账本/服务环境/分支保护]
-    P --> B[单实例锁<br/>state/onboard/&lt;远端&gt;.lock]
-    B --> E[driver 写飞书项目表行，启用=false<br/>已有同远端行则沿用]
-    E --> C[git worktree add -b feat/agent-graph<br/>cache/orca-factory/onboard/&lt;远端&gt;/worktree]
-    C --> D[接入 Agent：init、填项目文件、ONBOARD 5a～5d、开 PR]
-    D --> F[输出 PR 链接与项目表行]
+    A[observe：项目表行/origin/main/PR 回读/现场/锁] --> V[deriveStage 纯推导]
+    V -- 开始/续接 --> P[接入前置检查 7 项<br/>FAIL 修好回车重查，q 退出]
+    P --> S[session：锁→写行→worktree（续接跳过）<br/>无人值守 Agent 最长 2h]
+    S --> A
+    V -- 等待合并 --> W[打印 PR 链接<br/>回车重查；q 退出并提示从启用续接]
+    V -- 启用 --> E[enabler.run：合并复核→快进→check→启用→清理]
+    E --> A
+    V -- 完成 --> D0[退出 0]
+    V -- 受阻 --> D1[打印原因与补法，退出 1]
 ```
 
 - 接入前置检查（OF-52）在写任何东西之前，对每个确定性判断给出 `name`/`ok`/`detail`，`--dry-run` 和真实执行跑同一套：（a）本机工具，复用 `<factory_root>/bin/orca-factory doctor --json` 核对 orca 运行中、gh 已登录、git、jq 存在，并用 `resolveClaude` 核对 claude 可解析；（b）factory 自身，在 `factory_root` 跑 `scripts/agent-gates/install.sh --dry-run` 要求退出 0；（c）目标仓库，`gh api repos/<owner>/<repo>` 的 `permissions.push` 为 true、`git ls-remote origin main` 成功，且 `git -C <仓库> remote get-url origin` 规范化（去协议、凭据、`.git` 后缀，OF-56）后与发现阶段读到的 Orca canonicalKey 一致——不一致时该项失败，`detail` 给出两个规范化后的值与补法（重启 Orca 或在 Orca 中重新登记该仓库），从不回显原始 URL；（d）现场，接入 worktree 路径与 `feat/agent-graph` 分支（本地与远端）都不存在、接入锁空闲；（e）账本，由已经成功算出的接入计划直接证明（计算该计划本身就已读过飞书项目表并算出不冲突的编号前缀，账本不可读会在这之前就失败，不会走到这里）；（f）服务环境（OF-131），从 `systemctl --user show -p Environment orca-factory-driver.service` 读出合并 drop-in 后的 `PATH` 与 `AGENT_ORCA_BIN`，要求 go、gh、git 能在 `PATH` 中找到；orca 与 driver 的 `runx.OrcaPath` 一致，服务设置了 `AGENT_ORCA_BIN` 时要求该路径可执行，未设置时才在 `PATH` 中查找。缺失时列出工具名或 `AGENT_ORCA_BIN` 路径并建议在 drop-in 中修正；systemctl 不存在或连不上 systemd user 实例时如实报告原因，并建议在该用户的登录会话中运行或确认 `XDG_RUNTIME_DIR` 与 `loginctl enable-linger`；（g）分支保护（OF-131），同时读 `gh api repos/<owner>/<repo>/branches/main`（经典分支保护的 `required_status_checks.contexts`）与 `gh api repos/<owner>/<repo>/rules/branches/main`（Ruleset 的 `required_status_checks` 规则），任一来源提供非空必需检查即通过（合并通道只在非空检查集全部成功后 squash）；都没有时失败，修复建议同时给出分支保护与 Ruleset 两种做法。两个端点只需读权限，不改仓库设置。`--dry-run` 的 JSON 带全部 7 项结果，任一失败即退出非 0；真实执行（命令行与卡片「接入」按钮共用同一入口）任一失败都不写项目表行、不建 worktree、不启动 Agent。检查输出只给键名、布尔值与命令退出码，不回显凭据或环境变量值；唯一例外是服务环境项会给出 `AGENT_ORCA_BIN` 指向的工具路径。
 - 锁文件 `<state root>/onboard/<远端，/ 换成 _>.lock`（state root 默认 `~/.local/state/orca-factory`）跨进程互斥：命令行与网关按钮对同一仓库同时只有一个接入，其余拒绝“已有进行中的接入”。
-- worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。现场前置检查已确认该目录与分支都不存在；启用成功后 driver 会清理这次接入自己创建的现场，见下文“自动启用”。
+- worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`；该路径由 `onboardWorktree` 单一来源给出，接入、启用清理与续接判定读同一公式。现场前置检查已确认该目录与分支都不存在（向导续接阶段例外：本机自己的 worktree 加本地分支算「ours」，可续接）；启用成功后 driver 会清理这次接入自己创建的现场，见下文“自动启用”。向导的 agent 阶段结束但 gh 没有读到 PR 时，worktree 保留、以退出码 1 结束并提示重跑续接，不自动重开 agent。
 - 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
 - Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，错误信息附 Agent 最终说明。项目表行在启动 Agent 之前由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
-- 接入 PR 合并后，下一次发现把该仓库判为「项目未启用」（待启用），可在项目表手动勾选「启用」，也可在卡片或下方“已接入”完成回复上点“启用”按钮（OF-54，见“自动启用”），两者效果相同。发现读的是本机检出：检出还停在合并前时，该仓库仍显示「可接入」。`enable --repo` 不依赖发现结果，它先快进检出再校验（OF-195）。
+- 接入 PR 合并后，下一次发现把该仓库判为「项目未启用」（待启用），可在项目表手动勾选「启用」，也可在卡片或下方“已接入”完成回复上点“启用”按钮（OF-54，见“自动启用”），或重跑向导进入启用阶段（与 `enable --repo` 同一套校验，OF-195）。发现读的是本机检出：检出还停在合并前时，该仓库仍显示「可接入」，但向导按 origin/main 与 PR 的事实路由到启用阶段，不受发现原因影响。
 
-需求助手卡片的「接入」按钮走同一入口：只有 `AGENT_FEISHU_APPROVERS` 中的人点击生效，其他人得到 toast“只有审批人可以接入”；生效后网关在话题回复“开始接入 <仓库>”，完成后回复一张接入完成卡片，带 PR 链接、项目表行与同一个“启用”按钮（OF-54），失败时回复原因。网关只在 `driver.toml` 配置了 `factory_root` 时开启按钮。
+需求助手卡片的「接入」按钮与向导共用 `onboarder.run` 的锁、写行、worktree 与 Agent 骨架（`session`）：只有 `AGENT_FEISHU_APPROVERS` 中的人点击生效，其他人得到 toast“只有审批人可以接入”；生效后网关在话题回复“开始接入 <仓库>”，完成后回复一张接入完成卡片，带 PR 链接、项目表行与同一个“启用”按钮（OF-54），失败时回复原因。网关路径不设 `Resume`，现场检查与之前同样严格。网关只在 `driver.toml` 配置了 `factory_root` 时开启按钮；无人值守接入只保留卡片这一条路径。
 
 ### 自动启用
 
