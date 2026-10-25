@@ -70,10 +70,10 @@ Commands:
   projects --json
       [只读] 发现本机可接管项目：联立 Orca 仓库清单、飞书项目表与流水线 check，
       输出可接管与不接管（附原因）两个列表，不读 driver.toml 的 repositories。
-  onboard --repo <path> [--dry-run]
-      [写入] 接入一个「可接入」仓库：在其独立 worktree 运行接入 Agent（init、填项目文件、
-      ONBOARD 5a～5d、开接入 PR，不合并），再由 driver 在飞书项目表加「启用」=false 的行。
-      同一仓库已有进行中的接入时拒绝。--dry-run 只打印步骤与默认值。
+  onboard [--repo <path>] [--dry-run]
+      [写入] 接入终端向导（OF-197）：阶段由外部事实推导，中断后重跑从第一个未完成阶段续接。
+      无参数从选单开始；--repo 跳过选单。阶段依次为 接入会话（无人值守 Agent，最长 2h）→
+      等待合并 → 启用（与 enable 同一套校验）。--repo --dry-run 只打印 JSON 计划与预检。
   enable --repo <path>
       [写入] 启用一个已接入仓库：复核 origin/main 已有 agent-graph.env 后快进本机检出，
       跑本仓库 check，通过后把项目表该行置 启用=true 并清理接入现场；与飞书「启用」按钮

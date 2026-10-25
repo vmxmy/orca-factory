@@ -892,7 +892,7 @@ cmd_bootstrap() {
   # doctor exits 0 on unknown, which is what a crash-looping service reports.
   "$bin" doctor --json | jq -e 'all(.checks[]; .status != "unknown")' > /dev/null \
     || fail 'bootstrap: doctor 有 unknown 项，按上表处理后重跑本命令'
-  echo "bootstrap: 完成。接入下游项目：orca-factory-driver onboard --repo <本机检出路径> --dry-run（见 $root/ONBOARD.md）"
+  echo "bootstrap: 完成。接入下游项目：orca-factory-driver onboard（见 $root/ONBOARD.md）"
 }
 
 case "${1:-}" in
