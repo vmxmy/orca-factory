@@ -36,8 +36,8 @@ const (
 
 // classifyScene is pure: clear when nothing exists; ours when this machine's
 // onboarding worktree sits on the onboarding branch and the local branch
-// exists, LocalHead being its commit (the remote branch may too — the agent pushed, PR creation failed);
-// residue for everything else.
+// exists, LocalHead being its commit (the remote branch may too — the agent
+// pushed, PR creation failed); residue for everything else.
 func classifyScene(p sceneProbe) sceneState {
 	switch {
 	case !p.PathExists && p.LocalHead == "" && !p.RemoteBranch:
