@@ -236,7 +236,7 @@ flowchart LR
 - worktree 在 `<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`，分支 `feat/agent-graph` 基于 `origin/main`。现场前置检查已确认该目录与分支都不存在；启用成功后 driver 会清理这次接入自己创建的现场，见下文“自动启用”。
 - 接入 Agent 是 `claude -p`，角色 `scripts/agent-gates/roles/onboard.md`（`factory_root` 中的安装副本），档位取 factory 的 `AGENT_ROLE_INTAKE`，未设时取 `AGENT_TIER_STRONG`，必须是 claude。工具限 `Bash,Read,Edit,Write,Grep,Glob`，`--restricted` 把文件工具限在 worktree 内，`--settings` 拒绝读凭据目录、`env`/`printenv`、`git stash`、force push、push main 与 `gh pr merge`。进程环境只有 `HOME`、`PATH`，以及存在时的 `XDG_RUNTIME_DIR`、`DBUS_SESSION_BUS_ADDRESS`（gh 从系统 keyring 读已有登录用）；不传飞书应用凭据或其他 token。
 - Agent 最终回复须含 `https://github.com/<AGENT_GH_REPO>/pull/<号>`；没有则判失败，错误信息附 Agent 最终说明。项目表行在启动 Agent 之前由 driver 经 factory 的飞书账本写入（名称=检出目录名、仓库远端、编号前缀、启用=false），Agent 不写飞书。编号前缀取目录名各词首字母（单词取前两字母），与项目表已有前缀冲突时加数字后缀。同远端同前缀的行已存在时视为已写入；远端或前缀被别的行占用时报错。
-- 接入 PR 合并后，下一次发现把该仓库判为「项目未启用」（待启用），可在项目表手动勾选「启用」，也可在卡片或下方“已接入”完成回复上点“启用”按钮（OF-54，见“自动启用”），两者效果相同。
+- 接入 PR 合并后，下一次发现把该仓库判为「项目未启用」（待启用），可在项目表手动勾选「启用」，也可在卡片或下方“已接入”完成回复上点“启用”按钮（OF-54，见“自动启用”），两者效果相同。发现读的是本机检出：检出还停在合并前时，该仓库仍显示「可接入」。`enable --repo` 不依赖发现结果，它先快进检出再校验（OF-195）。
 
 需求助手卡片的「接入」按钮走同一入口：只有 `AGENT_FEISHU_APPROVERS` 中的人点击生效，其他人得到 toast“只有审批人可以接入”；生效后网关在话题回复“开始接入 <仓库>”，完成后回复一张接入完成卡片，带 PR 链接、项目表行与同一个“启用”按钮（OF-54），失败时回复原因。网关只在 `driver.toml` 配置了 `factory_root` 时开启按钮。
 
@@ -249,18 +249,23 @@ flowchart LR
     A[点击“启用”] --> B{审批人？}
     B -- 否 --> X[toast 拒绝]
     B -- 是 --> C[toast 受理，后台校验]
+    A2[enable --repo 命令] --> D
     C --> D[git fetch + ls-tree origin/main<br/>agent-graph.env 是否已合并]
-    D -- 未合并 --> F1[话题回复失败原因，不写表]
-    D -- 已合并 --> E[本仓库 check]
-    E -- 失败 --> F2[话题回复失败原因，不写表]
+    D -- 未合并 --> F1[回复/stderr 失败原因，不写表]
+    D -- 已合并 --> D2[快进本机检出到 origin/main<br/>须在 main 且无已跟踪改动]
+    D2 -- 失败 --> F3[回复/stderr 未快进原因，不写表]
+    D2 -- 成功 --> E[本仓库 check]
+    E -- 失败 --> F2[回复/stderr 失败原因，不写表]
     E -- 通过/core 落后 --> G[driver 经 factory 飞书账本把该行 启用 改为 true<br/>并写一条事件记录操作者与时间]
     G --> G2[清理接入 worktree 与可删除的本地<br/>feat/agent-graph 分支，失败不影响启用]
     G2 --> H[话题回复“已启用 前缀 名称，下次项目发现后接管”<br/>清理有残留时附带原因]
 ```
 
-点击按钮不依赖卡片渲染时的判定：按钮本身携带目标仓库的本机检出路径、远端、编号前缀与名称，生效前总是重新校验“接入 PR 已合并”（目标仓库 `origin/main` 上存在 `scripts/agent-gates/agent-graph.env`，用 `git ls-tree` 读取，不依赖本机检出当前所在分支）与“本仓库 check 通过”；任一条件不满足都只回复具体原因，不写项目表。两项校验都通过时，driver 经 factory 的飞书账本把该行 `启用` 改为 `true`，并在飞书「事件」表写一条记录（不关联任何票据），正文含操作者 open_id 与 RFC3339 时间。已经是 `启用=true` 的行再次点击直接复用现值，不重复写表或事件，保证重复点击幂等。不提供“停用”按钮；停用仍只能在项目表手动取消勾选。
+点击按钮不依赖卡片渲染时的判定：按钮本身携带目标仓库的本机检出路径、远端、编号前缀与名称，生效前总是重新校验“接入 PR 已合并”（目标仓库 `origin/main` 上存在 `scripts/agent-gates/agent-graph.env`，用 `git ls-tree` 读取，不依赖本机检出当前所在分支）与“本仓库 check 通过”；任一条件不满足都只回复具体原因，不写项目表。两项校验之间（OF-195），driver 先把本机检出快进到刚 fetch 的 `origin/main`（要求检出在 `main` 分支且无已跟踪改动，否则报“未快进”并放弃，不写项目表），check 读的就是这份快进后的检出，不会因为本地还停在接入前而误判失败。两项校验都通过时，driver 经 factory 的飞书账本把该行 `启用` 改为 `true`，并在飞书「事件」表写一条记录（不关联任何票据），正文含操作者 open_id 与 RFC3339 时间。已经是 `启用=true` 的行再次点击直接复用现值，不重复写表或事件，保证重复点击幂等。不提供“停用”按钮；停用仍只能在项目表手动取消勾选。
 
-启用成功后，driver 清理这次接入自己创建的现场（OF-57）：`git worktree remove` 接入 worktree（`<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`）；本地 `feat/agent-graph` 分支已合入刚 fetch 过的 `origin/main`（`git merge-base --is-ancestor`）时，或其远端分支已不存在时（squash 合并场景，`git ls-remote --exit-code --heads origin feat/agent-graph` 查不到任何引用），用 `git branch -D` 删除该本地分支；分支尚未合入且远端分支仍存在时保留，不强删。清理只认这一个 worktree 路径与 `feat/agent-graph` 这一个分支名，目标仓库里其他 worktree 与分支一律不动，也从不删除远端分支（删除远端分支是人在 GitHub 上合并 PR 时的选择）。清理失败（如 worktree 里有未提交改动）不影响启用结果：回复在“已启用 ...”后面追加一句，注明残留路径与失败原因，由人核对后清理或重试。该清理只在经由「启用」按钮这条路径触发；直接在飞书项目表手动勾选「启用」不会执行这一步。
+同一套校验也可从命令行驱动（OF-195）：`orca-factory-driver enable --repo <本机检出路径>`。命令先在 Orca 仓库清单中按路径匹配该仓库取其 canonicalKey（不用项目发现：发现读的正是这份尚未快进的检出，会把要启用的仓库本身拒掉），随后与按钮完全相同地复核合并、快进、check、写表与清理；成功把结果 JSON 输出到 stdout，失败原因写 stderr 并以非 0 退出。
+
+启用成功后，driver 清理这次接入自己创建的现场（OF-57）：`git worktree remove` 接入 worktree（`<用户缓存目录>/orca-factory/onboard/<远端键>/worktree`）；本地 `feat/agent-graph` 分支已合入刚 fetch 过的 `origin/main`（`git merge-base --is-ancestor`）时，或其远端分支已不存在时（squash 合并场景，`git ls-remote --exit-code --heads origin feat/agent-graph` 查不到任何引用），用 `git branch -D` 删除该本地分支；分支尚未合入且远端分支仍存在时保留，不强删。清理只认这一个 worktree 路径与 `feat/agent-graph` 这一个分支名，目标仓库里其他 worktree 与分支一律不动，也从不删除远端分支（删除远端分支是人在 GitHub 上合并 PR 时的选择）。清理失败（如 worktree 里有未提交改动）不影响启用结果：回复在“已启用 ...”后面追加一句，注明残留路径与失败原因，由人核对后清理或重试。该清理只在经由「启用」按钮或 `enable` 命令这两条路径触发；直接在飞书项目表手动勾选「启用」不会执行这一步。
 
 ## 启动检查
 

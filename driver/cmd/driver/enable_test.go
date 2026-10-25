@@ -12,11 +12,11 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 )
 
-// newEnableFixture builds a bare origin (branch main) and a local clone
-// whose current branch is rooted before any onboarding commit, so its
-// working tree never carries scripts/agent-gates/agent-graph.env even when
-// merged is true and origin/main does: mergedAgentGraphInstalled must read
-// origin/main, never the local checkout's current branch.
+// newEnableFixture builds a bare origin (branch main) and a local clone on
+// main at the pre-onboarding commit, behind origin/main when merged is true,
+// so its working tree never carries scripts/agent-gates/agent-graph.env even
+// when origin/main does: mergedAgentGraphInstalled must read origin/main,
+// never the local checkout's current state.
 func newEnableFixture(t *testing.T, merged bool) string {
 	t.Helper()
 	root := t.TempDir()
@@ -41,7 +41,7 @@ func newEnableFixture(t *testing.T, merged bool) string {
 		gitIn(t, repo, "commit", "--quiet", "-m", "onboard")
 	}
 	gitIn(t, repo, "push", "--quiet", "origin", "HEAD:main")
-	gitIn(t, repo, "checkout", "--quiet", "-b", "feat/agent-graph", base)
+	gitIn(t, repo, "checkout", "--quiet", "-B", "main", base)
 	return repo
 }
 
@@ -126,6 +126,63 @@ func TestEnablerRun(t *testing.T) {
 		}
 		if len(written) != 0 {
 			t.Fatalf("written=%v, want no write", written)
+		}
+	})
+
+	t.Run("fast-forwards the checkout before check", func(t *testing.T) {
+		repo := newEnableFixture(t, true)
+		envPresentAtCheck := false
+		var written int
+		e := enabler{
+			checker: func(_ context.Context, path string) ([]string, error) {
+				if _, err := os.Stat(filepath.Join(path, "scripts/agent-gates/agent-graph.env")); err == nil {
+					envPresentAtCheck = true
+				}
+				return nil, nil
+			},
+			writeRow: func(context.Context, string, string) (issues.LedgerProject, error) {
+				written++
+				return issues.LedgerProject{}, nil
+			},
+		}
+		if _, err := e.run(context.Background(), intake.EnableRequest{Repo: repo, Remote: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		if !envPresentAtCheck {
+			t.Fatal("checker ran before scripts/agent-gates/agent-graph.env reached the checkout")
+		}
+		if written != 1 {
+			t.Fatalf("written=%d, want 1", written)
+		}
+		if head, upstream := gitIn(t, repo, "rev-parse", "HEAD"), gitIn(t, repo, "rev-parse", "origin/main"); head != upstream {
+			t.Fatalf("HEAD=%s, want origin/main %s", head, upstream)
+		}
+	})
+
+	t.Run("checkout off main refuses without writing", func(t *testing.T) {
+		repo := newEnableFixture(t, true)
+		gitIn(t, repo, "checkout", "--quiet", "-b", "side", "main")
+		checkerCalled := false
+		var written int
+		e := enabler{
+			checker: func(context.Context, string) ([]string, error) {
+				checkerCalled = true
+				return nil, nil
+			},
+			writeRow: func(context.Context, string, string) (issues.LedgerProject, error) {
+				written++
+				return issues.LedgerProject{}, nil
+			},
+		}
+		_, err := e.run(context.Background(), intake.EnableRequest{Repo: repo, Remote: "x"})
+		if err == nil || !strings.Contains(err.Error(), "未快进") {
+			t.Fatalf("err=%v, want it to name 未快进", err)
+		}
+		if checkerCalled {
+			t.Fatal("checker called, want refusal before check")
+		}
+		if written != 0 {
+			t.Fatalf("written=%d, want no write", written)
 		}
 	})
 
@@ -345,5 +402,37 @@ func TestCleanupOnboardScene(t *testing.T) {
 			t.Fatalf("worktree %s gone, want it kept after a failed removal (err=%v)", f.worktree, err)
 		}
 		f.assertOtherUntouched(t)
+	})
+}
+
+// TestRunEnable drives the `enable` CLI (OF-195) as a black box: usage errors
+// exit 2, and a repository Orca does not list is refused with exit 1 before
+// anything is written.
+func TestRunEnable(t *testing.T) {
+	t.Run("no --repo is a usage error", func(t *testing.T) {
+		stderr := captureStderr(t, func() {
+			if code := runEnable(nil); code != 2 {
+				t.Fatalf("exit code = %d, want 2", code)
+			}
+		})
+		if !strings.Contains(string(stderr), "usage: orca-factory-driver enable --repo <path>") {
+			t.Fatalf("stderr=%q", stderr)
+		}
+	})
+
+	t.Run("repo not in the Orca list is refused without writing", func(t *testing.T) {
+		f := newOnboardFixture(t)
+		abs := filepath.Join(f.home, "not-listed")
+		if err := os.MkdirAll(abs, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stderr := captureStderr(t, func() {
+			if code := runEnable([]string{"--repo", abs}); code != 1 {
+				t.Fatalf("exit code = %d, want 1", code)
+			}
+		})
+		if !strings.Contains(string(stderr), abs+" 不在 Orca 仓库清单") {
+			t.Fatalf("stderr=%q", stderr)
+		}
 	})
 }
