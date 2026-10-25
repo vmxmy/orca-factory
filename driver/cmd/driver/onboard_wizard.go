@@ -125,7 +125,7 @@ func (w wizard) pick(result projects.Result) (string, bool) {
 	}
 	for {
 		line, ok := w.prompt("选择编号（q 退出）")
-		if !ok {
+		if !ok || line == "q" || line == "Q" {
 			return "", false
 		}
 		n := 0
@@ -188,11 +188,14 @@ func (w wizard) prompt(text string) (string, bool) {
 }
 
 // confirm prints text, then waits for Enter (ok) or q (not ok, exit 0). Any
-// other answer re-prompts; EOF counts as q.
+// other answer re-prompts; EOF exits 1, since nothing was confirmed.
 func (w wizard) confirm(text string) (ok bool, quitCode int) {
 	for {
 		line, readable := w.prompt(text + "（回车继续，q 退出）")
-		if !readable || line == "q" || line == "Q" {
+		if !readable {
+			return false, 1
+		}
+		if line == "q" || line == "Q" {
 			return false, 0
 		}
 		if line == "" {
@@ -228,7 +231,7 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 		}
 		line, readable := w.prompt("修好后回车重查（q 退出）")
 		if !readable || line == "q" || line == "Q" {
-			return false, 0
+			return false, 1
 		}
 	}
 	if resume {
@@ -236,7 +239,7 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 	} else {
 		_, _ = fmt.Fprintf(os.Stdout, "\n[接入会话] 项目表写行：%s %s 启用=false；worktree：%s（分支 %s，基于 origin/main）\n", plan.Name, plan.Prefix, plan.Worktree, plan.Branch)
 	}
-	if ok, code := w.confirm("回车进入接入会话"); !ok {
+	if ok, code := w.confirm("进入接入会话"); !ok {
 		return false, code
 	}
 	_, _ = fmt.Fprintln(os.Stdout, "无人值守接入 Agent 运行中，最长 2h，Ctrl-C 中断。")
@@ -253,8 +256,8 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stdout, err)
-		if ok, code := w.confirm("回车重试，q 退出"); !ok {
-			return false, code
+		if ok, _ := w.confirm("重试接入会话"); !ok {
+			return false, 1
 		}
 		return true, -1
 	}

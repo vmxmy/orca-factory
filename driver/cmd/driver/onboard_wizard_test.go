@@ -350,12 +350,20 @@ func TestOnboardWizardResumesFromExternalFacts(t *testing.T) {
 }
 
 // TestOnboardWizardBlocksOnResidue covers the wizard's dead end (OF-197): a
-// remote feat/agent-graph branch with no local worktree is residue. The
-// wizard reports it with the fix and exits 1 without touching the ledger or
+// remote feat/agent-graph branch plus a leftover directory at the onboarding
+// worktree path that is no longer a git worktree is residue. The wizard
+// reports both with the fix and exits 1 without touching the ledger or
 // starting the agent.
 func TestOnboardWizardBlocksOnResidue(t *testing.T) {
 	fx := newWizardFixture(t)
 	gitIn(t, fx.repo, "push", "--quiet", "origin", "main:refs/heads/"+onboardBranch)
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(onboardWorktree(cache, onboardRemote), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	var out []byte
 	var code int
 	out = captureStdout(t, func() {
@@ -364,8 +372,8 @@ func TestOnboardWizardBlocksOnResidue(t *testing.T) {
 	if code != 1 {
 		t.Fatalf("exit=%d, want 1\noutput=%s", code, out)
 	}
-	if !strings.Contains(string(out), "受阻") {
-		t.Fatalf("output missing 受阻:\n%s", out)
+	if !strings.Contains(string(out), "受阻") || !strings.Contains(string(out), "worktree 已存在") || !strings.Contains(string(out), "远端分支") {
+		t.Fatalf("output missing 受阻 with both residue items:\n%s", out)
 	}
 	if fx.ledger.projectCreates != 0 {
 		t.Fatalf("项目表 writes=%d, want 0", fx.ledger.projectCreates)

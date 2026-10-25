@@ -70,8 +70,8 @@ type onboardPlan struct {
 	Resume bool `json:"-"`
 	// Preflight is OF-52's deterministic go/no-go judgments, filled in after
 	// the plan itself: `onboard --dry-run` prints them and exits non-zero on
-	// any failure; the real run (CLI or the picker card's 接入 button, which
-	// share onboarder.run) refuses before writing the ledger row, creating
+	// any failure; the real run (the wizard's session stage or the picker
+	// card's 接入 button) refuses before writing the ledger row, creating
 	// the worktree, or starting the onboarding agent when any fails.
 	Preflight []preflightCheck `json:"preflight"`
 }
@@ -107,8 +107,8 @@ type preflightFuncs struct {
 }
 
 // defaultPreflight is OF-52's production preflight checks, wired at both
-// onboarder construction sites (the onboard command and the picker card's
-// 接入 button, which share onboarder.run). A test driving runOnboard as a
+// onboarder construction sites (the onboard wizard and the picker card's
+// 接入 button). A test driving runOnboard as a
 // black box swaps this package var for a stand-in and restores it after.
 var defaultPreflight = preflightFuncs{tools: checkOnboardTools, factory: checkOnboardFactory, repo: checkOnboardRepoAccess, scene: checkOnboardScene,
 	service: checkOnboardServicePath, protection: checkOnboardBranchProtection}
@@ -213,12 +213,10 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 		Model: model, Effort: effort, Env: env, RowExists: existing != "", Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
 }
 
-// run onboards req.Repo (OF-52: only after every preflight check passes,
-// so a blocking tool, factory or target-repository problem never writes
-// the ledger row, creates the worktree, or starts the onboarding agent)
-// under its repository's single-instance lock, <state root>/onboard/<remote
-// key>.lock, held across processes (the onboard command and the intake
-// gateway) until the run ends.
+// run is the picker card's 接入 path: it onboards req.Repo through session
+// only after every preflight check passes (OF-52), so a blocking tool,
+// factory or target-repository problem never writes the ledger row, creates
+// the worktree, or starts the onboarding agent.
 func (o onboarder) run(ctx context.Context, req intake.OnboardRequest) (intake.OnboardResult, error) {
 	plan, err := o.plan(ctx, req.Repo)
 	if err != nil {
@@ -449,14 +447,9 @@ func checkOnboardScene(ctx context.Context, o onboarder, plan onboardPlan) prefl
 	if err != nil {
 		return preflightCheck{Name: name, OK: false, Detail: err.Error()}
 	}
-	scene := classifyScene(probe)
 	problems := ""
-	switch {
-	case scene == sceneClear, plan.Resume && scene == sceneOurs:
-	case scene == sceneResidue:
+	if scene := classifyScene(probe); scene != sceneClear && (!plan.Resume || scene != sceneOurs) {
 		problems = sceneResidueDetail(probe)
-	default:
-		problems = "现场不可续接（worktree 与本地分支不完整）"
 	}
 	if lock, err := flock.TryLock(filepath.Join(o.stateRoot, "onboard", onboardKey(plan.Remote)+".lock")); err != nil {
 		busy := "接入锁被占用：已有进行中的接入"

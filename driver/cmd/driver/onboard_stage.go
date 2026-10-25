@@ -49,12 +49,13 @@ func classifyScene(p sceneProbe) sceneState {
 	}
 }
 
-// sceneResidueDetail names exactly what exists in a residue scene, so both
-// the Blocked verdict and preflight group (d) tell a person what to clean.
+// sceneResidueDetail names exactly what exists in a scene that is not clear,
+// in the wording preflight group (d) has always used, so the Blocked verdict
+// and the gateway's refusal tell a person what to clean.
 func sceneResidueDetail(p sceneProbe) string {
 	var items []string
 	if p.PathExists {
-		items = append(items, "worktree 路径已存在")
+		items = append(items, "worktree 已存在")
 	}
 	if p.LocalBranch {
 		items = append(items, "本地分支 "+onboardBranch+" 已存在")
@@ -225,7 +226,9 @@ func (o onboarder) observe(ctx context.Context, repo string) (onboardFacts, erro
 // probeScene reads the raw scene facts for repo: whether the onboarding
 // worktree path exists, whether it is this machine's own worktree on the
 // onboarding branch of this repository, and whether the branch exists
-// locally and on origin.
+// locally and on origin. A path git cannot read as a worktree (a stale
+// directory left after its repository was re-cloned) is simply not ours,
+// so it classifies as residue instead of failing the probe.
 func probeScene(ctx context.Context, o onboarder, repo, remote string) (sceneProbe, error) {
 	var p sceneProbe
 	worktree := onboardWorktree(o.cacheDir, remote)
@@ -234,14 +237,7 @@ func probeScene(ctx context.Context, o onboarder, repo, remote string) (scenePro
 	}
 	if p.PathExists {
 		branch, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"}, Timeout: 10 * time.Second})
-		if err != nil {
-			return p, fmt.Errorf("读取接入 worktree 分支失败：%w", err)
-		}
-		ours, err := sameGitCommonDir(ctx, worktree, repo)
-		if err != nil {
-			return p, err
-		}
-		p.OurWorktree = strings.TrimSpace(string(branch)) == onboardBranch && ours
+		p.OurWorktree = err == nil && strings.TrimSpace(string(branch)) == onboardBranch && sameGitCommonDir(ctx, worktree, repo)
 	}
 	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", repo, "show-ref", "--quiet", "refs/heads/" + onboardBranch}, Timeout: 10 * time.Second}); err == nil {
 		p.LocalBranch = true
@@ -257,28 +253,23 @@ func probeScene(ctx context.Context, o onboarder, repo, remote string) (scenePro
 }
 
 // sameGitCommonDir reports whether worktree and repo share one git directory
-// (a linked worktree's common dir is the main repository's).
-func sameGitCommonDir(ctx context.Context, worktree, repo string) (bool, error) {
-	read := func(dir string) (string, error) {
+// (a linked worktree's common dir is the main repository's); either side
+// unreadable by git means they do not.
+func sameGitCommonDir(ctx context.Context, worktree, repo string) bool {
+	read := func(dir string) (string, bool) {
 		out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir"}, Timeout: 10 * time.Second})
 		if err != nil {
-			return "", fmt.Errorf("git rev-parse --git-common-dir 失败：%w", err)
+			return "", false
 		}
 		path := filepath.Clean(strings.TrimSpace(string(out)))
 		if resolved, err := filepath.EvalSymlinks(path); err == nil {
-			return resolved, nil
+			return resolved, true
 		}
-		return path, nil
+		return path, true
 	}
-	a, err := read(worktree)
-	if err != nil {
-		return false, err
-	}
-	b, err := read(repo)
-	if err != nil {
-		return false, err
-	}
-	return a == b, nil
+	a, okA := read(worktree)
+	b, okB := read(repo)
+	return okA && okB && a == b
 }
 
 // readOnboardPR reads the onboarding PR back from gh — the only PR fact the
