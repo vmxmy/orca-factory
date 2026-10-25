@@ -72,8 +72,9 @@ Commands:
       输出可接管与不接管（附原因）两个列表，不读 driver.toml 的 repositories。
   onboard [--repo <path>] [--dry-run]
       [写入] 接入终端向导（OF-197）：阶段由外部事实推导，中断后重跑从第一个未完成阶段续接。
-      无参数从选单开始；--repo 跳过选单。阶段依次为 接入会话（无人值守 Agent，最长 2h）→
-      等待合并 → 启用（与 enable 同一套校验）。--repo --dry-run 只打印 JSON 计划与预检。
+      无参数从选单开始；--repo 跳过选单。阶段依次为 接入会话（交互式 Claude Code，需要终端；
+      首次按 ↓ 选 Yes 信任目录，开出 PR 后 /exit 回到向导）→ 等待合并 → 启用（与 enable
+      同一套校验）。--repo --dry-run 只打印 JSON 计划与预检。无人值守接入用飞书卡片。
   enable --repo <path>
       [写入] 启用一个已接入仓库：复核 origin/main 已有 agent-graph.env 后快进本机检出，
       跑本仓库 check，通过后把项目表该行置 启用=true 并清理接入现场；与飞书「启用」按钮

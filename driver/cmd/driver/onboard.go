@@ -609,26 +609,10 @@ func (o onboarder) addWorktree(ctx context.Context, plan onboardPlan) error {
 	return nil
 }
 
-// runAgent runs the onboarding agent in plan.Worktree and returns the PR it
-// reports. Its environment carries only HOME and PATH, plus the session bus
-// gh's keyring login needs: no Feishu app or other credentials.
+// runAgent runs the unattended onboarding agent (the gateway's `claude -p`)
+// in plan.Worktree and returns the PR it reports.
 func (o onboarder) runAgent(ctx context.Context, plan onboardPlan) (string, error) {
-	args := []string{"-p", onboardPrompt(plan, o.cfg.FactoryRoot), "--output-format", "json"}
-	if plan.Model != "" {
-		args = append(args, "--model", plan.Model)
-	}
-	if plan.Effort != "" {
-		args = append(args, "--effort", plan.Effort)
-	}
-	args = append(args, "--append-system-prompt-file", filepath.Join(o.cfg.FactoryRoot, "scripts/agent-gates/roles/onboard.md"),
-		"--tools", onboardTools, "--allowedTools", onboardTools, "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--settings", onboardSettings)
-	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
-	for _, key := range []string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"} {
-		if v, ok := os.LookupEnv(key); ok {
-			env = append(env, key+"="+v)
-		}
-	}
-	out, err := runx.Run(ctx, runx.Spec{Path: o.claude, Args: args, Dir: plan.Worktree, Env: env, Timeout: onboardTimeout})
+	out, err := runx.Run(ctx, runx.Spec{Path: o.claude, Args: onboardAgentArgs(plan, o.cfg.FactoryRoot, false), Dir: plan.Worktree, Env: onboardAgentEnv(false), Timeout: onboardTimeout})
 	if err != nil {
 		return "", fmt.Errorf("接入 Agent 失败：%w", err)
 	}
@@ -663,9 +647,52 @@ func truncateOnboardResult(s string) string {
 	return s
 }
 
-func onboardPrompt(plan onboardPlan, factoryRoot string) string {
+// onboardAgentArgs is the single source of the onboarding agent's argv in
+// both modes (OF-201). The prompt comes before every option because
+// --add-dir, --tools and --allowedTools take variadic values that would
+// swallow a trailing positional prompt.
+func onboardAgentArgs(plan onboardPlan, root string, attended bool) []string {
+	prompt := onboardPrompt(plan, root, attended)
+	args, tools, mode := []string{"-p", prompt, "--output-format", "json"}, onboardTools, "dontAsk"
+	if attended {
+		// dontAsk denies AskUserQuestion; default lets the person answer it.
+		args, tools, mode = []string{prompt}, onboardTools+",AskUserQuestion", "default"
+	}
+	if plan.Model != "" {
+		args = append(args, "--model", plan.Model)
+	}
+	if plan.Effort != "" {
+		args = append(args, "--effort", plan.Effort)
+	}
+	return append(args, "--append-system-prompt-file", filepath.Join(root, "scripts/agent-gates/roles/onboard.md"), "--add-dir", root,
+		"--tools", tools, "--allowedTools", tools, "--permission-mode", mode, "--restricted", "--strict-mcp-config", "--settings", onboardSettings)
+}
+
+// onboardAgentEnv is the onboarding agent's whole environment: HOME and PATH,
+// plus the session bus gh's keyring login needs, and for the attended
+// session the terminal and locale its TUI needs. Never the Feishu app or any
+// other credential.
+func onboardAgentEnv(attended bool) []string {
+	env := []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
+	optional := []string{"XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"}
+	if attended {
+		env = append(env, "TERM="+os.Getenv("TERM"), "LANG="+os.Getenv("LANG"))
+		optional = append(optional, "LC_ALL", "COLORTERM")
+	}
+	for _, key := range optional {
+		if v, ok := os.LookupEnv(key); ok {
+			env = append(env, key+"="+v)
+		}
+	}
+	return env
+}
+
+func onboardPrompt(plan onboardPlan, factoryRoot string, attended bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "按 roles/onboard.md 接入目标仓库。\n工作目录（目标仓库独立 worktree，分支 %s，基于 origin/main）：%s\n", plan.Branch, plan.Worktree)
+	if attended {
+		b.WriteString("交互模式：人在终端前，按角色文件的交互模式条款先调研再请人确认；下列待确认键人给了值就写入。\n")
+	}
 	if plan.Resume {
 		b.WriteString("续接：工作目录里可能已有上一轮的提交与产物，先按角色文件的续接条款判断从哪一步继续，不重做已有工作。\n")
 	}
