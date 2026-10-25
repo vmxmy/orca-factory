@@ -4,13 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
@@ -48,7 +47,7 @@ func runOnboard(args []string) int {
 		return 1
 	}
 	// No signal handling here: at a line prompt every signal keeps its default
-	// kill and exits at once, since nothing is held then. wizard.session
+	// kill and exits at once, since nothing is held then. runAttendedAgent
 	// catches them only while the agent runs.
 	ctx := context.Background()
 	o := onboarder{cfg: cfg, orca: &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}
@@ -205,10 +204,15 @@ func (w wizard) confirm(text string) (ok bool, quitCode int) {
 }
 
 // session runs the agent stage once: the 7 preflight checks, a summary of
-// what the session will do, then session() with the headless agent. After
-// the agent returns, the caller re-observes; still no PR means the run ends
-// with the resume hint instead of restarting the agent.
+// what the session will do, then session() with the attended agent, which
+// needs this terminal (OF-201). After the agent returns, the caller
+// re-observes; still no PR means the run ends with the resume hint instead
+// of restarting the agent.
 func (w wizard) session(ctx context.Context, repo string, resume bool) (again bool, code int) {
+	if info, err := os.Stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
+		_, _ = fmt.Fprintln(os.Stdout, "接入会话需要终端；无人值守接入请用飞书卡片。")
+		return false, 1
+	}
 	plan, err := w.o.plan(ctx, repo)
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stdout, err)
@@ -238,23 +242,15 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 	} else {
 		_, _ = fmt.Fprintf(os.Stdout, "\n[接入会话] 项目表写行：%s %s 启用=false；worktree：%s（分支 %s，基于 origin/main）\n", plan.Name, plan.Prefix, plan.Worktree, plan.Branch)
 	}
+	_, _ = fmt.Fprintln(os.Stdout, "首次进入会弹出信任目录对话框：按 ↓ 选 Yes 再回车")
+	_, _ = fmt.Fprintln(os.Stdout, "开出 PR 后输入 /exit 回到向导")
 	if ok, code := w.confirm("进入接入会话"); !ok {
 		return false, code
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "无人值守接入 Agent 运行中，最长 2h，Ctrl-C 中断。")
-	// The agent runs in its own process group (runx), out of reach of the
-	// terminal's Ctrl-C and of a kill aimed at the driver. Cancelling agentCtx
-	// is what makes runx kill that group; a default-killed driver would orphan
-	// the agent and free the lock.
-	agentCtx, stopAgent := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
-	_, err = w.o.session(agentCtx, plan, w.o.runAgent)
-	interrupted := agentCtx.Err() != nil
-	stopAgent()
-	if interrupted {
-		_, _ = fmt.Fprintln(os.Stdout, "\n[接入会话] 已中断，Agent 已停止。重跑 `orca-factory-driver onboard --repo <path>` 会续接 worktree。")
+	if _, err = w.o.session(ctx, plan, w.o.runAttendedAgent); errors.Is(err, errOnboardInterrupted) {
+		_, _ = fmt.Fprintln(os.Stdout, "\n[接入会话] 已中断。重跑 `orca-factory-driver onboard --repo <path>` 会续接 worktree。")
 		return false, 1
-	}
-	if err != nil {
+	} else if err != nil {
 		_, _ = fmt.Fprintln(os.Stdout, err)
 		if ok, _ := w.confirm("重试接入会话"); !ok {
 			return false, 1

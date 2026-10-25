@@ -228,12 +228,10 @@ func newWizardFixture(t *testing.T) *wizardFixture {
 	writeExecutable(t, filepath.Join(bin, "gh"), "#!/bin/sh\ncase \"$1 $2\" in\n"+
 		"  \"pr list\") if [ -f "+fx.ghMarker+" ]; then cat "+fx.ghMarker+"; else printf '[]'; fi ;;\n"+
 		"  *) exit 9 ;;\nesac\n")
-	const agentResult = `{"type":"result","subtype":"success","is_error":false,"result":"PR https://github.com/vmxmy/ziikoo-control-plane/pull/7"}`
 	writeExecutable(t, filepath.Join(bin, "claude"), "#!/bin/sh\n"+
 		"printf 'run\\n' >> "+fx.claudeRuns+"\n"+
 		"for a in \"$@\"; do printf '%s\\n' \"$a\"; done >> "+fx.claudeArgs+"\n"+
-		"case \"$2\" in *续接*) printf '%s' "+shQuote(fx.prOpen)+" > "+fx.ghMarker+" ;; esac\n"+
-		"printf '%s' "+shQuote(agentResult)+"\n")
+		"case \"$1\" in *续接*) printf '%s' "+shQuote(fx.prOpen)+" > "+fx.ghMarker+" ;; esac\n")
 
 	origin := filepath.Join(root, "origin.git")
 	gitIn(t, root, "init", "--quiet", "--bare", "-b", "main", origin)
@@ -298,7 +296,7 @@ func TestOnboardWizardResumesFromExternalFacts(t *testing.T) {
 	var out []byte
 	var code int
 	out = captureStdout(t, func() {
-		withStdin(t, "1\n\n", func() { code = runOnboard(nil) })
+		withTerminal(t, "1\n\n", func() { code = runOnboard(nil) })
 	})
 	if code != 1 {
 		t.Fatalf("round 1 exit=%d, want 1 (agent ran, gh reports no PR)\noutput=%s", code, out)
@@ -311,7 +309,7 @@ func TestOnboardWizardResumesFromExternalFacts(t *testing.T) {
 	}
 
 	out = captureStdout(t, func() {
-		withStdin(t, "\nq\n", func() { code = runOnboard([]string{"--repo", fx.repo}) })
+		withTerminal(t, "\nq\n", func() { code = runOnboard([]string{"--repo", fx.repo}) })
 	})
 	if code != 0 {
 		t.Fatalf("round 2 exit=%d, want 0 (quit at wait-merge)\noutput=%s", code, out)
