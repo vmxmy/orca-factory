@@ -347,6 +347,54 @@ func TestOnboardWizardResumesFromExternalFacts(t *testing.T) {
 	}
 }
 
+// TestOnboardWizardResumesAfterClosedPR covers a re-onboarding after an old
+// onboarding PR was closed (OF-199): gh keeps reporting that CLOSED PR, yet a
+// fresh session whose agent opens no PR ends with the resume hint, and the
+// rerun resumes its worktree instead of blocking on it. A closed PR still
+// blocks once its head is what the local onboarding branch points at.
+func TestOnboardWizardResumesAfterClosedPR(t *testing.T) {
+	fx := newWizardFixture(t)
+	closed := func(number int, head string) string {
+		return fmt.Sprintf(`[{"number":%d,"state":"CLOSED","headRefName":"feat/agent-graph","headRefOid":"%s","isCrossRepository":false,"headRepository":{"name":"ziikoo-control-plane"},"headRepositoryOwner":{"login":"vmxmy"}}]`, number, head)
+	}
+	if err := os.WriteFile(fx.ghMarker, []byte(closed(5, strings.Repeat("a", 40))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out []byte
+	var code int
+	out = captureStdout(t, func() {
+		withTerminal(t, "1\n\n", func() { code = runOnboard(nil) })
+	})
+	if code != 1 || !strings.Contains(string(out), "续接") || strings.Contains(string(out), "受阻") {
+		t.Fatalf("round 1 exit=%d, want 1 with the resume hint and no 受阻\noutput=%s", code, out)
+	}
+
+	out = captureStdout(t, func() {
+		withTerminal(t, "\nq\n", func() { code = runOnboard([]string{"--repo", fx.repo}) })
+	})
+	if code != 0 || !strings.Contains(string(out), "pull/7") {
+		t.Fatalf("round 2 exit=%d, want 0 after quitting at wait-merge on pull/7\noutput=%s", code, out)
+	}
+	if prompt, err := os.ReadFile(fx.claudeArgs); err != nil || !strings.Contains(string(prompt), "续接") {
+		t.Fatalf("round 2 agent prompt missing 续接 (err=%v):\n%s", err, prompt)
+	}
+
+	head := strings.TrimSpace(gitIn(t, fx.repo, "rev-parse", "refs/heads/"+onboardBranch))
+	if err := os.WriteFile(fx.ghMarker, []byte(closed(7, head)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out = captureStdout(t, func() {
+		withStdin(t, "", func() { code = runOnboard([]string{"--repo", fx.repo}) })
+	})
+	if code != 1 || !strings.Contains(string(out), "#7 已关闭") {
+		t.Fatalf("round 3 exit=%d, want 1 blocked on closed PR #7\noutput=%s", code, out)
+	}
+	if runs := fx.claudeRunCount(t); runs != 2 {
+		t.Fatalf("claude runs=%d, want the 2 runs from rounds 1 and 2", runs)
+	}
+}
+
 // TestOnboardWizardBlocksOnResidue covers the wizard's dead end (OF-197): a
 // remote feat/agent-graph branch plus a leftover directory at the onboarding
 // worktree path that is no longer a git worktree is residue. The wizard

@@ -221,7 +221,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 `orca-factory-driver onboard [--repo <本机检出路径>] [--dry-run]` 是接入终端向导（OF-197）。阶段只从外部事实推导（项目表行、origin/main、`gh pr list` 回读、本机 worktree/分支现场、接入锁），不写进度文件；中断后重跑同一命令，从第一个未完成阶段续接。无参数进入向导选单，列出发现结果中「可接入」与「项目未启用」的仓库；`--repo` 跳过选单。`--repo --dry-run` 保持打印 JSON 计划与 `preflight` 数组（OF-52）：步骤、worktree 路径、编号前缀、`agent-graph.env` 默认值、`pending` 键与全部检查结果，任一失败以非 0 退出。
 
-向导每轮观察后按序判定阶段（先命中先生效）：行已启用 → 完成；锁被占 → 受阻；origin/main 已有 `agent-graph.env` 但项目表没有行 → 受阻；已安装 → 启用；PR OPEN → 等待合并；PR MERGED 但 origin/main 没有 env → 受阻；PR CLOSED 且现场不干净 → 受阻；现场是本机自己的接入 worktree（`feat/agent-graph` 且与主检出同一 git 目录）→ 续接；现场干净 → 开始接入；其余 → 受阻并列出残留与补法。已关闭的 PR 在现场干净时不挡路，重跑会开新 PR。发现原因不参与路由：合并后主检出未快进时发现仍报「可接入」，向导照样进入启用阶段。
+向导每轮观察后按序判定阶段（先命中先生效）：行已启用 → 完成；锁被占 → 受阻；origin/main 已有 `agent-graph.env` 但项目表没有行 → 受阻；已安装 → 启用；PR OPEN → 等待合并；PR MERGED 但 origin/main 没有 env → 受阻；PR CLOSED 且本地 `feat/agent-graph` 仍指向该 PR 的 head → 受阻；现场是本机自己的接入 worktree（`feat/agent-graph` 且与主检出同一 git 目录）→ 续接；现场干净 → 开始接入；其余 → 受阻并列出残留与补法。已关闭的 PR 只挡它自己留下的分支：现场干净时重跑会开新 PR；之后的会话没开出 PR 时，按「Agent 已结束」提示续接（OF-199）。发现原因不参与路由：合并后主检出未快进时发现仍报「可接入」，向导照样进入启用阶段。
 
 ```mermaid
 flowchart LR

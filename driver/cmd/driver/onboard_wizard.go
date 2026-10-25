@@ -206,8 +206,9 @@ func (w wizard) confirm(text string) (ok bool, quitCode int) {
 // session runs the agent stage once: the 7 preflight checks, a summary of
 // what the session will do, then session() with the attended agent, which
 // needs this terminal (OF-201). After the agent returns, the caller
-// re-observes; still no PR means the run ends with the resume hint instead
-// of restarting the agent.
+// re-observes; still no open or merged PR (a closed one is an earlier
+// attempt, OF-199) means the run ends with the resume hint instead of
+// restarting the agent.
 func (w wizard) session(ctx context.Context, repo string, resume bool) (again bool, code int) {
 	if info, err := os.Stdin.Stat(); err != nil || info.Mode()&os.ModeCharDevice == 0 {
 		_, _ = fmt.Fprintln(os.Stdout, "接入会话需要终端；无人值守接入请用飞书卡片。")
@@ -262,10 +263,10 @@ func (w wizard) session(ctx context.Context, repo string, resume bool) (again bo
 		_, _ = fmt.Fprintln(os.Stdout, err)
 		return false, 1
 	}
-	if facts.PR.State != prNone {
+	if facts.PR.State == prOpen || facts.PR.State == prMerged {
 		return true, -1
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "[接入会话] Agent 已结束，gh 没有读到本仓库 feat/agent-graph 的 PR。")
+	_, _ = fmt.Fprintln(os.Stdout, "[接入会话] Agent 已结束，gh 没有读到本仓库 feat/agent-graph 打开或已合并的 PR。")
 	_, _ = fmt.Fprintln(os.Stdout, "  worktree 保留。重跑 `orca-factory-driver onboard --repo <path>` 会续接这个 worktree。")
 	return false, 1
 }

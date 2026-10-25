@@ -21,7 +21,7 @@ import (
 type sceneProbe struct {
 	PathExists   bool
 	OurWorktree  bool
-	LocalBranch  bool
+	LocalHead    string
 	RemoteBranch bool
 }
 
@@ -36,13 +36,13 @@ const (
 
 // classifyScene is pure: clear when nothing exists; ours when this machine's
 // onboarding worktree sits on the onboarding branch and the local branch
-// exists (the remote branch may too — the agent pushed, PR creation failed);
+// exists, LocalHead being its commit (the remote branch may too — the agent pushed, PR creation failed);
 // residue for everything else.
 func classifyScene(p sceneProbe) sceneState {
 	switch {
-	case !p.PathExists && !p.LocalBranch && !p.RemoteBranch:
+	case !p.PathExists && p.LocalHead == "" && !p.RemoteBranch:
 		return sceneClear
-	case p.OurWorktree && p.LocalBranch:
+	case p.OurWorktree && p.LocalHead != "":
 		return sceneOurs
 	default:
 		return sceneResidue
@@ -57,7 +57,7 @@ func sceneResidueDetail(p sceneProbe) string {
 	if p.PathExists {
 		items = append(items, "worktree 已存在")
 	}
-	if p.LocalBranch {
+	if p.LocalHead != "" {
 		items = append(items, "本地分支 "+onboardBranch+" 已存在")
 	}
 	if p.RemoteBranch {
@@ -87,10 +87,11 @@ const (
 	prClosed
 )
 
-// onboardPR is the onboarding PR read back from gh.
+// onboardPR is the onboarding PR read back from gh; Head is its headRefOid.
 type onboardPR struct {
 	State  prState
 	Number int
+	Head   string
 }
 
 var (
@@ -101,7 +102,8 @@ var (
 // onboardFacts is everything stage derivation reads, observed fresh on every
 // wizard loop iteration from the ledger, origin/main, gh, git and the
 // onboarding lock. Never persisted. Residue carries sceneResidueDetail's
-// list so a Blocked verdict can name what to clean.
+// list so a Blocked verdict can name what to clean; LocalHead is the local
+// onboarding branch's commit, empty when that branch does not exist.
 type onboardFacts struct {
 	Repo, Remote string
 	Row          rowState
@@ -109,6 +111,7 @@ type onboardFacts struct {
 	PR           onboardPR
 	Scene        sceneState
 	Residue      string
+	LocalHead    string
 	Busy         bool
 }
 
@@ -135,7 +138,9 @@ type stageVerdict struct {
 // deriveStage maps one observation to the wizard's next stage. Pure; first
 // match wins (OF-197). The merge fact is origin/main only and the discovery
 // reason never routes: a checkout that predates the merge still routes to
-// Enable, and a closed PR only blocks a scene that is not clear.
+// Enable, and a closed PR only blocks while the local onboarding branch
+// still points at its head (OF-199): a branch a later session started anew
+// resumes or starts as usual.
 func deriveStage(f onboardFacts) stageVerdict {
 	switch {
 	case f.Row == rowEnabled:
@@ -150,7 +155,7 @@ func deriveStage(f onboardFacts) stageVerdict {
 		return stageVerdict{Stage: stageWaitMerge, PR: f.PR}
 	case f.PR.State == prMerged:
 		return stageVerdict{Stage: stageBlocked, Why: fmt.Sprintf("接入 PR #%d 已合并，但 origin/main 上没有 scripts/agent-gates/agent-graph.env；补法：核对该 PR 实际合入的提交", f.PR.Number)}
-	case f.PR.State == prClosed && f.Scene != sceneClear:
+	case f.PR.State == prClosed && f.LocalHead != "" && f.LocalHead == f.PR.Head:
 		return stageVerdict{Stage: stageBlocked, Why: fmt.Sprintf("接入 PR #%d 已关闭，现场仍有残留；补法：清理 worktree 与 %s 分支后重跑（现场干净时会开新 PR）", f.PR.Number, onboardBranch)}
 	case f.Scene == sceneOurs:
 		return stageVerdict{Stage: stageResume}
@@ -209,7 +214,7 @@ func (o onboarder) observe(ctx context.Context, repo string) (onboardFacts, erro
 	if err != nil {
 		return onboardFacts{}, err
 	}
-	facts.Scene = classifyScene(probe)
+	facts.Scene, facts.LocalHead = classifyScene(probe), probe.LocalHead
 	if facts.Scene == sceneResidue {
 		facts.Residue = sceneResidueDetail(probe)
 	}
@@ -239,8 +244,8 @@ func probeScene(ctx context.Context, o onboarder, repo, remote string) (scenePro
 		branch, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", worktree, "rev-parse", "--abbrev-ref", "HEAD"}, Timeout: 10 * time.Second})
 		p.OurWorktree = err == nil && strings.TrimSpace(string(branch)) == onboardBranch && sameGitCommonDir(ctx, worktree, repo)
 	}
-	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", repo, "show-ref", "--quiet", "refs/heads/" + onboardBranch}, Timeout: 10 * time.Second}); err == nil {
-		p.LocalBranch = true
+	if out, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", repo, "show-ref", "--hash", "refs/heads/" + onboardBranch}, Timeout: 10 * time.Second}); err == nil {
+		p.LocalHead = strings.TrimSpace(string(out))
 	} else if exitCode(err) != 1 {
 		return p, fmt.Errorf("git show-ref 失败：%w", err)
 	}
@@ -298,7 +303,7 @@ func readOnboardPR(ctx context.Context, repo, remote string) (onboardPR, error) 
 			continue
 		}
 		if prStateRank[state] > prStateRank[best.State] || (state == best.State && pr.Number > best.Number) {
-			best = onboardPR{State: state, Number: pr.Number}
+			best = onboardPR{State: state, Number: pr.Number, Head: pr.HeadRefOid}
 		}
 	}
 	return best, nil
