@@ -2,16 +2,22 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -19,8 +25,8 @@ import (
 // origin/main (not the local checkout's current branch) already carries
 // scripts/agent-gates/agent-graph.env, read via `git ls-tree` after a fetch
 // (OF-54): the onboarding PR's merge into main is the fact that unlocks
-// enabling, and the local checkout discovery already walked can sit on any
-// branch (an onboarding worktree still on feat/agent-graph, for instance).
+// enabling, and the local checkout still predates that merge until
+// enabler.run fast-forwards it (OF-195).
 func mergedAgentGraphInstalled(ctx context.Context, repo string) (bool, error) {
 	if _, err := runx.Run(ctx, runx.Spec{Path: "git", Args: []string{"-C", repo, "fetch", "--quiet", "origin", "main"}, Timeout: 2 * time.Minute}); err != nil {
 		return false, fmt.Errorf("git fetch origin main 失败：%w", err)
@@ -54,6 +60,13 @@ func (e enabler) run(ctx context.Context, req intake.EnableRequest) (intake.Enab
 	if !merged {
 		return intake.EnableResult{}, errors.New("接入 PR 未合并（origin/main 上没有 scripts/agent-gates/agent-graph.env）")
 	}
+	// The merge fact lives on origin/main, but checker reads the local
+	// checkout, which nothing else moves after the onboarding PR merges
+	// (OF-195): fast-forward it first, or check inspects a checkout that
+	// still lacks scripts/agent-gates and enable always fails.
+	if err := fastForwardCheckout(ctx, req.Repo); err != nil {
+		return intake.EnableResult{}, fmt.Errorf("主检出未快进到 origin/main：%w", err)
+	}
 	if _, err := e.checker(ctx, req.Repo); err != nil {
 		return intake.EnableResult{}, fmt.Errorf("check 失败：%w", err)
 	}
@@ -66,6 +79,80 @@ func (e enabler) run(ctx context.Context, req intake.EnableRequest) (intake.Enab
 		result.Cleanup = e.cleanup(ctx, req.Repo, req.Remote)
 	}
 	return result, nil
+}
+
+func init() { Register("enable", runEnable) }
+
+// runEnable is the CLI enable entry (OF-195), the Feishu 启用 button's
+// shell-driven counterpart over the same enabler.run. The remote comes from
+// the Orca repo list, not project discovery: discovery reads the very
+// checkout this command is about to fast-forward, so before that it still
+// lacks scripts/agent-gates and would reject the repository it is here to
+// enable.
+func runEnable(args []string) int {
+	flags := flag.NewFlagSet("enable", flag.ContinueOnError)
+	repo := flags.String("repo", "", "目标仓库本机检出路径")
+	if flags.Parse(args) != nil || *repo == "" || flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: orca-factory-driver enable --repo <path>")
+		return 2
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if cfg.FactoryRoot == "" {
+		fmt.Fprintln(os.Stderr, string(projects.ReasonFactoryRootUnconfigured))
+		return 1
+	}
+	cacheDir, err := os.UserCacheDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+	abs, err := filepath.Abs(*repo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	repos, err := (&orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}).RepoList(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	remote := ""
+	for _, r := range repos {
+		if r.Path == abs {
+			remote = r.CanonicalKey
+			break
+		}
+	}
+	if remote == "" {
+		fmt.Fprintf(os.Stderr, "%s 不在 Orca 仓库清单\n", abs)
+		return 1
+	}
+	operator, err := operatorIdentity()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	result, err := enabler{checker: factoryChecker(cfg.FactoryRoot), writeRow: factoryEnabledWriter(cfg), cleanup: onboardSceneCleaner(cacheDir)}.run(ctx, intake.EnableRequest{Repo: abs, Remote: remote, Requester: operator})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	if err := json.NewEncoder(os.Stdout).Encode(result); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
 }
 
 // cleanupOnboardScene removes the OF-50 onboarding worktree at

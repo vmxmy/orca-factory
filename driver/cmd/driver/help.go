@@ -74,6 +74,10 @@ Commands:
       [写入] 接入一个「可接入」仓库：在其独立 worktree 运行接入 Agent（init、填项目文件、
       ONBOARD 5a～5d、开接入 PR，不合并），再由 driver 在飞书项目表加「启用」=false 的行。
       同一仓库已有进行中的接入时拒绝。--dry-run 只打印步骤与默认值。
+  enable --repo <path>
+      [写入] 启用一个已接入仓库：复核 origin/main 已有 agent-graph.env 后快进本机检出，
+      跑本仓库 check，通过后把项目表该行置 启用=true 并清理接入现场；与飞书「启用」按钮
+      同一套校验，路径须在 Orca 仓库清单中。
   install [--dry-run]
       [写入] 把当前二进制装到 ~/.local/bin，写 systemd user unit 并 daemon-reload。
       --dry-run 只打印步骤。
