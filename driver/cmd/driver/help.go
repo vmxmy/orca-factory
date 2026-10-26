@@ -27,6 +27,9 @@ Commands:
   doctor --bootstrap [--json]
       [只读] 在仓库根检查空机器前提：Go、gh/git/jq/claude、gh 登录与 keyring、systemd 用户实例与 linger、
       Orca、模型代理、driver.env 变量名、driver.toml。每项附修法；需要人做的项标 human。任一 fail 或 human 时退出 1。
+  config [--json]
+      [只读] 输出生效配置及来源：各仓库角色模型与路由、driver.toml 调度参数、服务环境与工具路径。
+      driver.env 只列键名，不输出任何凭证值。读失败的来源记在 problems，仍以 0 退出。
   watch [--dry-run]
       [写入] 跑一次 doctor，同一检查项连续 2 次 fail 时向飞书告警一次，恢复 ok 后可再告警。
       只写本机 watch.json 与发告警，不修复、不建票。由 orca-factory-driver-watch.timer 每 30 分钟运行。

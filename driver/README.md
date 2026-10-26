@@ -277,6 +277,7 @@ flowchart LR
 
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
+- `~/.local/bin/orca-factory-driver config [--json]`（OF-204）：只读，列出各接管仓库的角色模型与路由、`driver.toml` 调度参数、服务环境与工具路径，每项标来源；`driver.toml` 中不生效的键记在 `problems`。`driver.env` 只列键名，不输出值。JSON 形状见 [CONTRACTS.md](CONTRACTS.md) 的「driver config 快照」。
 - `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：只读的运行态健康自检。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟调用一次，所以只有现在需要人或 Agent 处理的问题才报 `fail`。
 
   | 状态 | 含义 | 退出码 |

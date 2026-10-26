@@ -210,3 +210,76 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 三个录制文件原样来自 PR #420 的提交 `555e44b3a919eb472cffc0155e92616695fcb47a`。
 其 chat_id、用户和机器人 open_id、tenant_key 已脱敏，原始消息 ID、话题 ID 和字段结构保留。
+
+## driver config 快照
+
+`orca-factory-driver config --json` 输出 driver 当前生效的模型、调度参数与环境，以及每项的来源（`driver-config-v1`）。字段名、取值和顺序以本节为准，消费方（如 Claude mod `/ziikoo-driver`）不自行解析配置文件。不带参数时输出同样内容的中文纯文本。
+
+```json
+{
+  "schema": "driver-config-v1",
+  "generatedAt": "2026-10-27T03:00:00Z",
+  "overview": {
+    "build": "006396a60a3ed1cc671c03db4ce145e66ac9ec07",
+    "service": "active",
+    "maintenance": "running",
+    "snapshot": "ok",
+    "globalPause": false,
+    "pauseSeconds": 0,
+    "factoryRoot": "/home/laoxu/github/orca-factory"
+  },
+  "repos": [
+    {
+      "name": "orca-factory",
+      "remote": "github.com/vmxmy/orca-factory",
+      "path": "/home/laoxu/github/orca-factory",
+      "prefix": "OF",
+      "roles": [
+        {"role": "worker_fast", "agent": "codex", "model": "gpt-6.1-sol", "effort": "high", "key": "AGENT_TIER_FAST", "raw": "codex:gpt-6.1-sol:high"},
+        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER_CMD", "raw": "env -u ORCA_PANE_KEY ... codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -"}
+      ],
+      "routing": [
+        {"key": "AGENT_TIER_BY_ESTIMATE", "value": "1-2:fast 3-5:default 8-:strong", "source": "agent-graph.env", "set": true}
+      ]
+    }
+  ],
+  "scheduler": [
+    {"key": "max_in_flight", "value": "4", "source": "driver.toml", "set": true},
+    {"key": "scheduler.pause_fraction", "value": "0.05", "source": "default", "set": true}
+  ],
+  "environment": [
+    {"key": "AGENT_FEISHU_APP_SECRET", "source": "driver.env", "set": true, "secret": true},
+    {"key": "HTTPS_PROXY", "value": "http://127.0.0.1:7890", "source": "service", "set": true},
+    {"key": "gh", "value": "/usr/bin/gh", "source": "service", "set": true}
+  ],
+  "problems": []
+}
+```
+
+字段规则：
+
+- `overview.build`：与 `orca-factory-driver version` 输出的提交相同。
+- `overview.service`：`systemctl --user is-active orca-factory-driver.service` 的输出（`active`、`inactive`、`failed` 等）；命令失败或不存在时为 `unknown`。
+- `overview.maintenance`：维护状态的 `mode`（`running`、`draining`、`frozen`）；读不到时为 `unknown`。
+- `overview.snapshot`、`globalPause`、`pauseSeconds`：取自 `status.Read` 的 `state`、`globalPause.active`、`globalPause.durationSeconds`。
+- `overview.factoryRoot`：`config.Load` 的 `FactoryRoot`，未配置时为空串。
+- `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
+- `roles[].role` 只有七种，固定顺序：`worker_fast`、`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
+  - `worker_*`：`AGENT_TIER_FAST` / `DEFAULT` / `STRONG`，按 `agent:model:effort` 切分。
+  - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
+  - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
+  - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词是 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
+  - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
+- `routing`：固定顺序的八个键：`AGENT_TIER_BY_ESTIMATE`、`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- `scheduler`：固定顺序的十四个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.pause_fraction`、`scheduler.quota_probe_backoff`、`scheduler.unregistered_grace`、`scheduler.adaptive_min_interval`、`scheduler.adaptive_max_interval`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`、`status.stale_after`、`runx.wait_delay`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
+- `environment` 依次是三组：
+  1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。
+  2. 服务环境（`serviceEnviron`）里的 `AGENT_ORCA_BIN`、`HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY`。代理地址去掉用户名和密码；不存在时 `set` 为 false、不带 `value`。
+  3. 在服务 `PATH` 中查找的工具 `go`、`gh`、`git`、`jq`、`claude`、`codex`，`value` 是找到的路径，找不到时 `set` 为 false。
+
+  服务环境读不到时省略第 2、3 组，并在 `problems` 记一条。
+- `source` 只有五种：`driver.toml`、`default`、`driver.env`、`agent-graph.env`、`service`。
+- `problems`：每个读失败的来源记一行中文原因，不含任何环境变量值。`driver.toml` 中 driver 不认识的键（toml MetaData 的 `Undecoded()`）每个记一行，例如「driver.toml 的 scheduler.resume_fraction 不被识别，不生效」。有 problems 时命令仍输出 JSON 并以 0 退出；参数错误以 2 退出。
+- 凭据铁律：任何 `secret` 项的值、`driver.env` 的任何值、代理地址里的用户名和密码，都不得出现在输出的任何位置。
+
+验证：`TestDriverConfigShowsEffectiveValuesWithoutSecrets` 用假飞书账本、假 Orca 仓库清单和读不到的服务运行 `config --json`，断言假凭据不出现在输出中、调度项来源、角色回退与 reviewer 命令解析，以及 `problems` 记下未识别键与服务环境。
