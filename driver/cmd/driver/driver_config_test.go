@@ -38,7 +38,9 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		"AGENT_FEISHU_BASE=BASE_TOKEN",
 		"AGENT_FEISHU_PROJECT=github.com/vmxmy/orca-factory",
 		"AGENT_TIER_FAST='codex:gpt-6.1-sol:medium'",
+		"AGENT_TIER_DEFAULT='codex::low'",
 		"AGENT_TIER_STRONG='claude:claude-opus-5-5:high'",
+		"AGENT_ROLE_INTAKE='codex:gpt-6.1-sol:high'",
 		"AGENT_ROLE_REVIEWER_CMD='env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -'",
 		"",
 	}, "\n"))
@@ -109,11 +111,11 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		t.Fatalf("repos=%+v, want only orca-factory", snapshot.Repos)
 	}
 	wantRoles := []role{
-		{"worker_fast", "codex", "gpt-6.1-sol", "medium", "AGENT_TIER_FAST", "codex:gpt-6.1-sol:medium"},
+		{"worker_default", "codex", "", "", "AGENT_TIER_DEFAULT", "codex::low"},
 		{"worker_strong", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high"},
 		{"reviewer", "codex", "gpt-6-astra", "xhigh", "AGENT_ROLE_REVIEWER_CMD", "env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -"},
 		{"resolver", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high"},
-		{"intake", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high"},
+		{"intake", "codex", "gpt-6.1-sol", "high", "AGENT_ROLE_INTAKE", "codex:gpt-6.1-sol:high"},
 	}
 	if got := snapshot.Repos[0].Roles; len(got) != len(wantRoles) {
 		t.Fatalf("roles=%+v, want %+v", got, wantRoles)
@@ -125,7 +127,9 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 	}
 
 	problems := strings.Join(snapshot.Problems, "\n")
-	if !strings.Contains(problems, "scheduler.resume_fraction") || !strings.Contains(problems, "服务") {
-		t.Fatalf("problems=%q, want the unknown driver.toml key and the unreachable service", snapshot.Problems)
+	for _, want := range []string{"scheduler.resume_fraction", "服务", "OF 的需求助手档位不是 claude", "AGENT_TIER_FAST 与 AGENT_TIER_BY_ESTIMATE 不生效（OF）"} {
+		if !strings.Contains(problems, want) {
+			t.Fatalf("problems=%q, want %q", snapshot.Problems, want)
+		}
 	}
 }

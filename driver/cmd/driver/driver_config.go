@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,23 +86,24 @@ type configEntry struct {
 
 // configRoles mirrors each role's dispatch-time fallback chain: resolver
 // (internal/scheduler/resolver.go), intake (tierParts) and the worker tiers.
+// The executor always starts on the default tier, so the fast tier never runs.
 var configRoles = []struct {
 	role     string
 	keys     []string
 	fallback string
 	parse    func(string) (agent, model, effort string)
 }{
-	{"worker_fast", []string{"AGENT_TIER_FAST"}, "", splitTier},
-	{"worker_default", []string{"AGENT_TIER_DEFAULT"}, "", splitTier},
-	{"worker_strong", []string{"AGENT_TIER_STRONG"}, "", splitTier},
+	{"worker_default", []string{"AGENT_TIER_DEFAULT"}, "", dispatchTier},
+	{"worker_strong", []string{"AGENT_TIER_STRONG"}, "", dispatchTier},
 	{"reviewer", []string{"AGENT_ROLE_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
-	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", splitTier},
+	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
 
+var configUnreadKeys = []string{"AGENT_TIER_FAST", "AGENT_TIER_BY_ESTIMATE"}
+
 var configRouting = []struct{ key, fallback string }{
-	{"AGENT_TIER_BY_ESTIMATE", ""},
 	{"AGENT_TIER_ESCALATE", ""},
 	{"AGENT_REVIEWER_SMALL_MAX_ESTIMATE", "2"},
 	{"AGENT_MAX_IN_FLIGHT", "4"},
@@ -194,9 +196,19 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		s.Problems = append(s.Problems, "项目发现失败，仓库未列出")
 		return s
 	}
+	var unread []string
 	for _, p := range result.Eligible {
 		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix,
 			Roles: repositoryRoles(p.Repository.Env), Routing: repositoryRouting(p.Repository.Env)})
+		if _, _, err := tierParts(p.Repository.Env); err != nil {
+			s.Problems = append(s.Problems, p.Prefix+" 的需求助手档位不是 claude，需求助手不可用")
+		}
+		if slices.ContainsFunc(configUnreadKeys, func(key string) bool { return p.Repository.Env[key] != "" }) {
+			unread = append(unread, p.Prefix)
+		}
+	}
+	if len(unread) > 0 {
+		s.Problems = append(s.Problems, "driver 施工首轮总用 default 档，AGENT_TIER_FAST 与 AGENT_TIER_BY_ESTIMATE 不生效（"+strings.Join(unread, "、")+"）")
 	}
 	return s
 }
@@ -350,6 +362,16 @@ func splitTier(tier string) (agent, model, effort string) {
 	return parts[0], parts[1], parts[2]
 }
 
+// dispatchTier drops the effort of a tier without a model, as the executor
+// and resolver do before starting a worker.
+func dispatchTier(tier string) (agent, model, effort string) {
+	agent, model, effort = splitTier(tier)
+	if model == "" {
+		effort = ""
+	}
+	return agent, model, effort
+}
+
 // parseReviewerCommand reads a reviewer shell command word by word; whatever
 // it cannot recognize stays empty and the caller keeps the original as raw.
 func parseReviewerCommand(command string) (agent, model, effort string) {
@@ -373,13 +395,18 @@ func parseReviewerCommand(command string) (agent, model, effort string) {
 		if j+1 < len(words) {
 			next = words[j+1]
 		}
+		word := strings.Trim(words[j], `'"`)
 		switch {
-		case words[j] == "-m" || words[j] == "--model":
+		case word == "-m" || word == "--model":
 			model = next
-		case words[j] == "--effort":
+		case strings.HasPrefix(word, "--model="):
+			model = strings.Trim(strings.TrimPrefix(word, "--model="), `'"`)
+		case strings.HasPrefix(word, "model="):
+			model = strings.Trim(strings.TrimPrefix(word, "model="), `'"`)
+		case word == "--effort":
 			effort = next
-		case strings.HasPrefix(strings.Trim(words[j], `'"`), "model_reasoning_effort="):
-			effort = strings.Trim(strings.TrimPrefix(strings.Trim(words[j], `'"`), "model_reasoning_effort="), `'"`)
+		case strings.HasPrefix(word, "model_reasoning_effort="):
+			effort = strings.Trim(strings.TrimPrefix(word, "model_reasoning_effort="), `'"`)
 		}
 	}
 	return agent, model, effort
