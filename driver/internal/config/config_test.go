@@ -134,7 +134,4 @@ func TestTuningDefaultsWhenAbsent(t *testing.T) {
 	if c.Tuning.Scheduler.PauseFraction != .05 {
 		t.Fatalf("scheduler defaults: %+v", c.Tuning.Scheduler)
 	}
-	if c.Tuning.Status.StaleAfter != 5*time.Minute || c.Tuning.Runx.WaitDelay != 100*time.Millisecond {
-		t.Fatalf("defaults: %+v", c.Tuning)
-	}
 }

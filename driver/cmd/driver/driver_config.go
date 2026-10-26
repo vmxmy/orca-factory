@@ -119,14 +119,10 @@ var configScheduler = []struct {
 	{"scheduler.pause_fraction", func(c config.Config) string { return formatFloat(c.Tuning.Scheduler.PauseFraction) }},
 	{"scheduler.quota_probe_backoff", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.QuotaProbeBackoff) }},
 	{"scheduler.unregistered_grace", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.UnregisteredGrace) }},
-	{"scheduler.adaptive_min_interval", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.AdaptiveMinInterval) }},
-	{"scheduler.adaptive_max_interval", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.AdaptiveMaxInterval) }},
 	{"github.http_timeout", func(c config.Config) string { return formatDuration(c.Tuning.GitHub.HTTPTimeout) }},
 	{"orca.worker_start_wait", func(c config.Config) string { return formatDuration(c.Tuning.Orca.WorkerStartWait) }},
 	{"orca.call_timeout", func(c config.Config) string { return formatDuration(c.Tuning.Orca.CallTimeout) }},
 	{"ledger.flush_interval", func(c config.Config) string { return formatDuration(c.Tuning.Ledger.FlushInterval) }},
-	{"status.stale_after", func(c config.Config) string { return formatDuration(c.Tuning.Status.StaleAfter) }},
-	{"runx.wait_delay", func(c config.Config) string { return formatDuration(c.Tuning.Runx.WaitDelay) }},
 }
 
 var configServiceKeys = []string{"AGENT_ORCA_BIN", "HTTPS_PROXY", "HTTP_PROXY", "NO_PROXY"}
@@ -224,8 +220,6 @@ func schedulerEntries(home string, cfg config.Config, problems *[]string) []conf
 			GitHub      *config.GitHub     `toml:"github"`
 			Orca        *config.Orca       `toml:"orca"`
 			Ledger      *config.Ledger     `toml:"ledger"`
-			Status      *config.Status     `toml:"status"`
-			Runx        *config.Runx       `toml:"runx"`
 		}
 		if meta, err = toml.Decode(string(data), &shape); err != nil {
 			*problems = append(*problems, "driver.toml 无法解析，调度项来源按默认值标注")

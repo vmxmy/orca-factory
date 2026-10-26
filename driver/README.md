@@ -446,7 +446,7 @@ reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factor
 
 ## 可调参数（driver.toml）
 
-`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]`、`[status]`、`[runx]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。已部署 driver.toml 中残留的 `[linear]` 节不再被读取，加载时忽略，可以删除。
+`~/.config/orca-factory/driver.toml` 除了 `max_in_flight`、`factory_root`、`[token_bucket]` 之外，还可以在 `[scheduler]`、`[github]`、`[orca]`、`[ledger]` 各节里覆盖驱动器的硬参数。每节只写要改的字典，其余保留内置默认值。时长用 TOML 字符串（如 `"5m"`、`"30s"`），比例用 0 到 1 的小数。已部署 driver.toml 中残留的 `[linear]` 节不再被读取，加载时忽略，可以删除。
 
 `factory_root`（支持 `~/` 展开）是本机 orca-factory 生产检出路径，
 调度器与飞书需求网关的项目发现（OF-42、OF-43）用它运行 `<factory_root>/bin/orca-factory check <仓库路径>`
@@ -461,8 +461,6 @@ factory_root = "~/github/orca-factory"
 pause_fraction = 0.05       # GitHub 额度低于该比例时暂停调度
 quota_probe_backoff = "5m"  # 无 reset 时间的额度暂停的退避期限
 unregistered_grace = "3m"   # 认领后等执行器登记的宽限
-adaptive_min_interval = "1m"
-adaptive_max_interval = "3m"
 
 [github]
 http_timeout = "30s"
@@ -473,12 +471,6 @@ call_timeout = "30s"        # 其他 orca 调用的默认超时
 
 [ledger]
 flush_interval = "10m"
-
-[status]
-stale_after = "5m"          # 状态快照视为过期的年龄
-
-[runx]
-wait_delay = "100ms"        # 子进程退出的收尾等待
 ```
 
 不写 `[tuning]` 各节时，所有值取上表默认值，行为与改动前一致。
