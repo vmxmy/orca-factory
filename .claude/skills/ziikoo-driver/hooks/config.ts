@@ -5,6 +5,8 @@ import type {
   Repo,
   Role,
   RoleId,
+  SchedulerKey,
+  SchedulerSetting,
   Setting,
   Source,
 } from '../types'
@@ -26,6 +28,32 @@ export const SOURCE_LABELS: Record<Source, string> = {
   'driver.env': 'driver.env',
   'agent-graph.env': 'agent-graph.env',
   service: '服务',
+}
+
+export const SETTING_GROUPS = ['并发与限速', 'GitHub', 'Orca 与执行器', '账本'] as const
+
+type SettingView = { group: (typeof SETTING_GROUPS)[number]; label: string; show: (value: string) => string }
+
+const DURATION_UNITS: Record<string, string> = { h: '小时', m: '分钟', s: '秒', ms: '毫秒', µs: '微秒', us: '微秒', ns: '纳秒' }
+
+const duration = (value: string) =>
+  [...value.matchAll(/(\d+(?:\.\d+)?)(ms|µs|us|ns|h|m|s)/g)]
+    .map(([, amount = '', unit = '']) => `${amount} ${DURATION_UNITS[unit]}`)
+    .join(' ') || value
+
+const percent = (value: string) => `${Number((Number(value) * 100).toFixed(2))}%`
+
+export const SETTINGS: Record<SchedulerKey, SettingView> = {
+  max_in_flight: { group: '并发与限速', label: '同时运行的票', show: value => `最多 ${value} 张` },
+  'token_bucket.capacity': { group: '并发与限速', label: '领票连发上限', show: value => `${value} 次` },
+  'token_bucket.refill_per_second': { group: '并发与限速', label: '领票补充速度', show: value => `每秒 ${value} 次` },
+  'scheduler.pause_fraction': { group: 'GitHub', label: '额度暂停阈值', show: value => `剩余低于 ${percent(value)}` },
+  'scheduler.quota_probe_backoff': { group: 'GitHub', label: '额度重试间隔', show: duration },
+  'scheduler.unregistered_grace': { group: 'Orca 与执行器', label: '执行器登记宽限', show: duration },
+  'github.http_timeout': { group: 'GitHub', label: '请求超时', show: duration },
+  'orca.worker_start_wait': { group: 'Orca 与执行器', label: 'worker 就绪等待', show: duration },
+  'orca.call_timeout': { group: 'Orca 与执行器', label: 'Orca 调用超时', show: duration },
+  'ledger.flush_interval': { group: '账本', label: '用量账本写回', show: value => `每 ${duration(value)}` },
 }
 
 type Fields = Record<string, unknown>
@@ -61,10 +89,10 @@ const count = (o: Fields, key: string, path: string): number => {
   return value
 }
 
-const member = <K extends string>(table: Record<K, string>, value: string): value is K =>
+const member = <K extends string>(table: Record<K, unknown>, value: string): value is K =>
   Object.hasOwn(table, value)
 
-const oneOf = <K extends string>(table: Record<K, string>, o: Fields, key: string, path: string): K => {
+const oneOf = <K extends string>(table: Record<K, unknown>, o: Fields, key: string, path: string): K => {
   const value = text(o, key, path)
   if (!member(table, value)) throw new Error(`${path}.${key} 取值未知：${value}`)
   return value
@@ -105,6 +133,11 @@ const parseSetting = (value: unknown, path: string): Setting => {
   }
 }
 
+const parseSchedulerSetting = (value: unknown, path: string): SchedulerSetting => ({
+  ...parseSetting(value, path),
+  key: oneOf(SETTINGS, fields(value, path), 'key', path),
+})
+
 const parseEnv = (value: unknown, path: string): EnvEntry => {
   const o = fields(value, path)
   const key = text(o, 'key', path)
@@ -136,7 +169,7 @@ export const parseConfig = (stdout: string): DriverConfig => {
     generatedAt: text(o, 'generatedAt', '输出'),
     overview: parseOverview(o.overview),
     repos: list(o.repos, 'repos').map((one, i) => parseRepo(one, `repos[${i}]`)),
-    scheduler: list(o.scheduler, 'scheduler').map((one, i) => parseSetting(one, `scheduler[${i}]`)),
+    scheduler: list(o.scheduler, 'scheduler').map((one, i) => parseSchedulerSetting(one, `scheduler[${i}]`)),
     environment: list(o.environment, 'environment').map((one, i) => parseEnv(one, `environment[${i}]`)),
     problems: list(o.problems, 'problems').map((one, i) => {
       if (typeof one !== 'string') throw new Error(`problems[${i}] 不是字符串`)

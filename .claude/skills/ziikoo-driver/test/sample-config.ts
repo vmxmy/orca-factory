@@ -63,7 +63,7 @@ export const SAMPLE_CONFIG = {
     { key: 'scheduler.quota_probe_backoff', value: '5m', source: 'driver.toml', set: true },
     { key: 'scheduler.unregistered_grace', value: '30s', source: 'default', set: true },
     { key: 'github.http_timeout', value: '30s', source: 'default', set: true },
-    { key: 'orca.worker_start_wait', value: '1m', source: 'driver.toml', set: true },
+    { key: 'orca.worker_start_wait', value: '1m30s', source: 'driver.toml', set: true },
     { key: 'orca.call_timeout', value: '15s', source: 'default', set: true },
     { key: 'ledger.flush_interval', value: '100ms', source: 'default', set: true },
   ],
