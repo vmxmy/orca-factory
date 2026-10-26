@@ -24,6 +24,20 @@ export type Role = {
 
 export type Setting = { key: string; value: string; source: Source; set: boolean }
 
+export type SchedulerKey =
+  | 'max_in_flight'
+  | 'token_bucket.capacity'
+  | 'token_bucket.refill_per_second'
+  | 'scheduler.pause_fraction'
+  | 'scheduler.quota_probe_backoff'
+  | 'scheduler.unregistered_grace'
+  | 'github.http_timeout'
+  | 'orca.worker_start_wait'
+  | 'orca.call_timeout'
+  | 'ledger.flush_interval'
+
+export type SchedulerSetting = Omit<Setting, 'key'> & { key: SchedulerKey }
+
 export type EnvEntry =
   | { key: string; source: Source; set: boolean; secret: true }
   | { key: string; source: Source; set: boolean; secret: false; value?: string }
@@ -52,7 +66,7 @@ export type DriverConfig = {
   generatedAt: string
   overview: Overview
   repos: Repo[]
-  scheduler: Setting[]
+  scheduler: SchedulerSetting[]
   environment: EnvEntry[]
   problems: string[]
 }

@@ -73,17 +73,23 @@ test('模型页列出施工档位与样本模型名，可切换仓库', async ($
   await ui.unmount()
 })
 
-test('调度页 default 来源的行是灰色', async ($, on) => {
+test('调度页按用途分组，值带单位，只高亮 driver.toml 改过的项', async ($, on) => {
   engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'page-scheduler' })
 
-  const rows = await Promise.all(SAMPLE_CONFIG.scheduler.map(one => exactText(ui, one.key)))
-  expect(rows.map(found => found.map(one => one.props.dimColor))).toEqual([
-    [false], [false], [true], [true], [false],
-    [true], [true], [false], [true], [true],
-  ])
+  for (const group of ['并发与限速', 'GitHub', 'Orca 与执行器', '账本']) {
+    expect(await exactText(ui, group)).toHaveLength(1)
+  }
+  const row = async (key: string) => (await ui.find({ key: `setting-${key}` }))?.text
+  expect(await row('max_in_flight')).toBe('同时运行的票最多 4 张driver.tomlmax_in_flight')
+  expect(await row('token_bucket.refill_per_second')).toBe('领票补充速度每秒 0.5 次默认token_bucket.refill_per_second')
+  expect(await row('scheduler.pause_fraction')).toBe('额度暂停阈值剩余低于 5%默认scheduler.pause_fraction')
+  expect(await row('orca.worker_start_wait')).toBe('worker 就绪等待1 分钟 30 秒driver.tomlorca.worker_start_wait')
+  expect(await row('ledger.flush_interval')).toBe('用量账本写回每 100 毫秒默认ledger.flush_interval')
+  expect((await exactText(ui, 'driver.toml')).map(one => one.props.color)).toEqual(['suggestion', 'suggestion', 'suggestion', 'suggestion'])
+  expect((await exactText(ui, '同时运行的票')).map(one => one.props.dimColor)).toEqual([false])
   expect((await exactText(ui, '默认')).map(one => one.props.dimColor)).toEqual([true, true, true, true, true, true])
   await ui.unmount()
 })
@@ -123,5 +129,15 @@ test('schema 不对时进入失败状态并给出原因', async ($, on) => {
   const ui = await $.ui.mount(PANE)
 
   expect((await ui.find({ type: 'Text', text: /schema/ }))?.text).toBe('schema 不是 driver-config-v1：driver-config-v2')
+  await ui.unmount()
+})
+
+test('未知调度键时进入失败状态', async ($, on) => {
+  const scheduler = [...SAMPLE_CONFIG.scheduler, { key: 'scheduler.new_knob', value: '1', source: 'default', set: true }]
+  engine(on, ran({ stdout: JSON.stringify({ ...SAMPLE_CONFIG, scheduler }) }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect((await ui.find({ type: 'Text', text: /取值未知/ }))?.text).toBe('scheduler[10].key 取值未知：scheduler.new_knob')
   await ui.unmount()
 })

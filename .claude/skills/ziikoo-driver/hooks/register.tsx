@@ -1,8 +1,8 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register } from 'claude-code'
 
-import type { DriverConfig, EnvEntry, Page, Repo, Setting, Snapshot } from '../types'
-import { ROLE_LABELS, SOURCE_LABELS, parseConfig, routingSummary } from './config'
+import type { DriverConfig, EnvEntry, Page, Repo, SchedulerSetting, Snapshot } from '../types'
+import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, parseConfig, routingSummary } from './config'
 
 const PANE = 'ziikoo-driver'
 const TITLE = 'Driver 配置'
@@ -18,7 +18,7 @@ const PAGES: { id: Page; label: string; hotkey: string }[] = [
 ]
 
 const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { kind: 'loading' }, {
-  shape: 'snapshot-1',
+  shape: 'snapshot-2',
 })
 const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'overview', { shape: 'page-1' })
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
@@ -61,9 +61,9 @@ const columns = (cols: number, fixed: number, share: number, max: number) => {
   return { flexible, rest: Math.max(6, rest - flexible) }
 }
 
-const cell = (ui: Kit, width: number, value: string, dimColor = false) => (
+const cell = (ui: Kit, width: number, value: string, dimColor = false, color?: string) => (
   <ui.Box width={width} flexShrink={0}>
-    <ui.Text wrap="truncate" dimColor={dimColor}>
+    <ui.Text wrap="truncate" dimColor={dimColor} color={color}>
       {value}
     </ui.Text>
   </ui.Box>
@@ -127,20 +127,29 @@ const modelsPage = (ui: Kit, current: Repo | undefined, cols: number) => {
   )
 }
 
-const schedulerPage = (ui: Kit, settings: Setting[], cols: number) => {
-  const { flexible: key, rest: value } = columns(cols, 16, 0.6, 34)
+const settingRow = (ui: Kit, one: SchedulerSetting, keyWidth: number) => {
+  const view = SETTINGS[one.key]
+  const changed = one.source === 'driver.toml'
+  return (
+    <ui.Box key={`setting-${one.key}`} flexDirection="row" marginLeft={2}>
+      {cell(ui, 18, view.label)}
+      {cell(ui, 14, view.show(one.value))}
+      {cell(ui, 13, SOURCE_LABELS[one.source], !changed, changed ? 'suggestion' : undefined)}
+      {cell(ui, keyWidth, one.key, true)}
+    </ui.Box>
+  )
+}
+
+const schedulerPage = (ui: Kit, settings: SchedulerSetting[], cols: number) => {
+  const keyWidth = Math.max(6, cols - 2 - 18 - 14 - 13)
   return (
     <ui.Box flexDirection="column">
-      {settings.map(one => {
-        const dim = one.source === 'default'
-        return (
-          <ui.Box flexDirection="row">
-            {cell(ui, key, one.key, dim)}
-            {cell(ui, value, one.value, dim)}
-            {cell(ui, 16, SOURCE_LABELS[one.source], dim)}
-          </ui.Box>
-        )
-      })}
+      {SETTING_GROUPS.map(group => (
+        <ui.Box flexDirection="column">
+          <ui.Text bold>{group}</ui.Text>
+          {settings.filter(one => SETTINGS[one.key].group === group).map(one => settingRow(ui, one, keyWidth))}
+        </ui.Box>
+      ))}
     </ui.Box>
   )
 }
