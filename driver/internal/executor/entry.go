@@ -47,19 +47,19 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	repo := strings.TrimSpace(string(b))
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_FAST:-}" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Result{}, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 15 {
+	if len(values) != 14 {
 		return Result{}, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
 	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
 		return Result{}, errors.New("repository profile requires GitHub repository and reviewer")
 	}
-	maximum, err := strconv.ParseFloat(values[7], 64)
+	maximum, err := strconv.ParseFloat(values[6], 64)
 	if err != nil {
 		return Result{}, errors.New("invalid reviewer estimate threshold")
 	}
@@ -71,7 +71,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, err
 	}
-	store, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[9], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[10], "AGENT_FEISHU_BASE": values[11], "AGENT_FEISHU_PROJECT": values[12]}, cfg.Tuning)
+	store, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[8], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[9], "AGENT_FEISHU_BASE": values[10], "AGENT_FEISHU_PROJECT": values[11]}, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
 	}
@@ -93,7 +93,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
-	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[6], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[13], ModelProxyURL: proxy}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
+	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[5], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[12], ModelProxyURL: proxy}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err
@@ -101,9 +101,9 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, name, ticket.Identifier, "executor")
 	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
 	e.Config.Tier = "default"
-	e.Config.Escalate = values[5]
-	e.Config.TierSettings = map[string]string{"fast": values[2], "default": values[3], "strong": values[4]}
-	parts := strings.Split(values[3], ":")
+	e.Config.Escalate = values[4]
+	e.Config.TierSettings = map[string]string{"default": values[2], "strong": values[3]}
+	parts := strings.Split(values[2], ":")
 	if len(parts) != 3 || parts[0] == "" {
 		return Result{}, errors.New("repository profile requires default worker tier")
 	}
@@ -113,7 +113,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	}
 	delegated = true
 	e.Config.Merging = merging
-	e.Config.Lane3Globs = strings.Fields(values[8])
+	e.Config.Lane3Globs = strings.Fields(values[7])
 	return e.Start(ctx, ticket)
 }
 

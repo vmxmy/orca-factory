@@ -99,7 +99,7 @@ ls -a | grep -iE 'env|secret|vars'   # 密钥文件命名
 | 部署工作流名 | `.github/workflows` 里 push main 触发部署的那个文件的 `name:`，原样（含空格） | `AGENT_DEPLOY_WORKFLOW` |
 | 冒烟 URL | README/部署工作流里的线上域名；一个 200 页面 + 一个未登录应 401 的 API 最稳 | `AGENT_SMOKE_CMD` |
 | 是否 monorepo / 子目录 | 命令要 `cd` 到哪；gate.project.sh 里相关测试路径要去前缀 | gate.project.sh 路径映射 |
-| 角色后端 | worker 三档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、estimate→档位映射（默认 `1-2:fast 3-5:default 8-:strong`）、lane 2 异构审查命令（默认 `codex exec --json`，不要审查就留空） | `AGENT_TIER_FAST/DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_BY_ESTIMATE`、`AGENT_ROLE_REVIEWER_CMD` |
+| 角色后端 | worker 两档 `agent:model:effort`（agent 用 Orca 里启用的 id，`orca agent-context` 或 Orca Settings → Agents 看；model 可空=该 agent 默认模型；模板默认值见 `templates/agent-graph.env.example`）、是否自动升档（默认 1）、lane 2 异构审查命令（默认 `codex exec --json`，不要审查就留空） | `AGENT_TIER_DEFAULT/STRONG`、`AGENT_TIER_ESCALATE`、`AGENT_ROLE_REVIEWER_CMD` |
 
 注意：`AGENT_ROLE_REVIEWER_CMD` 使用嵌套的 `claude -p` 审查员时，命令必须以 `env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN` 开头，清掉继承的 Orca 钩子变量；否则审查员结束时的 Stop 事件会以 coordinator 的终端标识上报，Orca 会在审查结束时结束 coordinator，导致票停在 In Progress、无 PR。
 
@@ -128,7 +128,7 @@ glob 语法：空格分隔的 bash glob，gate.sh 用 `[[ $f == $g ]]` 匹配，
 4. lane 2 / lane 3 路径增补：把你推导的两组 glob 列出来，问有没有要加的（例如他们心里的「不能让机器碰的目录」）。
 5. 没有自动部署时冒烟怎么做：可留空（`AGENT_DEPLOY_WORKFLOW` / `AGENT_SMOKE_CMD` 都为空，coordinator 跳过上线步）；有自动部署就确认工作流名与冒烟 URL。
 6. 工人安装命令是否正确：把你推导的 `AGENT_INSTALL_CMD` 原样给用户看。
-7. 模型档位：三档（fast / default / strong）各用什么 `agent:model:effort`（列出模板默认值 `codex:gpt-6-astra:low` / `codex:gpt-6-astra:medium` / `codex:gpt-6.1-sol:high`，问要不要改）；是否开自动升档（`AGENT_TIER_ESCALATE`，默认 1：被打回一次后下一轮 correction 升一档）。
+7. 模型档位：两档（default / strong）各用什么 `agent:model:effort`（列出模板默认值 `codex:gpt-6-astra:medium` / `codex:gpt-6.1-sol:high`，问要不要改）；是否开自动升档（`AGENT_TIER_ESCALATE`，默认 1：被打回后下一轮 correction 升到 strong）。
 
 8. 通知方案：`A 不接飞书通知` / `B 飞书通知`，把第 0 步 doctor 的推荐标为推荐值并给出理由。B 由飞书承接「需要人」通知。不要静默改写 doctor 的推荐。
 
@@ -178,7 +178,7 @@ $FACTORY/bin/orca-factory init $REPO
 
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
 
-- `agent-graph.env`：基本 `AGENT_*` 变量 + 5 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。三档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。另有两个可选通知变量：A 保持 `AGENT_NOTIFY_FEISHU_PROFILE=''`、`AGENT_NOTIFY_FEISHU_CHAT=''`；B 在用户确认后把机器人 profile（默认 `orca-factory`，隔离时为确认的新名称）和本项目新群的真实 ID 写进这两个变量。它们暂时只记录配置，发通知由后续票完成。
+- `agent-graph.env`：基本 `AGENT_*` 变量 + 3 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。两档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。另有两个可选通知变量：A 保持 `AGENT_NOTIFY_FEISHU_PROFILE=''`、`AGENT_NOTIFY_FEISHU_CHAT=''`；B 在用户确认后把机器人 profile（默认 `orca-factory`，隔离时为确认的新名称）和本项目新群的真实 ID 写进这两个变量。它们暂时只记录配置，发通知由后续票完成。
 - `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.lock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
 - `COORDINATOR.project.md`：lane 判据表、外部契约（录制样本目录与契约清单，没有就删除该小节或写「无」）、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 

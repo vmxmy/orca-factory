@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,7 +85,6 @@ type configEntry struct {
 
 // configRoles mirrors each role's dispatch-time fallback chain: resolver
 // (internal/scheduler/resolver.go), intake (tierParts) and the worker tiers.
-// The executor always starts on the default tier, so the fast tier never runs.
 var configRoles = []struct {
 	role     string
 	keys     []string
@@ -100,8 +98,6 @@ var configRoles = []struct {
 	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
-
-var configUnreadKeys = []string{"AGENT_TIER_FAST", "AGENT_TIER_BY_ESTIMATE"}
 
 var configRouting = []struct{ key, fallback string }{
 	{"AGENT_TIER_ESCALATE", ""},
@@ -196,19 +192,12 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		s.Problems = append(s.Problems, "项目发现失败，仓库未列出")
 		return s
 	}
-	var unread []string
 	for _, p := range result.Eligible {
 		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix,
 			Roles: repositoryRoles(p.Repository.Env), Routing: repositoryRouting(p.Repository.Env)})
 		if _, _, err := tierParts(p.Repository.Env); err != nil {
 			s.Problems = append(s.Problems, p.Prefix+" 的需求助手档位不是 claude，需求助手不可用")
 		}
-		if slices.ContainsFunc(configUnreadKeys, func(key string) bool { return p.Repository.Env[key] != "" }) {
-			unread = append(unread, p.Prefix)
-		}
-	}
-	if len(unread) > 0 {
-		s.Problems = append(s.Problems, "driver 施工首轮总用 default 档，AGENT_TIER_FAST 与 AGENT_TIER_BY_ESTIMATE 不生效（"+strings.Join(unread, "、")+"）")
 	}
 	return s
 }

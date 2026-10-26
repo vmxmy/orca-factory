@@ -36,7 +36,7 @@
   2. `mkdir -p .omc && touch .omc/agent-run-finished`（在运行 worktree）
 - 账本写入失败不阻塞本次运行收尾：只在本票评论里记一句失败原因（无票的 `no_ticket` 运行则只写 stderr），然后继续写结束标记。
 - `ledger stats` 从 当前主账本票评论读取并按 `(ticket, started_at)` 去重；无账本票时输出 `runs=0`，不创建票。
-- ledger 行字段：`ticket, lane, tier(fast|default|strong), outcome(merged|escalated|no_ticket), first_gate(green|red), corrections, ci_reds, pr, minutes, started_at, finished_at`。`first_gate` 是 coordinator 第一次独立复跑的结果；`tier` 是领票时解析出的档位（首跑所用，升档不改写）；`corrections` 含 CI 红与追溯块缺失；无票时 `outcome=no_ticket`，票字段省略。
+- ledger 行字段：`ticket, lane, tier(default), outcome(merged|escalated|no_ticket), first_gate(green|red), corrections, ci_reds, pr, minutes, started_at, finished_at`。`first_gate` 是 coordinator 第一次独立复跑的结果；`tier` 是领票时解析出的档位（首跑所用，升档不改写）；`corrections` 含 CI 红与追溯块缺失；无票时 `outcome=no_ticket`，票字段省略。
 - 不写结束标记 → 下次运行按 24 小时崩溃规则清理。
 
 ## 5. runtime_unavailable
@@ -47,12 +47,8 @@
 
 ## 6. 档位解析
 
-- 三档在 `agent-graph.env`：`AGENT_TIER_FAST` / `AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，值为 `agent:model:effort`；model 可空（如 `codex::low`）= 该 agent 的默认模型，此时派工不传 `--model` 也不传 `--effort`（`--effort` 依赖 `--model`）。档位顺序 fast < default < strong。
-- 领票时按优先级解析，取第一个命中的：
-  1. 票标签 `tier:fast` / `tier:default` / `tier:strong`（多个取最高档）；依据写 `label`。
-  2. 票 `estimate` 落进 `AGENT_TIER_BY_ESTIMATE` 的某个区间：格式 `lo-hi:tier` 空格分隔，`hi` 空表示无上限（`8-:strong`）；依据写 `estimate=N`。
-  3. 其余（无标签、无 estimate、estimate 不落任何区间）→ default；依据写 `default`。
-- 领票评论固定格式：`已领取 · tier=<t> (<agent>/<model>/<effort>) · 依据: <label|estimate=N|default>`；model 为空时写 `-`。
-- correction：`AGENT_TIER_ESCALATE=1` 时每次 correction 比上一轮升一档，strong 封顶；`=0` 不升。升档时票据评论 `correction n → 升至 <t>`，并用新档的 agent/model/effort 起 worker。ledger `tier` 仍记领票时的档位。
-- 解析只读 env 与票面；coordinator 不改 env、不改票标签。
+- 两档在 `agent-graph.env`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，值为 `agent:model:effort`；model 可空（如 `codex::low`）= 该 agent 的默认模型，此时派工不传 `--model` 也不传 `--effort`（`--effort` 依赖 `--model`）。
+- 施工首轮总用 default；票标签与 estimate 不决定档位。领票评论固定格式：`已领取 · tier=default (<agent>/<model>/<effort>)`；model 为空时写 `-`。
+- correction：`AGENT_TIER_ESCALATE=1` 时第一次 correction 升到 strong，之后保持 strong；`=0` 不升。升档时票据评论 `correction n → 升至 <t>`，并用新档的 agent/model/effort 起 worker。ledger `tier` 仍记领票时的档位。
+- 解析只读 env；coordinator 不改 env。
 - 实际生效的 agent/model/effort 以 `worker-start` **回执**里的 `launch.effective` 为准，派工时即记录（评论与 ledger 用它，不用解析值）；`worker-show` 不带该字段。回执 model 为空（agent 用自身默认模型）时，用 `ps -axo command | grep -E '^(codex --no-daemon|claude) '` 看真实进程参数核实。

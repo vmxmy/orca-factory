@@ -44,11 +44,9 @@ func newOnboardFixture(t *testing.T) onboardFixture {
 		"AGENT_ISSUE_BACKEND=feishu",
 		"AGENT_FEISHU_BASE=BASE_TOKEN",
 		"AGENT_FEISHU_PROJECT=github.com/vmxmy/orca-factory",
-		"AGENT_TIER_FAST='claude:claude-sonnet-5-5:high'",
 		"AGENT_TIER_DEFAULT='claude:claude-sonnet-5-5:high'",
 		"AGENT_TIER_STRONG='claude:claude-opus-5-5:high'",
 		"AGENT_TIER_ESCALATE=1",
-		"AGENT_TIER_BY_ESTIMATE='1-2:fast 3-5:default 8-:strong'",
 		"AGENT_DEPLOY_WORKFLOW='Deploy'",
 		"",
 	}, "\n"))
@@ -102,15 +100,13 @@ func TestOnboardDryRun(t *testing.T) {
 		t.Fatalf("plan=%+v", plan)
 	}
 	wantEnv := map[string]string{
-		"AGENT_ISSUE_BACKEND":    "feishu",
-		"AGENT_FEISHU_BASE":      "BASE_TOKEN",
-		"AGENT_FEISHU_PROJECT":   onboardRemote,
-		"AGENT_GH_REPO":          "vmxmy/ziikoo-control-plane",
-		"AGENT_TIER_FAST":        "claude:claude-sonnet-5-5:high",
-		"AGENT_TIER_DEFAULT":     "claude:claude-sonnet-5-5:high",
-		"AGENT_TIER_STRONG":      "claude:claude-opus-5-5:high",
-		"AGENT_TIER_ESCALATE":    "1",
-		"AGENT_TIER_BY_ESTIMATE": "1-2:fast 3-5:default 8-:strong",
+		"AGENT_ISSUE_BACKEND":  "feishu",
+		"AGENT_FEISHU_BASE":    "BASE_TOKEN",
+		"AGENT_FEISHU_PROJECT": onboardRemote,
+		"AGENT_GH_REPO":        "vmxmy/ziikoo-control-plane",
+		"AGENT_TIER_DEFAULT":   "claude:claude-sonnet-5-5:high",
+		"AGENT_TIER_STRONG":    "claude:claude-opus-5-5:high",
+		"AGENT_TIER_ESCALATE":  "1",
 	}
 	if !mapsEqual(plan.Env, wantEnv) {
 		t.Fatalf("env=%v\nwant %v", plan.Env, wantEnv)
