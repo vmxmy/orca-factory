@@ -49,8 +49,6 @@ func Load(home string) (Config, error) {
 		GitHub      *GitHub     `toml:"github"`
 		Orca        *Orca       `toml:"orca"`
 		Ledger      *Ledger     `toml:"ledger"`
-		Status      *Status     `toml:"status"`
-		Runx        *Runx       `toml:"runx"`
 	}{MaxInFlight: 4, TokenBucket: TokenBucket{Capacity: 4, RefillPerSecond: 1}}
 	path := filepath.Join(home, ".config", "orca-factory", "driver.toml")
 	data, err := os.ReadFile(path)
@@ -70,8 +68,6 @@ func Load(home string) (Config, error) {
 		GitHub:    DefaultGitHub(),
 		Orca:      DefaultOrca(),
 		Ledger:    DefaultLedger(),
-		Status:    DefaultStatus(),
-		Runx:      DefaultRunx(),
 	}}
 	// A named section overrides only the fields it names; the rest keep defaults.
 	if raw.Scheduler != nil {
@@ -85,12 +81,6 @@ func Load(home string) (Config, error) {
 	}
 	if raw.Ledger != nil {
 		result.Tuning.Ledger = fillLedger(*raw.Ledger, result.Tuning.Ledger)
-	}
-	if raw.Status != nil {
-		result.Tuning.Status = fillStatus(*raw.Status, result.Tuning.Status)
-	}
-	if raw.Runx != nil {
-		result.Tuning.Runx = fillRunx(*raw.Runx, result.Tuning.Runx)
 	}
 	if raw.FactoryRoot != "" {
 		root := raw.FactoryRoot
@@ -216,21 +206,17 @@ func ParseEnv(r io.Reader) (map[string]string, error) {
 
 // Scheduler holds the scheduler's tunable knobs. A zero field keeps the built-in default.
 type Scheduler struct {
-	PauseFraction       float64       `toml:"pause_fraction"`
-	QuotaProbeBackoff   time.Duration `toml:"quota_probe_backoff"`
-	UnregisteredGrace   time.Duration `toml:"unregistered_grace"`
-	AdaptiveMinInterval time.Duration `toml:"adaptive_min_interval"`
-	AdaptiveMaxInterval time.Duration `toml:"adaptive_max_interval"`
+	PauseFraction     float64       `toml:"pause_fraction"`
+	QuotaProbeBackoff time.Duration `toml:"quota_probe_backoff"`
+	UnregisteredGrace time.Duration `toml:"unregistered_grace"`
 }
 
 // DefaultScheduler returns the built-in scheduler defaults.
 func DefaultScheduler() Scheduler {
 	return Scheduler{
-		PauseFraction:       .05,
-		QuotaProbeBackoff:   5 * time.Minute,
-		UnregisteredGrace:   3 * time.Minute,
-		AdaptiveMinInterval: time.Minute,
-		AdaptiveMaxInterval: 3 * time.Minute,
+		PauseFraction:     .05,
+		QuotaProbeBackoff: 5 * time.Minute,
+		UnregisteredGrace: 3 * time.Minute,
 	}
 }
 
@@ -261,22 +247,6 @@ type Ledger struct {
 // DefaultLedger returns the built-in ledger defaults.
 func DefaultLedger() Ledger { return Ledger{FlushInterval: 10 * time.Minute} }
 
-// Status holds the status snapshot's tunables.
-type Status struct {
-	StaleAfter time.Duration `toml:"stale_after"`
-}
-
-// DefaultStatus returns the built-in status defaults.
-func DefaultStatus() Status { return Status{StaleAfter: 5 * time.Minute} }
-
-// Runx holds the process runner's tunables.
-type Runx struct {
-	WaitDelay time.Duration `toml:"wait_delay"`
-}
-
-// DefaultRunx returns the built-in runx defaults.
-func DefaultRunx() Runx { return Runx{WaitDelay: 100 * time.Millisecond} }
-
 // Tuning bundles every tunable subsystem. The raw TOML may name only the sections it overrides;
 // Load fills the rest with the built-in defaults.
 type Tuning struct {
@@ -284,8 +254,6 @@ type Tuning struct {
 	GitHub    GitHub
 	Orca      Orca
 	Ledger    Ledger
-	Status    Status
-	Runx      Runx
 }
 
 // fillScheduler returns want with every zero field of over taking its value.
@@ -298,12 +266,6 @@ func fillScheduler(over, want Scheduler) Scheduler {
 	}
 	if over.UnregisteredGrace != 0 {
 		want.UnregisteredGrace = over.UnregisteredGrace
-	}
-	if over.AdaptiveMinInterval != 0 {
-		want.AdaptiveMinInterval = over.AdaptiveMinInterval
-	}
-	if over.AdaptiveMaxInterval != 0 {
-		want.AdaptiveMaxInterval = over.AdaptiveMaxInterval
 	}
 	return want
 }
@@ -328,20 +290,6 @@ func fillOrca(over, want Orca) Orca {
 func fillLedger(over, want Ledger) Ledger {
 	if over.FlushInterval != 0 {
 		want.FlushInterval = over.FlushInterval
-	}
-	return want
-}
-
-func fillStatus(over, want Status) Status {
-	if over.StaleAfter != 0 {
-		want.StaleAfter = over.StaleAfter
-	}
-	return want
-}
-
-func fillRunx(over, want Runx) Runx {
-	if over.WaitDelay != 0 {
-		want.WaitDelay = over.WaitDelay
 	}
 	return want
 }

@@ -81,10 +81,10 @@ test('调度页 default 来源的行是灰色', async ($, on) => {
 
   const rows = await Promise.all(SAMPLE_CONFIG.scheduler.map(one => exactText(ui, one.key)))
   expect(rows.map(found => found.map(one => one.props.dimColor))).toEqual([
-    [false], [false], [true], [true], [false], [true], [false],
-    [false], [true], [false], [true], [true], [false], [true],
+    [false], [false], [true], [true], [false],
+    [true], [true], [false], [true], [true],
   ])
-  expect((await exactText(ui, '默认')).map(one => one.props.dimColor)).toEqual([true, true, true, true, true, true, true])
+  expect((await exactText(ui, '默认')).map(one => one.props.dimColor)).toEqual([true, true, true, true, true, true])
   await ui.unmount()
 })
 
