@@ -54,6 +54,6 @@ flowchart LR
 - 合并事实来自配置选定的票据主账本评论中的 `merge-handoff-v1`、`merge-progress-v1` 和 GitHub 回读。交接冻结 head、基线、gate/review 证据与队列身份；本地执行器 checkpoint 用于派工恢复，不替代合并事实。缺失或冲突证据导致等待，不能据此重派或放行。部署与 smoke 确认通过后才写 Done、放行下一 PR。
 - driver 把每张票的阶段同步到 Orca workspace 看板（列与映射见 `driver/README.md` 的“Orca 看板”，自定义列由 `bin/orca-factory board-columns` 安装）。看板与 `driver status` 展示观察数据，不是合并或恢复授权；状态快照可能过期。
 
-修改外部输出解析、持久回执、派工恢复或合并通道前，读 [driver/CONTRACTS.md](driver/CONTRACTS.md)，使用 `driver/testdata/recorded/` 中的真实录制样本。排查服务、配额暂停或部署屏障时，读 [driver/README.md](driver/README.md)；部署约束仍以 `AGENTS.md` 指向的共享记忆为准。
+修改外部输出解析、持久回执、派工恢复或合并通道前，读 [driver/CONTRACTS.md](driver/CONTRACTS.md)，使用 `driver/testdata/recorded/` 中的真实录制样本。排查服务或部署屏障时，读 [driver/README.md](driver/README.md)；部署约束仍以 `AGENTS.md` 指向的共享记忆为准。
 
 修改 gate 或验证入口前，读 `core/gate.sh` 和 `scripts/agent-gates/gate.project.sh`。后者由 gate 从基线读取；`selftest` 和 `gate.test.sh` 只能作为票的 `CHECK`，不能嵌套放进重型 project gate，以免重入同一把锁。

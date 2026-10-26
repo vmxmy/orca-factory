@@ -28,8 +28,6 @@ export type SchedulerKey =
   | 'max_in_flight'
   | 'token_bucket.capacity'
   | 'token_bucket.refill_per_second'
-  | 'scheduler.pause_fraction'
-  | 'scheduler.quota_probe_backoff'
   | 'scheduler.unregistered_grace'
   | 'github.http_timeout'
   | 'orca.worker_start_wait'
@@ -56,8 +54,6 @@ export type Overview = {
   service: string
   maintenance: string
   snapshot: string
-  globalPause: boolean
-  pauseSeconds: number
   factoryRoot: string
 }
 

@@ -18,7 +18,7 @@ const PAGES: { id: Page; label: string; hotkey: string }[] = [
 ]
 
 const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { kind: 'loading' }, {
-  shape: 'snapshot-2',
+  shape: 'snapshot-3',
 })
 const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'overview', { shape: 'page-1' })
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
@@ -91,7 +91,6 @@ const overviewPage = (ui: Kit, config: DriverConfig, fetchedAt: number) => {
       {field(ui, '服务', overview.service, overview.service === 'active' ? 'success' : 'warning')}
       {field(ui, '维护模式', overview.maintenance, overview.maintenance === 'running' ? undefined : 'warning')}
       {field(ui, '状态快照', overview.snapshot)}
-      {field(ui, '配额暂停', overview.globalPause ? `暂停中 ${overview.pauseSeconds} 秒` : '未暂停', overview.globalPause ? 'warning' : undefined)}
       {field(ui, '纳管仓库', `${config.repos.length} 个`)}
       {field(ui, '工厂目录', overview.factoryRoot || '未配置')}
       {field(ui, '取数时间', clockTime(fetchedAt))}

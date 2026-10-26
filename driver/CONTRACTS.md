@@ -173,8 +173,8 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 - `feishu.Client.SendText` 使用应用 tenant token，POST `/open-apis/im/v1/messages?receive_id_type=chat_id`；`content` 是包含 `text` 的 JSON 字符串。单次调用不重试。`TestFeishuNotifyRecorded` 回放 PR #418 的 `bot-message-send.json`、`bot-message-invalid-chat.json`（230001）、`bot-message-bot-not-in-chat.json`（230002），精确比较请求。缺权限测试复用 `bot-scope-denied.json` 的 99991672 与 permission violations 形态；该录制原请求是 Base 写入，不声称录制过消息接口缺权限。
 - `AGENT_FEISHU_NOTIFY_CHAT` 未配置时不写通知事件、不发消息。配置优先级为仓库 `agent-graph.env`、进程环境、机器 `driver.env`；显式空值关闭通知。应用凭据只读机器配置。非飞书账本不通知。
-- 全局暂停期间不通知。调度器在暂停检查之后，对允许自动化的仓库通知转人（归属人）、合并证据冲突、部署 `paused`；处置 Agent 归属是无人值守下的常规流程，不通知（OF-135，`TestFeishuNotifyResolverSilent`）；票级归属或处置凭证的证据冲突导致 Snapshot 失败时，聚合本轮完整读取评论后的票，通知全部待通知票，Snapshot 错误保留，整轮停止调度。无执行归属的纳管票只要有 `MergeProblem` 也保留以便通知。类别优先级为证据冲突、部署失败、转人。原因摘要折叠空白，先写事件 `通知: <类别> <摘要 sha256 前 12 位>`，已存在同票同标记则不再发送。发送失败或结果未知保留事件，不在以后轮次或重启后自动补发；原因与已有通知事件来自同一轮 Snapshot 的评论视图，通知不调用 `ListComments`。评论读取或事件写入失败不发送，下轮可重新观察。通知错误只记 warn，不改变原调度结果。
-- `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、已有事件、写入失败和发送失败；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`TestFeishuNotifySnapshotConflict` 验证票级错误身份、Snapshot 失败与跨轮去重；`TestFeishuNotifyPausedSkips` 覆盖 Snapshot 前后及失败时的全局暂停；`TestFeishuNotifySnapshotReason` 验证原因按创建时间、ID 排序并使用快照事件。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。
+- 调度器对允许自动化的仓库通知转人（归属人）、合并证据冲突、部署 `paused`；处置 Agent 归属是无人值守下的常规流程，不通知（OF-135，`TestFeishuNotifyResolverSilent`）；票级归属或处置凭证的证据冲突导致 Snapshot 失败时，聚合本轮完整读取评论后的票，通知全部待通知票，Snapshot 错误保留，整轮停止调度。无执行归属的纳管票只要有 `MergeProblem` 也保留以便通知。类别优先级为证据冲突、部署失败、转人。原因摘要折叠空白，先写事件 `通知: <类别> <摘要 sha256 前 12 位>`，已存在同票同标记则不再发送。发送失败或结果未知保留事件，不在以后轮次或重启后自动补发；原因与已有通知事件来自同一轮 Snapshot 的评论视图，通知不调用 `ListComments`。评论读取或事件写入失败不发送，下轮可重新观察。通知错误只记 warn，不改变原调度结果。
+- `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、已有事件、写入失败和发送失败；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`TestFeishuNotifySnapshotConflict` 验证票级错误身份、Snapshot 失败与跨轮去重；`TestFeishuNotifySnapshotReason` 验证原因按创建时间、ID 排序并使用快照事件。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。
 - `TestFeishuNotifyTwoTicks` 回放 `linear-comments-executor-handoff.json` 的转人评论，通过真实 Runtime 快照和连续两轮 Tick 验证三张票各发送一次、各写一条通知事件，并在两轮之间重建 Runtime；同时覆盖快照凭证错误与其他待通知票共存时，通知不漏报且不派工。`TestFeishuNotifyUnownedConflict` 覆盖无归属、非候选票的合并证据冲突。通知标记由本次测试的实际写入产生，第二轮从评论重新解析，不手工恢复 `NotifyEvents`。
 
 ## 飞书需求网关（OF-13）
@@ -224,8 +224,6 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
     "service": "active",
     "maintenance": "running",
     "snapshot": "ok",
-    "globalPause": false,
-    "pauseSeconds": 0,
     "factoryRoot": "/home/laoxu/github/orca-factory"
   },
   "repos": [
@@ -245,7 +243,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   ],
   "scheduler": [
     {"key": "max_in_flight", "value": "4", "source": "driver.toml", "set": true},
-    {"key": "scheduler.pause_fraction", "value": "0.05", "source": "default", "set": true}
+    {"key": "scheduler.unregistered_grace", "value": "3m", "source": "default", "set": true}
   ],
   "environment": [
     {"key": "AGENT_FEISHU_APP_SECRET", "source": "driver.env", "set": true, "secret": true},
@@ -261,7 +259,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `overview.build`：与 `orca-factory-driver version` 输出的提交相同。
 - `overview.service`：`systemctl --user is-active orca-factory-driver.service` 的输出（`active`、`inactive`、`failed` 等）；命令失败或不存在时为 `unknown`。
 - `overview.maintenance`：维护状态的 `mode`（`running`、`draining`、`frozen`）；读不到时为 `unknown`。
-- `overview.snapshot`、`globalPause`、`pauseSeconds`：取自 `status.Read` 的 `state`、`globalPause.active`、`globalPause.durationSeconds`。
+- `overview.snapshot`：取自 `status.Read` 的 `state`。
 - `overview.factoryRoot`：`config.Load` 的 `FactoryRoot`，未配置时为空串。
 - `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
 - `roles[].role` 只有六种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
@@ -272,7 +270,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
 - `routing`：固定顺序的七个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
-- `scheduler`：固定顺序的十个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.pause_fraction`、`scheduler.quota_probe_backoff`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
+- `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。
   2. 服务环境（`serviceEnviron`）里的 `AGENT_ORCA_BIN`、`HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY`。代理地址去掉用户名和密码；不存在时 `set` 为 false、不带 `value`。这四个键即使经 `EnvironmentFile` 来自 `driver.env`，也按本组规则输出。

@@ -10,12 +10,10 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
-	"github.com/vmxmy/orca-factory/driver/internal/pause"
 )
 
 func captureDecisions(t *testing.T, s *Scheduler) []map[string]any {
@@ -81,7 +79,7 @@ func TestSchedulerDecisionLog(t *testing.T) {
 		case "summary":
 			summary++
 			limits, ok := row["repository_limits"].(map[string]any)
-			if !ok || limits["a"] != float64(1) || limits["b"] != float64(3) || row["in_flight"] != float64(1) || row["candidates"] != float64(2) || row["paused"] != false || row["duration_ms"] == nil {
+			if !ok || limits["a"] != float64(1) || limits["b"] != float64(3) || row["in_flight"] != float64(1) || row["candidates"] != float64(2) || row["duration_ms"] == nil {
 				t.Fatalf("incomplete summary: %v", row)
 			}
 		}
@@ -92,7 +90,7 @@ func TestSchedulerDecisionLog(t *testing.T) {
 }
 
 func TestSchedulerDecisionLogSkipsEveryCandidate(t *testing.T) {
-	for _, reason := range []string{"capacity", "scope", "paused", "legacy", "token"} {
+	for _, reason := range []string{"capacity", "scope", "legacy", "token"} {
 		t.Run(reason, func(t *testing.T) {
 			f := &fakeBackend{tickets: []Ticket{
 				{ID: "one", Identifier: "ZII-1", Repo: "b", Candidate: true, Scope: []string{"shared/*"}},
@@ -107,10 +105,6 @@ func TestSchedulerDecisionLogSkipsEveryCandidate(t *testing.T) {
 			case "token":
 				s.Config.TokenBucket.Capacity = 1
 				s.Repositories[1].Env = map[string]string{"AGENT_SCOPE_AVOID": "0"}
-			case "paused":
-				s.Pauses = pause.New(s.clock, nil, nil)
-				s.Pauses.Pause(pause.Key{Repo: "b", Dependency: pause.GitHub}, time.Time{})
-				want = 3
 			case "legacy":
 				for i := range f.tickets {
 					f.tickets[i].Legacy = true
@@ -163,17 +157,6 @@ func TestSchedulerOwnershipDecisionLog(t *testing.T) {
 				t.Fatalf("ownership logs=%v", rows)
 			}
 		})
-	}
-}
-
-func TestSchedulerPausedSummary(t *testing.T) {
-	f := &fakeBackend{}
-	s := setup(f)
-	s.Pauses = pause.New(s.clock, nil, nil)
-	s.Pauses.Pause(pause.Key{Dependency: pause.Orca}, time.Time{})
-	rows := captureDecisions(t, s)
-	if f.snapshots != 0 || len(rows) != 1 || rows[0]["event"] != "summary" || rows[0]["paused"] != true || rows[0]["snapshot_available"] != false {
-		t.Fatalf("paused logs=%v snapshots=%d", rows, f.snapshots)
 	}
 }
 

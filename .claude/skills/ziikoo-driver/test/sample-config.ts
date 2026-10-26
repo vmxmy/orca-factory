@@ -6,8 +6,6 @@ export const SAMPLE_CONFIG = {
     service: 'active',
     maintenance: 'running',
     snapshot: 'ok',
-    globalPause: true,
-    pauseSeconds: 840,
     factoryRoot: '/home/laoxu/github/orca-factory',
   },
   repos: [
@@ -59,8 +57,6 @@ export const SAMPLE_CONFIG = {
     { key: 'max_in_flight', value: '4', source: 'driver.toml', set: true },
     { key: 'token_bucket.capacity', value: '20', source: 'driver.toml', set: true },
     { key: 'token_bucket.refill_per_second', value: '0.5', source: 'default', set: true },
-    { key: 'scheduler.pause_fraction', value: '0.05', source: 'default', set: true },
-    { key: 'scheduler.quota_probe_backoff', value: '5m', source: 'driver.toml', set: true },
     { key: 'scheduler.unregistered_grace', value: '30s', source: 'default', set: true },
     { key: 'github.http_timeout', value: '30s', source: 'default', set: true },
     { key: 'orca.worker_start_wait', value: '1m30s', source: 'driver.toml', set: true },

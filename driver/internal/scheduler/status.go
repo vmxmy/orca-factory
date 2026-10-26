@@ -5,21 +5,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
-func (s *Scheduler) pushStatus() {
-	now := s.clock()
-	status.Push(now, func(view *status.View) {
-		view.GlobalPause = status.GlobalPause{}
-		if s.Pauses != nil {
-			for _, p := range s.Pauses.Active() {
-				if p.Key.Repo == "" {
-					view.GlobalPause.Active = true
-					view.GlobalPause.DurationSeconds = max(view.GlobalPause.DurationSeconds, int64(now.Sub(p.Start).Seconds()))
-				}
-			}
-		}
-	})
-}
-
 func (s *Scheduler) pushTicket(t Ticket, a Action) {
 	owner := machine.OwnerExecutor
 	switch a.Kind {

@@ -206,18 +206,12 @@ func ParseEnv(r io.Reader) (map[string]string, error) {
 
 // Scheduler holds the scheduler's tunable knobs. A zero field keeps the built-in default.
 type Scheduler struct {
-	PauseFraction     float64       `toml:"pause_fraction"`
-	QuotaProbeBackoff time.Duration `toml:"quota_probe_backoff"`
 	UnregisteredGrace time.Duration `toml:"unregistered_grace"`
 }
 
 // DefaultScheduler returns the built-in scheduler defaults.
 func DefaultScheduler() Scheduler {
-	return Scheduler{
-		PauseFraction:     .05,
-		QuotaProbeBackoff: 5 * time.Minute,
-		UnregisteredGrace: 3 * time.Minute,
-	}
+	return Scheduler{UnregisteredGrace: 3 * time.Minute}
 }
 
 // GitHub holds the GitHub client's tunables.
@@ -258,12 +252,6 @@ type Tuning struct {
 
 // fillScheduler returns want with every zero field of over taking its value.
 func fillScheduler(over, want Scheduler) Scheduler {
-	if over.PauseFraction != 0 {
-		want.PauseFraction = over.PauseFraction
-	}
-	if over.QuotaProbeBackoff != 0 {
-		want.QuotaProbeBackoff = over.QuotaProbeBackoff
-	}
 	if over.UnregisteredGrace != 0 {
 		want.UnregisteredGrace = over.UnregisteredGrace
 	}

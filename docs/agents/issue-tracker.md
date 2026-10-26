@@ -57,7 +57,6 @@ to-spec、to-tickets、wayfinder 等技能说“发布到 issue tracker”时，
 | 项 | 证据与来源 | 写入 |
 | --- | --- | --- |
 | 程序与检出 | `orca-factory-driver version` 等于 main 部署提交；生产检出在 `main` 且 `git diff origin/main -- scripts/agent-gates core` 为空 | 否 |
-| 配额 | `driver status --json` 中 `globalPause.active=false`；有配额暂停时推迟，不靠重启清除 | 否 |
 | 旧 writer | `orca automations list` 中同仓库 `agent-linear-scan` 为 disabled；`systemctl --user list-timers`、`crontab -l` 无 coordinator；无 `driver exec`/`driver resolve` 进程；`maintenance status` 中 `writersActive`、`sessionsActive` 为 false；其他机器与 Linear 集成人工确认 | 否 |
 | 在途对象 | `status --json` 逐票列出 owner、phase、blockedReason；合并通道票核对 `merge-handoff-v1`/`merge-progress-v1` 与 PR 状态；resolver 票核对 resolution 与 `resolver.lock` 空闲；`executor.json` 的 Corrections、Completed 只读记录 | 否 |
 | checkpoint 与预算 | 状态根下 `<repo>/<Identifier>/` 文件清单与 sha256，切换前后一致；导入与释放不读写这些文件 | 否 |

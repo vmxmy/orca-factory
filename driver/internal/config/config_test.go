@@ -92,7 +92,7 @@ func TestTuningOverridesNamedFields(t *testing.T) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	body := "max_in_flight=4\nrepositories=[]\n[scheduler]\npause_fraction=0.02\nquota_probe_backoff=\"2m\"\n[orca]\nworker_start_wait=\"3m\"\n"
+	body := "max_in_flight=4\nrepositories=[]\n[scheduler]\nunregistered_grace=\"2m\"\n[orca]\nworker_start_wait=\"3m\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "driver.toml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -100,14 +100,8 @@ func TestTuningOverridesNamedFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Tuning.Scheduler.PauseFraction != 0.02 {
+	if c.Tuning.Scheduler.UnregisteredGrace != 2*time.Minute {
 		t.Fatalf("scheduler tuning: %+v", c.Tuning.Scheduler)
-	}
-	if c.Tuning.Scheduler.QuotaProbeBackoff != 2*time.Minute {
-		t.Fatalf("quota backoff: %v", c.Tuning.Scheduler.QuotaProbeBackoff)
-	}
-	if c.Tuning.Scheduler.UnregisteredGrace != 3*time.Minute {
-		t.Fatalf("unregistered grace must keep default: %v", c.Tuning.Scheduler.UnregisteredGrace)
 	}
 	if c.Tuning.Orca.WorkerStartWait != 3*time.Minute || c.Tuning.Orca.CallTimeout != 30*time.Second {
 		t.Fatalf("orca tuning: %+v", c.Tuning.Orca)
@@ -131,7 +125,7 @@ func TestTuningDefaultsWhenAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Tuning.Scheduler.PauseFraction != .05 {
+	if c.Tuning.Scheduler.UnregisteredGrace != 3*time.Minute {
 		t.Fatalf("scheduler defaults: %+v", c.Tuning.Scheduler)
 	}
 }

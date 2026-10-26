@@ -189,22 +189,15 @@ type statusBackend struct {
 	inspected bool
 }
 
+// Snapshot marks the inspection even when it fails, so every Tick past the
+// configuration check writes one status snapshot and wait-only iterations none.
 func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]scheduler.Ticket, error) {
+	b.inspected = true
 	tickets, err := b.Backend.Snapshot(ctx, repos)
 	if err == nil {
 		b.tickets = append([]scheduler.Ticket(nil), tickets...)
 	}
 	return tickets, err
-}
-
-func (b *statusBackend) GitHubLimits() []github.Usage {
-	// Tick checks quota even when a global pause prevents Snapshot. Wait-only
-	// iterations never call this method, so they must not refresh generatedAt.
-	b.inspected = true
-	if source, ok := b.Backend.(interface{ GitHubLimits() []github.Usage }); ok {
-		return source.GitHubLimits()
-	}
-	return nil
 }
 
 func (b *statusBackend) ActualChanges(ctx context.Context, ticket scheduler.Ticket) ([]string, bool, error) {
@@ -261,16 +254,18 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 			if s.Now != nil {
 				now = s.Now()
 			}
-			if err := status.Write(collectStatus(s, backend, runtime, now)); err != nil {
+			snapshot := collectStatus(s, backend, runtime, now)
+			if err := status.Write(snapshot); err != nil {
 				fmt.Fprintln(os.Stderr, "cannot write driver status snapshot")
 			}
+			status.Push(now, func(view *status.View) { view.GitHub = snapshot.GitHub })
 		}
 		return wait(ctx)
 	}, report)
 }
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
-	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}, Pauses: []status.Pause{}}
+	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
 	for _, ticket := range backend.tickets {
 		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
 			row := scheduler.ObservationRow(ticket, s.Repositories)
@@ -287,11 +282,6 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 		}
 		return a.Identifier < b.Identifier
 	})
-	if s.Pauses != nil {
-		for _, episode := range s.Pauses.Active() {
-			snapshot.Pauses = append(snapshot.Pauses, status.Pause{Dependency: string(episode.Key.Dependency), Repo: episode.Key.Repo, Kind: string(episode.Key.Kind), Start: episode.Start, Duration: max(0, now.Sub(episode.Start))})
-		}
-	}
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {
