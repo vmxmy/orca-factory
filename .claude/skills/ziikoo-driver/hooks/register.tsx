@@ -120,7 +120,7 @@ const modelsPage = (ui: Kit, current: Repo | undefined, cols: number) => {
     <ui.Box flexDirection="column">
       {row('角色', 'Agent', '模型', '强度', '来源键', true)}
       {current.roles.map(one =>
-        row(ROLE_LABELS[one.role], one.agent || '-', one.model || '默认', one.effort || '-', one.key),
+        row(ROLE_LABELS[one.role], one.agent || '-', one.model || '默认', one.effort || '-', one.key || '内置'),
       )}
       <ui.Text wrap="truncate">{routingSummary(current.routing)}</ui.Text>
     </ui.Box>
@@ -231,7 +231,7 @@ export const register: Register = on => {
         <ui.Box flexDirection="row" justifyContent="space-between">
           <ui.Box flexDirection="row" gap={1} flexShrink={0}>
             {PAGES.map(one => {
-              const press = () => void update($, page, () => one.id)
+              const press = () => update($, page, () => one.id)
               return one.id === current ? (
                 <ui.Button key={`page-${one.id}`} label={one.label} hotkey={one.hotkey} variant="primary" onPress={press} />
               ) : (
@@ -241,7 +241,7 @@ export const register: Register = on => {
           </ui.Box>
           <ui.Box flexDirection="row" gap={1} marginLeft={1}>
             {config && <ui.Text dimColor wrap="truncate">{`${config.overview.build.slice(0, 7)} · ${config.overview.service}`}</ui.Text>}
-            <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => void refresh($)} />
+            <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refresh($)} />
           </ui.Box>
         </ui.Box>
         {config && current === 'models' && selected && (
@@ -252,7 +252,7 @@ export const register: Register = on => {
                 key="repo"
                 value={selected.name}
                 options={config.repos.map(one => ({ value: one.name, label: one.name }))}
-                onSelect={value => void update($, repo, () => value)}
+                onSelect={value => update($, repo, () => value)}
               />
             ) : (
               <ui.Text>{selected.name}</ui.Text>
