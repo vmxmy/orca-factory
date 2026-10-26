@@ -41,14 +41,10 @@ const duration = (value: string) =>
     .map(([, amount = '', unit = '']) => `${amount} ${DURATION_UNITS[unit]}`)
     .join(' ') || value
 
-const percent = (value: string) => `${Number((Number(value) * 100).toFixed(2))}%`
-
 export const SETTINGS: Record<SchedulerKey, SettingView> = {
   max_in_flight: { group: '并发与限速', label: '同时运行的票', show: value => `最多 ${value} 张` },
   'token_bucket.capacity': { group: '并发与限速', label: '领票连发上限', show: value => `${value} 次` },
   'token_bucket.refill_per_second': { group: '并发与限速', label: '领票补充速度', show: value => `每秒 ${value} 次` },
-  'scheduler.pause_fraction': { group: 'GitHub', label: '额度暂停阈值', show: value => `剩余低于 ${percent(value)}` },
-  'scheduler.quota_probe_backoff': { group: 'GitHub', label: '额度重试间隔', show: duration },
   'scheduler.unregistered_grace': { group: 'Orca 与执行器', label: '执行器登记宽限', show: duration },
   'github.http_timeout': { group: 'GitHub', label: '请求超时', show: duration },
   'orca.worker_start_wait': { group: 'Orca 与执行器', label: 'worker 就绪等待', show: duration },
@@ -83,12 +79,6 @@ const flag = (o: Fields, key: string, path: string): boolean => {
   return value
 }
 
-const count = (o: Fields, key: string, path: string): number => {
-  const value = o[key]
-  if (typeof value !== 'number') throw new Error(`${path}.${key} 不是数字`)
-  return value
-}
-
 const member = <K extends string>(table: Record<K, unknown>, value: string): value is K =>
   Object.hasOwn(table, value)
 
@@ -105,8 +95,6 @@ const parseOverview = (value: unknown): Overview => {
     service: text(o, 'service', 'overview'),
     maintenance: text(o, 'maintenance', 'overview'),
     snapshot: text(o, 'snapshot', 'overview'),
-    globalPause: flag(o, 'globalPause', 'overview'),
-    pauseSeconds: count(o, 'pauseSeconds', 'overview'),
     factoryRoot: text(o, 'factoryRoot', 'overview'),
   }
 }

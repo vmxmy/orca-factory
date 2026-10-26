@@ -12,7 +12,6 @@ import (
 type Snapshot struct {
 	GeneratedAt time.Time `json:"generatedAt"`
 	Tickets     []Ticket  `json:"tickets"`
-	Pauses      []Pause   `json:"pauses"`
 	GitHub      Usage     `json:"github,omitzero"`
 }
 
@@ -37,15 +36,6 @@ type Ticket struct {
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
 	Stage string `json:"stage,omitempty"`
-}
-
-type Pause struct {
-	Dependency string    `json:"dependency"`
-	Repo       string    `json:"repo"`
-	Kind       string    `json:"kind"`
-	Start      time.Time `json:"start"`
-	// Duration is elapsed wall time in nanoseconds.
-	Duration time.Duration `json:"duration"`
 }
 
 type Usage struct {
@@ -87,9 +77,6 @@ func Write(snapshot Snapshot) error {
 	if snapshot.Tickets == nil {
 		snapshot.Tickets = []Ticket{}
 	}
-	if snapshot.Pauses == nil {
-		snapshot.Pauses = []Pause{}
-	}
 	writeErr := json.NewEncoder(file).Encode(snapshot)
 	closeErr := file.Close()
 	if writeErr != nil || closeErr != nil {
@@ -107,16 +94,10 @@ const DefaultStaleAfter = 5 * time.Minute
 // View.GeneratedAt records the last successful full scheduler observation.
 // Partial writes retain it; zero means no scheduler observation is available.
 type View struct {
-	State       string      `json:"state"`
-	GeneratedAt time.Time   `json:"generatedAt"`
-	Tickets     []Ticket    `json:"tickets"`
-	GlobalPause GlobalPause `json:"globalPause"`
-	GitHub      Usage       `json:"github,omitzero"`
-}
-
-type GlobalPause struct {
-	Active          bool  `json:"active"`
-	DurationSeconds int64 `json:"durationSeconds"`
+	State       string    `json:"state"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	Tickets     []Ticket  `json:"tickets"`
+	GitHub      Usage     `json:"github,omitzero"`
 }
 
 // Read observes only the disposable snapshot. Missing or damaged caches are unknown.
@@ -157,13 +138,5 @@ func Read(now time.Time, staleAfter time.Duration) View {
 	}
 	view.GitHub = snapshot.GitHub
 	normalize(&view, now)
-	for _, pause := range snapshot.Pauses {
-		if pause.Repo == "" {
-			view.GlobalPause.Active = true
-			if !pause.Start.IsZero() {
-				view.GlobalPause.DurationSeconds = max(view.GlobalPause.DurationSeconds, int64(now.Sub(pause.Start)/time.Second))
-			}
-		}
-	}
 	return view
 }

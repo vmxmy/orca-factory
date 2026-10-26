@@ -85,12 +85,12 @@ test('调度页按用途分组，值带单位，只高亮 driver.toml 改过的�
   const row = async (key: string) => (await ui.find({ key: `setting-${key}` }))?.text
   expect(await row('max_in_flight')).toBe('同时运行的票最多 4 张driver.tomlmax_in_flight')
   expect(await row('token_bucket.refill_per_second')).toBe('领票补充速度每秒 0.5 次默认token_bucket.refill_per_second')
-  expect(await row('scheduler.pause_fraction')).toBe('额度暂停阈值剩余低于 5%默认scheduler.pause_fraction')
+  expect(await row('github.http_timeout')).toBe('请求超时30 秒默认github.http_timeout')
   expect(await row('orca.worker_start_wait')).toBe('worker 就绪等待1 分钟 30 秒driver.tomlorca.worker_start_wait')
   expect(await row('ledger.flush_interval')).toBe('用量账本写回每 100 毫秒默认ledger.flush_interval')
-  expect((await exactText(ui, 'driver.toml')).map(one => one.props.color)).toEqual(['suggestion', 'suggestion', 'suggestion', 'suggestion'])
+  expect((await exactText(ui, 'driver.toml')).map(one => one.props.color)).toEqual(['suggestion', 'suggestion', 'suggestion'])
   expect((await exactText(ui, '同时运行的票')).map(one => one.props.dimColor)).toEqual([false])
-  expect((await exactText(ui, '默认')).map(one => one.props.dimColor)).toEqual([true, true, true, true, true, true])
+  expect((await exactText(ui, '默认')).map(one => one.props.dimColor)).toEqual([true, true, true, true, true])
   await ui.unmount()
 })
 
@@ -138,6 +138,6 @@ test('未知调度键时进入失败状态', async ($, on) => {
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
 
-  expect((await ui.find({ type: 'Text', text: /取值未知/ }))?.text).toBe('scheduler[10].key 取值未知：scheduler.new_knob')
+  expect((await ui.find({ type: 'Text', text: /取值未知/ }))?.text).toBe('scheduler[8].key 取值未知：scheduler.new_knob')
   await ui.unmount()
 })

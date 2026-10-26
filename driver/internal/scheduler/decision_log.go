@@ -28,7 +28,7 @@ func (s *Scheduler) decision(t Ticket, event, reason string, attrs ...any) {
 }
 
 // Counts describe the input snapshot, not tentative ownership writes. A missing
-// snapshot is explicit because a global pause must not trigger dependency reads.
+// snapshot is explicit so zero candidates is not mistaken for an empty ledger.
 func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, err error) {
 	total, candidates := 0, 0
 	for _, t := range tickets {
@@ -40,15 +40,12 @@ func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, er
 		}
 	}
 	limits := map[string]int{}
-	pausedRepos := map[string]bool{}
 	for _, r := range s.Repositories {
 		limits[r.Path] = r.MaxInFlight
-		pausedRepos[r.Path] = s.Pauses != nil && s.Pauses.Paused(r.Path)
 	}
 	s.logger().Info("scheduler inspection", "event", "summary", "in_flight", total,
 		"candidates", candidates, "snapshot_available", snapshot, "max_in_flight", s.Config.MaxInFlight,
-		"repository_limits", limits, "paused", s.Pauses != nil && s.Pauses.Paused(""),
-		"repository_paused", pausedRepos, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "err", err)
 }
 
 func evidence(negative bool, err error) any {

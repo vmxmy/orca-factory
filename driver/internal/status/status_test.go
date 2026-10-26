@@ -11,7 +11,7 @@ import (
 
 func TestStatusSnapshot(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
-	input := Snapshot{GeneratedAt: now, Tickets: []Ticket{{Repo: "/repo", Identifier: "ZII-883", Owner: "executor", Phase: "gate"}}, Pauses: []Pause{{Dependency: "GitHub", Repo: "/repo", Kind: "quota", Start: now.Add(-time.Minute), Duration: time.Minute}}, GitHub: Usage{Hour: now, Requests: 12, Complexity: 34, Limits: []ClientLimits{{Repo: "/repo", Requests: RateLimit{Limit: 100, Remaining: 88, Reset: now.Add(time.Hour)}, Complexity: RateLimit{Limit: 1000, Remaining: 966, Reset: now.Add(time.Hour)}}}}}
+	input := Snapshot{GeneratedAt: now, Tickets: []Ticket{{Repo: "/repo", Identifier: "ZII-883", Owner: "executor", Phase: "gate"}}, GitHub: Usage{Hour: now, Requests: 12, Complexity: 34, Limits: []ClientLimits{{Repo: "/repo", Requests: RateLimit{Limit: 100, Remaining: 88, Reset: now.Add(time.Hour)}, Complexity: RateLimit{Limit: 1000, Remaining: 966, Reset: now.Add(time.Hour)}}}}}
 	t.Run("fields and atomic replacement", func(t *testing.T) {
 		dir := t.TempDir()
 		path := filepath.Join(dir, "status.json")
@@ -37,7 +37,7 @@ func TestStatusSnapshot(t *testing.T) {
 		if err := json.Unmarshal(data, &fields); err != nil {
 			t.Fatal(err)
 		}
-		for _, field := range []string{"generatedAt", "tickets", "pauses", "github"} {
+		for _, field := range []string{"generatedAt", "tickets", "github"} {
 			if _, ok := fields[field]; !ok {
 				t.Errorf("missing %s", field)
 			}
@@ -49,10 +49,6 @@ func TestStatusSnapshot(t *testing.T) {
 		ticket := wire["tickets"].([]any)[0].(map[string]any)
 		if !reflect.DeepEqual(ticket, map[string]any{"repo": "/repo", "identifier": "ZII-883", "owner": "executor", "phase": "gate"}) {
 			t.Fatalf("ticket fields: %v", ticket)
-		}
-		paused := wire["pauses"].([]any)[0].(map[string]any)
-		if !reflect.DeepEqual(paused, map[string]any{"dependency": "GitHub", "repo": "/repo", "kind": "quota", "start": "2026-10-05T07:59:00Z", "duration": float64(time.Minute)}) {
-			t.Fatalf("pause fields: %v", paused)
 		}
 		usage := wire["github"].(map[string]any)
 		if usage["hour"] != "2026-10-05T08:00:00Z" || usage["requests"] != float64(12) || usage["complexity"] != float64(34) {
@@ -90,7 +86,7 @@ func TestStatusSnapshot(t *testing.T) {
 			}
 		}
 	})
-	t.Run("default path and empty pauses", func(t *testing.T) {
+	t.Run("default path", func(t *testing.T) {
 		dir := t.TempDir()
 		t.Setenv("TMPDIR", dir)
 		t.Setenv("DRIVER_STATUS_FILE", "")
@@ -100,16 +96,8 @@ func TestStatusSnapshot(t *testing.T) {
 		if err := Write(Snapshot{GeneratedAt: now}); err != nil {
 			t.Fatal(err)
 		}
-		data, err := os.ReadFile(Path())
-		if err != nil {
+		if _, err := os.Stat(Path()); err != nil {
 			t.Fatal(err)
-		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(data, &fields); err != nil {
-			t.Fatal(err)
-		}
-		if string(fields["pauses"]) != "[]" && len(fields["pauses"]) != 0 {
-			t.Fatalf("empty pauses = %s", fields["pauses"])
 		}
 	})
 }
@@ -147,7 +135,7 @@ func TestReadViewJSON(t *testing.T) {
 				t.Fatalf("view = %s", data)
 			}
 			if tc.name == "normal" {
-				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"globalPause":{"active":true,"durationSeconds":180},"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
 				var expected map[string]any
 				if err := json.Unmarshal([]byte(want), &expected); err != nil {
 					t.Fatal(err)
@@ -183,17 +171,5 @@ func TestGitHubUsageRolloverAndLegacyOmission(t *testing.T) {
 	view := Read(now, 0)
 	if view.GitHub.Requests != 0 || !view.GitHub.Hour.Equal(now) || view.GitHub.Limits[0].Requests.Remaining != 88 {
 		t.Fatalf("GitHub usage did not roll over: %+v", view.GitHub)
-	}
-}
-
-func TestReadRepoPauseIsNotGlobal(t *testing.T) {
-	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
-	err := os.WriteFile(Path(), []byte(`{"generatedAt":"2026-10-05T08:59:30Z","pauses":[{"repo":"/repo","start":"2026-10-05T08:00:00Z"}]}`), 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	view := Read(time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC), 0)
-	if view.GlobalPause.Active || view.GlobalPause.DurationSeconds != 0 {
-		t.Fatalf("view = %+v", view)
 	}
 }

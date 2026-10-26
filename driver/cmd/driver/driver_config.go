@@ -47,13 +47,11 @@ type configSnapshot struct {
 }
 
 type configOverview struct {
-	Build        string `json:"build"`
-	Service      string `json:"service"`
-	Maintenance  string `json:"maintenance"`
-	Snapshot     string `json:"snapshot"`
-	GlobalPause  bool   `json:"globalPause"`
-	PauseSeconds int64  `json:"pauseSeconds"`
-	FactoryRoot  string `json:"factoryRoot"`
+	Build       string `json:"build"`
+	Service     string `json:"service"`
+	Maintenance string `json:"maintenance"`
+	Snapshot    string `json:"snapshot"`
+	FactoryRoot string `json:"factoryRoot"`
 }
 
 type configRepo struct {
@@ -116,8 +114,6 @@ var configScheduler = []struct {
 	{"max_in_flight", func(c config.Config) string { return strconv.Itoa(c.MaxInFlight) }},
 	{"token_bucket.capacity", func(c config.Config) string { return strconv.Itoa(c.TokenBucket.Capacity) }},
 	{"token_bucket.refill_per_second", func(c config.Config) string { return formatFloat(c.TokenBucket.RefillPerSecond) }},
-	{"scheduler.pause_fraction", func(c config.Config) string { return formatFloat(c.Tuning.Scheduler.PauseFraction) }},
-	{"scheduler.quota_probe_backoff", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.QuotaProbeBackoff) }},
 	{"scheduler.unregistered_grace", func(c config.Config) string { return formatDuration(c.Tuning.Scheduler.UnregisteredGrace) }},
 	{"github.http_timeout", func(c config.Config) string { return formatDuration(c.Tuning.GitHub.HTTPTimeout) }},
 	{"orca.worker_start_wait", func(c config.Config) string { return formatDuration(c.Tuning.Orca.WorkerStartWait) }},
@@ -161,7 +157,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		Schema:      "driver-config-v1",
 		GeneratedAt: now.UTC().Truncate(time.Second),
 		Overview: configOverview{Build: version, Service: serviceActivity(ctx), Maintenance: "unknown",
-			Snapshot: view.State, GlobalPause: view.GlobalPause.Active, PauseSeconds: view.GlobalPause.DurationSeconds},
+			Snapshot: view.State},
 		Repos: []configRepo{}, Scheduler: []configEntry{}, Environment: []configEntry{}, Problems: []string{},
 	}
 	if state, err := maintenance.Read(); err == nil {
@@ -412,8 +408,8 @@ func formatDuration(d time.Duration) string {
 func writeConfigText(out io.Writer, s configSnapshot) error {
 	var b strings.Builder
 	o := s.Overview
-	fmt.Fprintf(&b, "概览\n  构建        %s\n  服务        %s\n  维护状态    %s\n  状态快照    %s\n  全局暂停    %t（%ds）\n  工厂根目录  %s\n",
-		o.Build, o.Service, o.Maintenance, o.Snapshot, o.GlobalPause, o.PauseSeconds, o.FactoryRoot)
+	fmt.Fprintf(&b, "概览\n  构建        %s\n  服务        %s\n  维护状态    %s\n  状态快照    %s\n  工厂根目录  %s\n",
+		o.Build, o.Service, o.Maintenance, o.Snapshot, o.FactoryRoot)
 	for _, repo := range s.Repos {
 		fmt.Fprintf(&b, "\n模型：%s（%s，%s）\n  %s\n", repo.Name, repo.Prefix, repo.Remote, repo.Path)
 		for _, r := range repo.Roles {

@@ -18,7 +18,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
-	"github.com/vmxmy/orca-factory/driver/internal/pause"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -107,16 +106,12 @@ type Scheduler struct {
 	identityDrift map[string]string
 	Now           func() time.Time
 	MergeQueue    []Ticket
-	Pauses        *pause.Manager
 	NextInterval  time.Duration
 	FullReconcile bool
 	adaptive      Adaptive
-	// quotaRetry caps the next inspection while any pause is active.
-	quotaRetry       time.Time
-	githubQuotaRetry time.Time
-	tokens           float64
-	refill           time.Time
-	initialized      bool
+	tokens        float64
+	refill        time.Time
+	initialized   bool
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -159,26 +154,13 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
-	defer s.pushStatus()
 	now := s.clock()
-	remaining, pauseErr := s.checkPauses(ctx, now)
 	s.MergeQueue = nil
-	if s.Pauses.Paused("") {
-		if s.quotaRetry.IsZero() {
-			// Wake within five minutes of a new pause even when the idle backoff is longer.
-			s.quotaRetry = now.Add(5 * time.Minute)
-		}
-		s.plan(now, false, remaining)
-		return pauseErr
-	}
 	// A failed rediscovery is already logged and keeps the previous projects.
 	_ = s.RefreshProjects(ctx)
 	repos := map[string]config.Repository{}
 	allowed := map[string]bool{}
 	var problems []error
-	if pauseErr != nil {
-		problems = append(problems, pauseErr)
-	}
 	for _, r := range s.Repositories {
 		repos[r.Path] = r
 		ok, err := s.Backend.AutomationDisabled(ctx, r)
@@ -209,12 +191,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	tickets, err = s.Backend.Snapshot(ctx, s.Repositories)
 	if err != nil {
 		category := "other"
-		s.checkGitHubQuota(now)
 		var evidence *SnapshotEvidenceError
 		if errors.As(err, &evidence) && category == "other" {
 			category = "evidence"
 		}
-		if !s.Pauses.Paused("") && errors.As(err, &evidence) {
+		if errors.As(err, &evidence) {
 			for _, ticket := range evidence.Tickets {
 				if allowed[ticket.Repo] {
 					notify(ticket)
@@ -243,21 +224,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			view.Tickets = append(view.Tickets, row)
 		}
 	})
-	// A successful snapshot replaces the stale quota observation. If the
-	// refreshed budget is still critical, start its new recovery window before
-	// allowing dispatch, even when no dependency probe is installed.
-	s.quotaRetry = time.Time{}
-	s.githubQuotaRetry = time.Time{}
-	remaining = s.checkGitHubQuota(now)
-	if s.Pauses.Paused("") {
-		s.plan(now, false, remaining)
-		for _, t := range tickets {
-			if t.Candidate {
-				s.decision(t, "skip", "paused")
-			}
-		}
-		return errors.Join(problems...)
-	}
 	for _, t := range tickets {
 		if allowed[t.Repo] {
 			notify(t)
@@ -269,7 +235,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			busy = true
 		}
 	}
-	s.plan(now, busy, remaining)
+	s.plan(now, busy)
 	s.MergeQueue = nil
 	count := map[string]int{}
 	total := 0
@@ -281,7 +247,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	conflicts := s.scopeConflicts(ctx, tickets, repos)
 	for _, t := range tickets {
-		if !allowed[t.Repo] || s.Pauses.Paused(t.Repo) {
+		if !allowed[t.Repo] {
 			continue
 		}
 		r := repos[t.Repo]
@@ -350,7 +316,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					}
 				}
 			}
-			if !t.UpdatedAt.IsZero() && s.Pauses.EffectiveElapsed(t.Repo, t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+			if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "in-flight ticket exceeded stale limit"}
 			} else if t.MaintenanceRefused || t.GateSpecRefresh {
 				action = Action{Kind: Resume, Attempt: t.Attempt, Phase: t.Phase}
@@ -451,8 +417,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 		reason := ""
 		switch {
-		case !allowed[t.Repo] || s.Pauses.Paused(t.Repo):
-			reason = "paused"
+		case !allowed[t.Repo]:
+			reason = "refused"
 		case s.retired[t.Repo]:
 			reason = "retired"
 		case t.Blocked:

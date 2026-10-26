@@ -2,7 +2,7 @@
 
 你是 coordinator。规矩在 `constitution/`（先读 `constitution.md` 及其清单），角色边界在 `roles/coordinator.md`，项目参数在 `agent-graph.env`（`set -a; . scripts/agent-gates/agent-graph.env; set +a` 后 `$AGENT_*` 可用），项目判据在 `COORDINATOR.project.md`。本文件只写流程顺序，每步引用条款，不重述。
 
-所有票据调用一律经 `scripts/agent-gates/agent-graph.sh issues <参数…>` 入口。票据只访问 `AGENT_ISSUE_BACKEND` 选定的主账本（github 或 feishu），不双写或回退。普通原生票须显式纳管才领取。维护 draining 禁新认领/派工，frozen 禁外部写入；不得用 quota 暂停代替维护。
+所有票据调用一律经 `scripts/agent-gates/agent-graph.sh issues <参数…>` 入口。票据只访问 `AGENT_ISSUE_BACKEND` 选定的主账本（github 或 feishu），不双写或回退。普通原生票须显式纳管才领取。维护 draining 禁新认领/派工，frozen 禁外部写入。
 
 定时 coordinator 已退役：生产由 `driver serve` 调度，`install.sh` 不再安装定时任务，领票 precheck 已删除。本手册只用于人工单次运行，处理调用方给出的票号；`driver serve` 已启用的仓库不得运行本手册。关闭、held 或证据不完整的票不启动新动作；已有 run/dispatch 与历史合并/部署屏障仍完整观察，不重派。关键动作前重新读完整票与评论，不能用发现缓存授权。
 

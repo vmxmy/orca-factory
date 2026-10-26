@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -252,10 +251,7 @@ type notifyTickBackend struct {
 	fakeBackend
 	runtime  *Runtime
 	snapshot func() ([]Ticket, error)
-	limits   []github.Usage
 }
-
-func (f *notifyTickBackend) GitHubLimits() []github.Usage { return f.limits }
 
 func (f *notifyTickBackend) Snapshot(context.Context, []config.Repository) ([]Ticket, error) {
 	f.snapshots++
@@ -264,44 +260,6 @@ func (f *notifyTickBackend) Snapshot(context.Context, []config.Repository) ([]Ti
 func (f *notifyTickBackend) NotifyFeishu(ctx context.Context, ticket Ticket) error {
 	return f.runtime.NotifyFeishu(ctx, ticket)
 }
-func TestFeishuNotifyPausedSkips(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	for _, timing := range []string{"before snapshot", "after snapshot", "failed snapshot"} {
-		t.Run(timing, func(t *testing.T) {
-			store := &notifyStore{}
-			sender := &notifySender{store: store}
-			sender.start(t)
-			repo := config.Repository{Path: "a", MaxInFlight: 1, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
-			f := &notifyTickBackend{runtime: &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}}
-			s := setup(&f.fakeBackend)
-			s.Backend = f
-			s.Repositories = []config.Repository{repo}
-			low := []github.Usage{{Limit: 100, Remaining: 1, Reset: s.Now().Add(time.Hour)}}
-			if timing == "before snapshot" {
-				f.limits = low
-			}
-			f.snapshot = func() ([]Ticket, error) {
-				f.limits = low
-				if timing == "failed snapshot" {
-					return nil, &SnapshotEvidenceError{Tickets: []Ticket{{ID: "id", Repo: repo.Path}}, Err: errors.New("invalid ownership comment")}
-				}
-				return []Ticket{{ID: "id", Repo: repo.Path, Owner: machine.OwnerHuman}}, nil
-			}
-			err := s.Tick(context.Background())
-			if timing == "failed snapshot" {
-				if err == nil || !strings.HasPrefix(err.Error(), "scheduler snapshot failed") {
-					t.Fatalf("err=%v", err)
-				}
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			if store.reads != 0 || store.writes != 0 || len(sender.messages) != 0 {
-				t.Fatalf("paused notification reads=%d writes=%d messages=%v", store.reads, store.writes, sender.messages)
-			}
-		})
-	}
-}
-
 func TestFeishuNotifySnapshotConflict(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, body := range []string{"归属: unknown", resolver.Prefix + "{}"} {

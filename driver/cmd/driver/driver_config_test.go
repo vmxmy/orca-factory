@@ -90,13 +90,15 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		t.Fatalf("environment lacks %+v without a value: %+v", secretEntry, snapshot.Environment)
 	}
 
+	if len(snapshot.Scheduler) != 8 {
+		t.Fatalf("scheduler has %d keys, want 8: %+v", len(snapshot.Scheduler), snapshot.Scheduler)
+	}
 	scheduler := map[string]entry{}
 	for _, e := range snapshot.Scheduler {
 		scheduler[e.Key] = e
 	}
 	for key, want := range map[string][2]string{
 		"max_in_flight":                {"3", "driver.toml"},
-		"scheduler.pause_fraction":     {"0.1", "driver.toml"},
 		"token_bucket.capacity":        {"4", "default"},
 		"scheduler.unregistered_grace": {"3m", "default"},
 	} {
@@ -126,7 +128,7 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 	}
 
 	problems := strings.Join(snapshot.Problems, "\n")
-	for _, want := range []string{"scheduler.resume_fraction", "服务", "OF 的需求助手档位不是 claude"} {
+	for _, want := range []string{"scheduler.resume_fraction", "scheduler.pause_fraction", "服务", "OF 的需求助手档位不是 claude"} {
 		if !strings.Contains(problems, want) {
 			t.Fatalf("problems=%q, want %q", snapshot.Problems, want)
 		}
