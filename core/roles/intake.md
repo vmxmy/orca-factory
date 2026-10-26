@@ -85,5 +85,4 @@ DEPENDENCIES: {"blockers":[],"related":[]}
 - project / Todo / ready-for-agent：<是>
 - 依赖：<无 | 阻塞票存在且已建关系>
 - 拆票形状：接口票 <有/无，原因>；依赖深度 <n>；最宽一层 <m> 张
-- estimate=<N> → 预计 tier=<t>（或 tier:<t> 标签）
 ```

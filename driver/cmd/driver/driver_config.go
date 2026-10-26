@@ -85,7 +85,6 @@ type configEntry struct {
 
 // configRoles mirrors each role's dispatch-time fallback chain: resolver
 // (internal/scheduler/resolver.go), intake (tierParts) and the worker tiers.
-// The executor always starts on the default tier, so the fast tier never runs.
 var configRoles = []struct {
 	role     string
 	keys     []string

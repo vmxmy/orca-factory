@@ -91,7 +91,7 @@ orca worktree set --worktree path:<wt> --comment $'<unit>: 实现中\nissue: <ca
 ## 4. 打回
 
 - 流程与计数按 handoffs §3；VERDICT 块格式按 handoffs §2。只打回出错的单元。
-- `$AGENT_TIER_ESCALATE` 为 1：correction n 的 `TIER` 比上一轮升一档（fast→default→strong，strong 封顶），票据评论 `correction n → 升至 <t>`，再按第 2 步拆 `--agent/--model/--effort`；为 0 沿用原档。
+- `$AGENT_TIER_ESCALATE` 为 1：correction n 的 `TIER` 升到 strong，之后保持 strong，票据评论 `correction n → 升至 <t>`，再按第 2 步拆 `--agent/--model/--effort`；为 0 沿用原档。
 - 3 次不过 = plan 错 → 第 7 步。错在简报先改简报再派。
 
 ## 5. 依赖边
