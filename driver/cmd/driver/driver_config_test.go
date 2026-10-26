@@ -37,7 +37,6 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		"AGENT_ISSUE_BACKEND=feishu",
 		"AGENT_FEISHU_BASE=BASE_TOKEN",
 		"AGENT_FEISHU_PROJECT=github.com/vmxmy/orca-factory",
-		"AGENT_TIER_FAST='codex:gpt-6.1-sol:medium'",
 		"AGENT_TIER_DEFAULT='codex::low'",
 		"AGENT_TIER_STRONG='claude:claude-opus-5-5:high'",
 		"AGENT_ROLE_INTAKE='codex:gpt-6.1-sol:high'",
@@ -127,7 +126,7 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 	}
 
 	problems := strings.Join(snapshot.Problems, "\n")
-	for _, want := range []string{"scheduler.resume_fraction", "服务", "OF 的需求助手档位不是 claude", "AGENT_TIER_FAST 与 AGENT_TIER_BY_ESTIMATE 不生效（OF）"} {
+	for _, want := range []string{"scheduler.resume_fraction", "服务", "OF 的需求助手档位不是 claude"} {
 		if !strings.Contains(problems, want) {
 			t.Fatalf("problems=%q, want %q", snapshot.Problems, want)
 		}

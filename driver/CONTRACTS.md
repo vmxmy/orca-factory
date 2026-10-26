@@ -265,7 +265,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `overview.factoryRoot`：`config.Load` 的 `FactoryRoot`，未配置时为空串。
 - `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
 - `roles[].role` 只有六种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
-  - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），strong 只在打回后升档时使用，所以没有 fast 档。
+  - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），strong 只在打回后升档时使用。
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
   - 施工与处置角色的 `model` 为空时 `effort` 也为空，与派工时不传 effort 一致；`intake` 照原样保留 effort。
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
@@ -280,7 +280,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
   服务环境读不到时省略第 2、3 组，并在 `problems` 记一条。
 - `source` 只有五种：`driver.toml`、`default`、`driver.env`、`agent-graph.env`、`service`。
-- `problems`：每个读失败的来源记一行中文原因，不含任何环境变量值。`driver.toml` 中 driver 不认识的键（toml MetaData 的 `Undecoded()`）每个记一行，例如「driver.toml 的 scheduler.resume_fraction 不被识别，不生效」。需求助手档位过不了 `tierParts` 的仓库记一行「<前缀> 的需求助手档位不是 claude，需求助手不可用」。仓库设置了 `AGENT_TIER_FAST` 或 `AGENT_TIER_BY_ESTIMATE` 时合记一行，列出这些仓库的前缀，说明这两个键不生效。有 problems 时命令仍输出 JSON 并以 0 退出；参数错误以 2 退出。
+- `problems`：每个读失败的来源记一行中文原因，不含任何环境变量值。`driver.toml` 中 driver 不认识的键（toml MetaData 的 `Undecoded()`）每个记一行，例如「driver.toml 的 scheduler.resume_fraction 不被识别，不生效」。需求助手档位过不了 `tierParts` 的仓库记一行「<前缀> 的需求助手档位不是 claude，需求助手不可用」。有 problems 时命令仍输出 JSON 并以 0 退出；参数错误以 2 退出。
 - 凭据铁律：任何 `secret` 项的值、`driver.env` 中服务白名单以外的值、代理地址里的用户名和密码，都不得出现在输出的任何位置。
 
 验证：`TestDriverConfigShowsEffectiveValuesWithoutSecrets` 用假飞书账本、假 Orca 仓库清单和读不到的服务运行 `config --json`，断言假凭据不出现在输出中、调度项来源、角色回退与 reviewer 命令解析，以及 `problems` 记下未识别键与服务环境。

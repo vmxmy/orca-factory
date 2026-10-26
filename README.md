@@ -39,7 +39,7 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 - 一台常开的 macOS，Orca 在运行（`orca status`），目标仓库已在 Orca 注册（`orca repo list`）。
 - `gh`、`jq`、`codex`、`claude` 已安装并登录。
 - Orca Settings → Agents 里 claude 的默认参数带模型（定时任务以 claude 做 coordinator，这是唯一在 Orca 里设的模型）；Orca 仓库设置里的 setup 脚本能在新 worktree 装依赖。
-- 角色模型在 `agent-graph.env` 里管：worker 分三档 `AGENT_TIER_FAST/DEFAULT/STRONG`（`agent:model:effort`），由票标签 `tier:*` > estimate 映射 `AGENT_TIER_BY_ESTIMATE` > default 选档，`AGENT_TIER_ESCALATE=1` 时被打回后自动升一档；reviewer 在 `AGENT_ROLE_REVIEWER_CMD`。都随仓库进 git。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
+- 角色模型在 `agent-graph.env` 里管：worker 分两档 `AGENT_TIER_DEFAULT/STRONG`（`agent:model:effort`），施工首轮用 default，`AGENT_TIER_ESCALATE=1` 时被打回后升到 strong；reviewer 在 `AGENT_ROLE_REVIEWER_CMD`。都随仓库进 git。只有 coordinator 例外：定时任务只能指定 agent id，模型取 Orca Settings → Agents 里 claude 的默认参数——**这是全局设置，对本机所有仓库、所有 claude 工人生效**，不要把某个角色的模型写在这里。
 - GitHub 仓库启用 Issues，配置 `AGENT_ISSUE_BACKEND=github`、`AGENT_GH_REPO`，有 `ready-for-agent` / `auto-impl` / `auto-failed` 工作流标签。票须有完整正文与依赖并显式纳管；直接创建的普通 Issue 不自动领取。
 
 ## 安全须知

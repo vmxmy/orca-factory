@@ -145,8 +145,8 @@ func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}}
 	e.Orca = ro
 	e.Config.Escalate = "1"
-	e.Config.Tier = "fast"
-	e.Config.TierSettings = map[string]string{"default": "codex:gpt-6-astra:medium"}
+	e.Config.Tier = "default"
+	e.Config.TierSettings = map[string]string{"strong": "codex:gpt-6-astra:medium"}
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil || result.State.Owner != machine.OwnerMerge {
 		t.Fatalf("result=%+v err=%v", result, err)

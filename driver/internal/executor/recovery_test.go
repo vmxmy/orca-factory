@@ -176,21 +176,20 @@ func TestCorrectionTierAndCap(t *testing.T) {
 	for _, escalate := range []string{"0", "1"} {
 		t.Run(escalate, func(t *testing.T) {
 			t.Setenv("AGENT_TIER_ESCALATE", escalate)
-			t.Setenv("AGENT_TIER_FAST", "codex:fast-model:low")
 			t.Setenv("AGENT_TIER_DEFAULT", "codex:default-model:medium")
 			t.Setenv("AGENT_TIER_STRONG", "claude:strong-model:high")
 			e, o, tools, s, _, ticket := recoveryFixture(t)
-			e.Config.Tier = "fast"
-			e.Config.Model = "fast-model"
-			e.Config.Effort = "low"
+			e.Config.Tier = "default"
+			e.Config.Model = "default-model"
+			e.Config.Effort = "medium"
 			tools.gateReds = 5
 			result, err := e.Execute(context.Background(), ticket)
 			if err != nil || result.State.Owner != machine.OwnerResolver || s.sessions != 3 || len(o.starts) != 4 {
 				t.Fatalf("result=%+v err=%v sessions=%d starts=%d", result, err, s.sessions, len(o.starts))
 			}
-			want := []string{"fast-model", "fast-model", "fast-model", "fast-model"}
+			want := []string{"default-model", "default-model", "default-model", "default-model"}
 			if escalate == "1" {
-				want = []string{"fast-model", "default-model", "strong-model", "strong-model"}
+				want = []string{"default-model", "strong-model", "strong-model", "strong-model"}
 			}
 			for i, start := range o.starts {
 				if start.Model != want[i] {

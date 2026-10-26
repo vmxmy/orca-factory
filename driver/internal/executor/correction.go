@@ -216,22 +216,17 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 }
 
 func correctionTier(c Config, n int) (tier, agent, model, effort string, err error) {
-	tiers := []string{"fast", "default", "strong"}
-	index := 1
-	if c.Tier == "fast" {
-		index = 0
-	} else if c.Tier == "strong" {
-		index = 2
+	tiers := []string{"default", "strong"}
+	index := 0
+	if c.Tier == "strong" {
+		index = 1
 	} else if c.Tier != "" && c.Tier != "default" {
 		err = errors.New("invalid worker tier")
 		return
 	}
 	agent, model, effort = c.Agent, c.Model, c.Effort
 	if tierEscalation(c) {
-		index += n
-		if index > 2 {
-			index = 2
-		}
+		index = min(index+n, len(tiers)-1)
 		value := c.TierSettings[tiers[index]]
 		if value == "" {
 			value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tiers[index]))

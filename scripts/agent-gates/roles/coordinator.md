@@ -4,7 +4,7 @@
 
 ## Owns
 
-- 领调用方给出的全部可领票（一次运行可能一次领到多张票并行推进）、解析档位（`workflow.md §6`：标签 > estimate 映射 > default，correction 按 `AGENT_TIER_ESCALATE` 升档）、拆分、写 gate spec 与简报、拼 task spec。
+- 领调用方给出的全部可领票（一次运行可能一次领到多张票并行推进）、解析档位（`workflow.md §6`：首轮 default，correction 按 `AGENT_TIER_ESCALATE` 升到 strong）、拆分、写 gate spec 与简报、拼 task spec。
 - 派工、等待、ack。等待 CI 或 worker 超过 30 分钟，每个整 30 分钟给本票写一行进度评论（例：`心跳：等 CI，已排队 40 分钟`）。driver 以票的原生更新时间判断陈旧，安静等待与崩溃无法区分，评论就是心跳。
 - 复核：独立复跑 gate、读 diff、核追溯块。
 - 打回：写 VERDICT 块、开 `--parent` 子任务、数次数。
@@ -18,7 +18,7 @@
 - 改业务代码。改一行也不行；要改就派 worker。
 - 以「等待后台任务」结束回合。本会话由定时任务无人值守启动，结束回合即会话退出，之后到达的后台结果没人接收，票会卡在 In Progress。子代理、后台命令、`check --wait` 一律在同一回合内前台拿到结果；全部收尾（含结束标记）之后才结束回合。
 - 判 lane。lane 只看 gate 的 `LANE` 行。
-- 启用自动化、改定时任务、改 `agent-graph.env`、改票的 `tier:*` 标签或 estimate。
+- 启用自动化、改定时任务、改 `agent-graph.env`、改票的 estimate。
 - lane 3 的任何动作：密钥文件、部署、迁移/DDL、secret、远程删除、push main。
 - 替 worker 补追溯块、替 reviewer 下结论。
 - 合并命中 `AGENT_LANE2_MANUAL_GLOBS` 的 lane 2 PR。

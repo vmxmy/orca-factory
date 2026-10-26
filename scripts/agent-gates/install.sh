@@ -24,7 +24,7 @@ for v in AGENT_GH_REPO AGENT_MAX_IN_FLIGHT AGENT_RUN_WORKTREE_PREFIX AGENT_INSTA
   [[ -n "${!v:-}" ]] || fail "agent-graph.env: $v is empty"
 done
 # Tiers are agent:model:effort (exactly two colons; agent non-empty, model may be empty).
-for v in AGENT_TIER_FAST AGENT_TIER_DEFAULT AGENT_TIER_STRONG; do
+for v in AGENT_TIER_DEFAULT AGENT_TIER_STRONG; do
   [[ "${!v:-}" =~ ^[^:]+:[^:]*:[^:]*$ ]] || fail "agent-graph.env: $v='${!v:-}' must be agent:model:effort (two colons, agent non-empty)"
 done
 for f in COORDINATOR.md COORDINATOR.project.md gate.sh prune-run-worktrees.sh wait-runs.sh; do
