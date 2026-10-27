@@ -182,6 +182,46 @@ func TestStatusServePushesGitHubUsage(t *testing.T) {
 	}
 }
 
+func TestStatusServeRecordsNextScan(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(dir, "status.json"))
+	now := time.Date(2026, 10, 5, 8, 0, 0, 0, time.UTC)
+	s := &scheduler.Scheduler{Backend: &statusFakeBackend{}, Now: func() time.Time { return now }, Config: config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}, Tuning: config.Tuning{Scheduler: config.DefaultScheduler()}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := serveWithStatus(ctx, filepath.Join(dir, "lock"), func(context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
+		return s, &scheduler.Runtime{}, nil
+	}, func(context.Context) error {
+		cancel()
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(at time.Time) string {
+		data, err := json.Marshal(status.Read(at, 0))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		return string(fields["nextScanAt"])
+	}
+	if got := read(now); got != `"2026-10-05T08:01:00Z"` {
+		t.Fatalf("snapshot file nextScanAt = %s", got)
+	}
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	if got := read(now); got != `"2026-10-05T08:01:00Z"` {
+		t.Fatalf("pushed nextScanAt = %s", got)
+	}
+	if got := read(now.Add(status.DefaultStaleAfter + time.Second)); got != "" {
+		t.Fatalf("stale snapshot kept nextScanAt = %s", got)
+	}
+}
+
 // serve wraps the Runtime for status snapshots; the wrapper must still expose
 // heartbeat liveness, or a killed executor is never judged dead (OF-22).
 func TestStatusBackendForwardsHeartbeatLiveness(t *testing.T) {

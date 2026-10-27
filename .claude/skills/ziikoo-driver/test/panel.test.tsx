@@ -226,6 +226,46 @@ test('流水线页按项目画阶段轨道，没配部署的仓库没有部署�
   await ui.unmount()
 })
 
+test('空闲项目写下次巡检约多久后，时间已过写即将巡检', async ($, on) => {
+  const { clock } = runtimeEngine(on, { ...SAMPLE_STATUS, nextScanAt: '2026-10-27T12:02:30Z' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect(await exactText(ui, '空闲 · 下次巡检约 2 分钟后')).toHaveLength(1)
+
+  await clock.advance(180_000)
+  await clock.settle()
+  expect(await exactText(ui, '空闲 · 即将巡检')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('旧版本存下的 status 按初始值读，新读取完成前不画旧快照', async ($, on) => {
+  const RUNTIME = { plugin: 'ziikoo-driver', key: 'runtime' } as const
+  const old = { kind: 'ready', value: { state: 'ok', generatedAt: NOW, tickets: [] }, fetchedAt: NOW }
+  let stored: { value: unknown; version: number } = { value: { shape: 'runtime-1', value: old }, version: 1 }
+  on('state.get', RUNTIME, () => ({ value: stored }))
+  on('state.set', RUNTIME, (_, e) => {
+    if (e.ifVersion !== undefined && e.ifVersion !== stored.version) return { value: { isSet: false, version: stored.version } }
+    stored = { value: e.value, version: stored.version + 1 }
+    return { value: { isSet: true, version: stored.version } }
+  })
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { status: 5_000 },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  expect(await exactText(ui, '正在读取 orca-factory-driver status --json …')).toHaveLength(1)
+
+  await clock.advance(5_000)
+  await opened
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe(OF1_ROW)
+  await ui.unmount()
+})
+
 test('流水线页每个项目一个区块，需要处理的徽标画成标签', async ($, on) => {
   runtimeEngine(on)
   await $.command.run(runCommand)

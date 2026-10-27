@@ -255,10 +255,14 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 				now = s.Now()
 			}
 			snapshot := collectStatus(s, backend, runtime, now)
+			snapshot.NextScanAt = s.NextTickAt
 			if err := status.Write(snapshot); err != nil {
 				fmt.Fprintln(os.Stderr, "cannot write driver status snapshot")
 			}
-			status.Push(now, func(view *status.View) { view.GitHub = snapshot.GitHub })
+			status.Push(now, func(view *status.View) {
+				view.GitHub = snapshot.GitHub
+				view.NextScanAt = snapshot.NextScanAt
+			})
 		}
 		return wait(ctx)
 	}, report)

@@ -107,6 +107,8 @@ type Scheduler struct {
 	Now           func() time.Time
 	MergeQueue    []Ticket
 	NextInterval  time.Duration
+	// NextTickAt is when Serve runs the next Tick; zero before the first Tick.
+	NextTickAt    time.Time
 	FullReconcile bool
 	adaptive      Adaptive
 	tokens        float64
@@ -485,12 +487,11 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 		}
 		return err
 	}
-	var next time.Time
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		if !s.clock().Before(next) {
+		if !s.clock().Before(s.NextTickAt) {
 			if err = s.Tick(ctx); err != nil && report != nil && !transientSnapshotFailure(err) {
 				report(err)
 			}
@@ -498,7 +499,7 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 			if delay <= 0 {
 				delay = time.Minute
 			}
-			next = s.clock().Add(delay)
+			s.NextTickAt = s.clock().Add(delay)
 		}
 		if err = wait(ctx); err != nil {
 			if ctx.Err() != nil {

@@ -97,7 +97,7 @@ const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { k
 })
 const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'pipeline', { shape: 'page-2' })
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
-const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kind: 'loading' }, { shape: 'runtime-1' })
+const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kind: 'loading' }, { shape: 'runtime-2' })
 const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-2' })
 const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, [], { shape: 'busy-1' })
 const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { shape: 'trend-1' })
@@ -538,6 +538,11 @@ const freshness = (state: Runtime, fetchedAt: number) => {
   return state.state === 'ok' ? age : `${age} · 已过期`
 }
 
+const idleText = ({ nextScanAt }: Runtime, fetchedAt: number) => {
+  if (nextScanAt === undefined) return '空闲'
+  return nextScanAt <= fetchedAt ? '空闲 · 即将巡检' : `空闲 · 下次巡检约 ${duration(nextScanAt - fetchedAt)}后`
+}
+
 const pipelinePage = (
   ui: Kit,
   config: DriverConfig,
@@ -565,7 +570,7 @@ const pipelinePage = (
         const nodes = deploys(one.routing) ? TRACK.length : TRACK.length - 1
         const list = badges(one, checks)
         const onEdge = displayWidth(`${one.name} ${one.prefix}`) + badgesWidth(list) + SECTION_EDGE_FRAME <= cols
-        const idle = wanted === '' ? <ui.Text dimColor>空闲</ui.Text> : noMatch(ui)
+        const idle = wanted === '' ? <ui.Text dimColor>{idleText(state.value, state.fetchedAt)}</ui.Text> : noMatch(ui)
         const rows = own.length === 0 ? [idle] : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment, open))
         return onEdge
           ? section(ui, one.name, rows, one.prefix, { key: `edge-${one.name}`, node: badgeRow(ui, one, list) })
