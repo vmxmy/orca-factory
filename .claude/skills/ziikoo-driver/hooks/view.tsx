@@ -1,10 +1,10 @@
-import type { ElementTable, RenderChildren } from 'claude-code'
+import type { ElementConstructor, ElementTable, InputProps, RenderChildren } from 'claude-code'
 
-import type { TrendSample } from '../types'
+import type { Alert, Fetched, Page, Repo, Runtime, RuntimeTicket, Timeline, TrendSample } from '../types'
 
 export type Kit = Pick<ElementTable, 'Box' | 'Text' | 'Button'>
 
-export type Alert = 'warning' | 'error'
+export type InputElement = ElementConstructor<InputProps>
 
 export const cell = (ui: Kit, width: number, value: string, dimColor = false, color?: string) => (
   <ui.Box width={width} flexShrink={0}>
@@ -80,6 +80,73 @@ export type Tone = 'current' | 'attention' | 'failed'
 export type Position = { at: number | null; tone: Tone; label: string }
 
 export const TONE_COLOR: Record<Tone, string> = { current: 'suggestion', attention: 'warning', failed: 'error' }
+
+export const field = (ui: Kit, label: string, value: string, color?: string) => (
+  <ui.Box flexDirection="row">
+    {cell(ui, 12, label, true)}
+    <ui.Text wrap="truncate" color={color}>
+      {value}
+    </ui.Text>
+  </ui.Box>
+)
+
+export const clockTime = (ms: number) => {
+  const at = new Date(ms)
+  return [at.getHours(), at.getMinutes(), at.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')
+}
+
+const PHASE_AT: Record<string, number> = {
+  待领: 0,
+  'worker 运行中': 1,
+  '写 correction': 1,
+  分支检查: 2,
+  gate: 2,
+  审查: 3,
+  '开 PR': 4,
+  排队合并: 4,
+  已合并: 4,
+}
+
+const DEPLOY_LABELS: Record<string, string> = { pending: '等部署', 'deploy-intent': '部署中', 'smoke-intent': 'smoke', paused: '部署暂停' }
+
+export const position = (t: RuntimeTicket): Position => {
+  const d = t.deployment
+  if (d && d.state !== 'passed') return { at: TRACK.length - 1, tone: d.state === 'paused' ? 'failed' : 'current', label: DEPLOY_LABELS[d.state] ?? d.state }
+  if (t.stage === 'candidate') return { at: 0, tone: 'current', label: '待领' }
+  if (t.stage === 'human') return { at: null, tone: 'attention', label: '转人' }
+  if (t.owner === '处置Agent') return { at: null, tone: 'attention', label: '处置 Agent' }
+  const at = PHASE_AT[t.phase]
+  if (at === undefined) return { at: null, tone: 'attention', label: t.phase || '未知阶段' }
+  return { at, tone: t.phase === '写 correction' ? 'attention' : 'current', label: t.phase }
+}
+
+export const duration = (ms: number) => {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  return minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`
+}
+
+const reasonOf = (t: RuntimeTicket): { text: string; color?: string } | undefined => {
+  if (t.blockedReason) return { text: t.blockedReason, color: 'warning' }
+  const d = t.deployment
+  if (!d || d.state === 'passed') return undefined
+  const text = [d.workflow || '部署', d.state, d.sha.slice(0, 7), d.reason].filter(Boolean).join(' · ')
+  return d.state === 'paused' ? { text, color: 'error' } : { text }
+}
+
+export const reasonLine = (ui: Kit, t: RuntimeTicket) => {
+  const reason = reasonOf(t)
+  return (
+    reason && (
+      <ui.Text color={reason.color} dimColor={reason.color === undefined} wrap="truncate">
+        {`↳ ${reason.text}`}
+      </ui.Text>
+    )
+  )
+}
 
 export const trackView = (ui: Kit, pos: Position, nodes: number, segment: number) => (
   <ui.Box flexDirection="row" width={segment * TRACK.length} flexShrink={0}>
@@ -192,3 +259,113 @@ export const failedView = (ui: Kit, state: { exitCode: number | null; stderr: st
     <ui.Text dimColor>r 重试</ui.Text>
   </ui.Box>
 )
+
+export const matches = (filter: string, ...texts: (string | undefined)[]) => {
+  const wanted = filter.toLowerCase()
+  return wanted === '' || texts.some(one => one?.toLowerCase().includes(wanted))
+}
+
+// The field stays drawn: a render that removes a focused element clears the ring, which would undo a move made on submit.
+// The host empties the field after submit, so the button carries the text that still filters.
+export const filterBar = (
+  ui: Kit,
+  Input: InputElement | undefined,
+  filter: string,
+  placeholder: string,
+  edit: () => void,
+  set: (text: string) => void,
+  submit: (text: string) => void,
+) => (
+  <ui.Box key="filter-bar" flexDirection="row" gap={1}>
+    <ui.Button key="filter" label={filter === '' ? '筛选' : `筛选：${filter}`} hotkey="f" plain onPress={edit} />
+    {Input && (
+      <Input
+        key="filter-input"
+        value={filter}
+        placeholder={filter === '' ? placeholder : '空回车清除筛选'}
+        submitLabel="确定"
+        onInput={set}
+        onSubmit={submit}
+      />
+    )}
+  </ui.Box>
+)
+
+export const NO_MATCH = '无匹配'
+
+const LIST_HELP = 'r 刷新 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框'
+
+const PAGE_HELP: Record<Page, string> = {
+  pipeline: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  health: LIST_HELP,
+  models: LIST_HELP,
+  scheduler: LIST_HELP,
+  environment: 'f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+}
+
+export const helpText = (current: Page, inDetail: boolean) =>
+  inDetail ? 'q 返回 · r 刷新 · 1–5 切页 · Esc 回到输入框' : PAGE_HELP[current]
+
+const TIMELINE_ROWS = 15
+
+const timelineBody = (ui: Kit, id: string, state: Fetched<Timeline>) => {
+  if (state.kind === 'failed') return failedView(ui, state)
+  if (state.kind === 'loading' || state.value.id !== id) {
+    return <ui.Text dimColor>{`正在读取 orca-factory-driver logs ${id} …`}</ui.Text>
+  }
+  const { entries } = state.value
+  if (entries.length === 0) return <ui.Text dimColor>没有执行器日志</ui.Text>
+  const hidden = Math.max(0, entries.length - TIMELINE_ROWS)
+  return [
+    ...(hidden > 0 ? [<ui.Text dimColor>{`更早 ${hidden} 条`}</ui.Text>] : []),
+    ...entries.slice(hidden).map((one, i) => (
+      <ui.Box key={`timeline-${hidden + i}`} flexDirection="row">
+        {cell(ui, 9, clockTime(one.at), true)}
+        <ui.Text wrap="truncate" color={one.alert}>
+          {one.label}
+        </ui.Text>
+      </ui.Box>
+    )),
+  ]
+}
+
+const ticketFacts = (ui: Kit, t: RuntimeTicket, repos: Repo[], now: number) => {
+  const pos = position(t)
+  return [
+    <ui.Box flexDirection="row">
+      {cell(ui, 12, '阶段', true)}
+      <ui.Box flexDirection="row" gap={1}>
+        <ui.Text color={TONE_COLOR[pos.tone]}>{pos.label}</ui.Text>
+        {t.since !== undefined && <ui.Text dimColor>{duration(now - t.since)}</ui.Text>}
+      </ui.Box>
+    </ui.Box>,
+    field(ui, '归属', t.owner),
+    field(ui, '仓库', repos.find(one => one.path === t.repo)?.name ?? t.repo),
+    reasonLine(ui, t),
+  ]
+}
+
+const factsBody = (ui: Kit, id: string, status: Fetched<Runtime>, repos: Repo[]) => {
+  if (status.kind === 'loading') return <ui.Text dimColor>正在读取 orca-factory-driver status --json …</ui.Text>
+  if (status.kind === 'failed') return failedView(ui, status)
+  const ticket = status.value.tickets.find(t => t.identifier === id)
+  return ticket ? ticketFacts(ui, ticket, repos, status.fetchedAt) : <ui.Text dimColor>已不在在途列表</ui.Text>
+}
+
+export const detailView = (
+  ui: Kit,
+  id: string,
+  status: Fetched<Runtime>,
+  repos: Repo[],
+  timeline: Fetched<Timeline>,
+  back: () => void,
+) => {
+  const title = status.kind === 'ready' ? status.value.tickets.find(t => t.identifier === id)?.title : undefined
+  return (
+    <ui.Box flexDirection="column">
+      <ui.Button key="detail-back" label="← 返回" hotkey="q" onPress={back} />
+      {section(ui, id, factsBody(ui, id, status, repos), title)}
+      {section(ui, '时间线', timelineBody(ui, id, timeline))}
+    </ui.Box>
+  )
+}
