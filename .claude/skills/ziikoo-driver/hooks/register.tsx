@@ -19,7 +19,7 @@ import type {
   TrendSample,
 } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseConfig, routingSummary } from './config'
-import { parseHealth, parseRuntime, parseTimeline } from './runtime'
+import { barriersOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
 import {
   NO_MATCH,
   ROW,
@@ -60,6 +60,7 @@ const LOGS_SCRIPT =
   'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited)"\' || [ $? -eq 1 ]; }'
 const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/
 const POLL_MS = 10_000
+const WATCH_MS = 30_000
 const SPIN_MS = 100
 const TREND_MS = TREND_MINUTES * 60_000
 const TOOL_KEYS = new Set(['go', 'gh', 'git', 'jq', 'claude', 'codex'])
@@ -102,6 +103,7 @@ const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { sha
 const detail = atom({ plugin: 'ziikoo-driver', key: 'detail' } as const, '', { shape: 'detail-1' })
 const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-1' })
 const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
+const seen = atom({ plugin: 'ziikoo-driver', key: 'seen' } as const, null, { shape: 'seen-1' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui'>
 
@@ -165,13 +167,26 @@ const refresh = async ($: Engine): Promise<void> => {
   await fetchConfig($)
 }
 
-const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === undefined).length
+// update reruns its callback on a version miss: only the last run's prev is the list this read replaced, so the toast waits until update returns.
+const remember = async ($: Engine, tickets: RuntimeTicket[]): Promise<void> => {
+  let before: RuntimeTicket[] | null = null
+  await update($, seen, prev => {
+    before = prev
+    return tickets
+  })
+  const notice = before === null ? undefined : noticeOf(before, tickets)
+  if (notice !== undefined) $.ui.toast(notice)
+}
 
+// The panel's reads and the background's all land here, so the status line and the toasts agree with what the panel shows.
 const fetchRuntime = async ($: Engine): Promise<void> => {
   const next = await runJson($, 'status', argvOf('status'), parseRuntime, code => code === 0)
+  const line = statusLine(next)
+  if (line !== undefined) $.ui.status(line)
   if (next.kind === 'ready') {
     const sample = { at: next.fetchedAt, inFlight: inFlightOf(next.value.tickets) }
     await update($, trend, samples => [...samples.filter(one => one.at > sample.at - TREND_MS), sample])
+    await remember($, next.value.tickets)
   }
   await update($, runtime, () => next)
 }
@@ -220,6 +235,19 @@ const pollRuntime = async ($: Engine): Promise<void> => {
 
 const ensurePolling = ($: Engine) => {
   poll ??= $.clock.every(POLL_MS, () => void pollRuntime($))
+}
+
+let watch: Timer | undefined
+
+// The open panel already reads status every 10 seconds while it stays in the run group.
+const watchRuntime = async ($: Engine): Promise<void> => {
+  const shown = (await $.ui.panes()).some(one => one.id === PANE)
+  if (shown && groupOf(await read($, page)) === 'run') return
+  await fetchRuntime($)
+}
+
+const ensureWatching = ($: Engine) => {
+  watch ??= $.clock.every(WATCH_MS, () => void watchRuntime($))
 }
 
 // Moving focus is a convenience, so a move that fails is logged instead of failing the hook that asked for it.
@@ -520,12 +548,11 @@ const pipelinePage = (
   if (state.kind === 'failed') return failedView(ui, state)
   const { tickets } = state.value
   const segment = segmentWidth(cols)
-  const barriers = tickets.filter(t => t.deployment && t.deployment.state !== 'passed').length
   const waiting = tickets.filter(t => t.stage === 'candidate').length
   return (
     <ui.Box flexDirection="column">
       {bar}
-      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriers}   待领 ${waiting}`}</ui.Text>
+      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}`}</ui.Text>
       {trendView(ui, samples, state.fetchedAt, cols)}
       {segment !== null && <ui.Box marginTop={1}>{trackLabels(ui, segment)}</ui.Box>}
       {config.repos.map(one => {
@@ -569,12 +596,15 @@ export const register: Register = on => {
       description: '打开 Driver 面板（运行：流水线、健康；配置：模型、调度、环境）',
       immediate: true,
     })
+    ensureWatching($)
+    void fetchRuntime($)
     return next(e)
   })
 
   on('command.run', { command: 'ziikoo-driver' }, async $ => {
     await $.ui.open({ id: PANE, title: TITLE, focus: true })
     ensurePolling($)
+    ensureWatching($)
     await fetchConfig($)
     await fetchPage($, await read($, page), () => focusTicket($))
     return { text: '已打开 Driver 面板。' }
