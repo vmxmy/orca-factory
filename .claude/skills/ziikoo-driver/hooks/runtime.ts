@@ -1,4 +1,4 @@
-import type { Checkout, Deployment, Health, Runtime, RuntimeTicket } from '../types'
+import type { Checkout, Deployment, DoctorCheck, Health, Runtime, RuntimeTicket } from '../types'
 import { fields, flag, list, text } from './config'
 import type { Fields } from './config'
 
@@ -56,6 +56,11 @@ const details = (checks: Fields, name: string): Fields => {
   return fields(check.details, `checks.${name}.details`)
 }
 
+const parseCheck = ([id, value]: [string, unknown]): DoctorCheck => {
+  const o = fields(value, `checks.${id}`)
+  return { id, status: text(o, 'status', `checks.${id}`), reason: text(o, 'reason', `checks.${id}`) }
+}
+
 const parseCheckout = (value: unknown, path: string): Checkout => {
   const o = fields(value, path)
   return { path: text(o, 'path', path), branch: text(o, 'branch', path), clean: flag(o, 'clean', path), behind: count(o, 'behind', path) }
@@ -71,5 +76,6 @@ export const parseHealth = (stdout: string): Health => {
       const o = fields(one, `${prs}[${i}]`)
       return { project: text(o, 'project', `${prs}[${i}]`), number: count(o, 'number', `${prs}[${i}]`) }
     }),
+    checks: Object.entries(checks).map(parseCheck),
   }
 }

@@ -11,7 +11,7 @@ const PANE = {
   requestId: 'ziikoo-driver',
   surface: 'terminal',
   props: {
-    title: 'Driver 配置',
+    title: 'Driver',
     isFocused: true,
     bodyColumns: 100,
     placement: 'dock',
@@ -35,7 +35,7 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, P
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({
-    value: [{ id: 'ziikoo-driver', title: 'Driver 配置', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
+    value: [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
   }))
   on('process.run', (_, e) => {
     calls.push([...e.argv])
@@ -56,13 +56,14 @@ const sampleStdout = JSON.stringify(SAMPLE_CONFIG)
 const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundElement[]> }, text: string) =>
   (await ui.findAll({ type: 'Text' })).filter(one => one.text === text)
 
+const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
+
 test('模型页列出施工档位与样本模型名，可切换仓库', async ($, on) => {
   const { calls } = engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
-  expect(calls).toEqual([['orca-factory-driver', 'config', '--json']])
+  expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ type: 'Text', text: /006396a · active/ }))?.text).toBe('006396a · active')
   await ui.press({ key: 'page-models' })
 
   expect(await exactText(ui, '施工')).toHaveLength(1)
@@ -152,13 +153,10 @@ const runtimeEngine = (on: On, status: unknown = SAMPLE_STATUS) =>
     doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
   })
 
-const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
-
 test('流水线页按项目画阶段轨道，没配部署的仓库没有部署点', async ($, on) => {
   const { calls } = runtimeEngine(on)
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
-  await ui.press({ key: 'page-pipeline' })
   expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
 
   const row = async (id: string) => (await ui.find({ key: `pipeline-${id}` }))?.text
@@ -186,7 +184,6 @@ test('快照过期时警告；流水线页每 10 秒重新读取 status，离开
   const { calls, clock } = runtimeEngine(on, { ...SAMPLE_STATUS, state: 'stale', generatedAt: '2026-10-27T11:54:00Z' })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
-  await ui.press({ key: 'page-pipeline' })
   expect((await exactText(ui, '快照 6 分钟前 · 已过期')).map(one => one.props.color)).toEqual(['warning'])
 
   const statusReads = () => subcommands(calls).filter(one => one === 'status').length
@@ -195,7 +192,7 @@ test('快照过期时警告；流水线页每 10 秒重新读取 status，离开
   await clock.settle()
   expect(statusReads()).toBe(2)
 
-  await ui.press({ key: 'page-overview' })
+  await ui.press({ key: 'page-models' })
   await clock.advance(10_000)
   await clock.settle()
   expect(statusReads()).toBe(2)
@@ -209,5 +206,78 @@ test('窄于 80 列时不画轨道', async ($, on) => {
   await ui.press({ key: 'page-pipeline' })
   expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1gate4 分钟')
   expect(await exactText(ui, '◉')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('打开面板默认在流水线页，页签分运行与配置两组', async ($, on) => {
+  const { calls } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
+
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
+  expect((await exactText(ui, '运行 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
+  expect((await exactText(ui, '配置 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
+
+  await ui.press({ key: 'page-models' })
+  expect((await exactText(ui, '运行 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
+  expect((await exactText(ui, '配置 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
+  await ui.unmount()
+})
+
+test('健康页逐项列出 doctor 检查，不再显示工厂目录与纳管仓库', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-health' })
+
+  expect(await exactText(ui, '006396a')).toHaveLength(1)
+  expect(await exactText(ui, 'active')).toHaveLength(1)
+  expect(await exactText(ui, 'doctor 检查')).toHaveLength(1)
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
+  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出注意ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动')
+  expect((await ui.find({ key: 'check-sync_prs' }))?.text).toBe('core 同步注意ansible #12 待合并')
+  expect((await exactText(ui, '注意')).map(one => one.props.color)).toEqual(['warning', 'warning'])
+  expect((await exactText(ui, '通过')).map(one => one.props.dimColor)).toEqual([true])
+  expect(await exactText(ui, 'driver.toml 的 scheduler.resume_fraction 不被识别，不生效')).toHaveLength(1)
+  expect(await exactText(ui, '工厂目录')).toHaveLength(0)
+  expect(await exactText(ui, '纳管仓库')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('环境页最上面是工厂目录', async ($, on) => {
+  engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-environment' })
+
+  expect(await exactText(ui, '工厂目录')).toHaveLength(1)
+  expect(await exactText(ui, '/home/laoxu/github/orca-factory')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('右上角在配置组显示 config 取数时间，在运行组显示快照新鲜度', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.findAll({ type: 'Text', text: /^取数于/ })).toHaveLength(0)
+
+  await ui.press({ key: 'page-scheduler' })
+  const fetched = await ui.findAll({ type: 'Text', text: /^取数于/ })
+  expect(fetched.map(one => one.props.dimColor)).toEqual([true])
+  expect(fetched[0]?.text).toMatch(/^取数于 \d{2}:\d{2}:\d{2}$/)
+  expect(await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('旧版本存下的概览页按初始值读，打开后在流水线页', async ($, on) => {
+  on('state.get', { plugin: 'ziikoo-driver', key: 'page' }, () => ({
+    value: { value: { shape: 'page-1', value: 'overview' }, version: 1 },
+  }))
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
   await ui.unmount()
 })
