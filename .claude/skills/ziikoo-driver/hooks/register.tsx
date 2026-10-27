@@ -55,7 +55,9 @@ const PANE = 'ziikoo-driver'
 const TITLE = 'Driver'
 const argvOf = (kind: FetchKind) => ['orca-factory-driver', kind, '--json']
 // Most of a long ticket's log is polling, and process.run keeps only the first 4 MiB, so grep keeps the lines the timeline reads.
-const LOGS_SCRIPT = 'orca-factory-driver logs "$1" --json | grep -E \'"msg":"(transition|ticket completed|command started|command exited)"\''
+// grep exits 1 when no line matches, a ticket without executor logs; pipefail keeps a driver failure from hiding behind it.
+const LOGS_SCRIPT =
+  'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited)"\' || [ $? -eq 1 ]; }'
 const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/
 const POLL_MS = 10_000
 const SPIN_MS = 100
@@ -180,14 +182,15 @@ const fetchHealth = async ($: Engine): Promise<void> => {
   await update($, health, () => next)
 }
 
-// grep exits 1 when no line matches, which is a ticket without executor logs.
+// A read for a ticket the person has since left lands late and would replace the one now open.
 const fetchTimeline = async ($: Engine, id: string): Promise<void> => {
   if (!TICKET_ID.test(id)) {
     await update($, timeline, (): Fetched<Timeline> => ({ kind: 'failed', exitCode: null, stderr: '票号格式不对' }))
     return
   }
   const argv = ['bash', '-c', LOGS_SCRIPT, '_', id]
-  const next = await runJson($, 'logs', argv, stdout => ({ id, entries: parseTimeline(stdout) }), code => code === 0 || code === 1)
+  const next = await runJson($, 'logs', argv, stdout => ({ id, entries: parseTimeline(stdout) }), code => code === 0)
+  if ((await read($, detail)) !== id) return
   await update($, timeline, () => next)
 }
 
@@ -198,7 +201,7 @@ const openDetail = async ($: Engine, id: string): Promise<void> => {
 }
 
 // doctor can take tens of seconds, so whatever needs only the tickets runs once status lands.
-const fetchPage = async ($: Engine, current: Page, listed = async () => {}): Promise<void> => {
+const fetchPage = async ($: Engine, current: Page, listed: () => Promise<unknown> = async () => {}): Promise<void> => {
   if (groupOf(current) !== 'run') return
   const opened = current === 'pipeline' ? await read($, detail) : ''
   await Promise.all([fetchRuntime($).then(listed), fetchHealth($), ...(opened === '' ? [] : [fetchTimeline($, opened)])])
@@ -231,15 +234,17 @@ const shownTickets = (one: Repo, tickets: RuntimeTicket[], wanted: string) =>
   tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
 
 // Called only when the list appears, never from a poll, so it does not pull the ring away from where the person is.
-const focusTicket = async ($: Engine, id?: string): Promise<void> => {
+const focusTicket = async ($: Engine, id?: string): Promise<boolean> => {
   const wanted = await read($, filter)
-  if ((await read($, page)) !== 'pipeline' || (await read($, detail)) !== '') return
+  if ((await read($, page)) !== 'pipeline' || (await read($, detail)) !== '') return false
   const state = await read($, snapshot)
   const status = await read($, runtime)
-  if (state.kind !== 'ready' || status.kind !== 'ready') return
+  if (state.kind !== 'ready' || status.kind !== 'ready') return false
   const shown = state.config.repos.flatMap(one => shownTickets(one, status.value.tickets, wanted)).map(t => t.identifier)
   const target = shown.find(one => one === id) ?? shown[0]
-  if (target !== undefined) await moveFocus($, `ticket-${target}`)
+  if (target === undefined) return false
+  await moveFocus($, `ticket-${target}`)
+  return true
 }
 
 const closeDetail = async ($: Engine, id: string): Promise<void> => {
@@ -247,9 +252,10 @@ const closeDetail = async ($: Engine, id: string): Promise<void> => {
   await focusTicket($, id)
 }
 
+// Left in the field, the focus would type the page hotkeys 1–5 into it instead.
 const submitFilter = async ($: Engine, text: string): Promise<void> => {
   await update($, filter, () => text)
-  await focusTicket($)
+  if (!(await focusTicket($))) await moveFocus($, 'filter')
 }
 
 const choose = async ($: Engine, next: Page): Promise<void> => {

@@ -36,7 +36,9 @@ type Answer = ProcessRunResult | ((nth: number) => ProcessRunResult)
 // so every move fails and the panel's debug line for it names the key it tried.
 const FOCUS_LOG = /^focus (\S+) not moved: /
 
-const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, number> = {}) => {
+type Late = number | ((nth: number) => number | undefined)
+
+const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, Late> = {}) => {
   const calls: string[][] = []
   const focused: string[] = []
   const clock = mock.clock(on, { now: NOW })
@@ -55,10 +57,12 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, A
   on('process.run', async (_, e) => {
     calls.push([...e.argv])
     const sub = subOf(e.argv)
+    const nth = calls.filter(argv => subOf(argv) === sub).length
     const late = lateMs[sub]
-    if (late !== undefined) await clock.sleep(late)
+    const wait = typeof late === 'function' ? late(nth) : late
+    if (wait !== undefined) await clock.sleep(wait)
     const answer = bySubcommand[sub] ?? result
-    return { value: typeof answer === 'function' ? answer(calls.filter(argv => subOf(argv) === sub).length) : answer }
+    return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
   return { calls, clock, focused }
 }
@@ -669,17 +673,59 @@ test('不在在途列表的票照常显示时间线；超过 15 条时折叠更�
   await ui.unmount()
 })
 
-test('没有执行器日志时说明；grep 无匹配的退出码 1 不算失败', async ($, on) => {
+const timelineEngine = (on: On, bash: ProcessRunResult) =>
   engine(on, ran({ stdout: sampleStdout }), {
     status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
     doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
-    bash: ran({ exitCode: 1 }),
+    bash,
   })
+
+test('脚本成功且没有输出时说明没有执行器日志', async ($, on) => {
+  timelineEngine(on, ran({ exitCode: 0 }))
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'ticket-OF-1' })
   expect((await exactText(ui, '没有执行器日志')).map(one => one.props.dimColor)).toEqual([true])
   expect(await ui.findAll({ type: 'Text', text: /取数失败/ })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('driver logs 失败时详情显示失败视图，不写没有执行器日志', async ($, on) => {
+  timelineEngine(on, ran({ exitCode: 1, stderr: 'Error: open state dir: permission denied' }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+  expect(await exactText(ui, '取数失败（退出码 1）')).toHaveLength(1)
+  expect(await exactText(ui, 'Error: open state dir: permission denied')).toHaveLength(1)
+  expect(await exactText(ui, '没有执行器日志')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('先开的票的时间线晚到时不覆盖后开的票', async ($, on) => {
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    {
+      status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
+      doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+      bash: nth => (nth === 1 ? ran({ exitCode: 1, stderr: 'late failure for OF-1' }) : ran({ stdout: SAMPLE_LOGS })),
+    },
+    { bash: nth => (nth === 1 ? 1000 : undefined) },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  const first = ui.press({ key: 'ticket-OF-1' })
+  await clock.settle()
+  await ui.press({ key: 'detail-back' })
+  await ui.press({ key: 'ticket-OF-3' })
+  expect(await timelineRows(ui)).toHaveLength(11)
+
+  await clock.advance(1000)
+  await first
+  expect(await timelineRows(ui)).toHaveLength(11)
+  expect(await exactText(ui, 'late failure for OF-1')).toHaveLength(0)
   await ui.unmount()
 })
 
@@ -749,6 +795,8 @@ test('打开面板、从详情返回、筛选提交后焦点落在票上，10 �
   expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3', 'filter-input'])
   await ui.input({ key: 'filter-input', text: 'ZW' })
   expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3', 'filter-input', 'ticket-ZW-7'])
+  await ui.input({ key: 'filter-input', text: 'nothing-like-this' })
+  expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3', 'filter-input', 'ticket-ZW-7', 'filter'])
   await ui.unmount()
 })
 
@@ -766,7 +814,7 @@ test('环境页按变量名筛选，没有匹配的分组写无匹配；切页�
   expect((await ui.find({ key: 'env-HTTPS_PROXY' }))?.text).toBe('HTTPS_PROXYhttp://127.0.0.1:7890')
   expect(await ui.findAll({ key: 'env-gh' })).toHaveLength(0)
   await ui.input({ key: 'filter-input', text: 'proxy' })
-  expect(focused).toEqual(['ticket-OF-1', 'filter-input'])
+  expect(focused).toEqual(['ticket-OF-1', 'filter-input', 'filter'])
   expect((await ui.find({ key: 'env-HTTPS_PROXY' }))?.text).toBe('HTTPS_PROXYhttp://127.0.0.1:7890')
   expect(await ui.findAll({ key: 'env-gh' })).toHaveLength(0)
   expect(await exactText(ui, '工具路径')).toHaveLength(1)
