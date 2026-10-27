@@ -970,11 +970,11 @@ test('快照为 unknown 时不比较也不更新比较基准，快照恢复后�
 
 test('停留时长越长精度越低，最长也不超过时长列宽', async ($, on) => {
   const ago = (hours: number, minutes: number) => new Date(NOW - (hours * 60 + minutes) * 60_000).toISOString()
-  const tickets = [ticket('OF-1', { since: ago(9, 59) }), ticket('OF-2', { since: ago(10, 15) }), ticket('OF-3', { since: ago(26, 5) }), ticket('OF-4', { since: ago(250, 0) })]
+  const tickets = [ticket('OF-1', { since: ago(9, 59) }), ticket('OF-2', { since: ago(10, 15) }), ticket('OF-3', { since: ago(26, 5) }), ticket('OF-4', { since: ago(239, 0) }), ticket('OF-5', { since: ago(250, 0) })]
   runtimeEngine(on, { ...SAMPLE_STATUS, tickets })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
 
-  for (const shown of ['9 小时 59 分', '10 小时', '1 天 2 小时', '10 天']) expect(await exactText(ui, shown)).toHaveLength(1)
+  for (const shown of ['9 小时 59 分', '10 小时', '1 天 2 小时', '9 天 23 小时', '10 天']) expect(await exactText(ui, shown)).toHaveLength(1)
   await ui.unmount()
 })
