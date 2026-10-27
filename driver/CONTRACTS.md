@@ -215,7 +215,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `orca-factory-driver status --json` 输出 `status.Read` 的 `View`：`state`（`ok`、`stale`、`unknown`）、`generatedAt`、`tickets`，有 GitHub 用量时另有 `github`。票行字段见 `driver/README.md`「排查停止推进」。
 
-- `nextScanAt`（OF-238）：serve 计划下一次巡检（`scheduler.Serve` 调用 `Tick`）的时间，RFC3339 UTC，取自 `Scheduler.NextTickAt`，即上一轮 `Tick` 结束时的时钟加 `NextInterval`（自适应间隔，最长 3 分钟，见 `scheduler/adaptive.go`）。serve 每轮巡检后写入快照文件与实时观察缓存。`state` 不是 `ok` 时省略；serve 还没完成第一轮巡检、或写快照的 driver 早于本字段时也没有这个键。它只是观察，不改变调度，也不是恢复授权。`cmd/driver.TestStatusServeRecordsNextScan` 覆盖写出、两条读路径与过期省略。
+- `nextScanAt`（OF-238）：serve 计划下一次巡检（`scheduler.Serve` 调用 `Tick`）的时间，RFC3339（带时区偏移与纳秒，和 `generatedAt` 同一个时钟），取自 `Scheduler.NextTickAt`，即上一轮 `Tick` 结束时的时钟加 `NextInterval`（自适应间隔，最长 3 分钟，见 `scheduler/adaptive.go`）。serve 每轮巡检后写入快照文件与实时观察缓存。`state` 不是 `ok` 时省略；serve 还没完成第一轮巡检、或写快照的 driver 早于本字段时也没有这个键。它只是观察，不改变调度，也不是恢复授权。`cmd/driver.TestStatusServeRecordsNextScan` 覆盖写出、两条读路径与实时缓存过期时的省略；快照文件过期走同一个判断，没有单独测试。
 
 ## driver config 快照
 
