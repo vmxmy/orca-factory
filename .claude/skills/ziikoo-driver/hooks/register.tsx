@@ -185,11 +185,12 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
   const next = await runJson($, 'status', argvOf('status'), parseRuntime, code => code === 0)
   const line = statusLine(next)
   if (line !== undefined) $.ui.status(line)
-  if (next.kind === 'ready') {
+  // With no snapshot the driver lists no tickets: as a trend sample it would draw an empty pipeline, and as the
+  // comparison base it would report every held ticket as done, then as new.
+  if (next.kind === 'ready' && next.value.state !== 'unknown') {
     const sample = { at: next.fetchedAt, inFlight: inFlightOf(next.value.tickets) }
     await update($, trend, samples => [...samples.filter(one => one.at > sample.at - TREND_MS), sample])
-    // With no snapshot the driver lists no tickets; taken as the pipeline it would report every held ticket as done, then as new.
-    if (next.value.state !== 'unknown') await remember($, next.value.tickets)
+    await remember($, next.value.tickets)
   }
   await update($, runtime, () => next)
 }
