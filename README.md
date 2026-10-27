@@ -14,7 +14,7 @@
 
 agent 会调研目标仓库、确认无法推导的决定、生成三份项目配置到 `<repo>/scripts/agent-gates/`，在隔离环境验收后开 PR。由 driver 单实例调度；定时 coordinator 已退役。合并后先用一张小票演练，再明确启用。
 
-建票推荐用 intake：在 Orca 里对该仓库按该仓库 `agent-graph.env` 的 `AGENT_ROLE_INTAKE` 档位（`agent:model:effort`，模板为 `claude:claude-opus-5-5:high`）运行 `claude --model claude-opus-5-5 --effort high '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、通过统一 `issues` 入口写票据主账本，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
+建票推荐用 intake：在 Orca 里对该仓库按该仓库 `agent-graph.env` 的 `AGENT_ROLE_INTAKE` 档位（`agent:model:effort`，为空时用 `AGENT_TIER_STRONG`）启动；模板值 `claude:claude-opus-5-5:high` 对应 `claude --model claude-opus-5-5 --effort high '按 scripts/agent-gates/roles/intake.md 工作'`。它是你与流水线之间唯一的对话面：只读仓库、通过统一 `issues` 入口写票据主账本，把需求变成带 SCOPE / CHECK / lane 预判 / estimate 的合格票，处理 `auto-failed` 票，给你看 `ledger stats`。
 
 手动安装也可以：`bin/orca-factory init <repo-path>`，然后按 [ONBOARD.md](ONBOARD.md) 填三份项目文件。
 
