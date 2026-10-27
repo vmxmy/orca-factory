@@ -80,7 +80,7 @@ if [ -f driver/go.mod ]; then
   fi
 fi
 
-echo "== ziikoo-driver-mod"   # 依据：OF-232，mod 的测试不在 CI 也不在 gate 里，OF-228/230/231 能合并只凭本地手动检查；合并通道用服务 PATH，需含 claude（2026-10-28 已加入 path-linuxbrew.conf）
+echo "== ziikoo-driver-mod"   # 依据：OF-232，mod 的测试不在 CI 也不在 gate 里，OF-228/230/231 能合并只凭本地手动检查；合并通道在 driver 服务进程里跑 gate，服务 PATH 需含 claude
 mod_changed=0   # 只在改动命中 mod 目录时才跑
 while IFS= read -r f; do
   case "$f" in
