@@ -120,13 +120,16 @@ export const position = (t: RuntimeTicket): Position => {
   return { at, tone: t.phase === '写 correction' ? 'attention' : 'current', label: t.phase }
 }
 
+// A second unit follows only a one-digit first, so the longest texts, 「9 小时 59 分」 and 「9 天 23 小时」, fit ROW.since.
 export const duration = (ms: number) => {
   const seconds = Math.max(0, Math.floor(ms / 1000))
   if (seconds < 60) return `${seconds} 秒`
   const minutes = Math.floor(seconds / 60)
   if (minutes < 60) return `${minutes} 分钟`
   const hours = Math.floor(minutes / 60)
-  return minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`
+  if (hours < 24) return hours >= 10 || minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`
+  const days = Math.floor(hours / 24)
+  return days >= 10 || hours % 24 === 0 ? `${days} 天` : `${days} 天 ${hours % 24} 小时`
 }
 
 const reasonOf = (t: RuntimeTicket): { text: string; color?: string } | undefined => {

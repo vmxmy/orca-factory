@@ -38,12 +38,19 @@ const FOCUS_LOG = /^focus (\S+) not moved: /
 
 type Late = number | ((nth: number) => number | undefined)
 
-const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, Late> = {}) => {
+// paneOpen starts the session with the pane already placed, as a hot reload finds it.
+const engine = (
+  on: On,
+  result: ProcessRunResult,
+  bySubcommand: Record<string, Answer> = {},
+  lateMs: Record<string, Late> = {},
+  paneOpen = false,
+) => {
   const calls: string[][] = []
   const focused: string[] = []
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
-  let isOpen = false
+  let isOpen = paneOpen
   const clock = mock.clock(on, { now: NOW })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
@@ -939,5 +946,35 @@ test('面板开着停在运行组时后台计时器不重复读取，切到配�
   await ui.press({ key: 'page-models' })
   await clock.advance(30_000)
   expect(statusReads()).toBe(6)
+  await ui.unmount()
+})
+
+test('热重载时面板仍开在流水线页，面板轮询照常每 10 秒读取 status', async ($, on) => {
+  const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }) }, {}, true)
+  await startSession($)
+  await clock.advance(30_000)
+  expect(subcommands(calls)).toEqual(['status', 'status', 'status'])
+})
+
+test('快照为 unknown 时不比较也不更新比较基准，快照恢复后不重复提醒', async ($, on) => {
+  const merged = { ...SAMPLE_STATUS, tickets: [ticket('OF-1', { phase: '已合并' })] }
+  const reads = [merged, { state: 'unknown', generatedAt: '0001-01-01T00:00:00Z', tickets: [] }, merged]
+  const { clock, statuses, toasts } = engine(on, ran({ stdout: sampleStdout }), {
+    status: nth => ran({ stdout: JSON.stringify(reads[Math.min(nth, reads.length) - 1]) }),
+  })
+  await startSession($)
+  await clock.advance(60_000)
+  expect(statuses).toEqual(['Driver 在途 1', 'Driver 没有可用的快照', 'Driver 在途 1'])
+  expect(toasts).toEqual([])
+})
+
+test('停留时长越长精度越低，最长也不超过时长列宽', async ($, on) => {
+  const ago = (hours: number, minutes: number) => new Date(NOW - (hours * 60 + minutes) * 60_000).toISOString()
+  const tickets = [ticket('OF-1', { since: ago(9, 59) }), ticket('OF-2', { since: ago(10, 15) }), ticket('OF-3', { since: ago(26, 5) }), ticket('OF-4', { since: ago(239, 0) }), ticket('OF-5', { since: ago(250, 0) })]
+  runtimeEngine(on, { ...SAMPLE_STATUS, tickets })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  for (const shown of ['9 小时 59 分', '10 小时', '1 天 2 小时', '9 天 23 小时', '10 天']) expect(await exactText(ui, shown)).toHaveLength(1)
   await ui.unmount()
 })
