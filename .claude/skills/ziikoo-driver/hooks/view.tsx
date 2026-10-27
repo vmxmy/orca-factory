@@ -266,6 +266,7 @@ export const matches = (filter: string, ...texts: (string | undefined)[]) => {
 }
 
 // The field stays drawn: a render that removes a focused element clears the ring, which would undo a move made on submit.
+// The host empties the field after submit, so the button carries the text that still filters.
 export const filterBar = (
   ui: Kit,
   Input: InputElement | undefined,
@@ -276,12 +277,12 @@ export const filterBar = (
   submit: (text: string) => void,
 ) => (
   <ui.Box key="filter-bar" flexDirection="row" gap={1}>
-    <ui.Button key="filter" label="筛选" hotkey="f" plain onPress={edit} />
+    <ui.Button key="filter" label={filter === '' ? '筛选' : `筛选：${filter}`} hotkey="f" plain onPress={edit} />
     {Input && (
       <Input
         key="filter-input"
         value={filter}
-        placeholder={placeholder}
+        placeholder={filter === '' ? placeholder : '空回车清除筛选'}
         submitLabel="确定"
         onInput={set}
         onSubmit={submit}

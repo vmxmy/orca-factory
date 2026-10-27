@@ -718,11 +718,14 @@ test('流水线按票号或标题筛选，没有匹配的项目写无匹配', as
   await ui.input({ key: 'filter-input', text: '冒烟' })
   expect((await ui.find({ key: 'filter-input' }))?.props.value).toBe('冒烟')
   expect(await ticketRows(ui)).toEqual(['pipeline-OF-1'])
-  expect((await ui.find({ key: 'filter' }))?.props.label).toBe('筛选')
+  expect((await ui.find({ key: 'filter' }))?.props.label).toBe('筛选：冒烟')
+  expect((await ui.find({ key: 'filter-input' }))?.props.placeholder).toBe('空回车清除筛选')
 
   await ui.input({ key: 'filter-input', text: '' })
   expect((await ticketRows(ui)).length).toBe(5)
   expect(await exactText(ui, '无匹配')).toHaveLength(0)
+  expect((await ui.find({ key: 'filter' }))?.props.label).toBe('筛选')
+  expect((await ui.find({ key: 'filter-input' }))?.props.placeholder).toBe('票号或标题')
   await ui.unmount()
 })
 
