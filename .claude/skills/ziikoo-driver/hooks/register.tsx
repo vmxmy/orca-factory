@@ -37,6 +37,7 @@ import {
   duration,
   failedView,
   field,
+  fit,
   filterBar,
   helpText,
   matches,
@@ -478,12 +479,12 @@ const ticketView = (ui: Kit, t: RuntimeTicket, nodes: number, now: number, segme
   return (
     <ui.Box flexDirection="column">
       <ui.Box key={`pipeline-${t.identifier}`} flexDirection="row">
-        <ui.Box width={ROW.id} flexShrink={0}>
-          <ui.Button key={`ticket-${t.identifier}`} label={t.identifier} plain onPress={() => open(t.identifier)} />
-        </ui.Box>
-        {segment !== null && trackView(ui, pos, nodes, segment)}
-        {cell(ui, ROW.label, pos.label, false, pos.tone === 'current' ? undefined : TONE_COLOR[pos.tone])}
-        {cell(ui, ROW.since, t.since === undefined ? '' : duration(now - t.since), true)}
+        <ui.Button key={`ticket-${t.identifier}`} label={t.identifier} plain onPress={() => open(t.identifier)}>
+          {fit(t.identifier, ROW.id)}
+          {segment === null ? [] : trackView(ui, pos, nodes, segment)}
+          <ui.Text color={pos.tone === 'current' ? undefined : TONE_COLOR[pos.tone]}>{fit(pos.label, ROW.label)}</ui.Text>
+          <ui.Text dimColor>{fit(t.since === undefined ? '' : duration(now - t.since), ROW.since)}</ui.Text>
+        </ui.Button>
       </ui.Box>
       {t.title && (
         <ui.Text dimColor wrap="truncate">

@@ -195,6 +195,9 @@ test('未知调度键时进入失败状态', async ($, on) => {
   await ui.unmount()
 })
 
+// The whole row is one button, its columns padded by display width: id 9, track 6 segments, stage 14, age 12.
+const OF1_ROW = ['OF-1     ', '●━━━━━●━━━━━◉─────○─────○─────○     ', 'gate          ', '4 分钟      '].join('')
+
 const runtimeEngine = (on: On, status: unknown = SAMPLE_STATUS, doctor: unknown = SAMPLE_DOCTOR) =>
   engine(on, ran({ stdout: sampleStdout }), {
     status: ran({ stdout: JSON.stringify(status) }),
@@ -207,12 +210,12 @@ test('流水线页按项目画阶段轨道，没配部署的仓库没有部署�
   const ui = await $.ui.mount(PANE)
   expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
 
-  const row = async (id: string) => (await ui.find({ key: `pipeline-${id}` }))?.text
-  expect(await row('OF-1')).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
-  expect(await row('OF-3')).toBe('OF-3●━━━━━●━━━━━●━━━━━●━━━━━●━━━━━◉smoke2 小时 5 分')
-  expect(await row('ZW-7')).toBe('ZW-7●━━━━━◉─────○─────○─────○worker 运行中30 秒')
+  const row = async (id: string) => (await ui.find({ key: `ticket-${id}` }))?.text
+  expect(await row('OF-1')).toBe(OF1_ROW)
+  expect(await row('OF-3')).toBe(['OF-3     ', '●━━━━━●━━━━━●━━━━━●━━━━━●━━━━━◉     ', 'smoke         ', '2 小时 5 分 '].join(''))
+  expect(await row('ZW-7')).toBe(['ZW-7     ', '●━━━━━◉─────○─────○─────○           ', 'worker 运行中 ', '30 秒       '].join(''))
   expect((await exactText(ui, '◉')).map(one => one.props.color)).toEqual(['suggestion', 'warning', 'suggestion', 'suggestion', 'suggestion'])
-  expect((await exactText(ui, '写 correction')).map(one => one.props.color)).toEqual(['warning'])
+  expect((await exactText(ui, '写 correction ')).map(one => one.props.color)).toEqual(['warning'])
 
   expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 4   部署屏障 1   待领 1')
   expect((await exactText(ui, '快照 8 秒前')).map(one => one.props.dimColor)).toEqual([true])
@@ -257,10 +260,10 @@ test('轨道每段宽度随面板伸缩，放不下时退回纯文字', async ($
     return seen
   }
 
-  expect(await at(100)).toEqual({ row: 'OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟', full: 1, short: 0, here: 5 })
-  expect(await at(57)).toEqual({ row: 'OF-1●━━●━━◉──○──○──○gate4 分钟', full: 0, short: 1, here: 5 })
-  expect(await at(52)).toEqual({ row: 'OF-1●━●━◉─○─○─○gate4 分钟', full: 0, short: 1, here: 5 })
-  expect(await at(40)).toEqual({ row: 'OF-1gate4 分钟', full: 0, short: 0, here: 0 })
+  expect(await at(100)).toEqual({ row: OF1_ROW, full: 1, short: 0, here: 5 })
+  expect(await at(57)).toEqual({ row: ['OF-1     ', '●━━●━━◉──○──○──○  ', 'gate          ', '4 分钟      '].join(''), full: 0, short: 1, here: 5 })
+  expect(await at(52)).toEqual({ row: ['OF-1     ', '●━●━◉─○─○─○ ', 'gate          ', '4 分钟      '].join(''), full: 0, short: 1, here: 5 })
+  expect(await at(40)).toEqual({ row: ['OF-1     ', 'gate          ', '4 分钟      '].join(''), full: 0, short: 0, here: 0 })
 })
 
 test('头部第二行显示服务状态与构建短 sha', async ($, on) => {
@@ -372,7 +375,7 @@ test('打开面板默认在流水线页，页签分运行与配置两组', async
   expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
 
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe(OF1_ROW)
   expect((await exactText(ui, '运行')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
   expect((await exactText(ui, '配置')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
 
@@ -493,7 +496,7 @@ test('旧版本存下的概览页按初始值读，打开后在流水线页', as
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
 
-  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe(OF1_ROW)
   await ui.unmount()
 })
 
@@ -975,6 +978,6 @@ test('停留时长越长精度越低，最长也不超过时长列宽', async ($
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
 
-  for (const shown of ['9 小时 59 分', '10 小时', '1 天 2 小时', '9 天 23 小时', '10 天']) expect(await exactText(ui, shown)).toHaveLength(1)
+  for (const shown of ['9 小时 59 分', '10 小时     ', '1 天 2 小时 ', '9 天 23 小时', '10 天       ']) expect(await exactText(ui, shown)).toHaveLength(1)
   await ui.unmount()
 })
