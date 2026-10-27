@@ -370,7 +370,7 @@ const issuesView = (ui: Kit, id: string, state: Fetched<Timeline>) => {
   )
 }
 
-const ticketFacts =(ui: Kit, t: RuntimeTicket, repos: Repo[], now: number) => {
+const ticketFacts = (ui: Kit, t: RuntimeTicket, repos: Repo[], now: number) => {
   const pos = position(t)
   return [
     <ui.Box flexDirection="row">
