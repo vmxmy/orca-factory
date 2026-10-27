@@ -4,6 +4,7 @@ import type { EngineInterface, Register, Timer } from 'claude-code'
 import type {
   DriverConfig,
   EnvEntry,
+  FetchKind,
   Fetched,
   Group,
   Health,
@@ -19,12 +20,15 @@ import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseCon
 import { parseHealth, parseRuntime } from './runtime'
 import {
   ROW,
+  SECTION_EDGE_FRAME,
   SECTION_INSET,
   TONE_COLOR,
   TRACK,
   TREND_MINUTES,
   cell,
   chip,
+  chipText,
+  displayWidth,
   failedView,
   section,
   segmentWidth,
@@ -37,10 +41,7 @@ import type { Alert, Kit, Position } from './view'
 
 const PANE = 'ziikoo-driver'
 const TITLE = 'Driver'
-const ARGV = ['orca-factory-driver', 'config', '--json']
-const RUNTIME_ARGV = ['orca-factory-driver', 'status', '--json']
-const HEALTH_ARGV = ['orca-factory-driver', 'doctor', '--json']
-const SERVICE = 'orca-factory-driver'
+const argvOf = (kind: FetchKind) => ['orca-factory-driver', kind, '--json']
 const POLL_MS = 10_000
 const SPIN_MS = 100
 const TREND_MS = TREND_MINUTES * 60_000
@@ -79,7 +80,7 @@ const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'pipeline',
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
 const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kind: 'loading' }, { shape: 'runtime-1' })
 const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-2' })
-const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, 0, { shape: 'busy-1' })
+const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, [], { shape: 'busy-1' })
 const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { shape: 'trend-1' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui'>
@@ -89,21 +90,23 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 let spin: Timer | undefined
 let frame = 0
 
+// busy lives in plugin state and survives a hot reload that may drop a finally; keyed by kind, the next fetch of that kind clears it.
 const runJson = async <T,>(
   $: Engine,
-  argv: string[],
+  kind: FetchKind,
   parse: (stdout: string) => T,
   accepts: (exitCode: number) => boolean,
 ): Promise<Fetched<T>> => {
-  if ((await update($, busy, n => n + 1)) === 1) {
+  await update($, busy, kinds => (kinds.includes(kind) ? kinds : [...kinds, kind]))
+  if (spin === undefined) {
     frame = 0
-    spin ??= $.clock.every(SPIN_MS, () => {
+    spin = $.clock.every(SPIN_MS, () => {
       frame += 1
       void $.ui.blit({ requestId: PANE, key: 'spin', cells: spinnerCells(frame) })
     })
   }
   try {
-    const run = await $.process.run(argv).catch((error: unknown) => message(error))
+    const run = await $.process.run(argvOf(kind)).catch((error: unknown) => message(error))
     if (typeof run === 'string') return { kind: 'failed', exitCode: null, stderr: run }
     if (!accepts(run.exitCode)) return { kind: 'failed', exitCode: run.exitCode, stderr: run.stderr }
     try {
@@ -112,7 +115,7 @@ const runJson = async <T,>(
       return { kind: 'failed', exitCode: 0, stderr: message(error) }
     }
   } finally {
-    if ((await update($, busy, n => n - 1)) === 0) {
+    if ((await update($, busy, kinds => kinds.filter(one => one !== kind))).length === 0) {
       spin?.cancel()
       spin = undefined
     }
@@ -120,7 +123,7 @@ const runJson = async <T,>(
 }
 
 const take = async ($: Engine): Promise<Snapshot> => {
-  const next = await runJson($, ARGV, parseConfig, code => code === 0)
+  const next = await runJson($, 'config', parseConfig, code => code === 0)
   return next.kind === 'ready' ? { kind: 'ready', config: next.value, fetchedAt: next.fetchedAt } : next
 }
 
@@ -137,7 +140,7 @@ const refresh = async ($: Engine): Promise<void> => {
 const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === undefined).length
 
 const fetchRuntime = async ($: Engine): Promise<void> => {
-  const next = await runJson($, RUNTIME_ARGV, parseRuntime, code => code === 0)
+  const next = await runJson($, 'status', parseRuntime, code => code === 0)
   if (next.kind === 'ready') {
     const sample = { at: next.fetchedAt, inFlight: inFlightOf(next.value.tickets) }
     await update($, trend, samples => [...samples.filter(one => one.at > sample.at - TREND_MS), sample])
@@ -147,7 +150,7 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
 
 // doctor exits 1 when any check fails; its report is still the answer.
 const fetchHealth = async ($: Engine): Promise<void> => {
-  const next = await runJson($, HEALTH_ARGV, parseHealth, code => code === 0 || code === 1)
+  const next = await runJson($, 'doctor', parseHealth, code => code === 0 || code === 1)
   await update($, health, () => next)
 }
 
@@ -291,7 +294,7 @@ const modelsPage = (ui: Kit, current: Repo | undefined, cols: number) => {
   )
 }
 
-const settingRow = (ui: Kit, one: SchedulerSetting, keyWidth: number) => {
+const settingRow = (ui: Kit, one: SchedulerSetting, keyWidth: number | null) => {
   const view = SETTINGS[one.key]
   const changed = one.source === 'driver.toml'
   return (
@@ -299,13 +302,17 @@ const settingRow = (ui: Kit, one: SchedulerSetting, keyWidth: number) => {
       {cell(ui, 18, view.label)}
       {cell(ui, 14, view.show(one.value))}
       {cell(ui, 13, SOURCE_LABELS[one.source], !changed, changed ? 'suggestion' : undefined)}
-      {cell(ui, keyWidth, one.key, true)}
+      {keyWidth !== null && cell(ui, keyWidth, one.key, true)}
     </ui.Box>
   )
 }
 
+// A raw key cut to a few characters says nothing, so a narrow panel drops the column.
+const KEY_MIN = 14
+
 const schedulerPage = (ui: Kit, settings: SchedulerSetting[], cols: number) => {
-  const keyWidth = Math.max(6, cols - SECTION_INSET - 18 - 14 - 13)
+  const room = cols - SECTION_INSET - 18 - 14 - 13
+  const keyWidth = room < KEY_MIN ? null : room
   return (
     <ui.Box flexDirection="column">
       {SETTING_GROUPS.map(group =>
@@ -453,16 +460,20 @@ const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
   return out
 }
 
-const badgeRow = (ui: Kit, repo: Repo, state: Fetched<Health>) => (
-  <ui.Box flexDirection="row" justifyContent="flex-end" gap={1}>
-    {badges(repo, state).map(one => chip(ui, one.text, one.alert))}
+// A gap leaves its cells unpainted, so on the border the line would show between badges.
+const badgeRow = (ui: Kit, repo: Repo, list: Badge[]) => (
+  <ui.Box key={`badges-${repo.name}`} flexDirection="row" justifyContent="flex-end">
+    {list.flatMap((one, i) => [...(i === 0 ? [] : [<ui.Text>{' '}</ui.Text>]), chip(ui, one.text, one.alert)])}
   </ui.Box>
 )
+
+const badgesWidth = (list: Badge[]) =>
+  list.reduce((sum, one) => sum + displayWidth(chipText(one.text, one.alert)), 0) + list.length - 1
 
 const freshness = (state: Runtime, fetchedAt: number) => {
   if (state.state === 'unknown') return '没有可用的快照'
   const age = `快照 ${duration(fetchedAt - state.generatedAt)}前`
-  return state.state === 'ok' ? `${age} · 每 ${POLL_MS / 1000} 秒刷新` : `${age} · 已过期`
+  return state.state === 'ok' ? age : `${age} · 已过期`
 }
 
 const pipelinePage = (
@@ -487,17 +498,12 @@ const pipelinePage = (
       {config.repos.map(one => {
         const own = tickets.filter(t => t.repo === one.path)
         const nodes = deploys(one.routing) ? TRACK.length : TRACK.length - 1
-        return section(
-          ui,
-          one.name,
-          [
-            badgeRow(ui, one, checks),
-            ...(own.length === 0
-              ? [<ui.Text dimColor>空闲</ui.Text>]
-              : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment))),
-          ],
-          one.prefix,
-        )
+        const list = badges(one, checks)
+        const onEdge = displayWidth(`${one.name} ${one.prefix}`) + badgesWidth(list) + SECTION_EDGE_FRAME <= cols
+        const rows = own.length === 0 ? [<ui.Text dimColor>空闲</ui.Text>] : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment))
+        return onEdge
+          ? section(ui, one.name, rows, one.prefix, { key: `edge-${one.name}`, node: badgeRow(ui, one, list) })
+          : section(ui, one.name, [badgeRow(ui, one, list), ...rows], one.prefix)
       })}
     </ui.Box>
   )
@@ -548,7 +554,7 @@ export const register: Register = on => {
     const chosen = await read($, repo)
     const runtimeState = await read($, runtime)
     const healthState = await read($, health)
-    const loading = (await read($, busy)) > 0
+    const loading = (await read($, busy)).length > 0
     const samples = await read($, trend)
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
@@ -579,7 +585,7 @@ export const register: Register = on => {
             {config && (
               <ui.Text color={config.overview.service === 'active' ? 'success' : 'error'}>●</ui.Text>
             )}
-            {config && <ui.Text>{SERVICE}</ui.Text>}
+            {config && <ui.Text>{config.overview.service}</ui.Text>}
             {config && <ui.Text dimColor>{`· ${config.overview.build.slice(0, 7)}`}</ui.Text>}
           </ui.Box>
           <ui.Box flexDirection="row" gap={1} marginLeft={1}>

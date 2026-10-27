@@ -76,6 +76,8 @@ export type Page = 'pipeline' | 'health' | 'models' | 'scheduler' | 'environment
 
 export type Group = 'run' | 'config'
 
+export type FetchKind = 'config' | 'status' | 'doctor'
+
 export type Deployment = { queueId: string; sha: string; workflow?: string; state: string; reason?: string }
 
 export type RuntimeTicket = {
@@ -117,7 +119,7 @@ declare module 'claude-code' {
       repo: Shaped<string>
       runtime: Shaped<Fetched<Runtime>>
       health: Shaped<Fetched<Health>>
-      busy: Shaped<number>
+      busy: Shaped<FetchKind[]>
       trend: Shaped<TrendSample[]>
     }
   }

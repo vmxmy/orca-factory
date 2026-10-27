@@ -17,8 +17,22 @@ export const cell = (ui: Kit, width: number, value: string, dimColor = false, co
 // Border plus one column of padding on each side.
 export const SECTION_INSET = 4
 
+// East Asian wide characters take two terminal columns.
+const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u
+
+export const displayWidth = (text: string) => [...text].reduce((sum, ch) => sum + (WIDE.test(ch) ? 2 : 1), 0)
+
+// Title and corner each sit two columns in from the border's ends, padded by a space on both sides.
+export const SECTION_EDGE_FRAME = 8
+
 // A title inside a bordered Box is clipped, so it is laid over the border from the unbordered parent.
-export const section = (ui: Kit, title: string, body: RenderChildren, note?: string) => (
+export const section = (
+  ui: Kit,
+  title: string,
+  body: RenderChildren,
+  note?: string,
+  corner?: { key: string; node: RenderChildren },
+) => (
   <ui.Box flexDirection="column">
     <ui.Box borderStyle="round" borderDimColor flexDirection="column" paddingX={1}>
       {body}
@@ -29,14 +43,23 @@ export const section = (ui: Kit, title: string, body: RenderChildren, note?: str
       {note !== undefined && <ui.Text dimColor>{` ${note}`}</ui.Text>}
       <ui.Text>{' '}</ui.Text>
     </ui.Box>
+    {corner && (
+      <ui.Box key={corner.key} position="absolute" top={0} right={2} flexDirection="row">
+        <ui.Text>{' '}</ui.Text>
+        {corner.node}
+        <ui.Text>{' '}</ui.Text>
+      </ui.Box>
+    )}
   </ui.Box>
 )
 
+export const chipText = (text: string, alert?: Alert) => (alert === undefined ? text : ` ${text} `)
+
 export const chip = (ui: Kit, text: string, alert?: Alert) =>
   alert === undefined ? (
-    <ui.Text dimColor>{text}</ui.Text>
+    <ui.Text dimColor>{chipText(text)}</ui.Text>
   ) : (
-    <ui.Text backgroundColor={alert} color="inverseText">{` ${text} `}</ui.Text>
+    <ui.Text backgroundColor={alert} color="inverseText">{chipText(text, alert)}</ui.Text>
   )
 
 export const TRACK = ['领', '施工', '门禁', '审查', '合并', '部署']
@@ -46,7 +69,7 @@ const SEGMENT_MAX = 6
 // At 4 columns the two-character labels fill each cell and run together.
 const FULL_LABEL_SEGMENT = 5
 
-export const ROW = { id: 8, label: 14, since: 12 }
+export const ROW = { id: 9, label: 14, since: 12 }
 
 export const segmentWidth = (cols: number): number | null => {
   const room = cols - SECTION_INSET - ROW.id - ROW.label - ROW.since
@@ -93,20 +116,35 @@ const TREND_TEXT = { label: '趋势', note: `近 ${TREND_MINUTES} 分钟` }
 // Label, note and the two gaps between the three parts.
 const TREND_FRAME = 4 + 10 + 2
 
-const sparkline = (samples: TrendSample[], now: number, buckets: number) => {
+const NO_SAMPLE = '·'
+
+type Run = { empty: boolean; text: string }
+
+const sparkline = (samples: TrendSample[], now: number, buckets: number): Run[] => {
   const minutesAgo = (one: TrendSample) => Math.floor((now - one.at) / MINUTE_MS)
   const peaks = Array.from({ length: buckets }, (_, i) => {
     const values = samples.filter(one => minutesAgo(one) === buckets - 1 - i).map(one => one.inFlight)
     return values.length === 0 ? null : Math.max(...values)
   })
   const top = Math.max(1, ...peaks.filter(peak => peak !== null))
-  return peaks.map(peak => (peak === null ? ' ' : BARS.charAt(Math.round((peak / top) * (BARS.length - 1))))).join('')
+  return peaks.reduce<Run[]>((runs, peak) => {
+    const empty = peak === null
+    const glyph = empty ? NO_SAMPLE : BARS.charAt(Math.round((peak / top) * (BARS.length - 1)))
+    const last = runs.at(-1)
+    return last?.empty === empty
+      ? [...runs.slice(0, -1), { empty, text: last.text + glyph }]
+      : [...runs, { empty, text: glyph }]
+  }, [])
 }
 
 export const trendView = (ui: Kit, samples: TrendSample[], now: number, cols: number) => (
   <ui.Box key="trend" flexDirection="row" gap={1}>
     <ui.Text dimColor>{TREND_TEXT.label}</ui.Text>
-    <ui.Text color="suggestion">{sparkline(samples, now, Math.max(0, Math.min(TREND_MINUTES, cols - TREND_FRAME)))}</ui.Text>
+    <ui.Box flexDirection="row">
+      {sparkline(samples, now, Math.max(0, Math.min(TREND_MINUTES, cols - TREND_FRAME))).map(run =>
+        run.empty ? <ui.Text dimColor>{run.text}</ui.Text> : <ui.Text color="suggestion">{run.text}</ui.Text>,
+      )}
+    </ui.Box>
     <ui.Text dimColor>{TREND_TEXT.note}</ui.Text>
   </ui.Box>
 )

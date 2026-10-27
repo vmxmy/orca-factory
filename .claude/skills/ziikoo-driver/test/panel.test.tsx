@@ -174,7 +174,7 @@ test('流水线页按项目画阶段轨道，没配部署的仓库没有部署�
   expect((await exactText(ui, '写 correction')).map(one => one.props.color)).toEqual(['warning'])
 
   expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 4   部署屏障 1   待领 1')
-  expect((await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).map(one => one.props.dimColor)).toEqual([true])
+  expect((await exactText(ui, '快照 8 秒前')).map(one => one.props.dimColor)).toEqual([true])
   expect(await exactText(ui, '流水线冒烟（OF）')).toHaveLength(1)
   expect(await exactText(ui, '↳ 部署 · smoke-intent · abc1234')).toHaveLength(1)
   expect((await exactText(ui, '↳ blocked by ZW-7')).map(one => one.props.color)).toEqual(['warning'])
@@ -229,7 +229,8 @@ test('头部第二行显示服务状态与构建短 sha', async ($, on) => {
   await ui.press({ key: 'page-models' })
 
   expect((await exactText(ui, '●')).map(one => one.props.color)).toEqual(['success'])
-  expect(await exactText(ui, 'orca-factory-driver')).toHaveLength(1)
+  expect(await exactText(ui, 'active')).toHaveLength(1)
+  expect(await exactText(ui, 'orca-factory-driver')).toHaveLength(0)
   expect(await exactText(ui, '· 006396a')).toHaveLength(1)
   await ui.unmount()
 })
@@ -269,7 +270,9 @@ test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) =>
   })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
-  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${' '.repeat(29)}█近 30 分钟`)
+  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${'·'.repeat(29)}█近 30 分钟`)
+  expect((await exactText(ui, '·'.repeat(29))).map(one => one.props.dimColor)).toEqual([true])
+  expect((await exactText(ui, '█')).map(one => one.props.color)).toEqual(['suggestion'])
 
   for (const _ of inFlight.slice(1)) {
     await ui.press({ key: 'page-models' })
@@ -277,7 +280,7 @@ test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) =>
     await ui.press({ key: 'page-pipeline' })
   }
   expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 2   部署屏障 0   待领 0')
-  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${' '.repeat(27)}▃█▅近 30 分钟`)
+  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${'·'.repeat(27)}▃█▅近 30 分钟`)
   await ui.unmount()
 })
 
@@ -323,7 +326,7 @@ test('健康页逐项列出 doctor 检查，不再显示工厂目录与纳管仓
   await ui.press({ key: 'page-health' })
 
   expect(await exactText(ui, '006396a')).toHaveLength(1)
-  expect(await exactText(ui, 'active')).toHaveLength(1)
+  expect((await exactText(ui, 'active')).map(one => one.props.color)).toEqual([undefined, 'success'])
   expect(await exactText(ui, 'doctor 检查')).toHaveLength(1)
   expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
   expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出 注意 ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动')
@@ -363,7 +366,7 @@ test('健康页也每 10 秒重新读取 status', async ($, on) => {
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'page-health' })
-  expect(await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).toHaveLength(1)
+  expect(await exactText(ui, '快照 8 秒前')).toHaveLength(1)
 
   const statusReads = () => subcommands(calls).filter(one => one === 'status').length
   const before = statusReads()
@@ -415,7 +418,7 @@ test('右上角在配置组显示 config 取数时间，在运行组显示快照
   const fetched = await ui.findAll({ type: 'Text', text: /^取数于/ })
   expect(fetched.map(one => one.props.dimColor)).toEqual([true])
   expect(fetched[0]?.text).toMatch(/^取数于 \d{2}:\d{2}:\d{2}$/)
-  expect(await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).toHaveLength(0)
+  expect(await exactText(ui, '快照 8 秒前')).toHaveLength(0)
   await ui.unmount()
 })
 
@@ -428,5 +431,88 @@ test('旧版本存下的概览页按初始值读，打开后在流水线页', as
   const ui = await $.ui.mount(PANE)
 
   expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
+  await ui.unmount()
+})
+
+test('徽标放得下时画在框线上，放不下时退回框内第一行', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const at = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns } })
+    const edge = async (name: string) => {
+      const found = await ui.find({ key: `edge-${name}` })
+      return found && { text: found.text, position: found.props.position, top: found.props.top, right: found.props.right }
+    }
+    const seen = {
+      edge: { factory: await edge('orca-factory'), ansible: await edge('ansible') },
+      inside: (await ui.find({ key: 'badges-ansible' }))?.text,
+    }
+    await ui.unmount()
+    return seen
+  }
+
+  const factory = { text: ' main ✓ core ✓ ', position: 'absolute', top: 0, right: 2 }
+  expect(await at(100)).toEqual({
+    edge: { factory, ansible: { text: ' main ✓  落后 2   未提交改动   core 待同步 #12  ', position: 'absolute', top: 0, right: 2 } },
+    inside: 'main ✓  落后 2   未提交改动   core 待同步 #12 ',
+  })
+  expect(await at(52)).toEqual({
+    edge: { factory, ansible: undefined },
+    inside: 'main ✓  落后 2   未提交改动   core 待同步 #12 ',
+  })
+})
+
+test('读取中的徽标是框线上的灰字「检查中…」', async ($, on) => {
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { doctor: 1000 },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'edge-orca-factory' }))?.text).toBe(' 检查中… ')
+  expect((await exactText(ui, '检查中…')).map(one => one.props.dimColor)).toEqual([true, true, true])
+
+  await clock.advance(1000)
+  await opened
+  expect(await exactText(ui, '检查中…')).toHaveLength(0)
+  expect((await ui.find({ key: 'edge-orca-factory' }))?.text).toBe(' main ✓ core ✓ ')
+  await ui.unmount()
+})
+
+test('调度页窄到原键名不足 14 列时整格不画', async ($, on) => {
+  engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const row = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns } })
+    await ui.press({ key: 'page-scheduler' })
+    const text = (await ui.find({ key: 'setting-max_in_flight' }))?.text
+    await ui.unmount()
+    return text
+  }
+
+  expect(await row(52)).toBe('同时运行的票最多 4 张driver.toml')
+  expect(await row(100)).toBe('同时运行的票最多 4 张driver.tomlmax_in_flight')
+})
+
+test('上次中断留下的读取种类在同类读取完成后清除', async ($, on) => {
+  const BUSY = { plugin: 'ziikoo-driver', key: 'busy' } as const
+  let stored: { value: unknown; version: number } = { value: { shape: 'busy-1', value: ['doctor'] }, version: 1 }
+  on('state.get', BUSY, () => ({ value: stored }))
+  on('state.set', BUSY, (_, e) => {
+    if (e.ifVersion !== undefined && e.ifVersion !== stored.version) return { value: { isSet: false, version: stored.version } }
+    stored = { value: e.value, version: stored.version + 1 }
+    return { value: { isSet: true, version: stored.version } }
+  })
+  runtimeEngine(on)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ key: 'spin' })).map(one => one.type)).toEqual(['Raster'])
+
+  await $.command.run(runCommand)
+  expect(await ui.findAll({ key: 'spin' })).toHaveLength(0)
+  expect((await ui.find({ key: 'refresh' }))?.type).toBe('Button')
   await ui.unmount()
 })
