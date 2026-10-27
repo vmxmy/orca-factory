@@ -35,6 +35,12 @@ const GROUPS: { id: Group; label: string; pages: { id: Page; label: string; hotk
   },
 ]
 
+const groupOf = (current: Page): Group => {
+  const found = GROUPS.find(one => one.pages.some(tab => tab.id === current))
+  if (!found) throw new Error(`页 ${current} 不在任何页签组里`)
+  return found.id
+}
+
 const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { kind: 'loading' }, {
   shape: 'snapshot-3',
 })
@@ -95,14 +101,8 @@ const openPipeline = async ($: Engine): Promise<void> => {
   await Promise.all([fetchRuntime($), fetchHealth($)])
 }
 
-// The hooks loader refuses $ passed through a lookup such as PAGE_FETCH[page]($), so the dispatch is a switch.
 const fetchPage = async ($: Engine, current: Page): Promise<void> => {
-  switch (current) {
-    case 'pipeline':
-      return openPipeline($)
-    case 'health':
-      return fetchHealth($)
-  }
+  if (groupOf(current) === 'run') await openPipeline($)
 }
 
 let poll: Timer | undefined
@@ -113,7 +113,7 @@ const pollRuntime = async ($: Poller): Promise<void> => {
     poll = undefined
     return
   }
-  if ((await read($, page)) === 'pipeline') await fetchRuntime($)
+  if (groupOf(await read($, page)) === 'run') await fetchRuntime($)
 }
 
 const ensurePolling = ($: Poller) => {
@@ -122,7 +122,7 @@ const ensurePolling = ($: Poller) => {
 
 const choose = async ($: Poller, next: Page): Promise<void> => {
   await update($, page, () => next)
-  if (next === 'pipeline') ensurePolling($)
+  ensurePolling($)
   await fetchPage($, next)
 }
 
@@ -173,12 +173,20 @@ const CHECK_STATUS: Record<string, { text: string; color?: string }> = {
   ok: { text: '通过' },
   warn: { text: '注意', color: 'warning' },
   fail: { text: '失败', color: 'error' },
+  unknown: { text: '未知', color: 'warning' },
+}
+
+const CHECK_ORDER = Object.keys(CHECK_LABELS)
+
+const checkRank = (id: string) => {
+  const at = CHECK_ORDER.indexOf(id)
+  return at === -1 ? CHECK_ORDER.length : at
 }
 
 const doctorChecks = (ui: Kit, state: Fetched<Health>) => {
   if (state.kind === 'loading') return <ui.Text dimColor>正在运行 orca-factory-driver doctor --json …</ui.Text>
   if (state.kind === 'failed') return failedView(ui, state)
-  return state.value.checks.map(one => {
+  return [...state.value.checks].sort((a, b) => checkRank(a.id) - checkRank(b.id)).map(one => {
     const status = CHECK_STATUS[one.status] ?? { text: one.status, color: 'warning' }
     return (
       <ui.Box key={`check-${one.id}`} flexDirection="row">
@@ -397,7 +405,8 @@ type Badge = { text: string; color?: string }
 const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
   if (state.kind === 'loading') return [{ text: '检查中…' }]
   if (state.kind === 'failed') return [{ text: 'doctor 读取失败', color: 'warning' }]
-  const checkout = state.value.checkouts.find(one => one.path === repo.path)
+  const { checkouts, syncPrs } = state.value
+  const checkout = checkouts?.find(one => one.path === repo.path)
   const out: Badge[] = []
   if (!checkout) out.push({ text: '检出未知', color: 'warning' })
   else {
@@ -405,7 +414,11 @@ const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
     if (checkout.behind > 0) out.push({ text: `落后 ${checkout.behind}`, color: 'warning' })
     if (!checkout.clean) out.push({ text: '⚠ 未提交改动', color: 'warning' })
   }
-  const pr = state.value.syncPrs.find(one => one.project === repo.name)
+  if (syncPrs === null) {
+    out.push({ text: 'core 未知', color: 'warning' })
+    return out
+  }
+  const pr = syncPrs.find(one => one.project === repo.name)
   out.push(pr ? { text: `core 待同步 #${pr.number}`, color: 'warning' } : { text: 'core ✓' })
   return out
 }
@@ -469,7 +482,7 @@ const pipelinePage = (ui: Kit, config: DriverConfig, state: Fetched<Runtime>, ch
   )
 }
 
-const cornerNote = (ui: Kit, group: Group | undefined, config: Snapshot, state: Fetched<Runtime>) => {
+const cornerNote = (ui: Kit, group: Group, config: Snapshot, state: Fetched<Runtime>) => {
   if (group === 'run' && state.kind === 'ready') {
     const fresh = state.value.state === 'ok'
     return (
@@ -537,7 +550,7 @@ export const register: Register = on => {
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
     const selected = config?.repos.find(one => one.name === chosen) ?? config?.repos[0]
-    const group = GROUPS.find(one => one.pages.some(tab => tab.id === current))?.id
+    const group = groupOf(current)
 
     return (
       <ui.Box flexDirection="column" width={cols}>

@@ -1,6 +1,6 @@
 {
   "name": "ziikoo-driver",
   "version": "0.1.0",
-  "description": "/ziikoo-driver 打开 Driver 配置面板：概览、模型、调度、环境四页，数据来自 orca-factory-driver config --json",
+  "description": "/ziikoo-driver 打开 Driver 面板：运行组（流水线、健康）与配置组（模型、调度、环境），数据来自 orca-factory-driver 的 config、status、doctor 三个只读命令",
   "types": "./types/index.d.ts"
 }

@@ -96,7 +96,11 @@ export type Checkout = { path: string; branch: string; clean: boolean; behind: n
 
 export type DoctorCheck = { id: string; status: string; reason: string }
 
-export type Health = { checkouts: Checkout[]; syncPrs: { project: string; number: number }[]; checks: DoctorCheck[] }
+export type Health = {
+  checkouts: Checkout[] | null
+  syncPrs: { project: string; number: number }[] | null
+  checks: DoctorCheck[]
+}
 
 export type Fetched<T> =
   | { kind: 'loading' }

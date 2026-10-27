@@ -51,9 +51,10 @@ export const parseRuntime = (stdout: string): Runtime => {
   }
 }
 
-const details = (checks: Fields, name: string): Fields => {
+// doctor leaves details out of a check it could not probe, such as when project discovery fails.
+const details = (checks: Fields, name: string): Fields | null => {
   const check = fields(checks[name], `checks.${name}`)
-  return fields(check.details, `checks.${name}.details`)
+  return check.details === undefined ? null : fields(check.details, `checks.${name}.details`)
 }
 
 const parseCheck = ([id, value]: [string, unknown]): DoctorCheck => {
@@ -70,9 +71,11 @@ export const parseHealth = (stdout: string): Health => {
   const checks = fields(fields(JSON.parse(stdout), '输出').checks, 'checks')
   const projects = 'checks.checkouts.details.projects'
   const prs = 'checks.sync_prs.details.prs'
+  const checkouts = details(checks, 'checkouts')
+  const syncPrs = details(checks, 'sync_prs')
   return {
-    checkouts: list(details(checks, 'checkouts').projects, projects).map((one, i) => parseCheckout(one, `${projects}[${i}]`)),
-    syncPrs: list(details(checks, 'sync_prs').prs, prs).map((one, i) => {
+    checkouts: checkouts && list(checkouts.projects, projects).map((one, i) => parseCheckout(one, `${projects}[${i}]`)),
+    syncPrs: syncPrs && list(syncPrs.prs, prs).map((one, i) => {
       const o = fields(one, `${prs}[${i}]`)
       return { project: text(o, 'project', `${prs}[${i}]`), number: count(o, 'number', `${prs}[${i}]`) }
     }),

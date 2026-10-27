@@ -147,10 +147,10 @@ test('未知调度键时进入失败状态', async ($, on) => {
   await ui.unmount()
 })
 
-const runtimeEngine = (on: On, status: unknown = SAMPLE_STATUS) =>
+const runtimeEngine = (on: On, status: unknown = SAMPLE_STATUS, doctor: unknown = SAMPLE_DOCTOR) =>
   engine(on, ran({ stdout: sampleStdout }), {
     status: ran({ stdout: JSON.stringify(status) }),
-    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(doctor) }),
   })
 
 test('流水线页按项目画阶段轨道，没配部署的仓库没有部署点', async ($, on) => {
@@ -242,6 +242,61 @@ test('健康页逐项列出 doctor 检查，不再显示工厂目录与纳管仓
   expect(await exactText(ui, 'driver.toml 的 scheduler.resume_fraction 不被识别，不生效')).toHaveLength(1)
   expect(await exactText(ui, '工厂目录')).toHaveLength(0)
   expect(await exactText(ui, '纳管仓库')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('项目发现失败时健康页照常列检查，徽标显示检出与 core 未知', async ($, on) => {
+  const unprobed = { status: 'unknown', reason: '项目发现失败，无法列出已接管项目' }
+  runtimeEngine(on, SAMPLE_STATUS, {
+    checks: { checkouts: unprobed, ledger: unprobed, sync_prs: unprobed, version: SAMPLE_DOCTOR.checks.version },
+    errors: ['checkouts: 项目发现失败，无法列出已接管项目'],
+  })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect((await exactText(ui, '检出未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
+  expect((await exactText(ui, 'core 未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
+
+  await ui.press({ key: 'page-health' })
+  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出未知项目发现失败，无法列出已接管项目')
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
+  expect((await exactText(ui, '未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
+  await ui.unmount()
+})
+
+test('健康页也每 10 秒重新读取 status', async ($, on) => {
+  const { calls, clock } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-health' })
+  expect(await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).toHaveLength(1)
+
+  const statusReads = () => subcommands(calls).filter(one => one === 'status').length
+  const before = statusReads()
+  await clock.advance(10_000)
+  await clock.settle()
+  expect(statusReads()).toBe(before + 1)
+  await ui.unmount()
+})
+
+test('记住的页是健康页时，打开面板读取 config、status、doctor', async ($, on) => {
+  on('state.get', { plugin: 'ziikoo-driver', key: 'page' }, () => ({
+    value: { value: { shape: 'page-2', value: 'health' }, version: 1 },
+  }))
+  const { calls } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
+})
+
+test('健康页的检查按文档顺序排列，不按键名', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-health' })
+
+  const labels = new Set(['运行版本', '项目检出', 'core 同步'])
+  const shown = (await ui.findAll({ type: 'Text' })).map(one => one.text).filter(text => labels.has(text))
+  expect(shown).toEqual(['运行版本', '项目检出', 'core 同步'])
   await ui.unmount()
 })
 

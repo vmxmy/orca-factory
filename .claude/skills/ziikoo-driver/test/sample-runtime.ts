@@ -23,7 +23,6 @@ export const SAMPLE_STATUS = {
 
 export const SAMPLE_DOCTOR = {
   checks: {
-    version: { status: 'ok', reason: '运行版本与 factory origin/main 一致', details: {} },
     checkouts: {
       status: 'warn',
       reason: 'ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动',
@@ -36,6 +35,7 @@ export const SAMPLE_DOCTOR = {
       },
     },
     sync_prs: { status: 'warn', reason: 'ansible #12 待合并', details: { prs: [{ project: 'ansible', number: 12 }] } },
+    version: { status: 'ok', reason: '运行版本与 factory origin/main 一致', details: {} },
   },
   errors: [],
 }
