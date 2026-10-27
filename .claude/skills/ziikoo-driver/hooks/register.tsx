@@ -47,7 +47,7 @@ const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { k
 const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'pipeline', { shape: 'page-2' })
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
 const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kind: 'loading' }, { shape: 'runtime-1' })
-const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-1' })
+const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-2' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock'>
 type Poller = Engine & Pick<EngineInterface, 'ui'>
@@ -159,8 +159,8 @@ const clockTime = (ms: number) => {
 }
 
 const CHECK_LABELS: Record<string, string> = {
-  version: '运行版本',
   service_path: '服务 PATH',
+  version: '运行版本',
   maintenance: '维护状态',
   checkouts: '项目检出',
   sync_prs: 'core 同步',
