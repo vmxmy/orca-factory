@@ -72,7 +72,32 @@ export type Snapshot =
   | { kind: 'ready'; config: DriverConfig; fetchedAt: number }
   | { kind: 'failed'; exitCode: number | null; stderr: string }
 
-export type Page = 'overview' | 'models' | 'scheduler' | 'environment'
+export type Page = 'overview' | 'models' | 'scheduler' | 'environment' | 'pipeline'
+
+export type Deployment = { queueId: string; sha: string; workflow?: string; state: string; reason?: string }
+
+export type RuntimeTicket = {
+  repo: string
+  identifier: string
+  owner: string
+  phase: string
+  stage?: string
+  title?: string
+  since?: number
+  blockedReason?: string
+  deployment?: Deployment
+}
+
+export type Runtime = { state: string; generatedAt: number; tickets: RuntimeTicket[] }
+
+export type Checkout = { path: string; branch: string; clean: boolean; behind: number }
+
+export type Health = { checkouts: Checkout[]; syncPrs: { project: string; number: number }[] }
+
+export type Fetched<T> =
+  | { kind: 'loading' }
+  | { kind: 'ready'; value: T; fetchedAt: number }
+  | { kind: 'failed'; exitCode: number | null; stderr: string }
 
 declare module 'claude-code' {
   interface PluginState {
@@ -80,6 +105,8 @@ declare module 'claude-code' {
       snapshot: Shaped<Snapshot>
       page: Shaped<Page>
       repo: Shaped<string>
+      runtime: Shaped<Fetched<Runtime>>
+      health: Shaped<Fetched<Health>>
     }
   }
 }

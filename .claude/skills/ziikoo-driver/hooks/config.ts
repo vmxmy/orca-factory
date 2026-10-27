@@ -52,28 +52,28 @@ export const SETTINGS: Record<SchedulerKey, SettingView> = {
   'ledger.flush_interval': { group: '账本', label: '用量账本写回', show: value => `每 ${duration(value)}` },
 }
 
-type Fields = Record<string, unknown>
+export type Fields = Record<string, unknown>
 
 const isFields = (value: unknown): value is Fields =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
-const fields = (value: unknown, path: string): Fields => {
+export const fields = (value: unknown, path: string): Fields => {
   if (!isFields(value)) throw new Error(`${path} 不是对象`)
   return value
 }
 
-const list = (value: unknown, path: string): unknown[] => {
+export const list = (value: unknown, path: string): unknown[] => {
   if (!Array.isArray(value)) throw new Error(`${path} 不是数组`)
   return value
 }
 
-const text = (o: Fields, key: string, path: string): string => {
+export const text = (o: Fields, key: string, path: string): string => {
   const value = o[key]
   if (typeof value !== 'string') throw new Error(`${path}.${key} 不是字符串`)
   return value
 }
 
-const flag = (o: Fields, key: string, path: string): boolean => {
+export const flag = (o: Fields, key: string, path: string): boolean => {
   const value = o[key]
   if (typeof value !== 'boolean') throw new Error(`${path}.${key} 不是布尔值`)
   return value
@@ -165,6 +165,12 @@ export const parseConfig = (stdout: string): DriverConfig => {
     }),
   }
 }
+
+// Mirrors the driver's newDeployment: any of these makes a merge wait at a deployment barrier.
+export const deploys = (routing: Setting[]): boolean =>
+  routing.some(one =>
+    one.key === 'AGENT_SELF_DEPLOY' ? one.value === '1' : (one.key === 'AGENT_DEPLOY_WORKFLOW' || one.key === 'AGENT_SMOKE_CMD') && one.value !== '',
+  )
 
 export const routingSummary = (routing: Setting[]): string => {
   const value = (key: string) => routing.find(one => one.key === key)?.value ?? ''
