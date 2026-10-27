@@ -55,10 +55,11 @@ import type { InputElement, Kit } from './view'
 const PANE = 'ziikoo-driver'
 const TITLE = 'Driver'
 const argvOf = (kind: FetchKind) => ['orca-factory-driver', kind, '--json']
-// Most of a long ticket's log is polling, and process.run keeps only the first 4 MiB, so grep keeps the lines the timeline reads.
+// Most of a long ticket's log is polling and commands that succeeded, and process.run keeps only the first 4 MiB, so grep keeps
+// the lines the timeline reads plus failed commands and steps; ERE has no negative lookahead, hence the spelled-out "not ok".
 // grep exits 1 when no line matches, a ticket without executor logs; pipefail keeps a driver failure from hiding behind it.
 const LOGS_SCRIPT =
-  'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited)"\' || [ $? -eq 1 ]; }'
+  'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited|correction)"|"msg":"external command".*("exit_code":[^0]|"timed_out":true)|"msg":"external\\.end".*"result":"([^o]|o[^k]|ok[^"])\' || [ $? -eq 1 ]; }'
 const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/
 const POLL_MS = 10_000
 const WATCH_MS = 30_000
@@ -102,7 +103,7 @@ const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind:
 const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, [], { shape: 'busy-1' })
 const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { shape: 'trend-1' })
 const detail = atom({ plugin: 'ziikoo-driver', key: 'detail' } as const, '', { shape: 'detail-1' })
-const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-1' })
+const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-2' })
 const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
 const seen = atom({ plugin: 'ziikoo-driver', key: 'seen' } as const, null, { shape: 'seen-1' })
 
@@ -208,7 +209,7 @@ const fetchTimeline = async ($: Engine, id: string): Promise<void> => {
     return
   }
   const argv = ['bash', '-c', LOGS_SCRIPT, '_', id]
-  const next = await runJson($, 'logs', argv, stdout => ({ id, entries: parseTimeline(stdout) }), code => code === 0)
+  const next = await runJson($, 'logs', argv, stdout => ({ id, ...parseTimeline(stdout) }), code => code === 0)
   if ((await read($, detail)) !== id) return
   await update($, timeline, () => next)
 }

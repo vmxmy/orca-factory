@@ -1,4 +1,16 @@
-import type { Alert, Checkout, Deployment, DoctorCheck, Fetched, Health, Runtime, RuntimeTicket, TimelineEntry } from '../types'
+import type {
+  Alert,
+  Checkout,
+  Deployment,
+  DoctorCheck,
+  Fetched,
+  Health,
+  LogIssue,
+  Runtime,
+  RuntimeTicket,
+  Timeline,
+  TimelineEntry,
+} from '../types'
 import { fields, flag, list, text } from './config'
 import type { Fields } from './config'
 
@@ -172,20 +184,43 @@ const record = (line: string): Fields | undefined => {
   }
 }
 
-// The driver writes every event to the log twice.
-export const parseTimeline = (stdout: string): TimelineEntry[] => {
-  const seen = new Set<string>()
-  return stdout
-    .split('\n')
+type Issue = Omit<LogIssue, 'at'>
+
+const firstLine = (text: string) => text.split('\n')[0] || undefined
+
+// runx logs every command it runs and the executor every step it calls; only the failed ones are issues.
+const ISSUES: Record<string, (o: Fields) => Issue | undefined> = {
+  'external command': o => {
+    const detail = firstLine(loose(o, 'stderr'))
+    if (o.timed_out === true) return { label: `${loose(o, 'executable')} 超时`, detail, alert: 'error' }
+    if (o.exit_code === 0) return undefined
+    return { label: `${loose(o, 'executable')} 退出码 ${String(o.exit_code)}`, detail, alert: 'error' }
+  },
+  'external.end': o => {
+    if (loose(o, 'result') === 'ok') return undefined
+    const verdict = loose(o, 'verdict')
+    return { label: `${loose(o, 'step')} 出错`, detail: verdict === '' ? undefined : `结论 ${verdict}`, alert: 'error' }
+  },
+  correction: o => ({ label: `打回：${loose(o, 'reason')}`, detail: firstLine(loose(o, 'fail_summary')), alert: 'warning' }),
+}
+
+// The driver writes every event to the log twice, as the same line.
+export const parseTimeline = (stdout: string): Omit<Timeline, 'id'> => {
+  const lines = [...new Set(stdout.split('\n'))]
     .flatMap(line => {
       const o = record(line)
-      const show = o && MESSAGES[loose(o, 'msg')]
       const at = o ? Date.parse(loose(o, 'time')) : Number.NaN
-      if (!o || !show || Number.isNaN(at)) return []
-      const id = `${loose(o, 'time')} ${loose(o, 'msg')} ${loose(o, 'event')}`
-      if (seen.has(id)) return []
-      seen.add(id)
-      return [{ at, ...show(o) }]
+      return o && !Number.isNaN(at) ? [{ at, o }] : []
     })
     .sort((a, b) => a.at - b.at)
+  return {
+    entries: lines.flatMap(({ at, o }): TimelineEntry[] => {
+      const show = MESSAGES[loose(o, 'msg')]
+      return show ? [{ at, ...show(o) }] : []
+    }),
+    issues: lines.flatMap(({ at, o }): LogIssue[] => {
+      const issue = ISSUES[loose(o, 'msg')]?.(o)
+      return issue ? [{ at, ...issue }] : []
+    }),
+  }
 }
