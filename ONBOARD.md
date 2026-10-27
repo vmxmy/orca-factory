@@ -242,7 +242,7 @@ PR body 写：接入了什么（三份项目文件 + core 版本，即 `$FACTORY
 
 1. 审阅并合并 PR（这是 lane 2 改动，必须人批）。
 2. 合并后在主检出跑 `scripts/agent-gates/install.sh` 校验配置，再把仓库加入 `~/.config/orca-factory/driver.toml` 的 `repositories`，由 `driver serve` 调度（见 `driver/README.md`）。
-3. 推荐用 intake 建票：在 Orca 里对该仓库运行 `claude --model claude-sonnet-5-5 --effort medium '按 scripts/agent-gates/roles/intake.md 工作'`，把需求说给它；它只读仓库、只写票据主账本，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
+3. 推荐用 intake 建票：在 Orca 里对该仓库按该仓库 `agent-graph.env` 的 `AGENT_ROLE_INTAKE` 档位（`agent:model:effort`，模板为 `claude:claude-opus-5-5:high`）运行 `claude --model claude-opus-5-5 --effort high '按 scripts/agent-gates/roles/intake.md 工作'`，把需求说给它；它只读仓库、只写票据主账本，会定 SCOPE / CHECK / lane 预判 / estimate，把票面给你确认后再建票。之后 `auto-failed` 的票和周报也找它。
 4. 建一张小票试跑：Todo 状态，加 `ready-for-agent`，内容是几十行、能写定向断言、只碰 lane 1 路径的改动（用 intake 建，或 `scripts/agent-gates/agent-graph.sh issues create --input <JSON>`）。
 5. `driver serve` 领票后，看票据评论、PR、`orca-factory-driver status` 与 `scripts/agent-gates/agent-graph.sh ledger stats`。
 6. 看板：停止本机 Orca（应用与 `orca serve`）后运行 `$FACTORY/bin/orca-factory board-columns` 写入 driver 阶段列，启动 Orca 后用 `--check` 确认；之后在 Orca workspace 看板查看票的流转。
