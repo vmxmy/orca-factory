@@ -1,4 +1,4 @@
-import type { Checkout, Deployment, DoctorCheck, Health, Runtime, RuntimeTicket } from '../types'
+import type { Alert, Checkout, Deployment, DoctorCheck, Health, Runtime, RuntimeTicket, TimelineEntry } from '../types'
 import { fields, flag, list, text } from './config'
 import type { Fields } from './config'
 
@@ -81,4 +81,67 @@ export const parseHealth = (stdout: string): Health => {
     }),
     checks: Object.entries(checks).map(parseCheck),
   }
+}
+
+type Shown = { label: string; alert?: Alert }
+
+const EVENTS: Record<string, Shown> = {
+  claim: { label: '认领' },
+  workerOk: { label: 'worker 完成' },
+  workerFail: { label: 'worker 失败', alert: 'warning' },
+  workerStall: { label: 'worker 卡住', alert: 'warning' },
+  workerUnstarted: { label: 'worker 未启动', alert: 'warning' },
+  branchOk: { label: '分支检查通过' },
+  branchNo: { label: '分支检查未通过', alert: 'warning' },
+  gateGreen: { label: 'gate 通过' },
+  gateRed: { label: 'gate 未通过', alert: 'warning' },
+  reviewGreen: { label: '审查通过' },
+  reviewRed: { label: '审查未通过', alert: 'warning' },
+  reviewEmpty: { label: '审查无输出', alert: 'warning' },
+  sessionOk: { label: 'correction 已写好' },
+  sessionEmpty: { label: 'correction 为空', alert: 'warning' },
+  openPr: { label: '开 PR' },
+  merge: { label: '合并' },
+  conflict: { label: '合并冲突', alert: 'error' },
+  execCrash: { label: '执行器崩溃', alert: 'error' },
+  readFail: { label: '读取失败', alert: 'error' },
+  infraFailure: { label: '基础设施错误', alert: 'error' },
+  requeue: { label: '重新排队' },
+  tick: { label: '定时检查' },
+}
+
+const loose = (o: Fields, key: string) => (typeof o[key] === 'string' ? o[key] : '')
+
+const MESSAGES: Record<string, (o: Fields) => Shown> = {
+  transition: o => EVENTS[loose(o, 'event')] ?? { label: `${loose(o, 'from')} → ${loose(o, 'to')}` },
+  'ticket completed': o => ({ label: `进入${loose(o, 'phase')}` }),
+  'command started': () => ({ label: '执行器启动' }),
+  'command exited': () => ({ label: '执行器退出' }),
+}
+
+// The 4 MiB stdout cap can cut the last line mid-object.
+const record = (line: string): Fields | undefined => {
+  try {
+    return fields(JSON.parse(line), '日志行')
+  } catch {
+    return undefined
+  }
+}
+
+// The driver writes every event to the log twice.
+export const parseTimeline = (stdout: string): TimelineEntry[] => {
+  const seen = new Set<string>()
+  return stdout
+    .split('\n')
+    .flatMap(line => {
+      const o = record(line)
+      const show = o && MESSAGES[loose(o, 'msg')]
+      const at = o ? Date.parse(loose(o, 'time')) : Number.NaN
+      if (!o || !show || Number.isNaN(at)) return []
+      const id = `${loose(o, 'time')} ${loose(o, 'msg')} ${loose(o, 'event')}`
+      if (seen.has(id)) return []
+      seen.add(id)
+      return [{ at, ...show(o) }]
+    })
+    .sort((a, b) => a.at - b.at)
 }

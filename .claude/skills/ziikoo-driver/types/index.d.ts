@@ -76,7 +76,7 @@ export type Page = 'pipeline' | 'health' | 'models' | 'scheduler' | 'environment
 
 export type Group = 'run' | 'config'
 
-export type FetchKind = 'config' | 'status' | 'doctor'
+export type FetchKind = 'config' | 'status' | 'doctor' | 'logs'
 
 export type Deployment = { queueId: string; sha: string; workflow?: string; state: string; reason?: string }
 
@@ -106,6 +106,14 @@ export type Health = {
 
 export type TrendSample = { at: number; inFlight: number }
 
+export type Alert = 'warning' | 'error'
+
+export type TimelineEntry = { at: number; label: string; alert?: Alert }
+
+export type Timeline = { id: string; entries: TimelineEntry[] }
+
+export type Filter = { text: string; editing: boolean }
+
 export type Fetched<T> =
   | { kind: 'loading' }
   | { kind: 'ready'; value: T; fetchedAt: number }
@@ -121,6 +129,9 @@ declare module 'claude-code' {
       health: Shaped<Fetched<Health>>
       busy: Shaped<FetchKind[]>
       trend: Shaped<TrendSample[]>
+      detail: Shaped<string>
+      timeline: Shaped<Fetched<Timeline>>
+      filter: Shaped<Filter>
     }
   }
 }

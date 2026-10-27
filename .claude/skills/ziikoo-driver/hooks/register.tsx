@@ -1,11 +1,13 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
 
 import type {
+  Alert,
   DriverConfig,
   EnvEntry,
   FetchKind,
   Fetched,
+  Filter,
   Group,
   Health,
   Page,
@@ -14,11 +16,13 @@ import type {
   RuntimeTicket,
   SchedulerSetting,
   Snapshot,
+  Timeline,
   TrendSample,
 } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseConfig, routingSummary } from './config'
-import { parseHealth, parseRuntime } from './runtime'
+import { parseHealth, parseRuntime, parseTimeline } from './runtime'
 import {
+  NO_MATCH,
   ROW,
   SECTION_EDGE_FRAME,
   SECTION_INSET,
@@ -28,8 +32,17 @@ import {
   cell,
   chip,
   chipText,
+  clockTime,
+  detailView,
   displayWidth,
+  duration,
   failedView,
+  field,
+  filterBar,
+  helpText,
+  matches,
+  position,
+  reasonLine,
   section,
   segmentWidth,
   spinnerCells,
@@ -37,11 +50,14 @@ import {
   trackView,
   trendView,
 } from './view'
-import type { Alert, Kit, Position } from './view'
+import type { InputElement, Kit } from './view'
 
 const PANE = 'ziikoo-driver'
 const TITLE = 'Driver'
 const argvOf = (kind: FetchKind) => ['orca-factory-driver', kind, '--json']
+// Most of a long ticket's log is polling, and process.run keeps only the first 4 MiB, so grep keeps the lines the timeline reads.
+const LOGS_SCRIPT = 'orca-factory-driver logs "$1" --json | grep -E \'"msg":"(transition|ticket completed|command started|command exited)"\''
+const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/
 const POLL_MS = 10_000
 const SPIN_MS = 100
 const TREND_MS = TREND_MINUTES * 60_000
@@ -82,6 +98,10 @@ const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kin
 const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-2' })
 const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, [], { shape: 'busy-1' })
 const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { shape: 'trend-1' })
+const detail = atom({ plugin: 'ziikoo-driver', key: 'detail' } as const, '', { shape: 'detail-1' })
+const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-1' })
+const NO_FILTER: Filter = { text: '', editing: false }
+const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, NO_FILTER, { shape: 'filter-1' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui'>
 
@@ -90,7 +110,7 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 let spin: Timer | undefined
 let frame = 0
 
-// A denied blit means nothing shows the spinner (pane closed, or a kind left over from a reload), so the timer stops itself.
+// A blit is denied once the pane is closed or a hot reload has replaced this module, so the timer stops itself.
 const startSpin = ($: Engine) => {
   frame = 0
   const timer = $.clock.every(SPIN_MS, async () => {
@@ -107,13 +127,14 @@ const startSpin = ($: Engine) => {
 const runJson = async <T,>(
   $: Engine,
   kind: FetchKind,
+  argv: string[],
   parse: (stdout: string) => T,
   accepts: (exitCode: number) => boolean,
 ): Promise<Fetched<T>> => {
   await update($, busy, kinds => (kinds.includes(kind) ? kinds : [...kinds, kind]))
   if (spin === undefined) startSpin($)
   try {
-    const run = await $.process.run(argvOf(kind)).catch((error: unknown) => message(error))
+    const run = await $.process.run(argv).catch((error: unknown) => message(error))
     if (typeof run === 'string') return { kind: 'failed', exitCode: null, stderr: run }
     if (!accepts(run.exitCode)) return { kind: 'failed', exitCode: run.exitCode, stderr: run.stderr }
     try {
@@ -130,7 +151,7 @@ const runJson = async <T,>(
 }
 
 const take = async ($: Engine): Promise<Snapshot> => {
-  const next = await runJson($, 'config', parseConfig, code => code === 0)
+  const next = await runJson($, 'config', argvOf('config'), parseConfig, code => code === 0)
   return next.kind === 'ready' ? { kind: 'ready', config: next.value, fetchedAt: next.fetchedAt } : next
 }
 
@@ -147,7 +168,7 @@ const refresh = async ($: Engine): Promise<void> => {
 const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === undefined).length
 
 const fetchRuntime = async ($: Engine): Promise<void> => {
-  const next = await runJson($, 'status', parseRuntime, code => code === 0)
+  const next = await runJson($, 'status', argvOf('status'), parseRuntime, code => code === 0)
   if (next.kind === 'ready') {
     const sample = { at: next.fetchedAt, inFlight: inFlightOf(next.value.tickets) }
     await update($, trend, samples => [...samples.filter(one => one.at > sample.at - TREND_MS), sample])
@@ -157,8 +178,25 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
 
 // doctor exits 1 when any check fails; its report is still the answer.
 const fetchHealth = async ($: Engine): Promise<void> => {
-  const next = await runJson($, 'doctor', parseHealth, code => code === 0 || code === 1)
+  const next = await runJson($, 'doctor', argvOf('doctor'), parseHealth, code => code === 0 || code === 1)
   await update($, health, () => next)
+}
+
+// grep exits 1 when no line matches, which is a ticket without executor logs.
+const fetchTimeline = async ($: Engine, id: string): Promise<void> => {
+  if (!TICKET_ID.test(id)) {
+    await update($, timeline, (): Fetched<Timeline> => ({ kind: 'failed', exitCode: null, stderr: '票号格式不对' }))
+    return
+  }
+  const argv = ['bash', '-c', LOGS_SCRIPT, '_', id]
+  const next = await runJson($, 'logs', argv, stdout => ({ id, entries: parseTimeline(stdout) }), code => code === 0 || code === 1)
+  await update($, timeline, () => next)
+}
+
+const openDetail = async ($: Engine, id: string): Promise<void> => {
+  await update($, detail, () => id)
+  await update($, timeline, () => ({ kind: 'loading' }))
+  await fetchTimeline($, id)
 }
 
 const openPipeline = async ($: Engine): Promise<void> => {
@@ -166,7 +204,9 @@ const openPipeline = async ($: Engine): Promise<void> => {
 }
 
 const fetchPage = async ($: Engine, current: Page): Promise<void> => {
-  if (groupOf(current) === 'run') await openPipeline($)
+  if (groupOf(current) !== 'run') return
+  const opened = current === 'pipeline' ? await read($, detail) : ''
+  await Promise.all([openPipeline($), ...(opened === '' ? [] : [fetchTimeline($, opened)])])
 }
 
 let poll: Timer | undefined
@@ -184,8 +224,17 @@ const ensurePolling = ($: Engine) => {
   poll ??= $.clock.every(POLL_MS, () => void pollRuntime($))
 }
 
+// autoFocus acts only when the pane takes the keyboard and a press leaves the ring where it was, so the field is focused here.
+// A host without a focus ring rejects the move; like a denied move, the field still shows and Tab reaches it.
+const editFilter = async ($: Engine): Promise<void> => {
+  await update($, filter, wanted => ({ ...wanted, editing: true }))
+  await $.ui.focus({ requestId: PANE, key: 'filter-input' }).catch((error: unknown) => ({ deny: message(error) }))
+}
+
 const choose = async ($: Engine, next: Page): Promise<void> => {
   await update($, page, () => next)
+  await update($, detail, () => '')
+  await update($, filter, () => NO_FILTER)
   ensurePolling($)
   await fetchPage($, next)
 }
@@ -198,20 +247,6 @@ const columns = (cols: number, fixed: number, share: number, max: number) => {
   const rest = Math.max(0, cols - fixed)
   const flexible = Math.max(6, Math.min(max, Math.floor(rest * share)))
   return { flexible, rest: Math.max(6, rest - flexible) }
-}
-
-const field = (ui: Kit, label: string, value: string, color?: string) => (
-  <ui.Box flexDirection="row">
-    {cell(ui, 12, label, true)}
-    <ui.Text wrap="truncate" color={color}>
-      {value}
-    </ui.Text>
-  </ui.Box>
-)
-
-const clockTime = (ms: number) => {
-  const at = new Date(ms)
-  return [at.getHours(), at.getMinutes(), at.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')
 }
 
 const CHECK_LABELS: Record<string, string> = {
@@ -344,12 +379,26 @@ const envGroup = (entry: EnvEntry) => {
   return TOOL_KEYS.has(entry.key) ? '工具路径' : '服务环境与代理'
 }
 
-const environmentPage = (ui: Kit, config: DriverConfig, cols: number) => {
+const noMatch = (ui: Kit) => <ui.Text dimColor>{NO_MATCH}</ui.Text>
+
+const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: Filter, bar: RenderChildren) => {
   const groups = ['driver.env', '服务环境与代理', '工具路径']
   const width = Math.min(30, Math.max(10, cols - SECTION_INSET - 20))
-  const entries = config.environment
+  const entries = config.environment.filter(entry => matches(wanted, entry.key))
+  const rows = (group: string) =>
+    entries
+      .filter(entry => envGroup(entry) === group)
+      .map(entry => (
+        <ui.Box key={`env-${entry.key}`} flexDirection="row">
+          {cell(ui, width, entry.key)}
+          <ui.Text wrap="truncate" dimColor={!entry.set}>
+            {envValue(entry)}
+          </ui.Text>
+        </ui.Box>
+      ))
   return (
     <ui.Box flexDirection="column">
+      {bar}
       {section(
         ui,
         '工厂目录',
@@ -357,75 +406,22 @@ const environmentPage = (ui: Kit, config: DriverConfig, cols: number) => {
           {config.overview.factoryRoot || '未配置'}
         </ui.Text>,
       )}
-      {groups.map(group =>
-        section(
-          ui,
-          group,
-          entries
-            .filter(entry => envGroup(entry) === group)
-            .map(entry => (
-              <ui.Box key={`env-${entry.key}`} flexDirection="row">
-                {cell(ui, width, entry.key)}
-                <ui.Text wrap="truncate" dimColor={!entry.set}>
-                  {envValue(entry)}
-                </ui.Text>
-              </ui.Box>
-            )),
-        ),
-      )}
+      {groups.map(group => {
+        const shown = rows(group)
+        return section(ui, group, shown.length === 0 && wanted.text !== '' ? noMatch(ui) : shown)
+      })}
     </ui.Box>
   )
 }
 
-const PHASE_AT: Record<string, number> = {
-  待领: 0,
-  'worker 运行中': 1,
-  '写 correction': 1,
-  分支检查: 2,
-  gate: 2,
-  审查: 3,
-  '开 PR': 4,
-  排队合并: 4,
-  已合并: 4,
-}
-
-const DEPLOY_LABELS: Record<string, string> = { pending: '等部署', 'deploy-intent': '部署中', 'smoke-intent': 'smoke', paused: '部署暂停' }
-
-const position = (t: RuntimeTicket): Position => {
-  const d = t.deployment
-  if (d && d.state !== 'passed') return { at: TRACK.length - 1, tone: d.state === 'paused' ? 'failed' : 'current', label: DEPLOY_LABELS[d.state] ?? d.state }
-  if (t.stage === 'candidate') return { at: 0, tone: 'current', label: '待领' }
-  if (t.stage === 'human') return { at: null, tone: 'attention', label: '转人' }
-  if (t.owner === '处置Agent') return { at: null, tone: 'attention', label: '处置 Agent' }
-  const at = PHASE_AT[t.phase]
-  if (at === undefined) return { at: null, tone: 'attention', label: t.phase || '未知阶段' }
-  return { at, tone: t.phase === '写 correction' ? 'attention' : 'current', label: t.phase }
-}
-
-const duration = (ms: number) => {
-  const seconds = Math.max(0, Math.floor(ms / 1000))
-  if (seconds < 60) return `${seconds} 秒`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes} 分钟`
-  const hours = Math.floor(minutes / 60)
-  return minutes % 60 === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes % 60} 分`
-}
-
-const reasonOf = (t: RuntimeTicket): { text: string; color?: string } | undefined => {
-  if (t.blockedReason) return { text: t.blockedReason, color: 'warning' }
-  const d = t.deployment
-  if (!d || d.state === 'passed') return undefined
-  const text = [d.workflow || '部署', d.state, d.sha.slice(0, 7), d.reason].filter(Boolean).join(' · ')
-  return d.state === 'paused' ? { text, color: 'error' } : { text }
-}
-
-const ticketView = (ui: Kit, t: RuntimeTicket, nodes: number, now: number, segment: number | null) => {
+const ticketView = (ui: Kit, t: RuntimeTicket, nodes: number, now: number, segment: number | null, open: (id: string) => void) => {
   const pos = position(t)
-  const reason = reasonOf(t)
   return (
     <ui.Box flexDirection="column">
       <ui.Box key={`pipeline-${t.identifier}`} flexDirection="row">
-        {cell(ui, ROW.id, t.identifier)}
+        <ui.Box width={ROW.id} flexShrink={0}>
+          <ui.Button key={`ticket-${t.identifier}`} label={t.identifier} plain onPress={() => open(t.identifier)} />
+        </ui.Box>
         {segment !== null && trackView(ui, pos, nodes, segment)}
         {cell(ui, ROW.label, pos.label, false, pos.tone === 'current' ? undefined : TONE_COLOR[pos.tone])}
         {cell(ui, ROW.since, t.since === undefined ? '' : duration(now - t.since), true)}
@@ -435,11 +431,7 @@ const ticketView = (ui: Kit, t: RuntimeTicket, nodes: number, now: number, segme
           {t.title}
         </ui.Text>
       )}
-      {reason && (
-        <ui.Text color={reason.color} dimColor={reason.color === undefined} wrap="truncate">
-          {`↳ ${reason.text}`}
-        </ui.Text>
-      )}
+      {reasonLine(ui, t)}
     </ui.Box>
   )
 }
@@ -493,6 +485,9 @@ const pipelinePage = (
   checks: Fetched<Health>,
   samples: TrendSample[],
   cols: number,
+  wanted: Filter,
+  bar: RenderChildren,
+  open: (id: string) => void,
 ) => {
   if (state.kind === 'loading') return <ui.Text dimColor>正在读取 orca-factory-driver status --json …</ui.Text>
   if (state.kind === 'failed') return failedView(ui, state)
@@ -502,15 +497,17 @@ const pipelinePage = (
   const waiting = tickets.filter(t => t.stage === 'candidate').length
   return (
     <ui.Box flexDirection="column">
+      {bar}
       <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriers}   待领 ${waiting}`}</ui.Text>
       {trendView(ui, samples, state.fetchedAt, cols)}
       {segment !== null && <ui.Box marginTop={1}>{trackLabels(ui, segment)}</ui.Box>}
       {config.repos.map(one => {
-        const own = tickets.filter(t => t.repo === one.path)
+        const own = tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
         const nodes = deploys(one.routing) ? TRACK.length : TRACK.length - 1
         const list = badges(one, checks)
         const onEdge = displayWidth(`${one.name} ${one.prefix}`) + badgesWidth(list) + SECTION_EDGE_FRAME <= cols
-        const rows = own.length === 0 ? [<ui.Text dimColor>空闲</ui.Text>] : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment))
+        const idle = wanted.text === '' ? <ui.Text dimColor>空闲</ui.Text> : noMatch(ui)
+        const rows = own.length === 0 ? [idle] : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment, open))
         return onEdge
           ? section(ui, one.name, rows, one.prefix, { key: `edge-${one.name}`, node: badgeRow(ui, one, list) })
           : section(ui, one.name, [badgeRow(ui, one, list), ...rows], one.prefix)
@@ -566,6 +563,11 @@ export const register: Register = on => {
     const healthState = await read($, health)
     const loading = (await read($, busy)).length > 0
     const samples = await read($, trend)
+    const opened = current === 'pipeline' ? await read($, detail) : ''
+    const timelineState = await read($, timeline)
+    const wanted = await read($, filter)
+    const Input: InputElement | undefined = 'Input' in resolved ? resolved.Input : undefined
+    const bar = (placeholder: string) => filterBar(ui, Input, wanted, placeholder, () => editFilter($), next => update($, filter, () => next))
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
     const selected = config?.repos.find(one => one.name === chosen) ?? config?.repos[0]
@@ -626,11 +628,17 @@ export const register: Register = on => {
           {state.kind === 'failed' && failedView(ui, state)}
           {state.kind === 'ready' && current === 'models' && modelsPage(ui, selected, cols)}
           {state.kind === 'ready' && current === 'scheduler' && schedulerPage(ui, state.config.scheduler, cols)}
-          {state.kind === 'ready' && current === 'pipeline' && pipelinePage(ui, state.config, runtimeState, healthState, samples, cols)}
+          {state.kind === 'ready' &&
+            current === 'pipeline' &&
+            (opened === ''
+              ? pipelinePage(ui, state.config, runtimeState, healthState, samples, cols, wanted, bar('票号或标题'), id => openDetail($, id))
+              : detailView(ui, opened, runtimeState, state.config.repos, timelineState, () => update($, detail, () => '')))}
           {state.kind === 'ready' && current === 'health' && healthPage(ui, state.config, healthState)}
-          {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols)}
+          {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols, wanted, bar('变量名'))}
         </ui.Box>
-        <ui.Text dimColor wrap="truncate">r 刷新 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框</ui.Text>
+        <ui.Text dimColor wrap="truncate">
+          {helpText(current, opened !== '')}
+        </ui.Text>
       </ui.Box>
     )
   })

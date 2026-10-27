@@ -3,6 +3,7 @@ import type { FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
+import { SAMPLE_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 
 const PANE = {
@@ -39,13 +40,15 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, A
   on('ui.panes', () => ({
     value: [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
   }))
+  // bash runs the logs pipeline, whose argv[1] is -c.
+  const subOf = (argv: readonly string[]) => (argv[0] === 'bash' ? 'bash' : (argv[1] ?? ''))
   on('process.run', async (_, e) => {
     calls.push([...e.argv])
-    const sub = e.argv[1] ?? ''
+    const sub = subOf(e.argv)
     const late = lateMs[sub]
     if (late !== undefined) await clock.sleep(late)
     const answer = bySubcommand[sub] ?? result
-    return { value: typeof answer === 'function' ? answer(calls.filter(argv => argv[1] === sub).length) : answer }
+    return { value: typeof answer === 'function' ? answer(calls.filter(argv => subOf(argv) === sub).length) : answer }
   })
   return { calls, clock }
 }
@@ -535,5 +538,215 @@ test('上次中断留下的读取种类在同类读取完成后清除', async ($
   await $.command.run(runCommand)
   expect(await ui.findAll({ key: 'spin' })).toHaveLength(0)
   expect((await ui.find({ key: 'refresh' }))?.type).toBe('Button')
+  await ui.unmount()
+})
+
+const logsEngine = (on: On, status: unknown = SAMPLE_STATUS) =>
+  engine(on, ran({ stdout: sampleStdout }), {
+    status: ran({ stdout: JSON.stringify(status) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+    bash: ran({ stdout: SAMPLE_LOGS }),
+  })
+
+type Drawing = { findAll: (q: { type: string }) => Promise<FoundElement[]> }
+
+const timelineRows = async (ui: Drawing) =>
+  (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('timeline-')).map(one => one.text)
+
+const ticketRows = async (ui: Drawing) =>
+  (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('pipeline-')).map(one => one.key)
+
+const HELP = {
+  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  detail: 'q 返回 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  environment: 'f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  other: 'r 刷新 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框',
+}
+
+test('按下票号进入详情，时间线按执行器日志列出中文事件', async ($, on) => {
+  const { calls } = logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect(await ticketRows(ui)).toEqual(['pipeline-OF-1', 'pipeline-OF-2', 'pipeline-OF-3', 'pipeline-ZW-7', 'pipeline-ZW-8'])
+
+  await ui.press({ key: 'ticket-OF-1' })
+  expect(await ticketRows(ui)).toEqual([])
+  expect((await ui.find({ key: 'detail-back' }))?.props.hotkey).toBe('q')
+  expect(await exactText(ui, 'OF-1')).toHaveLength(1)
+  expect(await exactText(ui, ' 流水线冒烟（OF）')).toHaveLength(1)
+  expect((await exactText(ui, 'gate')).map(one => one.props.color)).toEqual(['suggestion'])
+  expect(await exactText(ui, '4 分钟')).toHaveLength(1)
+  expect(await exactText(ui, '执行器')).toHaveLength(1)
+  expect(await exactText(ui, 'orca-factory')).toHaveLength(1)
+
+  const rows = await timelineRows(ui)
+  expect(rows.map(row => row.slice(8))).toEqual([
+    '执行器启动',
+    '认领',
+    'worker 失败',
+    'correction 已写好',
+    'worker 完成',
+    '分支检查通过',
+    'gate 通过',
+    '审查通过',
+    '开 PR',
+    '进入排队合并',
+    '执行器退出',
+  ])
+  for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+  expect((await exactText(ui, 'worker 失败')).map(one => one.props.color)).toEqual(['warning'])
+  expect((await exactText(ui, '认领')).map(one => one.props.color)).toEqual([undefined])
+
+  const logs = calls.filter(argv => argv[0] === 'bash')
+  expect(logs).toHaveLength(1)
+  expect(logs[0]?.at(-1)).toBe('OF-1')
+  expect(logs[0]?.[2]).toContain('orca-factory-driver logs "$1" --json')
+  expect(logs[0]?.[2]).not.toContain('OF-1')
+  await ui.unmount()
+})
+
+test('详情里按返回或 q 回到列表，切页再回来也是列表', async ($, on) => {
+  logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'ticket-OF-2' })
+  expect(await ticketRows(ui)).toEqual([])
+  await ui.press({ key: 'detail-back' })
+  expect((await ticketRows(ui)).length).toBe(5)
+  expect(await ui.findAll({ key: 'detail-back' })).toHaveLength(0)
+
+  await ui.press({ key: 'ticket-ZW-8' })
+  expect((await ui.find({ key: 'detail-back' }))?.type).toBe('Button')
+  await ui.press({ key: 'page-models' })
+  await ui.press({ key: 'page-pipeline' })
+  expect((await ticketRows(ui)).length).toBe(5)
+  expect(await ui.findAll({ key: 'detail-back' })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('详情里按 r 重新读取时间线', async ($, on) => {
+  const { calls } = logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+  await ui.press({ key: 'refresh' })
+  expect(calls.filter(argv => argv[0] === 'bash').map(argv => argv.at(-1))).toEqual(['OF-1', 'OF-1'])
+  await ui.unmount()
+})
+
+test('不在在途列表的票照常显示时间线；超过 15 条时折叠更早的', async ($, on) => {
+  const lines = SAMPLE_LOGS.trim().split('\n')
+  const many = Array.from({ length: 20 }, (_, i) =>
+    JSON.stringify({ time: `2026-10-27T20:${String(10 + i).padStart(2, '0')}:00+08:00`, msg: 'transition', event: 'tick', from: 'gate', to: 'gate' }),
+  )
+  engine(on, ran({ stdout: sampleStdout }), {
+    status: nth => ran({ stdout: JSON.stringify(nth === 1 ? SAMPLE_STATUS : { ...SAMPLE_STATUS, tickets: [] }) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+    bash: ran({ stdout: [...many, ...lines.slice(0, 2)].join('\n') }),
+  })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+  await ui.press({ key: 'refresh' })
+
+  expect((await exactText(ui, '已不在在途列表')).map(one => one.props.dimColor)).toEqual([true])
+  expect((await exactText(ui, '更早 6 条')).map(one => one.props.dimColor)).toEqual([true])
+  const rows = await timelineRows(ui)
+  expect(rows).toHaveLength(15)
+  expect(rows.at(-1)?.slice(8)).toBe('执行器启动')
+  expect(rows[0]?.slice(8)).toBe('定时检查')
+  await ui.unmount()
+})
+
+test('没有执行器日志时说明；grep 无匹配的退出码 1 不算失败', async ($, on) => {
+  engine(on, ran({ stdout: sampleStdout }), {
+    status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+    bash: ran({ exitCode: 1 }),
+  })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+  expect((await exactText(ui, '没有执行器日志')).map(one => one.props.dimColor)).toEqual([true])
+  expect(await ui.findAll({ type: 'Text', text: /取数失败/ })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('票号格式不对时不运行 bash，详情说明原因', async ($, on) => {
+  const bad = { repo: '/home/laoxu/github/orca-factory', identifier: 'OF-1; rm -rf x', owner: '执行器', phase: 'gate' }
+  const { calls } = logsEngine(on, { ...SAMPLE_STATUS, tickets: [...SAMPLE_STATUS.tickets, bad] })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  await ui.press({ key: 'ticket-OF-1; rm -rf x' })
+  expect(await exactText(ui, '票号格式不对')).toHaveLength(1)
+  expect(calls.filter(argv => argv[0] === 'bash')).toHaveLength(0)
+
+  await ui.press({ key: 'detail-back' })
+  await ui.press({ key: 'ticket-OF-1' })
+  expect(await exactText(ui, '票号格式不对')).toHaveLength(0)
+  expect(calls.filter(argv => argv[0] === 'bash')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('流水线按票号或标题筛选，没有匹配的项目写无匹配', async ($, on) => {
+  logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect(await ui.findAll({ key: 'filter-input' })).toHaveLength(0)
+
+  await ui.press({ key: 'filter' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.placeholder).toBe('票号或标题')
+  await ui.input({ key: 'filter-input', text: 'zw', kind: 'change' })
+  expect(await ticketRows(ui)).toEqual(['pipeline-ZW-7', 'pipeline-ZW-8'])
+  expect(await exactText(ui, '无匹配')).toHaveLength(2)
+
+  await ui.input({ key: 'filter-input', text: '冒烟' })
+  expect(await ui.findAll({ key: 'filter-input' })).toHaveLength(0)
+  expect(await ticketRows(ui)).toEqual(['pipeline-OF-1'])
+  expect((await exactText(ui, '筛选：冒烟')).map(one => one.props.dimColor)).toEqual([true])
+
+  await ui.press({ key: 'filter' })
+  await ui.input({ key: 'filter-input', text: '' })
+  expect((await ticketRows(ui)).length).toBe(5)
+  expect(await ui.findAll({ type: 'Text', text: /^筛选：/ })).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('环境页按变量名筛选，没有匹配的分组写无匹配；切页后清除', async ($, on) => {
+  logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-environment' })
+
+  await ui.press({ key: 'filter' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.placeholder).toBe('变量名')
+  await ui.input({ key: 'filter-input', text: 'proxy' })
+  expect((await ui.find({ key: 'env-HTTPS_PROXY' }))?.text).toBe('HTTPS_PROXYhttp://127.0.0.1:7890')
+  expect(await ui.findAll({ key: 'env-gh' })).toHaveLength(0)
+  expect(await exactText(ui, '工具路径')).toHaveLength(1)
+  expect(await exactText(ui, '无匹配')).toHaveLength(2)
+
+  await ui.press({ key: 'page-models' })
+  await ui.press({ key: 'page-environment' })
+  expect((await ui.find({ key: 'env-gh' }))?.text).toBe('gh/usr/bin/gh')
+  expect(await exactText(ui, '无匹配')).toHaveLength(0)
+  await ui.unmount()
+})
+
+test('帮助条随视图变化', async ($, on) => {
+  logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  const help = async () => (await ui.findAll({ type: 'Text' })).filter(one => Object.values(HELP).includes(one.text)).map(one => one.text)
+
+  expect(await help()).toEqual([HELP.list])
+  await ui.press({ key: 'ticket-OF-1' })
+  expect(await help()).toEqual([HELP.detail])
+  await ui.press({ key: 'page-environment' })
+  expect(await help()).toEqual([HELP.environment])
+  await ui.press({ key: 'page-scheduler' })
+  expect(await help()).toEqual([HELP.other])
   await ui.unmount()
 })
