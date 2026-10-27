@@ -19,3 +19,5 @@
 ## 部署
 
 部署保留配置、持久状态与正在运行的执行器；不能清空状态来制造健康检查成功。部署前保留可回滚旧程序。
+
+合并通道在 driver 服务进程里跑 project gate，用的是服务的 PATH，不是 worker 终端的 PATH。gate 用到的工具所在目录都要写进服务 PATH 的 drop-in：本仓库改到 `.claude/skills/ziikoo-driver/` 时 gate 会跑 `claude plugin test`，所以服务 PATH 要含 `claude` 所在目录（OF-232）。
