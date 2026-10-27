@@ -29,7 +29,9 @@ const ran = (result: Partial<ProcessRunResult>): ProcessRunResult => ({
   ...result,
 })
 
-const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, ProcessRunResult> = {}) => {
+type Answer = ProcessRunResult | ((nth: number) => ProcessRunResult)
+
+const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, number> = {}) => {
   const calls: string[][] = []
   const clock = mock.clock(on, { now: NOW })
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
@@ -37,9 +39,13 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, P
   on('ui.panes', () => ({
     value: [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
   }))
-  on('process.run', (_, e) => {
+  on('process.run', async (_, e) => {
     calls.push([...e.argv])
-    return { value: bySubcommand[e.argv[1] ?? ''] ?? result }
+    const sub = e.argv[1] ?? ''
+    const late = lateMs[sub]
+    if (late !== undefined) await clock.sleep(late)
+    const answer = bySubcommand[sub] ?? result
+    return { value: typeof answer === 'function' ? answer(calls.filter(argv => argv[1] === sub).length) : answer }
   })
   return { calls, clock }
 }
@@ -125,6 +131,7 @@ test('config 非零退出时渲染失败状态与 stderr 摘要', async ($, on) 
   expect((await ui.find({ type: 'Text', text: /unknown command/ }))?.text).toBe(
     'unknown command "config" for "orca-factory-driver"',
   )
+  expect((await exactText(ui, 'r 重试')).map(one => one.props.dimColor)).toEqual([true])
   await ui.unmount()
 })
 
@@ -172,11 +179,105 @@ test('流水线页按项目画阶段轨道，没配部署的仓库没有部署�
   expect(await exactText(ui, '↳ 部署 · smoke-intent · abc1234')).toHaveLength(1)
   expect((await exactText(ui, '↳ blocked by ZW-7')).map(one => one.props.color)).toEqual(['warning'])
   expect(await exactText(ui, '空闲')).toHaveLength(1)
+  await ui.unmount()
+})
 
-  expect((await exactText(ui, '在 feat/login')).map(one => one.props.color)).toEqual(['warning'])
-  expect((await exactText(ui, 'core 待同步 #12')).map(one => one.props.color)).toEqual(['warning'])
-  expect(await exactText(ui, '⚠ 未提交改动')).toHaveLength(1)
-  expect(await exactText(ui, 'main ✓')).toHaveLength(2)
+test('流水线页每个项目一个区块，需要处理的徽标画成标签', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect((await exactText(ui, 'orca-factory')).map(one => one.props.bold)).toEqual([true])
+  expect((await exactText(ui, 'ziikoo-web')).map(one => one.props.bold)).toEqual([true])
+  const chip = (one: FoundElement) => [one.props.backgroundColor, one.props.color]
+  expect((await exactText(ui, ' 在 feat/login ')).map(chip)).toEqual([['warning', 'inverseText']])
+  expect((await exactText(ui, ' core 待同步 #12 ')).map(chip)).toEqual([['warning', 'inverseText']])
+  expect((await exactText(ui, ' 落后 2 ')).map(chip)).toEqual([['warning', 'inverseText']])
+  expect((await exactText(ui, ' 未提交改动 ')).map(chip)).toEqual([['warning', 'inverseText']])
+  expect((await exactText(ui, 'main ✓')).map(one => [one.props.backgroundColor, one.props.dimColor])).toEqual([
+    [undefined, true],
+    [undefined, true],
+  ])
+  await ui.unmount()
+})
+
+test('轨道每段宽度随面板伸缩，放不下时退回纯文字', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const at = async (bodyColumns: number) => {
+    const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns } })
+    const seen = {
+      row: (await ui.find({ key: 'pipeline-OF-1' }))?.text,
+      full: (await exactText(ui, '施工')).length,
+      short: (await exactText(ui, '施')).length,
+      here: (await exactText(ui, '◉')).length,
+    }
+    await ui.unmount()
+    return seen
+  }
+
+  expect(await at(100)).toEqual({ row: 'OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟', full: 1, short: 0, here: 5 })
+  expect(await at(57)).toEqual({ row: 'OF-1●━━●━━◉──○──○──○gate4 分钟', full: 0, short: 1, here: 5 })
+  expect(await at(52)).toEqual({ row: 'OF-1●━●━◉─○─○─○gate4 分钟', full: 0, short: 1, here: 5 })
+  expect(await at(40)).toEqual({ row: 'OF-1gate4 分钟', full: 0, short: 0, here: 0 })
+})
+
+test('头部第二行显示服务状态与构建短 sha', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+
+  expect((await exactText(ui, '●')).map(one => one.props.color)).toEqual(['success'])
+  expect(await exactText(ui, 'orca-factory-driver')).toHaveLength(1)
+  expect(await exactText(ui, '· 006396a')).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('读取进行中时头部画加载动画，每 100 毫秒换帧，读完后消失', async ($, on) => {
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { doctor: 1000 },
+  )
+  const blits: unknown[] = []
+  on('ui.blit', (_, e) => {
+    blits.push(e)
+    return { value: {} }
+  })
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.findAll({ key: 'spin' })).map(one => one.type)).toEqual(['Raster'])
+
+  await clock.advance(100)
+  expect(blits).toEqual([{ requestId: 'ziikoo-driver', key: 'spin', cells: 'GSgAAAAAAAEAAAAB' }])
+
+  await clock.advance(1000)
+  await opened
+  expect(await ui.findAll({ key: 'spin' })).toHaveLength(0)
+  expect((await ui.find({ key: 'refresh' }))?.type).toBe('Button')
+  await ui.unmount()
+})
+
+test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) => {
+  const inFlight = [1, 4, 2]
+  const { clock } = engine(on, ran({ stdout: sampleStdout }), {
+    status: nth => ran({ stdout: JSON.stringify({ ...SAMPLE_STATUS, tickets: SAMPLE_STATUS.tickets.slice(0, inFlight[nth - 1]) }) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+  })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${' '.repeat(29)}█近 30 分钟`)
+
+  for (const _ of inFlight.slice(1)) {
+    await ui.press({ key: 'page-models' })
+    await clock.advance(61_000)
+    await ui.press({ key: 'page-pipeline' })
+  }
+  expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 2   部署屏障 0   待领 0')
+  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${' '.repeat(27)}▃█▅近 30 分钟`)
   await ui.unmount()
 })
 
@@ -199,16 +300,6 @@ test('快照过期时警告；流水线页每 10 秒重新读取 status，离开
   await ui.unmount()
 })
 
-test('窄于 80 列时不画轨道', async ($, on) => {
-  runtimeEngine(on)
-  await $.command.run(runCommand)
-  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 70 } })
-  await ui.press({ key: 'page-pipeline' })
-  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1gate4 分钟')
-  expect(await exactText(ui, '◉')).toHaveLength(0)
-  await ui.unmount()
-})
-
 test('打开面板默认在流水线页，页签分运行与配置两组', async ($, on) => {
   const { calls } = runtimeEngine(on)
   await $.command.run(runCommand)
@@ -216,12 +307,12 @@ test('打开面板默认在流水线页，页签分运行与配置两组', async
 
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
-  expect((await exactText(ui, '运行 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
-  expect((await exactText(ui, '配置 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
+  expect((await exactText(ui, '运行')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
+  expect((await exactText(ui, '配置')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
 
   await ui.press({ key: 'page-models' })
-  expect((await exactText(ui, '运行 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
-  expect((await exactText(ui, '配置 ▸')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
+  expect((await exactText(ui, '运行')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[false, true]])
+  expect((await exactText(ui, '配置')).map(one => [one.props.bold, one.props.dimColor])).toEqual([[true, false]])
   await ui.unmount()
 })
 
@@ -235,9 +326,12 @@ test('健康页逐项列出 doctor 检查，不再显示工厂目录与纳管仓
   expect(await exactText(ui, 'active')).toHaveLength(1)
   expect(await exactText(ui, 'doctor 检查')).toHaveLength(1)
   expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
-  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出注意ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动')
-  expect((await ui.find({ key: 'check-sync_prs' }))?.text).toBe('core 同步注意ansible #12 待合并')
-  expect((await exactText(ui, '注意')).map(one => one.props.color)).toEqual(['warning', 'warning'])
+  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出 注意 ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动')
+  expect((await ui.find({ key: 'check-sync_prs' }))?.text).toBe('core 同步 注意 ansible #12 待合并')
+  expect((await exactText(ui, ' 注意 ')).map(one => [one.props.backgroundColor, one.props.color])).toEqual([
+    ['warning', 'inverseText'],
+    ['warning', 'inverseText'],
+  ])
   expect((await exactText(ui, '通过')).map(one => one.props.dimColor)).toEqual([true])
   expect(await exactText(ui, 'driver.toml 的 scheduler.resume_fraction 不被识别，不生效')).toHaveLength(1)
   expect(await exactText(ui, '工厂目录')).toHaveLength(0)
@@ -254,13 +348,13 @@ test('项目发现失败时健康页照常列检查，徽标显示检出与 core
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
 
-  expect((await exactText(ui, '检出未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
-  expect((await exactText(ui, 'core 未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
+  expect((await exactText(ui, ' 检出未知 ')).map(one => one.props.backgroundColor)).toEqual(['warning', 'warning', 'warning'])
+  expect((await exactText(ui, ' core 未知 ')).map(one => one.props.backgroundColor)).toEqual(['warning', 'warning', 'warning'])
 
   await ui.press({ key: 'page-health' })
-  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出未知项目发现失败，无法列出已接管项目')
+  expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出 未知 项目发现失败，无法列出已接管项目')
   expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
-  expect((await exactText(ui, '未知')).map(one => one.props.color)).toEqual(['warning', 'warning', 'warning'])
+  expect((await exactText(ui, ' 未知 ')).map(one => one.props.backgroundColor)).toEqual(['warning', 'warning', 'warning'])
   await ui.unmount()
 })
 

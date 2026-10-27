@@ -102,6 +102,8 @@ export type Health = {
   checks: DoctorCheck[]
 }
 
+export type TrendSample = { at: number; inFlight: number }
+
 export type Fetched<T> =
   | { kind: 'loading' }
   | { kind: 'ready'; value: T; fetchedAt: number }
@@ -115,6 +117,8 @@ declare module 'claude-code' {
       repo: Shaped<string>
       runtime: Shaped<Fetched<Runtime>>
       health: Shaped<Fetched<Health>>
+      busy: Shaped<number>
+      trend: Shaped<TrendSample[]>
     }
   }
 }
