@@ -3,6 +3,7 @@ import type { FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
+import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 
 const PANE = {
   plugin: 'ziikoo-driver',
@@ -28,16 +29,19 @@ const ran = (result: Partial<ProcessRunResult>): ProcessRunResult => ({
   ...result,
 })
 
-const engine = (on: On, result: ProcessRunResult): string[][] => {
+const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, ProcessRunResult> = {}) => {
   const calls: string[][] = []
-  mock.clock(on)
+  const clock = mock.clock(on, { now: NOW })
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({
+    value: [{ id: 'ziikoo-driver', title: 'Driver 配置', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
+  }))
   on('process.run', (_, e) => {
     calls.push([...e.argv])
-    return { value: result }
+    return { value: bySubcommand[e.argv[1] ?? ''] ?? result }
   })
-  return calls
+  return { calls, clock }
 }
 
 const runCommand = {
@@ -53,7 +57,7 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
   (await ui.findAll({ type: 'Text' })).filter(one => one.text === text)
 
 test('模型页列出施工档位与样本模型名，可切换仓库', async ($, on) => {
-  const calls = engine(on, ran({ stdout: sampleStdout }))
+  const { calls } = engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
   expect(calls).toEqual([['orca-factory-driver', 'config', '--json']])
 
@@ -139,5 +143,71 @@ test('未知调度键时进入失败状态', async ($, on) => {
   const ui = await $.ui.mount(PANE)
 
   expect((await ui.find({ type: 'Text', text: /取值未知/ }))?.text).toBe('scheduler[8].key 取值未知：scheduler.new_knob')
+  await ui.unmount()
+})
+
+const runtimeEngine = (on: On, status: unknown = SAMPLE_STATUS) =>
+  engine(on, ran({ stdout: sampleStdout }), {
+    status: ran({ stdout: JSON.stringify(status) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+  })
+
+const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
+
+test('流水线页按项目画阶段轨道，没配部署的仓库没有部署点', async ($, on) => {
+  const { calls } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-pipeline' })
+  expect(subcommands(calls).sort()).toEqual(['config', 'doctor', 'status'])
+
+  const row = async (id: string) => (await ui.find({ key: `pipeline-${id}` }))?.text
+  expect(await row('OF-1')).toBe('OF-1●━━━━━●━━━━━◉─────○─────○─────○gate4 分钟')
+  expect(await row('OF-3')).toBe('OF-3●━━━━━●━━━━━●━━━━━●━━━━━●━━━━━◉smoke2 小时 5 分')
+  expect(await row('ZW-7')).toBe('ZW-7●━━━━━◉─────○─────○─────○worker 运行中30 秒')
+  expect((await exactText(ui, '◉')).map(one => one.props.color)).toEqual(['suggestion', 'warning', 'suggestion', 'suggestion', 'suggestion'])
+  expect((await exactText(ui, '写 correction')).map(one => one.props.color)).toEqual(['warning'])
+
+  expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 4   部署屏障 1   待领 1')
+  expect((await exactText(ui, '快照 8 秒前 · 每 10 秒刷新')).map(one => one.props.dimColor)).toEqual([true])
+  expect(await exactText(ui, '流水线冒烟（OF）')).toHaveLength(1)
+  expect(await exactText(ui, '↳ 部署 · smoke-intent · abc1234')).toHaveLength(1)
+  expect((await exactText(ui, '↳ blocked by ZW-7')).map(one => one.props.color)).toEqual(['warning'])
+  expect(await exactText(ui, '空闲')).toHaveLength(1)
+
+  expect((await exactText(ui, '在 feat/login')).map(one => one.props.color)).toEqual(['warning'])
+  expect((await exactText(ui, 'core 待同步 #12')).map(one => one.props.color)).toEqual(['warning'])
+  expect(await exactText(ui, '⚠ 未提交改动')).toHaveLength(1)
+  expect(await exactText(ui, 'main ✓')).toHaveLength(2)
+  await ui.unmount()
+})
+
+test('快照过期时警告；流水线页每 10 秒重新读取 status，离开后停止', async ($, on) => {
+  const { calls, clock } = runtimeEngine(on, { ...SAMPLE_STATUS, state: 'stale', generatedAt: '2026-10-27T11:54:00Z' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-pipeline' })
+  expect((await exactText(ui, '快照 6 分钟前 · 已过期')).map(one => one.props.color)).toEqual(['warning'])
+
+  const statusReads = () => subcommands(calls).filter(one => one === 'status').length
+  expect(statusReads()).toBe(1)
+  await clock.advance(10_000)
+  await clock.settle()
+  expect(statusReads()).toBe(2)
+
+  await ui.press({ key: 'page-overview' })
+  await clock.advance(10_000)
+  await clock.settle()
+  expect(statusReads()).toBe(2)
+  await ui.unmount()
+})
+
+test('窄于 80 列时不画轨道', async ($, on) => {
+  runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 70 } })
+  await ui.press({ key: 'page-pipeline' })
+  expect((await ui.find({ key: 'pipeline-OF-1' }))?.text).toBe('OF-1gate4 分钟')
+  expect(await exactText(ui, '◉')).toHaveLength(0)
   await ui.unmount()
 })

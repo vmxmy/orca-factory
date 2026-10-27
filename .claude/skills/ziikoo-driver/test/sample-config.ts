@@ -29,6 +29,9 @@ export const SAMPLE_CONFIG = {
         { key: 'AGENT_ISSUE_BACKEND', value: 'feishu', source: 'agent-graph.env', set: true },
         { key: 'AGENT_LANE2_AUTOMERGE', value: '1', source: 'agent-graph.env', set: true },
         { key: 'AGENT_LANE3_GLOBS', value: '', source: 'default', set: false },
+        { key: 'AGENT_DEPLOY_WORKFLOW', value: '', source: 'default', set: false },
+        { key: 'AGENT_SMOKE_CMD', value: 'orca-factory-driver doctor --json', source: 'agent-graph.env', set: true },
+        { key: 'AGENT_SELF_DEPLOY', value: '1', source: 'agent-graph.env', set: true },
       ],
     },
     {
@@ -51,6 +54,14 @@ export const SAMPLE_CONFIG = {
         { key: 'AGENT_LANE2_AUTOMERGE', value: '', source: 'default', set: false },
         { key: 'AGENT_LANE3_GLOBS', value: '', source: 'default', set: false },
       ],
+    },
+    {
+      name: 'ansible',
+      remote: 'github.com/vmxmy/ansible',
+      path: '/home/laoxu/ansible',
+      prefix: 'AN',
+      roles: [],
+      routing: [],
     },
   ],
   scheduler: [
