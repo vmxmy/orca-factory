@@ -80,7 +80,7 @@ if [ -f driver/go.mod ]; then
   fi
 fi
 
-echo "== ziikoo-driver-mod"   # 依据：OF-232，mod 的测试不在 CI 也不在 gate 里，OF-228/230/231 能合并只凭本地手动检查
+echo "== ziikoo-driver-mod"   # 依据：OF-232，mod 的测试不在 CI 也不在 gate 里，OF-228/230/231 能合并只凭本地手动检查；合并通道用服务 PATH，需含 claude（2026-10-28 已加入 path-linuxbrew.conf）
 mod_changed=0   # 只在改动命中 mod 目录时才跑
 while IFS= read -r f; do
   case "$f" in
@@ -90,7 +90,7 @@ while IFS= read -r f; do
 done <<< "${GATE_CHANGED:-}"
 if [ "$mod_changed" = 1 ]; then
   if ! command -v claude >/dev/null; then
-    echo "改动命中 .claude/skills/ziikoo-driver/，要用 claude plugin test 验证，但 PATH 里找不到 claude" >&2
+    echo "改动命中 .claude/skills/ziikoo-driver/，要用 claude plugin test 验证，但 PATH 里找不到 claude；合并通道在 driver 服务进程里跑 gate，要在 orca-factory-driver.service 的 PATH drop-in 里加入 claude 所在目录" >&2
     exit 1
   fi
   claude plugin test .claude/skills/ziikoo-driver
