@@ -105,6 +105,9 @@ var configRouting = []struct{ key, fallback string }{
 	{"AGENT_ISSUE_BACKEND", ""},
 	{"AGENT_LANE2_AUTOMERGE", ""},
 	{"AGENT_LANE3_GLOBS", ""},
+	{"AGENT_DEPLOY_WORKFLOW", ""},
+	{"AGENT_SMOKE_CMD", ""},
+	{"AGENT_SELF_DEPLOY", ""},
 }
 
 var configScheduler = []struct {

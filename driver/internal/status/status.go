@@ -36,6 +36,9 @@ type Ticket struct {
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
 	Stage string `json:"stage,omitempty"`
+	Title string `json:"title,omitempty"`
+	// Since is when the push cache first saw this owner, phase and stage.
+	Since time.Time `json:"since,omitzero"`
 }
 
 type Usage struct {

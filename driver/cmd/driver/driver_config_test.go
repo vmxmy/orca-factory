@@ -40,6 +40,7 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		"AGENT_TIER_DEFAULT='codex::low'",
 		"AGENT_TIER_STRONG='claude:claude-opus-5-5:high'",
 		"AGENT_ROLE_INTAKE='codex:gpt-6.1-sol:high'",
+		"AGENT_DEPLOY_WORKFLOW='Deploy to Cloudflare'",
 		"AGENT_ROLE_REVIEWER_CMD='env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -'",
 		"",
 	}, "\n"))
@@ -65,8 +66,9 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 	var snapshot struct {
 		Schema string `json:"schema"`
 		Repos  []struct {
-			Name  string `json:"name"`
-			Roles []role `json:"roles"`
+			Name    string  `json:"name"`
+			Roles   []role  `json:"roles"`
+			Routing []entry `json:"routing"`
 		} `json:"repos"`
 		Scheduler   []entry  `json:"scheduler"`
 		Environment []entry  `json:"environment"`
@@ -110,6 +112,22 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 
 	if len(snapshot.Repos) != 1 || snapshot.Repos[0].Name != "orca-factory" {
 		t.Fatalf("repos=%+v, want only orca-factory", snapshot.Repos)
+	}
+	routing := map[string]entry{}
+	for _, e := range snapshot.Repos[0].Routing {
+		routing[e.Key] = e
+	}
+	for key, want := range map[string]entry{
+		"AGENT_DEPLOY_WORKFLOW": {Key: "AGENT_DEPLOY_WORKFLOW", Value: routing["AGENT_DEPLOY_WORKFLOW"].Value, Source: "agent-graph.env", Set: true},
+		"AGENT_SMOKE_CMD":       {Key: "AGENT_SMOKE_CMD", Value: routing["AGENT_SMOKE_CMD"].Value, Source: "default"},
+		"AGENT_SELF_DEPLOY":     {Key: "AGENT_SELF_DEPLOY", Value: routing["AGENT_SELF_DEPLOY"].Value, Source: "default"},
+	} {
+		if got := routing[key]; got != want {
+			t.Fatalf("routing %s=%+v, want %+v", key, got, want)
+		}
+	}
+	if v := routing["AGENT_DEPLOY_WORKFLOW"].Value; v == nil || *v != "Deploy to Cloudflare" {
+		t.Fatalf("deploy workflow value: %+v", routing["AGENT_DEPLOY_WORKFLOW"])
 	}
 	wantRoles := []role{
 		{"worker_default", "codex", "", "", "AGENT_TIER_DEFAULT", "codex::low"},
