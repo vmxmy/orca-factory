@@ -199,14 +199,11 @@ const openDetail = async ($: Engine, id: string): Promise<void> => {
   await fetchTimeline($, id)
 }
 
-const openPipeline = async ($: Engine): Promise<void> => {
-  await Promise.all([fetchRuntime($), fetchHealth($)])
-}
-
-const fetchPage = async ($: Engine, current: Page): Promise<void> => {
+// doctor can take tens of seconds, so whatever needs only the tickets runs once status lands.
+const fetchPage = async ($: Engine, current: Page, listed = async () => {}): Promise<void> => {
   if (groupOf(current) !== 'run') return
   const opened = current === 'pipeline' ? await read($, detail) : ''
-  await Promise.all([openPipeline($), ...(opened === '' ? [] : [fetchTimeline($, opened)])])
+  await Promise.all([fetchRuntime($).then(listed), fetchHealth($), ...(opened === '' ? [] : [fetchTimeline($, opened)])])
 }
 
 let poll: Timer | undefined
@@ -224,11 +221,42 @@ const ensurePolling = ($: Engine) => {
   poll ??= $.clock.every(POLL_MS, () => void pollRuntime($))
 }
 
+// Moving focus is a convenience, so a move that fails is logged instead of failing the hook that asked for it.
+// The host answers a refused move with { deny }; `claude plugin test` has no focus ring and rejects every call.
+const moveFocus = async ($: Engine, key: string): Promise<void> => {
+  const { deny } = await $.ui.focus({ requestId: PANE, key }).catch((error: unknown) => ({ deny: message(error) }))
+  if (deny !== undefined) $.ui.log(`focus ${key} not moved: ${deny}`, { to: 'debug' })
+}
+
 // autoFocus acts only when the pane takes the keyboard and a press leaves the ring where it was, so the field is focused here.
-// A host without a focus ring rejects the move; like a denied move, the field still shows and Tab reaches it.
 const editFilter = async ($: Engine): Promise<void> => {
   await update($, filter, wanted => ({ ...wanted, editing: true }))
-  await $.ui.focus({ requestId: PANE, key: 'filter-input' }).catch((error: unknown) => ({ deny: message(error) }))
+  await moveFocus($, 'filter-input')
+}
+
+const shownTickets = (one: Repo, tickets: RuntimeTicket[], wanted: Filter) =>
+  tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
+
+// Called only when the list appears, never from a poll, so it does not pull the ring away from where the person is.
+const focusTicket = async ($: Engine, id?: string): Promise<void> => {
+  const wanted = await read($, filter)
+  if ((await read($, page)) !== 'pipeline' || (await read($, detail)) !== '' || wanted.editing) return
+  const state = await read($, snapshot)
+  const status = await read($, runtime)
+  if (state.kind !== 'ready' || status.kind !== 'ready') return
+  const shown = state.config.repos.flatMap(one => shownTickets(one, status.value.tickets, wanted)).map(t => t.identifier)
+  const target = shown.find(one => one === id) ?? shown[0]
+  if (target !== undefined) await moveFocus($, `ticket-${target}`)
+}
+
+const closeDetail = async ($: Engine, id: string): Promise<void> => {
+  await update($, detail, () => '')
+  await focusTicket($, id)
+}
+
+const submitFilter = async ($: Engine, text: string): Promise<void> => {
+  await update($, filter, () => ({ text, editing: false }))
+  await focusTicket($)
 }
 
 const choose = async ($: Engine, next: Page): Promise<void> => {
@@ -236,7 +264,7 @@ const choose = async ($: Engine, next: Page): Promise<void> => {
   await update($, detail, () => '')
   await update($, filter, () => NO_FILTER)
   ensurePolling($)
-  await fetchPage($, next)
+  await fetchPage($, next, () => focusTicket($))
 }
 
 const refreshPage = async ($: Engine, current: Page): Promise<void> => {
@@ -502,7 +530,7 @@ const pipelinePage = (
       {trendView(ui, samples, state.fetchedAt, cols)}
       {segment !== null && <ui.Box marginTop={1}>{trackLabels(ui, segment)}</ui.Box>}
       {config.repos.map(one => {
-        const own = tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
+        const own = shownTickets(one, tickets, wanted)
         const nodes = deploys(one.routing) ? TRACK.length : TRACK.length - 1
         const list = badges(one, checks)
         const onEdge = displayWidth(`${one.name} ${one.prefix}`) + badgesWidth(list) + SECTION_EDGE_FRAME <= cols
@@ -549,7 +577,7 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: TITLE, focus: true })
     ensurePolling($)
     await fetchConfig($)
-    await fetchPage($, await read($, page))
+    await fetchPage($, await read($, page), () => focusTicket($))
     return { text: '已打开 Driver 面板。' }
   })
 
@@ -567,7 +595,8 @@ export const register: Register = on => {
     const timelineState = await read($, timeline)
     const wanted = await read($, filter)
     const Input: InputElement | undefined = 'Input' in resolved ? resolved.Input : undefined
-    const bar = (placeholder: string) => filterBar(ui, Input, wanted, placeholder, () => editFilter($), next => update($, filter, () => next))
+    const bar = (placeholder: string) =>
+      filterBar(ui, Input, wanted, placeholder, () => editFilter($), next => update($, filter, () => next), text => submitFilter($, text))
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
     const selected = config?.repos.find(one => one.name === chosen) ?? config?.repos[0]
@@ -632,7 +661,7 @@ export const register: Register = on => {
             current === 'pipeline' &&
             (opened === ''
               ? pipelinePage(ui, state.config, runtimeState, healthState, samples, cols, wanted, bar('票号或标题'), id => openDetail($, id))
-              : detailView(ui, opened, runtimeState, state.config.repos, timelineState, () => update($, detail, () => '')))}
+              : detailView(ui, opened, runtimeState, state.config.repos, timelineState, () => closeDetail($, opened)))}
           {state.kind === 'ready' && current === 'health' && healthPage(ui, state.config, healthState)}
           {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols, wanted, bar('变量名'))}
         </ui.Box>

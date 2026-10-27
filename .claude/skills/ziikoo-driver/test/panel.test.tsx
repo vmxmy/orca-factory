@@ -32,11 +32,21 @@ const ran = (result: Partial<ProcessRunResult>): ProcessRunResult => ({
 
 type Answer = ProcessRunResult | ((nth: number) => ProcessRunResult)
 
+// The test host cannot answer a plugin's $.ui.focus, neither from a test hook nor from an inline plugin beneath,
+// so every move fails and the panel's debug line for it names the key it tried.
+const FOCUS_LOG = /^focus (\S+) not moved: /
+
 const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, number> = {}) => {
   const calls: string[][] = []
+  const focused: string[] = []
   const clock = mock.clock(on, { now: NOW })
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.log', (_, e) => {
+    const key = FOCUS_LOG.exec(e.text)?.[1]
+    if (key !== undefined) focused.push(key)
+    return { value: undefined }
+  })
   on('ui.panes', () => ({
     value: [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
   }))
@@ -50,7 +60,7 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, A
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(calls.filter(argv => subOf(argv) === sub).length) : answer }
   })
-  return { calls, clock }
+  return { calls, clock, focused }
 }
 
 const runCommand = {
@@ -705,12 +715,35 @@ test('流水线按票号或标题筛选，没有匹配的项目写无匹配', as
   await ui.input({ key: 'filter-input', text: '冒烟' })
   expect(await ui.findAll({ key: 'filter-input' })).toHaveLength(0)
   expect(await ticketRows(ui)).toEqual(['pipeline-OF-1'])
-  expect((await exactText(ui, '筛选：冒烟')).map(one => one.props.dimColor)).toEqual([true])
+  expect((await ui.find({ key: 'filter' }))?.props.label).toBe('筛选：冒烟')
+  expect(await exactText(ui, '筛选：冒烟')).toHaveLength(0)
 
   await ui.press({ key: 'filter' })
+  expect((await ui.find({ key: 'filter-input' }))?.props.submitLabel).toBe('确定')
   await ui.input({ key: 'filter-input', text: '' })
   expect((await ticketRows(ui)).length).toBe(5)
-  expect(await ui.findAll({ type: 'Text', text: /^筛选：/ })).toHaveLength(0)
+  expect((await ui.find({ key: 'filter' }))?.props.label).toBe('筛选')
+  await ui.unmount()
+})
+
+test('打开面板、从详情返回、筛选提交后焦点落在票上，10 秒轮询不移动焦点', async ($, on) => {
+  const { clock, focused } = logsEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  expect(focused).toEqual(['ticket-OF-1'])
+
+  await clock.advance(10_000)
+  await clock.settle()
+  expect(focused).toEqual(['ticket-OF-1'])
+
+  await ui.press({ key: 'ticket-OF-3' })
+  await ui.press({ key: 'detail-back' })
+  expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3'])
+
+  await ui.press({ key: 'filter' })
+  expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3', 'filter-input'])
+  await ui.input({ key: 'filter-input', text: 'ZW' })
+  expect(focused).toEqual(['ticket-OF-1', 'ticket-OF-3', 'filter-input', 'ticket-ZW-7'])
   await ui.unmount()
 })
 
@@ -749,4 +782,21 @@ test('帮助条随视图变化', async ($, on) => {
   await ui.press({ key: 'page-scheduler' })
   expect(await help()).toEqual([HELP.other])
   await ui.unmount()
+})
+
+test('doctor 还没读完时焦点已落在第一张票上', async ($, on) => {
+  const { clock, focused } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { doctor: 10_000 },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  expect(focused).toEqual(['ticket-OF-1'])
+
+  await clock.advance(10_000)
+  await opened
+  expect(focused).toEqual(['ticket-OF-1'])
 })

@@ -272,24 +272,26 @@ export const filterBar = (
   placeholder: string,
   edit: () => void,
   set: (next: Filter) => void,
+  submit: (text: string) => void,
 ) => (
   <ui.Box key="filter-bar" flexDirection="row" gap={1}>
-    <ui.Button key="filter" label="筛选" hotkey="f" plain onPress={edit} />
-    {filter.editing && Input ? (
+    <ui.Button
+      key="filter"
+      label={filter.text === '' || filter.editing ? '筛选' : `筛选：${filter.text}`}
+      hotkey="f"
+      plain
+      onPress={edit}
+    />
+    {filter.editing && Input && (
       <Input
         key="filter-input"
         autoFocus
         value={filter.text}
         placeholder={placeholder}
+        submitLabel="确定"
         onInput={text => set({ text, editing: true })}
-        onSubmit={text => set({ text, editing: false })}
+        onSubmit={submit}
       />
-    ) : (
-      filter.text !== '' && (
-        <ui.Text dimColor wrap="truncate">
-          {`筛选：${filter.text}`}
-        </ui.Text>
-      )
     )}
   </ui.Box>
 )
