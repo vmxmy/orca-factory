@@ -22,6 +22,17 @@ const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff
 
 export const displayWidth = (text: string) => [...text].reduce((sum, ch) => sum + (WIDE.test(ch) ? 2 : 1), 0)
 
+// A Button holds only text, so its columns are padded to their width here instead of laid out by Boxes.
+export const fit = (text: string, width: number) => {
+  if (displayWidth(text) <= width) return text + ' '.repeat(width - displayWidth(text))
+  let kept = ''
+  for (const ch of text) {
+    if (displayWidth(kept + ch) > width - 1) break
+    kept += ch
+  }
+  return `${kept}…${' '.repeat(width - 1 - displayWidth(kept))}`
+}
+
 // Title and corner each sit two columns in from the border's ends; the title is padded by a space on both sides, the corner's chips pad themselves.
 export const SECTION_EDGE_FRAME = 6
 
@@ -151,26 +162,29 @@ export const reasonLine = (ui: Kit, t: RuntimeTicket) => {
   )
 }
 
-export const trackView = (ui: Kit, pos: Position, nodes: number, segment: number) => (
-  <ui.Box flexDirection="row" width={segment * TRACK.length} flexShrink={0}>
-    {Array.from({ length: nodes }, (_, i) => {
+// Texts only, to sit inside the row's Button; a repo without a deploy node pads to the full track width.
+export const trackView = (ui: Kit, pos: Position, nodes: number, segment: number) => {
+  const drawn = nodes + (nodes - 1) * (segment - 1)
+  return [
+    ...Array.from({ length: nodes }, (_, i) => {
       const done = pos.at !== null && i < pos.at
       const here = pos.at === i
-      return (
-        <ui.Box flexDirection="row">
-          <ui.Text color={done ? 'success' : here ? TONE_COLOR[pos.tone] : undefined} dimColor={!done && !here}>
-            {done ? '●' : here ? '◉' : '○'}
-          </ui.Text>
-          {i < nodes - 1 && (
-            <ui.Text color={done ? 'success' : undefined} dimColor={!done}>
-              {(done ? '━' : '─').repeat(segment - 1)}
-            </ui.Text>
-          )}
-        </ui.Box>
+      const node = (
+        <ui.Text color={done ? 'success' : here ? TONE_COLOR[pos.tone] : undefined} dimColor={!done && !here}>
+          {done ? '●' : here ? '◉' : '○'}
+        </ui.Text>
       )
-    })}
-  </ui.Box>
-)
+      if (i === nodes - 1) return [node]
+      const line = (
+        <ui.Text color={done ? 'success' : undefined} dimColor={!done}>
+          {(done ? '━' : '─').repeat(segment - 1)}
+        </ui.Text>
+      )
+      return [node, line]
+    }).flat(),
+    <ui.Text>{' '.repeat(segment * TRACK.length - drawn)}</ui.Text>,
+  ]
+}
 
 export const trackLabels = (ui: Kit, segment: number) => (
   <ui.Box flexDirection="row" marginLeft={SECTION_INSET / 2 + ROW.id}>
