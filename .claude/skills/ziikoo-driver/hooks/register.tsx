@@ -1,12 +1,12 @@
 import { atom, read, update } from 'claude-code'
 import type { ElementTable, EngineInterface, Register, Timer } from 'claude-code'
 
-import type { DriverConfig, EnvEntry, Fetched, Health, Page, Repo, Runtime, RuntimeTicket, SchedulerSetting, Snapshot } from '../types'
+import type { DriverConfig, EnvEntry, Fetched, Group, Health, Page, Repo, Runtime, RuntimeTicket, SchedulerSetting, Snapshot } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseConfig, routingSummary } from './config'
 import { parseHealth, parseRuntime } from './runtime'
 
 const PANE = 'ziikoo-driver'
-const TITLE = 'Driver 配置'
+const TITLE = 'Driver'
 const ARGV = ['orca-factory-driver', 'config', '--json']
 const RUNTIME_ARGV = ['orca-factory-driver', 'status', '--json']
 const HEALTH_ARGV = ['orca-factory-driver', 'doctor', '--json']
@@ -15,21 +15,39 @@ const WIDE_COLUMNS = 80
 const STDERR_LINES = 6
 const TOOL_KEYS = new Set(['go', 'gh', 'git', 'jq', 'claude', 'codex'])
 
-const PAGES: { id: Page; label: string; hotkey: string }[] = [
-  { id: 'overview', label: '概览', hotkey: '1' },
-  { id: 'models', label: '模型', hotkey: '2' },
-  { id: 'scheduler', label: '调度', hotkey: '3' },
-  { id: 'environment', label: '环境', hotkey: '4' },
-  { id: 'pipeline', label: '流水线', hotkey: '5' },
+const GROUPS: { id: Group; label: string; pages: { id: Page; label: string; hotkey: string }[] }[] = [
+  {
+    id: 'run',
+    label: '运行',
+    pages: [
+      { id: 'pipeline', label: '流水线', hotkey: '1' },
+      { id: 'health', label: '健康', hotkey: '2' },
+    ],
+  },
+  {
+    id: 'config',
+    label: '配置',
+    pages: [
+      { id: 'models', label: '模型', hotkey: '3' },
+      { id: 'scheduler', label: '调度', hotkey: '4' },
+      { id: 'environment', label: '环境', hotkey: '5' },
+    ],
+  },
 ]
+
+const groupOf = (current: Page): Group => {
+  const found = GROUPS.find(one => one.pages.some(tab => tab.id === current))
+  if (!found) throw new Error(`页 ${current} 不在任何页签组里`)
+  return found.id
+}
 
 const snapshot = atom({ plugin: 'ziikoo-driver', key: 'snapshot' } as const, { kind: 'loading' }, {
   shape: 'snapshot-3',
 })
-const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'overview', { shape: 'page-1' })
+const page = atom({ plugin: 'ziikoo-driver', key: 'page' } as const, 'pipeline', { shape: 'page-2' })
 const repo = atom({ plugin: 'ziikoo-driver', key: 'repo' } as const, '', { shape: 'repo-1' })
 const runtime = atom({ plugin: 'ziikoo-driver', key: 'runtime' } as const, { kind: 'loading' }, { shape: 'runtime-1' })
-const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-1' })
+const health = atom({ plugin: 'ziikoo-driver', key: 'health' } as const, { kind: 'loading' }, { shape: 'health-2' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock'>
 type Poller = Engine & Pick<EngineInterface, 'ui'>
@@ -83,6 +101,10 @@ const openPipeline = async ($: Engine): Promise<void> => {
   await Promise.all([fetchRuntime($), fetchHealth($)])
 }
 
+const fetchPage = async ($: Engine, current: Page): Promise<void> => {
+  if (groupOf(current) === 'run') await openPipeline($)
+}
+
 let poll: Timer | undefined
 
 const pollRuntime = async ($: Poller): Promise<void> => {
@@ -91,7 +113,7 @@ const pollRuntime = async ($: Poller): Promise<void> => {
     poll = undefined
     return
   }
-  if ((await read($, page)) === 'pipeline') await fetchRuntime($)
+  if (groupOf(await read($, page)) === 'run') await fetchRuntime($)
 }
 
 const ensurePolling = ($: Poller) => {
@@ -100,13 +122,12 @@ const ensurePolling = ($: Poller) => {
 
 const choose = async ($: Poller, next: Page): Promise<void> => {
   await update($, page, () => next)
-  if (next !== 'pipeline') return
   ensurePolling($)
-  await openPipeline($)
+  await fetchPage($, next)
 }
 
 const refreshPage = async ($: Engine, current: Page): Promise<void> => {
-  await Promise.all([refresh($), current === 'pipeline' ? openPipeline($) : undefined])
+  await Promise.all([refresh($), fetchPage($, current)])
 }
 
 const columns = (cols: number, fixed: number, share: number, max: number) => {
@@ -137,7 +158,47 @@ const clockTime = (ms: number) => {
   return [at.getHours(), at.getMinutes(), at.getSeconds()].map(n => String(n).padStart(2, '0')).join(':')
 }
 
-const overviewPage = (ui: Kit, config: DriverConfig, fetchedAt: number) => {
+const CHECK_LABELS: Record<string, string> = {
+  service_path: '服务 PATH',
+  version: '运行版本',
+  maintenance: '维护状态',
+  checkouts: '项目检出',
+  sync_prs: 'core 同步',
+  ledger: '账本',
+  launches: '重复启动',
+  credentials: '凭证',
+}
+
+const CHECK_STATUS: Record<string, { text: string; color?: string }> = {
+  ok: { text: '通过' },
+  warn: { text: '注意', color: 'warning' },
+  fail: { text: '失败', color: 'error' },
+  unknown: { text: '未知', color: 'warning' },
+}
+
+const CHECK_ORDER = Object.keys(CHECK_LABELS)
+
+const checkRank = (id: string) => {
+  const at = CHECK_ORDER.indexOf(id)
+  return at === -1 ? CHECK_ORDER.length : at
+}
+
+const doctorChecks = (ui: Kit, state: Fetched<Health>) => {
+  if (state.kind === 'loading') return <ui.Text dimColor>正在运行 orca-factory-driver doctor --json …</ui.Text>
+  if (state.kind === 'failed') return failedView(ui, state)
+  return [...state.value.checks].sort((a, b) => checkRank(a.id) - checkRank(b.id)).map(one => {
+    const status = CHECK_STATUS[one.status] ?? { text: one.status, color: 'warning' }
+    return (
+      <ui.Box key={`check-${one.id}`} flexDirection="row">
+        {cell(ui, 12, CHECK_LABELS[one.id] ?? one.id, true)}
+        {cell(ui, 6, status.text, status.color === undefined, status.color)}
+        <ui.Text wrap="truncate">{one.reason}</ui.Text>
+      </ui.Box>
+    )
+  })
+}
+
+const healthPage = (ui: Kit, config: DriverConfig, checks: Fetched<Health>) => {
   const { overview, problems } = config
   return (
     <ui.Box flexDirection="column">
@@ -145,9 +206,8 @@ const overviewPage = (ui: Kit, config: DriverConfig, fetchedAt: number) => {
       {field(ui, '服务', overview.service, overview.service === 'active' ? 'success' : 'warning')}
       {field(ui, '维护模式', overview.maintenance, overview.maintenance === 'running' ? undefined : 'warning')}
       {field(ui, '状态快照', overview.snapshot)}
-      {field(ui, '纳管仓库', `${config.repos.length} 个`)}
-      {field(ui, '工厂目录', overview.factoryRoot || '未配置')}
-      {field(ui, '取数时间', clockTime(fetchedAt))}
+      <ui.Text bold>doctor 检查</ui.Text>
+      {doctorChecks(ui, checks)}
       <ui.Text bold>问题</ui.Text>
       {problems.length === 0 && <ui.Text dimColor>无</ui.Text>}
       {problems.map(problem => (
@@ -218,11 +278,13 @@ const envGroup = (entry: EnvEntry) => {
   return TOOL_KEYS.has(entry.key) ? '工具路径' : '服务环境与代理'
 }
 
-const environmentPage = (ui: Kit, entries: EnvEntry[], cols: number) => {
+const environmentPage = (ui: Kit, config: DriverConfig, cols: number) => {
   const groups = ['driver.env', '服务环境与代理', '工具路径']
   const width = Math.min(30, Math.max(10, cols - 20))
+  const entries = config.environment
   return (
     <ui.Box flexDirection="column">
+      <ui.Box marginBottom={1}>{field(ui, '工厂目录', config.overview.factoryRoot || '未配置')}</ui.Box>
       {groups.map(group => (
         <ui.Box flexDirection="column" marginBottom={1}>
           <ui.Text bold>{group}</ui.Text>
@@ -343,7 +405,8 @@ type Badge = { text: string; color?: string }
 const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
   if (state.kind === 'loading') return [{ text: '检查中…' }]
   if (state.kind === 'failed') return [{ text: 'doctor 读取失败', color: 'warning' }]
-  const checkout = state.value.checkouts.find(one => one.path === repo.path)
+  const { checkouts, syncPrs } = state.value
+  const checkout = checkouts?.find(one => one.path === repo.path)
   const out: Badge[] = []
   if (!checkout) out.push({ text: '检出未知', color: 'warning' })
   else {
@@ -351,7 +414,11 @@ const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
     if (checkout.behind > 0) out.push({ text: `落后 ${checkout.behind}`, color: 'warning' })
     if (!checkout.clean) out.push({ text: '⚠ 未提交改动', color: 'warning' })
   }
-  const pr = state.value.syncPrs.find(one => one.project === repo.name)
+  if (syncPrs === null) {
+    out.push({ text: 'core 未知', color: 'warning' })
+    return out
+  }
+  const pr = syncPrs.find(one => one.project === repo.name)
   out.push(pr ? { text: `core 待同步 #${pr.number}`, color: 'warning' } : { text: 'core ✓' })
   return out
 }
@@ -386,15 +453,9 @@ const pipelinePage = (ui: Kit, config: DriverConfig, state: Fetched<Runtime>, ch
   const inFlight = tickets.filter(t => t.stage === undefined).length
   const barriers = tickets.filter(t => t.deployment && t.deployment.state !== 'passed').length
   const waiting = tickets.filter(t => t.stage === 'candidate').length
-  const fresh = state.value.state === 'ok'
   return (
     <ui.Box flexDirection="column">
-      <ui.Box flexDirection="row" justifyContent="space-between">
-        <ui.Text>{`在途 ${inFlight}   部署屏障 ${barriers}   待领 ${waiting}`}</ui.Text>
-        <ui.Text wrap="truncate" color={fresh ? undefined : 'warning'} dimColor={fresh}>
-          {freshness(state.value, state.fetchedAt)}
-        </ui.Text>
-      </ui.Box>
+      <ui.Text>{`在途 ${inFlight}   部署屏障 ${barriers}   待领 ${waiting}`}</ui.Text>
       {wide && (
         <ui.Box flexDirection="row" marginLeft={2} marginTop={1}>
           {cell(ui, 10, '')}
@@ -421,6 +482,25 @@ const pipelinePage = (ui: Kit, config: DriverConfig, state: Fetched<Runtime>, ch
   )
 }
 
+const cornerNote = (ui: Kit, group: Group, config: Snapshot, state: Fetched<Runtime>) => {
+  if (group === 'run' && state.kind === 'ready') {
+    const fresh = state.value.state === 'ok'
+    return (
+      <ui.Text wrap="truncate" color={fresh ? undefined : 'warning'} dimColor={fresh}>
+        {freshness(state.value, state.fetchedAt)}
+      </ui.Text>
+    )
+  }
+  if (group === 'config' && config.kind === 'ready') {
+    return (
+      <ui.Text wrap="truncate" dimColor>
+        {`取数于 ${clockTime(config.fetchedAt)}`}
+      </ui.Text>
+    )
+  }
+  return undefined
+}
+
 const failureTitle = (exitCode: number | null) => {
   if (exitCode === null) return '无法运行 orca-factory-driver'
   return exitCode === 0 ? '输出无法解析' : `取数失败（退出码 ${exitCode}）`
@@ -445,7 +525,7 @@ export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ziikoo-driver',
-      description: '打开 Driver 配置面板（概览、模型、调度、环境、流水线）',
+      description: '打开 Driver 面板（运行：流水线、健康；配置：模型、调度、环境）',
       immediate: true,
     })
     return next(e)
@@ -455,7 +535,8 @@ export const register: Register = on => {
     await $.ui.open({ id: PANE, title: TITLE, focus: true })
     ensurePolling($)
     await fetchConfig($)
-    return { text: '已打开 Driver 配置面板。' }
+    await fetchPage($, await read($, page))
+    return { text: '已打开 Driver 面板。' }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -469,22 +550,28 @@ export const register: Register = on => {
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
     const selected = config?.repos.find(one => one.name === chosen) ?? config?.repos[0]
+    const group = groupOf(current)
 
     return (
       <ui.Box flexDirection="column" width={cols}>
         <ui.Box flexDirection="row" justifyContent="space-between">
-          <ui.Box flexDirection="row" gap={1} flexShrink={0}>
-            {PAGES.map(one => {
-              const press = () => choose($, one.id)
-              return one.id === current ? (
-                <ui.Button key={`page-${one.id}`} label={one.label} hotkey={one.hotkey} variant="primary" onPress={press} />
-              ) : (
-                <ui.Button key={`page-${one.id}`} label={one.label} hotkey={one.hotkey} plain onPress={press} />
-              )
-            })}
+          <ui.Box flexDirection="row" gap={3} flexShrink={0}>
+            {GROUPS.map(tabs => (
+              <ui.Box flexDirection="row" gap={1}>
+                <ui.Text bold={tabs.id === group} dimColor={tabs.id !== group}>{`${tabs.label} ▸`}</ui.Text>
+                {tabs.pages.map(one => {
+                  const press = () => choose($, one.id)
+                  return one.id === current ? (
+                    <ui.Button key={`page-${one.id}`} label={one.label} hotkey={one.hotkey} variant="primary" onPress={press} />
+                  ) : (
+                    <ui.Button key={`page-${one.id}`} label={one.label} hotkey={one.hotkey} plain onPress={press} />
+                  )
+                })}
+              </ui.Box>
+            ))}
           </ui.Box>
           <ui.Box flexDirection="row" gap={1} marginLeft={1}>
-            {config && <ui.Text dimColor wrap="truncate">{`${config.overview.build.slice(0, 7)} · ${config.overview.service}`}</ui.Text>}
+            {cornerNote(ui, group, state, runtimeState)}
             <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refreshPage($, current)} />
           </ui.Box>
         </ui.Box>
@@ -506,11 +593,11 @@ export const register: Register = on => {
         <ui.Box marginTop={1} flexDirection="column">
           {state.kind === 'loading' && <ui.Text dimColor>正在读取 orca-factory-driver config --json …</ui.Text>}
           {state.kind === 'failed' && failedView(ui, state)}
-          {state.kind === 'ready' && current === 'overview' && overviewPage(ui, state.config, state.fetchedAt)}
           {state.kind === 'ready' && current === 'models' && modelsPage(ui, selected, cols)}
           {state.kind === 'ready' && current === 'scheduler' && schedulerPage(ui, state.config.scheduler, cols)}
-          {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config.environment, cols)}
           {state.kind === 'ready' && current === 'pipeline' && pipelinePage(ui, state.config, runtimeState, healthState, cols)}
+          {state.kind === 'ready' && current === 'health' && healthPage(ui, state.config, healthState)}
+          {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols)}
         </ui.Box>
         <ui.Text dimColor wrap="truncate">1–5 切页 · r 刷新 · Tab 切换按钮 · Esc 回到输入框</ui.Text>
       </ui.Box>

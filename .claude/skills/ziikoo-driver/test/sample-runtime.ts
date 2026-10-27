@@ -35,6 +35,7 @@ export const SAMPLE_DOCTOR = {
       },
     },
     sync_prs: { status: 'warn', reason: 'ansible #12 待合并', details: { prs: [{ project: 'ansible', number: 12 }] } },
+    version: { status: 'ok', reason: '运行版本与 factory origin/main 一致', details: {} },
   },
   errors: [],
 }

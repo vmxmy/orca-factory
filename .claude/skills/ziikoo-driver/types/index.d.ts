@@ -72,7 +72,9 @@ export type Snapshot =
   | { kind: 'ready'; config: DriverConfig; fetchedAt: number }
   | { kind: 'failed'; exitCode: number | null; stderr: string }
 
-export type Page = 'overview' | 'models' | 'scheduler' | 'environment' | 'pipeline'
+export type Page = 'pipeline' | 'health' | 'models' | 'scheduler' | 'environment'
+
+export type Group = 'run' | 'config'
 
 export type Deployment = { queueId: string; sha: string; workflow?: string; state: string; reason?: string }
 
@@ -92,7 +94,13 @@ export type Runtime = { state: string; generatedAt: number; tickets: RuntimeTick
 
 export type Checkout = { path: string; branch: string; clean: boolean; behind: number }
 
-export type Health = { checkouts: Checkout[]; syncPrs: { project: string; number: number }[] }
+export type DoctorCheck = { id: string; status: string; reason: string }
+
+export type Health = {
+  checkouts: Checkout[] | null
+  syncPrs: { project: string; number: number }[] | null
+  checks: DoctorCheck[]
+}
 
 export type Fetched<T> =
   | { kind: 'loading' }
