@@ -1,4 +1,4 @@
-import type { Alert, Checkout, Deployment, DoctorCheck, Health, Runtime, RuntimeTicket, TimelineEntry } from '../types'
+import type { Alert, Checkout, Deployment, DoctorCheck, Fetched, Health, Runtime, RuntimeTicket, TimelineEntry } from '../types'
 import { fields, flag, list, text } from './config'
 import type { Fields } from './config'
 
@@ -49,6 +49,49 @@ export const parseRuntime = (stdout: string): Runtime => {
     generatedAt: time(o, 'generatedAt', '输出'),
     tickets: list(o.tickets, 'tickets').map((one, i) => parseTicket(one, `tickets[${i}]`)),
   }
+}
+
+export const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === undefined).length
+
+const holdsDeploy = (t: RuntimeTicket) => t.deployment !== undefined && t.deployment.state !== 'passed'
+
+export const barriersOf = (tickets: RuntimeTicket[]) => tickets.filter(holdsDeploy).length
+
+export const statusLine = (state: Fetched<Runtime>): string | undefined => {
+  if (state.kind === 'loading') return undefined
+  if (state.kind === 'failed') return 'Driver 状态读取失败'
+  const { state: snapshot, tickets } = state.value
+  if (snapshot === 'unknown') return 'Driver 没有可用的快照'
+  const inFlight = inFlightOf(tickets)
+  const barriers = barriersOf(tickets)
+  return [
+    inFlight === 0 ? 'Driver 空闲' : `Driver 在途 ${inFlight}`,
+    ...(barriers === 0 ? [] : [`部署屏障 ${barriers}`]),
+    ...(snapshot === 'ok' ? [] : ['快照过期']),
+  ].join(' · ')
+}
+
+const ENTERED: { label: string; holds: (t: RuntimeTicket) => boolean }[] = [
+  { label: '已合并', holds: t => t.phase === '已合并' },
+  { label: '交给处置 Agent', holds: t => t.owner === '处置Agent' },
+  { label: '转人', holds: t => t.stage === 'human' },
+  { label: '部署暂停', holds: t => t.deployment?.state === 'paused' },
+  { label: '打回修改', holds: t => t.phase === '写 correction' },
+]
+
+// A ticket that was merged or held a deployment leaves the list once it is done; any other leaves for reasons the list cannot tell.
+const finished = (t: RuntimeTicket) => t.phase === '已合并' || holdsDeploy(t)
+
+export const noticeOf = (before: RuntimeTicket[], after: RuntimeTicket[]): string | undefined => {
+  const earlier = new Map(before.map(t => [t.identifier, t]))
+  const still = new Set(after.map(t => t.identifier))
+  const entered = after.flatMap(t => {
+    const was = earlier.get(t.identifier)
+    return ENTERED.filter(rule => rule.holds(t) && !(was && rule.holds(was))).map(rule => `${t.identifier} ${rule.label}`)
+  })
+  const left = before.filter(t => !still.has(t.identifier) && finished(t)).map(t => `${t.identifier} 已完成`)
+  const lines = [...entered, ...left]
+  return lines.length === 0 ? undefined : lines.join('；')
 }
 
 // doctor leaves details out of a check it could not probe, such as when project discovery fails.

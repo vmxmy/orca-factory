@@ -130,6 +130,7 @@ declare module 'claude-code' {
       detail: Shaped<string>
       timeline: Shaped<Fetched<Timeline>>
       filter: Shaped<string>
+      seen: Shaped<RuntimeTicket[] | null>
     }
   }
 }

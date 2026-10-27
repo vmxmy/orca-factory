@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { FoundElement } from 'claude-code/testing'
+import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
@@ -41,16 +41,33 @@ type Late = number | ((nth: number) => number | undefined)
 const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, Answer> = {}, lateMs: Record<string, Late> = {}) => {
   const calls: string[][] = []
   const focused: string[] = []
+  const statuses: (string | undefined)[] = []
+  const toasts: string[] = []
+  let isOpen = false
   const clock = mock.clock(on, { now: NOW })
+  on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.open', () => {
+    isOpen = true
+    return { value: { isPlaced: true } }
+  })
   on('ui.log', (_, e) => {
     const key = FOCUS_LOG.exec(e.text)?.[1]
     if (key !== undefined) focused.push(key)
     return { value: undefined }
   })
+  on('ui.status', (_, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  on('ui.toast', (_, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
   on('ui.panes', () => ({
-    value: [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }],
+    value: isOpen
+      ? [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }]
+      : [],
   }))
   // bash runs the logs pipeline, whose argv[1] is -c.
   const subOf = (argv: readonly string[]) => (argv[0] === 'bash' ? 'bash' : (argv[1] ?? ''))
@@ -64,7 +81,7 @@ const engine = (on: On, result: ProcessRunResult, bySubcommand: Record<string, A
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clock, focused }
+  return { calls, clock, focused, statuses, toasts }
 }
 
 const runCommand = {
@@ -301,7 +318,8 @@ test('加载动画画不上去时计时器自己停下', async ($, on) => {
 })
 
 test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) => {
-  const inFlight = [1, 4, 2]
+  // Each 61 seconds on the models page holds two background reads at 30 and 60 seconds, then the read on return.
+  const inFlight = [1, 4, 4, 4, 2, 2, 2]
   const { clock } = engine(on, ran({ stdout: sampleStdout }), {
     status: nth => ran({ stdout: JSON.stringify({ ...SAMPLE_STATUS, tickets: SAMPLE_STATUS.tickets.slice(0, inFlight[nth - 1]) }) }),
     doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
@@ -312,7 +330,7 @@ test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) =>
   expect((await exactText(ui, '·'.repeat(29))).map(one => one.props.dimColor)).toEqual([true])
   expect((await exactText(ui, '█')).map(one => one.props.color)).toEqual(['suggestion'])
 
-  for (const _ of inFlight.slice(1)) {
+  for (const _ of [1, 2]) {
     await ui.press({ key: 'page-models' })
     await clock.advance(61_000)
     await ui.press({ key: 'page-pipeline' })
@@ -859,4 +877,67 @@ test('doctor 还没读完时焦点已落在第一张票上', async ($, on) => {
   await clock.advance(10_000)
   await opened
   expect(focused).toEqual(['ticket-OF-1'])
+})
+
+const startSession = ($: Engine) =>
+  $.session.start({ cwd: '/home/laoxu/github/orca-factory', surface: 'terminal', isInteractive: true })
+
+const ticket = (identifier: string, more: Record<string, string> = {}) => ({
+  repo: '/home/laoxu/github/orca-factory',
+  identifier,
+  owner: '执行器',
+  phase: 'gate',
+  ...more,
+})
+
+const statusOf = (reads: unknown[][]) => (nth: number) =>
+  ran({ stdout: JSON.stringify({ ...SAMPLE_STATUS, tickets: reads[Math.min(nth, reads.length) - 1] }) })
+
+test('没有面板时会话开始即读 status 写状态栏，之后每 30 秒再读；第一次读取不弹提醒', async ($, on) => {
+  const { calls, clock, statuses, toasts } = engine(on, ran({ stdout: sampleStdout }), {
+    status: statusOf([SAMPLE_STATUS.tickets, []]),
+  })
+  await startSession($)
+  await clock.settle()
+  expect(subcommands(calls)).toEqual(['status'])
+  expect(statuses).toEqual(['Driver 在途 4 · 部署屏障 1'])
+  expect(toasts).toEqual([])
+
+  await clock.advance(30_000)
+  expect(subcommands(calls)).toEqual(['status', 'status'])
+  expect(statuses).toEqual(['Driver 在途 4 · 部署屏障 1', 'Driver 空闲'])
+  expect(toasts).toEqual(['OF-3 已完成'])
+})
+
+test('票进入已合并时弹出含票号的提醒，同一次两张票变化合成一条', async ($, on) => {
+  const { clock, toasts } = engine(on, ran({ stdout: sampleStdout }), {
+    status: statusOf([
+      [ticket('OF-1'), ticket('OF-2')],
+      [ticket('OF-1', { phase: '已合并' }), ticket('OF-2')],
+      [ticket('OF-2', { stage: 'human' })],
+    ]),
+  })
+  await startSession($)
+  await clock.advance(30_000)
+  expect(toasts).toEqual(['OF-1 已合并'])
+
+  await clock.advance(30_000)
+  expect(toasts).toEqual(['OF-1 已合并', 'OF-2 转人；OF-1 已完成'])
+})
+
+test('面板开着停在运行组时后台计时器不重复读取，切到配置组后照常读取', async ($, on) => {
+  const { calls, clock } = runtimeEngine(on)
+  const statusReads = () => subcommands(calls).filter(one => one === 'status').length
+  await startSession($)
+  await $.command.run(runCommand)
+  expect(statusReads()).toBe(2)
+
+  await clock.advance(30_000)
+  expect(statusReads()).toBe(5)
+
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+  await clock.advance(30_000)
+  expect(statusReads()).toBe(6)
+  await ui.unmount()
 })
