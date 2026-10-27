@@ -47,6 +47,7 @@ export const parseRuntime = (stdout: string): Runtime => {
   return {
     state: text(o, 'state', '输出'),
     generatedAt: time(o, 'generatedAt', '输出'),
+    nextScanAt: o.nextScanAt === undefined ? undefined : time(o, 'nextScanAt', '输出'),
     tickets: list(o.tickets, 'tickets').map((one, i) => parseTicket(one, `tickets[${i}]`)),
   }
 }

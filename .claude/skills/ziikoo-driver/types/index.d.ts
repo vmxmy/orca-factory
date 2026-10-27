@@ -92,7 +92,7 @@ export type RuntimeTicket = {
   deployment?: Deployment
 }
 
-export type Runtime = { state: string; generatedAt: number; tickets: RuntimeTicket[] }
+export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
 
 export type Checkout = { path: string; branch: string; clean: boolean; behind: number }
 

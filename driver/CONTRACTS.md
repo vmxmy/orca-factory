@@ -211,6 +211,12 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 三个录制文件原样来自 PR #420 的提交 `555e44b3a919eb472cffc0155e92616695fcb47a`。
 其 chat_id、用户和机器人 open_id、tenant_key 已脱敏，原始消息 ID、话题 ID 和字段结构保留。
 
+## driver status 快照
+
+`orca-factory-driver status --json` 输出 `status.Read` 的 `View`：`state`（`ok`、`stale`、`unknown`）、`generatedAt`、`tickets`，有 GitHub 用量时另有 `github`。票行字段见 `driver/README.md`「排查停止推进」。
+
+- `nextScanAt`（OF-238）：serve 计划下一次巡检（`scheduler.Serve` 调用 `Tick`）的时间，RFC3339 UTC，取自 `Scheduler.NextTickAt`，即上一轮 `Tick` 结束时的时钟加 `NextInterval`（自适应间隔，最长 3 分钟，见 `scheduler/adaptive.go`）。serve 每轮巡检后写入快照文件与实时观察缓存。`state` 不是 `ok` 时省略；serve 还没完成第一轮巡检、或写快照的 driver 早于本字段时也没有这个键。它只是观察，不改变调度，也不是恢复授权。`cmd/driver.TestStatusServeRecordsNextScan` 覆盖写出、两条读路径与过期省略。
+
 ## driver config 快照
 
 `orca-factory-driver config --json` 输出 driver 当前生效的模型、调度参数与环境，以及每项的来源（`driver-config-v1`）。字段名、取值和顺序以本节为准，消费方（如 Claude mod `/ziikoo-driver`）不自行解析配置文件。不带参数时输出同样内容的中文纯文本。

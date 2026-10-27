@@ -11,6 +11,7 @@ import (
 
 type Snapshot struct {
 	GeneratedAt time.Time `json:"generatedAt"`
+	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
 	Tickets     []Ticket  `json:"tickets"`
 	GitHub      Usage     `json:"github,omitzero"`
 }
@@ -96,9 +97,11 @@ const DefaultStaleAfter = 5 * time.Minute
 
 // View.GeneratedAt records the last successful full scheduler observation.
 // Partial writes retain it; zero means no scheduler observation is available.
+// View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
 	State       string    `json:"state"`
 	GeneratedAt time.Time `json:"generatedAt"`
+	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
 	Tickets     []Ticket  `json:"tickets"`
 	GitHub      Usage     `json:"github,omitzero"`
 }
@@ -118,6 +121,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 			if json.Unmarshal(data, &view) == nil && (!view.GeneratedAt.IsZero() || view.State == "unknown") {
 				normalize(&view, now)
 				view.State = observationState(view.GeneratedAt, now, staleAfter)
+				dropNextScanUnlessOK(&view)
 				return view
 			}
 		}
@@ -136,10 +140,19 @@ func Read(now time.Time, staleAfter time.Duration) View {
 		view.State = "stale"
 	}
 	view.GeneratedAt = snapshot.GeneratedAt
+	view.NextScanAt = snapshot.NextScanAt
 	if snapshot.Tickets != nil {
 		view.Tickets = snapshot.Tickets
 	}
 	view.GitHub = snapshot.GitHub
 	normalize(&view, now)
+	dropNextScanUnlessOK(&view)
 	return view
+}
+
+// A stale or unknown view comes from a serve that may no longer be scanning.
+func dropNextScanUnlessOK(view *View) {
+	if view.State != "ok" {
+		view.NextScanAt = time.Time{}
+	}
 }
