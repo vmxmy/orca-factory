@@ -269,7 +269,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
   - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `routing`：固定顺序的七个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- `routing`：固定顺序的十个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。

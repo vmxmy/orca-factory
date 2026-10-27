@@ -59,7 +59,9 @@ func push(now time.Time, update func(*View), observation bool) error {
 		}
 	}
 	observedAt := view.GeneratedAt
+	before := append([]Ticket(nil), view.Tickets...)
 	update(&view)
+	carryTickets(before, view.Tickets, now)
 	if observation {
 		observedAt = now
 	}
@@ -84,6 +86,27 @@ func push(now time.Time, update func(*View), observation bool) error {
 		return errors.New("cannot encode status")
 	}
 	return os.Rename(file.Name(), path)
+}
+
+// carryTickets keeps each row's title and phase start across rewrites, which
+// rebuild rows from the ledger or from an executor that knows neither.
+func carryTickets(before, after []Ticket, now time.Time) {
+	previous := make(map[[2]string]Ticket, len(before))
+	for _, t := range before {
+		previous[[2]string{t.Repo, t.Identifier}] = t
+	}
+	for i := range after {
+		t := &after[i]
+		old, ok := previous[[2]string{t.Repo, t.Identifier}]
+		if t.Title == "" {
+			t.Title = old.Title
+		}
+		if ok && !old.Since.IsZero() && old.Owner == t.Owner && old.Phase == t.Phase && old.Stage == t.Stage {
+			t.Since = old.Since
+		} else {
+			t.Since = now
+		}
+	}
 }
 
 func observationState(observedAt, now time.Time, staleAfter time.Duration) string {

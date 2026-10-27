@@ -141,3 +141,33 @@ func TestPushedObservationHonorsConfiguredStaleness(t *testing.T) {
 		t.Fatalf("unexpired pushed observation rejected: %s", got.State)
 	}
 }
+
+func TestPushCarriesTitleAndPhaseSince(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	row := func(phase, title string) Ticket {
+		return Ticket{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: phase, Title: title}
+	}
+	read := func() Ticket {
+		t.Helper()
+		var view View
+		data, err := os.ReadFile(PushPath())
+		if err != nil || json.Unmarshal(data, &view) != nil || len(view.Tickets) != 1 {
+			t.Fatalf("status cache: %s %v", data, err)
+		}
+		return view.Tickets[0]
+	}
+	PushObservation(start, func(v *View) { v.Tickets = []Ticket{row("gate", "冒烟测试")} })
+	if got := read(); !got.Since.Equal(start) || got.Title != "冒烟测试" {
+		t.Fatalf("first observation: %+v", got)
+	}
+	PushObservation(start.Add(time.Minute), func(v *View) { v.Tickets = []Ticket{row("gate", "")} })
+	if got := read(); !got.Since.Equal(start) || got.Title != "冒烟测试" {
+		t.Fatalf("same phase after rebuild: %+v", got)
+	}
+	Push(start.Add(2*time.Minute), func(v *View) { SetTicket(v, row("审查", ""), true) })
+	if got := read(); !got.Since.Equal(start.Add(2*time.Minute)) || got.Title != "冒烟测试" || got.Phase != "审查" {
+		t.Fatalf("phase change: %+v", got)
+	}
+}

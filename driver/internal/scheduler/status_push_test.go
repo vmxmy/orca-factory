@@ -32,7 +32,7 @@ func (b *pushBackend) Launch(ctx context.Context, ticket Ticket) error {
 }
 func TestStatusFilePush(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	f := &fakeBackend{tickets: []Ticket{{ID: "one", Identifier: "ZII-891", Repo: "a", Candidate: true}}}
+	f := &fakeBackend{tickets: []Ticket{{ID: "one", Identifier: "ZII-891", Repo: "a", Title: "冒烟测试", Candidate: true}}}
 	s := setup(f)
 	s.Backend = &pushBackend{f, t}
 	if err := s.Tick(context.Background()); err != nil {
@@ -43,7 +43,7 @@ func TestStatusFilePush(t *testing.T) {
 		t.Fatal(err)
 	}
 	var view status.View
-	if json.Unmarshal(data, &view) != nil || len(view.Tickets) != 1 || !view.GeneratedAt.Equal(s.Now()) {
+	if json.Unmarshal(data, &view) != nil || len(view.Tickets) != 1 || !view.GeneratedAt.Equal(s.Now()) || view.Tickets[0].Title != "冒烟测试" || view.Tickets[0].Since.IsZero() {
 		t.Fatalf("tick end: %s", data)
 	}
 }
