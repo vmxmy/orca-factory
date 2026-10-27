@@ -79,3 +79,20 @@ if [ -f driver/go.mod ]; then
     exit 1
   fi
 fi
+
+echo "== ziikoo-driver-mod"   # 依据：OF-232，mod 的测试不在 CI 也不在 gate 里，OF-228/230/231 能合并只凭本地手动检查
+mod_changed=0   # 只在改动命中 mod 目录时才跑
+while IFS= read -r f; do
+  case "$f" in
+    *.md) ;;
+    .claude/skills/ziikoo-driver/*) mod_changed=1 ;;
+  esac
+done <<< "${GATE_CHANGED:-}"
+if [ "$mod_changed" = 1 ]; then
+  if ! command -v claude >/dev/null; then
+    echo "改动命中 .claude/skills/ziikoo-driver/，要用 claude plugin test 验证，但 PATH 里找不到 claude" >&2
+    exit 1
+  fi
+  claude plugin test .claude/skills/ziikoo-driver
+  claude plugin validate .claude/skills/ziikoo-driver
+fi
