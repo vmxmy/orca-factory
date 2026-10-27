@@ -691,7 +691,7 @@ test('按下票号进入详情，时间线按执行器日志列出中文事件',
 const issueRows = async (ui: Drawing) =>
   (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('issue-')).map(one => one.text)
 
-test('时间线下的最近异常框按时间列出最近 5 条失败命令、出错步骤与打回', async ($, on) => {
+test('时间线下的最近异常框按时间列出最近 5 条失败命令、出错步骤与打回，同一次失败的命令与步骤合成一行', async ($, on) => {
   timelineEngine(on, ran({ stdout: SAMPLE_LOGS + SAMPLE_ISSUE_LOGS }))
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
@@ -700,11 +700,11 @@ test('时间线下的最近异常框按时间列出最近 5 条失败命令、�
   expect(await exactText(ui, '最近异常')).toHaveLength(1)
   const rows = await issueRows(ui)
   expect(rows.map(row => row.slice(8))).toEqual([
-    '打回：worker failed FAIL: approach=head=deca23b files=scripts/pipeline-smoke.txt | reason=worker failed | evidence=worker_done outcome=failed',
     'orca 超时',
     'gate 出错',
     'reviewer 出错 结论 red',
     '打回：reviewer red FAIL: approach=head=1a2b3c4 | reason=reviewer red',
+    'open-pr 出错 pull request create failed: GraphQL: No commits between main and feat',
   ])
   for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   expect((await exactText(ui, 'orca 超时')).map(one => one.props.color)).toEqual(['error'])

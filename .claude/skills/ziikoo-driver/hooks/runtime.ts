@@ -218,9 +218,24 @@ export const parseTimeline = (stdout: string): Omit<Timeline, 'id'> => {
       const show = MESSAGES[loose(o, 'msg')]
       return show ? [{ at, ...show(o) }] : []
     }),
-    issues: lines.flatMap(({ at, o }): LogIssue[] => {
-      const issue = ISSUES[loose(o, 'msg')]?.(o)
-      return issue ? [{ at, ...issue }] : []
-    }),
+    issues: pairFailures(
+      lines.flatMap(({ at, o }) => {
+        const issue = ISSUES[loose(o, 'msg')]?.(o)
+        return issue ? [{ at, msg: loose(o, 'msg'), ...issue }] : []
+      }),
+    ),
   }
 }
+
+// A step that fails logs its failed command first, within the same second; one row names the step and keeps the
+// command's stderr, so one failure does not take two of the few rows shown.
+const PAIR_MS = 1_000
+
+const pairFailures = (issues: (LogIssue & { msg: string })[]): LogIssue[] =>
+  issues
+    .reduce<(LogIssue & { msg: string })[]>((kept, one) => {
+      const last = kept.at(-1)
+      if (last?.msg !== 'external command' || one.msg !== 'external.end' || one.at - last.at > PAIR_MS) return [...kept, one]
+      return [...kept.slice(0, -1), { ...one, detail: one.detail ?? last.detail }]
+    }, [])
+    .map(({ msg, ...issue }) => issue)
