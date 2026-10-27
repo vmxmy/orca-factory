@@ -112,8 +112,6 @@ export type TimelineEntry = { at: number; label: string; alert?: Alert }
 
 export type Timeline = { id: string; entries: TimelineEntry[] }
 
-export type Filter = { text: string; editing: boolean }
-
 export type Fetched<T> =
   | { kind: 'loading' }
   | { kind: 'ready'; value: T; fetchedAt: number }
@@ -131,7 +129,7 @@ declare module 'claude-code' {
       trend: Shaped<TrendSample[]>
       detail: Shaped<string>
       timeline: Shaped<Fetched<Timeline>>
-      filter: Shaped<Filter>
+      filter: Shaped<string>
     }
   }
 }

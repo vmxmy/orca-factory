@@ -7,7 +7,6 @@ import type {
   EnvEntry,
   FetchKind,
   Fetched,
-  Filter,
   Group,
   Health,
   Page,
@@ -100,8 +99,7 @@ const busy = atom({ plugin: 'ziikoo-driver', key: 'busy' } as const, [], { shape
 const trend = atom({ plugin: 'ziikoo-driver', key: 'trend' } as const, [], { shape: 'trend-1' })
 const detail = atom({ plugin: 'ziikoo-driver', key: 'detail' } as const, '', { shape: 'detail-1' })
 const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-1' })
-const NO_FILTER: Filter = { text: '', editing: false }
-const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, NO_FILTER, { shape: 'filter-1' })
+const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui'>
 
@@ -222,25 +220,20 @@ const ensurePolling = ($: Engine) => {
 }
 
 // Moving focus is a convenience, so a move that fails is logged instead of failing the hook that asked for it.
-// The host answers a refused move with { deny }; `claude plugin test` has no focus ring and rejects every call.
 const moveFocus = async ($: Engine, key: string): Promise<void> => {
+  // The documented refusal is { deny }; the catch is for `claude plugin test`, which has no implementation for a
+  // plugin's ui.focus and throws. Both only reach the debug log.
   const { deny } = await $.ui.focus({ requestId: PANE, key }).catch((error: unknown) => ({ deny: message(error) }))
   if (deny !== undefined) $.ui.log(`focus ${key} not moved: ${deny}`, { to: 'debug' })
 }
 
-// autoFocus acts only when the pane takes the keyboard and a press leaves the ring where it was, so the field is focused here.
-const editFilter = async ($: Engine): Promise<void> => {
-  await update($, filter, wanted => ({ ...wanted, editing: true }))
-  await moveFocus($, 'filter-input')
-}
-
-const shownTickets = (one: Repo, tickets: RuntimeTicket[], wanted: Filter) =>
+const shownTickets = (one: Repo, tickets: RuntimeTicket[], wanted: string) =>
   tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
 
 // Called only when the list appears, never from a poll, so it does not pull the ring away from where the person is.
 const focusTicket = async ($: Engine, id?: string): Promise<void> => {
   const wanted = await read($, filter)
-  if ((await read($, page)) !== 'pipeline' || (await read($, detail)) !== '' || wanted.editing) return
+  if ((await read($, page)) !== 'pipeline' || (await read($, detail)) !== '') return
   const state = await read($, snapshot)
   const status = await read($, runtime)
   if (state.kind !== 'ready' || status.kind !== 'ready') return
@@ -255,14 +248,14 @@ const closeDetail = async ($: Engine, id: string): Promise<void> => {
 }
 
 const submitFilter = async ($: Engine, text: string): Promise<void> => {
-  await update($, filter, () => ({ text, editing: false }))
+  await update($, filter, () => text)
   await focusTicket($)
 }
 
 const choose = async ($: Engine, next: Page): Promise<void> => {
   await update($, page, () => next)
   await update($, detail, () => '')
-  await update($, filter, () => NO_FILTER)
+  await update($, filter, () => '')
   ensurePolling($)
   await fetchPage($, next, () => focusTicket($))
 }
@@ -409,7 +402,7 @@ const envGroup = (entry: EnvEntry) => {
 
 const noMatch = (ui: Kit) => <ui.Text dimColor>{NO_MATCH}</ui.Text>
 
-const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: Filter, bar: RenderChildren) => {
+const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: string, bar: RenderChildren) => {
   const groups = ['driver.env', '服务环境与代理', '工具路径']
   const width = Math.min(30, Math.max(10, cols - SECTION_INSET - 20))
   const entries = config.environment.filter(entry => matches(wanted, entry.key))
@@ -436,7 +429,7 @@ const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: Fi
       )}
       {groups.map(group => {
         const shown = rows(group)
-        return section(ui, group, shown.length === 0 && wanted.text !== '' ? noMatch(ui) : shown)
+        return section(ui, group, shown.length === 0 && wanted !== '' ? noMatch(ui) : shown)
       })}
     </ui.Box>
   )
@@ -513,7 +506,7 @@ const pipelinePage = (
   checks: Fetched<Health>,
   samples: TrendSample[],
   cols: number,
-  wanted: Filter,
+  wanted: string,
   bar: RenderChildren,
   open: (id: string) => void,
 ) => {
@@ -534,7 +527,7 @@ const pipelinePage = (
         const nodes = deploys(one.routing) ? TRACK.length : TRACK.length - 1
         const list = badges(one, checks)
         const onEdge = displayWidth(`${one.name} ${one.prefix}`) + badgesWidth(list) + SECTION_EDGE_FRAME <= cols
-        const idle = wanted.text === '' ? <ui.Text dimColor>空闲</ui.Text> : noMatch(ui)
+        const idle = wanted === '' ? <ui.Text dimColor>空闲</ui.Text> : noMatch(ui)
         const rows = own.length === 0 ? [idle] : own.map(t => ticketView(ui, t, nodes, state.fetchedAt, segment, open))
         return onEdge
           ? section(ui, one.name, rows, one.prefix, { key: `edge-${one.name}`, node: badgeRow(ui, one, list) })
@@ -596,7 +589,7 @@ export const register: Register = on => {
     const wanted = await read($, filter)
     const Input: InputElement | undefined = 'Input' in resolved ? resolved.Input : undefined
     const bar = (placeholder: string) =>
-      filterBar(ui, Input, wanted, placeholder, () => editFilter($), next => update($, filter, () => next), text => submitFilter($, text))
+      filterBar(ui, Input, wanted, placeholder, () => moveFocus($, 'filter-input'), text => update($, filter, () => text), text => submitFilter($, text))
     const cols = e.props.bodyColumns
     const config = state.kind === 'ready' ? state.config : undefined
     const selected = config?.repos.find(one => one.name === chosen) ?? config?.repos[0]

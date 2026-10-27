@@ -1,6 +1,6 @@
 import type { ElementConstructor, ElementTable, InputProps, RenderChildren } from 'claude-code'
 
-import type { Alert, Fetched, Filter, Page, Repo, Runtime, RuntimeTicket, Timeline, TrendSample } from '../types'
+import type { Alert, Fetched, Page, Repo, Runtime, RuntimeTicket, Timeline, TrendSample } from '../types'
 
 export type Kit = Pick<ElementTable, 'Box' | 'Text' | 'Button'>
 
@@ -260,36 +260,30 @@ export const failedView = (ui: Kit, state: { exitCode: number | null; stderr: st
   </ui.Box>
 )
 
-export const matches = (filter: Filter, ...texts: (string | undefined)[]) => {
-  const wanted = filter.text.toLowerCase()
+export const matches = (filter: string, ...texts: (string | undefined)[]) => {
+  const wanted = filter.toLowerCase()
   return wanted === '' || texts.some(one => one?.toLowerCase().includes(wanted))
 }
 
+// The field stays drawn: a render that removes a focused element clears the ring, which would undo a move made on submit.
 export const filterBar = (
   ui: Kit,
   Input: InputElement | undefined,
-  filter: Filter,
+  filter: string,
   placeholder: string,
   edit: () => void,
-  set: (next: Filter) => void,
+  set: (text: string) => void,
   submit: (text: string) => void,
 ) => (
   <ui.Box key="filter-bar" flexDirection="row" gap={1}>
-    <ui.Button
-      key="filter"
-      label={filter.text === '' || filter.editing ? '筛选' : `筛选：${filter.text}`}
-      hotkey="f"
-      plain
-      onPress={edit}
-    />
-    {filter.editing && Input && (
+    <ui.Button key="filter" label="筛选" hotkey="f" plain onPress={edit} />
+    {Input && (
       <Input
         key="filter-input"
-        autoFocus
-        value={filter.text}
+        value={filter}
         placeholder={placeholder}
         submitLabel="确定"
-        onInput={text => set({ text, editing: true })}
+        onInput={set}
         onSubmit={submit}
       />
     )}
