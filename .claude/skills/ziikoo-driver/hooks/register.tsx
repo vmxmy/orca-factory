@@ -187,7 +187,8 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
   if (next.kind === 'ready') {
     const sample = { at: next.fetchedAt, inFlight: inFlightOf(next.value.tickets) }
     await update($, trend, samples => [...samples.filter(one => one.at > sample.at - TREND_MS), sample])
-    await remember($, next.value.tickets)
+    // With no snapshot the driver lists no tickets; taken as the pipeline it would report every held ticket as done, then as new.
+    if (next.value.state !== 'unknown') await remember($, next.value.tickets)
   }
   await update($, runtime, () => next)
 }
@@ -240,9 +241,11 @@ const ensurePolling = ($: Engine) => {
 
 let watch: Timer | undefined
 
-// The open panel already reads status every 10 seconds while it stays in the run group.
+// The open panel already reads status every 10 seconds while it stays in the run group. A hot reload keeps the pane
+// open but drops that poll, so the open pane gets it back here.
 const watchRuntime = async ($: Engine): Promise<void> => {
   const shown = (await $.ui.panes()).some(one => one.id === PANE)
+  if (shown) ensurePolling($)
   if (shown && groupOf(await read($, page)) === 'run') return
   await fetchRuntime($)
 }
@@ -598,7 +601,7 @@ export const register: Register = on => {
       immediate: true,
     })
     ensureWatching($)
-    void fetchRuntime($)
+    void watchRuntime($)
     return next(e)
   })
 
