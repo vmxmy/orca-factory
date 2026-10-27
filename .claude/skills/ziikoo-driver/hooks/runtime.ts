@@ -227,8 +227,8 @@ export const parseTimeline = (stdout: string): Omit<Timeline, 'id'> => {
   }
 }
 
-// A step that fails logs its failed command first, within the same second; one row names the step and keeps the
-// command's stderr, so one failure does not take two of the few rows shown.
+// A step that fails logs its failed command first, within the same second; one row names the step and keeps what the
+// command row said (exit code or timeout, stderr), so one failure does not take two of the few rows shown.
 const PAIR_MS = 1_000
 
 const pairFailures = (issues: (LogIssue & { msg: string })[]): LogIssue[] =>
@@ -236,6 +236,7 @@ const pairFailures = (issues: (LogIssue & { msg: string })[]): LogIssue[] =>
     .reduce<(LogIssue & { msg: string })[]>((kept, one) => {
       const last = kept.at(-1)
       if (last?.msg !== 'external command' || one.msg !== 'external.end' || one.at - last.at > PAIR_MS) return [...kept, one]
-      return [...kept.slice(0, -1), { ...one, detail: one.detail ?? last.detail }]
+      const command = last.detail === undefined ? last.label : `${last.label}：${last.detail}`
+      return [...kept.slice(0, -1), { ...one, detail: one.detail === undefined ? command : `${one.detail} · ${command}` }]
     }, [])
     .map(({ msg, ...issue }) => issue)

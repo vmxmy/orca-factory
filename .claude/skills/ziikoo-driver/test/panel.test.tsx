@@ -704,7 +704,7 @@ test('时间线下的最近异常框按时间列出最近 5 条失败命令、�
     'gate 出错',
     'reviewer 出错 结论 red',
     '打回：reviewer red FAIL: approach=head=1a2b3c4 | reason=reviewer red',
-    'open-pr 出错 pull request create failed: GraphQL: No commits between main and feat',
+    'open-pr 出错 gh 退出码 1：pull request create failed: GraphQL: No commits between main and feat',
   ])
   for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   expect((await exactText(ui, 'orca 超时')).map(one => one.props.color)).toEqual(['error'])
