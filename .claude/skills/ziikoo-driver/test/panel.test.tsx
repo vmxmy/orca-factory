@@ -1021,3 +1021,16 @@ test('停留时长越长精度越低，最长也不超过时长列宽', async ($
   for (const shown of ['9 小时 59 分', '10 小时     ', '1 天 2 小时 ', '9 天 23 小时', '10 天       ']) expect(await exactText(ui, shown)).toHaveLength(1)
   await ui.unmount()
 })
+
+test('快照为 unknown 的那几分钟趋势画灰点，不记在途 0', async ($, on) => {
+  const unknown = { state: 'unknown', generatedAt: '0001-01-01T00:00:00Z', tickets: [] }
+  const { clock } = engine(on, ran({ stdout: sampleStdout }), {
+    status: nth => ran({ stdout: JSON.stringify(nth === 1 ? SAMPLE_STATUS : unknown) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+  })
+  await $.command.run(runCommand)
+  await clock.advance(60_000)
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${'·'.repeat(28)}█·近 30 分钟`)
+  await ui.unmount()
+})
