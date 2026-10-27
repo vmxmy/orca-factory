@@ -110,7 +110,9 @@ export type Alert = 'warning' | 'error'
 
 export type TimelineEntry = { at: number; label: string; alert?: Alert }
 
-export type Timeline = { id: string; entries: TimelineEntry[] }
+export type LogIssue = { at: number; label: string; detail?: string; alert: Alert }
+
+export type Timeline = { id: string; entries: TimelineEntry[]; issues: LogIssue[] }
 
 export type Fetched<T> =
   | { kind: 'loading' }

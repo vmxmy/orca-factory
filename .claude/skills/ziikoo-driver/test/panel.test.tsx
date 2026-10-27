@@ -3,7 +3,7 @@ import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
-import { SAMPLE_LOGS } from './sample-logs'
+import { SAMPLE_ISSUE_LOGS, SAMPLE_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 
 const PANE = {
@@ -678,12 +678,55 @@ test('按下票号进入详情，时间线按执行器日志列出中文事件',
   for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   expect((await exactText(ui, 'worker 失败')).map(one => one.props.color)).toEqual(['warning'])
   expect((await exactText(ui, '认领')).map(one => one.props.color)).toEqual([undefined])
+  expect(await exactText(ui, '最近异常')).toHaveLength(0)
 
   const logs = calls.filter(argv => argv[0] === 'bash')
   expect(logs).toHaveLength(1)
   expect(logs[0]?.at(-1)).toBe('OF-1')
   expect(logs[0]?.[2]).toContain('orca-factory-driver logs "$1" --json')
   expect(logs[0]?.[2]).not.toContain('OF-1')
+  await ui.unmount()
+})
+
+const issueRows = async (ui: Drawing) =>
+  (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('issue-')).map(one => one.text)
+
+test('时间线下的最近异常框按时间列出最近 5 条失败命令、出错步骤与打回，同一次失败的命令与步骤合成一行', async ($, on) => {
+  timelineEngine(on, ran({ stdout: SAMPLE_LOGS + SAMPLE_ISSUE_LOGS }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+
+  expect(await exactText(ui, '最近异常')).toHaveLength(1)
+  const rows = await issueRows(ui)
+  expect(rows.map(row => row.slice(8))).toEqual([
+    'orca 超时',
+    'gate 出错',
+    'reviewer 出错 结论 red',
+    '打回：reviewer red FAIL: approach=head=1a2b3c4 | reason=reviewer red',
+    'open-pr 出错 gh 退出码 1：pull request create failed: GraphQL: No commits between main and feat',
+  ])
+  for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+  expect((await exactText(ui, 'orca 超时')).map(one => one.props.color)).toEqual(['error'])
+  expect((await exactText(ui, '打回：reviewer red')).map(one => one.props.color)).toEqual(['warning'])
+  expect(await timelineRows(ui)).toHaveLength(11)
+  await ui.unmount()
+})
+
+test('旧版本存下的时间线按初始值读，详情显示正在读取', async ($, on) => {
+  on('state.get', { plugin: 'ziikoo-driver', key: 'detail' }, () => ({
+    value: { value: { shape: 'detail-1', value: 'OF-1' }, version: 1 },
+  }))
+  const TIMELINE = { plugin: 'ziikoo-driver', key: 'timeline' } as const
+  const old = { kind: 'ready', value: { id: 'OF-1', entries: [{ at: NOW, label: '旧条目' }] }, fetchedAt: NOW }
+  on('state.get', TIMELINE, () => ({ value: { value: { shape: 'timeline-1', value: old }, version: 1 } }))
+  on('state.set', TIMELINE, () => ({ value: { isSet: true, version: 2 } }))
+  timelineEngine(on, ran({ stdout: SAMPLE_ISSUE_LOGS }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect(await exactText(ui, '正在读取 orca-factory-driver logs OF-1 …')).toHaveLength(1)
+  expect(await exactText(ui, '旧条目')).toHaveLength(0)
   await ui.unmount()
 })
 

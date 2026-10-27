@@ -346,6 +346,30 @@ const timelineBody = (ui: Kit, id: string, state: Fetched<Timeline>) => {
   ]
 }
 
+const ISSUE_ROWS = 5
+
+const issuesView = (ui: Kit, id: string, state: Fetched<Timeline>) => {
+  if (state.kind !== 'ready' || state.value.id !== id || state.value.issues.length === 0) return undefined
+  const shown = state.value.issues.slice(-ISSUE_ROWS)
+  return section(
+    ui,
+    '最近异常',
+    shown.map((one, i) => (
+      <ui.Box key={`issue-${i}`} flexDirection="row">
+        {cell(ui, 9, clockTime(one.at), true)}
+        <ui.Box flexShrink={0}>
+          <ui.Text color={one.alert}>{one.label}</ui.Text>
+        </ui.Box>
+        {one.detail !== undefined && (
+          <ui.Text dimColor wrap="truncate">
+            {` ${one.detail}`}
+          </ui.Text>
+        )}
+      </ui.Box>
+    )),
+  )
+}
+
 const ticketFacts = (ui: Kit, t: RuntimeTicket, repos: Repo[], now: number) => {
   const pos = position(t)
   return [
@@ -383,6 +407,7 @@ export const detailView = (
       <ui.Button key="detail-back" label="← 返回" hotkey="q" onPress={back} />
       {section(ui, id, factsBody(ui, id, status, repos), title)}
       {section(ui, '时间线', timelineBody(ui, id, timeline))}
+      {issuesView(ui, id, timeline)}
     </ui.Box>
   )
 }
