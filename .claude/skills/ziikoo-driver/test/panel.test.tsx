@@ -194,7 +194,7 @@ test('流水线页每个项目一个区块，需要处理的徽标画成标签',
   expect((await exactText(ui, ' core 待同步 #12 ')).map(chip)).toEqual([['warning', 'inverseText']])
   expect((await exactText(ui, ' 落后 2 ')).map(chip)).toEqual([['warning', 'inverseText']])
   expect((await exactText(ui, ' 未提交改动 ')).map(chip)).toEqual([['warning', 'inverseText']])
-  expect((await exactText(ui, 'main ✓')).map(one => [one.props.backgroundColor, one.props.dimColor])).toEqual([
+  expect((await exactText(ui, ' main ✓ ')).map(one => [one.props.backgroundColor, one.props.dimColor])).toEqual([
     [undefined, true],
     [undefined, true],
   ])
@@ -260,6 +260,27 @@ test('读取进行中时头部画加载动画，每 100 毫秒换帧，读完后
   expect(await ui.findAll({ key: 'spin' })).toHaveLength(0)
   expect((await ui.find({ key: 'refresh' }))?.type).toBe('Button')
   await ui.unmount()
+})
+
+test('加载动画画不上去时计时器自己停下', async ($, on) => {
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { doctor: 1000 },
+  )
+  let blits = 0
+  on('ui.blit', () => {
+    blits += 1
+    return { value: { deny: 'not mounted' } }
+  })
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  await clock.advance(500)
+  expect(blits).toBe(1)
+
+  await clock.advance(500)
+  await opened
 })
 
 test('趋势行按分钟取最大在途数，画近 30 分钟', async ($, on) => {
@@ -328,14 +349,14 @@ test('健康页逐项列出 doctor 检查，不再显示工厂目录与纳管仓
   expect(await exactText(ui, '006396a')).toHaveLength(1)
   expect((await exactText(ui, 'active')).map(one => one.props.color)).toEqual([undefined, 'success'])
   expect(await exactText(ui, 'doctor 检查')).toHaveLength(1)
-  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本 通过 运行版本与 factory origin/main 一致')
   expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出 注意 ziikoo-web 检出在 feat/login，不在 main；ansible 有未提交改动')
   expect((await ui.find({ key: 'check-sync_prs' }))?.text).toBe('core 同步 注意 ansible #12 待合并')
   expect((await exactText(ui, ' 注意 ')).map(one => [one.props.backgroundColor, one.props.color])).toEqual([
     ['warning', 'inverseText'],
     ['warning', 'inverseText'],
   ])
-  expect((await exactText(ui, '通过')).map(one => one.props.dimColor)).toEqual([true])
+  expect((await exactText(ui, ' 通过 ')).map(one => one.props.dimColor)).toEqual([true])
   expect(await exactText(ui, 'driver.toml 的 scheduler.resume_fraction 不被识别，不生效')).toHaveLength(1)
   expect(await exactText(ui, '工厂目录')).toHaveLength(0)
   expect(await exactText(ui, '纳管仓库')).toHaveLength(0)
@@ -356,7 +377,7 @@ test('项目发现失败时健康页照常列检查，徽标显示检出与 core
 
   await ui.press({ key: 'page-health' })
   expect((await ui.find({ key: 'check-checkouts' }))?.text).toBe('项目检出 未知 项目发现失败，无法列出已接管项目')
-  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本通过运行版本与 factory origin/main 一致')
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本 通过 运行版本与 factory origin/main 一致')
   expect((await exactText(ui, ' 未知 ')).map(one => one.props.backgroundColor)).toEqual(['warning', 'warning', 'warning'])
   await ui.unmount()
 })
@@ -451,14 +472,14 @@ test('徽标放得下时画在框线上，放不下时退回框内第一行', as
     return seen
   }
 
-  const factory = { text: ' main ✓ core ✓ ', position: 'absolute', top: 0, right: 2 }
+  const factory = { text: ' main ✓  core ✓ ', position: 'absolute', top: 0, right: 2 }
   expect(await at(100)).toEqual({
-    edge: { factory, ansible: { text: ' main ✓  落后 2   未提交改动   core 待同步 #12  ', position: 'absolute', top: 0, right: 2 } },
-    inside: 'main ✓  落后 2   未提交改动   core 待同步 #12 ',
+    edge: { factory, ansible: { text: ' main ✓  落后 2   未提交改动   core 待同步 #12 ', position: 'absolute', top: 0, right: 2 } },
+    inside: ' main ✓  落后 2   未提交改动   core 待同步 #12 ',
   })
   expect(await at(52)).toEqual({
     edge: { factory, ansible: undefined },
-    inside: 'main ✓  落后 2   未提交改动   core 待同步 #12 ',
+    inside: ' main ✓  落后 2   未提交改动   core 待同步 #12 ',
   })
 })
 
@@ -474,12 +495,12 @@ test('读取中的徽标是框线上的灰字「检查中…」', async ($, on) 
   await clock.settle()
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ key: 'edge-orca-factory' }))?.text).toBe(' 检查中… ')
-  expect((await exactText(ui, '检查中…')).map(one => one.props.dimColor)).toEqual([true, true, true])
+  expect((await exactText(ui, ' 检查中… ')).map(one => one.props.dimColor)).toEqual([true, true, true])
 
   await clock.advance(1000)
   await opened
-  expect(await exactText(ui, '检查中…')).toHaveLength(0)
-  expect((await ui.find({ key: 'edge-orca-factory' }))?.text).toBe(' main ✓ core ✓ ')
+  expect(await exactText(ui, ' 检查中… ')).toHaveLength(0)
+  expect((await ui.find({ key: 'edge-orca-factory' }))?.text).toBe(' main ✓  core ✓ ')
   await ui.unmount()
 })
 

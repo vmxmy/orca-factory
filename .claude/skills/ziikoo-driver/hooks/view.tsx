@@ -22,8 +22,8 @@ const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff
 
 export const displayWidth = (text: string) => [...text].reduce((sum, ch) => sum + (WIDE.test(ch) ? 2 : 1), 0)
 
-// Title and corner each sit two columns in from the border's ends, padded by a space on both sides.
-export const SECTION_EDGE_FRAME = 8
+// Title and corner each sit two columns in from the border's ends; the title is padded by a space on both sides, the corner's chips pad themselves.
+export const SECTION_EDGE_FRAME = 6
 
 // A title inside a bordered Box is clipped, so it is laid over the border from the unbordered parent.
 export const section = (
@@ -45,21 +45,20 @@ export const section = (
     </ui.Box>
     {corner && (
       <ui.Box key={corner.key} position="absolute" top={0} right={2} flexDirection="row">
-        <ui.Text>{' '}</ui.Text>
         {corner.node}
-        <ui.Text>{' '}</ui.Text>
       </ui.Box>
     )}
   </ui.Box>
 )
 
-export const chipText = (text: string, alert?: Alert) => (alert === undefined ? text : ` ${text} `)
+// Plain labels get the same padding as filled ones so a column of them lines up.
+export const chipText = (text: string) => ` ${text} `
 
 export const chip = (ui: Kit, text: string, alert?: Alert) =>
   alert === undefined ? (
     <ui.Text dimColor>{chipText(text)}</ui.Text>
   ) : (
-    <ui.Text backgroundColor={alert} color="inverseText">{chipText(text, alert)}</ui.Text>
+    <ui.Text backgroundColor={alert} color="inverseText">{chipText(text)}</ui.Text>
   )
 
 export const TRACK = ['领', '施工', '门禁', '审查', '合并', '部署']
@@ -113,8 +112,8 @@ export const TREND_MINUTES = 30
 const MINUTE_MS = 60_000
 const BARS = '▁▂▃▄▅▆▇█'
 const TREND_TEXT = { label: '趋势', note: `近 ${TREND_MINUTES} 分钟` }
-// Label, note and the two gaps between the three parts.
-const TREND_FRAME = 4 + 10 + 2
+// Plus the two one-column gaps between label, sparkline and note.
+const TREND_FRAME = displayWidth(TREND_TEXT.label) + displayWidth(TREND_TEXT.note) + 2
 
 const NO_SAMPLE = '·'
 

@@ -90,6 +90,19 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 let spin: Timer | undefined
 let frame = 0
 
+// A denied blit means nothing shows the spinner (pane closed, or a kind left over from a reload), so the timer stops itself.
+const startSpin = ($: Engine) => {
+  frame = 0
+  const timer = $.clock.every(SPIN_MS, async () => {
+    frame += 1
+    const { deny } = await $.ui.blit({ requestId: PANE, key: 'spin', cells: spinnerCells(frame) })
+    if (deny === undefined) return
+    timer.cancel()
+    if (spin === timer) spin = undefined
+  })
+  spin = timer
+}
+
 // busy lives in plugin state and survives a hot reload that may drop a finally; keyed by kind, the next fetch of that kind clears it.
 const runJson = async <T,>(
   $: Engine,
@@ -98,13 +111,7 @@ const runJson = async <T,>(
   accepts: (exitCode: number) => boolean,
 ): Promise<Fetched<T>> => {
   await update($, busy, kinds => (kinds.includes(kind) ? kinds : [...kinds, kind]))
-  if (spin === undefined) {
-    frame = 0
-    spin = $.clock.every(SPIN_MS, () => {
-      frame += 1
-      void $.ui.blit({ requestId: PANE, key: 'spin', cells: spinnerCells(frame) })
-    })
-  }
+  if (spin === undefined) startSpin($)
   try {
     const run = await $.process.run(argvOf(kind)).catch((error: unknown) => message(error))
     if (typeof run === 'string') return { kind: 'failed', exitCode: null, stderr: run }
@@ -460,15 +467,18 @@ const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
   return out
 }
 
+// Every chip is padded, so only two filled chips side by side need a space to keep their colors apart.
+const spacedBefore = (list: Badge[], i: number) => i > 0 && list[i - 1]?.alert !== undefined && list[i]?.alert !== undefined
+
 // A gap leaves its cells unpainted, so on the border the line would show between badges.
 const badgeRow = (ui: Kit, repo: Repo, list: Badge[]) => (
   <ui.Box key={`badges-${repo.name}`} flexDirection="row" justifyContent="flex-end">
-    {list.flatMap((one, i) => [...(i === 0 ? [] : [<ui.Text>{' '}</ui.Text>]), chip(ui, one.text, one.alert)])}
+    {list.flatMap((one, i) => [...(spacedBefore(list, i) ? [<ui.Text>{' '}</ui.Text>] : []), chip(ui, one.text, one.alert)])}
   </ui.Box>
 )
 
 const badgesWidth = (list: Badge[]) =>
-  list.reduce((sum, one) => sum + displayWidth(chipText(one.text, one.alert)), 0) + list.length - 1
+  list.reduce((sum, one, i) => sum + displayWidth(chipText(one.text)) + (spacedBefore(list, i) ? 1 : 0), 0)
 
 const freshness = (state: Runtime, fetchedAt: number) => {
   if (state.state === 'unknown') return '没有可用的快照'
