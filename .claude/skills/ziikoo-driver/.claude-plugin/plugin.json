@@ -1,6 +1,6 @@
 {
   "name": "ziikoo-driver",
   "version": "0.1.0",
-  "description": "/ziikoo-driver 打开 Driver 面板：运行组（流水线、健康）与配置组（模型、调度、环境），数据来自 orca-factory-driver 的 config、status、doctor、logs 四个只读命令",
+  "description": "/ziikoo-driver 打开 Driver 面板：运行组（流水线、健康）与配置组（模型、调度、环境），数据来自 orca-factory-driver 的 config、status、doctor、logs 四个只读命令；面板关着时也在后台每 30 秒读一次 status，更新状态栏并在票有变化时弹出提醒",
   "types": "./types/index.d.ts"
 }

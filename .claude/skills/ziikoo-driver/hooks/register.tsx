@@ -169,7 +169,8 @@ const refresh = async ($: Engine): Promise<void> => {
 
 // update reruns its callback on a version miss: only the last run's prev is the list this read replaced, so the toast waits until update returns.
 const remember = async ($: Engine, tickets: RuntimeTicket[]): Promise<void> => {
-  let before: RuntimeTicket[] | null = null
+  // Declared wide so TypeScript does not narrow it to null past the closure that assigns it.
+  let before = null as RuntimeTicket[] | null
   await update($, seen, prev => {
     before = prev
     return tickets
