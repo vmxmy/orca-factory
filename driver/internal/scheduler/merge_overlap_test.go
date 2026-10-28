@@ -110,29 +110,30 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 			f := overlapFixture(t, false)
 			dir := f.repos[0].Path
 			calls := 0
+			closeMergeGates(t, f.runtime)
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path != "bash" {
 					return runx.Run(ctx, s)
 				}
 				calls++
 				if len(s.Args) != 3 {
-					t.Fatalf("not full gate: %+v", s)
+					t.Errorf("not full gate: %+v", s)
 				}
 				wt := s.Args[1]
 				data, err := os.ReadFile(filepath.Join(wt, "shared"))
 				if err != nil || !strings.HasPrefix(string(data), "worker\n") || !strings.HasSuffix(string(data), "main\n") {
-					t.Fatalf("not merged result: %s %v", data, err)
+					t.Errorf("not merged result: %s %v", data, err)
 				}
 				parents := gitMergeTest(t, wt, "show", "-s", "--format=%P", "HEAD")
 				if parents != f.head+" "+f.main {
-					t.Fatalf("unpinned parents: %s", parents)
+					t.Errorf("unpinned parents: %s", parents)
 				}
 				spec, err := os.ReadFile(s.Args[2])
 				if err != nil || string(spec) != "UNIT: executor\nSCOPE: feature shared\nCHECK: test merged\nLANE: 1\n" {
-					t.Fatalf("lost spec: %s %v", spec, err)
+					t.Errorf("lost spec: %s %v", spec, err)
 				}
 				if !slices.Contains(s.Env, "GATE_BASE="+f.main) || !slices.Contains(s.Env, "GATE_PROJECT_SRC="+f.main) {
-					t.Fatal("gate environment must contain the exact frozen base and project source")
+					t.Error("gate environment must contain the exact frozen base and project source")
 				}
 				if verdict == "infra" {
 					return nil, fmt.Errorf("cannot launch gate")
@@ -143,7 +144,7 @@ func TestRuntimeOverlapRunsFrozenGateOnMergedTree(t *testing.T) {
 				}
 				return output, nil
 			}
-			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+			err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f)
 			if calls != 1 {
 				t.Fatalf("gate not run: calls=%d err=%v", calls, err)
 			}
@@ -190,7 +191,8 @@ func TestRuntimeOverlapCatchupSurvivesRestart(t *testing.T) {
 	}
 	for round := 1; round <= 2; round++ {
 		rebuilt := *f.runtime
-		err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background())
+		closeMergeGates(t, &rebuilt)
+		err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}, &rebuilt, f)
 		if round == 1 && err == nil {
 			t.Fatal("first moving main must wait")
 		}
@@ -235,7 +237,8 @@ func TestRuntimeOverlapGreenCleanupFailureStillCompletes(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+	closeMergeGates(t, f.runtime)
+	err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f)
 	if !errors.Is(err, merge.ErrWorktreeCleanup) || f.puts != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 无") {
 		t.Fatalf("lost successful merge: err=%v puts=%d state=%s receipts=%v", err, f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
 	}
@@ -274,9 +277,8 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	rewriteHandoff(t, f, func(h map[string]any) {
 		h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nCHECK_IS_NEW_TEST: no\nLANE: 1\n"
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx); err != nil {
+	closeMergeGates(t, f.runtime)
+	if err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f); err != nil {
 		t.Fatal(err)
 	}
 	if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
@@ -288,12 +290,10 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 	for _, failure := range []string{"merge-tree", "commit-tree", "worktree-add", "gate-script-read", "gate-cancel", "gate-malformed"} {
 		t.Run(failure, func(t *testing.T) {
 			f := overlapFixture(t, false)
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
+			closeMergeGates(t, f.runtime)
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
 				if s.Path == "bash" {
 					if failure == "gate-cancel" {
-						cancel()
 						return nil, context.Canceled
 					}
 					return []byte("VERDICT red\n"), gateExit{}
@@ -304,7 +304,7 @@ func TestRuntimeOverlapInfrastructureDoesNotCorrect(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
+			err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f)
 			if err == nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 || len(f.tracker.bodies) != 0 {
 				t.Fatalf("infrastructure spent correction: %v receipts=%v", err, f.tracker.bodies)
 			}
@@ -324,7 +324,8 @@ func TestRuntimeOverlapGateLaneRedReturnsCorrection(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+	closeMergeGates(t, f.runtime)
+	err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f)
 	if err != nil || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 1 {
 		t.Fatalf("valid gate red ignored: %v", err)
 	}
@@ -397,10 +398,12 @@ func TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
+			closeMergeGates(t, f.runtime)
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := tickPastMergeGate(t, s, f.runtime, f); err == nil {
 				t.Fatal("moving main must wait")
 			}
-			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+			err := tickPastMergeGate(t, s, f.runtime, f)
 			if (!cleanupFails && err != nil) || (cleanupFails && !errors.Is(err, merge.ErrWorktreeCleanup)) {
 				t.Fatal(err)
 			}
@@ -502,9 +505,13 @@ func TestRuntimeMergedGateAcceptsLowerActualLane(t *testing.T) {
 				h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared absorbed\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nLANE: 2\n"
 				h["gate_output"] = "UNIT executor\nVERDICT green\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature shared absorbed\nLANE 2"
 			})
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			err = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
+			closeMergeGates(t, f.runtime)
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if policy == "approved" {
+				err = tickPastMergeGate(t, s, f.runtime, f)
+			} else {
+				err = tickAlone(t, s)
+			}
 			if policy == "approved" {
 				if err != nil || f.puts != 1 || f.tracker.issue.State.Name != "Done" {
 					t.Fatalf("lower actual lane blocked full green gate: %v puts=%d", err, f.puts)

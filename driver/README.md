@@ -2,7 +2,7 @@
 
 这是用于取代 LLM coordinator 的 Go 驱动器，包含调度器、单票执行器、合并通道、部署屏障、用量账本和处置 Agent；整体演进计划见地图 [ZII-826](https://linear.app/ziikoo/issue/ZII-826)。
 
-调度器推进已验证的队首 PR：head 落后 main 时先对固定 head/main 的合并结果跑完整 gate，未落后时直接以 head CI 为准；GitHub 回读确认 squash 后按该 SHA 验证部署及 smoke，全部通过才写回 Done、放行下一 PR。合并通道自己保证合并结果基于最新 main，因此 main 的分支保护不得开启“合并前须与 main 同步”（`required_status_checks.strict`），否则落后的 PR 永远不会变成 `clean`。交接、合并 intent 和部署进度存在配置选定的票据主账本评论，重启按冻结身份恢复；缺验证证据或 CI 未明确成功继续等待，lane 2 未自动合并、命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `AGENT_LANE3_GLOBS` 则转处置 Agent 复核或直接转人工并移出队列（详见下文）。合并结果 gate/correction 的 #142 接点与持久格式见 `CONTRACTS.md`。
+调度器推进已验证的队首 PR：head 落后 main 时先对固定 head/main 的合并结果跑完整 gate，未落后时直接以 head CI 为准；GitHub 回读确认 squash 后按该 SHA 验证部署及 smoke，全部通过才写回 Done、放行下一 PR。合并通道自己保证合并结果基于最新 main，因此 main 的分支保护不得开启“合并前须与 main 同步”（`required_status_checks.strict`），否则落后的 PR 永远不会变成 `clean`。交接、合并 intent 和部署进度存在配置选定的票据主账本评论，重启按冻结身份恢复；缺验证证据或 CI 未明确成功继续等待，lane 2 未自动合并、命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `AGENT_LANE3_GLOBS` 则转处置 Agent 复核或直接转人工并移出队列（详见下文）。合并结果 gate（含 `AGENT_INSTALL_CMD`）在 serve 进程内后台运行，巡检不等待它，照常派工与认领；gate 结束后的下一轮巡检再按结果 squash、转打回或等待。每仓库同一时间只有一个合并 gate 或 squash：队首换人时旧 gate 不取消，新队首等它退出，旧结果丢弃。结论只在内存：红结论在打回写入失败时重试仍判红、不重跑；serve 重启时正在跑的 gate 被杀掉并清理 worktree，下一轮重跑，不当成绿。合并结果 gate/correction 的 #142 接点与持久格式见 `CONTRACTS.md`。自部署的 `awaitIdle` 与维护冻结看不到后台合并 gate：部署重启会打断别的仓库正在跑的 gate，下一轮重跑；它若正持有 `agent-gate-heavy.lock`，锁目录会泄漏（OF-299），所以手工部署前先确认各仓库检出下没有 `.merge-validation-*` 目录；自部署由 `installSelf` 自动执行，这个缺口记在 OF-300。
 
 `driver serve --dry-run` 不合并、不写回、不 fetch；scope 使用已读取的声明。旧票检查若需要 fetch 会打印省略原因并报告等待，不据此推断可以释放或重派。
 
@@ -99,7 +99,7 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 | `feishu API code 800004006` | 一页响应体超过 10 MiB。driver 已把页大小逐次减半重读同一位置；减到 1 条仍超限才报此错，说明单条记录超过 10 MiB |
 | 读账本或项目发现每轮都在 30 秒处报 `context deadline exceeded`，同时命令行新进程读同一账本正常 | 经 `HTTPS_PROXY` 的 HTTP/2 连接在代理一侧已失效，本机仍显示 ESTAB，之后的请求都复用这条连接（OF-295）。飞书与 GitHub 客户端现在检查 HTTP/2 连接：15 秒没收到帧就发 PING，5 秒内没有回应就关闭连接。这一轮的在途请求按暂时故障失败，下一轮换新连接。修复后仍持续出现，说明是别的原因：用 `ss -tnp` 查 serve 进程的连接，再查代理与网络 |
 
-每轮巡检按客户端读事件：把本项目的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
+每轮巡检按客户端读事件：把本项目的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`merge` 不含合并结果 gate 的运行时间；gate 退出时另写一条 INFO `merge gate finished`，带 `ticket`、`repository`、`queue_id`、`duration_ms`、`result`（`green`、`red`、`infrastructure`、`canceled`）与 `worktree_cleanup_failed`，基础设施失败另带 `err`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
 
 ## 内置定时协调与恢复
 

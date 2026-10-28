@@ -13,28 +13,23 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-// Run invokes the whole original gate, with its project hooks and base pinned to
-// the validated main. The frozen spec lives beside, never inside, the diff.
-func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) error {
-	h := a.ticket.Handoff
+// Prepare freezes the whole original gate for c on the inspection goroutine:
+// the script and project hooks from c's main, the frozen spec and the
+// repository env. The gate runs later on a validation goroutine, where it must
+// not read the runtime, which the next inspection updates.
+func (a *mergeAdapter) Prepare(ctx context.Context, c merge.Candidate) (merge.GateRun, error) {
+	h := *a.ticket.Handoff
 	if err := h.Validated(); err != nil {
-		return err
+		return nil, err
 	}
-	script, err := a.runtime.command(ctx, req.Path, "git", "show", a.main+":scripts/agent-gates/gate.sh")
+	script, err := a.runtime.command(ctx, c.Request.Path, "git", "show", c.Main+":scripts/agent-gates/gate.sh")
 	if err != nil {
-		return safeMergeGateError(err)
+		return nil, safeMergeGateError(err)
 	}
 	if len(script) == 0 {
-		return errors.New("original merge gate unavailable")
+		return nil, errors.New("original merge gate unavailable")
 	}
-	parent := filepath.Dir(wt)
-	gatePath, specPath := filepath.Join(parent, "gate.sh"), filepath.Join(parent, "gate.spec")
-	if err := os.WriteFile(gatePath, script, 0600); err != nil {
-		return errors.New("cannot freeze merge gate")
-	}
-	if err := os.WriteFile(specPath, []byte(h.GateSpec), 0600); err != nil {
-		return errors.New("cannot freeze merge spec")
-	}
+	repoEnv := a.runtime.Repositories[a.ticket.Repo].Env
 	env := map[string]string{}
 	for _, entry := range os.Environ() {
 		k, v, ok := strings.Cut(entry, "=")
@@ -42,10 +37,10 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 			env[k] = v
 		}
 	}
-	for k, v := range a.runtime.Repositories[a.ticket.Repo].Env {
+	for k, v := range repoEnv {
 		env[k] = v
 	}
-	env["GATE_BASE"], env["GATE_PROJECT_SRC"] = a.main, a.main
+	env["GATE_BASE"], env["GATE_PROJECT_SRC"] = c.Main, c.Main
 	entries := make([]string, 0, len(env))
 	for k, v := range env {
 		entries = append(entries, k+"="+v)
@@ -54,22 +49,47 @@ func (a *mergeAdapter) Run(ctx context.Context, req merge.Request, wt string) er
 	if run == nil {
 		run = runx.Run
 	}
-	if install := a.runtime.Repositories[a.ticket.Repo].Env["AGENT_INSTALL_CMD"]; install != "" {
-		if _, err := run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", install}, Dir: wt, Env: entries, Timeout: 30 * time.Minute}); err != nil {
+	g := mergeGate{handoff: h, script: script, checkout: c.Request.Path, install: repoEnv["AGENT_INSTALL_CMD"], env: entries, run: run}
+	return g.Run, nil
+}
+
+// mergeGate holds copies only, so it runs safely beside later inspections.
+type mergeGate struct {
+	handoff  merge.Handoff
+	script   []byte
+	checkout string
+	install  string
+	env      []string
+	run      func(context.Context, runx.Spec) ([]byte, error)
+}
+
+// Run invokes the whole original gate, with its project hooks and base pinned to
+// the validated main. The frozen spec lives beside, never inside, the diff.
+func (g mergeGate) Run(ctx context.Context, wt string) error {
+	parent := filepath.Dir(wt)
+	gatePath, specPath := filepath.Join(parent, "gate.sh"), filepath.Join(parent, "gate.spec")
+	if err := os.WriteFile(gatePath, g.script, 0600); err != nil {
+		return errors.New("cannot freeze merge gate")
+	}
+	if err := os.WriteFile(specPath, []byte(g.handoff.GateSpec), 0600); err != nil {
+		return errors.New("cannot freeze merge spec")
+	}
+	if g.install != "" {
+		if _, err := g.run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", g.install}, Dir: wt, Env: g.env, Timeout: 30 * time.Minute}); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
 		}
 	}
-	output, err := run(ctx, runx.Spec{Path: "bash", Args: []string{gatePath, wt, specPath}, Dir: req.Path, Env: entries, Timeout: 30 * time.Minute})
+	output, err := g.run(ctx, runx.Spec{Path: "bash", Args: []string{gatePath, wt, specPath}, Dir: g.checkout, Env: g.env, Timeout: 30 * time.Minute})
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	verdict, parseErr := h.MergeGateVerdict(string(output))
+	verdict, parseErr := g.handoff.MergeGateVerdict(string(output))
 	if parseErr != nil {
 		return parseErr
 	}

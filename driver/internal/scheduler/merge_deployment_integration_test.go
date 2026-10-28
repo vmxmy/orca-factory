@@ -45,10 +45,12 @@ func TestMergeCatchupPreservesDeploymentAndBudgets(t *testing.T) {
 		}
 		return runx.Run(ctx, s)
 	}
-	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err == nil {
+	closeMergeGates(t, f.runtime)
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	if err := tickAlone(t, s); err == nil {
 		t.Fatal("moving main must wait")
 	}
-	if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
+	if err := tickPastMergeGate(t, s, f.runtime, f); err != nil {
 		t.Fatal(err)
 	}
 	var p merge.Progress

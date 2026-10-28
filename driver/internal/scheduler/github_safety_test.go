@@ -139,8 +139,11 @@ func TestGitHubCancellationBeforeSquash(t *testing.T) {
 			if when == "intent-cancel" {
 				g.afterIntent = func() { g.stop(false) }
 			}
-			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			if gates != 1 || f.puts != 0 || f.merged || err == nil {
+			closeMergeGates(t, f.runtime)
+			err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f)
+			// A stop during the gate removes the ticket from the next inspection's
+			// merge queue; a stop after the intent fails the squash's fresh read.
+			if gates != 1 || f.puts != 0 || f.merged || (when == "intent-cancel") != (err != nil) {
 				t.Fatalf("stop ignored: gates=%d squash=%d merged=%v error=%v", gates, f.puts, f.merged, err)
 			}
 		})

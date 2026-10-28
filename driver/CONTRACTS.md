@@ -125,13 +125,16 @@
 
 - 保留 `merge-handoff-v1` / `merge-progress-v1` 格式。Progress 增加可选 `corrections/catchup_rounds/infra/attempt/reason`，增加 `waiting`、`correction`、`human` phase。`waiting` 包含移动 main 后的 catchup；写入的 correction 数是累计值（Channel.Result.Corrections 仍是增量）。`merge-intent` 和 `merged` 同样保留累计预算。未知 phase 停止处理，不覆盖为 legacy；部署状态保持 #143 的嵌套 `deployment` 对象；后续 Progress 写入保留它。
 - 对固定 head/main 执行真实 `merge-tree --write-tree`，以两者为 parent 建立临时提交，在隔离 worktree 调用完整 gate。gate.sh 与项目 hook 从固定 main 读取，`GATE_BASE/GATE_PROJECT_SRC` 都固定该 main；spec 使用交接冻结字节，不从 PR 描述猜测，也不只跑 CHECK。spec 和脚本位于 worktree 旁，不进入验证 diff。
+- 合并结果 gate（含 `AGENT_INSTALL_CMD`）在 serve 进程内后台运行，巡检不等待它（OF-298）。脚本、spec、环境与 install 命令在启动时由巡检冻结，gate 不读运行时状态。gate 运行期间队首处于内部状态 `validating`：不写 Progress、不计预算、不报错，只更新看板说明。gate 退出后的下一轮巡检按结论 squash、转 correction 或等待，判定与同步执行时相同。
+- 后台 gate 的结论绑定 queue_id、head 与 main，只存在内存。绿结论在 main 不变时保留，squash 或复核失败的下一轮直接重用；main 已变时只计一轮 catchup，下一轮按新 main 重跑。红结论保留到该队列项被替换，correction 写入失败的重试仍判红、不重跑 gate；correction 记录的 `main` 是 gate 验证的 main。基础设施失败与取消消费一次，不写证据、不计预算，下一轮重跑。
+- 每仓库同一时间最多一个 gate 或 squash。队首换人时旧 gate 不取消（SIGKILL 会让 `gate.sh` 的 heavy lock 泄漏），新队首即使不落后也等它退出，旧结论丢弃。serve 退出时取消全部 gate（runx SIGKILL 进程组），最多等 75 秒清理 worktree；重启后没有结论，进行中的 gate 一律重跑，从不推断为绿。gate 只读 ref，与巡检的 `git fetch --prune`、检出快进并发不改变结论。`merge-progress-v1` 格式不变。
 - 文本冲突即使 GitHub `mergeable=false` 仍可验证并交回 correction；这个 false 不授权 squash。完整 gate 红才计 correction，非完整输出、启动/读取/提交/worktree 失败及取消不计。绿 gate 的清理错误通过 `ErrWorktreeCleanup` 报告，同时保留合并、等待或 correction 决策；取消会使用独立清理上下文；读取 gate 脚本失败保留安全取消/超时与基础设施分类链。
 - 每次 main 变化后保存 catchup 轮数，再次启动从外部 Progress 恢复；两轮转人。correction 沿用状态机三次上限，第四次失败转人。返回 correction 的 Progress 与执行器归属同一评论写入并确认，然后调度器启动终端；不确定启动保留归属，由既有巡检恢复。
 - `Executor.Start` 在既有 PR 短路前消费当前 handoff 的 correction。重用原 run/task/worktree 和累计预算，旧 task 没有 dispatch 时不虚构它；修复 worker 的新 dispatch 正常保存。旧 checkpoint 增加可选 `MergeQueue/MergeHead/MergeCause/MergeSpec/CatchupRounds/Attempt/Infra`，仅用于已有派工恢复，不成为新的合并事实数据库。开始子任务前清除 MergeCause 并持久 pending，重启不能重复创建修复任务；缺 checkpoint 时从外部 handoff/progress 重建，并先沿 Orca task-list 的 parent_id 对账 correction 子任务；运行中、缺失或歧义证据停止，不能以新终端 UUID 重派。
 - 合并结果 gate 使用本次实际 lane 验证，允许 main 已吸收 lane 2 改动后降至 lane 1；旧交接不改写，lane 3、lane 升级和未批准的仓库策略仍不放行。
 - 修复必须产生不同 head；重跑冻结完整 gate 与 review 后生成新 handoff/FIFO 身份，保留 catchup 与 correction/Infra 预算，进入队尾。相同 queue_id 的不同冻结 spec 拒绝使用。
 
-验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/票据/Orca 使用外部边界替身，不触碰线上资源。
+验证：`TestRuntimeTextConflictStartsCorrection`、`TestRuntimeOverlap*`、`TestRuntimeMergeGate*`、`TestQueueHeadChangeWaitsForOldGate`、`TestMainMovesAfterGreenRerunsGateOnce`、`TestCloseCancelsGateAndRefusesValidation`、`TestRuntimeCatchupReceiptSurvivesCleanupAndCompletion`、`TestRuntimeCorrectionRequeueGoesBehindExistingTicket`、`TestRuntimeUnknownProgressWaitsWithoutOverwriting`、`TestStartMergeCorrection*`。临时 Git 仓库覆盖实际合并树、临时提交、worktree 与原版 gate.sh；GitHub/票据/Orca 使用外部边界替身，不触碰线上资源。
 
 ## `driver usage` 会话用量
 

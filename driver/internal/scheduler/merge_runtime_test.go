@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,10 @@ type mergeIssues struct {
 	bodies    []string
 	failDone  bool
 	failFinal bool
+	// failBody makes every comment containing it fail to write.
+	failBody string
+	// labels applies UpdateIssue label edits, as a claim confirmation needs.
+	labels bool
 }
 
 func (m *mergeIssues) Snapshot(context.Context, []string, time.Time) ([]task.Issue, error) {
@@ -49,7 +54,7 @@ func (m *mergeIssues) ListComments(context.Context, string) ([]task.Comment, err
 	return m.rows, nil
 }
 func (m *mergeIssues) CreateComment(_ context.Context, _ string, b string) (task.Comment, error) {
-	if m.failFinal && strings.Contains(b, "归属: 无") {
+	if (m.failFinal && strings.Contains(b, "归属: 无")) || (m.failBody != "" && strings.Contains(b, m.failBody)) {
 		return task.Comment{}, fmt.Errorf("offline")
 	}
 	c := task.Comment{ID: fmt.Sprint(len(m.rows) + 1), Body: b, CreatedAt: time.Now()}
@@ -57,12 +62,27 @@ func (m *mergeIssues) CreateComment(_ context.Context, _ string, b string) (task
 	m.bodies = append(m.bodies, b)
 	return c, nil
 }
-func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, _ []string, _ []string) (task.Issue, error) {
+func (m *mergeIssues) FreshIssue(context.Context, string) (task.Issue, error) {
+	return m.issue, nil
+}
+func (m *mergeIssues) UpdateIssue(_ context.Context, _ string, state string, add []string, remove []string) (task.Issue, error) {
 	if m.failDone {
 		return task.Issue{}, fmt.Errorf("offline")
 	}
 	if state != "" {
 		m.issue.State.Name = state
+	}
+	if m.labels {
+		var kept []task.NamedID
+		for _, l := range m.issue.Labels.Nodes {
+			if !slices.Contains(remove, l.Name) {
+				kept = append(kept, l)
+			}
+		}
+		for _, name := range add {
+			kept = append(kept, task.NamedID{Name: name})
+		}
+		m.issue.Labels.Nodes = kept
 	}
 	return m.issue, nil
 }
@@ -95,6 +115,8 @@ type mergeFixture struct {
 	checkState   string
 	prBody       map[string]any
 	server       *httptest.Server
+	// rejectPuts makes that many squash PUTs fail without merging.
+	rejectPuts int
 }
 
 func newMergeFixture(t *testing.T) *mergeFixture {
@@ -139,6 +161,11 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 				t.Errorf("unsafe merge %s %v", r.Method, b)
 			}
 			f.puts++
+			if f.rejectPuts > 0 {
+				f.rejectPuts--
+				w.WriteHeader(409)
+				return
+			}
 			f.merged = true
 			w.WriteHeader(502)
 		case strings.HasSuffix(r.URL.Path, "/pulls/1"):
@@ -493,6 +520,9 @@ func (m *mergeTickets) row(id string) *mergeIssues {
 		}
 	}
 	panic("unknown issue " + id)
+}
+func (m *mergeTickets) FreshIssue(ctx context.Context, id string) (task.Issue, error) {
+	return m.row(id).FreshIssue(ctx, id)
 }
 func (m *mergeTickets) Read(ctx context.Context, id string) (issues.Task, error) {
 	return m.row(id).Read(ctx, id)
