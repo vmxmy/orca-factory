@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runnerhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -63,6 +64,8 @@ type Runtime struct {
 	// Snapshot; ReclaimWorkspaces removes their workspaces (OF-96).
 	closed        map[string]map[string]closedTicket
 	reclaimWarned map[string]string
+	// merges runs merged-result gates beside the inspections.
+	merges *merge.Validations
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before

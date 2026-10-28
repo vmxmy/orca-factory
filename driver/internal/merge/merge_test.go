@@ -1,14 +1,18 @@
 package merge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type fakeGitHub struct {
@@ -50,14 +54,38 @@ func (f *fakeGit) WithWorktree(ctx context.Context, _ Request, tree, head, main 
 	return run(ctx, "isolated-result")
 }
 
+// fakeGate runs on the validation goroutine. With release set, each run waits
+// for its result or for cancellation.
 type fakeGate struct {
-	paths []string
-	err   error
+	mu       sync.Mutex
+	prepared []Candidate
+	paths    []string
+	canceled []bool
+	err      error
+	release  chan error
 }
 
-func (f *fakeGate) Run(_ context.Context, _ Request, path string) error {
-	f.paths = append(f.paths, path)
-	return f.err
+func (f *fakeGate) Prepare(_ context.Context, c Candidate) (GateRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prepared = append(f.prepared, c)
+	return func(ctx context.Context, path string) error {
+		f.mu.Lock()
+		f.paths = append(f.paths, path)
+		err, release := f.err, f.release
+		f.mu.Unlock()
+		if release != nil {
+			select {
+			case err = <-release:
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		}
+		f.mu.Lock()
+		f.canceled = append(f.canceled, ctx.Err() != nil)
+		f.mu.Unlock()
+		return err
+	}, nil
 }
 
 type fakeDeploy struct {
@@ -69,15 +97,53 @@ func (f *fakeDeploy) Check(_ context.Context, _ Request, sha string) (Deployment
 	f.calls = append(f.calls, sha)
 	return f.state, nil
 }
+
+// ready is a head behind main, so it needs the merged-result gate.
 func ready() Snapshot {
 	return Snapshot{Head: "head", Main: "main", CIHead: "head", CIGreen: true, MergeableState: "clean", Behind: true}
 }
-func fixture(s Snapshot) (*Channel, *fakeGitHub, *fakeGit, *fakeGate, *fakeDeploy) {
+
+// current is a head on top of main, squashed without a merged-result gate.
+func current() Snapshot {
+	s := ready()
+	s.Behind = false
+	return s
+}
+func validations(t *testing.T) *Validations {
+	t.Helper()
+	v := NewValidations()
+	t.Cleanup(func() {
+		if err := v.Close(5 * time.Second); err != nil {
+			t.Error(err)
+		}
+	})
+	return v
+}
+func fixture(t *testing.T, s Snapshot) (*Channel, *fakeGitHub, *fakeGit, *fakeGate, *fakeDeploy) {
 	h := &fakeGitHub{snapshots: []Snapshot{s}}
 	g := &fakeGit{}
 	gate := &fakeGate{}
 	d := &fakeDeploy{state: DeploymentPassed}
-	return New(h, g, gate, d), h, g, gate, d
+	return New(h, g, gate, validations(t), d), h, g, gate, d
+}
+
+// settle waits until the gate for c exited, keeping its verdict.
+func settle(t *testing.T, c *Channel, candidate Candidate) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !c.validations.Idle(candidate) {
+		if time.Now().After(deadline) {
+			t.Fatal("merged-result gate still running")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+func candidate(n int) Candidate { return Candidate{Request: req(n), Head: "head"} }
+func validating(t *testing.T, c *Channel, repo string) {
+	t.Helper()
+	if r := next(t, c, repo); r.Status != Validating {
+		t.Fatalf("want the merged-result gate running, got %+v", r)
+	}
 }
 func req(n int) Request { return Request{Repository: "owner/repo", Number: n} }
 func next(t *testing.T, c *Channel, repo string) Result {
@@ -89,9 +155,7 @@ func next(t *testing.T, c *Channel, repo string) Result {
 	return r
 }
 func TestCurrentDirectSquash(t *testing.T) {
-	s := ready()
-	s.Behind = false
-	c, h, g, gate, _ := fixture(s)
+	c, h, g, gate, _ := fixture(t, current())
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
 	}
@@ -104,11 +168,20 @@ func TestCurrentDirectSquash(t *testing.T) {
 // Disjoint paths can still break together, so any behind head is validated
 // as the merged result.
 func TestBehindGatesMergedTree(t *testing.T) {
-	c, h, g, gate, _ := fixture(ready())
+	c, h, g, gate, _ := fixture(t, ready())
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
 	}
-	r := next(t, c, "owner/repo")
+	var log bytes.Buffer
+	r, err := c.Next(runx.WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&log, nil))), "owner/repo")
+	if err != nil || r.Status != Validating || h.merges != 0 {
+		t.Fatalf("gate did not start beside the caller: result=%+v err=%v merges=%d", r, err, h.merges)
+	}
+	settle(t, c, candidate(1))
+	if !strings.Contains(log.String(), `"msg":"merge gate finished"`) || !strings.Contains(log.String(), `"result":"green"`) || !strings.Contains(log.String(), `"duration_ms":`) {
+		t.Fatalf("gate exit not logged: %s", log.String())
+	}
+	r = next(t, c, "owner/repo")
 	if r.Status != Merged || h.merges != 1 || !reflect.DeepEqual(g.worktrees, []string{"tree"}) || !reflect.DeepEqual(gate.paths, []string{"isolated-result"}) || g.head != "head" || g.main != "main" {
 		t.Fatalf("result=%+v git=%+v gate=%+v", r, g, gate)
 	}
@@ -116,7 +189,7 @@ func TestBehindGatesMergedTree(t *testing.T) {
 func TestConflictReturnsSchedulerCorrection(t *testing.T) {
 	s := ready()
 	s.MergeableState = "dirty"
-	c, h, g, _, _ := fixture(s)
+	c, h, g, _, _ := fixture(t, s)
 	g.conflict = true
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
@@ -130,7 +203,7 @@ func TestConflictReturnsSchedulerCorrection(t *testing.T) {
 	}
 }
 func TestTwoMovingMainRoundsEscalate(t *testing.T) {
-	c, h, _, _, _ := fixture(ready())
+	c, h, _, _, _ := fixture(t, current())
 	h.mergeErr = ErrMainAdvanced
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
@@ -142,7 +215,7 @@ func TestTwoMovingMainRoundsEscalate(t *testing.T) {
 	}
 }
 func TestDeploymentWaitAndSmokeFailurePause(t *testing.T) {
-	c, h, _, _, d := fixture(ready())
+	c, h, _, _, d := fixture(t, current())
 	a := req(1)
 	a.DeployWorkflow = "deploy.yml"
 	a.SmokeCommand = "smoke"
@@ -174,7 +247,7 @@ func TestDeploymentWaitAndSmokeFailurePause(t *testing.T) {
 	}
 }
 func TestDeploymentPassReleasesFIFO(t *testing.T) {
-	c, h, _, _, _ := fixture(ready())
+	c, h, _, _, _ := fixture(t, current())
 	a := req(1)
 	a.DeployWorkflow = "deploy"
 	a.SmokeCommand = "smoke"
@@ -202,12 +275,16 @@ func TestFailClosed(t *testing.T) {
 				s.MergeableState = "unknown"
 			case "gate":
 			}
-			c, h, _, gate, _ := fixture(s)
+			c, h, _, gate, _ := fixture(t, s)
 			if kind == "gate" {
 				gate.err = ErrGateRed
 			}
 			if err := c.Enqueue(req(1)); err != nil {
 				t.Fatal(err)
+			}
+			if kind == "gate" {
+				validating(t, c, "owner/repo")
+				settle(t, c, candidate(1))
 			}
 			r := next(t, c, "owner/repo")
 			wantStatus, wantCorrections := Waiting, 0
@@ -258,13 +335,16 @@ func TestValidationInfrastructureDoesNotBecomeCorrection(t *testing.T) {
 				}
 				return nil, nil
 			}}
-			c := New(h, g, gate, nil)
+			c := New(h, g, gate, validations(t), nil)
 			if err := c.Enqueue(r); err != nil {
 				t.Fatal(err)
 			}
 			if err := c.Enqueue(req(2)); err != nil {
 				t.Fatal(err)
 			}
+			pinned := Candidate{Request: r, Head: s.Head}
+			validating(t, c, r.Repository)
+			settle(t, c, pinned)
 			got, err := c.Next(context.Background(), r.Repository)
 			if strings.HasPrefix(failure, "cleanup-") {
 				wantStatus, wantCorrections, wantMerges := Merged, 0, 1
@@ -285,6 +365,8 @@ func TestValidationInfrastructureDoesNotBecomeCorrection(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			validating(t, c, r.Repository)
+			settle(t, c, pinned)
 			retry := next(t, c, r.Repository)
 			if retry.Status != Merged || retry.Request.Number != 1 || retry.Corrections != 0 || retry.Rounds != 0 || !reflect.DeepEqual(h.order, []int{1}) {
 				t.Fatalf("queue head lost after infrastructure failure: %+v order=%v", retry, h.order)
@@ -362,23 +444,98 @@ func TestCommandGitDistinguishesConflictFromInfrastructure(t *testing.T) {
 	}
 }
 func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
-	s := ready()
-	moved := s
-	moved.Main = "new-main"
-	c, h, g, _, _ := fixture(s)
-	h.snapshots = []Snapshot{s, moved, s, moved}
+	c, h, _, gate, _ := fixture(t, ready())
+	gate.release = make(chan error, 1)
 	if err := c.Enqueue(req(1)); err != nil {
 		t.Fatal(err)
 	}
-	a := next(t, c, "owner/repo")
-	b := next(t, c, "owner/repo")
-	if a.Status != Waiting || b.Status != Human || h.merges != 0 || g.trees != 2 {
-		t.Fatalf("%+v %+v merges=%d trees=%d", a, b, h.merges, g.trees)
+	moveMain := func(main string) {
+		s := ready()
+		s.Main = main
+		h.snapshots = []Snapshot{s}
+	}
+	validating(t, c, "owner/repo")
+	moveMain("main-2")
+	validating(t, c, "owner/repo")
+	gate.release <- nil
+	settle(t, c, candidate(1))
+	if r := next(t, c, "owner/repo"); r.Status != Waiting || r.Rounds != 1 || r.Reason != "main advanced; validate again" {
+		t.Fatalf("stale green must count one catch-up round: %+v", r)
+	}
+	validating(t, c, "owner/repo")
+	moveMain("main-3")
+	gate.release <- nil
+	settle(t, c, candidate(1))
+	r := next(t, c, "owner/repo")
+	var mains []string
+	for _, p := range gate.prepared {
+		mains = append(mains, p.Main)
+	}
+	if r.Status != Human || r.Rounds != 2 || h.merges != 0 || !reflect.DeepEqual(mains, []string{"main", "main-2"}) {
+		t.Fatalf("result=%+v merges=%d gate mains=%v", r, h.merges, mains)
+	}
+}
+
+// A new queue head waits for the old head's gate, which is never canceled,
+// and that gate's verdict is not kept for the old head's return.
+func TestQueueHeadChangeWaitsForOldGate(t *testing.T) {
+	c, h, g, gate, _ := fixture(t, ready())
+	gate.release = make(chan error, 1)
+	old := req(1)
+	old.QueueID = "q1"
+	if err := c.Enqueue(old); err != nil {
+		t.Fatal(err)
+	}
+	validating(t, c, "owner/repo")
+	newer := req(3)
+	newer.QueueID = "q3"
+	lane := New(h, g, gate, c.validations, nil)
+	if err := lane.Enqueue(newer); err != nil {
+		t.Fatal(err)
+	}
+	behind := ready()
+	behind.Head, behind.CIHead = "head-3", "head-3"
+	h.snapshots = []Snapshot{behind}
+	validating(t, lane, "owner/repo")
+	h.snapshots = []Snapshot{current()}
+	validating(t, lane, "owner/repo")
+	if h.merges != 0 || len(gate.prepared) != 1 {
+		t.Fatalf("new head overlapped the old gate: merges=%d gates=%d", h.merges, len(gate.prepared))
+	}
+	gate.release <- nil
+	settle(t, c, Candidate{Request: old, Head: "head"})
+	if r := next(t, lane, "owner/repo"); r.Status != Merged || r.Request.Number != 3 || h.merges != 1 || !reflect.DeepEqual(gate.canceled, []bool{false}) {
+		t.Fatalf("result=%+v merges=%d canceled=%v", r, h.merges, gate.canceled)
+	}
+	returned := New(h, g, gate, c.validations, nil)
+	if err := returned.Enqueue(old); err != nil {
+		t.Fatal(err)
+	}
+	h.snapshots = []Snapshot{ready()}
+	validating(t, returned, "owner/repo")
+	if len(gate.prepared) != 2 {
+		t.Fatalf("old head reused a discarded verdict: gates=%d", len(gate.prepared))
+	}
+}
+
+func TestCloseCancelsGateAndRefusesValidation(t *testing.T) {
+	c, h, _, gate, _ := fixture(t, ready())
+	gate.release = make(chan error)
+	if err := c.Enqueue(req(1)); err != nil {
+		t.Fatal(err)
+	}
+	validating(t, c, "owner/repo")
+	if err := c.validations.Close(5 * time.Second); err != nil {
+		t.Fatal(err)
+	}
+	r, err := c.Next(context.Background(), "owner/repo")
+	if !errors.Is(err, ErrValidationsClosed) || r.Corrections != 0 || h.merges != 0 || !reflect.DeepEqual(gate.canceled, []bool{true}) {
+		t.Fatalf("result=%+v err=%v merges=%d canceled=%v", r, err, h.merges, gate.canceled)
 	}
 }
 
 func TestDeploymentPolicyBelongsToRepository(t *testing.T) {
-	c, h, _, _, d := fixture(ready())
+	c, h, _, _, d := fixture(t, current())
 	first := req(1)
 	first.DeployWorkflow = "deploy"
 	first.SmokeCommand = "smoke"
@@ -421,7 +578,7 @@ func TestSnapshotFailureReasonNamesStepAndStaysSafe(t *testing.T) {
 	seen := map[string]bool{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c, h, _, _, _ := fixture(ready())
+			c, h, _, _, _ := fixture(t, ready())
 			h.snapshotErr = tc.err
 			if err := c.Enqueue(req(1)); err != nil {
 				t.Fatal(err)
@@ -442,7 +599,7 @@ func TestSnapshotFailureReasonNamesStepAndStaysSafe(t *testing.T) {
 }
 
 func TestReviewRequiredLeavesQueue(t *testing.T) {
-	c, h, _, _, _ := fixture(ready())
+	c, h, _, _, _ := fixture(t, current())
 	h.snapshotErr = ErrReviewRequired
 	for _, n := range []int{1, 2} {
 		if err := c.Enqueue(req(n)); err != nil {

@@ -21,7 +21,15 @@ func mergeGateAdapter(install string, run func(context.Context, runx.Spec) ([]by
 		env["AGENT_INSTALL_CMD"] = install
 	}
 	r := &Runtime{Run: run, Repositories: map[string]config.Repository{"": {Env: env}}}
-	return &mergeAdapter{runtime: r, ticket: Ticket{Handoff: &h}, main: strings.Repeat("c", 40)}
+	return &mergeAdapter{runtime: r, ticket: Ticket{Handoff: &h}}
+}
+
+func runMergeGate(a *mergeAdapter, wt string) error {
+	run, err := a.Prepare(context.Background(), merge.Candidate{Request: merge.Request{Path: "/repo"}, Main: strings.Repeat("c", 40)})
+	if err != nil {
+		return err
+	}
+	return run(context.Background(), wt)
 }
 
 func TestMergeGateRunsInstallCommand(t *testing.T) {
@@ -37,7 +45,7 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 		}
 		return []byte(validHandoffForResolver().GateOutput), nil
 	})
-	if err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt); err != nil {
+	if err := runMergeGate(a, wt); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 3 || calls[1].Path != "bash" || calls[1].Args[0] != "-c" || calls[1].Args[1] != "pnpm install --frozen-lockfile" || calls[1].Dir != wt {
@@ -50,7 +58,7 @@ func TestMergeGateRunsInstallCommand(t *testing.T) {
 	t.Setenv("AGENT_INSTALL_CMD", "leak")
 	calls = nil
 	a = mergeGateAdapter("", a.runtime.Run)
-	if err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt); err != nil {
+	if err := runMergeGate(a, wt); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 || calls[0].Path != "git" || calls[1].Args[0] == "-c" {
@@ -72,7 +80,7 @@ func TestMergeGateInstallFailureIsTicketInfra(t *testing.T) {
 			gateRan = true
 			return nil, nil
 		})
-		err := a.Run(context.Background(), merge.Request{Path: "/repo"}, wt)
+		err := runMergeGate(a, wt)
 		var ticket *infra.Ticket
 		if !errors.As(err, &ticket) || ticket.Err == nil || strings.Contains(ticket.Err.Error(), "secret") || errors.Is(err, installErr) || errors.Is(err, merge.ErrGateRed) {
 			t.Fatalf("install error %v: want sanitized ticket infra error, got %v", installErr, err)

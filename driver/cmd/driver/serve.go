@@ -89,11 +89,20 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		}
 		return sleepContext(ctx, 30*time.Second)
 	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
+	if served != nil {
+		if closeErr := served.Close(mergeGateDrain); closeErr != nil {
+			logger.Warn("merge gates not stopped", "err", closeErr)
+		}
+	}
 	if err != nil {
 		return 1, err
 	}
 	return 0, nil
 }
+
+// mergeGateDrain bounds the wait for killed merged-result gates to remove
+// their worktrees; systemd stops the unit after 90 seconds.
+const mergeGateDrain = 75 * time.Second
 
 // projectDiscoveryInterval spaces serve's project rediscovery: each run reads
 // Orca, the Feishu project table and every candidate's pipeline check.

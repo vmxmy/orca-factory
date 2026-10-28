@@ -71,7 +71,7 @@ func TestMergeCIFailureCorrection(t *testing.T) {
 			t.Fatal(err)
 		}
 		gh := &ciSnapshotGitHub{client: checkRunsFixture(t, body), owner: "vmxmy", repo: "orca-factory", head: head, main: "main"}
-		c := merge.New(gh, nil, nil, nil)
+		c := merge.New(gh, nil, nil, merge.NewValidations(), nil)
 		if err := c.Enqueue(merge.Request{Repository: "vmxmy/orca-factory", Number: 421}); err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +95,7 @@ func TestMergeCIFailureCorrection(t *testing.T) {
 			t.Fatal(err)
 		}
 		gh := &ciSnapshotGitHub{client: checkRunsFixture(t, body), owner: "vmxmy", repo: "orca-factory", head: head, main: "main"}
-		c := merge.New(gh, nil, nil, nil)
+		c := merge.New(gh, nil, nil, merge.NewValidations(), nil)
 		if err := c.Enqueue(merge.Request{Repository: "vmxmy/orca-factory", Number: 138}); err != nil {
 			t.Fatal(err)
 		}
@@ -108,7 +108,7 @@ func TestMergeCIFailureCorrection(t *testing.T) {
 		head := strings.Repeat("f", 40)
 		body := []byte(fmt.Sprintf(`{"total_count":1,"check_runs":[{"id":1,"name":"ci","status":"in_progress","head_sha":%q}]}`, head))
 		gh := &ciSnapshotGitHub{client: checkRunsFixture(t, body), owner: "vmxmy", repo: "orca-factory", head: head, main: "main"}
-		c := merge.New(gh, nil, nil, nil)
+		c := merge.New(gh, nil, nil, merge.NewValidations(), nil)
 		if err := c.Enqueue(merge.Request{Repository: "vmxmy/orca-factory", Number: 1}); err != nil {
 			t.Fatal(err)
 		}

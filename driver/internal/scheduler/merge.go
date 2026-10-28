@@ -165,8 +165,8 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 		if err = r.verifyFreshDecision(ctx, t, githubSquash); err != nil {
 			return err
 		}
-		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, nil)
-		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, CatchupRounds: rounds}
+		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, r.mergeValidations(), nil)
+		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, Ticket: t.Identifier, QueueID: h.QueueID, CatchupRounds: rounds}
 		if err = channel.Enqueue(req); err != nil {
 			return err
 		}
@@ -177,8 +177,16 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 		if err != nil && (!errors.Is(err, merge.ErrWorktreeCleanup) || (result.Status != merge.Merged && result.Status != merge.Correction && result.Status != merge.Human && result.Status != merge.Waiting)) {
 			return err
 		}
+		if result.Status == merge.Validating {
+			r.board(ctx, t, machine.PhaseMergeQueue, result.Reason)
+			return nil
+		}
 		if result.Status != merge.Merged {
-			return r.mergeDecision(ctx, a.ticket, a.main, result)
+			main := a.main
+			if result.Main != "" {
+				main = result.Main
+			}
+			return r.mergeDecision(ctx, a.ticket, main, result)
 		}
 		sha = result.MergeSHA
 	}
@@ -246,6 +254,24 @@ type mergeAdapter struct {
 	runtime           *Runtime
 	ticket            Ticket
 	owner, repo, main string
+}
+
+// mergeValidations is created on first use by the inspection goroutine and
+// lives as long as the serve process.
+func (r *Runtime) mergeValidations() *merge.Validations {
+	if r.merges == nil {
+		r.merges = merge.NewValidations()
+	}
+	return r.merges
+}
+
+// Close stops this process's merged-result gates and waits up to wait for
+// their worktree cleanup. A later serve reruns them rather than trusting them.
+func (r *Runtime) Close(wait time.Duration) error {
+	if r.merges == nil {
+		return nil
+	}
+	return r.merges.Close(wait)
 }
 
 func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {

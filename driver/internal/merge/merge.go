@@ -51,6 +51,8 @@ type Request struct {
 	Repository     string // canonical owner/repository; identical for every local checkout
 	Path           string // local checkout used by Git implementations
 	Number         int
+	Ticket         string // ticket identifier, for logs only
+	QueueID        string // frozen handoff queue_id; with the head it identifies a gate verdict
 	DeployWorkflow string // AGENT_DEPLOY_WORKFLOW
 	SmokeCommand   string // AGENT_SMOKE_CMD
 	CatchupRounds  int    // carry Result.Rounds when the scheduler resubmits a correction
@@ -84,9 +86,6 @@ type Git interface {
 	WithWorktree(context.Context, Request, string, string, string, func(context.Context, string) error) error
 }
 
-type Gate interface {
-	Run(context.Context, Request, string) error
-}
 type DeploymentState string
 
 const (
@@ -112,6 +111,9 @@ const (
 	Review      Status = "review"
 	HumanDirect Status = "human-direct"
 	Paused      Status = "paused"
+	// Validating means a merged-result gate for the repository is still
+	// running. It is not a decision: nothing is persisted or charged.
+	Validating Status = "validating"
 )
 
 type Result struct {
@@ -119,6 +121,9 @@ type Result struct {
 	Request             Request
 	MergeSHA, Reason    string
 	Corrections, Rounds int // correction delta and accumulated catch-up rounds
+	// Main is the main a red merged-result gate validated; the snapshot of
+	// the round that reports it may already see a newer main.
+	Main string
 }
 
 type entry struct {
@@ -138,16 +143,19 @@ type lane struct {
 	deployWorkflow, smokeCommand string
 }
 type Channel struct {
-	mu     sync.Mutex
-	lanes  map[string]*lane
-	github GitHub
-	git    Git
-	gate   Gate
-	deploy Deployment
+	mu          sync.Mutex
+	lanes       map[string]*lane
+	github      GitHub
+	git         Git
+	gate        Gate
+	validations *Validations
+	deploy      Deployment
 }
 
-func New(h GitHub, g Git, gate Gate, d Deployment) *Channel {
-	return &Channel{lanes: make(map[string]*lane), github: h, git: g, gate: gate, deploy: d}
+// New binds a lane to validations, which outlive the Channel: a scheduler
+// builds a Channel per inspection and finds its running gates there.
+func New(h GitHub, g Git, gate Gate, v *Validations, d Deployment) *Channel {
+	return &Channel{lanes: make(map[string]*lane), github: h, git: g, gate: gate, validations: v, deploy: d}
 }
 func (c *Channel) lane(repo string) *lane {
 	c.mu.Lock()
@@ -325,39 +333,28 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		if c.gate == nil {
 			return r, errors.New("merge gate required")
 		}
-		gateRan := false
-		var gateErr error
-		err = c.git.WithWorktree(ctx, e.request, tree, s.Head, s.Main, func(ctx context.Context, path string) error {
-			gateRan = true
-			gateErr = c.gate.Run(ctx, e.request, path)
-			return gateErr
-		})
+		verdict, validated, err := c.validations.Validate(ctx, Candidate{Request: e.request, Head: s.Head, Main: s.Main, Tree: tree}, c.git, c.gate)
+		if verdict == "" {
+			return r, err
+		}
+		// A cleanup failure is reported beside the verdict without spending a correction.
 		if errors.Is(err, ErrWorktreeCleanup) {
 			cleanupErr = ErrWorktreeCleanup
 		}
-		if ctx.Err() != nil {
-			return r, ctx.Err()
-		}
-		if !gateRan {
-			return r, errors.New("validation worktree unavailable")
-		}
-		if errors.Is(gateErr, context.Canceled) || errors.Is(gateErr, context.DeadlineExceeded) {
-			return r, gateErr
-		}
-		if gateErr != nil && !errors.Is(gateErr, ErrGateRed) {
-			return r, gateErr
-		}
-		if gateErr != nil {
-			r.Corrections = 1
+		switch verdict {
+		case VerdictRunning:
+			return finish(Validating, "merged-result gate running")
+		case VerdictStale:
+			return stale()
+		case VerdictRed:
+			r.Corrections, r.Main = 1, validated
 			return finish(Correction, "merged-result gate failed; return to scheduler")
-		}
-		// After a green callback, WithWorktree can only fail during cleanup.
-		// Report that failure alongside the merge result without spending a correction.
-		if err != nil {
-			cleanupErr = ErrWorktreeCleanup
 		}
 	} else if !mergeReady(s) {
 		return notReady(s, "head CI or mergeability not ready")
+	} else if !c.validations.Idle(Candidate{Request: e.request, Head: s.Head, Main: s.Main}) {
+		// One gate or squash per repository at a time, even after the queue head changed.
+		return finish(Validating, "previous merged-result gate running")
 	}
 	fresh, err := c.github.Snapshot(ctx, e.request)
 	if err != nil {
