@@ -39,9 +39,11 @@ const (
 	feishuBatchLimit       = 200
 	feishuReadBackTimeout  = 60 * time.Second
 	feishuReadBackInterval = 2 * time.Second
-	// feishuEventFilterLimit bounds the tickets one 事件 filter names, since the
-	// filter travels in the GET query; 160 was measured to work (OF-293).
-	feishuEventFilterLimit = 100
+	// feishuEventFilterLimit bounds the tickets one 事件 filter names. Every
+	// project shares the 事件 table and any write changes its rev, which restarts
+	// a multi-page read; at 10, production reads spanned at most 2 pages and 4 s,
+	// against 15 pages and 24 s at 100 (OF-293).
+	feishuEventFilterLimit = 10
 )
 
 var feishuTables = []feishu.TableSpec{

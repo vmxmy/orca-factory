@@ -512,10 +512,11 @@ func TestFeishuReadCommentsRejectEditedEvent(t *testing.T) {
 	}
 }
 
-// A snapshot's event reads cost one request per page of matching events,
-// however many tickets those events cover (OF-293).
+// A snapshot reads events with one listing per 10 tickets, and a listing costs
+// one request per page of its matching events (OF-293).
 func TestFeishuSnapshotCommentsRequestsFollowPages(t *testing.T) {
-	for _, tickets := range []int{2, 40} {
+	for _, tc := range []struct{ tickets, requests int }{{2, 3}, {10, 3}, {11, 4}} {
+		tickets := tc.tickets
 		f := newFeishuFake(t)
 		f.pageSize = 2
 		for i := 3; i <= tickets; i++ {
@@ -540,7 +541,7 @@ func TestFeishuSnapshotCommentsRequestsFollowPages(t *testing.T) {
 		if err != nil || len(got) != tickets || len(got[feishuUUIDA]) != 5 || got[feishuUUIDA][4].Body != "event 4" {
 			t.Fatalf("comments=%+v err=%v", got, err)
 		}
-		if reads := len(f.filters) - before; reads != 3 {
+		if reads := len(f.filters) - before; reads != tc.requests {
 			t.Fatalf("%d tickets: %d event requests", tickets, reads)
 		}
 	}
