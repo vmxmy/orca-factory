@@ -68,7 +68,7 @@ func New(o Options) (*Client, error) {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	hc := http.Client{Timeout: timeout}
+	hc := http.Client{Timeout: timeout, Transport: infra.HTTPTransport}
 	if o.HTTPClient != nil {
 		hc = *o.HTTPClient
 	}
@@ -202,7 +202,9 @@ func (c *Client) requestDetails(ctx context.Context, method, path string, input,
 	resp, err := c.http.Do(req)
 	c.recordUsage(resp)
 	if err != nil {
-		return safeError(err)
+		// No response, as with a timeout: the request may have been applied.
+		// This includes a connection the HTTP/2 health check closed mid-request.
+		return safeError(&infra.Transient{Err: err})
 	}
 	status, requestID = resp.StatusCode, resp.Header.Get("X-GitHub-Request-Id")
 	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.

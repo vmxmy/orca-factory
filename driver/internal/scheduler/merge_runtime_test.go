@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -207,9 +208,9 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 		}
 	}))
 	t.Cleanup(f.server.Close)
-	old := http.DefaultTransport
-	http.DefaultTransport = mergeTransport{f.server.URL}
-	t.Cleanup(func() { http.DefaultTransport = old })
+	old := infra.HTTPTransport
+	infra.HTTPTransport = mergeTransport{f.server.URL}
+	t.Cleanup(func() { infra.HTTPTransport = old })
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\nprintf test-token"), 0700); err != nil {
 		t.Fatal(err)

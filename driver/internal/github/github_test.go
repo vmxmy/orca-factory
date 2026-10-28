@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -28,6 +29,27 @@ func fixture(t *testing.T, h http.HandlerFunc, options Options) *Client {
 		t.Fatal(err)
 	}
 	return c
+}
+
+// A connection dropped without a response leaves a write's outcome unknown,
+// like a timeout, so callers must read back instead of treating it as rejected.
+func TestConnectionResetIsTransient(t *testing.T) {
+	c := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		conn, _, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		if err := conn.(*net.TCPConn).SetLinger(0); err != nil {
+			t.Error(err)
+		}
+		_ = conn.Close()
+	}, Options{})
+	_, err := c.GetPR(t.Context(), "acme", "app", 17)
+	var transient *infra.Transient
+	if !errors.As(err, &transient) {
+		t.Fatalf("err=%v, want a transient failure", err)
+	}
 }
 
 func TestCreatePRIdempotent(t *testing.T) {
