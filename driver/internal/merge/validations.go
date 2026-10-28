@@ -151,6 +151,17 @@ func (v *Validations) Idle(c Candidate) bool {
 	return true
 }
 
+// Forget drops c's exited verdict once the lane has spent it on a catch-up
+// round, so the next round validates the new main instead of counting the
+// same move again.
+func (v *Validations) Forget(c Candidate) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if run := v.runs[c.Request.Repository]; run != nil && run.exited && run.candidate.sameQueue(c) {
+		delete(v.runs, c.Request.Repository)
+	}
+}
+
 func (v *Validations) run(ctx context.Context, run *validation, git Git, gate GateRun) {
 	defer v.wg.Done()
 	started := time.Now()

@@ -476,6 +476,45 @@ func TestMainMovesDuringGateNeverMergesStaleTree(t *testing.T) {
 	}
 }
 
+// A green verdict whose squash recheck finds main moved counts one catch-up
+// round and is dropped, so the next round validates the new main instead of
+// counting the same move again.
+func TestMainMovesAfterGreenRerunsGateOnce(t *testing.T) {
+	moved := ready()
+	moved.Main = "main-2"
+	for name, tc := range map[string]struct {
+		recheck     func(h *fakeGitHub)
+		squashCalls int
+	}{
+		"recheck snapshot": {func(h *fakeGitHub) { h.snapshots, h.reads = []Snapshot{ready(), moved}, 0 }, 0},
+		"squash refused":   {func(h *fakeGitHub) { h.mergeErr = ErrMainAdvanced }, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c, h, _, gate, _ := fixture(t, ready())
+			gate.release = make(chan error, 2)
+			if err := c.Enqueue(req(1)); err != nil {
+				t.Fatal(err)
+			}
+			validating(t, c, "owner/repo")
+			gate.release <- nil
+			settle(t, c, candidate(1))
+			tc.recheck(h)
+			if r := next(t, c, "owner/repo"); r.Status != Waiting || r.Rounds != 1 || r.Reason != "main advanced; validate again" {
+				t.Fatalf("main moved after green must count one catch-up round: %+v", r)
+			}
+			h.snapshots, h.reads, h.mergeErr = []Snapshot{moved}, 0, nil
+			validating(t, c, "owner/repo")
+			var mains []string
+			for _, p := range gate.prepared {
+				mains = append(mains, p.Main)
+			}
+			if h.merges != tc.squashCalls || !reflect.DeepEqual(mains, []string{"main", "main-2"}) {
+				t.Fatalf("squash calls=%d gate mains=%v", h.merges, mains)
+			}
+		})
+	}
+}
+
 // A new queue head waits for the old head's gate, which is never canceled,
 // and that gate's verdict is not kept for the old head's return.
 func TestQueueHeadChangeWaitsForOldGate(t *testing.T) {

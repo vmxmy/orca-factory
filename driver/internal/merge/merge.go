@@ -363,7 +363,9 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		}
 		return finish(Waiting, "merge recheck unavailable: "+snapshotFailureReason(err))
 	}
+	checked := Candidate{Request: e.request, Head: s.Head, Main: s.Main}
 	if fresh.Main != s.Main {
+		c.validations.Forget(checked)
 		return stale()
 	}
 	if fresh.Head != s.Head {
@@ -374,6 +376,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	}
 	sha, err := c.github.Squash(ctx, e.request, s.Head, s.Main)
 	if errors.Is(err, ErrMainAdvanced) {
+		c.validations.Forget(checked)
 		return stale()
 	}
 	if err != nil {
