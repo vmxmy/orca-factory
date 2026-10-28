@@ -179,7 +179,7 @@ $FACTORY/bin/orca-factory init $REPO
 然后把 `$REPO/scripts/agent-gates/` 下三份项目文件的 `{{占位}}` 全部替换为第 1–3 步的结果（对照 `examples/zhiyun-ai-dashboard/` 的写法）：
 
 - `agent-graph.env`：基本 `AGENT_*` 变量 + 3 个 `AGENT_TIER_*` 变量 + `AGENT_ROLE_REVIEWER_CMD` + 两组 glob。无自动部署时 `AGENT_DEPLOY_WORKFLOW=''`、`AGENT_SMOKE_CMD=''`。两档值必须是 `agent:model:effort`（两个冒号），install.sh 会校验。另有两个可选通知变量：A 保持 `AGENT_NOTIFY_FEISHU_PROFILE=''`、`AGENT_NOTIFY_FEISHU_CHAT=''`；B 在用户确认后把机器人 profile（默认 `orca-factory`，隔离时为确认的新名称）和本项目新群的真实 ID 写进这两个变量。它们暂时只记录配置，发通知由后续票完成。
-- `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.lock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
+- `gate.project.sh`：每步前 `echo "== <step>"`（gate.sh 用最后一个标记定位失败步骤）；读 `GATE_CHANGED`（改动路径，每行一个）决定定向测试；用不到的步骤整段删除；`set -Eeuo pipefail`，任一命令非 0 即红。脚本会从 origin/main 读取执行，所以路径都相对仓库根。脚本在 `agent-gate-heavy.flock` 内运行：不要在里面调 `gate.sh`、`gate.test.sh`、`orca-factory selftest`（它们会再调 `gate.sh`，嵌套抢同一把锁，空等 30 分钟）；这类检查写进票的 `CHECK`（gate 第 5 步，锁已释放）。
 - `COORDINATOR.project.md`：lane 判据表、外部契约（录制样本目录与契约清单，没有就删除该小节或写「无」）、合并与上线（合并策略、部署/冒烟说明）。**每条判据后注明依据**（文件、命令或「用户答复」）。
 
 如需项目特化（工人跑法、大小上限、生成物、必读文档），不要改 `constitution/` 与 `roles/` 里由 core 分发的文件，而是新增两份覆盖层（模板在 `$FACTORY/templates/`，对照 `examples/zhiyun-ai-dashboard/`）：
@@ -223,7 +223,7 @@ GATE_PROJECT_SRC=worktree scripts/agent-gates/gate.sh . /tmp/onboard-red.spec
 git checkout -- <注入的文件>                        # 撤掉注入，确认 git status 只剩 scripts/agent-gates/
 ```
 
-5c 需要仓库依赖已安装（`AGENT_INSTALL_CMD`）。gate.sh 用 `${TMPDIR:-/tmp}/agent-gate-heavy.lock` 串行化项目检查，若上一轮异常退出留下锁目录会等 30 分钟，`rmdir` 掉即可。
+5c 需要仓库依赖已安装（`AGENT_INSTALL_CMD`）。gate.sh 用 `flock` 锁 `${TMPDIR:-/tmp}/agent-gate-heavy.flock` 串行化项目检查（需要 util-linux 的 `flock`）。锁随持有进程退出释放，gate 被 SIGKILL 也不残留。等锁超过 30 分钟时 gate 不输出 `VERDICT`，以退出码 2 结束，按基础设施失败处理，不计打回。
 
 ## 6. 交付
 

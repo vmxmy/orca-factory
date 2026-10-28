@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,8 +15,13 @@ import (
 // child executes both real-gate fixtures under an inherited, occupied TMPDIR.
 func TestRealGateFixturesIsolateOuterLock(t *testing.T) {
 	outer := t.TempDir()
-	lock := filepath.Join(outer, "agent-gate-heavy.lock")
-	if err := os.Mkdir(lock, 0700); err != nil {
+	lock := filepath.Join(outer, "agent-gate-heavy.flock")
+	held, err := os.OpenFile(lock, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(lock)

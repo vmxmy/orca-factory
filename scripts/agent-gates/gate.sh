@@ -53,11 +53,10 @@ LOG_DIR="$WT/.omc/gates/$UNIT"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/gate.log"
 TMP_BASE=""
-LOCK="${TMPDIR:-/tmp}/agent-gate-heavy.lock"
-HAVE_LOCK=0
+# flock is released with its descriptor, so a SIGKILLed gate cannot leave it held.
+LOCK="${TMPDIR:-/tmp}/agent-gate-heavy.flock"
 cleanup() {
   if [[ -n "$TMP_BASE" ]]; then git -C "$WT" worktree remove --force "$TMP_BASE" >/dev/null 2>&1 || true; fi
-  if [[ "$HAVE_LOCK" == 1 ]]; then rmdir "$LOCK" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
 
@@ -169,19 +168,20 @@ else
   rm -f "$PROJECT_GATE"; log "--- [project] no gate.project.sh at $PROJECT_SRC, skipped"
 fi
 if [[ -f "$PROJECT_GATE" ]]; then
-  deadline=$(( $(date +%s) + 1800 ))
-  until mkdir "$LOCK" 2>/dev/null; do
-    (( $(date +%s) < deadline )) || verdict red project "timed out waiting for heavy lock $LOCK" ""
-    sleep 5
-  done
-  HAVE_LOCK=1
+  exec 9>"$LOCK"
+  # Waiting out another gate is infrastructure, not a red verdict on this diff.
+  if ! flock -w 1800 9; then
+    log "--- [project] timed out waiting for heavy lock $LOCK"
+    echo "timed out waiting for heavy lock $LOCK" >&2
+    exit 2
+  fi
   export GATE_CHANGED="$CHANGED"
-  if ! run project "$WT" "bash '$PROJECT_GATE'"; then
+  # The project gate must not inherit fd 9: a leftover daemon would hold the lock.
+  if ! run project "$WT" "bash '$PROJECT_GATE'" 9>&-; then
     step="$(printf '%s' "$OUT" | sed -n 's/^== //p' | tail -n 1)"
     verdict red "${step:-project}" "project check ${step:-} failed" "$(tail20)"
   fi
-  rmdir "$LOCK" 2>/dev/null || true
-  HAVE_LOCK=0
+  exec 9>&-
 fi
 
 # 5. check

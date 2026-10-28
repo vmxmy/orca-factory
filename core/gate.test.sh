@@ -118,4 +118,17 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u9' 'SCOPE: src/* scripts/*' 'CHECK: true')")
 out="$(GATE_PROJECT_SRC=worktree "$GATE" "$R" "$(spec 'UNIT: u10' 'SCOPE: src/* scripts/*' 'CHECK: true')")"
 [[ "$(field "$out" VERDICT)" == green && "$(field "$out" LANE)" == 2 ]]
 
+# A project gate killed by SIGKILL (driver timeout kills the process group) must not leave the heavy lock behind
+R="$(mkrepo lockkill)"; mkdir -p "$R/scripts/agent-gates"
+printf '#!/usr/bin/env bash\ntouch "%s/started"; sleep 300\n' "$TMP" > "$R/scripts/agent-gates/gate.project.sh"
+echo 'changed' > "$R/src/a.js"
+S="$(spec 'UNIT: u11' 'SCOPE: src/* scripts/*' 'CHECK: true')"
+TMPDIR="$TMP" GATE_PROJECT_SRC=worktree setsid "$GATE" "$R" "$S" >/dev/null 2>&1 & pid=$!
+for _ in $(seq 300); do [[ -e "$TMP/started" ]] && break; sleep 0.1; done
+[[ -e "$TMP/started" ]]
+kill -KILL -- "-$pid"; wait "$pid" 2>/dev/null || true
+printf '#!/usr/bin/env bash\nexit 0\n' > "$R/scripts/agent-gates/gate.project.sh"
+out="$(TMPDIR="$TMP" GATE_PROJECT_SRC=worktree timeout 60 "$GATE" "$R" "$S")" || { echo "ASSERT: gate after SIGKILLed holder did not finish within 60s (stale heavy lock)"; exit 1; }
+[[ "$(field "$out" VERDICT)" == green ]]
+
 printf 'agent gate regression: PASS\n'
