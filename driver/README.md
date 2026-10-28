@@ -97,6 +97,7 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 | `feishu read-back not settled ...`、`write not confirmed` | 写入结果未知。飞书写后读有延迟，driver 不派工，下一轮再对账。持续出现时检查网络和飞书服务状态 |
 | `feishu event ... evidence conflict` | 事件被人改过或关联到多张票。合并通道停下等待，需人工核对记录历史 |
 | `feishu API code 800004006` | 一页响应体超过 10 MiB。driver 已把页大小逐次减半重读同一位置；减到 1 条仍超限才报此错，说明单条记录超过 10 MiB |
+| 读账本或项目发现每轮都在 30 秒处报 `context deadline exceeded`，同时命令行新进程读同一账本正常 | 经 `HTTPS_PROXY` 的 HTTP/2 连接在代理一侧已失效，本机仍显示 ESTAB，之后的请求都复用这条连接（OF-295）。飞书与 GitHub 客户端现在检查 HTTP/2 连接：15 秒没收到帧就发 PING，5 秒内没有回应就关闭连接。这一轮的在途请求按暂时故障失败，下一轮换新连接。修复后仍持续出现，说明是别的原因：用 `ss -tnp` 查 serve 进程的连接，再查代理与网络 |
 
 每轮巡检按客户端读事件：把本项目的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
 

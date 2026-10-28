@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 )
 
 // connectProxy is an HTTP CONNECT proxy whose open tunnels can be frozen:
@@ -147,7 +150,8 @@ func TestRequestsRecoverAfterProxyTunnelFreezes(t *testing.T) {
 
 	roots := x509.NewCertPool()
 	roots.AddCert(s.Certificate())
-	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport := infra.HTTPTransport.(*http.Transport).Clone()
+	transport.HTTP2.SendPingTimeout, transport.HTTP2.PingTimeout = 100*time.Millisecond, 100*time.Millisecond
 	transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: proxy.ln.Addr().String()})
 	transport.TLSClientConfig = &tls.Config{RootCAs: roots}
 	t.Cleanup(transport.CloseIdleConnections)
@@ -173,7 +177,10 @@ func TestRequestsRecoverAfterProxyTunnelFreezes(t *testing.T) {
 
 	proxy.freeze()
 	firstTook, firstErr := tables()
-	t.Logf("first request after freeze: %v after %v", firstErr, firstTook)
+	var transient *infra.Transient
+	if !errors.As(firstErr, &transient) {
+		t.Fatalf("first request after freeze: %v after %v; want a transient failure", firstErr, firstTook)
+	}
 	nextTook, nextErr := tables()
 	if nextErr != nil || proxy.opened.Load() != 2 {
 		t.Fatalf("next request: %v after %v over %d tunnels; want success over a second tunnel", nextErr, nextTook, proxy.opened.Load())

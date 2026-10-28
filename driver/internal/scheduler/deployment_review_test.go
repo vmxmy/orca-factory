@@ -133,7 +133,7 @@ func TestDeploymentQueryPreservesSafeErrorClassification(t *testing.T) {
 				if kind == "timeout" {
 					cause = context.DeadlineExceeded
 				}
-				http.DefaultTransport = deploymentFailureTransport{base: http.DefaultTransport, failure: fmt.Errorf("private-token: %w", cause)}
+				infra.HTTPTransport = deploymentFailureTransport{base: infra.HTTPTransport, failure: fmt.Errorf("private-token: %w", cause)}
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
 			if kind == "global" {

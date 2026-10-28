@@ -91,7 +91,7 @@ func New(o Options) (*Client, error) {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	hc := http.Client{Timeout: timeout}
+	hc := http.Client{Timeout: timeout, Transport: infra.HTTPTransport}
 	if o.HTTPClient != nil {
 		hc = *o.HTTPClient
 	}
@@ -207,7 +207,9 @@ func (c *Client) send(ctx context.Context, path, method, token string, input, ou
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return safeError(err)
+		// No response, as with a timeout: the request may have been applied.
+		// This includes a connection the HTTP/2 health check closed mid-request.
+		return safeError(&infra.Transient{Err: err})
 	}
 	defer func() { _ = resp.Body.Close() }() // Read-only response; read errors are handled below.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20+1))
