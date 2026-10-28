@@ -166,6 +166,52 @@ func TestScopeActualChanges(t *testing.T) {
 	})
 }
 
+func TestScopeSharedFiles(t *testing.T) {
+	i18n := []string{"web/src/i18n/resources/zh-CN.ts", "web/src/i18n/translation-lock.json"}
+	with := func(extra ...string) []string { return append(append([]string{}, i18n...), extra...) }
+	shared := "web/src/i18n/resources/*.ts web/src/i18n/translation-lock.json"
+	for _, tc := range []struct {
+		name          string
+		shared        string
+		pushed        []string
+		first, second []string
+		want          map[string]string
+	}{
+		{"only shared files overlap", shared, nil, with("web/src/a.ts"), with("web/src/b.ts"), map[string]string{"ZII-1": "claim", "ZII-2": "claim"}},
+		{"non-shared file still overlaps", shared, nil, with("web/src/a.ts"), with("web/src/a.ts"), map[string]string{"ZII-1": "claim", "ZII-2": "scope"}},
+		{"partly shared directory still holds", shared, nil, []string{"web/src/i18n/"}, with("web/src/i18n/index.ts"), map[string]string{"ZII-1": "claim", "ZII-2": "scope"}},
+		{"empty key keeps avoidance", "", nil, with("web/src/a.ts"), with("web/src/b.ts"), map[string]string{"ZII-1": "claim", "ZII-2": "scope"}},
+		{"pushed changes only shared files", shared, i18n, nil, with("web/src/c.ts"), map[string]string{"ZII-2": "claim"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &scopeBackend{fakeBackend: &fakeBackend{}, files: tc.pushed, found: tc.pushed != nil}
+			s := setup(f.fakeBackend)
+			s.Backend = f
+			s.Repositories[1].Env = map[string]string{"AGENT_SCOPE_SHARED": tc.shared}
+			candidates := []Ticket{{ID: "two", Identifier: "ZII-2", Repo: "b", Candidate: true, Scope: tc.second}}
+			if tc.pushed == nil {
+				candidates = append(candidates, Ticket{ID: "one", Identifier: "ZII-1", Repo: "b", Candidate: true, Scope: tc.first})
+			} else {
+				f.tickets = []Ticket{{ID: "live", Identifier: "ZII-9", Repo: "b", Owner: machine.OwnerMerge, UpdatedAt: s.Now(), Scope: with("web/src/c.ts")}}
+			}
+			f.tickets = append(f.tickets, candidates...)
+			got := map[string]string{}
+			for _, row := range captureDecisions(t, s) {
+				ticket, _ := row["ticket"].(string)
+				switch row["event"] {
+				case "claim":
+					got[ticket] = "claim"
+				case "skip":
+					got[ticket], _ = row["reason"].(string)
+				}
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("decisions=%v want=%v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFeishuReadDescriptionDeclaresScope(t *testing.T) {
 	brief := issues.FeishuBrief{Todo: "做", Check: "make test", Scope: "driver/internal/issues\n  driver/internal/feishu/**  ", Body: "## 现状\n说明", Blockers: []string{}, Related: []string{}}
 	if got := declaredScope(brief.Description()); !reflect.DeepEqual(got, []string{"driver/internal/issues", "driver/internal/feishu/**"}) {

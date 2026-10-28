@@ -430,6 +430,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			continue
 		}
 		reason := ""
+		scope := avoidedScope(t.Scope, repos[t.Repo])
 		switch {
 		case !allowed[t.Repo]:
 			reason = "refused"
@@ -443,7 +444,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = "owned"
 		case total >= s.Config.MaxInFlight || count[t.Repo] >= repos[t.Repo].MaxInFlight:
 			reason = "capacity"
-		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(t.Scope, conflicts[t.Repo]):
+		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(scope, conflicts[t.Repo]):
 			reason = "scope"
 		case !s.token(now):
 			reason = "token"
@@ -463,7 +464,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		total++
 		count[t.Repo]++
 		// An uncertain claim still reserves its scope for this tick.
-		conflicts[t.Repo] = append(conflicts[t.Repo], t.Scope...)
+		conflicts[t.Repo] = append(conflicts[t.Repo], scope...)
 		err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase})
 		result := outcome(err)
 		s.decision(t, "claim", "", "result", result, "err", err)
