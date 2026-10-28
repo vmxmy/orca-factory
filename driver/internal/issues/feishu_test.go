@@ -510,8 +510,40 @@ func TestFeishuReadCommentsRejectEditedEvent(t *testing.T) {
 	if _, err := c.ListComments(ctx, "OF-2"); err == nil {
 		t.Fatal("edited event accepted as evidence")
 	}
-	if _, err := c.SnapshotComments(ctx, "OF-2"); err == nil {
-		t.Fatal("edited event accepted by snapshot comments")
+}
+
+// A snapshot reads events with one listing per 10 tickets, and a listing costs
+// one request per page of its matching events (OF-293).
+func TestFeishuSnapshotCommentsRequestsFollowPages(t *testing.T) {
+	for _, tc := range []struct{ tickets, requests int }{{2, 3}, {10, 3}, {11, 4}} {
+		tickets := tc.tickets
+		f := newFeishuFake(t)
+		f.pageSize = 2
+		for i := 3; i <= tickets; i++ {
+			f.rows["tblT"] = append(f.rows["tblT"], feishuTicket(fmt.Sprintf("recX%d", i), fmt.Sprintf("NO.%03d", 100+i), fmt.Sprintf("%08d-2222-4333-8444-555555555555", i), "recP1", "Todo", nil, nil))
+		}
+		for i := range 5 {
+			at := fmt.Sprintf("2026-10-15T00:09:4%d.000+08:00", i)
+			f.rows["tblE"] = append(f.rows["tblE"], feishuRow{"_id": fmt.Sprintf("recE%d", i), "票据": []feishu.LinkRef{{ID: "recA"}}, "创建时间": at, "修改时间": at, "正文": fmt.Sprintf("event %d", i)})
+		}
+		c := newFeishuTest(t, f)
+		ctx := context.Background()
+		rows, err := c.Snapshot(ctx, []string{feishuRepo}, time.Time{})
+		if err != nil || len(rows) != tickets {
+			t.Fatalf("rows=%d err=%v", len(rows), err)
+		}
+		ids := []string{}
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		before := len(f.filters)
+		got, err := c.SnapshotComments(ctx, ids)
+		if err != nil || len(got) != tickets || len(got[feishuUUIDA]) != 5 || got[feishuUUIDA][4].Body != "event 4" {
+			t.Fatalf("comments=%+v err=%v", got, err)
+		}
+		if reads := len(f.filters) - before; reads != tc.requests {
+			t.Fatalf("%d tickets: %d event requests", tickets, reads)
+		}
 	}
 }
 

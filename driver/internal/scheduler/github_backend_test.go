@@ -44,7 +44,7 @@ func TestGitHubClaimRefreshesOwnershipBeforeMutation(t *testing.T) {
 	if _, err := client.List(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.SnapshotComments(ctx, "ZII-42"); err != nil {
+	if _, err := client.ListComments(ctx, "ZII-42"); err != nil {
 		t.Fatal(err)
 	}
 	changed = true

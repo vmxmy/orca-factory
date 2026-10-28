@@ -94,6 +94,9 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 | `feishu ignored fields ...` | 写入了只读字段，说明字段类型被改过。核对表结构 |
 | `feishu read-back not settled ...`、`write not confirmed` | 写入结果未知。飞书写后读有延迟，driver 不派工，下一轮再对账。持续出现时检查网络和飞书服务状态 |
 | `feishu event ... evidence conflict` | 事件被人改过或关联到多张票。合并通道停下等待，需人工核对记录历史 |
+| `feishu API code 800004006` | 一页响应体超过 10 MiB。driver 已把页大小逐次减半重读同一位置；减到 1 条仍超限才报此错，说明单条记录超过 10 MiB |
+
+每轮巡检按客户端读事件：把本项目的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
 
 ## 内置定时协调与恢复
 

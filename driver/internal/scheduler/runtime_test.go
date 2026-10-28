@@ -283,6 +283,45 @@ func TestRuntimeSnapshotAllProjects(t *testing.T) {
 		t.Fatalf("tickets=%v projects=%v", tickets, lc.projects)
 	}
 }
+
+type batchIssues struct {
+	fakeIssues
+	batches   [][]string
+	perTicket int
+	fail      string
+}
+
+func (f *batchIssues) ListComments(context.Context, string) ([]task.Comment, error) {
+	f.perTicket++
+	return nil, nil
+}
+
+func (f *batchIssues) SnapshotComments(_ context.Context, ids []string) (map[string][]task.Comment, error) {
+	f.batches = append(f.batches, ids)
+	if f.fail != "" {
+		return nil, &issues.CommentsError{ID: f.fail, Err: errors.New("feishu event recE evidence conflict: edited after creation")}
+	}
+	return map[string][]task.Comment{"id1": {{CreatedAt: time.Unix(1, 0), Body: "阶段: gate\n归属: 执行器 term=- run=- attempt=1"}}, "id2": {}}, nil
+}
+
+// A snapshot reads all of a client's ticket events in one batched call and
+// reports a failed read under that ticket's identifier (OF-293).
+func TestRuntimeSnapshotBatchesComments(t *testing.T) {
+	todo := func(id, identifier string) task.Issue {
+		return task.Issue{ID: id, Identifier: identifier, Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}
+	}
+	lc := &batchIssues{fakeIssues: fakeIssues{issues: []task.Issue{todo("id1", "ENG-1"), todo("id2", "ENG-2")}}}
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+	repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1", "AGENT_SCOPE_AVOID": "0"}}}
+	tickets, err := r.Snapshot(context.Background(), repos)
+	if err != nil || lc.perTicket != 0 || !reflect.DeepEqual(lc.batches, [][]string{{"id1", "id2"}}) || len(tickets) != 2 || tickets[0].Owner != machine.OwnerExecutor || tickets[1].Owner != "" || !tickets[1].Candidate {
+		t.Fatalf("tickets=%+v err=%v batches=%v per-ticket=%d", tickets, err, lc.batches, lc.perTicket)
+	}
+	lc.fail = "id2"
+	if _, err = r.Snapshot(context.Background(), repos); err == nil || err.Error() != "ownership snapshot failed: ENG-2 (a): feishu event recE evidence conflict: edited after creation" {
+		t.Fatalf("err=%v", err)
+	}
+}
 func TestRuntimeAutomationRequiresExplicitDisabled(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string

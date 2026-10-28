@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -301,7 +302,9 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
 	closed := map[string]map[string]closedTicket{}
+	ledgerStart := time.Now()
 	snapshot, err := reader.Snapshot(ctx, projects, time.Time{})
+	phases(ctx).add("ledger", ledgerStart)
 	if err != nil {
 		return nil, fmt.Errorf("issue snapshot failed: %w", err)
 	}
@@ -320,15 +323,13 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
 		repoOf[issue.ID] = path
 	}
+	eventsStart := time.Now()
 	for client, rows := range groups {
-		for _, issue := range rows {
-			history, err := client.ListComments(ctx, issue.ID)
-			if err != nil {
-				return nil, fmt.Errorf("ownership snapshot failed: %s (%s): %w", issue.Identifier, repoOf[issue.ID], err)
-			}
-			commentsByID[issue.ID] = history
+		if err := readComments(ctx, client, rows, repoOf, commentsByID); err != nil {
+			return nil, err
 		}
 	}
+	phases(ctx).add("events", eventsStart)
 	tickets := []Ticket{}
 	var problems []error
 	for _, issue := range snapshot {
@@ -642,6 +643,43 @@ func (r *Runtime) command(ctx context.Context, dir, path string, args ...string)
 		run = runx.Run
 	}
 	return run(ctx, runx.Spec{Path: path, Args: args, Dir: dir, Timeout: 30 * time.Second})
+}
+
+// readComments fills comments with every issue's events, in one batched read
+// when the store offers one.
+func readComments(ctx context.Context, client issues.Store, rows []task.Issue, repoOf map[string]string, comments map[string][]task.Comment) error {
+	failed := func(issue task.Issue, err error) error {
+		return fmt.Errorf("ownership snapshot failed: %s (%s): %w", issue.Identifier, repoOf[issue.ID], err)
+	}
+	batch, ok := client.(interface {
+		SnapshotComments(context.Context, []string) (map[string][]task.Comment, error)
+	})
+	if !ok {
+		for _, issue := range rows {
+			history, err := client.ListComments(ctx, issue.ID)
+			if err != nil {
+				return failed(issue, err)
+			}
+			comments[issue.ID] = history
+		}
+		return nil
+	}
+	ids := make([]string, 0, len(rows))
+	byID := map[string]task.Issue{}
+	for _, issue := range rows {
+		ids = append(ids, issue.ID)
+		byID[issue.ID] = issue
+	}
+	histories, err := batch.SnapshotComments(ctx, ids)
+	var ticketErr *issues.CommentsError
+	if errors.As(err, &ticketErr) {
+		return failed(byID[ticketErr.ID], ticketErr.Err)
+	}
+	if err != nil {
+		return err
+	}
+	maps.Copy(comments, histories)
+	return nil
 }
 
 // ticketScope stays local to the scheduler because the shared snapshot

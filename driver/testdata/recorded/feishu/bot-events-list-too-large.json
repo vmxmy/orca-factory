@@ -1,0 +1,21 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "filter": "{\"logic\":\"and\",\"conditions\":[[\"票据\",\"intersects\",[{\"id\":\"reczz28O8Zpg368Q\"},{\"id\":\"reczz28O8aSR66YF\"},{\"id\":\"reczz28O8aiwyyIW\"},{\"id\":\"reczz28O8ari2OtZ\"},{\"id\":\"reczz28O8b0Vdcxi\"},{\"id\":\"reczz28O8b9JKcld\"},{\"id\":\"reczz28O8bHuLNpv\"},{\"id\":\"reczz28O8bQc9SxN\"},{\"id\":\"reczz28O8bf5ldXx\"},{\"id\":\"reczz28O8boHKHCH\"},{\"id\":\"reczz28O8bxXoCtK\"},{\"id\":\"reczz28O8c6dF3gc\"},{\"id\":\"reczz28O8cFbaC8z\"},{\"id\":\"reczz28O8cODOsUE\"},{\"id\":\"reczz28O8cWl1iDs\"},{\"id\":\"reczz28O8cfI6o66\"},{\"id\":\"reczz28O8co1BYu2\"},{\"id\":\"reczz28O8cwV9TTE\"},{\"id\":\"reczz28O8d5BcAun\"},{\"id\":\"reczz28O8dE69jKN\"}]]]}",
+      "limit": 450,
+      "offset": 0
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tbly6EHxFwxnP5DZ/records"
+  },
+  "response": {
+    "error": {
+      "code": 800004006,
+      "log_id": "20261028102416EE586A719B53F2DF1E58",
+      "message": "response body too large: 10485761 bytes (max 10485760)"
+    },
+    "identity": "bot",
+    "ok": false
+  }
+}

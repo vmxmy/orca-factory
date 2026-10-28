@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -81,6 +83,10 @@ func TestSchedulerDecisionLog(t *testing.T) {
 			limits, ok := row["repository_limits"].(map[string]any)
 			if !ok || limits["a"] != float64(1) || limits["b"] != float64(3) || row["in_flight"] != float64(1) || row["candidates"] != float64(2) || row["duration_ms"] == nil {
 				t.Fatalf("incomplete summary: %v", row)
+			}
+			phases, _ := row["phase_ms"].(map[string]any)
+			if !reflect.DeepEqual(slices.Sorted(maps.Keys(phases)), []string{"claim", "dispatch", "merge", "projects", "runners", "snapshot"}) {
+				t.Fatalf("summary phases: %v", row["phase_ms"])
 			}
 		}
 	}

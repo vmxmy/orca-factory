@@ -75,7 +75,8 @@ func TestImportHoldVisibleButBlockedInRuntimeSnapshot(t *testing.T) {
 	}
 }
 
-func TestSnapshotCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
+// Comment edits need not change the issue timestamp; each page revalidates its ETag.
+func TestListCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
 	issueReads, commentReads := 0, 0
 	commentETag := `"comments-v1"`
 	body := `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"ZII-42","project":"o/r","state":"Todo","complete":true,"blockers":[],"related":[]} -->`
@@ -109,7 +110,7 @@ func TestSnapshotCommentsRefreshEditsWithoutIssueTimestampChange(t *testing.T) {
 			t.Fatal(err)
 		}
 		var err error
-		history, err = c.SnapshotComments(context.Background(), "ZII-42")
+		history, err = c.ListComments(context.Background(), "ZII-42")
 		if err != nil {
 			t.Fatal(err)
 		}
