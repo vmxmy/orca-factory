@@ -764,8 +764,12 @@ func (e *CommentsError) Unwrap() error { return e.Err }
 // 修改时间 differs from its 创建时间 was edited and is an evidence conflict.
 func (c *Feishu) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
 	rows, err := c.SnapshotComments(ctx, []string{id})
+	var ticketErr *CommentsError
+	if errors.As(err, &ticketErr) {
+		return nil, ticketErr.Err
+	}
 	if err != nil {
-		return nil, errors.Unwrap(err)
+		return nil, err
 	}
 	return rows[id], nil
 }
