@@ -131,4 +131,13 @@ printf '#!/usr/bin/env bash\nexit 0\n' > "$R/scripts/agent-gates/gate.project.sh
 out="$(TMPDIR="$TMP" GATE_PROJECT_SRC=worktree timeout 60 "$GATE" "$R" "$S")" || { echo "ASSERT: gate after SIGKILLed holder did not finish within 60s (stale heavy lock)"; exit 1; }
 [[ "$(field "$out" VERDICT)" == green ]]
 
+# Timing out on a held heavy lock is infrastructure (exit 2, no VERDICT), not a red verdict on the diff
+rm -f "$TMP/started"
+printf '#!/usr/bin/env bash\ntouch "%s/started"\n' "$TMP" > "$R/scripts/agent-gates/gate.project.sh"
+flock -o "$TMP/agent-gate-heavy.flock" sleep 30 & holder=$!
+sleep 0.5
+out="$(TMPDIR="$TMP" GATE_PROJECT_SRC=worktree GATE_LOCK_WAIT=1 timeout 20 "$GATE" "$R" "$S" 2>/dev/null)" && rc=0 || rc=$?
+kill "$holder"; wait "$holder" 2>/dev/null || true
+[[ $rc == 2 && -z "$(field "$out" VERDICT)" && ! -e "$TMP/started" ]] || { echo "ASSERT: heavy lock timeout rc=$rc VERDICT=$(field "$out" VERDICT)"; exit 1; }
+
 printf 'agent gate regression: PASS\n'

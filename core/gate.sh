@@ -10,6 +10,7 @@ WT="$(cd "$1" && pwd)"
 SPEC="$2"
 BASE="${GATE_BASE:-origin/main}"
 PROJECT_SRC="${GATE_PROJECT_SRC:-origin/main}"   # ref to read gate.project.sh from; 'worktree' = $WT copy
+LOCK_WAIT="${GATE_LOCK_WAIT:-1800}"               # seconds to wait for the heavy lock
 LANE_GLOBS_HARD='scripts/agent-gates/*'           # always lane 2, regardless of env
 # Read profile defaults in a subshell so unrelated assignments stay isolated.
 # As with gate.project.sh, only explicit worktree mode reads the checkout.
@@ -170,7 +171,7 @@ fi
 if [[ -f "$PROJECT_GATE" ]]; then
   exec 9>"$LOCK"
   # Waiting out another gate is infrastructure, not a red verdict on this diff.
-  if ! flock -w 1800 9; then
+  if ! flock -w "$LOCK_WAIT" 9; then
     log "--- [project] timed out waiting for heavy lock $LOCK"
     echo "timed out waiting for heavy lock $LOCK" >&2
     exit 2

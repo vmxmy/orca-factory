@@ -223,7 +223,7 @@ GATE_PROJECT_SRC=worktree scripts/agent-gates/gate.sh . /tmp/onboard-red.spec
 git checkout -- <注入的文件>                        # 撤掉注入，确认 git status 只剩 scripts/agent-gates/
 ```
 
-5c 需要仓库依赖已安装（`AGENT_INSTALL_CMD`）。gate.sh 用 `flock` 锁 `${TMPDIR:-/tmp}/agent-gate-heavy.flock` 串行化项目检查（需要 util-linux 的 `flock`）。锁随持有进程退出释放，gate 被 SIGKILL 也不残留。等锁超过 30 分钟时 gate 不输出 `VERDICT`，以退出码 2 结束，按基础设施失败处理，不计打回。
+5c 需要仓库依赖已安装（`AGENT_INSTALL_CMD`）。gate.sh 用 `flock` 锁 `${TMPDIR:-/tmp}/agent-gate-heavy.flock` 串行化项目检查（需要 util-linux 的 `flock`）。锁随持有进程退出释放，gate 被 SIGKILL 也不残留。等锁超过 `GATE_LOCK_WAIT` 秒（默认 1800）时 gate 不输出 `VERDICT`，以退出码 2 结束，按基础设施失败处理，不计打回。
 
 ## 6. 交付
 
