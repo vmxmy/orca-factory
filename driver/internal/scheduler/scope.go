@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -27,9 +28,25 @@ func (s *Scheduler) scopeConflicts(ctx context.Context, tickets []Ticket, repos 
 				scope = files
 			}
 		}
-		conflicts[t.Repo] = append(conflicts[t.Repo], scope...)
+		conflicts[t.Repo] = append(conflicts[t.Repo], avoidedScope(scope, repos[t.Repo])...)
 	}
 	return conflicts
+}
+
+// avoidedScope drops entries wholly covered by AGENT_SCOPE_SHARED. Concurrent
+// edits to those files reach the merge lane, which turns a text conflict into
+// a correction. An entry only partly covered, such as a parent directory, stays.
+func avoidedScope(scope []string, repo config.Repository) []string {
+	shared := strings.Fields(repo.Env["AGENT_SCOPE_SHARED"])
+	kept := []string{}
+	for _, entry := range scope {
+		if !slices.ContainsFunc(shared, func(pattern string) bool {
+			return entry == pattern || strings.HasPrefix(entry, strings.TrimSuffix(pattern, "/")+"/") || scopeMatch(pattern, entry)
+		}) {
+			kept = append(kept, entry)
+		}
+	}
+	return kept
 }
 
 func scopesOverlap(a, b []string) bool {
