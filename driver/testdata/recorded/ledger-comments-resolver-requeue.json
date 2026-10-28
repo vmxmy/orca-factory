@@ -1,0 +1,19 @@
+{
+  "comments": [
+    {
+      "id": "reczz28Sm6bjzCdc",
+      "body": "PR 已开: https://github.com/vmxmy/zhiyun-ai-dashboard/pull/2054\n阶段: 排队合并\n归属: 合并通道 term=term_21180bc6-3c51-4469-968b-bfbe832e1142 run=run_f4cb3741c954 attempt=1 since=2026-10-28T09:05:58Z\nmerge-handoff-v1: {\"version\":1,\"ticket_id\":\"c8a110a9-6913-45cd-b4b7-287a8cb37fe9\",\"identifier\":\"ZY-255\",\"repository\":\"vmxmy/zhiyun-ai-dashboard\",\"unit\":\"executor\",\"pr\":2054,\"head\":\"a6f34dbfba76026bdb747c0e779af9e63b67733d\",\"baseline\":\"acd3db983b3d951598d1ecfc0399d79fdfab7d6c\",\"gate_spec\":\"REDACTED\",\"gate_output\":\"REDACTED\",\"review_output\":\"REDACTED\",\"lane\":1,\"run\":\"run_f4cb3741c954\",\"task\":\"task_ff96b7d4b5ea\",\"dispatch\":\"ctx_74ef45362c3d\",\"worktree\":\"/home/laoxu/orca/workspaces/zhiyun-ai-dashboard/ZY-255-executor\",\"attempt\":1,\"corrections\":1,\"infra\":0,\"catchup_rounds\":0,\"enqueued_at\":\"2026-10-28T09:05:58.899824764Z\",\"queue_id\":\"a6eaced89b0b84f0f3ccb4f56e40f37e2019b859cc4398483b0747cc8f080dde\"}",
+      "createdAt": "2026-10-28T17:06:00+08:00"
+    },
+    {
+      "id": "reczz28Smf1ML17b",
+      "body": "阶段: 写 correction\n归属: 执行器 term=- run=run_f4cb3741c954 attempt=1\nmerge-progress-v1: {\"corrections\":2,\"catchup_rounds\":1,\"attempt\":1,\"reason\":\"return to scheduler to start a new executor for conflict\",\"version\":1,\"queue_id\":\"a6eaced89b0b84f0f3ccb4f56e40f37e2019b859cc4398483b0747cc8f080dde\",\"ticket_id\":\"c8a110a9-6913-45cd-b4b7-287a8cb37fe9\",\"repository\":\"vmxmy/zhiyun-ai-dashboard\",\"pr\":2054,\"head\":\"a6f34dbfba76026bdb747c0e779af9e63b67733d\",\"main\":\"8dac8d53fa41ed41dbfb1695af0d136f09fdc04a\",\"merge_sha\":\"\",\"phase\":\"correction\"}",
+      "createdAt": "2026-10-28T17:38:34+08:00"
+    },
+    {
+      "id": "reczz28SnWEd7M3D",
+      "body": "resolver-state {\"creator\":\"term_3ee293f5-9837-44d5-b45c-a517a581ef01\",\"version\":1,\"attempt\":1,\"phase\":\"result\",\"run\":\"run_6d70fa2bbdd6\",\"task\":\"task_1a993de28bf0\",\"dispatch\":\"ctx_ce8b1432b8a0\",\"spec\":\"REDACTED\",\"agent\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"result\":\"{\\\"action\\\":\\\"merge\\\",\\\"reason\\\":\\\"REDACTED\\\",\\\"handoff\\\":{\\\"version\\\":1,\\\"ticket_id\\\":\\\"c8a110a9-6913-45cd-b4b7-287a8cb37fe9\\\",\\\"identifier\\\":\\\"ZY-255\\\",\\\"repository\\\":\\\"vmxmy/zhiyun-ai-dashboard\\\",\\\"unit\\\":\\\"executor\\\",\\\"pr\\\":2054,\\\"head\\\":\\\"4d2cdf1182a37dd68e3207e34de5ad4412392b01\\\",\\\"baseline\\\":\\\"6fac33333563ce1c7bb7b110041444fecfdb8f7a\\\",\\\"gate_spec\\\":\\\"REDACTED\\\",\\\"gate_output\\\":\\\"REDACTED\\\",\\\"review_output\\\":\\\"REDACTED\\\",\\\"lane\\\":1,\\\"run\\\":\\\"run_6d70fa2bbdd6\\\",\\\"task\\\":\\\"task_1a993de28bf0\\\",\\\"dispatch\\\":\\\"ctx_ce8b1432b8a0\\\",\\\"worktree\\\":\\\"/home/laoxu/orca/workspaces/zhiyun-ai-dashboard/ZY-255-resolver-1\\\",\\\"attempt\\\":2,\\\"corrections\\\":3,\\\"infra\\\":0,\\\"catchup_rounds\\\":2,\\\"enqueued_at\\\":\\\"2026-10-28T10:28:39.032175Z\\\",\\\"queue_id\\\":\\\"50ee126df3a4b738ca8d97198b0e5291c8c22e7188234dc52660e71a0158e0b8\\\"}}\",\"outcome\":\"succeeded\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+      "createdAt": "2026-10-28T18:28:57+08:00"
+    }
+  ]
+}

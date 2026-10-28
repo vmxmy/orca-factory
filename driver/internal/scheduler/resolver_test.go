@@ -153,6 +153,34 @@ func TestResolverRequeueKeepsLaneCatchupRounds(t *testing.T) {
 	}
 }
 
+// ZY-255, 2026-10-28: the lane counted one conflict and resolver-1 proposed two.
+// gate_spec, gate_output, review_output, the role spec and the reason are redacted.
+func TestRecordedResolverRequeueCatchupRounds(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-resolver-requeue.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	var lane Ticket
+	readMergeHandoff(&lane, recording.Comments[:2])
+	var record resolver.Record
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(recording.Comments[2].Body, resolver.Prefix)), &record); err != nil {
+		t.Fatal(err)
+	}
+	var proposal resolver.Resolution
+	if err := json.Unmarshal([]byte(record.Result), &proposal); err != nil || proposal.Handoff == nil {
+		t.Fatalf("recorded proposal: %v", err)
+	}
+	if rounds, err := laneCatchupRounds(lane); proposal.Handoff.CatchupRounds != 2 || err != nil || rounds != 1 {
+		t.Fatalf("resolver proposed %d; lane rounds = %d, %v; want 1", proposal.Handoff.CatchupRounds, rounds, err)
+	}
+	other := *lane.Progress
+	other.Head = proposal.Handoff.Head
+	lane.Progress = &other
+	if rounds, err := laneCatchupRounds(lane); err == nil {
+		t.Fatalf("progress for head %s counted as the lane's %d rounds", other.Head, rounds)
+	}
+}
+
 func TestNewEscalationStartsAnotherResolverAttempt(t *testing.T) {
 	old := resolver.Record{Version: 1, Attempt: 2, Phase: "applied", Result: "old"}
 	raw, _ := json.Marshal(old)

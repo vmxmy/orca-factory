@@ -297,8 +297,12 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 			return r.retryResolution(ctx, t, p, "cannot rewrite a frozen queue; validate a new handoff")
 		}
 	} else {
+		rounds, err := laneCatchupRounds(t)
+		if err != nil {
+			return r.retryResolution(ctx, t, p, err.Error())
+		}
 		requeued := *h
-		requeued.CatchupRounds = laneCatchupRounds(t)
+		requeued.CatchupRounds = rounds
 		h = &requeued
 	}
 	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "", nil, []string{"auto-failed"}); err != nil {
