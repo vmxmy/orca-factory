@@ -4,7 +4,7 @@
 # 填法：每一步替换为 ONBOARD.md 第 1 步推导出的真实命令；用不到的步骤整段删掉。
 # 规则：每步前必须 echo "== <step>"（gate.sh 用最后一个标记定位失败步骤）；任一命令非 0 即红（set -e）；
 # 脚本从 origin/main 读取执行，工人改不动它。重型/全量检查放这里，定向测试走 spec 的 CHECK。
-# 本脚本在 agent-gate-heavy.lock 持有期间运行：不要在这里调用 gate.sh / gate.test.sh / orca-factory selftest（它们会再调 gate.sh，
+# 本脚本在 agent-gate-heavy.flock 持有期间运行：不要在这里调用 gate.sh / gate.test.sh / orca-factory selftest（它们会再调 gate.sh，
 # 嵌套抢同一把锁，空等 30 分钟）。这类检查写进 spec 的 CHECK（gate.sh 第 5 步，锁已释放）。
 set -Eeuo pipefail
 
