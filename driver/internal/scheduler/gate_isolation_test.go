@@ -20,7 +20,11 @@ func TestRealGateFixturesIsolateOuterLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer held.Close()
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatal(err)
 	}
