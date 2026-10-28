@@ -95,13 +95,32 @@ func mergeRounds(t Ticket) (int, error) {
 	if p.QueueID != h.QueueID {
 		return h.CatchupRounds, nil
 	}
-	if p.Version != 1 || p.TicketID != h.TicketID || p.Repository != h.Repository || p.PR != h.PR || p.Head != h.Head || p.CatchupRounds < 0 {
+	if !progressMatchesHandoff(p, h) {
 		return 0, errors.New("conflicting merge decision")
 	}
 	if p.Phase == "correction" || p.Phase == "human" {
 		return 0, errors.New("merge decision already transferred ownership")
 	}
 	return max(h.CatchupRounds, p.CatchupRounds), nil
+}
+
+// Catch-up rounds are lane events. A resolver merging main fixes a round the
+// lane already counted, so its new queue carries the lane's count, not its own.
+func laneCatchupRounds(t Ticket) (int, error) {
+	if t.Handoff == nil {
+		return 0, nil
+	}
+	if t.Progress == nil || t.Progress.QueueID != t.Handoff.QueueID {
+		return t.Handoff.CatchupRounds, nil
+	}
+	if !progressMatchesHandoff(t.Progress, t.Handoff) {
+		return 0, errors.New("conflicting merge decision")
+	}
+	return max(t.Handoff.CatchupRounds, t.Progress.CatchupRounds), nil
+}
+
+func progressMatchesHandoff(p *merge.Progress, h *merge.Handoff) bool {
+	return p.Version == 1 && p.TicketID == h.TicketID && p.Repository == h.Repository && p.PR == h.PR && p.Head == h.Head && p.CatchupRounds >= 0
 }
 
 // Progress extensions share one receipt; carry both budgets and deployment when
