@@ -104,6 +104,18 @@ func mergeRounds(t Ticket) (int, error) {
 	return max(h.CatchupRounds, p.CatchupRounds), nil
 }
 
+// Catch-up rounds are lane events. A resolver merging main fixes a round the
+// lane already counted, so its new queue carries the lane's count, not its own.
+func laneCatchupRounds(t Ticket) int {
+	if t.Handoff == nil {
+		return 0
+	}
+	if t.Progress != nil && t.Progress.QueueID == t.Handoff.QueueID {
+		return max(t.Handoff.CatchupRounds, t.Progress.CatchupRounds)
+	}
+	return t.Handoff.CatchupRounds
+}
+
 // Progress extensions share one receipt; carry both budgets and deployment when
 // writing another phase of the same queue identity.
 func retainMergeProgress(next, prior *merge.Progress) {

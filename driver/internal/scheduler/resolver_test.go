@@ -128,6 +128,31 @@ func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 	}
 }
 
+// The lane counts a conflict once; the resolver merging main to fix it is not
+// a second round, so the new queue must not leave the lane exhausted.
+func TestResolverRequeueKeepsLaneCatchupRounds(t *testing.T) {
+	f := newMergeFixture(t)
+	var h merge.Handoff
+	if err := json.Unmarshal([]byte(strings.Split(f.tracker.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
+		t.Fatal(err)
+	}
+	conflict, _ := json.Marshal(merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: f.main, Phase: "correction", Corrections: 1, CatchupRounds: 1, Attempt: 1, Reason: "return to scheduler to start a new executor for conflict"})
+	h.QueueID, h.CatchupRounds = "q2", 2
+	proposal, _ := json.Marshal(resolver.Resolution{Action: "merge", Reason: "conflict resolved", Handoff: &h})
+	record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
+	enqueued := f.tracker.rows[0].CreatedAt
+	f.tracker.rows = append(f.tracker.rows,
+		task.Comment{ID: "conflict", CreatedAt: enqueued.Add(time.Nanosecond), Body: "阶段: Agent处置\n归属: 处置Agent\n" + merge.ProgressPrefix + string(conflict)},
+		task.Comment{ID: "result", CreatedAt: enqueued.Add(2 * time.Nanosecond), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	for i := 0; i < 3 && f.tracker.issue.State.Name != "Done"; i++ {
+		_ = s.Tick(context.Background())
+	}
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"catchup_rounds":1,"enqueued_at"`) {
+		t.Fatalf("resolver requeue did not keep one catch-up round: puts=%d state=%s bodies=%q", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
+	}
+}
+
 func TestNewEscalationStartsAnotherResolverAttempt(t *testing.T) {
 	old := resolver.Record{Version: 1, Attempt: 2, Phase: "applied", Result: "old"}
 	raw, _ := json.Marshal(old)

@@ -296,6 +296,10 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 		if string(before) != string(after) {
 			return r.retryResolution(ctx, t, p, "cannot rewrite a frozen queue; validate a new handoff")
 		}
+	} else {
+		requeued := *h
+		requeued.CatchupRounds = laneCatchupRounds(t)
+		h = &requeued
 	}
 	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "", nil, []string{"auto-failed"}); err != nil {
 		return errors.New("resolver completion labels unconfirmed")
@@ -306,7 +310,8 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	handoff, _ := json.Marshal(h)
 	body := "阶段: " + string(machine.PhaseMergeQueue) + "\n归属: " + string(machine.OwnerMerge) + "\n" + merge.HandoffPrefix + string(handoff) + "\n" + resolver.Prefix + string(raw)
 	// A new queue must not inherit an exhausted old queue's progress. Existing
-	// deployment barriers were rejected above; budgets in the new evidence remain.
+	// deployment barriers were rejected above; correction and infra budgets in
+	// the new evidence remain, catch-up rounds come from the lane.
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
