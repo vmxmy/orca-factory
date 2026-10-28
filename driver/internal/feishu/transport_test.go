@@ -152,8 +152,17 @@ func TestRequestsRecoverAfterProxyTunnelFreezes(t *testing.T) {
 	roots.AddCert(s.Certificate())
 	transport := infra.HTTPTransport.(*http.Transport).Clone()
 	// send gives each request 30s; production must drop a dead connection within one.
-	if h := transport.HTTP2; h == nil || h.SendPingTimeout <= 0 || h.SendPingTimeout+h.PingTimeout >= 30*time.Second {
-		t.Fatalf("production HTTP/2 health check = %+v, want a ping that drops a dead connection within 30s", h)
+	// A zero PingTimeout means net/http's default of 15s.
+	h := transport.HTTP2
+	if h == nil || h.SendPingTimeout <= 0 {
+		t.Fatalf("production HTTP/2 health check = %+v, want pings enabled", h)
+	}
+	pingTimeout := h.PingTimeout
+	if pingTimeout == 0 {
+		pingTimeout = 15 * time.Second
+	}
+	if h.SendPingTimeout+pingTimeout >= 30*time.Second {
+		t.Fatalf("production HTTP/2 health check drops a dead connection after %s, want under 30s", h.SendPingTimeout+pingTimeout)
 	}
 	transport.HTTP2.SendPingTimeout, transport.HTTP2.PingTimeout = 100*time.Millisecond, 100*time.Millisecond
 	transport.Proxy = http.ProxyURL(&url.URL{Scheme: "http", Host: proxy.ln.Addr().String()})
