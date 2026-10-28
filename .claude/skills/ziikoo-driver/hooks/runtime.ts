@@ -86,7 +86,7 @@ export const statusLine = (state: Fetched<Runtime>): string | undefined => {
 
 const ENTERED: { label: string; holds: (t: RuntimeTicket) => boolean }[] = [
   { label: '已合并', holds: t => t.phase === '已合并' },
-  { label: '交给处置 Agent', holds: t => t.owner === '处置Agent' },
+  { label: '升级到二线 Agent', holds: t => t.owner === '处置Agent' },
   { label: '转人', holds: t => t.stage === 'human' },
   { label: '部署暂停', holds: t => t.deployment?.state === 'paused' },
   { label: '打回修改', holds: t => t.phase === '写 correction' },

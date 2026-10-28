@@ -18,7 +18,7 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   worker_strong: '施工 升档',
   reviewer: '审查',
   reviewer_small: '小票审查',
-  resolver: '处置',
+  resolver: '二线',
   intake: '需求助手',
 }
 

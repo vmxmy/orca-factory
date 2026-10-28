@@ -125,7 +125,7 @@ export const position = (t: RuntimeTicket): Position => {
   if (d && d.state !== 'passed') return { at: TRACK.length - 1, tone: d.state === 'paused' ? 'failed' : 'current', label: DEPLOY_LABELS[d.state] ?? d.state }
   if (t.stage === 'candidate') return { at: 0, tone: 'current', label: '待领' }
   if (t.stage === 'human') return { at: null, tone: 'attention', label: '转人' }
-  if (t.owner === '处置Agent') return { at: null, tone: 'attention', label: '处置 Agent' }
+  if (t.owner === '处置Agent') return { at: null, tone: 'attention', label: '二线处理中' }
   const at = PHASE_AT[t.phase]
   if (at === undefined) return { at: null, tone: 'attention', label: t.phase || '未知阶段' }
   return { at, tone: t.phase === '写 correction' ? 'attention' : 'current', label: t.phase }
