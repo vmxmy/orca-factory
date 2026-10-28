@@ -39,6 +39,9 @@ const (
 	feishuBatchLimit       = 200
 	feishuReadBackTimeout  = 60 * time.Second
 	feishuReadBackInterval = 2 * time.Second
+	// feishuEventFilterLimit bounds the tickets one 事件 filter names, since the
+	// filter travels in the GET query; 160 was measured to work (OF-293).
+	feishuEventFilterLimit = 100
 )
 
 var feishuTables = []feishu.TableSpec{
@@ -294,13 +297,22 @@ func (c *Feishu) readPages(ctx context.Context, table string, filter *feishu.Fil
 	id := c.tables[table].id
 	records := []feishu.Record{}
 	var rev int64
+	limit := feishuPageLimit
 	for offset := 0; ; {
 		var page feishu.Page
 		var err error
 		if filter == nil {
-			page, err = c.client.ListRecords(ctx, c.base, id, offset, feishuPageLimit)
+			page, err = c.client.ListRecords(ctx, c.base, id, offset, limit)
 		} else {
-			page, err = c.client.ListRecordsWhere(ctx, c.base, id, *filter, offset, feishuPageLimit)
+			page, err = c.client.ListRecordsWhere(ctx, c.base, id, *filter, offset, limit)
+		}
+		// Record sizes vary too widely for a fixed page to stay under the 10 MiB
+		// response cap: 200 production events measured 34 KB to 7.5 MB (OF-293).
+		// Later pages keep the smaller size.
+		var apiErr *feishu.APIError
+		if errors.As(err, &apiErr) && apiErr.Code == feishu.CodeResponseTooLarge && limit > 1 {
+			limit /= 2
+			continue
 		}
 		if err != nil {
 			return nil, err
@@ -737,49 +749,130 @@ func (c *Feishu) FreshIssue(ctx context.Context, id string) (task.Issue, error) 
 	return t.Issue, err
 }
 
+// CommentsError names the ticket whose own ListComments fails with Err.
+type CommentsError struct {
+	ID  string
+	Err error
+}
+
+func (e *CommentsError) Error() string { return e.ID + ": " + e.Err.Error() }
+func (e *CommentsError) Unwrap() error { return e.Err }
+
 // ListComments returns the ticket's events oldest first. An event whose
 // 修改时间 differs from its 创建时间 was edited and is an evidence conflict.
 func (c *Feishu) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
-	t, err := c.cachedTask(ctx, id)
+	rows, err := c.SnapshotComments(ctx, []string{id})
 	if err != nil {
-		return nil, err
+		return nil, errors.Unwrap(err)
 	}
-	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: t.nativeID}}}}}
-	records, err := c.readAll(ctx, "事件", &filter)
-	if err != nil {
-		return nil, err
-	}
-	const table = "事件"
-	history := make([]task.Comment, 0, len(records))
-	for _, r := range records {
-		owners, err := c.links(table, r, "票据")
-		if err != nil {
-			return nil, err
-		}
-		if !slices.Equal(owners, []string{t.nativeID}) {
-			return nil, fmt.Errorf("feishu event %s evidence conflict: linked to %d tickets", r.ID, len(owners))
-		}
-		body, err := c.text(table, r, "正文")
-		if err != nil {
-			return nil, err
-		}
-		created, err := c.timestamp(table, r, "创建时间")
-		if err != nil {
-			return nil, err
-		}
-		updated, err := c.timestamp(table, r, "修改时间")
-		if err != nil {
-			return nil, err
-		}
-		if !updated.Equal(created) {
-			return nil, fmt.Errorf("feishu event %s evidence conflict: edited after creation", r.ID)
-		}
-		history = append(history, task.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated})
-	}
-	sort.SliceStable(history, func(i, j int) bool { return history[i].CreatedAt.Before(history[j].CreatedAt) })
-	return decodeImportedHistory(history)
+	return rows[id], nil
 }
 
-func (c *Feishu) SnapshotComments(ctx context.Context, id string) ([]task.Comment, error) {
-	return c.ListComments(ctx, id)
+// SnapshotComments lists the 事件 of many tickets with one filtered listing per
+// chunk of tickets, instead of one listing per ticket. Each ticket gets exactly
+// what its own ListComments returns; the first ticket in ids order whose read
+// fails ends the call with a *CommentsError.
+func (c *Feishu) SnapshotComments(ctx context.Context, ids []string) (map[string][]task.Comment, error) {
+	out := make(map[string][]task.Comment, len(ids))
+	for chunk := range slices.Chunk(ids, feishuEventFilterLimit) {
+		reads := c.readEvents(ctx, chunk)
+		for i, id := range chunk {
+			if reads[i].err != nil {
+				return nil, &CommentsError{ID: id, Err: reads[i].err}
+			}
+			out[id] = reads[i].history
+		}
+	}
+	return out, nil
+}
+
+type ticketEvents struct {
+	history []task.Comment
+	err     error
+}
+
+// readEvents returns one result per ticket of chunk, in chunk order. A
+// failure that cannot be traced to one ticket fails every ticket of the chunk.
+func (c *Feishu) readEvents(ctx context.Context, chunk []string) []ticketEvents {
+	reads := make([]ticketEvents, len(chunk))
+	readers := map[string][]int{}
+	refs := []feishu.LinkRef{}
+	for i, id := range chunk {
+		t, err := c.cachedTask(ctx, id)
+		if err != nil {
+			reads[i].err = err
+			continue
+		}
+		reads[i].history = []task.Comment{}
+		if readers[t.nativeID] == nil {
+			refs = append(refs, feishu.LinkRef{ID: t.nativeID})
+		}
+		readers[t.nativeID] = append(readers[t.nativeID], i)
+	}
+	if len(refs) == 0 {
+		return reads
+	}
+	failAll := func(err error) []ticketEvents {
+		for i := range reads {
+			if reads[i].err == nil {
+				reads[i].err = err
+			}
+		}
+		return reads
+	}
+	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: refs}}}
+	records, err := c.readAll(ctx, "事件", &filter)
+	if err != nil {
+		return failAll(err)
+	}
+	for _, r := range records {
+		owners, err := c.links("事件", r, "票据")
+		if err != nil {
+			return failAll(err)
+		}
+		comment, eventErr := c.event(r)
+		if len(owners) != 1 {
+			eventErr = fmt.Errorf("feishu event %s evidence conflict: linked to %d tickets", r.ID, len(owners))
+		}
+		for _, owner := range owners {
+			for _, i := range readers[owner] {
+				switch {
+				case reads[i].err != nil:
+				case eventErr != nil:
+					reads[i].err = eventErr
+				default:
+					reads[i].history = append(reads[i].history, comment)
+				}
+			}
+		}
+	}
+	for i := range reads {
+		if reads[i].err != nil {
+			continue
+		}
+		history := reads[i].history
+		sort.SliceStable(history, func(a, b int) bool { return history[a].CreatedAt.Before(history[b].CreatedAt) })
+		reads[i].history, reads[i].err = decodeImportedHistory(history)
+	}
+	return reads
+}
+
+func (c *Feishu) event(r feishu.Record) (task.Comment, error) {
+	const table = "事件"
+	body, err := c.text(table, r, "正文")
+	if err != nil {
+		return task.Comment{}, err
+	}
+	created, err := c.timestamp(table, r, "创建时间")
+	if err != nil {
+		return task.Comment{}, err
+	}
+	updated, err := c.timestamp(table, r, "修改时间")
+	if err != nil {
+		return task.Comment{}, err
+	}
+	if !updated.Equal(created) {
+		return task.Comment{}, fmt.Errorf("feishu event %s evidence conflict: edited after creation", r.ID)
+	}
+	return task.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated}, nil
 }

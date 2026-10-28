@@ -15,3 +15,5 @@
 `bot-reaction-*` 于 2026-10-15 以应用身份录制，接口为 `POST /open-apis/im/v1/messages/:message_id/reactions`（`emoji_type=THUMBSUP`），现有 `im:message:send_as_bot` 等权限即可：添加成功返回 `reaction_id`；对同一消息重复添加同一表情仍成功并返回同一 `reaction_id`（幂等）；消息不存在返回 `99992354`。
 
 `bot-message-reply-card.json`、`bot-message-update-card.json` 于 2026-10-16 以应用身份（`lark-cli 1.0.97 api --as bot`）在真实需求群录制（OF-47）：对一条机器人根消息以 `reply_in_thread=true` 回复 JSON 2.0 项目选择卡片，再以 `PATCH /open-apis/im/v1/messages/:message_id` 把卡片改为已选择状态。message_id 脱敏为 `om_REDACTED_ROOT`（根消息）与 `om_REDACTED_CARD`（卡片），thread_id 为 `omt_REDACTED`；lark-cli 附加的 `_notice` 版本提示已删除。`constructed-card-action-project-pick.json` 不是录制：它按 SDK 类型构造 `card.action.trigger` 回调，待上线后真实点击实录替换。
+
+`bot-events-list-too-large.json` 于 2026-10-28 以应用身份录制（OF-293），用的不是 lark-cli，而是 driver 自己的 Go 客户端只读请求生产 Base：20 张 ZCP 票的事件过滤、每页 450 条，响应体超过 10 MiB。原始 OpenAPI 信封的 `code`、`msg`、`error.log_id` 按 lark-cli 的形态放在 `response.error` 下，`msg` 改记为 `message`。base token 替换为 `BASE_TOKEN`，记录 ID 与表 ID 保持原样。

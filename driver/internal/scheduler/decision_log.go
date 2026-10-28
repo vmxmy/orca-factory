@@ -27,9 +27,40 @@ func (s *Scheduler) decision(t Ticket, event, reason string, attrs ...any) {
 	s.logger().Info("scheduler decision", fields...)
 }
 
+type phasesKey struct{}
+
+// tickPhases sums one inspection's wall time per phase for its summary.
+// ledger and events sum every snapshot read of the round, including reads
+// nested in other phases.
+type tickPhases map[string]time.Duration
+
+func withPhases(ctx context.Context, p tickPhases) context.Context {
+	return context.WithValue(ctx, phasesKey{}, p)
+}
+
+func phases(ctx context.Context) tickPhases {
+	p, _ := ctx.Value(phasesKey{}).(tickPhases)
+	return p
+}
+
+// add is a no-op outside an inspection, such as a snapshot for driver resolve.
+func (p tickPhases) add(name string, start time.Time) {
+	if p != nil {
+		p[name] += time.Since(start)
+	}
+}
+
+func (p tickPhases) milliseconds() map[string]int64 {
+	out := map[string]int64{}
+	for name, d := range p {
+		out[name] = d.Milliseconds()
+	}
+	return out
+}
+
 // Counts describe the input snapshot, not tentative ownership writes. A missing
 // snapshot is explicit so zero candidates is not mistaken for an empty ledger.
-func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, err error) {
+func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, timing tickPhases, err error) {
 	total, candidates := 0, 0
 	for _, t := range tickets {
 		if owned(t) {
@@ -45,7 +76,7 @@ func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, er
 	}
 	s.logger().Info("scheduler inspection", "event", "summary", "in_flight", total,
 		"candidates", candidates, "snapshot_available", snapshot, "max_in_flight", s.Config.MaxInFlight,
-		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "err", err)
+		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "phase_ms", timing.milliseconds(), "err", err)
 }
 
 func evidence(negative bool, err error) any {

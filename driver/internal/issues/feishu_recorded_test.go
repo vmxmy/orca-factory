@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const (
@@ -72,6 +74,7 @@ type recordedFeishuBase struct {
 	mu       sync.Mutex
 	routes   map[string][]feishuReply
 	requests map[string][]json.RawMessage
+	limits   map[string][]string
 }
 
 func routeKey(t *testing.T, method, path, filter string, body []byte) string {
@@ -129,6 +132,7 @@ func (f *recordedFeishuBase) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.t.Error(err)
 	}
 	f.requests[r.Method+" "+r.URL.Path] = append(f.requests[r.Method+" "+r.URL.Path], body)
+	f.limits[r.URL.Path] = append(f.limits[r.URL.Path], r.URL.Query().Get("limit"))
 	key := routeKey(f.t, r.Method, r.URL.Path, r.URL.Query().Get("filter"), body)
 	replies := f.routes[key]
 	if len(replies) == 0 {
@@ -162,7 +166,7 @@ func rawJSON(t *testing.T, v any) json.RawMessage {
 // Ticket B relates to a record deleted
 // before recording, so its batch_get reply is an empty page.
 func newRecordedFeishuBase(t *testing.T) *recordedFeishuBase {
-	f := &recordedFeishuBase{t: t, routes: map[string][]feishuReply{}, requests: map[string][]json.RawMessage{}}
+	f := &recordedFeishuBase{t: t, routes: map[string][]feishuReply{}, requests: map[string][]json.RawMessage{}, limits: map[string][]string{}}
 	f.replay("bot-tables-list.json", "fields-list.json", "bot-fields-list-events.json", "bot-tickets-list-filter.json")
 	f.replay("bot-project-fields.json", "bot-project-records.json")
 	f.on(http.MethodPost, recBasePath+"/tables/"+recTicketTable+"/records/batch_get", "", []byte(`{"record_id_list":["reczz28NLqDRJWLV"]}`), feishuReply{data: rawJSON(t, map[string]any{
@@ -224,6 +228,100 @@ func TestRecordedFeishuBotEventsUpdatedAtBackfilled(t *testing.T) {
 	}
 	if _, err := c.ListComments(ctx, "OF-2"); err == nil || !strings.Contains(err.Error(), "evidence conflict") || !strings.Contains(err.Error(), edited) {
 		t.Fatalf("edited event accepted: %v", err)
+	}
+}
+
+// uneditedPage rewrites a recorded 事件 page so every row's 修改时间 equals its
+// 创建时间.
+func uneditedPage(t *testing.T, raw json.RawMessage) json.RawMessage {
+	t.Helper()
+	var page map[string]any
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatal(err)
+	}
+	fields := page["fields"].([]any)
+	created, updated := slices.Index(fields, any("创建时间")), slices.Index(fields, any("修改时间"))
+	for _, row := range page["data"].([]any) {
+		row.([]any)[updated] = row.([]any)[created]
+	}
+	return rawJSON(t, page)
+}
+
+// joinedPages serves the records of single-ticket recordings as one page, the
+// way base/v3 answers a filter that lists several tickets.
+func joinedPages(t *testing.T, pages ...json.RawMessage) json.RawMessage {
+	t.Helper()
+	var out map[string]any
+	for _, raw := range pages {
+		var page map[string]any
+		if err := json.Unmarshal(raw, &page); err != nil {
+			t.Fatal(err)
+		}
+		if out == nil {
+			out = page
+			continue
+		}
+		out["record_id_list"] = append(out["record_id_list"].([]any), page["record_id_list"].([]any)...)
+		out["data"] = append(out["data"].([]any), page["data"].([]any)...)
+	}
+	return rawJSON(t, out)
+}
+
+// One 事件 listing filtered to several tickets yields each ticket's events
+// exactly as that ticket's own ListComments does, and the edited event of
+// ticket B still fails the read under B's identity (OF-293).
+func TestRecordedFeishuSnapshotCommentsMatchListComments(t *testing.T) {
+	a := loadFeishuRecording(t, "bot-events-list.json")
+	b := loadFeishuRecording(t, "bot-events-list-ticket-b.json")
+	events := recBasePath + "/tables/" + recEventTable + "/records"
+	both := `{"logic":"and","conditions":[["票据","intersects",[{"id":"` + recTicketA + `"},{"id":"` + recTicketB + `"}]]]}`
+	conflicts := 0
+	for _, pageB := range []json.RawMessage{b.Response.Data, uneditedPage(t, b.Response.Data)} {
+		f := newRecordedFeishuBase(t)
+		f.on(http.MethodGet, events, a.Request.Params.Filter, nil, feishuReply{data: a.Response.Data})
+		f.on(http.MethodGet, events, b.Request.Params.Filter, nil, feishuReply{data: pageB})
+		f.on(http.MethodGet, events, both, nil, feishuReply{data: joinedPages(t, a.Response.Data, pageB)})
+		c := f.backend(t)
+		ctx := context.Background()
+		got, err := c.SnapshotComments(ctx, []string{feishuUUIDA, "OF-2"})
+		if reads := len(f.sent(http.MethodGet, events)); reads != 1 {
+			t.Fatalf("batched event reads = %d", reads)
+		}
+		wantA, errA := c.ListComments(ctx, feishuUUIDA)
+		wantB, errB := c.ListComments(ctx, "OF-2")
+		if errA != nil || len(wantA) != 3 || wantA[2].Body != "recorded as app identity" {
+			t.Fatalf("A=%+v err=%v", wantA, errA)
+		}
+		if errB != nil {
+			var conflict *CommentsError
+			if errB.Error() != "feishu event reczz28NLqZ0kk1a evidence conflict: edited after creation" || got != nil || !errors.As(err, &conflict) || conflict.ID != "OF-2" || conflict.Err.Error() != errB.Error() {
+				t.Fatalf("batch=%v %v per-ticket=%v", got, err, errB)
+			}
+			conflicts++
+			continue
+		}
+		if err != nil || len(wantB) != 1 || wantB[0].Body != "tampered" || !reflect.DeepEqual(got, map[string][]task.Comment{feishuUUIDA: wantA, "OF-2": wantB}) {
+			t.Fatalf("batch=%+v err=%v A=%+v B=%+v", got, err, wantA, wantB)
+		}
+	}
+	if conflicts != 1 {
+		t.Fatalf("edited recording conflicted %d times, want only the recorded page", conflicts)
+	}
+}
+
+// base/v3 refuses a page whose body would pass 10 MiB
+// (bot-events-list-too-large.json); the listing rereads that offset with half
+// the page.
+func TestRecordedFeishuTooLargePageHalvesLimit(t *testing.T) {
+	tooLarge := loadFeishuRecording(t, "bot-events-list-too-large.json")
+	a := loadFeishuRecording(t, "bot-events-list.json")
+	events := recBasePath + "/tables/" + recEventTable + "/records"
+	f := newRecordedFeishuBase(t)
+	f.on(http.MethodGet, events, a.Request.Params.Filter, nil, feishuReply{code: tooLarge.Response.Error.Code}, feishuReply{data: a.Response.Data})
+	c := f.backend(t)
+	comments, err := c.ListComments(context.Background(), feishuUUIDA)
+	if tooLarge.Response.Error.Code != 800004006 || err != nil || len(comments) != 3 || !slices.Equal(f.limits[events], []string{"500", "250"}) {
+		t.Fatalf("comments=%+v err=%v limits=%v", comments, err, f.limits[events])
 	}
 }
 

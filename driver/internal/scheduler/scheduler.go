@@ -152,7 +152,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	started := time.Now()
 	var tickets []Ticket
 	snapshot := false
-	defer func() { s.summary(started, tickets, snapshot, tickErr) }()
+	timing := tickPhases{}
+	ctx = withPhases(ctx, timing)
+	mark := started
+	lap := func(phase string) {
+		timing.add(phase, mark)
+		mark = time.Now()
+	}
+	defer func() { s.summary(started, tickets, snapshot, timing, tickErr) }()
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
@@ -189,8 +196,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			logger.Warn("Feishu notification failed", "ticket", t.Identifier, "error", err)
 		}
 	}
+	lap("projects")
 	var err error
 	tickets, err = s.Backend.Snapshot(ctx, s.Repositories)
+	lap("snapshot")
 	if err != nil {
 		category := "other"
 		var evidence *SnapshotEvidenceError
@@ -390,6 +399,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 	}
+	lap("dispatch")
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
 	}); ok {
@@ -397,12 +407,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, err)
 		}
 	}
+	lap("merge")
 	if runners, ok := s.Backend.(interface{ CheckRunners(context.Context) error }); ok {
 		// A runner alert never blocks ticket flow; its failure is only logged.
 		if err := runners.CheckRunners(ctx); err != nil {
 			s.logger().Warn("runner health check failed", "err", err)
 		}
 	}
+	lap("runners")
 	sort.SliceStable(tickets, func(i, j int) bool {
 		a, b := tickets[i], tickets[j]
 		if priority(a.Priority) != priority(b.Priority) {
@@ -469,6 +481,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 		}
 	}
+	lap("claim")
 	return errors.Join(problems...)
 }
 

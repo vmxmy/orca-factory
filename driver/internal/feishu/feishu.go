@@ -23,6 +23,10 @@ const (
 	CodeWriteConflict = 1254291
 	CodeMissingScope  = 99991672
 	CodeNoPermission  = 91403
+	// CodeResponseTooLarge refuses a response body over 10 MiB
+	// (bot-events-list-too-large.json); the same request with a smaller page
+	// succeeds.
+	CodeResponseTooLarge = 800004006
 )
 
 const tokenRefreshMargin = 5 * time.Minute

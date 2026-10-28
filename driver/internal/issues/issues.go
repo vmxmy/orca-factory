@@ -628,8 +628,3 @@ func (c *GitHub) awaitListed(ctx context.Context, id string) error {
 
 // GitHubUsage reports the GitHub client's rate-limit usage.
 func (c *GitHub) GitHubUsage() github.Usage { return c.gh.Usage() }
-
-// Comment edits need not change the issue timestamp; each page revalidates its ETag.
-func (c *GitHub) SnapshotComments(ctx context.Context, id string) ([]task.Comment, error) {
-	return c.ListComments(ctx, id)
-}
