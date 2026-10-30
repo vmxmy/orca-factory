@@ -145,7 +145,9 @@ func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRu
 func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intake.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	chat := p.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
 	if cached, ok := r.projects[p.Prefix]; ok {
+		cached.Chat = chat
 		return cached, nil
 	}
 	model, effort, err := tierParts(p.Repository.Env)
@@ -157,7 +159,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 		return intake.Project{}, fmt.Errorf("账本打开失败：%w", err)
 	}
 	checkout := filepath.Join(r.cacheDir, "orca-factory", "intake", p.Prefix, "checkout")
-	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store}
+	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store, Chat: chat}
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
 	r.built[p.Prefix] = &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store)}
@@ -365,6 +367,9 @@ func runFeishuGateway(ctx context.Context) error {
 		gateway.SetOnboarder(onboarder{cfg: cfg, orca: orcaClient, claude: claude, stateRoot: logStateRoot(), cacheDir: cacheDir, writeRow: factoryLedgerRow(cfg), preflight: defaultPreflight}.run)
 		gateway.SetEnabler(enabler{checker: factoryChecker(cfg.FactoryRoot), writeRow: factoryEnabledWriter(cfg), cleanup: onboardSceneCleaner(cacheDir)}.run)
 	}
+	// Replies in a project chat's open threads arrive before any new topic would
+	// trigger discovery, and that chat is only known from discovery.
+	refreshIntakeProjects(ctx, gateway, cfg, orcaClient, runtime)
 	handler := dispatcher.NewEventDispatcher("", "").OnP2MessageReceiveV1(func(ctx context.Context, event *im.P2MessageReceiveV1) error {
 		if isNewIntakeTopic(event) {
 			refreshIntakeProjects(ctx, gateway, cfg, orcaClient, runtime)

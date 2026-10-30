@@ -16,6 +16,8 @@ import (
 // drafts as plain replies. Reason, when non-empty, is why the project
 // discovery package (OF-42) would not let this project take over right now
 // (e.g. "check 失败"); it overrides the generic unavailable-project reply.
+// Chat is the project's own chat (AGENT_FEISHU_NOTIFY_CHAT), whose threads
+// belong to this project without a picker.
 type Project struct {
 	Prefix, Name, Remote, Repo string
 	Enabled                    bool
@@ -23,6 +25,7 @@ type Project struct {
 	Ledger                     Ledger
 	Lane2Globs, Lane3Globs     string
 	Reason                     string
+	Chat                       string
 }
 
 func (p Project) usable() bool { return p.Enabled && p.Repo != "" }
@@ -123,6 +126,20 @@ func (g *Gateway) project(prefix string) Project {
 	return p
 }
 
+// chatProject returns the project that owns chat. The shared intake chat keeps
+// the picker, and a chat two projects claim belongs to neither.
+func (g *Gateway) chatProject(chat string) (Project, bool) {
+	var owner Project
+	owners := 0
+	for _, p := range g.projectsSnapshot() {
+		if p.Chat == chat {
+			owner = p
+			owners++
+		}
+	}
+	return owner, owners == 1 && chat != "" && chat != g.chat
+}
+
 func (g *Gateway) projectByRemote(remote string) (Project, bool) {
 	for _, p := range g.projectsSnapshot() {
 		if p.Remote == remote {
@@ -182,6 +199,20 @@ func (g *Gateway) selectProject(ctx context.Context, id, thread, path string, se
 		return g.reply(ctx, id, unavailableProjectReply(p))
 	}
 	return g.beginProject(ctx, id, thread, path, session, sender, p, session.PendingPrompt)
+}
+
+// beginInProjectChat opens a thread on the project that owns its chat. A marker
+// can only repeat that project: moving a request between projects would file it
+// in a ledger its chat does not watch.
+func (g *Gateway) beginInProjectChat(ctx context.Context, id, thread, path string, session Session, sender string, p Project, prompt string) error {
+	prefix, name, rest := parseProjectMarker(prompt)
+	if (prefix != "" && prefix != p.Prefix) || (name != "" && name != p.Name) {
+		return g.reply(ctx, id, fmt.Sprintf("本群只接项目 %s %s 的需求，其他项目请到对应的群", p.Prefix, p.Name))
+	}
+	if !p.usable() {
+		return g.reply(ctx, id, unavailableProjectReply(p))
+	}
+	return g.beginProject(ctx, id, thread, path, session, sender, p, rest)
 }
 
 func (g *Gateway) beginProject(ctx context.Context, id, thread, path string, session Session, sender string, p Project, prompt string) error {

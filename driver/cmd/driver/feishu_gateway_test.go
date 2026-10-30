@@ -159,6 +159,31 @@ func TestResolveIntakeProjectsPartialTierFailure(t *testing.T) {
 	}
 }
 
+// A project's chat comes from its current config on every discovery round: the
+// runtime caches the rest of the project, but a chat set later must take effect
+// without restarting the gateway.
+func TestResolveIntakeProjectFollowsChatConfig(t *testing.T) {
+	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	project := func(chat string) projects.Project {
+		return projects.Project{Path: "/repo/of", Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Name: "orca-factory",
+			Repository: config.Repository{Env: map[string]string{
+				"AGENT_ISSUE_BACKEND":      "github",
+				"AGENT_GH_REPO":            "vmxmy/orca-factory",
+				"AGENT_TIER_STRONG":        "claude:claude-opus-5-5:high",
+				"AGENT_FEISHU_NOTIFY_CHAT": chat,
+			}}}
+	}
+	for _, chat := range []string{"", "oc_OF"} {
+		got, err := runtime.resolve(context.Background(), project(chat))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Chat != chat {
+			t.Fatalf("Chat=%q, want %q", got.Chat, chat)
+		}
+	}
+}
+
 func TestFeishuGatewayConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, key := range gatewayKeys {

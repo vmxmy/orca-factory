@@ -42,7 +42,7 @@ const (
 // and stay empty, listed under 待确认 in the onboarding PR.
 var (
 	onboardDefaultKeys = []string{"AGENT_ISSUE_BACKEND", "AGENT_FEISHU_BASE", "AGENT_ROLE_INTAKE", "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"}
-	onboardPendingKeys = []string{"AGENT_DEPLOY_WORKFLOW", "AGENT_SMOKE_CMD", "AGENT_NOTIFY_FEISHU_PROFILE", "AGENT_NOTIFY_FEISHU_CHAT"}
+	onboardPendingKeys = []string{"AGENT_DEPLOY_WORKFLOW", "AGENT_SMOKE_CMD", "AGENT_FEISHU_NOTIFY_CHAT"}
 	githubRemote       = regexp.MustCompile(`^github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)$`)
 )
 

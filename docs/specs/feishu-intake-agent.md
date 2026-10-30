@@ -86,7 +86,7 @@ stderr 记录告警，话题继续用原会话续聊；下一次请求摘要要�
 
 | 项 | 规则 |
 | --- | --- |
-| 群 | 只响应 `AGENT_FEISHU_INTAKE_CHAT` 指定的群；其他群和私聊一律忽略 |
+| 群 | 只响应 `AGENT_FEISHU_INTAKE_CHAT` 指定的共用群和各仓库 `AGENT_FEISHU_NOTIFY_CHAT` 指定的项目专属群（OF-304）；其他群和私聊一律忽略 |
 | 对话人 | 只响应 `AGENT_FEISHU_INTAKE_USERS`（open_id 列表）中的成员；名单外 @ 时只回复“无权限” |
 | 审批人 | `AGENT_FEISHU_APPROVERS`（open_id 列表）；只有他们的“批准”生效 |
 | Agent 工具 | 只允许 Read、Grep、Glob、Skill；禁止 Bash、Write、Edit、WebFetch、MCP |
