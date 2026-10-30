@@ -111,7 +111,7 @@ func TestOnboardDryRun(t *testing.T) {
 	if !mapsEqual(plan.Env, wantEnv) {
 		t.Fatalf("env=%v\nwant %v", plan.Env, wantEnv)
 	}
-	if !slices.Equal(plan.Pending, []string{"AGENT_DEPLOY_WORKFLOW", "AGENT_SMOKE_CMD", "AGENT_NOTIFY_FEISHU_PROFILE", "AGENT_NOTIFY_FEISHU_CHAT"}) {
+	if !slices.Equal(plan.Pending, []string{"AGENT_DEPLOY_WORKFLOW", "AGENT_SMOKE_CMD", "AGENT_FEISHU_NOTIFY_CHAT"}) {
 		t.Fatalf("pending=%v", plan.Pending)
 	}
 	steps := strings.Join(plan.Steps, "\n")

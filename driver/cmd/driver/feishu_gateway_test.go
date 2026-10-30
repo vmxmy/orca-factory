@@ -159,6 +159,105 @@ func TestResolveIntakeProjectsPartialTierFailure(t *testing.T) {
 	}
 }
 
+// A project's chat comes from its current config on every discovery round: the
+// runtime caches the rest of the project, but a chat set later must take effect
+// without restarting the gateway.
+func TestResolveIntakeProjectFollowsChatConfig(t *testing.T) {
+	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	project := func(chat string) projects.Project {
+		return projects.Project{Path: "/repo/of", Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Name: "orca-factory",
+			Repository: config.Repository{Env: map[string]string{
+				"AGENT_ISSUE_BACKEND":      "github",
+				"AGENT_GH_REPO":            "vmxmy/orca-factory",
+				"AGENT_TIER_STRONG":        "claude:claude-opus-5-5:high",
+				"AGENT_FEISHU_NOTIFY_CHAT": chat,
+			}}}
+	}
+	for _, chat := range []string{"", "oc_OF"} {
+		got, err := runtime.resolve(context.Background(), project(chat))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Chat != chat {
+			t.Fatalf("Chat=%q, want %q", got.Chat, chat)
+		}
+	}
+}
+
+// A chat an unusable project declares is still claimed. This runs real profiles
+// through Discover and resolveIntakeProjects into the gateway: an unusable
+// project dropping out on the way would hand the other project a chat two
+// repositories declared, and leave the unusable project's own chat silent.
+func TestProjectChatClaimsSurviveDiscovery(t *testing.T) {
+	const of, an = "github.com/vmxmy/of", "github.com/vmxmy/an"
+	ledger := "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=https://example.feishu.cn/base/b\n"
+	for _, tc := range []struct {
+		name, otherProfile, chat, wantReply string
+		otherEnabled, wantAgent             bool
+	}{
+		{name: "sole owner binds", otherProfile: ledger + "AGENT_TIER_STRONG=claude:claude-opus-5-5:high\n", chat: "oc_OF", wantAgent: true},
+		{name: "disabled project with no base shares the chat", otherProfile: "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", chat: "oc_OF"},
+		{name: "project on another backend shares the chat", otherProfile: "AGENT_ISSUE_BACKEND=github\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "project with an invalid limit shares the chat", otherProfile: ledger + "AGENT_MAX_IN_FLIGHT=0\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "project failing to resolve shares the chat", otherProfile: ledger + "AGENT_TIER_STRONG=codex:gpt-6:high\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "unusable project's own chat explains itself", otherProfile: "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_NOTIFY_CHAT=oc_AN\n", chat: "oc_AN", wantReply: "项目 AN 不可用：" + string(projects.ReasonProjectDisabled)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			write := func(name, profile string) string {
+				dir := filepath.Join(root, name, "scripts", "agent-gates")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "agent-graph.env"), []byte(profile), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(root, name)
+			}
+			ofPath := write("of", ledger+"AGENT_FEISHU_NOTIFY_CHAT=oc_OF\n")
+			anPath := write("an", tc.otherProfile)
+			rows := []issues.LedgerProject{{Prefix: "OF", Name: "of", Remote: of, Enabled: true}, {Prefix: "AN", Name: "an", Remote: an, Enabled: tc.otherEnabled}}
+			check := func(context.Context, string) ([]string, error) { return nil, nil }
+			result := projects.Discover(context.Background(), []orca.Repo{{Path: ofPath, CanonicalKey: of}, {Path: anPath, CanonicalKey: an}}, rows, check, nil)
+			runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+			runtime.projects["OF"] = intake.Project{Prefix: "OF", Name: "of", Remote: of, Enabled: true, Repo: ofPath}
+			agentRuns := 0
+			agent := func(context.Context, intake.Turn) (string, error) { agentRuns++; return "已整理", nil }
+			var replies []string
+			send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
+			react := func(context.Context, string) error { return nil }
+			gateway, err := intake.New(t.TempDir(), "oc_SHARED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, resolveIntakeProjects(context.Background(), result, rows, runtime), "", agent, send, react, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile("../../testdata/recorded/feishu/bot-event-message-at.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recording struct {
+				Event *im.P2MessageReceiveV1 `json:"event"`
+			}
+			if err := json.Unmarshal(raw, &recording); err != nil {
+				t.Fatal(err)
+			}
+			recording.Event.Event.Message.ChatId = strPtr(tc.chat)
+			recording.Event.Event.Message.Content = strPtr(`{"text":"@_user_1 帮我整理"}`)
+			if err := gateway.Handle(context.Background(), recording.Event); err != nil {
+				t.Fatal(err)
+			}
+			if (agentRuns == 1) != tc.wantAgent {
+				t.Fatalf("agent runs=%d, want agent=%v, replies=%q", agentRuns, tc.wantAgent, replies)
+			}
+			if !tc.wantAgent && (tc.wantReply == "") != (len(replies) == 0) {
+				t.Fatalf("replies=%q, want %q", replies, tc.wantReply)
+			}
+			if tc.wantReply != "" && (len(replies) != 1 || replies[0] != tc.wantReply) {
+				t.Fatalf("replies=%q, want %q", replies, tc.wantReply)
+			}
+		})
+	}
+}
+
 func TestFeishuGatewayConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	for _, key := range gatewayKeys {

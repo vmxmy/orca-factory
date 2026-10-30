@@ -256,7 +256,9 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 		return nil
 	}
 	m, s := event.Event.Message, event.Event.Sender
-	if value(m.ChatId) != g.chat || value(m.ChatType) != "group" || value(m.MessageId) == "" || s.SenderId == nil || value(s.SenderId.OpenId) == "" || value(s.SenderType) != "user" {
+	chat := value(m.ChatId)
+	owner, ownedChat := g.chatProject(chat)
+	if (chat != g.chat && !ownedChat) || value(m.ChatType) != "group" || value(m.MessageId) == "" || s.SenderId == nil || value(s.SenderId.OpenId) == "" || value(s.SenderType) != "user" {
 		return nil
 	}
 	mentioned := false
@@ -317,6 +319,9 @@ func (g *Gateway) Handle(ctx context.Context, event *im.P2MessageReceiveV1) erro
 	}
 	if !resume {
 		session = Session{ID: newSessionID(), Requester: sender}
+		if ownedChat {
+			return g.beginInProjectChat(ctx, id, thread, path, session, sender, owner, prompt)
+		}
 	}
 	if session.Project == "" && (!resume || session.PendingPrompt != "") {
 		return g.selectProject(ctx, id, thread, path, session, resume, sender, prompt)

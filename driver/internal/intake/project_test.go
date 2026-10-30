@@ -36,6 +36,63 @@ func recordedLedgerProject(t *testing.T) Project {
 	return Project{Name: at("名称").(string), Enabled: at("启用").(bool), Remote: at("仓库远端").(string), Prefix: at("编号前缀").(string)}
 }
 
+// TestProjectChatBindsThreads covers OF-304: a project's own chat opens every
+// thread on that project, while the shared chat keeps the picker and a chat no
+// single project claims stays ignored.
+func TestProjectChatBindsThreads(t *testing.T) {
+	zy := Project{Name: "zhiyun", Remote: "github.com/vmxmy/zhiyun", Prefix: "ZY", Enabled: true, Repo: "/repo/zy", Chat: "oc_ZY"}
+	an := Project{Name: "ansible", Remote: "github.com/vmxmy/ansible", Prefix: "AN", Enabled: true, Repo: "/repo/an", Chat: "oc_AN"}
+	off := Project{Name: "retired", Remote: "github.com/vmxmy/retired", Prefix: "OLD", Repo: "/repo/old", Chat: "oc_OLD"}
+	twinA := Project{Name: "twin-a", Remote: "github.com/vmxmy/twin-a", Prefix: "TA", Enabled: true, Repo: "/repo/ta", Chat: "oc_TWIN"}
+	twinB := Project{Name: "twin-b", Remote: "github.com/vmxmy/twin-b", Prefix: "TB", Enabled: true, Repo: "/repo/tb", Chat: "oc_TWIN"}
+	unset := Project{Name: "unset", Remote: "github.com/vmxmy/unset", Prefix: "UN", Enabled: true, Repo: "/repo/un"}
+	for _, tc := range []struct {
+		name, chat, text, wantPrefix, wantPrompt, wantReply string
+	}{
+		{name: "project chat binds without a picker", chat: "oc_ZY", text: "@_user_1 帮我整理", wantPrefix: "ZY", wantPrompt: "[需求人] 帮我整理", wantReply: "已整理"},
+		{name: "own marker is stripped", chat: "oc_ZY", text: "@_user_1 #ZY 帮我整理", wantPrefix: "ZY", wantPrompt: "[需求人] 帮我整理", wantReply: "已整理"},
+		{name: "other project marker is refused", chat: "oc_ZY", text: "@_user_1 #AN 帮我整理", wantReply: "本群只接项目 ZY zhiyun 的需求，其他项目请到对应的群"},
+		{name: "disabled project is refused", chat: "oc_OLD", text: "@_user_1 帮我整理", wantReply: "项目 OLD 不可用：未启用"},
+		{name: "unknown chat is ignored", chat: "oc_ELSE", text: "@_user_1 帮我整理"},
+		{name: "chat claimed twice is ignored", chat: "oc_TWIN", text: "@_user_1 帮我整理"},
+		{name: "shared chat marker still routes", chat: "oc_REDACTED", text: "@_user_1 #AN 帮我整理", wantPrefix: "AN", wantPrompt: "[需求人] 帮我整理", wantReply: "已整理"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []Turn
+			agent := func(_ context.Context, turn Turn) (string, error) {
+				calls = append(calls, turn)
+				return "已整理", nil
+			}
+			var replies []string
+			send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
+			g, err := New(t.TempDir(), "oc_REDACTED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, []Project{zy, an, off, twinA, twinB, unset}, "", agent, send, noopReact, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := recordedEvent(t, "bot-event-message-at")
+			event.Event.Message.MessageId = ptr("om_chat1")
+			event.Event.Message.ChatId = ptr(tc.chat)
+			event.Event.Message.Content = ptr(`{"text":"` + tc.text + `"}`)
+			if err := g.Handle(context.Background(), event); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantPrefix == "" && len(calls) != 0 {
+				t.Fatalf("agent ran: %+v", calls)
+			}
+			if tc.wantPrefix != "" && (len(calls) != 1 || calls[0].Project.Prefix != tc.wantPrefix || calls[0].Prompt != tc.wantPrompt) {
+				t.Fatalf("calls=%+v", calls)
+			}
+			want := []string{}
+			if tc.wantReply != "" {
+				want = append(want, tc.wantReply)
+			}
+			if !slices.Equal(append([]string{}, replies...), want) {
+				t.Fatalf("replies=%q want %q", replies, want)
+			}
+		})
+	}
+}
+
 // TestIntakeProjectSelection covers OF-32's explicit marker: a brand-new
 // thread's first message that starts with #<编号前缀> routes immediately with
 // the marker stripped. A project that is not enabled, or has no local

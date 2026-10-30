@@ -63,7 +63,7 @@ GitHub 客户端读取 rate-limit 响应头，只供看板与 status 观测额�
 
 1. 在应用开发者后台启用机器人能力，申请并发布 `im:message:send_as_bot` 权限，参见[发送消息接口](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create)。
 2. 建立接收异常通知的飞书群，在群设置中添加该应用机器人。取得此群的 `chat_id`（`oc_...`），不要使用群名称、邀请链接或用户 ID。
-3. 在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_FEISHU_NOTIFY_CHAT=oc_...`，复用已有应用凭据。单个仓库可在 `agent-graph.env` 设置同名值覆盖机器默认，设置空值可关闭该仓库通知。进程环境覆盖机器文件；仓库配置优先。`AGENT_FEISHU_BASE` 使用完整 Base URL，使消息带可点击的记录链接。
+3. 在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_FEISHU_NOTIFY_CHAT=oc_...`，复用已有应用凭据。单个仓库可在 `agent-graph.env` 设置同名值覆盖机器默认，设置空值可关闭该仓库通知。仓库设置的群同时是该项目的需求群，见“项目选择”。进程环境覆盖机器文件；仓库配置优先。`AGENT_FEISHU_BASE` 使用完整 Base URL，使消息带可点击的记录链接。
 4. 按现有服务管理流程重新加载配置。此次功能提交不自动建群、加机器人、发测试消息或切换生产配置。
 
 调度器观察到转人（含处置 Agent）、证据冲突或部署失败时发送票号、标题、类别、原因摘要及记录链接。未配置群时保持原行为。每个票据的同类别、同原因只尝试发送一次，发送前在事件表写去重标记；发送失败也保留标记，重启不会补发。事件读写失败不发送，下轮重新检查。消息发送失败只记 warn，不阻断调度。
@@ -483,7 +483,7 @@ flush_interval = "10m"
 
 `orca-factory-driver feishu-gateway` 独立运行官方 Go SDK 长连接，订阅
 `im.message.receive_v1`，断线自动重连，SIGTERM/SIGINT 取消连接并退出。
-它只处理指定群内 @ 本机器人发起的新话题。名单外回复“无权限”；白名单内的消息交给
+它只处理共用需求群和各项目专属群内 @ 本机器人发起的新话题。名单外回复“无权限”；白名单内的消息交给
 需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文
 作为话题回复。
 
@@ -571,7 +571,7 @@ Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票
 | `AGENT_FEISHU_APP_ID` | 应用 ID，沿用 driver 凭据 |
 | `AGENT_FEISHU_APP_SECRET` | 应用密钥，沿用 driver 凭据 |
 | `AGENT_FEISHU_BOT_OPEN_ID` | 本机器人的 open_id，必须与事件 mentions 中的机器人身份一致，不是 app_id |
-| `AGENT_FEISHU_INTAKE_CHAT` | 唯一允许的需求群 chat_id |
+| `AGENT_FEISHU_INTAKE_CHAT` | 共用需求群 chat_id，话题用项目选择卡片选项目。项目专属群另由该仓库的 `AGENT_FEISHU_NOTIFY_CHAT` 决定 |
 | `AGENT_FEISHU_INTAKE_USERS` | 可对话成员 open_id，逗号分隔 |
 | `AGENT_FEISHU_APPROVERS` | 可选，审批人 open_id，逗号分隔；建票后在话题里 @ 他们 |
 | `AGENT_FEISHU_ENDPOINT` | 可选，默认 `https://open.feishu.cn`，同时用于 HTTP 与长连接发现 |
@@ -596,8 +596,14 @@ Orca 仓库无需改配置或重启网关即可路由；人工核对用 `orca-fa
 
 ### 项目选择
 
-一个话题只属于一个项目，选定后话题内不可更改；换项目须另开话题。话题首条消息
-（@ 机器人新开会话时）按顺序确定项目：
+一个话题只属于一个项目，选定后话题内不可更改；换项目须另开话题。
+
+仓库 `agent-graph.env` 设了 `AGENT_FEISHU_NOTIFY_CHAT` 时，该群是这个项目的专属群
+（OF-304）：群内新话题直接绑定该项目，不出选择卡片；首条消息带本项目标记时去掉标记，
+带其他项目标记时回复“本群只接项目…”，不调用 Agent。项目暂时不可用时，群内回复不可用原因。同一个群被项目表里的两个项目同时设置时（含不可用的项目），
+网关忽略这个群。网关启动时和每个新话题开始前读取这项配置，改配置不用重启网关。
+
+共用需求群的话题首条消息（@ 机器人新开会话时）按顺序确定项目：
 
 1. 消息中出现 `#<编号前缀>`（如 `#OF`）或 `项目:<名称>`：命中该项目，网关把该标记从
    消息中去掉后再交给 Agent。
