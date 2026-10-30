@@ -77,6 +77,9 @@ type Rejection struct {
 	// would accept it, nil otherwise: serve still reads such a repository's
 	// ledger for driver-owned in-flight tickets (OF-98).
 	Repository *config.Repository `json:"-"`
+	// Chat is the project chat this repository's profile declares. It is read
+	// on its own because a chat stays claimed however the rest of the profile fails.
+	Chat string `json:"-"`
 }
 
 // Result is every repository Discover considered, split into what this
@@ -115,7 +118,7 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 	}
 	for _, repo := range repos {
 		reject := func(reason Reason) {
-			rejection := Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason}
+			rejection := Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason, Chat: declaredChat(repo.Path)}
 			if repository, ok := readable(repo.Path); ok {
 				rejection.Repository = &repository
 			}
@@ -198,6 +201,19 @@ func ReadableRepositories(repos []orca.Repo) []config.Repository {
 		}
 	}
 	return result
+}
+
+func declaredChat(path string) string {
+	f, err := os.Open(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
+	if err != nil {
+		return ""
+	}
+	defer func() { _ = f.Close() }() // Read-only: a close failure cannot lose data.
+	env, err := config.ParseEnv(f)
+	if err != nil {
+		return ""
+	}
+	return env["AGENT_FEISHU_NOTIFY_CHAT"]
 }
 
 func readable(path string) (config.Repository, bool) {

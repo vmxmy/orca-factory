@@ -265,11 +265,7 @@ func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []i
 			continue
 		}
 		rejected := rejections[row.Remote]
-		chat := ""
-		if rejected.Repository != nil {
-			chat = rejected.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
-		}
-		out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: string(rejected.Reason), Chat: chat})
+		out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: string(rejected.Reason), Chat: rejected.Chat})
 	}
 	return out
 }

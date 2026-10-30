@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -185,39 +184,77 @@ func TestResolveIntakeProjectFollowsChatConfig(t *testing.T) {
 	}
 }
 
-// A chat claimed by an unusable project is still claimed: dropping that claim on
-// the way to the gateway would hand the other project a chat two repositories
-// declared, and leave the unusable project's own chat silent.
-func TestResolveIntakeProjectsKeepsChatOfUnusableProjects(t *testing.T) {
-	env := func(repo, tier, chat string) map[string]string {
-		return map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": repo, "AGENT_TIER_STRONG": tier, "AGENT_FEISHU_NOTIFY_CHAT": chat}
-	}
-	eligible := func(prefix, remote, tier, chat string) projects.Project {
-		return projects.Project{Path: "/repo/" + prefix, Remote: remote, Prefix: prefix, Name: prefix, Repository: config.Repository{Env: env("vmxmy/"+prefix, tier, chat)}}
-	}
-	rows := []issues.LedgerProject{
-		{Prefix: "OF", Name: "OF", Remote: "github.com/vmxmy/of", Enabled: true},
-		{Prefix: "ZY", Name: "ZY", Remote: "github.com/vmxmy/zy", Enabled: true},
-		{Prefix: "AN", Name: "AN", Remote: "github.com/vmxmy/an"},
-		{Prefix: "ZCP", Name: "ZCP", Remote: "github.com/vmxmy/zcp", Enabled: true},
-	}
-	result := projects.Result{
-		Eligible: []projects.Project{
-			eligible("OF", "github.com/vmxmy/of", "claude:claude-opus-5-5:high", "oc_SHARED_BY_ERROR"),
-			eligible("ZY", "github.com/vmxmy/zy", "codex:gpt-6:high", "oc_SHARED_BY_ERROR"),
-		},
-		Rejected: []projects.Rejection{
-			{Path: "/repo/AN", Remote: "github.com/vmxmy/an", Reason: projects.ReasonProjectDisabled, Repository: &config.Repository{Env: env("vmxmy/AN", "", "oc_AN")}},
-			{Path: "/repo/ZCP", Remote: "github.com/vmxmy/zcp", Reason: projects.ReasonCheckFailed},
-		},
-	}
-	got := map[string]string{}
-	for _, p := range resolveIntakeProjects(context.Background(), result, rows, newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})) {
-		got[p.Prefix] = p.Chat
-	}
-	want := map[string]string{"OF": "oc_SHARED_BY_ERROR", "ZY": "oc_SHARED_BY_ERROR", "AN": "oc_AN", "ZCP": ""}
-	if !maps.Equal(got, want) {
-		t.Fatalf("chats=%v, want %v", got, want)
+// A chat an unusable project declares is still claimed. This runs real profiles
+// through Discover and resolveIntakeProjects into the gateway: an unusable
+// project dropping out on the way would hand the other project a chat two
+// repositories declared, and leave the unusable project's own chat silent.
+func TestProjectChatClaimsSurviveDiscovery(t *testing.T) {
+	const of, an = "github.com/vmxmy/of", "github.com/vmxmy/an"
+	ledger := "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=https://example.feishu.cn/base/b\n"
+	for _, tc := range []struct {
+		name, otherProfile, chat, wantReply string
+		otherEnabled, wantAgent             bool
+	}{
+		{name: "sole owner binds", otherProfile: ledger + "AGENT_TIER_STRONG=claude:claude-opus-5-5:high\n", chat: "oc_OF", wantAgent: true},
+		{name: "disabled project with no base shares the chat", otherProfile: "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", chat: "oc_OF"},
+		{name: "project on another backend shares the chat", otherProfile: "AGENT_ISSUE_BACKEND=github\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "project with an invalid limit shares the chat", otherProfile: ledger + "AGENT_MAX_IN_FLIGHT=0\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "project failing to resolve shares the chat", otherProfile: ledger + "AGENT_TIER_STRONG=codex:gpt-6:high\nAGENT_FEISHU_NOTIFY_CHAT=oc_OF\n", otherEnabled: true, chat: "oc_OF"},
+		{name: "unusable project's own chat explains itself", otherProfile: "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_NOTIFY_CHAT=oc_AN\n", chat: "oc_AN", wantReply: "项目 AN 不可用：" + string(projects.ReasonProjectDisabled)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			write := func(name, profile string) string {
+				dir := filepath.Join(root, name, "scripts", "agent-gates")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "agent-graph.env"), []byte(profile), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(root, name)
+			}
+			ofPath := write("of", ledger+"AGENT_FEISHU_NOTIFY_CHAT=oc_OF\n")
+			anPath := write("an", tc.otherProfile)
+			rows := []issues.LedgerProject{{Prefix: "OF", Name: "of", Remote: of, Enabled: true}, {Prefix: "AN", Name: "an", Remote: an, Enabled: tc.otherEnabled}}
+			check := func(context.Context, string) ([]string, error) { return nil, nil }
+			result := projects.Discover(context.Background(), []orca.Repo{{Path: ofPath, CanonicalKey: of}, {Path: anPath, CanonicalKey: an}}, rows, check, nil)
+			runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+			runtime.projects["OF"] = intake.Project{Prefix: "OF", Name: "of", Remote: of, Enabled: true, Repo: ofPath}
+			agentRuns := 0
+			agent := func(context.Context, intake.Turn) (string, error) { agentRuns++; return "已整理", nil }
+			var replies []string
+			send := func(_ context.Context, _, text string) error { replies = append(replies, text); return nil }
+			react := func(context.Context, string) error { return nil }
+			gateway, err := intake.New(t.TempDir(), "oc_SHARED", "ou_BOT_REDACTED", []string{"ou_REDACTED"}, nil, 1, resolveIntakeProjects(context.Background(), result, rows, runtime), "", agent, send, react, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := os.ReadFile("../../testdata/recorded/feishu/bot-event-message-at.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var recording struct {
+				Event *im.P2MessageReceiveV1 `json:"event"`
+			}
+			if err := json.Unmarshal(raw, &recording); err != nil {
+				t.Fatal(err)
+			}
+			recording.Event.Event.Message.ChatId = strPtr(tc.chat)
+			recording.Event.Event.Message.Content = strPtr(`{"text":"@_user_1 帮我整理"}`)
+			if err := gateway.Handle(context.Background(), recording.Event); err != nil {
+				t.Fatal(err)
+			}
+			if (agentRuns == 1) != tc.wantAgent {
+				t.Fatalf("agent runs=%d, want agent=%v, replies=%q", agentRuns, tc.wantAgent, replies)
+			}
+			if !tc.wantAgent && (tc.wantReply == "") != (len(replies) == 0) {
+				t.Fatalf("replies=%q, want %q", replies, tc.wantReply)
+			}
+			if tc.wantReply != "" && (len(replies) != 1 || replies[0] != tc.wantReply) {
+				t.Fatalf("replies=%q, want %q", replies, tc.wantReply)
+			}
+		})
 	}
 }
 
