@@ -17,7 +17,7 @@ import (
 // discovery package (OF-42) would not let this project take over right now
 // (e.g. "check 失败"); it overrides the generic unavailable-project reply.
 // Chat is the project's own chat (AGENT_FEISHU_NOTIFY_CHAT), whose threads
-// belong to this project without a picker.
+// belong to this project without a picker. An unusable project keeps its claim.
 type Project struct {
 	Prefix, Name, Remote, Repo string
 	Enabled                    bool

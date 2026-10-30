@@ -245,9 +245,9 @@ func resolvePendingEnable(result projects.Result, rows []issues.LedgerProject) [
 // resolves. A row discovery did not consider eligible carries the rejection
 // reason discovery already gave it.
 func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []issues.LedgerProject, runtime *projectRuntime) []intake.Project {
-	reasons := make(map[string]projects.Reason, len(result.Rejected))
+	rejections := make(map[string]projects.Rejection, len(result.Rejected))
 	for _, rejected := range result.Rejected {
-		reasons[rejected.Remote] = rejected.Reason
+		rejections[rejected.Remote] = rejected
 	}
 	eligible := make(map[string]projects.Project, len(result.Eligible))
 	for _, p := range result.Eligible {
@@ -258,13 +258,18 @@ func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []i
 		if p, ok := eligible[row.Remote]; ok {
 			project, err := runtime.resolve(ctx, p)
 			if err != nil {
-				out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: err.Error()})
+				out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: err.Error(), Chat: p.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]})
 				continue
 			}
 			out = append(out, project)
 			continue
 		}
-		out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: string(reasons[row.Remote])})
+		rejected := rejections[row.Remote]
+		chat := ""
+		if rejected.Repository != nil {
+			chat = rejected.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
+		}
+		out = append(out, intake.Project{Prefix: row.Prefix, Name: row.Name, Remote: row.Remote, Enabled: row.Enabled, Reason: string(rejected.Reason), Chat: chat})
 	}
 	return out
 }

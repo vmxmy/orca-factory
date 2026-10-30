@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -181,6 +182,42 @@ func TestResolveIntakeProjectFollowsChatConfig(t *testing.T) {
 		if got.Chat != chat {
 			t.Fatalf("Chat=%q, want %q", got.Chat, chat)
 		}
+	}
+}
+
+// A chat claimed by an unusable project is still claimed: dropping that claim on
+// the way to the gateway would hand the other project a chat two repositories
+// declared, and leave the unusable project's own chat silent.
+func TestResolveIntakeProjectsKeepsChatOfUnusableProjects(t *testing.T) {
+	env := func(repo, tier, chat string) map[string]string {
+		return map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": repo, "AGENT_TIER_STRONG": tier, "AGENT_FEISHU_NOTIFY_CHAT": chat}
+	}
+	eligible := func(prefix, remote, tier, chat string) projects.Project {
+		return projects.Project{Path: "/repo/" + prefix, Remote: remote, Prefix: prefix, Name: prefix, Repository: config.Repository{Env: env("vmxmy/"+prefix, tier, chat)}}
+	}
+	rows := []issues.LedgerProject{
+		{Prefix: "OF", Name: "OF", Remote: "github.com/vmxmy/of", Enabled: true},
+		{Prefix: "ZY", Name: "ZY", Remote: "github.com/vmxmy/zy", Enabled: true},
+		{Prefix: "AN", Name: "AN", Remote: "github.com/vmxmy/an"},
+		{Prefix: "ZCP", Name: "ZCP", Remote: "github.com/vmxmy/zcp", Enabled: true},
+	}
+	result := projects.Result{
+		Eligible: []projects.Project{
+			eligible("OF", "github.com/vmxmy/of", "claude:claude-opus-5-5:high", "oc_SHARED_BY_ERROR"),
+			eligible("ZY", "github.com/vmxmy/zy", "codex:gpt-6:high", "oc_SHARED_BY_ERROR"),
+		},
+		Rejected: []projects.Rejection{
+			{Path: "/repo/AN", Remote: "github.com/vmxmy/an", Reason: projects.ReasonProjectDisabled, Repository: &config.Repository{Env: env("vmxmy/AN", "", "oc_AN")}},
+			{Path: "/repo/ZCP", Remote: "github.com/vmxmy/zcp", Reason: projects.ReasonCheckFailed},
+		},
+	}
+	got := map[string]string{}
+	for _, p := range resolveIntakeProjects(context.Background(), result, rows, newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})) {
+		got[p.Prefix] = p.Chat
+	}
+	want := map[string]string{"OF": "oc_SHARED_BY_ERROR", "ZY": "oc_SHARED_BY_ERROR", "AN": "oc_AN", "ZCP": ""}
+	if !maps.Equal(got, want) {
+		t.Fatalf("chats=%v, want %v", got, want)
 	}
 }
 
