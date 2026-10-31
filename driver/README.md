@@ -488,8 +488,9 @@ flush_interval = "10m"
 作为话题回复。
 
 需求整理 Agent 每轮在 bwrap 沙箱里运行（OF-325），机器要装 `bubblewrap`；找不到或启动
-失败时这一轮报错，不退回无沙箱运行。沙箱内根目录和检出只读，`/tmp`、`/run` 为空，家目录
-只有 `~/.claude` 与 `~/.claude.json`，看不到 `driver.env`、`~/.ssh`、其他仓库和沙箱外进程。
+失败时这一轮报错，不退回无沙箱运行。沙箱内只有只读的系统目录（`/usr`、`/bin`、`/sbin`、
+`/lib`、`/lib64`、`/etc`）和检出，`/tmp` 为空，家目录只有 `~/.claude` 与 `~/.claude.json`，
+看不到 `driver.env`、`~/.ssh`、其他仓库和沙箱外进程。
 网络没有隔离，模型调用需要它。Agent 仍共用本机的 Claude 登录和 `~/.claude`，这两项在
 沙箱内可读写。检出的 git 目录不可见，所以 Agent 拿不到 git 状态；`.intake/` 和检出更新
 由网关在沙箱外完成。

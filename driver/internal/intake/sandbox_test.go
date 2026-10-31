@@ -37,8 +37,21 @@ func writeFile(t *testing.T, path, content string, mode os.FileMode) {
 // were exposed.
 func TestRunnerTurnConfinesAgentToSandbox(t *testing.T) {
 	if err := exec.Command("bwrap", "--ro-bind", "/", "/", "--unshare-pid", "true").Run(); err != nil {
-		t.Skipf("bwrap unavailable: %v", err)
+		// Hosted CI may forbid user namespaces; a machine running the gateway must not.
+		if os.Getenv("CI") != "" {
+			t.Skipf("bwrap unavailable: %v", err)
+		}
+		t.Fatalf("bwrap unavailable: %v", err)
 	}
+	// Outside /tmp, which the sandbox empties whatever else it exposes.
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", cache)
 	home, outside := t.TempDir(), t.TempDir()
 	t.Setenv("HOME", home)
 	checkout := filepath.Join(home, ".cache", "intake", "checkout")

@@ -106,9 +106,10 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 // sandboxArgs confines claude with the operating system, under --restricted:
 // the agent handles untrusted group messages on a machine holding production
 // credentials. A missing bwrap fails the turn instead of running unconfined.
-// Home is empty apart from claude's own directory, because a token refresh
-// must be able to replace its credentials file, and /run is empty apart from
-// the resolver file /etc/resolv.conf may link into.
+// Only system directories are exposed, so a repository is hidden wherever it
+// lives. Home holds nothing but claude's own directory, because a token refresh
+// must be able to replace its credentials file. /etc/resolv.conf may link into
+// the otherwise absent /run.
 func (r *Runner) sandboxArgs() ([]string, error) {
 	home := os.Getenv("HOME")
 	if home == "" {
@@ -118,7 +119,10 @@ func (r *Runner) sandboxArgs() ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("intake sandbox cannot resolve claude: %w", err)
 	}
-	args := []string{"--unshare-pid", "--die-with-parent", "--new-session", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run"}
+	args := []string{"--unshare-pid", "--die-with-parent", "--new-session", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
+	for _, dir := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"} {
+		args = append(args, "--ro-bind-try", dir, dir)
+	}
 	if resolver, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil {
 		args = append(args, "--ro-bind-try", resolver, resolver)
 	}
