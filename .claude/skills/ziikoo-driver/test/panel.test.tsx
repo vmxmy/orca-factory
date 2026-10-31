@@ -50,6 +50,7 @@ const engine = (
   const focused: string[] = []
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
+  const clipboard: { texts: string[]; surfaces: (string | undefined)[]; refuse?: 'no-surface' | 'no-clipboard' | 'refused' } = { texts: [], surfaces: [] }
   let isOpen = paneOpen
   const clock = mock.clock(on, { now: NOW })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
@@ -71,6 +72,12 @@ const engine = (
     toasts.push(e.text)
     return { value: undefined }
   })
+  on('ui.copy', (_, e) => {
+    if (clipboard.refuse !== undefined) return { value: { isCopied: false, reason: clipboard.refuse } }
+    clipboard.texts.push(e.text)
+    clipboard.surfaces.push(e.surface)
+    return { value: { isCopied: true } }
+  })
   on('ui.panes', () => ({
     value: isOpen
       ? [{ id: 'ziikoo-driver', title: 'Driver', isShown: true, isFocused: true, isPlaced: true, plugin: 'ziikoo-driver' }]
@@ -88,7 +95,7 @@ const engine = (
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clock, focused, statuses, toasts }
+  return { calls, clipboard, clock, focused, statuses, toasts }
 }
 
 const runCommand = {
@@ -639,10 +646,10 @@ const ticketRows = async (ui: Drawing) =>
   (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('pipeline-')).map(one => one.key)
 
 const HELP = {
-  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
-  detail: 'q 返回 · r 刷新 · 1–5 切页 · Esc 回到输入框',
-  environment: 'f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
-  other: 'r 刷新 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框',
+  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
+  detail: 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
+  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
+  other: 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框',
 }
 
 test('按下票号进入详情，时间线按执行器日志列出中文事件', async ($, on) => {
@@ -1075,5 +1082,102 @@ test('快照为 unknown 的那几分钟趋势画灰点，不记在途 0', async 
   await clock.advance(60_000)
   const ui = await $.ui.mount(PANE)
   expect((await ui.find({ key: 'trend' }))?.text).toBe(`趋势${'·'.repeat(28)}█·近 30 分钟`)
+  await ui.unmount()
+})
+
+test('c 键复制当前视图：流水线写成不带列宽和框线的纯文本', async ($, on) => {
+  const { clipboard, toasts } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  expect((await ui.find({ key: 'copy' }))?.props.hotkey).toBe('c')
+  await ui.press({ key: 'copy' })
+
+  expect(clipboard.texts).toEqual([
+    [
+      'Driver 流水线 · active · 006396a · 快照 8 秒前',
+      '在途 4   部署屏障 1   待领 1',
+      '',
+      'orca-factory（OF）：main ✓ · core ✓',
+      'OF-1 · gate · 4 分钟',
+      '  流水线冒烟（OF）',
+      'OF-2 · 写 correction · 1 分钟',
+      '  修正审查意见',
+      'OF-3 · smoke · 2 小时 5 分',
+      '  自部署验证',
+      '  ↳ 部署 · smoke-intent · abc1234',
+      '',
+      'ziikoo-web（ZW）：在 feat/login · core ✓',
+      'ZW-7 · worker 运行中 · 30 秒',
+      '  改登录页',
+      'ZW-8 · 待领',
+      '  ↳ blocked by ZW-7',
+      '',
+      'ansible（AN）：main ✓ · 落后 2 · 未提交改动 · core 待同步 #12',
+      '空闲',
+    ].join('\n'),
+  ])
+  expect(clipboard.surfaces).toEqual(['terminal'])
+  expect(toasts).toEqual(['已复制流水线（20 行）'])
+  await ui.unmount()
+})
+
+test('详情复制完整时间线，不受面板 15 行的限制', async ($, on) => {
+  const many = Array.from({ length: 20 }, (_, i) =>
+    JSON.stringify({ time: `2026-10-27T20:${String(10 + i).padStart(2, '0')}:00+08:00`, msg: 'transition', event: 'tick', from: 'gate', to: 'gate' }),
+  )
+  const { clipboard, toasts } = engine(on, ran({ stdout: sampleStdout }), {
+    status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
+    doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }),
+    bash: ran({ stdout: many.join('\n') }),
+  })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+  await ui.press({ key: 'copy' })
+
+  const lines = (clipboard.texts[0] ?? '').split('\n')
+  expect(lines.slice(0, 4)).toEqual(['OF-1 流水线冒烟（OF）', '阶段：gate · 4 分钟', '归属：执行器', '仓库：orca-factory'])
+  expect(lines.filter(line => line.endsWith(' 定时检查'))).toHaveLength(20)
+  expect(toasts).toEqual([`已复制 OF-1 详情（${lines.length} 行）`])
+  await ui.unmount()
+})
+
+test('环境页复制时密钥类变量只写是否设置，筛选后只含匹配项', async ($, on) => {
+  const { clipboard } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-environment' })
+  await ui.press({ key: 'copy' })
+
+  const text = clipboard.texts[0] ?? ''
+  expect(text).toContain('工厂目录：/home/laoxu/github/orca-factory')
+  expect(text).toContain('AGENT_FEISHU_APP_SECRET：已设置')
+  expect(text).toContain('GITHUB_TOKEN：未设置')
+  expect(text).toContain('HTTPS_PROXY：http://127.0.0.1:7890')
+
+  await ui.input({ key: 'filter-input', text: 'HTTPS' })
+  await ui.press({ key: 'copy' })
+  const filtered = clipboard.texts[1] ?? ''
+  expect(filtered).toContain('筛选：HTTPS')
+  expect(filtered).toContain('HTTPS_PROXY：')
+  expect(filtered).not.toContain('GITHUB_TOKEN')
+  await ui.unmount()
+})
+
+test('复制失败时提示原因，还在读取时不写剪贴板', async ($, on) => {
+  const { clipboard, toasts } = runtimeEngine(on)
+  const loading = await $.ui.mount(PANE)
+  await loading.press({ key: 'copy' })
+  expect(clipboard.texts).toEqual([])
+  expect(toasts).toEqual(['还在读取，稍后再复制'])
+  await loading.unmount()
+
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  clipboard.refuse = 'no-clipboard'
+  await ui.press({ key: 'copy' })
+  expect(clipboard.texts).toEqual([])
+  expect(toasts.at(-1)).toBe('复制失败：没有可用的剪贴板')
   await ui.unmount()
 })

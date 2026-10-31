@@ -1,10 +1,8 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, Timer } from 'claude-code'
+import type { EngineInterface, Register, RenderChildren, RenderSurface, Timer } from 'claude-code'
 
 import type {
-  Alert,
   DriverConfig,
-  EnvEntry,
   FetchKind,
   Fetched,
   Group,
@@ -19,6 +17,20 @@ import type {
   TrendSample,
 } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseConfig, routingSummary } from './config'
+import {
+  CHECK_LABELS,
+  ENV_GROUPS,
+  badges,
+  checkStatus,
+  envGroup,
+  envValue,
+  freshness,
+  idleText,
+  pageText,
+  shownTickets,
+  sortedChecks,
+} from './plain'
+import type { Badge } from './plain'
 import { barriersOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
 import {
   NO_MATCH,
@@ -65,7 +77,6 @@ const POLL_MS = 10_000
 const WATCH_MS = 30_000
 const SPIN_MS = 100
 const TREND_MS = TREND_MINUTES * 60_000
-const TOOL_KEYS = new Set(['go', 'gh', 'git', 'jq', 'claude', 'codex'])
 
 const GROUPS: { id: Group; label: string; pages: { id: Page; label: string; hotkey: string }[] }[] = [
   {
@@ -265,9 +276,6 @@ const moveFocus = async ($: Engine, key: string): Promise<void> => {
   if (deny !== undefined) $.ui.log(`focus ${key} not moved: ${deny}`, { to: 'debug' })
 }
 
-const shownTickets = (one: Repo, tickets: RuntimeTicket[], wanted: string) =>
-  tickets.filter(t => t.repo === one.path && matches(wanted, t.identifier, t.title))
-
 // Called only when the list appears, never from a poll, so it does not pull the ring away from where the person is.
 const focusTicket = async ($: Engine, id?: string): Promise<boolean> => {
   const wanted = await read($, filter)
@@ -305,42 +313,47 @@ const refreshPage = async ($: Engine, current: Page): Promise<void> => {
   await Promise.all([refresh($), fetchPage($, current)])
 }
 
+const COPY_FAILURES: Record<'no-surface' | 'no-clipboard' | 'refused', string> = {
+  'no-surface': '这个界面不支持复制',
+  'no-clipboard': '没有可用的剪贴板',
+  refused: '被拒绝',
+}
+
+const pageLabel = (current: Page) => GROUPS.flatMap(one => one.pages).find(one => one.id === current)?.label ?? current
+
+const copyPage = async ($: Engine, surface: RenderSurface): Promise<void> => {
+  const current = await read($, page)
+  const opened = current === 'pipeline' ? await read($, detail) : ''
+  const text = pageText({
+    page: current,
+    snapshot: await read($, snapshot),
+    runtime: await read($, runtime),
+    health: await read($, health),
+    timeline: await read($, timeline),
+    detail: opened,
+    filter: await read($, filter),
+    repo: await read($, repo),
+  })
+  if (text === undefined) {
+    $.ui.toast('还在读取，稍后再复制')
+    return
+  }
+  const copied = await $.ui.copy({ text, surface })
+  const name = opened === '' ? pageLabel(current) : ` ${opened} 详情`
+  $.ui.toast(copied.isCopied ? `已复制${name}（${text.split('\n').length} 行）` : `复制失败：${COPY_FAILURES[copied.reason]}`)
+}
+
 const columns = (cols: number, fixed: number, share: number, max: number) => {
   const rest = Math.max(0, cols - fixed)
   const flexible = Math.max(6, Math.min(max, Math.floor(rest * share)))
   return { flexible, rest: Math.max(6, rest - flexible) }
 }
 
-const CHECK_LABELS: Record<string, string> = {
-  service_path: '服务 PATH',
-  version: '运行版本',
-  maintenance: '维护状态',
-  checkouts: '项目检出',
-  sync_prs: 'core 同步',
-  ledger: '账本',
-  launches: '重复启动',
-  credentials: '凭证',
-}
-
-const CHECK_STATUS: Record<string, { text: string; alert?: Alert }> = {
-  ok: { text: '通过' },
-  warn: { text: '注意', alert: 'warning' },
-  fail: { text: '失败', alert: 'error' },
-  unknown: { text: '未知', alert: 'warning' },
-}
-
-const CHECK_ORDER = Object.keys(CHECK_LABELS)
-
-const checkRank = (id: string) => {
-  const at = CHECK_ORDER.indexOf(id)
-  return at === -1 ? CHECK_ORDER.length : at
-}
-
 const doctorChecks = (ui: Kit, state: Fetched<Health>) => {
   if (state.kind === 'loading') return <ui.Text dimColor>正在运行 orca-factory-driver doctor --json …</ui.Text>
   if (state.kind === 'failed') return failedView(ui, state)
-  return [...state.value.checks].sort((a, b) => checkRank(a.id) - checkRank(b.id)).map(one => {
-    const status = CHECK_STATUS[one.status] ?? { text: one.status, alert: 'warning' }
+  return sortedChecks(state.value.checks).map(one => {
+    const status = checkStatus(one.status)
     return (
       <ui.Box key={`check-${one.id}`} flexDirection="row">
         {cell(ui, 12, CHECK_LABELS[one.id] ?? one.id, true)}
@@ -430,21 +443,9 @@ const schedulerPage = (ui: Kit, settings: SchedulerSetting[], cols: number) => {
   )
 }
 
-const envValue = (entry: EnvEntry) => {
-  if (entry.secret) return entry.set ? '已设置' : '未设置'
-  if (!entry.set) return TOOL_KEYS.has(entry.key) ? '未找到' : '未设置'
-  return entry.value ?? '已设置'
-}
-
-const envGroup = (entry: EnvEntry) => {
-  if (entry.source === 'driver.env') return 'driver.env'
-  return TOOL_KEYS.has(entry.key) ? '工具路径' : '服务环境与代理'
-}
-
 const noMatch = (ui: Kit) => <ui.Text dimColor>{NO_MATCH}</ui.Text>
 
 const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: string, bar: RenderChildren) => {
-  const groups = ['driver.env', '服务环境与代理', '工具路径']
   const width = Math.min(30, Math.max(10, cols - SECTION_INSET - 20))
   const entries = config.environment.filter(entry => matches(wanted, entry.key))
   const rows = (group: string) =>
@@ -468,7 +469,7 @@ const environmentPage = (ui: Kit, config: DriverConfig, cols: number, wanted: st
           {config.overview.factoryRoot || '未配置'}
         </ui.Text>,
       )}
-      {groups.map(group => {
+      {ENV_GROUPS.map(group => {
         const shown = rows(group)
         return section(ui, group, shown.length === 0 && wanted !== '' ? noMatch(ui) : shown)
       })}
@@ -498,29 +499,6 @@ const ticketView = (ui: Kit, t: RuntimeTicket, nodes: number, now: number, segme
   )
 }
 
-type Badge = { text: string; alert?: Alert }
-
-const badges = (repo: Repo, state: Fetched<Health>): Badge[] => {
-  if (state.kind === 'loading') return [{ text: '检查中…' }]
-  if (state.kind === 'failed') return [{ text: 'doctor 读取失败', alert: 'warning' }]
-  const { checkouts, syncPrs } = state.value
-  const checkout = checkouts?.find(one => one.path === repo.path)
-  const out: Badge[] = []
-  if (!checkout) out.push({ text: '检出未知', alert: 'warning' })
-  else {
-    out.push(checkout.branch === 'main' ? { text: 'main ✓' } : { text: `在 ${checkout.branch}`, alert: 'warning' })
-    if (checkout.behind > 0) out.push({ text: `落后 ${checkout.behind}`, alert: 'warning' })
-    if (!checkout.clean) out.push({ text: '未提交改动', alert: 'warning' })
-  }
-  if (syncPrs === null) {
-    out.push({ text: 'core 未知', alert: 'warning' })
-    return out
-  }
-  const pr = syncPrs.find(one => one.project === repo.name)
-  out.push(pr ? { text: `core 待同步 #${pr.number}`, alert: 'warning' } : { text: 'core ✓' })
-  return out
-}
-
 // Every chip is padded, so only two filled chips side by side need a space to keep their colors apart.
 const spacedBefore = (list: Badge[], i: number) => i > 0 && list[i - 1]?.alert !== undefined && list[i]?.alert !== undefined
 
@@ -533,17 +511,6 @@ const badgeRow = (ui: Kit, repo: Repo, list: Badge[]) => (
 
 const badgesWidth = (list: Badge[]) =>
   list.reduce((sum, one, i) => sum + displayWidth(chipText(one.text)) + (spacedBefore(list, i) ? 1 : 0), 0)
-
-const freshness = (state: Runtime, fetchedAt: number) => {
-  if (state.state === 'unknown') return '没有可用的快照'
-  const age = `快照 ${duration(fetchedAt - state.generatedAt)}前`
-  return state.state === 'ok' ? age : `${age} · 已过期`
-}
-
-const idleText = ({ nextScanAt }: Runtime, fetchedAt: number) => {
-  if (nextScanAt === undefined) return '空闲'
-  return nextScanAt <= fetchedAt ? '空闲 · 即将巡检' : `空闲 · 下次巡检约 ${duration(nextScanAt - fetchedAt)}后`
-}
 
 const pipelinePage = (
   ui: Kit,
@@ -676,6 +643,7 @@ export const register: Register = on => {
               <resolved.Raster key="spin" columns={1} rows={1} cells={spinnerCells(frame)} />
             )}
             <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refreshPage($, current)} />
+            <ui.Button key="copy" label="复制" hotkey="c" onPress={press => copyPage($, press.surface)} />
           </ui.Box>
         </ui.Box>
         {config && current === 'models' && selected && (

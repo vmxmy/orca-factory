@@ -143,7 +143,7 @@ export const duration = (ms: number) => {
   return days >= 10 || hours % 24 === 0 ? `${days} 天` : `${days} 天 ${hours % 24} 小时`
 }
 
-const reasonOf = (t: RuntimeTicket): { text: string; color?: string } | undefined => {
+export const reasonOf = (t: RuntimeTicket): { text: string; color?: string } | undefined => {
   if (t.blockedReason) return { text: t.blockedReason, color: 'warning' }
   const d = t.deployment
   if (!d || d.state === 'passed') return undefined
@@ -256,7 +256,7 @@ export const spinnerCells = (frame: number) => {
 
 const STDERR_LINES = 6
 
-const failureTitle = (exitCode: number | null) => {
+export const failureTitle = (exitCode: number | null) => {
   if (exitCode === null) return '无法运行 orca-factory-driver'
   return exitCode === 0 ? '输出无法解析' : `取数失败（退出码 ${exitCode}）`
 }
@@ -310,18 +310,18 @@ export const filterBar = (
 
 export const NO_MATCH = '无匹配'
 
-const LIST_HELP = 'r 刷新 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框'
+const LIST_HELP = 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框'
 
 const PAGE_HELP: Record<Page, string> = {
-  pipeline: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  pipeline: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
   health: LIST_HELP,
   models: LIST_HELP,
   scheduler: LIST_HELP,
-  environment: 'f 筛选 · r 刷新 · 1–5 切页 · Esc 回到输入框',
+  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
 }
 
 export const helpText = (current: Page, inDetail: boolean) =>
-  inDetail ? 'q 返回 · r 刷新 · 1–5 切页 · Esc 回到输入框' : PAGE_HELP[current]
+  inDetail ? 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框' : PAGE_HELP[current]
 
 const TIMELINE_ROWS = 15
 
