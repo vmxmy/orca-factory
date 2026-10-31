@@ -196,6 +196,7 @@ const modelBlocks = (current: Repo | undefined) => {
   return [
     [
       `Driver 模型 · ${current.name}`,
+      '角色 · Agent · 模型 · 强度 · 来源键',
       ...current.roles.map(one =>
         [ROLE_LABELS[one.role], one.agent || '-', one.model || '默认', one.effort || '-', one.key || '内置'].join(' · '),
       ),

@@ -1181,3 +1181,27 @@ test('复制失败时提示原因，还在读取时不写剪贴板', async ($, o
   expect(toasts.at(-1)).toBe('复制失败：没有可用的剪贴板')
   await ui.unmount()
 })
+
+test('复制跟随选中的仓库和筛选词，模型页不带原始配置', async ($, on) => {
+  const { clipboard } = runtimeEngine(on)
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+
+  await ui.input({ key: 'filter-input', text: '冒烟' })
+  await ui.press({ key: 'copy' })
+  const filtered = clipboard.texts[0] ?? ''
+  expect(filtered).toContain('筛选：冒烟')
+  expect(filtered).toContain('OF-1 · gate')
+  expect(filtered).not.toContain('OF-2')
+
+  await ui.press({ key: 'page-models' })
+  await ui.press({ key: 'copy' })
+  const models = clipboard.texts[1] ?? ''
+  expect(models.split('\n').slice(0, 2)).toEqual(['Driver 模型 · orca-factory', '角色 · Agent · 模型 · 强度 · 来源键'])
+  expect(models).not.toContain('env -u')
+
+  await ui.select({ key: 'repo', value: 'ziikoo-web' })
+  await ui.press({ key: 'copy' })
+  expect(clipboard.texts[2]).toContain('Driver 模型 · ziikoo-web')
+  await ui.unmount()
+})
