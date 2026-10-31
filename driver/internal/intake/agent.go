@@ -40,7 +40,9 @@ const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.con
 // of origin/main. The agent receives no credentials and no write tools.
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
-	Timeout                               time.Duration
+	// Bwrap overrides the sandbox executable, found on PATH when empty.
+	Bwrap   string
+	Timeout time.Duration
 	// Tickets lists the project's ledger tickets for the .intake/tickets.md
 	// context (OF-33); nil for a gateway with no projects configured
 	// (pre-OF-32), which skips writing it.
@@ -70,7 +72,15 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	defer cancel()
 	// The prompt travels on stdin: --tools is variadic, and an untrusted message
 	// starting with "-" must never be parsed as a flag.
-	cmd := exec.CommandContext(ctx, r.Claude, args...)
+	sandbox, err := r.sandboxArgs()
+	if err != nil {
+		return "", err
+	}
+	bwrap := r.Bwrap
+	if bwrap == "" {
+		bwrap = "bwrap"
+	}
+	cmd := exec.CommandContext(ctx, bwrap, append(sandbox, args...)...)
 	cmd.Dir = r.Checkout
 	cmd.Env = []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}
 	cmd.Stdin = strings.NewReader(t.Prompt)
@@ -91,6 +101,34 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 		return "", errors.New("intake agent returned no result")
 	}
 	return result.Result, nil
+}
+
+// sandboxArgs confines claude with the operating system, under --restricted:
+// the agent handles untrusted group messages on a machine holding production
+// credentials. A missing bwrap fails the turn instead of running unconfined.
+// Only system directories are exposed, so a repository is hidden wherever it
+// lives. Home holds nothing but claude's own directory, because a token refresh
+// must be able to replace its credentials file. /etc/resolv.conf may link into
+// the otherwise absent /run.
+func (r *Runner) sandboxArgs() ([]string, error) {
+	home := os.Getenv("HOME")
+	if home == "" {
+		return nil, errors.New("intake sandbox requires HOME")
+	}
+	claude, err := filepath.EvalSymlinks(r.Claude)
+	if err != nil {
+		return nil, fmt.Errorf("intake sandbox cannot resolve claude: %w", err)
+	}
+	args := []string{"--unshare-pid", "--die-with-parent", "--new-session", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"}
+	for _, dir := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"} {
+		args = append(args, "--ro-bind-try", dir, dir)
+	}
+	if resolver, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil {
+		args = append(args, "--ro-bind-try", resolver, resolver)
+	}
+	config, state := filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
+	return append(args, "--tmpfs", home, "--bind-try", config, config, "--bind-try", state, state,
+		"--ro-bind", r.Checkout, r.Checkout, "--ro-bind", claude, claude, "--remount-ro", "/", "--chdir", r.Checkout, "--", claude), nil
 }
 
 // update moves the shared checkout to origin/main; a missing checkout is
