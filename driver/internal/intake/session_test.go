@@ -131,7 +131,7 @@ func TestIntakeSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	checkout := filepath.Join(root, "checkout")
-	runner := &Runner{Claude: standIn, Repo: repo, Checkout: checkout, Model: "claude-opus-5-5", Effort: "high", Timeout: 10 * time.Second}
+	runner := &Runner{Claude: standIn, Bwrap: standInBwrap(t), Repo: repo, Checkout: checkout, Model: "claude-opus-5-5", Effort: "high", Timeout: 10 * time.Second}
 	var mu sync.Mutex
 	var replies []string
 	reply := func(_ context.Context, _, text string) error {

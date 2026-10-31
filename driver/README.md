@@ -487,6 +487,13 @@ flush_interval = "10m"
 需求整理 Agent（角色 `scripts/agent-gates/roles/intake-chat.md`），Agent 的回复原文
 作为话题回复。
 
+需求整理 Agent 每轮在 bwrap 沙箱里运行（OF-325），机器要装 `bubblewrap`；找不到或启动
+失败时这一轮报错，不退回无沙箱运行。沙箱内根目录和检出只读，`/tmp`、`/run` 为空，家目录
+只有 `~/.claude` 与 `~/.claude.json`，看不到 `driver.env`、`~/.ssh`、其他仓库和沙箱外进程。
+网络没有隔离，模型调用需要它。Agent 仍共用本机的 Claude 登录和 `~/.claude`，这两项在
+沙箱内可读写。检出的 git 目录不可见，所以 Agent 拿不到 git 状态；`.intake/` 和检出更新
+由网关在沙箱外完成。
+
 Agent 回复带 `intake-draft-v1` 草稿时（OF-15），网关先校验：必填字段、SCOPE 每个
 glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环。不通过时把原因
 作为 `[网关]` 前缀的下一轮输入交还 Agent（每条消息最多 2 次），需求人看不到。通过后
