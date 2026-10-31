@@ -67,6 +67,7 @@ cat > /dev/null
 seen=""
 for f in %q %q %q /proc/%d/environ; do [ -r "$f" ] && seen="$seen $f"; done
 touch tracked-write 2> /dev/null && seen="$seen checkout-write"
+touch /root-write 2> /dev/null && seen="$seen root-write"
 [ -r tracked ] || seen="$seen no-checkout"
 [ -r "$HOME/.claude/.credentials.json" ] || seen="$seen no-credentials"
 touch "$HOME/.claude/session" 2> /dev/null || seen="$seen no-session-write"

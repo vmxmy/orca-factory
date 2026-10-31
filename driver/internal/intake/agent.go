@@ -128,7 +128,7 @@ func (r *Runner) sandboxArgs() ([]string, error) {
 	}
 	config, state := filepath.Join(home, ".claude"), filepath.Join(home, ".claude.json")
 	return append(args, "--tmpfs", home, "--bind-try", config, config, "--bind-try", state, state,
-		"--ro-bind", r.Checkout, r.Checkout, "--ro-bind", claude, claude, "--chdir", r.Checkout, "--", claude), nil
+		"--ro-bind", r.Checkout, r.Checkout, "--ro-bind", claude, claude, "--remount-ro", "/", "--chdir", r.Checkout, "--", claude), nil
 }
 
 // update moves the shared checkout to origin/main; a missing checkout is
