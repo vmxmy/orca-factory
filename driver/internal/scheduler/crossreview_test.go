@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -243,6 +244,38 @@ func TestRecordedCrossReviewOutput(t *testing.T) {
 		if got := parseCrossReviewOpinion("r", output); got.Verdict != crossReviewUnavailable {
 			t.Errorf("%q counted as %+v", output, got)
 		}
+	}
+}
+
+// resolver-escalate-class.json is stdout of the real resolver model given
+// core/roles/resolver.md and a written scenario; the ledger sample is a record
+// from a real run with both reviewers on OF-342, read back from the Feishu ledger.
+func TestRecordedCrossReviewEvidence(t *testing.T) {
+	proposal, err := resolver.ParseResult(string(recorded(t, "resolver-escalate-class.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proposal.Action != "escalate" || !crossReviewClasses[proposal.Class] || !commitID(proposal.Head) {
+		t.Fatalf("proposal=%+v", proposal)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-cross-review.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	var record crossReviewRecord
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(recording.Comments[0].Body, crossReviewPrefix)), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.WouldRelease || len(record.Forbidden) == 0 || len(record.Opinions) != 2 {
+		t.Fatalf("record=%+v", record)
+	}
+	ticket := Ticket{ID: record.TicketID}
+	readCrossReviews(&ticket, recording.Comments)
+	if err := readOwnership(&ticket, recording.Comments); err != nil {
+		t.Fatal(err)
+	}
+	if !ticket.CrossReviewed[record.Dispatch] || ticket.Owner != "" || ticket.Phase != "" {
+		t.Fatalf("record changed the ticket: %+v", ticket)
 	}
 }
 
