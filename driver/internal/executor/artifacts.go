@@ -17,7 +17,6 @@ Change:
 {{.Ticket.Todo}}
 CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
-LANE: {{.Ticket.Lane}}
 Gate spec: {{.Spec}}
 Branch: {{.Branch}}
 `

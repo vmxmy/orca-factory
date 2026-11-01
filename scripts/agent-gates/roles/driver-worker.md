@@ -17,6 +17,7 @@
 ## Verification
 
 - 推送前 `CHECK` 为绿，gate 输出 `VERDICT green`。
+- lane 以 gate 输出的 `LANE` 行为准；driver worker 不因 lane 取值报失败。
 
 ## Handoff
 
