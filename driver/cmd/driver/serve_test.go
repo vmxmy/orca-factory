@@ -224,6 +224,50 @@ func TestStatusServeRecordsNextScan(t *testing.T) {
 
 // serve wraps the Runtime for status snapshots; the wrapper must still expose
 // heartbeat liveness, or a killed executor is never judged dead (OF-22).
+// optionalBackend records the capabilities the scheduler finds by interface
+// assertion: serve wraps its Runtime in statusBackend, so one that is not
+// forwarded silently never runs in production.
+type optionalBackend struct {
+	statusFakeBackend
+	reviewed []scheduler.Ticket
+	updated  []config.Repository
+}
+
+func (b *optionalBackend) AdvanceCrossReviews(_ context.Context, tickets []scheduler.Ticket) error {
+	b.reviewed = tickets
+	return nil
+}
+
+func (b *optionalBackend) UpdateRepository(repo config.Repository) {
+	b.updated = append(b.updated, repo)
+}
+
+func TestStatusBackendForwardsOptionalCapabilities(t *testing.T) {
+	source := &optionalBackend{}
+	var backend scheduler.Backend = &statusBackend{Backend: source}
+	reviews, ok := backend.(interface {
+		AdvanceCrossReviews(context.Context, []scheduler.Ticket) error
+	})
+	if !ok {
+		t.Fatal("cross reviews do not reach the Runtime under serve")
+	}
+	tickets := []scheduler.Ticket{{ID: "id"}}
+	if err := reviews.AdvanceCrossReviews(context.Background(), tickets); err != nil {
+		t.Fatal(err)
+	}
+	if len(source.reviewed) != 1 {
+		t.Fatalf("reviewed=%+v", source.reviewed)
+	}
+	updater, ok := backend.(interface{ UpdateRepository(config.Repository) })
+	if !ok {
+		t.Fatal("hot reloaded configuration does not reach the Runtime under serve")
+	}
+	updater.UpdateRepository(config.Repository{Path: "a"})
+	if len(source.updated) != 1 || source.updated[0].Path != "a" {
+		t.Fatalf("updated=%+v", source.updated)
+	}
+}
+
 func TestStatusBackendForwardsHeartbeatLiveness(t *testing.T) {
 	root := t.TempDir()
 	if err := orca.WriteBeat(orca.HeartbeatPath(root, "proj", "OF-1", "executor"), orca.Beat{PID: 7, At: time.Unix(0, 0).UTC()}); err != nil {
