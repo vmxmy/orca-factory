@@ -77,13 +77,14 @@ func workerSubject(report *orca.WorkerReport) string {
 	if end := strings.IndexAny(line, "\r\n"); end >= 0 {
 		line = line[:end]
 	}
-	// Redact last: removing a control character can join a credential back together.
+	// Redact on both sides: the credential rules need the boundary a control
+	// character may provide, and removing one can join a credential back together.
 	line = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return -1
 		}
 		return r
-	}, line)
+	}, runx.RedactDiagnostic(line))
 	return truncateFail(strings.TrimSpace(runx.RedactDiagnostic(line)), 200)
 }
 

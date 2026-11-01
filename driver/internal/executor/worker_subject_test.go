@@ -110,6 +110,11 @@ func TestWorkerSubjectControlCharacterCannotHideCredential(t *testing.T) {
 		{"s\x1bk-abcdefgh", "sk-abcdefgh"},
 		{"Bea\arer abcdef", "abcdef"},
 		{"https\a://x:pw@github.com/a", "x:pw"},
+		{"see\tghp_abcdefgh", "ghp_abcdefgh"},
+		{"see\x1bghp_abcdefgh", "ghp_abcdefgh"},
+		{"use\tsk-abcdefgh", "sk-abcdefgh"},
+		{"Bearer\tabcdef", "abcdef"},
+		{"push --token\tsecret123", "secret123"},
 	} {
 		if got := workerSubject(&orca.WorkerReport{Subject: tc.subject}); strings.Contains(got, tc.secret) {
 			t.Fatalf("subject %q exposed %q", tc.subject, got)
