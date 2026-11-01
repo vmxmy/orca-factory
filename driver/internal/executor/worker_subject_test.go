@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -145,5 +146,20 @@ func TestWorkerSubjectRedactsColoredToken(t *testing.T) {
 		if got := workerSubject(&orca.WorkerReport{Subject: subject}); got != "[REDACTED] tail" {
 			t.Fatalf("subject %q: got %q", subject, got)
 		}
+	}
+}
+
+func TestWorkerSubjectRecordedANSI(t *testing.T) {
+	colored, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out-ansi.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSuffix(string(plain), "\n")
+	if got := workerSubject(&orca.WorkerReport{Subject: string(colored)}); got != want {
+		t.Fatalf("subject = %q, want %q", got, want)
 	}
 }

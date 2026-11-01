@@ -1,6 +1,9 @@
 package runx
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestRedactStderrStripsANSI(t *testing.T) {
 	for _, tc := range []struct {
@@ -20,5 +23,19 @@ func TestRedactStderrStripsANSI(t *testing.T) {
 				t.Fatalf("stderr = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRedactStderrRecordedGhANSI(t *testing.T) {
+	colored, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out-ansi.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := redactStderr(string(colored), nil); got != string(plain) {
+		t.Fatalf("stderr = %q, want %q", got, plain)
 	}
 }

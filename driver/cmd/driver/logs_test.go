@@ -50,6 +50,34 @@ func TestWriteLogsDropsControlCharacters(t *testing.T) {
 	}
 }
 
+func TestWriteLogsRecordedANSI(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/driver-logs-gh-ansi-stderr.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := writeLogs(&output, []logsRecord{{raw: string(raw), fields: fields}}, false); err != nil {
+		t.Fatal(err)
+	}
+	if want := `stderr=You are not logged into any GitHub hosts. To log in, run: gh auth login\n ticket=OF-345`; !strings.Contains(output.String(), want) {
+		t.Fatalf("text = %q, want substring %q", output.String(), want)
+	}
+	if strings.ContainsRune(output.String(), 0x1b) {
+		t.Fatalf("escape in text %q", output.String())
+	}
+	panelSample, err := os.ReadFile("../../../.claude/skills/ziikoo-driver/test/sample-logs.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(panelSample, bytes.TrimSpace(raw)) {
+		t.Fatal("panel sample differs from the recorded log")
+	}
+}
+
 func TestLogsCommand(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)

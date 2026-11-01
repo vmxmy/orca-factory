@@ -3,7 +3,7 @@ import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
-import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS } from './sample-logs'
+import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 
 const PANE = {
@@ -732,6 +732,19 @@ test('stderr 带控制字符时面板照常渲染', async ($, on) => {
     '转二线：gate red check',
   ])
   expect((await timelineRows(ui)).map(row => row.slice(8))).toEqual(['worker → failed'])
+  await ui.unmount()
+})
+
+test('录制日志带 ANSI 时面板照常渲染', async ($, on) => {
+  expect(SAMPLE_RECORDED_ANSI_LOGS).toContain('\\u001b[')
+  timelineEngine(on, ran({ stdout: SAMPLE_RECORDED_ANSI_LOGS }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+
+  expect((await issueRows(ui)).map(row => row.slice(8))).toEqual([
+    'gh 退出码 1 You are not logged into any GitHub hosts. To log in, run: gh auth login',
+  ])
   await ui.unmount()
 })
 

@@ -1,3 +1,6 @@
+// driver/testdata/recorded/driver-logs-gh-ansi-stderr.jsonl 的原文。插件测试不能读取插件目录外的文件；cmd/driver.TestWriteLogsRecordedANSI 校验两边一致。
+export const SAMPLE_RECORDED_ANSI_LOGS = String.raw`{"time":"2026-11-01T16:19:31.084384446+08:00","level":"WARN","msg":"external command","component":"executor","repo":"orca-factory","ticket":"OF-345","executable":"gh","args":["auth","status"],"exit_code":1,"duration":25483064,"stderr":"You are not logged into any GitHub hosts. To log in, run: \u001b[0;1;39mgh auth login\u001b[0m\n","timed_out":false}`
+
 export const SAMPLE_CONTROL_LOGS = [
   { msg: 'external command', executable: '\u001b[31mgit\u001b[0m', exit_code: 1, stderr: '\u001b[31mfatal:\u001b[0m\t denied\u001b]52;c;clipboard\u0007\u001b]0;title\u001b\\\u007f\u0085\nsecond line' },
   { msg: 'correction', reason: '\u001b[31mworker failed\u001b[0m', worker_subject: 'blocked\u0000\u0007\u001b[0m subject' },

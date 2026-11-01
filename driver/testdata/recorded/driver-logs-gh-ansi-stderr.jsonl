@@ -1,0 +1,1 @@
+{"time":"2026-11-01T16:19:31.084384446+08:00","level":"WARN","msg":"external command","component":"executor","repo":"orca-factory","ticket":"OF-345","executable":"gh","args":["auth","status"],"exit_code":1,"duration":25483064,"stderr":"You are not logged into any GitHub hosts. To log in, run: \u001b[0;1;39mgh auth login\u001b[0m\n","timed_out":false}
