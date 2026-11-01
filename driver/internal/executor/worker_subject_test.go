@@ -3,6 +3,7 @@ package executor
 import (
 	"bytes"
 	"context"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -124,8 +125,8 @@ func TestWorkerSubjectControlCharacterCannotHideCredential(t *testing.T) {
 
 func TestWorkerSubjectDropsControlCharacters(t *testing.T) {
 	for _, tc := range []struct{ subject, want string }{
-		{"\x1b[31mred\x1b[0m done", "[31mred[0m done"},
-		{"osc\x1b]52;c;aGk=\a end", "osc]52;c;aGk= end"},
+		{"\x1b[31mred\x1b[0m done", "red done"},
+		{"osc\x1b]52;c;aGk=\a end", "osc end"},
 		{"a\vb\fc\u0085d\x7fe\tf", "abcdef"},
 		{"first\rsecond", "first"},
 		{"\x1b\n", ""},
@@ -133,5 +134,32 @@ func TestWorkerSubjectDropsControlCharacters(t *testing.T) {
 		if got := workerSubject(&orca.WorkerReport{Subject: tc.subject}); got != tc.want {
 			t.Fatalf("subject %q: got %q want %q", tc.subject, got, tc.want)
 		}
+	}
+}
+
+func TestWorkerSubjectRedactsColoredToken(t *testing.T) {
+	for _, subject := range []string{
+		"gh\x1b[31mp_private\x1b[0m tail",
+		"gh\x1b]0;title\ap_private tail",
+		"gh\x1b]8;;https://example.com\x1b\\p_private tail",
+	} {
+		if got := workerSubject(&orca.WorkerReport{Subject: subject}); got != "[REDACTED] tail" {
+			t.Fatalf("subject %q: got %q", subject, got)
+		}
+	}
+}
+
+func TestWorkerSubjectRecordedANSI(t *testing.T) {
+	colored, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out-ansi.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := os.ReadFile("../../testdata/recorded/gh-auth-status-logged-out.stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.TrimSuffix(string(plain), "\n")
+	if got := workerSubject(&orca.WorkerReport{Subject: string(colored)}); got != want {
+		t.Fatalf("subject = %q, want %q", got, want)
 	}
 }

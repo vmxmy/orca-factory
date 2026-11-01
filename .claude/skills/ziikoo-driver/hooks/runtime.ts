@@ -169,6 +169,10 @@ const EVENTS: Record<string, Shown> = {
 
 const loose = (o: Fields, key: string) => (typeof o[key] === 'string' ? o[key] : '')
 
+const cleanLogText = (value: string) => value
+  .replace(/(?:\u001b\]|\u009d)[\s\S]*?(?:\u0007|\u001b\\|\u009c|$)|(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/g, '')
+  .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+
 const MESSAGES: Record<string, (o: Fields) => Shown> = {
   transition: o => EVENTS[loose(o, 'event')] ?? { label: `${loose(o, 'from')} → ${loose(o, 'to')}` },
   'ticket completed': o => ({ label: `进入${loose(o, 'phase')}` }),
@@ -223,14 +227,16 @@ export const parseTimeline = (stdout: string): Omit<Timeline, 'id'> => {
   return {
     entries: lines.flatMap(({ at, o }): TimelineEntry[] => {
       const show = MESSAGES[loose(o, 'msg')]
-      return show ? [{ at, ...show(o) }] : []
+      if (!show) return []
+      const shown = show(o)
+      return [{ at, ...shown, label: cleanLogText(shown.label) }]
     }),
     issues: pairFailures(
       lines.flatMap(({ at, o }) => {
         const issue = ISSUES[loose(o, 'msg')]?.(o)
         return issue ? [{ at, msg: loose(o, 'msg'), ...issue }] : []
       }),
-    ),
+    ).map(issue => ({ ...issue, label: cleanLogText(issue.label), detail: issue.detail === undefined ? undefined : cleanLogText(issue.detail) })),
   }
 }
 

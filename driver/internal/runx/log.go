@@ -39,6 +39,11 @@ var authorizationText = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:(?:b
 var credentialText = regexp.MustCompile(`(?i)\b(?:ghp_|github_pat_|lin_api_)[^\s"'<>]+|Bearer\s+[^\s"'<>]+`)
 var credentialFlag = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)(?:"[^"]*"|'[^']*'|[^\s]+)`)
 var urlCredentials = regexp.MustCompile(`([a-zA-Z][a-zA-Z0-9+.-]*://)[^/\s@]+@`)
+var ansiSequences = regexp.MustCompile(`(?s)(?:\x1b\]|\x{009d}).*?(?:\x07|\x1b\\|\x{009c}|$)|(?:\x1b\[|\x{009b})[0-?]*[ -/]*[@-~]`)
+
+func StripANSI(text string) string {
+	return ansiSequences.ReplaceAllString(text, "")
+}
 
 func sensitiveFlag(flag string) bool {
 	if !strings.HasPrefix(flag, "-") {
@@ -107,7 +112,7 @@ func redactValues(text string, args []string) string {
 
 // RedactDiagnostic applies the credential policy for external diagnostic text.
 func RedactDiagnostic(text string) string {
-	return strings.ToValidUTF8(logx.RedactText(redactText(text)), "")
+	return strings.ToValidUTF8(logx.RedactText(redactText(StripANSI(text))), "")
 }
 
 func redactStderr(stderr string, args []string) string {
@@ -118,7 +123,7 @@ func redactStderr(stderr string, args []string) string {
 			return "[REDACTED]"
 		}
 	}
-	stderr = redactValues(stderr, args)
+	stderr = redactValues(StripANSI(stderr), args)
 	stderr = RedactDiagnostic(stderr)
 	if len(stderr) > 2048 {
 		end := 2048

@@ -16,6 +16,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
+
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 func init() { Register("logs", runLogs) }
@@ -219,7 +222,12 @@ func writeLogs(out io.Writer, records []logsRecord, asJSON bool) error {
 				}
 				parts = append(parts, key+"="+value)
 			}
-			line = strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(strings.Join(parts, " ")) + "\n"
+			line = strings.Map(func(char rune) rune {
+				if unicode.IsControl(char) {
+					return -1
+				}
+				return char
+			}, runx.StripANSI(strings.NewReplacer("\r", `\r`, "\n", `\n`).Replace(strings.Join(parts, " ")))) + "\n"
 		}
 		if _, err := io.WriteString(out, line); err != nil {
 			return err
