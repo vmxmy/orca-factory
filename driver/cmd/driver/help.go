@@ -67,7 +67,9 @@ Commands:
   prune-workspaces [--dry-run]
       [写入] 按 serve 的回收规则一次性删除可接管项目中已结束票的 Orca 工作区：
       Done/Canceled 票的全部 executor、resolver 工作区，及其他票被新一轮取代的旧 resolver。
-      有未提交改动、未推送提交、运行中终端或 Orca 置顶时保留。--dry-run 只列出不删除。
+      已结束票的工作区无其他阻塞且全部终端均无 agent 身份、输出时间已知且静默至少 1 小时，先关终端再删除。
+      未结束票的旧 resolver 有终端就保留；有未提交改动、未推送提交、Orca 置顶或检查失败也保留。
+      --dry-run 只列出判定，不关闭终端或删除工作区。
   feishu-gateway
       [写入] 飞书长连接需求入口，按群与白名单过滤并回复话题。
   projects --json
