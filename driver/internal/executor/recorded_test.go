@@ -74,6 +74,9 @@ func TestRecordedTaskList(t *testing.T) {
 	if err != nil || report == nil {
 		t.Fatalf("report=%+v err=%v", report, err)
 	}
+	if got := workerSubject(report); got != "ZII-893 complete: 194a70b pushed, gate green" {
+		t.Fatalf("recorded subject=%q", got)
+	}
 }
 
 type recordedTasks struct {

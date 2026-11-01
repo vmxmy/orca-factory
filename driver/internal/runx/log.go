@@ -105,6 +105,11 @@ func redactValues(text string, args []string) string {
 	return text
 }
 
+// RedactDiagnostic applies the credential policy for external diagnostic text.
+func RedactDiagnostic(text string) string {
+	return strings.ToValidUTF8(logx.RedactText(redactText(text)), "")
+}
+
 func redactStderr(stderr string, args []string) string {
 	// Provider diagnostics can echo fragments after bounded capture truncation.
 	for _, arg := range args {
@@ -114,7 +119,7 @@ func redactStderr(stderr string, args []string) string {
 		}
 	}
 	stderr = redactValues(stderr, args)
-	stderr = strings.ToValidUTF8(logx.RedactText(redactText(stderr)), "")
+	stderr = RedactDiagnostic(stderr)
 	if len(stderr) > 2048 {
 		end := 2048
 		for !utf8.RuneStart(stderr[end]) {

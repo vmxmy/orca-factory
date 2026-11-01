@@ -189,6 +189,11 @@ type Issue = Omit<LogIssue, 'at'>
 
 const firstLine = (text: string) => text.split('\n')[0] || undefined
 
+// fail_summary is `FAIL: approach=… files=… | reason=… | evidence=…`; only the end says why.
+const failEvidence = (summary: string) => /\| evidence=(.+)$/m.exec(summary)?.[1]
+
+const subjectOr = (o: Fields, fallback: string | undefined) => loose(o, 'worker_subject') || fallback
+
 // runx logs every command it runs and the executor every step it calls; only the failed ones are issues.
 const ISSUES: Record<string, (o: Fields) => Issue | undefined> = {
   'external command': o => {
@@ -202,7 +207,8 @@ const ISSUES: Record<string, (o: Fields) => Issue | undefined> = {
     const verdict = loose(o, 'verdict')
     return { label: `${loose(o, 'step')} 出错`, detail: verdict === '' ? undefined : `结论 ${verdict}`, alert: 'error' }
   },
-  correction: o => ({ label: `打回：${loose(o, 'reason')}`, detail: firstLine(loose(o, 'fail_summary')), alert: 'warning' }),
+  correction: o => ({ label: `打回：${loose(o, 'reason')}`, detail: subjectOr(o, failEvidence(loose(o, 'fail_summary'))), alert: 'warning' }),
+  'resolver handoff': o => ({ label: `转二线：${loose(o, 'reason')}`, detail: subjectOr(o, loose(o, 'evidence') || undefined), alert: 'warning' }),
 }
 
 // The driver writes every event to the log twice, as the same line.
