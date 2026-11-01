@@ -25,6 +25,7 @@ type recoveryOrca struct {
 	failFirst       bool
 	failBody        string
 	failSubject     string
+	failResult      json.RawMessage
 	releaseRequests []string
 }
 
@@ -63,6 +64,9 @@ func (o *recoveryOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	result, err := json.Marshal(map[string]string{"provenance": "worker_report", "outcome": outcome, "subject": o.failSubject, "body": o.failBody})
 	if err != nil {
 		return nil, err
+	}
+	if outcome == "failed" && len(o.failResult) > 0 {
+		result = o.failResult
 	}
 	return []orca.Task{{ID: task, RunID: "run_one", DispatchID: dispatch, Result: result}}, nil
 }
