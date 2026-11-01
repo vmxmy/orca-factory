@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 func failLogPath(c Config, t Ticket) string {
@@ -66,10 +68,21 @@ func (e *Executor) failSummary(ctx context.Context, c Config, baseline, branch, 
 	return prefix + truncateFail(approach, 300-len(prefix)-len(suffix)) + suffix, nil
 }
 
-// workerSubject is the report's one line for the log, where logx redacts it. It
-// stays out of the ledger and fail.log, which hold identifiers only.
+// workerSubject is the report's one line for the log, held to the diagnostic
+// policy of command stderr: readers draw it, and a control character would blank
+// the panel or reach an operator's terminal. It stays out of the ledger and
+// fail.log, which hold identifiers only.
 func workerSubject(report *orca.WorkerReport) string {
-	line, _, _ := strings.Cut(strings.TrimSpace(report.Subject), "\n")
+	line := strings.TrimSpace(report.Subject)
+	if end := strings.IndexAny(line, "\r\n"); end >= 0 {
+		line = line[:end]
+	}
+	line = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, runx.RedactDiagnostic(line))
 	return truncateFail(strings.TrimSpace(line), 200)
 }
 
