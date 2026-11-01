@@ -2,15 +2,19 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -21,33 +25,39 @@ const (
 )
 
 var (
-	reviewCommand = regexp.MustCompile(`(?s)^(批准|驳回)\s+([A-Z][A-Z0-9]*)-([0-9]+)(?:\s+(\S.*))?$`)
+	reviewCommand = regexp.MustCompile(`(?s)^(批准|驳回|放行|取消)\s+([A-Z][A-Z0-9]*)-([0-9]+)(?:\s+(\S.*))?$`)
 	laneHeading   = regexp.MustCompile(`(?m)^## LANE 预判\s*\n\s*([0-9])`)
 )
 
-// review is an approver's command (OF-16): “批准 OF-N” releases an intake
-// ticket to the scheduler, “驳回 OF-N <理由>” cancels it.
+// review carries intake approval/rejection or human ticket release/cancellation.
 type review struct {
 	approve        bool
+	human          bool
 	prefix, ticket string
 	reason         string
 }
 
 func (r review) verb() string {
+	if r.human {
+		if r.approve {
+			return "放行"
+		}
+		return "取消"
+	}
 	if r.approve {
 		return "批准"
 	}
 	return "驳回"
 }
 
-// parseReview matches the whole prompt: approval takes no trailing text and
-// rejection requires a reason, so anything else stays an ordinary message.
+// parseReview matches the whole prompt: approval/release takes no trailing
+// text and rejection/cancellation requires a reason.
 func parseReview(prompt string) (review, bool) {
 	m := reviewCommand.FindStringSubmatch(prompt)
 	if m == nil {
 		return review{}, false
 	}
-	r := review{approve: m[1] == "批准", prefix: m[2], ticket: m[2] + "-" + m[3], reason: strings.TrimSpace(m[4])}
+	r := review{approve: m[1] == "批准" || m[1] == "放行", human: m[1] == "放行" || m[1] == "取消", prefix: m[2], ticket: m[2] + "-" + m[3], reason: strings.TrimSpace(m[4])}
 	if r.approve == (r.reason != "") {
 		return review{}, false
 	}
@@ -122,6 +132,9 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 		fmt.Fprintf(os.Stderr, "intake review read %s failed: %v\n", r.ticket, err)
 		return g.reply(ctx, id, fmt.Sprintf("账本中读取 %s 失败", r.ticket))
 	}
+	if r.human {
+		return g.handleHumanReview(ctx, id, sender, r, p.Ledger, t)
+	}
 	refusal, done := r.check(t)
 	if done {
 		return g.reply(ctx, id, r.ticket+" 已"+r.outcome())
@@ -137,6 +150,100 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 		return err
 	}
 	return g.notifyRequester(ctx, t.Description, r)
+}
+
+func latestHumanEvidence(comments []task.Comment) map[string]string {
+	rows := slices.Clone(comments)
+	sort.SliceStable(rows, func(first, second int) bool {
+		if rows[first].CreatedAt.Equal(rows[second].CreatedAt) {
+			return rows[first].ID < rows[second].ID
+		}
+		return rows[first].CreatedAt.Before(rows[second].CreatedAt)
+	})
+	latest := map[string]string{}
+	for _, comment := range rows {
+		for _, line := range strings.Split(comment.Body, "\n") {
+			for _, prefix := range []string{resolver.Prefix, merge.HandoffPrefix, merge.ProgressPrefix} {
+				if raw, ok := strings.CutPrefix(line, prefix); ok {
+					latest[prefix] = raw
+				}
+			}
+		}
+	}
+	return latest
+}
+
+func humanReleaseRefusal(ticket string, description string, latest map[string]string) string {
+	if raw, ok := latest[merge.HandoffPrefix]; ok {
+		var handoff merge.Handoff
+		if json.Unmarshal([]byte(raw), &handoff) != nil || handoff.Version != 1 || handoff.Lane < 1 || handoff.Lane > 3 {
+			return ticket + " 证据冲突：merge-handoff-v1 解析失败"
+		}
+		if handoff.Lane == 3 {
+			return lane3Reply
+		}
+	}
+	if raw, ok := latest[merge.ProgressPrefix]; ok {
+		var progress merge.Progress
+		if json.Unmarshal([]byte(raw), &progress) != nil || progress.Version != 1 {
+			return ticket + " 证据冲突：merge-progress-v1 解析失败"
+		}
+		if progress.Deployment != nil && progress.Deployment.State == "paused" {
+			return ticket + " 部署屏障处于 paused，请走 resume-deployment"
+		}
+	}
+	lane := laneHeading.FindStringSubmatch(description)
+	if lane == nil {
+		return ticket + " 票面缺少 LANE 预判，不放行"
+	}
+	if lane[1] == "3" {
+		return lane3Reply
+	}
+	return ""
+}
+
+func (g *Gateway) handleHumanReview(ctx context.Context, id, sender string, r review, ledger Ledger, ticket issues.Task) error {
+	if ticket.Metadata.State == "Canceled" {
+		return g.reply(ctx, id, r.ticket+" 当前状态为 Canceled")
+	}
+	comments, err := ledger.ListComments(ctx, ticket.Metadata.ID)
+	if err != nil {
+		return g.reply(ctx, id, r.ticket+" 读取评论失败，请重试")
+	}
+	latest := latestHumanEvidence(comments)
+	raw, ok := latest[resolver.Prefix]
+	if !ok {
+		return g.reply(ctx, id, r.ticket+" 当前没有 resolver-state，不处于 human 状态")
+	}
+	var record resolver.Record
+	if json.Unmarshal([]byte(raw), &record) != nil || record.Version != 1 || record.Attempt < 1 || record.Phase == "" {
+		return g.reply(ctx, id, r.ticket+" 证据冲突：resolver-state 解析失败")
+	}
+	if record.Phase != "human" {
+		return g.reply(ctx, id, fmt.Sprintf("%s 当前 resolver-state phase 为 %s，只有 human 可以%s", r.ticket, record.Phase, r.verb()))
+	}
+	if r.approve {
+		if refusal := humanReleaseRefusal(r.ticket, ticket.Description, latest); refusal != "" {
+			return g.reply(ctx, id, refusal)
+		}
+	}
+	body := fmt.Sprintf("%s：%s %s", r.verb(), sender, g.now().Format(time.RFC3339))
+	if r.approve {
+		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
+	} else {
+		body += "\n理由：" + r.reason
+	}
+	if r.approve || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+		if _, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {
+			return g.reply(ctx, id, failedReply)
+		}
+	}
+	if !r.approve {
+		if _, err := ledger.UpdateIssue(ctx, ticket.Metadata.ID, "Canceled", nil, nil); err != nil {
+			return g.reply(ctx, id, failedReply)
+		}
+	}
+	return g.reply(ctx, id, "已"+r.verb()+" "+r.ticket)
 }
 
 func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender string, r review) error {

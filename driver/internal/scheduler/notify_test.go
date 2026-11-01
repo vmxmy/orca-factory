@@ -28,6 +28,37 @@ type notifyStore struct {
 	commentsByID      map[string][]task.Comment
 }
 
+func TestHumanTicketNotifyListsCommands(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	for _, category := range []string{"转人", "证据冲突", "部署失败"} {
+		t.Run(category, func(t *testing.T) {
+			store := &notifyStore{}
+			sender := &notifySender{store: store}
+			sender.start(t)
+			repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+			ticket := Ticket{ID: "id", Repo: repo.Path, Identifier: "OF-9", Owner: machine.OwnerHuman, NotifyReason: "等待处置"}
+			if category == "证据冲突" {
+				ticket.MergeProblem = "conflicting handoff"
+			}
+			if category == "部署失败" {
+				ticket.Progress = &merge.Progress{Deployment: &merge.DeploymentProgress{State: "paused"}}
+			}
+			runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+			if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			if len(sender.messages) != 1 {
+				t.Fatalf("messages=%q", sender.messages)
+			}
+			for _, command := range []string{"@机器人 放行 OF-9", "@机器人 取消 OF-9 <理由>"} {
+				if strings.Contains(sender.messages[0], command) != (category == "转人") {
+					t.Errorf("category=%s message=%s", category, sender.messages[0])
+				}
+			}
+		})
+	}
+}
+
 func (f *notifyStore) ListComments(_ context.Context, id string) ([]task.Comment, error) {
 	f.reads++
 	if f.commentsByID != nil {

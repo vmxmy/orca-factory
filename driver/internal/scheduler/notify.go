@@ -46,7 +46,11 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	if _, err := client.CreateComment(ctx, t.ID, marker); err != nil {
 		return fmt.Errorf("notification event write: %w", err)
 	}
-	return sender.SendText(ctx, chat, fmt.Sprintf("%s %s\n类别: %s\n原因: %s\n%s", t.Identifier, t.Title, category, reason, t.URL))
+	body := fmt.Sprintf("%s %s\n类别: %s\n原因: %s\n%s", t.Identifier, t.Title, category, reason, t.URL)
+	if category == "转人" {
+		body += fmt.Sprintf("\n可用命令：@机器人 放行 %s 或 @机器人 取消 %s <理由>", t.Identifier, t.Identifier)
+	}
+	return sender.SendText(ctx, chat, body)
 }
 
 func feishuNotification(t Ticket) (string, string) {
