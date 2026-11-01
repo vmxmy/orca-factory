@@ -326,6 +326,31 @@ func TestIdleDetectionTerminalList(t *testing.T) {
 	}
 }
 
+func TestTerminalListAgentIdentity(t *testing.T) {
+	for _, tc := range []struct{ identity, want string }{
+		{`"claude"`, "claude"},
+		{`"codex"`, "codex"},
+		{`null`, ""},
+	} {
+		t.Run(tc.identity, func(t *testing.T) {
+			client, _ := fake(t)
+			path := filepath.Join(t.TempDir(), "orca")
+			response := `{"ok":true,"result":{"terminals":[{"handle":"term_test","worktreePath":"/worker","lastOutputAt":1000,"agentIdentity":` + tc.identity + `}]}}`
+			if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+response+"'\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			client.Path = path
+			terminals, err := client.TerminalList(context.Background())
+			if err != nil || len(terminals) != 1 {
+				t.Fatalf("terminals=%+v err=%v", terminals, err)
+			}
+			if terminals[0].AgentIdentity != tc.want {
+				t.Fatalf("identity=%q want %q", terminals[0].AgentIdentity, tc.want)
+			}
+		})
+	}
+}
+
 func TestTerminalSend(t *testing.T) {
 	c, log := fake(t)
 	receipt, err := c.TerminalSend(context.Background(), "term_one", "continue work")

@@ -760,10 +760,11 @@ func (c *Client) RepoList(ctx context.Context) ([]Repo, error) {
 // Terminal is a terminal output observation; timestamps are epoch milliseconds.
 // A null output timestamp decodes to zero and cannot establish idle duration.
 type Terminal struct {
-	Handle       string `json:"handle"`
-	WorktreeID   string `json:"worktreeId"`
-	WorktreePath string `json:"worktreePath"`
-	LastOutputAt int64  `json:"lastOutputAt"`
+	Handle        string `json:"handle"`
+	WorktreeID    string `json:"worktreeId"`
+	WorktreePath  string `json:"worktreePath"`
+	LastOutputAt  int64  `json:"lastOutputAt"`
+	AgentIdentity string `json:"agentIdentity"`
 }
 
 func (c *Client) TerminalList(ctx context.Context) ([]Terminal, error) {

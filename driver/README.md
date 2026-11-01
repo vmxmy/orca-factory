@@ -380,11 +380,15 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 |---|---|
 | `dirty` | `git status --porcelain` 非空 |
 | `unpushed` | `git rev-list --count HEAD --not --remotes` 非 0；HEAD 等于该票合并交接的冻结 head 时视为已推送 |
-| `terminal-running` / `terminal-unknown` | `orca terminal list` 仍有该工作区的终端 / 终端列表读取失败 |
+| `terminal-running` | 已结束票的工作区有任一终端不满足空闲条件；未结束票的旧 resolver 有任何终端 |
+| `terminal-unknown` | 终端列表读取失败 |
+| `terminal-close-failed` | 关闭空闲终端失败，本轮保留工作区，下轮重试 |
 | `pinned` | Orca 置顶（Orca 没有锁定标记，置顶是用户唯一的标记） |
 | `git-status-failed` / `git-rev-list-failed` / `remove-failed` | 检查或删除失败 |
 
-删除调用 `orca worktree rm --worktree path:<路径>`，不带 `--force`；Orca 同时删除能证明已合并的本地分支。删除失败只记 WARN，不影响票流转。
+Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都空闲时，先关闭终端再删除工作区。空闲须同时满足 `agentIdentity` 为空、`lastOutputAt > 0`，且距上次输出至少 1 小时；输出时间为 null 时不算空闲。exec 终端的 `agentIdentity` 也为 null，但可能仍在运行 `driver exec`，因此必须同时检查静默时间。只要有一个终端不空闲，一个都不关闭。未结束票被取代的旧 resolver 有终端就保留。
+
+关闭调用 `orca terminal close --terminal <handle>`；`terminal_handle_stale` 视为已关闭，其他错误阻止本轮删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。随后调用 `orca worktree rm --worktree path:<路径>`，不带 `--force`；Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
 
 存量回收用同一规则，先只读核对再执行：
 
@@ -393,7 +397,7 @@ orca-factory-driver prune-workspaces --dry-run
 orca-factory-driver prune-workspaces
 ```
 
-`--dry-run` 每行输出 `would-remove` 或 `keep … blocks=<原因>`；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
+`--dry-run` 使用同一套空闲与保留判定，每行输出 `would-remove` 或 `keep … blocks=<原因>`，不关闭终端或删除工作区；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
 
 ## 隔离 CI runner 检测
 

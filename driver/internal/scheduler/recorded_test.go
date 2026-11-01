@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -49,6 +50,20 @@ func TestRecordedOwnershipUnregistered(t *testing.T) {
 
 func TestRecordedTerminalList(t *testing.T) {
 	raw := recorded(t, "orca-terminal-list.json")
+	path := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat <<'RECORDED'\n"+string(raw)+"\nRECORDED\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	client := &orca.Client{Path: path}
+	terminals, err := client.TerminalList(context.Background())
+	if err != nil || len(terminals) != 2 {
+		t.Fatalf("terminals=%+v err=%v", terminals, err)
+	}
+	for _, terminal := range terminals {
+		if terminal.AgentIdentity != "claude" {
+			t.Fatalf("recorded agent identity=%q want claude", terminal.AgentIdentity)
+		}
+	}
 	r := &Runtime{OrcaPath: "/usr/bin/orca", Run: func(context.Context, runx.Spec) ([]byte, error) { return raw, nil }}
 	if absent, err := r.TerminalAbsent(context.Background(), Ticket{Terminal: "term_640d9460-b9fd-46a0-bedb-09763c8c20ea"}); err != nil || absent {
 		t.Fatalf("listed terminal: absent=%v err=%v", absent, err)

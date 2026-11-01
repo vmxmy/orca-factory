@@ -18,7 +18,7 @@ import (
 func init() { Register("prune-workspaces", runPruneWorkspaces) }
 
 // runPruneWorkspaces applies serve's workspace reclaim rule (OF-96) once to
-// every discovered project; --dry-run prints the decisions without removing.
+// every discovered project; --dry-run neither closes terminals nor removes workspaces.
 func runPruneWorkspaces(args []string) int {
 	dry := len(args) == 1 && args[0] == "--dry-run"
 	if len(args) != 0 && !dry {

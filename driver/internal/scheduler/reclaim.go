@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
@@ -19,7 +20,11 @@ type WorkspaceClient interface {
 	WorktreeList(context.Context, string) ([]orca.Worktree, error)
 	WorktreeRemove(context.Context, string) error
 	TerminalList(context.Context) ([]orca.Terminal, error)
+	TerminalClose(context.Context, string) error
 }
+
+// OF-329 requires an hour without output: exec terminals also have no agent identity.
+const reclaimTerminalIdle = time.Hour
 
 // Workspace is a driver-created Orca workspace, identified by the directory
 // name the executor (`<ticket>-executor`) or resolver (`<ticket>-resolver-<round>`)
@@ -128,7 +133,27 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 			terminalsRead = true
 		}
 		for _, v := range targets {
-			v.Blocks = r.reclaimBlocks(ctx, v.Workspace, pinned[v.Path], terminals, terminalErr, r.closed[repo][v.Ticket].Head)
+			var workspaceTerminals []orca.Terminal
+			for _, terminal := range terminals {
+				_, idPath, _ := strings.Cut(terminal.WorktreeID, "::")
+				if terminal.WorktreePath == v.Path || idPath == v.Path {
+					workspaceTerminals = append(workspaceTerminals, terminal)
+				}
+			}
+			closed, canClose := r.closed[repo][v.Ticket]
+			v.Blocks = r.reclaimBlocks(ctx, v.Workspace, pinned[v.Path], workspaceTerminals, terminalErr, closed.Head, canClose)
+			if len(v.Blocks) == 0 && !dryRun {
+				for _, terminal := range workspaceTerminals {
+					if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
+						var rejected *orca.RejectedError
+						if !errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale" {
+							v.Blocks = []string{"terminal-close-failed"}
+							break
+						}
+					}
+					logger.Info("workspace terminal closed", "path", v.Path, "terminal", terminal.Handle)
+				}
+			}
 			if len(v.Blocks) == 0 && !dryRun {
 				if err := r.Workspaces.WorktreeRemove(ctx, v.Path); err != nil {
 					v.Blocks = []string{"remove-failed"}
@@ -145,7 +170,7 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 	return verdicts, errors.Join(problems...)
 }
 
-func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, terminals []orca.Terminal, terminalErr error, mergedHead string) []string {
+func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, terminals []orca.Terminal, terminalErr error, mergedHead string, canClose bool) []string {
 	var blocks []string
 	if pinned {
 		blocks = append(blocks, "pinned")
@@ -154,8 +179,7 @@ func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, t
 		blocks = append(blocks, "terminal-unknown")
 	}
 	for _, terminal := range terminals {
-		_, idPath, _ := strings.Cut(terminal.WorktreeID, "::")
-		if terminal.WorktreePath == w.Path || idPath == w.Path {
+		if !canClose || terminal.AgentIdentity != "" || terminal.LastOutputAt <= 0 || r.clock().Sub(time.UnixMilli(terminal.LastOutputAt)) < reclaimTerminalIdle {
 			blocks = append(blocks, "terminal-running")
 			break
 		}
