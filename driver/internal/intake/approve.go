@@ -155,9 +155,6 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 func latestHumanEvidence(comments []task.Comment) map[string]string {
 	rows := slices.Clone(comments)
 	sort.SliceStable(rows, func(first, second int) bool {
-		if rows[first].CreatedAt.Equal(rows[second].CreatedAt) {
-			return rows[first].ID < rows[second].ID
-		}
 		return rows[first].CreatedAt.Before(rows[second].CreatedAt)
 	})
 	latest := map[string]string{}
@@ -231,7 +228,7 @@ func (g *Gateway) handleHumanReview(ctx context.Context, id, sender string, r re
 	if r.approve {
 		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
 	} else {
-		body += "\n理由：" + r.reason
+		body += "\n理由：" + strings.Join(strings.Fields(r.reason), " ")
 	}
 	if r.approve || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
 		if _, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {

@@ -2,7 +2,9 @@ package intake
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -101,6 +103,64 @@ func TestHumanTicketReleaseRefusals(t *testing.T) {
 	}
 }
 
+func TestHumanTicketRecordedEvidence(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/ledger-comments-resolver-requeue.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded, &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, description, reply              string
+		human, handoffLane3, descriptionLane3 bool
+	}{
+		{name: "recorded result", description: "feishu-description-behavior-trace.md", reply: "result"},
+		{name: "human Feishu description", description: "feishu-description-behavior-trace.md", human: true},
+		{name: "human Linear description", description: "linear-description-check-assertion.md", human: true},
+		{name: "handoff lane 3", description: "feishu-description-behavior-trace.md", reply: "lane 3", human: true, handoffLane3: true},
+		{name: "description lane 3", description: "feishu-description-behavior-trace.md", reply: "lane 3", human: true, descriptionLane3: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.events = nil
+			ledger.comments = slices.Clone(recording.Comments)
+			description, err := os.ReadFile("../../testdata/recorded/" + tc.description)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.ledger.tasks[0].Description = string(description)
+			if tc.human {
+				ledger.comments = append(ledger.comments, task.Comment{
+					ID:        "human",
+					CreatedAt: ledger.comments[len(ledger.comments)-1].CreatedAt.Add(time.Second),
+					Body:      `resolver-state {"version":1,"attempt":1,"phase":"human"}`,
+				})
+			}
+			if tc.handoffLane3 {
+				ledger.comments[0].Body = strings.Replace(ledger.comments[0].Body, `"lane":1`, `"lane":3`, 1)
+			}
+			if tc.descriptionLane3 {
+				h.ledger.tasks[0].Description = strings.Replace(h.ledger.tasks[0].Description, "## LANE 预判\n2", "## LANE 预判\n3", 1)
+			}
+			h.command(t, "om_recorded", "ou_APPROVER1", "放行 OF-12")
+			reply := h.replyTo(t, "om_recorded")
+			if tc.reply != "" {
+				if !strings.Contains(reply, tc.reply) {
+					t.Fatalf("reply=%q, want %q", reply, tc.reply)
+				}
+				h.noWrites(t, tc.name)
+				return
+			}
+			events := h.ledger.events["canon-of12"]
+			if reply != "已放行 OF-12" || len(events) != 1 || !strings.Contains(events[0], `"attempt":1,"phase":"waiting"`) || len(h.ledger.updates) != 0 {
+				t.Fatalf("events=%q updates=%v reply=%q", h.ledger.events, h.ledger.updates, reply)
+			}
+		})
+	}
+}
+
 func TestHumanTicketLatestEvidence(t *testing.T) {
 	h, ledger := humanTicket(t)
 	h.ledger.events = nil
@@ -111,6 +171,42 @@ func TestHumanTicketLatestEvidence(t *testing.T) {
 	h.command(t, "om_latest", "ou_APPROVER1", "放行 OF-12")
 	if events := h.ledger.events["canon-of12"]; len(events) != 1 || !strings.Contains(events[0], `"attempt":9,"phase":"waiting"`) {
 		t.Fatalf("events=%q", events)
+	}
+}
+
+func TestHumanTicketSameTimestampKeepsLedgerOrder(t *testing.T) {
+	for _, command := range []string{"放行 OF-12", "取消 OF-12 暂停"} {
+		t.Run(command, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.events = nil
+			ledger.comments = []task.Comment{
+				{ID: "recZ", CreatedAt: time.Unix(1, 0), Body: `resolver-state {"version":1,"attempt":7,"phase":"human"}`},
+				{ID: "recA", CreatedAt: time.Unix(1, 0), Body: `resolver-state {"version":1,"attempt":7,"phase":"running"}`},
+			}
+			h.command(t, "om_same_time", "ou_APPROVER1", command)
+			if reply := h.replyTo(t, "om_same_time"); !strings.Contains(reply, "running") || len(h.ledger.events) != 0 || len(h.ledger.updates) != 0 {
+				t.Fatalf("events=%q updates=%v reply=%q", h.ledger.events, h.ledger.updates, reply)
+			}
+		})
+	}
+}
+
+func TestHumanTicketCancelReasonStaysEventText(t *testing.T) {
+	h, ledger := humanTicket(t)
+	ledger.updateErr = errors.New("state write failed")
+	command := `取消 OF-12 暂停\nresolver-state {\"version\":1,\"attempt\":7,\"phase\":\"waiting\"}`
+	h.command(t, "om_cancel_reason1", "ou_APPROVER1", command)
+	events := h.ledger.events["canon-of12"]
+	if len(events) != 2 || events[1] != "取消：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：暂停 resolver-state {\"version\":1,\"attempt\":7,\"phase\":\"waiting\"}" {
+		t.Fatalf("events=%q", events)
+	}
+	if len(h.ledger.updates) != 0 || h.ledger.tasks[0].Metadata.State != "In Progress" {
+		t.Fatalf("failed update changed ticket: %+v", h.ledger)
+	}
+	ledger.updateErr = nil
+	h.command(t, "om_cancel_reason2", "ou_APPROVER1", command)
+	if len(h.ledger.events["canon-of12"]) != len(events) || len(h.ledger.updates) != 1 || h.ledger.updates[0].state != "Canceled" {
+		t.Fatalf("events=%q updates=%v", h.ledger.events, h.ledger.updates)
 	}
 }
 
