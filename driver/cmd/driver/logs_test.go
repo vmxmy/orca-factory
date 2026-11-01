@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,7 +11,44 @@ import (
 	"testing"
 	"testing/synctest"
 	"time"
+	"unicode"
 )
+
+func TestWriteLogsDropsControlCharacters(t *testing.T) {
+	raw, err := json.Marshal(map[string]string{
+		"time": "2026-11-01T12:00:00Z", "component": "exec\x1butor", "level": "\x1b[31mWARN\x1b[0m",
+		"msg": "fail\aure", "stderr": "\x1b[31mboom\x1b[0m\x1b]52;c;clipboard\a\x1b]0;title\x1b\\\t\v\f\x7f\u0085\nnext\rline",
+		"wo\x00rker_subject": "blocked\u009b31m subject\u009b0m",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	records := []logsRecord{{raw: string(raw) + "\n", fields: fields}}
+	var output bytes.Buffer
+	if err := writeLogs(&output, records, false); err != nil {
+		t.Fatal(err)
+	}
+	want := "2026-11-01T12:00:00Z executor WARN failure stderr=boom\\nnext\\rline worker_subject=blocked subject\n"
+	if output.String() != want {
+		t.Fatalf("text = %q, want %q", output.String(), want)
+	}
+	for _, char := range strings.TrimSuffix(output.String(), "\n") {
+		if unicode.IsControl(char) {
+			t.Fatalf("control character %U in text %q", char, output.String())
+		}
+	}
+	output.Reset()
+	if err := writeLogs(&output, records, true); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != string(raw)+"\n" {
+		t.Fatalf("JSON output changed: %q", output.String())
+	}
+}
 
 func TestLogsCommand(t *testing.T) {
 	root := t.TempDir()

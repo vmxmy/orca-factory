@@ -1,3 +1,10 @@
+export const SAMPLE_CONTROL_LOGS = [
+  { msg: 'external command', executable: '\u001b[31mgit\u001b[0m', exit_code: 1, stderr: '\u001b[31mfatal:\u001b[0m\t denied\u001b]52;c;clipboard\u0007\u001b]0;title\u001b\\\u007f\u0085\nsecond line' },
+  { msg: 'correction', reason: '\u001b[31mworker failed\u001b[0m', worker_subject: 'blocked\u0000\u0007\u001b[0m subject' },
+  { msg: 'resolver handoff', reason: 'gate red', evidence: '\u009b31mcheck\u009b0m\u009d0;title\u009c' },
+  { msg: 'transition', from: '\u001b[31mworker\u001b[0m', to: 'failed\u0007', event: 'unknown' },
+].map((fields, index) => JSON.stringify({ time: `2026-10-27T21:0${index}:00+08:00`, ...fields })).join('\n')
+
 export const SAMPLE_LOGS = `{"time":"2026-10-27T20:43:51.147145432+08:00","level":"INFO","msg":"command started","component":"executor","event":"start","version":"1b0b82f","args":["ZY-220"]}
 {"time":"2026-10-27T20:43:51.147145432+08:00","level":"INFO","msg":"command started","component":"executor","event":"start","version":"1b0b82f","args":["ZY-220"]}
 {"time":"2026-10-27T20:44:03.796260254+08:00","level":"INFO","msg":"transition","component":"executor","repo":"zhiyun-ai-dashboard","ticket":"ZY-220","from":"待领","to":"worker 运行中","event":"claim","effects":["label-auto-impl-then-read-back","orca-terminal-create-executor","write-ownership owner=执行器 attempt=1 note=claim","worker-start-with-request-id"]}
