@@ -18,6 +18,9 @@ type Resolution struct {
 	Handoff *merge.Handoff `json:"handoff,omitempty"`
 	Queue   string         `json:"queue,omitempty"`
 	SHA     string         `json:"sha,omitempty"`
+	// Class is the kind of block an escalate reports. It only selects whether
+	// the shadow cross review runs; a human still receives the ticket.
+	Class string `json:"class,omitempty"`
 }
 
 func ParseResult(body string) (Resolution, error) {

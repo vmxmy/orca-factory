@@ -305,10 +305,14 @@ func (r *Runtime) mergeValidations() *merge.Validations {
 // Close stops this process's merged-result gates and waits up to wait for
 // their worktree cleanup. A later serve reruns them rather than trusting them.
 func (r *Runtime) Close(wait time.Duration) error {
-	if r.merges == nil {
-		return nil
+	var problems []error
+	if r.reviews != nil {
+		problems = append(problems, r.reviews.close(wait))
 	}
-	return r.merges.Close(wait)
+	if r.merges != nil {
+		problems = append(problems, r.merges.Close(wait))
+	}
+	return errors.Join(problems...)
 }
 
 func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
