@@ -2,10 +2,15 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func tick(f *mergeFixture) error {
@@ -23,6 +28,29 @@ func TestMergePrecheckHoldsOnlyOnExitOne(t *testing.T) {
 		assertHumanEscalation(t, held.bodies)
 		if held.issue.State.Name == "Done" || f.puts != 1 || f.tracker.issue.State.Name != "Done" {
 			t.Fatalf("queue blocked behind held ticket: puts=%d held=%s next=%s", f.puts, held.issue.State.Name, f.tracker.issue.State.Name)
+		}
+	})
+	t.Run("a hold after an unconfirmed squash keeps the frozen main", func(t *testing.T) {
+		f := newMergeFixture(t)
+		f.repos[0].Env["AGENT_MERGE_PRECHECK_CMD"] = "exit 1"
+		tickets, err := f.runtime.Snapshot(context.Background(), f.repos)
+		if err != nil || len(tickets) != 1 {
+			t.Fatalf("snapshot: %v %v", tickets, err)
+		}
+		h := tickets[0].Handoff
+		intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: f.main, Phase: "merge-intent", Attempt: 1, Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending"}}
+		raw, err := json.Marshal(intent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "intent", CreatedAt: time.Now(), Body: merge.ProgressPrefix + string(raw)})
+		_ = tick(f)
+		tickets, err = f.runtime.Snapshot(context.Background(), f.repos)
+		if err != nil || len(tickets) != 1 {
+			t.Fatalf("held ticket unreadable: %v %v", tickets, err)
+		}
+		if tickets[0].MergeProblem != "" || DeploymentBarrier(tickets[0]) || tickets[0].Progress.Main != f.main {
+			t.Fatalf("hold still blocks the queue: problem=%q barrier=%v main=%q", tickets[0].MergeProblem, DeploymentBarrier(tickets[0]), tickets[0].Progress.Main)
 		}
 	})
 	t.Run("exit 0 squashes", func(t *testing.T) {

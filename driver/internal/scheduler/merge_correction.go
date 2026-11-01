@@ -130,6 +130,9 @@ func retainMergeProgress(next, prior *merge.Progress) {
 		return
 	}
 	next.Deployment = prior.Deployment
+	if next.Main == "" {
+		next.Main = prior.Main
+	}
 	next.Corrections = max(next.Corrections, prior.Corrections)
 	next.CatchupRounds = max(next.CatchupRounds, prior.CatchupRounds)
 	next.Infra = max(next.Infra, prior.Infra)
