@@ -435,13 +435,26 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
 
-人工处理完转人工的票后，在票据主账本追加一条评论恢复自动处置（attempt 填最近一条 `resolver-state` 的 attempt）：
+人工处理完转人工的票后，`AGENT_FEISHU_APPROVERS` 中的审批人可在飞书群发送
+`@机器人 放行 OF-N`，让网关重读票据与评论。只有最新 `resolver-state` 的 phase 为
+`human` 才会生效，网关追加同一条评论，包含 `放行：<审批人 open_id> <时间>` 与
+下面的恢复记录，attempt 使用最新值。也可在票据主账本手动追加恢复记录：
 
 ```text
 resolver-state {"version":1,"attempt":7,"phase":"waiting"}
 ```
 
-调度器下一轮派新的处置 Agent，连续失败计数从 0 开始。
+调度器下一轮派新的处置 Agent，连续失败计数从 0 开始。飞书放行不会合并或改标签，
+gate、审查与 CI 仍按原流程执行。票面缺少 `LANE 预判`、票面或最新
+`merge-handoff-v1` 的 lane 为 3、最新 `resolver-state`、`merge-handoff-v1` 或
+`merge-progress-v1` 解析失败时，网关只回复原因，不写账本。部署屏障处于 paused 时
+必须走 `resume-deployment`；没有 resolver-state 或 phase 不是 human 时回复当前状态。
+这些拒绝条件也应在人工恢复前核对。
+
+放弃实施时，审批人可发送 `@机器人 取消 OF-N <理由>`。只有最新 resolver-state
+的 phase 为 human 才能取消，先写 `取消：<审批人 open_id> <时间>` 与 `理由：<理由>`
+事件，再把状态改为 Canceled。事件已存在则只补状态，已是 Canceled 时只回复现状。
+理由写入事件前折叠为单行，理由内容不会成为状态记录。
 
 需要操作员主动恢复时，保留原命令：先停止 `driver serve` 服务/进程；真实恢复命令使用同一单实例锁，若服务仍在运行则拒绝写入。核对生产 workflow 的 SHA 和 smoke 的实际执行结果后，先只读验证（替换示例值）：
 
@@ -531,6 +544,22 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 `理由：`），再加 `ready-for-agent` 或把状态改为 Canceled，回复审批人，并在票的
 原话题里 @ 需求人告知结果。已放行的票再批准、已取消的票再驳回只回复现状，不再写账本；
 事件已存在时不重复写，所以两次写之间崩溃后重发命令也只补上标签或状态。
+
+转人票使用 `放行 OF-N` 或 `取消 OF-N <理由>`，仍要求发送者在
+`AGENT_FEISHU_APPROVERS` 中；顶层消息须 @ 机器人，网关开过会话的话题内无需 @，
+与已有审批命令相同。`放行` 不接尾随文本，`取消` 必须带非空理由，其他写法按普通
+消息处理。这两条命令不要求票据带需求入口标记或处于 Todo，执行前按票号重读账本与
+评论，核对最新 `resolver-state` 的 phase 为 human。放行追加同一条包含操作者、
+时间和保留最新 attempt 的 waiting 记录的评论，由调度器下一轮重新派处置 Agent；
+不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面或最新
+`merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
+merge-progress-v1 解析失败均拒绝；部署屏障 paused 时回复走 `resume-deployment`。
+没有 resolver-state 或 phase 不是 human 时回复当前状态。取消先写操作者、时间、
+理由事件，再改为 Canceled；事件已存在时不重复写，崩溃后重发只补状态，已是
+Canceled 则只回复现状。“转人”类别通知列出这两条可用命令，“证据冲突”和“部署失败”
+通知不列出。人工恢复的记录格式见前面的转人恢复小节。
+理由写入事件前折叠为单行，理由内容不会成为状态记录。
+
 已开通 `im:message.group_msg` 后，话题内无需 @ 也能继续对话：该话题已有网关自己开的
 会话、会话未关闭、发送者在名单内，三者同时成立才续接；否则静默丢弃，不回复、不写
 任何状态。开新话题仍须 @ 机器人；只按 `root_id` 是否存在判断话题是不正确的，

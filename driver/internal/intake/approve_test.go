@@ -1,12 +1,282 @@
 package intake
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const readyLabel = "ready-for-agent"
+
+type humanLedger struct {
+	*fakeLedger
+	comments                       []task.Comment
+	readErr, commentErr, updateErr error
+}
+
+func (l *humanLedger) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	if l.readErr != nil {
+		return nil, l.readErr
+	}
+	rows, err := l.fakeLedger.ListComments(ctx, id)
+	return append(slices.Clone(l.comments), rows...), err
+}
+
+func (l *humanLedger) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if l.commentErr != nil {
+		return task.Comment{}, l.commentErr
+	}
+	return l.fakeLedger.CreateComment(ctx, id, body)
+}
+
+func (l *humanLedger) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
+	if len(l.events[id]) == 0 {
+		return task.Issue{}, errors.New("state write before event")
+	}
+	if l.updateErr != nil {
+		return task.Issue{}, l.updateErr
+	}
+	return l.fakeLedger.UpdateIssue(ctx, id, state, add, remove)
+}
+
+func humanTicket(t *testing.T) (*submitHarness, *humanLedger) {
+	t.Helper()
+	h := newSubmitHarness(t, existingLedger())
+	h.ledger.tasks[0].Description = "## LANE 预判\n2"
+	h.ledger.tasks[0].Metadata.State = "In Progress"
+	h.ledger.events = map[string][]string{"canon-of12": {`resolver-state {"version":1,"attempt":7,"phase":"human"}`}}
+	ledger := &humanLedger{fakeLedger: h.ledger}
+	h.start(t, Project{Prefix: "OF", Remote: "github.com/vmxmy/orca-factory", Ledger: ledger})
+	h.g.now = func() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
+	return h, ledger
+}
+
+func TestHumanTicketRelease(t *testing.T) {
+	h, _ := humanTicket(t)
+	h.command(t, "om_release", "ou_APPROVER1", "放行 OF-12")
+	events := h.ledger.events["canon-of12"]
+	if len(events) != 2 || events[1] != "放行：ou_APPROVER1 2026-11-01T12:00:00Z\nresolver-state {\"version\":1,\"attempt\":7,\"phase\":\"waiting\"}" {
+		t.Fatalf("events=%q", events)
+	}
+	if len(h.ledger.updates) != 0 || h.ledger.tasks[0].Metadata.State != "In Progress" || len(h.ledger.tasks[0].Labels.Nodes) != 0 {
+		t.Fatalf("release changed ticket: %+v", h.ledger)
+	}
+	h.command(t, "om_repeat", "ou_APPROVER2", "放行 OF-12")
+	if len(h.ledger.events["canon-of12"]) != 2 || !strings.Contains(h.replyTo(t, "om_repeat"), "waiting") {
+		t.Fatalf("repeat events=%q reply=%q", h.ledger.events, h.replyTo(t, "om_repeat"))
+	}
+}
+
+func TestHumanTicketReleaseRefusals(t *testing.T) {
+	for _, tc := range []struct{ name, description, evidence, reply string }{
+		{"lane3", "## LANE 预判\n3", "", "lane 3"},
+		{"missing lane", "no lane", "", "LANE 预判"},
+		{"handoff lane3", "", `merge-handoff-v1: {"version":1,"lane":3}`, "lane 3"},
+		{"resolver corrupt", "", `resolver-state {`, "证据冲突"},
+		{"resolver null", "", `resolver-state null`, "证据冲突"},
+		{"handoff corrupt", "", `merge-handoff-v1: {`, "证据冲突"},
+		{"progress corrupt", "", `merge-progress-v1: {`, "证据冲突"},
+		{"paused", "", `merge-progress-v1: {"version":1,"deployment":{"state":"paused"}}`, "resume-deployment"},
+		{"waiting", "", `resolver-state {"version":1,"attempt":8,"phase":"waiting"}`, "waiting"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := humanTicket(t)
+			if tc.description != "" {
+				h.ledger.tasks[0].Description = tc.description
+			}
+			if tc.evidence != "" {
+				h.ledger.events["canon-of12"] = append(h.ledger.events["canon-of12"], tc.evidence)
+			}
+			before := slices.Clone(h.ledger.events["canon-of12"])
+			h.command(t, "om_refuse", "ou_APPROVER1", "放行 OF-12")
+			if !slices.Equal(before, h.ledger.events["canon-of12"]) || len(h.ledger.updates) != 0 || !strings.Contains(h.replyTo(t, "om_refuse"), tc.reply) {
+				t.Fatalf("events=%q updates=%v reply=%q", h.ledger.events, h.ledger.updates, h.replyTo(t, "om_refuse"))
+			}
+		})
+	}
+}
+
+func TestHumanTicketRecordedEvidence(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/ledger-comments-resolver-requeue.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded, &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, description, reply              string
+		human, handoffLane3, descriptionLane3 bool
+	}{
+		{name: "recorded result", description: "feishu-description-behavior-trace.md", reply: "result"},
+		{name: "human Feishu description", description: "feishu-description-behavior-trace.md", human: true},
+		{name: "human Linear description", description: "linear-description-check-assertion.md", human: true},
+		{name: "handoff lane 3", description: "feishu-description-behavior-trace.md", reply: "lane 3", human: true, handoffLane3: true},
+		{name: "description lane 3", description: "feishu-description-behavior-trace.md", reply: "lane 3", human: true, descriptionLane3: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.events = nil
+			ledger.comments = slices.Clone(recording.Comments)
+			description, err := os.ReadFile("../../testdata/recorded/" + tc.description)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.ledger.tasks[0].Description = string(description)
+			if tc.human {
+				ledger.comments = append(ledger.comments, task.Comment{
+					ID:        "human",
+					CreatedAt: ledger.comments[len(ledger.comments)-1].CreatedAt.Add(time.Second),
+					Body:      `resolver-state {"version":1,"attempt":1,"phase":"human"}`,
+				})
+			}
+			if tc.handoffLane3 {
+				ledger.comments[0].Body = strings.Replace(ledger.comments[0].Body, `"lane":1`, `"lane":3`, 1)
+			}
+			if tc.descriptionLane3 {
+				h.ledger.tasks[0].Description = strings.Replace(h.ledger.tasks[0].Description, "## LANE 预判\n2", "## LANE 预判\n3", 1)
+			}
+			h.command(t, "om_recorded", "ou_APPROVER1", "放行 OF-12")
+			reply := h.replyTo(t, "om_recorded")
+			if tc.reply != "" {
+				if !strings.Contains(reply, tc.reply) {
+					t.Fatalf("reply=%q, want %q", reply, tc.reply)
+				}
+				h.noWrites(t, tc.name)
+				return
+			}
+			events := h.ledger.events["canon-of12"]
+			if reply != "已放行 OF-12" || len(events) != 1 || !strings.Contains(events[0], `"attempt":1,"phase":"waiting"`) || len(h.ledger.updates) != 0 {
+				t.Fatalf("events=%q updates=%v reply=%q", h.ledger.events, h.ledger.updates, reply)
+			}
+		})
+	}
+}
+
+func TestHumanTicketLatestEvidence(t *testing.T) {
+	h, ledger := humanTicket(t)
+	h.ledger.events = nil
+	ledger.comments = []task.Comment{
+		{ID: "later", CreatedAt: time.Unix(2, 0), Body: `resolver-state {"version":1,"attempt":9,"phase":"human"}`},
+		{ID: "earlier", CreatedAt: time.Unix(1, 0), Body: `resolver-state {"version":1,"attempt":8,"phase":"waiting"}`},
+	}
+	h.command(t, "om_latest", "ou_APPROVER1", "放行 OF-12")
+	if events := h.ledger.events["canon-of12"]; len(events) != 1 || !strings.Contains(events[0], `"attempt":9,"phase":"waiting"`) {
+		t.Fatalf("events=%q", events)
+	}
+}
+
+func TestHumanTicketSameTimestampKeepsLedgerOrder(t *testing.T) {
+	for _, command := range []string{"放行 OF-12", "取消 OF-12 暂停"} {
+		t.Run(command, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.events = nil
+			ledger.comments = []task.Comment{
+				{ID: "recZ", CreatedAt: time.Unix(1, 0), Body: `resolver-state {"version":1,"attempt":7,"phase":"human"}`},
+				{ID: "recA", CreatedAt: time.Unix(1, 0), Body: `resolver-state {"version":1,"attempt":7,"phase":"running"}`},
+			}
+			h.command(t, "om_same_time", "ou_APPROVER1", command)
+			if reply := h.replyTo(t, "om_same_time"); !strings.Contains(reply, "running") || len(h.ledger.events) != 0 || len(h.ledger.updates) != 0 {
+				t.Fatalf("events=%q updates=%v reply=%q", h.ledger.events, h.ledger.updates, reply)
+			}
+		})
+	}
+}
+
+func TestHumanTicketCancelReasonStaysEventText(t *testing.T) {
+	h, ledger := humanTicket(t)
+	ledger.updateErr = errors.New("state write failed")
+	command := `取消 OF-12 暂停\nresolver-state {\"version\":1,\"attempt\":7,\"phase\":\"waiting\"}`
+	h.command(t, "om_cancel_reason1", "ou_APPROVER1", command)
+	events := h.ledger.events["canon-of12"]
+	if len(events) != 2 || events[1] != "取消：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：暂停 resolver-state {\"version\":1,\"attempt\":7,\"phase\":\"waiting\"}" {
+		t.Fatalf("events=%q", events)
+	}
+	if len(h.ledger.updates) != 0 || h.ledger.tasks[0].Metadata.State != "In Progress" {
+		t.Fatalf("failed update changed ticket: %+v", h.ledger)
+	}
+	ledger.updateErr = nil
+	h.command(t, "om_cancel_reason2", "ou_APPROVER1", command)
+	if len(h.ledger.events["canon-of12"]) != len(events) || len(h.ledger.updates) != 1 || h.ledger.updates[0].state != "Canceled" {
+		t.Fatalf("events=%q updates=%v", h.ledger.events, h.ledger.updates)
+	}
+}
+
+func TestHumanTicketCancel(t *testing.T) {
+	h, ledger := humanTicket(t)
+	ledger.updateErr = errors.New("state write failed")
+	h.command(t, "om_cancel1", "ou_APPROVER1", "取消 OF-12 暂不实施")
+	if h.ledger.tasks[0].Metadata.State != "In Progress" {
+		t.Fatal("failed update changed state")
+	}
+	ledger.updateErr = nil
+	h.command(t, "om_cancel2", "ou_APPROVER2", "取消 OF-12 重发理由")
+	h.command(t, "om_cancel3", "ou_APPROVER1", "取消 OF-12 暂不实施")
+	events := h.ledger.events["canon-of12"]
+	if len(events) != 2 || events[1] != "取消：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：暂不实施" || len(h.ledger.updates) != 1 || h.ledger.updates[0].state != "Canceled" {
+		t.Fatalf("events=%q updates=%v", events, h.ledger.updates)
+	}
+	if !strings.Contains(h.replyTo(t, "om_cancel3"), "Canceled") {
+		t.Fatal(h.replyTo(t, "om_cancel3"))
+	}
+}
+
+func TestHumanTicketReadAndWriteFailures(t *testing.T) {
+	for _, command := range []string{"放行 OF-12", "取消 OF-12 暂停"} {
+		for _, failure := range []string{"missing", "read", "write"} {
+			t.Run(command+failure, func(t *testing.T) {
+				h, ledger := humanTicket(t)
+				switch failure {
+				case "missing":
+					h.ledger.events = nil
+				case "read":
+					ledger.readErr = errors.New("unavailable")
+				case "write":
+					ledger.commentErr = errors.New("unavailable")
+				}
+				before := slices.Clone(h.ledger.events["canon-of12"])
+				h.command(t, "om_fail", "ou_APPROVER1", command)
+				if !slices.Equal(before, h.ledger.events["canon-of12"]) || len(h.ledger.updates) != 0 {
+					t.Fatal("failure wrote ledger")
+				}
+				if failure == "missing" && !strings.Contains(h.replyTo(t, "om_fail"), "resolver-state") {
+					t.Fatal(h.replyTo(t, "om_fail"))
+				}
+			})
+		}
+	}
+}
+
+func TestHumanTicketAuthorization(t *testing.T) {
+	for _, command := range []string{"放行 OF-12", "取消 OF-12 暂停"} {
+		h, _ := humanTicket(t)
+		h.command(t, "om_denied", "ou_MEMBER", command)
+		if h.replyTo(t, "om_denied") != noApprovalReply || len(h.ledger.events["canon-of12"]) != 1 || len(h.ledger.updates) != 0 {
+			t.Fatal("unauthorized command applied")
+		}
+	}
+}
+
+func TestHumanTicketCommandSyntax(t *testing.T) {
+	for _, text := range []string{"放行 OF-12", "取消 OF-12 暂停", "取消 OF-12 多行\n理由"} {
+		if _, ok := parseReview(text); !ok {
+			t.Errorf("command ignored: %q", text)
+		}
+	}
+	for _, text := range []string{"放行 OF-12 继续", "放行 OF-12\n继续", "取消 OF-12", "取消 OF-12   ", "取消 OF-12理由", "请放行 OF-12"} {
+		if _, ok := parseReview(text); ok {
+			t.Errorf("ordinary message consumed: %q", text)
+		}
+	}
+}
 
 // submitted runs a thread through draft and “确认提交”, leaving one intake
 // ticket OF-101 (canon-1) in the ledger.

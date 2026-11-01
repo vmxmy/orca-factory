@@ -115,6 +115,42 @@ func TestFeishuGatewayCorruptState(t *testing.T) {
 
 func ptr(s string) *string { return &s }
 
+func TestHumanTicketGatewayRouting(t *testing.T) {
+	for _, command := range []string{"放行 OF-12", "取消 OF-12 暂停"} {
+		for _, scenario := range []string{"top without mention", "unknown thread", "known thread", "closed thread"} {
+			t.Run(command+scenario, func(t *testing.T) {
+				h, _ := humanTicket(t)
+				const thread = "om_human_thread"
+				if scenario == "known thread" || scenario == "closed thread" {
+					state := Chatting
+					if scenario == "closed thread" {
+						state = Closed
+					}
+					if err := writeJSON(filepath.Join(h.dir, thread+".json"), Session{ID: "human-session", State: state, LastMessage: time.Now()}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				event := recordedEvent(t, "bot-event-thread-reply-no-at")
+				if scenario == "top without mention" {
+					event = recordedEvent(t, "bot-event-group-message-no-at")
+				}
+				event.Event.Message.MessageId = ptr("om_routing")
+				event.Event.Message.RootId = ptr(thread)
+				event.Event.Message.Content = ptr(`{"text":"` + command + `"}`)
+				event.Event.Sender.SenderId.OpenId = ptr("ou_APPROVER1")
+				h.handle(t, event)
+				wantEvents := 1
+				if scenario == "known thread" || scenario == "closed thread" {
+					wantEvents = 2
+				}
+				if len(h.ledger.events["canon-of12"]) != wantEvents {
+					t.Fatalf("events=%q", h.ledger.events)
+				}
+			})
+		}
+	}
+}
+
 func fixedAgent(context.Context, Turn) (string, error) { return "已整理", nil }
 
 func noopReact(context.Context, string) error { return nil }
