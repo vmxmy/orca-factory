@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -238,10 +239,53 @@ func TestRecordedCrossReviewOutput(t *testing.T) {
 			t.Errorf("%s: %+v", name, got)
 		}
 	}
-	for _, output := range []string{"", "looks fine", `{"step":"cross-review","verdict":"green"}`, `{"step":"review","verdict":"green","expands_authority":false}`, `{"step":"cross-review","verdict":"green","expands_authority":false} trailing`} {
+	for _, output := range []string{"", "looks fine", `{"step":"cross-review","verdict":"green"}`, `{"step":"cross-review","verdict":"green","expands_authority":false}`, `{"step":"cross-review","verdict":"green","expands_authority":false,"reason":" "}`, `{"step":"review","verdict":"green","expands_authority":false}`, `{"step":"cross-review","verdict":"green","expands_authority":false} trailing`} {
 		if got := parseCrossReviewOpinion("r", output); got.Verdict != crossReviewUnavailable {
 			t.Errorf("%q counted as %+v", output, got)
 		}
+	}
+}
+
+// lostAckStore lands the first comment and then reports the write as failed,
+// as when the ledger response is lost.
+type lostAckStore struct {
+	*notifyStore
+	lost bool
+}
+
+func (s *lostAckStore) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	c, err := s.notifyStore.CreateComment(ctx, id, body)
+	if err == nil && !s.lost {
+		s.lost = true
+		return c, errors.New("response lost")
+	}
+	return c, err
+}
+
+func TestCrossReviewLostWriteResponseDoesNotDuplicate(t *testing.T) {
+	f := newCrossReviewFixture(t, "scope-extension", "src/fix.go")
+	f.runtime.Clients[f.repo.Path] = &lostAckStore{notifyStore: f.store}
+	f.tickUntilRecorded(t)
+	s := f.scheduler()
+	for range 3 {
+		_ = s.Tick(context.Background())
+	}
+	if got := f.records(t); len(got) != 1 {
+		t.Fatalf("records=%+v", got)
+	}
+}
+
+// A repository still under the old Automation refuses this driver's work.
+func TestCrossReviewRespectsRefusedRepository(t *testing.T) {
+	f := newCrossReviewFixture(t, "scope-extension", "src/fix.go")
+	s := f.scheduler()
+	s.Backend.(*crossReviewBackend).enabled = map[string]bool{f.repo.Path: true}
+	for range 3 {
+		_ = s.Tick(context.Background())
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := os.Stat(f.first + ".count"); err == nil {
+		t.Fatal("reviewer ran for a refused repository")
 	}
 }
 

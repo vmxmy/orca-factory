@@ -109,7 +109,7 @@ func parseCrossReviewOpinion(name, output string) crossReviewOpinion {
 			ExpandsAuthority *bool  `json:"expands_authority"`
 			Reason           string `json:"reason"`
 		}
-		if json.Unmarshal([]byte(output[i:]), &result) == nil && result.Step == "cross-review" && (result.Verdict == "green" || result.Verdict == "red") && result.ExpandsAuthority != nil {
+		if json.Unmarshal([]byte(output[i:]), &result) == nil && result.Step == "cross-review" && (result.Verdict == "green" || result.Verdict == "red") && result.ExpandsAuthority != nil && strings.TrimSpace(result.Reason) != "" {
 			return crossReviewOpinion{Reviewer: name, Verdict: result.Verdict, ExpandsAuthority: *result.ExpandsAuthority, Reason: ledgerLine(result.Reason)}
 		}
 	}
@@ -338,7 +338,21 @@ func (r *Runtime) AdvanceCrossReviews(ctx context.Context, tickets []Ticket) err
 	if r.reviews == nil {
 		return errors.Join(problems...)
 	}
+	current := make(map[string]Ticket, len(tickets))
+	for _, t := range tickets {
+		current[t.ID] = t
+	}
 	for _, run := range r.reviews.finished() {
+		// A ticket outside this list is in a refused repository or closed.
+		t, ok := current[run.job.ticketID]
+		if !ok {
+			continue
+		}
+		// The ledger already holds it when the last write's response was lost.
+		if t.CrossReviewed[run.job.dispatch] {
+			run.written = true
+			continue
+		}
 		raw, err := json.Marshal(run.record)
 		if err != nil {
 			return err
