@@ -13,6 +13,7 @@
 | Linear 存储正文时转义 CommonMark 字符（`*` 存为 `\*`，`\` 存为 `\\`） | `linear-description-escaped.md` | `executor.TestRecordedTicketDescriptions` |
 | 票面「CHECK:」的下一行是「断言:」，不属于命令 | `linear-description-check-assertion.md` | 同上 |
 | 小节标题可能带说明，如「## 要做（接口票）」 | `linear-description-heading-note.md` | 同上 |
+| 飞书票面在 `## intake 自检` 内用 ``- 行为追踪：说明 → `仓库路径:起始行-结束行`；…`` 列出文件。建票只校验该行的路径，按 SCOPE glob 匹配，忽略「要做」中的 `method/path`、`Origin/Sec-Fetch-Site`。ZY-333 录制时的 SCOPE 已覆盖全部追踪文件 | `feishu-description-behavior-trace.md`（2026-11-01，在 zhiyun-ai-dashboard 运行 `scripts/agent-gates/agent-graph.sh issues read --id ZY-333 --json`，保留 description 原文。已核对无凭据或会话内容，无需脱敏） | `issues.TestCreateRejectsBehaviorTraceOutsideScope` |
 | 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `task.TestRecordedInverseRelations` |
 | 调度器认领时写 `term=- run=-`，表示执行器尚未登记 | `linear-comment-ownership-unregistered.json` | `scheduler.TestRecordedOwnershipUnregistered` |
 | 审查员常把结尾的 verdict JSON 包在 Markdown 代码块里 | `reviewer-output-fenced.txt` | `executor.TestRecordedReviewerOutput` |
