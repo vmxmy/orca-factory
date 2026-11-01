@@ -9,7 +9,7 @@ import (
 	"strings"
 )
 
-var behaviorTracePath = regexp.MustCompile(`(?:[\pL\pN_.-]+/)+[\pL\pN_.-]+|[\pL\pN_.-]*\.[\pL\pN_-]+|\b(?:Makefile|Dockerfile)\b`)
+var behaviorTracePath = regexp.MustCompile(`(?:[\pL\pN_@.-]+/)+[\pL\pN_@.-]+|[\pL\pN_@.-]*\.[\pL\pN_@-]+|\b(?:Makefile|Dockerfile)\b`)
 
 func requireBehaviorTraceInScope(ctx context.Context, description string) error {
 	var paths []string

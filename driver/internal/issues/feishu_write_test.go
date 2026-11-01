@@ -587,6 +587,17 @@ func TestCreateRejectsBehaviorTraceOutsideScope(t *testing.T) {
 			body:  "## intake 自检\n- 行为追踪: driver/internal/issues/issues.go:476",
 		},
 		{
+			name:  "systemd template path covered",
+			scope: "scripts/local-runner/*",
+			body:  "## intake 自检\n- 行为追踪：scripts/local-runner/orca-go-isolated-runner@.service:1",
+		},
+		{
+			name:    "systemd template path outside scope",
+			scope:   "driver/*",
+			body:    "## intake 自检\n- 行为追踪：scripts/local-runner/orca-go-isolated-runner@.service:1",
+			missing: []string{"scripts/local-runner/orca-go-isolated-runner@.service"},
+		},
+		{
 			name:  "double star and multiple scope entries",
 			scope: "core/* driver/**",
 			body:  "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
