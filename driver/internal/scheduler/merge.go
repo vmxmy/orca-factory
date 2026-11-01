@@ -450,7 +450,7 @@ func (a *mergeAdapter) policy(files []string) error {
 				return errors.New("invalid merge policy glob")
 			}
 			for _, file := range files {
-				if !scopeMatch(pattern, file) {
+				if !task.ScopeMatch(pattern, file) {
 					continue
 				}
 				switch key {

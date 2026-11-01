@@ -72,6 +72,8 @@
 
 负责人改正票面 CHECK 后，可在账本写一条以 `gate-spec-refresh:` 开头的评论（如 `gate-spec-refresh: 已改正 CHECK`），让执行阶段按最新票面重建 `gate.spec`（OF-130）。只有整条评论以该前缀开头才算指令；driver 写的评论在后续行引用 gate 输出，不构成指令。指令位于最新 `归属:` 行之后才生效，下一条 `归属:` 行即消费它。这条指令没有作者校验：账本里 driver 写的评论与 Agent 经 driver CLI 写的评论来源字段相同，无法可靠区分，任何能写评论的一方都能写指令。约束靠两点：每个执行器 attempt 最多生效一次，以及执行器写的审计回执。执行器每次 gate 运行前读取评论；有未消费的指令、且本 attempt 尚无回执时，先写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>`（整条评论以该前缀开头，N 为执行器 attempt，经 checkpoint 跨重放不变），再在 gate 前退出，不写新结论。同一 attempt 已有回执时，后续指令一律忽略，照常跑 gate；`归属: 无` 行开始新认领周期，清空回执记录。调度器只在执行器终端与派工均已结束、且最新 `归属:` 行之后出现本 attempt 的首条回执时，才不计执行器失败，以原 attempt 和原阶段 Resume；仅有指令、回执出现在评论后续行、或同 attempt 的重复回执，都按普通执行器退出计失败。新执行器从账本重读票面，`writeArtifacts` 重写 `gate.spec`，再按 checkpoint 对同一 head 跑 gate，不重新派工，`Corrections` 不增加。执行器开 PR 交接前再读一次评论；仍有未消费的指令时写 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接内容不变，写失败只告警。合并交接后归属为合并通道，调度器不读该指令；merge correction 的执行器（`cp.MergeSpec` 非空）不在 gate 前检查，继续使用冻结的 `MergeSpec`。`executor.TestGateSpecRefreshReplaysGateWithoutCorrection`、`executor.TestGateSpecRefreshOncePerAttempt`、`executor.TestGateSpecRefreshNoticeBeforeHandoff`、`scheduler.TestGateSpecRefreshResumesWithoutFailure` 覆盖。
 
+worker 失败报告可带一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`（OF-291）。这是 worker 正文里唯一由 driver 解析的信号：行首（去掉空白后）必须是该前缀，路径不得是绝对路径、含 `..`、含行号或 glob，且不得匹配当前 `gate.spec` 的 `SCOPE`（语义同 `gate.sh`）。任一条件不满足或 spec 不可读时整条声明作废，走普通 `workerFail`。声明成立时执行器走 `workerScopeBlocked` 转处置 Agent，`corrections` 不变。声明只能把票交给处置 Agent，不授权改范围或放行；gate 与审查规则不变。
+
 ## GitHub Issues（#172 / #173）
 
 - `internal/issues.Store` 选择唯一后端，复用 `internal/task` 的 `Issue/Comment` 类型（JSON 字段不变），不更改旧 UUID/ZII、checkpoint 或 mutation UUID。GitHub repo/number/URL 是地址，不是 canonical 身份。

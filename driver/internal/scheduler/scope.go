@@ -2,11 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"path"
 	"slices"
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // actualChangeReader distinguishes an empty branch diff from absent branches.
@@ -41,7 +41,7 @@ func avoidedScope(scope []string, repo config.Repository) []string {
 	kept := []string{}
 	for _, entry := range scope {
 		if !slices.ContainsFunc(shared, func(pattern string) bool {
-			return entry == pattern || strings.HasPrefix(entry, strings.TrimSuffix(pattern, "/")+"/") || scopeMatch(pattern, entry)
+			return entry == pattern || strings.HasPrefix(entry, strings.TrimSuffix(pattern, "/")+"/") || task.ScopeMatch(pattern, entry)
 		}) {
 			kept = append(kept, entry)
 		}
@@ -52,19 +52,12 @@ func avoidedScope(scope []string, repo config.Repository) []string {
 func scopesOverlap(a, b []string) bool {
 	for _, x := range a {
 		for _, y := range b {
-			if x == y || strings.HasPrefix(x, strings.TrimSuffix(y, "/")+"/") || strings.HasPrefix(y, strings.TrimSuffix(x, "/")+"/") || scopeMatch(x, y) || scopeMatch(y, x) {
+			if x == y || strings.HasPrefix(x, strings.TrimSuffix(y, "/")+"/") || strings.HasPrefix(y, strings.TrimSuffix(x, "/")+"/") || task.ScopeMatch(x, y) || task.ScopeMatch(y, x) {
 				return true
 			}
 		}
 	}
 	return false
-}
-
-func scopeMatch(pattern, value string) bool {
-	// Shell globs cross directory boundaries; path.Match otherwise uses the
-	// desired *, ?, bracket class and escape rules. Hide slash from its separator.
-	matched, err := path.Match(strings.ReplaceAll(pattern, "/", "\x00"), strings.ReplaceAll(value, "/", "\x00"))
-	return err == nil && matched
 }
 
 func declaredScope(body string) []string {

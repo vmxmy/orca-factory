@@ -147,6 +147,7 @@ const EVENTS: Record<string, Shown> = {
   workerFail: { label: 'worker 失败', alert: 'warning' },
   workerStall: { label: 'worker 卡住', alert: 'warning' },
   workerUnstarted: { label: 'worker 未启动', alert: 'warning' },
+  workerScopeBlocked: { label: 'worker 报告 SCOPE 缺文件', alert: 'warning' },
   branchOk: { label: '分支检查通过' },
   branchNo: { label: '分支检查未通过', alert: 'warning' },
   gateGreen: { label: 'gate 通过' },
