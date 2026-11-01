@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -553,6 +554,177 @@ func TestCreateRejectsInvalidCheckRed(t *testing.T) {
 		if _, err := gh.Create(context.Background(), CreateInput{Title: "无效红", Description: selfCheckDescription(reason), Labels: []string{}}); err == nil || fake.writes != 0 {
 			t.Fatalf("github created ticket with invalid red %q: writes=%d err=%v", reason, fake.writes, err)
 		}
+	}
+}
+
+func TestCreateRejectsBehaviorTraceOutsideScope(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/feishu-description-behavior-trace.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordedDescription := string(recorded)
+	beforeScope, scopeAndAfter, ok := strings.Cut(recordedDescription, "\n## SCOPE\n")
+	if !ok {
+		t.Fatal("recorded description has no SCOPE section")
+	}
+	_, afterScope, ok := strings.Cut(scopeAndAfter, "\n\n")
+	if !ok {
+		t.Fatal("recorded description has no section after SCOPE")
+	}
+	withRecordedScope := func(scope string) string {
+		return beforeScope + "\n## SCOPE\n" + scope + "\n\n" + afterScope
+	}
+	for _, test := range []struct {
+		name        string
+		scope       string
+		body        string
+		description string
+		missing     []string
+	}{
+		{
+			name:        "recorded ZY-333 original scope covers trace",
+			description: recordedDescription,
+		},
+		{
+			name:        "recorded ZY-333 glob scope covers trace",
+			description: withRecordedScope("functions/* web/*"),
+		},
+		{
+			name:        "recorded ZY-333 omitted confirmation route",
+			description: withRecordedScope("functions/mcp/* web/*"),
+			missing:     []string{"functions/api/v1/_mcp-account-routes.js"},
+		},
+		{
+			name:  "ZY-333 omitted behavior owners",
+			scope: "driver/internal/feishu/*",
+			body: "## intake 自检\n- 行为追踪：白名单 → `driver/internal/issues/feishu_write.go:395`；生命周期 → " +
+				"driver/internal/issues/issues.go:476；请求 → [构造](driver/internal/issues/import.go:226)",
+			missing: []string{"driver/internal/issues/feishu_write.go", "driver/internal/issues/issues.go", "driver/internal/issues/import.go"},
+		},
+		{
+			name:    "one uncovered path",
+			scope:   "driver/internal/issues/issues.go",
+			body:    "## intake 自检\n- 行为追踪：`driver/internal/issues/issues.go:476`、`driver/internal/issues/feishu_write.go:395`",
+			missing: []string{"driver/internal/issues/feishu_write.go"},
+		},
+		{
+			name:  "explicit files",
+			scope: "driver/internal/issues/issues.go\ndriver/internal/issues/feishu_write.go",
+			body:  "## intake 自检\n- 行为追踪：`driver/internal/issues/issues.go:476`、`driver/internal/issues/feishu_write.go:395`",
+		},
+		{
+			name:  "star crosses directories",
+			scope: "driver/*",
+			body:  "## intake 自检\n- 行为追踪: driver/internal/issues/issues.go:476",
+		},
+		{
+			name:  "systemd template path covered",
+			scope: "scripts/local-runner/*",
+			body:  "## intake 自检\n- 行为追踪：scripts/local-runner/orca-go-isolated-runner@.service:1",
+		},
+		{
+			name:    "systemd template path outside scope",
+			scope:   "driver/*",
+			body:    "## intake 自检\n- 行为追踪：scripts/local-runner/orca-go-isolated-runner@.service:1",
+			missing: []string{"scripts/local-runner/orca-go-isolated-runner@.service"},
+		},
+		{
+			name:  "double star and multiple scope entries",
+			scope: "core/* driver/**",
+			body:  "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
+		},
+		{
+			name:  "question crosses separator",
+			scope: "driver?internal/issues/*.go",
+			body:  "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
+		},
+		{
+			name:  "shell negated character class",
+			scope: "driver/internal/issues/[!x]*.go",
+			body:  "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
+		},
+		{
+			name:  "shell POSIX character class",
+			scope: "driver/internal/issues/[[:alpha:]]*.go",
+			body:  "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
+		},
+		{
+			name:    "directory needs glob",
+			scope:   "driver/internal/issues/",
+			body:    "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go:476",
+			missing: []string{"driver/internal/issues/issues.go"},
+		},
+		{
+			name:    "similar filename is not coverage",
+			scope:   "driver/internal/issues/issues.go",
+			body:    "## intake 自检\n- 行为追踪：driver/internal/issues/issues.go.bak:476",
+			missing: []string{"driver/internal/issues/issues.go.bak"},
+		},
+		{
+			name:    "root file",
+			scope:   "driver/*",
+			body:    "## intake 自检\n- 行为追踪：Makefile:15、AGENTS.md:1",
+			missing: []string{"Makefile", "AGENTS.md"},
+		},
+		{
+			name:  "root and hidden paths covered",
+			scope: "Makefile AGENTS.md .github/*",
+			body:  "## intake 自检\n- 行为追踪：Makefile:15、AGENTS.md:1、.github/workflows/go.yml:1",
+		},
+		{
+			name:  "trace omitted",
+			scope: "driver/*",
+			body:  "## 现状\nweb/src/main.ts:1\n\n## intake 自检\n- SCOPE 路径存在：是",
+		},
+		{
+			name:  "trace has no paths",
+			scope: "driver/*",
+			body:  "## intake 自检\n- 行为追踪：不涉及",
+		},
+		{
+			name:  "trace outside self check ignored",
+			scope: "driver/*",
+			body:  "## 现状\n- 行为追踪：web/src/main.ts:1\n\n## intake 自检\n- 行为追踪：不涉及\n\n## 其他\n- 行为追踪：web/src/other.ts:2",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, backend := range []string{"feishu", "github"} {
+				t.Run(backend, func(t *testing.T) {
+					var store Store
+					var writeCount func() int
+					if backend == "feishu" {
+						fake := newFeishuFake(t)
+						client := newFeishuTest(t, fake)
+						fastReadBack(client)
+						store = client
+						writeCount = func() int { return len(fake.writes) }
+					} else {
+						client, fake := newImportServer(t)
+						store = client
+						writeCount = func() int { return fake.writes }
+					}
+					description := test.description
+					if description == "" {
+						description = FeishuBrief{Todo: "1. 修复行为", Check: "make test", Scope: test.scope, Body: test.body}.Description()
+					}
+					created, err := store.Create(context.Background(), CreateInput{Title: "行为追踪", Description: description, Labels: []string{}})
+					if len(test.missing) > 0 {
+						if err == nil || writeCount() != 0 {
+							t.Fatalf("out-of-scope behavior trace created ticket: writes=%d err=%v", writeCount(), err)
+						}
+						for _, missing := range test.missing {
+							if !strings.Contains(err.Error(), missing) || strings.Contains(err.Error(), missing+":") {
+								t.Errorf("error %q must list missing path %q without its line number", err, missing)
+							}
+						}
+						return
+					}
+					if err != nil || writeCount() != 1 || created.Title != "行为追踪" {
+						t.Fatalf("covered or absent trace did not create ticket: title=%q writes=%d err=%v", created.Title, writeCount(), err)
+					}
+				})
+			}
+		})
 	}
 }
 

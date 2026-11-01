@@ -405,6 +405,9 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if err := requireValidCheckRed(in.Description); err != nil {
 		return Task{}, err
 	}
+	if err := requireBehaviorTraceInScope(ctx, in.Description); err != nil {
+		return Task{}, err
+	}
 	adopt := in.Blockers != nil && in.Related != nil
 	state := in.State
 	if state == "" {
