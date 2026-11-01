@@ -1,0 +1,11 @@
+判定 red，不能直接接受。
+
+1. **要求未完成。** `driver/internal/scheduler/crossreview.go:353` 在任一 reviewer 命令为空时直接跳过。当前 `scripts/agent-gates/agent-graph.env:26` 只配置 Astra，未配置第二个 reviewer，无法据此确认 Fable 与 Astra 会运行并写入事件。`driver/internal/scheduler/crossreview_test.go:19` 使用直接输出预设 JSON 的脚本，没有验证处置说明要求的两个真实命令输出格式。
+2. **范围。** 新增分类字段、后台任务、禁改路径判定和事件记录均与票面直接相关，未发现明显无关改动；但提供的票面没有具体 SCOPE，无法确认路径范围合规。
+3. **票面解释。** 保持人工接管、仅记录 `would_release` 符合原意；缺配置时静默不运行，不能作为“运行两个 reviewer”的完成依据。
+4. **正确性。** `driver/internal/scheduler/crossreview.go:395` 只凭可解析 JSON 和非空 dispatch 就标记已复审，未校验版本、票据身份或记录完整性；同 dispatch 的不完整评论也能阻止实际复审，影响采样完整性。
+5. **权限。** 所示改动没有新增自动放行、合并、资金、计费或凭据授权能力，`expands_authority=false`。
+
+本次只读核对，未修改文件；未运行会创建临时仓库和文件的 Go 测试，也未执行真实 reviewer 命令。
+
+{"step":"cross-review","verdict":"red","expands_authority":false,"reason":"第二个 reviewer 未配置且真实命令输出格式未获验证，事件去重还会接受不完整记录，无法确认满足双模型复审和准确率采样要求。"}

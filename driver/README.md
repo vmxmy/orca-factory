@@ -425,6 +425,14 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 处置 Agent 在权限内无法解决时提交 `escalate`，调度器把票转人工（`阶段: 转人`、`归属: 人`），写一条 `转人:` 事件并通知一次，不再派处置 Agent。可重试的失败（outcome=failed、无效或被拒提案）退避 5 分钟后重派；同一票连续 3 次失败同样转人工。
 
+#### 交叉复审（只记录，OF-342）
+
+处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了 `AGENT_ROLE_SECOND_REVIEWER_CMD` 时，调度器在转人后后台运行 `AGENT_ROLE_REVIEWER_CMD` 和第二 reviewer。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令只拿到 `HOME` 和 `PATH`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
+
+`would_release` 为 true 要同时满足：两个 reviewer 都判 green，都没有判定新增权限或资金能力，改动路径都不在禁改范围。禁改范围是 `crossReviewForbidden`（`driver/internal/scheduler/crossreview.go`）、`AGENT_LANE3_GLOBS`、`AGENT_LANE2_MANUAL_GLOBS` 和 `AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS`。reviewer 输出不合格、失败或超时都算不放行。serve 退出时取消进行中的复审，重启后按账本重跑。
+
+reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
+
 人工处理完转人工的票后，在票据主账本追加一条评论恢复自动处置（attempt 填最近一条 `resolver-state` 的 attempt）：
 
 ```text

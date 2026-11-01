@@ -1,0 +1,16 @@
+**Verdict: red.** The change is shadow-only as claimed, but the one thing the escalation asked to settle, the reviewer output format, is documented as verified with evidence that does not exist in the branch.
+
+**1. Does the diff solve the ticket and the escalation?** The mechanism is complete: escalations of class scope-extension or brief-interpretation with a pinned head get two background reviewers, one event per dispatch, and nothing reads `would_release` outside `driver/internal/scheduler/crossreview.go` and its tests. However the handling note says the open item was verifying the two reviewer commands' output format. The contract at `driver/CONTRACTS.md:168` claims two recorded samples and a test named TestRecordedCrossReviewOutput cover that. Neither sample file nor that test exists anywhere in the worktree. The only parser coverage is a fixture that echoes an exact hand-written JSON line. So the escalated question is unanswered, and the contract now asserts a false fact.
+
+**2. Changes outside scope.** The resolver role docs in core and scripts/agent-gates, the Class field on the resolver result, the Runtime field, the Close hook and the scheduler tick step are all direct necessities. No unrelated drift found.
+
+**3. Reading of the brief.** Matches the ticket: not releasing, driver-side forbidden globs, driver-embedded prompt.
+
+**4. Correctness and safety.** No blocking defects beyond the missing evidence. Smaller points:
+- The reviewer runs with its working directory inside a checkout of the branch under review. The prompt is driver-owned, but a CLI reviewer will still load that checkout's own agent config and instructions, so the branch can still steer its reviewer. Only data quality suffers in shadow mode, but the README's isolation claim overstates it.
+- When a repository already has a running review, other escalations are silently skipped and re-fetch the ticket description every tick. The runs map is never pruned.
+- The ledger event parsing is prefix-based everywhere I checked, so the new event cannot be misread as ownership, resolution, or notification.
+
+**5. Authority.** No new permission, credential, billing, or fund capability. The reviewer subprocess gets a narrower environment than the existing lane reviewer, and the result is write-only data. It does add model spend per escalation, two reviewers up to fifteen minutes each, which is cost, not authority.
+
+{"step":"cross-review","verdict":"red","expands_authority":false,"reason":"Shadow mechanism is sound and read by nothing, but CONTRACTS.md cites recorded reviewer-output samples and a TestRecordedCrossReviewOutput that do not exist, so the escalated output-format verification is unproven and the contract is false."}
