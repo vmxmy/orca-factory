@@ -28,6 +28,9 @@ func DeploymentBarrier(t Ticket) bool {
 // is the only check of the binary the restarted serve runs.
 func deploymentConfig(env map[string]string) error {
 	w, s, self := env["AGENT_DEPLOY_WORKFLOW"], env["AGENT_SMOKE_CMD"], env["AGENT_SELF_DEPLOY"]
+	if rerun := env["AGENT_DEPLOY_AUTO_RERUN"]; rerun != "" && (rerun != "1" || w == "") {
+		return errors.New("invalid deployment configuration")
+	}
 	if (w != "" && !github.ValidWorkflow(w)) || (s != "" && strings.TrimSpace(s) == "") || strings.ContainsRune(s, 0) || (self != "" && (self != "1" || w != "" || s == "")) {
 		return errors.New("invalid deployment configuration")
 	}
@@ -38,7 +41,7 @@ func newDeployment(env map[string]string) *merge.DeploymentProgress {
 	if w == "" && s == "" && !self {
 		return nil
 	}
-	return &merge.DeploymentProgress{Workflow: w, Smoke: s, Self: self, State: "pending"}
+	return &merge.DeploymentProgress{Workflow: w, Smoke: s, Self: self, AutoRerun: env["AGENT_DEPLOY_AUTO_RERUN"] == "1", State: "pending"}
 }
 
 // A same-queue intent freezes even the absence of deployment configuration.
@@ -82,12 +85,30 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 		if err != nil {
 			return fmt.Errorf("deployment query unavailable: %w", err)
 		}
-		state, err := gh.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
+		state, runID, err := gh.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
 		if err != nil {
 			return fmt.Errorf("deployment query unavailable: %w", err)
 		}
 		if state == "failed" {
-			return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
+			if !d.AutoRerun || d.Reruns > 0 {
+				return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
+			}
+			// Rerunning an old SHA after main moved would roll production back.
+			main, err := gh.MainSHA(ctx, owner, repo)
+			if err != nil {
+				return fmt.Errorf("deployment query unavailable: %w", err)
+			}
+			if main != p.MergeSHA {
+				return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
+			}
+			d.Reruns = 1
+			if err := r.deploymentReceipt(ctx, t, p); err != nil {
+				return err
+			}
+			if err := gh.RerunFailedJobs(ctx, owner, repo, runID); err != nil {
+				return fmt.Errorf("deployment rerun failed: %w", err)
+			}
+			return errors.New("deployment pending")
 		}
 		if state != "passed" {
 			return errors.New("deployment pending")

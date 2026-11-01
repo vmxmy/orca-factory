@@ -405,6 +405,10 @@ orca-factory-driver prune-workspaces
 
 ## 部署屏障与 Agent 处置
 
+合并预检：`AGENT_MERGE_PRECHECK_CMD` 非空时，队首 PR 在每次合并尝试前运行这条命令，工作目录是仓库检出，`AGENT_MERGE_HEAD` 是冻结的 PR head（已 fetch，用 `git show "$AGENT_MERGE_HEAD:<路径>"` 读该提交的文件）。退出 0 继续合并。退出 1 表示这张票现在不能合：写 `转人`，移出队列，后面的票继续合。其他退出码或超时（1 分钟）只说明命令坏了，票留在队首等待。人处理完后推新 head，处置 Agent 用新 queue ID 重新排队。
+
+部署自动重跑：`AGENT_DEPLOY_AUTO_RERUN=1` 且配置了 `AGENT_DEPLOY_WORKFLOW` 时，部署 workflow 失败后自动重跑一次失败的 job，再失败才转处置 Agent。开关随队列冻结。`reruns` 在发出请求前写入账本，所以崩溃后不会重跑第二次。main 已前进时不重跑，因为旧 SHA 重新部署会回滚生产。
+
 `AGENT_DEPLOY_WORKFLOW` 接受现有 workflow 显示名（含空格），也接受 workflow ID 或文件名。显示名必须唯一；GitHub 读取失败、空集合、截断或未知状态都等待。只观察既有 workflow，不触发部署或发布。`AGENT_SMOKE_CMD` 由 `bash -c` 在仓库目录执行，超时 30 秒；环境提供真实 `AGENT_MERGE_SHA` 与 `AGENT_GH_REPO`。只有 workflow 时仅等待 workflow；只有 smoke 时在确认 squash 后执行；两者都有时 workflow 成功才执行 smoke。无效配置不放行。
 
 部署或 smoke 失败通过票据主账本评论把归属转为处置 Agent、暂停该仓库合并通道，其他仓库继续。配置在合并 intent 中冻结，移除配置、标记 Done/auto-failed、重启或恢复凭据均不解除已有屏障。smoke 执行前先写 `smoke-intent`；如果结果写回不能确认，后续 tick 调用 resolver 对账，不自动重放。
