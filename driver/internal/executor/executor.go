@@ -189,6 +189,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	// must not be charged for main's commits since the claim baseline.
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, failureSummary, reviewerTier string
 	var mergeGateOutput, mergeReviewOutput string
+	var scopeBlocked []string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -212,10 +213,13 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		status.Push(e.Now(), func(view *status.View) {
 			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
 		})
-		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections) {
+		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections || ev == machine.EvWorkerScopeBlocked) {
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
+			}
+			if ev == machine.EvWorkerScopeBlocked {
+				evidence += "；SCOPE 外文件: " + strings.Join(scopeBlocked, " ")
 			}
 			return e.handoff(ctx, t, next, evidence, result.RunID, &cp)
 		}
@@ -451,6 +455,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
 			event = machine.EvWorkerFail
+			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
+				event = machine.EvWorkerScopeBlocked
+			}
 		}
 		if report.Provenance == provenanceExecutorUnstarted {
 			event = machine.EvWorkerUnstarted

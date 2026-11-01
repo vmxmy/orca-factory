@@ -35,6 +35,7 @@ type Ticket struct {
 	URL, Title                          string
 	NotifyReason                        string
 	NotifyEvents                        map[string]bool
+	CrossReviewed                       map[string]bool
 	Number                              int
 	Scope                               []string
 	Blockers                            []string
@@ -408,6 +409,20 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	lap("merge")
+	if reviews, ok := s.Backend.(interface {
+		AdvanceCrossReviews(context.Context, []Ticket) error
+	}); ok {
+		permitted := make([]Ticket, 0, len(tickets))
+		for _, t := range tickets {
+			if allowed[t.Repo] {
+				permitted = append(permitted, t)
+			}
+		}
+		// The shadow record never decides anything, so it never fails a tick.
+		if err := reviews.AdvanceCrossReviews(ctx, permitted); err != nil {
+			s.logger().Warn("cross review record failed", "err", err)
+		}
+	}
 	if runners, ok := s.Backend.(interface{ CheckRunners(context.Context) error }); ok {
 		// A runner alert never blocks ticket flow; its failure is only logged.
 		if err := runners.CheckRunners(ctx); err != nil {

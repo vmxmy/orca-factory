@@ -10,6 +10,7 @@
 - 对原先等待审批的改动执行独立复核，记录当前 PR head 的检查和审查证据。
 - `Agent处置: lane 2 复核` 事件表示 lane 2 未自动合并，合并通道已把票移出队列交你复核。核对 PR head 仍等于冻结 handoff 的 head，读完整 diff，确认 gate 与独立 reviewer 均为 green、CI 全绿、改动不碰 lane 3 路径。全部满足时原样提交该 handoff 的 merge 提案；head 已变或任一条件不满足时，修复后重新验证并使用新 queue_id，权限内无法解决时 escalate。
 - `Agent处置: head ref 复核` 事件表示冻结 handoff 的 PR 分支不是 `agent/<票号>/<单元>`，合并通道已把票移出队列。把 head 推到该分支，提交 open-pr，CI 通过后用新 queue_id 提交新的 merge handoff。
+- `Agent处置: worker reported files outside SCOPE` 事件的证据列出 worker 声明缺少的文件，已完成的改动在 worker 分支上。先核实票面确实需要改这些文件，再按本文件的规则处置。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
 
@@ -40,6 +41,6 @@
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
-- 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。
+- 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。修复已推送、只差人裁定时再加 `class` 和 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。其他阻塞不填。这两个字段只触发交叉复审并记录结果，票仍然转人。
 - 可重试的暂时失败用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器退避重试，连续 3 次失败转人工。
 - 报告后停止操作，等待控制器释放 worker。

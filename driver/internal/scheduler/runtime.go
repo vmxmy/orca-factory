@@ -64,6 +64,8 @@ type Runtime struct {
 	// Snapshot; ReclaimWorkspaces removes their workspaces (OF-96).
 	closed        map[string]map[string]closedTicket
 	reclaimWarned map[string]string
+	// reviews runs the shadow cross reviews of escalated tickets.
+	reviews *crossReviews
 	// merges runs merged-result gates beside the inspections.
 	merges *merge.Validations
 }
@@ -363,6 +365,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		readMergeHandoff(&ticket, comments)
 		ticket.Resolution, err = readResolution(comments)
 		readFeishuNotification(&ticket, comments)
+		readCrossReviews(&ticket, comments)
 		if err != nil {
 			ticket.MergeProblem = err.Error()
 			tickets = append(tickets, ticket)

@@ -117,6 +117,8 @@ orca-factory-driver status --json
 
 票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
 
+worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
+
 无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 ### 守护进程被杀后的恢复
@@ -424,6 +426,14 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 默认由 `driver resolve` 派发处置 Agent，提交绑定 queue/SHA 的结果后，常驻调度器在单实例锁内应用，无需人工重启。`AGENT_ROLE_RESOLVER` 可覆盖 strong 档；角色规范见 `scripts/agent-gates/roles/resolver.md`。
 
 处置 Agent 在权限内无法解决时提交 `escalate`，调度器把票转人工（`阶段: 转人`、`归属: 人`），写一条 `转人:` 事件并通知一次，不再派处置 Agent。可重试的失败（outcome=failed、无效或被拒提案）退避 5 分钟后重派；同一票连续 3 次失败同样转人工。
+
+#### 交叉复审（只记录，OF-342）
+
+处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了 `AGENT_ROLE_SECOND_REVIEWER_CMD` 时，调度器在转人后后台运行 `AGENT_ROLE_REVIEWER_CMD` 和第二 reviewer。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令只拿到 `HOME` 和 `PATH`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
+
+`would_release` 为 true 要同时满足：两个 reviewer 都判 green，都没有判定新增权限或资金能力，改动路径都不在禁改范围。禁改范围是 `crossReviewForbidden`（`driver/internal/scheduler/crossreview.go`）、`AGENT_LANE3_GLOBS`、`AGENT_LANE2_MANUAL_GLOBS` 和 `AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS`。reviewer 输出不合格、失败或超时都算不放行。serve 退出时取消进行中的复审，重启后按账本重跑。
+
+reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
 
 人工处理完转人工的票后，在票据主账本追加一条评论恢复自动处置（attempt 填最近一条 `resolver-state` 的 attempt）：
 

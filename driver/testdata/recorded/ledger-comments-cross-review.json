@@ -1,0 +1,9 @@
+{
+  "comments": [
+    {
+      "id": "reczz28UJjNtJPsr",
+      "body": "cross-review-v1: {\"version\":1,\"ticket_id\":\"994c362f-ac9a-4593-8184-0bee40314d93\",\"dispatch\":\"of-342-sample\",\"class\":\"scope-extension\",\"head\":\"801733820c2f41c371d9e6bb705921c143f070e7\",\"base\":\"07395c26971dc7a1ff5f8721ddc9c23c87661aec\",\"paths\":15,\"outside_scope\":null,\"forbidden\":[\"core/roles/resolver.md\",\"driver/CONTRACTS.md\",\"driver/README.md\",\"driver/cmd/driver/driver_config.go\",\"driver/internal/resolver/result.go\",\"driver/internal/scheduler/crossreview.go\",\"driver/internal/scheduler/crossreview_test.go\",\"driver/internal/scheduler/merge.go\",\"driver/internal/scheduler/runtime.go\",\"driver/internal/scheduler/scheduler.go\",\"driver/testdata/recorded/cross-review-output-astra.txt\",\"driver/testdata/recorded/cross-review-output-fable.txt\",\"scripts/agent-gates/agent-graph.env\",\"scripts/agent-gates/roles/resolver.md\",\"templates/agent-graph.env.example\"],\"opinions\":[{\"reviewer\":\"reviewer\",\"verdict\":\"red\",\"expands_authority\":false,\"reason\":\"去重会将没有执行结果的不完整账本记录视为已复审并永久跳过该次处置，且处置要求的账本录制样本仍未补齐，不能确认满足验收。\"},{\"reviewer\":\"second_reviewer\",\"verdict\":\"red\",\"expands_authority\":false,\"reason\":\"The shadow cross-review is implemented correctly and read by nothing, but the change edits driver, role docs and production gate config that the patch itself marks as not model-clearable, and the make test CHECK could not be run here, so a human must land it.\"}],\"would_release\":false,\"reason\":\"forbidden path: core/roles/resolver.md\",\"at\":\"2026-11-01T06:38:08.769650091Z\"}",
+      "createdAt": "2026-11-01T14:38:36+08:00"
+    }
+  ]
+}

@@ -91,6 +91,10 @@ const (
 	// EvWorkerUnstarted is a stopped dispatch whose turn never started: an
 	// infra fault, so it is redone through correction without charging it.
 	EvWorkerUnstarted Event = "workerUnstarted"
+
+	// EvWorkerScopeBlocked is a failed report naming files verified to be outside
+	// SCOPE. A worker cannot change them, so a correction would only repeat it.
+	EvWorkerScopeBlocked Event = "workerScopeBlocked"
 )
 
 type Limits struct{ Corrections, Infra, ExecFailures int }
@@ -215,6 +219,11 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			return reject("没有在运行且有人接收的 worker")
 		}
 		correction("worker failed")
+	case EvWorkerScopeBlocked:
+		if s.Phase != PhaseWorker || !s.ExecAlive {
+			return reject("没有在运行且有人接收的 worker")
+		}
+		toResolver("worker reported files outside SCOPE")
 	case EvWorkerUnstarted:
 		if s.Phase != PhaseWorker || !s.ExecAlive {
 			return reject("没有在运行且有人接收的 worker")

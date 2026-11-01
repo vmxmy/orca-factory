@@ -18,7 +18,7 @@
      `REQ n` 对应简报 `Change` 第 n 条；条目数 ≥ Change 条目数；每条都有 文件:行 或测试名，末段是 gate 步名或 `CHECK`。
   2. gate 输出块：`GATE_PROJECT_SRC=worktree gate.sh` 的七行原样粘贴。
 - `--files-modified` 的值来自 `git diff --name-only HEAD` 加 `git ls-files --others --exclude-standard`。
-- `--outcome failed` 的 body：卡在哪一步、最后一次 gate 输出块、需要 coordinator 做什么。
+- `--outcome failed` 的 body：卡在哪一步、最后一次 gate 输出块、需要 coordinator 做什么。缺 SCOPE 外文件时另起一行写 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`（`roles/driver-worker.md`）。
 
 ## 2. VERDICT 块
 

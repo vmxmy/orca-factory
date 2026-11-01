@@ -93,6 +93,7 @@ var configRoles = []struct {
 	{"worker_strong", []string{"AGENT_TIER_STRONG"}, "", dispatchTier},
 	{"reviewer", []string{"AGENT_ROLE_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
+	{"second_reviewer", []string{"AGENT_ROLE_SECOND_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
