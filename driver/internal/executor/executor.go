@@ -376,7 +376,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
 	if cp.MergeCause != "" {
 		result.State.Phase = machine.PhaseCorrection
-		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, "", transition)
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, nil, transition)
 		if correctionErr != nil || !again {
 			return result, correctionErr
 		}
@@ -479,7 +479,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, failedSubject, transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, report, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -561,7 +561,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, "", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, nil, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -612,7 +612,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, nil
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, "", transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, nil, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
