@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
 )
@@ -165,6 +167,13 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 		if err = r.verifyFreshDecision(ctx, t, githubSquash); err != nil {
 			return err
 		}
+		held, precheckErr := r.mergePrecheck(ctx, t)
+		if precheckErr != nil {
+			return precheckErr
+		}
+		if held {
+			return r.mergeDecision(ctx, t, "", merge.Result{Status: merge.HumanDirect, Reason: "merge precheck failed at PR head; resolve it and push a new head", Rounds: rounds})
+		}
 		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, r.mergeValidations(), nil)
 		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, Ticket: t.Identifier, QueueID: h.QueueID, CatchupRounds: rounds}
 		if err = channel.Enqueue(req); err != nil {
@@ -221,6 +230,34 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	defer r.cleanupMerged(ctx, t)
 	return r.mergeComment(ctx, t, fmt.Sprintf("已合并: PR #%d squash %s\n阶段: %s\n归属: %s\n%s%s", h.PR, sha, machine.PhaseMerged, machine.OwnerNone, merge.ProgressPrefix, b))
 }
+
+// mergePrecheck runs AGENT_MERGE_PRECHECK_CMD against the frozen head from the
+// checkout, so a held ticket costs no worktree. Exit 1 holds this ticket and
+// lets the rest of the queue pass; anything else keeps the ticket waiting,
+// because a broken command says nothing about the PR.
+func (r *Runtime) mergePrecheck(ctx context.Context, t Ticket) (bool, error) {
+	cmd := r.Repositories[t.Repo].Env["AGENT_MERGE_PRECHECK_CMD"]
+	if cmd == "" {
+		return false, nil
+	}
+	if _, err := r.command(ctx, t.Repo, "git", "fetch", "--no-tags", "origin", t.Handoff.Head); err != nil {
+		return false, errors.New("merge precheck unavailable: head fetch failed")
+	}
+	run := r.Run
+	if run == nil {
+		run = runx.Run
+	}
+	_, err := run(ctx, runx.Spec{Path: "bash", Args: []string{"-c", cmd}, Dir: t.Repo, Env: append(os.Environ(), "AGENT_MERGE_HEAD="+t.Handoff.Head), Timeout: time.Minute})
+	if err == nil {
+		return false, nil
+	}
+	var code interface{ ExitCode() int }
+	if ctx.Err() == nil && errors.As(err, &code) && code.ExitCode() == 1 {
+		return true, nil
+	}
+	return false, errors.New("merge precheck unavailable: command did not report a verdict")
+}
+
 func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error {
 	client := r.Clients[t.Repo]
 	rows, err := client.ListComments(ctx, t.ID)

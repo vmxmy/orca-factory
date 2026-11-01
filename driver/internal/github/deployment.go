@@ -20,14 +20,14 @@ func ValidWorkflow(workflow string) bool {
 
 // Deployment observes only the configured workflow at the actual squash SHA.
 // All pages must be complete; unknown states and ambiguous receipts stay pending.
-func (c *Client) Deployment(ctx context.Context, owner, repo, workflow, sha string) (string, error) {
+func (c *Client) Deployment(ctx context.Context, owner, repo, workflow, sha string) (string, int64, error) {
 	if !ValidWorkflow(workflow) {
-		return "pending", errors.New("invalid deployment workflow")
+		return "pending", 0, errors.New("invalid deployment workflow")
 	}
 	if !workflowName.MatchString(workflow) {
 		id, err := c.workflowID(ctx, owner, repo, workflow)
 		if err != nil {
-			return "pending", err
+			return "pending", 0, err
 		}
 		workflow = strconv.FormatInt(id, 10)
 	}
@@ -49,19 +49,19 @@ func (c *Client) Deployment(ctx context.Context, owner, repo, workflow, sha stri
 		}
 		err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/actions/workflows/"+url.PathEscape(workflow)+"/runs?head_sha="+url.QueryEscape(sha)+"&per_page=100&page="+strconv.Itoa(page), nil, &v)
 		if err != nil {
-			return "pending", err
+			return "pending", 0, err
 		}
 		if v.Total == nil || v.Runs == nil || *v.Total < 0 || (total >= 0 && total != *v.Total) {
-			return "pending", nil
+			return "pending", 0, nil
 		}
 		total = *v.Total
 		for _, r := range *v.Runs {
 			file, _, _ := strings.Cut(r.Path, "@")
 			if r.ID <= 0 || seen[r.ID] || r.SHA != sha || r.Workflow <= 0 || (strconv.FormatInt(r.Workflow, 10) != workflow && file != ".github/workflows/"+workflow) {
-				return "pending", nil
+				return "pending", 0, nil
 			}
 			if r.Status != "completed" {
-				return "pending", nil
+				return "pending", 0, nil
 			}
 			seen[r.ID] = true
 			if r.ID > latest.ID {
@@ -70,22 +70,28 @@ func (c *Client) Deployment(ctx context.Context, owner, repo, workflow, sha stri
 		}
 		if len(seen) == total {
 			if latest.ID == 0 || latest.Status != "completed" {
-				return "pending", nil
+				return "pending", 0, nil
 			}
 			switch latest.Conclusion {
 			case "success":
-				return "passed", nil
+				return "passed", latest.ID, nil
 			case "failure", "cancelled", "timed_out", "action_required", "startup_failure":
-				return "failed", nil
+				return "failed", latest.ID, nil
 			default:
-				return "pending", nil
+				return "pending", 0, nil
 			}
 		}
 		if len(*v.Runs) == 0 || len(seen) > total {
-			return "pending", nil
+			return "pending", 0, nil
 		}
 	}
-	return "pending", nil
+	return "pending", 0, nil
+}
+
+// RerunFailedJobs starts a new attempt of a completed run. The failed attempt
+// stays in the run's history, and Deployment reads the new attempt as pending.
+func (c *Client) RerunFailedJobs(ctx context.Context, owner, repo string, runID int64) error {
+	return c.request(ctx, http.MethodPost, repoPath(owner, repo)+"/actions/runs/"+strconv.FormatInt(runID, 10)+"/rerun-failed-jobs", nil, nil)
 }
 
 // Resolve display names across the complete collection; duplicates fail closed.

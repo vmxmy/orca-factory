@@ -63,11 +63,15 @@ type DeploymentProgress struct {
 	SmokePassed  bool                `json:"smoke_passed,omitempty"`
 	// Self means serve builds and installs its own binary from the squash SHA,
 	// then restarts; the next serve verifies and smokes it.
-	Self     bool   `json:"self,omitempty"`
-	Workflow string `json:"workflow,omitempty"`
-	Smoke    string `json:"smoke,omitempty"`
-	State    string `json:"state"`
-	Reason   string `json:"reason,omitempty"`
+	Self bool `json:"self,omitempty"`
+	// AutoRerun is frozen with the queue like the rest of the policy. Reruns is
+	// written before the rerun request, so a crash can only under-run it.
+	AutoRerun bool   `json:"auto_rerun,omitempty"`
+	Reruns    int    `json:"reruns,omitempty"`
+	Workflow  string `json:"workflow,omitempty"`
+	Smoke     string `json:"smoke,omitempty"`
+	State     string `json:"state"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // Recovery records the operator's reconciliation, not inferred credential health.

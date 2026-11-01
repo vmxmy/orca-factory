@@ -39,7 +39,7 @@ func TestDeploymentResolvesExistingWorkflowDisplayName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, err := c.Deployment(context.Background(), "o", "r", "Deploy to Cloudflare", sha)
+	state, _, err := c.Deployment(context.Background(), "o", "r", "Deploy to Cloudflare", sha)
 	if err != nil || state != "passed" {
 		t.Fatalf("existing workflow name rejected: %s %v", state, err)
 	}
@@ -73,7 +73,7 @@ func TestDeploymentConservativeReceipts(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			state, err := c.Deployment(context.Background(), "o", "r", "deploy.yml", sha)
+			state, _, err := c.Deployment(context.Background(), "o", "r", "deploy.yml", sha)
 			if err != nil || state != tc.want {
 				t.Fatalf("state=%s err=%v want=%s", state, err, tc.want)
 			}
