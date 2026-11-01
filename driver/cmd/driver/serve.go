@@ -327,6 +327,21 @@ func (b *statusBackend) AdvanceMerges(ctx context.Context, tickets []scheduler.T
 	return nil
 }
 
+func (b *statusBackend) AdvanceCrossReviews(ctx context.Context, tickets []scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		AdvanceCrossReviews(context.Context, []scheduler.Ticket) error
+	}); ok {
+		return source.AdvanceCrossReviews(ctx, tickets)
+	}
+	return nil
+}
+
+func (b *statusBackend) UpdateRepository(repo config.Repository) {
+	if source, ok := b.Backend.(interface{ UpdateRepository(config.Repository) }); ok {
+		source.UpdateRepository(repo)
+	}
+}
+
 func (b *statusBackend) Track(ctx context.Context, repo config.Repository) error {
 	if source, ok := b.Backend.(interface {
 		Track(context.Context, config.Repository) error
