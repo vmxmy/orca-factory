@@ -417,7 +417,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			s.logger().Warn("cross review record failed", "err", err)
 		}
 	}
-	lap("cross_review")
 	if runners, ok := s.Backend.(interface{ CheckRunners(context.Context) error }); ok {
 		// A runner alert never blocks ticket flow; its failure is only logged.
 		if err := runners.CheckRunners(ctx); err != nil {

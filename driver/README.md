@@ -431,6 +431,8 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 `would_release` 为 true 要同时满足：两个 reviewer 都判 green，都没有判定新增权限或资金能力，改动路径都不在禁改范围。禁改范围是 `crossReviewForbidden`（`driver/internal/scheduler/crossreview.go`）、`AGENT_LANE3_GLOBS`、`AGENT_LANE2_MANUAL_GLOBS` 和 `AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS`。reviewer 输出不合格、失败或超时都算不放行。serve 退出时取消进行中的复审，重启后按账本重跑。
 
+reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
+
 人工处理完转人工的票后，在票据主账本追加一条评论恢复自动处置（attempt 填最近一条 `resolver-state` 的 attempt）：
 
 ```text

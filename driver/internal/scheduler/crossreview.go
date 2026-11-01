@@ -254,16 +254,27 @@ func newCrossReviews() *crossReviews {
 	return &crossReviews{runs: map[string]*crossReviewRun{}, base: base, stop: stop}
 }
 
+// admits answers whether a review for this repository can start now; a closed
+// or busy registry leaves the ticket for a later inspection.
+func (c *crossReviews) admits(repo string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return false
+	}
+	for _, run := range c.runs {
+		if run.job.repo == repo && run.record == nil {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *crossReviews) start(job crossReviewJob) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed {
 		return
-	}
-	for _, run := range c.runs {
-		if run.job.repo == job.repo && run.record == nil {
-			return
-		}
 	}
 	run := &crossReviewRun{job: job}
 	c.runs[job.key] = run
@@ -358,7 +369,7 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 		r.reviews = newCrossReviews()
 	}
 	key := t.ID + "\x00" + t.Resolution.Dispatch
-	if r.reviews.known(key) {
+	if r.reviews.known(key) || !r.reviews.admits(t.Repo) {
 		return nil
 	}
 	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
@@ -392,7 +403,7 @@ func readCrossReviews(t *Ticket, comments []task.Comment) {
 			continue
 		}
 		var record crossReviewRecord
-		if json.Unmarshal([]byte(raw), &record) != nil || record.Dispatch == "" {
+		if json.Unmarshal([]byte(raw), &record) != nil || record.Version != 1 || record.TicketID != t.ID || record.Dispatch == "" {
 			continue
 		}
 		if t.CrossReviewed == nil {

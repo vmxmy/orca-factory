@@ -229,6 +229,44 @@ func TestCrossReviewOutsideWhitelistDoesNotRun(t *testing.T) {
 	}
 }
 
+// Stdout of the real reviewer commands on this change's own diff, 2026-11-01,
+// run with only HOME and PATH. Both end in prose followed by the verdict object.
+func TestRecordedCrossReviewOutput(t *testing.T) {
+	for _, name := range []string{"cross-review-output-astra.txt", "cross-review-output-fable.txt"} {
+		got := parseCrossReviewOpinion("r", string(recorded(t, name)))
+		if got.Verdict != "red" || got.ExpandsAuthority || got.Reason == "" {
+			t.Errorf("%s: %+v", name, got)
+		}
+	}
+	for _, output := range []string{"", "looks fine", `{"step":"cross-review","verdict":"green"}`, `{"step":"review","verdict":"green","expands_authority":false}`, `{"step":"cross-review","verdict":"green","expands_authority":false} trailing`} {
+		if got := parseCrossReviewOpinion("r", output); got.Verdict != crossReviewUnavailable {
+			t.Errorf("%q counted as %+v", output, got)
+		}
+	}
+}
+
+// A record only settles a review when it names this ticket: any other comment
+// must not be able to suppress the review.
+func TestCrossReviewRecordMustNameTicket(t *testing.T) {
+	line := func(version int, ticket string) task.Comment {
+		raw, err := json.Marshal(crossReviewRecord{Version: version, TicketID: ticket, Dispatch: "ctx_1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return task.Comment{Body: crossReviewPrefix + string(raw)}
+	}
+	var ticket Ticket
+	ticket.ID = "id"
+	readCrossReviews(&ticket, []task.Comment{line(1, "other"), line(2, "id"), {Body: crossReviewPrefix + "{"}})
+	if ticket.CrossReviewed["ctx_1"] {
+		t.Fatal("foreign record settled the review")
+	}
+	readCrossReviews(&ticket, []task.Comment{line(1, "id")})
+	if !ticket.CrossReviewed["ctx_1"] {
+		t.Fatal("own record ignored")
+	}
+}
+
 func TestCrossReviewDecisionNeedsBothGreen(t *testing.T) {
 	green := crossReviewOpinion{Reviewer: "a", Verdict: "green"}
 	for _, tc := range []struct {
