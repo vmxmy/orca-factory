@@ -23,6 +23,7 @@ type recoveryOrca struct {
 	fakeOrca
 	starts          []orca.StartOptions
 	failFirst       bool
+	failBody        string
 	releaseRequests []string
 }
 
@@ -58,7 +59,11 @@ func (o *recoveryOrca) TaskList(context.Context, string) ([]orca.Task, error) {
 	if len(o.starts) > 1 {
 		dispatch = fmt.Sprintf("ctx_%d", len(o.starts))
 	}
-	return []orca.Task{{ID: task, RunID: "run_one", DispatchID: dispatch, Result: json.RawMessage(`{"provenance":"worker_report","outcome":"` + outcome + `"}`)}}, nil
+	result, err := json.Marshal(map[string]string{"provenance": "worker_report", "outcome": outcome, "body": o.failBody})
+	if err != nil {
+		return nil, err
+	}
+	return []orca.Task{{ID: task, RunID: "run_one", DispatchID: dispatch, Result: result}}, nil
 }
 
 type recoveryTools struct {

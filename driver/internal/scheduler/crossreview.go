@@ -215,7 +215,7 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 
 func matchesAny(patterns []string, name string) bool {
 	for _, pattern := range patterns {
-		if scopeMatch(pattern, name) {
+		if task.ScopeMatch(pattern, name) {
 			return true
 		}
 	}

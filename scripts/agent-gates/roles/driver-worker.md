@@ -22,3 +22,4 @@
 
 - 通过注入的 Orca `worker_done` 协议报告结果。
 - 做不完（例如 `CHECK`、`SCOPE` 或 gate spec 看起来有误）：提交并推送已有改动，再以 `worker_done --outcome failed` 报告，正文写明确切原因。
+- 只有改 `SCOPE` 外的文件才能完成简报时，正文另起一行写 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，只写仓库相对的文件路径，路径只能含 ASCII 字母、数字和 `_` `.` `/` `-`，不写行号或 glob。路径含其他字符时不写这一行，在正文说明。driver 核实这些路径都在 `SCOPE` 外后，直接把票交给处置 Agent，不再打回。其他失败不写这一行。
