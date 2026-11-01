@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -557,12 +558,42 @@ func TestCreateRejectsInvalidCheckRed(t *testing.T) {
 }
 
 func TestCreateRejectsBehaviorTraceOutsideScope(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/feishu-description-behavior-trace.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordedDescription := string(recorded)
+	beforeScope, scopeAndAfter, ok := strings.Cut(recordedDescription, "\n## SCOPE\n")
+	if !ok {
+		t.Fatal("recorded description has no SCOPE section")
+	}
+	_, afterScope, ok := strings.Cut(scopeAndAfter, "\n\n")
+	if !ok {
+		t.Fatal("recorded description has no section after SCOPE")
+	}
+	withRecordedScope := func(scope string) string {
+		return beforeScope + "\n## SCOPE\n" + scope + "\n\n" + afterScope
+	}
 	for _, test := range []struct {
-		name    string
-		scope   string
-		body    string
-		missing []string
+		name        string
+		scope       string
+		body        string
+		description string
+		missing     []string
 	}{
+		{
+			name:        "recorded ZY-333 original scope covers trace",
+			description: recordedDescription,
+		},
+		{
+			name:        "recorded ZY-333 glob scope covers trace",
+			description: withRecordedScope("functions/* web/*"),
+		},
+		{
+			name:        "recorded ZY-333 omitted confirmation route",
+			description: withRecordedScope("functions/mcp/* web/*"),
+			missing:     []string{"functions/api/v1/_mcp-account-routes.js"},
+		},
 		{
 			name:  "ZY-333 omitted behavior owners",
 			scope: "driver/internal/feishu/*",
@@ -672,7 +703,10 @@ func TestCreateRejectsBehaviorTraceOutsideScope(t *testing.T) {
 						store = client
 						writeCount = func() int { return fake.writes }
 					}
-					description := FeishuBrief{Todo: "1. 修复行为", Check: "make test", Scope: test.scope, Body: test.body}.Description()
+					description := test.description
+					if description == "" {
+						description = FeishuBrief{Todo: "1. 修复行为", Check: "make test", Scope: test.scope, Body: test.body}.Description()
+					}
 					created, err := store.Create(context.Background(), CreateInput{Title: "行为追踪", Description: description, Labels: []string{}})
 					if len(test.missing) > 0 {
 						if err == nil || writeCount() != 0 {
