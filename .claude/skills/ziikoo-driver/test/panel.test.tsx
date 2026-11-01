@@ -710,13 +710,38 @@ test('时间线下的最近异常框按时间列出最近 5 条失败命令、�
     'orca 超时',
     'gate 出错',
     'reviewer 出错 结论 red',
-    '打回：reviewer red FAIL: approach=head=1a2b3c4 | reason=reviewer red',
+    '打回：reviewer red functions/api/v1/_admin-routes.js:155',
     'open-pr 出错 gh 退出码 1：pull request create failed: GraphQL: No commits between main and feat',
   ])
   for (const row of rows) expect(row.slice(0, 8)).toMatch(/^\d{2}:\d{2}:\d{2}$/)
   expect((await exactText(ui, 'orca 超时')).map(one => one.props.color)).toEqual(['error'])
   expect((await exactText(ui, '打回：reviewer red')).map(one => one.props.color)).toEqual(['warning'])
   expect(await timelineRows(ui)).toHaveLength(11)
+  await ui.unmount()
+})
+
+test('worker 报告失败的打回与转二线，最近异常的补充是报告 subject，没有 subject 时是 evidence', async ($, on) => {
+  const line = (time: string, fields: Record<string, string>) =>
+    JSON.stringify({ time: `2026-10-27T${time}+08:00`, level: 'INFO', component: 'executor', repo: 'orca-factory', ticket: 'OF-1', ...fields })
+  const logs = [
+    line('21:00:00.1', { msg: 'correction', reason: 'worker failed', worker_subject: 'ZY-333 blocked: same-origin guard outside SCOPE', fail_summary: 'FAIL: approach=head=4d1a17e files=a.js | reason=worker failed | evidence=worker_done outcome=failed' }),
+    line('21:01:00.1', { msg: 'correction', reason: 'gate red', fail_summary: 'FAIL: approach=head=4d1a17e files=a.js | reason=gate red | evidence=check_shell' }),
+    line('21:02:00.1', { msg: 'correction', reason: 'merge conflict', fail_summary: '' }),
+    line('21:03:00.1', { msg: 'resolver handoff', reason: 'correction exhausted: worker failed', worker_subject: 'ZY-333 blocked: Change 4 需要扩大 SCOPE', evidence: 'worker 运行中' }),
+    line('21:04:00.1', { msg: 'resolver handoff', reason: 'correction exhausted: gate red', evidence: 'gate' }),
+  ].join('\n')
+  timelineEngine(on, ran({ stdout: logs }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'ticket-OF-1' })
+
+  expect((await issueRows(ui)).map(row => row.slice(8))).toEqual([
+    '打回：worker failed ZY-333 blocked: same-origin guard outside SCOPE',
+    '打回：gate red check_shell',
+    '打回：merge conflict',
+    '转二线：correction exhausted: worker failed ZY-333 blocked: Change 4 需要扩大 SCOPE',
+    '转二线：correction exhausted: gate red gate',
+  ])
   await ui.unmount()
 })
 

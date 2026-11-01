@@ -71,7 +71,7 @@ const argvOf = (kind: FetchKind) => ['orca-factory-driver', kind, '--json']
 // the lines the timeline reads plus failed commands and steps; ERE has no negative lookahead, hence the spelled-out "not ok".
 // grep exits 1 when no line matches, a ticket without executor logs; pipefail keeps a driver failure from hiding behind it.
 const LOGS_SCRIPT =
-  'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited|correction)"|"msg":"external command".*("exit_code":[^0]|"timed_out":true)|"msg":"external\\.end".*"result":"([^o]|o[^k]|ok[^"])\' || [ $? -eq 1 ]; }'
+  'set -o pipefail; orca-factory-driver logs "$1" --json | { grep -E \'"msg":"(transition|ticket completed|command started|command exited|correction|resolver handoff)"|"msg":"external command".*("exit_code":[^0]|"timed_out":true)|"msg":"external\\.end".*"result":"([^o]|o[^k]|ok[^"])\' || [ $? -eq 1 ]; }'
 const TICKET_ID = /^[A-Z][A-Z0-9]*-\d+$/
 const POLL_MS = 10_000
 const WATCH_MS = 30_000

@@ -288,6 +288,7 @@ type Task struct {
 type WorkerReport struct {
 	Provenance    string   `json:"provenance"`
 	Outcome       string   `json:"outcome"`
+	Subject       string   `json:"subject"`
 	Body          string   `json:"body"`
 	FilesModified []string `json:"filesModified"`
 }

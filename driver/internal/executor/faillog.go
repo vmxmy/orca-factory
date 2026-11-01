@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
 func failLogPath(c Config, t Ticket) string {
@@ -63,6 +64,20 @@ func (e *Executor) failSummary(ctx context.Context, c Config, baseline, branch, 
 	suffix := " | reason=" + reason + " | evidence=" + truncateFail(evidence, 120)
 	const prefix = "FAIL: approach="
 	return prefix + truncateFail(approach, 300-len(prefix)-len(suffix)) + suffix, nil
+}
+
+// workerSubject is the report's one line for the log, where logx redacts it. It
+// stays out of the ledger and fail.log, which hold identifiers only.
+func workerSubject(report *orca.WorkerReport) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(report.Subject), "\n")
+	return truncateFail(strings.TrimSpace(line), 200)
+}
+
+func withWorkerSubject(subject string, attrs ...any) []any {
+	if subject == "" {
+		return attrs
+	}
+	return append(attrs, "worker_subject", subject)
 }
 
 func failIdentifier(s string) string {

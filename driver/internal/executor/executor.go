@@ -190,6 +190,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, failureSummary, reviewerTier string
 	var mergeGateOutput, mergeReviewOutput string
 	var scopeBlocked []string
+	var failedSubject string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -221,6 +222,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if ev == machine.EvWorkerScopeBlocked {
 				evidence += "；SCOPE 外文件: " + strings.Join(scopeBlocked, " ")
 			}
+			e.logger().Info("resolver handoff", withWorkerSubject(failedSubject, "reason", next.HumanReason, "evidence", evidence)...)
 			return e.handoff(ctx, t, next, evidence, result.RunID, &cp)
 		}
 		if charged {
@@ -374,14 +376,14 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	result.State.Attempt = max(result.State.Attempt, cp.Attempt)
 	if cp.MergeCause != "" {
 		result.State.Phase = machine.PhaseCorrection
-		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, transition)
+		again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, cp.MergeCause, failureSummary, "", transition)
 		if correctionErr != nil || !again {
 			return result, correctionErr
 		}
 		taskID = cp.Task
 	}
 	for {
-		head, failureOutput = "", ""
+		head, failureOutput, failedSubject = "", "", ""
 		report := &orca.WorkerReport{Outcome: "succeeded"}
 		var waitErr error
 		var idle workerIdle
@@ -455,6 +457,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		event := machine.EvWorkerOK
 		if report.Outcome != "succeeded" {
 			event = machine.EvWorkerFail
+			failedSubject = workerSubject(report)
 			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
 				event = machine.EvWorkerScopeBlocked
 			}
@@ -476,7 +479,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, failureCause, failureSummary, failedSubject, transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -558,7 +561,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, err
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "gate red", failureSummary, "", transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
@@ -609,7 +612,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return result, nil
 		}
 		if result.State.Phase == machine.PhaseCorrection {
-			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, transition)
+			again, correctionErr := e.correct(ctx, c, t, &result, &cp, brief, "reviewer red", failureSummary, "", transition)
 			if correctionErr != nil {
 				return result, correctionErr
 			}
