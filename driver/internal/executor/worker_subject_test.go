@@ -104,6 +104,19 @@ func TestWorkerSubjectIsOneBoundedLine(t *testing.T) {
 	}
 }
 
+func TestWorkerSubjectControlCharacterCannotHideCredential(t *testing.T) {
+	for _, tc := range []struct{ subject, secret string }{
+		{"gh\ap_abcdefgh", "ghp_abcdefgh"},
+		{"s\x1bk-abcdefgh", "sk-abcdefgh"},
+		{"Bea\arer abcdef", "abcdef"},
+		{"https\a://x:pw@github.com/a", "x:pw"},
+	} {
+		if got := workerSubject(&orca.WorkerReport{Subject: tc.subject}); strings.Contains(got, tc.secret) {
+			t.Fatalf("subject %q exposed %q", tc.subject, got)
+		}
+	}
+}
+
 func TestWorkerSubjectDropsControlCharacters(t *testing.T) {
 	for _, tc := range []struct{ subject, want string }{
 		{"\x1b[31mred\x1b[0m done", "[31mred[0m done"},

@@ -74,7 +74,7 @@
 
 worker 失败报告可带一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`（OF-291）。这是 worker 正文里唯一由 driver 解析的信号：行首（去掉空白后）必须是该前缀，路径只能含 ASCII 字母、数字和 `_` `.` `/` `-`（这些路径会写进账本），不得是绝对路径或含 `..`，且不得匹配当前 `gate.spec` 的 `SCOPE`。匹配用 `task.ScopeMatch`，`*`、`?` 和普通字符类与 `gate.sh` 一致；SCOPE 含 `[!a]`、未闭合的 `[` 或 extglob 时两边可能不同，后果最多是多转一次处置 Agent。driver 不检查文件是否存在。任一条件不满足或 spec 不可读时整条声明作废，走普通 `workerFail`。声明成立时执行器走 `workerScopeBlocked` 转处置 Agent，`corrections` 不变。声明只能把票交给处置 Agent，不授权改范围或放行；gate 与审查规则不变。
 
-执行器日志的 `correction` 与 `resolver handoff` 记录带可选字段 `worker_subject`（OF-290）：worker 失败报告 `subject` 的第一行（以 `\n` 或 `\r` 为界），按 stderr 的策略脱敏，去掉控制字符，最长 200 字符；没有 worker 报告的失败不带这个字段。`resolver handoff` 另带 `reason`、`evidence`，只由执行器在状态转移转处置时写（打回耗尽、基础设施预算耗尽、SCOPE 缺文件）；其他转处置路径（读取预算耗尽、恢复路径、合并通道、部署暂停、调度器）不写。这段原文只进日志，账本与 `fail.log` 的 `FAIL:` 摘要仍只含标识符。`/ziikoo-driver` 用这些字段显示「最近异常」的补充。
+执行器日志的 `correction` 与 `resolver handoff` 记录带可选字段 `worker_subject`（OF-290）：worker 失败报告 `subject` 的第一行（以 `\n` 或 `\r` 为界），去掉控制字符后按 stderr 的策略脱敏，最长 200 字符；没有 worker 报告的失败不带这个字段。`resolver handoff` 另带 `reason`、`evidence`，只在这三种转处置时写：打回耗尽、步骤的基础设施预算耗尽、SCOPE 缺文件。其他转处置路径不写：`branchNo`、读取预算耗尽、恢复路径、合并通道、部署暂停、调度器。这段原文只进日志，账本与 `fail.log` 的 `FAIL:` 摘要仍只含标识符。`/ziikoo-driver` 用这些字段显示「最近异常」的补充。
 
 ## GitHub Issues（#172 / #173）
 

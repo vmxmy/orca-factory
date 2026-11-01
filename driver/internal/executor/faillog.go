@@ -77,13 +77,14 @@ func workerSubject(report *orca.WorkerReport) string {
 	if end := strings.IndexAny(line, "\r\n"); end >= 0 {
 		line = line[:end]
 	}
+	// Redact last: removing a control character can join a credential back together.
 	line = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {
 			return -1
 		}
 		return r
-	}, runx.RedactDiagnostic(line))
-	return truncateFail(strings.TrimSpace(line), 200)
+	}, line)
+	return truncateFail(strings.TrimSpace(runx.RedactDiagnostic(line)), 200)
 }
 
 func withWorkerSubject(subject string, attrs ...any) []any {
