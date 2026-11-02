@@ -1,6 +1,9 @@
 package resolver
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestResolutionRejectsUnstructuredOrUnknownDecision(t *testing.T) {
 	for _, body := range []string{`done`, `{"action":"done","reason":"looks good"}`, `{"action":"merge","reason":"checked"}`, `{"action":"retry-smoke","queue":"q","sha":"a","reason":"checked"}`} {
@@ -25,9 +28,22 @@ func TestResolutionAcceptsPinnedDeploymentProposal(t *testing.T) {
 	}
 }
 
+// resolver-escalate-scope.json is stdout of the real resolver model given
+// core/roles/resolver.md and a written scenario.
 func TestHumanTicketEscalateCarriesScope(t *testing.T) {
-	p, err := ParseResult(`{"action":"escalate","reason":"差文件","body":"证据","class":"scope-extension","scope":["a/b.go","c.go"]}`)
-	if err != nil || len(p.Scope) != 2 || p.Scope[1] != "c.go" {
-		t.Fatalf("scope=%v err=%v", p.Scope, err)
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-escalate-scope.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParseResult(string(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.ScopeRequest(); len(got) != 1 || got[0] != "scripts/module-size-metric-report.test.mjs" {
+		t.Fatalf("scope=%v class=%s", got, p.Class)
+	}
+	p.Class = "brief-interpretation"
+	if got := p.ScopeRequest(); got != nil {
+		t.Fatalf("other class exposed scope %v", got)
 	}
 }

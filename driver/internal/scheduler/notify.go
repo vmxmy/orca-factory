@@ -34,7 +34,12 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return nil
 	}
 	reason = strings.Join(strings.Fields(reason), " ")
-	digest := sha256.Sum256([]byte(reason))
+	human := category == "转人" && t.Resolution != nil && t.Resolution.Phase == "human"
+	identity := reason
+	if human {
+		identity = fmt.Sprintf("%s attempt=%d", reason, t.Resolution.Attempt)
+	}
+	digest := sha256.Sum256([]byte(identity))
 	marker := fmt.Sprintf("通知: %s %x", category, digest[:6])
 	if t.NotifyEvents[marker] {
 		return nil
@@ -47,7 +52,7 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	if _, err := client.CreateComment(ctx, t.ID, marker); err != nil {
 		return fmt.Errorf("notification event write: %w", err)
 	}
-	if category == "转人" && t.Resolution != nil && t.Resolution.Phase == "human" {
+	if human {
 		card := feishu.HumanCard{Ticket: t.Identifier, Title: t.Title, Reason: reason, URL: t.URL, Attempt: t.Resolution.Attempt}
 		if decision, err := resolver.ParseResult(t.Resolution.Result); err == nil {
 			card.Scope = decision.ScopeRequest()

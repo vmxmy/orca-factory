@@ -124,6 +124,10 @@ func TestHumanTicketScope(t *testing.T) {
 		{"lane 3 path", "billing/x.go", "lane 3"},
 		{"lane 3 hidden path", ".github/workflows/ci.yml", "lane 3"},
 		{"parent traversal", "a/../../x", "路径"},
+		{"dot alias of lane 3", "./billing/x.go", "路径"},
+		{"empty segment alias of lane 3", "billing//x.go", "路径"},
+		{"current dir segment", "a/./b.go", "路径"},
+		{"trailing slash", "billing/", "路径"},
 		{"absolute", "/etc/passwd", "路径"},
 		{"glob", "driver/*", "路径"},
 		{"option-like", "-x", "路径"},
@@ -136,6 +140,26 @@ func TestHumanTicketScope(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("recorded ticket face keeps every other section", func(t *testing.T) {
+		raw, err := os.ReadFile("../../testdata/recorded/feishu-description-behavior-trace.md")
+		if err != nil {
+			t.Fatal(err)
+		}
+		face, changed, found := withScope(string(raw), []string{"added/file.go"})
+		if !changed || !found {
+			t.Fatalf("changed=%v found=%v", changed, found)
+		}
+		section := scopeHeading.FindStringIndex(string(raw))
+		if section == nil || face[:section[1]] != string(raw)[:section[1]] {
+			t.Fatalf("head changed: %s", face)
+		}
+		line, rest, _ := strings.Cut(face[section[1]:], "\n")
+		originalLine, originalRest, _ := strings.Cut(string(raw)[section[1]:], "\n")
+		if line != originalLine+" added/file.go" || rest != originalRest {
+			t.Fatalf("line=%q rest changed=%v", line, rest != originalRest)
+		}
+	})
 
 	t.Run("ticket without SCOPE is refused", func(t *testing.T) {
 		h := scopedTicket(t, "")

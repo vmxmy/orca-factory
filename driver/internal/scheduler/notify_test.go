@@ -136,6 +136,38 @@ func TestHumanTicketNotifySendsCard(t *testing.T) {
 		}
 	})
 
+	t.Run("a later attempt with the same reason sends a new card", func(t *testing.T) {
+		store := &notifyStore{}
+		runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+		first := ticket
+		first.NotifyEvents = map[string]bool{}
+		requests = nil
+		if err := runtime.NotifyFeishu(context.Background(), first); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.issueComments) != 1 {
+			t.Fatalf("markers=%v", store.issueComments)
+		}
+		marker := store.issueComments[0]
+		first.NotifyEvents = map[string]bool{marker.Body: true}
+		if err := runtime.NotifyFeishu(context.Background(), first); err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 1 {
+			t.Fatalf("same attempt sent again: %d", len(requests))
+		}
+		next := first
+		record := *first.Resolution
+		record.Attempt = 5
+		next.Resolution = &record
+		if err := runtime.NotifyFeishu(context.Background(), next); err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 2 || !strings.Contains(requests[1].Content, `"attempt":"5"`) {
+			t.Fatalf("requests=%+v", requests)
+		}
+	})
+
 	t.Run("human ticket without a resolver receipt stays text", func(t *testing.T) {
 		plain := ticket
 		plain.Resolution = nil

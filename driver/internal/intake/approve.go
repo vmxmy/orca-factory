@@ -221,7 +221,8 @@ func scopeAddition(r review, record resolver.Record, lane3Globs string) (paths [
 		return nil, r.ticket + " 处置 Agent 没有申请 SCOPE，请发 扩SCOPE " + r.ticket + " <路径...>"
 	}
 	for _, p := range paths {
-		if !literalPath.MatchString(p) || slices.Contains(strings.Split(p, "/"), "..") {
+		segments := strings.Split(p, "/")
+		if !literalPath.MatchString(p) || slices.Contains(segments, "") || slices.Contains(segments, ".") || slices.Contains(segments, "..") {
 			return nil, fmt.Sprintf("路径 %s 不是仓库内的字面路径，不放行", p)
 		}
 		for _, glob := range strings.Fields(lane3Globs) {
