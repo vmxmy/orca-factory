@@ -38,8 +38,12 @@ func toast(kind, content string) *callback.CardActionTriggerResponse {
 // requester's pick once the thread already has a project, it also returns
 // the work the caller runs after responding: settlePick. An onboard button
 // press (OF-50) goes to handleOnboardAction instead, and an enable button
-// press (OF-54) goes to handleEnableAction.
+// press (OF-54) goes to handleEnableAction, and a human-ticket card press
+// (OF-354) goes to handleHumanAction.
 func (g *Gateway) HandleCardAction(event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, func(context.Context) error) {
+	if isHumanAction(event) {
+		return g.handleHumanAction(event)
+	}
 	if isOnboardAction(event) {
 		return g.handleOnboardAction(event)
 	}

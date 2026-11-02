@@ -9,9 +9,12 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -25,39 +28,43 @@ const (
 )
 
 var (
-	reviewCommand = regexp.MustCompile(`(?s)^(批准|驳回|放行|取消)\s+([A-Z][A-Z0-9]*)-([0-9]+)(?:\s+(\S.*))?$`)
+	reviewCommand = regexp.MustCompile(`(?s)^(批准|驳回|放行|取消|裁定|扩SCOPE)\s+([A-Z][A-Z0-9]*)-([0-9]+)(?:\s+(\S.*))?$`)
 	laneHeading   = regexp.MustCompile(`(?m)^## LANE 预判\s*\n\s*([0-9])`)
+	scopeHeading  = regexp.MustCompile(`(?m)^## SCOPE[^\n]*\n`)
+	nextHeading   = regexp.MustCompile(`(?m)^## `)
+	literalPath   = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_./@+-]*$`)
+	ticketID      = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-[0-9]+$`)
 )
 
-// review carries intake approval/rejection or human ticket release/cancellation.
+// review carries intake approval/rejection or a decision on a human ticket.
+// attempt is set for a card press, tying it to the escalation the card showed.
 type review struct {
+	verb           string
 	approve        bool
 	human          bool
 	prefix, ticket string
 	reason         string
+	attempt        int
 }
 
-func (r review) verb() string {
-	if r.human {
-		if r.approve {
-			return "放行"
-		}
-		return "取消"
+func newReview(verb, prefix, ticket, reason string) review {
+	return review{
+		verb:    verb,
+		approve: verb == "批准" || verb == feishu.VerbRelease,
+		human:   verb != "批准" && verb != "驳回",
+		prefix:  prefix, ticket: ticket, reason: reason,
 	}
-	if r.approve {
-		return "批准"
-	}
-	return "驳回"
 }
 
 // parseReview matches the whole prompt: approval/release takes no trailing
-// text and rejection/cancellation requires a reason.
+// text; rejection, cancellation and ruling require a reason, and a scope
+// extension requires its paths.
 func parseReview(prompt string) (review, bool) {
 	m := reviewCommand.FindStringSubmatch(prompt)
 	if m == nil {
 		return review{}, false
 	}
-	r := review{approve: m[1] == "批准" || m[1] == "放行", human: m[1] == "放行" || m[1] == "取消", prefix: m[2], ticket: m[2] + "-" + m[3], reason: strings.TrimSpace(m[4])}
+	r := newReview(m[1], m[2], m[2]+"-"+m[3], strings.TrimSpace(m[4]))
 	if r.approve == (r.reason != "") {
 		return review{}, false
 	}
@@ -81,7 +88,7 @@ func (r review) check(t issues.Task) (refusal string, done bool) {
 	case !r.approve && ready:
 		return fmt.Sprintf("%s 已放行，不能驳回", r.ticket), false
 	case state != "Todo":
-		return fmt.Sprintf("%s 状态为 %s，只有 Todo 可以%s", r.ticket, state, r.verb()), false
+		return fmt.Sprintf("%s 状态为 %s，只有 Todo 可以%s", r.ticket, state, r.verb), false
 	}
 	if !r.approve {
 		return "", false
@@ -133,7 +140,8 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 		return g.reply(ctx, id, fmt.Sprintf("账本中读取 %s 失败", r.ticket))
 	}
 	if r.human {
-		return g.handleHumanReview(ctx, id, sender, r, p.Ledger, t)
+		reply, _ := g.applyHumanReview(ctx, sender, r, p, t)
+		return g.reply(ctx, id, reply)
 	}
 	refusal, done := r.check(t)
 	if done {
@@ -143,7 +151,7 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 		return g.reply(ctx, id, refusal)
 	}
 	if err := g.applyReview(ctx, p.Ledger, t.Metadata.ID, sender, r); err != nil {
-		fmt.Fprintf(os.Stderr, "intake review %s %s failed: %v\n", r.verb(), r.ticket, err)
+		fmt.Fprintf(os.Stderr, "intake review %s %s failed: %v\n", r.verb, r.ticket, err)
 		return g.reply(ctx, id, failedReply)
 	}
 	if err := g.reply(ctx, id, "已"+r.outcome()+" "+r.ticket); err != nil {
@@ -199,52 +207,202 @@ func humanReleaseRefusal(ticket string, description string, latest map[string]st
 	return ""
 }
 
-func (g *Gateway) handleHumanReview(ctx context.Context, id, sender string, r review, ledger Ledger, ticket issues.Task) error {
-	if ticket.Metadata.State == "Canceled" {
-		return g.reply(ctx, id, r.ticket+" 当前状态为 Canceled")
+// scopeAddition resolves the paths a scope extension adds: the command's own,
+// or for a card press the list the latest escalation declared. refusal, when
+// not empty, is why they may not be added.
+func scopeAddition(r review, record resolver.Record, lane3Globs string) (paths []string, refusal string) {
+	paths = strings.Fields(r.reason)
+	if len(paths) == 0 {
+		if decision, err := resolver.ParseResult(record.Result); err == nil {
+			paths = decision.ScopeRequest()
+		}
 	}
-	comments, err := ledger.ListComments(ctx, ticket.Metadata.ID)
+	if len(paths) == 0 {
+		return nil, r.ticket + " 处置 Agent 没有申请 SCOPE，请发 扩SCOPE " + r.ticket + " <路径...>"
+	}
+	for _, p := range paths {
+		segments := strings.Split(p, "/")
+		if !literalPath.MatchString(p) || slices.Contains(segments, "") || slices.Contains(segments, ".") || slices.Contains(segments, "..") {
+			return nil, fmt.Sprintf("路径 %s 不是仓库内的字面路径，不放行", p)
+		}
+		for _, glob := range strings.Fields(lane3Globs) {
+			if task.ScopeMatch(glob, p) {
+				return nil, fmt.Sprintf("路径 %s 命中 lane 3，不放行", p)
+			}
+		}
+	}
+	return paths, ""
+}
+
+// withScope merges paths into the ticket face's SCOPE section. Paths an
+// existing pattern already covers are not added, so a retry changes nothing.
+func withScope(description string, paths []string) (face string, changed, ok bool) {
+	heading := scopeHeading.FindStringIndex(description)
+	if heading == nil {
+		return description, false, false
+	}
+	end := len(description)
+	if next := nextHeading.FindStringIndex(description[heading[1]:]); next != nil {
+		end = heading[1] + next[0]
+	}
+	section := description[heading[1]:end]
+	scope := strings.Fields(section)
+	for _, p := range paths {
+		if !slices.ContainsFunc(scope, func(pattern string) bool { return task.ScopeMatch(pattern, p) }) {
+			scope = append(scope, p)
+			changed = true
+		}
+	}
+	trailing := section[len(strings.TrimRight(section, " \t\r\n")):]
+	return description[:heading[1]] + strings.Join(scope, " ") + trailing + description[end:], changed, true
+}
+
+// applyHumanReview writes a decision on a human ticket and returns the reply
+// and whether the decision was applied. A scope extension edits the face
+// before its event, so a retry after a crash between the two converges.
+func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review, p Project, ticket issues.Task) (string, bool) {
+	if ticket.Metadata.State == "Canceled" {
+		return r.ticket + " 当前状态为 Canceled", false
+	}
+	comments, err := p.Ledger.ListComments(ctx, ticket.Metadata.ID)
 	if err != nil {
-		return g.reply(ctx, id, r.ticket+" 读取评论失败，请重试")
+		return r.ticket + " 读取评论失败，请重试", false
 	}
 	latest := latestHumanEvidence(comments)
 	raw, ok := latest[resolver.Prefix]
 	if !ok {
-		return g.reply(ctx, id, r.ticket+" 当前没有 resolver-state，不处于 human 状态")
+		return r.ticket + " 当前没有 resolver-state，不处于 human 状态", false
 	}
 	var record resolver.Record
 	if json.Unmarshal([]byte(raw), &record) != nil || record.Version != 1 || record.Attempt < 1 || record.Phase == "" {
-		return g.reply(ctx, id, r.ticket+" 证据冲突：resolver-state 解析失败")
+		return r.ticket + " 证据冲突：resolver-state 解析失败", false
+	}
+	if r.attempt != 0 && r.attempt != record.Attempt {
+		return r.ticket + " 这张卡片已过期，请看最新通知", false
 	}
 	if record.Phase != "human" {
-		return g.reply(ctx, id, fmt.Sprintf("%s 当前 resolver-state phase 为 %s，只有 human 可以%s", r.ticket, record.Phase, r.verb()))
+		return fmt.Sprintf("%s 当前 resolver-state phase 为 %s，只有 human 可以%s", r.ticket, record.Phase, r.verb), false
 	}
-	if r.approve {
+	if r.verb != feishu.VerbCancel {
 		if refusal := humanReleaseRefusal(r.ticket, ticket.Description, latest); refusal != "" {
-			return g.reply(ctx, id, refusal)
+			return refusal, false
 		}
 	}
-	body := fmt.Sprintf("%s：%s %s", r.verb(), sender, g.now().Format(time.RFC3339))
-	if r.approve {
+	body := fmt.Sprintf("%s：%s %s", r.verb, sender, g.now().Format(time.RFC3339))
+	note := strings.Join(strings.Fields(r.reason), " ")
+	switch r.verb {
+	case feishu.VerbRuling, feishu.VerbCancel:
+		body += "\n理由：" + note
+	case feishu.VerbScope:
+		paths, refusal := scopeAddition(r, record, p.Lane3Globs)
+		if refusal != "" {
+			return refusal, false
+		}
+		face, changed, found := withScope(ticket.Description, paths)
+		if !found {
+			return r.ticket + " 票面缺少 SCOPE，不放行", false
+		}
+		if changed {
+			patch, err := json.Marshal(map[string]string{"description": face})
+			if err != nil {
+				return failedReply, false
+			}
+			if _, err := p.Ledger.Edit(ctx, ticket.Metadata.ID, patch); err != nil {
+				fmt.Fprintf(os.Stderr, "intake scope edit %s failed: %v\n", r.ticket, err)
+				return failedReply, false
+			}
+		}
+		body += "\n路径：" + strings.Join(paths, " ")
+	}
+	if r.verb != feishu.VerbCancel {
 		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
-	} else {
-		body += "\n理由：" + strings.Join(strings.Fields(r.reason), " ")
 	}
-	if r.approve || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
-		if _, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {
-			return g.reply(ctx, id, failedReply)
+	if r.verb != feishu.VerbCancel || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+		if _, err := p.Ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {
+			return failedReply, false
 		}
 	}
-	if !r.approve {
-		if _, err := ledger.UpdateIssue(ctx, ticket.Metadata.ID, "Canceled", nil, nil); err != nil {
-			return g.reply(ctx, id, failedReply)
+	if r.verb == feishu.VerbCancel {
+		if _, err := p.Ledger.UpdateIssue(ctx, ticket.Metadata.ID, "Canceled", nil, nil); err != nil {
+			return failedReply, false
 		}
 	}
-	return g.reply(ctx, id, "已"+r.verb()+" "+r.ticket)
+	return "已" + r.verb + " " + r.ticket, true
+}
+
+func isHumanAction(event *callback.CardActionTriggerEvent) bool {
+	if event == nil || event.Event == nil || event.Event.Action == nil {
+		return false
+	}
+	action, _ := event.Event.Action.Value[feishu.HumanActionKey].(string)
+	return action == feishu.HumanAction
+}
+
+// parseHumanAction reads a press on the human-ticket card. The chat must be
+// one the gateway serves.
+func (g *Gateway) parseHumanAction(event *callback.CardActionTriggerEvent) (review, bool) {
+	e := event.Event
+	if e.Operator == nil || e.Operator.OpenID == "" || e.Context == nil || !threadRoot.MatchString(e.Context.OpenMessageID) {
+		return review{}, false
+	}
+	if _, owned := g.chatProject(e.Context.OpenChatID); e.Context.OpenChatID != g.chat && !owned {
+		return review{}, false
+	}
+	verb, _ := e.Action.Value[feishu.HumanVerbKey].(string)
+	ticket, _ := e.Action.Value[feishu.HumanTicketKey].(string)
+	rawAttempt, _ := e.Action.Value[feishu.HumanAttemptKey].(string)
+	attempt, err := strconv.Atoi(rawAttempt)
+	id := ticketID.FindStringSubmatch(ticket)
+	if err != nil || attempt < 1 || id == nil || !slices.Contains([]string{feishu.VerbRelease, feishu.VerbRuling, feishu.VerbScope, feishu.VerbCancel}, verb) {
+		return review{}, false
+	}
+	note, _ := e.Action.FormValue[feishu.HumanNoteField].(string)
+	r := newReview(verb, id[1], ticket, strings.TrimSpace(note))
+	r.attempt = attempt
+	return r, true
+}
+
+// handleHumanAction answers a card press within the callback deadline with a
+// toast. The ledger read and write run after the response under the same lock
+// and rules as the text commands, so the ledger stays the decision's record.
+func (g *Gateway) handleHumanAction(event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, func(context.Context) error) {
+	r, ok := g.parseHumanAction(event)
+	if !ok {
+		return toast("error", "无法识别的卡片操作"), nil
+	}
+	operator, card := event.Event.Operator.OpenID, event.Event.Context.OpenMessageID
+	if !slices.Contains(g.approvers, operator) {
+		return toast("error", noApprovalReply), nil
+	}
+	needsReason := r.verb == feishu.VerbRuling || r.verb == feishu.VerbCancel
+	if needsReason && r.reason == "" {
+		return toast("error", "请先在输入框填写理由"), nil
+	}
+	if !needsReason && r.reason != "" {
+		return toast("error", r.verb+"不带理由，需要说明时点裁定"), nil
+	}
+	return toast("success", "正在处理 "+r.ticket), func(ctx context.Context) error {
+		p := g.project(r.prefix)
+		if p.Ledger == nil {
+			return g.reply(ctx, card, fmt.Sprintf("未找到项目 %s 的账本", r.prefix))
+		}
+		unlock := g.lockThread("review/" + r.ticket)
+		defer unlock()
+		t, err := p.Ledger.Read(ctx, r.ticket)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "intake review read %s failed: %v\n", r.ticket, err)
+			return g.reply(ctx, card, fmt.Sprintf("账本中读取 %s 失败", r.ticket))
+		}
+		reply, applied := g.applyHumanReview(ctx, operator, r, p, t)
+		if !applied {
+			return g.reply(ctx, card, reply)
+		}
+		return g.updateCard(ctx, card, feishu.SettledHumanCard(r.ticket, t.Title, r.verb, operator, r.reason))
+	}
 }
 
 func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender string, r review) error {
-	prefix := r.verb() + "："
+	prefix := r.verb + "："
 	events, err := ledger.ListComments(ctx, ticket)
 	if err != nil {
 		return err

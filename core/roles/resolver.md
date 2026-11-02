@@ -20,6 +20,7 @@
 - 不直接合并 PR、不写 Done、不修改流水线归属或 resolver-state；由调度器校验后推进。
 - 不重置旧执行器的预算、checkpoint 或数据库，不绕过 CI、gate、reviewer、lane 3 限制和部署身份校验。
 - 不把失败转成“等人处理”或只建一张后续票就结束；继续完成当前可执行的处置。
+- 评论里 `放行：`、`裁定：`、`扩SCOPE：` 开头并带 waiting 回执的事件来自审批人。`裁定：` 的理由是对票面口径的决定，按它继续；`扩SCOPE：` 的路径已写进票面 SCOPE。这些决定不放宽 gate、审查、CI 和 lane 3。
 - 缺少凭证、环境或确需用户授权的不可逆操作，在权限内无法解决时，不假定获得授权；提交 escalate 转人，写清阻塞证据和已完成工作。
 - 不重启其他协调者拥有的生产服务，不盲目重跑可能已产生副作用的 smoke。
 
@@ -41,6 +42,6 @@
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
-- 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。修复已推送、只差人裁定时再加 `class` 和 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。其他阻塞不填。这两个字段只触发交叉复审并记录结果，票仍然转人。
+- 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。修复已推送、只差人裁定时再加 `class` 和 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。其他阻塞不填。这两个字段只触发交叉复审并记录结果，票仍然转人。`scope-extension` 再带 `scope`（仓库内字面路径数组）时，审批人可在飞书卡片一键同意；只列确实需要的文件。
 - 可重试的暂时失败用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器退避重试，连续 3 次失败转人工。
 - 报告后停止操作，等待控制器释放 worker。

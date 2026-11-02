@@ -61,7 +61,7 @@ func TestBlockedResolutionEscalatesOnce(t *testing.T) {
 			t.Fatalf("ticket not in human phase: %+v", tickets)
 		}
 	}
-	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "类别: 转人") || !strings.Contains(sender.messages[0], "原因: PATH 缺少 PostgreSQL") {
+	if len(sender.messages) != 1 || !strings.Contains(sender.messages[0], "转人 OF-1") || !strings.Contains(sender.messages[0], "原因：PATH 缺少 PostgreSQL") {
 		t.Fatalf("messages=%q", sender.messages)
 	}
 	store.commentsByID["id"] = append(store.commentsByID["id"], task.Comment{ID: "z", Body: resolver.Prefix + `{"version":1,"attempt":1,"phase":"waiting"}`})

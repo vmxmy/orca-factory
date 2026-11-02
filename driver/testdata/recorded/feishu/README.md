@@ -17,3 +17,5 @@
 `bot-message-reply-card.json`、`bot-message-update-card.json` 于 2026-10-16 以应用身份（`lark-cli 1.0.97 api --as bot`）在真实需求群录制（OF-47）：对一条机器人根消息以 `reply_in_thread=true` 回复 JSON 2.0 项目选择卡片，再以 `PATCH /open-apis/im/v1/messages/:message_id` 把卡片改为已选择状态。message_id 脱敏为 `om_REDACTED_ROOT`（根消息）与 `om_REDACTED_CARD`（卡片），thread_id 为 `omt_REDACTED`；lark-cli 附加的 `_notice` 版本提示已删除。`constructed-card-action-project-pick.json` 不是录制：它按 SDK 类型构造 `card.action.trigger` 回调，待上线后真实点击实录替换。
 
 `bot-events-list-too-large.json` 于 2026-10-28 以应用身份录制（OF-293），用的不是 lark-cli，而是 driver 自己的 Go 客户端只读请求生产 Base：20 张 ZCP 票的事件过滤、每页 450 条，响应体超过 10 MiB。原始 OpenAPI 信封的 `code`、`msg`、`error.log_id` 按 lark-cli 的形态放在 `response.error` 下，`msg` 改记为 `message`。base token 替换为 `BASE_TOKEN`，记录 ID 与表 ID 保持原样。
+
+`bot-message-send-card.json` 于 2026-11-02 以应用身份在真实项目群录制（OF-354），用 `feishu.HumanCard` 生成的转人卡片发送成功，同一消息随后用 `SettledHumanCard` 更新成功。响应里的 `body` 已替换为占位。`bot-event-card-action-human-review.json` 于同日用官方 Go SDK 长连接录制，是真人在该卡片输入框写 `test` 后点“裁定”的原始回调，已脱敏身份、令牌和消息 ID。

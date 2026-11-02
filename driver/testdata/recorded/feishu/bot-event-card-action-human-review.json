@@ -1,0 +1,38 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "REDACTED_EVENT_ID",
+    "token": "REDACTED_TOKEN",
+    "create_time": "1793601784524860",
+    "event_type": "card.action.trigger",
+    "tenant_key": "TENANT_KEY",
+    "app_id": "cli_REDACTED"
+  },
+  "event": {
+    "operator": {
+      "tenant_key": "TENANT_KEY",
+      "open_id": "ou_REDACTED",
+      "union_id": "on_REDACTED"
+    },
+    "token": "REDACTED_CARD_TOKEN",
+    "action": {
+      "value": {
+        "action": "human_review",
+        "attempt": "1",
+        "ticket": "OF-354",
+        "verb": "裁定"
+      },
+      "tag": "button",
+      "timezone": "Asia/Shanghai",
+      "form_value": {
+        "note": "test"
+      },
+      "name": "human_ruling"
+    },
+    "host": "im_message",
+    "context": {
+      "open_message_id": "om_REDACTED_CARD",
+      "open_chat_id": "oc_REDACTED"
+    }
+  }
+}
