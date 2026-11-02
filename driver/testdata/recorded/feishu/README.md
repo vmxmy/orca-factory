@@ -18,4 +18,4 @@
 
 `bot-events-list-too-large.json` 于 2026-10-28 以应用身份录制（OF-293），用的不是 lark-cli，而是 driver 自己的 Go 客户端只读请求生产 Base：20 张 ZCP 票的事件过滤、每页 450 条，响应体超过 10 MiB。原始 OpenAPI 信封的 `code`、`msg`、`error.log_id` 按 lark-cli 的形态放在 `response.error` 下，`msg` 改记为 `message`。base token 替换为 `BASE_TOKEN`，记录 ID 与表 ID 保持原样。
 
-`bot-message-send-card.json` 于 2026-11-02 以应用身份在真实项目群录制（OF-354），用 `feishu.HumanCard` 生成的转人卡片发送成功，同一消息随后用 `SettledHumanCard` 更新成功。响应里的 `body` 已替换为占位。`constructed-card-action-human-review.json` 是构造样本，形状沿用 `constructed-card-action-project-pick.json`，点击回调要真人操作，尚未录制。
+`bot-message-send-card.json` 于 2026-11-02 以应用身份在真实项目群录制（OF-354），用 `feishu.HumanCard` 生成的转人卡片发送成功，同一消息随后用 `SettledHumanCard` 更新成功。响应里的 `body` 已替换为占位。`bot-event-card-action-human-review.json` 于同日用官方 Go SDK 长连接录制，是真人在该卡片输入框写 `test` 后点“裁定”的原始回调，已脱敏身份、令牌和消息 ID。

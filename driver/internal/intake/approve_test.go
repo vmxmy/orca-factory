@@ -180,11 +180,11 @@ func TestHumanTicketScope(t *testing.T) {
 	})
 }
 
-// pressHumanCard replays the constructed card callback through the SDK
+// pressHumanCard replays the recorded card callback through the SDK
 // dispatcher with the fields a test varies.
 func pressHumanCard(t *testing.T, h *submitHarness, operator, verb, attempt, note string) (*callback.Toast, func(context.Context) error) {
 	t.Helper()
-	raw, err := os.ReadFile("../../testdata/recorded/feishu/constructed-card-action-human-review.json")
+	raw, err := os.ReadFile("../../testdata/recorded/feishu/bot-event-card-action-human-review.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +197,7 @@ func pressHumanCard(t *testing.T, h *submitHarness, operator, verb, attempt, not
 	action := event["action"].(map[string]any)
 	action["form_value"] = map[string]any{"note": note}
 	value := action["value"].(map[string]any)
-	value["verb"], value["attempt"] = verb, attempt
+	value["verb"], value["attempt"], value["ticket"] = verb, attempt, "OF-12"
 	if raw, err = json.Marshal(payload); err != nil {
 		t.Fatal(err)
 	}
@@ -216,6 +216,26 @@ func pressHumanCard(t *testing.T, h *submitHarness, operator, verb, attempt, not
 		t.Fatalf("callback response=%#v, want a toast and no card", out)
 	}
 	return response.Toast, begin
+}
+
+func TestHumanTicketCardRecordedPress(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/feishu/bot-event-card-action-human-review.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, _ := humanTicket(t)
+	var got review
+	var ok bool
+	handler := dispatcher.NewEventDispatcher("", "").OnP2CardActionTrigger(func(_ context.Context, e *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
+		got, ok = h.g.parseHumanAction(e)
+		return toast("success", ""), nil
+	})
+	if _, err := handler.Do(context.Background(), raw); err != nil {
+		t.Fatal(err)
+	}
+	if !ok || got.verb != "裁定" || got.ticket != "OF-354" || got.prefix != "OF" || got.attempt != 1 || got.reason != "test" || !got.human || got.approve {
+		t.Fatalf("ok=%v review=%+v", ok, got)
+	}
 }
 
 func TestHumanTicketCard(t *testing.T) {
