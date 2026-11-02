@@ -10,6 +10,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -45,6 +46,13 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	}
 	if _, err := client.CreateComment(ctx, t.ID, marker); err != nil {
 		return fmt.Errorf("notification event write: %w", err)
+	}
+	if category == "转人" && t.Resolution != nil && t.Resolution.Phase == "human" {
+		card := feishu.HumanCard{Ticket: t.Identifier, Title: t.Title, Reason: reason, URL: t.URL, Attempt: t.Resolution.Attempt}
+		if decision, err := resolver.ParseResult(t.Resolution.Result); err == nil {
+			card.Scope = decision.ScopeRequest()
+		}
+		return sender.SendCard(ctx, chat, card.JSON())
 	}
 	body := fmt.Sprintf("%s %s\n类别: %s\n原因: %s\n%s", t.Identifier, t.Title, category, reason, t.URL)
 	if category == "转人" {

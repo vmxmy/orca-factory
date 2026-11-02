@@ -9,6 +9,33 @@ import (
 	"testing"
 )
 
+func TestSendCardRecorded(t *testing.T) {
+	rec := loadRecording(t, "bot-message-send-card.json")
+	var body struct {
+		ReceiveID string `json:"receive_id"`
+		MsgType   string `json:"msg_type"`
+		Content   string `json:"content"`
+	}
+	if err := json.Unmarshal(rec.Request.Body, &body); err != nil {
+		t.Fatal(err)
+	}
+	c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		var got, want any
+		if r.Method != rec.Request.Method || r.URL.Path != rec.Request.Path || r.URL.Query().Get("receive_id_type") != "chat_id" || json.NewDecoder(r.Body).Decode(&got) != nil || json.Unmarshal(rec.Request.Body, &want) != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("request %s %s body=%v want=%v", r.Method, r.URL, got, want)
+		}
+		if err := json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": rec.Response.Data}); err != nil {
+			t.Error(err)
+		}
+	}, Options{})
+	if body.MsgType != "interactive" {
+		t.Fatalf("recorded msg_type=%s", body.MsgType)
+	}
+	if err := c.SendCard(context.Background(), body.ReceiveID, body.Content); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFeishuNotifyRecorded(t *testing.T) {
 	for _, name := range []string{"bot-message-send.json", "bot-message-invalid-chat.json", "bot-message-bot-not-in-chat.json", "bot-scope-denied.json"} {
 		t.Run(name, func(t *testing.T) {

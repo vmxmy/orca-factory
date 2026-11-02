@@ -26,6 +26,7 @@ type Ledger interface {
 	ListComments(context.Context, string) ([]task.Comment, error)
 	CreateComment(context.Context, string, string) (task.Comment, error)
 	UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error)
+	Edit(context.Context, string, []byte) (issues.Task, error)
 }
 
 const (

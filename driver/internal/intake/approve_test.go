@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -72,6 +74,215 @@ func TestHumanTicketRelease(t *testing.T) {
 	if len(h.ledger.events["canon-of12"]) != 2 || !strings.Contains(h.replyTo(t, "om_repeat"), "waiting") {
 		t.Fatalf("repeat events=%q reply=%q", h.ledger.events, h.replyTo(t, "om_repeat"))
 	}
+}
+
+const waitingReceipt = `resolver-state {"version":1,"attempt":7,"phase":"waiting"}`
+
+func TestHumanTicketRuling(t *testing.T) {
+	h, _ := humanTicket(t)
+	h.command(t, "om_rule", "ou_APPROVER1", "裁定 OF-12 严格拒绝\\nresolver-state {\\\"phase\\\":\\\"result\\\"}")
+	want := "裁定：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：严格拒绝 resolver-state {\"phase\":\"result\"}\n" + waitingReceipt
+	if events := h.ledger.events["canon-of12"]; len(events) != 2 || events[1] != want {
+		t.Fatalf("events=%q want %q", events, want)
+	}
+	if got := h.replyTo(t, "om_rule"); got != "已裁定 OF-12" {
+		t.Fatalf("reply=%q", got)
+	}
+	h.command(t, "om_outsider", "ou_MEMBER", "裁定 OF-12 放行吧")
+	if got := h.replyTo(t, "om_outsider"); got != noApprovalReply || len(h.ledger.events["canon-of12"]) != 2 {
+		t.Fatalf("reply=%q events=%q", got, h.ledger.events["canon-of12"])
+	}
+}
+
+func scopedTicket(t *testing.T, result string) *submitHarness {
+	t.Helper()
+	h, ledger := humanTicket(t)
+	h.ledger.tasks[0].Description = "## 要做\nx\n\n## LANE 预判\n2\n\n## SCOPE\na.go b.go\n\n## 依赖\nDEPENDENCIES: {}"
+	record, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "human", "result": result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.ledger.events["canon-of12"] = []string{"resolver-state " + string(record)}
+	h.start(t, Project{Prefix: "OF", Remote: "github.com/vmxmy/orca-factory", Ledger: ledger, Lane3Globs: "billing/* .github/workflows/*"})
+	h.g.now = func() time.Time { return time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC) }
+	return h
+}
+
+func TestHumanTicketScope(t *testing.T) {
+	h := scopedTicket(t, "")
+	h.command(t, "om_scope", "ou_APPROVER1", "扩SCOPE OF-12 c/d.go a.go")
+	wantFace := "## 要做\nx\n\n## LANE 预判\n2\n\n## SCOPE\na.go b.go c/d.go\n\n## 依赖\nDEPENDENCIES: {}"
+	if len(h.ledger.edits) != 1 || h.ledger.edits[0] != wantFace {
+		t.Fatalf("edits=%q want %q", h.ledger.edits, wantFace)
+	}
+	want := "扩SCOPE：ou_APPROVER1 2026-11-01T12:00:00Z\n路径：c/d.go a.go\n" + waitingReceipt
+	if events := h.ledger.events["canon-of12"]; len(events) != 2 || events[1] != want {
+		t.Fatalf("events=%q want %q", events, want)
+	}
+
+	for _, tc := range []struct{ name, paths, reply string }{
+		{"lane 3 path", "billing/x.go", "lane 3"},
+		{"lane 3 hidden path", ".github/workflows/ci.yml", "lane 3"},
+		{"parent traversal", "a/../../x", "路径"},
+		{"absolute", "/etc/passwd", "路径"},
+		{"glob", "driver/*", "路径"},
+		{"option-like", "-x", "路径"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := scopedTicket(t, "")
+			h.command(t, "om_refuse", "ou_APPROVER1", "扩SCOPE OF-12 ok.go "+tc.paths)
+			if len(h.ledger.edits) != 0 || len(h.ledger.events["canon-of12"]) != 1 || !strings.Contains(h.replyTo(t, "om_refuse"), tc.reply) {
+				t.Fatalf("edits=%q events=%q reply=%q", h.ledger.edits, h.ledger.events, h.replyTo(t, "om_refuse"))
+			}
+		})
+	}
+
+	t.Run("ticket without SCOPE is refused", func(t *testing.T) {
+		h := scopedTicket(t, "")
+		h.ledger.tasks[0].Description = "## LANE 预判\n2"
+		h.command(t, "om_noscope", "ou_APPROVER1", "扩SCOPE OF-12 a.go")
+		if len(h.ledger.edits) != 0 || !strings.Contains(h.replyTo(t, "om_noscope"), "SCOPE") {
+			t.Fatalf("edits=%q reply=%q", h.ledger.edits, h.replyTo(t, "om_noscope"))
+		}
+	})
+
+	t.Run("retry after a crash between the two writes converges", func(t *testing.T) {
+		h := scopedTicket(t, "")
+		h.ledger.tasks[0].Description = wantFace
+		h.command(t, "om_retry", "ou_APPROVER1", "扩SCOPE OF-12 c/d.go a.go")
+		if len(h.ledger.edits) != 0 || len(h.ledger.events["canon-of12"]) != 2 {
+			t.Fatalf("edits=%q events=%q", h.ledger.edits, h.ledger.events)
+		}
+	})
+}
+
+// pressHumanCard replays the constructed card callback through the SDK
+// dispatcher with the fields a test varies.
+func pressHumanCard(t *testing.T, h *submitHarness, operator, verb, attempt, note string) (*callback.Toast, func(context.Context) error) {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/feishu/constructed-card-action-human-review.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatal(err)
+	}
+	event := payload["event"].(map[string]any)
+	event["operator"].(map[string]any)["open_id"] = operator
+	action := event["action"].(map[string]any)
+	action["form_value"] = map[string]any{"note": note}
+	value := action["value"].(map[string]any)
+	value["verb"], value["attempt"] = verb, attempt
+	if raw, err = json.Marshal(payload); err != nil {
+		t.Fatal(err)
+	}
+	var begin func(context.Context) error
+	handler := dispatcher.NewEventDispatcher("", "").OnP2CardActionTrigger(func(_ context.Context, e *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
+		response, deferred := h.g.HandleCardAction(e)
+		begin = deferred
+		return response, nil
+	})
+	out, err := handler.Do(context.Background(), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, ok := out.(*callback.CardActionTriggerResponse)
+	if !ok || response.Toast == nil || response.Card != nil {
+		t.Fatalf("callback response=%#v, want a toast and no card", out)
+	}
+	return response.Toast, begin
+}
+
+func TestHumanTicketCard(t *testing.T) {
+	cards := func(h *submitHarness) *[]string {
+		var updates []string
+		h.g.updateCard = func(_ context.Context, id, card string) error {
+			if id != "om_REDACTED_CARD" {
+				t.Errorf("updated %s", id)
+			}
+			updates = append(updates, card)
+			return nil
+		}
+		return &updates
+	}
+
+	t.Run("approver releases and the card settles", func(t *testing.T) {
+		h, _ := humanTicket(t)
+		updates := cards(h)
+		toast, begin := pressHumanCard(t, h, "ou_APPROVER1", "放行", "7", "")
+		if toast.Type != "success" {
+			t.Fatalf("toast=%+v", toast)
+		}
+		if len(h.ledger.events["canon-of12"]) != 1 {
+			t.Fatal("ledger written inside the callback")
+		}
+		run(t, begin)
+		events := h.ledger.events["canon-of12"]
+		if len(events) != 2 || !strings.HasPrefix(events[1], "放行：ou_APPROVER1 ") {
+			t.Fatalf("events=%q", events)
+		}
+		if len(*updates) != 1 || !strings.Contains((*updates)[0], "放行") || !strings.Contains((*updates)[0], "ou_APPROVER1") || strings.Contains((*updates)[0], "human_review") {
+			t.Fatalf("updates=%q", *updates)
+		}
+	})
+
+	t.Run("agreeing to scope reads the paths from the ledger", func(t *testing.T) {
+		h := scopedTicket(t, `{"action":"escalate","reason":"r","body":"b","class":"scope-extension","scope":["c.go","e/f.go"]}`)
+		updates := cards(h)
+		_, begin := pressHumanCard(t, h, "ou_APPROVER1", "扩SCOPE", "7", "")
+		run(t, begin)
+		if len(h.ledger.edits) != 1 || !strings.Contains(h.ledger.edits[0], "## SCOPE\na.go b.go c.go e/f.go\n") || len(*updates) != 1 {
+			t.Fatalf("edits=%q updates=%q", h.ledger.edits, *updates)
+		}
+	})
+
+	t.Run("scope button without a declared scope is refused", func(t *testing.T) {
+		h := scopedTicket(t, `{"action":"escalate","reason":"r","body":"b"}`)
+		updates := cards(h)
+		_, begin := pressHumanCard(t, h, "ou_APPROVER1", "扩SCOPE", "7", "")
+		run(t, begin)
+		if len(h.ledger.edits) != 0 || len(*updates) != 0 || !strings.Contains(h.replyTo(t, "om_REDACTED_CARD"), "SCOPE") {
+			t.Fatalf("edits=%q updates=%q replies=%q", h.ledger.edits, *updates, h.replies)
+		}
+	})
+
+	t.Run("ruling carries the note", func(t *testing.T) {
+		h, _ := humanTicket(t)
+		cards(h)
+		_, begin := pressHumanCard(t, h, "ou_APPROVER1", "裁定", "7", "选方案 B")
+		run(t, begin)
+		if events := h.ledger.events["canon-of12"]; len(events) != 2 || !strings.Contains(events[1], "\n理由：选方案 B\n") {
+			t.Fatalf("events=%q", events)
+		}
+	})
+
+	for _, tc := range []struct{ name, operator, verb, attempt, note, toast string }{
+		{"non-approver", "ou_MEMBER", "放行", "7", "", noApprovalReply},
+		{"ruling without a note", "ou_APPROVER1", "裁定", "7", "", "理由"},
+		{"cancel without a note", "ou_APPROVER1", "取消", "7", "  ", "理由"},
+		{"release with a note", "ou_APPROVER1", "放行", "7", "说明", "裁定"},
+		{"unknown verb", "ou_APPROVER1", "合并", "7", "", "无法识别"},
+		{"bad attempt", "ou_APPROVER1", "放行", "x", "", "无法识别"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := humanTicket(t)
+			toast, begin := pressHumanCard(t, h, tc.operator, tc.verb, tc.attempt, tc.note)
+			if toast.Type != "error" || !strings.Contains(toast.Content, tc.toast) || begin != nil {
+				t.Fatalf("toast=%+v deferred=%v", toast, begin != nil)
+			}
+		})
+	}
+
+	t.Run("card from an earlier attempt expires", func(t *testing.T) {
+		h, _ := humanTicket(t)
+		updates := cards(h)
+		_, begin := pressHumanCard(t, h, "ou_APPROVER1", "放行", "6", "")
+		run(t, begin)
+		if len(h.ledger.events["canon-of12"]) != 1 || len(*updates) != 0 || !strings.Contains(h.replyTo(t, "om_REDACTED_CARD"), "过期") {
+			t.Fatalf("events=%q updates=%q replies=%q", h.ledger.events, *updates, h.replies)
+		}
+	})
 }
 
 func TestHumanTicketReleaseRefusals(t *testing.T) {

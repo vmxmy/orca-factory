@@ -22,6 +22,7 @@ type fakeLedger struct {
 	creates []issues.CreateInput
 	updates []ledgerUpdate
 	events  map[string][]string
+	edits   []string
 }
 
 type ledgerUpdate struct{ id, state, add string }
@@ -70,6 +71,22 @@ func (l *fakeLedger) UpdateIssue(_ context.Context, id, state string, add, _ []s
 		t.Labels.Nodes = append(t.Labels.Nodes, task.NamedID{ID: label, Name: label})
 	}
 	return t.Issue, nil
+}
+
+func (l *fakeLedger) Edit(_ context.Context, id string, raw []byte) (issues.Task, error) {
+	i, err := l.index(id)
+	if err != nil {
+		return issues.Task{}, err
+	}
+	var patch struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		return issues.Task{}, err
+	}
+	l.edits = append(l.edits, patch.Description)
+	l.tasks[i].Description = patch.Description
+	return l.tasks[i], nil
 }
 
 func (l *fakeLedger) ListComments(_ context.Context, id string) ([]task.Comment, error) {

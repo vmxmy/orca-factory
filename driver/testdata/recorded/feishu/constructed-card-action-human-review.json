@@ -1,0 +1,36 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "CONSTRUCTED_EVENT_ID",
+    "token": "CONSTRUCTED_TOKEN",
+    "create_time": "1792130000000000",
+    "event_type": "card.action.trigger",
+    "tenant_key": "TENANT_KEY",
+    "app_id": "cli_REDACTED"
+  },
+  "event": {
+    "operator": {
+      "tenant_key": "TENANT_KEY",
+      "open_id": "ou_APPROVER1"
+    },
+    "token": "CONSTRUCTED_CARD_TOKEN",
+    "action": {
+      "value": {
+        "action": "human_review",
+        "verb": "放行",
+        "ticket": "OF-12",
+        "attempt": "7"
+      },
+      "tag": "button",
+      "name": "human_release",
+      "form_value": {
+        "note": ""
+      }
+    },
+    "host": "im_message",
+    "context": {
+      "open_message_id": "om_REDACTED_CARD",
+      "open_chat_id": "oc_REDACTED"
+    }
+  }
+}

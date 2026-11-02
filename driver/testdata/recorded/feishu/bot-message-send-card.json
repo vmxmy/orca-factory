@@ -1,0 +1,36 @@
+{
+  "request": {
+    "body": {
+      "content": "{\"body\":{\"elements\":[{\"tag\":\"div\",\"text\":{\"content\":\"【测试】OF-354 卡片录制样本，可忽略\",\"tag\":\"plain_text\"}},{\"tag\":\"div\",\"text\":{\"content\":\"原因：录制样本：只差把 SCOPE 外文件纳入\",\"tag\":\"plain_text\"}},{\"tag\":\"div\",\"text\":{\"content\":\"申请扩 SCOPE：driver/internal/feishu/humancard.go\",\"tag\":\"plain_text\"}},{\"elements\":[{\"name\":\"note\",\"placeholder\":{\"content\":\"裁定或取消时填写理由\",\"tag\":\"plain_text\"},\"required\":false,\"tag\":\"input\"},{\"behaviors\":[{\"type\":\"callback\",\"value\":{\"action\":\"human_review\",\"attempt\":\"1\",\"ticket\":\"OF-354\",\"verb\":\"放行\"}}],\"form_action_type\":\"submit\",\"name\":\"human_release\",\"tag\":\"button\",\"text\":{\"content\":\"放行\",\"tag\":\"plain_text\"},\"type\":\"primary\"},{\"behaviors\":[{\"type\":\"callback\",\"value\":{\"action\":\"human_review\",\"attempt\":\"1\",\"ticket\":\"OF-354\",\"verb\":\"扩SCOPE\"}}],\"form_action_type\":\"submit\",\"name\":\"human_scope\",\"tag\":\"button\",\"text\":{\"content\":\"同意扩 SCOPE\",\"tag\":\"plain_text\"},\"type\":\"default\"},{\"behaviors\":[{\"type\":\"callback\",\"value\":{\"action\":\"human_review\",\"attempt\":\"1\",\"ticket\":\"OF-354\",\"verb\":\"裁定\"}}],\"form_action_type\":\"submit\",\"name\":\"human_ruling\",\"tag\":\"button\",\"text\":{\"content\":\"裁定\",\"tag\":\"plain_text\"},\"type\":\"default\"},{\"behaviors\":[{\"type\":\"callback\",\"value\":{\"action\":\"human_review\",\"attempt\":\"1\",\"ticket\":\"OF-354\",\"verb\":\"取消\"}}],\"form_action_type\":\"submit\",\"name\":\"human_cancel\",\"tag\":\"button\",\"text\":{\"content\":\"取消票\",\"tag\":\"plain_text\"},\"type\":\"danger\"}],\"name\":\"human_review_form\",\"tag\":\"form\"},{\"behaviors\":[{\"default_url\":\"https://TENANT.feishu.cn/base/BASE_TOKEN\",\"type\":\"open_url\"}],\"tag\":\"button\",\"text\":{\"content\":\"打开票据\",\"tag\":\"plain_text\"},\"type\":\"default\"},{\"tag\":\"div\",\"text\":{\"content\":\"也可发文字：@机器人 放行 OF-354、裁定 OF-354 \\u003c理由\\u003e、扩SCOPE OF-354 \\u003c路径...\\u003e、取消 OF-354 \\u003c理由\\u003e\",\"tag\":\"plain_text\"}}]},\"config\":{\"update_multi\":true},\"header\":{\"template\":\"orange\",\"title\":{\"content\":\"转人 OF-354\",\"tag\":\"plain_text\"}},\"schema\":\"2.0\"}",
+      "msg_type": "interactive",
+      "receive_id": "oc_REDACTED"
+    },
+    "method": "POST",
+    "params": {
+      "receive_id_type": "chat_id"
+    },
+    "path": "/open-apis/im/v1/messages"
+  },
+  "response": {
+    "data": {
+      "body": {
+        "content": "CARD_RENDERED_BY_FEISHU"
+      },
+      "chat_id": "oc_REDACTED",
+      "create_time": "1793597434487",
+      "deleted": false,
+      "message_id": "om_x100b61b5b16c30b4c01998d57b7674a",
+      "msg_type": "interactive",
+      "sender": {
+        "id": "cli_REDACTED",
+        "id_type": "app_id",
+        "sender_type": "app",
+        "tenant_key": "TENANT_KEY"
+      },
+      "update_time": "1793597434487",
+      "updated": false
+    },
+    "identity": "bot",
+    "ok": true
+  }
+}

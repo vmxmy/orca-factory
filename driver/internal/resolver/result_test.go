@@ -24,3 +24,10 @@ func TestResolutionAcceptsPinnedDeploymentProposal(t *testing.T) {
 		t.Fatalf("pinned decision rejected: %+v %v", p, err)
 	}
 }
+
+func TestHumanTicketEscalateCarriesScope(t *testing.T) {
+	p, err := ParseResult(`{"action":"escalate","reason":"差文件","body":"证据","class":"scope-extension","scope":["a/b.go","c.go"]}`)
+	if err != nil || len(p.Scope) != 2 || p.Scope[1] != "c.go" {
+		t.Fatalf("scope=%v err=%v", p.Scope, err)
+	}
+}

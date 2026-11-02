@@ -21,6 +21,16 @@ type Resolution struct {
 	// Class is the kind of block an escalate reports. It only selects whether
 	// the shadow cross review runs; a human still receives the ticket.
 	Class string `json:"class,omitempty"`
+	// Scope lists the files a scope-extension escalate asks a human to add.
+	Scope []string `json:"scope,omitempty"`
+}
+
+// ScopeRequest is the file list an approver can accept as is.
+func (p Resolution) ScopeRequest() []string {
+	if p.Action != "escalate" || p.Class != "scope-extension" {
+		return nil
+	}
+	return p.Scope
 }
 
 func ParseResult(body string) (Resolution, error) {

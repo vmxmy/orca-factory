@@ -79,6 +79,72 @@ func (f *notifyStore) CreateComment(_ context.Context, id string, body string) (
 	return c, nil
 }
 
+func TestHumanTicketNotifySendsCard(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests []struct{ MsgType, Content string }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"test-token","expire":7200}`))
+			return
+		}
+		var body struct {
+			MsgType string `json:"msg_type"`
+			Content string `json:"content"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		requests = append(requests, struct{ MsgType, Content string }{body.MsgType, body.Content})
+		_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	t.Setenv("AGENT_FEISHU_APP_ID", "cli_test")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+	send := func(t *testing.T, ticket Ticket) (string, string) {
+		t.Helper()
+		requests = nil
+		runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: &notifyStore{}}, Repositories: map[string]config.Repository{repo.Path: repo}}
+		if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		if len(requests) != 1 {
+			t.Fatalf("requests=%+v", requests)
+		}
+		return requests[0].MsgType, requests[0].Content
+	}
+	ticket := Ticket{ID: "id", Repo: repo.Path, Identifier: "OF-9", Title: "票", URL: "https://example.test/OF-9", Owner: machine.OwnerHuman, NotifyReason: "差一个文件",
+		Resolution: &resolver.Record{Version: 1, Attempt: 4, Phase: "human", Result: `{"action":"escalate","reason":"r","body":"b","class":"scope-extension","scope":["a/b.go"]}`}}
+
+	kind, content := send(t, ticket)
+	if kind != "interactive" {
+		t.Fatalf("kind=%s", kind)
+	}
+	for _, want := range []string{"OF-9", "差一个文件", "a/b.go", `"attempt":"4"`, `"verb":"放行"`, `"verb":"扩SCOPE"`, `"verb":"裁定"`, `"verb":"取消"`, "https://example.test/OF-9"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("card missing %s: %s", want, content)
+		}
+	}
+
+	t.Run("no declared scope hides the scope button", func(t *testing.T) {
+		plain := ticket
+		plain.Resolution = &resolver.Record{Version: 1, Attempt: 4, Phase: "human", Result: `{"action":"escalate","reason":"r","body":"b"}`}
+		kind, content := send(t, plain)
+		if kind != "interactive" || strings.Contains(content, `"verb":"扩SCOPE"`) || !strings.Contains(content, `"verb":"裁定"`) {
+			t.Fatalf("kind=%s content=%s", kind, content)
+		}
+	})
+
+	t.Run("human ticket without a resolver receipt stays text", func(t *testing.T) {
+		plain := ticket
+		plain.Resolution = nil
+		if kind, _ := send(t, plain); kind != "text" {
+			t.Fatalf("kind=%s", kind)
+		}
+	})
+}
+
 type notifySender struct {
 	store    *notifyStore
 	messages []string
@@ -128,7 +194,11 @@ func (f *notifySender) start(t *testing.T) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := f.SendText(req.Context(), body.ReceiveID, content.Text); err != nil {
+		sent := content.Text
+		if sent == "" {
+			sent = body.Content
+		}
+		if err := f.SendText(req.Context(), body.ReceiveID, sent); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
