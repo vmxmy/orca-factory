@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestSendCardRecorded(t *testing.T) {
+func TestHumanTicketSendCardRecorded(t *testing.T) {
 	rec := loadRecording(t, "bot-message-send-card.json")
 	var body struct {
 		ReceiveID string `json:"receive_id"`
