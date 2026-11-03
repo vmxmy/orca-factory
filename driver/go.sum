@@ -8,8 +8,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
-github.com/larksuite/oapi-sdk-go/v3 v3.12.1 h1:5Zu2z+meHR/ETyTSWOB6gyRN0FIiImXdq/ReQGlGYH8=
-github.com/larksuite/oapi-sdk-go/v3 v3.12.1/go.mod h1:F1nwLfYBSKvD8mS/OFw90Gr+V4RIugPBR44m/ThA5jg=
+github.com/larksuite/oapi-sdk-go/v3 v3.12.2 h1:YjIVkSXW3TZOL3HCdJdTKYYP3ZBIM9ql9+TVyb1XL2w=
+github.com/larksuite/oapi-sdk-go/v3 v3.12.2/go.mod h1:F1nwLfYBSKvD8mS/OFw90Gr+V4RIugPBR44m/ThA5jg=
 github.com/pmezard/go-difflib v1.0.0 h1:4DBwDE0NGyQoBHbLQYPwSUPoCMWR5BEzIk/f1lZbAQM=
 github.com/pmezard/go-difflib v1.0.0/go.mod h1:iKH77koFhYxTK1pcRnkKkqfTogsbg7gZNVY4sRDYZ/4=
 github.com/stretchr/testify v1.8.0 h1:pSgiaMZlXftHpm5L7V1+rVB+AZJydKsMxsQBIJw4PKk=
