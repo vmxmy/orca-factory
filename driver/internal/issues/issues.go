@@ -68,14 +68,28 @@ func Project(env map[string]string) string {
 	return ""
 }
 func New(ctx context.Context, env map[string]string, tuning config.Tuning) (Store, error) {
+	return NewFactory(tuning).New(ctx, env)
+}
+
+type Factory struct {
+	tuning config.Tuning
+	mu     sync.Mutex
+	feishu map[feishuConnectionKey]feishuConnection
+}
+
+func NewFactory(tuning config.Tuning) *Factory {
+	return &Factory{tuning: tuning, feishu: map[feishuConnectionKey]feishuConnection{}}
+}
+
+func (factory *Factory) New(ctx context.Context, env map[string]string) (Store, error) {
 	b, err := Backend(env)
 	if err != nil {
 		return nil, err
 	}
 	if b == "feishu" {
-		return newFeishuFromEnv(ctx, env)
+		return factory.newFeishuFromEnv(ctx, env)
 	}
-	gh, err := github.New(github.Options{BaseURL: env["AGENT_GH_API_URL"], HTTPTimeout: tuning.GitHub.HTTPTimeout})
+	gh, err := github.New(github.Options{BaseURL: env["AGENT_GH_API_URL"], HTTPTimeout: factory.tuning.GitHub.HTTPTimeout})
 	if err != nil {
 		return nil, err
 	}

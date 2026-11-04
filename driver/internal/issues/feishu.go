@@ -186,7 +186,16 @@ func feishuBase(raw string) (token, baseURL string, err error) {
 	return token, u.Scheme + "://" + u.Host + "/base/" + token, nil
 }
 
-func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, error) {
+type feishuConnectionKey struct {
+	base, endpoint, appID, appSecret string
+}
+
+type feishuConnection struct {
+	client *feishu.Client
+	tables map[string]feishuTable
+}
+
+func (factory *Factory) newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, error) {
 	token, baseURL, err := feishuBase(env["AGENT_FEISHU_BASE"])
 	if err != nil {
 		return nil, err
@@ -195,11 +204,26 @@ func newFeishuFromEnv(ctx context.Context, env map[string]string) (*Feishu, erro
 	if err != nil {
 		return nil, err
 	}
+	repo := env["AGENT_FEISHU_PROJECT"]
+	if strings.TrimSpace(repo) == "" {
+		return nil, errors.New("feishu backend requires client, base and AGENT_FEISHU_PROJECT")
+	}
+	key := feishuConnectionKey{base: token, endpoint: machine["AGENT_FEISHU_ENDPOINT"], appID: machine["AGENT_FEISHU_APP_ID"], appSecret: machine["AGENT_FEISHU_APP_SECRET"]}
+	factory.mu.Lock()
+	defer factory.mu.Unlock()
+	if shared, ok := factory.feishu[key]; ok {
+		return newFeishu(shared.client, token, baseURL, repo, shared.tables, FeishuOptions{}), nil
+	}
 	client, err := feishu.New(feishu.Options{Endpoint: machine["AGENT_FEISHU_ENDPOINT"], AppID: machine["AGENT_FEISHU_APP_ID"], AppSecret: machine["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		return nil, err
 	}
-	return NewFeishu(ctx, client, token, baseURL, env["AGENT_FEISHU_PROJECT"], FeishuOptions{})
+	store, err := NewFeishu(ctx, client, token, baseURL, repo, FeishuOptions{})
+	if err != nil {
+		return nil, err
+	}
+	factory.feishu[key] = feishuConnection{client: client, tables: store.tables}
+	return store, nil
 }
 
 var feishuMachineKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET"}
@@ -249,16 +273,7 @@ func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo s
 	if err != nil {
 		return nil, err
 	}
-	if o.ReadBackTimeout <= 0 {
-		o.ReadBackTimeout = feishuReadBackTimeout
-	}
-	if o.Now == nil {
-		o.Now = time.Now
-	}
-	if o.Sleep == nil {
-		o.Sleep = sleepContext
-	}
-	c := &Feishu{client: client, base: base, baseURL: baseURL, repo: repo, tables: map[string]feishuTable{}, readBackTimeout: o.ReadBackTimeout, now: o.Now, sleep: o.Sleep}
+	tables := map[string]feishuTable{}
 	for _, spec := range feishuTables {
 		i := slices.IndexFunc(listed, func(t feishu.Table) bool { return t.Name == spec.Name })
 		if i < 0 || slices.ContainsFunc(listed[i+1:], func(t feishu.Table) bool { return t.Name == spec.Name }) {
@@ -275,9 +290,22 @@ func NewFeishu(ctx context.Context, client *feishu.Client, base, baseURL, repo s
 		for _, f := range fields {
 			ids[f.Name] = f.ID
 		}
-		c.tables[spec.Name] = feishuTable{id: listed[i].ID, fields: ids}
+		tables[spec.Name] = feishuTable{id: listed[i].ID, fields: ids}
 	}
-	return c, nil
+	return newFeishu(client, base, baseURL, repo, tables, o), nil
+}
+
+func newFeishu(client *feishu.Client, base, baseURL, repo string, tables map[string]feishuTable, o FeishuOptions) *Feishu {
+	if o.ReadBackTimeout <= 0 {
+		o.ReadBackTimeout = feishuReadBackTimeout
+	}
+	if o.Now == nil {
+		o.Now = time.Now
+	}
+	if o.Sleep == nil {
+		o.Sleep = sleepContext
+	}
+	return &Feishu{client: client, base: base, baseURL: baseURL, repo: repo, tables: tables, readBackTimeout: o.ReadBackTimeout, now: o.Now, sleep: o.Sleep}
 }
 
 func (c *Feishu) Repository() string { return c.repo }
