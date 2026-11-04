@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -243,6 +244,9 @@ func TestDeploymentRetryWorkflowRerunsFailedRun(t *testing.T) {
 				if f.tracker.issue.State.Name == "Done" || !strings.Contains(f.tracker.bodies[len(f.tracker.bodies)-1], `"state":"paused"`) {
 					t.Fatalf("main moved without durable pause: state=%s bodies=%v", f.tracker.issue.State.Name, f.tracker.bodies)
 				}
+				if err := rebuilt.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "confirm-passed", "operator", "later deployment verified", false); err != nil {
+					t.Fatalf("confirm-passed after main moved: %v", err)
+				}
 				return
 			}
 			wantError := "deployment pending"
@@ -280,6 +284,87 @@ func TestDeploymentRetryWorkflowRerunsFailedRun(t *testing.T) {
 			}
 			if reruns != wantReruns || f.tracker.issue.State.Name != "Done" {
 				t.Fatalf("successful rerun did not complete ticket: reruns=%d state=%s", reruns, f.tracker.issue.State.Name)
+			}
+		})
+	}
+}
+
+// ZY-365, 2026-11-04: the auto rerun was used, the deployment paused, and a
+// retry-workflow recovery paused again without a rerun. These old v1 receipts
+// predate workflow_retry_pending. The smoke command and reasons are redacted.
+func TestRecordedDeploymentRetryWorkflowReceipts(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	ticket := Ticket{ID: "699afdbb-3850-4999-8363-389adbfa4ed9"}
+	readMergeHandoff(&ticket, recording.Comments)
+	d := ticket.Progress.Deployment
+	if ticket.MergeProblem != "" || d.State != "paused" || d.Recovery == nil || d.Recovery.Action != "retry-workflow" || d.WorkflowRetryPending {
+		t.Fatalf("recorded retry-workflow receipts: problem=%q deployment=%+v", ticket.MergeProblem, d)
+	}
+}
+
+func TestDeploymentRetryPendingCannotBeRearmed(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	paused := recording.Comments[4]
+	var base merge.Progress
+	if err := json.Unmarshal([]byte(paused.Body[strings.Index(paused.Body, merge.ProgressPrefix)+len(merge.ProgressPrefix):]), &base); err != nil {
+		t.Fatal(err)
+	}
+	at := paused.CreatedAt
+	receipt := func(change func(*merge.DeploymentProgress)) task.Comment {
+		next := base
+		d := *base.Deployment
+		change(&d)
+		next.Deployment = &d
+		b, _ := json.Marshal(next)
+		at = at.Add(time.Minute)
+		return task.Comment{ID: at.Format(time.RFC3339), Body: merge.ProgressPrefix + string(b), CreatedAt: at}
+	}
+	recovery := func(action string) func(*merge.DeploymentProgress) {
+		return func(d *merge.DeploymentProgress) {
+			d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: "operator", Reason: "reconciled", At: paused.CreatedAt.Add(time.Second)}
+			d.Reason = ""
+			d.State = "pending"
+			if action == "confirm-passed" {
+				d.State = "passed"
+			}
+		}
+	}
+	armed := func(change func(*merge.DeploymentProgress)) func(*merge.DeploymentProgress) {
+		return func(d *merge.DeploymentProgress) {
+			change(d)
+			d.WorkflowRetryPending = true
+		}
+	}
+	consumed := func(d *merge.DeploymentProgress) {
+		d.WorkflowRetryPending = false
+		d.Reruns++
+	}
+	retry := recovery("retry-workflow")
+	for _, scenario := range []struct {
+		name     string
+		receipts []func(*merge.DeploymentProgress)
+		problem  string
+	}{
+		{name: "retry consumed once", receipts: []func(*merge.DeploymentProgress){armed(retry), func(d *merge.DeploymentProgress) { retry(d); consumed(d) }}},
+		{name: "consumed retry rearmed", problem: "conflicting deployment progress", receipts: []func(*merge.DeploymentProgress){armed(retry), func(d *merge.DeploymentProgress) { retry(d); consumed(d) }, func(d *merge.DeploymentProgress) { retry(d); consumed(d); d.WorkflowRetryPending = true }}},
+		{name: "confirm-passed carries retry", problem: "conflicting deployment progress", receipts: []func(*merge.DeploymentProgress){armed(recovery("confirm-passed"))}},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			at = paused.CreatedAt
+			comments := append([]task.Comment(nil), recording.Comments[:5]...)
+			for _, change := range scenario.receipts {
+				comments = append(comments, receipt(change))
+			}
+			ticket := Ticket{ID: base.TicketID}
+			readMergeHandoff(&ticket, comments)
+			if ticket.MergeProblem != scenario.problem {
+				t.Fatalf("merge problem = %q, want %q; last=%s", ticket.MergeProblem, scenario.problem, comments[len(comments)-1].Body)
 			}
 		})
 	}

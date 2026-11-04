@@ -234,7 +234,6 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 			return rejectDeploymentProposal("smoke may have executed; reconcile explicitly")
 		}
 		d.State = "pending"
-		d.WorkflowRetryPending = true
 	case "retry-smoke":
 		if d.Smoke == "" || !d.SmokeStarted {
 			return rejectDeploymentProposal("no smoke execution to reconcile")
@@ -251,6 +250,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	}
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""
+	d.WorkflowRetryPending = action == "retry-workflow"
 	if !deploymentTransition(t.Progress, p) {
 		return rejectDeploymentProposal("invalid or stale deployment recovery")
 	}

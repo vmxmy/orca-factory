@@ -26,7 +26,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 	}
 	if !sameDeploymentRecovery(d.Recovery, n.Recovery) {
 		r := n.Recovery
-		if r == nil || strings.TrimSpace(r.Operator) == "" || strings.TrimSpace(r.Reason) == "" || strings.ContainsAny(r.Operator+r.Reason, "\r\n") || r.At.IsZero() || (d.Recovery != nil && !r.At.After(d.Recovery.At)) || (d.State != "paused" && d.State != "smoke-intent") {
+		if r == nil || strings.TrimSpace(r.Operator) == "" || strings.TrimSpace(r.Reason) == "" || strings.ContainsAny(r.Operator+r.Reason, "\r\n") || r.At.IsZero() || (d.Recovery != nil && !r.At.After(d.Recovery.At)) || (d.State != "paused" && d.State != "smoke-intent") || (n.WorkflowRetryPending && r.Action != "retry-workflow") {
 			return false
 		}
 		switch r.Action {
@@ -40,8 +40,8 @@ func deploymentTransition(old, next *merge.Progress) bool {
 			return false
 		}
 	}
-	// Only a new explicit recovery may clear execution evidence.
-	if d.SmokeStarted && !n.SmokeStarted || d.SmokePassed && !n.SmokePassed {
+	// Only a new explicit recovery may clear execution evidence or arm a rerun.
+	if d.SmokeStarted && !n.SmokeStarted || d.SmokePassed && !n.SmokePassed || !d.WorkflowRetryPending && n.WorkflowRetryPending {
 		return false
 	}
 	switch d.State {
