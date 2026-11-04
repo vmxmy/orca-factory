@@ -22,10 +22,11 @@ func recorded(t *testing.T, name string) []byte {
 }
 
 func TestRecordedTicketDescriptions(t *testing.T) {
-	for _, c := range []struct{ file, check, scope string }{
-		{"linear-description-escaped.md", `set -a; . scripts/agent-gates/agent-graph.env; set +a; \[\[ $AGENT_ROLE_REVIEWER_CMD == claude\\ -p\* \]\] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`, "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env"},
-		{"linear-description-check-assertion.md", "", `driver/internal/status/\* driver/internal/scheduler/\* driver/internal/executor/\* mods/swarm-board/hooks/driver-status.ts mods/swarm-board/hooks/register.tsx`},
-		{"linear-description-heading-note.md", "", `driver/internal/usage/\* driver/internal/ledger/\* mods/swarm-board/types/index.d.ts`},
+	for _, c := range []struct{ file, check, scope, testFiles string }{
+		{"linear-description-escaped.md", `set -a; . scripts/agent-gates/agent-graph.env; set +a; \[\[ $AGENT_ROLE_REVIEWER_CMD == claude\\ -p\* \]\] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`, "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env", ""},
+		{"linear-description-check-assertion.md", "", `driver/internal/status/\* driver/internal/scheduler/\* driver/internal/executor/\* mods/swarm-board/hooks/driver-status.ts mods/swarm-board/hooks/register.tsx`, ""},
+		{"linear-description-heading-note.md", "", `driver/internal/usage/\* driver/internal/ledger/\* mods/swarm-board/types/index.d.ts`, ""},
+		{"feishu-description-check-test-files.md", `cd driver && go test -count=1 -v -run '^TestMergeGate(RunsInstallCommand|InstallFailureIsTicketInfra)$' ./internal/scheduler/ 2>&1 | grep -c -- '^--- PASS: TestMergeGate' | grep -qx 2`, "driver/internal/scheduler/merge_gate.go driver/internal/scheduler/merge_gate_test.go", "driver/internal/scheduler/merge_gate_test.go"},
 	} {
 		got, err := ParseTicket("id", "ZII-1", "t", string(recorded(t, c.file)))
 		if err != nil {
@@ -33,6 +34,9 @@ func TestRecordedTicketDescriptions(t *testing.T) {
 		}
 		if c.check != "" && got.Check != c.check {
 			t.Fatalf("%s: Check=%q", c.file, got.Check)
+		}
+		if got.TestFiles != c.testFiles {
+			t.Fatalf("%s: TestFiles=%q", c.file, got.TestFiles)
 		}
 		if got.Scope != c.scope {
 			t.Fatalf("%s: Scope=%q", c.file, got.Scope)
