@@ -124,6 +124,8 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 
 let spin: Timer | undefined
 let frame = 0
+const pending = new Map<FetchKind, number>()
+let healthRequest = 0
 
 // A blit is denied once the pane is closed or a hot reload has replaced this module, so the timer stops itself.
 const startSpin = ($: Engine) => {
@@ -147,6 +149,7 @@ const runJson = async <T,>(
   accepts: (exitCode: number) => boolean,
   init?: ProcessRunInit,
 ): Promise<Fetched<T>> => {
+  pending.set(kind, (pending.get(kind) ?? 0) + 1)
   await update($, busy, kinds => (kinds.includes(kind) ? kinds : [...kinds, kind]))
   if (spin === undefined) startSpin($)
   try {
@@ -159,7 +162,8 @@ const runJson = async <T,>(
       return { kind: 'failed', exitCode: 0, stderr: message(error) }
     }
   } finally {
-    if ((await update($, busy, kinds => kinds.filter(one => one !== kind))).length === 0) {
+    pending.set(kind, (pending.get(kind) ?? 0) - 1)
+    if ((await update($, busy, kinds => ((pending.get(kind) ?? 0) > 0 ? kinds : kinds.filter(one => one !== kind)))).length === 0) {
       spin?.cancel()
       spin = undefined
     }
@@ -214,8 +218,9 @@ const DOCTOR_TIMEOUT_MS = 5 * 60_000 + 30_000
 
 // doctor exits 1 when any check fails; its report is still the answer.
 const fetchHealth = async ($: Engine): Promise<void> => {
+  const request = ++healthRequest
   const next = await runJson($, 'doctor', argvOf('doctor'), parseHealth, code => code === 0 || code === 1, { timeoutMs: DOCTOR_TIMEOUT_MS })
-  await update($, health, () => next)
+  await update($, health, prev => (request === healthRequest ? next : prev))
 }
 
 // A read for a ticket the person has since left lands late and would replace the one now open.

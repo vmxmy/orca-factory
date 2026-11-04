@@ -144,6 +144,96 @@ test('读 doctor 的超时不短于 doctor 自己的 5 分钟时限', async ($, 
   expect(inits[doctor]?.timeoutMs ?? 30_000).toBeGreaterThan(5 * 60_000)
 })
 
+test('较早发起的 doctor 结果晚到时不覆盖较新的结果', async ($, on) => {
+  const { calls, clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    {
+      status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
+      doctor: nth => ran({
+        stdout: JSON.stringify({
+          ...SAMPLE_DOCTOR,
+          checks: { ...SAMPLE_DOCTOR.checks, version: { status: 'ok', reason: nth === 1 ? '较早的检查结果' : '最新的检查结果' } },
+        }),
+      }),
+    },
+    { doctor: nth => (nth === 1 ? 1000 : undefined) },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-health' })
+  await clock.settle()
+  expect(subcommands(calls).filter(sub => sub === 'doctor')).toHaveLength(2)
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本 通过 最新的检查结果')
+
+  await clock.advance(1000)
+  await opened
+  expect((await ui.find({ key: 'check-version' }))?.text).toBe('运行版本 通过 最新的检查结果')
+  await ui.unmount()
+})
+
+test('最新的 doctor 读取失败后不被较早成功的结果覆盖', async ($, on) => {
+  const { clock } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    {
+      status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }),
+      doctor: nth => (nth === 1 ? ran({ stdout: JSON.stringify(SAMPLE_DOCTOR) }) : ran({ exitCode: 2, stderr: '最新的检查失败' })),
+    },
+    { doctor: nth => (nth === 1 ? 1000 : undefined) },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-health' })
+  await clock.settle()
+  expect(await exactText(ui, '最新的检查失败')).toHaveLength(1)
+
+  await clock.advance(1000)
+  await opened
+  expect(await exactText(ui, '最新的检查失败')).toHaveLength(1)
+  expect(await ui.findAll({ key: 'check-version' })).toHaveLength(0)
+  await ui.unmount()
+})
+
+for (const firstFinishesEarlier of [true, false]) {
+  test(`同类读取${firstFinishesEarlier ? '先发先到' : '后发先到'}时加载动画持续到全部完成`, async ($, on) => {
+    const { calls, clock } = engine(
+      on,
+      ran({ stdout: sampleStdout }),
+      { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+      { doctor: nth => ((nth === 1) === firstFinishesEarlier ? 1000 : 2000) },
+    )
+    let blits = 0
+    on('ui.blit', () => {
+      blits += 1
+      return { value: {} }
+    })
+    const opened = $.command.run(runCommand)
+    await clock.settle()
+    const ui = await $.ui.mount(PANE)
+    const selected = ui.press({ key: 'page-health' })
+    await clock.settle()
+    expect(subcommands(calls).filter(sub => sub === 'doctor')).toHaveLength(2)
+
+    await clock.advance(1000)
+    await clock.settle()
+    expect((await ui.findAll({ key: 'spin' })).map(one => one.type)).toEqual(['Raster'])
+    expect(await exactText(ui, '正在运行 orca-factory-driver doctor --json …')).toHaveLength(firstFinishesEarlier ? 1 : 0)
+    const previousBlits = blits
+    await clock.advance(100)
+    expect(blits).toBeGreaterThan(previousBlits)
+
+    await clock.advance(1000)
+    await Promise.all([opened, selected])
+    expect(await ui.findAll({ key: 'spin' })).toHaveLength(0)
+    await ui.unmount()
+  })
+}
+
 test('模型页列出交叉复审角色及其来源键', async ($, on) => {
   engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
