@@ -166,6 +166,125 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 	}
 }
 
+func TestDeploymentRetryWorkflowRerunsFailedRun(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		autoRerun    bool
+		mainMoved    bool
+		rerunFails   bool
+		requestFails bool
+	}{
+		{name: "automatic budget exhausted", autoRerun: true},
+		{name: "automatic rerun disabled"},
+		{name: "main moved after recovery", autoRerun: true, mainMoved: true},
+		{name: "one rerun per recovery", autoRerun: true, rerunFails: true},
+		{name: "rerun request result lost", autoRerun: true, rerunFails: true, requestFails: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			f.merged = true
+			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+			if scenario.autoRerun {
+				f.repos[0].Env["AGENT_DEPLOY_AUTO_RERUN"] = "1"
+			}
+			sha := strings.Repeat("a", 40)
+			f.main = sha
+			conclusion := "failure"
+			reruns := 0
+			original := f.server.Config.Handler
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/actions/runs/19/rerun-failed-jobs"):
+					if r.Method != http.MethodPost {
+						t.Errorf("rerun method = %s, want POST", r.Method)
+					}
+					body := f.tracker.bodies[len(f.tracker.bodies)-1]
+					if strings.Contains(body, `"workflow_retry_pending":true`) || !strings.Contains(body, fmt.Sprintf(`"reruns":%d`, reruns+1)) {
+						t.Errorf("rerun not reserved before request: %s", body)
+					}
+					reruns++
+					if scenario.requestFails && reruns == 2 {
+						w.WriteHeader(http.StatusInternalServerError)
+						return
+					}
+					w.WriteHeader(http.StatusCreated)
+				case strings.Contains(r.URL.Path, "/actions/workflows/"):
+					if _, err := fmt.Fprintf(w, `{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"completed","conclusion":%q}]}`, sha, conclusion); err != nil {
+						t.Error(err)
+					}
+				default:
+					original.ServeHTTP(w, r)
+				}
+			})
+			for range 2 {
+				_ = tick(f)
+			}
+			initialReruns := 0
+			if scenario.autoRerun {
+				initialReruns = 1
+			}
+			if reruns != initialReruns || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"state":"paused"`) {
+				t.Fatalf("automatic rerun not exhausted: reruns=%d bodies=%v", reruns, f.tracker.bodies)
+			}
+			if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "retry-workflow", "operator", "safe to rerun failed deployment", false); err != nil {
+				t.Fatal(err)
+			}
+			if scenario.mainMoved {
+				f.main = strings.Repeat("b", 40)
+			}
+			rebuilt := *f.runtime
+			rebuilt.GitHub = nil
+			scheduler := &Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}
+			if scenario.mainMoved {
+				err := scheduler.Tick(context.Background())
+				if err == nil || !strings.Contains(err.Error(), "deployment workflow failed; main moved past merge SHA") || reruns != initialReruns {
+					t.Fatalf("retry over newer main: err=%v reruns=%d", err, reruns)
+				}
+				if f.tracker.issue.State.Name == "Done" || !strings.Contains(f.tracker.bodies[len(f.tracker.bodies)-1], `"state":"paused"`) {
+					t.Fatalf("main moved without durable pause: state=%s bodies=%v", f.tracker.issue.State.Name, f.tracker.bodies)
+				}
+				return
+			}
+			wantError := "deployment pending"
+			if scenario.requestFails {
+				wantError = "deployment rerun failed"
+			}
+			if err := scheduler.Tick(context.Background()); err == nil || !strings.Contains(err.Error(), wantError) {
+				t.Fatalf("retry did not wait for rerun: %v", err)
+			}
+			wantReruns := initialReruns + 1
+			if reruns != wantReruns || f.tracker.issue.State.Name != "In Progress" {
+				t.Fatalf("manual retry did not rerun failed deployment: reruns=%d state=%s", reruns, f.tracker.issue.State.Name)
+			}
+			if scenario.rerunFails {
+				if err := scheduler.Tick(context.Background()); err == nil || !strings.Contains(err.Error(), "deployment workflow failed") {
+					t.Fatalf("failed rerun did not pause: %v", err)
+				}
+				if reruns != wantReruns {
+					t.Fatalf("recovery reran more than once: reruns=%d want=%d", reruns, wantReruns)
+				}
+				if err := rebuilt.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "retry-workflow", "operator", "reconciled failed retry; retry once more", false); err != nil {
+					t.Fatal(err)
+				}
+				if err := scheduler.Tick(context.Background()); err == nil || !strings.Contains(err.Error(), "deployment pending") {
+					t.Fatalf("new recovery did not wait for rerun: %v", err)
+				}
+				wantReruns++
+				if reruns != wantReruns {
+					t.Fatalf("new recovery did not rerun once: reruns=%d want=%d", reruns, wantReruns)
+				}
+			}
+			conclusion = "success"
+			if err := scheduler.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if reruns != wantReruns || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("successful rerun did not complete ticket: reruns=%d state=%s", reruns, f.tracker.issue.State.Name)
+			}
+		})
+	}
+}
+
 type uncertainSmokeIssues struct {
 	*mergeIssues
 	loseResult bool

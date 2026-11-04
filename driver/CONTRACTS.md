@@ -115,7 +115,7 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 冻结 `merge-handoff-v1` 格式不变；`merge-progress-v1` 仅增加可选 `deployment` 对象，外层 `phase` 仍为 `merge-intent` / `merged`。不占用 #142 的 catchup/correction 阶段，也不修改 #144/#145 的派工恢复或预算。
 
 - `deployment.workflow/smoke` 是 intent 时冻结的配置。`state` 为 `pending`、`smoke-intent`、`paused`、`passed`；`reason` 为暂停原因；`smoke_started=true` 表示已持久预留执行，不能凭重启推断安全重试；`smoke_passed=true` 仅在命令确认成功后写入，自动通过回执必须承接同身份的 smoke-intent。
-- `deployment.recovery` 的 `action/operator/reason/at` 是人工决定，动作仅为 `retry-workflow`、`retry-smoke`、`confirm-passed`。恢复时精确匹配票、queue、squash SHA，追加完整 Progress，不覆写旧评论。恢复记录随后续状态一同保留。
+- `deployment.recovery` 的 `action/operator/reason/at` 是人工决定，动作仅为 `retry-workflow`、`retry-smoke`、`confirm-passed`。恢复时精确匹配票、queue、squash SHA，追加完整 Progress，不覆写旧评论。恢复记录随后续状态一同保留。`retry-workflow` 后同一 squash SHA 的 workflow 仍失败且 main 仍等于该 SHA 时，会重跑一次该 run 的失败 job，不受 `AGENT_DEPLOY_AUTO_RERUN` 或已用 `reruns` 限制；每次恢复决定最多触发一次重跑，重跑仍失败则再次暂停。可选 `workflow_retry_pending` 在恢复时写入，重跑请求前清除并递增 `reruns`、确认回执，崩溃只会少跑，不会重复重跑；无此字段的旧 v1 回执仍可读取。main 已前移时不重跑，暂停原因是 `deployment workflow failed; main moved past merge SHA`，由二线核对后续部署后用 `confirm-passed` 恢复；外部已重跑成功时照常继续 smoke 或完成。
 - 每条历史 Progress 都校验状态转换。清除执行标记、从暂停恢复或人工确认通过必须有新的 `recovery`，操作者/理由/动作/时间均有效且时间晚于上次恢复；旧授权不能再次放行。无授权的 pending/passed 记录会保留冲突屏障，后续记录不能掩盖它。
 - 同 queue 的重试复用既存冻结配置（包括无配置），不从更新后的 env 重建 intent；合法配置变更仅影响新 queue。
 - 新部署字段在 squash intent 之前持久；实际 SHA 只来自 GitHub 已合并 PR 回读。smoke 必须在其 intent 写回确认后执行，执行成功但通过回执无法确认时保留屏障，重建调度器要求人工对账。

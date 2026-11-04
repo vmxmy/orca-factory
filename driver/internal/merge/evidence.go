@@ -58,9 +58,10 @@ type Progress struct {
 // DeploymentProgress extends v1 receipts without changing the frozen Handoff.
 // Smoke is stored only in durable evidence; observation views omit the command.
 type DeploymentProgress struct {
-	Recovery     *DeploymentRecovery `json:"recovery,omitempty"`
-	SmokeStarted bool                `json:"smoke_started,omitempty"`
-	SmokePassed  bool                `json:"smoke_passed,omitempty"`
+	WorkflowRetryPending bool                `json:"workflow_retry_pending,omitempty"`
+	Recovery             *DeploymentRecovery `json:"recovery,omitempty"`
+	SmokeStarted         bool                `json:"smoke_started,omitempty"`
+	SmokePassed          bool                `json:"smoke_passed,omitempty"`
 	// Self means serve builds and installs its own binary from the squash SHA,
 	// then restarts; the next serve verifies and smokes it.
 	Self bool `json:"self,omitempty"`
