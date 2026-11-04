@@ -59,6 +59,59 @@ func TestHumanTicketNotifyListsCommands(t *testing.T) {
 	}
 }
 
+func TestReleasedHumanTicketIsNotNotifiedAgain(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx := context.Background()
+	store := &notifyStore{fakeIssues: fakeIssues{issueComments: []task.Comment{
+		{ID: "human", Body: resolver.Prefix + `{"version":1,"attempt":4,"phase":"human"}`},
+		{ID: "reason", Body: "转人: 等待处置"},
+	}}}
+	sender := &notifySender{store: store}
+	sender.start(t)
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+	runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	ticket := Ticket{ID: "id", Repo: repo.Path, Identifier: "OF-9", Owner: machine.OwnerHuman}
+	notify := func() {
+		t.Helper()
+		var err error
+		ticket.Resolution, err = readResolution(store.issueComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		readFeishuNotification(&ticket, store.issueComments)
+		if err := runtime.NotifyFeishu(ctx, ticket); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notify()
+	if len(sender.messages) != 1 || store.writes != 1 || !strings.Contains(sender.messages[0], `"attempt":"4"`) {
+		t.Fatalf("initial human notification: messages=%q writes=%d", sender.messages, store.writes)
+	}
+	notify()
+	if len(sender.messages) != 1 || store.writes != 1 {
+		t.Fatalf("same human attempt notified again: messages=%q writes=%d", sender.messages, store.writes)
+	}
+	store.issueComments = append(store.issueComments, task.Comment{ID: "released", Body: "人工决定：放行 OF-9\n" + resolver.Prefix + `{"version":1,"attempt":4,"phase":"waiting"}`})
+	for range 2 {
+		notify()
+		if ticket.Owner != machine.OwnerHuman || ticket.Resolution.Phase != "waiting" {
+			t.Fatalf("released ticket=%+v", ticket)
+		}
+		if len(sender.messages) != 1 || store.writes != 1 {
+			t.Fatalf("released ticket notified again: messages=%q writes=%d", sender.messages, store.writes)
+		}
+	}
+	store.issueComments = append(store.issueComments, task.Comment{ID: "human-again", Body: resolver.Prefix + `{"version":1,"attempt":5,"phase":"human"}`})
+	notify()
+	if len(sender.messages) != 2 || store.writes != 2 || !strings.Contains(sender.messages[1], `"attempt":"5"`) {
+		t.Fatalf("new human attempt not notified: messages=%q writes=%d", sender.messages, store.writes)
+	}
+	notify()
+	if len(sender.messages) != 2 || store.writes != 2 {
+		t.Fatalf("new human attempt notified twice: messages=%q writes=%d", sender.messages, store.writes)
+	}
+}
+
 func (f *notifyStore) ListComments(_ context.Context, id string) ([]task.Comment, error) {
 	f.reads++
 	if f.commentsByID != nil {

@@ -76,7 +76,7 @@ func feishuNotification(t Ticket) (string, string) {
 			reason = t.NotifyReason
 		}
 		return "部署失败", reason
-	case t.Owner == machine.OwnerHuman:
+	case t.Owner == machine.OwnerHuman && (t.Resolution == nil || t.Resolution.Phase != "waiting"):
 		return "转人", t.NotifyReason
 	default:
 		return "", ""
