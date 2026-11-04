@@ -209,7 +209,8 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
 }
 
 // doctor gives its own checks five minutes and takes about 30 seconds, past process.run's 30-second default.
-const DOCTOR_TIMEOUT_MS = 5 * 60_000
+// Its five minutes start after it loads its config and are followed by writing the report, so the wait runs past them.
+const DOCTOR_TIMEOUT_MS = 5 * 60_000 + 30_000
 
 // doctor exits 1 when any check fails; its report is still the answer.
 const fetchHealth = async ($: Engine): Promise<void> => {

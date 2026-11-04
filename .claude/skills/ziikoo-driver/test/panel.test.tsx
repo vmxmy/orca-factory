@@ -141,7 +141,7 @@ test('读 doctor 的超时不短于 doctor 自己的 5 分钟时限', async ($, 
 
   const doctor = subcommands(calls).indexOf('doctor')
   expect(doctor).toBeGreaterThanOrEqual(0)
-  expect(inits[doctor]?.timeoutMs ?? 30_000).toBeGreaterThanOrEqual(5 * 60_000)
+  expect(inits[doctor]?.timeoutMs ?? 30_000).toBeGreaterThan(5 * 60_000)
 })
 
 test('模型页列出交叉复审角色及其来源键', async ($, on) => {
