@@ -18,6 +18,7 @@ export const SAMPLE_CONFIG = {
         { role: 'worker_default', agent: 'codex', model: 'gpt-6.1-sol', effort: 'high', key: 'AGENT_TIER_DEFAULT', raw: 'codex:gpt-6.1-sol:high' },
         { role: 'worker_strong', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_TIER_STRONG', raw: 'claude:claude-fable-5-1:high' },
         { role: 'reviewer', agent: 'codex', model: 'gpt-6-astra', effort: 'high', key: 'AGENT_ROLE_REVIEWER_CMD', raw: 'env -u ORCA_PANE_KEY codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -' },
+        { role: 'second_reviewer', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_ROLE_SECOND_REVIEWER_CMD', raw: 'claude -p --model claude-fable-5-1 --effort high --tools Read,Grep,Glob' },
         { role: 'resolver', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_TIER_STRONG', raw: 'claude:claude-fable-5-1:high' },
         { role: 'intake', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_TIER_STRONG', raw: 'claude:claude-fable-5-1:high' },
       ],

@@ -132,6 +132,17 @@ test('模型页列出施工档位与样本模型名，可切换仓库', async ($
   await ui.unmount()
 })
 
+test('模型页列出交叉复审角色及其来源键', async ($, on) => {
+  engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+
+  expect(await exactText(ui, '交叉复审')).toHaveLength(1)
+  expect(await exactText(ui, 'AGENT_ROLE_SECOND_REVIEWER_CMD')).toHaveLength(1)
+  await ui.unmount()
+})
+
 test('调度页按用途分组，值带单位，只高亮 driver.toml 改过的项', async ($, on) => {
   engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
