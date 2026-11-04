@@ -18,7 +18,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		if old != nil && old.QueueID == next.QueueID && (old.Phase == "merge-intent" || old.Phase == "merged") {
 			return false
 		}
-		return n.State == "pending" && !n.SmokeStarted && !n.SmokePassed && n.Recovery == nil
+		return n.State == "pending" && !n.SmokeStarted && !n.SmokePassed && !n.WorkflowRetryPending && n.Recovery == nil
 	}
 	d := old.Deployment
 	if n == nil || old.QueueID != next.QueueID || old.TicketID != next.TicketID || old.Repository != next.Repository || old.PR != next.PR || old.Head != next.Head || (old.MergeSHA != "" && old.MergeSHA != next.MergeSHA) || d.Workflow != n.Workflow || d.Smoke != n.Smoke || d.Self != n.Self || d.AutoRerun != n.AutoRerun || n.Reruns < d.Reruns {

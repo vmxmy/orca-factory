@@ -368,6 +368,15 @@ func TestDeploymentRetryPendingCannotBeRearmed(t *testing.T) {
 			}
 		})
 	}
+	t.Run("first receipt preset", func(t *testing.T) {
+		first := base
+		d := *base.Deployment
+		d.State, d.Reason, d.Recovery, d.Reruns, d.WorkflowRetryPending = "pending", "", nil, 0, true
+		first.Deployment = &d
+		if deploymentTransition(nil, &first) {
+			t.Fatal("first deployment receipt armed a workflow rerun without a recovery decision")
+		}
+	})
 }
 
 type uncertainSmokeIssues struct {
