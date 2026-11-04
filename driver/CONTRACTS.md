@@ -289,14 +289,15 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `overview.snapshot`：取自 `status.Read` 的 `state`。
 - `overview.factoryRoot`：`config.Load` 的 `FactoryRoot`，未配置时为空串。
 - `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
-- `roles[].role` 只有六种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
+- `roles[].role` 只有七种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
   - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），strong 只在打回后升档时使用。
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
   - 施工与处置角色的 `model` 为空时 `effort` 也为空，与派工时不传 effort 一致；`intake` 照原样保留 effort。
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
   - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
+  - `second_reviewer`：来源为 `AGENT_ROLE_SECOND_REVIEWER_CMD`，shell 命令的解析规则与 `reviewer` 相同。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `routing`：固定顺序的十个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- `routing`：固定顺序的十二个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。

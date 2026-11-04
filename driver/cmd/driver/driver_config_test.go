@@ -8,6 +8,35 @@ import (
 	"testing"
 )
 
+func TestConfigContractListsEveryRoleAndRoutingKey(t *testing.T) {
+	contract, err := os.ReadFile(filepath.Join("..", "..", "CONTRACTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, found := strings.Cut(string(contract), "\n## driver config 快照\n")
+	if !found {
+		t.Fatal("CONTRACTS.md lacks the driver config section")
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	if !strings.Contains(section, "`driver-config-v1`") {
+		t.Fatal("driver config section lacks driver-config-v1")
+	}
+	for _, role := range configRoles {
+		t.Run("role/"+role.role, func(t *testing.T) {
+			if !strings.Contains(section, "`"+role.role+"`") {
+				t.Errorf("driver-config-v1 contract lacks role %q", role.role)
+			}
+		})
+	}
+	for _, routing := range configRouting {
+		t.Run("routing/"+routing.key, func(t *testing.T) {
+			if !strings.Contains(section, "`"+routing.key+"`") {
+				t.Errorf("driver-config-v1 contract lacks routing key %q", routing.key)
+			}
+		})
+	}
+}
+
 // TestDriverConfigShowsEffectiveValuesWithoutSecrets runs `config --json` on
 // a machine whose only eligible repository is the factory itself, with a
 // driver.env holding credentials and a service the test cannot reach.
