@@ -23,9 +23,9 @@ func recorded(t *testing.T, name string) []byte {
 
 func TestRecordedTicketDescriptions(t *testing.T) {
 	for _, c := range []struct{ file, check, scope string }{
-		{"linear-description-escaped.md", `set -a; . scripts/agent-gates/agent-graph.env; set +a; [[ $AGENT_ROLE_REVIEWER_CMD == claude\ -p* ]] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`, "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env"},
-		{"linear-description-check-assertion.md", "", "driver/internal/status/* driver/internal/scheduler/* driver/internal/executor/* mods/swarm-board/hooks/driver-status.ts mods/swarm-board/hooks/register.tsx"},
-		{"linear-description-heading-note.md", "", "driver/internal/usage/* driver/internal/ledger/* mods/swarm-board/types/index.d.ts"},
+		{"linear-description-escaped.md", `set -a; . scripts/agent-gates/agent-graph.env; set +a; \[\[ $AGENT_ROLE_REVIEWER_CMD == claude\\ -p\* \]\] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`, "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env"},
+		{"linear-description-check-assertion.md", "", `driver/internal/status/\* driver/internal/scheduler/\* driver/internal/executor/\* mods/swarm-board/hooks/driver-status.ts mods/swarm-board/hooks/register.tsx`},
+		{"linear-description-heading-note.md", "", `driver/internal/usage/\* driver/internal/ledger/\* mods/swarm-board/types/index.d.ts`},
 	} {
 		got, err := ParseTicket("id", "ZII-1", "t", string(recorded(t, c.file)))
 		if err != nil {
@@ -37,21 +37,10 @@ func TestRecordedTicketDescriptions(t *testing.T) {
 		if got.Scope != c.scope {
 			t.Fatalf("%s: Scope=%q", c.file, got.Scope)
 		}
-		if got.Todo == "" || containsAny(got.Check, "断言", `\*`) {
+		if got.Todo == "" || strings.Contains(got.Check, "断言") {
 			t.Fatalf("%s: Todo=%q Check=%q", c.file, got.Todo, got.Check)
 		}
 	}
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		for i := 0; i+len(sub) <= len(s); i++ {
-			if s[i:i+len(sub)] == sub {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func TestRecordedReviewerOutput(t *testing.T) {

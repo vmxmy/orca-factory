@@ -7,17 +7,29 @@ import (
 	"testing"
 )
 
-func TestParseTicketEscapedMarkdown(t *testing.T) {
+func TestParseTicketKeepsEscapedFields(t *testing.T) {
 	description := "## 要做\n\n1. do it\n\n## 验收\n\nCHECK: \\[\\[ $X == claude\\\\ -p\\* \\]\\] && grep -q 'a\\_b' f\n断言: 这一行不是命令\n\n## SCOPE\n\ndriver/internal/status/\\* mods/x/\\_y.ts\n\n## 依赖\n\n无\n"
 	got, err := ParseTicket("id", "ZII-1", "t", description)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `[[ $X == claude\ -p* ]] && grep -q 'a_b' f`; got.Check != want {
+	if want := `\[\[ $X == claude\\ -p\* \]\] && grep -q 'a\_b' f`; got.Check != want {
 		t.Fatalf("Check=%q want %q", got.Check, want)
 	}
-	if want := "driver/internal/status/* mods/x/_y.ts"; got.Scope != want {
+	if want := `driver/internal/status/\* mods/x/\_y.ts`; got.Scope != want {
 		t.Fatalf("Scope=%q want %q", got.Scope, want)
+	}
+}
+
+func TestParseTicketKeepsCheckBackslashes(t *testing.T) {
+	check := `grep -q "\[worker\].*gate\.spec" driver.log && printf "\"%s\"\n" "$CHECK"`
+	description := "## 要做\n\n1. keep the command intact\n\nCHECK: " + check + "\nSCOPE: driver/internal/executor/artifacts.go\n"
+	got, err := ParseTicket("id", "ZY-366", "t", description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Check != check {
+		t.Fatalf("Check=%q want ticket text %q", got.Check, check)
 	}
 }
 

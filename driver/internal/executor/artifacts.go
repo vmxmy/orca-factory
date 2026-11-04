@@ -17,6 +17,7 @@ Change:
 {{.Ticket.Todo}}
 CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
+CHECK_TEST_FILES: {{.Ticket.TestFiles}}
 Gate spec: {{.Spec}}
 Branch: {{.Branch}}
 `
@@ -203,27 +204,14 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		}
 	}
 	t.Todo = strings.TrimSpace(strings.Join(fields["要做"], "\n"))
-	t.Check = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["CHECK"], " ")))
-	t.Scope = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["SCOPE"], " ")))
-	t.TestFiles = unescapeMarkdown(strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " ")))
+	t.Check = strings.TrimSpace(strings.Join(fields["CHECK"], " "))
+	t.Scope = strings.TrimSpace(strings.Join(fields["SCOPE"], " "))
+	t.TestFiles = strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " "))
 	t.NewTest = strings.TrimSpace(strings.Join(fields["CHECK_IS_NEW_TEST"], " ")) == "yes"
 	if t.Todo == "" || t.Check == "" || t.Scope == "" {
 		return Ticket{}, fmt.Errorf("ticket requires 要做, CHECK and SCOPE")
 	}
 	return t, nil
-}
-
-// unescapeMarkdown reverses the CommonMark backslash escapes Linear adds when it
-// stores a description (`\*` for `*`, `\\` for `\`); other backslashes stay.
-func unescapeMarkdown(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\\' && i+1 < len(s) && strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", s[i+1]) >= 0 {
-			i++
-		}
-		b.WriteByte(s[i])
-	}
-	return b.String()
 }
 
 // ParseReviewVerdict exposes the reviewer verdict contract to the live self-test.
