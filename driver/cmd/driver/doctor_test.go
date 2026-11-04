@@ -6,17 +6,165 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
+
+func TestDoctorReadsFeishuSchemaOncePerBase(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_FEISHU_APP_ID", "doctor-test-app")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "doctor-test-secret")
+	type field struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	schemas := map[string]struct {
+		Fields []field `json:"fields"`
+	}{}
+	responses := map[string]json.RawMessage{}
+	for table, fixture := range map[string]string{
+		"projects": "bot-project-fields.json",
+		"tickets":  "fields-list.json",
+		"events":   "bot-fields-list-events.json",
+	} {
+		raw, err := os.ReadFile(filepath.Join("../../testdata/recorded/feishu", fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recorded struct {
+			Response struct {
+				Data json.RawMessage `json:"data"`
+			} `json:"response"`
+		}
+		if err := json.Unmarshal(raw, &recorded); err != nil {
+			t.Fatal(err)
+		}
+		responses[table] = recorded.Response.Data
+		schema := schemas[table]
+		if err := json.Unmarshal(recorded.Response.Data, &schema); err != nil {
+			t.Fatal(err)
+		}
+		schemas[table] = schema
+	}
+	page := func(table string, ids []string, rows []map[string]any) map[string]any {
+		fieldIDs, names, types := []string{}, []string{}, []string{}
+		data := [][]any{}
+		for _, field := range schemas[table].Fields {
+			fieldIDs = append(fieldIDs, field.ID)
+			names = append(names, field.Name)
+			types = append(types, field.Type)
+		}
+		for _, row := range rows {
+			cells := []any{}
+			for _, name := range names {
+				cells = append(cells, row[name])
+			}
+			data = append(data, cells)
+		}
+		return map[string]any{"field_id_list": fieldIDs, "fields": names, "field_type_list": types, "record_id_list": ids, "data": data, "rev": 1, "has_more": false}
+	}
+	var mu sync.Mutex
+	requests := map[string]int{}
+	filters := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		requests[request.URL.Path]++
+		var data any
+		switch request.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			if err := json.NewEncoder(writer).Encode(map[string]any{"code": 0, "tenant_access_token": "doctor-token", "expire": 7200}); err != nil {
+				t.Error(err)
+			}
+			return
+		case "/open-apis/base/v3/bases/doctor-base/tables":
+			data = map[string]any{"tables": []map[string]string{{"id": "projects", "name": "项目"}, {"id": "tickets", "name": "票据"}, {"id": "events", "name": "事件"}}}
+		case "/open-apis/base/v3/bases/doctor-base/tables/projects/records":
+			data = page("projects", []string{"rec-one", "rec-two"}, []map[string]any{
+				{"名称": "one", "仓库远端": "github.com/test/one", "编号前缀": "ONE", "启用": true},
+				{"名称": "two", "仓库远端": "github.com/test/two", "编号前缀": "TWO", "启用": true},
+			})
+		case "/open-apis/base/v3/bases/doctor-base/tables/tickets/records":
+			filter := request.URL.Query().Get("filter")
+			filters[filter]++
+			project, serial := "", ""
+			switch filter {
+			case `{"logic":"and","conditions":[["项目","intersects",[{"id":"rec-one"}]]]}`:
+				project, serial = "rec-one", "NO.001"
+			case `{"logic":"and","conditions":[["项目","intersects",[{"id":"rec-two"}]]]}`:
+				project, serial = "rec-two", "NO.002"
+			default:
+				t.Errorf("unexpected ticket filter: %s", filter)
+				http.Error(writer, "invalid filter", http.StatusBadRequest)
+				return
+			}
+			data = page("tickets", []string{"ticket-" + project}, []map[string]any{{
+				"标题": project, "序号": serial, "项目": []map[string]string{{"id": project}}, "状态": []string{"In Progress"},
+				"创建时间": "2026-11-04T00:00:00Z", "修改时间": "2026-11-04T00:00:00Z",
+			}})
+		case "/open-apis/base/v3/bases/doctor-base/tables/events/records":
+			data = page("events", []string{}, nil)
+		default:
+			table := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/open-apis/base/v3/bases/doctor-base/tables/"), "/fields")
+			var ok bool
+			if data, ok = responses[table]; !ok || !strings.HasSuffix(request.URL.Path, "/fields") {
+				t.Errorf("unexpected request: %s", request.URL.Path)
+				http.NotFound(writer, request)
+				return
+			}
+		}
+		if err := json.NewEncoder(writer).Encode(map[string]any{"code": 0, "data": data}); err != nil {
+			t.Error(err)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	eligible := []projects.Project{}
+	for _, name := range []string{"one", "two"} {
+		eligible = append(eligible, projects.Project{Name: name, Repository: config.Repository{Env: map[string]string{
+			"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": "doctor-base", "AGENT_FEISHU_PROJECT": "github.com/test/" + name,
+		}}})
+	}
+	eligible[1].Repository.Env["AGENT_FEISHU_BASE"] = "https://example.feishu.cn/base/doctor-base"
+	for run := 1; run <= 2; run++ {
+		probe, err := newDoctorProbe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		check := probe.checkLedger(context.Background(), eligible)
+		if check.Status != healthOK {
+			t.Fatalf("ledger check = %+v", check)
+		}
+		want := []doctorLedgerTicket{{Project: "one", Identifier: "ONE-1", Headroom: issues.FeishuBodyRunes}, {Project: "two", Identifier: "TWO-2", Headroom: issues.FeishuBodyRunes}}
+		if got := check.Details.(map[string]any)["tickets"]; !reflect.DeepEqual(got, want) {
+			t.Fatalf("ledger tickets = %+v, want %+v", got, want)
+		}
+		mu.Lock()
+		for _, path := range []string{"/open-apis/auth/v3/tenant_access_token/internal", "/open-apis/base/v3/bases/doctor-base/tables", "/open-apis/base/v3/bases/doctor-base/tables/projects/fields", "/open-apis/base/v3/bases/doctor-base/tables/tickets/fields", "/open-apis/base/v3/bases/doctor-base/tables/events/fields"} {
+			if got := requests[path]; got != run {
+				t.Errorf("run %d: %s requested %d times, want %d", run, path, got, run)
+			}
+		}
+		if len(filters) != 2 {
+			t.Errorf("project filters = %v, want two distinct filters", filters)
+		}
+		mu.Unlock()
+	}
+}
 
 type doctorFakeLedger struct {
 	tasks    []issues.Task

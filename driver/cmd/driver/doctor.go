@@ -139,6 +139,7 @@ func newDoctorProbe() (doctorProbe, error) {
 	if err != nil {
 		return doctorProbe{}, err
 	}
+	ledgers := issues.NewFactory(cfg.Tuning)
 	return doctorProbe{
 		now:         time.Now(),
 		stateRoot:   logStateRoot(),
@@ -149,7 +150,7 @@ func newDoctorProbe() (doctorProbe, error) {
 			return result.Eligible, err
 		},
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
-			return issues.New(ctx, p.Repository.Env, cfg.Tuning)
+			return ledgers.New(ctx, p.Repository.Env)
 		},
 		githubReachable: func(ctx context.Context) error { return httpReachable(ctx, "https://api.github.com/") },
 	}, nil
