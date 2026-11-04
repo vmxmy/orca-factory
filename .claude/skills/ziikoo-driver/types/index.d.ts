@@ -3,6 +3,7 @@ export type RoleId =
   | 'worker_strong'
   | 'reviewer'
   | 'reviewer_small'
+  | 'second_reviewer'
   | 'resolver'
   | 'intake'
 
