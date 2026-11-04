@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, FoundElement } from 'claude-code/testing'
-import type { On, ProcessRunResult } from 'claude-code'
+import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 
 import { SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
@@ -47,6 +47,7 @@ const engine = (
   paneOpen = false,
 ) => {
   const calls: string[][] = []
+  const inits: (ProcessRunInit | undefined)[] = []
   const focused: string[] = []
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
@@ -87,6 +88,7 @@ const engine = (
   const subOf = (argv: readonly string[]) => (argv[0] === 'bash' ? 'bash' : (argv[1] ?? ''))
   on('process.run', async (_, e) => {
     calls.push([...e.argv])
+    inits.push(e.init)
     const sub = subOf(e.argv)
     const nth = calls.filter(argv => subOf(argv) === sub).length
     const late = lateMs[sub]
@@ -95,7 +97,7 @@ const engine = (
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clipboard, clock, focused, statuses, toasts }
+  return { calls, clipboard, clock, focused, inits, statuses, toasts }
 }
 
 const runCommand = {
@@ -130,6 +132,16 @@ test('模型页列出施工档位与样本模型名，可切换仓库', async ($
   expect(await exactText(ui, '小票审查')).toHaveLength(1)
   expect(await exactText(ui, 'claude-haiku-5-5')).toHaveLength(1)
   await ui.unmount()
+})
+
+// doctor gives its own checks five minutes (driver/cmd/driver/doctor.go) and takes about 30 seconds on this host.
+test('读 doctor 的超时不短于 doctor 自己的 5 分钟时限', async ($, on) => {
+  const { calls, inits } = engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+
+  const doctor = subcommands(calls).indexOf('doctor')
+  expect(doctor).toBeGreaterThanOrEqual(0)
+  expect(inits[doctor]?.timeoutMs ?? 30_000).toBeGreaterThanOrEqual(5 * 60_000)
 })
 
 test('模型页列出交叉复审角色及其来源键', async ($, on) => {
