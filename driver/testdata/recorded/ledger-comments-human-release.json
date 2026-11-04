@@ -1,0 +1,34 @@
+{
+  "comments": [
+    {
+      "id": "reczz28VPiALNdsV",
+      "body": "转人: ZY-366 gate spec 缺陷，需人改票面（原文已替换）\n证据: REDACTED\n阶段: 转人\n归属: 人\nresolver-state {\"source_run\":\"run_6dae88aa15f2\",\"creator\":\"term_56fe39b8-91aa-4a45-baac-1bbde069c81c\",\"version\":1,\"attempt\":1,\"phase\":\"human\",\"run\":\"run_9401c6644826\",\"task\":\"task_45d3580f8134\",\"dispatch\":\"ctx_9e6e99afcd9e\",\"spec\":\"REDACTED\",\"agent\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"result\":\"REDACTED\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+      "createdAt": "2026-11-04T09:08:36+08:00"
+    },
+    {
+      "id": "reczz28VPkOsxR2k",
+      "body": "通知: 转人 4a218db141db",
+      "createdAt": "2026-11-04T09:10:43+08:00"
+    },
+    {
+      "id": "reczz28VQ5IPQQYh",
+      "body": "放行：ou_00000000000000000000000000000000 2026-11-04T09:30:29+08:00\nresolver-state {\"version\":1,\"attempt\":1,\"phase\":\"waiting\"}",
+      "createdAt": "2026-11-04T09:30:30+08:00"
+    },
+    {
+      "id": "reczz28VQ8T84xIt",
+      "body": "通知: 转人 2ea38ecafe59",
+      "createdAt": "2026-11-04T09:33:30+08:00"
+    },
+    {
+      "id": "reczz28VQNEVIn2E",
+      "body": "转人: ZY-366 放行后票面仍未改，需人改票面后再放行（原文已替换）\n证据: REDACTED\n阶段: 转人\n归属: 人\nresolver-state {\"creator\":\"term_4ff4feea-f505-41ae-9f1c-a3b55a0ced47\",\"version\":1,\"attempt\":2,\"phase\":\"human\",\"run\":\"run_60e5a7d8beab\",\"task\":\"task_685cc860ea18\",\"dispatch\":\"ctx_4548b7b83d94\",\"spec\":\"REDACTED\",\"agent\":\"claude\",\"model\":\"claude-opus-5-5\",\"effort\":\"high\",\"result\":\"REDACTED\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+      "createdAt": "2026-11-04T09:47:29+08:00"
+    },
+    {
+      "id": "reczz28VQPYfBEwg",
+      "body": "通知: 转人 f0ea03249aee",
+      "createdAt": "2026-11-04T09:49:41+08:00"
+    }
+  ]
+}

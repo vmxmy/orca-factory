@@ -59,6 +59,60 @@ func TestHumanTicketNotifyListsCommands(t *testing.T) {
 	}
 }
 
+// ZY-366, 2026-11-04: after the approver released attempt 1, the scheduler
+// wrote "通知: 转人 6684040bb385" and sent a second human notification before
+// the next resolver ran. Evidence lines, the role spec and the result are redacted.
+func TestReleasedHumanTicketIsNotNotifiedAgain(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-human-release.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	human, marker, released, duplicate, humanAgain, markerAgain := recording.Comments[0], recording.Comments[1], recording.Comments[2], recording.Comments[3], recording.Comments[4], recording.Comments[5]
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}
+	notify := func(comments ...task.Comment) (*notifyStore, *notifySender) {
+		t.Helper()
+		store := &notifyStore{fakeIssues: fakeIssues{issueComments: comments}}
+		sender := &notifySender{store: store}
+		sender.start(t)
+		ticket := Ticket{ID: "id", Repo: repo.Path, Identifier: "ZY-366", Owner: machine.OwnerHuman}
+		var err error
+		if ticket.Resolution, err = readResolution(comments); err != nil {
+			t.Fatal(err)
+		}
+		readFeishuNotification(&ticket, comments)
+		runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+		if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+			t.Fatal(err)
+		}
+		return store, sender
+	}
+	written := func(store *notifyStore, before int) []string {
+		var bodies []string
+		for _, c := range store.issueComments[before:] {
+			bodies = append(bodies, c.Body)
+		}
+		return bodies
+	}
+
+	store, sender := notify(human)
+	if got := written(store, 1); len(got) != 1 || got[0] != marker.Body || len(sender.messages) != 1 {
+		t.Fatalf("first human notification wrote %q, want %q; messages=%q", got, marker.Body, sender.messages)
+	}
+	store, sender = notify(human, marker, released)
+	if got := written(store, 3); len(got) != 0 || len(sender.messages) != 0 {
+		t.Fatalf("released ticket notified again (recorded duplicate %q): wrote %q, messages=%q", duplicate.Body, got, sender.messages)
+	}
+	store, sender = notify(human, marker, released, humanAgain)
+	if got := written(store, 4); len(got) != 1 || got[0] != markerAgain.Body || len(sender.messages) != 1 || !strings.Contains(sender.messages[0], `"attempt":"2"`) {
+		t.Fatalf("second human notification wrote %q, want %q; messages=%q", got, markerAgain.Body, sender.messages)
+	}
+	store, sender = notify(human, marker, released, humanAgain, markerAgain)
+	if got := written(store, 5); len(got) != 0 || len(sender.messages) != 0 {
+		t.Fatalf("second human attempt notified twice: wrote %q, messages=%q", got, sender.messages)
+	}
+}
+
 func (f *notifyStore) ListComments(_ context.Context, id string) ([]task.Comment, error) {
 	f.reads++
 	if f.commentsByID != nil {
