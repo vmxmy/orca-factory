@@ -90,7 +90,7 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 			return fmt.Errorf("deployment query unavailable: %w", err)
 		}
 		if state == "failed" {
-			if !d.AutoRerun || d.Reruns > 0 {
+			if !d.WorkflowRetryPending && (!d.AutoRerun || d.Reruns > 0) {
 				return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
 			}
 			// Rerunning an old SHA after main moved would roll production back.
@@ -99,9 +99,10 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 				return fmt.Errorf("deployment query unavailable: %w", err)
 			}
 			if main != p.MergeSHA {
-				return r.pauseDeployment(ctx, t, p, "deployment workflow failed")
+				return r.pauseDeployment(ctx, t, p, "deployment workflow failed; main moved past merge SHA")
 			}
-			d.Reruns = 1
+			d.WorkflowRetryPending = false
+			d.Reruns++
 			if err := r.deploymentReceipt(ctx, t, p); err != nil {
 				return err
 			}
@@ -249,6 +250,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	}
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""
+	d.WorkflowRetryPending = action == "retry-workflow"
 	if !deploymentTransition(t.Progress, p) {
 		return rejectDeploymentProposal("invalid or stale deployment recovery")
 	}
