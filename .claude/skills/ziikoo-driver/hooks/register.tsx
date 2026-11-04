@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, RenderChildren, RenderSurface, Timer } from 'claude-code'
+import type { EngineInterface, ProcessRunInit, Register, RenderChildren, RenderSurface, Timer } from 'claude-code'
 
 import type {
   DriverConfig,
@@ -145,11 +145,12 @@ const runJson = async <T,>(
   argv: string[],
   parse: (stdout: string) => T,
   accepts: (exitCode: number) => boolean,
+  init?: ProcessRunInit,
 ): Promise<Fetched<T>> => {
   await update($, busy, kinds => (kinds.includes(kind) ? kinds : [...kinds, kind]))
   if (spin === undefined) startSpin($)
   try {
-    const run = await $.process.run(argv).catch((error: unknown) => message(error))
+    const run = await $.process.run(argv, init).catch((error: unknown) => message(error))
     if (typeof run === 'string') return { kind: 'failed', exitCode: null, stderr: run }
     if (!accepts(run.exitCode)) return { kind: 'failed', exitCode: run.exitCode, stderr: run.stderr }
     try {
@@ -207,9 +208,13 @@ const fetchRuntime = async ($: Engine): Promise<void> => {
   await update($, runtime, () => next)
 }
 
+// doctor gives its own checks five minutes and takes about 30 seconds, past process.run's 30-second default.
+// Its five minutes start after it loads its config and are followed by writing the report, so the wait runs past them.
+const DOCTOR_TIMEOUT_MS = 5 * 60_000 + 30_000
+
 // doctor exits 1 when any check fails; its report is still the answer.
 const fetchHealth = async ($: Engine): Promise<void> => {
-  const next = await runJson($, 'doctor', argvOf('doctor'), parseHealth, code => code === 0 || code === 1)
+  const next = await runJson($, 'doctor', argvOf('doctor'), parseHealth, code => code === 0 || code === 1, { timeoutMs: DOCTOR_TIMEOUT_MS })
   await update($, health, () => next)
 }
 
