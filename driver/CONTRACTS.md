@@ -195,6 +195,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 调度器对允许自动化的仓库通知转人（归属人）、合并证据冲突、部署 `paused`；处置 Agent 归属是无人值守下的常规流程，不通知（OF-135，`TestFeishuNotifyResolverSilent`）；票级归属或处置凭证的证据冲突导致 Snapshot 失败时，聚合本轮完整读取评论后的票，通知全部待通知票，Snapshot 错误保留，整轮停止调度。无执行归属的纳管票只要有 `MergeProblem` 也保留以便通知。类别优先级为证据冲突、部署失败、转人。原因摘要折叠空白，先写事件 `通知: <类别> <摘要 sha256 前 12 位>`，已存在同票同标记则不再发送。发送失败或结果未知保留事件，不在以后轮次或重启后自动补发；原因与已有通知事件来自同一轮 Snapshot 的评论视图，通知不调用 `ListComments`。评论读取或事件写入失败不发送，下轮可重新观察。通知错误只记 warn，不改变原调度结果。
 - `TestFeishuNotifyDurable` 覆盖三类消息和重建 Runtime 后去重；`TestFeishuNotifyFailureAndDisabled` 覆盖关闭、非飞书、普通状态、已有事件、写入失败和发送失败；`TestFeishuNotifyWarnDoesNotBlock` 验证 warn 后继续派工。`TestFeishuNotifySnapshotConflict` 验证票级错误身份、Snapshot 失败与跨轮去重；`TestFeishuNotifySnapshotReason` 验证原因按创建时间、ID 排序并使用快照事件。`config.TestFeishuNotifySettings` 验证配置来源及凭据隔离。
 - `TestFeishuNotifyTwoTicks` 回放 `linear-comments-executor-handoff.json` 的转人评论，通过真实 Runtime 快照和连续两轮 Tick 验证三张票各发送一次、各写一条通知事件，并在两轮之间重建 Runtime；同时覆盖快照凭证错误与其他待通知票共存时，通知不漏报且不派工。`TestFeishuNotifyUnownedConflict` 覆盖无归属、非候选票的合并证据冲突。通知标记由本次测试的实际写入产生，第二轮从评论重新解析，不手工恢复 `NotifyEvents`。
+- 放行后到二线转人前不通知（OF-376）：归属仍为人、最新 `resolver-state` 是网关写入的 `waiting` 时不写事件、不发消息；二线再次转人写入新 attempt 的 `human` 记录后照常发卡片。`TestReleasedHumanTicketIsNotNotifiedAgain` 回放 `ledger-comments-human-release.json`：录自 ZY-366 的账本评论（2026-11-04，driver `issues read`），保留 attempt 1 转人、通知事件、`放行：` 评论、修复前多发的通知事件、attempt 2 转人及其通知事件。`证据:` 行、处置角色 spec 与 result 已替换为 `REDACTED`；两条 `转人:` 首行和审批人 open_id 换成占位文本，三个 `通知:` 标记按替换后的原因重新计算（标识规则同 `notify.go`）；其余字段原样。测试断言写出的通知事件与录制逐字相同。
 
 ## 飞书需求网关（OF-13）
 
