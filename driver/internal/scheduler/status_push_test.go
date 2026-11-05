@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -43,15 +44,22 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 	if err := json.Unmarshal(data, &live); err != nil {
 		t.Fatal(err)
 	}
-	if err := status.Write(status.Snapshot{GeneratedAt: live.GeneratedAt, Tickets: live.Tickets}); err != nil {
-		t.Fatal(err)
-	}
-	legacy, err := os.ReadFile(status.Path())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, contents := range map[string][]byte{"live": data, "snapshot": legacy} {
+	var legacy status.View
+	for _, name := range []string{"live", "snapshot"} {
 		t.Run(name, func(t *testing.T) {
+			contents := data
+			if name == "snapshot" {
+				if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories)}); err != nil {
+					t.Fatal(err)
+				}
+				contents, err = os.ReadFile(status.Path())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(contents, &legacy); err != nil {
+					t.Fatal(err)
+				}
+			}
 			var view struct {
 				Tickets []struct {
 					Identifier    string             `json:"identifier"`
@@ -92,6 +100,30 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 				t.Error("deployment exposes smoke command")
 			}
 		})
+	}
+	liveRows := make(map[string]status.Ticket, len(live.Tickets))
+	for _, row := range live.Tickets {
+		liveRows[row.Identifier] = row
+	}
+	legacyRows := make(map[string]status.Ticket, len(legacy.Tickets))
+	for _, row := range legacy.Tickets {
+		legacyRows[row.Identifier] = row
+	}
+	if len(liveRows) != len(legacyRows) {
+		t.Errorf("live tickets = %d, snapshot tickets = %d", len(liveRows), len(legacyRows))
+	}
+	for identifier, liveRow := range liveRows {
+		legacyRow, found := legacyRows[identifier]
+		if !found {
+			t.Errorf("%s is missing from snapshot", identifier)
+			continue
+		}
+		if liveRow.QueuePosition != legacyRow.QueuePosition {
+			t.Errorf("%s queuePosition differs: live = %d, snapshot = %d", identifier, liveRow.QueuePosition, legacyRow.QueuePosition)
+		}
+		if !reflect.DeepEqual(liveRow.Deployment, legacyRow.Deployment) {
+			t.Errorf("%s deployment differs: live = %+v, snapshot = %+v", identifier, liveRow.Deployment, legacyRow.Deployment)
+		}
 	}
 }
 

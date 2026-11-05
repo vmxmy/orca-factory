@@ -59,3 +59,21 @@ func ObservationRows(tickets []Ticket, repos []config.Repository) []status.Ticke
 	}
 	return rows
 }
+
+func SnapshotRows(tickets []Ticket, repos []config.Repository) []status.Ticket {
+	snapshot := make([]status.Ticket, 0, len(tickets))
+	rows := ObservationRows(tickets, repos)
+	for index, ticket := range tickets {
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || DeploymentBarrier(ticket) {
+			snapshot = append(snapshot, rows[index])
+		}
+	}
+	sort.Slice(snapshot, func(i, j int) bool {
+		a, b := snapshot[i], snapshot[j]
+		if a.Repo != b.Repo {
+			return a.Repo < b.Repo
+		}
+		return a.Identifier < b.Identifier
+	})
+	return snapshot
+}
