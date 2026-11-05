@@ -33,7 +33,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		case "confirm-passed":
 			return n.State == "passed" && n.SmokeStarted == d.SmokeStarted && n.SmokePassed == d.SmokePassed
 		case "retry-workflow":
-			return (d.Workflow != "" || d.Self && d.Recovery == nil) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
+			return (d.Workflow != "" || d.Self && selfReinstallable(d.Recovery)) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
 		case "retry-smoke":
 			return d.Smoke != "" && d.SmokeStarted && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
 		default:
@@ -83,6 +83,13 @@ func sameDeploymentRecovery(a, b *merge.DeploymentRecovery) bool {
 		return a == b
 	}
 	return a.Action == b.Action && a.Operator == b.Operator && a.Reason == b.Reason && a.At.Equal(b.At)
+}
+
+// selfReinstallable reports whether no smoke of a self deployment can have run
+// before this recovery: retry-smoke clears SmokeStarted, so only a deployment
+// never recovered or last recovered by a reinstall may be reinstalled.
+func selfReinstallable(r *merge.DeploymentRecovery) bool {
+	return r == nil || r.Action == "retry-workflow"
 }
 
 // retry-smoke on a self deployment retries only its smoke; pending would
