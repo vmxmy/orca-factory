@@ -118,11 +118,68 @@ const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { k
 const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
 const seen = atom({ plugin: 'ziikoo-driver', key: 'seen' } as const, null, { shape: 'seen-1' })
 
-type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui'>
+type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui' | 'plugin'>
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 let spin: Timer | undefined
+let scene: { url: string } | undefined
+let sceneStarting = false
+
+const browseScene = async ($: Engine, url: string) => {
+  try {
+    const result = await $.process.run(['xdg-open', url])
+    $.ui.toast(result.exitCode === 0 ? `已在浏览器打开 ${url}` : `请手动打开 ${url}（xdg-open 退出码 ${result.exitCode}）`)
+  } catch (error) {
+    $.ui.toast(`请手动打开 ${url}（${message(error)}）`)
+  }
+}
+
+const openScene = ($: Engine) => {
+  if (scene) return browseScene($, scene.url)
+  if (sceneStarting) return
+  sceneStarting = true
+  const bytes = crypto.getRandomValues(new Uint8Array(32))
+  const token = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  const child = $.process.spawn({
+    argv: ['bun', 'run', `${$.plugin.root}/scene/server.ts`],
+    cwd: $.plugin.root,
+    env: { ZIIKOO_SCENE_TOKEN: token },
+  })
+  void (async () => {
+    let exitCode: number | null = null
+    let buffer = ''
+    const chunks = async function* () {
+      let next = await child.next()
+      while (!next.done) {
+        yield next.value
+        next = await child.next()
+      }
+      exitCode = next.value.code
+    }
+    try {
+      for await (const chunk of chunks()) {
+        if (chunk.stream !== 'stdout') continue
+        buffer += chunk.text
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          const match = /^listening (http:\/\/127\.0\.0\.1:\d+\/\?t=\S+)\r?$/.exec(line)
+          if (!match || scene) continue
+          scene = { url: match[1]! }
+          sceneStarting = false
+          await browseScene($, scene.url)
+        }
+      }
+      $.ui.toast(`3D 服务已退出（退出码 ${exitCode}）`)
+    } catch (error) {
+      $.ui.toast(`3D 服务失败：${message(error)}`)
+    } finally {
+      scene = undefined
+      sceneStarting = false
+    }
+  })()
+}
 let frame = 0
 const pending = new Map<FetchKind, number>()
 let healthRequest = 0
@@ -654,6 +711,7 @@ export const register: Register = on => {
             )}
             <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refreshPage($, current)} />
             <ui.Button key="copy" label="复制" hotkey="c" onPress={press => copyPage($, press.surface)} />
+            <ui.Button key="scene" label="3D" hotkey="d" onPress={() => openScene($)} />
           </ui.Box>
         </ui.Box>
         {config && current === 'models' && selected && (
@@ -685,7 +743,7 @@ export const register: Register = on => {
           {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols, wanted, bar('变量名'))}
         </ui.Box>
         <ui.Text dimColor wrap="truncate">
-          {helpText(current, opened !== '')}
+          {`${helpText(current, opened !== '')} · d 3D`}
         </ui.Text>
       </ui.Box>
     )

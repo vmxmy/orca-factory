@@ -51,9 +51,16 @@ const engine = (
   const focused: string[] = []
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
+  const spawns: { argv: readonly string[]; env?: Record<string, string> }[] = []
   const clipboard: { texts: string[]; surfaces: (string | undefined)[]; refuse?: 'no-surface' | 'no-clipboard' | 'refused' } = { texts: [], surfaces: [] }
   let isOpen = paneOpen
   const clock = mock.clock(on, { now: NOW })
+  on('process.spawn', async function* (_, event) {
+    spawns.push(event)
+    yield { stream: 'stdout', text: 'listening http://127.0.0.1:1/?t=x\n' }
+    await clock.sleep(60_000)
+    return { value: { code: 0, signal: null } }
+  })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
   on('ui.open', () => {
@@ -97,7 +104,7 @@ const engine = (
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clipboard, clock, focused, inits, statuses, toasts }
+  return { calls, clipboard, clock, focused, inits, statuses, toasts, spawns }
 }
 
 const runCommand = {
@@ -113,6 +120,34 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
   (await ui.findAll({ type: 'Text' })).filter(one => one.text === text)
 
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
+
+test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on) => {
+  const { calls, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(spawns).toHaveLength(1)
+  expect(spawns[0]?.argv[0]).toBe('bun')
+  expect(spawns[0]?.argv[2]).toMatch(/\/scene\/server\.ts$/)
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_TOKEN).toMatch(/^[a-f0-9]{64}$/)
+  expect(calls).toContainEqual(['xdg-open', 'http://127.0.0.1:1/?t=x'])
+  expect(toasts.some(text => text.includes('http://127.0.0.1:1/?t=x'))).toBe(true)
+  await ui.press({ key: 'scene' })
+  expect(spawns).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('3D 服务退出后再次按下会重新 spawn', async ($, on) => {
+  const { spawns, clock, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  await clock.advance(60_000)
+  expect(toasts.some(text => text.includes('退出码 0'))).toBe(true)
+  await ui.press({ key: 'scene' })
+  expect(spawns).toHaveLength(2)
+  await ui.unmount()
+})
 
 test('模型页列出施工档位与样本模型名，可切换仓库', async ($, on) => {
   const { calls } = engine(on, ran({ stdout: sampleStdout }))
@@ -759,10 +794,10 @@ const ticketRows = async (ui: Drawing) =>
   (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('pipeline-')).map(one => one.key)
 
 const HELP = {
-  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
-  detail: 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
-  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框',
-  other: 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框',
+  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 3D',
+  detail: 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 3D',
+  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 3D',
+  other: 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框 · d 3D',
 }
 
 test('按下票号进入详情，时间线按执行器日志列出中文事件', async ($, on) => {
