@@ -5,7 +5,7 @@ import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 import { SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
-import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
+import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_NO_TOKEN, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
 
 const PANE = {
   plugin: 'ziikoo-driver',
@@ -237,6 +237,20 @@ test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
   await ui.press({ key: 'scene' })
   await clock.advance(60_000)
   expect(toasts.some(text => text.includes('退出码 1') && text.includes('3D 服务端口必须是 0–65535 的整数，收到 abc'))).toBe(true)
+  await ui.unmount()
+})
+
+test('3D 服务崩溃时提醒取 error 行，不取 Bun 版本页脚', async ($, on) => {
+  const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  sceneExit.code = SAMPLE_SCENE_NO_TOKEN.exitCode
+  const stackOffset = SAMPLE_SCENE_NO_TOKEN.stderr.indexOf('      at ')
+  sceneExit.stderr = [SAMPLE_SCENE_NO_TOKEN.stderr.slice(0, stackOffset), SAMPLE_SCENE_NO_TOKEN.stderr.slice(stackOffset)]
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  await clock.advance(60_000)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('缺少 ZIIKOO_SCENE_TOKEN'))).toBe(true)
+  expect(toasts.every(text => !text.includes('Bun v'))).toBe(true)
   await ui.unmount()
 })
 
