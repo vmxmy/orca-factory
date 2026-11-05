@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -61,6 +62,13 @@ func (r *Runtime) deploymentReceipt(ctx context.Context, t Ticket, p *merge.Prog
 }
 func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Progress) error {
 	d := p.Deployment
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	if d.State == "pending" && d.StartedAt.IsZero() {
+		d.StartedAt = now.UTC()
+	}
 	if err := r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
 	}
@@ -88,6 +96,14 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 		state, runID, err := gh.Deployment(ctx, owner, repo, d.Workflow, p.MergeSHA)
 		if err != nil {
 			return fmt.Errorf("deployment query unavailable: %w", err)
+		}
+		minutes := 30
+		if configured, err := strconv.Atoi(r.Repositories[t.Repo].Env["AGENT_DEPLOY_ABSENT_MINUTES"]); err == nil && configured >= 0 {
+			minutes = configured
+		}
+		elapsed := now.Sub(d.StartedAt)
+		if state == "absent" && minutes > 0 && elapsed.Minutes() > float64(minutes) {
+			return r.pauseDeployment(ctx, t, p, fmt.Sprintf("no deployment run for %s after %d minutes", p.MergeSHA, int64(elapsed/time.Minute)))
 		}
 		if state == "failed" {
 			if !d.WorkflowRetryPending && (!d.AutoRerun || d.Reruns > 0) {
@@ -247,6 +263,9 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	now := time.Now()
 	if r.Now != nil {
 		now = r.Now()
+	}
+	if action == "retry-workflow" {
+		d.StartedAt = now.UTC()
 	}
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""

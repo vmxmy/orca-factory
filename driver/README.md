@@ -411,7 +411,9 @@ orca-factory-driver prune-workspaces
 
 部署自动重跑：`AGENT_DEPLOY_AUTO_RERUN=1` 且配置了 `AGENT_DEPLOY_WORKFLOW` 时，部署 workflow 失败后自动重跑一次失败的 job，再失败才转处置 Agent。开关随队列冻结。`reruns` 在发出请求前写入账本，所以崩溃后不会重跑第二次。main 已前进时不重跑，因为旧 SHA 重新部署会回滚生产。
 
-`AGENT_DEPLOY_WORKFLOW` 接受现有 workflow 显示名（含空格），也接受 workflow ID 或文件名。显示名必须唯一；GitHub 读取失败、空集合、截断或未知状态都等待。只观察既有 workflow，不触发部署或发布。`AGENT_SMOKE_CMD` 由 `bash -c` 在仓库目录执行，超时 30 秒；环境提供真实 `AGENT_MERGE_SHA` 与 `AGENT_GH_REPO`。只有 workflow 时仅等待 workflow；只有 smoke 时在确认 squash 后执行；两者都有时 workflow 成功才执行 smoke。无效配置不放行。
+`AGENT_DEPLOY_WORKFLOW` 接受现有 workflow 显示名（含空格），也接受 workflow ID 或文件名。显示名必须唯一；GitHub 读取失败、截断或未知状态都等待。该 squash SHA 的 workflow 查询返回 `total_count=0` 时观察状态为 `absent`，已有运行但未完成时为 `pending`。部署屏障首次写入 pending 回执时记录 `started_at`；旧回执缺少该字段时，下一轮补写当前时钟，从补写时刻起计时。仅观察到 `absent` 且从 `started_at` 起已等待超过默认 30 分钟才暂停并转处置 Agent，原因是 `no deployment run for <sha> after <N> minutes`，N 为已等待的整分钟数。仓库环境变量 `AGENT_DEPLOY_ABSENT_MINUTES` 可覆盖时限，`0` 表示不限时；`pending` 不受此时限影响。没有运行可能来自路径过滤、workflow 禁用或 GitHub 延迟，不能自动判为通过。只观察既有 workflow，不触发部署或发布。`AGENT_SMOKE_CMD` 由 `bash -c` 在仓库目录执行，超时 30 秒；环境提供真实 `AGENT_MERGE_SHA` 与 `AGENT_GH_REPO`。只有 workflow 时仅等待 workflow；只有 smoke 时在确认 squash 后执行；两者都有时 workflow 成功才执行 smoke。无效配置不放行。
+
+因没有运行而暂停后，处置 Agent 核对该 SHA 相对上一次已部署 SHA 的改动是否全在部署 workflow 的路径过滤之外，是则 `confirm-passed`；否则 `retry-workflow` 并通知人手动触发。`retry-workflow` 恢复 pending 并重置 `started_at`，让 driver 重新等待。
 
 部署或 smoke 失败通过票据主账本评论把归属转为处置 Agent、暂停该仓库合并通道，其他仓库继续。配置在合并 intent 中冻结，移除配置、标记 Done/auto-failed、重启或恢复凭据均不解除已有屏障。smoke 执行前先写 `smoke-intent`；如果结果写回不能确认，后续 tick 调用 resolver 对账，不自动重放。
 

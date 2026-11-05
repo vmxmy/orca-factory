@@ -69,6 +69,9 @@ func (c *Client) Deployment(ctx context.Context, owner, repo, workflow, sha stri
 			}
 		}
 		if len(seen) == total {
+			if total == 0 {
+				return "absent", 0, nil
+			}
 			if latest.ID == 0 || latest.Status != "completed" {
 				return "pending", 0, nil
 			}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -614,6 +615,133 @@ func TestDeploymentFIFOOnlyReleasesAfterConfirmedSmoke(t *testing.T) {
 	}
 	if nextPuts != 1 || smokes != 1 || next.issue.State.Name != "Done" {
 		t.Fatalf("next PR did not advance once: next=%d smoke=%d state=%s", nextPuts, smokes, next.issue.State.Name)
+	}
+}
+
+func TestDeploymentWithoutRunPausesForResolver(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		running bool
+		legacy  bool
+		minutes string
+		elapsed time.Duration
+		paused  bool
+	}{
+		{name: "absent", elapsed: 31 * time.Minute, paused: true},
+		{name: "legacy receipt", legacy: true, elapsed: 31 * time.Minute, paused: true},
+		{name: "running", running: true, elapsed: 31 * time.Minute},
+		{name: "boundary", elapsed: 30 * time.Minute},
+		{name: "override", minutes: "5", elapsed: 6 * time.Minute, paused: true},
+		{name: "unlimited", minutes: "0", elapsed: 24 * time.Hour},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"
+			f.repos[0].Env["AGENT_DEPLOY_ABSENT_MINUTES"] = scenario.minutes
+			now := time.Now().UTC()
+			started := now
+			f.runtime.Now = func() time.Time { return now }
+			sha := strings.Repeat("a", 40)
+			if scenario.legacy {
+				f.merged = true
+				progress := merge.Progress{Version: 1, QueueID: "q1", TicketID: "id", Repository: "o/r", PR: 1, Head: f.head, Main: f.main, MergeSHA: sha, Phase: "merged", Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending"}}
+				raw, err := json.Marshal(progress)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := f.tracker.CreateComment(context.Background(), "id", merge.ProgressPrefix+string(raw)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			original := f.server.Config.Handler
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/actions/workflows/deploy.yml/runs") {
+					if r.URL.Query().Get("head_sha") != sha {
+						t.Errorf("wrong deployment SHA: %s", r.URL)
+					}
+					body := `{"total_count":0,"workflow_runs":[]}`
+					if scenario.running {
+						body = fmt.Sprintf(`{"total_count":1,"workflow_runs":[{"id":19,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":"in_progress"}]}`, sha)
+					}
+					if _, err := fmt.Fprint(w, body); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				original.ServeHTTP(w, r)
+			})
+			read := func() (Ticket, time.Time) {
+				t.Helper()
+				tickets, err := f.runtime.Snapshot(context.Background(), f.repos)
+				if err != nil || len(tickets) != 1 || tickets[0].Progress == nil || tickets[0].Progress.Deployment == nil {
+					t.Fatalf("missing deployment receipt: tickets=%v err=%v", tickets, err)
+				}
+				raw, err := json.Marshal(tickets[0].Progress.Deployment)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var receipt struct {
+					StartedAt time.Time `json:"started_at"`
+				}
+				if err := json.Unmarshal(raw, &receipt); err != nil {
+					t.Fatal(err)
+				}
+				return tickets[0], receipt.StartedAt
+			}
+			scheduler := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := scheduler.Tick(context.Background()); err == nil {
+				t.Fatal("unfinished deployment did not retain barrier")
+			}
+			ticket, recordedStart := read()
+			if ticket.Progress.Deployment.State != "pending" || !recordedStart.Equal(started) {
+				t.Errorf("first receipt state=%s started_at=%s, want pending at %s", ticket.Progress.Deployment.State, recordedStart, started)
+			}
+			now = now.Add(scenario.elapsed)
+			if err := scheduler.Tick(context.Background()); err == nil {
+				t.Fatal("unfinished deployment released barrier")
+			}
+			ticket, recordedStart = read()
+			if !recordedStart.Equal(started) {
+				t.Errorf("deployment wait restarted: %s", recordedStart)
+			}
+			if !scenario.paused {
+				if ticket.Progress.Deployment.State != "pending" || ticket.Owner != machine.OwnerMerge {
+					t.Fatalf("pending deployment changed: %+v", ticket)
+				}
+				return
+			}
+			deployment := ticket.Progress.Deployment
+			wantReason := fmt.Sprintf("no deployment run for %s after %d minutes", sha, int(scenario.elapsed/time.Minute))
+			if deployment.State != "paused" || deployment.Reason != wantReason || ticket.Owner != machine.OwnerResolver {
+				t.Fatalf("missing resolver handoff: state=%s reason=%q owner=%s", deployment.State, deployment.Reason, ticket.Owner)
+			}
+			if scenario.name == "override" {
+				if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "confirm-passed", "operator", "path filters verified", false); err != nil {
+					t.Fatal(err)
+				}
+				if err := scheduler.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if f.tracker.issue.State.Name != "Done" {
+					t.Fatal("confirmed deployment did not release barrier")
+				}
+				return
+			}
+			if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "retry-workflow", "operator", "workflow trigger reconciled", false); err != nil {
+				t.Fatal(err)
+			}
+			ticket, recordedStart = read()
+			if ticket.Progress.Deployment.State != "pending" || !recordedStart.Equal(now) {
+				t.Fatalf("retry did not restart wait: state=%s started_at=%s", ticket.Progress.Deployment.State, recordedStart)
+			}
+			if err := scheduler.Tick(context.Background()); err == nil {
+				t.Fatal("retry released absent workflow barrier")
+			}
+			ticket, _ = read()
+			if ticket.Progress.Deployment.State != "pending" {
+				t.Fatal("retry immediately paused again")
+			}
+		})
 	}
 }
 
