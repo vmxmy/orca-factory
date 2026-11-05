@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,10 +29,18 @@ const grace = 10 * time.Minute
 
 var slots = []int{1, 2, 3, 4}
 
+const (
+	stepCommented   = "commented"
+	stepWithdrawing = "withdrawing"
+	stepWithdrawn   = "withdrawn"
+)
+
 type Tickets interface {
 	Create(context.Context, issues.CreateInput) (issues.Task, error)
 	Read(context.Context, string) (issues.Task, error)
+	ListComments(context.Context, string) ([]task.Comment, error)
 	CreateComment(context.Context, string, string) (task.Comment, error)
+	UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error)
 }
 
 type Monitor struct {
@@ -47,6 +56,9 @@ type record struct {
 	Ticket     string               `json:"ticket,omitempty"`
 	Identifier string               `json:"identifier,omitempty"`
 	Recovered  bool                 `json:"recovered"`
+	// RecoveryStep is the last recovery write that landed, so a failed write
+	// retries only itself and never repeats a comment.
+	RecoveryStep string `json:"recovery_step,omitempty"`
 	// A failed create may still have opened an issue; never create again until
 	// every slot recovers, so a flaky API cannot flood the tracker.
 	Unconfirmed bool `json:"unconfirmed,omitempty"`
@@ -74,6 +86,22 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 		due = due || now.Sub(first) >= grace
 	}
 	rec.Since = since
+	// A withdrawn ticket owes its note even when the outage is back, before a
+	// new ticket replaces it in the record.
+	if rec.RecoveryStep == stepWithdrawing {
+		if err := m.settleWithdrawal(ctx, rec); err != nil {
+			return errors.Join(err, m.save(rec))
+		}
+	}
+	if rec.RecoveryStep == stepWithdrawn {
+		if err := m.recover(ctx, rec, now); err != nil {
+			return errors.Join(err, m.save(rec))
+		}
+		rec.Recovered, rec.RecoveryStep = true, ""
+		if err := m.save(rec); err != nil {
+			return err
+		}
+	}
 	// Reading the ticket costs a full issue listing, so only an action reads it.
 	if due && rec.Ticket != "" {
 		task, err := m.Tickets.Read(ctx, rec.Ticket)
@@ -91,19 +119,103 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 			rec.Unconfirmed = true
 			return errors.Join(fmt.Errorf("runner alert ticket unconfirmed: %w", err), m.save(rec))
 		}
-		rec.Ticket, rec.Identifier, rec.Recovered = task.ID, task.Identifier, false
+		rec.Ticket, rec.Identifier, rec.Recovered, rec.RecoveryStep = task.ID, task.Identifier, false, ""
 	case len(problems) > 0:
-		rec.Recovered = false
+		rec.Recovered, rec.RecoveryStep = false, ""
 	case rec.Unconfirmed:
 		rec.Unconfirmed = false
 	case rec.Ticket != "" && !rec.Recovered:
+		if err := m.recover(ctx, rec, now); err != nil {
+			return errors.Join(err, m.save(rec))
+		}
+		rec.Recovered, rec.RecoveryStep = true, ""
+	}
+	return m.save(rec)
+}
+
+// recover saves after each tracker write so a failure retries only the step
+// that did not land.
+func (m *Monitor) recover(ctx context.Context, rec *record, now time.Time) error {
+	if rec.RecoveryStep == "" {
 		body := fmt.Sprintf("runner 检测：%s 起 4 个槽位均已健康。", now.UTC().Format(time.RFC3339))
 		if _, err := m.Tickets.CreateComment(ctx, rec.Ticket, body); err != nil {
 			return err
 		}
-		rec.Recovered = true
+		rec.RecoveryStep = stepCommented
+		if err := m.save(rec); err != nil {
+			return err
+		}
+	}
+	if rec.RecoveryStep == stepWithdrawing {
+		if err := m.settleWithdrawal(ctx, rec); err != nil {
+			return err
+		}
+	}
+	if rec.RecoveryStep == stepCommented {
+		unclaimed, err := m.unclaimed(ctx, rec.Ticket)
+		if err != nil || !unclaimed {
+			return err
+		}
+		// An update error can follow a landed write, so the retry re-reads it.
+		rec.RecoveryStep = stepWithdrawing
+		if err := m.save(rec); err != nil {
+			return err
+		}
+		if _, err := m.Tickets.UpdateIssue(ctx, rec.Ticket, "Canceled", nil, []string{"ready-for-agent"}); err != nil {
+			return err
+		}
+		rec.RecoveryStep = stepWithdrawn
+		if err := m.save(rec); err != nil {
+			return err
+		}
+	}
+	_, err := m.Tickets.CreateComment(ctx, rec.Ticket, "runner 检测：故障已自行恢复，无需施工；未认领的票已取消，并移除 ready-for-agent。")
+	return err
+}
+
+// settleWithdrawal reads back an unconfirmed cancel: a landed one owes only its
+// note, any other state is judged again from the commented step.
+func (m *Monitor) settleWithdrawal(ctx context.Context, rec *record) error {
+	ticket, err := m.Tickets.Read(ctx, rec.Ticket)
+	if err != nil {
+		return err
+	}
+	rec.RecoveryStep = stepCommented
+	if ticket.State.Name == "Canceled" && !slices.ContainsFunc(ticket.Labels.Nodes, func(label task.NamedID) bool { return label.Name == "ready-for-agent" }) {
+		rec.RecoveryStep = stepWithdrawn
 	}
 	return m.save(rec)
+}
+
+// unclaimed is the scheduler's candidate rule plus no ownership line: any
+// claim, even one released later, leaves the ticket to its own flow.
+func (m *Monitor) unclaimed(ctx context.Context, id string) (bool, error) {
+	ticket, err := m.Tickets.Read(ctx, id)
+	if err != nil || ticket.State.Name != "Todo" {
+		return false, err
+	}
+	ready := false
+	for _, label := range ticket.Labels.Nodes {
+		if label.Name == "auto-impl" {
+			return false, nil
+		}
+		ready = ready || label.Name == "ready-for-agent"
+	}
+	if !ready {
+		return false, nil
+	}
+	comments, err := m.Tickets.ListComments(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	for _, comment := range comments {
+		for _, line := range strings.Split(comment.Body, "\n") {
+			if strings.HasPrefix(line, "归属: ") {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func (m *Monitor) probe(ctx context.Context, now time.Time, rec *record) (map[string]string, error) {
@@ -191,7 +303,7 @@ CHECK: for s in 1 2 3 4; do systemctl --user is-active --quiet orca-go-isolated-
 2（依据：命中 ` + "`$AGENT_LANE2_GLOBS`" + ` 的 ` + "`scripts/*`" + `）
 
 ## SCOPE
-scripts/local-runner
+scripts/local-runner/* scripts/local-runner/maintenance/*
 
 ## 依赖
 DEPENDENCIES: {"blockers":[],"related":[]}
