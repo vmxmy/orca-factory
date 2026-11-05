@@ -28,6 +28,7 @@ if "--session-dir" in sys.argv:
     session_dir = sys.argv[sys.argv.index("--session-dir") + 1]
 history = []
 history_restored = False
+init_replies = 0
 if session_dir:
     try:
         with open(os.path.join(session_dir, "history.jsonl")) as f:
@@ -53,10 +54,6 @@ log({"event": "spawn", "argv": sys.argv[1:]})
 
 if mode == "crash":
     sys.exit(1)
-if mode == "never-read":
-    import time
-    while True:
-        time.sleep(3600)
 
 for raw in sys.stdin:
     line = raw.rstrip("\n")
@@ -97,6 +94,11 @@ for raw in sys.stdin:
             mode = "ok"
     elif typ in ("set_model", "set_thinking_level", "get_state", "get_session_stats"):
         respond(typ, rid)
+        if mode == "stall":
+            init_replies += 1
+            if init_replies >= 2:
+                import time
+                time.sleep(3600)
     else:
         rec = {"type": "response", "command": typ, "success": False, "error": "unknown command"}
         if rid:
@@ -458,6 +460,89 @@ for raw in sys.stdin:
 	}
 }
 
+// replayRecordedProc feeds a recorded JSONL exchange through the same LF
+// framing and record dispatch as readLoop, without a live process: done is
+// never closed, so the waitSettledAfterAbort branches are exercised without
+// racing a process-death signal.
+func replayRecordedProc(t *testing.T, path string, drop map[string]bool) *piProc {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &piProc{
+		events:  make(chan json.RawMessage, 256),
+		done:    make(chan struct{}),
+		pending: map[string]chan piResponse{},
+	}
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		trimmed := bytes.TrimSuffix(line, []byte{'\r'})
+		if len(bytes.TrimSpace(trimmed)) == 0 {
+			continue
+		}
+		var head struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(trimmed, &head); err == nil && drop[head.Type] {
+			continue
+		}
+		p.handleRecord(trimmed)
+	}
+	return p
+}
+
+// TestPiRecordedAbortReplay covers the abort path against a real recorded pi
+// exchange: the abort command succeeds, and the aborted run's agent_settled
+// (aborted=true) confirms waitSettledAfterAbort and leaves nothing stale.
+// The abort-response waiter registers before dispatch, as a live client's
+// would.
+func TestPiRecordedAbortReplayConfirmsSettled(t *testing.T) {
+	b, err := os.ReadFile("../../testdata/recorded/pi-rpc-abort.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &piProc{
+		events:  make(chan json.RawMessage, 256),
+		done:    make(chan struct{}),
+		pending: map[string]chan piResponse{},
+	}
+	abortCh := make(chan piResponse, 1)
+	p.pendingMu.Lock()
+	p.pending["2"] = abortCh
+	p.pendingMu.Unlock()
+	for _, line := range bytes.Split(b, []byte{'\n'}) {
+		trimmed := bytes.TrimSuffix(line, []byte{'\r'})
+		if len(bytes.TrimSpace(trimmed)) > 0 {
+			p.handleRecord(trimmed)
+		}
+	}
+	select {
+	case abort := <-abortCh:
+		if !abort.Success {
+			t.Fatalf("recorded abort was rejected: %+v", abort)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no abort response in recording")
+	}
+	if !p.waitSettledAfterAbort() {
+		t.Fatal("recorded aborted run's settled must confirm cleanup")
+	}
+	select {
+	case rec := <-p.events:
+		t.Fatalf("stale event left for the next turn: %s", rec)
+	default:
+	}
+}
+
+// Without the aborted run's agent_settled (dropped here), cleanup cannot
+// confirm the process state and must retire it.
+func TestPiRecordedAbortReplayWithoutSettled(t *testing.T) {
+	p := replayRecordedProc(t, "../../testdata/recorded/pi-rpc-abort.jsonl", map[string]bool{"agent_settled": true})
+	if p.waitSettledAfterAbort() {
+		t.Fatal("missing settled must not confirm")
+	}
+}
+
 // TestPiRecordedTurnReplay replays a real recorded pi RPC exchange (prompt
 // response, session events, agent_settled, get_last_assistant_text) through
 // the protocol parsing layer and asserts the turn's key facts parse.
@@ -616,8 +701,11 @@ func TestPiSandboxArgsCarriesRolePromptAndConfig(t *testing.T) {
 // A pi that stops reading stdin must not wedge the turn: the prompt write
 // blocks, the turn deadline must still fire, and the process must end up
 // cleaned (killed and dropped) instead of holding the gateway slot forever.
+// The fake answers the spawn-time model setup and only then stops reading,
+// so the turn's oversized prompt is what blocks — with a synchronous send
+// the write has no cancellation path and this test hangs to its 15s guard.
 func TestPiTurnWriteBlockedByPeerTimesOut(t *testing.T) {
-	runner, logPath := piTestRunner(t, "never-read")
+	runner, logPath := piTestRunner(t, "stall")
 	startPiRunner(t, runner)
 	runner.Timeout = 300 * time.Millisecond
 	big := strings.Repeat("x", 128<<10)
@@ -628,8 +716,8 @@ func TestPiTurnWriteBlockedByPeerTimesOut(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err == nil {
-			t.Fatal("turn must fail when pi never reads stdin")
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("turn err=%v, want timeout", err)
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("turn hung past its deadline on a blocked stdin write")
