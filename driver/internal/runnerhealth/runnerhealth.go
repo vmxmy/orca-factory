@@ -91,6 +91,9 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 			return errors.Join(err, m.save(rec))
 		}
 		rec.Recovered, rec.RecoveryStep = true, ""
+		if err := m.save(rec); err != nil {
+			return err
+		}
 	}
 	// Reading the ticket costs a full issue listing, so only an action reads it.
 	if due && rec.Ticket != "" {

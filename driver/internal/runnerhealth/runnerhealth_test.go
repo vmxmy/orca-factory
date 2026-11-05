@@ -26,7 +26,8 @@ type fakeTickets struct {
 	history       []task.Comment
 	updates       int
 	recoveryReads int
-	failNoteOnce  bool
+	failNotes     int
+	readErr       error
 }
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
@@ -37,6 +38,10 @@ func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.T
 	return t, nil
 }
 func (f *fakeTickets) Read(_ context.Context, id string) (issues.Task, error) {
+	if err := f.readErr; err != nil {
+		f.readErr = nil
+		return issues.Task{}, err
+	}
 	if len(f.comments) > 0 {
 		f.recoveryReads++
 	}
@@ -62,8 +67,8 @@ func (f *fakeTickets) UpdateIssue(_ context.Context, _ string, state string, add
 	return task.Issue{}, nil
 }
 func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
-	if f.failNoteOnce && strings.Contains(body, "无需施工") {
-		f.failNoteOnce = false
+	if f.failNotes > 0 && strings.Contains(body, "无需施工") {
+		f.failNotes--
 		return task.Comment{}, errors.New("comment rejected")
 	}
 	f.comments = append(f.comments, id+": "+body)
@@ -225,7 +230,7 @@ func readRecord(t *testing.T, m *Monitor) record {
 }
 
 func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
-	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNoteOnce: true}
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNotes: 1}
 	m, now := outage(t, tickets)
 	if err := m.Poll(context.Background(), now); err == nil {
 		t.Fatal("failed withdrawal note must surface")
@@ -244,7 +249,7 @@ func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
 }
 
 func TestWithdrawalNoteSurvivesReturningOutage(t *testing.T) {
-	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNoteOnce: true}
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNotes: 1}
 	m, now := outage(t, tickets)
 	if err := m.Poll(context.Background(), now); err == nil {
 		t.Fatal("failed withdrawal note must surface")
@@ -258,6 +263,28 @@ func TestWithdrawalNoteSurvivesReturningOutage(t *testing.T) {
 	notes := slices.DeleteFunc(slices.Clone(tickets.comments), func(c string) bool { return !strings.Contains(c, "无需施工") })
 	if len(tickets.created) != 2 || len(notes) != 1 || !strings.HasPrefix(notes[0], "uuid-1: ") {
 		t.Fatalf("returning outage dropped the owed note: created=%d comments=%q", len(tickets.created), tickets.comments)
+	}
+}
+
+func TestOwedNoteSavedBeforeTicketRead(t *testing.T) {
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNotes: 2}
+	m, now := outage(t, tickets)
+	writeLease(t, m.StateDir, "registering", now)
+	for _, minutes := range []int{0, 15} {
+		if err := m.Poll(context.Background(), now.Add(time.Duration(minutes)*time.Minute)); err == nil {
+			t.Fatal("failed withdrawal note must surface")
+		}
+	}
+	tickets.readErr = errors.New("tracker unavailable")
+	if err := m.Poll(context.Background(), now.Add(26*time.Minute)); err == nil {
+		t.Fatal("failed ticket read must surface")
+	}
+	if err := m.Poll(context.Background(), now.Add(31*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	notes := slices.DeleteFunc(slices.Clone(tickets.comments), func(c string) bool { return !strings.Contains(c, "无需施工") })
+	if len(notes) != 1 || len(tickets.created) != 2 {
+		t.Fatalf("note must land once before the read fails: created=%d comments=%q", len(tickets.created), tickets.comments)
 	}
 }
 
