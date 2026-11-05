@@ -3,6 +3,8 @@ import { OrbitControls } from './vendor/OrbitControls.js'
 
 const colors = { done: 0x50c98b, current: 0x5d9fff, attention: 0xf6c75c, failed: 0xed676b, idle: 0x596879 }
 const positions = { pickup: 0, work: 6, gate: 12, review: 17, pack: 22, merge: 27, dispatch: 34, smoke: 40, repair: 12, human: 22, return: 9, unknown: 0 }
+const RETURN_ENTRY_OFFSET = 3.45
+const RETURN_SHIFT_HOLD = 0.6
 const labels = { pickup: '领取台', work: '施工台', gate: '门禁', review: '审查台', pack: '打包台', merge: '合并装车道', dispatch: '出厂门', smoke: '目的地检查站' }
 const world = new THREE.Scene()
 world.background = new THREE.Color(0x101923)
@@ -44,6 +46,8 @@ world.add(new THREE.GridHelper(180, 90, 0x3d5266, 0x2a3c4e))
 const fixtures = new THREE.Group()
 world.add(fixtures)
 const parcels = new Map()
+const returnOrder = new Map()
+let returnSequence = 0
 let machines = []
 let trucks = []
 let lamps = []
@@ -233,9 +237,13 @@ function applyScene(scene) {
     const rowZ = offsets.get(row.path)
     const occupied = new Map()
     let lane = 0
+    const returning = row.parcels.filter(parcel => parcel.station === 'return').map(parcel => `${row.path}\0${parcel.identifier}`)
+    for (const key of returning) if (!returnOrder.has(key)) returnOrder.set(key, returnSequence++)
+    const returnSlots = new Map([...returning].sort((left, right) => returnOrder.get(left) - returnOrder.get(right)).map((key, index) => [key, index]))
     for (const parcel of row.parcels) {
       const key = `${row.path}\0${parcel.identifier}`
       alive.add(key)
+      if (parcel.station !== 'return') returnOrder.delete(key)
       let state = parcels.get(key)
       if (!state) {
         const group = new THREE.Group()
@@ -250,8 +258,8 @@ function applyScene(scene) {
       state.initialized = true
       state.parcel = parcel
       state.box.material.color.setHex(colors[parcel.tone])
-      const slot = occupied.get(parcel.station) ?? 0
-      occupied.set(parcel.station, slot + 1)
+      const slot = parcel.station === 'return' ? returnSlots.get(key) : occupied.get(parcel.station) ?? 0
+      occupied.set(parcel.station, (occupied.get(parcel.station) ?? 0) + 1)
       let targetZ = rowZ + slot * 1.15
       let targetY = 1.15
       if (parcel.station === 'work') {
@@ -264,20 +272,25 @@ function applyScene(scene) {
         targetY = 0.15
       }
       const sideSlot = parcel.station === 'repair' || parcel.station === 'human' ? (slot % 3 - 1) * 1.2 : parcel.station === 'return' ? slot * 1.15 : 0
+      const before = state.target.clone()
       state.target.set(positions[parcel.station] + sideSlot, targetY, targetZ)
       if (previous !== parcel.station) {
         state.rejected = previous === 'gate' && parcel.station === 'return'
-        if (parcel.station === 'return' || previous === 'return') {
+        const entering = parcel.station === 'return'
+        if (entering || previous === 'return') {
           const height = 2.2 + lane++ * 1.3
-          state.waypoints = [
-            new THREE.Vector3(state.group.position.x, height, state.group.position.z),
-            new THREE.Vector3(state.target.x, height, state.target.z),
-          ]
+          const from = state.group.position
+          const entry = state.target.x + RETURN_ENTRY_OFFSET
+          state.waypoints = entering
+            ? [new THREE.Vector3(from.x, height, from.z), new THREE.Vector3(entry, height, targetZ), new THREE.Vector3(entry, targetY, targetZ)]
+            : [new THREE.Vector3(from.x, height, from.z), new THREE.Vector3(state.target.x, height, state.target.z)]
         } else {
           state.waypoints = parcel.station === 'repair' || parcel.station === 'human'
             ? [new THREE.Vector3(state.group.position.x, 3.7, rowZ), new THREE.Vector3(state.target.x, 3.7, targetZ)]
             : []
         }
+      } else if (parcel.station === 'return' && !before.equals(state.target)) {
+        state.holdUntil = clock.elapsedTime + RETURN_SHIFT_HOLD
       }
       if (state.blocker) { dispose(state.blocker); state.blocker = undefined }
       if (parcel.blocker) state.blocker = label(state.group, '⛓ 锁定', 0, 1.65, 0, 1.8, '#f6c75c')
@@ -295,7 +308,7 @@ function applyScene(scene) {
     }
   }
   for (const [key, state] of parcels) {
-    if (!alive.has(key)) { dispose(state.group); parcels.delete(key) }
+    if (!alive.has(key)) { dispose(state.group); parcels.delete(key); returnOrder.delete(key) }
   }
   for (const door of doors) {
     door.userData.lock.visible = scene.maintenance === 'frozen'
@@ -370,6 +383,7 @@ function animate() {
   const delta = Math.min(clock.getDelta(), 0.1)
   const time = clock.elapsedTime
   for (const state of parcels.values()) {
+    if (state.holdUntil > time) continue
     const target = state.waypoints[0] ?? state.target
     state.group.position.lerp(target, 1 - Math.exp(-3 * delta))
     if (state.waypoints.length && state.group.position.distanceTo(target) < 0.1) state.waypoints.shift()
