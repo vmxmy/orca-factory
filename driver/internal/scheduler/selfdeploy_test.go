@@ -384,21 +384,10 @@ func TestSelfDeployGuardFailureAbortsBeforeRestart(t *testing.T) {
 	}
 }
 
-// Every intermediate state converges in the next serve: done, rolled back, or
-// paused with maintenance running again.
+// Every intermediate state after the install began converges in the next
+// serve: done, rolled back, or paused with maintenance running again. A crash
+// before the install is TestSelfDeployInterruptedBeforeInstallRetries.
 func TestSelfDeployConvergesAfterCrash(t *testing.T) {
-	t.Run("drain or build", func(t *testing.T) {
-		f, h := newSelfDeployFixture(t)
-		h.kill = "go"
-		firstServe(t, f, h)
-		if lastState(f) != "deploy-intent" || maintenanceMode(t) != "draining" || installed(t, h.driver) != "old" {
-			t.Fatalf("crash: state=%s mode=%s", lastState(f), maintenanceMode(t))
-		}
-		_ = serveAs(f, h, "old")
-		if lastState(f) != "paused" || maintenanceMode(t) != "running" || h.builds != 0 || h.restarts != 0 || installed(t, h.driver) != "old" {
-			t.Fatalf("after crash: state=%s mode=%s builds=%d restarts=%d", lastState(f), maintenanceMode(t), h.builds, h.restarts)
-		}
-	})
 	t.Run("replaced before restart", func(t *testing.T) {
 		f, h := newSelfDeployFixture(t)
 		h.kill = "restart"
