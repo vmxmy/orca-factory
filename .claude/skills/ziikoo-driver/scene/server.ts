@@ -6,13 +6,15 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 
-const token = process.env.ZIIKOO_SCENE_TOKEN
-if (!token) throw new Error('缺少 ZIIKOO_SCENE_TOKEN')
-
 const fail = (reason: string): never => {
   console.error(reason)
   process.exit(1)
 }
+const failWith = (reason: unknown) => fail(reason instanceof Error ? reason.message : String(reason))
+process.on('uncaughtException', failWith)
+process.on('unhandledRejection', failWith)
+
+const token = process.env.ZIIKOO_SCENE_TOKEN || fail('缺少 ZIIKOO_SCENE_TOKEN')
 
 const bind = process.env.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
 const portText = process.env.ZIIKOO_SCENE_PORT ?? '0'

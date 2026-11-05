@@ -79,4 +79,4 @@ Three.js 固定为 `0.180.0`，模块、它依赖的 `three.core.min.js`、Orbit
 claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claude/skills/ziikoo-driver
 ```
 
-测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts`（3D 服务 `listening` 与启动失败 stderr 的真实录制，权威副本在 `driver/testdata/recorded/ziikoo-scene-*`，由 driver 的 Go 测试对照一致）。
+测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌 3D 服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。

@@ -184,8 +184,7 @@ const openScene = ($: Engine, surface: RenderSurface, bind: string, port: string
           await deliverScene($, scene.url, surface, bind)
         }
       }
-      const stderrLines = stderr.split(/\r?\n/).map(line => line.trimEnd()).filter(line => line !== '' && !line.startsWith('Bun v'))
-      const reason = exitCode !== 0 ? stderrLines.find(line => line.startsWith('error: ')) ?? stderrLines.pop() : ''
+      const reason = exitCode !== 0 ? stderr.trimEnd().split(/\r?\n/).pop() : ''
       $.ui.toast(`3D 服务已退出（退出码 ${exitCode}${reason ? `：${reason}` : ''}）`)
     } catch (error) {
       $.ui.toast(`3D 服务失败：${message(error)}`)

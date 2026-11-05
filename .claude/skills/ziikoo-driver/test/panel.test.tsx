@@ -240,17 +240,15 @@ test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
   await ui.unmount()
 })
 
-test('3D 服务崩溃时提醒取 error 行，不取 Bun 版本页脚', async ($, on) => {
+test('3D 服务缺少 token 时 toast 显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
   sceneExit.code = SAMPLE_SCENE_NO_TOKEN.exitCode
-  const stackOffset = SAMPLE_SCENE_NO_TOKEN.stderr.indexOf('      at ')
-  sceneExit.stderr = [SAMPLE_SCENE_NO_TOKEN.stderr.slice(0, stackOffset), SAMPLE_SCENE_NO_TOKEN.stderr.slice(stackOffset)]
+  sceneExit.stderr = [SAMPLE_SCENE_NO_TOKEN.stderr]
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
   await clock.advance(60_000)
   expect(toasts.some(text => text.includes('退出码 1') && text.includes('缺少 ZIIKOO_SCENE_TOKEN'))).toBe(true)
-  expect(toasts.every(text => !text.includes('Bun v'))).toBe(true)
   await ui.unmount()
 })
 
