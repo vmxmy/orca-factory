@@ -4,42 +4,98 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <title>Driver · 3D 车间</title>
+  <link rel="icon" href="data:,">
+  <title>Driver · 像素工坊小镇</title>
   <style>
     * { box-sizing: border-box; }
-    body { margin: 0; background: #101923; color: #ecf2f8; font: 14px system-ui, sans-serif; overflow: hidden; }
-    canvas { display: block; touch-action: none; }
-    header, aside, #tooltip, footer { position: fixed; z-index: 1; background: #142231ed; border: 1px solid #394c5e; border-radius: 10px; padding: 14px 18px; }
-    header { top: 20px; left: 20px; max-width: min(540px, 60vw); }
-    h1 { font-size: 19px; margin: 0 0 6px; }
-    #status { color: #f6c75c; white-space: pre-line; }
-    aside { top: 20px; right: 20px; line-height: 1.9; max-width: 280px; }
-    .key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
-    .done { background: #50c98b; } .current { background: #5d9fff; } .attention { background: #f6c75c; } .failed { background: #ed676b; }
-    #snapshot, .note { font-size: 12px; color: #adbdcc; }
-    #tooltip { display: none; pointer-events: none; max-width: 360px; white-space: pre-line; line-height: 1.7; }
-    footer { bottom: 20px; left: 20px; color: #adbdcc; font-size: 12px; }
-    @media (max-width: 680px) { header { top: 10px; left: 10px; max-width: 55vw; } aside { top: 10px; right: 10px; padding: 10px; max-width: 40vw; font-size: 12px; } }
+    :root { color-scheme: light; font-family: system-ui, "PingFang SC", sans-serif; color: #5c3e30; background: #f1e6cd; }
+    body { margin: 0; height: 100dvh; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; }
+    button, input { font: inherit; color: inherit; }
+    button { cursor: pointer; background: #f7edda; border: 1px solid #b89b73; border-bottom: 3px solid #9a7853; border-radius: 3px; padding: 8px 12px; }
+    button:hover, button[aria-current="true"] { background: #e2c99d; }
+    button:disabled { opacity: .5; cursor: default; }
+    :focus-visible { outline: 3px solid #347e91; outline-offset: 2px; }
+    [hidden] { display: none !important; }
+    header { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; padding: 12px 20px; background: #f9efd8; border-bottom: 7px solid #8a6245; }
+    h1 { font-size: 19px; margin: 0; letter-spacing: 1px; }
+    header small { display: block; font-size: 11px; color: #8d765a; margin-top: 3px; }
+    nav { display: flex; gap: 8px; }
+    #search { min-width: 0; width: min(100%, 320px); padding: 9px; border: 1px solid #b4976b; background: #fffaed; border-radius: 3px; }
+    .search-label { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; white-space: nowrap; }
+    #workspace { display: grid; grid-template-columns: 228px minmax(0, 1fr); min-height: 0; }
+    #workspace.has-detail { grid-template-columns: 228px minmax(0, 1fr) 310px; }
+    #sidebar { display: flex; flex-direction: column; gap: 8px; padding: 13px 10px; overflow: hidden; border-right: 4px solid #9b7852; background: #eee0c2; }
+    h2 { font-size: 14px; margin: 3px 0; }
+    #project-count, .note { font-size: 11px; color: #79644b; }
+    #projects { flex: 1; min-height: 48px; overflow: auto; }
+    #projects button, #parcels button { width: 100%; display: block; text-align: left; margin-bottom: 6px; overflow: hidden; }
+    .title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+    .sub { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: #806a50; margin-top: 4px; }
+    #parcels { overflow: auto; max-height: 36%; min-height: 0; }
+    #nodes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    #nodes button { padding: 5px 1px; font-size: 10px; }
+    #viewport { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: #b9c78c; }
+    #map { display: block; width: 100%; height: 100%; touch-action: none; image-rendering: pixelated; }
+    #tools { position: absolute; right: 12px; top: 12px; display: flex; gap: 5px; }
+    #location { position: absolute; left: 12px; top: 12px; max-width: calc(100% - 200px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 7px; background: #f7eacde8; font-size: 12px; pointer-events: none; }
+    #empty { position: absolute; inset: 25% 10%; text-align: center; padding: 30px 10px; background: #f8efd9; border: 4px double #9b7852; }
+    #detail { min-width: 0; overflow: auto; padding: 16px; background: #faf0d8; border-left: 4px solid #9b7852; }
+    #detail h2 { font-size: 18px; margin: 15px 0; overflow-wrap: anywhere; }
+    #detail p { font-size: 12px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-line; }
+    #detail .reason { color: #a23f31; }
+    #detail button { max-width: 100%; overflow-wrap: anywhere; }
+    footer { padding: 8px 14px; border-top: 4px solid #8a6245; background: #f7ecd4; font-size: 11px; }
+    #status { white-space: pre-line; color: #8d482c; max-height: 90px; overflow: auto; }
+    #snapshot { margin-top: 4px; color: #806c52; }
+    @media (max-width: 760px) {
+      header { padding: 8px; gap: 8px; }
+      h1 { font-size: 16px; }
+      header small { display: none; }
+      nav button { padding: 6px; font-size: 11px; }
+      .search-label { width: 100%; margin: 0; }
+      #search { flex: 1; width: auto; padding: 6px; }
+      #workspace, #workspace.has-detail { grid-template-columns: minmax(0, 1fr); grid-template-rows: 135px minmax(130px, 1fr); }
+      #workspace.has-detail { grid-template-rows: 120px minmax(130px, 1fr) minmax(100px, 210px); }
+      #sidebar { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-rows: 18px minmax(0, 1fr); gap: 4px 8px; padding: 5px 8px; border-right: 0; border-bottom: 3px solid #9b7852; }
+      #project-count { grid-column: 1; grid-row: 1; }
+      #sidebar h2 { display: none; }
+      #projects { grid-column: 1; grid-row: 2; min-height: 0; }
+      #parcels { grid-column: 2; grid-row: 2; max-height: none; }
+      #nodes { grid-column: 2; grid-row: 1; display: flex; overflow: auto; }
+      #nodes button { flex-shrink: 0; padding: 1px 5px; }
+      #detail { border-left: 0; border-top: 3px solid #9b7852; padding: 8px 14px; }
+      #detail h2 { margin: 8px 0; font-size: 15px; }
+      #tools { right: 5px; top: 5px; }
+      #tools button { padding: 6px 9px; }
+      #location { left: 5px; top: 5px; max-width: calc(100% - 150px); font-size: 11px; }
+      footer { padding: 5px 8px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
   </style>
-  <script type="importmap">
-    {"imports":{"three":"/vendor/three.module.min.js?t=__TOKEN__","/vendor/three.core.min.js":"/vendor/three.core.min.js?t=__TOKEN__","/vendor/OrbitControls.js":"/vendor/OrbitControls.js?t=__TOKEN__"}}
-  </script>
 </head>
 <body>
-  <header><h1>Driver · 3D 车间</h1><div id="status" role="status">正在连接 driver…</div></header>
-  <aside aria-label="图例">
-    <div><span class="key done"></span>完成 <span class="key current"></span>当前</div>
-    <div><span class="key attention"></span>注意 <span class="key failed"></span>失败</div>
-    <div id="snapshot">等待快照</div>
-    <div class="note">部署状态需 driver 补字段</div>
-    <div class="note">装车道按服务端首次看到排序，driver 未提供队列位次</div>
-  </aside>
-  <div id="tooltip" role="tooltip"></div>
-  <footer>拖动旋转 · 滚轮缩放 · 右键平移 · 悬停箱子查看票据</footer>
+  <header>
+    <h1>像素工坊小镇<small>DRIVER OBSERVATORY · 实时只读观察</small></h1>
+    <nav aria-label="顶部导航"><button id="overview">小镇总览</button><button id="enter" disabled>进入工坊</button><button id="attention">需要关注</button></nav>
+    <label class="search-label" for="search">查找<input id="search" type="search" placeholder="项目、路径、票号或标题" autocomplete="off"></label>
+  </header>
+  <div id="workspace">
+    <aside id="sidebar" aria-label="项目与票据导航">
+      <h2>工坊名录</h2><div id="project-count">等待项目</div><div id="projects"></div>
+      <h2>工位</h2><div id="nodes"></div><h2>票据 · 按身份定位</h2><div id="parcels"></div>
+    </aside>
+    <main id="viewport" aria-label="工坊地图">
+      <canvas id="map" tabindex="0" aria-label="像素地图。方向键平移，+ 或 - 缩放，Home 复位。项目、工位和包裹也可通过侧栏按钮访问。"></canvas>
+      <span id="location">等待快照</span>
+      <div id="tools" aria-label="地图工具"><button id="zoom-out" aria-label="缩小">−</button><button id="zoom-in" aria-label="放大">+</button><button id="reset">复位</button></div>
+      <section id="empty" hidden><h2>小镇尚无项目</h2><p>等待 driver 的真实项目快照。</p></section>
+    </main>
+    <section id="detail" aria-label="详情" hidden></section>
+  </div>
+  <footer><div id="status" role="status">正在连接 driver…</div><div id="snapshot">等待快照</div><span>拖动平移 · 滚轮缩放 · 侧栏可键盘访问 · 蓝 当前 / 黄 注意 / 红 失败 / 绿 完成 · 页面只读</span></footer>
   <script type="module">
     import('/scene.js?t=__TOKEN__').catch(error => {
-      document.querySelector('#status').textContent = `车间加载失败：${error.message}`;
-      document.querySelector('#status').style.color = '#ed676b';
+      document.querySelector('#status').textContent = `工坊加载失败：${error.message}`;
     });
   </script>
 </body>

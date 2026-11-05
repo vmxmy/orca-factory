@@ -129,7 +129,7 @@ const deliverScene = async ($: Engine, url: string, surface: RenderSurface, ssh:
   try {
     const copied = await $.ui.copy({ text: url, surface })
     $.ui.toast(copied.isCopied
-      ? `已复制 3D 车间 URL：${url}${suffix}`
+      ? `已复制像素工坊 URL：${url}${suffix}`
       : `复制失败：${COPY_FAILURES[copied.reason]}，请手动打开 ${url}${suffix}`)
   } catch (error) {
     $.ui.toast(`复制失败：${message(error)}，请手动打开 ${url}${suffix}`)
@@ -187,9 +187,9 @@ const openScene = async ($: Engine, surface: RenderSurface, bind: string, port: 
         }
       }
       const reason = exitCode !== 0 ? stderr.trimEnd().split(/\r?\n/).pop() : ''
-      $.ui.toast(`3D 服务已退出（退出码 ${exitCode}${reason ? `：${reason}` : ''}）`)
+      $.ui.toast(`像素工坊服务已退出（退出码 ${exitCode}${reason ? `：${reason}` : ''}）`)
     } catch (error) {
-      $.ui.toast(`3D 服务失败：${message(error)}`)
+      $.ui.toast(`像素工坊服务失败：${message(error)}`)
     } finally {
       scene = undefined
       sceneStarting = false
@@ -729,7 +729,7 @@ export const register: Register = (on, options) => {
             )}
             <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refreshPage($, current)} />
             <ui.Button key="copy" label="复制" hotkey="c" onPress={press => copyPage($, press.surface)} />
-            <ui.Button key="scene" label="3D" hotkey="d" onPress={press => openScene($, press.surface, bind, port)} />
+            <ui.Button key="scene" label="像素工坊" hotkey="d" onPress={press => openScene($, press.surface, bind, port)} />
           </ui.Box>
         </ui.Box>
         {config && current === 'models' && selected && (
@@ -761,7 +761,7 @@ export const register: Register = (on, options) => {
           {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols, wanted, bar('变量名'))}
         </ui.Box>
         <ui.Text dimColor wrap="truncate">
-          {`${helpText(current, opened !== '')} · d 3D`}
+          {`${helpText(current, opened !== '')} · d 像素工坊`}
         </ui.Text>
       </ui.Box>
     )

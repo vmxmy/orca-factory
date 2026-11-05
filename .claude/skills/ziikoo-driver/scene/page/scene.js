@@ -1,410 +1,364 @@
-import * as THREE from 'three'
-import { OrbitControls } from './vendor/OrbitControls.js'
-
-const colors = { done: 0x50c98b, current: 0x5d9fff, attention: 0xf6c75c, failed: 0xed676b, idle: 0x596879 }
-const positions = { pickup: 0, work: 6, gate: 12, review: 17, pack: 22, merge: 27, dispatch: 34, smoke: 40, repair: 12, human: 22, return: 9, unknown: 0 }
-const RETURN_ENTRY_OFFSET = 3.45
-const RETURN_CLEAR_HEIGHT = 1
-const labels = { pickup: '领取台', work: '施工台', gate: '门禁', review: '审查台', pack: '打包台', merge: '合并装车道', dispatch: '出厂门', smoke: '目的地检查站' }
-const world = new THREE.Scene()
-world.background = new THREE.Color(0x101923)
-world.fog = new THREE.Fog(0x101923, 65, 170)
-const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 300)
-camera.position.set(43, 35, 46)
-const renderer = new THREE.WebGLRenderer({ antialias: true })
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
-renderer.setSize(innerWidth, innerHeight)
-renderer.shadowMap.enabled = true
-renderer.outputColorSpace = THREE.SRGBColorSpace
-renderer.domElement.setAttribute('aria-label', 'Driver 流水线三维车间，箱子代表票据')
-document.body.append(renderer.domElement)
-const controls = new OrbitControls(camera, renderer.domElement)
-controls.enableDamping = true
-controls.maxPolarAngle = Math.PI / 2.1
-controls.maxDistance = 150
-controls.target.set(18, 0, 5)
-world.add(new THREE.HemisphereLight(0xcce5ff, 0x17222f, 2.4))
-const sun = new THREE.DirectionalLight(0xffffff, 3)
-sun.position.set(10, 35, 12)
-sun.castShadow = true
-sun.shadow.mapSize.set(2048, 2048)
-sun.shadow.camera.left = -50
-sun.shadow.camera.right = 65
-sun.shadow.camera.top = 65
-sun.shadow.camera.bottom = -50
-world.add(sun)
-const topLight = new THREE.PointLight(colors.attention, 35, 90)
-topLight.position.set(20, 12, 10)
-world.add(topLight)
-const floor = new THREE.Mesh(new THREE.PlaneGeometry(230, 230), new THREE.MeshStandardMaterial({ color: 0x202f3e, roughness: 0.95 }))
-floor.rotation.x = -Math.PI / 2
-floor.position.y = -0.25
-floor.receiveShadow = true
-world.add(floor)
-world.add(new THREE.GridHelper(180, 90, 0x3d5266, 0x2a3c4e))
-
-const fixtures = new THREE.Group()
-world.add(fixtures)
-const parcels = new Map()
-const returnOrder = new Map()
-let returnSequence = 0
-let machines = []
-let trucks = []
-let lamps = []
-let doors = []
-let layoutKey = ''
-let snapshot
-let connected = false
+const token = new URL(import.meta.url).searchParams.get('t')
+const resource = pathname => `${pathname}?t=${encodeURIComponent(token)}`
+const [model, drawing] = await Promise.all([import(resource('/town.mjs')), import(resource('/draw.mjs'))])
+const element = selector => document.querySelector(selector)
+const canvas = element('#map')
+const context = canvas.getContext('2d', { alpha: false })
+const cache = document.createElement('canvas')
+const cacheContext = cache.getContext('2d', { alpha: false })
+const buffer = document.createElement('canvas')
+const bufferContext = buffer.getContext('2d', { alpha: false })
+const reduced = matchMedia('(prefers-reduced-motion: reduce)')
 const failures = new Map()
-const status = document.querySelector('#status')
-const snapshotTime = document.querySelector('#snapshot')
-const tooltip = document.querySelector('#tooltip')
+const metrics = { resizes: 0, draws: 0, baseDraws: 0, visibleProjects: 0 }
+let state = model.initialState()
+let layout = model.townLayout([])
+let connected = false
+let fresh = true
+let cacheDirty = true
+let requested = false
+let hits = []
+let size = { width: 1, height: 1, ratio: 1 }
+let drag = null
+let pointerMoved = false
+let detailMode = null
+let snapshotRequest
 
-function block(parent, width, height, depth, color, positionX = 0, positionY = 0, rowZ = 0) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(width, height, depth), new THREE.MeshStandardMaterial({ color, roughness: 0.65 }))
-  mesh.position.set(positionX, positionY, rowZ)
-  mesh.castShadow = true
-  mesh.receiveShadow = true
-  parent.add(mesh)
-  return mesh
+const currentRow = () => state.scene?.rows.find(row => row.path === state.project)
+const currentLayout = () => {
+  if (state.view === 'town') return model.townLayout(state.scene?.rows ?? [])
+  const row = currentRow()
+  return { ...model.workshopLayout(row), row }
 }
-
-function label(parent, text, positionX, positionY, rowZ, width = 3.5, color = '#e5edf6') {
-  const canvas = document.createElement('canvas')
-  canvas.width = 768
-  canvas.height = 160
-  const context = canvas.getContext('2d')
-  context.fillStyle = '#142231'
-  context.fillRect(0, 0, canvas.width, canvas.height)
-  context.fillStyle = color
-  context.font = 'bold 64px system-ui, sans-serif'
-  context.textAlign = 'center'
-  context.textBaseline = 'middle'
-  context.fillText(text, 384, 80, 740)
-  const texture = new THREE.CanvasTexture(canvas)
-  texture.colorSpace = THREE.SRGBColorSpace
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture }))
-  sprite.position.set(positionX, positionY, rowZ)
-  sprite.scale.set(width, width * 160 / 768, 1)
-  parent.add(sprite)
-  return sprite
+const viewport = () => ({ x: state.camera.x - size.width / state.camera.zoom / 2, y: state.camera.y - size.height / state.camera.zoom / 2, width: size.width / state.camera.zoom, height: size.height / state.camera.zoom })
+const projectAnchor = () => model.townLayout(state.scene?.rows ?? []).projects.get(state.project)
+const screenPoint = point => ({ x: (point.x - state.camera.x) * state.camera.zoom + size.width / 2, y: (point.y - state.camera.y) * state.camera.zoom + size.height / 2 })
+function selectedPoint() {
+  const selected = state.selection
+  if (selected?.kind === 'parcel') return layout.parcels?.get(selected.key)
+  if (selected?.kind === 'station') return layout.nodes?.get(selected.station)
+  return state.view === 'town' ? projectAnchor() : { x: layout.bounds.x + layout.bounds.width / 2, y: layout.bounds.y + layout.bounds.height / 2 }
 }
-
-function dispose(group) {
-  group.traverse(object => {
-    object.geometry?.dispose()
-    const materials = Array.isArray(object.material) ? object.material : object.material ? [object.material] : []
-    for (const material of materials) {
-      material.map?.dispose()
-      material.dispose()
+function requestDraw(staticChanged = false) {
+  cacheDirty ||= staticChanged
+  if (requested) return
+  requested = true
+  requestAnimationFrame(draw)
+}
+function transform(target) {
+  target.setTransform(size.ratio, 0, 0, size.ratio, 0, 0)
+  target.translate(size.width / 2, size.height / 2)
+  target.scale(state.camera.zoom, state.camera.zoom)
+  target.translate(-state.camera.x, -state.camera.y)
+  target.imageSmoothingEnabled = false
+}
+function draw(now) {
+  requested = false
+  for (const [key, motion] of state.motions) if (now - motion.start >= motion.duration) state.motions.delete(key)
+  const view = viewport()
+  if (cacheDirty) {
+    transform(cacheContext)
+    drawing.paintBase(cacheContext, state, layout, view, model)
+    metrics.baseDraws++
+    cacheDirty = false
+  }
+  bufferContext.setTransform(1, 0, 0, 1, 0, 0)
+  bufferContext.drawImage(cache, 0, 0)
+  transform(bufferContext)
+  hits = state.scene ? drawing.paintActors(bufferContext, state, layout, view, now, model, reduced.matches) : []
+  context.setTransform(1, 0, 0, 1, 0, 0)
+  context.drawImage(buffer, 0, 0)
+  metrics.draws++
+  metrics.visibleProjects = state.view === 'town' ? model.visibleProjects(layout, view).length : 0
+  if (!reduced.matches && state.scene && (state.motions.size || connected && state.scene.state === 'ok' && state.scene.maintenance === 'running')) requestDraw()
+}
+function resize() {
+  const bounds = canvas.getBoundingClientRect()
+  const ratio = Math.min(devicePixelRatio || 1, 2)
+  const width = Math.max(1, Math.round(bounds.width * ratio))
+  const height = Math.max(1, Math.round(bounds.height * ratio))
+  if (canvas.width === width && canvas.height === height) return
+  buffer.width = width
+  buffer.height = height
+  bufferContext.fillStyle = '#b9c78c'
+  bufferContext.fillRect(0, 0, width, height)
+  bufferContext.drawImage(canvas, 0, 0, width, height)
+  canvas.width = width
+  canvas.height = height
+  context.drawImage(buffer, 0, 0)
+  cache.width = width
+  cache.height = height
+  size = { width: bounds.width, height: bounds.height, ratio }
+  metrics.resizes++
+  if (state.selection) keepVisible()
+  requestDraw(true)
+}
+function focus(point, zoom) {
+  if (!point) return
+  state.camera = { x: point.x, y: point.y, zoom: zoom ?? state.camera.zoom }
+  requestDraw(true)
+}
+function home() {
+  if (state.view === 'town') { focus(projectAnchor(), 1); return }
+  const bounds = canvas.getBoundingClientRect()
+  if (bounds.width < 650) { focus({ x: layout.nodes.get('work').x, y: layout.nodes.get('work').y + 60 }, 1); return }
+  focus(selectedPoint(), Math.max(.7, Math.min(1, (bounds.width - 36) / layout.bounds.width, (bounds.height - 48) / layout.bounds.height)))
+}
+function keepVisible() {
+  const point = selectedPoint()
+  if (!point) return
+  const screen = screenPoint(point)
+  if (screen.x < 25 || screen.x > size.width - 25 || screen.y < 55 || screen.y > size.height - 25) focus(point)
+}
+function setUrl() {
+  const url = new URL(location.href)
+  for (const name of ['project', 'parcel', 'view']) url.searchParams.delete(name)
+  if (state.project) url.searchParams.set('project', state.project)
+  if (state.view === 'workshop') url.searchParams.set('view', 'workshop')
+  if (state.selection?.kind === 'parcel') url.searchParams.set('parcel', JSON.parse(state.selection.key)[1])
+  history.replaceState(null, '', url)
+}
+function list(container, entries) {
+  const existing = new Map([...container.children].map(button => [button.dataset.key, button]))
+  const active = new Set()
+  entries.forEach((entry, index) => {
+    active.add(entry.key)
+    let button = existing.get(entry.key)
+    if (!button) {
+      button = document.createElement('button')
+      button.dataset.key = entry.key
+      button.append(document.createElement('span'), document.createElement('span'))
+      button.children[0].className = 'title'
+      button.children[1].className = 'sub'
     }
+    button.children[0].textContent = entry.title
+    button.children[1].textContent = entry.subtitle ?? ''
+    button.title = `${entry.title}\n${entry.subtitle ?? ''}`
+    button.setAttribute('aria-current', String(Boolean(entry.selected)))
+    button.onclick = entry.click
+    if (container.children[index] !== button) container.insertBefore(button, container.children[index] ?? null)
   })
-  group.removeFromParent()
+  for (const button of [...container.children]) if (!active.has(button.dataset.key)) button.remove()
 }
-
-function belt(positionX, rowZ, width, depth = 1.7, height = 0.35) {
-  block(fixtures, width, 0.3, depth, 0x394b5b, positionX + width / 2, height, rowZ)
-  for (let offset = 0; offset < width; offset += 0.65) block(fixtures, 0.12, 0.03, depth, 0x607387, positionX + offset, height + 0.17, rowZ)
+function selectProject(path, enter = false) {
+  if (!state.scene.rows.some(row => row.path === path)) return
+  state.project = path
+  state.selection = null
+  state.motions.clear()
+  state.view = enter ? 'workshop' : 'town'
+  detailMode = enter ? 'project' : null
+  layout = currentLayout()
+  renderUI()
+  if (enter) home()
+  else focus(projectAnchor(), Math.max(.7, state.camera.zoom))
+  setUrl()
 }
-
-function wheel(parent, positionX, rowZ) {
-  const mesh = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.19, 12), new THREE.MeshStandardMaterial({ color: 0x14202c }))
-  mesh.rotation.x = Math.PI / 2
-  mesh.position.set(positionX, 0.25, rowZ)
-  parent.add(mesh)
+function selectParcel(path, key) {
+  if (state.project !== path || state.view !== 'workshop') selectProject(path, true)
+  state.selection = { kind: 'parcel', key }
+  detailMode = 'parcel'
+  renderUI()
+  focus(layout.parcels.get(key), Math.max(1, state.camera.zoom))
+  setUrl()
 }
-
-function forklift(rowZ) {
-  const group = new THREE.Group()
-  group.position.set(28.5, 0, rowZ - 2.4)
-  block(group, 1.5, 0.6, 0.9, colors.attention, 0, 0.7)
-  block(group, 0.65, 0.7, 0.75, 0x344c60, 0.2, 1.2)
-  block(group, 0.12, 1.8, 0.12, 0x98aec0, -0.9, 1.1, -0.4)
-  block(group, 0.12, 1.8, 0.12, 0x98aec0, -0.9, 1.1, 0.4)
-  block(group, 1.2, 0.1, 0.15, 0xc4d2de, -1.3, 0.35, -0.35)
-  block(group, 1.2, 0.1, 0.15, 0xc4d2de, -1.3, 0.35, 0.35)
-  for (const positionX of [-0.55, 0.55]) for (const side of [-0.55, 0.55]) wheel(group, positionX, side)
-  fixtures.add(group)
+function selectStation(station) {
+  state.selection = { kind: 'station', station }
+  detailMode = 'station'
+  renderUI()
+  focus(layout.nodes.get(station))
+  setUrl()
 }
-
-function truck(rowZ, parcel) {
-  const group = new THREE.Group()
-  block(group, 2.8, 1.6, 1.3, 0xb5c6d5, 0, 1.3)
-  block(group, 1, 1.1, 1.3, colors.current, 1.9, 1)
-  block(group, 0.55, 0.4, 1.32, 0x233b50, 2, 1.5)
-  for (const positionX of [-0.9, 0.9, 2]) for (const side of [-0.75, 0.75]) wheel(group, positionX, side)
-  const beacon = block(group, 0.25, 0.2, 0.25, colors.attention, 1.9, 1.7)
-  const paused = parcel.deployment === 'paused'
-  group.position.set(paused ? 32 : positions[parcel.station], 0, rowZ)
-  if (paused) {
-    block(group, 0.2, 1.6, 0.2, colors.failed, 3.2, 0.8, -1)
-    block(group, 0.15, 0.16, 2.2, colors.failed, 3.2, 1.6)
-  }
-  label(group, parcel.identifier, 0, 2.5, 0, 2.5)
-  fixtures.add(group)
-  trucks.push({ group, beacon, paused })
+function needsAttention(parcel) {
+  return parcel.tone === 'attention' || parcel.tone === 'failed' || parcel.unknownDeploy || model.stationOf(parcel.station) === 'unknown' || ['paused', 'failed'].includes(parcel.deployment)
 }
-
-function makeRow(row, rowZ) {
-  label(fixtures, row.name, -4, 2, rowZ, 5)
-  belt(0, rowZ, row.deploy ? 40 : 28)
-  belt(5, rowZ + 3, 12, 1.2, -0.05)
-  label(fixtures, 'correction 回流带', 9, 0.65, rowZ + 3, 4, '#f6c75c')
-  for (const [station, title] of Object.entries(labels)) {
-    if (!row.deploy && (station === 'dispatch' || station === 'smoke')) continue
-    const positionX = positions[station]
-    label(fixtures, station === 'work' ? `${title} ×${row.workers}` : title, positionX, 3.7, rowZ, 3.6)
-    const lamp = block(fixtures, 0.3, 0.15, 0.3, colors.idle, positionX, 3.1, rowZ)
-    lamps.push({ lamp, row: row.path, station })
-  }
-  block(fixtures, 2.3, 0.7, 2, 0x445c70, 0, 0.75, rowZ)
-  for (let slot = 0; slot < row.workers; slot++) {
-    const offset = (slot - (row.workers - 1) / 2) * 1.8
-    block(fixtures, 2.5, 0.7, 1.5, 0x445c70, 6, 0.75, rowZ + offset)
-    const arm = new THREE.Group()
-    arm.position.set(5, 1.1, rowZ + offset)
-    block(arm, 0.4, 0.7, 0.4, colors.idle, 0, 0.35)
-    const boom = block(arm, 1.25, 0.23, 0.25, colors.idle, 0.4, 0.8)
-    block(arm, 0.2, 0.5, 0.25, 0xc3d3df, 0.95, 0.5)
-    fixtures.add(arm)
-    machines.push({ arm, boom, row: row.path, slot, active: false })
-  }
-  for (const positionX of [10.7, 13.3]) block(fixtures, 0.25, 2.6, 2.4, 0x48647c, positionX, 1.3, rowZ)
-  block(fixtures, 2.9, 0.25, 2.4, 0x48647c, 12, 2.6, rowZ)
-  const scanner = block(fixtures, 2.3, 0.06, 0.08, colors.done, 12, 1.7, rowZ)
-  scanner.userData.scanner = true
-  lamps.push({ lamp: scanner, row: row.path, station: 'gate' })
-  block(fixtures, 2.7, 0.7, 2, 0x445c70, 17, 0.75, rowZ)
-  const glass = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.09, 8, 24), new THREE.MeshStandardMaterial({ color: 0xc0d6e8 }))
-  glass.position.set(17, 2.1, rowZ - 0.35)
-  fixtures.add(glass)
-  block(fixtures, 0.12, 0.7, 0.12, 0xc0d6e8, 17.45, 1.5, rowZ - 0.35)
-  block(fixtures, 2.6, 0.7, 2, 0x445c70, 22, 0.75, rowZ)
-  block(fixtures, 0.25, 0.2, 2, colors.attention, 22, 1.18, rowZ)
-  forklift(rowZ)
-  for (const [station, title, positionX, color] of [['repair', '维修间 · 扳手', 12, colors.attention], ['human', '人工柜台', 22, colors.failed]]) {
-    block(fixtures, 4, 0.5, 2, 0x445c70, positionX, 0.6, rowZ + 5.2)
-    block(fixtures, 0.2, 2.5, 0.2, color, positionX - 1.9, 1.5, rowZ + 6)
-    block(fixtures, 0.2, 2.5, 0.2, color, positionX + 1.9, 1.5, rowZ + 6)
-    label(fixtures, title, positionX, 3.3, rowZ + 5.2, 4.5)
-    label(fixtures, station === 'repair' ? '🔧' : '人工', positionX, 2.4, rowZ + 5.2, 1.2)
-  }
-  if (row.deploy) {
-    for (const positionX of [32.5, 35.5]) block(fixtures, 0.3, 3, 0.3, 0x63839f, positionX, 1.5, rowZ)
-    block(fixtures, 3.3, 0.3, 0.3, 0x63839f, 34, 3, rowZ)
-    block(fixtures, 0.3, 2.4, 0.3, 0x63839f, 40, 1.2, rowZ - 1.2)
-    label(fixtures, '✓ smoke', 40, 2.7, rowZ, 2.8)
-  }
+function renderUI() {
+  const rows = state.scene?.rows ?? []
+  const row = currentRow()
+  const query = element('#search').value.trim().toLocaleLowerCase()
+  const matches = value => String(value).toLocaleLowerCase().includes(query)
+  const rowMatches = one => matches(one.name) || matches(one.path)
+  const parcelMatches = one => matches(one.identifier) || matches(one.title)
+  const visibleRows = rows.filter(one => rowMatches(one) || one.parcels.some(parcelMatches))
+  list(element('#projects'), visibleRows.map(one => ({ key: one.path, title: `${one.name} · ${one.parcels.length}`, subtitle: one.path, selected: one.path === state.project, click: () => selectProject(one.path) })))
+  const parcelRows = query ? rows : row ? [row] : []
+  list(element('#parcels'), parcelRows.flatMap(one => one.parcels.filter(parcel => !query || rowMatches(one) || parcelMatches(parcel)).map(parcel => ({ key: model.parcelKey(one.path, parcel.identifier), title: `${parcel.identifier} · ${parcel.title}`, subtitle: `${one.path} · ${parcel.label} · ${parcel.duration}${needsAttention(parcel) ? ' · 需关注' : ''}`, selected: state.selection?.key === model.parcelKey(one.path, parcel.identifier), click: () => selectParcel(one.path, model.parcelKey(one.path, parcel.identifier)) }))))
+  list(element('#nodes'), state.view === 'workshop' ? [...layout.nodes.values()].map(node => ({ key: node.station, title: `${model.stations[node.station][0]} ${node.count}`, selected: state.selection?.station === node.station, click: () => selectStation(node.station) })) : [])
+  element('#project-count').textContent = `${rows.length} 座工坊 · 匹配 ${visibleRows.length}`
+  element('#enter').disabled = !row
+  element('#empty').hidden = rows.length !== 0
+  element('#location').textContent = row ? `${state.view === 'town' ? '总览' : '工坊'} · ${row.name}` : '小镇总览'
+  element('#location').title = row?.path ?? ''
+  renderDetail()
+  renderStatus()
+  requestDraw()
 }
-
-function layout(scene) {
-  const key = JSON.stringify(scene.rows.map(row => [row.path, row.deploy, row.workers, row.parcels.length]))
-  const changed = key !== layoutKey
-  const offsets = new Map()
-  let rowZ = 0
-  for (const row of scene.rows) {
-    offsets.set(row.path, rowZ)
-    rowZ += Math.max(12, row.workers * 1.8 + 7, row.parcels.length * 1.2 + 8)
-  }
-  if (!changed) return offsets
-  layoutKey = key
-  for (const child of [...fixtures.children]) dispose(child)
-  machines = []
-  lamps = []
-  doors = []
-  trucks = []
-  for (const row of scene.rows) makeRow(row, offsets.get(row.path))
-  for (const at of [-2.7, Math.max(7, rowZ - 5)]) {
-    block(fixtures, 0.45, 5, 0.45, 0x60768b, -7, 2.5, at)
-  }
-  const door = block(fixtures, 0.2, 4.5, rowZ + 1.5, colors.idle, -7, 5.2, (rowZ - 3) / 2)
-  doors.push(door)
-  label(fixtures, '厂房入口', -7, 6, (rowZ - 3) / 2, 5)
-  door.userData.lock = label(fixtures, '🔒 维护冻结', -7, 3.5, (rowZ - 3) / 2, 4, '#ed676b')
-  if (!snapshot) {
-    controls.target.set(18, 0, Math.max(0, (rowZ - 12) / 2))
-    camera.position.set(43, Math.max(30, rowZ + 12), rowZ + 28)
-  }
-  return offsets
+function paragraph(value, className) {
+  const item = document.createElement('p')
+  item.textContent = value
+  if (className) item.className = className
+  element('#detail').append(item)
 }
-
-function applyScene(scene) {
-  const offsets = layout(scene)
-  const alive = new Set()
-  for (const truckState of trucks) dispose(truckState.group)
-  trucks = []
-  for (const row of scene.rows) {
-    const rowZ = offsets.get(row.path)
-    const occupied = new Map()
-    let lane = 0
-    const shifting = []
-    const departing = []
-    const returning = row.parcels.filter(parcel => parcel.station === 'return').map(parcel => `${row.path}\0${parcel.identifier}`)
-    for (const key of returning) if (!returnOrder.has(key)) returnOrder.set(key, returnSequence++)
-    const returnSlots = new Map([...returning].sort((left, right) => returnOrder.get(left) - returnOrder.get(right)).map((key, index) => [key, index]))
-    for (const parcel of row.parcels) {
-      const key = `${row.path}\0${parcel.identifier}`
-      alive.add(key)
-      if (parcel.station !== 'return') returnOrder.delete(key)
-      let state = parcels.get(key)
-      if (!state) {
-        const group = new THREE.Group()
-        const box = block(group, 0.85, 0.8, 0.85, colors[parcel.tone], 0, 0.4)
-        label(group, parcel.identifier, 0, 1.05, 0, 2.2)
-        group.position.set(0, 1.15, rowZ)
-        world.add(group)
-        state = { group, box, target: new THREE.Vector3(), waypoints: [], parcel, row: row.path }
-        parcels.set(key, state)
-      }
-      const previous = state.initialized ? state.parcel.station : undefined
-      state.initialized = true
-      state.parcel = parcel
-      state.box.material.color.setHex(colors[parcel.tone])
-      const slot = parcel.station === 'return' ? returnSlots.get(key) : occupied.get(parcel.station) ?? 0
-      occupied.set(parcel.station, (occupied.get(parcel.station) ?? 0) + 1)
-      let targetZ = rowZ + slot * 1.15
-      let targetY = 1.15
-      if (parcel.station === 'work') {
-        targetZ = rowZ + (slot - (row.workers - 1) / 2) * 1.8
-      } else if (parcel.station === 'human' || parcel.station === 'repair') {
-        targetZ = rowZ + 5.2
-        targetY = 1.2 + Math.floor(slot / 3) * 1.1
-      } else if (parcel.station === 'return') {
-        targetZ = rowZ + 3
-        targetY = 0.15
-      }
-      const sideSlot = parcel.station === 'repair' || parcel.station === 'human' ? (slot % 3 - 1) * 1.2 : parcel.station === 'return' ? slot * 1.15 : 0
-      const before = state.target.clone()
-      state.target.set(positions[parcel.station] + sideSlot, targetY, targetZ)
-      if (previous !== parcel.station) {
-        state.rejected = previous === 'gate' && parcel.station === 'return'
-        state.waitFor = undefined
-        if (previous === 'return') departing.push(state)
-        const entering = parcel.station === 'return'
-        if (entering || previous === 'return') {
-          const height = 2.2 + lane++ * 1.3
-          const from = state.group.position
-          const entry = state.target.x + RETURN_ENTRY_OFFSET
-          state.waypoints = entering
-            ? [new THREE.Vector3(from.x, height, from.z), new THREE.Vector3(entry, height, targetZ), new THREE.Vector3(entry, targetY, targetZ)]
-            : [new THREE.Vector3(from.x, height, from.z), new THREE.Vector3(state.target.x, height, state.target.z)]
-        } else {
-          state.waypoints = parcel.station === 'repair' || parcel.station === 'human'
-            ? [new THREE.Vector3(state.group.position.x, 3.7, rowZ), new THREE.Vector3(state.target.x, 3.7, targetZ)]
-            : []
-        }
-      } else if (parcel.station === 'return' && !before.equals(state.target)) {
-        shifting.push(state)
-      }
-      if (state.blocker) { dispose(state.blocker); state.blocker = undefined }
-      if (parcel.blocker) state.blocker = label(state.group, '⛓ 锁定', 0, 1.65, 0, 1.8, '#f6c75c')
-      if (row.deploy && parcel.deployment && ['dispatch', 'smoke'].includes(parcel.station)) truck(targetZ, parcel)
+function renderDetail() {
+  const panel = element('#detail')
+  panel.hidden = !detailMode
+  element('#workspace').classList.toggle('has-detail', Boolean(detailMode))
+  if (!detailMode) { panel.replaceChildren(); return }
+  const close = document.createElement('button')
+  close.textContent = '收起详情'
+  close.onclick = () => { detailMode = null; state.selection = null; renderUI(); setUrl(); element('#enter').focus() }
+  const heading = document.createElement('h2')
+  panel.replaceChildren(close, heading)
+  const row = currentRow()
+  if (detailMode === 'attention') {
+    heading.textContent = '需要关注'
+    let count = 0
+    for (const project of state.scene?.rows ?? []) for (const parcel of project.parcels.filter(needsAttention)) {
+      const button = document.createElement('button')
+      button.textContent = `${project.name} · ${project.path} · ${parcel.identifier} · ${parcel.reason || parcel.label}`
+      button.onclick = () => selectParcel(project.path, model.parcelKey(project.path, parcel.identifier))
+      panel.append(button)
+      count++
     }
-    for (const state of shifting) state.waitFor = [...departing]
-    for (const machine of machines.filter(one => one.row === row.path)) {
-      machine.active = machine.slot < (occupied.get('work') ?? 0)
-      machine.boom.material.color.setHex(machine.active ? colors.current : colors.idle)
-    }
-    for (const fixture of lamps.filter(one => one.row === row.path && !one.lamp.userData.scanner)) {
-      const here = row.parcels.find(parcel => parcel.station === fixture.station)
-      const done = row.parcels.some(parcel => !['repair', 'human', 'return', 'unknown'].includes(parcel.station) && positions[parcel.station] > positions[fixture.station])
-      const color = here ? colors[here.tone] : done ? colors.done : colors.idle
-      fixture.lamp.material.color.setHex(color)
+    paragraph(count ? `${count} 张票需要关注，保留真实原因。` : '当前没有需要关注的票据。')
+    return
+  }
+  if (!row) return
+  if (detailMode === 'parcel') {
+    const parcel = layout.parcels.get(state.selection?.key)?.parcel
+    if (!parcel) { heading.textContent = '票据已不在当前快照'; paragraph('消失原因未知，不据此认定完成。'); return }
+    heading.textContent = parcel.identifier
+    paragraph(parcel.title)
+    paragraph(`项目：${row.name}\n路径：${row.path}\n工位：${model.stations[model.stationOf(parcel.station)][0]}${model.stationOf(parcel.station) === 'unknown' ? `（${parcel.station}）` : ''}\n真实阶段：${parcel.phase} / ${parcel.label}\n停留时长：${parcel.duration}\n状态：${parcel.tone}`)
+    paragraph(`原因：${parcel.reason || parcel.blocker || '未提供'}`, needsAttention(parcel) ? 'reason' : '')
+    paragraph(`部署：${!row.deploy ? '不适用 · 未配置部署' : parcel.deployment || (parcel.unknownDeploy ? '未知' : '未提供')}${parcel.unknownDeploy ? '\n部署字段：未知 · driver 未提供 deployment' : ''}${parcel.deployment ? `\n部署原始状态：${parcel.deployment}` : ''}`)
+    return
+  }
+  if (detailMode === 'station') {
+    const station = state.selection.station
+    heading.textContent = model.stations[station][0]
+    paragraph(model.stations[station][1])
+    paragraph(`当前票据：${layout.nodes.get(station).count} 张`)
+    if (!row.deploy && ['dispatch', 'smoke'].includes(station)) paragraph('不适用 · 项目未配置部署')
+    return
+  }
+  heading.textContent = row.name
+  paragraph(`路径：${row.path}\n票据：${row.parcels.length} 张\n执行位：${row.workers}\n部署：${row.deploy ? '已配置' : '不适用 · 未配置部署'}`)
+  paragraph('主线：领取、施工、门禁、审查、开 PR、排队合并、部署、smoke。异常沿修理、返工、人工支线处理。')
+  paragraph('这里只显示 Scene 已提供的数据。包裹排列不代表真实队列顺序，包裹消失不代表完成。')
+}
+function renderStatus() {
+  const scene = state.scene
+  const messages = [connected ? '已连接 · 实时只读' : '连接断开 · 正在重连，保留最近快照']
+  if (scene) {
+    if (scene.state !== 'ok' || Date.now() - scene.generatedAt > 20000) messages.push(`快照过期或不可用：${scene.state}`)
+    if (scene.maintenance !== 'running') messages.push(`维护模式：${scene.maintenance}`)
+    const deploymentFailures = scene.rows.flatMap(row => row.parcels).filter(parcel => ['paused', 'failed'].includes(parcel.deployment))
+    if (deploymentFailures.length) messages.push(`部署需要关注：${deploymentFailures.length} 张票（${[...new Set(deploymentFailures.map(parcel => parcel.deployment))].join(' / ')}）`)
+    element('#snapshot').textContent = `快照 ${new Date(scene.generatedAt).toLocaleString()} · ${scene.rows.length} 个项目`
+  }
+  for (const failure of failures.values()) messages.push(`${failure.command} 命令错误（${failure.exitCode ?? '未知退出码'}）：${failure.reason}`)
+  element('#status').textContent = messages.join('\n')
+}
+function receive(scene) {
+  const previous = state
+  const requestedUrl = !state.scene ? new URL(location.href) : null
+  state = model.reconcile(state, scene, { now: performance.now(), fresh, reduced: reduced.matches })
+  fresh = false
+  if (state === previous) { renderStatus(); return }
+  if (previous.project && previous.project !== state.project) detailMode = null
+  if (previous.selection && !state.selection) detailMode = null
+  layout = currentLayout()
+  if (requestedUrl) {
+    const path = requestedUrl.searchParams.get('project')
+    if (scene.rows.some(row => row.path === path)) {
+      selectProject(path, requestedUrl.searchParams.get('view') === 'workshop')
+      const identifier = requestedUrl.searchParams.get('parcel')
+      if (identifier && currentRow().parcels.some(parcel => parcel.identifier === identifier)) selectParcel(path, model.parcelKey(path, identifier))
     }
   }
-  for (const [key, state] of parcels) {
-    if (!alive.has(key)) { dispose(state.group); parcels.delete(key); returnOrder.delete(key) }
-  }
-  for (const door of doors) {
-    door.userData.lock.visible = scene.maintenance === 'frozen'
-    door.position.y = scene.maintenance === 'frozen' ? 2.1 : scene.maintenance === 'draining' ? 3.7 : 6.7
-    door.material.color.setHex(scene.maintenance === 'running' ? colors.done : colors.attention)
-  }
-  snapshot = scene
-  snapshotTime.textContent = `快照 ${new Date(scene.generatedAt).toLocaleString()}`
-  updateStatus()
+  renderUI()
+  setUrl()
+  requestDraw(true)
 }
-
-function updateStatus() {
-  const stale = snapshot && (snapshot.state !== 'ok' || Date.now() - snapshot.generatedAt > 30_000)
-  const error = !connected || failures.size > 0
-  const tone = error ? 'failed' : stale ? 'attention' : 'done'
-  topLight.color.setHex(colors[tone])
-  status.style.color = `#${colors[tone].toString(16).padStart(6, '0')}`
-  status.textContent = !connected ? '连接中断，正在重连…' : failures.size > 0
-    ? [...failures.values()].join('\n')
-    : !snapshot ? '等待 driver 快照…'
-      : `${stale ? `快照过期（${snapshot.state}）` : '快照正常'} · ${snapshot.maintenance} · ${snapshot.rows.reduce((sum, row) => sum + row.parcels.length, 0)} 张票`
+async function fetchSnapshot() {
+  const controller = new AbortController()
+  snapshotRequest?.abort()
+  snapshotRequest = controller
+  try {
+    const response = await fetch(resource('/snapshot'), { signal: controller.signal })
+    if (!response.ok) throw new Error(`快照 HTTP ${response.status}`)
+    const scene = await response.json()
+    if (controller === snapshotRequest) receive(scene)
+  } catch (error) {
+    if (error.name !== 'AbortError') { failures.set('snapshot', { command: 'snapshot', reason: error.message }); renderStatus() }
+  }
 }
-
-const raycaster = new THREE.Raycaster()
-const pointer = new THREE.Vector2(-2, -2)
-let cursor = { x: 0, y: 0 }
-renderer.domElement.addEventListener('pointermove', event => {
-  pointer.set(event.clientX / innerWidth * 2 - 1, -(event.clientY / innerHeight) * 2 + 1)
-  cursor = { x: event.clientX, y: event.clientY }
+element('#overview').onclick = () => {
+  state.view = 'town'
+  state.selection = null
+  state.motions.clear()
+  detailMode = null
+  layout = currentLayout()
+  focus(projectAnchor(), 1)
+  renderUI()
+  setUrl()
+}
+element('#enter').onclick = () => { if (state.project) selectProject(state.project, true) }
+element('#attention').onclick = () => { detailMode = 'attention'; renderUI() }
+element('#search').addEventListener('input', renderUI)
+function zoom(factor) { state.camera.zoom = Math.max(.55, Math.min(2.5, state.camera.zoom * factor)); requestDraw(true) }
+element('#zoom-in').onclick = () => zoom(1.2)
+element('#zoom-out').onclick = () => zoom(1 / 1.2)
+element('#reset').onclick = () => state.selection ? focus(selectedPoint(), 1) : home()
+canvas.addEventListener('wheel', event => { event.preventDefault(); zoom(event.deltaY < 0 ? 1.1 : 1 / 1.1) }, { passive: false })
+canvas.addEventListener('pointerdown', event => {
+  canvas.setPointerCapture(event.pointerId)
+  drag = { x: event.clientX, y: event.clientY, camera: { ...state.camera } }
+  pointerMoved = false
 })
-renderer.domElement.addEventListener('pointerleave', () => pointer.set(-2, -2))
-function hover() {
-  raycaster.setFromCamera(pointer, camera)
-  const states = [...parcels.values()]
-  const hit = raycaster.intersectObjects(states.map(state => state.box))[0]
-  const state = hit && states.find(one => one.box === hit.object)
-  tooltip.style.display = state ? 'block' : 'none'
-  if (!state) return
-  const parcel = state.parcel
-  const seconds = parcel.since === undefined ? undefined : Math.max(0, Math.floor((Date.now() - parcel.since) / 1000))
-  const elapsed = seconds === undefined ? parcel.duration : seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分钟`
-  tooltip.textContent = `${parcel.identifier} · ${parcel.title}\n${parcel.phase} · ${parcel.label}\n停留 ${elapsed}${parcel.reason ? `\n${parcel.reason}` : ''}${parcel.unknownDeploy ? '\n部署状态需 driver 补字段' : ''}`
-  tooltip.style.left = `${Math.min(cursor.x + 16, innerWidth - tooltip.offsetWidth - 12)}px`
-  tooltip.style.top = `${Math.min(cursor.y + 16, innerHeight - tooltip.offsetHeight - 12)}px`
-}
-
-const token = new URLSearchParams(location.search).get('t') ?? ''
-const events = new EventSource(`/events?t=${encodeURIComponent(token)}`)
-events.addEventListener('open', () => {
-  failures.clear()
-  connected = true
-  updateStatus()
+canvas.addEventListener('pointermove', event => {
+  if (!drag) return
+  const deltaX = event.clientX - drag.x
+  const deltaY = event.clientY - drag.y
+  pointerMoved ||= Math.abs(deltaX) + Math.abs(deltaY) > 4
+  state.camera.x = drag.camera.x - deltaX / state.camera.zoom
+  state.camera.y = drag.camera.y - deltaY / state.camera.zoom
+  requestDraw(true)
 })
-events.addEventListener('scene', event => { connected = true; applyScene(JSON.parse(event.data)) })
+canvas.addEventListener('pointercancel', () => { drag = null })
+canvas.addEventListener('pointerup', event => {
+  drag = null
+  if (pointerMoved) return
+  const bounds = canvas.getBoundingClientRect()
+  const point = { x: (event.clientX - bounds.left - size.width / 2) / state.camera.zoom + state.camera.x, y: (event.clientY - bounds.top - size.height / 2) / state.camera.zoom + state.camera.y }
+  const hit = [...hits].reverse().find(one => point.x >= one.x && point.x <= one.x + one.width && point.y >= one.y && point.y <= one.y + one.height)
+  if (hit?.kind === 'project') selectProject(hit.path, true)
+  else if (hit?.kind === 'parcel') selectParcel(state.project, hit.key)
+  else if (hit?.kind === 'station') selectStation(hit.station)
+})
+canvas.addEventListener('keydown', event => {
+  const steps = { ArrowLeft: [-60, 0], ArrowRight: [60, 0], ArrowUp: [0, -60], ArrowDown: [0, 60] }
+  if (steps[event.key]) {
+    event.preventDefault()
+    state.camera.x += steps[event.key][0] / state.camera.zoom
+    state.camera.y += steps[event.key][1] / state.camera.zoom
+    requestDraw(true)
+  } else if (event.key === '+' || event.key === '=') zoom(1.2)
+  else if (event.key === '-') zoom(1 / 1.2)
+  else if (event.key === 'Home') { event.preventDefault(); element('#reset').click() }
+})
+reduced.addEventListener('change', () => { if (reduced.matches) state.motions.clear(); requestDraw() })
+new ResizeObserver(resize).observe(element('#viewport'))
+resize()
+const events = new EventSource(resource('/events'))
+events.onopen = () => { connected = true; fresh = true; failures.delete('snapshot'); renderStatus(); requestDraw() }
+events.addEventListener('scene', event => { snapshotRequest?.abort(); failures.delete('snapshot'); receive(JSON.parse(event.data)) })
 events.addEventListener('error', event => {
-  if (typeof event.data === 'string') {
-    const failure = JSON.parse(event.data)
-    if (failure.recovered) failures.delete(failure.command)
-    else failures.set(failure.command, `${failure.command} 失败 · 退出码 ${failure.exitCode ?? '未知'} · ${failure.reason}`)
-  } else connected = false
-  updateStatus()
+  if (event.data) { const failure = JSON.parse(event.data); if (failure.recovered) failures.delete(failure.command); else failures.set(failure.command, failure) }
+  else { connected = false; fresh = true }
+  renderStatus()
 })
-addEventListener('beforeunload', () => events.close())
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight
-  camera.updateProjectionMatrix()
-  renderer.setSize(innerWidth, innerHeight)
-})
-setInterval(updateStatus, 1000)
-const clock = new THREE.Clock()
-function animate() {
-  const delta = Math.min(clock.getDelta(), 0.1)
-  const time = clock.elapsedTime
-  for (const state of parcels.values()) {
-    if (state.waitFor) {
-      if (state.waitFor.some(other => other.group.parent && other.group.position.y < RETURN_CLEAR_HEIGHT)) continue
-      state.waitFor = undefined
-    }
-    const target = state.waypoints[0] ?? state.target
-    state.group.position.lerp(target, 1 - Math.exp(-3 * delta))
-    if (state.waypoints.length && state.group.position.distanceTo(target) < 0.1) state.waypoints.shift()
-  }
-  for (const fixture of lamps.filter(one => one.lamp.userData.scanner)) {
-    const rejecting = [...parcels.values()].some(state => state.row === fixture.row && state.rejected && state.waypoints.length > 0)
-    fixture.lamp.material.color.setHex(rejecting ? colors.failed : colors.done)
-  }
-  for (const machine of machines) machine.arm.rotation.y = machine.active ? Math.sin(time * 2.5 + machine.slot) * 0.6 : 0
-  for (const state of trucks) state.beacon.material.color.setHex(state.paused && Math.sin(time * 6) > 0 ? colors.failed : colors.attention)
-  controls.update()
-  hover()
-  renderer.render(world, camera)
-  requestAnimationFrame(animate)
-}
-animate()
+setInterval(renderStatus, 5000)
+void fetchSnapshot()
+window.addEventListener('pagehide', () => { events.close(); snapshotRequest?.abort() }, { once: true })
+window.pixelTown = Object.freeze({ get state() { return state }, get layout() { return layout }, metrics, selectedScreenPoint() { const point = selectedPoint(); if (!point) return null; const bounds = canvas.getBoundingClientRect(); const screen = screenPoint(point); return { x: bounds.left + screen.x, y: bounds.top + screen.y } } })
