@@ -91,7 +91,6 @@ export type RuntimeTicket = {
   since?: number
   blockedReason?: string
   deployment?: Deployment
-  queuePosition?: number
 }
 
 export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
@@ -109,7 +108,6 @@ export type Parcel = {
   duration: string
   reason?: string
   blocker?: string
-  queuePosition?: number
   deployment?: string
   unknownDeploy: boolean
 }

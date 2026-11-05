@@ -23,7 +23,6 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
     duration: ticket.since === undefined ? '未知' : duration(now - ticket.since),
     reason: ticket.blockedReason || ticket.deployment?.reason,
     blocker: ticket.blockedReason,
-    queuePosition: ticket.queuePosition,
     deployment: ticket.deployment?.state,
     unknownDeploy: ticket.phase === '已合并' && ticket.deployment === undefined,
   }

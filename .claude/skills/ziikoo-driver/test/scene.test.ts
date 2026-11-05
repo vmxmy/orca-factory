@@ -47,11 +47,3 @@ test('sceneOf 沿用部署、候选、人工、处置、阶段与回流的优先
   expect(scene.rows[1]?.deploy).toBe(false)
   expect(scene.rows[0]?.workers).toBe(Number(SAMPLE_CONFIG.scheduler.find(one => one.key === 'max_in_flight')?.value))
 })
-
-test('parseRuntime 保留数字 queuePosition，缺失保持 undefined，非数字拒绝', () => {
-  const raw = structuredClone(SAMPLE_STATUS)
-  const status = { ...raw, tickets: raw.tickets.map(one => ({ ...one, queuePosition: 3 })) }
-  expect(parseRuntime(JSON.stringify(status)).tickets[0]?.queuePosition).toBe(3)
-  expect(runtime().tickets[0]?.queuePosition).toBe(undefined)
-  expect(() => parseRuntime(JSON.stringify({ ...raw, tickets: [{ ...raw.tickets[0], queuePosition: '3' }] }))).toThrow()
-})

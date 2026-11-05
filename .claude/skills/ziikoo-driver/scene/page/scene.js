@@ -167,7 +167,7 @@ function makeRow(row, rowZ) {
   }
   for (const positionX of [10.7, 13.3]) block(fixtures, 0.25, 2.6, 2.4, 0x48647c, positionX, 1.3, rowZ)
   block(fixtures, 2.9, 0.25, 2.4, 0x48647c, 12, 2.6, rowZ)
-  const scanner = block(fixtures, 2.3, 0.06, 0.08, colors.current, 12, 1.7, rowZ)
+  const scanner = block(fixtures, 2.3, 0.06, 0.08, colors.done, 12, 1.7, rowZ)
   scanner.userData.scanner = true
   lamps.push({ lamp: scanner, row: row.path, station: 'gate' })
   block(fixtures, 2.7, 0.7, 2, 0x445c70, 17, 0.75, rowZ)
@@ -262,9 +262,10 @@ function applyScene(scene) {
         targetZ = rowZ + 3
         targetY = 0.15
       }
-      const sideSlot = parcel.station === 'repair' || parcel.station === 'human' ? (slot % 3 - 1) * 1.2 : 0
+      const sideSlot = parcel.station === 'repair' || parcel.station === 'human' ? (slot % 3 - 1) * 1.2 : parcel.station === 'return' ? slot * 1.15 : 0
       state.target.set(positions[parcel.station] + sideSlot, targetY, targetZ)
       if (previous !== parcel.station) {
+        state.rejected = previous === 'gate' && parcel.station === 'return'
         state.waypoints = parcel.station === 'return' || previous === 'return'
           ? [new THREE.Vector3(state.group.position.x, 0.15, rowZ + 3), new THREE.Vector3(6, 0.15, rowZ + 3)]
           : parcel.station === 'repair' || parcel.station === 'human'
@@ -279,10 +280,10 @@ function applyScene(scene) {
       machine.active = machine.slot < (occupied.get('work') ?? 0)
       machine.boom.material.color.setHex(machine.active ? colors.current : colors.idle)
     }
-    for (const fixture of lamps.filter(one => one.row === row.path)) {
+    for (const fixture of lamps.filter(one => one.row === row.path && !one.lamp.userData.scanner)) {
       const here = row.parcels.find(parcel => parcel.station === fixture.station)
       const done = row.parcels.some(parcel => !['repair', 'human', 'return', 'unknown'].includes(parcel.station) && positions[parcel.station] > positions[fixture.station])
-      const color = here ? fixture.lamp.userData.scanner && here.tone !== 'failed' ? colors.done : colors[here.tone] : done ? colors.done : colors.idle
+      const color = here ? colors[here.tone] : done ? colors.done : colors.idle
       fixture.lamp.material.color.setHex(color)
     }
   }
@@ -336,7 +337,11 @@ function hover() {
 
 const token = new URLSearchParams(location.search).get('t') ?? ''
 const events = new EventSource(`/events?t=${encodeURIComponent(token)}`)
-events.addEventListener('open', () => { connected = true; updateStatus() })
+events.addEventListener('open', () => {
+  failures.clear()
+  connected = true
+  updateStatus()
+})
 events.addEventListener('scene', event => { connected = true; applyScene(JSON.parse(event.data)) })
 events.addEventListener('error', event => {
   if (typeof event.data === 'string') {
@@ -361,6 +366,10 @@ function animate() {
     const target = state.waypoints[0] ?? state.target
     state.group.position.lerp(target, 1 - Math.exp(-3 * delta))
     if (state.waypoints.length && state.group.position.distanceTo(target) < 0.1) state.waypoints.shift()
+  }
+  for (const fixture of lamps.filter(one => one.lamp.userData.scanner)) {
+    const rejecting = [...parcels.values()].some(state => state.row === fixture.row && state.rejected && state.waypoints.length > 0)
+    fixture.lamp.material.color.setHex(rejecting ? colors.failed : colors.done)
   }
   for (const machine of machines) machine.arm.rotation.y = machine.active ? Math.sin(time * 2.5 + machine.slot) * 0.6 : 0
   for (const state of trucks) state.beacon.material.color.setHex(state.paused && Math.sin(time * 6) > 0 ? colors.failed : colors.attention)

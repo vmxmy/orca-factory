@@ -32,11 +32,9 @@ const publish = () => {
       active.add(key)
       if (!firstSeen.has(key)) firstSeen.set(key, sequence++)
     }
-    row.parcels.sort((left, right) => {
-      const leftPosition = left.queuePosition ?? firstSeen.get(`${row.path}\0${left.identifier}`)!
-      const rightPosition = right.queuePosition ?? firstSeen.get(`${row.path}\0${right.identifier}`)!
-      return leftPosition - rightPosition
-    })
+    row.parcels.sort(
+      (left, right) => firstSeen.get(`${row.path}\0${left.identifier}`)! - firstSeen.get(`${row.path}\0${right.identifier}`)!,
+    )
   }
   for (const key of firstSeen.keys()) if (!active.has(key)) firstSeen.delete(key)
   const json = JSON.stringify(current)
