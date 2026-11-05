@@ -147,7 +147,8 @@ func normalize(view *View, now time.Time) {
 	}
 }
 
-// SetTicket preserves other repositories and executor observations.
+// SetTicket preserves other repositories and executor observations. It clears
+// PushedAt so Push stamps the written row even when copied from the cache.
 func SetTicket(view *View, ticket Ticket, active bool) {
 	for i, old := range view.Tickets {
 		if old.Repo == ticket.Repo && old.Identifier == ticket.Identifier {
@@ -156,6 +157,7 @@ func SetTicket(view *View, ticket Ticket, active bool) {
 		}
 	}
 	if active {
+		ticket.PushedAt = time.Time{}
 		view.Tickets = append(view.Tickets, ticket)
 	}
 }

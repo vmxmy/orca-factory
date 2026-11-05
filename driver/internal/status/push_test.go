@@ -227,3 +227,24 @@ func TestExecutorPushDoesNotPinOtherTickets(t *testing.T) {
 		}
 	}
 }
+
+func TestPushRestampsRewrittenRow(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	Push(start, func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "gate"}, true)
+	})
+	Push(start.Add(10*time.Second), func(view *View) {
+		row := view.Tickets[0]
+		row.Phase = "审查"
+		SetTicket(view, row, true)
+	})
+	observedAt := start.Add(15 * time.Second)
+	PushObservation(observedAt, start.Add(5*time.Second), func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "gate"}}
+	})
+	if got := Read(observedAt, 0).Tickets[0]; got.Phase != "审查" {
+		t.Fatalf("stale ledger read replaced a row rewritten from the cache: %+v", got)
+	}
+}
