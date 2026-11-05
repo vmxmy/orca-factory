@@ -163,6 +163,7 @@ func (r *Runtime) pauseDeployment(ctx context.Context, t Ticket, p *merge.Progre
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
+	runx.LoggerFrom(ctx).Info("merge lane paused: deployment awaits agent recovery", "ticket", t.Identifier, "repo", p.Repository, "reason", d.Reason)
 	r.board(ctx, t, machine.PhaseResolver, d.Reason)
 	return errors.New(d.Reason)
 }
@@ -246,7 +247,8 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	case "confirm-passed":
 		d.State = "passed"
 	case "retry-workflow":
-		if d.Workflow == "" || d.SmokeStarted {
+		// A self deployment has no workflow; retry-workflow reinstalls it.
+		if (d.Workflow == "" && !d.Self) || d.SmokeStarted || d.Self && !selfReinstallable(d.Recovery) {
 			return rejectDeploymentProposal("smoke may have executed; reconcile explicitly")
 		}
 		d.State = "pending"
@@ -269,7 +271,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	}
 	d.Recovery = &merge.DeploymentRecovery{Action: action, Operator: operator, Reason: reason, At: now.UTC()}
 	d.Reason = ""
-	d.WorkflowRetryPending = action == "retry-workflow"
+	d.WorkflowRetryPending = action == "retry-workflow" && !d.Self
 	if !deploymentTransition(t.Progress, p) {
 		return rejectDeploymentProposal("invalid or stale deployment recovery")
 	}

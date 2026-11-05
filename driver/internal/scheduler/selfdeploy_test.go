@@ -189,7 +189,7 @@ func TestSelfDeployCompletesAcrossRestart(t *testing.T) {
 	if err := serveAs(f, h, selfSHA); err != nil {
 		t.Fatal(err)
 	}
-	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || !guardStopped(h) || !markerExists(f, selfSHA, "smoke-passed") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
+	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || !guardStopped(h) || !markerExists(f, selfSHA, "smoke-passed") || markerExists(f, selfSHA, "installing") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
 		t.Fatalf("deployment after restart: builds=%d restarts=%d smokes=%d guardStops=%v state=%s ledger=%s mode=%s", h.builds, h.restarts, h.smokes, h.guardStops, f.tracker.issue.State.Name, lastState(f), maintenanceMode(t))
 	}
 }
@@ -384,21 +384,10 @@ func TestSelfDeployGuardFailureAbortsBeforeRestart(t *testing.T) {
 	}
 }
 
-// Every intermediate state converges in the next serve: done, rolled back, or
-// paused with maintenance running again.
+// Every intermediate state after the install began converges in the next
+// serve: done, rolled back, or paused with maintenance running again. A crash
+// before the install is TestSelfDeployInterruptedBeforeInstallRetries.
 func TestSelfDeployConvergesAfterCrash(t *testing.T) {
-	t.Run("drain or build", func(t *testing.T) {
-		f, h := newSelfDeployFixture(t)
-		h.kill = "go"
-		firstServe(t, f, h)
-		if lastState(f) != "deploy-intent" || maintenanceMode(t) != "draining" || installed(t, h.driver) != "old" {
-			t.Fatalf("crash: state=%s mode=%s", lastState(f), maintenanceMode(t))
-		}
-		_ = serveAs(f, h, "old")
-		if lastState(f) != "paused" || maintenanceMode(t) != "running" || h.builds != 0 || h.restarts != 0 || installed(t, h.driver) != "old" {
-			t.Fatalf("after crash: state=%s mode=%s builds=%d restarts=%d", lastState(f), maintenanceMode(t), h.builds, h.restarts)
-		}
-	})
 	t.Run("replaced before restart", func(t *testing.T) {
 		f, h := newSelfDeployFixture(t)
 		h.kill = "restart"
@@ -452,6 +441,61 @@ func TestSelfDeployRetrySmokeKeepsBackup(t *testing.T) {
 	backup := filepath.Join(f.runtime.StateRoot, "deploy-backups", "self-"+selfSHA, "orca-factory-driver")
 	if h.builds != 1 || h.restarts != 1 || installed(t, backup) != "old" || lastState(f) != "passed" {
 		t.Fatalf("retry-smoke reinstalled: builds=%d restarts=%d backup=%q state=%s", h.builds, h.restarts, installed(t, backup), lastState(f))
+	}
+}
+
+// retry-smoke after a rollback only smokes: the restored old serve pauses again,
+// also for a deployment installed before the installing marker existed.
+func TestSelfDeployRetrySmokeAfterRollbackDoesNotReinstall(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			firstServe(t, f, h)
+			h.smokeOut, h.smokeErr = nil, errors.New("driver.toml does not load")
+			_ = serveAs(f, h, selfSHA)
+			_ = serveAs(f, h, "old")
+			if lastState(f) != "paused" {
+				t.Fatalf("rollback did not pause: state=%s", lastState(f))
+			}
+			if legacy {
+				if err := os.Remove(f.runtime.selfMarker(selfSHA, "installing")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recovered := *f.runtime
+			recovered.GitHub = nil
+			if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-smoke", "operator", "reconciled failed smoke", false); err != nil {
+				t.Fatal(err)
+			}
+			_ = serveAs(f, h, "old")
+			if lastState(f) != "paused" || h.builds != 1 || h.restarts != 2 || installed(t, h.driver) != "old" {
+				t.Fatalf("retry-smoke reinstalled: state=%s builds=%d restarts=%d installed=%s", lastState(f), h.builds, h.restarts, installed(t, h.driver))
+			}
+			if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-workflow", "operator", "reinstall after smoke", false); err == nil || lastState(f) != "paused" {
+				t.Fatalf("retry-workflow reinstalled a deployment whose smoke ran: err=%v state=%s", err, lastState(f))
+			}
+		})
+	}
+}
+
+// An uncertain install keeps its installing marker until a later pause is
+// recorded, so a lost pause receipt never turns into a reinstall.
+func TestSelfDeployUncertainInstallSurvivesLostPauseReceipt(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.kill = "go"
+	firstServe(t, f, h)
+	if err := os.WriteFile(f.runtime.selfMarker(selfSHA, "installing"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.failBody = `"state":"paused"`
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "deploy-intent" || !markerExists(f, selfSHA, "installing") {
+		t.Fatalf("lost pause receipt: state=%s installing=%t", lastState(f), markerExists(f, selfSHA, "installing"))
+	}
+	f.tracker.failBody = ""
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "paused" || h.builds != 0 || h.restarts != 0 {
+		t.Fatalf("uncertain install reinstalled: state=%s builds=%d restarts=%d", lastState(f), h.builds, h.restarts)
 	}
 }
 

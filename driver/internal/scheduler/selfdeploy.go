@@ -21,9 +21,10 @@ import (
 
 // Self deployment follows README "部署顺序" from inside serve. The restart
 // stops this process, so the deploy-intent receipt is written before anything
-// changes and the next serve resumes from it. A deploy-intent is never
-// installed twice; every later state converges in whichever serve reads it:
-// passed, or paused with the drain this deployment started resumed.
+// changes and the next serve resumes from it. A deploy-intent whose install
+// may have started is never installed twice; one interrupted before the
+// install returns to pending. Every other state converges in whichever serve
+// reads it: passed, or paused with the drain this deployment started resumed.
 const (
 	maintenanceWait        = 2 * time.Minute
 	selfDeployBuildTimeout = 10 * time.Minute
@@ -44,11 +45,14 @@ var selfDeployIdleWait, selfDeployIdlePoll = time.Hour, 15 * time.Second
 var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-driver"}
 
 // Markers under <state root>/self-deploy/<sha>.<kind>. drained means this
-// deployment set maintenance draining and owes the resume; the guard reads
-// smoke-passed; rolled-back tells the restored serve to pause and resume, and
-// holds the reason when serve itself rolled back.
+// deployment set maintenance draining and owes the resume; installing means the
+// guard or the binary may have changed, so the install is not redone until a
+// recovery returns the deployment to pending; the guard reads smoke-passed;
+// rolled-back tells the restored serve to pause and resume, and holds the
+// reason when serve itself rolled back.
 const (
 	markerDrained     = "drained"
+	markerInstalling  = "installing"
 	markerSmokePassed = "smoke-passed"
 	markerRolledBack  = "rolled-back"
 )
@@ -71,6 +75,10 @@ cp -f "$backup" "$driver.guard" && mv -f "$driver.guard" "$driver" && : > "$roll
 var errSelfDeployRestarting = errors.New("self deployment installed; serve restarting")
 
 var errSelfDeployRestartPending = errors.New("self deployment restart pending: this serve is not the installed driver")
+
+// errSelfDeployReinstall ends the tick after a deploy-intent interrupted before
+// its install returned to pending; the next tick installs again.
+var errSelfDeployReinstall = errors.New("self deployment interrupted before install; reinstalling")
 
 func selfDeployFlag(self bool) string {
 	if self {
@@ -142,6 +150,9 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	if err = os.Remove(r.selfMarker(p.MergeSHA, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	p.Deployment.State = "deploy-intent"
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
@@ -182,6 +193,9 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 	}
 	built := r.DriverPath + ".new"
 	if err = r.buildSelf(ctx, repo, sha, built); err != nil {
+		return false, err
+	}
+	if err = touch(r.selfMarker(sha, markerInstalling)); err != nil {
 		return false, err
 	}
 	if err = r.startGuard(ctx, sha); err != nil {
@@ -276,7 +290,9 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 }
 
 // settleSelf resumes the drain this deployment started and clears its
-// rollback marker, so a later retry-smoke is judged afresh.
+// rollback marker, so a later retry-smoke is judged afresh. The installing
+// marker stays through a pause: only passed or a new install from pending
+// clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
@@ -344,7 +360,7 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	if !ok {
-		return r.pauseSelf(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's")
+		return r.retryOrPauseSelf(ctx, t, p)
 	}
 	d := p.Deployment
 	d.State, d.SmokeStarted = "smoke-intent", true
@@ -376,7 +392,32 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	p.Deployment = &passed
+	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return nil
+}
+
+// retryOrPauseSelf handles a serve that is not running the squash SHA. Without
+// the installing marker the install never began, so the deployment returns to
+// pending and reinstalls; with it the binary is uncertain and the deployment
+// pauses. A deployment with a recovery pauses too: retry-smoke authorizes only
+// the smoke, also where an older serve installed without the marker, and a
+// reinstall from retry-workflow is not repeated without a new decision. Reruns
+// counts reinstalls, so the pending receipt differs from the first one and is
+// recorded.
+func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
+	installing, err := fileExists(r.selfMarker(p.MergeSHA, markerInstalling))
+	if err != nil {
+		return err
+	}
+	d := p.Deployment
+	if installing || d.Recovery != nil || d.State != "deploy-intent" {
+		return r.pauseSelf(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's")
+	}
+	d.State = "pending"
+	d.Reruns++
+	return errors.Join(errSelfDeployReinstall, r.deploymentReceipt(ctx, t, p))
 }
 
 // selfSmoke judges only what this deployment can break: the version (checked
