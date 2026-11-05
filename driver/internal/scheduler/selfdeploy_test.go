@@ -471,6 +471,9 @@ func TestSelfDeployRetrySmokeAfterRollbackDoesNotReinstall(t *testing.T) {
 			if lastState(f) != "paused" || h.builds != 1 || h.restarts != 2 || installed(t, h.driver) != "old" {
 				t.Fatalf("retry-smoke reinstalled: state=%s builds=%d restarts=%d installed=%s", lastState(f), h.builds, h.restarts, installed(t, h.driver))
 			}
+			if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-workflow", "operator", "reinstall after smoke", false); err == nil || lastState(f) != "paused" {
+				t.Fatalf("retry-workflow reinstalled a deployment whose smoke ran: err=%v state=%s", err, lastState(f))
+			}
 		})
 	}
 }

@@ -33,7 +33,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		case "confirm-passed":
 			return n.State == "passed" && n.SmokeStarted == d.SmokeStarted && n.SmokePassed == d.SmokePassed
 		case "retry-workflow":
-			return (d.Workflow != "" || d.Self) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
+			return (d.Workflow != "" || d.Self && d.Recovery == nil) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
 		case "retry-smoke":
 			return d.Smoke != "" && d.SmokeStarted && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
 		default:
@@ -61,8 +61,9 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		case "deploy-intent", "paused":
 			return !n.SmokeStarted && !n.SmokePassed
 		case "pending":
-			// Interrupted before the install: the next serve installs again.
-			return n.Self && !n.SmokeStarted && !n.SmokePassed
+			// Interrupted before the install: the next serve installs again,
+			// unless a recovery decided this deployment.
+			return n.Self && n.Recovery == nil && !n.SmokeStarted && !n.SmokePassed
 		case "smoke-intent":
 			return n.SmokeStarted && !n.SmokePassed
 		}

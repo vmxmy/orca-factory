@@ -401,17 +401,18 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 // retryOrPauseSelf handles a serve that is not running the squash SHA. Without
 // the installing marker the install never began, so the deployment returns to
 // pending and reinstalls; with it the binary is uncertain and the deployment
-// pauses. A retry-smoke recovery authorizes only the smoke, so it pauses even
-// where an older serve installed without the marker. Reruns counts reinstalls,
-// so the pending receipt differs from the first one and is recorded.
+// pauses. A deployment with a recovery pauses too: retry-smoke authorizes only
+// the smoke, also where an older serve installed without the marker, and a
+// reinstall from retry-workflow is not repeated without a new decision. Reruns
+// counts reinstalls, so the pending receipt differs from the first one and is
+// recorded.
 func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	installing, err := fileExists(r.selfMarker(p.MergeSHA, markerInstalling))
 	if err != nil {
 		return err
 	}
 	d := p.Deployment
-	smokeOnly := d.Recovery != nil && d.Recovery.Action == "retry-smoke"
-	if installing || smokeOnly || d.State != "deploy-intent" {
+	if installing || d.Recovery != nil || d.State != "deploy-intent" {
 		return r.pauseSelf(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's")
 	}
 	d.State = "pending"

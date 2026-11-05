@@ -177,16 +177,16 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 - 第 3 到 6 步失败（含等待空闲超时）：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
 - 第 7 步失败：从备份恢复二进制，写 `rolled-back` 标记，重启。恢复后的 serve 读到标记，写 `paused` 并 resume。
-- 第 2 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
+- 第 2 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。部署没有恢复记录时，新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
 - 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
 - `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
-- 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记在暂停时保留，`passed` 回执确认后删除，或账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前删除，所以暂停回执丢失不会触发重装。`retry-smoke` 恢复的部署版本不符时一律暂停，不看标记。
+- 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记在暂停时保留，`passed` 回执确认后删除，或账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前删除，所以暂停回执丢失不会触发重装。有恢复记录（`retry-smoke` 或 `retry-workflow`）的部署版本不符时一律暂停，不看标记。
 - 第 8 步 smoke 失败：停看守，从备份恢复二进制，写 `rolled-back` 标记（含原因），保持 draining 重启。恢复后的 serve 读到标记，写 `paused`、resume，交给处置 Agent，不再部署。失败的二进制在重启前不会认领票。
 - smoke 通过但 resume 失败：写 `paused`（`smoke_passed` 仍为 false），转处置 Agent。
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
 - 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元最多等 7 分钟取得 `deploy.lock`，等不到只记日志退出。取得锁后确认仍无 `smoke-passed` 标记、且已安装二进制的 `version` 仍是 squash SHA，才换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，停看守、写 `paused`、resume 并删除标记。serve 的 smoke 与标记写入都在锁内，看守不会在 smoke 进行中换回旧二进制；人工 `deploy.sh` 装的版本不是 squash SHA，看守不会把它换掉。
 
-处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。smoke 开始过的部署拒绝 `retry-workflow`。人工已用 `deploy.sh` 部署时，用 `confirm-passed` 放行。
+处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。smoke 开始过或已有恢复记录的部署拒绝 `retry-workflow`（`retry-smoke` 会清除 smoke 开始标志，恢复记录仍保留）。人工已用 `deploy.sh` 部署时，用 `confirm-passed` 放行。
 
 ## 调度范围（项目发现）
 
@@ -467,7 +467,7 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 去掉 `--dry-run` 写入人工决定，然后重启 `driver serve`。命令只追加带操作者、理由、时间、动作的主账本 Progress 证据，不直接运行 smoke、合并或标记 Done；调度器在后续 tick 对账并推进。
 
 - `confirm-passed`：人工确认该 squash 的所有部署与 smoke 验证都已通过；适用于 smoke 已执行但结果未持久确认。不会重跑 smoke。
-- `retry-workflow`：人工处理部署失败后，重新查询同一 squash 的 workflow；自部署没有 workflow，此动作表示重新安装。若 smoke 可能执行过则拒绝此动作。
+- `retry-workflow`：人工处理部署失败后，重新查询同一 squash 的 workflow；自部署没有 workflow，此动作表示重新安装，已有恢复记录时拒绝。若 smoke 可能执行过则拒绝此动作。
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。

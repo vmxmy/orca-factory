@@ -231,8 +231,9 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	case "confirm-passed":
 		d.State = "passed"
 	case "retry-workflow":
-		// A self deployment has no workflow; retry-workflow reinstalls it.
-		if (d.Workflow == "" && !d.Self) || d.SmokeStarted {
+		// A self deployment has no workflow; retry-workflow reinstalls it once,
+		// only if no earlier recovery exists: a retry-smoke clears SmokeStarted.
+		if (d.Workflow == "" && !d.Self) || d.SmokeStarted || d.Self && d.Recovery != nil {
 			return rejectDeploymentProposal("smoke may have executed; reconcile explicitly")
 		}
 		d.State = "pending"
