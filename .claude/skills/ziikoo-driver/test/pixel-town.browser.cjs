@@ -81,6 +81,47 @@ async function main() {
   convoyState = model.reconcile(convoyState, arriving, { now: 0 })
   const midway = [...convoyState.motions.values()].map(motion => model.pointAlong(motion.points, .5))
   for (const [index, point] of midway.entries()) for (const other of midway.slice(index + 1)) assert.ok(Math.abs(point.x - other.x) >= 33 || Math.abs(point.y - other.y) >= 43, 'simultaneous parcels must keep separate belt lanes')
+
+  const movingOnes = snapshot(1)
+  movingOnes.rows[0].parcels = [parcel('OF-leaver'), parcel('OF-stayer')]
+  let mixedState = model.reconcile(model.initialState(), movingOnes, { fresh: true })
+  const leaverRoute = structuredClone(movingOnes)
+  leaverRoute.rows[0].parcels[0].station = 'gate'
+  mixedState = model.reconcile(mixedState, leaverRoute, { now: 0 })
+  const leaver = model.pointAlong(mixedState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-leaver')).points, 0)
+  const stayer = mixedState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-stayer'))
+  assert.ok(stayer, 'a remaining parcel whose slot is taken over must animate, not teleport')
+  const stayerPoint = model.pointAlong(stayer.points, 0)
+  assert.ok(Math.abs(leaver.x - stayerPoint.x) >= 27 || Math.abs(leaver.y - stayerPoint.y) >= 27, 'a leaving parcel must not overlap the parcel taking its slot')
+
+  const one = snapshot(1)
+  one.rows[0].parcels = [parcel('OF-solo')]
+  let soloState = model.reconcile(model.initialState(), one, { fresh: true })
+  const soloMove = structuredClone(one)
+  soloMove.rows[0].parcels[0].station = 'pack'
+  soloState = model.reconcile(soloState, soloMove, { now: 0 })
+  const soloMotion = soloState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-solo'))
+  const horizontals = soloMotion.points.filter((point, index) => index > 0 && soloMotion.points[index - 1].y === point.y)
+  const verticals = soloMotion.points.filter((point, index) => index > 0 && soloMotion.points[index - 1].x === point.x)
+  assert.ok(horizontals.length >= 1 && verticals.length >= 1, 'a mid-belt move must keep both a horizontal and a vertical segment')
+  const soloLayout = model.workshopLayout(one.rows[0])
+  const packLayout = model.workshopLayout(soloMove.rows[0])
+  const upperLane = soloLayout.nodes.get('work').y + 85
+  const lowerLane = packLayout.nodes.get('pack').y + 85
+  const beltPoints = ['pickup', 'work', 'gate', 'review', 'pack', 'merge', 'dispatch', 'smoke'].map(station => {
+    const node = soloLayout.nodes.get(station)
+    return { x: node.x, y: node.y + 85 }
+  })
+  const soloSlot = soloLayout.parcels.get(model.parcelKey('/fixture/repo-0', 'OF-solo'))
+  const slotOffset = Math.hypot(soloSlot.x - beltPoints[1].x, soloSlot.y - beltPoints[1].y)
+  for (const [index, point] of soloMotion.points.entries()) {
+    if (!index) continue
+    const previous = soloMotion.points[index - 1]
+    if (previous.y === point.y) assert.ok([upperLane, lowerLane].includes(point.y), 'horizontal tween segments must ride the drawn belt lanes')
+    else assert.ok(beltPoints.some(belt => Math.abs(point.x - belt.x) <= slotOffset + 1), 'vertical tween segments must ride the drawn belt corner columns')
+  }
+  const offBelt = soloMotion.points.filter(point => !beltPoints.some(belt => Math.hypot(point.x - belt.x, point.y - belt.y) <= slotOffset + 1))
+  assert.ok(offBelt.length === 0, `every tween waypoint must stay within one slot offset of the painted belt (worst ${offBelt[0] ? Math.round(offBelt[0].x) + ',' + Math.round(offBelt[0].y) : ''})`)
   console.log('PASS pure layout, identity, routing, reconciliation and unbounded project counts')
 
   let playwright
@@ -232,9 +273,17 @@ async function main() {
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('fixture failure'))
     for (const response of streams) response.write('event: error\ndata: {"command":"status","recovered":true}\n\n')
     await page.waitForFunction(() => !document.querySelector('#status').textContent.includes('fixture failure'))
+    for (const response of streams) response.write('event: error\ndata: {"command":"config","reason":"offline failure","exitCode":9}\n\n')
+    await page.waitForFunction(() => document.querySelector('#status').textContent.includes('offline failure'))
+    // The config poll recovers while offline; its recovered event is not
+    // replayed on reconnect, so the page must not keep showing the error once
+    // the stream is healthy again. This asserts the ordering the executor's
+    // reviewer flagged: fail -> disconnect -> recover offline -> reconnect.
     for (const response of streams) response.end()
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('断开'))
     await page.waitForFunction(() => document.querySelector('#status').textContent.includes('已连接'), { timeout: 15000 })
+    const statusAfterReconnect = await page.locator('#status').innerText()
+    assert.ok(!statusAfterReconnect.includes('offline failure'), 'a command error that recovered during a disconnect must not survive the reconnect')
     assert.equal(await page.evaluate(() => window.pixelTown.state.motions.size), 0)
     await page.locator('#overview').click()
     const undeployed = snapshot(1)

@@ -4,6 +4,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
+import { RECORDED_CONFIG, RECORDED_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -46,4 +47,23 @@ test('sceneOf 沿用部署、候选、人工、处置、阶段与回流的优先
   expect(scene.rows[0]?.deploy).toBe(true)
   expect(scene.rows[1]?.deploy).toBe(false)
   expect(scene.rows[0]?.workers).toBe(Number(SAMPLE_CONFIG.scheduler.find(one => one.key === 'max_in_flight')?.value))
+})
+
+test('sceneOf 消费真实录制的 status/config 快照', () => {
+  const recordedRuntime = parseRuntime(RECORDED_STATUS)
+  const recordedConfig = parseConfig(RECORDED_CONFIG)
+  const scene = sceneOf(recordedRuntime, recordedConfig)
+  expect(scene.state).toBe('stale')
+  expect(scene.maintenance).toBe('draining')
+  const rowsByName = new Map(scene.rows.map(row => [row.name, row]))
+  expect(rowsByName.size).toBe(recordedConfig.repos.length)
+  const factory = rowsByName.get('orca-factory')
+  expect(factory?.parcels.map(parcel => parcel.identifier)).toEqual(['OF-414', 'OF-415'])
+  const queued = factory?.parcels.find(parcel => parcel.identifier === 'OF-414')
+  expect(queued?.station).toBe('merge')
+  expect(queued?.unknownDeploy).toBe(false)
+  const resolved = factory?.parcels.find(parcel => parcel.identifier === 'OF-415')
+  expect(resolved?.station).toBe('repair')
+  expect(resolved?.tone).toBe('attention')
+  expect(factory?.deploy).toBe(true)
 })

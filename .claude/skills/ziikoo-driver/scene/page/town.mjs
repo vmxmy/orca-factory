@@ -122,14 +122,29 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
     const previous = workshopLayout(previousRow)
     for (const [key, point] of layout.parcels) {
       const old = previous.parcels.get(key)
-      if (!old || old.station === point.station) continue
+      if (!old) continue
       const running = state.motions.get(key)
       const start = running ? pointAlong(running.points, (now - running.start) / running.duration) : old
-      const route = travelPath(layout, old.station, point.station)
-      const offset = { x: point.x - route.at(-1).x, y: point.y - route.at(-1).y }
-      const laneRoute = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
-      const points = [start, ...elbow(start, laneRoute[0]), ...laneRoute.slice(1)]
-      next.motions.set(key, { points, start: now, duration: 1800 })
+      const moved = old.station !== point.station
+      const displaced = old.x !== point.x || old.y !== point.y
+      if (!moved && !displaced) continue
+      // Parcels rest beside their station's belt lane. The tween rides the
+      // parcel slot row for the long segments (parallel to the painted belt, so
+      // a convoy keeps its spacing instead of collapsing onto the lane) and
+      // uses the painted belt lane itself for the corner steps between rows,
+      // so every turn happens on the belt the eye can see.
+      let points
+      if (moved) {
+        const route = travelPath(layout, old.station, point.station)
+        const offset = { x: start.x - route[0].x, y: start.y - route[0].y }
+        const riding = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
+        const step = (from, to) => (Math.abs(from.x - to.x) + Math.abs(from.y - to.y) ? [...elbow(from, to), to] : [])
+        const core = [start, ...step(start, riding[0]), ...riding.slice(1), ...step(route.at(-1), point)]
+        points = core.filter((node, index) => index === 0 || node.x !== core[index - 1].x || node.y !== core[index - 1].y)
+      } else {
+        points = [start, ...elbow(start, point), point]
+      }
+      next.motions.set(key, { points, start: now, duration: moved ? 1800 : 600 })
     }
   }
   return next

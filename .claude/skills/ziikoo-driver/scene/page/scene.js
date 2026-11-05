@@ -351,7 +351,16 @@ reduced.addEventListener('change', () => { if (reduced.matches) state.motions.cl
 new ResizeObserver(resize).observe(element('#viewport'))
 resize()
 const events = new EventSource(resource('/events'))
-events.onopen = () => { connected = true; fresh = true; failures.delete('snapshot'); renderStatus(); requestDraw() }
+events.onopen = () => {
+  connected = true
+  fresh = true
+  // Reconnects do not replay historical recovered events; a scene event proves
+  // both polls are healthy, so stale command errors must not survive them.
+  for (const command of failures.keys()) if (command !== 'snapshot') failures.delete(command)
+  failures.delete('snapshot')
+  renderStatus()
+  requestDraw()
+}
 events.addEventListener('scene', event => { snapshotRequest?.abort(); failures.delete('snapshot'); receive(JSON.parse(event.data)) })
 events.addEventListener('error', event => {
   if (event.data) { const failure = JSON.parse(event.data); if (failure.recovered) failures.delete(failure.command); else failures.set(failure.command, failure) }
