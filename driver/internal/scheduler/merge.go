@@ -67,7 +67,11 @@ func readMergeHandoff(t *Ticket, comments []task.Comment) {
 	}
 	if t.Progress != nil && t.Progress.Deployment != nil {
 		if err := deploymentIdentity(*t); err != nil {
-			t.MergeProblem = err.Error()
+			t.Progress = nil
+			t.MergeProblem = ""
+			if t.Handoff != nil {
+				t.MergeProblem = err.Error()
+			}
 		}
 	}
 }
