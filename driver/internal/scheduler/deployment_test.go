@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,61 @@ func TestDeploymentFailureRequiresExplicitRecovery(t *testing.T) {
 		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: &rebuilt}).Tick(context.Background()); err == nil {
 			t.Fatal("restart/credential recovery bypassed human confirmation")
 		}
+	}
+}
+
+func TestSelfDeployInterruptedBeforeInstallRetries(t *testing.T) {
+	for _, installing := range []bool{false, true} {
+		t.Run(fmt.Sprintf("installing=%t", installing), func(t *testing.T) {
+			f, host := newSelfDeployFixture(t)
+			host.kill = "go"
+			firstServe(t, f, host)
+			if lastState(f) != "deploy-intent" || !markerExists(f, selfSHA, "drained") || markerExists(f, selfSHA, "installing") || markerExists(f, selfSHA, "rolled-back") || installed(t, host.driver) != "old" {
+				t.Fatalf("invalid interrupted fixture: state=%s installed=%s", lastState(f), installed(t, host.driver))
+			}
+			if installing {
+				if err := os.WriteFile(f.runtime.selfMarker(selfSHA, "installing"), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_ = serveAs(f, host, "old")
+			if installing {
+				if lastState(f) != "paused" || maintenanceMode(t) != "running" || host.builds != 0 || host.restarts != 0 {
+					t.Fatalf("uncertain install did not pause: state=%s builds=%d restarts=%d", lastState(f), host.builds, host.restarts)
+				}
+				return
+			}
+			if lastState(f) != "pending" {
+				t.Fatalf("interrupted before install must retry: state=%s", lastState(f))
+			}
+			_ = serveAs(f, host, "old")
+			if lastState(f) != "deploy-intent" || host.builds != 1 || host.restarts != 1 || host.smokes != 0 || installed(t, host.driver) != selfSHA {
+				t.Fatalf("next tick did not reinstall: state=%s builds=%d restarts=%d smokes=%d installed=%s", lastState(f), host.builds, host.restarts, host.smokes, installed(t, host.driver))
+			}
+		})
+	}
+}
+
+func TestSelfDeployRetryWorkflowBeforeSmokeReinstalls(t *testing.T) {
+	f, host := newSelfDeployFixture(t)
+	host.kill = "go"
+	firstServe(t, f, host)
+	if err := os.WriteFile(f.runtime.selfMarker(selfSHA, "installing"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, host, "old")
+	if lastState(f) != "paused" {
+		t.Fatalf("expected paused deployment: state=%s", lastState(f))
+	}
+	if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-workflow", "operator", "reconciled interrupted install; reinstall", false); err != nil {
+		t.Fatal(err)
+	}
+	if lastState(f) != "pending" {
+		t.Fatalf("reinstall recovery must be pending: state=%s", lastState(f))
+	}
+	_ = serveAs(f, host, "old")
+	if lastState(f) != "deploy-intent" || host.builds != 1 || host.restarts != 1 || installed(t, host.driver) != selfSHA {
+		t.Fatalf("recovery did not reinstall: state=%s builds=%d restarts=%d installed=%s", lastState(f), host.builds, host.restarts, installed(t, host.driver))
 	}
 }
 
