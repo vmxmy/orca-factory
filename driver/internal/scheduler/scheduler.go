@@ -220,16 +220,18 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
+	rows := ObservationRows(tickets, s.Repositories)
 	status.PushObservation(s.clock(), func(view *status.View) {
 		view.Tickets = nil
-		for _, t := range tickets {
-			row := ObservationRow(t, s.Repositories)
+		for index, t := range tickets {
+			row := rows[index]
 			switch {
 			case owned(t):
 			case t.Candidate:
 				row.Stage = "candidate"
 			case t.Owner == machine.OwnerHuman:
 				row.Stage = "human"
+			case DeploymentBarrier(t):
 			default:
 				continue
 			}

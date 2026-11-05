@@ -237,6 +237,8 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `orca-factory-driver status --json` 输出 `status.Read` 的 `View`：`state`（`ok`、`stale`、`unknown`）、`generatedAt`、`tickets`，有 GitHub 用量时另有 `github`。票行字段见 `driver/README.md`「排查停止推进」。
 
+- `deployment` 与 `queuePosition`（OF-385）：实时观察缓存与 `status.Write` 快照共用 `scheduler.ObservationRow` / `ObservationRows`。`deployment` 来自 `Progress.Deployment`，映射 `Progress.QueueID` 为 `queueId`、`Progress.MergeSHA` 为 `sha`，并带 `workflow`、`state` 与 `reason`，不输出 smoke 命令；无部署进度时省略。`DeploymentBarrier` 为真的票即使归属为无、阶段已合并也保留在实时列表中。`queuePosition` 仅给同仓库阶段为排队合并、有 `Handoff` 且 `MergeProblem` 为空的票，按 `Handoff.EnqueuedAt` 升序、同时间按 `QueueID` 升序，从 1 编号，其他票省略。`scheduler.TestLiveStatusCarriesDeploymentAndQueuePosition` 覆盖未归属部署屏障、字段映射与 smoke 省略、位次排序及同时间排序、跨仓库独立编号、缺失或冲突 handoff 的省略，以及两条读路径的字段一致性。
+
 - `nextScanAt`（OF-238）：serve 计划下一次巡检（`scheduler.Serve` 调用 `Tick`）的时间，RFC3339（带时区偏移与纳秒，和 `generatedAt` 同一个时钟），取自 `Scheduler.NextTickAt`，即上一轮 `Tick` 结束时的时钟加 `NextInterval`（自适应间隔，最长 3 分钟，见 `scheduler/adaptive.go`）。serve 每轮巡检后写入快照文件与实时观察缓存。`state` 不是 `ok` 时省略；serve 还没完成第一轮巡检、或写快照的 driver 早于本字段时也没有这个键。它只是观察，不改变调度，也不是恢复授权。`cmd/driver.TestStatusServeRecordsNextScan` 覆盖写出、两条读路径与实时缓存过期时的省略；快照文件过期走同一个判断，没有单独测试。
 
 ## driver config 快照

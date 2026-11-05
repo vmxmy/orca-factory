@@ -279,13 +279,10 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
-	for _, ticket := range backend.tickets {
+	rows := scheduler.ObservationRows(backend.tickets, s.Repositories)
+	for index, ticket := range backend.tickets {
 		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
-			row := scheduler.ObservationRow(ticket, s.Repositories)
-			if p := ticket.Progress; p != nil && p.Deployment != nil {
-				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
-			}
-			snapshot.Tickets = append(snapshot.Tickets, row)
+			snapshot.Tickets = append(snapshot.Tickets, rows[index])
 		}
 	}
 	sort.Slice(snapshot.Tickets, func(i, j int) bool {

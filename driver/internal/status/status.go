@@ -25,14 +25,15 @@ type Deployment struct {
 }
 
 type Ticket struct {
-	Deployment *Deployment `json:"deployment,omitempty"`
-	Repo       string      `json:"repo"`
-	Identifier string      `json:"identifier"`
-	Owner      string      `json:"owner"`
-	Phase      string      `json:"phase"`
-	Backend    string      `json:"backend,omitempty"`
-	URL        string      `json:"url,omitempty"`
-	Held       bool        `json:"held,omitempty"`
+	Deployment    *Deployment `json:"deployment,omitempty"`
+	QueuePosition int         `json:"queuePosition,omitempty"`
+	Repo          string      `json:"repo"`
+	Identifier    string      `json:"identifier"`
+	Owner         string      `json:"owner"`
+	Phase         string      `json:"phase"`
+	Backend       string      `json:"backend,omitempty"`
+	URL           string      `json:"url,omitempty"`
+	Held          bool        `json:"held,omitempty"`
 	// BlockedReason explains why a visible ticket cannot advance.
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
