@@ -5,6 +5,7 @@ import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 import { SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
+import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
 
 const PANE = {
   plugin: 'ziikoo-driver',
@@ -52,6 +53,7 @@ const engine = (
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const spawns: { argv: readonly string[]; env?: Record<string, string> }[] = []
+  const sceneStart = { stdout: undefined as string | undefined }
   const sceneExit = { code: 0, stderr: [] as string[] }
   const clipboard: { texts: string[]; surfaces: (string | undefined)[]; refuse?: 'no-surface' | 'no-clipboard' | 'refused' } = { texts: [], surfaces: [] }
   let isOpen = paneOpen
@@ -61,7 +63,7 @@ const engine = (
     const bind = event.env?.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
     const host = bind === 'nebula1' ? '192.168.99.10' : bind
     const port = Number(event.env?.ZIIKOO_SCENE_PORT) || 1
-    yield { stream: 'stdout', text: `listening http://${host}:${port}/?t=x\n` }
+    yield { stream: 'stdout', text: sceneStart.stdout ?? `listening http://${host}:${port}/?t=x\n` }
     await clock.sleep(60_000)
     for (const text of sceneExit.stderr) yield { stream: 'stderr', text }
     return { value: { code: sceneExit.code, signal: null } }
@@ -109,7 +111,7 @@ const engine = (
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clipboard, clock, focused, inits, statuses, toasts, spawns, sceneExit }
+  return { calls, clipboard, clock, focused, inits, statuses, toasts, spawns, sceneStart, sceneExit }
 }
 
 const runCommand = {
@@ -178,6 +180,18 @@ test('3D 绑定 nebula1 时复制 URL 且不打开本机浏览器', { options: {
   await ui.unmount()
 })
 
+test('录制的远程绑定 listening 行按原样解析并复制', { options: { bind: 'enp3s0', port: 4300 } }, async ($, on) => {
+  const { calls, clipboard, sceneStart, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  sceneStart.stdout = SAMPLE_SCENE_LISTENING
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toEqual(['http://10.10.10.121:4300/?t=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'])
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  expect(toasts.some(text => text.includes('已复制') && text.includes('http://10.10.10.121:4300/?t=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef'))).toBe(true)
+  await ui.unmount()
+})
+
 test('3D URL 复制失败时显示原因与完整地址', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
   const { clipboard, calls, toasts } = engine(on, ran({ stdout: sampleStdout }))
   clipboard.refuse = 'no-clipboard'
@@ -192,13 +206,37 @@ test('3D URL 复制失败时显示原因与完整地址', { options: { bind: 'ne
 
 test('3D 服务非零退出时显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
-  sceneExit.code = 1
-  sceneExit.stderr = ['服务启动失败\n接口 ne', 'bula1 不存在\r\n']
+  sceneExit.code = SAMPLE_SCENE_NO_INTERFACE.exitCode
+  sceneExit.stderr = [SAMPLE_SCENE_NO_INTERFACE.stderr.slice(0, 6), SAMPLE_SCENE_NO_INTERFACE.stderr.slice(6)]
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
   await clock.advance(60_000)
-  expect(toasts.some(text => text.includes('退出码 1') && text.includes('接口 nebula1 不存在'))).toBe(true)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('接口 nosuch0 不存在'))).toBe(true)
+  await ui.unmount()
+})
+
+test('录制的端口占用错误显示 stderr 最后一行', async ($, on) => {
+  const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  sceneExit.code = SAMPLE_SCENE_PORT_IN_USE.exitCode
+  sceneExit.stderr = [SAMPLE_SCENE_PORT_IN_USE.stderr]
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  await clock.advance(60_000)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('端口 4300 被占用'))).toBe(true)
+  await ui.unmount()
+})
+
+test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
+  const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  sceneExit.code = SAMPLE_SCENE_BAD_PORT.exitCode
+  sceneExit.stderr = [SAMPLE_SCENE_BAD_PORT.stderr]
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  await clock.advance(60_000)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('3D 服务端口必须是 0–65535 的整数，收到 abc'))).toBe(true)
   await ui.unmount()
 })
 
