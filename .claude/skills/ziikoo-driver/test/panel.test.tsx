@@ -52,14 +52,19 @@ const engine = (
   const statuses: (string | undefined)[] = []
   const toasts: string[] = []
   const spawns: { argv: readonly string[]; env?: Record<string, string> }[] = []
+  const sceneExit = { code: 0, stderr: [] as string[] }
   const clipboard: { texts: string[]; surfaces: (string | undefined)[]; refuse?: 'no-surface' | 'no-clipboard' | 'refused' } = { texts: [], surfaces: [] }
   let isOpen = paneOpen
   const clock = mock.clock(on, { now: NOW })
   on('process.spawn', async function* (_, event) {
     spawns.push(event)
-    yield { stream: 'stdout', text: 'listening http://127.0.0.1:1/?t=x\n' }
+    const bind = event.env?.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
+    const host = bind === 'nebula1' ? '192.168.99.10' : bind
+    const port = Number(event.env?.ZIIKOO_SCENE_PORT) || 1
+    yield { stream: 'stdout', text: `listening http://${host}:${port}/?t=x\n` }
     await clock.sleep(60_000)
-    return { value: { code: 0, signal: null } }
+    for (const text of sceneExit.stderr) yield { stream: 'stderr', text }
+    return { value: { code: sceneExit.code, signal: null } }
   })
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'ziikoo-driver' } }))
@@ -104,7 +109,7 @@ const engine = (
     const answer = bySubcommand[sub] ?? result
     return { value: typeof answer === 'function' ? answer(nth) : answer }
   })
-  return { calls, clipboard, clock, focused, inits, statuses, toasts, spawns }
+  return { calls, clipboard, clock, focused, inits, statuses, toasts, spawns, sceneExit }
 }
 
 const runCommand = {
@@ -122,7 +127,7 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
 
 test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on) => {
-  const { calls, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
@@ -130,15 +135,20 @@ test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on)
   expect(spawns[0]?.argv[0]).toBe('bun')
   expect(spawns[0]?.argv[2]).toMatch(/\/scene\/server\.ts$/)
   expect(spawns[0]?.env?.ZIIKOO_SCENE_TOKEN).toMatch(/^[a-f0-9]{64}$/)
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_BIND).toBe('127.0.0.1')
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('0')
+  expect(clipboard.texts).toEqual(['http://127.0.0.1:1/?t=x'])
+  expect(clipboard.surfaces).toEqual(['terminal'])
   expect(calls).toContainEqual(['xdg-open', 'http://127.0.0.1:1/?t=x'])
   expect(toasts.some(text => text.includes('http://127.0.0.1:1/?t=x'))).toBe(true)
   await ui.press({ key: 'scene' })
   expect(spawns).toHaveLength(1)
+  expect(clipboard.texts).toHaveLength(2)
   await ui.unmount()
 })
 
 test('3D 服务退出后再次按下会重新 spawn', async ($, on) => {
-  const { spawns, clock, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  const { clipboard, spawns, clock, toasts } = engine(on, ran({ stdout: sampleStdout }))
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
@@ -146,6 +156,49 @@ test('3D 服务退出后再次按下会重新 spawn', async ($, on) => {
   expect(toasts.some(text => text.includes('退出码 0'))).toBe(true)
   await ui.press({ key: 'scene' })
   expect(spawns).toHaveLength(2)
+  expect(clipboard.texts).toEqual(['http://127.0.0.1:1/?t=x', 'http://127.0.0.1:1/?t=x'])
+  await ui.unmount()
+})
+
+test('3D 绑定 nebula1 时复制 URL 且不打开本机浏览器', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
+  const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_BIND).toBe('nebula1')
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('4300')
+  expect(clipboard.texts).toContain('http://192.168.99.10:4300/?t=x')
+  expect(clipboard.surfaces).toEqual(['terminal'])
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  expect(toasts.some(text => text.includes('已复制') && text.includes('http://192.168.99.10:4300/?t=x'))).toBe(true)
+  await ui.press({ key: 'scene' })
+  expect(spawns).toHaveLength(1)
+  expect(clipboard.texts).toHaveLength(2)
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  await ui.unmount()
+})
+
+test('3D URL 复制失败时显示原因与完整地址', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
+  const { clipboard, calls, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  clipboard.refuse = 'no-clipboard'
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toHaveLength(0)
+  expect(toasts.some(text => text.includes('没有可用的剪贴板') && text.includes('http://192.168.99.10:4300/?t=x'))).toBe(true)
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  await ui.unmount()
+})
+
+test('3D 服务非零退出时显示 stderr 最后一行', async ($, on) => {
+  const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  sceneExit.code = 1
+  sceneExit.stderr = ['服务启动失败\n接口 ne', 'bula1 不存在\r\n']
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  await clock.advance(60_000)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('接口 nebula1 不存在'))).toBe(true)
   await ui.unmount()
 })
 
