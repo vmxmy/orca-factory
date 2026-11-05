@@ -91,9 +91,35 @@ export type RuntimeTicket = {
   since?: number
   blockedReason?: string
   deployment?: Deployment
+  queuePosition?: number
 }
 
 export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
+
+export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' | 'merge' | 'dispatch' | 'smoke' | 'repair' | 'human' | 'unknown'
+
+export type Parcel = {
+  identifier: string
+  title: string
+  phase: string
+  label: string
+  station: Station
+  tone: 'current' | 'attention' | 'failed' | 'done'
+  since?: number
+  duration: string
+  reason?: string
+  blocker?: string
+  queuePosition?: number
+  deployment?: string
+  unknownDeploy: boolean
+}
+
+export type Scene = {
+  generatedAt: number
+  state: string
+  maintenance: string
+  rows: { name: string; path: string; deploy: boolean; workers: number; parcels: Parcel[] }[]
+}
 
 export type Checkout = { path: string; branch: string; clean: boolean; behind: number }
 

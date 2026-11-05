@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Driver · 3D 车间</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #101923; color: #ecf2f8; font: 14px system-ui, sans-serif; overflow: hidden; }
+    canvas { display: block; touch-action: none; }
+    header, aside, #tooltip, footer { position: fixed; z-index: 1; background: #142231ed; border: 1px solid #394c5e; border-radius: 10px; padding: 14px 18px; }
+    header { top: 20px; left: 20px; max-width: min(540px, 60vw); }
+    h1 { font-size: 19px; margin: 0 0 6px; }
+    #status { color: #f6c75c; white-space: pre-line; }
+    aside { top: 20px; right: 20px; line-height: 1.9; max-width: 280px; }
+    .key { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 7px; }
+    .done { background: #50c98b; } .current { background: #5d9fff; } .attention { background: #f6c75c; } .failed { background: #ed676b; }
+    #snapshot, .note { font-size: 12px; color: #adbdcc; }
+    #tooltip { display: none; pointer-events: none; max-width: 360px; white-space: pre-line; line-height: 1.7; }
+    footer { bottom: 20px; left: 20px; color: #adbdcc; font-size: 12px; }
+    @media (max-width: 680px) { header { top: 10px; left: 10px; max-width: 55vw; } aside { top: 10px; right: 10px; padding: 10px; max-width: 40vw; font-size: 12px; } }
+  </style>
+  <script type="importmap">
+    {"imports":{"three":"/vendor/three.module.min.js?t=__TOKEN__","/vendor/three.core.min.js":"/vendor/three.core.min.js?t=__TOKEN__","/vendor/OrbitControls.js":"/vendor/OrbitControls.js?t=__TOKEN__"}}
+  </script>
+</head>
+<body>
+  <header><h1>Driver · 3D 车间</h1><div id="status" role="status">正在连接 driver…</div></header>
+  <aside aria-label="图例">
+    <div><span class="key done"></span>完成 <span class="key current"></span>当前</div>
+    <div><span class="key attention"></span>注意 <span class="key failed"></span>失败</div>
+    <div id="snapshot">等待快照</div>
+    <div class="note">部署状态需 driver 补字段</div>
+    <div class="note">无队列位次时按服务端首次看到排序</div>
+  </aside>
+  <div id="tooltip" role="tooltip"></div>
+  <footer>拖动旋转 · 滚轮缩放 · 右键平移 · 悬停箱子查看票据</footer>
+  <script type="module">
+    import('/scene.js?t=__TOKEN__').catch(error => {
+      document.querySelector('#status').textContent = `车间加载失败：${error.message}`;
+      document.querySelector('#status').style.color = '#ed676b';
+    });
+  </script>
+</body>
+</html>
