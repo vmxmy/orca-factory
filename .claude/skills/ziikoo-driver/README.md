@@ -46,11 +46,18 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 车间服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。每个仓库一行，箱子代表票据；可拖动旋转、滚轮缩放，悬停查看标题、阶段、停留时长和原因。施工台数量来自 `max_in_flight`，部署段由仓库部署配置决定。过期快照亮黄灯，命令失败或连接中断亮红灯并写原因；重连后以新收到的快照和失败为准。status 不带 gate 结果，门禁扫描门平时亮绿光，只在箱子从门禁退回施工台（进入写 correction）的那段补间扫红光。回流带按票进入 correction 的先后排队：新进的箱子从带子远端落下，沿下层回流带滑到自己的槽位；离开回流带时由施工台原地取走，后面的箱子等它抬离带面后再沿带子补位，同仓库多张票全程不重叠。
 
-服务仅监听 `127.0.0.1` 的随机端口，每次启动生成随机 token。页面、脚本、快照和 SSE 都要求 URL 的 `t` 参数或 `X-Token` 头；缺失或不符返回 404。URL 含 token，只在本机浏览器打开或提醒里显示，不要转发。连续 15 分钟没有 SSE 订阅者时服务自动退出。
+在 `/config` 中设置本 mod 的两个选项，下一次启动 3D 服务时生效：
+
+- `bind`（3D 服务绑定地址）：默认 `127.0.0.1`，可填 IP 或接口名，例如 `nebula1`。接口名取该接口第一个 IPv4 地址；`0.0.0.0` 监听全部接口。
+- `port`（3D 服务端口）：默认 `0`，每次启动使用随机端口；可设为 1–65535 的固定端口，便于收藏和防火墙放行。
+
+远程打开时，先把 `bind` 设为 `nebula1`，按 `d`，再在能访问该 Nebula 网络的远程浏览器粘贴剪贴板里的 URL。提醒也会显示完整 URL。局域网访问可把 `bind` 填成局域网接口名、IP 或 `0.0.0.0`；后者生成的 URL 优先使用本机 `nebula1` 的 IPv4，没有时使用第一个非回环 IPv4。Nebula relay 对应用透明，仍然使用对端 Nebula 地址。仅当 `bind` 是 `127.0.0.1` 或 `localhost` 时，复制后还会通过 `xdg-open` 打开本机浏览器。服务运行期间再按 `d` 会复制已有 URL；修改绑定配置后需等旧服务退出，再按 `d` 启动。
+
+每次启动生成随机 token，它是服务唯一的访问门禁。页面、脚本、快照和 SSE 都要求 URL 的 `t` 参数或 `X-Token` 头；缺失或不符返回 404。URL 含 token，不要外传；`0.0.0.0` 会把监听端口暴露给局域网全部主机。Nebula 入站防火墙由主机 `/etc/nebula/config.yml` 决定，本 mod 不修改它。连续 15 分钟没有 SSE 订阅者时服务自动退出。
 
 Three.js 固定为 `0.180.0`，模块、它依赖的 `three.core.min.js`、OrbitControls 和许可证随 mod 发布，不依赖 CDN，也不需要安装 npm 包。浏览器需要 WebGL 和 importmap 支持。
 
-已知限制：子进程随会话或热重载结束，再按 `d` 重起；没有 `xdg-open` 或打开失败时，提醒只给 URL，需手动打开。driver 的 `status --json` 不带合并队列位次，装车道按服务端首次看到票的顺序排，不代表真实 FIFO 位次；已合并票没有 `deployment` 时不画卡车，图例注明「部署状态需 driver 补字段」。快照中的归属和阶段由 driver 提供，3D 视图不会发起调度、合并或部署。
+已知限制：子进程随会话或热重载结束，再按 `d` 重起；复制失败时提醒给出原因与 URL，没有 `xdg-open` 或打开失败时也可手动粘贴 URL。固定端口只固定地址与端口，每次重启 token 都会变化，旧的收藏 URL 需更新。driver 的 `status --json` 不带合并队列位次，装车道按服务端首次看到票的顺序排，不代表真实 FIFO 位次；已合并票没有 `deployment` 时不画卡车，图例注明「部署状态需 driver 补字段」。快照中的归属和阶段由 driver 提供，3D 视图不会发起调度、合并或部署。
 
 ## 复制
 
@@ -72,4 +79,4 @@ Three.js 固定为 `0.180.0`，模块、它依赖的 `three.core.min.js`、Orbit
 claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claude/skills/ziikoo-driver
 ```
 
-测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。
+测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌 3D 服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。

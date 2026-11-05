@@ -32,13 +32,13 @@ import {
 } from './plain'
 import type { Badge } from './plain'
 import { barriersOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
+import { TRACK, duration, position } from './ticket'
 import {
   NO_MATCH,
   ROW,
   SECTION_EDGE_FRAME,
   SECTION_INSET,
   TONE_COLOR,
-  TRACK,
   TREND_MINUTES,
   cell,
   chip,
@@ -46,14 +46,12 @@ import {
   clockTime,
   detailView,
   displayWidth,
-  duration,
   failedView,
   field,
   fit,
   filterBar,
   helpText,
   matches,
-  position,
   reasonLine,
   section,
   segmentWidth,
@@ -126,7 +124,17 @@ let spin: Timer | undefined
 let scene: { url: string } | undefined
 let sceneStarting = false
 
-const browseScene = async ($: Engine, url: string) => {
+const deliverScene = async ($: Engine, url: string, surface: RenderSurface, bind: string) => {
+  const local = bind === '127.0.0.1' || bind === 'localhost'
+  try {
+    const copied = await $.ui.copy({ text: url, surface })
+    $.ui.toast(copied.isCopied
+      ? `已复制 3D 车间 URL${local ? '' : `：${url}`}`
+      : `复制失败：${COPY_FAILURES[copied.reason]}，请手动打开 ${url}`)
+  } catch (error) {
+    $.ui.toast(`复制失败：${message(error)}，请手动打开 ${url}`)
+  }
+  if (!local) return
   try {
     const result = await $.process.run(['xdg-open', url])
     $.ui.toast(result.exitCode === 0 ? `已在浏览器打开 ${url}` : `请手动打开 ${url}（xdg-open 退出码 ${result.exitCode}）`)
@@ -135,8 +143,8 @@ const browseScene = async ($: Engine, url: string) => {
   }
 }
 
-const openScene = ($: Engine) => {
-  if (scene) return browseScene($, scene.url)
+const openScene = ($: Engine, surface: RenderSurface, bind: string, port: string) => {
+  if (scene) return deliverScene($, scene.url, surface, bind)
   if (sceneStarting) return
   sceneStarting = true
   const bytes = crypto.getRandomValues(new Uint8Array(32))
@@ -144,11 +152,12 @@ const openScene = ($: Engine) => {
   const child = $.process.spawn({
     argv: ['bun', 'run', `${$.plugin.root}/scene/server.ts`],
     cwd: $.plugin.root,
-    env: { ZIIKOO_SCENE_TOKEN: token },
+    env: { ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: bind, ZIIKOO_SCENE_PORT: port },
   })
   void (async () => {
     let exitCode: number | null = null
     let buffer = ''
+    let stderr = ''
     const chunks = async function* () {
       let next = await child.next()
       while (!next.done) {
@@ -159,19 +168,24 @@ const openScene = ($: Engine) => {
     }
     try {
       for await (const chunk of chunks()) {
+        if (chunk.stream === 'stderr') {
+          stderr = (stderr + chunk.text).slice(-8192)
+          continue
+        }
         if (chunk.stream !== 'stdout') continue
         buffer += chunk.text
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
         for (const line of lines) {
-          const match = /^listening (http:\/\/127\.0\.0\.1:\d+\/\?t=\S+)\r?$/.exec(line)
+          const match = /^listening (http:\/\/[^\s/]+:\d+\/\?t=\S+)\r?$/.exec(line)
           if (!match || scene) continue
           scene = { url: match[1]! }
           sceneStarting = false
-          await browseScene($, scene.url)
+          await deliverScene($, scene.url, surface, bind)
         }
       }
-      $.ui.toast(`3D 服务已退出（退出码 ${exitCode}）`)
+      const reason = exitCode !== 0 ? stderr.trimEnd().split(/\r?\n/).pop() : ''
+      $.ui.toast(`3D 服务已退出（退出码 ${exitCode}${reason ? `：${reason}` : ''}）`)
     } catch (error) {
       $.ui.toast(`3D 服务失败：${message(error)}`)
     } finally {
@@ -635,7 +649,9 @@ const cornerNote = (ui: Kit, group: Group, config: Snapshot, state: Fetched<Runt
   return undefined
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const bind = String(options.bind ?? '127.0.0.1')
+  const port = String(options.port ?? 0)
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ziikoo-driver',
@@ -711,7 +727,7 @@ export const register: Register = on => {
             )}
             <ui.Button key="refresh" label="↻ 刷新" hotkey="r" onPress={() => refreshPage($, current)} />
             <ui.Button key="copy" label="复制" hotkey="c" onPress={press => copyPage($, press.surface)} />
-            <ui.Button key="scene" label="3D" hotkey="d" onPress={() => openScene($)} />
+            <ui.Button key="scene" label="3D" hotkey="d" onPress={press => openScene($, press.surface, bind, port)} />
           </ui.Box>
         </ui.Box>
         {config && current === 'models' && selected && (

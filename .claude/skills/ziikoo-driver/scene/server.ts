@@ -1,10 +1,39 @@
+import { isIP } from 'node:net'
+import { networkInterfaces } from 'node:os'
+
 import type { DriverConfig, Runtime, Scene } from '../types'
 import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 
-const token = process.env.ZIIKOO_SCENE_TOKEN
-if (!token) throw new Error('缺少 ZIIKOO_SCENE_TOKEN')
+const fail = (reason: string): never => {
+  console.error(reason)
+  process.exit(1)
+}
+const failWith = (reason: unknown) => fail(reason instanceof Error ? reason.message : String(reason))
+process.on('uncaughtException', failWith)
+process.on('unhandledRejection', failWith)
+
+const token = process.env.ZIIKOO_SCENE_TOKEN || fail('缺少 ZIIKOO_SCENE_TOKEN')
+
+const bind = process.env.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
+const portText = process.env.ZIIKOO_SCENE_PORT ?? '0'
+const port = Number(portText)
+if (!/^\d+$/.test(portText) || !Number.isInteger(port) || port < 0 || port > 65535) {
+  fail(`3D 服务端口必须是 0–65535 的整数，收到 ${portText}`)
+}
+const interfaces = networkInterfaces()
+let hostname = bind
+if (bind !== 'localhost' && isIP(bind) === 0) {
+  const addresses = interfaces[bind]
+  if (!addresses) fail(`接口 ${bind} 不存在`)
+  hostname = addresses.find(address => address.family === 'IPv4')?.address ?? fail(`接口 ${bind} 没有 IPv4 地址`)
+}
+const advertised = hostname === '0.0.0.0'
+  ? interfaces.nebula1?.find(address => address.family === 'IPv4')?.address
+    ?? Object.values(interfaces).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address
+    ?? fail('没有可供远程访问的非回环 IPv4 地址')
+  : hostname
 
 const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
 const encoder = new TextEncoder()
@@ -79,49 +108,56 @@ const files: Record<string, { path: string; type: string }> = {
   '/vendor/LICENSE.three': { path: 'vendor/LICENSE.three', type: 'text/plain; charset=utf-8' },
 }
 
-const server = Bun.serve({
-  hostname: '127.0.0.1',
-  port: 0,
-  idleTimeout: 0,
-  async fetch(request) {
-    const url = new URL(request.url)
-    if (url.searchParams.get('t') !== token && request.headers.get('X-Token') !== token) return new Response(null, { status: 404 })
-    if (request.method !== 'GET') return new Response(null, { status: 404 })
-    const headers = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }
-    if (url.pathname === '/snapshot') {
-      return Response.json(current ?? { reason: '等待 driver 快照' }, { status: current ? 200 : 503, headers })
-    }
-    if (url.pathname === '/events') {
-      let client: ReadableStreamDefaultController<Uint8Array>
-      let keepalive: ReturnType<typeof setInterval>
-      const detach = () => {
-        clearInterval(keepalive)
-        if (clients.delete(client) && clients.size === 0) unattendedSince = Date.now()
+let server: Bun.Server<undefined>
+try {
+  server = Bun.serve({
+    hostname,
+    port,
+    idleTimeout: 0,
+    async fetch(request) {
+      const url = new URL(request.url)
+      if (url.searchParams.get('t') !== token && request.headers.get('X-Token') !== token) return new Response(null, { status: 404 })
+      if (request.method !== 'GET') return new Response(null, { status: 404 })
+      const headers = { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }
+      if (url.pathname === '/snapshot') {
+        return Response.json(current ?? { reason: '等待 driver 快照' }, { status: current ? 200 : 503, headers })
       }
-      const stream = new ReadableStream<Uint8Array>({
-        start(controller) {
-          client = controller
-          clients.add(client)
-          if (current) client.enqueue(event('scene', current))
-          for (const failure of failures.values()) client.enqueue(event('error', failure))
-          keepalive = setInterval(() => client.enqueue(encoder.encode(': keepalive\n\n')), 15_000)
-          request.signal.addEventListener('abort', detach, { once: true })
-        },
-        cancel: detach,
-      })
-      return new Response(stream, { headers: { ...headers, 'Content-Type': 'text/event-stream', Connection: 'keep-alive' } })
-    }
-    if (url.pathname === '/') {
-      const html = await Bun.file(new URL('./page/index.html', import.meta.url)).text()
-      return new Response(html.replaceAll('__TOKEN__', encodeURIComponent(token)), { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } })
-    }
-    const file = files[url.pathname]
-    if (!file) return new Response(null, { status: 404 })
-    return new Response(Bun.file(new URL(`./page/${file.path}`, import.meta.url)), { headers: { ...headers, 'Content-Type': file.type } })
-  },
-})
+      if (url.pathname === '/events') {
+        let client: ReadableStreamDefaultController<Uint8Array>
+        let keepalive: ReturnType<typeof setInterval>
+        const detach = () => {
+          clearInterval(keepalive)
+          if (clients.delete(client) && clients.size === 0) unattendedSince = Date.now()
+        }
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            client = controller
+            clients.add(client)
+            if (current) client.enqueue(event('scene', current))
+            for (const failure of failures.values()) client.enqueue(event('error', failure))
+            keepalive = setInterval(() => client.enqueue(encoder.encode(': keepalive\n\n')), 15_000)
+            request.signal.addEventListener('abort', detach, { once: true })
+          },
+          cancel: detach,
+        })
+        return new Response(stream, { headers: { ...headers, 'Content-Type': 'text/event-stream', Connection: 'keep-alive' } })
+      }
+      if (url.pathname === '/') {
+        const html = await Bun.file(new URL('./page/index.html', import.meta.url)).text()
+        return new Response(html.replaceAll('__TOKEN__', encodeURIComponent(token)), { headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } })
+      }
+      const file = files[url.pathname]
+      if (!file) return new Response(null, { status: 404 })
+      return new Response(Bun.file(new URL(`./page/${file.path}`, import.meta.url)), { headers: { ...headers, 'Content-Type': file.type } })
+    },
+  })
+} catch (error) {
+  const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
+  fail(code === 'EADDRINUSE' ? `端口 ${port} 被占用` : `3D 服务无法监听 ${hostname}:${port}：${String(error).split(/\r?\n/)[0]}`)
+}
 
-console.log(`listening http://127.0.0.1:${server.port}/?t=${encodeURIComponent(token)}`)
+const urlHost = isIP(advertised) === 6 ? `[${advertised}]` : advertised
+console.log(`listening http://${urlHost}:${server.port}/?t=${encodeURIComponent(token)}`)
 
 const repeat = async (kind: 'status' | 'config', interval: number) => {
   await poll(kind)

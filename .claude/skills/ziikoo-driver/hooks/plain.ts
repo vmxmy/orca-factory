@@ -15,7 +15,8 @@ import type {
 } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, routingSummary } from './config'
 import { barriersOf, inFlightOf } from './runtime'
-import { NO_MATCH, clockTime, duration, failureTitle, matches, position, reasonOf } from './view'
+import { NO_MATCH, clockTime, failureTitle, matches, reasonOf } from './view'
+import { duration, position } from './ticket'
 
 const TOOL_KEYS = new Set(['go', 'gh', 'git', 'jq', 'claude', 'codex'])
 

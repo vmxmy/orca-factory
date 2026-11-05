@@ -1,5 +1,5 @@
 import type { DriverConfig, Parcel, Runtime, RuntimeTicket, Scene, Station } from '../types'
-import { position, duration } from './view'
+import { position, duration } from './ticket'
 import { deploys } from './config'
 
 const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
