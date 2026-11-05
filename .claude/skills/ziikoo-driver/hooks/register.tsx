@@ -32,13 +32,13 @@ import {
 } from './plain'
 import type { Badge } from './plain'
 import { barriersOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
+import { TRACK, duration, position } from './ticket'
 import {
   NO_MATCH,
   ROW,
   SECTION_EDGE_FRAME,
   SECTION_INSET,
   TONE_COLOR,
-  TRACK,
   TREND_MINUTES,
   cell,
   chip,
@@ -46,14 +46,12 @@ import {
   clockTime,
   detailView,
   displayWidth,
-  duration,
   failedView,
   field,
   fit,
   filterBar,
   helpText,
   matches,
-  position,
   reasonLine,
   section,
   segmentWidth,
