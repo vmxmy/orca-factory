@@ -433,6 +433,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	lap("runners")
+	claimNow := s.clock()
 	sort.SliceStable(tickets, func(i, j int) bool {
 		a, b := tickets[i], tickets[j]
 		if priority(a.Priority) != priority(b.Priority) {
@@ -464,7 +465,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = "capacity"
 		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(scope, conflicts[t.Repo]):
 			reason = "scope"
-		case !s.token(now):
+		case !s.token(claimNow):
 			reason = "token"
 		}
 		if reason != "" {
