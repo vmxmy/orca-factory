@@ -232,6 +232,7 @@ function applyScene(scene) {
   for (const row of scene.rows) {
     const rowZ = offsets.get(row.path)
     const occupied = new Map()
+    let lane = 0
     for (const parcel of row.parcels) {
       const key = `${row.path}\0${parcel.identifier}`
       alive.add(key)
@@ -266,11 +267,17 @@ function applyScene(scene) {
       state.target.set(positions[parcel.station] + sideSlot, targetY, targetZ)
       if (previous !== parcel.station) {
         state.rejected = previous === 'gate' && parcel.station === 'return'
-        state.waypoints = parcel.station === 'return' || previous === 'return'
-          ? [new THREE.Vector3(state.group.position.x, 0.15, rowZ + 3), new THREE.Vector3(6, 0.15, rowZ + 3)]
-          : parcel.station === 'repair' || parcel.station === 'human'
+        if (parcel.station === 'return' || previous === 'return') {
+          const height = 2.2 + lane++ * 1.3
+          state.waypoints = [
+            new THREE.Vector3(state.group.position.x, height, state.group.position.z),
+            new THREE.Vector3(state.target.x, height, state.target.z),
+          ]
+        } else {
+          state.waypoints = parcel.station === 'repair' || parcel.station === 'human'
             ? [new THREE.Vector3(state.group.position.x, 3.7, rowZ), new THREE.Vector3(state.target.x, 3.7, targetZ)]
             : []
+        }
       }
       if (state.blocker) { dispose(state.blocker); state.blocker = undefined }
       if (parcel.blocker) state.blocker = label(state.group, '⛓ 锁定', 0, 1.65, 0, 1.8, '#f6c75c')
