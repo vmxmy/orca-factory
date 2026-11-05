@@ -33,7 +33,7 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		case "confirm-passed":
 			return n.State == "passed" && n.SmokeStarted == d.SmokeStarted && n.SmokePassed == d.SmokePassed
 		case "retry-workflow":
-			return d.Workflow != "" && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
+			return (d.Workflow != "" || d.Self && selfReinstallable(d.Recovery)) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
 		case "retry-smoke":
 			return d.Smoke != "" && d.SmokeStarted && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
 		default:
@@ -60,6 +60,10 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		switch n.State {
 		case "deploy-intent", "paused":
 			return !n.SmokeStarted && !n.SmokePassed
+		case "pending":
+			// Interrupted before the install: the next serve installs again,
+			// unless a recovery decided this deployment.
+			return n.Self && n.Recovery == nil && !n.SmokeStarted && !n.SmokePassed
 		case "smoke-intent":
 			return n.SmokeStarted && !n.SmokePassed
 		}
@@ -81,7 +85,15 @@ func sameDeploymentRecovery(a, b *merge.DeploymentRecovery) bool {
 	return a.Action == b.Action && a.Operator == b.Operator && a.Reason == b.Reason && a.At.Equal(b.At)
 }
 
-// A self deployment retries only its smoke; pending would reinstall it.
+// selfReinstallable reports whether no smoke of a self deployment can have run
+// before this recovery: retry-smoke clears SmokeStarted, so only a deployment
+// never recovered or last recovered by a reinstall may be reinstalled.
+func selfReinstallable(r *merge.DeploymentRecovery) bool {
+	return r == nil || r.Action == "retry-workflow"
+}
+
+// retry-smoke on a self deployment retries only its smoke; pending would
+// reinstall it.
 func retrySmokeState(self bool) string {
 	if self {
 		return "deploy-intent"

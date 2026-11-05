@@ -1,0 +1,29 @@
+{
+  "comments": [
+    {
+      "id": "reczz28VwbYVkajp",
+      "body": "PR 已开: https://github.com/vmxmy/orca-factory/pull/605\n阶段: 排队合并\n归属: 合并通道 term=term_22cdb4f3-9c52-415a-8019-28638d895c87 run=run_993d1cdf1531 attempt=1 since=2026-11-05T09:19:13Z\nmerge-handoff-v1: {\"version\":1,\"ticket_id\":\"d8844eec-5be4-4de1-9e4e-c583c8b284a4\",\"identifier\":\"OF-393\",\"repository\":\"vmxmy/orca-factory\",\"unit\":\"executor\",\"pr\":605,\"head\":\"1af93d0f2f736fbf02e3f36579f1b8be03f00c2d\",\"baseline\":\"a11d72cbc1420ee4123297be52a7f9a378e9a71b\",\"gate_spec\":\"REDACTED\",\"gate_output\":\"REDACTED\",\"review_output\":\"REDACTED\",\"lane\":1,\"run\":\"run_993d1cdf1531\",\"task\":\"task_2ddf919a33d7\",\"dispatch\":\"ctx_31228a7d0543\",\"worktree\":\"/home/laoxu/orca/workspaces/orca-factory/OF-393-executor\",\"attempt\":1,\"corrections\":0,\"infra\":0,\"catchup_rounds\":0,\"enqueued_at\":\"2026-11-05T09:19:13.307197764Z\",\"queue_id\":\"8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50\"}",
+      "createdAt": "2026-11-05T17:19:15+08:00"
+    },
+    {
+      "id": "reczz28Vwf08rKY7",
+      "body": "merge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50\",\"ticket_id\":\"d8844eec-5be4-4de1-9e4e-c583c8b284a4\",\"repository\":\"vmxmy/orca-factory\",\"pr\":605,\"head\":\"1af93d0f2f736fbf02e3f36579f1b8be03f00c2d\",\"main\":\"a11d72cbc1420ee4123297be52a7f9a378e9a71b\",\"merge_sha\":\"\",\"phase\":\"merge-intent\"}",
+      "createdAt": "2026-11-05T17:22:30+08:00"
+    },
+    {
+      "id": "reczz28VwfF6L7Lv",
+      "body": "merge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50\",\"ticket_id\":\"d8844eec-5be4-4de1-9e4e-c583c8b284a4\",\"repository\":\"vmxmy/orca-factory\",\"pr\":605,\"head\":\"1af93d0f2f736fbf02e3f36579f1b8be03f00c2d\",\"main\":\"a11d72cbc1420ee4123297be52a7f9a378e9a71b\",\"merge_sha\":\"e51c6389bf0097a6c2a9b500f79c49805b6b1bd1\",\"phase\":\"merged\"}",
+      "createdAt": "2026-11-05T17:22:44+08:00"
+    },
+    {
+      "id": "reczz28VwfHwuwuY",
+      "body": "merge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"deploy-intent\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50\",\"ticket_id\":\"d8844eec-5be4-4de1-9e4e-c583c8b284a4\",\"repository\":\"vmxmy/orca-factory\",\"pr\":605,\"head\":\"1af93d0f2f736fbf02e3f36579f1b8be03f00c2d\",\"main\":\"a11d72cbc1420ee4123297be52a7f9a378e9a71b\",\"merge_sha\":\"e51c6389bf0097a6c2a9b500f79c49805b6b1bd1\",\"phase\":\"merged\"}",
+      "createdAt": "2026-11-05T17:22:46+08:00"
+    },
+    {
+      "id": "reczz28VyjNBTj8L",
+      "body": "Agent处置: installed driver is not the squash SHA; no rollback, the binary is not this deployment's\n处置要求: 核对部署与 smoke，返回绑定队列和 SHA 的恢复决策\n阶段: Agent处置\n归属: 处置Agent\nmerge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"paused\",\"reason\":\"installed driver is not the squash SHA; no rollback, the binary is not this deployment's\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50\",\"ticket_id\":\"d8844eec-5be4-4de1-9e4e-c583c8b284a4\",\"repository\":\"vmxmy/orca-factory\",\"pr\":605,\"head\":\"1af93d0f2f736fbf02e3f36579f1b8be03f00c2d\",\"main\":\"a11d72cbc1420ee4123297be52a7f9a378e9a71b\",\"merge_sha\":\"e51c6389bf0097a6c2a9b500f79c49805b6b1bd1\",\"phase\":\"merged\"}",
+      "createdAt": "2026-11-05T19:24:02+08:00"
+    }
+  ]
+}

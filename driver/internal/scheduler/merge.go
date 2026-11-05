@@ -106,7 +106,12 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			}
 			return a.EnqueuedAt.Before(b.EnqueuedAt)
 		})
-		if rows[0].Owner == machine.OwnerResolver || rows[0].Owner == machine.OwnerHuman {
+		if head := rows[0]; head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman {
+			reason := string(head.Owner)
+			if p := head.Progress; p != nil && p.Deployment != nil && p.Deployment.Reason != "" {
+				reason = p.Deployment.Reason
+			}
+			runx.LoggerFrom(ctx).Info("merge lane paused: head ticket awaits recovery", "ticket", head.Identifier, "repo", repo, "owner", head.Owner, "reason", reason, "queued", len(rows)-1)
 			continue
 		}
 		if err := r.advanceMerge(ctx, rows[0]); err != nil {
