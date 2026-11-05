@@ -126,7 +126,9 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
       const running = state.motions.get(key)
       const start = running ? pointAlong(running.points, (now - running.start) / running.duration) : old
       const route = travelPath(layout, old.station, point.station)
-      const points = [start, ...elbow(start, route[0]), ...route.slice(1), ...elbow(route.at(-1), point)]
+      const offset = { x: point.x - route.at(-1).x, y: point.y - route.at(-1).y }
+      const laneRoute = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
+      const points = [start, ...elbow(start, laneRoute[0]), ...laneRoute.slice(1)]
       next.motions.set(key, { points, start: now, duration: 1800 })
     }
   }

@@ -73,6 +73,14 @@ async function main() {
   anchored = model.reconcile(anchored, vanished)
   assert.equal(anchored.selection, null)
   assert.equal(anchored.motions.size, 0)
+  const convoy = snapshot(1)
+  convoy.rows[0].parcels = Array.from({ length: 4 }, (_, index) => parcel(`OF-${index}`))
+  let convoyState = model.reconcile(model.initialState(), convoy, { fresh: true })
+  const arriving = structuredClone(convoy)
+  arriving.rows[0].parcels.forEach(one => { one.station = 'gate' })
+  convoyState = model.reconcile(convoyState, arriving, { now: 0 })
+  const midway = [...convoyState.motions.values()].map(motion => model.pointAlong(motion.points, .5))
+  for (const [index, point] of midway.entries()) for (const other of midway.slice(index + 1)) assert.ok(Math.abs(point.x - other.x) >= 33 || Math.abs(point.y - other.y) >= 43, 'simultaneous parcels must keep separate belt lanes')
   console.log('PASS pure layout, identity, routing, reconciliation and unbounded project counts')
 
   let playwright
