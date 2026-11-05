@@ -53,6 +53,10 @@ log({"event": "spawn", "argv": sys.argv[1:]})
 
 if mode == "crash":
     sys.exit(1)
+if mode == "never-read":
+    import time
+    while True:
+        time.sleep(3600)
 
 for raw in sys.stdin:
     line = raw.rstrip("\n")
@@ -71,7 +75,7 @@ for raw in sys.stdin:
             with open(os.path.join(session_dir, "history.jsonl"), "a") as f:
                 f.write(json.dumps({"message": last_message}) + "\n")
         log({"event": "prompt", "message": last_message})
-        if mode in ("hang", "abort-stuck"):
+        if mode in ("hang", "abort-stuck", "abort-no-settled", "late-settled"):
             continue
         if mode == "die-on-prompt":
             sys.exit(1)
@@ -83,8 +87,14 @@ for raw in sys.stdin:
         respond(typ, rid, {"text": text})
     elif typ == "abort":
         log({"event": "abort"})
-        if mode != "abort-stuck":
-            respond(typ, rid)
+        if mode == "abort-stuck":
+            continue
+        respond(typ, rid)
+        if mode == "abort-no-settled":
+            continue
+        if mode == "late-settled":
+            print(json.dumps({"type": "agent_settled", "aborted": True}), flush=True)
+            mode = "ok"
     elif typ in ("set_model", "set_thinking_level", "get_state", "get_session_stats"):
         respond(typ, rid)
     else:
@@ -600,6 +610,96 @@ func TestPiSandboxArgsCarriesRolePromptAndConfig(t *testing.T) {
 		if !found {
 			t.Fatalf("config %s not bound to %s: %v", name, target, args)
 		}
+	}
+}
+
+// A pi that stops reading stdin must not wedge the turn: the prompt write
+// blocks, the turn deadline must still fire, and the process must end up
+// cleaned (killed and dropped) instead of holding the gateway slot forever.
+func TestPiTurnWriteBlockedByPeerTimesOut(t *testing.T) {
+	runner, logPath := piTestRunner(t, "never-read")
+	startPiRunner(t, runner)
+	runner.Timeout = 300 * time.Millisecond
+	big := strings.Repeat("x", 128<<10)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runner.Turn(context.Background(), Turn{Session: "s-blocked", Resume: true, Prompt: big})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("turn must fail when pi never reads stdin")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("turn hung past its deadline on a blocked stdin write")
+	}
+	if n := countSpawns(readFakePiLog(t, logPath)); n != 1 {
+		t.Fatalf("spawns=%d, want 1", n)
+	}
+}
+
+// When an abort acks but the aborted run's agent_settled never arrives, the
+// process is in a state the next turn cannot trust: cleanup must retire it.
+func TestPiTurnDropsProcWhenSettledNeverArrives(t *testing.T) {
+	runner, logPath := piTestRunner(t, "abort-no-settled")
+	startPiRunner(t, runner)
+	runner.Timeout = 300 * time.Millisecond
+	if _, err := runner.Turn(context.Background(), Turn{Session: "s-noset", Resume: true, Prompt: "hang"}); err == nil {
+		t.Fatal("turn must fail when the agent never settles")
+	}
+	t.Setenv("ANTHROPIC_FAKE_PI_MODE", "ok")
+	if got, err := runner.Turn(context.Background(), Turn{Session: "s-noset", Resume: true, Prompt: "back"}); err != nil || got != "recalled:hang" {
+		t.Fatalf("respawn turn = %q, %v", got, err)
+	}
+	if n := countSpawns(readFakePiLog(t, logPath)); n != 2 {
+		t.Fatalf("spawns=%d, want 2 (proc without settled must be replaced)", n)
+	}
+}
+
+// An abort ack that races ahead of the aborted run's agent_settled must not
+// leave that stale settled for the next turn: cleanup waits for it (bounded)
+// and confirms it, keeping the process.
+func TestPiCleanupConfirmsLateSettled(t *testing.T) {
+	p := &piProc{events: make(chan json.RawMessage, 16), done: make(chan struct{})}
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		p.events <- json.RawMessage(`{"type":"agent_settled","aborted":true}`)
+	}()
+	if !p.waitSettledAfterAbort() {
+		t.Fatal("settled within the window must be confirmed")
+	}
+	select {
+	case rec := <-p.events:
+		t.Fatalf("stale event left for the next turn: %s", rec)
+	default:
+	}
+}
+
+// No settled within the window: the process cannot be trusted to serve the
+// next turn.
+func TestPiCleanupRejectsMissingSettled(t *testing.T) {
+	p := &piProc{events: make(chan json.RawMessage, 16), done: make(chan struct{})}
+	if p.waitSettledAfterAbort() {
+		t.Fatal("missing settled must not confirm")
+	}
+}
+
+// A late-settled abort must not corrupt the following turn: the stale settled
+// is consumed by cleanup, the process stays resident, and the next turn gets
+// a fresh reply over the same process.
+func TestPiTurnAfterLateSettledAbortStaysClean(t *testing.T) {
+	runner, logPath := piTestRunner(t, "late-settled")
+	startPiRunner(t, runner)
+	runner.Timeout = 300 * time.Millisecond
+	if _, err := runner.Turn(context.Background(), Turn{Session: "s-late", Resume: true, Prompt: "hang"}); err == nil {
+		t.Fatal("turn must fail when the agent never settles")
+	}
+	if got, err := runner.Turn(context.Background(), Turn{Session: "s-late", Resume: true, Prompt: "two"}); err != nil || got != "echo:two" {
+		t.Fatalf("next turn = %q, %v", got, err)
+	}
+	if n := countSpawns(readFakePiLog(t, logPath)); n != 1 {
+		t.Fatalf("spawns=%d, want 1 (confirmed proc stays resident)", n)
 	}
 }
 

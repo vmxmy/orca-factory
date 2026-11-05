@@ -356,19 +356,41 @@ func (r *Runner) piEnv() []string {
 
 func (p *piProc) touch() { p.used.Store(time.Now().UnixNano()) }
 
-// send writes one command record, LF-framed. Concurrent shutdown closes the
-// pipe underneath; that surfaces as an error, never a panic.
-func (p *piProc) send(cmd map[string]any) error {
+// send writes one command record, LF-framed. The write runs detached from
+// the caller so a peer that stopped reading stdin cannot wedge the turn past
+// its deadline: on cancellation or process death the pipe is closed to
+// unblock the writer, and the caller's cleanup retires the process (a pi
+// whose stdin closed is no longer usable anyway).
+func (p *piProc) send(ctx context.Context, cmd map[string]any) error {
 	b, err := json.Marshal(cmd)
 	if err != nil {
 		return err
 	}
+	done := make(chan error, 1)
 	p.writeMu.Lock()
 	defer p.writeMu.Unlock()
-	if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+	go func() {
+		if _, err := p.stdin.Write(append(b, '\n')); err != nil {
+			done <- err
+			return
+		}
+		done <- p.stdin.Flush()
+	}()
+	select {
+	case err := <-done:
 		return err
+	case <-ctx.Done():
+	case <-p.done:
 	}
-	return p.stdin.Flush()
+	_ = p.rawIn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return errPiExited
 }
 
 // request sends a command with a fresh id and waits for its response record.
@@ -386,7 +408,7 @@ func (p *piProc) request(ctx context.Context, cmd map[string]any) (piResponse, e
 		delete(p.pending, id)
 		p.pendingMu.Unlock()
 	}()
-	if err := p.send(cmd); err != nil {
+	if err := p.send(ctx, cmd); err != nil {
 		return piResponse{}, err
 	}
 	select {
@@ -503,24 +525,47 @@ func (r *Runner) piWaitSettled(ctx context.Context, p *piProc, t Turn) error {
 	}
 }
 
-// piCleanupTurn aborts a turn that will not complete; a pi that never acks
-// the abort is killed and dropped so the next turn respawns, and a stale
-// agent_settled from the aborted run is drained so the next turn cannot
-// mistake it for its own completion.
+// piCleanupTurn aborts a turn that will not complete. pi acks an abort once
+// it considers itself idle, but it clears that state before the aborted
+// run's agent_settled goes out, so an ack alone cannot justify keeping the
+// process: the late settled would poison the next turn's wait. The cleanup
+// therefore confirms the settled within a short window and retires the
+// process (kill + drop, a path the next turn already handles by respawning)
+// when the confirmation never arrives; a pi that never acks the abort is
+// retired immediately.
 func (r *Runner) piCleanupTurn(session string, p *piProc) {
 	if !p.abort() {
 		r.dropPiProc(session, p)
 		return
 	}
-	p.drainEvents()
+	if !p.waitSettledAfterAbort() {
+		r.dropPiProc(session, p)
+	}
 }
 
-func (p *piProc) drainEvents() {
+// waitSettledAfterAbort gives the aborted run's agent_settled a bounded
+// window to arrive and consumes it, so no stale settled survives into the
+// next turn; false means the process is in a state the next turn cannot
+// trust.
+func (p *piProc) waitSettledAfterAbort() bool {
+	timer := time.NewTimer(piAbortGrace)
+	defer timer.Stop()
 	for {
 		select {
-		case <-p.events:
-		default:
-			return
+		case <-timer.C:
+			return false
+		case <-p.done:
+			return false
+		case rec, ok := <-p.events:
+			if !ok {
+				continue
+			}
+			var head struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal(rec, &head); err == nil && head.Type == "agent_settled" {
+				return true
+			}
 		}
 	}
 }
