@@ -83,3 +83,15 @@ func TestRecordedMergeHeadModified(t *testing.T) {
 		t.Fatalf("pr=%+v err=%v", pr, err)
 	}
 }
+
+// Recorded through gh api repos/vmxmy/orca-factory/actions/workflows/go.yml/runs
+// for a pushed SHA that the workflow never ran on.
+func TestRecordedDeploymentWithoutRuns(t *testing.T) {
+	c := recordedServer(t, map[string]string{
+		"/actions/workflows/go.yml/runs": "github/actions-workflow-runs-empty.json",
+	}, nil)
+	state, run, err := c.Deployment(context.Background(), "vmxmy", "orca-factory", "go.yml", "31c0e47a7d7f9b895ff18a9c03212da80d0e5262")
+	if err != nil || state != "absent" || run != 0 {
+		t.Fatalf("state=%q run=%d err=%v", state, run, err)
+	}
+}
