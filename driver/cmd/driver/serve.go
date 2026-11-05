@@ -16,7 +16,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
-	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -279,22 +278,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
-	for _, ticket := range backend.tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || scheduler.DeploymentBarrier(ticket) {
-			row := scheduler.ObservationRow(ticket, s.Repositories)
-			if p := ticket.Progress; p != nil && p.Deployment != nil {
-				row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
-			}
-			snapshot.Tickets = append(snapshot.Tickets, row)
-		}
-	}
-	sort.Slice(snapshot.Tickets, func(i, j int) bool {
-		a, b := snapshot.Tickets[i], snapshot.Tickets[j]
-		if a.Repo != b.Repo {
-			return a.Repo < b.Repo
-		}
-		return a.Identifier < b.Identifier
-	})
+	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories)
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {

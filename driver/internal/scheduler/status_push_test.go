@@ -1,18 +1,131 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
+
+func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	enqueued := time.Date(2026, 11, 5, 8, 0, 0, 0, time.UTC)
+	f := &fakeBackend{tickets: []Ticket{
+		{ID: "second", Identifier: "OF-2", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "second", EnqueuedAt: enqueued.Add(time.Minute)}},
+		{ID: "first", Identifier: "OF-1", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "first", EnqueuedAt: enqueued}},
+		{ID: "deployed", Identifier: "OF-3", Repo: "a", Owner: machine.OwnerNone, Phase: machine.PhaseMerged, Progress: &merge.Progress{QueueID: "deploy", MergeSHA: "merged-sha", Phase: "merged", Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending", Reason: "waiting for workflow", Smoke: "private-smoke-command"}}},
+		{ID: "tie-last", Identifier: "OF-4", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "z", EnqueuedAt: enqueued.Add(2 * time.Minute)}},
+		{ID: "tie-first", Identifier: "OF-5", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "a", EnqueuedAt: enqueued.Add(2 * time.Minute)}},
+		{ID: "other-repo", Identifier: "OF-6", Repo: "b", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "other", EnqueuedAt: enqueued.Add(time.Hour)}},
+		{ID: "missing", Identifier: "OF-7", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue},
+		{ID: "conflicting", Identifier: "OF-8", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, MergeProblem: "conflicting handoff", Handoff: &merge.Handoff{QueueID: "conflict", EnqueuedAt: enqueued.Add(-time.Hour)}},
+		{ID: "merged", Identifier: "OF-9", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "merged", EnqueuedAt: enqueued.Add(-time.Hour)}},
+	}}
+	s := setup(f)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(status.PushPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var live status.View
+	if err := json.Unmarshal(data, &live); err != nil {
+		t.Fatal(err)
+	}
+	var legacy status.View
+	for _, name := range []string{"live", "snapshot"} {
+		t.Run(name, func(t *testing.T) {
+			contents := data
+			if name == "snapshot" {
+				if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories)}); err != nil {
+					t.Fatal(err)
+				}
+				contents, err = os.ReadFile(status.Path())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := json.Unmarshal(contents, &legacy); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var view struct {
+				Tickets []struct {
+					Identifier    string             `json:"identifier"`
+					QueuePosition *int               `json:"queuePosition"`
+					Deployment    *status.Deployment `json:"deployment"`
+				} `json:"tickets"`
+			}
+			if err := json.Unmarshal(contents, &view); err != nil {
+				t.Fatal(err)
+			}
+			if len(view.Tickets) != 9 {
+				t.Errorf("tickets = %d, want 9 including the unowned deployment barrier", len(view.Tickets))
+			}
+			positions := map[string]int{"OF-1": 1, "OF-2": 2, "OF-4": 4, "OF-5": 3, "OF-6": 1}
+			foundDeployment := false
+			for _, row := range view.Tickets {
+				if want, queued := positions[row.Identifier]; queued {
+					if row.QueuePosition == nil || *row.QueuePosition != want {
+						t.Errorf("%s queuePosition = %v, want %d", row.Identifier, row.QueuePosition, want)
+					}
+				} else if row.QueuePosition != nil {
+					t.Errorf("%s unexpectedly has queuePosition %d", row.Identifier, *row.QueuePosition)
+				}
+				if row.Identifier == "OF-3" {
+					foundDeployment = true
+					want := status.Deployment{QueueID: "deploy", SHA: "merged-sha", Workflow: "deploy.yml", State: "pending", Reason: "waiting for workflow"}
+					if row.Deployment == nil || *row.Deployment != want {
+						t.Errorf("deployment = %+v, want %+v", row.Deployment, want)
+					}
+				} else if row.Deployment != nil {
+					t.Errorf("%s unexpectedly has deployment %+v", row.Identifier, row.Deployment)
+				}
+			}
+			if !foundDeployment {
+				t.Error("unowned deployment barrier is missing")
+			}
+			if bytes.Contains(contents, []byte("private-smoke-command")) || bytes.Contains(contents, []byte(`"smoke"`)) {
+				t.Error("deployment exposes smoke command")
+			}
+		})
+	}
+	liveRows := make(map[string]status.Ticket, len(live.Tickets))
+	for _, row := range live.Tickets {
+		liveRows[row.Identifier] = row
+	}
+	legacyRows := make(map[string]status.Ticket, len(legacy.Tickets))
+	for _, row := range legacy.Tickets {
+		legacyRows[row.Identifier] = row
+	}
+	if len(liveRows) != len(legacyRows) {
+		t.Errorf("live tickets = %d, snapshot tickets = %d", len(liveRows), len(legacyRows))
+	}
+	for identifier, liveRow := range liveRows {
+		legacyRow, found := legacyRows[identifier]
+		if !found {
+			t.Errorf("%s is missing from snapshot", identifier)
+			continue
+		}
+		if liveRow.QueuePosition != legacyRow.QueuePosition {
+			t.Errorf("%s queuePosition differs: live = %d, snapshot = %d", identifier, liveRow.QueuePosition, legacyRow.QueuePosition)
+		}
+		if !reflect.DeepEqual(liveRow.Deployment, legacyRow.Deployment) {
+			t.Errorf("%s deployment differs: live = %+v, snapshot = %+v", identifier, liveRow.Deployment, legacyRow.Deployment)
+		}
+	}
+}
 
 type pushBackend struct {
 	*fakeBackend
