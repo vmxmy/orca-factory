@@ -152,7 +152,7 @@ func TestGitHubUsageRolloverAndLegacyOmission(t *testing.T) {
 	now := time.Date(2026, 10, 5, 9, 0, 0, 0, time.UTC)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
-	PushObservation(now, func(*View) {})
+	PushObservation(now, now, func(*View) {})
 	raw, err := json.Marshal(Read(now, 0))
 	if err != nil {
 		t.Fatal(err)

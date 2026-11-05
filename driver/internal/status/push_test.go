@@ -207,3 +207,23 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 		t.Fatalf("newer ledger observation did not advance phase: %+v", got)
 	}
 }
+
+func TestExecutorPushDoesNotPinOtherTickets(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	other := Ticket{Repo: "/repo", Identifier: "OF-2", Owner: "执行器", Phase: "gate"}
+	PushObservation(start, start, func(view *View) { view.Tickets = []Ticket{other} })
+	Push(start.Add(10*time.Second), func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "审查"}, true)
+	})
+	observedAt := start.Add(15 * time.Second)
+	PushObservation(observedAt, start.Add(5*time.Second), func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "审查"}, {Repo: other.Repo, Identifier: other.Identifier, Owner: other.Owner, Phase: "审查"}}
+	})
+	for _, got := range Read(observedAt, 0).Tickets {
+		if got.Identifier == "OF-2" && (got.Phase != "审查" || !got.Since.Equal(observedAt)) {
+			t.Fatalf("push for another ticket pinned this ticket's ledger phase: %+v", got)
+		}
+	}
+}

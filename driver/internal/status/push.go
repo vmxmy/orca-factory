@@ -90,6 +90,8 @@ func push(now time.Time, update func(*View), observation bool, observedFrom time
 
 // carryTickets keeps each row's title and phase start across rewrites, which
 // rebuild rows from the ledger or from an executor that knows neither.
+// A partial push stamps only the rows it wrote, so it cannot pin other rows
+// against a newer ledger observation.
 func carryTickets(before, after []Ticket, now time.Time, observation bool, observedFrom time.Time) {
 	previous := make(map[[2]string]Ticket, len(before))
 	for _, t := range before {
@@ -113,7 +115,9 @@ func carryTickets(before, after []Ticket, now time.Time, observation bool, obser
 		} else {
 			t.Since = now
 		}
-		t.PushedAt = now
+		if observation || t.PushedAt.IsZero() {
+			t.PushedAt = now
+		}
 	}
 }
 
