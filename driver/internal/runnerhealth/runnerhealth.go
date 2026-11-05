@@ -31,7 +31,9 @@ var slots = []int{1, 2, 3, 4}
 type Tickets interface {
 	Create(context.Context, issues.CreateInput) (issues.Task, error)
 	Read(context.Context, string) (issues.Task, error)
+	ListComments(context.Context, string) ([]task.Comment, error)
 	CreateComment(context.Context, string, string) (task.Comment, error)
+	UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error)
 }
 
 type Monitor struct {
@@ -101,9 +103,48 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 		if _, err := m.Tickets.CreateComment(ctx, rec.Ticket, body); err != nil {
 			return err
 		}
+		if err := m.withdrawRecovered(ctx, rec.Ticket); err != nil {
+			return err
+		}
 		rec.Recovered = true
 	}
 	return m.save(rec)
+}
+
+func (m *Monitor) withdrawRecovered(ctx context.Context, id string) error {
+	ticket, err := m.Tickets.Read(ctx, id)
+	if err != nil {
+		return err
+	}
+	if ticket.State.Name != "Todo" {
+		return nil
+	}
+	ready := false
+	for _, label := range ticket.Labels.Nodes {
+		if label.Name == "auto-impl" {
+			return nil
+		}
+		ready = ready || label.Name == "ready-for-agent"
+	}
+	if !ready {
+		return nil
+	}
+	comments, err := m.Tickets.ListComments(ctx, id)
+	if err != nil {
+		return err
+	}
+	for _, comment := range comments {
+		for _, line := range strings.Split(comment.Body, "\n") {
+			if strings.HasPrefix(line, "归属: ") {
+				return nil
+			}
+		}
+	}
+	if _, err := m.Tickets.UpdateIssue(ctx, id, "Canceled", nil, []string{"ready-for-agent"}); err != nil {
+		return err
+	}
+	_, err = m.Tickets.CreateComment(ctx, id, "runner 检测：故障已自行恢复，无需施工；未认领的票已取消，并移除 ready-for-agent。")
+	return err
 }
 
 func (m *Monitor) probe(ctx context.Context, now time.Time, rec *record) (map[string]string, error) {
@@ -191,7 +232,7 @@ CHECK: for s in 1 2 3 4; do systemctl --user is-active --quiet orca-go-isolated-
 2（依据：命中 ` + "`$AGENT_LANE2_GLOBS`" + ` 的 ` + "`scripts/*`" + `）
 
 ## SCOPE
-scripts/local-runner
+scripts/local-runner/* scripts/local-runner/maintenance/*
 
 ## 依赖
 DEPENDENCIES: {"blockers":[],"related":[]}
