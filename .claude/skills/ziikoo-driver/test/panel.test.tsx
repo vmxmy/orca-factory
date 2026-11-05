@@ -60,9 +60,9 @@ const engine = (
   const clock = mock.clock(on, { now: NOW })
   on('process.spawn', async function* (_, event) {
     spawns.push(event)
-    const bind = event.env?.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
-    const host = bind === 'nebula1' ? '192.168.99.10' : bind
-    const port = Number(event.env?.ZIIKOO_SCENE_PORT) || 1
+    const bind = event.env?.ZIIKOO_SCENE_BIND ?? 'auto'
+    const host = bind === 'auto' || bind === 'nebula1' ? '192.168.99.10' : bind
+    const port = Number(event.env?.ZIIKOO_SCENE_PORT) || 43210
     yield { stream: 'stdout', text: sceneStart.stdout ?? `listening http://${host}:${port}/?t=x\n` }
     await clock.sleep(60_000)
     for (const text of sceneExit.stderr) yield { stream: 'stderr', text }
@@ -128,8 +128,61 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
 
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
 
-test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on) => {
+test('不配置时自动选择绑定地址并复制 URL，非 SSH 会话打开本机浏览器', async ($, on) => {
   const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_BIND).toBe('auto')
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('0')
+  expect(clipboard.texts).toContain('http://192.168.99.10:43210/?t=x')
+  expect(calls).toContainEqual(['xdg-open', 'http://192.168.99.10:43210/?t=x'])
+  expect(toasts).toContain('已复制 3D 车间 URL：http://192.168.99.10:43210/?t=x')
+  await ui.unmount()
+})
+
+test('SSH 会话里自动选择绑定地址后只复制 URL，不开本机浏览器', async ($, on) => {
+  const { calls, clipboard, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '10.0.0.2 51234 10.0.0.1 22', SSH_TTY: '' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toContain('http://192.168.99.10:43210/?t=x')
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  expect(toasts).toContain('已复制 3D 车间 URL：http://192.168.99.10:43210/?t=x（SSH 会话，请在远程浏览器粘贴）')
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toHaveLength(2)
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  await ui.unmount()
+})
+
+test('SSH_TTY 会话显式绑定回环地址时也只复制 URL', { options: { bind: '127.0.0.1', port: 4300 } }, async ($, on) => {
+  const { calls, clipboard, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '/dev/pts/1' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toContain('http://127.0.0.1:4300/?t=x')
+  expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
+  expect(toasts).toContain('已复制 3D 车间 URL：http://127.0.0.1:4300/?t=x（SSH 会话，请在远程浏览器粘贴）')
+  await ui.unmount()
+})
+
+test('非 SSH 会话显式绑定 nebula1 时也打开广播 URL', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
+  const { calls, clipboard } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'scene' })
+  expect(clipboard.texts).toContain('http://192.168.99.10:4300/?t=x')
+  expect(calls).toContainEqual(['xdg-open', 'http://192.168.99.10:4300/?t=x'])
+  await ui.unmount()
+})
+
+test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', { options: { bind: '127.0.0.1' } }, async ($, on) => {
+  const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
@@ -139,10 +192,10 @@ test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on)
   expect(spawns[0]?.env?.ZIIKOO_SCENE_TOKEN).toMatch(/^[a-f0-9]{64}$/)
   expect(spawns[0]?.env?.ZIIKOO_SCENE_BIND).toBe('127.0.0.1')
   expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('0')
-  expect(clipboard.texts).toEqual(['http://127.0.0.1:1/?t=x'])
+  expect(clipboard.texts).toEqual(['http://127.0.0.1:43210/?t=x'])
   expect(clipboard.surfaces).toEqual(['terminal'])
-  expect(calls).toContainEqual(['xdg-open', 'http://127.0.0.1:1/?t=x'])
-  expect(toasts.some(text => text.includes('http://127.0.0.1:1/?t=x'))).toBe(true)
+  expect(calls).toContainEqual(['xdg-open', 'http://127.0.0.1:43210/?t=x'])
+  expect(toasts.some(text => text.includes('http://127.0.0.1:43210/?t=x'))).toBe(true)
   await ui.press({ key: 'scene' })
   expect(spawns).toHaveLength(1)
   expect(clipboard.texts).toHaveLength(2)
@@ -151,6 +204,7 @@ test('3D 按钮启动带 token 的 Bun 服务并打开监听 URL', async ($, on)
 
 test('3D 服务退出后再次按下会重新 spawn', async ($, on) => {
   const { clipboard, spawns, clock, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
@@ -158,12 +212,13 @@ test('3D 服务退出后再次按下会重新 spawn', async ($, on) => {
   expect(toasts.some(text => text.includes('退出码 0'))).toBe(true)
   await ui.press({ key: 'scene' })
   expect(spawns).toHaveLength(2)
-  expect(clipboard.texts).toEqual(['http://127.0.0.1:1/?t=x', 'http://127.0.0.1:1/?t=x'])
+  expect(clipboard.texts).toEqual(['http://192.168.99.10:43210/?t=x', 'http://192.168.99.10:43210/?t=x'])
   await ui.unmount()
 })
 
 test('3D 绑定 nebula1 时复制 URL 且不打开本机浏览器', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
   const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '/dev/pts/1' })
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
@@ -182,6 +237,7 @@ test('3D 绑定 nebula1 时复制 URL 且不打开本机浏览器', { options: {
 
 test('录制的远程绑定 listening 行按原样解析并复制', { options: { bind: 'enp3s0', port: 4300 } }, async ($, on) => {
   const { calls, clipboard, sceneStart, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '10.0.0.2 51234 10.0.0.1 22', SSH_TTY: '' })
   sceneStart.stdout = SAMPLE_SCENE_LISTENING
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
@@ -194,6 +250,7 @@ test('录制的远程绑定 listening 行按原样解析并复制', { options: {
 
 test('3D URL 复制失败时显示原因与完整地址', { options: { bind: 'nebula1', port: 4300 } }, async ($, on) => {
   const { clipboard, calls, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '10.0.0.2 51234 10.0.0.1 22', SSH_TTY: '' })
   clipboard.refuse = 'no-clipboard'
   await $.command.run(runCommand)
   const ui = await $.ui.mount(PANE)
@@ -206,6 +263,7 @@ test('3D URL 复制失败时显示原因与完整地址', { options: { bind: 'ne
 
 test('3D 服务非零退出时显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   sceneExit.code = SAMPLE_SCENE_NO_INTERFACE.exitCode
   sceneExit.stderr = [SAMPLE_SCENE_NO_INTERFACE.stderr.slice(0, 6), SAMPLE_SCENE_NO_INTERFACE.stderr.slice(6)]
   await $.command.run(runCommand)
@@ -218,6 +276,7 @@ test('3D 服务非零退出时显示 stderr 最后一行', async ($, on) => {
 
 test('录制的端口占用错误显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   sceneExit.code = SAMPLE_SCENE_PORT_IN_USE.exitCode
   sceneExit.stderr = [SAMPLE_SCENE_PORT_IN_USE.stderr]
   await $.command.run(runCommand)
@@ -230,6 +289,7 @@ test('录制的端口占用错误显示 stderr 最后一行', async ($, on) => {
 
 test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   sceneExit.code = SAMPLE_SCENE_BAD_PORT.exitCode
   sceneExit.stderr = [SAMPLE_SCENE_BAD_PORT.stderr]
   await $.command.run(runCommand)
@@ -242,6 +302,7 @@ test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
 
 test('3D 服务缺少 token 时 toast 显示 stderr 最后一行', async ($, on) => {
   const { clock, sceneExit, toasts } = engine(on, ran({ stdout: sampleStdout }))
+  mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   sceneExit.code = SAMPLE_SCENE_NO_TOKEN.exitCode
   sceneExit.stderr = [SAMPLE_SCENE_NO_TOKEN.stderr]
   await $.command.run(runCommand)

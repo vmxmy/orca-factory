@@ -116,7 +116,7 @@ const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { k
 const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
 const seen = atom({ plugin: 'ziikoo-driver', key: 'seen' } as const, null, { shape: 'seen-1' })
 
-type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui' | 'plugin'>
+type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui' | 'plugin' | 'env'>
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -124,17 +124,17 @@ let spin: Timer | undefined
 let scene: { url: string } | undefined
 let sceneStarting = false
 
-const deliverScene = async ($: Engine, url: string, surface: RenderSurface, bind: string) => {
-  const local = bind === '127.0.0.1' || bind === 'localhost'
+const deliverScene = async ($: Engine, url: string, surface: RenderSurface, ssh: boolean) => {
+  const suffix = ssh ? '（SSH 会话，请在远程浏览器粘贴）' : ''
   try {
     const copied = await $.ui.copy({ text: url, surface })
     $.ui.toast(copied.isCopied
-      ? `已复制 3D 车间 URL${local ? '' : `：${url}`}`
-      : `复制失败：${COPY_FAILURES[copied.reason]}，请手动打开 ${url}`)
+      ? `已复制 3D 车间 URL：${url}${suffix}`
+      : `复制失败：${COPY_FAILURES[copied.reason]}，请手动打开 ${url}${suffix}`)
   } catch (error) {
-    $.ui.toast(`复制失败：${message(error)}，请手动打开 ${url}`)
+    $.ui.toast(`复制失败：${message(error)}，请手动打开 ${url}${suffix}`)
   }
-  if (!local) return
+  if (ssh) return
   try {
     const result = await $.process.run(['xdg-open', url])
     $.ui.toast(result.exitCode === 0 ? `已在浏览器打开 ${url}` : `请手动打开 ${url}（xdg-open 退出码 ${result.exitCode}）`)
@@ -143,8 +143,10 @@ const deliverScene = async ($: Engine, url: string, surface: RenderSurface, bind
   }
 }
 
-const openScene = ($: Engine, surface: RenderSurface, bind: string, port: string) => {
-  if (scene) return deliverScene($, scene.url, surface, bind)
+const openScene = async ($: Engine, surface: RenderSurface, bind: string, port: string) => {
+  const [connection, tty] = await Promise.all([$.env.get('SSH_CONNECTION'), $.env.get('SSH_TTY')])
+  const ssh = Boolean(connection || tty)
+  if (scene) return deliverScene($, scene.url, surface, ssh)
   if (sceneStarting) return
   sceneStarting = true
   const bytes = crypto.getRandomValues(new Uint8Array(32))
@@ -181,7 +183,7 @@ const openScene = ($: Engine, surface: RenderSurface, bind: string, port: string
           if (!match || scene) continue
           scene = { url: match[1]! }
           sceneStarting = false
-          await deliverScene($, scene.url, surface, bind)
+          await deliverScene($, scene.url, surface, ssh)
         }
       }
       const reason = exitCode !== 0 ? stderr.trimEnd().split(/\r?\n/).pop() : ''
@@ -650,7 +652,7 @@ const cornerNote = (ui: Kit, group: Group, config: Snapshot, state: Fetched<Runt
 }
 
 export const register: Register = (on, options) => {
-  const bind = String(options.bind ?? '127.0.0.1')
+  const bind = String(options.bind ?? 'auto')
   const port = String(options.port ?? 0)
   on('session.start', async ($, e, next) => {
     await $.command.register({

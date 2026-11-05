@@ -16,15 +16,15 @@ process.on('unhandledRejection', failWith)
 
 const token = process.env.ZIIKOO_SCENE_TOKEN || fail('缺少 ZIIKOO_SCENE_TOKEN')
 
-const bind = process.env.ZIIKOO_SCENE_BIND ?? '127.0.0.1'
+const bind = process.env.ZIIKOO_SCENE_BIND ?? 'auto'
 const portText = process.env.ZIIKOO_SCENE_PORT ?? '0'
 const port = Number(portText)
 if (!/^\d+$/.test(portText) || !Number.isInteger(port) || port < 0 || port > 65535) {
   fail(`3D 服务端口必须是 0–65535 的整数，收到 ${portText}`)
 }
 const interfaces = networkInterfaces()
-let hostname = bind
-if (bind !== 'localhost' && isIP(bind) === 0) {
+let hostname = bind === 'auto' ? '0.0.0.0' : bind
+if (bind !== 'auto' && bind !== 'localhost' && isIP(bind) === 0) {
   const addresses = interfaces[bind]
   if (!addresses) fail(`接口 ${bind} 不存在`)
   hostname = addresses.find(address => address.family === 'IPv4')?.address ?? fail(`接口 ${bind} 没有 IPv4 地址`)
@@ -32,7 +32,7 @@ if (bind !== 'localhost' && isIP(bind) === 0) {
 const advertised = hostname === '0.0.0.0'
   ? interfaces.nebula1?.find(address => address.family === 'IPv4')?.address
     ?? Object.values(interfaces).flat().find(address => address?.family === 'IPv4' && !address.internal)?.address
-    ?? fail('没有可供远程访问的非回环 IPv4 地址')
+    ?? '127.0.0.1'
   : hostname
 
 const clients = new Set<ReadableStreamDefaultController<Uint8Array>>()
@@ -108,11 +108,10 @@ const files: Record<string, { path: string; type: string }> = {
   '/vendor/LICENSE.three': { path: 'vendor/LICENSE.three', type: 'text/plain; charset=utf-8' },
 }
 
-let server: Bun.Server<undefined>
-try {
-  server = Bun.serve({
+const listen = (listenPort: number) => {
+  return Bun.serve({
     hostname,
-    port,
+    port: listenPort,
     idleTimeout: 0,
     async fetch(request) {
       const url = new URL(request.url)
@@ -151,6 +150,16 @@ try {
       return new Response(Bun.file(new URL(`./page/${file.path}`, import.meta.url)), { headers: { ...headers, 'Content-Type': file.type } })
     },
   })
+}
+
+let server: Bun.Server<undefined>
+try {
+  try {
+    server = listen(port === 0 ? 43210 : port)
+  } catch (error) {
+    if (port !== 0 || !error || typeof error !== 'object' || !('code' in error) || error.code !== 'EADDRINUSE') throw error
+    server = listen(0)
+  }
 } catch (error) {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
   fail(code === 'EADDRINUSE' ? `端口 ${port} 被占用` : `3D 服务无法监听 ${hostname}:${port}：${String(error).split(/\r?\n/)[0]}`)

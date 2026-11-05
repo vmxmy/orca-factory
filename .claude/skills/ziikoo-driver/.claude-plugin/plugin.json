@@ -7,13 +7,13 @@
     "bind": {
       "type": "string",
       "title": "3D 服务绑定地址",
-      "description": "可填 IP 或接口名，如 nebula1；0.0.0.0 为全部接口，默认 127.0.0.1",
-      "default": "127.0.0.1"
+      "description": "auto 为自动：绑定全部接口，广播地址按 nebula1 → 第一个非回环 IPv4 → 127.0.0.1 选；也可填 IP、接口名或 0.0.0.0 覆盖",
+      "default": "auto"
     },
     "port": {
       "type": "number",
       "title": "3D 服务端口",
-      "description": "0 为随机端口；固定端口便于收藏与防火墙放行，默认 0",
+      "description": "0 为自动：优先 43210，被占用时改用随机端口；可填 1–65535 固定端口",
       "default": 0
     }
   }
