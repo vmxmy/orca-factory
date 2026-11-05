@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,8 +30,9 @@ const grace = 10 * time.Minute
 var slots = []int{1, 2, 3, 4}
 
 const (
-	stepCommented = "commented"
-	stepWithdrawn = "withdrawn"
+	stepCommented   = "commented"
+	stepWithdrawing = "withdrawing"
+	stepWithdrawn   = "withdrawn"
 )
 
 type Tickets interface {
@@ -86,6 +88,11 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 	rec.Since = since
 	// A withdrawn ticket owes its note even when the outage is back, before a
 	// new ticket replaces it in the record.
+	if rec.RecoveryStep == stepWithdrawing {
+		if err := m.settleWithdrawal(ctx, rec); err != nil {
+			return errors.Join(err, m.save(rec))
+		}
+	}
 	if rec.RecoveryStep == stepWithdrawn {
 		if err := m.recover(ctx, rec, now); err != nil {
 			return errors.Join(err, m.save(rec))
@@ -139,9 +146,19 @@ func (m *Monitor) recover(ctx context.Context, rec *record, now time.Time) error
 			return err
 		}
 	}
+	if rec.RecoveryStep == stepWithdrawing {
+		if err := m.settleWithdrawal(ctx, rec); err != nil {
+			return err
+		}
+	}
 	if rec.RecoveryStep == stepCommented {
 		unclaimed, err := m.unclaimed(ctx, rec.Ticket)
 		if err != nil || !unclaimed {
+			return err
+		}
+		// An update error can follow a landed write, so the retry re-reads it.
+		rec.RecoveryStep = stepWithdrawing
+		if err := m.save(rec); err != nil {
 			return err
 		}
 		if _, err := m.Tickets.UpdateIssue(ctx, rec.Ticket, "Canceled", nil, []string{"ready-for-agent"}); err != nil {
@@ -154,6 +171,20 @@ func (m *Monitor) recover(ctx context.Context, rec *record, now time.Time) error
 	}
 	_, err := m.Tickets.CreateComment(ctx, rec.Ticket, "runner 检测：故障已自行恢复，无需施工；未认领的票已取消，并移除 ready-for-agent。")
 	return err
+}
+
+// settleWithdrawal reads back an unconfirmed cancel: a landed one owes only its
+// note, any other state is judged again from the commented step.
+func (m *Monitor) settleWithdrawal(ctx context.Context, rec *record) error {
+	ticket, err := m.Tickets.Read(ctx, rec.Ticket)
+	if err != nil {
+		return err
+	}
+	rec.RecoveryStep = stepCommented
+	if ticket.State.Name == "Canceled" && !slices.ContainsFunc(ticket.Labels.Nodes, func(label task.NamedID) bool { return label.Name == "ready-for-agent" }) {
+		rec.RecoveryStep = stepWithdrawn
+	}
+	return m.save(rec)
 }
 
 // unclaimed is the scheduler's candidate rule plus no ownership line: any

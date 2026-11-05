@@ -28,6 +28,8 @@ type fakeTickets struct {
 	recoveryReads int
 	failNotes     int
 	readErr       error
+	// unconfirmedUpdates lands the write, then fails like a lost read-back.
+	unconfirmedUpdates int
 }
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
@@ -64,6 +66,10 @@ func (f *fakeTickets) UpdateIssue(_ context.Context, _ string, state string, add
 	}
 	f.labels = slices.DeleteFunc(f.labels, func(label string) bool { return slices.Contains(remove, label) })
 	f.labels = append(f.labels, add...)
+	if f.unconfirmedUpdates > 0 {
+		f.unconfirmedUpdates--
+		return task.Issue{}, errors.New("write unconfirmed")
+	}
 	return task.Issue{}, nil
 }
 func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
@@ -245,6 +251,20 @@ func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
 	}
 	if rec := readRecord(t, m); len(tickets.comments) != 2 || !strings.Contains(tickets.comments[1], "故障已自行恢复，无需施工") || tickets.updates != 1 || tickets.recoveryReads != 1 || !rec.Recovered || rec.RecoveryStep != "" {
 		t.Fatalf("retry must add only the note: updates=%d reads=%d comments=%q record=%+v", tickets.updates, tickets.recoveryReads, tickets.comments, rec)
+	}
+}
+
+func TestWithdrawalNoteAfterUnconfirmedCancel(t *testing.T) {
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, unconfirmedUpdates: 1}
+	m, now := outage(t, tickets)
+	if err := m.Poll(context.Background(), now); err == nil {
+		t.Fatal("unconfirmed withdrawal must surface")
+	}
+	if err := m.Poll(context.Background(), now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if rec := readRecord(t, m); len(tickets.comments) != 2 || !strings.Contains(tickets.comments[1], "故障已自行恢复，无需施工") || tickets.updates != 1 || !rec.Recovered {
+		t.Fatalf("landed withdrawal lost its note: updates=%d comments=%q record=%+v", tickets.updates, tickets.comments, rec)
 	}
 }
 
