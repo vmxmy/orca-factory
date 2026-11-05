@@ -46,8 +46,8 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 
 // Markers under <state root>/self-deploy/<sha>.<kind>. drained means this
 // deployment set maintenance draining and owes the resume; installing means the
-// guard or the binary may have changed, so the install must not be redone; the
-// guard reads smoke-passed; rolled-back tells the restored serve to pause and
+// guard or the binary may have changed, so the install is not redone until a
+// recovery returns the deployment to pending; the guard reads smoke-passed; rolled-back tells the restored serve to pause and
 // resume, and holds the reason when serve itself rolled back.
 const (
 	markerDrained     = "drained"
@@ -149,6 +149,9 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	if err = os.Remove(r.selfMarker(p.MergeSHA, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	p.Deployment.State = "deploy-intent"
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
@@ -286,7 +289,8 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 }
 
 // settleSelf resumes the drain this deployment started and clears its
-// installing and rollback markers, so a later retry is judged afresh.
+// rollback marker, so a later retry-smoke is judged afresh. The installing
+// marker stays: only a new install, authorized by pending, clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
@@ -300,12 +304,10 @@ func (r *Runtime) settleSelf(sha string) error {
 			return err
 		}
 	}
-	for _, kind := range []string{markerInstalling, markerRolledBack} {
-		if err = os.Remove(r.selfMarker(sha, kind)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
+	if err = os.Remove(r.selfMarker(sha, markerRolledBack)); errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	return nil
+	return err
 }
 
 func (r *Runtime) pauseSelf(ctx context.Context, t Ticket, p *merge.Progress, reason string) error {

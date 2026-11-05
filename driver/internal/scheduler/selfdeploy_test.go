@@ -444,6 +444,48 @@ func TestSelfDeployRetrySmokeKeepsBackup(t *testing.T) {
 	}
 }
 
+// retry-smoke after a rollback only smokes: the restored old serve pauses again.
+func TestSelfDeployRetrySmokeAfterRollbackDoesNotReinstall(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	firstServe(t, f, h)
+	h.smokeOut, h.smokeErr = nil, errors.New("driver.toml does not load")
+	_ = serveAs(f, h, selfSHA)
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "paused" {
+		t.Fatalf("rollback did not pause: state=%s", lastState(f))
+	}
+	recovered := *f.runtime
+	recovered.GitHub = nil
+	if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-smoke", "operator", "reconciled failed smoke", false); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "paused" || h.builds != 1 || h.restarts != 2 || installed(t, h.driver) != "old" {
+		t.Fatalf("retry-smoke reinstalled: state=%s builds=%d restarts=%d installed=%s", lastState(f), h.builds, h.restarts, installed(t, h.driver))
+	}
+}
+
+// An uncertain install keeps its installing marker until a later pause is
+// recorded, so a lost pause receipt never turns into a reinstall.
+func TestSelfDeployUncertainInstallSurvivesLostPauseReceipt(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.kill = "go"
+	firstServe(t, f, h)
+	if err := os.WriteFile(f.runtime.selfMarker(selfSHA, "installing"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.failBody = `"state":"paused"`
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "deploy-intent" || !markerExists(f, selfSHA, "installing") {
+		t.Fatalf("lost pause receipt: state=%s installing=%t", lastState(f), markerExists(f, selfSHA, "installing"))
+	}
+	f.tracker.failBody = ""
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "paused" || h.builds != 0 || h.restarts != 0 {
+		t.Fatalf("uncertain install reinstalled: state=%s builds=%d restarts=%d", lastState(f), h.builds, h.restarts)
+	}
+}
+
 func TestSelfDeployWaitsForLockAndIdle(t *testing.T) {
 	t.Run("deploy lock", func(t *testing.T) {
 		f, h := newSelfDeployFixture(t)
