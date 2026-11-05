@@ -47,8 +47,9 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // Markers under <state root>/self-deploy/<sha>.<kind>. drained means this
 // deployment set maintenance draining and owes the resume; installing means the
 // guard or the binary may have changed, so the install is not redone until a
-// recovery returns the deployment to pending; the guard reads smoke-passed; rolled-back tells the restored serve to pause and
-// resume, and holds the reason when serve itself rolled back.
+// recovery returns the deployment to pending; the guard reads smoke-passed;
+// rolled-back tells the restored serve to pause and resume, and holds the
+// reason when serve itself rolled back.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
@@ -290,7 +291,8 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 
 // settleSelf resumes the drain this deployment started and clears its
 // rollback marker, so a later retry-smoke is judged afresh. The installing
-// marker stays: only a new install, authorized by pending, clears it.
+// marker stays through a pause: only passed or a new install from pending
+// clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
@@ -390,24 +392,30 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	p.Deployment = &passed
+	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return nil
 }
 
 // retryOrPauseSelf handles a serve that is not running the squash SHA. Without
 // the installing marker the install never began, so the deployment returns to
 // pending and reinstalls; with it the binary is uncertain and the deployment
-// pauses. Reruns counts reinstalls, so the pending receipt differs from the
-// first one and is recorded.
+// pauses. A retry-smoke recovery authorizes only the smoke, so it pauses even
+// where an older serve installed without the marker. Reruns counts reinstalls,
+// so the pending receipt differs from the first one and is recorded.
 func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	installing, err := fileExists(r.selfMarker(p.MergeSHA, markerInstalling))
 	if err != nil {
 		return err
 	}
-	if installing || p.Deployment.State != "deploy-intent" {
+	d := p.Deployment
+	smokeOnly := d.Recovery != nil && d.Recovery.Action == "retry-smoke"
+	if installing || smokeOnly || d.State != "deploy-intent" {
 		return r.pauseSelf(ctx, t, p, "installed driver is not the squash SHA; no rollback, the binary is not this deployment's")
 	}
-	p.Deployment.State = "pending"
-	p.Deployment.Reruns++
+	d.State = "pending"
+	d.Reruns++
 	return errors.Join(errSelfDeployReinstall, r.deploymentReceipt(ctx, t, p))
 }
 

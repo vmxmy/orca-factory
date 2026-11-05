@@ -189,7 +189,7 @@ func TestSelfDeployCompletesAcrossRestart(t *testing.T) {
 	if err := serveAs(f, h, selfSHA); err != nil {
 		t.Fatal(err)
 	}
-	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || !guardStopped(h) || !markerExists(f, selfSHA, "smoke-passed") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
+	if h.builds != 1 || h.restarts != 1 || h.smokes != 1 || !guardStopped(h) || !markerExists(f, selfSHA, "smoke-passed") || markerExists(f, selfSHA, "installing") || f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" || maintenanceMode(t) != "running" {
 		t.Fatalf("deployment after restart: builds=%d restarts=%d smokes=%d guardStops=%v state=%s ledger=%s mode=%s", h.builds, h.restarts, h.smokes, h.guardStops, f.tracker.issue.State.Name, lastState(f), maintenanceMode(t))
 	}
 }
@@ -444,24 +444,34 @@ func TestSelfDeployRetrySmokeKeepsBackup(t *testing.T) {
 	}
 }
 
-// retry-smoke after a rollback only smokes: the restored old serve pauses again.
+// retry-smoke after a rollback only smokes: the restored old serve pauses again,
+// also for a deployment installed before the installing marker existed.
 func TestSelfDeployRetrySmokeAfterRollbackDoesNotReinstall(t *testing.T) {
-	f, h := newSelfDeployFixture(t)
-	firstServe(t, f, h)
-	h.smokeOut, h.smokeErr = nil, errors.New("driver.toml does not load")
-	_ = serveAs(f, h, selfSHA)
-	_ = serveAs(f, h, "old")
-	if lastState(f) != "paused" {
-		t.Fatalf("rollback did not pause: state=%s", lastState(f))
-	}
-	recovered := *f.runtime
-	recovered.GitHub = nil
-	if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-smoke", "operator", "reconciled failed smoke", false); err != nil {
-		t.Fatal(err)
-	}
-	_ = serveAs(f, h, "old")
-	if lastState(f) != "paused" || h.builds != 1 || h.restarts != 2 || installed(t, h.driver) != "old" {
-		t.Fatalf("retry-smoke reinstalled: state=%s builds=%d restarts=%d installed=%s", lastState(f), h.builds, h.restarts, installed(t, h.driver))
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			firstServe(t, f, h)
+			h.smokeOut, h.smokeErr = nil, errors.New("driver.toml does not load")
+			_ = serveAs(f, h, selfSHA)
+			_ = serveAs(f, h, "old")
+			if lastState(f) != "paused" {
+				t.Fatalf("rollback did not pause: state=%s", lastState(f))
+			}
+			if legacy {
+				if err := os.Remove(f.runtime.selfMarker(selfSHA, "installing")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			recovered := *f.runtime
+			recovered.GitHub = nil
+			if err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-smoke", "operator", "reconciled failed smoke", false); err != nil {
+				t.Fatal(err)
+			}
+			_ = serveAs(f, h, "old")
+			if lastState(f) != "paused" || h.builds != 1 || h.restarts != 2 || installed(t, h.driver) != "old" {
+				t.Fatalf("retry-smoke reinstalled: state=%s builds=%d restarts=%d installed=%s", lastState(f), h.builds, h.restarts, installed(t, h.driver))
+			}
+		})
 	}
 }
 

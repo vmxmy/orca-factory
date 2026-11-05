@@ -180,7 +180,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 - 第 2 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
 - 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
 - `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
-- 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记保留到下一次安装：只有账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前才删除，所以暂停回执丢失或 `retry-smoke` 都不会触发重装。
+- 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记在暂停时保留，`passed` 回执确认后删除，或账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前删除，所以暂停回执丢失不会触发重装。`retry-smoke` 恢复的部署版本不符时一律暂停，不看标记。
 - 第 8 步 smoke 失败：停看守，从备份恢复二进制，写 `rolled-back` 标记（含原因），保持 draining 重启。恢复后的 serve 读到标记，写 `paused`、resume，交给处置 Agent，不再部署。失败的二进制在重启前不会认领票。
 - smoke 通过但 resume 失败：写 `paused`（`smoke_passed` 仍为 false），转处置 Agent。
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
