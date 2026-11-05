@@ -184,6 +184,38 @@ func TestResolveIntakeProjectFollowsChatConfig(t *testing.T) {
 	}
 }
 
+// A project whose own env sets AGENT_INTAKE_PI gets the pi execution path
+// even when the gateway-level AGENT_INTAKE_PI is empty: the tier selects the
+// path per project, and the binary resolves independently of the gateway
+// setting.
+func TestResolveIntakeProjectPiTierWithoutGatewayTier(t *testing.T) {
+	binDir := t.TempDir()
+	piBin := filepath.Join(binDir, "pi")
+	if err := os.WriteFile(piBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	runtime.setPi("", t.TempDir(), t.TempDir())
+	project := projects.Project{Path: "/repo/of", Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Name: "orca-factory",
+		Repository: config.Repository{Env: map[string]string{
+			"AGENT_ISSUE_BACKEND": "github",
+			"AGENT_GH_REPO":       "vmxmy/orca-factory",
+			"AGENT_TIER_STRONG":   "claude:claude-opus-5-5:high",
+			"AGENT_INTAKE_PI":     "pi:anthropic/claude-sonnet-5-5:high",
+		}}}
+	if _, err := runtime.resolve(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	runner := runtime.built["OF"]
+	if runner == nil {
+		t.Fatal("no runner built for OF")
+	}
+	if runner.PiBinary != piBin {
+		t.Fatalf("PiBinary=%q, want resolved %q (project tier must select the pi path)", runner.PiBinary, piBin)
+	}
+}
+
 // A chat an unusable project declares is still claimed. This runs real profiles
 // through Discover and resolveIntakeProjects into the gateway: an unusable
 // project dropping out on the way would hand the other project a chat two
