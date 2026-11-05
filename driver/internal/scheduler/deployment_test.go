@@ -1,9 +1,11 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -200,6 +202,35 @@ func TestSelfDeployInterruptedBeforeInstallRetries(t *testing.T) {
 	}
 }
 
+// A paused head keeps its lane paused on every later tick, also after a
+// restart; the skip is logged so the tickets queued behind it do not look like
+// ordinary waits.
+func TestPausedDeploymentLaneIsLoggedEachTick(t *testing.T) {
+	f, host := newSelfDeployFixture(t)
+	host.kill = "go"
+	firstServe(t, f, host)
+	if err := os.WriteFile(f.runtime.selfMarker(selfSHA, "installing"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, host, "old")
+	if lastState(f) != "paused" {
+		t.Fatalf("expected paused deployment: state=%s", lastState(f))
+	}
+	var logs bytes.Buffer
+	ctx := runx.WithLogger(context.Background(), slog.New(slog.NewJSONHandler(&logs, nil)))
+	tickets, err := f.runtime.Snapshot(ctx, f.repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.runtime.AdvanceMerges(ctx, tickets); err != nil {
+		t.Fatal(err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, `"msg":"merge lane paused`) || !strings.Contains(out, `"ticket":"ENG-1"`) || !strings.Contains(out, `"reason":"installed driver is not the squash SHA`) {
+		t.Fatalf("paused lane not logged: %s", out)
+	}
+}
+
 func TestSelfDeployRetryWorkflowBeforeSmokeReinstalls(t *testing.T) {
 	f, host := newSelfDeployFixture(t)
 	host.kill = "go"
@@ -358,6 +389,42 @@ func TestRecordedDeploymentRetryWorkflowReceipts(t *testing.T) {
 	d := ticket.Progress.Deployment
 	if ticket.MergeProblem != "" || d.State != "paused" || d.Recovery == nil || d.Recovery.Action != "retry-workflow" || d.WorkflowRetryPending {
 		t.Fatalf("recorded retry-workflow receipts: problem=%q deployment=%+v", ticket.MergeProblem, d)
+	}
+}
+
+// OF-393, 2026-11-05: a self deployment wrote deploy-intent, serve stopped
+// before the install, and the next serve paused it. The interrupted retry and
+// the reinstall recovery must both extend this real history.
+func TestRecordedSelfDeployInterruptedBeforeInstall(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-selfdeploy-interrupted.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	extend := func(history []task.Comment, from task.Comment, change func(*merge.DeploymentProgress)) Ticket {
+		var next merge.Progress
+		if err := json.Unmarshal([]byte(from.Body[strings.Index(from.Body, merge.ProgressPrefix)+len(merge.ProgressPrefix):]), &next); err != nil {
+			t.Fatal(err)
+		}
+		d := *next.Deployment
+		change(&d)
+		next.Deployment = &d
+		b, _ := json.Marshal(next)
+		at := from.CreatedAt.Add(time.Minute)
+		ticket := Ticket{ID: next.TicketID}
+		readMergeHandoff(&ticket, append(append([]task.Comment(nil), history...), task.Comment{ID: at.Format(time.RFC3339), Body: merge.ProgressPrefix + string(b), CreatedAt: at}))
+		return ticket
+	}
+	intent, paused := recording.Comments[3], recording.Comments[4]
+	retried := extend(recording.Comments[:4], intent, func(d *merge.DeploymentProgress) { d.State, d.Reruns = "pending", d.Reruns+1 })
+	if retried.MergeProblem != "" || retried.Progress.Deployment.State != "pending" {
+		t.Fatalf("interrupted retry: problem=%q deployment=%+v", retried.MergeProblem, retried.Progress.Deployment)
+	}
+	recovered := extend(recording.Comments, paused, func(d *merge.DeploymentProgress) {
+		d.State, d.Reason = "pending", ""
+		d.Recovery = &merge.DeploymentRecovery{Action: "retry-workflow", Operator: "operator", Reason: "reinstall", At: paused.CreatedAt.Add(time.Second)}
+	})
+	if recovered.MergeProblem != "" || recovered.Progress.Deployment.State != "pending" || recovered.Progress.Deployment.WorkflowRetryPending {
+		t.Fatalf("reinstall recovery: problem=%q deployment=%+v", recovered.MergeProblem, recovered.Progress.Deployment)
 	}
 }
 
