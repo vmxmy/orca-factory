@@ -58,6 +58,7 @@ type Progress struct {
 // DeploymentProgress extends v1 receipts without changing the frozen Handoff.
 // Smoke is stored only in durable evidence; observation views omit the command.
 type DeploymentProgress struct {
+	StartedAt            time.Time           `json:"started_at,omitzero"`
 	WorkflowRetryPending bool                `json:"workflow_retry_pending,omitempty"`
 	Recovery             *DeploymentRecovery `json:"recovery,omitempty"`
 	SmokeStarted         bool                `json:"smoke_started,omitempty"`

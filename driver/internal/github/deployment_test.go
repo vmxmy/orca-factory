@@ -51,7 +51,7 @@ func TestDeploymentConservativeReceipts(t *testing.T) {
 		return fmt.Sprintf(`{"id":%d,"workflow_id":7,"path":".github/workflows/deploy.yml","head_sha":%q,"status":%q,"conclusion":%q}`, id, head, status, conclusion)
 	}
 	for _, tc := range []struct{ name, body, want string }{
-		{"no runs", `{"total_count":0,"workflow_runs":[]}`, "pending"},
+		{"no runs", `{"total_count":0,"workflow_runs":[]}`, "absent"},
 		{"unknown", `{"total_count":1,"workflow_runs":[` + row(1, "mystery", "success", sha) + `]}`, "pending"},
 		{"unknown conclusion", `{"total_count":1,"workflow_runs":[` + row(1, "completed", "neutral", sha) + `]}`, "pending"},
 		{"wrong SHA", `{"total_count":1,"workflow_runs":[` + row(1, "completed", "success", strings.Repeat("b", 40)) + `]}`, "pending"},

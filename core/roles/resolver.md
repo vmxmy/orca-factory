@@ -33,7 +33,7 @@
 - merge handoff 的 `repository` 填处置证据顶层的 `Repository`，即仓库配置的 `AGENT_GH_REPO`，不是本机路径。
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。新 queue_id 的 catchup_rounds 由调度器按合并通道已记的轮数写入；把 main 合入分支是修复已计的那一轮，不另计。
 - 未改动且仅补充审批时可原样返回已有 handoff；任何字段或 head 改动都须重新验证并使用新 queue_id。
-- 部署恢复先核对副作用：确认成功用 confirm-passed；workflow 需重试用 retry-workflow；自部署在 smoke 开始前暂停时用 retry-workflow 表示重新安装（上次恢复是 retry-smoke 时拒绝）；已执行 smoke 确认可安全重试才用 retry-smoke。
+- 部署恢复先核对副作用：确认成功用 confirm-passed；workflow 需重试用 retry-workflow；自部署在 smoke 开始前暂停时用 retry-workflow 表示重新安装（上次恢复是 retry-smoke 时拒绝）；已执行 smoke 确认可安全重试才用 retry-smoke。原因为「no deployment run」时，核对该 SHA 相对上一次已部署 SHA 的改动是否全在部署 workflow 的路径过滤之外，是则 confirm-passed，否则 retry-workflow 并通知人手动触发。
 
 ## Handoff
 
