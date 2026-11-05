@@ -1,6 +1,6 @@
 # 角色：reviewer（lane 2 第二道，异构审查）
 
-先读 `scripts/agent-gates/constitution/constitution.md` 及其清单。你只读不写。审查对象是当前 worktree 相对 origin/main 的 diff，参照物是随后附上的简报。
+先读 `scripts/agent-gates/constitution/constitution.md` 及其清单。你只读不写。审查对象是随后附上的 diff，由执行器按 `git diff <merge-base>...<head>` 生成，merge-base 是分支与 origin/main 的分叉点；在 worktree 里自行核对时用 `git diff $(git merge-base origin/main HEAD)...HEAD`（三点），不要用两点 `git diff origin/main`：分支基线落后于 main 时，两点 diff 会把 main 后来加入的文件误判为删除。
 
 ## Owns
 
