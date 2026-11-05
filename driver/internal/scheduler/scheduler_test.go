@@ -20,6 +20,7 @@ type fakeBackend struct {
 	absent, inactive         bool
 	terminalErr, dispatchErr error
 	applyErr                 error
+	onApply                  func(Ticket, Action)
 	actions                  []Action
 	launched                 []Ticket
 	legacy                   map[string]Legacy
@@ -41,8 +42,11 @@ func (f *fakeBackend) NoActiveDispatch(context.Context, Ticket) (bool, error) {
 func (f *fakeBackend) InspectLegacy(_ context.Context, t Ticket) (Legacy, error) {
 	return f.legacy[t.ID], nil
 }
-func (f *fakeBackend) Apply(_ context.Context, _ Ticket, a Action) error {
+func (f *fakeBackend) Apply(_ context.Context, ticket Ticket, a Action) error {
 	f.actions = append(f.actions, a)
+	if f.onApply != nil {
+		f.onApply(ticket, a)
+	}
 	return f.applyErr
 }
 func (f *fakeBackend) Launch(_ context.Context, t Ticket) error {
@@ -132,6 +136,7 @@ func TestSecondExecutorFailureEscalates(t *testing.T) {
 		t.Fatalf("actions=%v", f.actions)
 	}
 }
+
 // OF-100: an Apply failure must name the ticket and the action it attempted,
 // and must never surface a credential from the backend's raw error text.
 func TestOwnershipApplyFailureNamesTicketAndAction(t *testing.T) {
@@ -205,6 +210,60 @@ func TestStaleInflightEscalatesWithoutRetry(t *testing.T) {
 		t.Fatalf("actions=%v", f.actions)
 	}
 }
+func TestClaimsNotStarvedByResumes(t *testing.T) {
+	for _, advanceClock := range []bool{true, false} {
+		name := "clock advances during resumes"
+		if !advanceClock {
+			name = "clock does not advance"
+		}
+		t.Run(name, func(t *testing.T) {
+			backend := &fakeBackend{absent: true, inactive: true}
+			scheduler := setup(backend)
+			now := scheduler.Now()
+			scheduler.Now = func() time.Time { return now }
+			scheduler.Config.MaxInFlight = 5
+			scheduler.Config.TokenBucket = config.TokenBucket{Capacity: 4, RefillPerSecond: 1.0 / 30}
+			scheduler.Repositories[1].MaxInFlight = 5
+			for _, identifier := range []string{"resume-1", "resume-2", "resume-3", "resume-4"} {
+				backend.tickets = append(backend.tickets, Ticket{ID: identifier, Repo: "b", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: now})
+			}
+			backend.tickets = append(backend.tickets, Ticket{ID: "candidate", Repo: "b", Candidate: true})
+			resumes := 0
+			var claims []string
+			backend.onApply = func(ticket Ticket, action Action) {
+				switch action.Kind {
+				case Resume:
+					resumes++
+					if advanceClock {
+						now = now.Add(30 * time.Second)
+					}
+				case Claim:
+					claims = append(claims, ticket.ID)
+				}
+			}
+			decisions := captureDecisions(t, scheduler)
+			if resumes != 4 {
+				t.Fatalf("resumes=%d, want 4", resumes)
+			}
+			if advanceClock {
+				if !reflect.DeepEqual(claims, []string{"candidate"}) {
+					t.Fatalf("claims=%v, want candidate", claims)
+				}
+				return
+			}
+			if len(claims) != 0 {
+				t.Fatalf("claims=%v without time passing", claims)
+			}
+			for _, decision := range decisions {
+				if decision["event"] == "skip" && decision["ticket_id"] == "candidate" && decision["reason"] == "token" {
+					return
+				}
+			}
+			t.Fatalf("candidate not skipped for token: %v", decisions)
+		})
+	}
+}
+
 func TestTokenBucketUsesInjectedClock(t *testing.T) {
 	f := &fakeBackend{tickets: []Ticket{{ID: "one", Repo: "b", Candidate: true}, {ID: "two", Repo: "b", Candidate: true}}}
 	s := setup(f)
