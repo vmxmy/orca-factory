@@ -4,7 +4,7 @@ import { OrbitControls } from './vendor/OrbitControls.js'
 const colors = { done: 0x50c98b, current: 0x5d9fff, attention: 0xf6c75c, failed: 0xed676b, idle: 0x596879 }
 const positions = { pickup: 0, work: 6, gate: 12, review: 17, pack: 22, merge: 27, dispatch: 34, smoke: 40, repair: 12, human: 22, return: 9, unknown: 0 }
 const RETURN_ENTRY_OFFSET = 3.45
-const RETURN_SHIFT_HOLD = 0.6
+const RETURN_CLEAR_HEIGHT = 1
 const labels = { pickup: '领取台', work: '施工台', gate: '门禁', review: '审查台', pack: '打包台', merge: '合并装车道', dispatch: '出厂门', smoke: '目的地检查站' }
 const world = new THREE.Scene()
 world.background = new THREE.Color(0x101923)
@@ -237,6 +237,8 @@ function applyScene(scene) {
     const rowZ = offsets.get(row.path)
     const occupied = new Map()
     let lane = 0
+    const shifting = []
+    const departing = []
     const returning = row.parcels.filter(parcel => parcel.station === 'return').map(parcel => `${row.path}\0${parcel.identifier}`)
     for (const key of returning) if (!returnOrder.has(key)) returnOrder.set(key, returnSequence++)
     const returnSlots = new Map([...returning].sort((left, right) => returnOrder.get(left) - returnOrder.get(right)).map((key, index) => [key, index]))
@@ -276,6 +278,8 @@ function applyScene(scene) {
       state.target.set(positions[parcel.station] + sideSlot, targetY, targetZ)
       if (previous !== parcel.station) {
         state.rejected = previous === 'gate' && parcel.station === 'return'
+        state.waitFor = undefined
+        if (previous === 'return') departing.push(state)
         const entering = parcel.station === 'return'
         if (entering || previous === 'return') {
           const height = 2.2 + lane++ * 1.3
@@ -290,12 +294,13 @@ function applyScene(scene) {
             : []
         }
       } else if (parcel.station === 'return' && !before.equals(state.target)) {
-        state.holdUntil = clock.elapsedTime + RETURN_SHIFT_HOLD
+        shifting.push(state)
       }
       if (state.blocker) { dispose(state.blocker); state.blocker = undefined }
       if (parcel.blocker) state.blocker = label(state.group, '⛓ 锁定', 0, 1.65, 0, 1.8, '#f6c75c')
       if (row.deploy && parcel.deployment && ['dispatch', 'smoke'].includes(parcel.station)) truck(targetZ, parcel)
     }
+    for (const state of shifting) state.waitFor = [...departing]
     for (const machine of machines.filter(one => one.row === row.path)) {
       machine.active = machine.slot < (occupied.get('work') ?? 0)
       machine.boom.material.color.setHex(machine.active ? colors.current : colors.idle)
@@ -383,7 +388,10 @@ function animate() {
   const delta = Math.min(clock.getDelta(), 0.1)
   const time = clock.elapsedTime
   for (const state of parcels.values()) {
-    if (state.holdUntil > time) continue
+    if (state.waitFor) {
+      if (state.waitFor.some(other => other.group.parent && other.group.position.y < RETURN_CLEAR_HEIGHT)) continue
+      state.waitFor = undefined
+    }
     const target = state.waypoints[0] ?? state.target
     state.group.position.lerp(target, 1 - Math.exp(-3 * delta))
     if (state.waypoints.length && state.group.position.distanceTo(target) < 0.1) state.waypoints.shift()
