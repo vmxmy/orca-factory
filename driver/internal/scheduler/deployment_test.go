@@ -19,6 +19,49 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+// A recorded ledger history whose deployment identity no longer matches its
+// frozen handoff is the real-world shape of an invalid deployment progress.
+func TestRecordedInvalidDeploymentDiscarded(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, withHandoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("handoff=%t", withHandoff), func(t *testing.T) {
+			history := append([]task.Comment(nil), recording.Comments...)
+			if !withHandoff {
+				history = history[1:]
+			}
+			for i, c := range history {
+				for _, line := range strings.Split(c.Body, "\n") {
+					if !strings.HasPrefix(line, merge.ProgressPrefix) {
+						continue
+					}
+					var p merge.Progress
+					if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p); err != nil {
+						t.Fatal(err)
+					}
+					p.QueueID = strings.Repeat("x", 64)
+					b, _ := json.Marshal(p)
+					history[i].Body = strings.Replace(c.Body, line, merge.ProgressPrefix+string(b), 1)
+				}
+			}
+			ticket := Ticket{ID: "699afdbb-3850-4999-8363-389adbfa4ed9"}
+			readMergeHandoff(&ticket, history)
+			if ticket.Progress != nil {
+				t.Errorf("recorded invalid deployment retained: %+v", ticket.Progress)
+			}
+			if withHandoff {
+				if ticket.MergeProblem == "" || !DeploymentBarrier(ticket) {
+					t.Fatalf("recorded invalid deployment lost its barrier: %+v", ticket)
+				}
+			} else if ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
+				t.Fatalf("recorded invalid deployment blocks merges: %+v", ticket)
+			}
+		})
+	}
+}
+
 func TestInvalidDeploymentDeployment(t *testing.T) {
 	for _, withHandoff := range []bool{false, true} {
 		for _, damage := range []string{"empty-policy", "wrong-queue"} {
