@@ -19,6 +19,120 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+// A recorded ledger history whose deployment identity no longer matches its
+// frozen handoff is the real-world shape of an invalid deployment progress.
+func TestRecordedInvalidDeploymentDiscarded(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, withHandoff := range []bool{false, true} {
+		t.Run(fmt.Sprintf("handoff=%t", withHandoff), func(t *testing.T) {
+			history := append([]task.Comment(nil), recording.Comments...)
+			if !withHandoff {
+				history = history[1:]
+			}
+			for i, c := range history {
+				for _, line := range strings.Split(c.Body, "\n") {
+					if !strings.HasPrefix(line, merge.ProgressPrefix) {
+						continue
+					}
+					var p merge.Progress
+					if err := json.Unmarshal([]byte(strings.TrimPrefix(line, merge.ProgressPrefix)), &p); err != nil {
+						t.Fatal(err)
+					}
+					p.QueueID = strings.Repeat("x", 64)
+					b, _ := json.Marshal(p)
+					history[i].Body = strings.Replace(c.Body, line, merge.ProgressPrefix+string(b), 1)
+				}
+			}
+			ticket := Ticket{ID: "699afdbb-3850-4999-8363-389adbfa4ed9"}
+			readMergeHandoff(&ticket, history)
+			if ticket.Progress != nil {
+				t.Errorf("recorded invalid deployment retained: %+v", ticket.Progress)
+			}
+			if withHandoff {
+				if ticket.MergeProblem == "" || !DeploymentBarrier(ticket) {
+					t.Fatalf("recorded invalid deployment lost its barrier: %+v", ticket)
+				}
+			} else if ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
+				t.Fatalf("recorded invalid deployment blocks merges: %+v", ticket)
+			}
+		})
+	}
+}
+
+func TestInvalidDeploymentDeployment(t *testing.T) {
+	for _, withHandoff := range []bool{false, true} {
+		for _, damage := range []string{"empty-policy", "wrong-queue"} {
+			t.Run(fmt.Sprintf("handoff=%t/%s", withHandoff, damage), func(t *testing.T) {
+				progress := &merge.Progress{
+					Version: 1, TicketID: "done", Repository: "o/r", PR: 1,
+					QueueID: "q1", Head: strings.Repeat("b", 40), Main: strings.Repeat("c", 40),
+					Phase: "merged", MergeSHA: strings.Repeat("a", 40),
+					Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending"},
+				}
+				ticket := Ticket{ID: "done"}
+				if withHandoff {
+					ticket.Handoff = &merge.Handoff{QueueID: "q1", Repository: "o/r", PR: 1, Head: progress.Head}
+				}
+				if damage == "empty-policy" {
+					progress.Deployment.Workflow = ""
+				} else {
+					progress.QueueID = "wrong"
+				}
+				readMergeHandoff(&ticket, []task.Comment{{Body: merge.ProgressPrefix + progressJSON(t, progress)}})
+				if ticket.Progress != nil {
+					t.Error("invalid deployment progress retained")
+				}
+				if withHandoff {
+					if ticket.MergeProblem == "" || !DeploymentBarrier(ticket) {
+						t.Fatalf("invalid deployment with handoff lost its barrier: %+v", ticket)
+					}
+				} else if ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
+					t.Fatalf("invalid deployment without handoff blocks merges: %+v", ticket)
+				}
+			})
+		}
+	}
+}
+
+func TestDoneInvalidDeploymentExcluded(t *testing.T) {
+	for _, workflow := range []string{"", "deploy.yml"} {
+		t.Run("workflow="+workflow, func(t *testing.T) {
+			fixture := newMergeFixture(t)
+			done := *fixture.tracker
+			done.issue.ID, done.issue.Identifier, done.issue.State.Name = "done", "ENG-0", "Done"
+			progress := &merge.Progress{
+				Version: 1, TicketID: "done", Repository: "o/r", PR: 2,
+				QueueID: "old", Head: fixture.head, Main: fixture.main,
+				Phase: "merged", MergeSHA: strings.Repeat("a", 40),
+				Deployment: &merge.DeploymentProgress{Workflow: workflow, State: "pending"},
+			}
+			done.rows = []task.Comment{{Body: "归属: 无\n" + merge.ProgressPrefix + progressJSON(t, progress)}}
+			fixture.runtime.Clients[fixture.repos[0].Path] = &mergeTickets{rows: []*mergeIssues{&done, fixture.tracker}}
+			ctx := context.Background()
+			tickets, err := fixture.runtime.Snapshot(ctx, fixture.repos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(tickets) != 1 || tickets[0].ID != fixture.tracker.issue.ID {
+				t.Errorf("Done ticket with invalid deployment retained in active snapshot: %+v", tickets)
+			}
+			scheduler := &Scheduler{Config: fixture.config, Repositories: fixture.repos, Backend: fixture.runtime}
+			if err := scheduler.Tick(ctx); err != nil {
+				t.Errorf("same repository merge blocked: %v", err)
+			}
+			if len(scheduler.MergeQueue) != 1 || scheduler.MergeQueue[0].ID != fixture.tracker.issue.ID {
+				t.Errorf("merge queue includes Done ticket: %+v", scheduler.MergeQueue)
+			}
+			if fixture.puts != 1 || !fixture.merged || fixture.tracker.issue.State.Name != "Done" {
+				t.Fatalf("next ticket did not merge: squash=%d merged=%t state=%s", fixture.puts, fixture.merged, fixture.tracker.issue.State.Name)
+			}
+		})
+	}
+}
+
 func TestDeploymentRestartKeepsBarrierAndOtherRepositoryContinues(t *testing.T) {
 	f := newMergeFixture(t)
 	f.repos[0].Env["AGENT_DEPLOY_WORKFLOW"] = "deploy.yml"

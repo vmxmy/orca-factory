@@ -109,8 +109,16 @@ func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 		record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Result: string(body)})
 		bodies := []string{"阶段: Agent处置\n归属: 处置Agent\n" + resolver.Prefix + string(record)}
 		if barrier {
-			progress, _ := json.Marshal(merge.Progress{Phase: "merged", Deployment: &merge.DeploymentProgress{State: "paused"}})
-			bodies = append(bodies, merge.ProgressPrefix+string(progress))
+			handoff, _ := json.Marshal(h)
+			progress := merge.Progress{
+				Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository,
+				PR: h.PR, Head: h.Head, Main: h.Baseline, Phase: "merged", MergeSHA: strings.Repeat("c", 40),
+				Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending"},
+			}
+			pending, _ := json.Marshal(progress)
+			progress.Deployment.State = "paused"
+			paused, _ := json.Marshal(progress)
+			bodies = append(bodies, merge.HandoffPrefix+string(handoff), merge.ProgressPrefix+string(pending), merge.ProgressPrefix+string(paused))
 		}
 		comments := evidenceComments(bodies...)
 		l := &fakeIssues{issueComments: comments}
@@ -118,6 +126,9 @@ func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, comments)
 		if barrier != DeploymentBarrier(ticket) {
 			t.Fatalf("barrier fixture: %+v", ticket)
+		}
+		if ticket.MergeProblem != "" {
+			t.Fatalf("invalid barrier fixture: %s", ticket.MergeProblem)
 		}
 		if err := r.applyResolution(context.Background(), ticket); err != nil {
 			t.Fatal(err)
