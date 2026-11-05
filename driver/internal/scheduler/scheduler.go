@@ -199,6 +199,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	lap("projects")
 	var err error
+	observedFrom := s.clock()
 	tickets, err = s.Backend.Snapshot(ctx, s.Repositories)
 	lap("snapshot")
 	if err != nil {
@@ -221,7 +222,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	snapshot = true
 	s.dropIdleRetired(tickets)
 	rows := ObservationRows(tickets, s.Repositories)
-	status.PushObservation(s.clock(), func(view *status.View) {
+	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
 		view.Tickets = nil
 		for index, t := range tickets {
 			row := rows[index]

@@ -133,7 +133,7 @@ func TestPushedObservationHonorsConfiguredStaleness(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
-	PushObservation(now, func(v *View) { v.Tickets = []Ticket{} })
+	PushObservation(now, now, func(v *View) { v.Tickets = []Ticket{} })
 	if got := Read(now.Add(2*time.Minute), time.Minute); got.State != "stale" {
 		t.Fatalf("configured stale threshold ignored by pushed observation: %s", got.State)
 	}
@@ -158,16 +158,93 @@ func TestPushCarriesTitleAndPhaseSince(t *testing.T) {
 		}
 		return view.Tickets[0]
 	}
-	PushObservation(start, func(v *View) { v.Tickets = []Ticket{row("gate", "冒烟测试")} })
+	PushObservation(start, start, func(v *View) { v.Tickets = []Ticket{row("gate", "冒烟测试")} })
 	if got := read(); !got.Since.Equal(start) || got.Title != "冒烟测试" {
 		t.Fatalf("first observation: %+v", got)
 	}
-	PushObservation(start.Add(time.Minute), func(v *View) { v.Tickets = []Ticket{row("gate", "")} })
+	PushObservation(start.Add(time.Minute), start.Add(time.Minute), func(v *View) { v.Tickets = []Ticket{row("gate", "")} })
 	if got := read(); !got.Since.Equal(start) || got.Title != "冒烟测试" {
 		t.Fatalf("same phase after rebuild: %+v", got)
 	}
 	Push(start.Add(2*time.Minute), func(v *View) { SetTicket(v, row("审查", ""), true) })
 	if got := read(); !got.Since.Equal(start.Add(2*time.Minute)) || got.Title != "冒烟测试" || got.Phase != "审查" {
 		t.Fatalf("phase change: %+v", got)
+	}
+}
+
+func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	pushedAt := start.Add(10 * time.Second)
+	Push(pushedAt, func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "审查", Title: "旧标题"}, true)
+	})
+	before := Read(pushedAt, 0).Tickets[0]
+	if !before.PushedAt.Equal(pushedAt) || !before.Since.Equal(pushedAt) {
+		t.Fatalf("executor push timestamps: %+v", before)
+	}
+	observedAt := start.Add(15 * time.Second)
+	rebuild := func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "gate", Title: "新标题", BlockedReason: "等待观察"}}
+	}
+	PushObservation(observedAt, start, rebuild)
+	view := Read(observedAt, 0)
+	if len(view.Tickets) != 1 {
+		t.Fatalf("observation lost ticket: %+v", view)
+	}
+	got := view.Tickets[0]
+	if got.Phase != "审查" || !got.Since.Equal(before.Since) {
+		t.Fatalf("older ledger observation overwrote executor phase or since: %+v, before: %+v", got, before)
+	}
+	if got.Title != "新标题" || got.BlockedReason != "等待观察" || !got.PushedAt.Equal(observedAt) {
+		t.Fatalf("observation fields did not refresh: %+v", got)
+	}
+	observedAt = start.Add(25 * time.Second)
+	PushObservation(observedAt, start.Add(20*time.Second), rebuild)
+	got = Read(observedAt, 0).Tickets[0]
+	if got.Phase != "gate" || !got.Since.Equal(observedAt) || !got.PushedAt.Equal(observedAt) {
+		t.Fatalf("newer ledger observation did not advance phase: %+v", got)
+	}
+}
+
+func TestExecutorPushDoesNotPinOtherTickets(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	other := Ticket{Repo: "/repo", Identifier: "OF-2", Owner: "执行器", Phase: "gate"}
+	PushObservation(start, start, func(view *View) { view.Tickets = []Ticket{other} })
+	Push(start.Add(10*time.Second), func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "审查"}, true)
+	})
+	observedAt := start.Add(15 * time.Second)
+	PushObservation(observedAt, start.Add(5*time.Second), func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "审查"}, {Repo: other.Repo, Identifier: other.Identifier, Owner: other.Owner, Phase: "审查"}}
+	})
+	for _, got := range Read(observedAt, 0).Tickets {
+		if got.Identifier == "OF-2" && (got.Phase != "审查" || !got.Since.Equal(observedAt)) {
+			t.Fatalf("push for another ticket pinned this ticket's ledger phase: %+v", got)
+		}
+	}
+}
+
+func TestPushRestampsRewrittenRow(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	Push(start, func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "gate"}, true)
+	})
+	Push(start.Add(10*time.Second), func(view *View) {
+		row := view.Tickets[0]
+		row.Phase = "审查"
+		SetTicket(view, row, true)
+	})
+	observedAt := start.Add(15 * time.Second)
+	PushObservation(observedAt, start.Add(5*time.Second), func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-1", Owner: "执行器", Phase: "gate"}}
+	})
+	if got := Read(observedAt, 0).Tickets[0]; got.Phase != "审查" {
+		t.Fatalf("stale ledger read replaced a row rewritten from the cache: %+v", got)
 	}
 }

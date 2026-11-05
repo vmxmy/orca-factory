@@ -40,7 +40,8 @@ type Ticket struct {
 	Stage string `json:"stage,omitempty"`
 	Title string `json:"title,omitempty"`
 	// Since is when the push cache first saw this owner, phase and stage.
-	Since time.Time `json:"since,omitzero"`
+	Since    time.Time `json:"since,omitzero"`
+	PushedAt time.Time `json:"pushedAt,omitzero"`
 }
 
 type Usage struct {
