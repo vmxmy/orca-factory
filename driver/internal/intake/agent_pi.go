@@ -314,7 +314,9 @@ func (r *Runner) piSandboxArgs(pi, session string) ([]string, error) {
 		"--ro-bind", piMount, piMount,
 		"--remount-ro", "/",
 		"--chdir", r.Checkout, "--",
-		pi, "--mode", "rpc", "--session-id", session, "--session-dir", r.PiSessionDir, "--name", "intake", "-t", "read,grep,glob"), nil
+		pi, "--mode", "rpc", "--session-id", session, "--session-dir", r.PiSessionDir, "--name", "intake",
+		"--append-system-prompt", filepath.Join(r.Checkout, "scripts/agent-gates/roles/intake-chat.md"),
+		"-t", "read,grep,glob"), nil
 }
 
 // pathWithin reports whether child is strictly inside parent.
@@ -398,10 +400,10 @@ func (p *piProc) request(ctx context.Context, cmd map[string]any) (piResponse, e
 }
 
 // piTurn runs one conversation turn against the resident process: prompt,
-// wait for agent_settled, then read the last assistant text. A timed-out or
-// caller-canceled turn aborts pi first; an abort pi never acks escalates to
-// killing the process group, and a process that died on its own is dropped so
-// the next turn respawns.
+// wait for agent_settled, then read the last assistant text. One turnCtx
+// deadline bounds every RPC of the turn, including the process's model setup;
+// any exit that leaves a run possibly in flight aborts it first, and a pi
+// that never acks the abort is killed and dropped so the next turn respawns.
 func (r *Runner) piTurn(ctx context.Context, t Turn) (string, error) {
 	if !t.Resume {
 		if err := r.update(ctx); err != nil {
@@ -409,25 +411,27 @@ func (r *Runner) piTurn(ctx context.Context, t Turn) (string, error) {
 		}
 	}
 	r.writeTicketContext(ctx)
-	p, err := r.piProc(ctx, t.Session)
+	turnCtx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	p, err := r.piProc(turnCtx, t.Session)
 	if err != nil {
 		return "", err
 	}
 	p.turnMu.Lock()
 	defer p.turnMu.Unlock()
 	p.touch()
-	turnCtx, cancel := context.WithTimeout(ctx, r.Timeout)
-	defer cancel()
 	resp, err := p.request(turnCtx, map[string]any{"type": "prompt", "message": t.Prompt, "streamingBehavior": "followUp"})
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			if !p.abort() {
-				r.dropPiProc(t.Session, p)
-			}
-			return "", fmt.Errorf("intake pi turn timed out after %s", r.Timeout)
-		}
 		if errors.Is(err, errPiExited) {
 			r.dropPiProc(t.Session, p)
+			return "", err
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			r.piCleanupTurn(t.Session, p)
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("intake pi turn timed out after %s", r.Timeout)
+			}
+			return "", err
 		}
 		return "", err
 	}
@@ -439,14 +443,21 @@ func (r *Runner) piTurn(ctx context.Context, t Turn) (string, error) {
 	}
 	_ = json.Unmarshal(resp.Data, &outcome)
 	if outcome.Disposition != "handled" {
-		if err := r.piWaitSettled(ctx, p, t); err != nil {
+		if err := r.piWaitSettled(turnCtx, p, t); err != nil {
 			return "", err
 		}
 	}
-	text, err := p.lastAssistantText(ctx)
+	text, err := p.lastAssistantText(turnCtx)
 	if err != nil {
 		if errors.Is(err, errPiExited) {
 			r.dropPiProc(t.Session, p)
+			return "", err
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			r.piCleanupTurn(t.Session, p)
+			if errors.Is(err, context.DeadlineExceeded) {
+				return "", fmt.Errorf("intake pi turn timed out after %s", r.Timeout)
+			}
 		}
 		return "", err
 	}
@@ -456,8 +467,7 @@ func (r *Runner) piTurn(ctx context.Context, t Turn) (string, error) {
 
 // piWaitSettled consumes events until agent_settled. A prompt response only
 // means pi accepted the work; the turn is done when pi will not continue on
-// its own. The settle wait shares the turn deadline that already bounded the
-// prompt acceptance wait.
+// its own.
 func (r *Runner) piWaitSettled(ctx context.Context, p *piProc, t Turn) error {
 	remaining := r.Timeout
 	if deadline, ok := ctx.Deadline(); ok {
@@ -474,12 +484,10 @@ func (r *Runner) piWaitSettled(ctx context.Context, p *piProc, t Turn) error {
 			r.dropPiProc(t.Session, p)
 			return errPiExited
 		case <-timer.C:
-			if !p.abort() {
-				r.dropPiProc(t.Session, p)
-			}
+			r.piCleanupTurn(t.Session, p)
 			return fmt.Errorf("intake pi turn timed out after %s", r.Timeout)
 		case <-ctx.Done():
-			p.abort()
+			r.piCleanupTurn(t.Session, p)
 			return ctx.Err()
 		case rec, ok := <-p.events:
 			if !ok {
@@ -491,6 +499,28 @@ func (r *Runner) piWaitSettled(ctx context.Context, p *piProc, t Turn) error {
 			if err := json.Unmarshal(rec, &head); err == nil && head.Type == "agent_settled" {
 				return nil
 			}
+		}
+	}
+}
+
+// piCleanupTurn aborts a turn that will not complete; a pi that never acks
+// the abort is killed and dropped so the next turn respawns, and a stale
+// agent_settled from the aborted run is drained so the next turn cannot
+// mistake it for its own completion.
+func (r *Runner) piCleanupTurn(session string, p *piProc) {
+	if !p.abort() {
+		r.dropPiProc(session, p)
+		return
+	}
+	p.drainEvents()
+}
+
+func (p *piProc) drainEvents() {
+	for {
+		select {
+		case <-p.events:
+		default:
+			return
 		}
 	}
 }
@@ -509,6 +539,11 @@ func (p *piProc) lastAssistantText(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return resp.assistantText()
+}
+
+// assistantText extracts data.text from a get_last_assistant_text response.
+func (resp piResponse) assistantText() (string, error) {
 	if !resp.Success {
 		return "", fmt.Errorf("intake pi get_last_assistant_text failed: %s", resp.Error)
 	}

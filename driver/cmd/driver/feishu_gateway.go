@@ -155,9 +155,9 @@ func (r *projectRuntime) setPi(tier, sessionDir, configDir string) {
 	r.piTier = tier
 	r.piSessionDir = sessionDir
 	r.piConfigDir = configDir
-	if tier == "" {
-		return
-	}
+	// The binary resolves regardless of the gateway-level tier: a project
+	// whose own env opts into AGENT_INTAKE_PI must get the pi path even
+	// when the gateway setting is empty.
 	binary, err := exec.LookPath("pi")
 	if err == nil && !filepath.IsAbs(binary) {
 		binary, err = filepath.Abs(binary)
