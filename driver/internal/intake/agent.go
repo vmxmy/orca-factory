@@ -37,7 +37,10 @@ type Turn struct {
 const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.config/**)","Read(~/.local/state/**)","Read(~/.ssh/**)"]}}`
 
 // Runner runs the read-only intake agent with claude -p in a detached checkout
-// of origin/main. The agent receives no credentials and no write tools.
+// of origin/main. The agent receives no credentials and no write tools. When
+// PiBinary is set, turns run against a resident pi --mode rpc process per
+// session (OF-416) instead; every other field below applies only to the
+// claude path, and the zero value selects it exactly as before.
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
 	// Bwrap overrides the sandbox executable, found on PATH when empty.
@@ -47,10 +50,30 @@ type Runner struct {
 	// context (OF-33); nil for a gateway with no projects configured
 	// (pre-OF-32), which skips writing it.
 	Tickets func(context.Context) ([]TicketContext, error)
-	refresh sync.Mutex
+	// PiBinary is the pi executable for the RPC execution path; empty keeps
+	// the per-turn claude -p process model.
+	PiBinary string
+	// PiProvider and PiModel select the model tier applied over RPC
+	// (set_model); PiThinking maps to set_thinking_level.
+	PiProvider, PiModel, PiThinking string
+	// PiSessionDir anchors pi session storage; it must outlive individual
+	// Runner instances so a gateway restart resumes conversations.
+	PiSessionDir string
+	// PiConfigDir is a host directory whose models.json/settings.json are
+	// exposed inside the sandbox as pi configuration; credential files are
+	// never bound.
+	PiConfigDir   string
+	PiIdleTimeout time.Duration
+	refresh       sync.Mutex
+	piMu          sync.Mutex
+	piProcs       map[string]*piProc
+	piStop        chan struct{}
 }
 
 func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
+	if r.piEnabled() {
+		return r.piTurn(ctx, t)
+	}
 	flag := "--resume"
 	if !t.Resume {
 		flag = "--session-id"
