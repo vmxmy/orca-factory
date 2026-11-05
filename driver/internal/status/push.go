@@ -24,20 +24,20 @@ func PushPath() string {
 // complete old or new JSON document; cache errors never escape into the driver.
 // Partial writes do not renew the last full scheduler observation.
 func Push(now time.Time, update func(*View)) {
-	if err := push(now, update, false); err != nil {
+	if err := push(now, update, false, time.Time{}); err != nil {
 		log.Print("cannot push driver status snapshot")
 	}
 }
 
 // PushObservation renews freshness after a successful full scheduler snapshot.
 // Executor transitions, quota reads and pause updates must use Push instead.
-func PushObservation(now time.Time, update func(*View)) {
-	if err := push(now, update, true); err != nil {
+func PushObservation(now, observedFrom time.Time, update func(*View)) {
+	if err := push(now, update, true, observedFrom); err != nil {
 		log.Print("cannot push driver status snapshot")
 	}
 }
 
-func push(now time.Time, update func(*View), observation bool) error {
+func push(now time.Time, update func(*View), observation bool, observedFrom time.Time) error {
 	path := PushPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
@@ -61,7 +61,7 @@ func push(now time.Time, update func(*View), observation bool) error {
 	observedAt := view.GeneratedAt
 	before := append([]Ticket(nil), view.Tickets...)
 	update(&view)
-	carryTickets(before, view.Tickets, now)
+	carryTickets(before, view.Tickets, now, observation, observedFrom)
 	if observation {
 		observedAt = now
 	}
@@ -90,7 +90,7 @@ func push(now time.Time, update func(*View), observation bool) error {
 
 // carryTickets keeps each row's title and phase start across rewrites, which
 // rebuild rows from the ledger or from an executor that knows neither.
-func carryTickets(before, after []Ticket, now time.Time) {
+func carryTickets(before, after []Ticket, now time.Time, observation bool, observedFrom time.Time) {
 	previous := make(map[[2]string]Ticket, len(before))
 	for _, t := range before {
 		previous[[2]string{t.Repo, t.Identifier}] = t
@@ -98,14 +98,22 @@ func carryTickets(before, after []Ticket, now time.Time) {
 	for i := range after {
 		t := &after[i]
 		old, ok := previous[[2]string{t.Repo, t.Identifier}]
+		phaseChanged := old.Owner != t.Owner || old.Phase != t.Phase || old.Stage != t.Stage
+		if observation && ok && old.PushedAt.After(observedFrom) && phaseChanged {
+			t.Owner = old.Owner
+			t.Phase = old.Phase
+			t.Stage = old.Stage
+			phaseChanged = false
+		}
 		if t.Title == "" {
 			t.Title = old.Title
 		}
-		if ok && !old.Since.IsZero() && old.Owner == t.Owner && old.Phase == t.Phase && old.Stage == t.Stage {
+		if ok && !old.Since.IsZero() && !phaseChanged {
 			t.Since = old.Since
 		} else {
 			t.Since = now
 		}
+		t.PushedAt = now
 	}
 }
 
