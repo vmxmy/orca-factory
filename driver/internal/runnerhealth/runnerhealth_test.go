@@ -31,8 +31,9 @@ type fakeTickets struct {
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
 	f.created = append(f.created, in)
+	f.state = "open"
 	var t issues.Task
-	t.ID, t.Identifier, t.NativeState = "uuid-1", "GH-900", "open"
+	t.ID, t.Identifier, t.NativeState = "uuid-"+strconv.Itoa(len(f.created)), "GH-900", "open"
 	return t, nil
 }
 func (f *fakeTickets) Read(_ context.Context, id string) (issues.Task, error) {
@@ -53,6 +54,9 @@ func (f *fakeTickets) ListComments(context.Context, string) ([]task.Comment, err
 func (f *fakeTickets) UpdateIssue(_ context.Context, _ string, state string, add, remove []string) (task.Issue, error) {
 	f.updates++
 	f.workflowState = state
+	if state == "Canceled" {
+		f.state = "closed"
+	}
 	f.labels = slices.DeleteFunc(f.labels, func(label string) bool { return slices.Contains(remove, label) })
 	f.labels = append(f.labels, add...)
 	return task.Issue{}, nil
@@ -236,6 +240,24 @@ func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
 	}
 	if rec := readRecord(t, m); len(tickets.comments) != 2 || !strings.Contains(tickets.comments[1], "故障已自行恢复，无需施工") || tickets.updates != 1 || tickets.recoveryReads != 1 || !rec.Recovered || rec.RecoveryStep != "" {
 		t.Fatalf("retry must add only the note: updates=%d reads=%d comments=%q record=%+v", tickets.updates, tickets.recoveryReads, tickets.comments, rec)
+	}
+}
+
+func TestWithdrawalNoteSurvivesReturningOutage(t *testing.T) {
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNoteOnce: true}
+	m, now := outage(t, tickets)
+	if err := m.Poll(context.Background(), now); err == nil {
+		t.Fatal("failed withdrawal note must surface")
+	}
+	writeLease(t, m.StateDir, "registering", now)
+	for _, minutes := range []int{15, 20, 26} {
+		if err := m.Poll(context.Background(), now.Add(time.Duration(minutes)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes := slices.DeleteFunc(slices.Clone(tickets.comments), func(c string) bool { return !strings.Contains(c, "无需施工") })
+	if len(tickets.created) != 2 || len(notes) != 1 || !strings.HasPrefix(notes[0], "uuid-1: ") {
+		t.Fatalf("returning outage dropped the owed note: created=%d comments=%q", len(tickets.created), tickets.comments)
 	}
 }
 

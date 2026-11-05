@@ -84,6 +84,14 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 		due = due || now.Sub(first) >= grace
 	}
 	rec.Since = since
+	// A withdrawn ticket owes its note even when the outage is back, before a
+	// new ticket replaces it in the record.
+	if rec.RecoveryStep == stepWithdrawn {
+		if err := m.recover(ctx, rec, now); err != nil {
+			return errors.Join(err, m.save(rec))
+		}
+		rec.Recovered, rec.RecoveryStep = true, ""
+	}
 	// Reading the ticket costs a full issue listing, so only an action reads it.
 	if due && rec.Ticket != "" {
 		task, err := m.Tickets.Read(ctx, rec.Ticket)
@@ -103,11 +111,7 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 		}
 		rec.Ticket, rec.Identifier, rec.Recovered, rec.RecoveryStep = task.ID, task.Identifier, false, ""
 	case len(problems) > 0:
-		rec.Recovered = false
-		// A withdrawn ticket still owes its note; anything earlier restarts.
-		if rec.RecoveryStep != stepWithdrawn {
-			rec.RecoveryStep = ""
-		}
+		rec.Recovered, rec.RecoveryStep = false, ""
 	case rec.Unconfirmed:
 		rec.Unconfirmed = false
 	case rec.Ticket != "" && !rec.Recovered:
