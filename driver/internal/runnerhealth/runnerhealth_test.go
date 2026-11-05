@@ -3,6 +3,7 @@ package runnerhealth
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,7 @@ type fakeTickets struct {
 	history       []task.Comment
 	updates       int
 	recoveryReads int
+	failNoteOnce  bool
 }
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
@@ -56,6 +58,10 @@ func (f *fakeTickets) UpdateIssue(_ context.Context, _ string, state string, add
 	return task.Issue{}, nil
 }
 func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
+	if f.failNoteOnce && strings.Contains(body, "无需施工") {
+		f.failNoteOnce = false
+		return task.Comment{}, errors.New("comment rejected")
+	}
 	f.comments = append(f.comments, id+": "+body)
 	return task.Comment{}, nil
 }
@@ -88,7 +94,6 @@ func TestStuckRegistrationOpensOneAgentTicketThenCommentsRecovery(t *testing.T) 
 	}{
 		{name: "unclaimed", state: "Todo", labels: []string{"ready-for-agent", "runner"}, wantCancel: true},
 		{name: "auto-impl", state: "Todo", labels: []string{"ready-for-agent", "auto-impl"}},
-		{name: "ownership", state: "Todo", labels: []string{"ready-for-agent"}, history: []task.Comment{{Body: "阶段: gate\n归属: 执行器 term=worker"}}},
 		{name: "in progress", state: "In Progress", labels: []string{"ready-for-agent"}},
 		{name: "not ready", state: "Todo", labels: []string{"runner"}},
 		{name: "completed", state: "Done", labels: []string{"ready-for-agent"}},
@@ -183,5 +188,91 @@ func TestRestartLoopIsAProblem(t *testing.T) {
 	}
 	if len(tickets.created) != 1 || !strings.Contains(tickets.created[0].Description, "NRestarts") {
 		t.Fatalf("restart loop tickets = %+v", tickets.created)
+	}
+}
+
+// outage opens the stuck-registration ticket, then makes every slot healthy.
+func outage(t *testing.T, tickets *fakeTickets) (*Monitor, time.Time) {
+	t.Helper()
+	dir := t.TempDir()
+	start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	writeLease(t, dir, "registering", start)
+	m := &Monitor{StateDir: dir, Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+	for _, minutes := range []int{15, 20, 26, 31} {
+		if err := m.Poll(context.Background(), start.Add(time.Duration(minutes)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeLease(t, dir, "registered", start.Add(32*time.Minute))
+	return m, start.Add(35 * time.Minute)
+}
+
+func readRecord(t *testing.T, m *Monitor) record {
+	t.Helper()
+	b, err := os.ReadFile(m.Record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec record
+	if err := json.Unmarshal(b, &rec); err != nil {
+		t.Fatal(err)
+	}
+	return rec
+}
+
+func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
+	tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, failNoteOnce: true}
+	m, now := outage(t, tickets)
+	if err := m.Poll(context.Background(), now); err == nil {
+		t.Fatal("failed withdrawal note must surface")
+	}
+	if rec := readRecord(t, m); tickets.workflowState != "Canceled" || tickets.updates != 1 || len(tickets.comments) != 1 || rec.RecoveryStep != stepWithdrawn || rec.Recovered {
+		t.Fatalf("after failed note: state=%s updates=%d comments=%q record=%+v", tickets.workflowState, tickets.updates, tickets.comments, rec)
+	}
+	for _, minutes := range []int{5, 10} {
+		if err := m.Poll(context.Background(), now.Add(time.Duration(minutes)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rec := readRecord(t, m); len(tickets.comments) != 2 || !strings.Contains(tickets.comments[1], "故障已自行恢复，无需施工") || tickets.updates != 1 || tickets.recoveryReads != 1 || !rec.Recovered || rec.RecoveryStep != "" {
+		t.Fatalf("retry must add only the note: updates=%d reads=%d comments=%q record=%+v", tickets.updates, tickets.recoveryReads, tickets.comments, rec)
+	}
+}
+
+func TestRecordedOwnershipCommentBlocksWithdrawal(t *testing.T) {
+	for _, name := range []string{"linear-comment-ownership-unregistered.json", "linear-comments-executor-handoff.json"} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var resp struct {
+				Data struct {
+					Issue struct {
+						Comments struct{ Nodes []task.Comment } `json:"comments"`
+					} `json:"issue"`
+				} `json:"data"`
+			}
+			if err := json.Unmarshal(raw, &resp); err != nil {
+				t.Fatal(err)
+			}
+			recorded := resp.Data.Issue.Comments.Nodes
+			unowned := slices.DeleteFunc(slices.Clone(recorded), func(c task.Comment) bool { return strings.Contains(c.Body, "归属: ") })
+			for _, scenario := range []struct {
+				history    []task.Comment
+				wantCancel bool
+			}{{history: recorded}, {history: unowned, wantCancel: true}} {
+				tickets := &fakeTickets{state: "open", workflowState: "Todo", labels: []string{"ready-for-agent"}, history: scenario.history}
+				m, now := outage(t, tickets)
+				if err := m.Poll(context.Background(), now); err != nil {
+					t.Fatal(err)
+				}
+				canceled := tickets.workflowState == "Canceled" && tickets.updates == 1 && len(tickets.comments) == 2
+				untouched := tickets.workflowState == "Todo" && tickets.updates == 0 && len(tickets.comments) == 1 && slices.Equal(tickets.labels, []string{"ready-for-agent"})
+				if (scenario.wantCancel && !canceled) || (!scenario.wantCancel && !untouched) {
+					t.Fatalf("history %d comments, want cancel %v: state=%s labels=%v updates=%d comments=%q", len(scenario.history), scenario.wantCancel, tickets.workflowState, tickets.labels, tickets.updates, tickets.comments)
+				}
+			}
+		})
 	}
 }
