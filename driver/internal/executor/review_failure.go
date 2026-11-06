@@ -148,7 +148,14 @@ func reviewStderr(path string) string {
 		if idx < 0 {
 			return ""
 		}
-		text = dropUnbalancedPrefix(text[idx+1:])
+		headLine, rest := text[:idx+1], text[idx+1:]
+		// The dropped head line may itself open a credential value (the key
+		// sits at the window start): that value runs into the rest, so the
+		// remainder is not provably outside it.
+		if credentialOpener.MatchString(runx.StripANSI(headLine)) {
+			return ""
+		}
+		text = dropUnbalancedPrefix(rest)
 		for len(text) > 0 && !utf8.RuneStart(text[0]) {
 			text = text[1:]
 		}

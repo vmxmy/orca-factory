@@ -365,6 +365,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if upperTail := reviewStderr(upperEdge); upperTail != "" {
 		t.Errorf("uppercase key cut at the window edge must drop the capture, got %q", upperTail)
 	}
+	// The credential key may sit at the window start: the dropped head line
+	// opens the value and everything after it is the value body.
+	headOpens := filepath.Join(dir, "head-opens.stderr")
+	headBody := "\npassword='" + strings.Repeat("h", 64<<10) + "\nSENSITIVE_HEAD_FRAGMENT'\nprovider unavailable\n"
+	if err := os.WriteFile(headOpens, []byte(headBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if headTail := reviewStderr(headOpens); headTail != "" {
+		t.Errorf("head line opening a credential must drop the capture, got %q", headTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
