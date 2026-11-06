@@ -78,6 +78,24 @@ func TestWriteLogsRecordedANSI(t *testing.T) {
 	}
 }
 
+func TestPanelSampleMatchesRecordedLedger(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/ledger-comments-deployment-retry-workflow.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, raw); err != nil {
+		t.Fatal(err)
+	}
+	panelSample, err := os.ReadFile("../../../.claude/skills/ziikoo-driver/test/sample-recorded.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(panelSample, compact.Bytes()) {
+		t.Fatal("panel recorded-ledger sample differs from the recorded file")
+	}
+}
+
 func TestLogsCommand(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)
