@@ -103,7 +103,8 @@ const poll = async (kind: 'status' | 'config') => {
 const files: Record<string, { path: string; type: string }> = {
   '/scene.js': { path: 'scene.js', type: 'text/javascript; charset=utf-8' },
   '/town.mjs': { path: 'town.mjs', type: 'text/javascript; charset=utf-8' },
-  '/draw.mjs': { path: 'draw.mjs', type: 'text/javascript; charset=utf-8' },
+  ...Object.fromEntries(['index', 'shell', 'primitives', 'town', 'equipment', 'workshop', 'navigation', 'details', 'camera', 'controls', 'geometry'].map(name => [`/components/${name}.mjs`, {path:`components/${name}.mjs`, type:'text/javascript; charset=utf-8'}])),
+  '/components/shared.css': {path:'components/shared.css', type:'text/css; charset=utf-8'},
 }
 
 const listen = (listenPort: number) => {

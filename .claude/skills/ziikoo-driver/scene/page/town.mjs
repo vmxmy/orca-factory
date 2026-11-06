@@ -1,3 +1,8 @@
+const geometryURL = new URL('./components/geometry.mjs', import.meta.url)
+const token = new URL(import.meta.url).searchParams.get('t')
+if (token) geometryURL.searchParams.set('t', token)
+const {stages} = await import(geometryURL.href)
+
 export const stations = {
   pickup: ['领取', '领料公告板与箱筐架，显示等待领取的真实票据。'],
   work: ['施工', '锻造炉与铁砧，执行器正在实现或修改代码。'],
@@ -20,41 +25,35 @@ export const parcelKey = (project, identifier) => JSON.stringify([project, ident
 export function townLayout(rows) {
   const projects = new Map()
   const ordered = rows.map((row, index) => {
-    const x = rows.length === 1 ? 0 : index % 2 === 0 ? -175 : 175
-    const y = rows.length === 1 ? 0 : Math.floor(index / 2) * 250
-    const project = { path: row.path, x, y, width: 260, height: 244, row, index }
+    const x = rows.length === 1 ? 520 : index % 2 === 0 ? 290 : 760
+    const y = rows.length === 1 ? 330 : 245 + Math.floor(index / 2) * 320
+    const project = { path: row.path, x, y, width: 294, height: 285, row, index }
     projects.set(row.path, project)
     return project
   })
-  return { projects, ordered, bounds: { x: -330, y: -120, width: 660, height: Math.max(260, Math.ceil(rows.length / 2) * 250) } }
+  return { projects, ordered, bounds: { x: 0, y: 0, width: 1040, height: Math.max(760, (ordered.at(-1)?.y || 245) + 280) } }
 }
 
 export function visibleProjects(layout, viewport) {
-  const start = Math.max(0, Math.floor((viewport.y - 110) / 250)) * 2
-  const end = Math.min(layout.ordered.length, (Math.ceil((viewport.y + viewport.height + 110) / 250) + 1) * 2)
-  return layout.ordered.slice(start, Math.max(start, end)).filter(project => project.x + 140 >= viewport.x && project.x - 140 <= viewport.x + viewport.width)
+  return layout.ordered.filter(project => project.x + 190 >= viewport.x && project.x - 190 <= viewport.x + viewport.width && project.y + 160 >= viewport.y && project.y - 150 <= viewport.y + viewport.height)
 }
 
 export function workshopLayout(row) {
   const groups = new Map(Object.keys(stations).map(station => [station, []]))
   for (const parcel of row.parcels) groups.get(stationOf(parcel.station)).push(parcel)
-  const band = keys => Math.max(1, ...keys.map(station => Math.ceil(groups.get(station).length / 4))) * 44
-  const lower = 140 + band(mainline.slice(0, 4)) + 200
-  const branch = lower + band(mainline.slice(4)) + 200
-  const nodes = new Map()
-  for (const [index, station] of mainline.entries()) nodes.set(station, { station, x: index < 4 ? 140 + index * 220 : 140 + (7 - index) * 220, y: index < 4 ? 140 : lower })
-  for (const [index, station] of ['repair', 'return', 'human', 'unknown'].entries()) nodes.set(station, { station, x: 140 + index * 220, y: branch })
+  const nodes = new Map(Object.entries(stages).map(([station, point]) => [station, {station, x:point.x, y:point.y}]))
+  nodes.set('unknown', {station:'unknown', x:520, y:720})
   const parcels = new Map()
   for (const [station, tickets] of groups) {
     const node = nodes.get(station)
-    tickets.forEach((parcel, index) => parcels.set(parcelKey(row.path, parcel.identifier), { x: node.x + index % 4 * 34, y: node.y + 85 + Math.floor(index / 4) * 44, station, parcel }))
+    tickets.forEach((parcel, index) => parcels.set(parcelKey(row.path, parcel.identifier), { x: node.x + (index % 4 - (Math.min(tickets.length,4)-1)/2) * 62 * (node.y === 285 ? -1 : 1), y: node.y + Math.floor(index / 4) * 44, station, parcel }))
     node.count = tickets.length
     node.parcelRows = Math.max(1, Math.ceil(tickets.length / 4))
   }
-  return { nodes, parcels, bounds: { x: 0, y: 20, width: 980, height: branch + band(['repair', 'return', 'human', 'unknown']) + 130 } }
+  return { nodes, parcels, bounds: { x: 0, y: 0, width: 1040, height: Math.max(760,...[...parcels.values()].map(point=>point.y+50)) } }
 }
 
-const lane = node => ({ x: node.x, y: node.y + 85 })
+const lane = node => ({ x: node.x, y: node.y })
 const elbow = (from, to) => from.x === to.x || from.y === to.y ? [to] : [{ x: to.x, y: from.y }, to]
 
 const ortho = nodes => nodes.length < 2 ? [...nodes] : nodes.slice(1).reduce((chain, node) => [...chain, ...elbow(chain.at(-1), node)], [nodes[0]])
@@ -70,12 +69,17 @@ export function travelPath(layout, source, target) {
   if (fromIndex >= 0 && toIndex >= 0) {
     const route = [start]
     const step = fromIndex < toIndex ? 1 : -1
-    for (let index = fromIndex + step; index !== toIndex + step; index += step) route.push(...elbow(route.at(-1), lane(layout.nodes.get(mainline[index]))))
+    for (let index = fromIndex + step; index !== toIndex + step; index += step) {
+      const target = lane(layout.nodes.get(mainline[index]))
+      if ((index === 4 && step === 1) || (index === 3 && step === -1)) route.push({x:948,y:route.at(-1).y},{x:948,y:target.y})
+      route.push(...elbow(route.at(-1), target))
+    }
     return route
   }
   const work = lane(layout.nodes.get('work'))
-  const branchY = layout.nodes.get('return').y + 35
-  const branchRoute = node => [lane(node), { x: node.x, y: branchY }, { x: 30, y: branchY }, { x: 30, y: work.y + 45 }, { x: work.x, y: work.y + 45 }, work]
+  const branchY = layout.nodes.get('return').y
+  if (from === 'gate' && to === 'repair' || from === 'review' && to === 'return') return ortho([start,{x:start.x,y:branchY},finish])
+  const branchRoute = node => ortho([lane(node), {x:node.x,y:branchY}, {x:work.x,y:branchY}, work])
   const first = fromIndex < 0 ? branchRoute(layout.nodes.get(from)) : travelPath(layout, from, 'work')
   const last = toIndex < 0 ? branchRoute(layout.nodes.get(to)).reverse() : travelPath(layout, 'work', to)
   return [...first, ...last.slice(1)]
@@ -220,7 +224,7 @@ const flightCandidates = (start, end, serviceY, columns) => {
 
 export function reconcile(state, scene, { now = 0, fresh = false, reduced = false } = {}) {
   const signature = JSON.stringify(scene)
-  if (signature === state.signature && !fresh && !reduced) return state
+  if (signature === state.signature && !fresh && (!reduced || state.motions.size === 0)) return state
   const next = { ...state, scene, signature, motions: fresh || reduced ? new Map() : new Map(state.motions) }
   const projects = townLayout(scene.rows)
   const previousRow = state.scene?.rows.find(row => row.path === state.project)
@@ -310,7 +314,7 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
         const serviceNodes = new Map([...layout.nodes].map(([station, node]) => {
           const index = mainline.indexOf(station)
           const serviceY = index < 0 ? layout.nodes.get('return').y + 35 : index < 4 ? upperY - PARCEL_CLEARANCE : layout.nodes.get('return').y - 35
-          return [station, { ...node, x: ['review', 'pack'].includes(station) ? Math.max(800, east) + PARCEL_CLEARANCE : node.x, y: serviceY - 85 }]
+          return [station, { ...node, x: ['review', 'pack'].includes(station) ? Math.max(880, east) + PARCEL_CLEARANCE : node.x, y: serviceY }]
         }))
         const service = travelPath({ nodes: serviceNodes }, source, target)
         const entry = local(from, service[0])
