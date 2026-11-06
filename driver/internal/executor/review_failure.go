@@ -96,20 +96,51 @@ func reviewStderr(path string) string {
 	text := string(data)
 	if offset > 0 {
 		// A captured window that starts inside a line cannot prove its own
-		// redaction boundaries: the fragment may begin mid-credential. Drop
-		// every partial line, keeping only lines that started in the file.
-		// When no newline exists, the whole capture is one truncated line.
+		// redaction boundaries: the fragment may begin mid-credential, and a
+		// quoted value opened before the window can straddle into it. Drop
+		// the partial head line, then drop leading lines until quote parity
+		// settles, plus the line where it settles: that line may hold the
+		// value's closing tail.
 		idx := strings.IndexByte(text, '\n')
 		if idx < 0 {
 			return ""
 		}
-		text = text[idx+1:]
+		text = dropUnbalancedPrefix(text[idx+1:])
 		for len(text) > 0 && !utf8.RuneStart(text[0]) {
 			text = text[1:]
 		}
 		if text == "" {
 			return ""
 		}
+	}
+	return text
+}
+
+// dropUnbalancedPrefix removes leading lines while a quoted value opened
+// before the capture may still be open, plus the line that closes it: that
+// line can hold the value's tail without its key.
+// dropUnbalancedPrefix publishes only when quote parity is even at every line
+// boundary from the window start: a value opened before the window is
+// indistinguishable from one opened on the first line, so any odd boundary
+// forfeits the whole capture. An all-even window keeps its first line.
+func dropUnbalancedPrefix(text string) string {
+	var dq, sq int
+	for i := 0; i < len(text); i++ {
+		switch text[i] {
+		case '\\':
+			i++
+		case '"':
+			dq ^= 1
+		case '\'':
+			sq ^= 1
+		case '\n':
+			if dq != 0 || sq != 0 {
+				return ""
+			}
+		}
+	}
+	if dq != 0 || sq != 0 {
+		return ""
 	}
 	return text
 }

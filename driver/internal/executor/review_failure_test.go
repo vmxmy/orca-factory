@@ -242,6 +242,17 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if !strings.Contains(finalTail, "last diagnostic line without newline") {
 		t.Errorf("complete trailing line was lost: %q", tail)
 	}
+	// A quoted credential opened before the capture window straddles into it:
+	// the closing line holds the value's tail without its key, and parity
+	// cannot prove where the value ends, so the capture is dropped wholesale.
+	straddled := filepath.Join(dir, "straddle.stderr")
+	straddleBody := `password="` + strings.Repeat("p", 70<<10) + "\nsynthetic-multiline-tail\"\nprovider unavailable\n"
+	if err := os.WriteFile(straddled, []byte(straddleBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if straddleTail := reviewStderr(straddled); straddleTail != "" {
+		t.Errorf("straddling multiline credential must drop the whole capture, got %q", straddleTail)
+	}
 }
 
 func TestReviewFailureClass(t *testing.T) {
