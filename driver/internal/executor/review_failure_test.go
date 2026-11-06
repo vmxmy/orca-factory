@@ -297,6 +297,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if singleTail := reviewStderr(singleStraddle); singleTail != "" {
 		t.Errorf("single-quoted straddling credential must drop the capture, got %q", singleTail)
 	}
+	// The window may start exactly at the value's opening quote: the prefix
+	// ends right after the assignment and the first dropped line is the value.
+	edgeStraddle := filepath.Join(dir, "edge.stderr")
+	edgeBody := `password="` + strings.Repeat("e", 64<<10) + "\nsynthetic-edge-tail\n"
+	if err := os.WriteFile(edgeStraddle, []byte(edgeBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if edgeTail := reviewStderr(edgeStraddle); edgeTail != "" {
+		t.Errorf("window starting at the opening quote must drop the capture, got %q", edgeTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"

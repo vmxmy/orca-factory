@@ -160,7 +160,8 @@ func reviewStderr(path string) string {
 }
 
 // credentialStraddlesWindow reports whether a quoted credential value opened
-// in the prefix before the capture window never closes before the window:
+// in the prefix before the capture window never closes before the window, or
+// an assignment ends exactly at the window edge with its quote still to come:
 // the window then starts inside the value body and nothing is publishable.
 // Prose apostrophes do not arm the state machine; only a credential key or
 // flag followed by an opening quote does.
@@ -172,21 +173,29 @@ func credentialStraddlesWindow(file *os.File, offset int64) bool {
 	if err != nil {
 		return true
 	}
+	text := string(prefix)
 	from := 0
 	for {
-		loc := credentialOpener.FindStringIndex(string(prefix[from:]))
+		loc := credentialOpener.FindStringIndex(text[from:])
 		if loc == nil {
-			return false
+			break
 		}
 		valueStart := from + loc[1]
-		quote := prefix[valueStart-1]
-		closer := closingQuoteIndex(string(prefix), valueStart, quote)
+		quote := text[valueStart-1]
+		closer := closingQuoteIndex(text, valueStart, quote)
 		if closer < 0 {
 			return true
 		}
 		from = closer + 1
 	}
+	// The prefix may end right after a credential assignment, with the value's
+	// opening quote at the window start: the first dropped line is the value.
+	return credentialAssignmentTail.MatchString(text[from:])
 }
+
+// credentialAssignmentTail matches a credential key or flag whose value has
+// not started yet at the scan position.
+var credentialAssignmentTail = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*(?:=|\s+)|(?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?$`)
 
 // dropUnbalancedPrefix publishes only when double-quote parity is even at
 // every line boundary and at EOF: a value opened before the window is
