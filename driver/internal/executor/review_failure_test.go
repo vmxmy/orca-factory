@@ -287,7 +287,17 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if unclosedTail := reviewStderr(unclosedStraddle); unclosedTail != "" {
 		t.Errorf("unclosed straddling credential must drop the capture, got %q", unclosedTail)
 	}
-	// Prose apostrophes must not forfeit the capture: only double quotes gate.
+	// A single-quoted credential straddling the window start is dropped too:
+	// prose apostrophes alone never arm the straddle check.
+	singleStraddle := filepath.Join(dir, "single-straddle.stderr")
+	singleBody := `password='` + strings.Repeat("s", 70<<10) + "\nsynthetic-single-tail'\nprovider unavailable\n"
+	if err := os.WriteFile(singleStraddle, []byte(singleBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if singleTail := reviewStderr(singleStraddle); singleTail != "" {
+		t.Errorf("single-quoted straddling credential must drop the capture, got %q", singleTail)
+	}
+	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
 	if err := os.WriteFile(apostrophe, []byte(apostropheBody), 0o600); err != nil {

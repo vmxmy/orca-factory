@@ -125,9 +125,9 @@ func reviewStderr(path string) string {
 	}
 	const capture = 64 << 10
 	offset := max(0, info.Size()-capture)
-	if offset > 0 && oddQuoteParity(file, offset) {
-		// The window begins inside a quoted value that opened earlier and may
-		// never close in-window: nothing here can be published.
+	if offset > 0 && credentialStraddlesWindow(file, offset) {
+		// The window begins inside a quoted credential value that opened
+		// earlier and never closed before the window: nothing is publishable.
 		return ""
 	}
 	if _, err = file.Seek(offset, io.SeekStart); err != nil {
@@ -159,39 +159,33 @@ func reviewStderr(path string) string {
 	return text
 }
 
-// oddQuoteParity reports whether the prefix before the capture window holds an
-// odd number of unescaped double quotes, meaning the window may start inside
-// a quoted value. Single quotes are prose apostrophes too often to gate on.
-func oddQuoteParity(file *os.File, offset int64) bool {
+// credentialStraddlesWindow reports whether a quoted credential value opened
+// in the prefix before the capture window never closes before the window:
+// the window then starts inside the value body and nothing is publishable.
+// Prose apostrophes do not arm the state machine; only a credential key or
+// flag followed by an opening quote does.
+func credentialStraddlesWindow(file *os.File, offset int64) bool {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return true
 	}
-	var dq int
-	escaped := false
-	buf := make([]byte, 32<<10)
-	var read int64
-	for read < offset {
-		want := offset - read
-		if want > int64(len(buf)) {
-			want = int64(len(buf))
+	prefix, err := io.ReadAll(io.LimitReader(file, offset))
+	if err != nil {
+		return true
+	}
+	from := 0
+	for {
+		loc := credentialOpener.FindStringIndex(string(prefix[from:]))
+		if loc == nil {
+			return false
 		}
-		n, err := file.Read(buf[:want])
-		if n == 0 || err != nil {
+		valueStart := from + loc[1]
+		quote := prefix[valueStart-1]
+		closer := closingQuoteIndex(string(prefix), valueStart, quote)
+		if closer < 0 {
 			return true
 		}
-		for i := 0; i < n; i++ {
-			switch {
-			case escaped:
-				escaped = false
-			case buf[i] == '\\':
-				escaped = true
-			case buf[i] == '"':
-				dq ^= 1
-			}
-		}
-		read += int64(n)
+		from = closer + 1
 	}
-	return dq != 0
 }
 
 // dropUnbalancedPrefix publishes only when double-quote parity is even at
