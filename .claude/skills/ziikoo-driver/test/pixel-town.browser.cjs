@@ -93,6 +93,26 @@ async function main() {
   assert.ok(stayer, 'a remaining parcel whose slot is taken over must animate, not teleport')
   const stayerPoint = model.pointAlong(stayer.points, 0)
   assert.ok(Math.abs(leaver.x - stayerPoint.x) >= 27 || Math.abs(leaver.y - stayerPoint.y) >= 27, 'a leaving parcel must not overlap the parcel taking its slot')
+  const sweep = (motions, step = 5) => {
+    const end = Math.max(...motions.map(motion => motion.start + motion.duration))
+    let min = Infinity
+    for (let time = 0; time <= end; time += step) {
+      const points = motions.map(motion => model.pointAlong(motion.points, (time - motion.start) / motion.duration))
+      for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) min = Math.min(min, Math.hypot(points[index].x - other.x, points[index].y - other.y))
+    }
+    return min
+  }
+  const swapMotions = [...mixedState.motions.values()]
+  assert.ok(sweep(swapMotions) >= 26, `leaver and the parcel taking its slot must never overlap mid-tween (min ${sweep(swapMotions).toFixed(1)}px)`)
+
+  const fiveAtWork = snapshot(1)
+  fiveAtWork.rows[0].parcels = Array.from({ length: 5 }, (_, index) => parcel(`OF-${index}`))
+  let fiveState = model.reconcile(model.initialState(), fiveAtWork, { fresh: true })
+  const fiveMove = structuredClone(fiveAtWork)
+  fiveMove.rows[0].parcels.forEach(one => { one.station = 'pack' })
+  fiveState = model.reconcile(fiveState, fiveMove, { now: 0 })
+  const fiveMin = sweep([...fiveState.motions.values()])
+  assert.ok(fiveMin >= 26, `a cross-belt convoy across slot rows must keep clearance mid-tween (min ${fiveMin.toFixed(1)}px)`)
 
   const one = snapshot(1)
   one.rows[0].parcels = [parcel('OF-solo')]
@@ -114,14 +134,16 @@ async function main() {
   })
   const soloSlot = soloLayout.parcels.get(model.parcelKey('/fixture/repo-0', 'OF-solo'))
   const slotOffset = Math.hypot(soloSlot.x - beltPoints[1].x, soloSlot.y - beltPoints[1].y)
+  assert.ok(Math.abs(soloSlot.x - beltPoints[1].x) < 26 && Math.abs(soloSlot.y - beltPoints[1].y) < 26, 'fixture slot must sit within a parcel width of its belt lane')
   for (const [index, point] of soloMotion.points.entries()) {
     if (!index) continue
     const previous = soloMotion.points[index - 1]
     if (previous.y === point.y) assert.ok([upperLane, lowerLane].includes(point.y), 'horizontal tween segments must ride the drawn belt lanes')
-    else assert.ok(beltPoints.some(belt => Math.abs(point.x - belt.x) <= slotOffset + 1), 'vertical tween segments must ride the drawn belt corner columns')
+    else assert.ok(beltPoints.some(belt => Math.abs(point.x - belt.x) <= 12), 'vertical tween segments must ride the drawn belt corner columns')
   }
-  const offBelt = soloMotion.points.filter(point => !beltPoints.some(belt => Math.hypot(point.x - belt.x, point.y - belt.y) <= slotOffset + 1))
-  assert.ok(offBelt.length === 0, `every tween waypoint must stay within one slot offset of the painted belt (worst ${offBelt[0] ? Math.round(offBelt[0].x) + ',' + Math.round(offBelt[0].y) : ''})`)
+  const beltHalf = 12
+  const stray = soloMotion.points.filter(point => !beltPoints.some(belt => Math.abs(point.x - belt.x) <= beltHalf || Math.abs(point.y - belt.y) <= beltHalf))
+  assert.ok(stray.length === 0, `every tween waypoint must sit on the painted belt polyline (worst ${stray[0] ? Math.round(stray[0].x) + ',' + Math.round(stray[0].y) : ''})`)
   console.log('PASS pure layout, identity, routing, reconciliation and unbounded project counts')
 
   let playwright

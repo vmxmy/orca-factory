@@ -4,7 +4,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { RECORDED_CONFIG, RECORDED_STATUS } from './sample-recorded'
+import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -66,4 +66,21 @@ test('sceneOf 消费真实录制的 status/config 快照', () => {
   expect(resolved?.station).toBe('repair')
   expect(resolved?.tone).toBe('attention')
   expect(factory?.deploy).toBe(true)
+})
+
+test('sceneOf 消费还原的部署屏障与未知阶段录制快照', () => {
+  const runtime = parseRuntime(RECORDED_DEPLOY_STATUS)
+  const scene = sceneOf(runtime, parseConfig(RECORDED_CONFIG))
+  const row = scene.rows.find(one => one.name === 'zhiyun-ai-dashboard')
+  const barrier = row?.parcels.find(one => one.identifier === 'ZY-365')
+  expect(barrier?.station).toBe('dispatch')
+  expect(barrier?.tone).toBe('current')
+  expect(barrier?.label).toBe('等部署')
+  expect(barrier?.deployment).toBe('pending')
+  expect(barrier?.blocker).toBe('deployment: pending')
+  const unmapped = row?.parcels.find(one => one.identifier === 'ZY-366')
+  expect(unmapped?.station).toBe('unknown')
+  expect(unmapped?.tone).toBe('attention')
+  expect(unmapped?.label).toBe('准备镜像')
+  expect(unmapped?.unknownDeploy).toBe(false)
 })

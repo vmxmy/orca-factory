@@ -47,7 +47,7 @@ export function workshopLayout(row) {
   const parcels = new Map()
   for (const [station, tickets] of groups) {
     const node = nodes.get(station)
-    tickets.forEach((parcel, index) => parcels.set(parcelKey(row.path, parcel.identifier), { x: node.x - 51 + index % 4 * 34, y: node.y + 85 + Math.floor(index / 4) * 44, station, parcel }))
+    tickets.forEach((parcel, index) => parcels.set(parcelKey(row.path, parcel.identifier), { x: node.x + index % 4 * 34, y: node.y + 85 + Math.floor(index / 4) * 44, station, parcel }))
     node.count = tickets.length
     node.parcelRows = Math.max(1, Math.ceil(tickets.length / 4))
   }
@@ -94,6 +94,36 @@ export function pointAlong(points, progress) {
 
 export const initialState = () => ({ scene: null, signature: '', project: null, selection: null, view: 'town', camera: { x: 0, y: 0, zoom: 1 }, motions: new Map() })
 
+// Every parcel rides the belt at one speed, so a convoy keeps its spacing and
+// crossing traffic never depends on per-parcel timing. A parcel whose slot row
+// is being crossed, or one moving backward on the mainline, dips to a service
+// row below the lane instead of meeting oncoming parcels.
+const BELT_PX_PER_MS = 0.45
+const SERVICE_ROW_OFFSET = 44
+const PARCEL_CLEARANCE = 26
+
+const pathLength = points => points.reduce((sum, node, index) => index ? sum + Math.hypot(node.x - points[index - 1].x, node.y - points[index - 1].y) : 0, 0)
+
+const dedupe = nodes => nodes.filter((node, index) => index === 0 || node.x !== nodes[index - 1].x || node.y !== nodes[index - 1].y)
+
+const onSegment = (a, b, c) => (a.x - c.x) * (b.x - c.x) <= 0 && (a.y - c.y) * (b.y - c.y) <= 0 && (a.x === b.x || a.y === b.y)
+
+// A slot that sits on a straight belt run does not need the corner beyond it.
+const trimDock = nodes => {
+  const list = [...nodes]
+  while (list.length > 2 && onSegment(list[1], list[2], list[0])) list.splice(1, 1)
+  while (list.length > 2 && onSegment(list.at(-3), list.at(-2), list.at(-1))) list.splice(list.length - 2, 1)
+  return list
+}
+
+const nearSegment = (a, b, point) => {
+  const within = (value, low, high) => value >= Math.min(low, high) - PARCEL_CLEARANCE && value <= Math.max(low, high) + PARCEL_CLEARANCE
+  return a.y === b.y && Math.abs(a.y - point.y) < PARCEL_CLEARANCE && within(point.x, a.x, b.x)
+    || a.x === b.x && Math.abs(a.x - point.x) < PARCEL_CLEARANCE && within(point.y, a.y, b.y)
+}
+
+const serviceDetour = (start, point) => dedupe([start, { x: start.x, y: start.y + SERVICE_ROW_OFFSET }, { x: point.x, y: point.y + SERVICE_ROW_OFFSET }, point])
+
 export function reconcile(state, scene, { now = 0, fresh = false, reduced = false } = {}) {
   const signature = JSON.stringify(scene)
   if (signature === state.signature && !fresh && !reduced) return state
@@ -120,6 +150,7 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
   }
   if (!fresh && !reduced && previousRow) {
     const previous = workshopLayout(previousRow)
+    const drafted = new Map()
     for (const [key, point] of layout.parcels) {
       const old = previous.parcels.get(key)
       if (!old) continue
@@ -128,23 +159,67 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
       const moved = old.station !== point.station
       const displaced = old.x !== point.x || old.y !== point.y
       if (!moved && !displaced) continue
-      // Parcels rest beside their station's belt lane. The tween rides the
-      // parcel slot row for the long segments (parallel to the painted belt, so
-      // a convoy keeps its spacing instead of collapsing onto the lane) and
-      // uses the painted belt lane itself for the corner steps between rows,
-      // so every turn happens on the belt the eye can see.
+      // Parcels rest beside their station's belt lane. A lone mover rides the
+      // painted belt: long runs on the belt lane itself, corners at the belt's
+      // node columns, and only the docking steps between lane and slot row
+      // leave it. When several parcels move at once, each rides a same-shaped
+      // path translated by its own slot offset (rigid convoy): equal speed and
+      // equal length keep the grid spacing between them for the whole tween,
+      // so simultaneous parcels can never bunch on a shared corner.
+      drafted.set(key, { start, point, moved, duration: 0, points: null })
+    }
+    const moverCount = [...drafted.values()].filter(one => one.moved).length
+    for (const [key, draft] of drafted) {
       let points
-      if (moved) {
-        const route = travelPath(layout, old.station, point.station)
-        const offset = { x: start.x - route[0].x, y: start.y - route[0].y }
-        const riding = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
-        const step = (from, to) => (Math.abs(from.x - to.x) + Math.abs(from.y - to.y) ? [...elbow(from, to), to] : [])
-        const core = [start, ...step(start, riding[0]), ...riding.slice(1), ...step(route.at(-1), point)]
-        points = core.filter((node, index) => index === 0 || node.x !== core[index - 1].x || node.y !== core[index - 1].y)
+      if (!draft.moved) {
+        points = [draft.start, ...elbow(draft.start, draft.point), draft.point]
+      } else if (moverCount === 1) {
+        const route = travelPath(layout, stationOf(previous.parcels.get(key).station), draft.point.station)
+        const fromIndex = mainline.indexOf(stationOf(previous.parcels.get(key).station))
+        const toIndex = mainline.indexOf(stationOf(draft.point.station))
+        const backward = fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex
+        const shifted = backward
+          ? route.map((node, index) => index > 0 && index < route.length - 1 && route[index - 1].y === node.y && route[index + 1].y === node.y ? { ...node, y: node.y + SERVICE_ROW_OFFSET } : node)
+          : route
+        const merged = backward
+          ? dedupe([draft.start, ...elbow(draft.start, { x: draft.start.x, y: draft.start.y + SERVICE_ROW_OFFSET }), { x: shifted.at(-1).x, y: shifted.at(-1).y + SERVICE_ROW_OFFSET }, { x: draft.point.x, y: draft.point.y + SERVICE_ROW_OFFSET }, draft.point])
+          : dedupe([draft.start, { x: shifted[0].x, y: draft.start.y }, ...shifted, { x: draft.point.x, y: shifted.at(-1).y }, draft.point])
+        const trimmed = trimDock(merged)
+        points = trimmed.length > 1 ? trimmed : merged
       } else {
-        points = [start, ...elbow(start, point), point]
+        // Convoy: every mover follows the same L as the belt-lane route,
+        // translated by its own slot offset from its own belt lane, so the
+        // convoy's shape is the resting grid's shape for the whole tween.
+        const route = travelPath(layout, stationOf(previous.parcels.get(key).station), draft.point.station)
+        const offset = { x: draft.start.x - route[0].x, y: draft.start.y - route[0].y }
+        const target = { x: draft.point.x - (route.at(-1).x - route[0].x) - offset.x + draft.start.x - draft.start.x, y: draft.point.y }
+        void target
+        const riding = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
+        points = dedupe([draft.start, ...riding.slice(1), draft.point])
       }
-      next.motions.set(key, { points, start: now, duration: moved ? 1800 : 600 })
+      drafted.set(key, { ...draft, points })
+    }
+    // Same-row swaps are geometrically unsafe at equal speed (the parcels meet
+    // head-on on their shared row), so a displaced parcel whose slot another
+    // drafted parcel ends on waits for it, instead of passing through it.
+    for (const [key, draft] of drafted) {
+      if (draft.moved) continue
+      const taken = [...drafted.values()].some(other => other !== draft && other.point.x === draft.point.x && other.point.y === draft.point.y)
+      if (!taken) continue
+      const swapDetour = serviceDetour(draft.points[0], draft.points.at(-1))
+      drafted.set(key, { ...draft, points: swapDetour, start: draft.start, duration: pathLength(swapDetour) / BELT_PX_PER_MS })
+    }
+    for (const [key, draft] of drafted) {
+      let begin = draft.start
+      for (const [otherKey, other] of drafted) {
+        if (otherKey === key) continue
+        const crossing = other.points.slice(1).some((node, index) => nearSegment(other.points[index], node, draft.points[0]))
+          || other.points.slice(1).some((node, index) => nearSegment(other.points[index], node, draft.points.at(-1)))
+        const swap = other.points[0].x === draft.point.x && other.points[0].y === draft.point.y
+        if (crossing || swap) begin = Math.max(begin, other.start + other.duration)
+      }
+      const duration = Math.max(240, Math.round(pathLength(draft.points) / BELT_PX_PER_MS))
+      next.motions.set(key, { points: draft.points, start: begin, duration })
     }
   }
   return next
