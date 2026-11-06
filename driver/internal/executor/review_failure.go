@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -79,8 +80,15 @@ func reviewStderr(path string) string {
 		return ""
 	}
 	text := string(data)
-	if offset > 0 {
-		_, text, _ = strings.Cut(text, "\n")
+	if offset > 0 && len(text) > 0 {
+		// Truncation must not start mid-rune; a single diagnostic line longer
+		// than the capture survives by keeping the bounded fragment itself.
+		for !utf8.RuneStart(text[0]) {
+			text = text[1:]
+		}
+		if idx := strings.IndexByte(text, '\n'); idx >= 0 && idx+1 < len(text) {
+			text = text[idx+1:]
+		}
 	}
 	return text
 }

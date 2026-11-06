@@ -1,0 +1,3 @@
+stream error: provider upstream unavailable after retry
+Authorization: Bearer ghp_recordedsample0000
+API_KEY=recorded-sample-key

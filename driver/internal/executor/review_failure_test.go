@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +94,85 @@ func TestReviewFailureEvidence(t *testing.T) {
 			t.Fatalf("stderr tail was lost or unbounded: %v", err)
 		}
 	})
+}
+
+// recordedReviewFailure replays a recorded reviewer failure through the real
+// Review wrapper: the sample's stderr is delivered on fd 2 via the same
+// `2> "$2.stderr"` redirection the wrapper installs in production.
+func recordedReviewFailure(t *testing.T, sample string) error {
+	t.Helper()
+	base := "../../testdata/recorded/reviewer-fail-stderr-" + sample
+	abs, err := filepath.Abs(base + ".txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	exit, absErr := filepath.Abs(base + ".exit")
+	if absErr != nil {
+		t.Fatal(absErr)
+	}
+	commands := &Commands{ReviewerCommand: `sh -c 'cat "$1" >&2; exit "$2"' reviewer ` + strconv.Quote(abs) + " " + strconv.Quote(readTrimmed(t, exit))}
+	commands.Run = withReviewerRole(t, func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path == "git" {
+			return []byte("diff"), nil
+		}
+		return runx.Run(ctx, spec)
+	})
+	_, _, reviewErr := commands.Review(context.Background(), t.TempDir(), "base", "head", nil)
+	return reviewErr
+}
+
+func readTrimmed(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func TestReviewFailureEvidenceRecorded(t *testing.T) {
+	code := readTrimmed(t, "../../testdata/recorded/reviewer-fail-stderr-nonzero.exit")
+	failure := recordedReviewFailure(t, "nonzero")
+	var classified *reviewFailure
+	if !errors.As(failure, &classified) {
+		t.Fatalf("recorded failure must stay classified, got %T", failure)
+	}
+	if classified.class != "nonzero_exit" || strconv.Itoa(classified.exitCode) != code {
+		t.Fatalf("recorded sample classified %s exit=%d, want nonzero_exit exit=%s", classified.class, classified.exitCode, code)
+	}
+	for _, want := range []string{"stream error: provider upstream unavailable", "[REDACTED]"} {
+		if !strings.Contains(failure.Error(), want) {
+			t.Errorf("recorded evidence %q lacks %q", failure.Error(), want)
+		}
+	}
+	for _, secret := range []string{"ghp_recordedsample0000", "recorded-sample-key"} {
+		if strings.Contains(failure.Error(), secret) {
+			t.Errorf("recorded evidence exposed %q", secret)
+		}
+	}
+	empty := recordedReviewFailure(t, "empty")
+	if !errors.As(empty, &classified) || classified.class != "empty_output" || classified.exitCode != 0 {
+		t.Fatalf("recorded empty sample misclassified: %v", empty)
+	}
+	if !strings.Contains(empty.Error(), "session ended without final message") {
+		t.Errorf("recorded empty evidence lost diagnostics: %v", empty)
+	}
+}
+
+func TestReviewStderrKeepsSingleLongLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "long.stderr")
+	line := strings.Repeat("x", 70<<10)
+	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tail := reviewStderr(path)
+	if len(tail) == 0 || len(tail) > 64<<10 {
+		t.Fatalf("oversized single line was dropped instead of bounded: %d bytes", len(tail))
+	}
+	if strings.Count(tail, "x") != len(strings.TrimSpace(tail)) {
+		t.Fatalf("tail must keep the diagnostic content, got %q", tail[:40])
+	}
 }
 
 func TestReviewFailureClass(t *testing.T) {
