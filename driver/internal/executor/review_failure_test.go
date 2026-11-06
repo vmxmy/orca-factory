@@ -173,6 +173,10 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(flagQuoted.stderr, "synthetic-flag-tail") {
 		t.Errorf("escaped-quoted flag value leaked: %q", flagQuoted.stderr)
 	}
+	unclosed := reviewCommandFailure(nil, `password="synthetic prefix sensitive-tail`)
+	if strings.Contains(unclosed.stderr, "sensitive-tail") {
+		t.Errorf("unclosed quoted credential leaked: %q", unclosed.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)

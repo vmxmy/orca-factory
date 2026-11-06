@@ -32,6 +32,10 @@ var quotedCredentialValue = regexp.MustCompile(`(?i)(authorization|token|passwor
 // value here before it runs.
 var credentialFlagQuoted = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
 
+// A credential value whose opening quote never closes (stderr ended mid-value)
+// is redacted through end of line: nothing after the opener is provable.
+var unclosedCredential = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?"[^"\n]*$`)
+
 func (failure *reviewFailure) Error() string {
 	return fmt.Sprintf("reviewer %s exit_code=%d stderr=%s", failure.class, failure.exitCode, strconv.Quote(failure.stderr))
 }
@@ -59,7 +63,9 @@ func reviewCommandFailure(err error, stderr string) *reviewFailure {
 			failure.class = "timeout"
 		}
 	}
-	stderr = reviewCredentials.ReplaceAllString(runx.StripANSI(stderr), "${1}[REDACTED]")
+	stderr = runx.StripANSI(stderr)
+	stderr = unclosedCredential.ReplaceAllString(stderr, "${1}[REDACTED]")
+	stderr = reviewCredentials.ReplaceAllString(stderr, "${1}[REDACTED]")
 	stderr = credentialFlagQuoted.ReplaceAllString(stderr, "${1}=[REDACTED]")
 	stderr = runx.RedactDiagnostic(stderr)
 	stderr = quotedCredentialValue.ReplaceAllString(stderr, "[REDACTED]")
