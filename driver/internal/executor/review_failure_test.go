@@ -194,6 +194,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if tail := reviewStderr(allContinuation); tail != "" {
 		t.Errorf("capture of only continuation bytes must be dropped, got %d bytes", len(tail))
 	}
+	// A dropped leading line can leave a sole continuation byte: alignment
+	// must trim to empty instead of indexing past the slice.
+	danglingContinuation := filepath.Join(dir, "dangling.stderr")
+	body = strings.Repeat("a", 70000) + "\n\x80"
+	if err := os.WriteFile(danglingContinuation, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tail := reviewStderr(danglingContinuation); tail != "" {
+		t.Errorf("sole continuation byte must be dropped, got %q", tail)
+	}
 	// An oversized final line may itself be truncated at EOF mid-credential;
 	// reviewCommandFailure only keeps a bounded tail, so the published window
 	// holds the start of that last line, which can cut a credential open.

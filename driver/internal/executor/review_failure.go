@@ -90,11 +90,11 @@ func reviewStderr(path string) string {
 			return ""
 		}
 		text = text[idx+1:]
+		for len(text) > 0 && !utf8.RuneStart(text[0]) {
+			text = text[1:]
+		}
 		if text == "" {
 			return ""
-		}
-		for !utf8.RuneStart(text[0]) {
-			text = text[1:]
 		}
 	}
 	return text
