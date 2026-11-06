@@ -189,6 +189,14 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(unclosedEscaped.stderr, "sensitive-tail") {
 		t.Errorf("unclosed credential with escaped quote leaked: %q", unclosedEscaped.stderr)
 	}
+	closedKeep := reviewCommandFailure(nil, "API_KEY=\"synthetic-key\"\nprovider unavailable\nretry exhausted")
+	if !strings.Contains(closedKeep.stderr, "provider unavailable") || !strings.Contains(closedKeep.stderr, "retry exhausted") {
+		t.Errorf("closed credential must keep later diagnostics: %q", closedKeep.stderr)
+	}
+	unclosedFlag := reviewCommandFailure(nil, `error invoking reviewer: --password "synthetic prefix sensitive-tail`)
+	if strings.Contains(unclosedFlag.stderr, "sensitive-tail") {
+		t.Errorf("unclosed flag value leaked: %q", unclosedFlag.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)
