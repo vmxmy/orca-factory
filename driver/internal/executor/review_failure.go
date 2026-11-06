@@ -21,7 +21,7 @@ type reviewFailure struct {
 	cause         error
 }
 
-var reviewCredentials = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)`)
+var reviewCredentials = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)`)
 
 // A credential value already orphaned from its key (Bearer "…" becomes
 // [REDACTED] "…" after the first pass) is redacted by its quoted shape alone.
@@ -54,8 +54,8 @@ func reviewCommandFailure(err error, stderr string) *reviewFailure {
 			failure.class = "timeout"
 		}
 	}
-	stderr = runx.RedactDiagnostic(stderr)
 	stderr = reviewCredentials.ReplaceAllString(stderr, "${1}[REDACTED]")
+	stderr = runx.RedactDiagnostic(stderr)
 	stderr = quotedCredentialValue.ReplaceAllString(stderr, "[REDACTED]")
 	const limit = 4096
 	if len(stderr) > limit {

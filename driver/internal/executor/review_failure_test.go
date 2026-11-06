@@ -161,6 +161,10 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(bearer.stderr, "synthetic-sensitive-value") {
 		t.Errorf("quoted bearer value leaked after layered redaction: %q", bearer.stderr)
 	}
+	jsonBearer := reviewCommandFailure(nil, `{"Authorization":"Bearer \"synthetic-nested-value\""}`)
+	if strings.Contains(jsonBearer.stderr, "synthetic-nested-value") {
+		t.Errorf("json-embedded escaped bearer leaked: %q", jsonBearer.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)
