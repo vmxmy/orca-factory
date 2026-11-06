@@ -165,6 +165,10 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(jsonBearer.stderr, "synthetic-nested-value") {
 		t.Errorf("json-embedded escaped bearer leaked: %q", jsonBearer.stderr)
 	}
+	ansiKey := reviewCommandFailure(nil, "\x1b[31mAPI_KEY\x1b[0m=synthetic-ansi-value")
+	if strings.Contains(ansiKey.stderr, "synthetic-ansi-value") {
+		t.Errorf("ansi-wrapped credential key leaked: %q", ansiKey.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)

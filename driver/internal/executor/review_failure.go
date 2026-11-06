@@ -54,7 +54,7 @@ func reviewCommandFailure(err error, stderr string) *reviewFailure {
 			failure.class = "timeout"
 		}
 	}
-	stderr = reviewCredentials.ReplaceAllString(stderr, "${1}[REDACTED]")
+	stderr = reviewCredentials.ReplaceAllString(runx.StripANSI(stderr), "${1}[REDACTED]")
 	stderr = runx.RedactDiagnostic(stderr)
 	stderr = quotedCredentialValue.ReplaceAllString(stderr, "[REDACTED]")
 	const limit = 4096
