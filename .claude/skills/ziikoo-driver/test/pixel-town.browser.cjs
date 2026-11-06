@@ -140,6 +140,37 @@ async function main() {
   const fiveMin = sweep([...fiveState.motions.values()])
   assert.ok(fiveMin >= 26, `a cross-belt convoy across slot rows must keep clearance mid-tween (min ${fiveMin.toFixed(1)}px)`)
 
+  // A convoy leaving one station while a displaced parcel waits on their lane:
+  // every mover dips whole to the service row around the waiting parcel's old
+  // slot, so no painted box crosses a waiting box at any point of the tween.
+  const convLeaver = snapshot(1)
+  convLeaver.rows[0].parcels = [parcel('OF-A'), parcel('OF-B'), parcel('OF-C')]
+  let convState = model.reconcile(model.initialState(), convLeaver, { fresh: true })
+  const convMove = structuredClone(convLeaver)
+  convMove.rows[0].parcels[0].station = 'gate'
+  convMove.rows[0].parcels[1].station = 'gate'
+  convState = model.reconcile(convState, convMove, { now: 0 })
+  const convMin = sweepBoxes([...convState.motions.values()], 1)
+  assert.ok(convMin >= 26, `a convoy must clear a waiting displaced parcel without box overlap (axis min ${convMin.toFixed(1)}px)`)
+
+  // A mid-tween reconcile feeds fractional coordinates back into path
+  // drafting; blocked-column detection must stay interval-based instead of
+  // stepping pixel by pixel toward an integer endpoint (which never arrives).
+  const crowd = snapshot(1)
+  crowd.rows[0].parcels = Array.from({ length: 170 }, (_, index) => parcel(`OF-${index}`))
+  let crowdState = model.reconcile(model.initialState(), crowd, { fresh: true })
+  const crowdMove = structuredClone(crowd)
+  crowdMove.rows[0].parcels[0].station = 'pack'
+  crowdState = model.reconcile(crowdState, crowdMove, { now: 0 })
+  const reRoute = structuredClone(crowdMove)
+  reRoute.rows[0].parcels[0].station = 'review'
+  const reState = model.reconcile(crowdState, reRoute, { now: 5000 })
+  const reMotion = reState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-0'))
+  assert.ok(reMotion, 'a mid-tween reconcile must reschedule the moving parcel')
+  for (let index = 1; index < reMotion.points.length; index++) {
+    assert.ok(reMotion.points[index].x === reMotion.points[index - 1].x || reMotion.points[index].y === reMotion.points[index - 1].y, `a rescheduled route must stay orthogonal (segment ${index})`)
+  }
+
   const backward = snapshot(1)
   backward.rows[0].parcels = [parcel('OF-back', 'pack')]
   let backwardState = model.reconcile(model.initialState(), backward, { fresh: true })
@@ -411,7 +442,54 @@ async function checkProductionServer() {
   const token = crypto.randomBytes(24).toString('hex')
   const fake = path.join(temp, 'orca-factory-driver')
   const configFile = pathToFileURL(path.join(plugin, 'test/sample-config.ts')).href
-  fs.writeFileSync(fake, `#!/usr/bin/env bun\nimport { SAMPLE_CONFIG } from ${JSON.stringify(configFile)}; console.log(JSON.stringify(process.argv[2] === 'config' ? SAMPLE_CONFIG : {state:'ok',generatedAt:new Date().toISOString(),tickets:[]}));\n`)
+  // The status the fake driver reports is rebuilt from the repository's real
+  // ledger recording: the paused merge-progress record plus its frozen
+  // merge-handoff supply the paused deployment-barrier ticket, and a phase the
+  // track table never maps supplies the unknown-station ticket. The real
+  // parseRuntime → sceneOf chain in scene/server.ts turns both into the page's
+  // deploy-paused and unknown-stage branches — no hand-written Scene involved.
+  const sampleSource = fs.readFileSync(path.join(plugin, 'test/sample-recorded.ts'), 'utf8')
+  const ledger = JSON.parse(fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'), 'utf8'))
+  const progressLines = ledger.comments.flatMap(comment => comment.body.split('\n')).filter(line => line.startsWith('merge-progress-v1: '))
+  const pausedLine = progressLines.map(line => JSON.parse(line.slice('merge-progress-v1: '.length))).find(progress => progress.deployment?.state === 'paused')
+  assert.ok(pausedLine, 'recorded ledger must contain a paused merge-progress record')
+  const handoffLine = ledger.comments.flatMap(comment => comment.body.split('\n')).find(line => line.startsWith('merge-handoff-v1: '))
+  const frozen = JSON.parse(handoffLine.slice('merge-handoff-v1: '.length))
+  const recordedStatus = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_DEPLOY_STATUS: string = ("[\s\S]*?")\n/)?.[1]))
+  const pausedTicket = recordedStatus.tickets.find(ticket => ticket.deployment?.queueId === frozen.queue_id)
+  assert.ok(pausedTicket, 'recorded status must carry the paused barrier ticket')
+  const unknownTicket = recordedStatus.tickets.find(ticket => ticket.phase === '准备镜像')
+  assert.ok(unknownTicket, 'recorded status must carry the unmapped-phase ticket')
+  const barrierTicket = JSON.stringify({
+    repo: pausedTicket.repo,
+    identifier: pausedTicket.identifier,
+    owner: '处置Agent',
+    phase: '已合并',
+    since: pausedTicket.since,
+    blockedReason: `deployment: ${pausedLine.deployment.state}`,
+    deployment: {
+      queueId: pausedLine.queue_id,
+      sha: pausedLine.head,
+      workflow: pausedLine.deployment.workflow,
+      state: pausedLine.deployment.state,
+      reason: pausedLine.deployment.reason,
+    },
+  })
+  const unknownRow = JSON.stringify({
+    repo: unknownTicket.repo,
+    identifier: unknownTicket.identifier,
+    owner: unknownTicket.owner ?? '无',
+    phase: unknownTicket.phase,
+    title: unknownTicket.title,
+    since: unknownTicket.since,
+  })
+  fs.writeFileSync(fake, `#!/usr/bin/env bun
+import { SAMPLE_CONFIG } from ${JSON.stringify(configFile)};
+const paused = ${barrierTicket};
+const unmapped = ${unknownRow};
+if (process.argv[2] === 'config') console.log(JSON.stringify(SAMPLE_CONFIG));
+else console.log(JSON.stringify({ state: 'stale', generatedAt: new Date().toISOString(), tickets: [paused, unmapped] }));
+`)
   fs.chmodSync(fake, 0o755)
   const child = spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
   try {
@@ -439,10 +517,30 @@ async function checkProductionServer() {
     const snapshotResponse = await fetch(`${origin}/snapshot?t=${token}`)
     assert.equal(snapshotResponse.status, 200, 'the isolated driver status/config chain must produce a real Scene')
     const actualScene = await snapshotResponse.json()
-    assert.equal(actualScene.state, 'ok')
-    assert.equal(actualScene.rows.length, 3)
+    assert.equal(actualScene.state, 'stale', 'the recorded stale status must survive the parse chain')
+    // SAMPLE_CONFIG has three repos; sceneOf appends one extra row for the
+    // recorded tickets whose repo path the config does not list.
+    assert.equal(actualScene.rows.length, 4)
     assert.equal(actualScene.rows[0].name, 'orca-factory')
     assert.equal(typeof actualScene.generatedAt, 'number')
+    // The paused deployment barrier from the real ledger recording drives the
+    // dispatch-station failed branch, and the untracked phase drives the
+    // unknown-station branch — both through the production parseRuntime →
+    // sceneOf chain, not a hand-written Scene. The dashboard repo is not in
+    // SAMPLE_CONFIG, so sceneOf appends it as an unconfigured row keyed by
+    // its path.
+    const dashboard = actualScene.rows.find(row => row.path === pausedTicket.repo)
+    const barrier = dashboard?.parcels.find(one => one.identifier === pausedTicket.identifier)
+    assert.equal(barrier?.station, 'dispatch')
+    assert.equal(barrier?.tone, 'failed')
+    assert.equal(barrier?.label, '部署暂停')
+    assert.equal(barrier?.deployment, 'paused')
+    assert.equal(barrier?.blocker, 'deployment: paused')
+    assert.equal(barrier?.reason, 'deployment: paused')
+    const unmapped = dashboard?.parcels.find(one => one.identifier === unknownTicket.identifier)
+    assert.equal(unmapped?.station, 'unknown', 'the recorded unmapped phase must reach the unknown-station branch')
+    assert.equal(unmapped?.tone, 'attention')
+    assert.equal(unmapped?.label, '准备镜像')
     assert.equal((await fetch(`${origin}/vendor/OrbitControls.js?t=${token}`)).status, 404)
     console.log('PASS production Bun service: GET, header/query auth, all modules and retired routes')
   } finally {

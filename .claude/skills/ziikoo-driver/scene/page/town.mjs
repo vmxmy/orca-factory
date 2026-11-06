@@ -147,12 +147,12 @@ const laneDetour = (nodes, columns, serviceY) => {
     const from = nodes[index - 1]
     const to = nodes[index]
     if (from.y !== to.y) { hops.push([to]); continue }
-    const step = to.x > from.x ? 1 : -1
-    const blocked = []
-    for (let x = from.x + step; ; x += step) {
-      if (columns.has(x)) blocked.push(x)
-      if (x === to.x) break
-    }
+    // A mid-tween reconcile feeds fractional coordinates in, so blocked
+    // columns are found by interval comparison, never by stepping pixel by
+    // pixel toward an integer endpoint.
+    const low = Math.min(from.x, to.x)
+    const high = Math.max(from.x, to.x)
+    const blocked = [...columns.values()].filter(x => x > low && x < high)
     if (!blocked.length) { hops.push([to]); continue }
     // The whole blocked hop rides the service row: the mover descends on its
     // own column, runs beneath every idler on the lane, and climbs on the
@@ -235,10 +235,16 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
         // Convoy: every mover follows the same L as the belt-lane route,
         // translated by its own slot offset from its own belt lane, so the
         // convoy's shape is the resting grid's shape for the whole tween.
+        // A hop whose translated run crosses a resting column dips whole to
+        // the service row — the dip's segment lengths are identical for every
+        // mover, so the convoy stays rigid while it clears waiting parcels.
         const route = travelPath(layout, stationOf(previous.parcels.get(key).station), draft.point.station)
         const offset = { x: draft.start.x - route[0].x, y: draft.start.y - route[0].y }
         const riding = route.map(node => ({ x: node.x + offset.x, y: node.y + offset.y }))
-        points = dedupe([draft.start, ...riding.slice(1), draft.point])
+        const plain = dedupe([draft.start, ...riding.slice(1), draft.point])
+        const columns = occupiedColumns(previous, key)
+        const serviceY = draft.point.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE
+        points = laneDetour(plain, columns, serviceY) || plain
       }
       drafted.set(key, { ...draft, points })
     }

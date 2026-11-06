@@ -108,22 +108,27 @@ test('部署屏障快照的字段来自真实账本录制', () => {
 
 test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
   const ledger = JSON.parse(RECORDED_LEDGER_DEPLOYMENT)
-  const progressLines = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+  const lines = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+  const progressLines = lines
     .filter((line: string) => line.startsWith('merge-progress-v1: '))
     .map((line: string) => JSON.parse(line.slice('merge-progress-v1: '.length)))
   const paused = progressLines.find(progress => progress.deployment?.state === 'paused')
   expect(paused).toBeDefined()
   expect(paused.deployment.reason).toBe('deployment workflow failed')
   expect(paused.phase).toBe('merged')
+  const frozen = JSON.parse(lines.find((line: string) => line.startsWith('merge-handoff-v1: '))!.slice('merge-handoff-v1: '.length))
+  const recorded = JSON.parse(RECORDED_DEPLOY_STATUS)
+  const barrier = recorded.tickets.find((ticket: { deployment?: { queueId: string } }) => ticket.deployment?.queueId === frozen.queue_id)
+  expect(barrier).toBeDefined()
   const runtime: Runtime = {
     state: 'ok',
     generatedAt: 1,
     tickets: [{
-      repo: '/home/laoxu/github/zhiyun-ai-dashboard',
-      identifier: paused.identifier,
+      repo: barrier.repo,
+      identifier: barrier.identifier,
       owner: '处置Agent',
       phase: '已合并',
-      since: 1,
+      since: Date.parse(barrier.since),
       blockedReason: `deployment: ${paused.deployment.state}`,
       deployment: {
         queueId: paused.queue_id,
@@ -136,7 +141,7 @@ test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
   }
   const scene = sceneOf(runtime, parseConfig(RECORDED_CONFIG))
   const row = scene.rows.find(one => one.name === 'zhiyun-ai-dashboard')
-  const parcel = row?.parcels.find(one => one.identifier === paused.identifier)
+  const parcel = row?.parcels.find(one => one.identifier === barrier.identifier)
   expect(parcel?.station).toBe('dispatch')
   expect(parcel?.tone).toBe('failed')
   expect(parcel?.label).toBe('部署暂停')
