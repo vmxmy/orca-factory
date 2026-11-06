@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"slices"
@@ -27,9 +28,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
 
-var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
+var gatewayKeys = []string{"AGENT_FEISHU_APP_ID", "AGENT_FEISHU_APP_SECRET", "AGENT_FEISHU_INTAKE_CHAT", "AGENT_FEISHU_INTAKE_USERS", "AGENT_FEISHU_BOT_OPEN_ID", "AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_INTAKE_PI", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
 
-var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
+var optionalGatewayKeys = []string{"AGENT_FEISHU_ENDPOINT", "AGENT_INTAKE_CLAUDE", "AGENT_INTAKE_PI", "AGENT_FEISHU_INTAKE_PROJECT", "AGENT_FEISHU_APPROVERS"}
 
 func loadGatewaySettings() (map[string]string, error) {
 	settings := map[string]string{}
@@ -129,14 +130,53 @@ func intakeTickets(store issues.Store) func(context.Context) ([]intake.TicketCon
 type projectRuntime struct {
 	mu       sync.Mutex
 	claude   string
-	cacheDir string
-	tuning   config.Tuning
-	built    map[string]*intake.Runner
-	projects map[string]intake.Project
+	// piTier selects the pi --mode rpc execution path when non-empty
+	// (AGENT_INTAKE_PI); piBinaryErr defers the "pi not installed" failure
+	// to projects that actually opt into the path.
+	piTier       string
+	piBinary     string
+	piBinaryErr  error
+	piSessionDir string
+	piConfigDir  string
+	cacheDir     string
+	tuning       config.Tuning
+	built        map[string]*intake.Runner
+	projects     map[string]intake.Project
 }
 
 func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRuntime {
 	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}}
+}
+
+// setPi installs the gateway-wide pi RPC configuration: the tier comes from
+// AGENT_INTAKE_PI and the binary resolves like claude's, but only projects
+// whose own env opts into the tier need pi installed at all.
+func (r *projectRuntime) setPi(tier, sessionDir, configDir string) {
+	r.piTier = tier
+	r.piSessionDir = sessionDir
+	r.piConfigDir = configDir
+	// The binary resolves regardless of the gateway-level tier: a project
+	// whose own env opts into AGENT_INTAKE_PI must get the pi path even
+	// when the gateway setting is empty.
+	binary, err := exec.LookPath("pi")
+	if err == nil && !filepath.IsAbs(binary) {
+		binary, err = filepath.Abs(binary)
+	}
+	if err != nil {
+		r.piBinaryErr = errors.New("AGENT_INTAKE_PI 需要 pi 在 PATH 上")
+		return
+	}
+	r.piBinary = binary
+}
+
+// stop ends every built Runner's pi janitor and resident processes; the
+// gateway defers it for its whole lifetime.
+func (r *projectRuntime) stop() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, runner := range r.built {
+		runner.Stop()
+	}
 }
 
 // resolve returns the fully wired intake.Project for an eligible discovery
@@ -154,6 +194,21 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	if err != nil {
 		return intake.Project{}, err
 	}
+	// A repository's own AGENT_INTAKE_PI opts it into the pi RPC path
+	// (OF-416), falling back to the gateway-wide tier; empty keeps claude.
+	piTier := strings.TrimSpace(p.Repository.Env["AGENT_INTAKE_PI"])
+	if piTier == "" {
+		piTier = r.piTier
+	}
+	var piProvider, piModel, piThinking string
+	if piTier != "" {
+		if r.piBinaryErr != nil {
+			return intake.Project{}, r.piBinaryErr
+		}
+		if piProvider, piModel, piThinking, err = intake.ParsePiTier(piTier); err != nil {
+			return intake.Project{}, err
+		}
+	}
 	store, err := intakeLedger(ctx, p.Repository.Env, r.tuning)
 	if err != nil {
 		return intake.Project{}, fmt.Errorf("账本打开失败：%w", err)
@@ -162,7 +217,15 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store, Chat: chat}
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
-	r.built[p.Prefix] = &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store)}
+	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store)}
+	if piTier != "" {
+		runner.PiBinary = r.piBinary
+		runner.PiProvider, runner.PiModel, runner.PiThinking = piProvider, piModel, piThinking
+		runner.PiSessionDir = r.piSessionDir
+		runner.PiConfigDir = r.piConfigDir
+		runner.Start()
+	}
+	r.built[p.Prefix] = runner
 	r.projects[p.Prefix] = project
 	return project, nil
 }
@@ -347,6 +410,8 @@ func runFeishuGateway(ctx context.Context) error {
 		return err
 	}
 	runtime := newProjectRuntime(claude, cacheDir, cfg.Tuning)
+	runtime.setPi(settings["AGENT_INTAKE_PI"], filepath.Join(logStateRoot(), "intake-pi-sessions"), filepath.Join(home, ".pi", "agent"))
+	defer runtime.stop()
 	orcaClient := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
 	dir := filepath.Join(logStateRoot(), "intake")
 	lock, err := flock.TryLock(filepath.Join(dir, "gateway.lock"))
