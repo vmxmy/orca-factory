@@ -287,6 +287,24 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if unclosedTail := reviewStderr(unclosedStraddle); unclosedTail != "" {
 		t.Errorf("unclosed straddling credential must drop the capture, got %q", unclosedTail)
 	}
+	// Prose apostrophes must not forfeit the capture: only double quotes gate.
+	apostrophe := filepath.Join(dir, "apostrophe.stderr")
+	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
+	if err := os.WriteFile(apostrophe, []byte(apostropheBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if apostropheTail := reviewStderr(apostrophe); !strings.Contains(apostropheTail, "provider unavailable") {
+		t.Errorf("prose apostrophe dropped the diagnostic tail: %q", apostropheTail)
+	}
+	// An escaped quote split across buffer boundaries must not flip parity.
+	boundary := filepath.Join(dir, "boundary.stderr")
+	boundaryBody := `password="tail\` + strings.Repeat("y", 70<<10) + `\"` + "\nsynthetic-boundary-tail\n"
+	if err := os.WriteFile(boundary, []byte(boundaryBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if boundaryTail := reviewStderr(boundary); strings.Contains(boundaryTail, "synthetic-boundary-tail") {
+		t.Errorf("escape split across reads leaked the value tail: %q", boundaryTail)
+	}
 }
 
 func TestReviewFailureClass(t *testing.T) {

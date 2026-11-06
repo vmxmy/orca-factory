@@ -160,12 +160,14 @@ func reviewStderr(path string) string {
 }
 
 // oddQuoteParity reports whether the prefix before the capture window holds an
-// odd number of unescaped quotes, meaning the window starts inside a value.
+// odd number of unescaped double quotes, meaning the window may start inside
+// a quoted value. Single quotes are prose apostrophes too often to gate on.
 func oddQuoteParity(file *os.File, offset int64) bool {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return true
 	}
-	var dq, sq int
+	var dq int
+	escaped := false
 	buf := make([]byte, 32<<10)
 	var read int64
 	for read < offset {
@@ -178,41 +180,41 @@ func oddQuoteParity(file *os.File, offset int64) bool {
 			return true
 		}
 		for i := 0; i < n; i++ {
-			switch buf[i] {
-			case '\\':
-				i++
-			case '"':
+			switch {
+			case escaped:
+				escaped = false
+			case buf[i] == '\\':
+				escaped = true
+			case buf[i] == '"':
 				dq ^= 1
-			case '\'':
-				sq ^= 1
 			}
 		}
 		read += int64(n)
 	}
-	return dq != 0 || sq != 0
+	return dq != 0
 }
 
-// dropUnbalancedPrefix publishes only when quote parity is even at every
-// line boundary and at EOF: a value opened before the window is
+// dropUnbalancedPrefix publishes only when double-quote parity is even at
+// every line boundary and at EOF: a value opened before the window is
 // indistinguishable from one opened on the first line, and an unclosed value
-// runs past EOF, so any odd state forfeits the whole capture.
+// runs past EOF, so any odd state forfeits the whole capture. Single quotes
+// are prose apostrophes; single-quoted values are handled by the credential
+// scanner instead.
 func dropUnbalancedPrefix(text string) string {
-	var dq, sq int
+	var dq int
 	for i := 0; i < len(text); i++ {
 		switch text[i] {
 		case '\\':
 			i++
 		case '"':
 			dq ^= 1
-		case '\'':
-			sq ^= 1
 		case '\n':
-			if dq != 0 || sq != 0 {
+			if dq != 0 {
 				return ""
 			}
 		}
 	}
-	if dq != 0 || sq != 0 {
+	if dq != 0 {
 		return ""
 	}
 	return text
