@@ -237,7 +237,7 @@ export function paintActors(context, state, layout, viewport, now, model, reduce
   for (const [key, destination] of layout.parcels) {
     const motion = state.motions.get(key)
     const progress = motion ? (now - motion.start) / motion.duration : 1
-    const point = motion && progress < 1 && !reduced ? model.pointAlong(motion.points, progress) : destination
+    const point = motion && progress < 1 && !reduced ? model.pointAlong(motion.points, progress, motion.dwell ?? 0, motion.dwellAt ?? 0) : destination
     if (progress >= 1) state.motions.delete(key)
     if (point.x + 20 < viewport.x || point.x - 20 > viewport.x + viewport.width || point.y + 25 < viewport.y || point.y - 20 > viewport.y + viewport.height) continue
     const parcel = destination.parcel

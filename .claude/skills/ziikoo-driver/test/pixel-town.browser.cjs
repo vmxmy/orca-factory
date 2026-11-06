@@ -153,6 +153,29 @@ async function main() {
   const convMin = sweepBoxes([...convState.motions.values()], 1)
   assert.ok(convMin >= 26, `a convoy must clear a waiting displaced parcel without box overlap (axis min ${convMin.toFixed(1)}px)`)
 
+  // The service-row dive must also clear parcels waiting on the second slot
+  // row: the dive column is the mover's old slot column, which can be exactly
+  // where a deeper-row waiter idles. Waiters stay put until movers finish, so
+  // the dive has to route around (not through) every waiting box.
+  const refill = snapshot(1)
+  refill.rows[0].parcels = Array.from({ length: 5 }, (_, index) => parcel(`OF-${index}`))
+  let refillState = model.reconcile(model.initialState(), refill, { fresh: true })
+  const refillMove = structuredClone(refill)
+  refillMove.rows[0].parcels[0].station = 'gate'
+  refillMove.rows[0].parcels[1].station = 'gate'
+  refillState = model.reconcile(refillState, refillMove, { now: 0 })
+  const refillLayout = model.workshopLayout(refillMove.rows[0])
+  const refillEnd = Math.max(...[...refillState.motions.values()].map(motion => motion.start + motion.duration))
+  let refillMin = Infinity
+  for (let time = 0; time <= refillEnd; time++) {
+    const points = [...refillLayout.parcels].map(([key, point]) => {
+      const motion = refillState.motions.get(key)
+      return motion ? model.pointAlong(motion.points, (time - motion.start) / motion.duration) : point
+    })
+    for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) refillMin = Math.min(refillMin, Math.max(Math.abs(points[index].x - other.x), Math.abs(points[index].y - other.y)))
+  }
+  assert.ok(refillMin >= 26, `a service-row dive must clear second-row waiters too (axis min ${refillMin.toFixed(1)}px)`)
+
   // A mid-tween reconcile feeds fractional coordinates back into path
   // drafting; blocked-column detection must stay interval-based instead of
   // stepping pixel by pixel toward an integer endpoint (which never arrives).
@@ -426,69 +449,54 @@ async function main() {
     assert.deepEqual(errors, [])
     console.log('PASS real Chrome: counts, search, identity, camera, viewport caches, mobile, accessibility, SSE and errors')
   } finally {
-    await browser.close()
     for (const response of streams) response.end()
     await new Promise(resolve => server.close(resolve))
   }
-  await checkProductionServer()
+  await checkProductionServer(browser)
+  await browser.close()
 }
 
 async function assertVisible(locator) { assert.equal(await locator.isVisible(), true) }
 
-async function checkProductionServer() {
+async function checkProductionServer(browser) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
   const temp = fs.mkdtempSync(path.join(tempRoot, 'pixel-town-'))
   const token = crypto.randomBytes(24).toString('hex')
   const fake = path.join(temp, 'orca-factory-driver')
-  const configFile = pathToFileURL(path.join(plugin, 'test/sample-config.ts')).href
-  // The status the fake driver reports is rebuilt from the repository's real
-  // ledger recording: the paused merge-progress record plus its frozen
-  // merge-handoff supply the paused deployment-barrier ticket, and a phase the
-  // track table never maps supplies the unknown-station ticket. The real
-  // parseRuntime → sceneOf chain in scene/server.ts turns both into the page's
-  // deploy-paused and unknown-stage branches — no hand-written Scene involved.
+  // The fake driver replays real recordings only: the status is the recorded
+  // `status --json` output extended with the two ledger-derived tickets (the
+  // paused ZY-365 deployment barrier and the 等人批 ZY-366 turnover), and the
+  // config is the recorded `config --json` output verbatim — no hand-written
+  // SAMPLE_CONFIG on this path. The real parseRuntime → parseConfig → sceneOf
+  // chain in scene/server.ts turns both tickets into the page's deploy-paused
+  // and unknown-stage branches.
   const sampleSource = fs.readFileSync(path.join(plugin, 'test/sample-recorded.ts'), 'utf8')
+  const replayStatus = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_REPLAY_STATUS: string = ("[\s\S]*?")\n/)?.[1]))
+  const replayConfig = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_CONFIG: string = ("[\s\S]*?")\n/)?.[1]))
   const ledger = JSON.parse(fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'), 'utf8'))
   const progressLines = ledger.comments.flatMap(comment => comment.body.split('\n')).filter(line => line.startsWith('merge-progress-v1: '))
   const pausedLine = progressLines.map(line => JSON.parse(line.slice('merge-progress-v1: '.length))).find(progress => progress.deployment?.state === 'paused')
   assert.ok(pausedLine, 'recorded ledger must contain a paused merge-progress record')
   const handoffLine = ledger.comments.flatMap(comment => comment.body.split('\n')).find(line => line.startsWith('merge-handoff-v1: '))
   const frozen = JSON.parse(handoffLine.slice('merge-handoff-v1: '.length))
-  const recordedStatus = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_DEPLOY_STATUS: string = ("[\s\S]*?")\n/)?.[1]))
-  const pausedTicket = recordedStatus.tickets.find(ticket => ticket.deployment?.queueId === frozen.queue_id)
-  assert.ok(pausedTicket, 'recorded status must carry the paused barrier ticket')
-  const unknownTicket = recordedStatus.tickets.find(ticket => ticket.phase === '准备镜像')
-  assert.ok(unknownTicket, 'recorded status must carry the unmapped-phase ticket')
-  const barrierTicket = JSON.stringify({
-    repo: pausedTicket.repo,
-    identifier: pausedTicket.identifier,
-    owner: '处置Agent',
-    phase: '已合并',
-    since: pausedTicket.since,
-    blockedReason: `deployment: ${pausedLine.deployment.state}`,
-    deployment: {
-      queueId: pausedLine.queue_id,
-      sha: pausedLine.head,
-      workflow: pausedLine.deployment.workflow,
-      state: pausedLine.deployment.state,
-      reason: pausedLine.deployment.reason,
-    },
-  })
-  const unknownRow = JSON.stringify({
-    repo: unknownTicket.repo,
-    identifier: unknownTicket.identifier,
-    owner: unknownTicket.owner ?? '无',
-    phase: unknownTicket.phase,
-    title: unknownTicket.title,
-    since: unknownTicket.since,
-  })
+  const humanLedger = JSON.parse(fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-human-release.json'), 'utf8'))
+  const turnover = humanLedger.comments.filter(comment => comment.body.startsWith('转人: ZY-366')).at(-1)
+  assert.ok(turnover, 'recorded human-release ledger must carry the ZY-366 turnover receipt')
+  const barrierTicket = replayStatus.tickets.find(ticket => ticket.deployment?.queueId === frozen.queue_id)
+  assert.ok(barrierTicket, 'replay status must carry the paused barrier ticket')
+  assert.equal(barrierTicket.deployment.state, pausedLine.deployment.state)
+  assert.equal(barrierTicket.deployment.sha, pausedLine.head)
+  const unknownTicket = replayStatus.tickets.find(ticket => ticket.identifier === 'ZY-366')
+  assert.ok(unknownTicket, 'replay status must carry the ZY-366 turnover ticket')
+  assert.equal(unknownTicket.phase, '等人批')
+  assert.equal(unknownTicket.since, turnover.createdAt)
+  assert.ok(replayConfig.repos.some(repo => repo.path === barrierTicket.repo), 'replay config must list the dashboard repo')
   fs.writeFileSync(fake, `#!/usr/bin/env bun
-import { SAMPLE_CONFIG } from ${JSON.stringify(configFile)};
-const paused = ${barrierTicket};
-const unmapped = ${unknownRow};
-if (process.argv[2] === 'config') console.log(JSON.stringify(SAMPLE_CONFIG));
-else console.log(JSON.stringify({ state: 'stale', generatedAt: new Date().toISOString(), tickets: [paused, unmapped] }));
+const status = ${JSON.stringify(replayStatus)};
+const config = ${JSON.stringify(replayConfig)};
+if (process.argv[2] === 'config') console.log(JSON.stringify(config));
+else console.log(JSON.stringify(status));
 `)
   fs.chmodSync(fake, 0o755)
   const child = spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -517,20 +525,17 @@ else console.log(JSON.stringify({ state: 'stale', generatedAt: new Date().toISOS
     const snapshotResponse = await fetch(`${origin}/snapshot?t=${token}`)
     assert.equal(snapshotResponse.status, 200, 'the isolated driver status/config chain must produce a real Scene')
     const actualScene = await snapshotResponse.json()
-    assert.equal(actualScene.state, 'stale', 'the recorded stale status must survive the parse chain')
-    // SAMPLE_CONFIG has three repos; sceneOf appends one extra row for the
-    // recorded tickets whose repo path the config does not list.
-    assert.equal(actualScene.rows.length, 4)
+    assert.equal(actualScene.state, replayStatus.state, 'the recorded status state must survive the parse chain')
+    assert.equal(actualScene.maintenance, replayConfig.overview.maintenance, 'the recorded config maintenance must survive the parse chain')
+    assert.equal(actualScene.rows.length, replayConfig.repos.length, 'the recorded config repo list must shape the rows')
     assert.equal(actualScene.rows[0].name, 'orca-factory')
     assert.equal(typeof actualScene.generatedAt, 'number')
     // The paused deployment barrier from the real ledger recording drives the
-    // dispatch-station failed branch, and the untracked phase drives the
-    // unknown-station branch — both through the production parseRuntime →
-    // sceneOf chain, not a hand-written Scene. The dashboard repo is not in
-    // SAMPLE_CONFIG, so sceneOf appends it as an unconfigured row keyed by
-    // its path.
-    const dashboard = actualScene.rows.find(row => row.path === pausedTicket.repo)
-    const barrier = dashboard?.parcels.find(one => one.identifier === pausedTicket.identifier)
+    // dispatch-station failed branch, and the untracked 等人批 phase drives
+    // the unknown-station branch — both through the production
+    // parseRuntime → parseConfig → sceneOf chain, not a hand-written Scene.
+    const dashboard = actualScene.rows.find(row => row.path === barrierTicket.repo)
+    const barrier = dashboard?.parcels.find(one => one.identifier === barrierTicket.identifier)
     assert.equal(barrier?.station, 'dispatch')
     assert.equal(barrier?.tone, 'failed')
     assert.equal(barrier?.label, '部署暂停')
@@ -538,11 +543,40 @@ else console.log(JSON.stringify({ state: 'stale', generatedAt: new Date().toISOS
     assert.equal(barrier?.blocker, 'deployment: paused')
     assert.equal(barrier?.reason, 'deployment: paused')
     const unmapped = dashboard?.parcels.find(one => one.identifier === unknownTicket.identifier)
-    assert.equal(unmapped?.station, 'unknown', 'the recorded unmapped phase must reach the unknown-station branch')
+    assert.equal(unmapped?.station, 'unknown', 'the recorded 等人批 phase must reach the unknown-station branch')
     assert.equal(unmapped?.tone, 'attention')
-    assert.equal(unmapped?.label, '准备镜像')
+    assert.equal(unmapped?.label, '等人批')
     assert.equal((await fetch(`${origin}/vendor/OrbitControls.js?t=${token}`)).status, 404)
     console.log('PASS production Bun service: GET, header/query auth, all modules and retired routes')
+    // The recorded chain must also drive the real page: load the production
+    // page against this server and walk both exception branches in Chrome,
+    // before the server goes away.
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
+    const pageErrors = []
+    page.on('pageerror', error => pageErrors.push(error.message))
+    try {
+      await page.goto(`${origin}/?t=${token}`)
+      await page.waitForFunction(() => window.pixelTown?.state.scene)
+      await page.locator('#search').fill('zhiyun')
+      await page.locator('#projects button').first().click()
+      await page.locator('#enter').click()
+      await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
+      await page.locator('#parcels button').first().click()
+      const detail = await page.locator('#detail').innerText()
+      assert.ok(detail.includes('ZY-365'), `the paused barrier ticket must open from the replayed scene (${detail.slice(0, 80)})`)
+      assert.ok(detail.includes('部署暂停'), 'the page must surface the paused deployment state')
+      assert.ok(detail.includes('deployment: paused'), 'the page must surface the ledger-derived blocked reason')
+      await page.locator('#attention').click()
+      await page.locator('#detail button').last().click()
+      const unknownDetail = await page.locator('#detail').innerText()
+      assert.ok(unknownDetail.includes('ZY-366'), `the turnover ticket must be reachable from the attention list (${unknownDetail.slice(0, 80)})`)
+      assert.ok(unknownDetail.includes('未知阶段'), 'the 等人批 phase must drive the page unknown-stage branch')
+      assert.ok(unknownDetail.includes('等人批'), 'the page must keep the original phase text next to the unknown station')
+      assert.deepEqual(pageErrors, [])
+      console.log('PASS production page in real Chrome: recorded barrier and unknown-phase branches')
+    } finally {
+      await page.close()
+    }
   } finally {
     child.kill('SIGTERM')
     await new Promise(resolve => child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve))
