@@ -355,6 +355,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if twoTail := reviewStderr(twoInChunk); !strings.Contains(twoTail, "provider unavailable") {
 		t.Errorf("two closed credentials must keep the tail: %q", twoTail)
 	}
+	// An uppercase credential key split at the window edge is joined and
+	// recognized: API_ in the prefix, KEY=' in the window's dropped head.
+	upperEdge := filepath.Join(dir, "upper-edge.stderr")
+	upperBody := "API_KEY='" + strings.Repeat("x", 64<<10) + "\nsynthetic-upper-tail'\nprovider unavailable\n"
+	if err := os.WriteFile(upperEdge, []byte(upperBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if upperTail := reviewStderr(upperEdge); upperTail != "" {
+		t.Errorf("uppercase key cut at the window edge must drop the capture, got %q", upperTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"

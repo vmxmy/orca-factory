@@ -275,7 +275,7 @@ func credentialStraddlesWindow(file *os.File, offset int64, windowHead string) b
 // not started yet at the scan position.
 var credentialAssignmentTail = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*(?:=|\s+)|(?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?$`)
 
-var identifierTail = regexp.MustCompile(`[a-z0-9_-]{1,64}$`)
+var identifierTail = regexp.MustCompile(`[A-Za-z0-9_-]{1,64}$`)
 
 // dropUnbalancedPrefix publishes only when double-quote parity is even at
 // every line boundary and at EOF: a value opened before the window is
