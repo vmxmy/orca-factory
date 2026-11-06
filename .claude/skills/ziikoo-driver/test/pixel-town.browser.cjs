@@ -106,12 +106,30 @@ async function main() {
     assert.ok(samples > 0, `sweep must sample the tween at least once (end ${end})`)
     return min
   }
+  // draw.mjs paints each parcel as a 26x26 box, so two parcels overlap when
+  // their centers are under 26px apart on either axis. The sweep above only
+  // measures the euclidean distance, which can stay above 26 while the boxes
+  // already intersect on a 45° crossing.
+  const sweepBoxes = (motions, step = 5) => {
+    const end = Math.max(...motions.map(motion => motion.start + motion.duration))
+    assert.ok(Number.isFinite(end), `motion schedule must be finite numbers (end ${end})`)
+    let min = Infinity
+    let samples = 0
+    for (let time = 0; time <= end; time += step) {
+      samples++
+      const points = motions.map(motion => model.pointAlong(motion.points, (time - motion.start) / motion.duration))
+      for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) min = Math.min(min, Math.max(Math.abs(points[index].x - other.x), Math.abs(points[index].y - other.y)))
+    }
+    assert.ok(samples > 0, `box sweep must sample the tween at least once (end ${end})`)
+    return min
+  }
   for (const motion of mixedState.motions.values()) {
     assert.ok(Number.isFinite(motion.start) && Number.isFinite(motion.duration), 'motion start must be a timestamp, not a screen position')
     assert.ok(model.pointAlong(motion.points, 0.5).x > 0 || model.pointAlong(motion.points, 0.5).y > 0, 'mid-tween position must stay finite')
   }
   const swapMotions = [...mixedState.motions.values()]
   assert.ok(sweep(swapMotions) >= 26, `leaver and the parcel taking its slot must never overlap mid-tween (min ${sweep(swapMotions).toFixed(1)}px)`)
+  assert.ok(sweepBoxes(swapMotions, 1) >= 26, `painted 26x26 parcels must never intersect on the leaver/stayer tween (axis min ${sweepBoxes(swapMotions, 1).toFixed(1)}px)`)
 
   const fiveAtWork = snapshot(1)
   fiveAtWork.rows[0].parcels = Array.from({ length: 5 }, (_, index) => parcel(`OF-${index}`))
@@ -131,6 +149,20 @@ async function main() {
   const backwardMotion = backwardState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-back'))
   for (let index = 1; index < backwardMotion.points.length; index++) {
     assert.ok(backwardMotion.points[index].x === backwardMotion.points[index - 1].x || backwardMotion.points[index].y === backwardMotion.points[index - 1].y, `a backward mainline move must follow orthogonal belt segments (segment ${index})`)
+  }
+  // A backward move rides the drawn U-shaped belt: it climbs its own station
+  // column to the upper lane, rides that lane left, and only the dock steps
+  // leave the painted belt between lane and slot row.
+  const backwardBelt = model.travelPath(model.workshopLayout(backwardMove.rows[0]), 'pack', 'work')
+  const backwardColumns = [...new Set(backwardBelt.map(point => point.x))]
+  const backwardLanes = [...new Set(backwardBelt.map(point => point.y))]
+  const backwardClimb = backwardMotion.points.some(point => point.x === backwardColumns[0] && point.y <= Math.min(...backwardLanes))
+  assert.ok(backwardClimb, 'a backward move must first ascend its own belt corner column, not cross vertically through the dispatch/work column')
+  for (const [index, point] of backwardMotion.points.entries()) {
+    if (!index) continue
+    const previous = backwardMotion.points[index - 1]
+    if (previous.y === point.y) assert.ok(backwardLanes.includes(point.y), `a backward horizontal segment must ride a drawn belt lane (y ${point.y})`)
+    else assert.ok(backwardColumns.includes(point.x), `a backward vertical segment must ride a belt corner column (x ${point.x})`)
   }
 
   const one = snapshot(1)

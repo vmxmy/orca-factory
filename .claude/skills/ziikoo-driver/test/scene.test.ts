@@ -1,5 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
+import type { Runtime } from '../types'
 import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
@@ -103,4 +104,43 @@ test('部署屏障快照的字段来自真实账本录制', () => {
   expect(ticket.deployment.workflow).toBe(pending.deployment.workflow)
   expect(ticket.deployment.state).toBe(pending.deployment.state)
   expect(ticket.blockedReason).toBe(`deployment: ${pending.deployment.state}`)
+})
+
+test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
+  const ledger = JSON.parse(RECORDED_LEDGER_DEPLOYMENT)
+  const progressLines = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+    .filter((line: string) => line.startsWith('merge-progress-v1: '))
+    .map((line: string) => JSON.parse(line.slice('merge-progress-v1: '.length)))
+  const paused = progressLines.find(progress => progress.deployment?.state === 'paused')
+  expect(paused).toBeDefined()
+  expect(paused.deployment.reason).toBe('deployment workflow failed')
+  expect(paused.phase).toBe('merged')
+  const runtime: Runtime = {
+    state: 'ok',
+    generatedAt: 1,
+    tickets: [{
+      repo: '/home/laoxu/github/zhiyun-ai-dashboard',
+      identifier: paused.identifier,
+      owner: '处置Agent',
+      phase: '已合并',
+      since: 1,
+      blockedReason: `deployment: ${paused.deployment.state}`,
+      deployment: {
+        queueId: paused.queue_id,
+        sha: paused.head,
+        workflow: paused.deployment.workflow,
+        state: paused.deployment.state,
+        reason: paused.deployment.reason,
+      },
+    }],
+  }
+  const scene = sceneOf(runtime, parseConfig(RECORDED_CONFIG))
+  const row = scene.rows.find(one => one.name === 'zhiyun-ai-dashboard')
+  const parcel = row?.parcels.find(one => one.identifier === paused.identifier)
+  expect(parcel?.station).toBe('dispatch')
+  expect(parcel?.tone).toBe('failed')
+  expect(parcel?.label).toBe('部署暂停')
+  expect(parcel?.deployment).toBe('paused')
+  expect(parcel?.blocker).toBe('deployment: paused')
+  expect(parcel?.reason).toBe('deployment: paused')
 })

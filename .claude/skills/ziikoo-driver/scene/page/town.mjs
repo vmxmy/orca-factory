@@ -57,6 +57,8 @@ export function workshopLayout(row) {
 const lane = node => ({ x: node.x, y: node.y + 85 })
 const elbow = (from, to) => from.x === to.x || from.y === to.y ? [to] : [{ x: to.x, y: from.y }, to]
 
+const ortho = nodes => nodes.length < 2 ? [...nodes] : nodes.slice(1).reduce((chain, node) => [...chain, ...elbow(chain.at(-1), node)], [nodes[0]])
+
 export function travelPath(layout, source, target) {
   const from = stationOf(source)
   const to = stationOf(target)
@@ -104,8 +106,6 @@ const PARCEL_CLEARANCE = 26
 
 const pathLength = points => points.reduce((sum, node, index) => index ? sum + Math.hypot(node.x - points[index - 1].x, node.y - points[index - 1].y) : 0, 0)
 
-const ortho = nodes => nodes.length < 2 ? [...nodes] : nodes.slice(1).reduce((chain, node) => [...chain, ...elbow(chain.at(-1), node)], [nodes[0]])
-
 const dedupe = nodes => nodes.filter((node, index) => index === 0 || node.x !== nodes[index - 1].x || node.y !== nodes[index - 1].y)
 
 const onSegment = (a, b, c) => (a.x - c.x) * (b.x - c.x) <= 0 && (a.y - c.y) * (b.y - c.y) <= 0 && (a.x === b.x || a.y === b.y)
@@ -124,7 +124,48 @@ const nearSegment = (a, b, point) => {
     || a.x === b.x && Math.abs(a.x - point.x) < PARCEL_CLEARANCE && within(point.y, a.y, b.y)
 }
 
-const serviceDetour = (start, point) => dedupe([start, { x: start.x, y: start.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE }, { x: point.x, y: point.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE }, point])
+// A parcel resting beside the lane a lone mover wants to ride would be cut in
+// half by the 26px painted box, so the mover dips to the service row around
+// every occupied slot column strictly between its endpoints and climbs back
+// on its target column: horizontal runs stay on drawn lanes, vertical hops on
+// node or slot columns, and no timing constraint is needed against idlers.
+// Resting means the slot the parcel occupies during the tween, so displaced
+// parcels count at their old slot and pure idlers at their unchanged one.
+const occupiedColumns = (previous, moverKey) => {
+  const columns = new Set()
+  for (const [key, point] of previous.parcels) {
+    if (key === moverKey) continue
+    columns.add(point.x)
+  }
+  return columns
+}
+
+const laneDetour = (nodes, columns, serviceY) => {
+  if (!columns.size) return null
+  const hops = []
+  for (let index = 1; index < nodes.length; index++) {
+    const from = nodes[index - 1]
+    const to = nodes[index]
+    if (from.y !== to.y) { hops.push([to]); continue }
+    const step = to.x > from.x ? 1 : -1
+    const blocked = []
+    for (let x = from.x + step; ; x += step) {
+      if (columns.has(x)) blocked.push(x)
+      if (x === to.x) break
+    }
+    if (!blocked.length) { hops.push([to]); continue }
+    // The whole blocked hop rides the service row: the mover descends on its
+    // own column, runs beneath every idler on the lane, and climbs on the
+    // target column, so its box never crosses a resting box at any speed.
+    hops.push([{ x: from.x, y: serviceY }, { x: to.x, y: serviceY }, to])
+  }
+  const merged = [nodes[0]]
+  for (const hop of hops) merged.push(...hop.filter(point => {
+    const previous = merged.at(-1)
+    return !previous || point.x !== previous.x || point.y !== previous.y
+  }))
+  return merged.length > 1 ? ortho(merged) : null
+}
 
 export function reconcile(state, scene, { now = 0, fresh = false, reduced = false } = {}) {
   const signature = JSON.stringify(scene)
@@ -180,17 +221,16 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
         const fromIndex = mainline.indexOf(stationOf(previous.parcels.get(key).station))
         const toIndex = mainline.indexOf(stationOf(draft.point.station))
         const backward = fromIndex >= 0 && toIndex >= 0 && toIndex < fromIndex
-        const shifted = backward
-          ? route.map((node, index) => index > 0 && index < route.length - 1 && route[index - 1].y === node.y && route[index + 1].y === node.y ? { ...node, y: node.y + SERVICE_ROW_OFFSET } : node)
-          : route
-        // Every hop between waypoints turns orthogonally, so a backward move
-        // descends to the service row, rides it under the oncoming lane, and
-        // climbs to its slot column instead of cutting across the workshop.
-        const merged = backward
-          ? ortho([draft.start, { x: draft.start.x, y: draft.start.y + SERVICE_ROW_OFFSET }, { x: shifted.at(-1).x, y: shifted.at(-1).y + SERVICE_ROW_OFFSET }, { x: draft.point.x, y: draft.point.y + SERVICE_ROW_OFFSET }, draft.point])
-          : ortho([draft.start, { x: shifted[0].x, y: draft.start.y }, ...shifted, { x: draft.point.x, y: shifted.at(-1).y }, draft.point])
-        const trimmed = trimDock(merged)
-        points = trimmed.length > 1 ? trimmed : merged
+        // A backward move rides the belt backwards: it climbs its own station
+        // column to the upper lane, rides that lane left to the target
+        // column, and docks down to the slot row, mirroring the forward belt.
+        const belt = ortho([draft.start, ...route.slice(1), draft.point])
+        const docked = trimDock(belt)
+        const beltRun = docked.length > 1 ? docked : belt
+        const columns = occupiedColumns(previous, key)
+        const serviceY = draft.point.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE
+        const dipped = laneDetour(beltRun, columns, serviceY)
+        points = dipped || beltRun
       } else {
         // Convoy: every mover follows the same L as the belt-lane route,
         // translated by its own slot offset from its own belt lane, so the
@@ -202,39 +242,22 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
       }
       drafted.set(key, { ...draft, points })
     }
-    // Same-row swaps are geometrically unsafe at equal speed (the parcels meet
-    // head-on on their shared row), so a displaced parcel heading for a slot
-    // another drafted parcel starts from dips to the service row around the
-    // crossing, moving immediately so the leaver never passes through an
-    // idling parcel.
-    const detoured = new Set()
+    // Same-row swaps are geometrically unsafe at equal speed (the parcels
+    // would cut through each other's painted boxes), and a displaced parcel's
+    // target slot is the mover's origin column. The mover already dips around
+    // idle parcels on its lane, so the displaced parcel only needs to wait
+    // until every mover has finished before taking the vacated slot; waits
+    // never form a cycle because movers never wait.
     for (const [key, draft] of drafted) {
-      if (draft.moved) continue
-      const taken = [...drafted.values()].some(other => other !== draft && other.points[0].x === draft.point.x && other.points[0].y === draft.point.y)
-      if (!taken) continue
-      const swapDetour = serviceDetour(draft.points[0], draft.points.at(-1))
-      drafted.set(key, { ...draft, points: swapDetour })
-      detoured.add(key)
-    }
-    for (const [key, draft] of drafted) {
-      // A station-to-station mover leaves immediately; a displaced parcel that
-      // did not detour waits for movers whose lane crosses its resting spot,
-      // so the waits never form a cycle.
       let wait = 0
-      if (!draft.moved && !detoured.has(key)) {
+      if (!draft.moved) {
         for (const [otherKey, other] of drafted) {
-          if (otherKey === key) continue
-          const crossing = other.points.slice(1).some((node, index) => nearSegment(other.points[index], node, draft.points[0]))
-            || other.points.slice(1).some((node, index) => nearSegment(other.points[index], node, draft.points.at(-1)))
-          const swap = other.points[0].x === draft.point.x && other.points[0].y === draft.point.y
-          if (crossing || swap) wait = Math.max(wait, Math.max(240, Math.round(pathLength(other.points) / BELT_PX_PER_MS)))
+          if (otherKey === key || !other.moved) continue
+          wait = Math.max(wait, Math.max(240, Math.round(pathLength(other.points) / BELT_PX_PER_MS)))
         }
       }
-      // A swap detour clears the shared row at twice the belt speed; equal
-      // speed would graze the passing parcel at 34/√2 ≈ 24px, under the 26px
-      // clearance the resting grid keeps.
-      const speed = detoured.has(key) ? BELT_PX_PER_MS * 2 : BELT_PX_PER_MS
-      const duration = Math.max(240, Math.round(pathLength(draft.points) / speed))
+      const raw = Math.round(pathLength(draft.points) / BELT_PX_PER_MS)
+      const duration = draft.points.length > 2 ? raw : Math.max(240, raw)
       next.motions.set(key, { points: draft.points, start: draft.begin + wait, duration })
     }
   }
