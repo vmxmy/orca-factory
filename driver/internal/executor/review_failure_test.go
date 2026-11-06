@@ -150,6 +150,13 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 			t.Errorf("recorded evidence exposed %q", secret)
 		}
 	}
+	escaped := reviewCommandFailure(nil, `{"password":"prefix\"sensitive-tail","ok":true}`)
+	if strings.Contains(escaped.stderr, "sensitive-tail") {
+		t.Errorf("quoted value with escaped quote leaked: %q", escaped.stderr)
+	}
+	if !strings.Contains(escaped.stderr, `[REDACTED]`) {
+		t.Errorf("redaction marker missing: %q", escaped.stderr)
+	}
 	empty := recordedReviewFailure(t, "empty")
 	if !errors.As(empty, &classified) || classified.class != "empty_output" || classified.exitCode != 0 {
 		t.Fatalf("recorded empty sample misclassified: %v", empty)
