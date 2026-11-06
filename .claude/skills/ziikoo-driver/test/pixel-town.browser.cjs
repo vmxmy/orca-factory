@@ -300,6 +300,22 @@ async function main() {
   const beltHalf = 12
   const stray = soloMotion.points.filter(point => !beltPoints.some(belt => Math.abs(point.x - belt.x) <= beltHalf || Math.abs(point.y - belt.y) <= beltHalf))
   assert.ok(stray.length === 0, `every tween waypoint must sit on the painted belt polyline (worst ${stray[0] ? Math.round(stray[0].x) + ',' + Math.round(stray[0].y) : ''})`)
+  const stageMove = (from, to) => {
+    const original = snapshot(1)
+    const scene = { ...original, rows: [{ ...original.rows[0], parcels: [parcel('OF-belt', from)] }] }
+    const before = model.reconcile(model.initialState(), scene, { now: 0, fresh: true })
+    const next = { ...scene, rows: [{ ...scene.rows[0], parcels: [parcel('OF-belt', to)] }] }
+    const moving = model.reconcile(before, next, { now: 0 })
+    return moving.motions.get(model.parcelKey('/fixture/repo-0', 'OF-belt'))
+  }
+  for (const [from, to, corner] of [['return', 'work', 30], ['work', 'smoke', 800], ['smoke', 'work', 800], ['repair', 'work', 30], ['work', 'human', 30]]) {
+    const motion = stageMove(from, to)
+    assert.ok(motion, `${from}->${to} must schedule a belt motion`)
+    for (let index = 1; index < motion.points.length; index++) {
+      assert.ok(motion.points[index].x === motion.points[index - 1].x || motion.points[index].y === motion.points[index - 1].y, `${from}->${to} must follow orthogonal belt segments (segment ${index})`)
+    }
+    assert.ok(motion.points.some(point => point.x === corner), `${from}->${to} must round the visible belt corner x=${corner}, not a cross-workshop shortcut`)
+  }
   // The embedded deploy-barrier sample must be the repository's real ledger
   // recording, not hand-written data: compare against the recorded file.
   const recordedLedger = fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'), 'utf8')

@@ -282,13 +282,8 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
       // lane last. A tour may climb at an approach column east or west of the
       // target and dock horizontally, which is how a wrapped parcel rounds a
       // stacked column block through the empty corridor.
-      const candidatePaths = (from, to, key, moved) => {
+      const candidatePaths = (from, to) => {
         const list = []
-        if (moved) {
-          const route = travelPath(layout, stationOf(previous.parcels.get(key).station), layout.parcels.get(key).station)
-          const belt = trimDock(ortho([from, ...route.slice(1), to]))
-          list.push(belt.length > 1 ? belt : [from, to])
-        }
         if (from.x === to.x || from.y === to.y) list.push([from, to])
         else list.push([from, { x: from.x, y: to.y }, to], [from, { x: to.x, y: from.y }, to])
         const lanes = [...new Set([to.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE, from.y + SERVICE_ROW_OFFSET + PARCEL_CLEARANCE, deepY, to.y - SERVICE_ROW_OFFSET - PARCEL_CLEARANCE, from.y - SERVICE_ROW_OFFSET - PARCEL_CLEARANCE, upperY])]
@@ -304,7 +299,25 @@ export function reconcile(state, scene, { now = 0, fresh = false, reduced = fals
       }
       const clearPath = (flight, from = flight.start, to = flight.point) => {
         const rest = restIndex(resting, flight.key)
-        return candidatePaths(from, to, flight.key, flight.moved).find(points => flightClear(points, rest.byColumn, rest.byRow))
+        const clear = points => flightClear(points, rest.byColumn, rest.byRow)
+        const local = (start, finish) => candidatePaths(start, finish).find(clear)
+        if (!flight.moved || to !== flight.point) return local(from, to)
+        const source = stationOf(previous.parcels.get(flight.key).station)
+        const target = layout.parcels.get(flight.key).station
+        const route = travelPath(layout, source, target)
+        const belt = trimDock(ortho([from, ...route.slice(1), to]))
+        if (clear(belt)) return belt
+        const serviceNodes = new Map([...layout.nodes].map(([station, node]) => {
+          const index = mainline.indexOf(station)
+          const serviceY = index < 0 ? layout.nodes.get('return').y + 35 : index < 4 ? upperY - PARCEL_CLEARANCE : layout.nodes.get('return').y - 35
+          return [station, { ...node, x: ['review', 'pack'].includes(station) ? Math.max(800, east) + PARCEL_CLEARANCE : node.x, y: serviceY - 85 }]
+        }))
+        const service = travelPath({ nodes: serviceNodes }, source, target)
+        const entry = local(from, service[0])
+        const exit = local(service.at(-1), to)
+        if (!entry || !exit) return undefined
+        const detour = dedupe([...entry, ...service.slice(1), ...exit.slice(1)])
+        return clear(detour) ? detour : undefined
       }
       // Movers leave first, easternmost departure ahead — a same-station
       // convoy then rides the belt in reverse order, each through slots the
