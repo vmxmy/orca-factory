@@ -108,6 +108,7 @@ func TestReviewRunsInHeadCheckout(t *testing.T) {
 			return []byte("diff --git a/x b/x\n+added\n"), nil
 		default:
 			reviewDir = s.Dir
+			return []byte(`{"verdict":"green","step":"review"}`), nil
 		}
 		return nil, nil
 	}}

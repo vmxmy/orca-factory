@@ -185,12 +185,15 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err = os.WriteFile(name, []byte(input), 0o600); err != nil {
 		return "", tier, errors.New("review input write failed")
 	}
-	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
+	spec := runx.Spec{Path: "/bin/sh", Args: []string{"-c", `exec /bin/sh -c "$1" reviewer < "$2" 2> "$2.stderr"`, "reviewer", command, name}, Dir: dir, Timeout: 10 * time.Minute}
 	if c.ModelProxyURL != "" {
 		spec.Env = append(os.Environ(), "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
 	}
 	b, err := c.runSpec(ctx, spec)
-	return string(b), tier, err
+	if err != nil || strings.TrimSpace(string(b)) == "" {
+		return "", tier, reviewCommandFailure(err, reviewStderr(name+".stderr"))
+	}
+	return string(b), tier, nil
 }
 
 // ReviewBrief is the ticket brief the reviewer judges the diff against, plus the

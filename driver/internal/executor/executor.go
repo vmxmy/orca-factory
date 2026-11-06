@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -191,6 +192,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	var mergeGateOutput, mergeReviewOutput string
 	var scopeBlocked []string
 	var failedSubject string
+	reviewFailureCounts := make(map[string]int)
+	var reviewFailureEvidence, reviewFailureClass string
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -218,6 +221,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
+				if ev == machine.EvReviewEmpty {
+					next.HumanReason = "infra budget exhausted: reviewer " + reviewFailureClass
+					result.State = next
+					evidence += "；" + strconv.Quote(reviewFailureEvidence)
+				}
 			}
 			if ev == machine.EvWorkerScopeBlocked {
 				evidence += "；SCOPE 外文件: " + strings.Join(scopeBlocked, " ")
@@ -594,6 +602,21 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			stop := dependencyStop(ctx, reviewErr)
 			if stop != nil {
 				return result, stop
+			}
+			if event == machine.EvReviewEmpty {
+				failure := reviewCommandFailure(reviewErr, "")
+				var captured *reviewFailure
+				if errors.As(reviewErr, &captured) {
+					failure = captured
+				} else if reviewErr == nil && strings.TrimSpace(output) != "" {
+					failure.class = "invalid_output"
+				}
+				reviewFailureClass = failure.class
+				reviewFailureCounts[failure.class]++
+				reviewFailureEvidence = fmt.Sprintf("%s\n本次执行分类计数: start_failure=%d nonzero_exit=%d empty_output=%d invalid_output=%d\nshared infra budget=%d/%d; all failure classes share this budget\n审查命令档位: %s", failure.Error(), reviewFailureCounts["start_failure"], reviewFailureCounts["nonzero_exit"], reviewFailureCounts["empty_output"], reviewFailureCounts["invalid_output"], result.State.Infra+1, machine.DefaultLimits.Infra, reviewerTier)
+				if err = e.comment(ctx, t.ID, reviewFailureEvidence); err != nil {
+					return result, errors.New("review failure evidence comment failed")
+				}
 			}
 			if event == machine.EvReviewRed {
 				next := cp
