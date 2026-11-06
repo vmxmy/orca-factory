@@ -20,7 +20,7 @@ const bind = process.env.ZIIKOO_SCENE_BIND ?? 'auto'
 const portText = process.env.ZIIKOO_SCENE_PORT ?? '0'
 const port = Number(portText)
 if (!/^\d+$/.test(portText) || !Number.isInteger(port) || port < 0 || port > 65535) {
-  fail(`3D 服务端口必须是 0–65535 的整数，收到 ${portText}`)
+  fail(`像素工坊服务端口必须是 0–65535 的整数，收到 ${portText}`)
 }
 const interfaces = networkInterfaces()
 let hostname = bind === 'auto' ? '0.0.0.0' : bind
@@ -102,10 +102,8 @@ const poll = async (kind: 'status' | 'config') => {
 
 const files: Record<string, { path: string; type: string }> = {
   '/scene.js': { path: 'scene.js', type: 'text/javascript; charset=utf-8' },
-  '/vendor/three.module.min.js': { path: 'vendor/three.module.min.js', type: 'text/javascript; charset=utf-8' },
-  '/vendor/three.core.min.js': { path: 'vendor/three.core.min.js', type: 'text/javascript; charset=utf-8' },
-  '/vendor/OrbitControls.js': { path: 'vendor/OrbitControls.js', type: 'text/javascript; charset=utf-8' },
-  '/vendor/LICENSE.three': { path: 'vendor/LICENSE.three', type: 'text/plain; charset=utf-8' },
+  '/town.mjs': { path: 'town.mjs', type: 'text/javascript; charset=utf-8' },
+  '/draw.mjs': { path: 'draw.mjs', type: 'text/javascript; charset=utf-8' },
 }
 
 const listen = (listenPort: number) => {
@@ -162,7 +160,7 @@ try {
   }
 } catch (error) {
   const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined
-  fail(code === 'EADDRINUSE' ? `端口 ${port} 被占用` : `3D 服务无法监听 ${hostname}:${port}：${String(error).split(/\r?\n/)[0]}`)
+  fail(code === 'EADDRINUSE' ? `端口 ${port} 被占用` : `像素工坊服务无法监听 ${hostname}:${port}：${String(error).split(/\r?\n/)[0]}`)
 }
 
 const urlHost = isIP(advertised) === 6 ? `[${advertised}]` : advertised

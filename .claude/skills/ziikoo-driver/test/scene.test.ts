@@ -1,9 +1,11 @@
 import { expect, test } from 'claude-code/testing'
 
+import type { Runtime } from '../types'
 import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
+import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -46,4 +48,104 @@ test('sceneOf 沿用部署、候选、人工、处置、阶段与回流的优先
   expect(scene.rows[0]?.deploy).toBe(true)
   expect(scene.rows[1]?.deploy).toBe(false)
   expect(scene.rows[0]?.workers).toBe(Number(SAMPLE_CONFIG.scheduler.find(one => one.key === 'max_in_flight')?.value))
+})
+
+test('sceneOf 消费真实录制的 status/config 快照', () => {
+  const recordedRuntime = parseRuntime(RECORDED_STATUS)
+  const recordedConfig = parseConfig(RECORDED_CONFIG)
+  const scene = sceneOf(recordedRuntime, recordedConfig)
+  expect(scene.state).toBe('stale')
+  expect(scene.maintenance).toBe('draining')
+  const rowsByName = new Map(scene.rows.map(row => [row.name, row]))
+  expect(rowsByName.size).toBe(recordedConfig.repos.length)
+  const factory = rowsByName.get('orca-factory')
+  expect(factory?.parcels.map(parcel => parcel.identifier)).toEqual(['OF-414', 'OF-415'])
+  const queued = factory?.parcels.find(parcel => parcel.identifier === 'OF-414')
+  expect(queued?.station).toBe('merge')
+  expect(queued?.unknownDeploy).toBe(false)
+  const resolved = factory?.parcels.find(parcel => parcel.identifier === 'OF-415')
+  expect(resolved?.station).toBe('repair')
+  expect(resolved?.tone).toBe('attention')
+  expect(factory?.deploy).toBe(true)
+})
+
+test('sceneOf 消费还原的部署屏障与未知阶段录制快照', () => {
+  const runtime = parseRuntime(RECORDED_DEPLOY_STATUS)
+  const scene = sceneOf(runtime, parseConfig(RECORDED_CONFIG))
+  const row = scene.rows.find(one => one.name === 'zhiyun-ai-dashboard')
+  const barrier = row?.parcels.find(one => one.identifier === 'ZY-365')
+  expect(barrier?.station).toBe('dispatch')
+  expect(barrier?.tone).toBe('current')
+  expect(barrier?.label).toBe('等部署')
+  expect(barrier?.deployment).toBe('pending')
+  expect(barrier?.blocker).toBe('deployment: pending')
+  const unmapped = row?.parcels.find(one => one.identifier === 'ZY-366')
+  expect(unmapped?.station).toBe('unknown')
+  expect(unmapped?.tone).toBe('attention')
+  expect(unmapped?.label).toBe('准备镜像')
+  expect(unmapped?.unknownDeploy).toBe(false)
+})
+
+test('部署屏障快照的字段来自真实账本录制', () => {
+  const ledger = JSON.parse(RECORDED_LEDGER_DEPLOYMENT)
+  const handoff = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+    .find((line: string) => line.startsWith('merge-handoff-v1: '))
+  const progresses = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+    .filter((line: string) => line.startsWith('merge-progress-v1: '))
+    .map((line: string) => JSON.parse(line.slice('merge-progress-v1: '.length)))
+  const pending = progresses.find(progress => progress.phase === 'merge-intent' && progress.deployment?.state === 'pending')
+  expect(handoff).toBeDefined()
+  expect(pending).toBeDefined()
+  const frozen = JSON.parse(handoff!.slice('merge-handoff-v1: '.length))
+  const status = JSON.parse(RECORDED_DEPLOY_STATUS)
+  const ticket = status.tickets.find((one: { identifier: string }) => one.identifier === 'ZY-365')
+  expect(ticket.deployment.queueId).toBe(frozen.queue_id)
+  expect(ticket.deployment.sha).toBe(frozen.head)
+  expect(ticket.deployment.workflow).toBe(pending.deployment.workflow)
+  expect(ticket.deployment.state).toBe(pending.deployment.state)
+  expect(ticket.blockedReason).toBe(`deployment: ${pending.deployment.state}`)
+})
+
+test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
+  const ledger = JSON.parse(RECORDED_LEDGER_DEPLOYMENT)
+  const lines = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+  const progressLines = lines
+    .filter((line: string) => line.startsWith('merge-progress-v1: '))
+    .map((line: string) => JSON.parse(line.slice('merge-progress-v1: '.length)))
+  const paused = progressLines.find(progress => progress.deployment?.state === 'paused')
+  expect(paused).toBeDefined()
+  expect(paused.deployment.reason).toBe('deployment workflow failed')
+  expect(paused.phase).toBe('merged')
+  const frozen = JSON.parse(lines.find((line: string) => line.startsWith('merge-handoff-v1: '))!.slice('merge-handoff-v1: '.length))
+  const recorded = JSON.parse(RECORDED_DEPLOY_STATUS)
+  const barrier = recorded.tickets.find((ticket: { deployment?: { queueId: string } }) => ticket.deployment?.queueId === frozen.queue_id)
+  expect(barrier).toBeDefined()
+  const runtime: Runtime = {
+    state: 'ok',
+    generatedAt: 1,
+    tickets: [{
+      repo: barrier.repo,
+      identifier: barrier.identifier,
+      owner: '处置Agent',
+      phase: '已合并',
+      since: Date.parse(barrier.since),
+      blockedReason: `deployment: ${paused.deployment.state}`,
+      deployment: {
+        queueId: paused.queue_id,
+        sha: paused.head,
+        workflow: paused.deployment.workflow,
+        state: paused.deployment.state,
+        reason: paused.deployment.reason,
+      },
+    }],
+  }
+  const scene = sceneOf(runtime, parseConfig(RECORDED_CONFIG))
+  const row = scene.rows.find(one => one.name === 'zhiyun-ai-dashboard')
+  const parcel = row?.parcels.find(one => one.identifier === barrier.identifier)
+  expect(parcel?.station).toBe('dispatch')
+  expect(parcel?.tone).toBe('failed')
+  expect(parcel?.label).toBe('部署暂停')
+  expect(parcel?.deployment).toBe('paused')
+  expect(parcel?.blocker).toBe('deployment: paused')
+  expect(parcel?.reason).toBe('deployment: paused')
 })
