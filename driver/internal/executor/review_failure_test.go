@@ -375,6 +375,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if headTail := reviewStderr(headOpens); headTail != "" {
 		t.Errorf("head line opening a credential must drop the capture, got %q", headTail)
 	}
+	// A JSON-quoted credential key split before its colon: the fragment's
+	// trailing quote joins with the window's `:"value` head.
+	jsonKeyEdge := filepath.Join(dir, "json-key-edge.stderr")
+	jsonBody := `{"password"` + `:"` + strings.Repeat("j", 65512) + "\nSYNTHETIC_PRIVATE_TAIL\n"
+	if err := os.WriteFile(jsonKeyEdge, []byte(jsonBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if jsonTail := reviewStderr(jsonKeyEdge); jsonTail != "" {
+		t.Errorf("json key cut before its colon must drop the capture, got %q", jsonTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
