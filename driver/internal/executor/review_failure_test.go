@@ -159,19 +159,51 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	}
 }
 
-func TestReviewStderrKeepsSingleLongLine(t *testing.T) {
+func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "long.stderr")
-	line := strings.Repeat("x", 70<<10)
-	if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
+	oversized := filepath.Join(dir, "single.stderr")
+	if err := os.WriteFile(oversized, []byte("API_KEY="+strings.Repeat("k", 70<<10)+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tail := reviewStderr(path)
-	if len(tail) == 0 || len(tail) > 64<<10 {
-		t.Fatalf("oversized single line was dropped instead of bounded: %d bytes", len(tail))
+	if tail := reviewStderr(oversized); tail != "" {
+		t.Fatalf("a capture that starts mid-credential must be dropped, got %q", tail[:min(40, len(tail))])
 	}
-	if strings.Count(tail, "x") != len(strings.TrimSpace(tail)) {
-		t.Fatalf("tail must keep the diagnostic content, got %q", tail[:40])
+	mixed := filepath.Join(dir, "mixed.stderr")
+	long := "Authorization: Bearer " + strings.Repeat("c", 70<<10)
+	body := long + "\nprovider unavailable\nretry budget exhausted\n"
+	if err := os.WriteFile(mixed, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tail := reviewStderr(mixed)
+	for _, want := range []string{"provider unavailable", "retry budget exhausted"} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("complete tail lines were lost with the truncated head: %q", tail)
+		}
+	}
+	if strings.Contains(tail, "cccc") {
+		t.Errorf("truncated credential fragment leaked into diagnostics: %q", tail[:40])
+	}
+	allContinuation := filepath.Join(dir, "continuation.stderr")
+	raw := make([]byte, 70<<10)
+	for i := range raw {
+		raw[i] = 0x80
+	}
+	if err := os.WriteFile(allContinuation, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if tail := reviewStderr(allContinuation); tail != "" {
+		t.Errorf("capture of only continuation bytes must be dropped, got %d bytes", len(tail))
+	}
+	// An oversized final line may itself be truncated at EOF mid-credential;
+	// reviewCommandFailure only keeps a bounded tail, so the published window
+	// holds the start of that last line, which can cut a credential open.
+	noTrailingNewline := filepath.Join(dir, "open.stderr")
+	if err := os.WriteFile(noTrailingNewline, []byte(strings.Repeat("y", 70<<10)+"\nlast diagnostic line without newline"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	finalTail := reviewStderr(noTrailingNewline)
+	if !strings.Contains(finalTail, "last diagnostic line without newline") {
+		t.Errorf("complete trailing line was lost: %q", tail)
 	}
 }
 

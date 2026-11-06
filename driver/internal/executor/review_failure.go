@@ -80,14 +80,21 @@ func reviewStderr(path string) string {
 		return ""
 	}
 	text := string(data)
-	if offset > 0 && len(text) > 0 {
-		// Truncation must not start mid-rune; a single diagnostic line longer
-		// than the capture survives by keeping the bounded fragment itself.
+	if offset > 0 {
+		// A captured window that starts inside a line cannot prove its own
+		// redaction boundaries: the fragment may begin mid-credential. Drop
+		// every partial line, keeping only lines that started in the file.
+		// When no newline exists, the whole capture is one truncated line.
+		idx := strings.IndexByte(text, '\n')
+		if idx < 0 {
+			return ""
+		}
+		text = text[idx+1:]
+		if text == "" {
+			return ""
+		}
 		for !utf8.RuneStart(text[0]) {
 			text = text[1:]
-		}
-		if idx := strings.IndexByte(text, '\n'); idx >= 0 && idx+1 < len(text) {
-			text = text[idx+1:]
 		}
 	}
 	return text
