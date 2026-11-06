@@ -13,6 +13,8 @@ const snapshot = count => ({ generatedAt: Date.now(), state: 'ok', maintenance: 
 
 async function main() {
   const model = await import(pathToFileURL(path.join(pageRoot, 'town.mjs')))
+  assert.deepEqual(model.pointAlong([{ x: 0, y: 0 }, { x: 34, y: 0 }, { x: 68, y: 0 }], 120 / 580, 100, 1), { x: 17, y: 0 }, 'short parked legs must honor their 240ms travel time')
+  assert.deepEqual(model.pointAlong([{ x: 0, y: 0 }, { x: 135, y: 0 }, { x: 270, y: 0 }], 650 / 900, 300, 1), { x: 157.5, y: 0 }, 'dwell timing must use milliseconds throughout')
   for (const count of [0, 1, 2, 4, 6, 12, 24, 100, 1000, 1001]) {
     const scene = snapshot(count)
     const layout = model.townLayout(scene.rows)
@@ -175,6 +177,55 @@ async function main() {
     for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) refillMin = Math.min(refillMin, Math.max(Math.abs(points[index].x - other.x), Math.abs(points[index].y - other.y)))
   }
   assert.ok(refillMin >= 26, `a service-row dive must clear second-row waiters too (axis min ${refillMin.toFixed(1)}px)`)
+
+  // A dense refill (a packed hall compacting after departures) must fly every
+  // drafted parcel to its new slot — no teleporting majority — and no two
+  // painted boxes may intersect across the whole schedule. The sweep follows
+  // the renderer's truth: an unplanned parcel paints at its new slot from
+  // t=0, a planned one waits at the motion's first waypoint until it starts,
+  // rides the path, then rests at the destination.
+  const sweepSchedule = (state, layout, step) => {
+    const end = Math.max(0, ...[...state.motions.values()].map(motion => motion.start + motion.duration))
+    let samples = 0
+    let min = Infinity
+    for (let time = 0; time <= end; time += step) {
+      samples++
+      const points = [...layout.parcels].map(([key, point]) => {
+        const motion = state.motions.get(key)
+        if (!motion) return point
+        if (time < motion.start) return motion.points[0]
+        return model.pointAlong(motion.points, (time - motion.start) / motion.duration, motion.dwell ?? 0, motion.dwellAt ?? 0)
+      })
+      for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) min = Math.min(min, Math.max(Math.abs(points[index].x - other.x), Math.abs(points[index].y - other.y)))
+    }
+    assert.ok(samples > 0, `schedule sweep must sample at least once (end ${end})`)
+    return min
+  }
+  const denseRefill = (count, leavers, step) => {
+    const hall = snapshot(1)
+    hall.rows[0].parcels = Array.from({ length: count }, (_, index) => parcel(`OF-${index}`))
+    let hallState = model.reconcile(model.initialState(), hall, { fresh: true })
+    const compacted = structuredClone(hall)
+    for (let index = 0; index < leavers; index++) compacted.rows[0].parcels[index].station = 'gate'
+    hallState = model.reconcile(hallState, compacted, { now: 0 })
+    const layout = model.workshopLayout(compacted.rows[0])
+    const flying = [...layout.parcels.keys()].filter(key => hallState.motions.has(key)).length
+    assert.equal(flying, count, `every drafted parcel in a ${count}-parcel refill must fly, not teleport (${flying}/${count})`)
+    for (const [key, destination] of layout.parcels) {
+      const endpoint = hallState.motions.get(key).points.at(-1)
+      assert.deepEqual({ x: endpoint.x, y: endpoint.y }, { x: destination.x, y: destination.y }, `${key} must finish at its assigned slot`)
+    }
+    return sweepSchedule(hallState, layout, step)
+  }
+  const dense26 = denseRefill(26, 2, 1)
+  assert.ok(dense26 >= 26, `a 26-parcel refill must never intersect painted boxes (axis min ${dense26.toFixed(1)}px)`)
+  const dense170 = denseRefill(170, 1, 8)
+  assert.ok(dense170 >= 26, `a 170-parcel refill must never intersect painted boxes (axis min ${dense170.toFixed(1)}px)`)
+  // The nine-parcel refill is the teleport hole itself: a dropped motion
+  // snaps its parcel to its new slot at t=0 while the parcel queued there has
+  // not departed yet, so the two boxes start stacked.
+  const dense9 = denseRefill(9, 2, 1)
+  assert.ok(dense9 >= 26, `a nine-parcel refill must not stack a teleported parcel on a waiting one (axis min ${dense9.toFixed(1)}px)`)
 
   // A mid-tween reconcile feeds fractional coordinates back into path
   // drafting; blocked-column detection must stay interval-based instead of
@@ -431,6 +482,21 @@ async function main() {
     const statusAfterReconnect = await page.locator('#status').innerText()
     assert.ok(!statusAfterReconnect.includes('offline failure'), 'a command error that recovered during a disconnect must not survive the reconnect')
     assert.equal(await page.evaluate(() => window.pixelTown.state.motions.size), 0)
+    // BFCache 恢复时不重跑模块，关闭的流与旧连接标记会随页面恢复。
+    // 两轮受控事件用于锁定离开、恢复及重新取快照的处理行为。
+    // Playwright 默认禁用 BFCache，这里直接派发 persisted 事件。
+    // 该回归验证事件处理器，不证明浏览器实际命中 BFCache。
+    // 实际命中的证据需要浏览器自身触发 pageshow.persisted=true。
+    for (const count of [2, 4]) {
+      const priorStreams = requests.filter(request => request.pathname === '/events').length
+      await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+      assert.ok((await page.locator('#status').innerText()).includes('断开'), 'pagehide must stop reporting a live connection')
+      scene = snapshot(count)
+      await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+      await page.waitForFunction(count => window.pixelTown.state.scene?.rows.length === count, count, { timeout: 5000 })
+      assert.ok(requests.filter(request => request.pathname === '/events').length > priorStreams, 'pageshow must create a new authenticated stream')
+      assert.equal(await page.evaluate(() => window.pixelTown.state.motions.size), 0, 'restoration must snap to current state')
+    }
     await page.locator('#overview').click()
     const undeployed = snapshot(1)
     undeployed.rows[0].deploy = false
@@ -448,15 +514,36 @@ async function main() {
     assert.ok(requests.every(one => one.authorized), 'all resource and event requests must keep authentication')
     assert.deepEqual(errors, [])
     console.log('PASS real Chrome: counts, search, identity, camera, viewport caches, mobile, accessibility, SSE and errors')
+  } catch (error) {
+    await browser.close()
+    throw error
   } finally {
     for (const response of streams) response.end()
     await new Promise(resolve => server.close(resolve))
   }
-  await checkProductionServer(browser)
-  await browser.close()
+  try {
+    await checkProductionServer(browser)
+  } finally {
+    await browser.close()
+  }
 }
 
 async function assertVisible(locator) { assert.equal(await locator.isVisible(), true) }
+
+// listening 先于首轮 status/config 读取完成，不能作为快照就绪信号。
+// 启动后的初始 503 允许等待，其他状态立即失败。
+// 截止时间内仍未产生首个 Scene 时，测试必须失败。
+// 该等待只处理测试启动时序，不改变生产服务契约。
+async function waitForSnapshot(origin, token, timeout = 15000) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const response = await fetch(`${origin}/snapshot?t=${token}`)
+    if (response.status === 200) return response
+    if (response.status !== 503) assert.fail(`snapshot returned ${response.status}`)
+    if (Date.now() > deadline) assert.fail('snapshot stayed 503 past the deadline')
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+}
 
 async function checkProductionServer(browser) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
@@ -464,16 +551,24 @@ async function checkProductionServer(browser) {
   const temp = fs.mkdtempSync(path.join(tempRoot, 'pixel-town-'))
   const token = crypto.randomBytes(24).toString('hex')
   const fake = path.join(temp, 'orca-factory-driver')
-  // The fake driver replays real recordings only: the status is the recorded
-  // `status --json` output extended with the two ledger-derived tickets (the
-  // paused ZY-365 deployment barrier and the 等人批 ZY-366 turnover), and the
-  // config is the recorded `config --json` output verbatim — no hand-written
-  // SAMPLE_CONFIG on this path. The real parseRuntime → parseConfig → sceneOf
-  // chain in scene/server.ts turns both tickets into the page's deploy-paused
-  // and unknown-stage branches.
-  const sampleSource = fs.readFileSync(path.join(plugin, 'test/sample-recorded.ts'), 'utf8')
-  const replayStatus = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_REPLAY_STATUS: string = ("[\s\S]*?")\n/)?.[1]))
-  const replayConfig = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_CONFIG: string = ("[\s\S]*?")\n/)?.[1]))
+  // 原始录制链与派生异常夹具分开运行，避免将测试构造误称为生产录制。
+  // 原始 status --json 与 config --json 文件位于插件 test/recorded/：
+  // live-status.json 与 live-config.json，录制于 2026-11-06。
+  // status 只有处于 Agent处置 的 OF-415 与 OF-419，没有下面的异常票。
+  // 异常夹具在同一 status 基底上追加两张票，并保留原始文件不变。
+  // ZY-365 的 paused 部署字段取自真实 merge-progress-v1 账本录制。
+  // ZY-366 的 since 取自真实转人收据，阶段另选历史字面值“等人批”。
+  // “等人批”不是从这份 CLI 或转人收据读取的阶段，不是异常原始录制。
+  // 两条链都经过 scene/server.ts 的 parseRuntime、parseConfig、sceneOf。
+  // 派生夹具用于验证部署暂停与未知阶段的页面分支。
+  const liveStatusText = fs.readFileSync(path.join(plugin, 'test/recorded/live-status.json'), 'utf8')
+  const liveConfigText = fs.readFileSync(path.join(plugin, 'test/recorded/live-config.json'), 'utf8')
+  const liveStatus = JSON.parse(liveStatusText)
+  const liveConfig = JSON.parse(liveConfigText)
+  for (const ticket of liveStatus.tickets) {
+    assert.equal(ticket.phase, 'Agent处置', 'the live recording must be the raw CLI capture, not a derived fixture')
+    assert.equal(ticket.deployment, undefined, 'the live recording must not carry derived deployment fields')
+  }
   const ledger = JSON.parse(fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'), 'utf8'))
   const progressLines = ledger.comments.flatMap(comment => comment.body.split('\n')).filter(line => line.startsWith('merge-progress-v1: '))
   const pausedLine = progressLines.map(line => JSON.parse(line.slice('merge-progress-v1: '.length))).find(progress => progress.deployment?.state === 'paused')
@@ -483,23 +578,54 @@ async function checkProductionServer(browser) {
   const humanLedger = JSON.parse(fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-human-release.json'), 'utf8'))
   const turnover = humanLedger.comments.filter(comment => comment.body.startsWith('转人: ZY-366')).at(-1)
   assert.ok(turnover, 'recorded human-release ledger must carry the ZY-366 turnover receipt')
+  const replayStatus = { ...liveStatus, tickets: [...liveStatus.tickets, {
+    repo: '/home/laoxu/github/zhiyun-ai-dashboard',
+    identifier: 'ZY-365',
+    owner: '处置Agent',
+    phase: '已合并',
+    backend: 'feishu',
+    queuePosition: 1,
+    blockedReason: `deployment: ${pausedLine.deployment.state}`,
+    since: turnover.createdAt,
+    pushedAt: turnover.createdAt,
+    url: 'https://github.com/vmxmy/zhiyun-ai-dashboard/pull/2143',
+    title: 'fix(dashboard): 修复图表在空数据下的崩溃',
+    deployment: { queueId: pausedLine.queue_id, sha: pausedLine.head, workflow: pausedLine.deployment.workflow, state: pausedLine.deployment.state, reason: pausedLine.deployment.reason },
+  }, {
+    repo: '/home/laoxu/github/zhiyun-ai-dashboard',
+    identifier: 'ZY-366',
+    owner: '人',
+    phase: '等人批',
+    backend: 'feishu',
+    since: turnover.createdAt,
+    pushedAt: turnover.createdAt,
+    url: 'https://qcnqhljeakpl.feishu.cn/base/VeQObWd9VaV66tsiM7GcN0Avnph?table=tblmC0IWUj4QJ3b6&record=reczz28VPL7ISrNs',
+    title: 'chore(content): 退役 Workers AI 嵌入通道与语义检索路由',
+  }] }
   const barrierTicket = replayStatus.tickets.find(ticket => ticket.deployment?.queueId === frozen.queue_id)
-  assert.ok(barrierTicket, 'replay status must carry the paused barrier ticket')
+  assert.ok(barrierTicket, 'the derived replay status must carry the paused barrier ticket')
   assert.equal(barrierTicket.deployment.state, pausedLine.deployment.state)
   assert.equal(barrierTicket.deployment.sha, pausedLine.head)
+  assert.equal(barrierTicket.since, turnover.createdAt)
+  assert.equal(barrierTicket.blockedReason, `deployment: ${pausedLine.deployment.state}`)
   const unknownTicket = replayStatus.tickets.find(ticket => ticket.identifier === 'ZY-366')
-  assert.ok(unknownTicket, 'replay status must carry the ZY-366 turnover ticket')
+  assert.ok(unknownTicket, 'the derived replay status must carry the ZY-366 turnover ticket')
   assert.equal(unknownTicket.phase, '等人批')
   assert.equal(unknownTicket.since, turnover.createdAt)
-  assert.ok(replayConfig.repos.some(repo => repo.path === barrierTicket.repo), 'replay config must list the dashboard repo')
-  fs.writeFileSync(fake, `#!/usr/bin/env bun
-const status = ${JSON.stringify(replayStatus)};
-const config = ${JSON.stringify(replayConfig)};
+  assert.ok(liveConfig.repos.some(repo => repo.path === barrierTicket.repo), 'the recorded config must list the dashboard repo')
+  assert.ok(!liveStatus.tickets.some(ticket => ticket.identifier === 'ZY-365' || ticket.identifier === 'ZY-366'), 'the live recording must not already contain the derived tickets')
+  const fakeStatus = status => {
+    fs.writeFileSync(fake, `#!/usr/bin/env bun
+const status = JSON.parse(JSON.stringify(${JSON.stringify(status)}));
+const config = JSON.parse(${JSON.stringify(liveConfigText)});
 if (process.argv[2] === 'config') console.log(JSON.stringify(config));
 else console.log(JSON.stringify(status));
 `)
-  fs.chmodSync(fake, 0o755)
-  const child = spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
+    fs.chmodSync(fake, 0o755)
+  }
+  fakeStatus(liveStatus)
+  const spawnServer = () => spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawnServer()
   try {
     const origin = await new Promise((resolve, reject) => {
       let output = ''
@@ -522,14 +648,48 @@ else console.log(JSON.stringify(status));
       await header.body.cancel()
       assert.equal((await fetch(`${origin}${resource}?t=${token}`, { method: 'POST' })).status, 404)
     }
-    const snapshotResponse = await fetch(`${origin}/snapshot?t=${token}`)
-    assert.equal(snapshotResponse.status, 200, 'the isolated driver status/config chain must produce a real Scene')
+    const snapshotResponse = await waitForSnapshot(origin, token)
     const actualScene = await snapshotResponse.json()
-    assert.equal(actualScene.state, replayStatus.state, 'the recorded status state must survive the parse chain')
-    assert.equal(actualScene.maintenance, replayConfig.overview.maintenance, 'the recorded config maintenance must survive the parse chain')
-    assert.equal(actualScene.rows.length, replayConfig.repos.length, 'the recorded config repo list must shape the rows')
+    assert.equal(actualScene.state, liveStatus.state, 'the live recorded status state must survive the parse chain')
+    assert.equal(actualScene.maintenance, liveConfig.overview.maintenance, 'the recorded config maintenance must survive the parse chain')
+    assert.equal(actualScene.rows.length, liveConfig.repos.length, 'the recorded config repo list must shape the rows')
     assert.equal(actualScene.rows[0].name, 'orca-factory')
     assert.equal(typeof actualScene.generatedAt, 'number')
+    // 原始录制只有处于 Agent处置 的 OF-415 与 OF-419。
+    // 这两张票应落在修理架，原始链不能混入派生的异常票。
+    // 部署暂停与未知阶段由后面的独立派生夹具覆盖。
+    const factoryRow = actualScene.rows.find(row => row.name === 'orca-factory')
+    const liveParcels = factoryRow?.parcels.map(one => one.identifier)
+    assert.deepEqual(liveParcels, ['OF-415', 'OF-419'], 'the live recording must survive the parse chain as recorded')
+    for (const one of factoryRow?.parcels ?? []) {
+      assert.equal(one.station, 'repair', `the recorded Agent处置 phase must drive the repair rack (${one.identifier})`)
+      assert.equal(one.tone, 'attention')
+      assert.equal(one.deployment, undefined)
+      assert.equal(one.unknownDeploy, false)
+    }
+    assert.equal((await fetch(`${origin}/vendor/OrbitControls.js?t=${token}`)).status, 404)
+    console.log('PASS production Bun service on raw live recordings: GET, header/query auth, all modules and retired routes')
+    await driveLivePage(browser, origin, token)
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve))
+  }
+  fakeStatus(replayStatus)
+  const exceptionChild = spawnServer()
+  try {
+    const exceptionOrigin = await new Promise((resolve, reject) => {
+      let output = ''
+      const timer = setTimeout(() => reject(new Error('Bun fixture server did not listen')), 15000)
+      exceptionChild.on('error', reject)
+      exceptionChild.on('exit', code => { clearTimeout(timer); reject(new Error(`Bun fixture server exited ${code}`)) })
+      exceptionChild.stdout.on('data', bytes => {
+        output += bytes
+        const match = /listening (http:\/\/[^/]+)/.exec(output)
+        if (match) { clearTimeout(timer); resolve(match[1]) }
+      })
+    })
+    const snapshotResponse = await waitForSnapshot(exceptionOrigin, token)
+    const actualScene = await snapshotResponse.json()
     // The paused deployment barrier from the real ledger recording drives the
     // dispatch-station failed branch, and the untracked 等人批 phase drives
     // the unknown-station branch — both through the production
@@ -543,44 +703,67 @@ else console.log(JSON.stringify(status));
     assert.equal(barrier?.blocker, 'deployment: paused')
     assert.equal(barrier?.reason, 'deployment: paused')
     const unmapped = dashboard?.parcels.find(one => one.identifier === unknownTicket.identifier)
-    assert.equal(unmapped?.station, 'unknown', 'the recorded 等人批 phase must reach the unknown-station branch')
+    assert.equal(unmapped?.station, 'unknown', 'the 等人批 phase must reach the unknown-station branch')
     assert.equal(unmapped?.tone, 'attention')
     assert.equal(unmapped?.label, '等人批')
-    assert.equal((await fetch(`${origin}/vendor/OrbitControls.js?t=${token}`)).status, 404)
-    console.log('PASS production Bun service: GET, header/query auth, all modules and retired routes')
-    // The recorded chain must also drive the real page: load the production
-    // page against this server and walk both exception branches in Chrome,
-    // before the server goes away.
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
-    const pageErrors = []
-    page.on('pageerror', error => pageErrors.push(error.message))
-    try {
-      await page.goto(`${origin}/?t=${token}`)
-      await page.waitForFunction(() => window.pixelTown?.state.scene)
-      await page.locator('#search').fill('zhiyun')
-      await page.locator('#projects button').first().click()
-      await page.locator('#enter').click()
-      await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
-      await page.locator('#parcels button').first().click()
-      const detail = await page.locator('#detail').innerText()
-      assert.ok(detail.includes('ZY-365'), `the paused barrier ticket must open from the replayed scene (${detail.slice(0, 80)})`)
-      assert.ok(detail.includes('部署暂停'), 'the page must surface the paused deployment state')
-      assert.ok(detail.includes('deployment: paused'), 'the page must surface the ledger-derived blocked reason')
-      await page.locator('#attention').click()
-      await page.locator('#detail button').last().click()
-      const unknownDetail = await page.locator('#detail').innerText()
-      assert.ok(unknownDetail.includes('ZY-366'), `the turnover ticket must be reachable from the attention list (${unknownDetail.slice(0, 80)})`)
-      assert.ok(unknownDetail.includes('未知阶段'), 'the 等人批 phase must drive the page unknown-stage branch')
-      assert.ok(unknownDetail.includes('等人批'), 'the page must keep the original phase text next to the unknown station')
-      assert.deepEqual(pageErrors, [])
-      console.log('PASS production page in real Chrome: recorded barrier and unknown-phase branches')
-    } finally {
-      await page.close()
-    }
+    console.log('PASS production Bun service on the derived exception fixture')
+    await driveExceptionPage(browser, exceptionOrigin, token, barrierTicket, unknownTicket)
   } finally {
-    child.kill('SIGTERM')
-    await new Promise(resolve => child.exitCode !== null || child.signalCode !== null ? resolve() : child.once('exit', resolve))
+    exceptionChild.kill('SIGTERM')
+    await new Promise(resolve => exceptionChild.exitCode !== null || exceptionChild.signalCode !== null ? resolve() : exceptionChild.once('exit', resolve))
     fs.rmSync(temp, { recursive: true, force: true })
+  }
+}
+
+async function driveLivePage(browser, origin, token) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
+  const pageErrors = []
+  page.on('pageerror', error => pageErrors.push(error.message))
+  try {
+    await page.goto(`${origin}/?t=${token}`)
+    await page.waitForFunction(() => window.pixelTown?.state.scene)
+    await page.locator('#search').fill('orca-factory')
+    await page.locator('#projects button').first().click()
+    await page.locator('#enter').click()
+    await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
+    await page.locator('#parcels button').first().click()
+    const detail = await page.locator('#detail').innerText()
+    assert.ok(detail.includes('OF-415'), `the recorded live ticket must open from the replayed scene (${detail.slice(0, 80)})`)
+    assert.ok(detail.includes('修理'), 'the recorded Agent处置 phase must drive the page repair-station branch')
+    assert.ok(detail.includes('二线处理中'), 'the page must keep the recorded label')
+    assert.deepEqual(pageErrors, [])
+    console.log('PASS production page in real Chrome on the raw live recording')
+  } finally {
+    await page.close()
+  }
+}
+
+async function driveExceptionPage(browser, origin, token, barrierTicket, unknownTicket) {
+  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
+  const pageErrors = []
+  page.on('pageerror', error => pageErrors.push(error.message))
+  try {
+    await page.goto(`${origin}/?t=${token}`)
+    await page.waitForFunction(() => window.pixelTown?.state.scene)
+    await page.locator('#search').fill('zhiyun')
+    await page.locator('#projects button').first().click()
+    await page.locator('#enter').click()
+    await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
+    await page.locator('#parcels button').first().click()
+    const detail = await page.locator('#detail').innerText()
+    assert.ok(detail.includes(barrierTicket.identifier), `the paused barrier ticket must open from the derived scene (${detail.slice(0, 80)})`)
+    assert.ok(detail.includes('部署暂停'), 'the page must surface the paused deployment state')
+    assert.ok(detail.includes('deployment: paused'), 'the page must surface the ledger-derived blocked reason')
+    await page.locator('#attention').click()
+    await page.locator('#detail button').last().click()
+    const unknownDetail = await page.locator('#detail').innerText()
+    assert.ok(unknownDetail.includes(unknownTicket.identifier), `the turnover ticket must be reachable from the attention list (${unknownDetail.slice(0, 80)})`)
+    assert.ok(unknownDetail.includes('未知阶段'), 'the 等人批 phase must drive the page unknown-stage branch')
+    assert.ok(unknownDetail.includes('等人批'), 'the page must keep the original phase text next to the unknown station')
+    assert.deepEqual(pageErrors, [])
+    console.log('PASS production page in real Chrome: derived barrier and unknown-phase branches')
+  } finally {
+    await page.close()
   }
 }
 

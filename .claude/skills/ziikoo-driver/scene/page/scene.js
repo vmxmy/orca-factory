@@ -350,24 +350,43 @@ canvas.addEventListener('keydown', event => {
 reduced.addEventListener('change', () => { if (reduced.matches) state.motions.clear(); requestDraw() })
 new ResizeObserver(resize).observe(element('#viewport'))
 resize()
-const events = new EventSource(resource('/events'))
-events.onopen = () => {
-  connected = true
+let events
+function connectEvents() {
+  if (events) return
   fresh = true
-  // Reconnects do not replay historical recovered events; a scene event proves
-  // both polls are healthy, so stale command errors must not survive them.
-  for (const command of failures.keys()) if (command !== 'snapshot') failures.delete(command)
-  failures.delete('snapshot')
-  renderStatus()
-  requestDraw()
+  events = new EventSource(resource('/events'))
+  events.onopen = () => {
+    connected = true
+    fresh = true
+    // Reconnects do not replay historical recovered events; a scene event proves
+    // both polls are healthy, so stale command errors must not survive them.
+    for (const command of failures.keys()) if (command !== 'snapshot') failures.delete(command)
+    failures.delete('snapshot')
+    renderStatus()
+    requestDraw()
+  }
+  events.addEventListener('scene', event => { snapshotRequest?.abort(); failures.delete('snapshot'); receive(JSON.parse(event.data)) })
+  events.addEventListener('error', event => {
+    if (event.data) { const failure = JSON.parse(event.data); if (failure.recovered) failures.delete(failure.command); else failures.set(failure.command, failure) }
+    else { connected = false; fresh = true }
+    renderStatus()
+  })
 }
-events.addEventListener('scene', event => { snapshotRequest?.abort(); failures.delete('snapshot'); receive(JSON.parse(event.data)) })
-events.addEventListener('error', event => {
-  if (event.data) { const failure = JSON.parse(event.data); if (failure.recovered) failures.delete(failure.command); else failures.set(failure.command, failure) }
-  else { connected = false; fresh = true }
+connectEvents()
+window.addEventListener('pagehide', () => {
+  events?.close()
+  events = undefined
+  connected = false
+  fresh = true
+  snapshotRequest?.abort()
+  snapshotRequest = undefined
   renderStatus()
+})
+window.addEventListener('pageshow', event => {
+  if (!event.persisted) return
+  connectEvents()
+  void fetchSnapshot()
 })
 setInterval(renderStatus, 5000)
 void fetchSnapshot()
-window.addEventListener('pagehide', () => { events.close(); snapshotRequest?.abort() }, { once: true })
 window.pixelTown = Object.freeze({ get state() { return state }, get layout() { return layout }, metrics, selectedScreenPoint() { const point = selectedPoint(); if (!point) return null; const bounds = canvas.getBoundingClientRect(); const screen = screenPoint(point); return { x: bounds.left + screen.x, y: bounds.top + screen.y } } })
