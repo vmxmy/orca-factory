@@ -23,6 +23,10 @@ type reviewFailure struct {
 
 var reviewCredentials = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;]+)`)
 
+// A credential value already orphaned from its key (Bearer "…" becomes
+// [REDACTED] "…" after the first pass) is redacted by its quoted shape alone.
+var quotedCredentialValue = regexp.MustCompile(`(?i)(authorization|token|password|secret|api[_-]?key)[a-z0-9_-]*\s*[:=]\s*\[REDACTED\]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
+
 func (failure *reviewFailure) Error() string {
 	return fmt.Sprintf("reviewer %s exit_code=%d stderr=%s", failure.class, failure.exitCode, strconv.Quote(failure.stderr))
 }
@@ -45,10 +49,14 @@ func reviewCommandFailure(err error, stderr string) *reviewFailure {
 		}
 		if errors.Is(err, context.DeadlineExceeded) {
 			failure.cause = context.DeadlineExceeded
+			// A started reviewer killed by its own 10-minute timeout is a
+			// runtime failure, not a start failure.
+			failure.class = "timeout"
 		}
 	}
 	stderr = runx.RedactDiagnostic(stderr)
 	stderr = reviewCredentials.ReplaceAllString(stderr, "${1}[REDACTED]")
+	stderr = quotedCredentialValue.ReplaceAllString(stderr, "[REDACTED]")
 	const limit = 4096
 	if len(stderr) > limit {
 		stderr = strings.ToValidUTF8(stderr[len(stderr)-limit:], "")

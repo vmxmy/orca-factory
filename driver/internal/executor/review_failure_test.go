@@ -157,6 +157,14 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if !strings.Contains(escaped.stderr, `[REDACTED]`) {
 		t.Errorf("redaction marker missing: %q", escaped.stderr)
 	}
+	bearer := reviewCommandFailure(nil, `Authorization: Bearer "synthetic-sensitive-value"`)
+	if strings.Contains(bearer.stderr, "synthetic-sensitive-value") {
+		t.Errorf("quoted bearer value leaked after layered redaction: %q", bearer.stderr)
+	}
+	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
+	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
+		t.Errorf("runtime timeout misclassified: %+v", timeout)
+	}
 	empty := recordedReviewFailure(t, "empty")
 	if !errors.As(empty, &classified) || classified.class != "empty_output" || classified.exitCode != 0 {
 		t.Fatalf("recorded empty sample misclassified: %v", empty)

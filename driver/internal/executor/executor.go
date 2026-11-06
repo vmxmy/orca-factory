@@ -613,7 +613,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 				}
 				reviewFailureClass = failure.class
 				reviewFailureCounts[failure.class]++
-				reviewFailureEvidence = fmt.Sprintf("%s\n本次执行分类计数: start_failure=%d nonzero_exit=%d empty_output=%d invalid_output=%d\nshared infra budget=%d/%d; all failure classes share this budget\n审查命令档位: %s", failure.Error(), reviewFailureCounts["start_failure"], reviewFailureCounts["nonzero_exit"], reviewFailureCounts["empty_output"], reviewFailureCounts["invalid_output"], result.State.Infra+1, machine.DefaultLimits.Infra, reviewerTier)
+				reviewFailureEvidence = fmt.Sprintf("%s\n本次执行分类计数: start_failure=%d nonzero_exit=%d empty_output=%d invalid_output=%d timeout=%d\nshared infra budget=%d/%d; all failure classes share this budget\n审查命令档位: %s", failure.Error(), reviewFailureCounts["start_failure"], reviewFailureCounts["nonzero_exit"], reviewFailureCounts["empty_output"], reviewFailureCounts["invalid_output"], reviewFailureCounts["timeout"], result.State.Infra+1, machine.DefaultLimits.Infra, reviewerTier)
 				if err = e.comment(ctx, t.ID, reviewFailureEvidence); err != nil {
 					return result, errors.New("review failure evidence comment failed")
 				}
