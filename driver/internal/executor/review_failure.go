@@ -206,17 +206,24 @@ func credentialStraddlesWindow(file *os.File, offset int64, windowHead string) b
 			}
 			data = data[i:]
 		}
-		// Not inside a value: look for the next opener in a bounded carry.
+		// Not inside a value: drain every credential opener in the bounded
+		// window, leaving carry at the byte after the last closer (or the
+		// opener's value streaming into the next chunk).
 		window := runx.StripANSI(carry + string(data))
-		if loc := credentialOpener.FindStringIndex(window); loc != nil {
+		carry = ""
+		for {
+			loc := credentialOpener.FindStringIndex(window)
+			if loc == nil {
+				break
+			}
 			valueStart := loc[1]
 			q := window[valueStart-1]
-			if closer := closingQuoteIndex(window, valueStart, q); closer < 0 {
-				// Opener inside this chunk: stream the remainder for its closer.
-				carry = ""
+			closer := closingQuoteIndex(window, valueStart, q)
+			if closer < 0 {
+				// Value runs past this chunk: stream its remainder.
 				quote = q
 				rest := window[valueStart:]
-				for i := 0; i < len(rest); i++ {
+				for i := 0; i < len(rest) && quote != 0; i++ {
 					switch {
 					case escaped:
 						escaped = false
@@ -224,18 +231,19 @@ func credentialStraddlesWindow(file *os.File, offset int64, windowHead string) b
 						escaped = true
 					case rest[i] == q:
 						quote = 0
-					}
-					if quote == 0 {
-						break
+						rest = rest[i+1:]
 					}
 				}
 				if quote != 0 {
-					continue
+					break
 				}
-			} else {
-				carry = window[closer+1:]
+				window = rest
 				continue
 			}
+			window = window[closer+1:]
+		}
+		if quote != 0 {
+			continue
 		}
 		if keep := len(window); keep > 512 {
 			carry = window[keep-512:]

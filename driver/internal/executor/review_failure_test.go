@@ -336,6 +336,25 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if plainTail := reviewStderr(plainWord); !strings.Contains(plainTail, "provider unavailable") {
 		t.Errorf("plain identifier boundary dropped the diagnostic tail: %q", plainTail)
 	}
+	// A closed credential earlier in the prefix must not hide a later
+	// straddling one: the scan drains every opener before deciding.
+	closedThenOpen := filepath.Join(dir, "closed-then-open.stderr")
+	closedBody := "token='ok'\npassword='" + strings.Repeat("x", 70000) + "\nSENSITIVE_FRAGMENT'\nprovider unavailable\n"
+	if err := os.WriteFile(closedThenOpen, []byte(closedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if closedTail := reviewStderr(closedThenOpen); closedTail != "" {
+		t.Errorf("closed credential followed by straddling one must drop the capture, got %q", closedTail)
+	}
+	// Two credentials closed inside one chunk still publish the tail.
+	twoInChunk := filepath.Join(dir, "two-in-chunk.stderr")
+	twoBody := "token='ok' password='short' " + strings.Repeat("q", 70<<10) + "\nprovider unavailable\n"
+	if err := os.WriteFile(twoInChunk, []byte(twoBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if twoTail := reviewStderr(twoInChunk); !strings.Contains(twoTail, "provider unavailable") {
+		t.Errorf("two closed credentials must keep the tail: %q", twoTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
