@@ -2,18 +2,21 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher/callback"
@@ -128,8 +131,8 @@ func intakeTickets(store issues.Store) func(context.Context) ([]intake.TicketCon
 // rediscovers the live eligible set, but only the first topic that actually
 // dispatches to a given prefix pays for building its Store and Runner.
 type projectRuntime struct {
-	mu       sync.Mutex
-	claude   string
+	mu     sync.Mutex
+	claude string
 	// piTier selects the pi --mode rpc execution path when non-empty
 	// (AGENT_INTAKE_PI); piBinaryErr defers the "pi not installed" failure
 	// to projects that actually opt into the path.
@@ -142,10 +145,14 @@ type projectRuntime struct {
 	tuning       config.Tuning
 	built        map[string]*intake.Runner
 	projects     map[string]intake.Project
+	// ledgers holds each resolved project's full issues.Store (its intake
+	// Project only exposes the narrower intake.Ledger): the draft_ticket
+	// submission reads dependencies and creates tickets through it (OF-417).
+	ledgers map[string]issues.Store
 }
 
 func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRuntime {
-	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}}
+	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}, ledgers: map[string]issues.Store{}}
 }
 
 // setPi installs the gateway-wide pi RPC configuration: the tier comes from
@@ -227,14 +234,28 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	}
 	r.built[p.Prefix] = runner
 	r.projects[p.Prefix] = project
+	r.ledgers[p.Prefix] = store
 	return project, nil
 }
 
 // agent is the Turn dispatcher passed to intake.New: every prefix a Turn can
 // name was already resolved (discoverIntakeProjects only ever hands the
 // gateway prefixes it resolved), so a miss here means no local repository
-// ever matched that project.
+// ever matched that project. After a successful turn it also submits any
+// draft_ticket block the answer carries, appending the receipt (OF-417).
 func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, error) {
+	answer, err := r.turn(ctx, t)
+	if err != nil {
+		return "", err
+	}
+	if receipt, ok := r.submitDraftTicket(ctx, t, answer); ok {
+		answer += "\n\n" + receipt
+	}
+	return answer, nil
+}
+
+// turn dispatches one Turn to the project's built Runner.
+func (r *projectRuntime) turn(ctx context.Context, t intake.Turn) (string, error) {
 	r.mu.Lock()
 	runner, ok := r.built[t.Project.Prefix]
 	r.mu.Unlock()
@@ -242,6 +263,265 @@ func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, erro
 		return "", fmt.Errorf("intake gateway: no local repository for project %s", t.Project.Prefix)
 	}
 	return runner.Turn(ctx, t)
+}
+
+// draftTicketFence isolates the Agent's draft_ticket JSON block from the
+// surrounding reply text, which the group sees as-is.
+var draftTicketFence = regexp.MustCompile("(?s)```draft_ticket\\s*\\n(.*?)\\n```")
+
+// draftTicketAllowedLabels is the only label set a draft may carry: the
+// agent's reply is untrusted data, so unknown labels are dropped, never
+// passed through to the ledger. Extend this fixed set deliberately.
+var draftTicketAllowedLabels = map[string]bool{}
+
+// draftTicketWire is the Agent's draft_ticket JSON (OF-417): one fully
+// specified ticket the gateway validates and creates on the Agent's behalf.
+type draftTicketWire struct {
+	Title    string   `json:"title"`
+	Todo     []string `json:"todo"`
+	Check    string   `json:"check"`
+	Scope    string   `json:"scope"`
+	Blockers []string `json:"blockers"`
+	Related  []string `json:"related"`
+	Labels   []string `json:"labels"`
+}
+
+// parseDraftTicket extracts the draft_ticket block from an agent reply.
+// found is false when the answer carries no block; a present but malformed
+// block comes back as a problem instead of being silently ignored.
+func parseDraftTicket(answer string) (draft draftTicketWire, problems []string, found bool) {
+	m := draftTicketFence.FindStringSubmatch(answer)
+	if m == nil {
+		return draftTicketWire{}, nil, false
+	}
+	if err := json.Unmarshal([]byte(m[1]), &draft); err != nil {
+		return draftTicketWire{}, []string{"draft_ticket 不是合法 JSON：" + err.Error()}, true
+	}
+	return draft, nil, true
+}
+
+// draftTicketFieldProblems applies the adopt-style face requirement: 要做,
+// CHECK and SCOPE must all be present and non-empty.
+func draftTicketFieldProblems(d draftTicketWire) []string {
+	var missing []string
+	if strings.TrimSpace(d.Title) == "" {
+		missing = append(missing, "title")
+	}
+	if len(d.Todo) == 0 || slices.ContainsFunc(d.Todo, func(s string) bool { return strings.TrimSpace(s) == "" }) {
+		missing = append(missing, "todo（非空数组，且每项非空）")
+	}
+	if strings.TrimSpace(d.Check) == "" {
+		missing = append(missing, "check")
+	}
+	if strings.TrimSpace(d.Scope) == "" {
+		missing = append(missing, "scope")
+	}
+	return missing
+}
+
+// draftTicketDependencies validates blockers/related like issues.Adopt:
+// both arrays must be explicit (nil is not a complete list), free of
+// duplicates, and every reference must resolve to a Complete task. It
+// returns the canonical IDs the ticket is created with.
+func draftTicketDependencies(ctx context.Context, store issues.Store, d draftTicketWire) (blockers, related []string, problems []string) {
+	if d.Blockers == nil || d.Related == nil {
+		return nil, nil, []string{"blockers、related 必须是完整数组（没有依赖写 []，不能省略或写 null）"}
+	}
+	refs := slices.Concat(d.Blockers, d.Related)
+	if len(slices.Compact(slices.Sorted(slices.Values(refs)))) != len(refs) {
+		return nil, nil, []string{"blockers、related 中有重复的票"}
+	}
+	blockers, problems = resolveDraftTicketRefs(ctx, store, d.Blockers)
+	related, relatedProblems := resolveDraftTicketRefs(ctx, store, d.Related)
+	return blockers, related, append(problems, relatedProblems...)
+}
+
+func resolveDraftTicketRefs(ctx context.Context, store issues.Store, refs []string) (ids []string, problems []string) {
+	for _, ref := range refs {
+		dep, err := store.Read(ctx, ref)
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Sprintf("依赖 %s 在账本中不存在", ref))
+		case !dep.Complete:
+			problems = append(problems, fmt.Sprintf("依赖 %s 尚未纳管", ref))
+		default:
+			ids = append(ids, dep.ID)
+		}
+	}
+	return ids, problems
+}
+
+// similarTicket finds an open ledger ticket whose title looks like the
+// draft, so a repeated proposal never creates a duplicate.
+func similarTicket(ctx context.Context, store issues.Store, title string) (issues.Task, bool, error) {
+	tasks, err := store.List(ctx)
+	if err != nil {
+		return issues.Task{}, false, err
+	}
+	for _, t := range tasks {
+		if closedTicketState(t.Metadata.State) {
+			continue
+		}
+		if similarTitle(t.Title, title) {
+			return t, true, nil
+		}
+	}
+	return issues.Task{}, false, nil
+}
+
+func closedTicketState(state string) bool {
+	switch state {
+	case "Done", "Canceled", "Cancelled", "Duplicate":
+		return true
+	}
+	return false
+}
+
+// similarTitle compares normalized titles: equality, containment, or a
+// character-bigram overlap (shared bigrams over the smaller title's
+// bigram set) of at least 0.6 counts as similar.
+func similarTitle(a, b string) bool {
+	na, nb := normalizeTitle(a), normalizeTitle(b)
+	if na == "" || nb == "" {
+		return false
+	}
+	if na == nb || strings.Contains(na, nb) || strings.Contains(nb, na) {
+		return true
+	}
+	ga, gb := titleBigrams(na), titleBigrams(nb)
+	shared := 0
+	for g := range ga {
+		if gb[g] {
+			shared++
+		}
+	}
+	smaller := min(len(ga), len(gb))
+	return smaller > 0 && float64(shared) >= 0.6*float64(smaller)
+}
+
+func normalizeTitle(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) {
+			return -1
+		}
+		return unicode.ToLower(r)
+	}, s)
+}
+
+func titleBigrams(s string) map[string]bool {
+	runes := []rune(s)
+	out := make(map[string]bool, len(runes))
+	for i := 0; i+1 < len(runes); i++ {
+		out[string(runes[i:i+2])] = true
+	}
+	return out
+}
+
+// draftTicketDescription renders the create face both backends adopt:
+// 要做/验收/SCOPE sections plus a 依赖 section whose DEPENDENCIES line
+// issues.Adopt re-checks against the creation input.
+func draftTicketDescription(session, prompt string, d draftTicketWire, blockers, related []string) string {
+	deps, _ := json.Marshal(issues.AdoptInput{Blockers: blockers, Related: related})
+	var todo strings.Builder
+	for i, item := range d.Todo {
+		fmt.Fprintf(&todo, "%d. %s\n", i+1, strings.TrimSpace(item))
+	}
+	return fmt.Sprintf("## 现状\nintake draft_ticket 代建，需求原话摘要：%s\n\n## 要做\n%s## 验收\nCHECK: %s\n\n## SCOPE\n%s\n\n## 依赖\nDEPENDENCIES: %s\n\n## 来源\nintake 会话 %s\n",
+		draftTicketSummary(prompt), todo.String(), strings.TrimSpace(d.Check), strings.Join(strings.Fields(d.Scope), " "), deps, session)
+}
+
+// draftTicketSummary truncates the requester's original words for the
+// provenance comment and the ticket face.
+func draftTicketSummary(prompt string) string {
+	runes := []rune(strings.TrimSpace(prompt))
+	if len(runes) > 200 {
+		return string(runes[:200]) + "…"
+	}
+	return string(runes)
+}
+
+// draftTicketLabels keeps only the fixed allowlist; the agent's reply is
+// untrusted, so unknown labels never reach the ledger.
+func draftTicketLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		if draftTicketAllowedLabels[l] {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// createDraftTicket creates the validated draft at Todo (never
+// ready-for-agent: a human confirms the need before that label) and writes
+// the provenance comment OF-417 requires.
+func createDraftTicket(ctx context.Context, store issues.Store, session, prompt string, d draftTicketWire, blockers, related []string) (issues.Task, error) {
+	task, err := store.Create(ctx, issues.CreateInput{
+		Title:       strings.TrimSpace(d.Title),
+		Description: draftTicketDescription(session, prompt, d, blockers, related),
+		State:       "Todo",
+		Labels:      draftTicketLabels(d.Labels),
+		Blockers:    blockers,
+		Related:     related,
+	})
+	if err != nil {
+		return issues.Task{}, fmt.Errorf("代建票据: %w", err)
+	}
+	if err := auditDraftTicket(ctx, store, task, session, prompt); err != nil {
+		fmt.Fprintln(os.Stderr, "intake draft ticket audit failed:", err)
+	}
+	return task, nil
+}
+
+// auditDraftTicket writes the source audit comment on the created ticket; a
+// failure is logged and left in the receipt but does not undo the creation.
+func auditDraftTicket(ctx context.Context, store issues.Store, t issues.Task, session, prompt string) error {
+	body := fmt.Sprintf("来源审计：intake 会话 %s\n需求原话摘要：%s", session, draftTicketSummary(prompt))
+	if _, err := store.CreateComment(ctx, t.ID, body); err != nil {
+		return fmt.Errorf("审计评论写入失败: %w", err)
+	}
+	return nil
+}
+
+// submitDraftTicket turns a draft_ticket block in the agent's answer into a
+// ledger ticket: validate, dedup by title, create at Todo with a provenance
+// comment, and report back in the thread. It returns ok=false when the
+// answer carries no draft_ticket block, leaving the reply untouched.
+func (r *projectRuntime) submitDraftTicket(ctx context.Context, t intake.Turn, answer string) (receipt string, ok bool) {
+	d, problems, found := parseDraftTicket(answer)
+	if !found {
+		return "", false
+	}
+	header := "[网关] draft_ticket："
+	r.mu.Lock()
+	store := r.ledgers[t.Project.Prefix]
+	r.mu.Unlock()
+	if store == nil {
+		return header + "该项目账本不可用，未建票", true
+	}
+	if problems == nil {
+		problems = draftTicketFieldProblems(d)
+	}
+	var blockers, related []string
+	if len(problems) == 0 {
+		blockers, related, problems = draftTicketDependencies(ctx, store, d)
+	}
+	if len(problems) == 0 {
+		if existing, similar, err := similarTicket(ctx, store, d.Title); err != nil {
+			problems = []string{"账本读取失败，无法核对重复：" + err.Error()}
+		} else if similar {
+			return header + fmt.Sprintf("与在途票 %s《%s》标题高度相似，未重复建票；如确为新需求请改标题后重新输出", existing.Metadata.Identifier, existing.Title), true
+		}
+	}
+	if len(problems) > 0 {
+		return header + "校验未通过，未建票：\n- " + strings.Join(problems, "\n- "), true
+	}
+	task, err := createDraftTicket(ctx, store, t.Session, t.Prompt, d, blockers, related)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "intake draft ticket create failed:", err)
+		return header + "建票失败：" + err.Error(), true
+	}
+	return header + fmt.Sprintf("已建票 %s《%s》\n%s\n状态 Todo，未打 ready-for-agent；确认需求后由人打标放行", task.Metadata.Identifier, task.Title, task.URL), true
 }
 
 // discoverIntakeProjects re-runs project discovery (OF-42: live Orca

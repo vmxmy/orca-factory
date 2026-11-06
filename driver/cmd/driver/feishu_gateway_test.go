@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -22,6 +24,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func strPtr(s string) *string { return &s }
@@ -448,4 +451,219 @@ func TestFeishuGatewayReconnectAndShutdown(t *testing.T) {
 	if err := lock.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// draftTicketStore fakes the issues.Store parts the draft_ticket submission
+// uses; every other Store method stays nil and panics if called.
+type draftTicketStore struct {
+	issues.Store
+	tasks    []issues.Task
+	created  []issues.CreateInput
+	comments map[string][]string
+}
+
+func (f *draftTicketStore) List(context.Context) ([]issues.Task, error) { return f.tasks, nil }
+
+func (f *draftTicketStore) Read(_ context.Context, id string) (issues.Task, error) {
+	for _, t := range f.tasks {
+		if t.ID == id || t.Metadata.ID == id || t.Metadata.Identifier == id {
+			return t, nil
+		}
+	}
+	return issues.Task{}, errors.New("task not found")
+}
+
+func (f *draftTicketStore) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
+	f.created = append(f.created, in)
+	id := fmt.Sprintf("uuid-%d", len(f.created))
+	identifier := fmt.Sprintf("OF-%d", 100+len(f.created))
+	return issues.Task{Title: in.Title, URL: "https://ledger.example/" + id,
+		Issue:    task.Issue{ID: id, Identifier: identifier},
+		Metadata: issues.Metadata{ID: id, Identifier: identifier, State: in.State}}, nil
+}
+
+func (f *draftTicketStore) CreateComment(_ context.Context, id, body string) (task.Comment, error) {
+	if f.comments == nil {
+		f.comments = map[string][]string{}
+	}
+	f.comments[id] = append(f.comments[id], body)
+	return task.Comment{ID: "c1", Body: body}, nil
+}
+
+func managedTask(id, identifier, title, state string, complete bool) issues.Task {
+	return issues.Task{Title: title,
+		Issue:    task.Issue{ID: id, Identifier: identifier},
+		Metadata: issues.Metadata{ID: id, Identifier: identifier, State: state}, Complete: complete}
+}
+
+const draftTicketAnswer = "需求已明确，直接建票：\n\n" +
+	"```draft_ticket\n" +
+	"{\n  \"title\": \"网关增加部署重试\",\n" +
+	"  \"todo\": [\"网关部署失败时按固定间隔重试\"],\n" +
+	"  \"check\": \"cd driver && go test -count=1 -run TestDeployRetry ./internal/deploy\",\n" +
+	"  \"scope\": \"driver/internal/deploy/retry.go\",\n" +
+	"  \"blockers\": [],\n  \"related\": []\n}\n" +
+	"```"
+
+func TestDraftTicketParse(t *testing.T) {
+	d, problems, found := parseDraftTicket(draftTicketAnswer)
+	if !found || problems != nil {
+		t.Fatalf("found=%v problems=%v, want a clean parse", found, problems)
+	}
+	if d.Title != "网关增加部署重试" || len(d.Todo) != 1 || d.Check == "" || d.Scope == "" {
+		t.Fatalf("draft=%+v, want the fenced fields", d)
+	}
+	if d.Blockers == nil || d.Related == nil {
+		t.Fatalf("empty arrays must parse as non-nil: %+v", d)
+	}
+	if _, problems, found := parseDraftTicket("这条回复没有草稿块"); found || problems != nil {
+		t.Fatalf("found=%v problems=%v, want no draft", found, problems)
+	}
+	_, problems, found = parseDraftTicket("```draft_ticket\n{bad json}\n```")
+	if !found || len(problems) == 0 {
+		t.Fatalf("found=%v problems=%v, want a malformed-JSON problem", found, problems)
+	}
+}
+
+func TestDraftTicketValidate(t *testing.T) {
+	store := &draftTicketStore{tasks: []issues.Task{
+		managedTask("uuid-1", "OF-1", "网关重试退避", "Todo", true),
+		managedTask("uuid-2", "OF-2", "未纳管的票", "Todo", false),
+	}}
+	valid := draftTicketWire{Title: "新票", Todo: []string{"做一件事"}, Check: "go test ./...", Scope: "driver/",
+		Blockers: []string{"OF-1"}, Related: []string{}}
+	if problems := draftTicketFieldProblems(valid); len(problems) != 0 {
+		t.Fatalf("field problems=%v, want none", problems)
+	}
+	blockers, related, problems := draftTicketDependencies(context.Background(), store, valid)
+	if len(problems) != 0 {
+		t.Fatalf("dep problems=%v, want none", problems)
+	}
+	if !slices.Equal(blockers, []string{"uuid-1"}) || !slices.Equal(related, []string{}) {
+		t.Fatalf("blockers=%v related=%v, want canonical resolved IDs", blockers, related)
+	}
+
+	cases := []struct {
+		name string
+		d    draftTicketWire
+		want string
+	}{
+		{"missing todo", draftTicketWire{Title: "新票", Check: "c", Scope: "s", Blockers: []string{}, Related: []string{}}, "todo"},
+		{"missing check", draftTicketWire{Title: "新票", Todo: []string{"t"}, Scope: "s", Blockers: []string{}, Related: []string{}}, "check"},
+		{"nil blockers", draftTicketWire{Title: "新票", Todo: []string{"t"}, Check: "c", Scope: "s", Related: []string{}}, "完整数组"},
+		{"duplicate refs", draftTicketWire{Title: "新票", Todo: []string{"t"}, Check: "c", Scope: "s", Blockers: []string{"OF-1"}, Related: []string{"OF-1"}}, "重复"},
+		{"missing dep", draftTicketWire{Title: "新票", Todo: []string{"t"}, Check: "c", Scope: "s", Blockers: []string{"OF-99"}, Related: []string{}}, "不存在"},
+		{"incomplete dep", draftTicketWire{Title: "新票", Todo: []string{"t"}, Check: "c", Scope: "s", Blockers: []string{"OF-2"}, Related: []string{}}, "尚未纳管"},
+	}
+	for _, tc := range cases {
+		if problems := draftTicketFieldProblems(tc.d); len(problems) > 0 {
+			if !strings.Contains(strings.Join(problems, ";"), tc.want) {
+				t.Errorf("%s: field problems=%v, want %q", tc.name, problems, tc.want)
+			}
+			continue
+		}
+		_, _, problems := draftTicketDependencies(context.Background(), store, tc.d)
+		if !slices.ContainsFunc(problems, func(p string) bool { return strings.Contains(p, tc.want) }) {
+			t.Errorf("%s: problems=%v, want one containing %q", tc.name, problems, tc.want)
+		}
+	}
+}
+
+func TestDraftTicketSimilarTitle(t *testing.T) {
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{"网关增加重试机制", "网关增加重试机制", true},
+		{"网关增加重试机制", "增加网关的重试机制", true},
+		{"网关增加重试机制", "修复部署屏障超时", false},
+		{"整理 intake 草稿", "整理 intake 草稿的格式", true},
+		{"网关增加重试机制", "增加网关的重试机制与熔断降级", true},
+		{"", "非空标题", false},
+	} {
+		if got := similarTitle(tc.a, tc.b); got != tc.want {
+			t.Errorf("similarTitle(%q, %q)=%v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
+
+func TestDraftTicketSubmit(t *testing.T) {
+	newRuntime := func() (*projectRuntime, *draftTicketStore) {
+		store := &draftTicketStore{tasks: []issues.Task{
+			managedTask("uuid-1", "OF-1", "网关重试退避", "Todo", true),
+			managedTask("uuid-9", "OF-9", "已经完结的旧票", "Done", true),
+		}}
+		runtime := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+		runtime.ledgers["OF"] = store
+		return runtime, store
+	}
+	turn := intake.Turn{Session: "sess-417", Prompt: "给网关部署加重试，失败间隔翻倍", Project: intake.Project{Prefix: "OF"}}
+
+	t.Run("creates at Todo with audit comment", func(t *testing.T) {
+		runtime, store := newRuntime()
+		answer := strings.Replace(draftTicketAnswer, `"related": []`, "\"related\": [],\n  \"labels\": [\"ready-for-agent\"]", 1)
+		receipt, ok := runtime.submitDraftTicket(context.Background(), turn, answer)
+		if !ok {
+			t.Fatal("receipt missing for a draft answer")
+		}
+		if !strings.Contains(receipt, "已建票 OF-101") || !strings.Contains(receipt, "https://ledger.example/uuid-1") {
+			t.Fatalf("receipt=%q, want ticket id and link", receipt)
+		}
+		if len(store.created) != 1 {
+			t.Fatalf("created=%d, want 1", len(store.created))
+		}
+		created := store.created[0]
+		if created.State != "Todo" || len(created.Labels) != 0 {
+			t.Fatalf("state=%q labels=%v, want Todo with no pass-through labels", created.State, created.Labels)
+		}
+		if !strings.Contains(created.Description, "DEPENDENCIES:") || !strings.Contains(created.Description, "sess-417") {
+			t.Fatalf("description=%q, want DEPENDENCIES line and session provenance", created.Description)
+		}
+		comments := store.comments["uuid-1"]
+		if len(comments) != 1 || !strings.Contains(comments[0], "sess-417") || !strings.Contains(comments[0], turn.Prompt) {
+			t.Fatalf("comments=%v, want one audit comment with session and request summary", comments)
+		}
+	})
+
+	t.Run("dedup against open ticket", func(t *testing.T) {
+		runtime, store := newRuntime()
+		answer := strings.Replace(draftTicketAnswer, "网关增加部署重试", "网关的重试退避", 1)
+		receipt, ok := runtime.submitDraftTicket(context.Background(), turn, answer)
+		if !ok || !strings.Contains(receipt, "高度相似") || !strings.Contains(receipt, "OF-1") {
+			t.Fatalf("receipt=%q, want a dedup explanation naming OF-1", receipt)
+		}
+		if len(store.created) != 0 {
+			t.Fatalf("created=%v, want none on a dedup hit", store.created)
+		}
+	})
+
+	t.Run("closed ticket does not block", func(t *testing.T) {
+		runtime, store := newRuntime()
+		answer := strings.Replace(draftTicketAnswer, "网关增加部署重试", "已经完结的旧票", 1)
+		if _, ok := runtime.submitDraftTicket(context.Background(), turn, answer); !ok {
+			t.Fatal("receipt missing")
+		}
+		if len(store.created) != 1 {
+			t.Fatalf("created=%d, want 1; closed tickets must not dedup", len(store.created))
+		}
+	})
+
+	t.Run("validation failure explains the missing field", func(t *testing.T) {
+		runtime, store := newRuntime()
+		answer := strings.Replace(draftTicketAnswer, `"check": "cd driver && go test -count=1 -run TestDeployRetry ./internal/deploy",`, "", 1)
+		receipt, ok := runtime.submitDraftTicket(context.Background(), turn, answer)
+		if !ok || !strings.Contains(receipt, "校验未通过") || !strings.Contains(receipt, "check") {
+			t.Fatalf("receipt=%q, want the missing check field named", receipt)
+		}
+		if len(store.created) != 0 {
+			t.Fatalf("created=%v, want none on validation failure", store.created)
+		}
+	})
+
+	t.Run("answer without draft passes through", func(t *testing.T) {
+		runtime, _ := newRuntime()
+		if receipt, ok := runtime.submitDraftTicket(context.Background(), turn, "只是普通回复"); ok || receipt != "" {
+			t.Fatalf("receipt=%q ok=%v, want no receipt", receipt, ok)
+		}
+	})
 }
