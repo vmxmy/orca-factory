@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -148,6 +150,59 @@ func truncateFail(s string, limit int) string {
 		return string(runes[:limit])
 	}
 	return s
+}
+
+// reviewFailure is one of the three reviewer command failure classes. The kind
+// names the class for budget descriptions; the detail carries the exit code and
+// a sanitized stderr tail as ticket evidence.
+type reviewFailure struct {
+	kind   string
+	detail string
+}
+
+// classifyReviewFailure splits reviewer command failures into start failure,
+// nonzero exit and empty output, so one flaky class stays distinguishable in
+// ticket evidence while the machine keeps a single infra budget.
+func classifyReviewFailure(reviewErr error, output string) reviewFailure {
+	if reviewErr == nil {
+		if strings.TrimSpace(output) == "" {
+			return reviewFailure{kind: "输出为空", detail: "stdout 无内容"}
+		}
+		return reviewFailure{kind: "输出为空", detail: "stdout 无法解析出 verdict JSON"}
+	}
+	var exitErr *exec.ExitError
+	if errors.As(reviewErr, &exitErr) {
+		failure := reviewFailure{kind: "非零退出", detail: fmt.Sprintf("exit=%d", exitErr.ExitCode())}
+		if tail := diagnosticTail(string(exitErr.Stderr)); tail != "" {
+			failure.detail += "\nstderr 末4KB: " + tail
+		}
+		return failure
+	}
+	if errors.Is(reviewErr, context.DeadlineExceeded) {
+		return reviewFailure{kind: "非零退出", detail: "命令超时被杀，无退出码"}
+	}
+	return reviewFailure{kind: "命令启动失败"}
+}
+
+// diagnosticTail applies the credential policy for external diagnostic text and
+// keeps the last 4KB, mirroring workerSubject: tickets and ledgers never receive
+// raw reviewer stderr.
+func diagnosticTail(stderr string) string {
+	line := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1
+		}
+		return r
+	}, runx.RedactDiagnostic(stderr))
+	const limit = 4096
+	if len(line) <= limit {
+		return strings.TrimSpace(line)
+	}
+	start := len(line) - limit
+	for start < len(line) && !utf8.RuneStart(line[start]) {
+		start++
+	}
+	return strings.TrimSpace(line[start:])
 }
 
 // The ticket backend is the recovery source when this ticket's local state is lost.
