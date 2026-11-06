@@ -4,7 +4,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_STATUS } from './sample-recorded'
+import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -83,4 +83,24 @@ test('sceneOf 消费还原的部署屏障与未知阶段录制快照', () => {
   expect(unmapped?.tone).toBe('attention')
   expect(unmapped?.label).toBe('准备镜像')
   expect(unmapped?.unknownDeploy).toBe(false)
+})
+
+test('部署屏障快照的字段来自真实账本录制', () => {
+  const ledger = JSON.parse(RECORDED_LEDGER_DEPLOYMENT)
+  const handoff = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+    .find((line: string) => line.startsWith('merge-handoff-v1: '))
+  const progresses = ledger.comments.flatMap((comment: { body: string }) => comment.body.split('\n'))
+    .filter((line: string) => line.startsWith('merge-progress-v1: '))
+    .map((line: string) => JSON.parse(line.slice('merge-progress-v1: '.length)))
+  const pending = progresses.find(progress => progress.phase === 'merge-intent' && progress.deployment?.state === 'pending')
+  expect(handoff).toBeDefined()
+  expect(pending).toBeDefined()
+  const frozen = JSON.parse(handoff!.slice('merge-handoff-v1: '.length))
+  const status = JSON.parse(RECORDED_DEPLOY_STATUS)
+  const ticket = status.tickets.find((one: { identifier: string }) => one.identifier === 'ZY-365')
+  expect(ticket.deployment.queueId).toBe(frozen.queue_id)
+  expect(ticket.deployment.sha).toBe(frozen.head)
+  expect(ticket.deployment.workflow).toBe(pending.deployment.workflow)
+  expect(ticket.deployment.state).toBe(pending.deployment.state)
+  expect(ticket.blockedReason).toBe(`deployment: ${pending.deployment.state}`)
 })

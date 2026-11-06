@@ -95,12 +95,20 @@ async function main() {
   assert.ok(Math.abs(leaver.x - stayerPoint.x) >= 27 || Math.abs(leaver.y - stayerPoint.y) >= 27, 'a leaving parcel must not overlap the parcel taking its slot')
   const sweep = (motions, step = 5) => {
     const end = Math.max(...motions.map(motion => motion.start + motion.duration))
+    assert.ok(Number.isFinite(end), `motion schedule must be finite numbers (end ${end})`)
     let min = Infinity
+    let samples = 0
     for (let time = 0; time <= end; time += step) {
+      samples++
       const points = motions.map(motion => model.pointAlong(motion.points, (time - motion.start) / motion.duration))
       for (let index = 0; index < points.length; index++) for (const other of points.slice(index + 1)) min = Math.min(min, Math.hypot(points[index].x - other.x, points[index].y - other.y))
     }
+    assert.ok(samples > 0, `sweep must sample the tween at least once (end ${end})`)
     return min
+  }
+  for (const motion of mixedState.motions.values()) {
+    assert.ok(Number.isFinite(motion.start) && Number.isFinite(motion.duration), 'motion start must be a timestamp, not a screen position')
+    assert.ok(model.pointAlong(motion.points, 0.5).x > 0 || model.pointAlong(motion.points, 0.5).y > 0, 'mid-tween position must stay finite')
   }
   const swapMotions = [...mixedState.motions.values()]
   assert.ok(sweep(swapMotions) >= 26, `leaver and the parcel taking its slot must never overlap mid-tween (min ${sweep(swapMotions).toFixed(1)}px)`)
@@ -113,6 +121,17 @@ async function main() {
   fiveState = model.reconcile(fiveState, fiveMove, { now: 0 })
   const fiveMin = sweep([...fiveState.motions.values()])
   assert.ok(fiveMin >= 26, `a cross-belt convoy across slot rows must keep clearance mid-tween (min ${fiveMin.toFixed(1)}px)`)
+
+  const backward = snapshot(1)
+  backward.rows[0].parcels = [parcel('OF-back', 'pack')]
+  let backwardState = model.reconcile(model.initialState(), backward, { fresh: true })
+  const backwardMove = structuredClone(backward)
+  backwardMove.rows[0].parcels[0].station = 'work'
+  backwardState = model.reconcile(backwardState, backwardMove, { now: 0 })
+  const backwardMotion = backwardState.motions.get(model.parcelKey('/fixture/repo-0', 'OF-back'))
+  for (let index = 1; index < backwardMotion.points.length; index++) {
+    assert.ok(backwardMotion.points[index].x === backwardMotion.points[index - 1].x || backwardMotion.points[index].y === backwardMotion.points[index - 1].y, `a backward mainline move must follow orthogonal belt segments (segment ${index})`)
+  }
 
   const one = snapshot(1)
   one.rows[0].parcels = [parcel('OF-solo')]
@@ -144,6 +163,25 @@ async function main() {
   const beltHalf = 12
   const stray = soloMotion.points.filter(point => !beltPoints.some(belt => Math.abs(point.x - belt.x) <= beltHalf || Math.abs(point.y - belt.y) <= beltHalf))
   assert.ok(stray.length === 0, `every tween waypoint must sit on the painted belt polyline (worst ${stray[0] ? Math.round(stray[0].x) + ',' + Math.round(stray[0].y) : ''})`)
+  // The embedded deploy-barrier sample must be the repository's real ledger
+  // recording, not hand-written data: compare against the recorded file.
+  const recordedLedger = fs.readFileSync(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'), 'utf8')
+  const sampleSource = fs.readFileSync(path.join(plugin, 'test/sample-recorded.ts'), 'utf8')
+  const embeddedText = sampleSource.match(/RECORDED_LEDGER_DEPLOYMENT: string = String\.raw`([\s\S]*?)`/)?.[1]
+  assert.ok(embeddedText, 'sample-recorded.ts must embed RECORDED_LEDGER_DEPLOYMENT via String.raw')
+  const ledger = JSON.parse(embeddedText)
+  assert.deepEqual(ledger, JSON.parse(recordedLedger))
+  const handoffLine = ledger.comments.flatMap(comment => comment.body.split('\n')).find(line => line.startsWith('merge-handoff-v1: '))
+  const progressLine = ledger.comments.flatMap(comment => comment.body.split('\n')).find(line => line.startsWith('merge-progress-v1: ') && line.includes('"state":"pending"'))
+  const frozen = JSON.parse(handoffLine.slice('merge-handoff-v1: '.length))
+  const pending = JSON.parse(progressLine.slice('merge-progress-v1: '.length))
+  const barrierStatus = JSON.parse(JSON.parse(sampleSource.match(/RECORDED_DEPLOY_STATUS: string = ("[\s\S]*?")\n/)?.[1]))
+  const barrierTicket = barrierStatus.tickets.find(ticket => ticket.identifier === 'ZY-365')
+  assert.equal(barrierTicket.deployment.queueId, frozen.queue_id)
+  assert.equal(barrierTicket.deployment.sha, frozen.head)
+  assert.equal(barrierTicket.deployment.workflow, pending.deployment.workflow)
+  assert.equal(barrierTicket.deployment.state, pending.deployment.state)
+  assert.equal(barrierTicket.blockedReason, `deployment: ${pending.deployment.state}`)
   console.log('PASS pure layout, identity, routing, reconciliation and unbounded project counts')
 
   let playwright
