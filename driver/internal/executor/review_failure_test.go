@@ -177,6 +177,14 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(unclosed.stderr, "sensitive-tail") {
 		t.Errorf("unclosed quoted credential leaked: %q", unclosed.stderr)
 	}
+	unclosedSingle := reviewCommandFailure(nil, `password='synthetic prefix sensitive-tail`)
+	if strings.Contains(unclosedSingle.stderr, "sensitive-tail") {
+		t.Errorf("unclosed single-quoted credential leaked: %q", unclosedSingle.stderr)
+	}
+	unclosedMulti := reviewCommandFailure(nil, "password=\"half open\nnext diagnostic line")
+	if strings.Contains(unclosedMulti.stderr, "half open") {
+		t.Errorf("unclosed credential with following lines leaked: %q", unclosedMulti.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)
@@ -256,6 +264,16 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	}
 	if straddleTail := reviewStderr(straddled); straddleTail != "" {
 		t.Errorf("straddling multiline credential must drop the whole capture, got %q", straddleTail)
+	}
+	// The value may never close in-window at all: prefix parity is odd, so
+	// the whole capture is the value body and is dropped.
+	unclosedStraddle := filepath.Join(dir, "unclosed.stderr")
+	unclosedBody := `password="` + strings.Repeat("p", 70<<10) + "\nsynthetic-unclosed-tail\n"
+	if err := os.WriteFile(unclosedStraddle, []byte(unclosedBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if unclosedTail := reviewStderr(unclosedStraddle); unclosedTail != "" {
+		t.Errorf("unclosed straddling credential must drop the capture, got %q", unclosedTail)
 	}
 }
 
