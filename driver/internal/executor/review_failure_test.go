@@ -101,7 +101,7 @@ func TestReviewFailureEvidence(t *testing.T) {
 // `2> "$2.stderr"` redirection the wrapper installs in production.
 func recordedReviewFailure(t *testing.T, sample string) error {
 	t.Helper()
-	base := "../../testdata/recorded/reviewer-fail-stderr-" + sample
+	base := "testdata/reviewer-fail-stderr-" + sample
 	abs, err := filepath.Abs(base + ".txt")
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func readTrimmed(t *testing.T, path string) string {
 }
 
 func TestReviewFailureEvidenceRecorded(t *testing.T) {
-	code := readTrimmed(t, "../../testdata/recorded/reviewer-fail-stderr-nonzero.exit")
+	code := readTrimmed(t, "testdata/reviewer-fail-stderr-nonzero.exit")
 	failure := recordedReviewFailure(t, "nonzero")
 	var classified *reviewFailure
 	if !errors.As(failure, &classified) {
