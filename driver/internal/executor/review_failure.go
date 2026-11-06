@@ -125,11 +125,6 @@ func reviewStderr(path string) string {
 	}
 	const capture = 64 << 10
 	offset := max(0, info.Size()-capture)
-	if offset > 0 && credentialStraddlesWindow(file, offset) {
-		// The window begins inside a quoted credential value that opened
-		// earlier and never closed before the window: nothing is publishable.
-		return ""
-	}
 	if _, err = file.Seek(offset, io.SeekStart); err != nil {
 		return ""
 	}
@@ -139,6 +134,11 @@ func reviewStderr(path string) string {
 	}
 	text := string(data)
 	if offset > 0 {
+		if credentialStraddlesWindow(file, offset, text) {
+			// The window begins inside a quoted credential value that opened
+			// earlier and never closed before the window: nothing is publishable.
+			return ""
+		}
 		// A captured window that starts inside a line cannot prove its own
 		// redaction boundaries: the fragment may begin mid-credential, a
 		// quoted value opened on the window's first line can straddle on, and
@@ -161,41 +161,113 @@ func reviewStderr(path string) string {
 
 // credentialStraddlesWindow reports whether a quoted credential value opened
 // in the prefix before the capture window never closes before the window, or
-// an assignment ends exactly at the window edge with its quote still to come:
-// the window then starts inside the value body and nothing is publishable.
+// an assignment or key fragment ends at the window edge with the value's
+// opening quote still to come: the window then starts inside the value body
+// and nothing is publishable. windowHead is the capture's first bytes, used
+// to decide whether a prefix-ending identifier fragment completes a key.
 // Prose apostrophes do not arm the state machine; only a credential key or
-// flag followed by an opening quote does.
-func credentialStraddlesWindow(file *os.File, offset int64) bool {
+// flag followed by an opening quote does. The scan is streaming with a
+// bounded carry so stderr size does not bound memory.
+func credentialStraddlesWindow(file *os.File, offset int64, windowHead string) bool {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return true
 	}
-	prefix, err := io.ReadAll(io.LimitReader(file, offset))
-	if err != nil {
-		return true
-	}
-	text := string(prefix)
-	from := 0
-	for {
-		loc := credentialOpener.FindStringIndex(text[from:])
-		if loc == nil {
-			break
+	const chunk = 32 << 10
+	buf := make([]byte, chunk)
+	var carry string
+	var read int64
+	var quote byte
+	escaped := false
+	for read < offset {
+		want := offset - read
+		if want > chunk {
+			want = chunk
 		}
-		valueStart := from + loc[1]
-		quote := text[valueStart-1]
-		closer := closingQuoteIndex(text, valueStart, quote)
-		if closer < 0 {
+		n, err := file.Read(buf[:want])
+		if n == 0 || err != nil {
 			return true
 		}
-		from = closer + 1
+		data := buf[:n]
+		read += int64(n)
+		if quote != 0 {
+			i := 0
+			for ; i < len(data) && quote != 0; i++ {
+				switch {
+				case escaped:
+					escaped = false
+				case data[i] == '\\':
+					escaped = true
+				case data[i] == quote:
+					quote = 0
+				}
+			}
+			if quote != 0 {
+				continue
+			}
+			data = data[i:]
+		}
+		// Not inside a value: look for the next opener in a bounded carry.
+		window := runx.StripANSI(carry + string(data))
+		if loc := credentialOpener.FindStringIndex(window); loc != nil {
+			valueStart := loc[1]
+			q := window[valueStart-1]
+			if closer := closingQuoteIndex(window, valueStart, q); closer < 0 {
+				// Opener inside this chunk: stream the remainder for its closer.
+				carry = ""
+				quote = q
+				rest := window[valueStart:]
+				for i := 0; i < len(rest); i++ {
+					switch {
+					case escaped:
+						escaped = false
+					case rest[i] == '\\':
+						escaped = true
+					case rest[i] == q:
+						quote = 0
+					}
+					if quote == 0 {
+						break
+					}
+				}
+				if quote != 0 {
+					continue
+				}
+			} else {
+				carry = window[closer+1:]
+				continue
+			}
+		}
+		if keep := len(window); keep > 512 {
+			carry = window[keep-512:]
+		} else {
+			carry = window
+		}
+	}
+	if quote != 0 {
+		return true
 	}
 	// The prefix may end right after a credential assignment, with the value's
-	// opening quote at the window start: the first dropped line is the value.
-	return credentialAssignmentTail.MatchString(text[from:])
+	// opening quote at the window start.
+	if credentialAssignmentTail.MatchString(carry) {
+		return true
+	}
+	// Or inside an identifier that only completes a credential key together
+	// with the window's first line: test the joined text.
+	if frag := identifierTail.FindString(carry); frag != "" {
+		head := windowHead
+		if idx := strings.IndexByte(head, '\n'); idx >= 0 {
+			head = head[:idx]
+		}
+		return credentialAssignmentTail.MatchString(frag+head) || credentialOpener.MatchString(frag+head)
+	}
+	return false
 }
 
 // credentialAssignmentTail matches a credential key or flag whose value has
 // not started yet at the scan position.
 var credentialAssignmentTail = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*(?:=|\s+)|(?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?$`)
+
+var identifierTail = regexp.MustCompile(`[a-z0-9_-]{1,64}$`)
 
 // dropUnbalancedPrefix publishes only when double-quote parity is even at
 // every line boundary and at EOF: a value opened before the window is

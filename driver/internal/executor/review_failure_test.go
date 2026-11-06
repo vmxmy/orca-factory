@@ -307,6 +307,35 @@ func TestReviewStderrDropsTruncatedLeadingLine(t *testing.T) {
 	if edgeTail := reviewStderr(edgeStraddle); edgeTail != "" {
 		t.Errorf("window starting at the opening quote must drop the capture, got %q", edgeTail)
 	}
+	// The window may cut a credential key in the middle: the fragment completes
+	// the key only with the window's first dropped line.
+	midKey := filepath.Join(dir, "midkey.stderr")
+	midKeyBody := "prefix\npass" + `word='` + strings.Repeat("m", 64<<10) + "\nsynthetic-midkey-tail\n"
+	if err := os.WriteFile(midKey, []byte(midKeyBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if midKeyTail := reviewStderr(midKey); midKeyTail != "" {
+		t.Errorf("key cut at the window edge must drop the capture, got %q", midKeyTail)
+	}
+	// An ANSI-wrapped key split across the edge is caught the same way.
+	ansiEdge := filepath.Join(dir, "ansi-edge.stderr")
+	ansiEdgeBody := "prefix\n\x1b[31mAPI_\x1b[0mKEY='" + strings.Repeat("a", 70<<10) + "\nsynthetic-ansi-edge-tail\n"
+	if err := os.WriteFile(ansiEdge, []byte(ansiEdgeBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ansiTail := reviewStderr(ansiEdge); ansiTail != "" {
+		t.Errorf("ansi-split key at the window edge must drop the capture, got %q", ansiTail)
+	}
+	// A plain identifier ending the prefix completes no credential key with
+	// the window's first line: the tail stays publishable.
+	plainWord := filepath.Join(dir, "plainword.stderr")
+	plainWordBody := "someidentifier" + strings.Repeat("z", 70<<10) + "\nprovider unavailable\n"
+	if err := os.WriteFile(plainWord, []byte(plainWordBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if plainTail := reviewStderr(plainWord); !strings.Contains(plainTail, "provider unavailable") {
+		t.Errorf("plain identifier boundary dropped the diagnostic tail: %q", plainTail)
+	}
 	// Prose apostrophes must not forfeit the capture: only credential openers arm.
 	apostrophe := filepath.Join(dir, "apostrophe.stderr")
 	apostropheBody := "can't connect\n" + strings.Repeat("x", 70<<10) + "\nprovider unavailable\n"
