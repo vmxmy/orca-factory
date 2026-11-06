@@ -191,6 +191,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	var mergeGateOutput, mergeReviewOutput string
 	var scopeBlocked []string
 	var failedSubject string
+	var reviewFail reviewFailure
 	cp := checkpoint{}
 	if restored != nil {
 		cp = *restored
@@ -218,6 +219,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
+				if reviewFail.kind != "" {
+					evidence += "；reviewer 失败类别: " + reviewFail.kind
+				}
 			}
 			if ev == machine.EvWorkerScopeBlocked {
 				evidence += "；SCOPE 外文件: " + strings.Join(scopeBlocked, " ")
@@ -594,6 +598,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			stop := dependencyStop(ctx, reviewErr)
 			if stop != nil {
 				return result, stop
+			}
+			if event == machine.EvReviewEmpty {
+				reviewFail = classifyReviewFailure(reviewErr, output)
+				if err := e.comment(ctx, t.ID, "reviewer 失败类别: "+reviewFail.kind+"\n"+reviewFail.detail); err != nil {
+					return result, errors.New("review failure evidence comment failed")
+				}
 			}
 			if event == machine.EvReviewRed {
 				next := cp
