@@ -182,8 +182,12 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 		t.Errorf("unclosed single-quoted credential leaked: %q", unclosedSingle.stderr)
 	}
 	unclosedMulti := reviewCommandFailure(nil, "password=\"half open\nnext diagnostic line")
-	if strings.Contains(unclosedMulti.stderr, "half open") {
+	if strings.Contains(unclosedMulti.stderr, "half open") || strings.Contains(unclosedMulti.stderr, "next diagnostic") {
 		t.Errorf("unclosed credential with following lines leaked: %q", unclosedMulti.stderr)
+	}
+	unclosedEscaped := reviewCommandFailure(nil, `password="prefix\"part sensitive-tail`)
+	if strings.Contains(unclosedEscaped.stderr, "sensitive-tail") {
+		t.Errorf("unclosed credential with escaped quote leaked: %q", unclosedEscaped.stderr)
 	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {

@@ -32,10 +32,9 @@ var quotedCredentialValue = regexp.MustCompile(`(?i)(authorization|token|passwor
 // value here before it runs.
 var credentialFlagQuoted = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
 
-// A credential value whose opening quote never closes (stderr ended mid-value
-// or the rest of the line is the value body) is redacted through end of line:
-// nothing after the opener is provable.
-var unclosedCredential = regexp.MustCompile(`(?im)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?["'][^"'\n]*$`)
+// A credential value whose opening quote never closes consumes everything to
+// end of input: no later line is provably outside the value body.
+var unclosedCredential = regexp.MustCompile(`(?is)((?:"|')?[a-z0-9_-]*(?:authorization|api[_-]?key|token|password|secret)[a-z0-9_-]*(?:"|')?\s*[:=]\s*)(?:(?:basic|bearer|token)\s+)?["'].*`)
 
 func (failure *reviewFailure) Error() string {
 	return fmt.Sprintf("reviewer %s exit_code=%d stderr=%s", failure.class, failure.exitCode, strconv.Quote(failure.stderr))
