@@ -169,6 +169,10 @@ func TestReviewFailureEvidenceRecorded(t *testing.T) {
 	if strings.Contains(ansiKey.stderr, "synthetic-ansi-value") {
 		t.Errorf("ansi-wrapped credential key leaked: %q", ansiKey.stderr)
 	}
+	flagQuoted := reviewCommandFailure(nil, `error invoking reviewer: --password "prefix\"synthetic-flag-tail"`)
+	if strings.Contains(flagQuoted.stderr, "synthetic-flag-tail") {
+		t.Errorf("escaped-quoted flag value leaked: %q", flagQuoted.stderr)
+	}
 	timeout := reviewCommandFailure(context.DeadlineExceeded, "reviewer timed out mid-run")
 	if timeout.class != "timeout" || !strings.Contains(timeout.Error(), "reviewer timed out mid-run") {
 		t.Errorf("runtime timeout misclassified: %+v", timeout)

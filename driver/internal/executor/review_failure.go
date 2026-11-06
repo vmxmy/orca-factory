@@ -27,6 +27,11 @@ var reviewCredentials = regexp.MustCompile(`(?i)((?:"|')?[a-z0-9_-]*(?:authoriza
 // [REDACTED] "…" after the first pass) is redacted by its quoted shape alone.
 var quotedCredentialValue = regexp.MustCompile(`(?i)(authorization|token|password|secret|api[_-]?key)[a-z0-9_-]*\s*[:=]\s*\[REDACTED\]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
 
+// Command-line credential flags with quoted values also carry escapes;
+// the runx pass stops at the first escaped quote, so match the full quoted
+// value here before it runs.
+var credentialFlagQuoted = regexp.MustCompile(`(?i)(--[a-z0-9_-]*(?:token|key|secret|password|authorization)[a-z0-9_-]*)(?:=|\s+)("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')`)
+
 func (failure *reviewFailure) Error() string {
 	return fmt.Sprintf("reviewer %s exit_code=%d stderr=%s", failure.class, failure.exitCode, strconv.Quote(failure.stderr))
 }
@@ -55,6 +60,7 @@ func reviewCommandFailure(err error, stderr string) *reviewFailure {
 		}
 	}
 	stderr = reviewCredentials.ReplaceAllString(runx.StripANSI(stderr), "${1}[REDACTED]")
+	stderr = credentialFlagQuoted.ReplaceAllString(stderr, "${1}=[REDACTED]")
 	stderr = runx.RedactDiagnostic(stderr)
 	stderr = quotedCredentialValue.ReplaceAllString(stderr, "[REDACTED]")
 	const limit = 4096
