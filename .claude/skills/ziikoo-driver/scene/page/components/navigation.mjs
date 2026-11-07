@@ -23,9 +23,10 @@ export function runSearch(runtime) {
     const query=document.querySelector('#search').value.trim().toLowerCase();runtime.state.query=query;
     const resultBox=document.querySelector('#search-results');resultBox.hidden=!query;
     if(!query){resultBox.innerHTML='';runtime.needsDraw=true;return;}
-    const matched=runtime.tickets.filter(ticket=>`${runtime.escapeText(ticket.id)} ${runtime.escapeText(ticket.title)} ${runtime.escapeText(runtime.projectOf(ticket.project).name)}`.toLowerCase().includes(query));
-    const matchedProjects=runtime.projects.filter(project=>project.name.toLowerCase().includes(query));
-    resultBox.innerHTML=matchedProjects.map(project=>`<button class="search-result" data-project="${runtime.escapeText(project.id)}"><strong>${runtime.escapeText(project.name)}</strong><small>进入工坊内部</small></button>`).join('')+matched.map(ticket=>`<button class="search-result" data-ticket="${runtime.escapeText(ticket.key ?? ticket.id)}"><strong>${runtime.escapeText(ticket.id)} · ${runtime.escapeText(ticket.title)}</strong><small>${runtime.escapeText(runtime.projectOf(ticket.project).name)} · ${ticket.completed?'已完成':runtime.stageOf(ticket).phase}</small></button>`).join('')||'<div class="empty-state">没有找到匹配的委托或项目。</div>';
+    const projectMatches=project=>[project.name,project.id].some(value=>String(value).toLowerCase().includes(query));
+    const matched=runtime.tickets.filter(ticket=>[ticket.id,ticket.title].some(value=>String(value).toLowerCase().includes(query))||projectMatches(runtime.projectOf(ticket.project)));
+    const matchedProjects=runtime.projects.filter(projectMatches);
+    resultBox.innerHTML=matchedProjects.map(project=>`<button class="search-result" data-project="${runtime.escapeText(project.id)}"><strong>${runtime.escapeText(project.name)}</strong><small>${runtime.escapeText(project.id)} · 进入工坊内部</small></button>`).join('')+matched.map(ticket=>`<button class="search-result" data-ticket="${runtime.escapeText(ticket.key ?? ticket.id)}"><strong>${runtime.escapeText(ticket.id)} · ${runtime.escapeText(ticket.title)}</strong><small>${runtime.escapeText(runtime.projectOf(ticket.project).name)} · ${ticket.completed?'已完成':runtime.stageOf(ticket).phase}</small></button>`).join('')||'<div class="empty-state">没有找到匹配的委托或项目。</div>';
     runtime.needsDraw=true;
   }
 

@@ -96,7 +96,7 @@ function receive(scene) {
   fresh=false
   if(state===previous){renderStatus();return}
   workshops=new Map(scene.rows.map(row=>[row.path,model.workshopLayout(row)]))
-  runtime.projects=scene.rows.map((row,index)=>({id:row.path,name:row.name,short:row.name.slice(0,1),description:row.path,color:['#b87951','#8d9370','#ae7758','#77918b'][index%4],idle:index===3}))
+  runtime.projects=scene.rows.map((row,index)=>({id:row.path,name:row.name,short:row.name.slice(0,1),description:row.path,color:['#b87951','#8d9370','#ae7758','#77918b'][index%4],idle:!row.parcels.length}))
   runtime.tickets=scene.rows.flatMap(row=>row.parcels.map(parcel=>({id:parcel.identifier,key:encodeURIComponent(model.parcelKey(row.path,parcel.identifier)),project:row.path,title:parcel.title,stage:model.stationOf(parcel.station),phase:parcel.phase,tone:parcel.tone,duration:parcel.duration,owner:'未提供',reason:parcel.reason||parcel.blocker,history:[],parcel})))
   runtime.occupancy=new Map(scene.rows.map(row=>[row.path,new Set(row.parcels.map(parcel=>model.stationOf(parcel.station)))]))
   runtime.townLayout=runtime.deriveTownLayout(runtime.projects)

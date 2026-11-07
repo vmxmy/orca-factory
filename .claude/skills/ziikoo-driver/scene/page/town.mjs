@@ -139,7 +139,7 @@ const trimDock = nodes => {
   return list
 }
 
-// draw.mjs paints every parcel as a 26x26 box, so a flight path is safe only
+// The workshop component paints every parcel as a 26x26 box, so a flight path is safe only
 // when every point on it keeps 26px of axial clearance from every resting box.
 // Resting means the slot the parcel occupies during the tween: pure idlers at
 // their unchanged slot, parcels that already flew at their new slot.
