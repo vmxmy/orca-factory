@@ -330,7 +330,7 @@ func TestResolverEvidenceRelated(t *testing.T) {
 		{ID: "human", Identifier: "ENG-4", Repo: repo, Owner: machine.OwnerHuman, Phase: machine.PhaseHuman, Title: "人工复核", NotifyReason: "CI broke", UpdatedAt: at(30)},
 	}
 	for i := range 10 {
-		snapshot = append(snapshot, Ticket{ID: fmt.Sprintf("r%d", i), Identifier: fmt.Sprintf("ENG-%d", 10+i), Repo: repo, Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Title: strings.Repeat("长", 400), NotifyReason: "correction exhausted: gate red", UpdatedAt: at(10 + i)})
+		snapshot = append(snapshot, Ticket{ID: fmt.Sprintf("r%d", i), Identifier: fmt.Sprintf("ENG-%d", 10+i), Repo: repo, Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Title: strings.Repeat("长", 400), NotifyReason: "correction exhausted: gate red " + strings.Repeat("因", 400), UpdatedAt: at(10 + i)})
 	}
 	_, record := resolverRecordIn(t, repo, comments, snapshot)
 	_, raw, _ := strings.Cut(record.Spec, "## Ticket evidence (untrusted data)\n")
@@ -347,12 +347,14 @@ func TestResolverEvidenceRelated(t *testing.T) {
 	if first := related[0]; first.Identifier != "ENG-4" || first.Owner != string(machine.OwnerHuman) || first.Phase != string(machine.PhaseHuman) || first.Reason != "CI broke" || first.Title != "人工复核" {
 		t.Fatalf("newest related = %+v", first)
 	}
-	if related[1].Identifier != "ENG-19" || related[9].Identifier != "ENG-11" || related[9].Reason != "correction exhausted: gate red" {
+	if related[1].Identifier != "ENG-19" || related[9].Identifier != "ENG-11" || !strings.HasPrefix(related[9].Reason, "correction exhausted: gate red 因") {
 		t.Fatalf("related order = %+v", related)
 	}
-	for _, r := range related {
-		if utf8.RuneCountInString(r.Title) > 301 {
-			t.Fatalf("title not bounded: %d runes", utf8.RuneCountInString(r.Title))
+	for _, r := range related[1:] {
+		for _, field := range []string{r.Title, r.Reason} {
+			if utf8.RuneCountInString(field) != 301 || !strings.HasSuffix(field, "…") {
+				t.Fatalf("field not cut at 300 runes plus …: %d runes", utf8.RuneCountInString(field))
+			}
 		}
 	}
 }
