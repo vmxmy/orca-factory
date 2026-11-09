@@ -90,6 +90,7 @@ export const createCamera = layout => {
     view,
     goal,
     resize(width, height, margins) {
+      if (width <= 0 || height <= 0) return
       viewport = { width, height, margins }
       islandHalf = islandFrame().half
     },

@@ -162,6 +162,7 @@ export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => 
   })
   canvas.addEventListener('wheel', event => {
     event.preventDefault()
+    if (event.deltaY === 0) return
     lens.zoom(event.deltaY > 0 ? WHEEL_STEP : 1 / WHEEL_STEP)
   }, { passive: false })
   stage.addEventListener('keydown', event => {
@@ -170,7 +171,7 @@ export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => 
     else if (key === 'Home') setStop(stop)
     else if (key === 'Escape' && stop === 3) setStop(2)
     else if (key === 'Escape' && selected) select(null)
-    else if (NUDGES[key]) lens.nudge(...NUDGES[key])
+    else if (NUDGES[key] && event.target === canvas) lens.nudge(...NUDGES[key])
     else return
     event.preventDefault()
   })
