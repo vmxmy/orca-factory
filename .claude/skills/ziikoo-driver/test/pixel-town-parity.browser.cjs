@@ -19,6 +19,8 @@ async function main() {
   const {projectSeeds,ticketSeeds}=await import(pathToFileURL(path.join(__dirname,'design-preview/seeds.mjs')))
   const projectRows=Array.from({length:8},(_,index)=>projectSeeds[index]??{id:`project-${index+1}`,name:`小镇工坊 ${String(index+1).padStart(4,'0')}`})
   const scene={generatedAt:1793970000000,state:'ok',maintenance:'running',rows:projectRows.map(project=>({name:project.name,path:'/fixture/'+project.id,workers:1,deploy:true,parcels:ticketSeeds.filter(ticket=>ticket.project===project.id).map(ticket=>({identifier:ticket.id,title:ticket.title,station:ticket.stage,phase:ticket.stage,label:ticket.stage,duration:`${ticket.minutes} 分钟`,tone:ticket.tone,reason:ticket.reason,unknownDeploy:false}))}))}
+  const productionIdle=scene.rows.filter(row=>!row.parcels.length).map(row=>row.path.slice('/fixture/'.length))
+  const sameIdle=productionIdle.join(',')==='app'
   const streams=new Set()
   const server = http.createServer((request, response) => {
     const url=new URL(request.url,'http://localhost')
@@ -34,14 +36,14 @@ async function main() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   let browser
   try {
-    browser = await playwright.chromium.launch({executablePath:chrome, headless:true, args:['--no-sandbox']})
+    browser = await playwright.chromium.launch({executablePath:chrome, headless:true, args:['--no-sandbox','--disable-partial-raster']})
     const origin = `http://127.0.0.1:${server.address().port}`
     const results = []
     for (const viewport of [{width:1440,height:1000},{width:1920,height:1080},{width:390,height:844}]) {
       for (const view of ['project','town']) {
         const context = await browser.newContext({viewport, deviceScaleFactor:1, reducedMotion:'reduce'})
         const errors = []
-        const pages = await Promise.all([context.newPage(),context.newPage(),context.newPage()])
+        const pages = await Promise.all([context.newPage(),context.newPage(),context.newPage(),context.newPage()])
         for(const page of pages) {
           page.on('pageerror', error => errors.push(error.message))
           await page.addInitScript(() => { Date.now = () => 1793970000000; performance.now = () => 4000 })
@@ -50,6 +52,7 @@ async function main() {
         await pages[0].goto(origin+'/test/recorded/pixel-town-approved.html'+query)
         await pages[1].goto(origin+'/test/design-preview/index.html'+query)
         await pages[2].goto(origin+`/?t=fixture-token&view=${view}&project=${encodeURIComponent('/fixture/orca')}`)
+        await pages[3].goto(origin+'/test/design-preview/index.html'+query+'&idle='+productionIdle.join(','))
         for(const page of pages) {
           await page.waitForFunction(() => document.querySelectorAll('.repo-button').length === 8)
           await page.evaluate(() => document.fonts.ready)
@@ -64,9 +67,12 @@ async function main() {
         await pages[2].screenshot({path:path.join(output,prefix+'-production.png')})
         const sourceCanvas=await pages[0].locator('#world').screenshot()
         const productionCanvas=await pages[2].locator('#world').screenshot()
+        const sameInputCanvas=await pages[3].locator('#world').screenshot()
         fs.writeFileSync(path.join(output,prefix+'-source-canvas.png'),sourceCanvas)
         fs.writeFileSync(path.join(output,prefix+'-production-canvas.png'),productionCanvas)
-        assert.ok(sourceCanvas.equals(productionCanvas),`${prefix}: production must use identical room, devices, actors and belts; see ${prefix}-source-canvas.png and ${prefix}-production-canvas.png`)
+        fs.writeFileSync(path.join(output,prefix+'-same-input-canvas.png'),sameInputCanvas)
+        assert.ok(sameInputCanvas.equals(productionCanvas),`${prefix}: production must use identical room, devices, actors and belts; see ${prefix}-same-input-canvas.png and ${prefix}-production-canvas.png`)
+        if(sameIdle||view==='project')assert.ok(sourceCanvas.equals(productionCanvas),`${prefix}: production must match the approved canvas; see ${prefix}-source-canvas.png and ${prefix}-production-canvas.png`)
         if(view==='project')assert.equal(await pages[2].locator('[data-station]').count(),11)
         assert.equal(await pages[2].locator('#advance').count(),0)
         assert.equal(await pages[2].locator('#project-count').isVisible(),false)

@@ -3,7 +3,8 @@ import * as demo from './demo.mjs'
 import { projectSeeds, ticketSeeds } from './seeds.mjs'
 
 const parameters = new URLSearchParams(location.search)
-const projects = demo.demoProjects({projectSeeds}, demo.parseProjectCount({}, parameters.get('count')) ?? 8).map(project=>({...project,idle:project.id==='app'}))
+const idleProjects = new Set(parameters.has('idle') ? parameters.get('idle').split(',').filter(Boolean) : ['app'])
+const projects = demo.demoProjects({projectSeeds}, demo.parseProjectCount({}, parameters.get('count')) ?? 8).map(project=>({...project,idle:idleProjects.has(project.id)}))
 const tickets = ticketSeeds.filter(ticket => projects.some(project => project.id === ticket.project)).map(ticket => structuredClone(ticket))
 for(const ticket of tickets)if(ticket.id==='OF-131')ticket.note='等待依赖完成'
 const time = parameters.get('time')
