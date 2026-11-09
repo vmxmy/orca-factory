@@ -13,6 +13,7 @@
 - `Agent处置: head ref 复核` 事件表示冻结 handoff 的 PR 分支不是 `agent/<票号>/<单元>`，合并通道已把票移出队列。把 head 推到该分支，提交 open-pr，CI 通过后用新 queue_id 提交新的 merge handoff。
 - `Agent处置: worker reported files outside SCOPE` 事件的证据列出 worker 声明缺少的文件，已完成的改动在 worker 分支上。先核实票面确实需要改这些文件，再按本文件的规则处置。
 - `Agent处置: correction stalled: no progress across failures` 事件表示 correction coordinator 判定多次失败重复、没有进展。证据里的「停滞判断」是它的理由，失败历史在账本的 `FAIL:` 行，worker 分支保留。先核实失败确实重复，再查根因（票面、CHECK、环境或实现方向），按本文件的规则处置。
+- `Agent处置: worker overran: no worker_done within run limit` 事件表示 worker 单次派工运行满时长上限仍未回报 `worker_done`。执行器没有停止或释放 worker，它可能仍在运行。证据里的「运行超时」给出已运行时长和终端最后输出时间。先读 worker 终端与分支，判断它是否仍在推进，再按本文件的规则停止它或复用它的工作。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
 

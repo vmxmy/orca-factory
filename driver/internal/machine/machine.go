@@ -100,6 +100,11 @@ const (
 	// repeats without progress. It needs stallMinCorrections charged failures to
 	// compare; an earlier verdict counts as a session without a correction.
 	EvCorrectionStalled Event = "correctionStalled"
+
+	// EvWorkerOverrun is a live worker that reached the dispatch run limit
+	// without worker_done. It may still be working, so only the resolver can
+	// judge it; neither budget is charged.
+	EvWorkerOverrun Event = "workerOverrun"
 )
 
 const stallMinCorrections = 2
@@ -246,6 +251,13 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		}
 		if !s.frozen() {
 			infra("worker stalled")
+		}
+	case EvWorkerOverrun:
+		if s.Phase != PhaseWorker || !s.ExecAlive {
+			return reject("没有在运行的 worker")
+		}
+		if !s.frozen() {
+			toResolver("worker overran: no worker_done within run limit")
 		}
 	case EvBranchOK, EvBranchNo:
 		if s.Phase != PhaseBranchCheck {

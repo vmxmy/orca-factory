@@ -162,7 +162,7 @@ func TestIdleTimeoutConfig(t *testing.T) {
 		{"", 15 * time.Minute}, {"0", 15 * time.Minute}, {"-1", 15 * time.Minute}, {"invalid", 15 * time.Minute},
 		{"1.5", 15 * time.Minute}, {"9223372036854775807", 15 * time.Minute}, {"2", 2 * time.Minute},
 	} {
-		if got := workerIdleTimeout(tc.value); got != tc.want {
+		if got := envMinutes(tc.value, 15*time.Minute); got != tc.want {
 			t.Fatalf("value=%q got=%v want=%v", tc.value, got, tc.want)
 		}
 	}
@@ -282,11 +282,15 @@ func TestIdleNudge(t *testing.T) {
 			}
 			e.Orca = o
 			result, err := e.Execute(context.Background(), ticket)
-			want := 1
-			if scenario == "output recovery" || scenario == "worker_done recovery" {
+			want, owner := 1, machine.OwnerMerge
+			switch scenario {
+			case "output recovery", "worker_done recovery":
 				want = 0
+			case "send failure":
+				// Without a confirmed nudge the silence repeats every timeout.
+				want, owner = machine.DefaultLimits.Infra, machine.OwnerResolver
 			}
-			if err != nil || result.State.Infra != want || result.State.Owner != machine.OwnerMerge {
+			if err != nil || result.State.Infra != want || result.State.Owner != owner {
 				t.Fatalf("result=%+v err=%v want infra=%d", result, err, want)
 			}
 			if len(o.sends) != 1 || o.sends[0] != [2]string{"term_worker", "请按任务继续；完成时用 worker_done 回报"} {

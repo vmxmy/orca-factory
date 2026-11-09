@@ -45,7 +45,7 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	cp.Task, cp.Dispatch = opts.Task, ""
 	cp.PendingParent = ""
 	cp.Pending, cp.Completed, cp.Settled = true, false, false
-	cp.UnobservedSince = time.Time{}
+	cp.UnobservedSince, cp.DispatchStartedAt = time.Time{}, time.Time{}
 	if cp.StartedAt == "" {
 		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
 	}

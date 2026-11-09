@@ -12,12 +12,13 @@ const workerIdleNudge = "请按任务继续；完成时用 worker_done 回报"
 
 // workerIdle belongs to one dispatch and survives output recovery and read retries.
 type workerIdle struct {
-	lastOutput                int64
-	observed, stalled, nudged bool
-	nudgedAt                  time.Time
+	lastOutput          int64
+	observed, nudged    bool
+	nudgedAt, stalledAt time.Time
 }
 
-// observe returns true once per idle episode that has exhausted its grace period.
+// observe returns true each time the terminal has stayed silent for a full
+// timeout since its last output, the nudge, or the previous counted stall.
 func (i *workerIdle) observe(ctx context.Context, e *Executor, worktree string, timeout time.Duration, state machine.State) bool {
 	for _, paused := range state.Paused {
 		if paused {
@@ -36,13 +37,15 @@ func (i *workerIdle) observe(ctx context.Context, e *Executor, worktree string, 
 		return false
 	}
 	if !i.observed || terminal.LastOutputAt > i.lastOutput {
-		i.lastOutput, i.observed, i.stalled = terminal.LastOutputAt, true, false
+		i.lastOutput, i.observed = terminal.LastOutputAt, true
 	}
 	since := time.UnixMilli(i.lastOutput)
-	if i.nudgedAt.After(since) {
-		since = i.nudgedAt
+	for _, mark := range []time.Time{i.nudgedAt, i.stalledAt} {
+		if mark.After(since) {
+			since = mark
+		}
 	}
-	if i.stalled || e.Now().Sub(since) <= timeout {
+	if e.Now().Sub(since) <= timeout {
 		return false
 	}
 	if !i.nudged {
@@ -55,6 +58,14 @@ func (i *workerIdle) observe(ctx context.Context, e *Executor, worktree string, 
 			return false
 		}
 	}
-	i.stalled = true
+	i.stalledAt = e.Now()
 	return true
+}
+
+// lastOutputText is the evidence form of the latest observed terminal output.
+func (i *workerIdle) lastOutputText() string {
+	if !i.observed {
+		return "未知"
+	}
+	return time.UnixMilli(i.lastOutput).UTC().Format(time.RFC3339)
 }

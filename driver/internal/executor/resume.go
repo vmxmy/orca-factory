@@ -29,6 +29,9 @@ type checkpoint struct {
 	// UnobservedSince is when the current dispatch was first seen pending
 	// without a started turn, kept so a restart resumes the window (OF-161).
 	UnobservedSince time.Time `json:",omitzero"`
+	// DispatchStartedAt starts the run-limit clock of the current dispatch; a
+	// restart keeps it so the limit is not reset (OF-439).
+	DispatchStartedAt time.Time `json:",omitzero"`
 	// Restarts counts unstarted workers redone without a correction charge;
 	// it keeps their request IDs apart from the dispatch they replace.
 	Restarts int `json:",omitempty"`
