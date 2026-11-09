@@ -1,0 +1,346 @@
+.diorama {
+  --w-paper: #fffaf0;
+  --w-ink: #2b2a33;
+  --w-muted: #77727f;
+  --w-line: #e4d6c3;
+  --w-ok: #2f9a6a;
+  --o-exec: #3f6fd8;
+  --o-agent: #eea61b;
+  --o-human: #e0442e;
+  --text: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #f4dccb;
+  color: var(--w-ink);
+  font-family: var(--text);
+  touch-action: none;
+  user-select: none;
+}
+
+.diorama * {
+  box-sizing: border-box;
+}
+
+.diorama canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+}
+
+.diorama canvas:active {
+  cursor: grabbing;
+}
+
+.diorama canvas:focus-visible {
+  outline: 3px solid var(--o-exec);
+  outline-offset: -3px;
+}
+
+.diorama .labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.diorama .label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  font: 500 11px/1 var(--text);
+  background: rgba(255, 250, 240, 0.86);
+  padding: 4px 6px;
+  white-space: nowrap;
+}
+
+.diorama .label.ticket {
+  font: 600 11px/1 var(--mono);
+  background: var(--w-ink);
+  color: #fff;
+}
+
+.diorama .label.ticket.warn {
+  background: var(--o-agent);
+  color: var(--w-ink);
+}
+
+.diorama .label.ticket.bad {
+  background: var(--o-human);
+}
+
+.diorama .hud,
+.diorama .hud-top {
+  pointer-events: none;
+}
+
+.diorama .hud {
+  position: absolute;
+  inset: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diorama .hud-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  min-height: 0;
+}
+
+.diorama .status,
+.diorama .side,
+.diorama .trip {
+  pointer-events: auto;
+}
+
+.diorama .status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 60%;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.diorama .status::before {
+  content: "";
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--w-ok);
+}
+
+.diorama .status[data-sky="fog"]::before {
+  background: var(--o-agent);
+}
+
+.diorama .status[data-sky="overcast"]::before {
+  background: var(--w-muted);
+}
+
+.diorama .status[data-sky="dark"]::before {
+  background: var(--o-human);
+}
+
+.diorama .side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  width: 248px;
+  min-height: 0;
+  max-height: 100%;
+}
+
+.diorama .stops {
+  display: flex;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+}
+
+.diorama button {
+  all: unset;
+  cursor: pointer;
+}
+
+.diorama button:focus-visible,
+.diorama summary:focus-visible {
+  outline: 2px solid var(--o-exec);
+  outline-offset: 2px;
+}
+
+.diorama .stops button {
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--w-muted);
+}
+
+.diorama .stops button[aria-pressed="true"] {
+  background: var(--w-ink);
+  color: #fff;
+}
+
+.diorama .stops button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.diorama .stuck {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+  overflow: auto;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 12px;
+}
+
+.diorama .stuck h2 {
+  display: flex;
+  justify-content: space-between;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--w-muted);
+}
+
+.diorama .stuck.clear h2 {
+  color: var(--w-ok);
+}
+
+.diorama .list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.diorama .list button {
+  display: grid;
+  grid-template-columns: 8px 1fr auto;
+  gap: 2px 9px;
+  padding: 8px;
+  border: 1px solid var(--w-line);
+  background: #fff;
+}
+
+.diorama .list button[aria-pressed="true"] {
+  border-color: var(--w-ink);
+  box-shadow: inset 0 0 0 1px var(--w-ink);
+}
+
+.diorama .list button i {
+  grid-row: 1 / 3;
+  align-self: stretch;
+  width: 8px;
+}
+
+.diorama .list button b {
+  font: 600 13px/1.3 var(--mono);
+}
+
+.diorama .list button em {
+  font: 600 13px/1.3 var(--mono);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+
+.diorama .list button span {
+  grid-column: 2 / 4;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--w-muted);
+}
+
+.diorama details summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--w-muted);
+  margin-bottom: 6px;
+}
+
+.diorama .trip {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 12px 14px;
+}
+
+.diorama .trip-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+  font-size: 12.5px;
+}
+
+.diorama .trip-head b {
+  font: 600 15px/1.2 var(--mono);
+}
+
+.diorama .trip-head .own {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diorama .trip-head .own i {
+  display: block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+}
+
+.diorama .trip-head .why {
+  color: var(--w-muted);
+}
+
+.diorama .track {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 3px;
+}
+
+.diorama .track span {
+  padding: 6px 2px;
+  background: #efe4d2;
+  color: var(--w-muted);
+  font-size: 10.5px;
+  line-height: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.diorama .track span.done {
+  background: #cfe6d8;
+  color: #1d6a47;
+}
+
+.diorama .track span.now {
+  background: var(--w-ink);
+  color: #fff;
+}
+
+.diorama .trip-foot {
+  font-size: 11.5px;
+  color: var(--w-muted);
+}
+
+@media (max-width: 760px) {
+  .diorama .hud-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .diorama .status {
+    max-width: none;
+  }
+
+  .diorama .side {
+    width: auto;
+    align-items: stretch;
+  }
+
+  .diorama .stuck {
+    max-height: 24vh;
+  }
+
+  .diorama .track span {
+    padding: 6px 0;
+    font-size: 9px;
+  }
+}
