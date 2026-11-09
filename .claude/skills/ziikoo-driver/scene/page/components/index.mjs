@@ -35,7 +35,10 @@ runtime.townDirty = true;
 runtime.moves = new Map();
 runtime.escapeText = text => String(text).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
 runtime.activeTickets = project => runtime.tickets.filter(ticket => !project || ticket.project === project);
-runtime.attentionTickets = () => runtime.tickets.filter(ticket => ticket.tone !== 'current');
+runtime.needsAttention = actions.needsAttention ?? (ticket => ticket.tone !== 'current');
+runtime.detailText = actions.detailText ?? (ticket => `${ticket.id} · ${ticket.title}\n项目：${runtime.projectOf(ticket.project).name}\n阶段：${runtime.stageOf(ticket).phase}\n已观察：${ticket.duration ?? `${ticket.minutes} 分钟`}${ticket.reason?`\n原因：${ticket.reason}`:''}\n（设计原型演示数据）`);
+runtime.projectBounds = () => actions.projectBounds?.(runtime) ?? {width:1040,height:760};
+runtime.attentionTickets = () => runtime.tickets.filter(runtime.needsAttention);
 runtime.projectOf = id => runtime.projects.find(project => project.id === id);
 runtime.ticketOf = id => runtime.tickets.find(ticket => (ticket.key ?? ticket.id) === id);
 runtime.rect = (left,top,width,height,color) => {runtime.drawContext.fillStyle=color;runtime.drawContext.fillRect(Math.round(left),Math.round(top),Math.round(width),Math.round(height));};
@@ -48,7 +51,7 @@ document.addEventListener('click',event=>{
     else if(target.hasAttribute('data-close')){runtime.state.selected=null;runtime.state.station=null;runtime.updateDetail();runtime.createLabels();runtime.updateURL();runtime.needsDraw=true;}
     else if(target.dataset.copy){
       const ticket=runtime.ticketOf(runtime.state.selected);if(!ticket)return;
-      runtime.copyText(target.dataset.copy==='id'?ticket.id:`${runtime.escapeText(ticket.id)} · ${runtime.escapeText(ticket.title)}\n项目：${runtime.escapeText(runtime.projectOf(ticket.project).name)}\n阶段：${runtime.stageOf(ticket).phase}\n已观察：${runtime.escapeText(ticket.duration ?? `${ticket.minutes} 分钟`)}${ticket.reason?`\n原因：${ticket.reason}`:''}\n（设计原型演示数据）`);
+      runtime.copyText(target.dataset.copy==='id'?ticket.id:runtime.detailText(ticket));
     }else if(target.id==='advance')runtime.advance?.();
     else if(target.id==='demo-exception')runtime.advance?.('exception');
     else if(target.id==='demo-human')runtime.advance?.('human');
@@ -66,6 +69,17 @@ document.querySelector('#motion-toggle').addEventListener('click',()=>{runtime.s
 document.querySelector('#zoom-in').addEventListener('click',()=>runtime.zoom(.2));
 document.querySelector('#zoom-out').addEventListener('click',()=>runtime.zoom(-.2));
 document.querySelector('#fit-map').addEventListener('click',()=>{runtime.state.zoom=1;runtime.sizeCanvas(true);if(runtime.state.view!=='project')runtime.focusTownProject();});
+runtime.canvas.tabIndex=0;
+runtime.canvas.setAttribute('aria-label','地图：方向键平移，加减键缩放，Home 复位');
+runtime.canvas.addEventListener('keydown',event=>{
+    const step={ArrowLeft:[40,0],ArrowRight:[-40,0],ArrowUp:[0,40],ArrowDown:[0,-40]}[event.key];
+    if(step){runtime.state.panX+=step[0];runtime.state.panY+=step[1];runtime.sizeCanvas();}
+    else if(event.key==='+'||event.key==='=')runtime.zoom(.2);
+    else if(event.key==='-')runtime.zoom(-.2);
+    else if(event.key==='Home')document.querySelector('#fit-map').click();
+    else return;
+    event.preventDefault();
+  });
 runtime.canvas.addEventListener('wheel',event=>{event.preventDefault();runtime.zoom(event.deltaY>0?-.08:.08);},{passive:false});
 runtime.canvas.addEventListener('pointerdown',event=>{runtime.drag={x:event.clientX,y:event.clientY,panX:runtime.state.panX,panY:runtime.state.panY};runtime.canvas.setPointerCapture(event.pointerId);});
 runtime.canvas.addEventListener('pointermove',event=>{if(!runtime.drag)return;runtime.state.panX=runtime.drag.panX+event.clientX-runtime.drag.x;runtime.state.panY=runtime.drag.panY+event.clientY-runtime.drag.y;runtime.sizeCanvas();});

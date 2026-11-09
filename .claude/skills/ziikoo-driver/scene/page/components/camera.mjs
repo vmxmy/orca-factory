@@ -7,7 +7,7 @@ export function createLabels(runtime) {
     }else{
       runtime.labels.innerHTML=Object.entries(runtime.stages).map(([id,stage])=>`<button class="world-label station-label ${stage.branch?'branch':''}" data-station="${id}" data-x="${stage.x}" data-y="${stage.y-(stage.branch?94:115)}" aria-pressed="${runtime.state.station===id}" aria-label="${stage.number} ${stage.name}，${stage.phase}"><b>${stage.number}</b>${stage.name}<span>${runtime.activeTickets(runtime.state.project).filter(ticket=>ticket.stage===id).length} 件</span></button>`).join('')+runtime.activeTickets(runtime.state.project).map(ticket=>{
         const position=runtime.ticketPosition(ticket);
-        return `<button class="ticket-chip ${ticket.tone} ${runtime.state.selected===(ticket.key ?? ticket.id)?'selected':''}" data-ticket="${runtime.escapeText(ticket.key ?? ticket.id)}" data-x="${position.x}" data-y="${position.y+31}" aria-label="查看 ${runtime.escapeText(ticket.id)} ${runtime.escapeText(ticket.title)}">${runtime.escapeText(ticket.id)}${ticket.completed?' ✓':''}</button>`;
+        return `<button class="ticket-chip ${runtime.escapeText(ticket.tone)} ${runtime.state.selected===(ticket.key ?? ticket.id)?'selected':''}" data-ticket="${runtime.escapeText(ticket.key ?? ticket.id)}" data-x="${position.x}" data-y="${position.y+31}" aria-label="查看 ${runtime.escapeText(ticket.id)} ${runtime.escapeText(ticket.title)}">${runtime.escapeText(ticket.id)}${ticket.completed?' ✓':''}</button>`;
       }).join('');
       runtime.labels.insertAdjacentHTML('beforeend',[
         [520,126,'工坊流水线','room-sign'],
@@ -57,7 +57,7 @@ export function positionLabels(runtime) {
   }
 
 export function constrainCamera(runtime) {
-    const bounds=runtime.state.view==='project'?{width:1040,height:760}:runtime.townLayout.bounds;
+    const bounds=runtime.state.view==='project'?runtime.projectBounds():runtime.townLayout.bounds;
     const halfWidth=runtime.camera.width/(2*runtime.camera.scale),halfHeight=runtime.camera.height/(2*runtime.camera.scale);
     const following=runtime.state.view==='project'&&runtime.state.selected&&matchMedia('(max-width:760px)').matches;
     if(following){

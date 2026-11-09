@@ -59,7 +59,7 @@ export function drawDynamic(runtime, time) {
           const puff=runtime.state.reduced?0:(time*8)%31;
           runtime.rect(x+40,y-112-puff,8,6,'#e3e6cd99');runtime.rect(x+44,y-120-puff,12,8,'#e8e9d388');
         }
-        if(list.some(ticket=>ticket.tone!=='current')){
+        if(list.some(runtime.needsAttention)){
           const left=x+104,top=y-59;
           runtime.rect(left,top,3,38,'#8d7450');runtime.rect(left+3,top,22,13,'#c69b4f');runtime.rect(left+11,top+3,2,5,'#f8edc5');runtime.rect(left+11,top+10,2,2,'#f8edc5');
         }
@@ -86,11 +86,11 @@ export function drawDynamic(runtime, time) {
         const label=runtime.labels.querySelector(`[data-ticket="${runtime.escapeText(ticket.key ?? ticket.id)}"]`);
         if(label)runtime.placeTicketLabel(label,ticket,position);
         if(runtime.state.selected===(ticket.key ?? ticket.id)){
-          runtime.drawContext.strokeStyle=ticket.tone==='current'?'#507d8e':'#b98940';runtime.drawContext.lineWidth=2;runtime.drawContext.setLineDash([4,4]);runtime.drawContext.strokeRect(Math.round(position.x-19),Math.round(position.y-13),39,29);runtime.drawContext.setLineDash([]);
+          runtime.drawContext.strokeStyle=!runtime.needsAttention(ticket)?'#507d8e':'#b98940';runtime.drawContext.lineWidth=2;runtime.drawContext.setLineDash([4,4]);runtime.drawContext.strokeRect(Math.round(position.x-19),Math.round(position.y-13),39,29);runtime.drawContext.setLineDash([]);
         }
         runtime.crate(position.x-9,position.y-9);
-        runtime.rect(position.x-4,position.y-6,8,6,'#f0ddb1');runtime.rect(position.x-2,position.y-5,4,1,ticket.tone==='current'?'#6e8d94':'#b08746');
-        if(ticket.tone!=='current'){runtime.rect(position.x+17,position.y-27,2,23,'#8b754a');runtime.rect(position.x+19,position.y-27,13,10,ticket.tone==='failed'?'#b46e54':'#c69b4f');runtime.rect(position.x+23,position.y-25,2,4,'#f7e7bb');}
+        runtime.rect(position.x-4,position.y-6,8,6,'#f0ddb1');runtime.rect(position.x-2,position.y-5,4,1,!runtime.needsAttention(ticket)?'#6e8d94':'#b08746');
+        if(runtime.needsAttention(ticket)){runtime.rect(position.x+17,position.y-27,2,23,'#8b754a');runtime.rect(position.x+19,position.y-27,13,10,ticket.tone==='failed'?'#b46e54':'#c69b4f');runtime.rect(position.x+23,position.y-25,2,4,'#f7e7bb');}
         if(ticket.completed){runtime.rect(position.x+17,position.y-27,2,23,'#8b754a');runtime.rect(position.x+19,position.y-27,13,10,'#6f9260');}
         if(ticket.queue){runtime.drawContext.fillStyle='#66593d';runtime.drawContext.font='9px monospace';runtime.drawContext.textAlign='center';runtime.drawContext.fillText(String(ticket.queue),position.x,position.y-14);}
       }

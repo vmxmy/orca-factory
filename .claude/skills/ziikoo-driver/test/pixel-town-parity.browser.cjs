@@ -99,6 +99,12 @@ async function main() {
         await context.close()
       }
     }
+    const recount = await browser.newPage()
+    await recount.goto(origin+'/test/design-preview/index.html?count=8&view=town&project=orca')
+    await recount.locator('#project-count').fill('4')
+    await recount.locator('#project-count').dispatchEvent('change')
+    assert.equal(await recount.evaluate(() => window.componentTown.projects.find(project=>project.id==='app').idle),true,'changing the demo count must keep the approved idle courtyard')
+    await recount.close()
     fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(results,null,2))
     assert.equal(results.length,6,'all viewport/view combinations must execute')
     assert.ok(results.every(result=>result.differentPixels===0),'every frame must have zero different pixels; inspect original/candidate/diff evidence')

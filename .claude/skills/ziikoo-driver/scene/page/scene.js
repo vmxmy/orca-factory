@@ -51,6 +51,9 @@ function decorateDetail(runtime, ticket) {
 
 const initialURL = new URL(location.href)
 const runtime = createPage({projects:[],tickets:[],actions:{
+  detailText:({id,title,project,parcel})=>{const row=state.scene.rows.find(row=>row.path===project);const reason=parcel.reason||parcel.blocker;return `${id} · ${title}\n项目：${row.name} · ${row.path}\n工位：${model.stations[model.stationOf(parcel.station)][0]}\n真实阶段：${parcel.phase} / ${parcel.label}\n已观察：${parcel.duration}${reason?`\n原因：${reason}`:''}`},
+  projectBounds:page=>workshops.get(page.state.project)?.bounds,
+  needsAttention:({parcel})=>['attention','failed'].includes(parcel.tone)||parcel.unknownDeploy||model.stationOf(parcel.station)==='unknown'||['paused','failed'].includes(parcel.deployment),
   changed:synchronize,
   detail:decorateDetail,
   arrived(page,ticket) {state.motions.delete(model.parcelKey(ticket.project,ticket.id))},
@@ -101,7 +104,7 @@ function receive(scene) {
   runtime.occupancy=new Map(scene.rows.map(row=>[row.path,new Set(row.parcels.map(parcel=>model.stationOf(parcel.station)))]))
   runtime.townLayout=runtime.deriveTownLayout(runtime.projects)
   runtime.state.project=state.project
-  runtime.state.view=state.view==='workshop'?'project':'town'
+  runtime.state.view=state.view==='workshop'?'project':runtime.state.view==='attention'?'attention':'town'
   runtime.state.selected=state.selection?.kind==='parcel'?encodeURIComponent(state.selection.key):null
   runtime.state.station=state.selection?.kind==='station'?state.selection.station:null
   runtime.moves=new Map([...state.motions].map(([key,motion])=>[encodeURIComponent(key),motion]))

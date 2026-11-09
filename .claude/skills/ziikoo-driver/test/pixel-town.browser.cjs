@@ -531,6 +531,41 @@ async function main() {
     assert.ok((await page.locator('#detail').innerText()).includes('不适用 · 未配置部署'))
     assert.ok((await page.locator('#detail').innerText()).includes('部署字段：未知'))
     await page.keyboard.press('Escape')
+    await assertVisible(page.locator('#status'))
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.locator('[data-view="town"]').click()
+    const reviewed = snapshot(1)
+    reviewed.rows[0].parcels = [
+      ...Array.from({ length: 90 }, (_, index) => parcel(`OF-crowd-${index}`)),
+      { ...parcel('OF-xss', 'alien'), phase: '<img src=x onerror="window.__xss=1">', title: 'A & B' },
+      { ...parcel('OF-nodeploy', 'smoke'), unknownDeploy: true },
+      { ...parcel('OF-shipped', 'smoke'), tone: 'done', deployment: 'passed' },
+    ]
+    await emit(reviewed)
+    assert.equal(await page.locator('#attention-count').innerText(), '2', 'attention must keep the real Scene rule: unknown stage and unknown deployment count, a passed deployment does not')
+    await page.locator('#search').fill('OF-xss')
+    assert.equal(await page.locator('#search-results img').count(), 0, 'a Scene phase must render as text in search results')
+    await page.locator('#search-results button[data-ticket]').click()
+    assert.equal(await page.locator('#detail img').count(), 0, 'a Scene phase must render as text in details')
+    await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async text => { window.copiedDetail = text } }))
+    await page.locator('[data-copy="detail"]').click()
+    const copied = await page.waitForFunction(() => window.copiedDetail).then(handle => handle.jsonValue())
+    assert.ok(copied.includes('A & B') && copied.includes('<img src=x') && !copied.includes('演示'), `copied detail must carry the real Scene text: ${copied}`)
+    assert.equal(await page.evaluate(() => window.__xss), undefined)
+    await page.locator('#search').fill('OF-crowd-89')
+    await page.locator('#search-results button[data-ticket]').click()
+    await page.locator('#world').focus()
+    for (let index = 0; index < 30; index++) await page.keyboard.press('ArrowDown')
+    const reach = await page.evaluate(() => ({ point: window.pixelTown.selectedScreenPoint(), canvas: document.querySelector('#world').getBoundingClientRect().toJSON() }))
+    assert.ok(reach.point.y >= reach.canvas.top && reach.point.y <= reach.canvas.bottom, `the last crowded parcel must be reachable by keyboard panning (${reach.point.y} outside ${reach.canvas.top}-${reach.canvas.bottom})`)
+    const zoomText = await page.locator('#zoom-text').innerText()
+    await page.keyboard.press('+')
+    assert.notEqual(await page.locator('#zoom-text').innerText(), zoomText, 'the focused map must zoom with +')
+    await page.locator('[data-close]').click()
+    await page.locator('[data-view="attention"]').click()
+    reviewed.rows[0].parcels[0].duration = '3 分钟'
+    await emit(reviewed)
+    assert.ok(await page.locator('[data-view="attention"]').evaluate(button => button.classList.contains('active')), 'a routine SSE update must keep the attention view')
     await page.locator('[data-view="town"]').focus()
     await page.keyboard.press('Enter')
     assert.equal(await page.evaluate(() => window.pixelTown.state.view), 'town')
