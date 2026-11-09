@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -21,14 +22,16 @@ import (
 
 // querySource is one resolved project's read-only evidence wiring for the
 // intake query loop (OF-427). repo is the local checkout path the scheduler
-// status snapshot and shared scheduler records name; ghRepo is AGENT_GH_REPO,
-// the repository field of shared merge-lane records; logKey is the
-// executor/resolver log directory component, which the driver derives from
-// the repository name alone. Every query reads only through these, so two
-// projects sharing a ticket number never mix.
+// status snapshot and shared scheduler records name; remote is its canonical
+// host/owner/repo identity; ghRepo is AGENT_GH_REPO, the repository field of
+// shared merge-lane records; logKey is the executor/resolver log directory
+// component, which the driver derives from the repository name alone. Every
+// query reads only through these, so two projects sharing a ticket number
+// never mix.
 type querySource struct {
 	store  issues.Store
 	repo   string
+	remote string
 	ghRepo string
 	logKey string
 }
@@ -60,13 +63,49 @@ func readProfile(repo string) (map[string]string, time.Time, error) {
 	return repository.Env, info.ModTime(), nil
 }
 
-func newQuerySource(store issues.Store, repo string, env map[string]string) querySource {
-	ghRepo := strings.TrimSpace(env["AGENT_GH_REPO"])
-	key := filepath.Base(repo)
-	if _, name, ok := strings.Cut(ghRepo, "/"); ok && logComponent.MatchString(name) {
-		key = name
+func newQuerySource(store issues.Store, repo, remote string, env map[string]string) querySource {
+	return querySource{store: store, repo: filepath.Clean(repo), remote: remote, ghRepo: strings.TrimSpace(env["AGENT_GH_REPO"]), logKey: logDirKey(repo, env)}
+}
+
+// logDirKey is the directory driver exec and driver resolve log under:
+// AGENT_GH_REPO's repository name, else the checkout's base name.
+func logDirKey(repo string, env map[string]string) string {
+	if _, name, ok := strings.Cut(strings.TrimSpace(env["AGENT_GH_REPO"]), "/"); ok && logComponent.MatchString(name) {
+		return name
 	}
-	return querySource{store: store, repo: filepath.Clean(repo), ghRepo: ghRepo, logKey: key}
+	return filepath.Base(repo)
+}
+
+// logDirOwners maps each log directory to the repository identities that can
+// write it: every ledger project row, enabled or not, and every local
+// repository discovery saw. Executor and resolver records carry only the
+// repository name, so a directory with a second identity cannot be attributed.
+func logDirOwners(result projects.Result, rows []issues.LedgerProject) map[string]map[string]bool {
+	owners := map[string]map[string]bool{}
+	claim := func(key, identity string) {
+		if owners[key] == nil {
+			owners[key] = map[string]bool{}
+		}
+		owners[key][identity] = true
+	}
+	for _, row := range rows {
+		claim(row.Remote[strings.LastIndex(row.Remote, "/")+1:], row.Remote)
+	}
+	for _, p := range result.Eligible {
+		claim(logDirKey(p.Path, p.Repository.Env), p.Remote)
+	}
+	for _, rejected := range result.Rejected {
+		var env map[string]string
+		if rejected.Repository != nil {
+			env = rejected.Repository.Env
+		}
+		identity := rejected.Remote
+		if identity == "" {
+			identity = rejected.Path
+		}
+		claim(logDirKey(rejected.Path, env), identity)
+	}
+	return owners
 }
 
 // query is the intake.Querier: it resolves the session's bound project to
@@ -76,8 +115,8 @@ func (r *projectRuntime) query(ctx context.Context, p intake.Project, q intake.Q
 	source, ok := r.sources[p.Prefix]
 	readers := r.readers
 	sharedLogDir := false
-	for prefix, other := range r.sources {
-		sharedLogDir = sharedLogDir || (prefix != p.Prefix && other.logKey == source.logKey && other.repo != source.repo)
+	for identity := range r.logOwners[source.logKey] {
+		sharedLogDir = sharedLogDir || identity != source.remote
 	}
 	r.mu.Unlock()
 	now := readers.now()

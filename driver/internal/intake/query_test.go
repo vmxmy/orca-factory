@@ -121,7 +121,10 @@ func TestIntakeQueryValidation(t *testing.T) {
 	}
 	t.Run("default window and bounds accepted", func(t *testing.T) {
 		var got []time.Duration
-		q := func(_ context.Context, _ Project, r QueryRequest) Evidence { got = append(got, r.Window); return Evidence{Outcome: OutcomeOK} }
+		q := func(_ context.Context, _ Project, r QueryRequest) Evidence {
+			got = append(got, r.Window)
+			return Evidence{Outcome: OutcomeOK}
+		}
 		turn, _ := scriptedTurns(t, queryReply(`{"op":"logs","ticket":"OF-1"},{"op":"logs","ticket":"OF-1","since":"1m"},{"op":"logs","ticket":"OF-1","since":"24h"}`), "好")
 		if _, err := runQueries(context.Background(), turn, q, Turn{Project: Project{Prefix: "OF"}}, testLimits); err != nil {
 			t.Fatal(err)
@@ -174,17 +177,48 @@ func TestIntakeQueryTimeouts(t *testing.T) {
 func TestIntakeQueryLoopClock(t *testing.T) {
 	called := 0
 	querier := func(context.Context, Project, QueryRequest) Evidence { called++; return Evidence{Outcome: OutcomeOK} }
-	answers := []string{queryReply(`{"op":"status"}`), queryReply(`{"op":"config"}`)}
-	turn := func(_ context.Context, t Turn) (string, error) {
-		if t.Resume {
-			time.Sleep(testLimits.loop)
+	turn := func(ctx context.Context, t Turn) (string, error) {
+		if !t.Resume {
+			return queryReply(`{"op":"status"}`), nil
 		}
-		answer := answers[0]
-		answers = answers[1:]
-		return answer, nil
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Minute):
+			return queryReply(`{"op":"config"}`), nil
+		}
 	}
+	started := time.Now()
 	answer, err := runQueries(context.Background(), turn, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits)
-	if err != nil || called != 1 || !strings.Contains(answer, "查询额度已用尽") || strings.Contains(answer, "intake-query-v1") {
+	if took := time.Since(started); err != nil || called != 1 || took > 10*testLimits.loop || !strings.Contains(answer, "查询合计已超过 45 秒") {
+		t.Fatalf("answer=%q err=%v called=%d took=%v", answer, err, called, took)
+	}
+}
+
+// TestIntakeQueryCorrectionClock counts a draft-correction turn against the
+// message's 45 seconds: a query requested after a slow correction does not run.
+func TestIntakeQueryCorrectionClock(t *testing.T) {
+	ctx := withQueryBudget(context.Background())
+	called := 0
+	querier := func(context.Context, Project, QueryRequest) Evidence { called++; return Evidence{Outcome: OutcomeOK} }
+	first := func(_ context.Context, t Turn) (string, error) {
+		if t.Resume {
+			return "草稿", nil
+		}
+		return queryReply(`{"op":"status"}`), nil
+	}
+	if _, err := runQueries(ctx, first, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits); err != nil || called != 1 {
+		t.Fatalf("err=%v called=%d", err, called)
+	}
+	correction := func(_ context.Context, t Turn) (string, error) {
+		if t.Resume {
+			return "修正后的草稿", nil
+		}
+		time.Sleep(testLimits.loop)
+		return queryReply(`{"op":"config"}`), nil
+	}
+	answer, err := runQueries(ctx, correction, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits)
+	if err != nil || called != 1 || !strings.Contains(answer, "查询额度已用尽") {
 		t.Fatalf("answer=%q err=%v called=%d", answer, err, called)
 	}
 }

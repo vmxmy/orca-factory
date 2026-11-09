@@ -130,9 +130,11 @@ type projectRuntime struct {
 	// submission reads dependencies and creates tickets through it (OF-417).
 	ledgers map[string]issues.Store
 	// sources and readers back the Agent's read-only evidence queries
-	// (OF-427), keyed by the same prefix as ledgers.
-	sources map[string]querySource
-	readers evidenceReaders
+	// (OF-427), keyed by the same prefix as ledgers. logOwners is the latest
+	// discovery round's logDirOwners.
+	sources   map[string]querySource
+	logOwners map[string]map[string]bool
+	readers   evidenceReaders
 }
 
 func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRuntime {
@@ -181,7 +183,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	chat := p.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
 	if cached, ok := r.projects[p.Prefix]; ok {
 		cached.Chat = chat
-		r.sources[p.Prefix] = newQuerySource(r.ledgers[p.Prefix], p.Path, p.Repository.Env)
+		r.sources[p.Prefix] = newQuerySource(r.ledgers[p.Prefix], p.Path, p.Remote, p.Repository.Env)
 		return cached, nil
 	}
 	model, effort, err := tierParts(p.Repository.Env)
@@ -222,7 +224,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	r.built[p.Prefix] = runner
 	r.projects[p.Prefix] = project
 	r.ledgers[p.Prefix] = store
-	r.sources[p.Prefix] = newQuerySource(store, p.Path, p.Repository.Env)
+	r.sources[p.Prefix] = newQuerySource(store, p.Path, p.Remote, p.Repository.Env)
 	return project, nil
 }
 
@@ -578,6 +580,10 @@ func resolvePendingEnable(result projects.Result, rows []issues.LedgerProject) [
 // resolves. A row discovery did not consider eligible carries the rejection
 // reason discovery already gave it.
 func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []issues.LedgerProject, runtime *projectRuntime) []intake.Project {
+	owners := logDirOwners(result, rows)
+	runtime.mu.Lock()
+	runtime.logOwners = owners
+	runtime.mu.Unlock()
 	rejections := make(map[string]projects.Rejection, len(result.Rejected))
 	for _, rejected := range result.Rejected {
 		rejections[rejected.Remote] = rejected

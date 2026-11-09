@@ -111,7 +111,7 @@ func evidenceRuntime(t *testing.T, now time.Time, env map[string]string) (*proje
 		env = map[string]string{"AGENT_GH_REPO": "vmxmy/orca-factory"}
 	}
 	r.readers.profile = func(string) (map[string]string, time.Time, error) { return env, recordedStatusTime, nil }
-	r.sources["OF"] = newQuerySource(store, "/home/laoxu/github/orca-factory", env)
+	r.sources["OF"] = newQuerySource(store, "/home/laoxu/github/orca-factory", "github.com/vmxmy/orca-factory", env)
 	return r, store, stateRoot
 }
 
@@ -425,13 +425,20 @@ func TestIntakeQueryLogsAttribution(t *testing.T) {
 			t.Fatalf("evidence=%+v", e)
 		}
 	})
-	t.Run("log directory another project shares is not read", func(t *testing.T) {
-		r, store, root := evidenceRuntime(t, time.Date(2026, 11, 7, 11, 40, 0, 0, time.FixedZone("CST", 8*3600)), nil)
+	t.Run("log directory a disabled ledger project shares is not read", func(t *testing.T) {
+		r, _, root := evidenceRuntime(t, time.Date(2026, 11, 7, 11, 40, 0, 0, time.FixedZone("CST", 8*3600)), nil)
 		copyRecorded(t, "driver-logs-executor-auth-failure.jsonl", filepath.Join(root, "orca-factory", "OF-427", "executor.log"))
-		// Synthetic: another bound project whose repository is also named orca-factory.
-		r.sources["ZY"] = newQuerySource(store, "/home/laoxu/github/fork/orca-factory", map[string]string{"AGENT_GH_REPO": "acme/orca-factory"})
-		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-427", Window: time.Hour})
-		if e.Outcome != intake.OutcomeFailed || !strings.Contains(e.Error, "被多个项目共用") || strings.Contains(e.Data, "no oauth token") {
+		own := issues.LedgerProject{Name: "orca-factory", Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Enabled: true}
+		resolveIntakeProjects(context.Background(), projects.Result{}, []issues.LedgerProject{own}, r)
+		logs := intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-427", Window: time.Hour}
+		if e := r.query(context.Background(), ofProject, logs); e.Outcome != intake.OutcomeOK || !strings.Contains(e.Data, "no oauth token") {
+			t.Fatalf("evidence=%+v", e)
+		}
+		// Synthetic: a disabled ledger row whose repository is also named
+		// orca-factory; the gateway restarted, so no source was ever resolved for it.
+		other := issues.LedgerProject{Name: "fork", Remote: "github.com/acme/orca-factory", Prefix: "ZY", Enabled: false}
+		resolveIntakeProjects(context.Background(), projects.Result{}, []issues.LedgerProject{own, other}, r)
+		if e := r.query(context.Background(), ofProject, logs); e.Outcome != intake.OutcomeFailed || !strings.Contains(e.Error, "被多个项目共用") || strings.Contains(e.Data, "no oauth token") {
 			t.Fatalf("evidence=%+v", e)
 		}
 	})
