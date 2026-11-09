@@ -1,0 +1,1224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<meta name="description" content="工坊小镇：原生 Canvas 2D 像素工厂交互设计原型。全部为演示数据。">
+<title>工坊小镇 · 交互设计稿</title>
+<style>
+:root{--paper:#f7f2df;--paper-deep:#eae2c8;--ink:#413d2e;--muted:#898371;--line:#d9d1b7;--green:#4d6946;--green-dark:#344b31;--wood:#8d6844;--amber:#b97c29;--red:#b85b45;--blue:#537e90;--serif:"Songti SC","STSong","Noto Serif CJK SC",serif;--sans:"PingFang SC","Noto Sans CJK SC","Microsoft YaHei",sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);font:13px/1.6 var(--sans);color:var(--ink)}
+button,input{font:inherit}button{cursor:pointer;color:inherit}button:disabled{opacity:.45;cursor:default}
+button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--blue);outline-offset:4px}
+button{border:0;background:none}svg{display:block}button svg{pointer-events:none}
+.app{min-height:100dvh;display:flex;flex-direction:column}
+.topbar{height:83px;display:flex;align-items:center;gap:32px;padding:0 27px;border-bottom:1px solid var(--line);background:var(--paper);position:relative;z-index:12}
+.brand{display:flex;gap:12px;align-items:center;flex-shrink:0;text-align:left;padding:0}
+.brand-icon{width:43px;height:43px}.brand-name{font:700 25px/1.2 var(--serif);letter-spacing:3px}.brand-sub{display:block;font:10px/2 var(--sans);letter-spacing:3px;color:var(--muted)}
+.search-wrap{position:relative;margin-left:auto;width:min(320px,29vw)}
+.search-box{display:flex;align-items:center;gap:10px;background:#eee8d4;border:1px solid #dcd4bc;padding:9px 12px}
+.search-box svg{width:17px;height:17px;color:#918872;flex-shrink:0}.search-box input{background:none;border:0;outline:none!important;width:100%;min-width:0;color:var(--ink);font-size:12px}.search-box input::placeholder{color:#9b9480}.key-hint{font-size:10px;border:1px solid #cfc6ac;padding:0 5px;color:#918872}
+.search-results{position:absolute;top:48px;left:0;right:0;max-height:400px;overflow:auto;background:var(--paper);border:1px solid var(--wood);box-shadow:4px 5px 0 #4e45251a;z-index:20;padding:8px}
+.search-results[hidden]{display:none}.search-result{display:block;text-align:left;padding:10px;width:100%;border-bottom:1px solid var(--line)}.search-result:hover{background:var(--paper-deep)}.search-result strong{font-size:12px;display:block}.search-result small{color:var(--muted);display:block}
+.top-meta{display:flex;align-items:center;gap:22px;flex-shrink:0}.season{display:flex;gap:8px;align-items:center}.season svg{color:#b69b4e;width:22px;height:22px}.season b{font-weight:500}.season small{display:block;font-size:10px;color:var(--muted);letter-spacing:1px}
+.demo-badge{font-size:10px;letter-spacing:1px;border:1px solid #c8ceb8;padding:4px 8px;color:var(--green);background:#edf0e2}
+.navigation{height:49px;padding:0 27px;display:flex;align-items:stretch;border-bottom:1px solid var(--line);gap:30px;background:#f9f5e9;position:relative;z-index:9}
+.nav-button{position:relative;display:flex;align-items:center;gap:8px;padding:0 2px;color:var(--muted);font-size:12px}
+.nav-button svg{width:15px;height:15px}.nav-button.active{color:var(--green-dark);font-weight:600}.nav-button.active:after{content:"";height:3px;background:var(--green);position:absolute;bottom:-1px;left:0;right:0}.small-count{font-size:10px;background:#efe0b9;color:#9a6b2d;min-width:17px;line-height:17px;text-align:center}
+.nav-end{margin-left:auto;display:flex;align-items:center;gap:7px;font-size:11px;color:var(--muted)}.status-dot{width:6px;height:6px;display:inline-block;background:#7b935b;box-shadow:0 0 0 3px #7b935b14}
+.workspace{display:grid;grid-template-columns:207px minmax(0,1fr) 304px;flex:1;min-height:0;height:calc(100dvh - 172px)}
+.project-sidebar{padding:27px 15px 20px;background:#f2eddb;border-right:1px solid var(--line);display:flex;flex-direction:column;gap:20px}
+.eyebrow{text-transform:uppercase;font-size:10px;letter-spacing:2px;color:var(--muted)}.sidebar-heading{display:flex;align-items:center;justify-content:space-between;padding:0 11px;margin-bottom:12px}.sidebar-heading span:last-child{font-size:10px;color:#9a917c}
+.repo-list{display:flex;flex-direction:column;gap:7px}.repo-button{padding:12px 10px;text-align:left;width:100%;position:relative;display:flex;gap:9px;align-items:flex-start;border:1px solid transparent}
+.project-count{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 10px 14px;color:#756c54;font-size:10px}.project-count input{width:66px;min-height:30px;border:1px solid #c7b998;background:#faf5e5;color:var(--ink);padding:3px 6px}.project-count-error{width:100%;color:var(--red);line-height:1.5}.project-count-error[hidden]{display:none}
+.repo-button:hover{background:#eae5d2}.repo-button.active{background:#e4e9d8;border-color:#c2cdb2}.repo-button.active:before{content:"";position:absolute;left:-1px;top:12px;bottom:12px;width:3px;background:var(--green)}
+.repo-symbol{width:25px;height:27px;display:flex;align-items:center;justify-content:center;flex-shrink:0;background:#dfd4b9;color:#876144;font-family:var(--serif);font-weight:bold;border-bottom:3px solid #baa581;font-size:16px}.repo-button:nth-child(2) .repo-symbol{background:#dce3cf;color:#657b52;border-color:#a9b893}.repo-button:nth-child(3) .repo-symbol{background:#e7d8c5;color:#926c4d;border-color:#bea383}.repo-button:nth-child(4) .repo-symbol{background:#d8e1df;color:#6d8581;border-color:#a4bcb7}
+.repo-info{min-width:0}.repo-info strong{display:block;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}.repo-info small{font-size:10px;color:var(--muted);display:block;margin-top:3px}.repo-info .attention{color:var(--amber)}
+.sidebar-note{margin-top:auto;padding:15px 11px;border-top:1px solid var(--line);color:#8d846e;font-size:11px}.sidebar-note b{display:block;color:#756c54;font-weight:500;margin-bottom:7px}.sidebar-note p{margin:0;line-height:1.9}
+.map-column{position:relative;min-width:0;display:flex;flex-direction:column;overflow:hidden;background:#b7c789}
+.map-heading{position:absolute;top:23px;left:26px;z-index:5;pointer-events:none;background:linear-gradient(90deg,#b4c681f5 60%,#b4c68100);padding:0 35px 12px 0}.map-heading .eyebrow{color:#596b3f;letter-spacing:3px}.map-heading h1{font:600 29px/1.4 var(--serif);letter-spacing:2px;margin:4px 0;color:#35452c;text-shadow:0 1px #eef5cb88}.map-heading p{font-size:11px;color:#607048;margin:2px 0}
+.weather-stamp{position:absolute;top:27px;right:23px;z-index:4;font:10px var(--sans);color:#5e744a;display:flex;gap:8px;align-items:center}.weather-stamp svg{width:19px;height:19px}
+.map-viewport{position:relative;flex:1;min-height:440px;overflow:hidden;touch-action:none}
+#world{position:absolute;width:100%;height:100%;image-rendering:pixelated;cursor:grab}#world:active{cursor:grabbing}
+#map-labels{position:absolute;inset:0;pointer-events:none}.world-label{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;text-align:center;white-space:nowrap;max-width:260px}
+.village-label{background:#fff7df;border:1px solid #8c7952;box-shadow:0 3px 0 #6e70414d;padding:7px 12px;color:#4d452f;transition:transform .15s}.village-label:before{content:"";position:absolute;width:3px;height:6px;background:#87774d;top:-7px;left:50%}.village-label:hover{transform:translate(-50%,-54%);background:#fffbed}
+.village-label strong{font:600 12px var(--sans);display:block}.village-label small{display:block;font-size:10px;color:#8b8066;margin-top:4px}.village-label .tiny-dot{width:5px;height:5px;background:#9caa83;display:inline-block;margin-right:4px}.village-label.needs-attention .tiny-dot{background:#b4823d}
+.station-label{font-size:11px;background:#faf2d9ed;border:1px solid #9a8b62;padding:4px 8px;box-shadow:0 2px 0 #6e70412b}.station-label:hover{background:#fffbee}.station-label span{color:#8b8063;font-size:9px;margin-left:6px}
+.station-label b{color:#758463;font:10px monospace;margin-right:5px}.station-label.branch{border-color:#b08b56;background:#f8e9c8}.station-label.branch b{color:#a1793f}.station-label[aria-pressed="true"]{outline:2px solid #537e90;outline-offset:2px}
+.route-note{pointer-events:none;font-size:10px;color:#786445;padding:1px 4px;background:#d8be89df}.route-note.room-sign{color:#f5e4b7;background:none;font-size:12px;letter-spacing:3px}
+.map-column.interior{background:#d4c5a3}.interior .map-heading{background:linear-gradient(90deg,#e3d5b7f5 65%,#e3d5b700)}.interior .map-heading h1{color:#57482f}.interior .map-heading p,.interior .map-heading .eyebrow,.interior .map-tip{color:#79684b}.interior .weather-stamp{display:none}
+.flow-guide{border:1px solid #d5c7a6;background:#f1ead7;padding:11px;margin:15px 0;font-size:10px;color:#83704e}.flow-guide strong{display:block;color:#6a674b;margin-bottom:5px;font-size:11px}.flow-guide p{margin:5px 0;line-height:1.9}.branch-action{width:100%;margin-top:8px;color:#98703c;border-color:#c7aa76}.station-description{font-size:12px;line-height:1.9;color:#817459;margin:16px 0}
+.ticket-chip{position:absolute;transform:translate(-50%,-50%);pointer-events:auto;background:#fff8e5;color:#635338;border:1px solid #c5af7b;font:600 10px var(--sans);padding:4px 6px;box-shadow:0 2px #81744135;white-space:nowrap}
+.ticket-chip.current{border-color:#6b98a3}.ticket-chip.attention{border-color:#bf9047;background:#fff0cb}.ticket-chip.failed{border-color:#b8664c;background:#fff0e4}.ticket-chip.selected{background:#4d7180;color:#fff;outline:2px solid #fdf9e8;outline-offset:1px}
+.map-toolbar{position:absolute;bottom:24px;left:24px;right:24px;display:flex;justify-content:space-between;align-items:flex-end;pointer-events:none;z-index:7;gap:10px}
+.map-legend{background:#f7f2dfeb;border:1px solid #a7b288;box-shadow:0 2px #75835426;padding:9px 12px;display:flex;gap:14px;pointer-events:auto;font-size:10px;color:#6c7359}
+.legend-item{display:flex;align-items:center;gap:5px}.legend-square{width:6px;height:6px;background:var(--blue)}.legend-square.amber{background:var(--amber)}.legend-square.idle{background:#9da889}
+.map-controls{display:flex;gap:5px;pointer-events:auto}.square-button{width:31px;height:31px;background:#f7f2df;border:1px solid #a1a884;box-shadow:0 2px #6e70413b;display:flex;align-items:center;justify-content:center}.square-button svg{width:15px;height:15px}.square-button:hover{background:#fffaf0}
+.map-tip{position:absolute;bottom:68px;left:25px;color:#64734c;font-size:10px;pointer-events:none}.map-tip .kbd{border:1px solid #91a16c;padding:0 4px;margin-right:4px}
+.detail-panel{background:#fbf7e9;border-left:1px solid var(--line);overflow:auto;position:relative;z-index:8;scrollbar-width:thin;scrollbar-color:#c6bea7 transparent}
+.panel-top{padding:24px 22px 15px;display:flex;align-items:center;justify-content:space-between}.panel-top h2{font:600 20px var(--serif);letter-spacing:1px;margin:0}.panel-top .close-detail{color:#9b9077;font-size:20px;width:26px;height:26px;line-height:1}
+.panel-content{padding:0 22px 22px}.chapter-label{font-size:9px;color:#a39576;letter-spacing:2px;margin-bottom:6px}.journal-rule{width:24px;height:2px;background:#bba578;margin:0 0 17px}
+.greeting{font:600 24px/1.5 var(--serif);margin:0 0 9px;color:#4f583d;letter-spacing:1px}.intro-copy{font-size:11px;line-height:1.9;color:#938972;margin:0 0 20px}
+.summary-grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--line);border-bottom:1px solid var(--line);margin:20px 0 24px;padding:17px 0}
+.summary-cell+.summary-cell{border-left:1px solid var(--line);padding-left:20px}.summary-cell strong{font:30px/1.2 Georgia,serif;color:#536345}.summary-cell span{display:block;font-size:10px;color:#948b75;margin-top:5px}.summary-cell.attention strong{color:#ad7c3c}
+.section-title{display:flex;align-items:center;justify-content:space-between;margin:21px 0 9px}.section-title h3{margin:0;font-size:12px;font-weight:600}.section-title span{font-size:9px;color:#9c927b}
+.attention-item{display:block;text-align:left;border-bottom:1px solid #e6dec7;padding:12px 0;width:100%;position:relative}.attention-item:hover{background:#f1ead7}.attention-item-head{display:flex;align-items:center;gap:7px;font-size:11px}.mini-flag{font-size:10px;color:var(--amber);background:#eee0b9;width:16px;height:16px;display:grid;place-items:center}.mini-flag.red{color:var(--red);background:#eedbcf}.attention-item-head strong{font-weight:600}.attention-item-head .time{margin-left:auto;color:#9a9078;font-size:9px}.attention-item p{margin:6px 0 0 23px;font-size:11px;color:#756c59}.attention-item small{display:block;margin:3px 0 0 23px;font-size:9px;color:#a0967f}
+.journal-bottom{margin-top:30px;padding:20px 14px;background:repeating-linear-gradient(transparent,transparent 25px,#dfd6ba66 25px,#dfd6ba66 26px);border:1px solid #e1d7bb;position:relative;color:#91856c;font:13px/2 var(--serif);transform:rotate(-1deg)}.journal-bottom:before{content:"";position:absolute;top:-7px;left:calc(50% - 18px);width:36px;height:13px;background:#ddd1a6aa;transform:rotate(4deg)}.journal-bottom small{display:block;text-align:right;font:9px var(--sans);margin-top:10px;color:#aca087}
+.ticket-heading{display:flex;justify-content:space-between;align-items:center;gap:8px}.ticket-id{font:20px Georgia,serif;letter-spacing:.5px}.state-pill{font-size:10px;padding:3px 7px;color:#4c7380;background:#e3eced;border:1px solid #c7d9db}.state-pill.attention{color:#9d712d;background:#f4e9cd;border-color:#e3cd9a}.state-pill.failed{color:#a85542;background:#f2e2d9;border-color:#dfc1b2}
+.ticket-title{font:600 21px/1.55 var(--serif);letter-spacing:.5px;margin:16px 0 20px}.ticket-project{font-size:10px;color:#948b75;display:block;margin-top:6px}
+.reason-box{padding:12px;background:#f4ead0;border:1px solid #dfc999;border-left:3px solid #b88a40;margin-bottom:22px}.reason-box.failed{background:#f3e4db;border-color:#dfc3b2;border-left-color:#b1644b}.reason-box strong{font-size:11px;display:flex;gap:7px;align-items:center}.reason-box p{font-size:11px;line-height:1.9;margin:6px 0 0;color:#8b7958}
+.field-list{margin:0 0 20px}.field-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #e7dfc9;font-size:11px}.field-row dt{color:#9a9079;flex-shrink:0}.field-row dd{margin:0;text-align:right;overflow-wrap:anywhere}
+.timeline{list-style:none;padding:2px 0 0;margin:0}.timeline li{padding:0 0 18px 18px;margin-left:3px;border-left:1px solid #d6d1bc;position:relative;font-size:11px}.timeline li:before{content:"";width:5px;height:5px;background:#a7ad8c;position:absolute;left:-3px;top:5px}.timeline li:first-child:before{background:var(--green);box-shadow:0 0 0 3px #e7e9d7}.timeline time{font-size:9px;color:#a1977f;display:block;margin-top:2px}.timeline-note{font-size:9px;color:#aaa18c;line-height:1.8;margin:0 0 20px}
+.panel-actions{display:flex;gap:7px;margin-top:22px}.paper-button{border:1px solid #c7b998;background:#f0e8d2;box-shadow:0 2px #c7b99850;padding:8px 11px;font-size:11px;text-align:center;min-height:35px}.paper-button:hover{background:#e6dcc1}.paper-button.primary{background:var(--green);color:#fff8e7;border-color:#385231}.paper-button.primary:hover{background:#3d5936}.panel-actions .paper-button{flex:1}
+.advance-button{margin-top:12px;width:100%;font-size:10px}.empty-state{padding:30px 8px;text-align:center;color:#9e957e;font-size:12px}.empty-state strong{display:block;color:#647253;font:22px var(--serif);margin-bottom:10px}
+.footer{height:40px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;padding:0 25px;background:#f3eedb;gap:12px;font-size:10px;color:#958b74;z-index:9}.footer-left{display:flex;gap:20px;align-items:center}.footer-right{display:flex;gap:15px;align-items:center}.motion-toggle{display:flex;gap:7px;align-items:center;font-size:10px;padding:0;color:#8c826b}.toggle-track{display:inline-block;width:22px;height:12px;background:#9ca982;position:relative;border:1px solid #8c9b71}.toggle-track:after{content:"";position:absolute;width:7px;height:7px;right:2px;top:1.5px;background:#faf7e9}.motion-toggle[aria-pressed="true"] .toggle-track{background:#c2bca7;border-color:#b3ad98}.motion-toggle[aria-pressed="true"] .toggle-track:after{right:11px}
+.toast{position:fixed;bottom:58px;left:50%;transform:translate(-50%,8px);background:#354b31;color:#faf4de;font-size:12px;padding:10px 20px;box-shadow:0 3px 0 #25382155;z-index:40;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}.toast.visible{opacity:1;transform:translate(-50%,0)}.drawer-handle{display:none}
+.mobile-shade{display:none}
+@media(min-width:761px){.app{height:100dvh;overflow:hidden}.workspace{flex:1;min-height:0}.project-sidebar{overflow:auto}}
+@media(min-width:1600px){.workspace{grid-template-columns:230px minmax(0,1fr) 340px}.topbar{padding:0 35px}.project-sidebar{padding-left:20px;padding-right:20px}.panel-content{padding:0 28px 28px}.panel-top{padding:28px}.map-heading{top:30px;left:32px}}
+@media(max-width:1150px) and (min-width:761px){.workspace{grid-template-columns:165px minmax(0,1fr) 265px}.topbar{gap:18px;padding:0 18px}.brand-name{font-size:21px}.season{display:none}.project-sidebar{padding:22px 8px}.repo-button{gap:6px;padding:10px 7px}.repo-symbol{width:20px;height:23px}.repo-info strong{font-size:10px}.panel-content{padding:0 17px 20px}.panel-top{padding:23px 17px 15px}.map-heading{left:20px}.map-heading h1{font-size:25px}.map-legend{gap:9px;padding:7px}.weather-stamp{display:none}}
+@media(max-width:760px){.topbar{height:auto;min-height:77px;flex-wrap:wrap;padding:15px 17px 12px;gap:12px}.brand{gap:9px}.brand-icon{width:32px;height:32px}.brand-name{font-size:21px;letter-spacing:2px}.brand-sub{font-size:8px;letter-spacing:2px}.top-meta{margin-left:auto}.season{display:none}.demo-badge{font-size:9px;padding:3px 5px}.search-wrap{order:3;width:100%;margin:0}.search-box{padding:8px 10px}.search-box input{font-size:12px}.search-results{top:42px}.navigation{height:44px;padding:0 17px;gap:24px}.nav-button{font-size:11px;min-height:44px}.nav-end{display:none}.workspace{display:flex;flex-direction:column;height:auto;min-height:calc(100dvh - 204px)}.project-sidebar{padding:10px 12px;border-right:0;border-bottom:1px solid var(--line);display:block}.sidebar-heading,.sidebar-note{display:none}.repo-list{display:flex;flex-direction:row;overflow:auto;gap:7px;scrollbar-width:none}.repo-button{width:auto;min-width:143px;flex-shrink:0;padding:9px;min-height:47px}.repo-info strong{font-size:10px}.repo-symbol{height:22px;width:21px;font-size:13px}.repo-info small{font-size:9px}.map-column{min-height:490px;flex:none}.map-viewport{min-height:490px}.map-heading{top:20px;left:20px}.map-heading h1{font-size:25px}.map-heading p{font-size:10px}.map-heading .eyebrow{font-size:8px}.weather-stamp{display:none}.map-toolbar{bottom:18px;left:15px;right:15px;gap:6px}.map-legend{padding:8px;gap:9px;font-size:9px}.square-button{width:34px;height:34px}.map-tip{left:17px;bottom:62px;font-size:9px}.village-label{padding:6px 7px;max-width:170px}.village-label strong{font-size:10px}.village-label small{font-size:9px}.station-label{font-size:10px;padding:5px 7px}.station-label span{display:none}.ticket-chip{font-size:9px;padding:5px 6px;min-height:26px}.detail-panel{border-left:0;border-top:1px solid var(--line);overflow:visible}.panel-top{padding:22px 21px 14px}.panel-content{padding:0 21px 25px}.summary-grid{margin-top:14px;margin-bottom:16px}.journal-bottom{display:none}.attention-item{padding:14px 0}.footer{height:auto;min-height:49px;padding:11px 17px;font-size:9px}.footer-left span:last-child{display:none}.footer-right>span{display:none}.footer-left{gap:7px}.motion-toggle{font-size:9px}.detail-panel.is-drawer{position:fixed;bottom:0;left:0;right:0;max-height:65dvh;overflow:auto;z-index:25;border-top:3px solid #9b8055;box-shadow:0 -10px 35px #3e41242e;padding-top:9px}.is-drawer .drawer-handle{display:block;width:35px;height:3px;margin:1px auto 0;background:#b5a484}.is-drawer .panel-top{padding-top:12px}.is-drawer .panel-actions{position:sticky;bottom:-25px;background:#fbf7e9;padding:12px 0;margin-bottom:0}.is-drawer .paper-button{min-height:44px}.is-drawer .close-detail{width:44px;height:36px}.ticket-title{margin:10px 0 17px}.map-column.drawer-open{min-height:490px}.toast{max-width:90%;text-align:center;font-size:11px;bottom:20px;z-index:40}.world-label{max-width:170px}}
+@media(max-width:760px){.app.has-selection .navigation,.app.has-selection .project-sidebar,.app.has-selection .search-wrap{display:none}.app.has-selection .topbar{height:68px;min-height:68px;padding-top:10px;padding-bottom:10px}.map-column.drawer-open .map-heading,.map-column.drawer-open .map-tip{display:none}.detail-panel.is-drawer{max-height:58dvh}}
+@media(max-width:760px){.station-label{font-size:9px;padding:3px 5px}.station-label b{font-size:9px;margin-right:3px}.station-label.branch{margin-top:8px}.ticket-chip{font-size:8px;padding:3px 4px;min-height:22px}.route-note{display:none}}
+@media(max-width:760px){.project-count{margin:0 0 9px}.project-sidebar{min-width:0;width:100%}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="topbar">
+    <button class="brand" id="brand" aria-label="工坊小镇，返回总览">
+      <svg class="brand-icon" viewBox="0 0 40 40" aria-hidden="true" shape-rendering="crispEdges"><path fill="#708555" d="M0 30h40v7H0zM4 26h32v5H4z"/><path fill="#9f613f" d="M7 13h26v20H7z"/><path fill="#e5ce91" d="M10 15h20v18H10z"/><path fill="#bc7750" d="M3 14h34v4H3zM6 11h28v3H6zM10 7h20v4H10zM14 3h12v4H14z"/><path fill="#794a32" d="M3 17h34v3H3zM17 23h7v10h-7z"/><path fill="#f6dfa0" d="M12 20h4v5h-4zM26 20h3v5h-3z"/><path fill="#4d663e" d="M1 20h4v12H1zM0 23h7v5H0zM34 27h6v6h-6z"/><path fill="#d0a668" d="M16 33h9v3h-9z"/></svg>
+      <span><span class="brand-name">工坊小镇</span><span class="brand-sub">把每一份委托，认真做好</span></span>
+    </button>
+    <div class="search-wrap">
+      <label class="search-box"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input id="search" type="search" placeholder="寻找一份委托，或一个项目…" aria-label="搜索票号、标题或项目" autocomplete="off"><span class="key-hint">/</span></label>
+      <div id="search-results" class="search-results" hidden></div>
+    </div>
+    <div class="top-meta"><div class="season"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2"/></svg><span><b>春日 · 晴</b><small>小镇的一天</small></span></div><span class="demo-badge">交互设计稿</span></div>
+  </header>
+  <nav class="navigation" aria-label="主要视图">
+    <button class="nav-button active" data-view="town"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M2 8 7 3l5 5M4 7v9h7V7m2 3 3-3 3 3m-5 0v6h4v-6"/></svg>小镇总览</button>
+    <button class="nav-button" data-view="project"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M3 9h14v8H3zM1 9l4-6h10l4 6M8 12h4v5M7 3 5 9m8-6 2 6"/></svg>工坊内部</button>
+    <button class="nav-button" data-view="attention"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 18V3m0 1h11l-2 4 2 4H4"/></svg>需关注<span class="small-count" id="attention-count">3</span></button>
+    <span class="nav-end"><span class="status-dot"></span>演示数据 · 不连接实际流水线</span>
+  </nav>
+  <main class="workspace">
+    <aside class="project-sidebar" aria-label="项目选择">
+      <div><div class="sidebar-heading"><span class="eyebrow">小镇里的院落</span><span id="project-total"></span></div><label class="project-count">演示项目数量<input id="project-count" type="number" min="0" max="1000" step="1" value="4" aria-label="演示项目数量" aria-describedby="project-count-range project-count-error"><span id="project-count-range">0 至 1000 个</span><span id="project-count-error" class="project-count-error" role="status" hidden></span></label><div class="repo-list" id="repo-list"></div></div>
+      <div class="sidebar-note"><b>每一间工坊，都有故事。</b><p>点击院落看看大家在忙什么。<br>一份委托，一段认真打磨的旅程。</p></div>
+    </aside>
+    <section class="map-column" aria-label="可交互像素工坊地图">
+      <div class="map-heading"><div class="eyebrow" id="map-eyebrow">一切都在慢慢变好</div><h1 id="map-title">今天的小镇</h1><p id="map-subtitle"></p></div>
+      <div class="weather-stamp"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><path d="M4 17h14a4 4 0 0 0 0-8 6 6 0 0 0-11-1 5 5 0 0 0-3 9Z"/></svg>适合开工的好天气</div>
+      <div class="map-viewport" id="viewport"><canvas id="world" aria-label="像素地图，项目与票据均可通过旁边的按钮访问"></canvas><div id="map-labels"></div></div>
+      <div class="map-tip"><span class="kbd">拖动</span>探索地图 <span style="margin-left:9px" id="zoom-text">100%</span></div>
+      <div class="map-toolbar"><div class="map-legend"><span class="legend-item"><i class="legend-square"></i>进行中</span><span class="legend-item"><i class="legend-square amber"></i>需关注</span><span class="legend-item"><i class="legend-square idle"></i>空闲</span></div><div class="map-controls"><button class="square-button" id="zoom-out" aria-label="缩小地图">−</button><button class="square-button" id="zoom-in" aria-label="放大地图">+</button><button class="square-button" id="fit-map" aria-label="适应地图"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2 7V2h5m6 0h5v5M2 13v5h5m6 0h5v-5"/></svg></button></div></div>
+    </section>
+    <aside class="detail-panel" id="detail-panel" aria-label="概况与委托详情"><div class="drawer-handle"></div><div id="detail"></div></aside>
+  </main>
+  <footer class="footer"><div class="footer-left"><span>工坊小镇 · 设计原型 03</span><span>数据为演示，可放心探索</span></div><div class="footer-right"><a href="./index.html" download="pixel-town.html" style="color:inherit;text-underline-offset:3px">下载 HTML</a><button class="motion-toggle" id="motion-toggle" aria-pressed="false"><span class="toggle-track"></span>减少动态</button><span>原生 HTML / Canvas 2D</span></div></footer>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script>
+(() => {
+  'use strict';
+  const projectSeeds = [
+    {id:'orca',name:'orca-factory',short:'工',description:'让协作有序发生',color:'#b87951'},
+    {id:'zhiyun',name:'zhiyun-ai-dashboard',short:'云',description:'让每次调用更清晰',color:'#8d9370'},
+    {id:'control',name:'ziikoo-control-plane',short:'枢',description:'小镇的调度中枢',color:'#ae7758'},
+    {id:'app',name:'gpt-ziikoo-app',short:'知',description:'今天，休息一下也很好',color:'#77918b'}
+  ];
+  function parseProjectCount(value) {
+    if(value===null||value.trim()==='')return null;
+    const count=Number(value);
+    return Number.isInteger(count)&&count>=0&&count<=1000?count:null;
+  }
+  function demoProjects(count) {
+    return Array.from({length:count},(_,index)=>projectSeeds[index]||{
+      id:`project-${index+1}`,name:`小镇工坊 ${String(index+1).padStart(4,'0')}`,short:'坊',
+      description:'等待新的委托',color:projectSeeds[index%projectSeeds.length].color
+    });
+  }
+  function deriveTownLayout(list) {
+    const anchors=list.map((project,index)=>({project,x:list.length===1?520:index%2?760:290,y:list.length===1?330:245+Math.floor(index/2)*320}));
+    return {anchors,riverX:list.length===1?270:514,bounds:{width:1040,height:Math.max(760,(anchors.at(-1)?.y||245)+280)},visible:[]};
+  }
+  const parameters=new URLSearchParams(location.search);
+  let projects=demoProjects(parseProjectCount(parameters.get('count'))??4);
+  let townLayout=deriveTownLayout(projects);
+  const stages = {
+    pickup:{name:'领料台',phase:'等待领取',x:160,y:285,number:'01',description:'票据先成为待领包裹。依赖未满足时留在本站，显示等待原因。'},
+    work:{name:'制作台',phase:'施工中',x:400,y:285,number:'02',description:'执行器在此处理任务。工位旁的工匠对应当前执行者。'},
+    gate:{name:'验收台',phase:'验收中',x:640,y:285,number:'03',description:'执行检查。通过后进入审查，未通过则转入内侧修理支线。'},
+    review:{name:'审查台',phase:'审查中',x:880,y:285,number:'04',description:'审查变更。通过后沿右侧转角进入包装，退回时转入返工台。'},
+    pack:{name:'包装台',phase:'开 PR',x:880,y:610,number:'05',description:'整理变更并准备 PR。主线在这一排从右向左流转。'},
+    merge:{name:'合并排队台',phase:'排队合并',x:640,y:610,number:'06',description:'包裹按队列顺序等待合并，数字标记实际演示位次。'},
+    dispatch:{name:'部署台',phase:'部署中',x:400,y:610,number:'07',description:'合并后执行部署。部署异常时包裹停留，显示暂停原因。'},
+    smoke:{name:'出厂检查台',phase:'冒烟检查',x:160,y:610,number:'08',description:'部署后进行 smoke 检查。检查通过才标为已完成，完成包裹留在出口。'},
+    human:{name:'人工工作台',phase:'等待人工',x:160,y:442,number:'C',branch:true,description:'自动处置无法继续时交给人工。确认处理方向后，可经返工台回到制作。'},
+    return:{name:'返工台',phase:'打回修改',x:400,y:442,number:'B',branch:true,description:'接收审查退回或人工确认后的任务。沿向上的回流带重新进入制作。'},
+    repair:{name:'修理台',phase:'处置中',x:640,y:442,number:'A',branch:true,description:'接收验收异常。修正后经返工通道回到制作，无法解决时转交人工。'}
+  };
+  const mainRoute = ['pickup','work','gate','review','pack','merge','dispatch','smoke'];
+  const mainBelt = [{x:92,y:285},{x:948,y:285},{x:948,y:610},{x:92,y:610}];
+  const branchBelts = [
+    [{x:640,y:285},{x:640,y:442},{x:160,y:442}],
+    [{x:880,y:285},{x:880,y:442},{x:400,y:442}],
+    [{x:400,y:442},{x:400,y:285}]
+  ];
+  const ticketSeeds = [
+    {id:'OF-126',project:'orca',title:'让排队状态更清晰',stage:'pickup',tone:'current',minutes:4,owner:'待领取',history:[['14:17','进入待领列表']]},
+    {id:'OF-127',project:'orca',title:'重构工厂页面',stage:'work',tone:'current',minutes:12,owner:'执行器',history:[['14:20','进入施工'],['14:18','已领取'],['14:17','等待领取']]},
+    {id:'OF-128',project:'orca',title:'修复部署检查',stage:'human',tone:'attention',minutes:18,owner:'人工',reason:'连续修正后，验收仍未通过。自动处置已结束，等待人工确认下一步。',history:[['14:32','转交人工'],['14:30','自动处置结束'],['14:18','验收未通过']]},
+    {id:'OF-129',project:'orca',title:'补全审查记录',stage:'review',tone:'current',minutes:6,owner:'审查员',history:[['14:26','开始审查'],['14:24','验收通过']]},
+    {id:'OF-130',project:'orca',title:'整理项目说明',stage:'pack',tone:'current',minutes:2,owner:'执行器',history:[['14:30','准备 PR'],['14:27','审查完成']]},
+    {id:'OF-131',project:'orca',title:'支持新的任务入口',stage:'pickup',tone:'attention',minutes:24,owner:'待领取',reason:'依赖票 OF-127 尚未完成，暂不进入施工。',history:[['14:08','等待依赖完成']]},
+    {id:'ZY-205',project:'zhiyun',title:'优化调用统计',stage:'work',tone:'current',minutes:8,owner:'执行器',history:[['14:24','进入施工']]},
+    {id:'ZY-206',project:'zhiyun',title:'更新用量面板',stage:'dispatch',tone:'failed',minutes:15,owner:'处置 Agent',reason:'部署检查未通过，后续发货暂时暂停。当前为演示异常状态。',history:[['14:17','部署暂停'],['14:14','开始部署']]},
+    {id:'ZY-207',project:'zhiyun',title:'优化表格筛选',stage:'gate',tone:'current',minutes:3,owner:'执行器',history:[['14:29','进入验收']]},
+    {id:'ZCP-86',project:'control',title:'完善工作区索引',stage:'merge',tone:'current',minutes:9,owner:'合并队列',queue:1,history:[['14:23','进入合并队列']]},
+    {id:'ZCP-87',project:'control',title:'补充运行摘要',stage:'merge',tone:'current',minutes:5,owner:'合并队列',queue:2,history:[['14:27','进入合并队列']]},
+    {id:'ZCP-88',project:'control',title:'调整通知文案',stage:'work',tone:'current',minutes:7,owner:'执行器',history:[['14:25','进入施工']]}
+  ];
+  let tickets=ticketSeeds.filter(ticket=>projects.some(project=>project.id===ticket.project)).map(ticket=>({...ticket,history:ticket.history.map(entry=>[...entry])}));
+  const state = {view:'town',project:projects[0]?.id||null,selected:null,station:null,query:'',reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,zoom:1,panX:0,panY:0};
+  const palette = {grass:'#b4c681',grassLight:'#c0ce8d',grassDark:'#a5bc75',tree:'#667c46',treeDark:'#465f36',treeLight:'#879b56',trunk:'#826445',path:'#d8c395',pathLight:'#e6d3a5',pathDark:'#b5a478',wood:'#9c7750',darkWood:'#6e5239',wall:'#e9d3a0',wallDark:'#c7ac7b',water:'#82aaa3',waterLight:'#afd0bd'};
+  const canvas = document.querySelector('#world');
+  const context = canvas.getContext('2d');
+  const viewport = document.querySelector('#viewport');
+  const labels = document.querySelector('#map-labels');
+  const base = document.createElement('canvas');
+  base.width=1040;base.height=760;
+  const ground = base.getContext('2d');
+  const townBase=document.createElement('canvas');
+  const townGround=townBase.getContext('2d');
+  const camera = {scale:1,width:0,height:0,centerX:520,centerY:400};
+  let drawContext=ground, lastFrame=0, needsDraw=true, toastTimer, drag=null, townDirty=true;
+  const moves = new Map();
+  const escapeText = text => String(text).replace(/[&<>"']/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[character]));
+  const activeTickets = project => tickets.filter(ticket => !project || ticket.project === project);
+  const attentionTickets = () => tickets.filter(ticket => ticket.tone !== 'current');
+  const projectOf = id => projects.find(project => project.id === id);
+  const ticketOf = id => tickets.find(ticket => ticket.id === id);
+  const rect = (left,top,width,height,color) => {drawContext.fillStyle=color;drawContext.fillRect(Math.round(left),Math.round(top),Math.round(width),Math.round(height));};
+  function seeded(seed) {let value=seed;return () => {value=(value*1664525+1013904223)>>>0;return value/4294967296;};}
+  function ellipse(left,top,width,height,color) {drawContext.fillStyle=color;drawContext.beginPath();drawContext.ellipse(left,top,width,height,0,0,Math.PI*2);drawContext.fill();}
+  function tree(left,top,scale=1,variant=0) {
+    drawContext.save();drawContext.translate(Math.round(left),Math.round(top));drawContext.scale(scale,scale);
+    rect(-21,28,48,8,'#728b4c44');rect(-5,8,10,28,palette.trunk);rect(0,13,3,20,'#614b35');
+    const dark=variant?'#617b45':palette.treeDark,mid=variant?'#7f9651':palette.tree,light=variant?'#98ac62':palette.treeLight;
+    rect(-18,-25,37,58,dark);rect(-27,-14,54,35,dark);rect(-11,-34,24,10,dark);
+    rect(-22,-13,42,32,mid);rect(-16,-24,32,44,mid);rect(-8,-31,17,12,mid);
+    rect(-17,-16,16,13,light);rect(-9,-26,14,14,light);rect(-23,-5,9,12,light);
+    rect(9,5,12,9,dark);rect(-5,20,17,7,dark);rect(-14,4,7,5,'#879c56');
+    drawContext.restore();
+  }
+  function flower(left,top,kind=0) {
+    rect(left,top+3,2,5,'#7f9756');rect(left-2,top+5,3,2,'#8aa15f');
+    const colors=['#f5e8c3','#d8a28d','#d5b65b','#ede8c9'];
+    rect(left-2,top,6,3,colors[kind%4]);rect(left,top-2,2,7,colors[kind%4]);rect(left,top,2,2,'#b79a51');
+  }
+  function bush(left,top,flowers=false) {
+    rect(left-14,top-5,29,15,'#70894b');rect(left-9,top-10,20,7,'#7c9650');rect(left-11,top-3,10,5,'#93a75d');
+    if(flowers){flower(left-7,top-4,1);flower(left+5,top,0);}
+  }
+  function fence(left,top,width) {
+    rect(left,top+4,width,5,'#8b7551');rect(left,top+15,width,4,'#9e885e');
+    for(let offset=0;offset<=width;offset+=24){rect(left+offset,top,5,26,'#806545');rect(left+offset,top,3,20,'#c0a877');rect(left+offset-1,top+2,7,3,'#d3be8e');}
+  }
+  function path(points,width=26) {
+    drawContext.lineJoin='round';drawContext.lineCap='square';drawContext.strokeStyle=palette.pathDark;drawContext.lineWidth=width+6;
+    drawContext.beginPath();points.forEach(([left,top],index)=>index?drawContext.lineTo(left,top):drawContext.moveTo(left,top));drawContext.stroke();
+    drawContext.strokeStyle=palette.path;drawContext.lineWidth=width;drawContext.stroke();
+    drawContext.strokeStyle=palette.pathLight;drawContext.lineWidth=width-8;drawContext.stroke();
+    const random=seeded(Math.round(points[0][0]*7+points[0][1]));
+    for(let segment=1;segment<points.length;segment++){
+      const from=points[segment-1],to=points[segment],length=Math.hypot(to[0]-from[0],to[1]-from[1]);
+      for(let distance=0;distance<length;distance+=16){const part=distance/length;rect(from[0]+(to[0]-from[0])*part+(random()-.5)*width-2,from[1]+(to[1]-from[1])*part+(random()-.5)*width-2,4,2,'#c4b183');}
+    }
+  }
+  function crate(left,top,small=false) {
+    const width=small?13:19,height=small?12:17;
+    rect(left+2,top+height,width,3,'#726a3b3b');rect(left,top,width,height,'#8d6c44');rect(left+2,top+2,width-4,height-4,'#c5a16a');rect(left+3,top+3,width-6,2,'#dfbf85');rect(left+width/2-1,top,2,height,'#9d7a4b');rect(left,top+height-4,width,2,'#a07c49');
+  }
+  function windowAt(left,top,lit=true) {
+    rect(left,top,17,20,'#8b6743');rect(left+2,top+2,13,15,lit?'#eac774':'#a6bab0');rect(left+3,top+3,5,6,lit?'#f8dfa2':'#c9d8c4');rect(left+8,top,2,18,'#8c6b48');rect(left,top+9,17,2,'#8c6b48');rect(left-2,top+18,21,4,'#bb9763');
+  }
+  function roof(left,top,width,height,color) {
+    rect(left-5,top+height,width+10,7,'#6f5138');
+    for(let row=0;row<height;row+=5){
+      const inset=Math.round((height-row)*.73);
+      rect(left+inset-4,top+row,width-inset*2+8,5,color);
+      rect(left+inset-4,top+row,width-inset*2+8,1,'#d7a07988');
+      for(let column=left+inset+((row/5)%2)*8;column<left+width-inset;column+=17)rect(column,top+row,1,5,'#74503966');
+    }
+    rect(left+height*.73-4,top-2,width-height*1.46+8,3,'#dbb18a');
+  }
+  function building(left,top,kind='workshop',color='#b47d59',scale=1,idle=false) {
+    drawContext.save();drawContext.translate(Math.round(left),Math.round(top));drawContext.scale(scale,scale);
+    if(kind==='board'){
+      rect(-31,16,65,8,'#61744232');rect(-26,-35,5,62,'#8a6945');rect(22,-35,5,62,'#8a6945');rect(-34,-42,68,47,'#826344');rect(-30,-38,60,39,'#b6945f');rect(-27,-35,54,32,'#ccae77');roof(-38,-63,76,18,color);
+      rect(-21,-30,18,25,'#f1e3b8');rect(3,-28,19,21,'#e9d7a5');rect(-17,-25,10,2,'#a99b75');rect(-17,-20,10,2,'#a99b75');rect(7,-23,11,2,'#a99b75');rect(9,-14,5,5,'#ba8662');
+      drawContext.restore();return;
+    }
+    const width=kind==='shed'?84:kind==='hall'?130:kind==='gate'?92:116;
+    const height=kind==='shed'?45:65;
+    rect(-width/2-5,27,width+19,13,'#60743f35');
+    rect(-width/2,-height+27,width,height,palette.darkWood);rect(-width/2+4,-height+31,width-8,height-7,palette.wall);
+    rect(-width/2+5,20,width-10,7,palette.wallDark);
+    for(let row=-height+38;row<20;row+=10)rect(-width/2+5,row,width-10,1,'#c6ab7f66');
+    rect(-width/2+2,-height+28,5,height,'#ad8452');rect(width/2-8,-height+28,5,height,'#ad8452');
+    rect(-13,-7,27,36,'#795b3e');rect(-10,-4,21,31,'#9c754b');rect(-8,-2,7,26,'#ac8455');rect(6,11,2,2,'#eddba1');rect(-19,28,39,5,'#c5b188');rect(-22,33,45,5,'#e1cda2');
+    if(kind!=='shed'){windowAt(-width/2+13,-21,!idle);windowAt(width/2-30,-21,!idle);}
+    if(kind==='workshop'||kind==='repair'){rect(width/2-24,-97,14,49,'#8f8973');rect(width/2-27,-99,20,5,'#b0a88e');rect(width/2-21,-91,5,8,'#bcb49c');}
+    roof(-width/2-6,-height-18,width+12,45,color);
+    rect(-15,-height+8,30,19,'#71563e');rect(-13,-height+10,26,15,'#f2deb0');
+    drawContext.strokeStyle='#8a704c';drawContext.lineWidth=2;drawContext.beginPath();
+    if(kind==='library'){drawContext.rect(-8,-height+14,7,8);drawContext.rect(1,-height+14,7,8);}
+    else if(kind==='post'){drawContext.rect(-8,-height+13,17,10);drawContext.moveTo(-8,-height+13);drawContext.lineTo(0,-height+19);drawContext.lineTo(9,-height+13);}
+    else if(kind==='gate'){drawContext.moveTo(-7,-height+18);drawContext.lineTo(-2,-height+22);drawContext.lineTo(7,-height+13);}
+    else if(kind==='hall'){drawContext.rect(-8,-height+17,6,6);drawContext.rect(2,-height+17,6,6);drawContext.rect(-6,-height+13,2,2);drawContext.rect(4,-height+13,2,2);}
+    else {drawContext.moveTo(-7,-height+13);drawContext.lineTo(7,-height+24);drawContext.moveTo(5,-height+13);drawContext.lineTo(-6,-height+24);}
+    drawContext.stroke();
+    if(kind==='workshop'){rect(22,43,39,5,'#977044');rect(25,48,4,13,'#795d3e');rect(54,48,4,13,'#795d3e');rect(30,39,12,4,'#c5b18b');crate(-width/2-23,18);}
+    if(kind==='post'){crate(width/2+4,9);crate(width/2+24,19,true);rect(-width/2-19,-4,9,29,'#8f7351');rect(-width/2-23,-9,17,13,'#9b7750');}
+    if(kind==='shop'){rect(-width/2+7,-8,width-14,6,'#9e8b5a');for(let stripe=0;stripe<width-14;stripe+=14)rect(-width/2+7+stripe,-8,7,8,'#dcd0a4');crate(width/2+4,21,true);}
+    bush(-width/2-7,28,true);bush(width/2+5,31,false);
+    drawContext.restore();
+  }
+  function person(left,top,time=0,color='#6d8b98',walking=false,seed=0) {
+    const stride=walking?Math.floor(time*5+seed)%2:0;
+    rect(left-5,top+18,13,3,'#51633b33');rect(left-3,top+10,4,8+stride*2,'#665d48');rect(left+3,top+10,4,10-stride*2,'#665d48');
+    rect(left-4,top-1,12,13,color);rect(left-7,top+1,3,9,'#d5b58b');rect(left+8,top+1,3,8,'#d5b58b');rect(left-2,top-11,9,10,'#e5c497');rect(left+5,top-8,2,2,'#5a4c37');rect(left-3,top-13,10,4,'#7b6242');rect(left-6,top-12,16,3,'#c2a56a');rect(left-2,top-17,9,5,'#d8bc7c');
+  }
+  function drawTown() {
+    const leftEdge=camera.centerX-camera.width/(2*camera.scale),rightEdge=camera.centerX+camera.width/(2*camera.scale);
+    const topEdge=Math.max(0,camera.centerY-camera.height/(2*camera.scale)-60),bottomEdge=Math.min(townLayout.bounds.height,camera.centerY+camera.height/(2*camera.scale)+60);
+    rect(leftEdge,topEdge,rightEdge-leftEdge,bottomEdge-topEdge,palette.grass);
+    for(let tileY=Math.floor(topEdge/128);tileY<=Math.floor(bottomEdge/128);tileY++){
+      for(let tileX=Math.floor(leftEdge/128);tileX<=Math.floor(rightEdge/128);tileX++){
+        const random=seeded(tileY*104729+tileX*290+414);
+        for(let item=0;item<52;item++){
+          const left=tileX*128+Math.floor(random()*42)*3,top=tileY*128+Math.floor(random()*42)*3;
+          rect(left,top,random()>.6?4:2,2,random()>.5?'#c4d28e':'#a6bd78');
+          if(item%7===0){rect(left,top-3,1,3,'#9db36d');rect(left+3,top-2,1,2,'#9db36d');}
+        }
+      }
+    }
+    for(let row=Math.floor(topEdge/6)*6;row<bottomEdge;row+=6){
+      const left=townLayout.riverX+Math.round(Math.sin(row/100)*17);
+      rect(left-30,row,64,6,'#96b180');rect(left-25,row,54,6,palette.water);rect(left-24,row,4,6,'#adc8a3');rect(left+23,row,3,6,'#6f998b');
+      if(row%30===0){rect(left-12,row,18,2,palette.waterLight);rect(left+8,row+9,11,2,'#a6c6b7');}
+    }
+    if(projects.length){
+      const roadStart=Math.max(topEdge,projects.length===1?390:310),roadEnd=Math.min(bottomEdge,townLayout.bounds.height-55);
+      if(roadStart<roadEnd)for(const left of projects.length===1?[520]:[290,760])path([[left,roadStart],[left,roadEnd]],27);
+      const rows=Math.ceil(projects.length/2);
+      for(let row=Math.max(0,Math.floor((topEdge-435)/320));row<Math.min(rows,Math.ceil((bottomEdge-375)/320)+1);row++){
+        const top=projects.length===1?492:407+row*320;
+        path([[0,top],[1040,top]],30);
+        drawContext.save();drawContext.translate(townLayout.riverX-514,0);
+        rect(469,top-26,92,54,'#7b6746');
+        for(let board=0;board<10;board++){rect(472+board*9,top-23,7,47,'#c7aa73');rect(472+board*9,top-20,7,2,'#e1c58c');}
+        rect(466,top-27,98,4,'#8c724a');rect(466,top+25,98,4,'#8c724a');
+        for(const left of [468,560]){rect(left,top-32,4,65,'#a58a59');rect(left-2,top-32,8,5,'#dcc28d');}
+        drawContext.restore();
+        rect(88,top-24,22,8,'#9c8559');rect(90,top-17,4,15,'#7e6946');rect(105,top-17,4,15,'#7e6946');
+      }
+    }
+    for(const anchor of townLayout.visible){
+      const {project,x:left,y:top}=anchor;
+      rect(left-147,top-83,294,178,'#acbd7a');
+      path([[left-97,top+59],[left+103,top+59]],25);path([[left,top+60],[left,top+152]],22);
+      fence(left-148,top-80,120);fence(left+23,top-80,120);
+      fence(left-148,top+105,114);fence(left+38,top+105,104);
+      building(left,top,'workshop',project.color,1.05,project.id==='app');
+      building(left-107,top+11,'shed',project.color,.70,project.id==='app');
+      building(left+108,top+10,'post',project.color,.67,project.id==='app');
+      for(let flowerIndex=0;flowerIndex<12;flowerIndex++){flower(left-130+flowerIndex*11,top+92+(flowerIndex%2)*5,flowerIndex);}
+      tree(left-163,top-30,.72,1);tree(left+158,top-32,.75);bush(left-119,top+80,true);bush(left+119,top+78,true);
+      if(project.id==='app'){rect(left-19,top+69,39,5,'#a58a55');rect(left-16,top+74,4,7,'#7b6544');rect(left+14,top+74,4,7,'#7b6544');}
+    }
+    for(let row=Math.max(0,Math.floor((topEdge-27)/58));row*58+27<bottomEdge;row++){
+      const random=seeded(row+414),top=row*58+27;
+      tree(35+random()*20,top,.88);tree(995+random()*16,top,1.05,1);
+    }
+    const random=seeded(414);
+    for(let left=90;left<970;left+=61){
+      if(Math.abs(left-townLayout.riverX)<50)continue;
+      tree(left,39+random()*9,.72,left%2);tree(left,townLayout.bounds.height-17+random()*10,.87);
+      flower(left+15,79,left);flower(left-12,townLayout.bounds.height-40,left);
+    }
+  }
+  function belt(points,width,branch=false) {
+    for(const [thickness,color] of [[width+10,'#655a43'],[width+6,branch?'#b28b52':'#b6a477'],[width,branch?'#9a8760':'#758179'],[width-6,branch?'#b6a071':'#929d8e']]){
+      drawContext.strokeStyle=color;drawContext.lineWidth=thickness;drawContext.lineJoin='round';drawContext.beginPath();
+      points.forEach((point,index)=>index?drawContext.lineTo(point.x,point.y):drawContext.moveTo(point.x,point.y));
+      drawContext.stroke();
+    }
+    if(branch)beltRollers(points,width,0,branch);
+  }
+  function beltRollers(points,width,offset,branch=false) {
+    for(let index=1;index<points.length;index++){
+      const from=points[index-1],to=points[index],length=Math.hypot(to.x-from.x,to.y-from.y),horizontal=from.y===to.y;
+      for(let distance=offset;distance<length;distance+=17){
+        const left=from.x+(to.x-from.x)*distance/length,top=from.y+(to.y-from.y)*distance/length;
+        rect(left-(horizontal?1:width/2-3),top-(horizontal?width/2-3:1),horizontal?2:width-6,horizontal?width-6:2,branch?'#89734f':'#62766d');
+        rect(left+(horizontal?2:0),top+(horizontal?0:2),horizontal?1:width-7,horizontal?width-7:1,branch?'#d3b984':'#bac4aa');
+      }
+    }
+  }
+  function arrow(left,top,direction,color='#eee4bd') {
+    drawContext.save();drawContext.translate(left,top);drawContext.rotate(direction);
+    rect(-7,-2,11,4,color);rect(1,-6,3,12,color);rect(4,-4,3,8,color);rect(7,-2,3,4,color);
+    drawContext.restore();
+  }
+  function stationPolygon(points,color) {
+    drawContext.fillStyle=color;
+    drawContext.beginPath();
+    points.forEach(([left,top],index)=>index?drawContext.lineTo(left,top):drawContext.moveTo(left,top));
+    drawContext.closePath();
+    drawContext.fill();
+  }
+
+  function stationGauge(left,top,needle=0,color='#657f65') {
+    const rim='#465856';
+    rect(left-7,top-10,14,20,rim);
+    rect(left-10,top-7,20,14,rim);
+    rect(left-6,top-8,12,16,'#d2c6a0');
+    rect(left-8,top-6,16,12,'#ede3bc');
+    rect(left-5,top-5,2,3,'#ac7055');
+    rect(left+4,top-5,2,3,color);
+    rect(left-1,top-7,2,2,'#66736a');
+    rect(left-6,top,2,2,'#66736a');
+    rect(left+5,top,2,2,'#66736a');
+    stationPolygon([[left-1,top+2],[left+needle-1,top-5],[left+needle+2,top-5],[left+2,top+2]],'#4b5b53');
+    rect(left-2,top-1,4,4,'#a4734c');
+  }
+
+  function workbench(id,station,time=0) {
+    const occupied=activeTickets(state.project).some(ticket=>ticket.stage===id);
+    const motion=state.reduced?0:time;
+    const beat=occupied?Math.floor(motion*3)%2:0;
+    const light=occupied?'#9bc481':'#7b8473';
+    let workerLeft=-64;
+    drawContext.save();
+    drawContext.translate(Math.round(station.x),Math.round(station.y));
+    switch(id) {
+      case 'pickup': {
+        rect(-60,-29,114,5,'#6e58312e');
+        rect(-52,-79,6,51,'#705037');
+        rect(-3,-79,6,51,'#705037');
+        rect(-59,-95,68,43,'#654a35');
+        rect(-55,-91,60,35,'#b18b54');
+        rect(-55,-91,60,3,'#d2af75');
+        rect(-59,-98,68,5,'#d1af75');
+        rect(-48,-83,19,23,'#f5e8bd');
+        rect(-24,-86,21,16,'#e6d49a');
+        rect(-20,-65,19,8,'#c5d0a1');
+        for(let row=0;row<3;row++)rect(-44,-76+row*4,11,1,'#ae9365');
+        rect(-18,-80,12,2,'#ad976c');
+        rect(-42,-85,4,4,'#ad6650');
+        rect(-17,-88,4,4,'#6e8f86');
+        rect(-11,-67,3,3,'#bd8b4c');
+        rect(16,-66,5,37,'#6c4e36');
+        rect(61,-66,5,37,'#6c4e36');
+        rect(11,-47,60,5,'#9c7549');
+        rect(11,-29,60,5,'#9c7549');
+        rect(14,-47,54,2,'#ddbd7e');
+        rect(14,-29,54,2,'#ddbd7e');
+        crate(20,-65);
+        crate(43,-60,true);
+        crate(23,-43,true);
+        crate(45,-43,true);
+        rect(58,-69,9,5,'#d9be7b');
+        rect(60,-68,5,3,light);
+        break;
+      }
+      case 'work': {
+        rect(-57,-28,116,6,'#6a4c382e');
+        rect(-50,-94,22,42,'#645d54');
+        rect(-54,-99,30,7,'#a19780');
+        rect(-47,-91,16,4,'#b1a48b');
+        rect(-47,-82,16,3,'#8d826f');
+        rect(-39,-89,2,8,'#484e49');
+        rect(-48,-70,58,39,'#64645a');
+        rect(-54,-58,70,29,'#68665b');
+        rect(-46,-73,54,9,'#9f9d87');
+        rect(-51,-61,14,11,'#aaa48b');
+        rect(-34,-62,13,9,'#8a8c79');
+        rect(-18,-62,13,10,'#b4aa8d');
+        rect(-2,-60,14,10,'#92917a');
+        rect(-51,-47,12,13,'#8f927f');
+        rect(0,-46,13,12,'#a9a28a');
+        rect(-35,-52,32,24,'#46463d');
+        rect(-31,-56,24,30,'#3b3b35');
+        rect(-31,-43,24,14,occupied?'#b45736':'#6d4937');
+        rect(-27,-47-beat*3,7,17+beat*3,occupied?'#ea9c49':'#9c6841');
+        rect(-17,-49+beat*2,6,19-beat*2,occupied?'#f5cb6a':'#b3834f');
+        rect(-23,-38,7,8,occupied?'#f8e3a0':'#c19758');
+        rect(-39,-29,42,5,'#aca18a');
+        rect(-30,-28,26,3,'#786853');
+        stationPolygon([[17,-42],[40,-45],[44,-31],[17,-28]],'#76513a');
+        stationPolygon([[18,-44],[39,-49],[42,-44],[18,-38]],'#bf8b57');
+        for(let fold=0;fold<3;fold++)rect(22+fold*6,-40,2,9,'#503f32');
+        rect(9,-40,9,4,'#8d8871');
+        rect(42,-55,12,30,'#796247');
+        rect(35,-30,27,6,'#ad8755');
+        stationPolygon([[24,-65],[61,-65],[70,-61],[60,-56],[53,-56],[52,-46],[61,-42],[61,-38],[32,-38],[32,-42],[40,-47],[40,-55],[27,-57]],'#455e60');
+        rect(28,-66,34,4,'#a6b7ab');
+        rect(41,-55,11,4,'#6e8b88');
+        rect(53,-78,4,13,'#b68956');
+        rect(47,-82,16,7,'#687b78');
+        rect(48,-82,14,2,'#adb8a6');
+        break;
+      }
+      case 'gate': {
+        rect(-61,7,22,6,'#6a655033');
+        rect(40,7,22,6,'#6a655033');
+        rect(-56,-84,13,93,'#455b5c');
+        rect(43,-84,13,93,'#455b5c');
+        rect(-53,-80,5,83,'#91aaa2');
+        rect(46,-80,5,83,'#7b958e');
+        rect(-59,-87,118,17,'#405654');
+        rect(-55,-84,110,10,'#829c90');
+        rect(-55,-86,110,3,'#c2cbb0');
+        rect(-38,-70,5,9,'#4b6461');
+        rect(33,-70,5,9,'#4b6461');
+        rect(-58,-1,18,9,'#566a65');
+        rect(40,-1,18,9,'#566a65');
+        for(const left of [-55,46]){
+          rect(left,-23,7,4,'#e1bf69');
+          rect(left,-15,7,4,'#e1bf69');
+          rect(left,-7,7,4,'#e1bf69');
+        }
+        rect(-13,-97,26,25,'#60756b');
+        stationGauge(0,-85,occupied?3:-3);
+        rect(18,-82,9,6,light);
+        rect(31,-82,9,6,occupied?'#e3c36e':'#8b8060');
+        rect(-40,-82,7,6,'#bc7758');
+        rect(-30,-82,7,6,'#d5bf75');
+        rect(-58,-54,18,23,'#3e5250');
+        rect(-55,-51,12,10,'#b6cda8');
+        rect(-53,-49,3,6,'#618461');
+        rect(-49,-47,4,2,'#618461');
+        rect(-54,-37,4,3,light);
+        rect(-47,-37,4,3,'#c19454');
+        rect(37,-49,5,14,'#aac6b5');
+        rect(-42,-49,5,14,'#aac6b5');
+        workerLeft=-68;
+        break;
+      }
+      case 'review': {
+        rect(-59,-28,119,5,'#634c362b');
+        rect(30,-98,36,68,'#674c3b');
+        rect(34,-94,28,60,'#99724c');
+        rect(27,-99,42,5,'#ba9160');
+        for(let shelf=0;shelf<3;shelf++){
+          const top=-90+shelf*18;
+          rect(32,top+13,32,4,'#d0a16a');
+          for(let book=0;book<4;book++){
+            const colors=['#7c968b','#b36650','#d1b36c','#8393a2'];
+            rect(35+book*6,top+(book%2)*3,5,13-(book%2)*3,colors[(book+shelf)%4]);
+            rect(36+book*6,top+8,3,1,'#e5cc96');
+          }
+        }
+        rect(-48,-50,7,25,'#6d4935');
+        rect(9,-50,7,25,'#6d4935');
+        stationPolygon([[-59,-52],[-41,-73],[22,-63],[7,-40]],'#674a38');
+        stationPolygon([[-59,-57],[-41,-78],[22,-68],[7,-45]],'#b98c59');
+        stationPolygon([[-55,-57],[-40,-74],[16,-66],[5,-49]],'#dbb87b');
+        stationPolygon([[-43,-61],[-33,-74],[-12,-67],[-19,-53]],'#f8eccc');
+        stationPolygon([[-19,-53],[-12,-67],[9,-68],[2,-53]],'#e7d6a6');
+        stationPolygon([[-21,-55],[-14,-68],[-11,-67],[-18,-53]],'#a38056');
+        for(let line=0;line<3;line++){
+          rect(-35+line*2,-67+line*4,12,1,'#b7a17a');
+          rect(-7-line*2,-64+line*4,11,1,'#ae9873');
+        }
+        rect(-61,-86,4,32,'#666c51');
+        rect(-68,-55,18,4,'#6c6d50');
+        stationPolygon([[-70,-87],[-66,-96],[-53,-96],[-47,-87]],'#648778');
+        rect(-70,-87,23,3,'#405e55');
+        rect(-65,-84,13,3,occupied?'#f3d890':'#c1af79');
+        rect(14,-43,12,5,'#8b6350');
+        rect(17,-51,6,8,'#9b6d50');
+        rect(18,-51,4,2,'#e4d4a9');
+        workerLeft=-38;
+        break;
+      }
+      case 'pack': {
+        rect(-61,-29,126,5,'#6f52322b');
+        rect(-47,-48,7,23,'#765238');
+        rect(37,-48,7,23,'#765238');
+        rect(-53,-55,104,10,'#765238');
+        rect(-55,-59,109,6,'#ddbd83');
+        rect(-51,-53,100,3,'#b38b55');
+        rect(-39,-79,6,22,'#6f786c');
+        rect(34,-79,6,22,'#6f786c');
+        rect(-42,-86,85,5,'#655c45');
+        rect(-36,-91,68,21,'#b58a52');
+        rect(-36,-89,68,13,'#d9b77a');
+        rect(-36,-88,68,4,'#efcf91');
+        ellipse(-35,-81,8,11,'#8d693d');
+        ellipse(-35,-81,5,8,'#e1bc7d');
+        ellipse(-35,-81,2,3,'#795c3a');
+        ellipse(31,-81,7,11,'#e8c88c');
+        ellipse(31,-81,3,5,'#aa7d48');
+        stationPolygon([[-24,-74],[26,-74],[35,-59],[-20,-54]],'#e6c98d');
+        rect(-19,-69,43,2,'#f2db9c');
+        rect(6,-64,2,9,'#bc965e');
+        rect(-43,-53,23,16,'#bd8a51');
+        rect(-43,-53,23,3,'#e7bc7a');
+        rect(-34,-53,5,16,'#f0d69b');
+        rect(45,-49,22,22,'#af7b47');
+        rect(47,-47,18,17,'#c89d62');
+        rect(54,-49,5,22,'#ebd29a');
+        stationPolygon([[44,-49],[40,-56],[53,-59],[57,-49]],'#e3bb79');
+        stationPolygon([[57,-49],[62,-58],[72,-53],[67,-46]],'#d5a365');
+        rect(13,-51,14,3,'#596f68');
+        rect(14,-54,3,7,'#829487');
+        rect(25,-54,3,7,'#829487');
+        break;
+      }
+      case 'merge': {
+        rect(-56,-29,109,5,'#5f59312b');
+        for(let bay=0;bay<3;bay++){
+          const left=-54+bay*31;
+          rect(left,-78,26,49,'#484e47');
+          rect(left+3,-76,20,45,'#858f7a');
+          rect(left+2,-74,3,43,'#c1c4a3');
+          rect(left+21,-74,3,43,'#b2b99b');
+          for(let roller=0;roller<6;roller++){
+            rect(left+5,-70+roller*6,15,3,'#596c60');
+            rect(left+5,-70+roller*6,15,1,'#b0bea3');
+          }
+          rect(left+4,-87,18,8,'#766242');
+          for(let mark=0;mark<=bay;mark++)rect(left+7+mark*4,-85,2,4,'#f0d69c');
+          rect(left,-31,26,4,'#bd995d');
+        }
+        rect(53,-95,7,70,'#5c6659');
+        rect(54,-93,2,66,'#bac1a0');
+        rect(48,-29,17,5,'#6e7662');
+        rect(45,-93,23,21,'#40524c');
+        rect(48,-90,7,7,occupied?'#dbac62':'#827557');
+        rect(58,-81,7,7,light);
+        stationPolygon(occupied?[[57,-65],[73,-65],[73,-59],[57,-59]]:[[57,-65],[68,-76],[73,-71],[61,-60]],'#b06b4b');
+        rect(55,-65,5,5,'#e6c98a');
+        rect(-55,-97,88,4,'#c7bb88');
+        break;
+      }
+      case 'dispatch': {
+        rect(-56,-36,119,12,'#725035');
+        for(let plank=0;plank<9;plank++){
+          rect(-54+plank*13,-39,11,11,'#b08b58');
+          rect(-53+plank*13,-39,10,2,'#ddbc7d');
+          rect(-49+plank*13,-32,2,2,'#7a6040');
+        }
+        rect(-49,-96,12,60,'#4a6666');
+        rect(-46,-94,5,54,'#87a29a');
+        rect(-56,-42,26,6,'#48605a');
+        rect(-53,-100,100,10,'#4c6763');
+        rect(-49,-99,93,3,'#b7c0a1');
+        stationPolygon([[-37,-90],[-14,-90],[-37,-65]],'#5f7c72');
+        stationPolygon([[-35,-87],[-22,-87],[-35,-73]],'#cfb783');
+        rect(32,-94,11,9,'#b18c50');
+        rect(35,-85,3,14+beat,'#525b4d');
+        rect(31,-73+beat,3,7,'#5c6655');
+        rect(32,-68+beat,8,3,'#5c6655');
+        rect(38,-73+beat,3,7,'#5c6655');
+        rect(26,-68+beat,2,8,'#a2824f');
+        rect(45,-68+beat,2,8,'#a2824f');
+        stationPolygon([[27,-69+beat],[36,-75+beat],[46,-69+beat],[44,-67+beat],[36,-72+beat],[29,-67+beat]],'#84714d');
+        crate(27,-61+beat);
+        rect(18,-45,3,6,'#c8b17a');
+        rect(52,-45,3,6,'#c8b17a');
+        rect(-58,-66,25,16,'#6c7c69');
+        rect(-55,-63,19,10,'#aeb99a');
+        rect(-51,-60,10,3,'#697764');
+        rect(-46,-64,3,12,'#697764');
+        rect(-47,-59,5,5,'#d6bd7b');
+        rect(-18,-43,25,4,'#d7bf83');
+        rect(-13,-49,15,7,'#aa8351');
+        rect(-8,-50,4,11,'#e5d19c');
+        workerLeft=-67;
+        break;
+      }
+      case 'smoke': {
+        rect(-60,-29,121,5,'#6a51352b');
+        rect(-56,-84,8,49,'#775a40');
+        rect(-53,-82,3,46,'#e2a96c');
+        rect(-56,-87,28,8,'#976946');
+        rect(-54,-85,24,3,'#edba7b');
+        rect(-36,-83,8,17,'#b78350');
+        rect(-42,-70,12,6,'#deb178');
+        rect(-38,-61,45,30,'#8f633f');
+        rect(-43,-56,55,18,'#ad7848');
+        rect(-37,-66,43,9,'#d9a268');
+        rect(-32,-70,33,6,'#e7b97d');
+        rect(-36,-60,5,25,'#edbb7c');
+        rect(0,-59,5,25,'#77583c');
+        rect(-42,-43,53,4,'#d3a772');
+        rect(-40,-33,49,6,'#6b6d58');
+        rect(-30,-53,27,16,'#5b7469');
+        rect(-27,-51,21,11,'#a9c5a3');
+        rect(-24,-48,4,5,light);
+        rect(-17,-48,8,2,'#678e70');
+        rect(-19,-84,7,16,'#b18050');
+        stationGauge(-16,-87,occupied?3:-3);
+        rect(20,-89,28,62,'#58675c');
+        rect(23,-87,22,57,'#8a9580');
+        stationGauge(34,-75,occupied?2:-4);
+        stationGauge(34,-51,occupied?4:-2);
+        rect(12,-44,9,7,'#c28c54');
+        rect(48,-39,18,7,'#688765');
+        rect(60,-50,8,15,'#809c71');
+        rect(57,-52,14,5,'#acc18a');
+        rect(61,-51,6,2,light);
+        rect(63,-63-beat*3,5,5,'#d1d8b2');
+        rect(59,-70-beat*3,7,4,'#e1dfbb');
+        rect(-60,-72,17,4,'#6d7761');
+        rect(-54,-78,4,16,'#6d7761');
+        rect(-55,-73,6,6,'#bc9d62');
+        break;
+      }
+      case 'repair': {
+        rect(-58,-28,120,5,'#5c56352b');
+        rect(-55,-72,7,43,'#596b69');
+        rect(47,-72,7,43,'#596b69');
+        rect(-59,-76,117,8,'#728a80');
+        rect(-56,-75,111,2,'#b6bd9c');
+        rect(-60,-31,18,5,'#6f7b65');
+        rect(42,-31,18,5,'#6f7b65');
+        rect(-31,-68,3,14,'#8d7950');
+        rect(-37,-57,14,4,'#bfc8ad');
+        rect(-36,-62,4,10,'#bfc8ad');
+        rect(-27,-62,4,10,'#bfc8ad');
+        rect(27,-68,3,21,'#c49c62');
+        rect(22,-58,13,5,'#9cae9b');
+        rect(28,-49,4,9,'#5c7370');
+        ellipse(-4,-47,24,23,'#455a59');
+        ellipse(-4,-48,20,19,'#a2b4a0');
+        ellipse(-4,-48,15,14,'#5b7068');
+        ellipse(-4,-48,11,10,'#c3bc90');
+        rect(-6,-65,4,35,'#7b9182');
+        rect(-22,-50,36,4,'#7b9182');
+        stationPolygon([[-19,-59],[-16,-62],[10,-36],[7,-33]],'#8ca18c');
+        stationPolygon([[-19,-36],[-16,-33],[10,-59],[7,-62]],'#8ca18c');
+        ellipse(-4,-48,6,6,'#526864');
+        rect(-6,-50,4,4,'#d9bf80');
+        rect(-19,-27,31,4,'#6d6a50');
+        rect(42,-59,19,12,'#b46e4a');
+        rect(45,-56,13,7,'#d69a62');
+        rect(47,-63,9,4,'#536961');
+        rect(49,-61,5,4,'#cfb783');
+        rect(-60,-48,15,12,'#8d9b80');
+        rect(-58,-46,11,3,'#c2ccab');
+        rect(-50,-45,3,6,light);
+        workerLeft=-67;
+        break;
+      }
+      case 'return': {
+        ellipse(-9,-40,47,18,'#6a6750');
+        ellipse(-9,-43,47,18,'#879887');
+        ellipse(-9,-44,41,14,'#b5b998');
+        ellipse(-9,-44,32,10,'#7b8b75');
+        ellipse(-9,-44,28,7,'#a4b396');
+        rect(-51,-46,84,3,'#4d6863');
+        rect(-51,-39,84,3,'#4d6863');
+        for(let sleeper=0;sleeper<6;sleeper++)rect(-44+sleeper*13,-49,4,17,'#d2bd83');
+        rect(-52,-46,86,2,'#566e66');
+        rect(-52,-38,86,2,'#566e66');
+        ellipse(-9,-42,6,5,'#4f6a61');
+        ellipse(-9,-43,3,2,'#d1c08a');
+        rect(46,-62,6,37,'#6c755d');
+        rect(41,-29,16,4,'#80846a');
+        rect(35,-74,29,23,'#5a7469');
+        rect(32,-70,35,15,'#5a7469');
+        rect(36,-71,27,16,'#b5c69c');
+        rect(43,-68,14,3,'#527a67');
+        rect(55,-66,4,8,'#527a67');
+        rect(42,-59,16,3,'#527a67');
+        rect(40,-65,3,8,'#527a67');
+        stationPolygon([[36,-64],[43,-70],[43,-58]],'#527a67');
+        rect(-60,-36,12,4,'#9b7c50');
+        rect(-58,-55,3,19,'#637970');
+        rect(-61,-57,10,5,'#c29859');
+        rect(-59,-56,5,3,light);
+        workerLeft=-68;
+        break;
+      }
+      case 'human': {
+        rect(-11,-75,25,15,'#8f6650');
+        rect(-8,-73,19,10,'#cda674');
+        rect(-9,-61,5,13,'#765741');
+        rect(7,-61,5,13,'#765741');
+        rect(-60,-53,17,21,'#90674f');
+        rect(-58,-51,13,14,'#d2ad79');
+        rect(-58,-35,4,10,'#745741');
+        rect(-47,-35,4,10,'#745741');
+        rect(44,-53,17,21,'#90674f');
+        rect(46,-51,13,14,'#d2ad79');
+        rect(46,-35,4,10,'#745741');
+        rect(57,-35,4,10,'#745741');
+        rect(-24,-39,7,15,'#78543a');
+        rect(18,-39,7,15,'#78543a');
+        ellipse(0,-46,43,21,'#77513b');
+        ellipse(0,-50,43,21,'#c59661');
+        ellipse(0,-52,38,17,'#dfb982');
+        rect(-28,-55,57,1,'#c49b69');
+        rect(-31,-46,61,1,'#c49b69');
+        stationPolygon([[-14,-61],[8,-63],[16,-52],[-7,-49]],'#f1e1b8');
+        rect(-6,-59,11,2,'#b49f78');
+        rect(-3,-55,11,1,'#b49f78');
+        for(const [left,top] of [[-27,-59],[23,-53],[-12,-39]]){
+          rect(left,top,7,7,'#779991');
+          rect(left+1,top-1,5,2,'#eff0ce');
+          rect(left+2,top,3,2,'#846347');
+          rect(left+7,top+2,3,4,'#527d74');
+          rect(left+8,top+3,1,1,'#dfb982');
+        }
+        rect(17,-65,8,4,'#a8784c');
+        rect(20,-69,2,5,'#6f8d61');
+        rect(16,-70,5,3,'#92a86e');
+        rect(21,-73,5,4,'#738f5f');
+        workerLeft=-66;
+        break;
+      }
+    }
+    if(occupied)person(workerLeft,-17,motion,station.branch?'#b28a5f':'#77978d',false);
+    drawContext.restore();
+  }
+  function drawProject() {
+    rect(0,0,1040,760,'#d4c5a3');rect(37,111,975,595,'#786449');rect(29,101,975,595,'#68523b');
+    rect(39,111,955,573,'#cfb783');
+    const random=seeded(18);
+    for(let row=0;row<20;row++){
+      const top=143+row*27;
+      rect(44,top,946,25,row%3===0?'#d8bf8a':row%3===1?'#d4b982':'#ceb17b');
+      for(let left=45+(row%2)*68;left<986;left+=137){
+        rect(left,top,2,25,'#bda071');rect(left+11,top+18,33+random()*38,1,'#b3986838');rect(left+13,top+5,3,2,'#a88c61');
+      }
+    }
+    rect(39,107,955,43,'#aa8b5f');
+    for(let left=45;left<990;left+=61){rect(left,109,56,18,'#c7af7f');rect(left+12,130,44,14,'#bca475');}
+    for(const left of [48,306,724,980]){rect(left,103,10,54,'#775a3d');rect(left+2,104,3,48,'#b49361');}
+    for(const left of [180,820]){
+      rect(left-37,107,74,38,'#6e573e');rect(left-31,110,62,28,'#a3c4b3');
+      rect(left-27,111,23,23,'#c2d9bb');rect(left+4,111,23,23,'#b9d3b4');rect(left-2,109,4,29,'#95764c');rect(left-39,140,78,5,'#dfc48b');
+    }
+    rect(426,110,188,33,'#745a3d');rect(430,113,180,26,'#a78e5c');
+    rect(39,150,955,6,'#897149');rect(39,676,955,8,'#8b6a43');
+    for(const left of [53,979]){rect(left,160,8,505,'#8c714d');rect(left+2,160,3,505,'#b49462');}
+    for(const left of [86,969]){
+      rect(left-12,177,24,34,'#b79964');rect(left-9,181,18,27,'#d8be87');bush(left,175,false);
+      crate(left-12,650);crate(left-4,637);
+    }
+    rect(102,340,645,119,'#987a4e20');
+    branchBelts.forEach(points=>belt(points,18,true));
+    belt(mainBelt,38);
+    for(const left of [160,400,640,880]){
+      rect(left-44,660,88,3,'#b19666');rect(left-34,665,68,2,'#b1966666');
+    }
+    for(const left of [280,520,760]){arrow(left,285,0);arrow(left,610,Math.PI);}
+    arrow(948,391,Math.PI/2);arrow(948,506,Math.PI/2);
+    arrow(640,341,Math.PI/2,'#f4d79b');arrow(880,374,Math.PI/2,'#f4d79b');arrow(400,344,-Math.PI/2,'#f4d79b');
+    arrow(282,442,Math.PI,'#f4d79b');arrow(524,442,Math.PI,'#f4d79b');arrow(763,442,Math.PI,'#f4d79b');
+  }
+  function rebuildGround() {
+    if(state.view==='project'){drawContext=ground;ground.clearRect(0,0,1040,760);drawProject();}
+    townDirty=true;needsDraw=true;
+  }
+  function projectCounts(project) {const list=activeTickets(project.id);return {total:list.length,attention:list.filter(ticket=>ticket.tone!=='current').length};}
+  function updateSidebar() {
+    document.querySelector('#project-total').textContent=projects.length;
+    document.querySelector('#repo-list').innerHTML=projects.map(project=>{
+      const count=projectCounts(project);
+      return `<button class="repo-button ${state.view==='project'&&state.project===project.id?'active':''}" data-project="${project.id}" aria-label="查看 ${project.name} 院落"><span class="repo-symbol">${project.short}</span><span class="repo-info"><strong>${project.name}</strong><small class="${count.attention?'attention':''}">${count.total?`${count.total} 张委托${count.attention?` · ${count.attention} 项需关注`:' · 正在有序推进'}`:'当前空闲'}</small></span></button>`;
+    }).join('')||'<div class="empty-state">没有项目</div>';
+  }
+  function updateHeader() {
+    document.querySelector('.map-column').classList.toggle('interior',state.view==='project');
+    document.querySelectorAll('[data-view]').forEach(button=>{const active=button.dataset.view===state.view;button.classList.toggle('active',active);button.setAttribute('aria-current',active?'page':'false');});
+    document.querySelector('#attention-count').textContent=attentionTickets().length;
+    document.querySelector('[data-view="project"]').disabled=!projects.length;
+    document.querySelector('#map-title').textContent=state.view==='project'?projectOf(state.project).name:state.view==='attention'?'有几份委托，需要你':'今天的小镇';
+    document.querySelector('#map-eyebrow').textContent=state.view==='project'?'工坊内部 / 一份委托的制作过程':state.view==='attention'?'停下来，把问题看清楚':'一切都在慢慢变好';
+    document.querySelector('#map-subtitle').textContent=state.view==='project'?'沿传送带看流程；点击工位或包裹查看详情。':projects.length?`${projects.length} 座院落。拖动地图，或从列表寻找项目。`:'没有项目。调整演示数量，看看小镇的新院落。';
+    document.querySelector('#motion-toggle').setAttribute('aria-pressed',String(state.reduced));
+  }
+  function attentionMarkup(ticket) {
+    return `<button class="attention-item" data-ticket="${ticket.id}" aria-label="查看 ${ticket.id} ${ticket.title}"><span class="attention-item-head"><span class="mini-flag ${ticket.tone==='failed'?'red':''}">!</span><strong>${ticket.id}</strong><span class="time">${ticket.minutes} 分钟</span></span><p>${ticket.id==='OF-131'?'等待依赖完成':stages[ticket.stage].phase}</p><small>${escapeText(ticket.title)}</small></button>`;
+  }
+  function overviewMarkup() {
+    if(!projects.length)return '<div class="panel-top"><h2>小镇手记</h2></div><div class="panel-content"><div class="empty-state"><strong>暂无项目</strong>用“演示项目数量”添加院落。<br>当前没有委托或待处理事项。</div></div>';
+    const focused=state.view==='project', list=activeTickets(focused?state.project:null), alerts=list.filter(ticket=>ticket.tone!=='current');
+    return `<div class="panel-top"><h2>${focused?'院落手记':'小镇手记'}</h2><span class="eyebrow">01 / 春</span></div><div class="panel-content"><div class="chapter-label">把进度，写进今天</div><div class="journal-rule"></div><h3 class="greeting">${state.view==='attention'?'先照顾这些小插曲。':!list.length?'今天的院落，很安静。':'又是认真开工的一天。'}</h3><p class="intro-copy">${!list.length?'这里暂时没有委托。新的任务到来时，工坊会重新热闹起来。':'每个包裹都是一份委托。<br>它们正在各自的工位上，一点点向前。'}</p><div class="summary-grid"><div class="summary-cell"><strong>${list.length.toString().padStart(2,'0')}</strong><span>当前委托</span></div><div class="summary-cell attention"><strong>${alerts.length.toString().padStart(2,'0')}</strong><span>需要关注</span></div></div><div class="section-title"><h3>告示栏</h3><span>${alerts.length?'点击查看详情':'一切安好'}</span></div>${alerts.length?alerts.map(attentionMarkup).join(''):'<div class="empty-state">暂时没有需要处理的事项。</div>'}${focused&&list.length?`<div class="section-title"><h3>院落中的委托</h3><span>${list.length} 张</span></div>${list.filter(ticket=>ticket.tone==='current').map(ticket=>`<button class="attention-item" data-ticket="${ticket.id}"><span class="attention-item-head"><strong>${ticket.id}</strong><span class="time">${stages[ticket.stage].phase}</span></span><p style="margin-left:0">${escapeText(ticket.title)}</p></button>`).join('')}`:''}<div class="journal-bottom">不用催促每一株嫩芽，<br>但要记得照顾需要帮助的那一株。<small>— 工坊小镇的日常</small></div></div>`;
+  }
+  function detailMarkup(ticket) {
+    const project=projectOf(ticket.project),stage=stages[ticket.stage];
+    return `<div class="panel-top"><h2>委托详情</h2><button class="close-detail" data-close aria-label="关闭委托详情">×</button></div><div class="panel-content"><div class="ticket-heading"><strong class="ticket-id">${ticket.id}</strong><span class="state-pill ${ticket.tone}">${ticket.tone==='failed'?'部署暂停':stage.phase}</span></div><h3 class="ticket-title">${escapeText(ticket.title)}<small class="ticket-project">${project.name}</small></h3>${ticket.reason?`<div class="reason-box ${ticket.tone}"><strong><span>!</span> 需要你查看</strong><p>${escapeText(ticket.reason)}</p></div>`:''}<dl class="field-list"><div class="field-row"><dt>当前工位</dt><dd>${stage.name}</dd></div><div class="field-row"><dt>归属</dt><dd>${ticket.owner}</dd></div><div class="field-row"><dt>本阶段已观察</dt><dd>${ticket.minutes} 分钟</dd></div>${ticket.queue?`<div class="field-row"><dt>合并位次</dt><dd>第 ${ticket.queue} 位</dd></div>`:''}<div class="field-row"><dt>数据来源</dt><dd>演示数据</dd></div></dl><div class="section-title"><h3>本次观察记录</h3><span>${ticket.history.length} 条</span></div><ol class="timeline">${ticket.history.map(([time,message])=>`<li>${escapeText(message)}<time>${time}</time></li>`).join('')}</ol><p class="timeline-note">这里是设计稿中的示例记录，不代表真实执行历史。</p><div class="panel-actions"><button class="paper-button" data-copy="id">复制票号</button><button class="paper-button" data-copy="detail">复制详情</button></div>${ticket.id==='OF-127'?'<button class="paper-button primary advance-button" id="advance">演示流转 · 推进一个工位</button>':''}</div>`;
+  }
+  function demoActions(ticket) {
+    const busy=moves.has(ticket.id),disabled=busy||ticket.completed?'disabled':'';
+    const label=ticket.completed?'演示已完成 · 刷新可重置':busy?'包裹正在沿传送带移动…':ticket.stage==='human'?'演示流转 · 人工确认后返工':ticket.stage==='return'||ticket.stage==='repair'?'演示流转 · 修正后回施工':ticket.stage==='smoke'?'演示流转 · 检查通过并完成':'演示流转 · 推进一个工位';
+    return `<button class="paper-button primary advance-button" id="advance" ${disabled}>${label}</button>${['gate','review'].includes(ticket.stage)?`<button class="paper-button branch-action" id="demo-exception" ${disabled}>${ticket.stage==='gate'?'演示支线 · 验收未通过':'演示支线 · 审查退回'}</button>`:''}${ticket.stage==='repair'?`<button class="paper-button branch-action" id="demo-human" ${disabled}>演示支线 · 转交人工</button>`:''}`;
+  }
+  function stationMarkup() {
+    const stage=stages[state.station],list=activeTickets(state.project).filter(ticket=>ticket.stage===state.station);
+    return `<div class="panel-top"><h2>${stage.name}</h2><button class="close-detail" data-close aria-label="关闭工位详情">×</button></div><div class="panel-content"><div class="chapter-label">${stage.phase} · ${list.length} 张委托</div><div class="journal-rule"></div>${list.length?list.map(ticket=>`<button class="attention-item" data-ticket="${ticket.id}"><span class="attention-item-head"><strong>${ticket.id}</strong><span class="time">${ticket.minutes} 分钟</span></span><p style="margin-left:0">${escapeText(ticket.title)}</p></button>`).join(''):'<div class="empty-state"><strong>这一站暂时空闲</strong>有委托抵达时，会在这里出现。</div>'}</div>`;
+  }
+  function updateDetail() {
+    document.querySelector('#detail').innerHTML=state.selected?detailMarkup(ticketOf(state.selected)):state.station?stationMarkup():overviewMarkup();
+    if(state.selected){
+      const ticket=ticketOf(state.selected);
+      if(ticket.completed)document.querySelector('.state-pill').textContent='已完成';
+      if(ticket.id==='OF-127')document.querySelector('#advance').outerHTML=demoActions(ticket);
+    }else if(state.station){
+      document.querySelector('#detail .journal-rule').insertAdjacentHTML('afterend',`<p class="station-description">${stages[state.station].description}</p>`);
+    }else if(state.view==='project'){
+      document.querySelector('#detail h2').textContent='工坊手记';
+      document.querySelector('#detail .intro-copy').insertAdjacentHTML('afterend','<div class="flow-guide"><strong>主线 · 顺着箭头走</strong><p>领取 → 施工 → 验收 → 审查<br>开 PR → 合并排队 → 部署 → 出厂检查</p><strong>内侧支线 · 处理异常</strong><p>验收异常进入修理台，审查退回进入返工台；无法自动处理时交给人工。</p><p>选择 OF-127 可演示主线与返工。动画不代表真实执行进度。</p></div>');
+    }
+    document.querySelector('#detail-panel').classList.toggle('is-drawer',Boolean(state.selected||state.station));
+    document.querySelector('.map-column').classList.toggle('drawer-open',Boolean(state.selected||state.station));
+    document.querySelector('.app').classList.toggle('has-selection',Boolean(state.selected||state.station));
+  }
+  function ticketPosition(ticket) {
+    const stage=stages[ticket.stage],siblings=activeTickets(ticket.project).filter(other=>other.stage===ticket.stage).sort((first,second)=>(first.queue||0)-(second.queue||0)),index=siblings.indexOf(ticket);
+    return {x:ticket.completed?92:stage.x+(index-(siblings.length-1)/2)*62*(stage.y===285?-1:1),y:stage.y};
+  }
+  function createLabels() {
+    if(state.view!=='project'){
+      labels.innerHTML=townLayout.visible.map(({project,x,y})=>{
+        const count=projectCounts(project);
+        return `<button class="world-label village-label ${count.attention?'needs-attention':''}" data-project="${project.id}" data-x="${x}" data-y="${y+100}"><strong>${project.name}</strong><small><span class="tiny-dot"></span>${count.total?`${count.total} 张委托${count.attention?` · ${count.attention} 项需关注`:' · 正在工作'}`:'当前空闲'}</small></button>`;
+      }).join('');
+    }else{
+      labels.innerHTML=Object.entries(stages).map(([id,stage])=>`<button class="world-label station-label ${stage.branch?'branch':''}" data-station="${id}" data-x="${stage.x}" data-y="${stage.y-(stage.branch?94:115)}" aria-pressed="${state.station===id}" aria-label="${stage.number} ${stage.name}，${stage.phase}"><b>${stage.number}</b>${stage.name}<span>${activeTickets(state.project).filter(ticket=>ticket.stage===id).length} 件</span></button>`).join('')+activeTickets(state.project).map(ticket=>{
+        const position=ticketPosition(ticket);
+        return `<button class="ticket-chip ${ticket.tone} ${state.selected===ticket.id?'selected':''}" data-ticket="${ticket.id}" data-x="${position.x}" data-y="${position.y+31}" aria-label="查看 ${ticket.id} ${ticket.title}">${ticket.id}${ticket.completed?' ✓':''}</button>`;
+      }).join('');
+      labels.insertAdjacentHTML('beforeend',[
+        [520,126,'工坊流水线','room-sign'],
+        [500,329,'↑ 修正后回施工',''],
+        [714,329,'验收异常 ↓',''],
+        [880,329,'审查退回 ↓',''],
+        [274,468,'← 人工接手',''],
+        [520,665,'← 合并、部署、出厂检查','']
+      ].map(([left,top,text,kind])=>`<span class="world-label route-note ${kind}" data-x="${left}" data-y="${top}">${text}</span>`).join(''));
+    }
+    positionLabels();
+  }
+  function toScreen(left,top) {return {x:(left-camera.centerX)*camera.scale+camera.width/2,y:(top-camera.centerY)*camera.scale+camera.height/2};}
+  function placeTicketLabel(label,ticket,position) {
+    label.hidden=false;
+    const point=toScreen(position.x,position.y+31);
+    if(camera.width<500){
+      if(stages[ticket.stage].branch){point.x+=35;point.y-=29*camera.scale;}
+      else{
+        const siblings=activeTickets(ticket.project).filter(other=>other.stage===ticket.stage);
+        if(siblings.length>1){
+          point.x+=(siblings.indexOf(ticket)-(siblings.length-1)/2)*Math.max(0,46-62*camera.scale)*(stages[ticket.stage].y===285?-1:1);
+        }
+      }
+      const half=label.offsetWidth/2+3;
+      if(point.x>-half&&point.x<camera.width+half)point.x=Math.max(half,Math.min(camera.width-half,point.x));
+    }
+    label.style.left=`${point.x}px`;label.style.top=`${point.y}px`;
+    label.hidden=point.x+label.offsetWidth/2<0||point.x-label.offsetWidth/2>camera.width||point.y+label.offsetHeight/2<0||point.y-label.offsetHeight/2>camera.height;
+  }
+  function positionLabels() {
+    labels.querySelectorAll('[data-x]').forEach(label=>{
+      if(label.dataset.ticket){const ticket=ticketOf(label.dataset.ticket);placeTicketLabel(label,ticket,ticketPosition(ticket));}
+      else{
+        label.hidden=false;
+        const point=toScreen(Number(label.dataset.x),Number(label.dataset.y));
+        label.style.left=`${point.x}px`;label.style.top=`${point.y}px`;
+        const halfWidth=label.offsetWidth/2,halfHeight=label.offsetHeight/2;
+        label.hidden=state.view==='project'
+          ?point.x+halfWidth<0||point.x-halfWidth>camera.width||point.y+halfHeight<0||point.y-halfHeight>camera.height
+          :point.x-halfWidth<4||point.x+halfWidth>camera.width-4||point.y-halfHeight<130||point.y+halfHeight>camera.height-85;
+      }
+    });
+  }
+  function constrainCamera() {
+    const bounds=state.view==='project'?{width:1040,height:760}:townLayout.bounds;
+    const halfWidth=camera.width/(2*camera.scale),halfHeight=camera.height/(2*camera.scale);
+    const following=state.view==='project'&&state.selected&&matchMedia('(max-width:760px)').matches;
+    if(following){
+      camera.centerX=Math.max(0,Math.min(bounds.width,camera.centerX));
+      camera.centerY=Math.max(0,Math.min(bounds.height+Math.max(0,(camera.height/2-175)/camera.scale),camera.centerY));
+    }else{
+      camera.centerX=halfWidth*2>=bounds.width?bounds.width/2:Math.max(halfWidth,Math.min(bounds.width-halfWidth,camera.centerX));
+      camera.centerY=halfHeight*2>=bounds.height?bounds.height/2:Math.max(halfHeight,Math.min(bounds.height-halfHeight,camera.centerY));
+    }
+    state.panX=(520-camera.centerX)*camera.scale;state.panY=(400-camera.centerY)*camera.scale;
+  }
+  function sizeCanvas(reset=false) {
+    const bounds=viewport.getBoundingClientRect();camera.width=bounds.width;camera.height=bounds.height;
+    const bitmapWidth=Math.ceil(bounds.width/2),bitmapHeight=Math.ceil(bounds.height/2);
+    if(canvas.width!==bitmapWidth)canvas.width=bitmapWidth;
+    if(canvas.height!==bitmapHeight)canvas.height=bitmapHeight;
+    context.imageSmoothingEnabled=false;
+    const mobile=bounds.width<500;
+    const fitted=state.view==='project'?Math.min(bounds.width/(mobile?930:1040),bounds.height/820):Math.max(.65,Math.min(bounds.width/1040,bounds.height/820));
+    const centerX=camera.centerX,centerY=camera.centerY,previousScale=camera.scale;
+    if(state.view!=='project')state.zoom=Math.max(state.zoom,.65/fitted);
+    camera.scale=fitted*state.zoom;
+    if(reset){state.panX=0;state.panY=0;}
+    else if(state.view!=='project'&&previousScale!==camera.scale){state.panX=(520-centerX)*camera.scale;state.panY=(400-centerY)*camera.scale;}
+    camera.centerX=520-state.panX/camera.scale;camera.centerY=400-state.panY/camera.scale;
+    constrainCamera();
+    document.querySelector('#zoom-text').textContent=`${Math.round(state.zoom*100)}%`;
+    if(state.view!=='project'){
+      const halfWidth=camera.width/(2*camera.scale),halfHeight=camera.height/(2*camera.scale);
+      townLayout.visible=townLayout.anchors.filter(anchor=>Math.abs(anchor.x-camera.centerX)<halfWidth+190&&anchor.y+160>camera.centerY-halfHeight&&anchor.y-150<camera.centerY+halfHeight);
+      townBase.width=canvas.width;townBase.height=canvas.height;townDirty=true;createLabels();
+    }else positionLabels();
+    needsDraw=true;
+  }
+  function focusTownProject() {
+    const anchor=townLayout.anchors.find(item=>item.project.id===state.project);
+    if(!anchor)return;
+    const left=camera.width<700?anchor.x:520;
+    state.panX=(520-left)*camera.scale;state.panY=(400-anchor.y-40)*camera.scale;
+    sizeCanvas();
+  }
+  function updateURL() {
+    const current=new URLSearchParams(location.search);
+    current.set('count',projects.length);current.set('view',state.view);
+    if(state.project)current.set('project',state.project);else current.delete('project');
+    if(state.selected)current.set('ticket',state.selected);else current.delete('ticket');
+    try{history.replaceState(null,'',`${location.pathname}?${current}`);}catch{}
+  }
+  function applyProjectCount() {
+    const input=document.querySelector('#project-count'),error=document.querySelector('#project-count-error'),count=parseProjectCount(input.value);
+    input.setAttribute('aria-invalid',String(count===null));error.hidden=count!==null;
+    if(count===null){error.textContent='请输入 0 到 1000 之间的整数，当前项目保持不变。';return;}
+    input.value=count;
+    if(count===projects.length)return;
+    const previousAnchor=townLayout.anchors.find(anchor=>anchor.project.id===state.project);
+    const previousIds=new Set(projects.map(project=>project.id));
+    projects=demoProjects(count);
+    const ids=new Set(projects.map(project=>project.id));
+    tickets=tickets.filter(ticket=>ids.has(ticket.project));
+    tickets.push(...ticketSeeds.filter(ticket=>ids.has(ticket.project)&&!previousIds.has(ticket.project)).map(ticket=>({...ticket,history:ticket.history.map(entry=>[...entry])})));
+    for(const id of moves.keys())if(!ticketOf(id))moves.delete(id);
+    const removedProject=!ids.has(state.project);
+    if(removedProject){state.project=projects[0]?.id||null;state.station=null;state.zoom=1;}
+    if(!ticketOf(state.selected))state.selected=null;
+    if(!projects.length){state.view='town';state.station=null;}
+    townLayout=deriveTownLayout(projects);
+    const nextAnchor=townLayout.anchors.find(anchor=>anchor.project.id===state.project);
+    const anchorMoved=previousAnchor&&nextAnchor&&(previousAnchor.x!==nextAnchor.x||previousAnchor.y!==nextAnchor.y);
+    clearSearch();updateSidebar();updateHeader();updateDetail();rebuildGround();createLabels();sizeCanvas(removedProject);
+    if(state.view!=='project'&&(removedProject||anchorMoved))focusTownProject();
+    updateURL();
+  }
+  function setView(view,project) {
+    const returning=state.view==='project'&&view!=='project';
+    state.project=projectOf(project)?.id||projectOf(state.project)?.id||projects[0]?.id||null;
+    state.view=view==='project'&&!state.project?'town':view;
+    state.selected=null;state.station=null;state.zoom=1;state.panX=0;state.panY=0;
+    updateSidebar();updateHeader();updateDetail();rebuildGround();sizeCanvas(true);createLabels();
+    if(state.view!=='project'&&(returning||camera.width<700))focusTownProject();
+    updateURL();
+  }
+  function selectTicket(id) {
+    const ticket=ticketOf(id);if(!ticket)return;
+    if(state.view!=='project'||state.project!==ticket.project)setView('project',ticket.project);
+    state.selected=id;state.station=null;updateDetail();createLabels();needsDraw=true;
+    document.querySelector('#detail-panel').scrollTop=0;
+    if(matchMedia('(max-width:760px)').matches){
+      state.zoom=1.65;sizeCanvas();
+      const position=ticketPosition(ticket);
+      state.panX=(520-position.x)*camera.scale;
+      state.panY=(400-position.y)*camera.scale+175-camera.height/2;
+      sizeCanvas();
+    }
+    updateURL();
+  }
+  function showToast(message) {
+    const toast=document.querySelector('#toast');toast.textContent=message;toast.classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>toast.classList.remove('visible'),2300);
+  }
+  async function copyText(text) {
+    try {
+      if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(text);
+      else {const textarea=document.createElement('textarea');textarea.value=text;textarea.style.cssText='position:fixed;left:-9999px';document.body.append(textarea);textarea.select();const copied=document.execCommand('copy');textarea.remove();if(!copied)throw new Error('clipboard');}
+      showToast('已复制到剪贴板');
+    }catch{showToast('浏览器限制了复制，请手动选择详情中的文字。');}
+  }
+  function movementPath(fromStage,next,from,to) {
+    if(fromStage==='review'&&next==='pack')return [from,{x:948,y:285},{x:948,y:610},to];
+    if(fromStage==='review'&&next==='return')return [from,{x:880,y:442},to];
+    if(fromStage==='repair'&&next==='work')return [from,{x:400,y:442},to];
+    return [from,to];
+  }
+  function pointAlong(points,amount) {
+    const lengths=points.slice(1).map((point,index)=>Math.hypot(point.x-points[index].x,point.y-points[index].y));
+    let remaining=lengths.reduce((sum,length)=>sum+length,0)*amount;
+    for(let index=0;index<lengths.length;index++){
+      if(remaining<=lengths[index]){
+        const fraction=lengths[index]?remaining/lengths[index]:1;
+        return {x:points[index].x+(points[index+1].x-points[index].x)*fraction,y:points[index].y+(points[index+1].y-points[index].y)*fraction};
+      }
+      remaining-=lengths[index];
+    }
+    return points[points.length-1];
+  }
+  function advance(branch) {
+    const ticket=ticketOf('OF-127');
+    if(moves.has(ticket.id)||ticket.completed)return;
+    const previous=ticket.stage,from=ticketPosition(ticket);
+    let next=mainRoute[mainRoute.indexOf(previous)+1];
+    if(branch==='exception'&&previous==='gate')next='repair';
+    else if(branch==='exception'&&previous==='review')next='return';
+    else if(branch==='human'&&previous==='repair')next='human';
+    else if(previous==='human')next='return';
+    else if(previous==='repair'||previous==='return')next='work';
+    else if(previous==='smoke'){next='smoke';ticket.completed=true;}
+    ticket.stage=next;ticket.minutes=0;ticket.owner=next==='merge'?'合并队列':'执行器';ticket.queue=next==='merge'?1:undefined;
+    ticket.tone=stages[next].branch?'attention':'current';
+    ticket.reason=next==='repair'?'演示：验收未通过，包裹已转入修理支线。':next==='return'?'演示：任务需要修改，确认后回到制作台。':next==='human'?'演示：自动处置未能解决问题，等待人工确认。':undefined;
+    if(next==='human')ticket.owner='人工';
+    moves.set(ticket.id,{points:movementPath(previous,next,from,ticketPosition(ticket)),start:performance.now()});
+    const [lastHour,lastMinute]=ticket.history[0][0].split(':').map(Number),nextMinute=(lastHour*60+lastMinute+1)%(24*60);
+    const demoTime=`${String(Math.floor(nextMinute/60)).padStart(2,'0')}:${String(nextMinute%60).padStart(2,'0')}`;
+    ticket.history.unshift([demoTime,ticket.completed?'演示：出厂检查通过，任务完成':`演示：进入${stages[next].name}`]);
+    if(ticket.history.length>5)ticket.history.pop();
+    updateDetail();updateSidebar();updateHeader();createLabels();rebuildGround();
+  }
+  function runSearch() {
+    const query=document.querySelector('#search').value.trim().toLowerCase();state.query=query;
+    const resultBox=document.querySelector('#search-results');resultBox.hidden=!query;
+    if(!query){resultBox.innerHTML='';needsDraw=true;return;}
+    const matched=tickets.filter(ticket=>`${ticket.id} ${ticket.title} ${projectOf(ticket.project).name}`.toLowerCase().includes(query));
+    const matchedProjects=projects.filter(project=>project.name.toLowerCase().includes(query));
+    resultBox.innerHTML=matchedProjects.map(project=>`<button class="search-result" data-project="${project.id}"><strong>${project.name}</strong><small>进入工坊内部</small></button>`).join('')+matched.map(ticket=>`<button class="search-result" data-ticket="${ticket.id}"><strong>${ticket.id} · ${escapeText(ticket.title)}</strong><small>${projectOf(ticket.project).name} · ${ticket.completed?'已完成':stages[ticket.stage].phase}</small></button>`).join('')||'<div class="empty-state">没有找到匹配的委托或项目。</div>';
+    needsDraw=true;
+  }
+  function clearSearch(){document.querySelector('#search').value='';state.query='';document.querySelector('#search-results').hidden=true;document.querySelector('#search-results').innerHTML='';}
+  function drawDynamic(time) {
+    drawContext=context;
+    if(state.view!=='project'){
+      for(const {project,x,y} of townLayout.visible){
+        const list=activeTickets(project.id);
+        if(list.length){
+          const walk=state.reduced?0:Math.sin(time*.33+x)*38;
+          person(x+walk,y+45,time,'#77959b',!state.reduced,x);
+          person(x-79,y+37,time,'#a69569',false);
+          crate(x+walk+11,y+47,true);
+          const puff=state.reduced?0:(time*8)%31;
+          rect(x+40,y-112-puff,8,6,'#e3e6cd99');rect(x+44,y-120-puff,12,8,'#e8e9d388');
+        }
+        if(list.some(ticket=>ticket.tone!=='current')){
+          const left=x+104,top=y-59;
+          rect(left,top,3,38,'#8d7450');rect(left+3,top,22,13,'#c69b4f');rect(left+11,top+3,2,5,'#f8edc5');rect(left+11,top+10,2,2,'#f8edc5');
+        }
+      }
+      const random=seeded(30);
+      for(let butterfly=0;butterfly<5;butterfly++){const left=100+random()*850,top=180+random()*480,flutter=state.reduced?0:Math.sin(time*2+butterfly)*8;rect(left+flutter,top,3,3,'#edda9b');rect(left+5+flutter,top+1,3,2,'#f0e7bb');}
+    }else{
+      beltRollers(mainBelt,38,state.reduced?0:(time*17)%17);
+      for(const left of [280,520,760]){arrow(left,285,0);arrow(left,610,Math.PI);}
+      arrow(948,391,Math.PI/2);arrow(948,506,Math.PI/2);
+      for(const [id,station] of Object.entries(stages))workbench(id,station,time);
+      for(const ticket of activeTickets(state.project)){
+        let position=ticketPosition(ticket),movement=moves.get(ticket.id);
+        if(movement){
+          const amount=state.reduced?1:Math.min(1,(performance.now()-movement.start)/1200);
+          position=pointAlong(movement.points,amount);
+          if(amount===1){
+            moves.delete(ticket.id);
+            if(state.selected===ticket.id)updateDetail();
+            showToast(ticket.completed?'演示：出厂检查通过，任务已完成':`演示：${ticket.id} 已到${stages[ticket.stage].name}`);
+            needsDraw=true;
+          }
+        }
+        const label=labels.querySelector(`[data-ticket="${ticket.id}"]`);
+        if(label)placeTicketLabel(label,ticket,position);
+        if(state.selected===ticket.id){
+          drawContext.strokeStyle=ticket.tone==='current'?'#507d8e':'#b98940';drawContext.lineWidth=2;drawContext.setLineDash([4,4]);drawContext.strokeRect(Math.round(position.x-19),Math.round(position.y-13),39,29);drawContext.setLineDash([]);
+        }
+        crate(position.x-9,position.y-9);
+        rect(position.x-4,position.y-6,8,6,'#f0ddb1');rect(position.x-2,position.y-5,4,1,ticket.tone==='current'?'#6e8d94':'#b08746');
+        if(ticket.tone!=='current'){rect(position.x+17,position.y-27,2,23,'#8b754a');rect(position.x+19,position.y-27,13,10,ticket.tone==='failed'?'#b46e54':'#c69b4f');rect(position.x+23,position.y-25,2,4,'#f7e7bb');}
+        if(ticket.completed){rect(position.x+17,position.y-27,2,23,'#8b754a');rect(position.x+19,position.y-27,13,10,'#6f9260');}
+        if(ticket.queue){drawContext.fillStyle='#66593d';drawContext.font='9px monospace';drawContext.textAlign='center';drawContext.fillText(String(ticket.queue),position.x,position.y-14);}
+      }
+    }
+  }
+  function frame(timestamp) {
+    requestAnimationFrame(frame);
+    if(document.hidden||timestamp-lastFrame<40||state.reduced&&!needsDraw&&!moves.size)return;
+    lastFrame=timestamp;needsDraw=false;
+    const selectedMove=moves.get(state.selected);
+    if(selectedMove&&state.view==='project'&&matchMedia('(max-width:760px)').matches){
+      const position=pointAlong(selectedMove.points,state.reduced?1:Math.min(1,(timestamp-selectedMove.start)/1200));
+      state.panX=(520-position.x)*camera.scale;
+      state.panY=(400-position.y)*camera.scale+175-camera.height/2;
+      camera.centerX=520-state.panX/camera.scale;camera.centerY=400-state.panY/camera.scale;
+      positionLabels();
+    }
+    context.setTransform(1,0,0,1,0,0);context.clearRect(0,0,canvas.width,canvas.height);context.fillStyle=state.view==='project'?'#d4c5a3':palette.grass;context.fillRect(0,0,canvas.width,canvas.height);
+    if(state.view!=='project'){
+      if(townDirty){
+        townGround.setTransform(1,0,0,1,0,0);townGround.fillStyle=palette.grass;townGround.fillRect(0,0,townBase.width,townBase.height);
+        townGround.setTransform(camera.scale/2,0,0,camera.scale/2,(camera.width/2-camera.centerX*camera.scale)/2,(camera.height/2-camera.centerY*camera.scale)/2);
+        drawContext=townGround;drawTown();townDirty=false;
+      }
+      context.drawImage(townBase,0,0);
+    }
+    context.save();context.scale(.5,.5);context.translate(camera.width/2,camera.height/2);context.scale(camera.scale,camera.scale);context.translate(-camera.centerX,-camera.centerY);
+    if(state.view==='project')context.drawImage(base,0,0);
+    drawDynamic(timestamp/1000);context.restore();
+  }
+  document.addEventListener('click',event=>{
+    const target=event.target.closest('button');if(!target)return;
+    if(target.dataset.project){setView('project',target.dataset.project);clearSearch();}
+    else if(target.dataset.ticket){selectTicket(target.dataset.ticket);clearSearch();}
+    else if(target.dataset.view)setView(target.dataset.view);
+    else if(target.dataset.station){state.station=target.dataset.station;state.selected=null;updateDetail();createLabels();updateURL();needsDraw=true;}
+    else if(target.hasAttribute('data-close')){state.selected=null;state.station=null;updateDetail();createLabels();updateURL();needsDraw=true;}
+    else if(target.dataset.copy){
+      const ticket=ticketOf(state.selected);if(!ticket)return;
+      copyText(target.dataset.copy==='id'?ticket.id:`${ticket.id} · ${ticket.title}\n项目：${projectOf(ticket.project).name}\n阶段：${stages[ticket.stage].phase}\n已观察：${ticket.minutes} 分钟${ticket.reason?`\n原因：${ticket.reason}`:''}\n（设计原型演示数据）`);
+    }else if(target.id==='advance')advance();
+    else if(target.id==='demo-exception')advance('exception');
+    else if(target.id==='demo-human')advance('human');
+  });
+  document.querySelector('#brand').addEventListener('click',()=>setView('town'));
+  document.querySelector('#project-count').addEventListener('change',applyProjectCount);
+  document.querySelector('#project-count').addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();applyProjectCount();}});
+  document.querySelector('#search').addEventListener('input',runSearch);
+  document.querySelector('#search').addEventListener('keydown',event=>{if(event.key==='Enter'){const first=document.querySelector('#search-results button');if(first){first.click();event.preventDefault();}}if(event.key==='Escape')clearSearch();});
+  document.addEventListener('pointerdown',event=>{if(!event.target.closest('.search-wrap'))document.querySelector('#search-results').hidden=true;});
+  document.querySelector('#search').addEventListener('focus',()=>{if(state.query)runSearch();});
+  document.querySelector('#motion-toggle').addEventListener('click',()=>{state.reduced=!state.reduced;updateHeader();needsDraw=true;});
+  function zoom(amount){state.zoom=Math.max(.7,Math.min(2.4,state.zoom+amount));sizeCanvas();}
+  document.querySelector('#zoom-in').addEventListener('click',()=>zoom(.2));
+  document.querySelector('#zoom-out').addEventListener('click',()=>zoom(-.2));
+  document.querySelector('#fit-map').addEventListener('click',()=>{state.zoom=1;sizeCanvas(true);if(state.view!=='project')focusTownProject();});
+  canvas.addEventListener('wheel',event=>{event.preventDefault();zoom(event.deltaY>0?-.08:.08);},{passive:false});
+  canvas.addEventListener('pointerdown',event=>{drag={x:event.clientX,y:event.clientY,panX:state.panX,panY:state.panY};canvas.setPointerCapture(event.pointerId);});
+  canvas.addEventListener('pointermove',event=>{if(!drag)return;state.panX=drag.panX+event.clientX-drag.x;state.panY=drag.panY+event.clientY-drag.y;sizeCanvas();});
+  canvas.addEventListener('pointerup',()=>{drag=null;});canvas.addEventListener('pointercancel',()=>{drag=null;});
+  document.addEventListener('keydown',event=>{
+    if(event.target.matches('input,textarea,[contenteditable]'))return;
+    if(event.key==='/'){event.preventDefault();document.querySelector('#search').focus();}
+    if(event.key==='Escape'){if(state.selected||state.station){state.selected=null;state.station=null;updateDetail();createLabels();updateURL();needsDraw=true;}else if(state.view!=='town')setView('town');}
+  });
+  new ResizeObserver(()=>sizeCanvas()).observe(viewport);
+  const initialView=parameters.get('view'),initialProject=parameters.get('project');
+  document.querySelector('#project-count').value=projects.length;
+  if(projectOf(initialProject))state.project=initialProject;
+  setView(['town','project','attention'].includes(initialView)?initialView:'town',state.project);
+  if(state.view!=='project'&&projectOf(initialProject))focusTownProject();
+  if(ticketOf(parameters.get('ticket')))selectTicket(parameters.get('ticket'));
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

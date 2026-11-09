@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const http = require('node:http')
 const crypto = require('node:crypto')
+const os = require('node:os')
 
 const plugin = path.resolve(__dirname, '..')
 const pageRoot = path.join(plugin, 'scene/page')
@@ -23,7 +24,7 @@ async function main() {
     const last = layout.projects.get(`/fixture/repo-${count - 1}`)
     assert.ok(last)
     assert.ok(model.visibleProjects(layout, { x: last.x - 150, y: last.y - 120, width: 300, height: 240 }).some(one => one.path === last.path))
-    if (count === 1) assert.deepEqual([last.x, last.y], [0, 0])
+    if (count === 1) assert.deepEqual([last.x, last.y], [520, 330])
     if (count > 1) assert.ok(last.y >= Math.floor((count - 1) / 2) * 240)
     assert.ok(model.visibleProjects(layout, { x: -400, y: -120, width: 800, height: 500 }).length <= 8)
   }
@@ -35,9 +36,9 @@ async function main() {
   for (const [index, point] of positions.entries()) for (const other of positions.slice(index + 1)) assert.ok(Math.abs(point.x - other.x) >= 34 || Math.abs(point.y - other.y) >= 43, 'crowded parcel hit areas must not overlap')
   assert.equal(model.stationOf('new-backend-stage'), 'unknown')
   const route = model.travelPath(workshop, 'review', 'return')
-  assert.ok(route.length >= 4)
+  assert.deepEqual(route, [{x:880,y:285},{x:880,y:442},{x:400,y:442}])
   for (let index = 1; index < route.length; index++) assert.ok(route[index].x === route[index - 1].x || route[index].y === route[index - 1].y)
-  assert.ok(model.travelPath(workshop, 'return', 'work').length >= 4)
+  assert.ok(model.travelPath(workshop, 'return', 'work').every(point=>point.x===400))
   for (const source of Object.keys(model.stations)) for (const target of Object.keys(model.stations)) {
     const points = model.travelPath(workshop, source, target)
     for (let index = 1; index < points.length; index++) assert.ok(points[index].x === points[index - 1].x || points[index].y === points[index - 1].y, `${source} to ${target} must follow orthogonal belts`)
@@ -62,13 +63,13 @@ async function main() {
   assert.equal(removed.motions.size, 0)
   let anchored = model.reconcile(model.initialState(), snapshot(1), { fresh: true })
   anchored = model.reconcile(anchored, snapshot(2))
-  assert.equal(anchored.camera.x, -175)
+  assert.equal(anchored.camera.x, 290)
   anchored.selection = { kind: 'parcel', key: model.parcelKey('/fixture/repo-0', 'OF-1') }
   const reordered = structuredClone(anchored.scene)
   reordered.rows.reverse()
   anchored = model.reconcile(anchored, reordered)
   assert.equal(anchored.project, '/fixture/repo-0')
-  assert.equal(anchored.camera.x, 175)
+  assert.equal(anchored.camera.x, 760)
   assert.ok(anchored.selection)
   const vanished = structuredClone(anchored.scene)
   vanished.rows.find(row => row.path === anchored.project).parcels = []
@@ -282,11 +283,11 @@ async function main() {
   assert.ok(horizontals.length >= 1 && verticals.length >= 1, 'a mid-belt move must keep both a horizontal and a vertical segment')
   const soloLayout = model.workshopLayout(one.rows[0])
   const packLayout = model.workshopLayout(soloMove.rows[0])
-  const upperLane = soloLayout.nodes.get('work').y + 85
-  const lowerLane = packLayout.nodes.get('pack').y + 85
+  const upperLane = soloLayout.nodes.get('work').y
+  const lowerLane = packLayout.nodes.get('pack').y
   const beltPoints = ['pickup', 'work', 'gate', 'review', 'pack', 'merge', 'dispatch', 'smoke'].map(station => {
     const node = soloLayout.nodes.get(station)
-    return { x: node.x, y: node.y + 85 }
+    return { x: node.x, y: node.y }
   })
   const soloSlot = soloLayout.parcels.get(model.parcelKey('/fixture/repo-0', 'OF-solo'))
   const slotOffset = Math.hypot(soloSlot.x - beltPoints[1].x, soloSlot.y - beltPoints[1].y)
@@ -295,10 +296,10 @@ async function main() {
     if (!index) continue
     const previous = soloMotion.points[index - 1]
     if (previous.y === point.y) assert.ok([upperLane, lowerLane].includes(point.y), 'horizontal tween segments must ride the drawn belt lanes')
-    else assert.ok(beltPoints.some(belt => Math.abs(point.x - belt.x) <= 12), 'vertical tween segments must ride the drawn belt corner columns')
+    else assert.equal(point.x, 948, 'vertical tween segments must ride the approved outer belt corner')
   }
   const beltHalf = 12
-  const stray = soloMotion.points.filter(point => !beltPoints.some(belt => Math.abs(point.x - belt.x) <= beltHalf || Math.abs(point.y - belt.y) <= beltHalf))
+  const stray = soloMotion.points.filter(point => !(Math.abs(point.x-948)<=beltHalf || beltPoints.some(belt => Math.abs(point.y - belt.y) <= beltHalf)))
   assert.ok(stray.length === 0, `every tween waypoint must sit on the painted belt polyline (worst ${stray[0] ? Math.round(stray[0].x) + ',' + Math.round(stray[0].y) : ''})`)
   const stageMove = (from, to) => {
     const original = snapshot(1)
@@ -308,7 +309,7 @@ async function main() {
     const moving = model.reconcile(before, next, { now: 0 })
     return moving.motions.get(model.parcelKey('/fixture/repo-0', 'OF-belt'))
   }
-  for (const [from, to, corner] of [['return', 'work', 30], ['work', 'smoke', 800], ['smoke', 'work', 800], ['repair', 'work', 30], ['work', 'human', 30]]) {
+  for (const [from, to, corner] of [['return', 'work', 400], ['work', 'smoke', 948], ['smoke', 'work', 948], ['repair', 'work', 400], ['work', 'human', 400]]) {
     const motion = stageMove(from, to)
     assert.ok(motion, `${from}->${to} must schedule a belt motion`)
     for (let index = 1; index < motion.points.length; index++) {
@@ -367,8 +368,8 @@ async function main() {
     }
     if (url.pathname === '/snapshot') { response.setHeader('Content-Type', 'application/json'); response.end(JSON.stringify(scene)); return }
     const name = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
-    if (!['index.html', 'scene.js', 'town.mjs', 'draw.mjs'].includes(name)) { response.writeHead(404).end(); return }
-    response.setHeader('Content-Type', name.endsWith('.html') ? 'text/html' : 'text/javascript')
+    if (!['index.html', 'scene.js', 'town.mjs', ...fs.readdirSync(path.join(pageRoot,'components')).map(name=>'components/'+name)].includes(name)) { response.writeHead(404).end(); return }
+    response.setHeader('Content-Type', name.endsWith('.html') ? 'text/html' : name.endsWith('.css') ? 'text/css' : 'text/javascript')
     response.end(fs.readFileSync(path.join(pageRoot, name), 'utf8').replaceAll('__TOKEN__', encodeURIComponent(token)))
   })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -390,18 +391,21 @@ async function main() {
     await page.waitForFunction(() => window.pixelTown?.state.scene)
     for (const count of [0, 1, 2, 4, 6, 12, 24, 100, 1000, 1001]) {
       await emit(snapshot(count))
-      if (!count) { await assertVisible(page.locator('#empty')); assert.equal(await page.locator('#enter').isDisabled(), true); continue }
+      if (!count) { await assertVisible(page.locator('.empty-state').first()); assert.equal(await page.locator('[data-view="project"]').isDisabled(), true); continue }
       await page.locator('#search').fill(`/fixture/repo-${count - 1}`)
-      await page.locator('#projects button').last().click()
+      await page.locator(`#search-results button[data-project="/fixture/repo-${count - 1}"]`).click()
       assert.equal(await page.evaluate(() => window.pixelTown.state.project), `/fixture/repo-${count - 1}`, `last project reachable at count ${count}; page errors: ${errors.join(', ')}`)
-      await page.locator('#enter').click()
+      await page.locator('[data-view="project"]').click()
       await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
-      await page.locator('#parcels button').first().click()
+      await page.locator('#map-labels button[data-ticket]').first().click()
       assert.ok((await page.locator('#detail').innerText()).includes('长中文标题'.repeat(12)))
-      await page.locator('#overview').click()
+      await page.locator('[data-view="town"]').click()
       const position = await page.evaluate(() => ({ camera: window.pixelTown.state.camera, project: window.pixelTown.layout.projects.get(window.pixelTown.state.project) }))
-      assert.equal(position.camera.x, position.project.x)
-      assert.equal(position.camera.y, position.project.y)
+      const halfHeight = (await page.locator('#world').boundingBox()).height / (2 * position.camera.zoom)
+      const townHeight = await page.evaluate(() => window.pixelTown.layout.bounds.height)
+      const focusY = halfHeight * 2 >= townHeight ? townHeight / 2 : Math.max(halfHeight, Math.min(townHeight - halfHeight, position.project.y + 40))
+      assert.equal(position.camera.x, 520, 'returning to town on desktop must center the town axis')
+      assert.ok(Math.abs(position.camera.y - focusY) < 1e-6, `returning to town must focus the selected courtyard (${position.camera.y} vs ${focusY})`)
       await page.locator('#search').fill('')
       if (count === 6 && process.env.PIXEL_TOWN_SCREENSHOT) await page.screenshot({ path: process.env.PIXEL_TOWN_SCREENSHOT })
     }
@@ -409,17 +413,18 @@ async function main() {
     const building = await page.evaluate(() => window.pixelTown.selectedScreenPoint())
     await page.mouse.click(building.x, building.y)
     assert.equal(await page.evaluate(() => window.pixelTown.state.view), 'workshop', 'building hit area shares the derived layout')
-    for (const station of Object.keys(model.stations)) {
-      await page.locator(`#nodes button[data-key="${station}"]`).click()
+    assert.equal(await page.locator('#map-labels [data-station]').count(), 11, 'unknown phases must not add a twelfth workstation')
+    for (const station of Object.keys(model.stations).filter(station=>station!=='unknown')) {
+      await page.locator(`#map-labels button[data-station="${station}"]`).click()
       assert.ok((await page.locator('#detail').innerText()).includes(model.stations[station][1]))
     }
     if (process.env.PIXEL_TOWN_SCREENSHOT) {
       await page.locator('#detail button').first().click()
       await page.locator('#zoom-out').click()
-      await page.locator('#reset').click()
+      await page.locator('#fit-map').click()
       await page.screenshot({ path: process.env.PIXEL_TOWN_SCREENSHOT.replace(/\.png$/, '-workshop.png') })
     }
-    await page.locator('#overview').click()
+    await page.locator('[data-view="town"]').click()
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     const idleBaseDraws = await page.evaluate(() => window.pixelTown.metrics.baseDraws)
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
@@ -434,9 +439,9 @@ async function main() {
     await page.mouse.up()
     assert.equal(await page.evaluate(() => window.pixelTown.metrics.resizes), before, 'pan/zoom must not resize canvas')
     await emit(snapshot(2))
-    await page.locator('#projects button').last().click()
-    await page.locator('#enter').click()
-    await page.locator('#parcels button').first().click()
+    await page.locator('#repo-list button').last().click()
+    await page.locator('[data-view="project"]').click()
+    await page.locator('#map-labels button[data-ticket]').first().click()
     const key = await page.evaluate(() => window.pixelTown.state.selection.key)
     const changed = structuredClone(scene)
     changed.rows[1].parcels[0].station = 'return'
@@ -452,18 +457,22 @@ async function main() {
     await emit(changed)
     await page.waitForFunction(() => window.pixelTown.state.motions.size === 0)
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.locator('#parcels button').first().click()
+    await page.locator('#map-labels button[data-ticket]').first().click()
     const mobile = await page.evaluate(() => {
       const point = window.pixelTown.selectedScreenPoint()
-      const canvas = document.querySelector('#map').getBoundingClientRect()
-      const detail = document.querySelector('#detail').getBoundingClientRect()
-      return { point, canvas: { left: canvas.left, top: canvas.top, right: canvas.right, bottom: canvas.bottom }, detail: { top: detail.top } }
+      const canvas = document.querySelector('#world').getBoundingClientRect()
+      const panel = document.querySelector('#detail-panel')
+      const detail = panel.getBoundingClientRect()
+      return { point, canvas: { left: canvas.left, top: canvas.top, right: canvas.right, bottom: canvas.bottom }, detail: { top: detail.top, bottom: detail.bottom, drawer: panel.classList.contains('is-drawer') && getComputedStyle(panel).position === 'fixed' } }
     })
     assert.ok(mobile.point.x >= mobile.canvas.left && mobile.point.x <= mobile.canvas.right)
     assert.ok(mobile.point.y >= mobile.canvas.top && mobile.point.y <= mobile.canvas.bottom)
-    assert.ok(mobile.canvas.bottom <= mobile.detail.top + 1)
+    assert.ok(mobile.detail.drawer && mobile.detail.bottom <= 844 + 1, 'the approved demo opens mobile details as a bottom drawer over the map')
+    assert.ok(mobile.point.y + 20 <= mobile.detail.top, 'the selected parcel must stay visible above the mobile detail drawer')
     if (process.env.PIXEL_TOWN_SCREENSHOT) await page.screenshot({ path: process.env.PIXEL_TOWN_SCREENSHOT.replace(/\.png$/, '-mobile.png') })
-    await page.locator('#overview').click()
+    await assertVisible(page.locator('#status'))
+    await page.locator('[data-close]').click()
+    await page.locator('[data-view="town"]').click()
     await emit(snapshot(1))
     assert.equal(await page.evaluate(() => window.pixelTown.state.project), '/fixture/repo-0')
     assert.equal(await page.evaluate(() => window.pixelTown.state.selection), null)
@@ -473,13 +482,14 @@ async function main() {
     exceptional.maintenance = 'paused'
     exceptional.rows[0].parcels = [{ ...parcel('OF-unknown', 'alien'), unknownDeploy: true, deployment: 'paused', reason: '部署凭据错误', tone: 'failed' }]
     await emit(exceptional)
-    await page.locator('#enter').click()
-    await page.locator('#parcels button').click()
+    await page.locator('[data-view="project"]').click()
+    await page.locator('#map-labels button[data-ticket]').click()
     assert.ok((await page.locator('#detail').innerText()).includes('未知阶段'))
     assert.ok((await page.locator('#detail').innerText()).includes('paused'))
     assert.ok((await page.locator('#status').innerText()).includes('过期'))
     assert.ok((await page.locator('#status').innerText()).includes('paused'))
-    await page.locator('#attention').click()
+    await page.locator('[data-close]').click()
+    await page.locator('[data-view="attention"]').click()
     await page.locator('#detail button').last().click()
     assert.ok((await page.locator('#detail').innerText()).includes('部署凭据错误'))
     for (const response of streams) response.write('event: error\ndata: {"command":"status","reason":"fixture failure","exitCode":7}\n\n')
@@ -513,16 +523,52 @@ async function main() {
       assert.ok(requests.filter(request => request.pathname === '/events').length > priorStreams, 'pageshow must create a new authenticated stream')
       assert.equal(await page.evaluate(() => window.pixelTown.state.motions.size), 0, 'restoration must snap to current state')
     }
-    await page.locator('#overview').click()
+    await page.locator('[data-view="town"]').click()
     const undeployed = snapshot(1)
     undeployed.rows[0].deploy = false
     undeployed.rows[0].parcels[0].unknownDeploy = true
     await emit(undeployed)
-    await page.locator('#enter').click()
-    await page.locator('#parcels button').click()
+    await page.locator('[data-view="project"]').click()
+    await page.locator('#map-labels button[data-ticket]').click()
     assert.ok((await page.locator('#detail').innerText()).includes('不适用 · 未配置部署'))
     assert.ok((await page.locator('#detail').innerText()).includes('部署字段：未知'))
-    await page.locator('#overview').focus()
+    await page.keyboard.press('Escape')
+    await assertVisible(page.locator('#status'))
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.locator('[data-view="town"]').click()
+    const reviewed = snapshot(1)
+    reviewed.rows[0].parcels = [
+      ...Array.from({ length: 90 }, (_, index) => parcel(`OF-crowd-${index}`)),
+      { ...parcel('OF-xss', 'alien'), phase: '<img src=x onerror="window.__xss=1">', title: 'A & B' },
+      { ...parcel('OF-nodeploy', 'smoke'), unknownDeploy: true },
+      { ...parcel('OF-shipped', 'smoke'), tone: 'done', deployment: 'passed' },
+    ]
+    await emit(reviewed)
+    assert.equal(await page.locator('#attention-count').innerText(), '2', 'attention must keep the real Scene rule: unknown stage and unknown deployment count, a passed deployment does not')
+    await page.locator('#search').fill('OF-xss')
+    assert.equal(await page.locator('#search-results img').count(), 0, 'a Scene phase must render as text in search results')
+    await page.locator('#search-results button[data-ticket]').click()
+    assert.equal(await page.locator('#detail img').count(), 0, 'a Scene phase must render as text in details')
+    await page.evaluate(() => Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async text => { window.copiedDetail = text } }))
+    await page.locator('[data-copy="detail"]').click()
+    const copied = await page.waitForFunction(() => window.copiedDetail).then(handle => handle.jsonValue())
+    assert.ok(copied.includes('A & B') && copied.includes('<img src=x') && !copied.includes('演示'), `copied detail must carry the real Scene text: ${copied}`)
+    assert.equal(await page.evaluate(() => window.__xss), undefined)
+    await page.locator('#search').fill('OF-crowd-89')
+    await page.locator('#search-results button[data-ticket]').click()
+    await page.locator('#world').focus()
+    for (let index = 0; index < 30; index++) await page.keyboard.press('ArrowDown')
+    const reach = await page.evaluate(() => ({ point: window.pixelTown.selectedScreenPoint(), canvas: document.querySelector('#world').getBoundingClientRect().toJSON() }))
+    assert.ok(reach.point.y >= reach.canvas.top && reach.point.y <= reach.canvas.bottom, `the last crowded parcel must be reachable by keyboard panning (${reach.point.y} outside ${reach.canvas.top}-${reach.canvas.bottom})`)
+    const zoomText = await page.locator('#zoom-text').innerText()
+    await page.keyboard.press('+')
+    assert.notEqual(await page.locator('#zoom-text').innerText(), zoomText, 'the focused map must zoom with +')
+    await page.locator('[data-close]').click()
+    await page.locator('[data-view="attention"]').click()
+    reviewed.rows[0].parcels[0].duration = '3 分钟'
+    await emit(reviewed)
+    assert.ok(await page.locator('[data-view="attention"]').evaluate(button => button.classList.contains('active')), 'a routine SSE update must keep the attention view')
+    await page.locator('[data-view="town"]').focus()
     await page.keyboard.press('Enter')
     assert.equal(await page.evaluate(() => window.pixelTown.state.view), 'town')
     assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0)
@@ -640,7 +686,11 @@ else console.log(JSON.stringify(status));
     fs.chmodSync(fake, 0o755)
   }
   fakeStatus(liveStatus)
-  const spawnServer = () => spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  // 驱动器服务的 PATH 不含 Bun 安装目录（合并验证 gate 因此 spawn bun ENOENT），按 Bun 安装器的默认位置补上
+  const installedBun = path.join(process.env.BUN_INSTALL || path.join(os.homedir(), '.bun'), 'bin', 'bun')
+  const bun = process.env.BUN_PATH || (fs.existsSync(installedBun) ? installedBun : 'bun')
+  const bunDir = path.isAbsolute(bun) ? `${path.dirname(bun)}:` : ''
+  const spawnServer = () => spawn(bun, [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${bunDir}${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
   const child = spawnServer()
   try {
     const origin = await new Promise((resolve, reject) => {
@@ -654,7 +704,7 @@ else console.log(JSON.stringify(status));
         if (match) { clearTimeout(timer); resolve(match[1]) }
       })
     })
-    for (const resource of ['/', '/scene.js', '/town.mjs', '/draw.mjs', '/snapshot', '/events']) {
+    for (const resource of ['/', '/scene.js', '/town.mjs', ...fs.readdirSync(path.join(pageRoot,'components')).map(name=>'/components/'+name), '/snapshot', '/events']) {
       assert.equal((await fetch(origin + resource)).status, 404)
       const authenticated = await fetch(`${origin}${resource}?t=${token}`)
       assert.ok(authenticated.status === 200 || (resource === '/snapshot' && authenticated.status === 503))
@@ -739,10 +789,10 @@ async function driveLivePage(browser, origin, token) {
     await page.goto(`${origin}/?t=${token}`)
     await page.waitForFunction(() => window.pixelTown?.state.scene)
     await page.locator('#search').fill('orca-factory')
-    await page.locator('#projects button').first().click()
-    await page.locator('#enter').click()
+    await page.locator('#repo-list button').first().click()
+    await page.locator('[data-view="project"]').click()
     await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
-    await page.locator('#parcels button').first().click()
+    await page.locator('#map-labels button[data-ticket]').first().click()
     const detail = await page.locator('#detail').innerText()
     assert.ok(detail.includes('OF-415'), `the recorded live ticket must open from the replayed scene (${detail.slice(0, 80)})`)
     assert.ok(detail.includes('修理'), 'the recorded Agent处置 phase must drive the page repair-station branch')
@@ -762,15 +812,15 @@ async function driveExceptionPage(browser, origin, token, barrierTicket, unknown
     await page.goto(`${origin}/?t=${token}`)
     await page.waitForFunction(() => window.pixelTown?.state.scene)
     await page.locator('#search').fill('zhiyun')
-    await page.locator('#projects button').first().click()
-    await page.locator('#enter').click()
+    await page.locator('#search-results button[data-project]').first().click()
+    await page.locator('[data-view="project"]').click()
     await page.waitForFunction(() => window.pixelTown.state.view === 'workshop')
-    await page.locator('#parcels button').first().click()
+    await page.locator('#map-labels button[data-ticket]').first().click()
     const detail = await page.locator('#detail').innerText()
     assert.ok(detail.includes(barrierTicket.identifier), `the paused barrier ticket must open from the derived scene (${detail.slice(0, 80)})`)
     assert.ok(detail.includes('部署暂停'), 'the page must surface the paused deployment state')
     assert.ok(detail.includes('deployment: paused'), 'the page must surface the ledger-derived blocked reason')
-    await page.locator('#attention').click()
+    await page.locator('[data-view="attention"]').click()
     await page.locator('#detail button').last().click()
     const unknownDetail = await page.locator('#detail').innerText()
     assert.ok(unknownDetail.includes(unknownTicket.identifier), `the turnover ticket must be reachable from the attention list (${unknownDetail.slice(0, 80)})`)
