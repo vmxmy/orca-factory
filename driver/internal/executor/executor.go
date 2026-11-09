@@ -92,6 +92,8 @@ type Result struct {
 	State             machine.State
 	RunID, DispatchID string
 	PR                github.PullRequest
+	// StallReason is the coordinator's latest STALLED reason, cleaned to one line.
+	StallReason string
 }
 
 // board mirrors a phase onto the ticket worktree's Orca card. The board is an
@@ -215,7 +217,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		status.Push(e.Now(), func(view *status.View) {
 			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
 		})
-		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections || ev == machine.EvWorkerScopeBlocked) {
+		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections || ev == machine.EvWorkerScopeBlocked || ev == machine.EvCorrectionStalled) {
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
@@ -225,6 +227,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			}
 			if ev == machine.EvWorkerScopeBlocked {
 				evidence += "；SCOPE 外文件: " + strings.Join(scopeBlocked, " ")
+			}
+			if ev == machine.EvCorrectionStalled {
+				evidence += "；停滞判断: " + result.StallReason
 			}
 			e.logger().Info("resolver handoff", withWorkerSubject(failedSubject, "reason", next.HumanReason, "evidence", evidence)...)
 			return e.handoff(ctx, t, next, evidence, result.RunID, &cp)

@@ -104,6 +104,7 @@ func (f *recoveryTools) Review(ctx context.Context, repo, base, head string, est
 
 type recoveryService struct {
 	sessions, children int
+	stalledFrom        int
 	missing            bool
 	complete           bool
 	requests           []CorrectionRequest
@@ -114,6 +115,9 @@ func (r *recoveryService) Correction(_ context.Context, req CorrectionRequest) e
 	r.requests = append(r.requests, req)
 	if r.missing {
 		return nil
+	}
+	if r.stalledFrom > 0 && req.Number >= r.stalledFrom {
+		return os.WriteFile(req.Path, []byte("\nSTALLED: 同一断言连续失败\a，步骤无新进展\n第二行\n"), 0600)
 	}
 	return os.WriteFile(req.Path, []byte("Repair the failing assertion"), 0600)
 }
