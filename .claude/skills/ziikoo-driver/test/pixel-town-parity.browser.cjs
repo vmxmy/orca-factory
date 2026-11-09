@@ -14,6 +14,18 @@ const playwright = require(process.env.PLAYWRIGHT_PATH || path.join(execFileSync
 const chrome = process.env.CHROME_PATH || ['/usr/bin/google-chrome', '/usr/bin/chromium'].find(filename => fs.existsSync(filename))
 assert.ok(chrome, 'Chrome must be installed; parity cannot be skipped')
 
+// 合并验证 gate 曾在负载下截到尚未完成缩放重绘的生产画布；连续两帧一致才比较，零像素阈值不变
+async function settledCanvas(page, prefix) {
+  let previous=await page.locator('#world').screenshot()
+  for(let attempt=0;attempt<20;attempt++){
+    await page.waitForTimeout(100)
+    const next=await page.locator('#world').screenshot()
+    if(next.equals(previous))return next
+    previous=next
+  }
+  assert.fail(`${prefix}: #world canvas never settled across two consecutive frames`)
+}
+
 async function main() {
   fs.mkdirSync(output, {recursive:true})
   const {projectSeeds,ticketSeeds}=await import(pathToFileURL(path.join(__dirname,'design-preview/seeds.mjs')))
@@ -65,9 +77,9 @@ async function main() {
         assert.ok(original.equals(repeat),`${prefix}: approved source must be stable before comparison; see ${prefix}-original.png and ${prefix}-repeat.png`)
         const candidate = await pages[1].screenshot({path:path.join(output,prefix+'-candidate.png')})
         await pages[2].screenshot({path:path.join(output,prefix+'-production.png')})
-        const sourceCanvas=await pages[0].locator('#world').screenshot()
-        const productionCanvas=await pages[2].locator('#world').screenshot()
-        const sameInputCanvas=await pages[3].locator('#world').screenshot()
+        const sourceCanvas=await settledCanvas(pages[0],prefix)
+        const productionCanvas=await settledCanvas(pages[2],prefix)
+        const sameInputCanvas=await settledCanvas(pages[3],prefix)
         fs.writeFileSync(path.join(output,prefix+'-source-canvas.png'),sourceCanvas)
         fs.writeFileSync(path.join(output,prefix+'-production-canvas.png'),productionCanvas)
         fs.writeFileSync(path.join(output,prefix+'-same-input-canvas.png'),sameInputCanvas)
