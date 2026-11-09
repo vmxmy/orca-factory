@@ -70,12 +70,17 @@ func (e *Executor) failSummary(ctx context.Context, c Config, baseline, branch, 
 	return prefix + truncateFail(approach, 300-len(prefix)-len(suffix)) + suffix, nil
 }
 
-// workerSubject is the report's one line for the log, held to the diagnostic
-// policy of command stderr: readers draw it, and a control character would blank
-// the panel or reach an operator's terminal. It stays out of the ledger and
-// fail.log, which hold identifiers only.
+// workerSubject is the report's one line for the log. It stays out of the ledger
+// and fail.log, which hold identifiers only.
 func workerSubject(report *orca.WorkerReport) string {
-	line := strings.TrimSpace(report.Subject)
+	return diagnosticLine(report.Subject)
+}
+
+// diagnosticLine holds the first line of agent text to the diagnostic policy of
+// command stderr: readers draw it, and a control character would blank the
+// panel or reach an operator's terminal.
+func diagnosticLine(text string) string {
+	line := strings.TrimSpace(text)
 	if end := strings.IndexAny(line, "\r\n"); end >= 0 {
 		line = line[:end]
 	}

@@ -95,7 +95,14 @@ const (
 	// EvWorkerScopeBlocked is a failed report naming files verified to be outside
 	// SCOPE. A worker cannot change them, so a correction would only repeat it.
 	EvWorkerScopeBlocked Event = "workerScopeBlocked"
+
+	// EvCorrectionStalled is the coordinator's verdict that the FAIL history
+	// repeats without progress. It needs stallMinCorrections charged failures to
+	// compare; an earlier verdict counts as a session without a correction.
+	EvCorrectionStalled Event = "correctionStalled"
 )
+
+const stallMinCorrections = 2
 
 type Limits struct{ Corrections, Infra, ExecFailures int }
 
@@ -274,14 +281,18 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 		default:
 			infra("reviewer empty output")
 		}
-	case EvSessionOK, EvSessionEmpty:
+	case EvSessionOK, EvSessionEmpty, EvCorrectionStalled:
 		if s.Phase != PhaseCorrection {
 			return reject("不在写 correction")
 		}
 		if s.Paused[DepClaude] {
 			return reject("Claude 暂停中")
 		}
-		if ev == EvSessionEmpty {
+		if ev == EvCorrectionStalled && s.Corrections >= stallMinCorrections {
+			toResolver("correction stalled: no progress across failures")
+			break
+		}
+		if ev != EvSessionOK {
 			infra("coordinator session produced no correction.md")
 			break
 		}

@@ -148,6 +148,13 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 			}
 			continue
 		}
+		if reason, stalled := stallVerdict(correction); stalled {
+			result.StallReason = reason
+			if err := transition(machine.EvCorrectionStalled, nil); err != nil {
+				return false, err
+			}
+			continue
+		}
 		if cp.Worktree == "" {
 			err = e.retryRead(ctx, t, result, "correction worktree lookup", func() error {
 				var readErr error
@@ -228,6 +235,19 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		return err == nil, err
 	}
 	return false, nil
+}
+
+const stalledPrefix = "STALLED:"
+
+// stallVerdict reads the coordinator's verdict from the correction file's first
+// line. The reason enters the ledger as handoff evidence.
+func stallVerdict(correction []byte) (string, bool) {
+	first, _, _ := strings.Cut(strings.TrimSpace(string(correction)), "\n")
+	reason, stalled := strings.CutPrefix(strings.TrimSpace(first), stalledPrefix)
+	if !stalled {
+		return "", false
+	}
+	return diagnosticLine(reason), true
 }
 
 func correctionTier(c Config, n int) (tier, agent, model, effort string, err error) {

@@ -96,3 +96,28 @@ func TestBoardColumnPerPhase(t *testing.T) {
 		}
 	}
 }
+
+// A stall verdict needs two charged failures to compare; an earlier verdict
+// is an unusable coordinator session, not a handoff.
+func TestCorrectionStalledNeedsTwoFailures(t *testing.T) {
+	run := func(events ...Event) State {
+		t.Helper()
+		state := Initial()
+		for _, ev := range events {
+			next, _, err := Step(state, ev, DefaultLimits)
+			if err != nil {
+				t.Fatalf("%s: %v", ev, err)
+			}
+			state = next
+		}
+		return state
+	}
+	early := run(EvClaim, EvWorkerFail, EvCorrectionStalled)
+	if early.Phase != PhaseCorrection || early.Owner != OwnerExecutor || early.Corrections != 1 || early.Infra != 1 {
+		t.Fatalf("early verdict: %+v", early)
+	}
+	late := run(EvClaim, EvWorkerFail, EvSessionOK, EvWorkerFail, EvCorrectionStalled)
+	if late.Phase != PhaseResolver || late.Owner != OwnerResolver || late.Corrections != 2 || late.Infra != 0 || late.HumanReason != "correction stalled: no progress across failures" {
+		t.Fatalf("late verdict: %+v", late)
+	}
+}
