@@ -129,6 +129,22 @@ func (b *queryBudget) elapsed() time.Duration {
 	return time.Since(b.started)
 }
 
+// turn runs one Agent turn. Once the message has queried, every later turn,
+// a continuation or a draft correction, ends at the loop deadline; a turn cut
+// off there answers with a visible note.
+func (b *queryBudget) turn(ctx context.Context, turn func(context.Context, Turn) (string, error), t Turn, limits queryLimits) (string, error) {
+	if b.started.IsZero() {
+		return turn(ctx, t)
+	}
+	loopCtx, cancel := context.WithDeadline(ctx, b.started.Add(limits.loop))
+	defer cancel()
+	answer, err := turn(loopCtx, t)
+	if err != nil && errors.Is(loopCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+		return "[网关] 本条消息查询合计已超过 45 秒，Agent 未在时限内给出回答，请稍后重新提问", nil
+	}
+	return answer, err
+}
+
 func (b *queryBudget) exhausted(limits queryLimits) bool {
 	return b.closed || b.used >= maxQueriesPerTurn || b.elapsed() >= limits.loop
 }
@@ -148,11 +164,14 @@ func RunQueries(ctx context.Context, turn func(context.Context, Turn) (string, e
 }
 
 func runQueries(ctx context.Context, turn func(context.Context, Turn) (string, error), query Querier, t Turn, limits queryLimits) (string, error) {
-	answer, err := turn(ctx, t)
-	if err != nil || query == nil {
-		return answer, err
+	if query == nil {
+		return turn(ctx, t)
 	}
 	budget := messageBudget(ctx)
+	answer, err := budget.turn(ctx, turn, t, limits)
+	if err != nil {
+		return answer, err
+	}
 	for queryBlock.MatchString(answer) {
 		visible := strings.TrimSpace(queryBlock.ReplaceAllString(answer, ""))
 		if budget.exhausted(limits) {
@@ -187,13 +206,7 @@ func runQueries(ctx context.Context, turn func(context.Context, Turn) (string, e
 				}
 			}
 		}
-		loopCtx, cancel := context.WithDeadline(ctx, budget.started.Add(limits.loop))
-		answer, err = turn(loopCtx, Turn{Session: t.Session, Resume: true, Prompt: evidencePrompt(evidence, budget.used, budget.elapsed(), budget.exhausted(limits)), Project: t.Project})
-		late := errors.Is(loopCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
-		cancel()
-		if err != nil && late {
-			return "[网关] 本条消息查询合计已超过 45 秒，Agent 未在时限内给出回答，请稍后重新提问", nil
-		}
+		answer, err = budget.turn(ctx, turn, Turn{Session: t.Session, Resume: true, Prompt: evidencePrompt(evidence, budget.used, budget.elapsed(), budget.exhausted(limits)), Project: t.Project}, limits)
 		if err != nil {
 			return "", err
 		}

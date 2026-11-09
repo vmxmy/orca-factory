@@ -15,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -442,6 +443,76 @@ func TestIntakeQueryLogsAttribution(t *testing.T) {
 			t.Fatalf("evidence=%+v", e)
 		}
 	})
+}
+
+// TestIntakeQueryLogOwnersRecorded derives log directory owners from the
+// recorded 项目 table row (feishu/bot-project-records.json) and the recorded
+// `orca-ide repo list --json` (orca-repo-list.json) through Discover: each
+// production directory has exactly its own repository, so executor logs stay
+// readable; a recorded remote reappearing under a second owner is shared.
+func TestIntakeQueryLogOwnersRecorded(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "feishu", "bot-project-records.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct {
+		Response struct {
+			Data struct {
+				Fields []string `json:"fields"`
+				Data   [][]any  `json:"data"`
+			} `json:"data"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(b, &recording); err != nil {
+		t.Fatal(err)
+	}
+	var rows []issues.LedgerProject
+	for _, row := range recording.Response.Data.Data {
+		at := func(name string) any { return row[slices.Index(recording.Response.Data.Fields, name)] }
+		rows = append(rows, issues.LedgerProject{Name: at("名称").(string), Enabled: at("启用").(bool), Remote: at("仓库远端").(string), Prefix: at("编号前缀").(string)})
+	}
+	fixture, err := filepath.Abs(filepath.Join("..", "..", "testdata", "recorded", "orca-repo-list.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "orca")
+	writeLines(t, script, "#!/bin/sh", "cat '"+fixture+"'")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := (&orca.Client{Path: script}).RepoList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	var repos []orca.Repo
+	for _, r := range recorded {
+		path := filepath.Join(root, filepath.Base(r.Path))
+		if r.CanonicalKey == "github.com/vmxmy/orca-factory" {
+			writeLines(t, filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"), "AGENT_ISSUE_BACKEND=feishu", "AGENT_GH_REPO=vmxmy/orca-factory")
+		} else if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		repos = append(repos, orca.Repo{Path: path, CanonicalKey: r.CanonicalKey})
+	}
+	pass := func(context.Context, string) ([]string, error) { return nil, nil }
+	result := projects.Discover(context.Background(), repos, rows, pass, nil)
+	if len(rows) != 1 || len(result.Eligible) != 1 || len(result.Rejected) != len(recorded)-1 {
+		t.Fatalf("rows=%+v result=%+v", rows, result)
+	}
+	owners := logDirOwners(result, rows)
+	for _, r := range recorded {
+		key := filepath.Base(r.Path)
+		if len(owners[key]) != 1 || !owners[key][r.CanonicalKey] {
+			t.Fatalf("owners[%s]=%v, want only %s", key, owners[key], r.CanonicalKey)
+		}
+	}
+	// Synthetic: a second checkout of another owner's orca-factory.
+	fork := projects.Rejection{Path: "/home/laoxu/github/fork/orca-factory", Remote: "github.com/acme/orca-factory", Reason: projects.ReasonOnboardable}
+	shared := logDirOwners(projects.Result{Eligible: result.Eligible, Rejected: append(slices.Clone(result.Rejected), fork)}, rows)
+	if len(shared["orca-factory"]) != 2 {
+		t.Fatalf("owners=%v", shared["orca-factory"])
+	}
 }
 
 // TestIntakeQueryConfigFollowsProfile rereads agent-graph.env at query time

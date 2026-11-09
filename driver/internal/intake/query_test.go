@@ -196,7 +196,8 @@ func TestIntakeQueryLoopClock(t *testing.T) {
 }
 
 // TestIntakeQueryCorrectionClock counts a draft-correction turn against the
-// message's 45 seconds: a query requested after a slow correction does not run.
+// message's 45 seconds: a query requested after a slow correction does not
+// run, and a correction still running at the deadline is cut off there.
 func TestIntakeQueryCorrectionClock(t *testing.T) {
 	ctx := withQueryBudget(context.Background())
 	called := 0
@@ -220,6 +221,19 @@ func TestIntakeQueryCorrectionClock(t *testing.T) {
 	answer, err := runQueries(ctx, correction, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits)
 	if err != nil || called != 1 || !strings.Contains(answer, "查询额度已用尽") {
 		t.Fatalf("answer=%q err=%v called=%d", answer, err, called)
+	}
+	stalled := func(ctx context.Context, _ Turn) (string, error) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(time.Minute):
+			return "迟到的草稿", nil
+		}
+	}
+	started := time.Now()
+	answer, err = runQueries(ctx, stalled, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits)
+	if took := time.Since(started); err != nil || took > 10*testLimits.loop || !strings.Contains(answer, "查询合计已超过 45 秒") {
+		t.Fatalf("answer=%q err=%v took=%v", answer, err, took)
 	}
 }
 
