@@ -12,9 +12,9 @@ const LABEL_GAP = 2
 const STATUS_INTERVAL = 1000
 const NUDGES = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }
 
-const stationLabels = layout => [
+const stationLabels = ({ layout, working, workers }) => [
   ['主账本', layout.tower, 2.6, 0],
-  ['工作间', layout.booths.reduce((sum, booth) => sum + booth.x, 0) / layout.booths.length, 1.9, layout.booths[0].z],
+  [`工作间 · ${working}/${workers}`, layout.booths.reduce((sum, booth) => sum + booth.x, 0) / layout.booths.length, 1.9, layout.booths[0].z],
   ['检验间 · gate', -1, 2.2, 0],
   ['审查', 2.5, 2.7, 0],
   ['封箱 · 开 PR', 5.5, 0.6, 0],
@@ -79,7 +79,7 @@ export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => 
   hud.trip(undefined)
   hud.stops(stop, false)
 
-  const stations = stationLabels(island.layout).map(([text, x, y, z]) => ({
+  const stations = stationLabels(island).map(([text, x, y, z]) => ({
     node: tag(labels, 'label', text),
     position: new Vector3(x, y, z),
   }))

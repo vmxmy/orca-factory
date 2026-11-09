@@ -25,7 +25,7 @@ const parcel = (identifier, station, extra = {}) => ({
   unknownDeploy: false,
   ...extra,
 })
-const row = parcels => ({ name: 'fixture', path: '/fixture', deploy: true, workers: 3, parcels })
+const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', deploy: true, workers, parcels })
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
@@ -36,9 +36,8 @@ async function checkModel() {
     assert.equal(find(`S-${station}`).station, station)
     assert.equal(find(`S-${station}`).stationName, model.STATION_NAMES[station])
   }
-  assert.equal(island.layout.booths.length, 3, 'booth count must equal workers')
-  const crowded = model.layoutOf(20).booths
-  assert.equal(new Set(crowded.map(booth => `${booth.x},${booth.z}`)).size, 20, 'every worker must get its own booth')
+  assert.equal(island.layout.booths.length, 8, 'booth count must equal work tickets above three')
+  assert.equal(model.islandOf(row([], 20)).layout.booths.length, 3, 'booth count must stay three without work tickets, whatever workers says')
   assert.ok(island.layout.booths.some(booth => booth.x === find('S-work').slot.x), 'work parcels must stand at a booth')
   for (const station of ['return', 'repair', 'human']) assert.ok(find(`S-${station}`).slot.y >= 1.5, `${station} must sit on the mezzanine`)
   assert.equal(new Set(island.parcels.map(({ slot }) => `${slot.x},${slot.y},${slot.z}`)).size, island.parcels.length, 'slots must not overlap')

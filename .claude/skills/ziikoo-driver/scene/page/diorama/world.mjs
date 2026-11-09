@@ -135,7 +135,7 @@ const buildParcel = (scene, view) => {
 }
 
 const dressIsland = (parts, island) => {
-  parts.doors.forEach((door, index) => door.material.emissive.setHex(index < island.busyBooths ? GLOW.door : 0x000000))
+  parts.doors.forEach((door, index) => door.material.emissive.setHex(index < island.working ? GLOW.door : 0x000000))
   parts.lock.position.y = LOCK_Y[island.lock] + 0.55
   if (island.beacon === 'off') {
     parts.beacon.material.color.setHex(WORLD.unlit)

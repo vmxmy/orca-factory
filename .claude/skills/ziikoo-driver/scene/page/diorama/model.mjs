@@ -34,6 +34,7 @@ export const STATION_NAMES = {
   unknown: '账簿塔旁 · 工位未知',
 }
 
+const MIN_BOOTHS = 3
 const BOOTH_STEP = 2
 const BOOTHS_PER_ROW = 5
 const ROW_STEP = 3.8
@@ -48,8 +49,7 @@ const AFLOAT = new Set(['dispatch', 'smoke'])
 const FAILED_DEPLOYMENTS = new Set(['paused', 'failed'])
 const GROUND_BACK = -8
 
-export const layoutOf = workers => {
-  const count = Math.max(1, Math.floor(Number(workers)) || 1)
+const layoutOf = count => {
   const columns = Math.min(count, BOOTHS_PER_ROW)
   const rows = Math.ceil(count / columns)
   const right = rows > 1 ? YARD_LAST_BOOTH_X : LAST_BOOTH_X
@@ -59,11 +59,12 @@ export const layoutOf = workers => {
   }))
   const tower = right - BOOTH_STEP * (columns - 1) - 5.7
   const left = tower - 1.8
+  const yardBack = booths.at(-1).z - 1.5
   return {
     booths,
     tower,
     ground: { left, right: 11.4, back: GROUND_BACK, front: 3 },
-    yard: rows > 1 ? { left, right: right + 1.2, back: booths.at(-1).z - 1.5, front: GROUND_BACK } : null,
+    yard: yardBack < GROUND_BACK ? { left, right: right + 1.2, back: yardBack, front: GROUND_BACK } : null,
     water: { left: 11.4, right: 17.4, back: -9, front: 10 },
   }
 }
@@ -90,10 +91,7 @@ const doorway = (inside, waiting, step, perLine) => {
 
 const slotRules = layout => ({
   pickup: lined({ x: layout.tower + 1.6, y: 0.22, z: 0 }, { x: 0.95, z: 0 }, 3),
-  work: index => {
-    const booth = layout.booths[index % layout.booths.length]
-    return { x: booth.x, y: 0.22 + LIFT * Math.floor(index / layout.booths.length), z: booth.z + DOOR_TO_SLOT }
-  },
+  work: index => ({ x: layout.booths[index].x, y: 0.22, z: layout.booths[index].z + DOOR_TO_SLOT }),
   gate: doorway({ x: -1, y: 0.22, z: 0 }, { x: -2.3, y: 0.22, z: 0 }, { x: -0.95, z: 0 }, 2),
   review: doorway({ x: 2.5, y: 0.22, z: 0 }, { x: 1.55, y: 0.22, z: 0 }, { x: -0.95, z: 0 }, 2),
   pack: doorway({ x: 5.5, y: 0.44, z: 0 }, { x: 3.7, y: 0.22, z: 0 }, { x: 0, z: 0 }, 1),
@@ -149,14 +147,15 @@ const viewOf = (parcel, station, slot) => ({
 })
 
 export const islandOf = row => {
-  const layout = layoutOf(row.workers)
-  const rules = slotRules(layout)
   const stations = new Map()
   for (const parcel of row.parcels) {
     const station = stationOf(parcel.station)
     stations.set(station, [...(stations.get(station) ?? []), parcel])
   }
   if (stations.has('merge')) stations.set('merge', mergeQueue(stations.get('merge')))
+  const working = stations.get('work')?.length ?? 0
+  const layout = layoutOf(Math.max(MIN_BOOTHS, working))
+  const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
     members.map((parcel, index) => {
       const view = viewOf(parcel, station, rules[station](index))
@@ -168,7 +167,8 @@ export const islandOf = row => {
     path: row.path,
     layout,
     parcels,
-    busyBooths: Math.min(layout.booths.length, stations.get('work')?.length ?? 0),
+    working,
+    workers: row.workers,
     lantern: stations.has('human'),
     idle: row.parcels.length === 0,
     ...deploymentOf(row),
