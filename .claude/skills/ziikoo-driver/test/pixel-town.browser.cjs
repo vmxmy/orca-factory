@@ -469,6 +469,7 @@ async function main() {
     assert.ok(mobile.detail.drawer && mobile.detail.bottom <= 844 + 1, 'the approved demo opens mobile details as a bottom drawer over the map')
     assert.ok(mobile.point.y + 20 <= mobile.detail.top, 'the selected parcel must stay visible above the mobile detail drawer')
     if (process.env.PIXEL_TOWN_SCREENSHOT) await page.screenshot({ path: process.env.PIXEL_TOWN_SCREENSHOT.replace(/\.png$/, '-mobile.png') })
+    await assertVisible(page.locator('#status'))
     await page.locator('[data-close]').click()
     await page.locator('[data-view="town"]').click()
     await emit(snapshot(1))
