@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const http = require('node:http')
 const crypto = require('node:crypto')
+const os = require('node:os')
 
 const plugin = path.resolve(__dirname, '..')
 const pageRoot = path.join(plugin, 'scene/page')
@@ -685,7 +686,11 @@ else console.log(JSON.stringify(status));
     fs.chmodSync(fake, 0o755)
   }
   fakeStatus(liveStatus)
-  const spawnServer = () => spawn(process.env.BUN_PATH || 'bun', [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  // 驱动器服务的 PATH 不含 Bun 安装目录（合并验证 gate 因此 spawn bun ENOENT），按 Bun 安装器的默认位置补上
+  const installedBun = path.join(process.env.BUN_INSTALL || path.join(os.homedir(), '.bun'), 'bin', 'bun')
+  const bun = process.env.BUN_PATH || (fs.existsSync(installedBun) ? installedBun : 'bun')
+  const bunDir = path.isAbsolute(bun) ? `${path.dirname(bun)}:` : ''
+  const spawnServer = () => spawn(bun, [path.join(plugin, 'scene/server.ts')], { env: { ...process.env, PATH: `${temp}:${bunDir}${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: '0' }, stdio: ['ignore', 'pipe', 'pipe'] })
   const child = spawnServer()
   try {
     const origin = await new Promise((resolve, reject) => {
