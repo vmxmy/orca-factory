@@ -141,10 +141,10 @@ func TestIntakeQueryBudget(t *testing.T) {
 	if err != nil || called != 4 || len(*turns) != 2 {
 		t.Fatalf("err=%v called=%d turns=%d", err, called, len(*turns))
 	}
-	if prompt := (*turns)[1].Prompt; !strings.Contains(prompt, "超过每轮 4 次查询上限") || !strings.Contains(prompt, "额度已用尽") {
+	if prompt := (*turns)[1].Prompt; !strings.Contains(prompt, "超过每条消息 4 次查询上限") || !strings.Contains(prompt, "额度已用尽") {
 		t.Fatalf("prompt=%s", prompt)
 	}
-	if strings.Contains(answer, "intake-query-v1") || !strings.HasPrefix(answer, "部分结论") || !strings.Contains(answer, "本轮查询已达上限") {
+	if strings.Contains(answer, "intake-query-v1") || !strings.HasPrefix(answer, "部分结论") || !strings.Contains(answer, "查询额度已用尽") {
 		t.Fatalf("answer=%q", answer)
 	}
 }
@@ -164,14 +164,53 @@ func TestIntakeQueryTimeouts(t *testing.T) {
 		t.Fatalf("loop took %s", elapsed)
 	}
 	prompt := (*turns)[1].Prompt
-	if strings.Count(prompt, "查询超时") != 2 || !strings.Contains(prompt, "合计已超过") || strings.Contains(prompt, "late") {
+	if strings.Count(prompt, "查询超时") != 1 || strings.Count(prompt, "前一项查询已超时，本条消息不再执行查询") != 2 || strings.Contains(prompt, "late") {
 		t.Fatalf("prompt=%s", prompt)
+	}
+}
+
+// TestIntakeQueryLoopClock counts the Agent's continuation turns against the
+// loop budget: a slow continuation spends it, so the next request never runs.
+func TestIntakeQueryLoopClock(t *testing.T) {
+	called := 0
+	querier := func(context.Context, Project, QueryRequest) Evidence { called++; return Evidence{Outcome: OutcomeOK} }
+	answers := []string{queryReply(`{"op":"status"}`), queryReply(`{"op":"config"}`)}
+	turn := func(_ context.Context, t Turn) (string, error) {
+		if t.Resume {
+			time.Sleep(testLimits.loop)
+		}
+		answer := answers[0]
+		answers = answers[1:]
+		return answer, nil
+	}
+	answer, err := runQueries(context.Background(), turn, querier, Turn{Project: Project{Prefix: "OF"}}, testLimits)
+	if err != nil || called != 1 || !strings.Contains(answer, "查询额度已用尽") || strings.Contains(answer, "intake-query-v1") {
+		t.Fatalf("answer=%q err=%v called=%d", answer, err, called)
+	}
+}
+
+// TestIntakeQueryMessageBudget keeps one allowance per user message: the
+// gateway's draft-correction turn resumes the Agent through the same loop,
+// and a query it requests after the message spent its four does not run.
+func TestIntakeQueryMessageBudget(t *testing.T) {
+	invalid := draftReply(draftTicket("", "missing/path.go"))
+	h := newSubmitHarness(t, existingLedger(), queryReply(strings.Repeat(`{"op":"status"},`, 3)+`{"op":"config"}`), invalid, queryReply(`{"op":"maintenance"}`))
+	called := 0
+	querier := func(context.Context, Project, QueryRequest) Evidence { called++; return Evidence{Outcome: OutcomeOK} }
+	agent := h.g.agent
+	h.g.agent = func(ctx context.Context, turn Turn) (string, error) { return RunQueries(ctx, agent, querier, turn) }
+	h.open(t, "om_query_budget", "查一下状态再整理需求")
+	if called != 4 || len(h.turns) != 3 || !strings.Contains(h.turns[2].Prompt, "网关") {
+		t.Fatalf("called=%d turns=%d", called, len(h.turns))
+	}
+	if reply := h.lastReply(t); strings.Contains(reply, "intake-query-v1") || !strings.Contains(reply, "查询额度已用尽") {
+		t.Fatalf("reply=%q", reply)
 	}
 }
 
 func TestIntakeQueryTruncation(t *testing.T) {
 	big := strings.Repeat("处置", 20000)
-	e := runQuery(context.Background(), func(context.Context, Project, QueryRequest) Evidence {
+	e, _ := runQuery(context.Background(), func(context.Context, Project, QueryRequest) Evidence {
 		return Evidence{Outcome: OutcomeOK, Complete: true, Data: "x" + big}
 	}, Project{Prefix: "OF"}, QueryRequest{Op: QueryLogs, Ticket: "OF-1"}, time.Second)
 	if !e.Truncated || e.Complete || len(e.Data) > maxEvidenceBytes || !utf8.ValidString(e.Data) || len(e.Data)+e.OmittedBytes != len(big)+1 || e.Op != QueryLogs {

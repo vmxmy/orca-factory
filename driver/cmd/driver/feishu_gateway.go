@@ -173,13 +173,15 @@ func (r *projectRuntime) stop() {
 
 // resolve returns the fully wired intake.Project for an eligible discovery
 // result, building and caching its Ledger Store and Runner the first time
-// this prefix is seen; later discovery rounds reuse the cached wiring.
+// this prefix is seen; later discovery rounds reuse the cached wiring but
+// refresh the query source from the current profile (OF-427).
 func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intake.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	chat := p.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
 	if cached, ok := r.projects[p.Prefix]; ok {
 		cached.Chat = chat
+		r.sources[p.Prefix] = newQuerySource(r.ledgers[p.Prefix], p.Path, p.Repository.Env)
 		return cached, nil
 	}
 	model, effort, err := tierParts(p.Repository.Env)

@@ -15,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -58,6 +59,34 @@ func labeledTask(identifier, state string, labels ...string) issues.Task {
 	return t
 }
 
+// recordedTicket replays issues-read-OF-427.json: the ledger task as
+// `agent-graph.sh issues read --id OF-427 --json` returned it, plus the
+// owner and phase that read derived from the same comments.
+func recordedTicket(t *testing.T) (issues.Task, string, string) {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "issues-read-OF-427.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var read struct {
+		Result struct {
+			Issue struct {
+				issues.Task
+				Owner string `json:"owner"`
+				Phase string `json:"phase"`
+			} `json:"issue"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(b, &read); err != nil {
+		t.Fatal(err)
+	}
+	issue := read.Result.Issue
+	if issue.Metadata.Identifier != "OF-427" || len(issue.Comments.Nodes) == 0 || issue.Owner == "" {
+		t.Fatalf("recorded ticket did not decode: %+v", issue.Metadata)
+	}
+	return issue.Task, issue.Owner, issue.Phase
+}
+
 // recordedStatusTime is generatedAt of driver-status-json-stale.json.
 var recordedStatusTime = time.Date(2026, 11, 9, 10, 59, 37, 443068794, time.FixedZone("CST", 8*3600))
 
@@ -71,8 +100,9 @@ func evidenceRuntime(t *testing.T, now time.Time, env map[string]string) (*proje
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", stateRoot)
 	copyRecorded(t, "driver-status-json-stale.json", filepath.Join(runtimeDir, "orca-factory", "status.json"))
 	copyRecorded(t, "driver-maintenance-status.json", filepath.Join(stateRoot, "maintenance.json"))
-	store := &evidenceStore{tasks: []issues.Task{labeledTask("OF-427", "In Progress", "auto-impl", "auto-failed"), labeledTask("OF-12", "Todo")},
-		comments: map[string][]task.Comment{"uuid-OF-427": {{Body: "Agent处置: executor failed twice\n证据: scheduler inspection\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-07T03:40:58Z"}}}}
+	recorded, _, _ := recordedTicket(t)
+	store := &evidenceStore{tasks: []issues.Task{recorded, labeledTask("OF-12", "Todo")},
+		comments: map[string][]task.Comment{recorded.ID: recorded.Comments.Nodes}}
 	r := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
 	r.readers = defaultEvidenceReaders()
 	r.readers.logRoot = stateRoot
@@ -80,6 +110,7 @@ func evidenceRuntime(t *testing.T, now time.Time, env map[string]string) (*proje
 	if env == nil {
 		env = map[string]string{"AGENT_GH_REPO": "vmxmy/orca-factory"}
 	}
+	r.readers.profile = func(string) (map[string]string, time.Time, error) { return env, recordedStatusTime, nil }
 	r.sources["OF"] = newQuerySource(store, "/home/laoxu/github/orca-factory", env)
 	return r, store, stateRoot
 }
@@ -150,12 +181,13 @@ func TestIntakeQueryStatusEvidence(t *testing.T) {
 
 func TestIntakeQueryTicketEvidence(t *testing.T) {
 	var detail ticketDetail
-	t.Run("live read with labels and ledger ownership", func(t *testing.T) {
+	t.Run("recorded ticket keeps labels and derives the recorded ownership", func(t *testing.T) {
 		r, _, _ := evidenceRuntime(t, recordedStatusTime, nil)
+		_, owner, phase := recordedTicket(t)
 		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryTicket, Ticket: "OF-427"})
 		evidenceData(t, e, &detail)
-		if e.Outcome != intake.OutcomeOK || !slices.Equal(detail.Labels, []string{"auto-impl", "auto-failed"}) || detail.Owner != "处置Agent" || detail.Phase != "Agent处置" || !detail.CommentsComplete {
-			t.Fatalf("evidence=%+v detail=%+v", e, detail)
+		if e.Outcome != intake.OutcomeOK || !slices.Equal(detail.Labels, []string{"auto-failed", "auto-impl"}) || detail.State != "In Progress" || detail.Owner != owner || detail.Phase != phase || !detail.CommentsComplete {
+			t.Fatalf("evidence=%+v detail=%+v recorded owner=%s phase=%s", e, detail, owner, phase)
 		}
 	})
 	t.Run("no ownership events is unknown", func(t *testing.T) {
@@ -308,7 +340,7 @@ func TestIntakeQueryProductionLoop(t *testing.T) {
 		t.Fatalf("ledger reads=%v, want only the bound project's ticket", store.reads)
 	}
 	evidence := prompts[1]
-	for _, want := range []string{`\"labels\":[\"auto-impl\",\"auto-failed\"]`, "不属于当前会话绑定的项目 OF", `"op": "status"`} {
+	for _, want := range []string{`\"labels\":[\"auto-failed\",\"auto-impl\"]`, "不属于当前会话绑定的项目 OF", `"op": "status"`} {
 		if !strings.Contains(evidence, want) {
 			t.Fatalf("evidence prompt lacks %q:\n%s", want, evidence)
 		}
@@ -335,9 +367,168 @@ func TestIntakeTicketsRuntimeEvidence(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := tickets[0]
-			if got.Identifier != "OF-427" || !slices.Equal(got.Labels, []string{"auto-impl", "auto-failed"}) || got.Owner != tc.owner || got.Phase != tc.phase {
+			if got.Identifier != "OF-427" || !slices.Equal(got.Labels, []string{"auto-failed", "auto-impl"}) || got.Owner != tc.owner || got.Phase != tc.phase {
 				t.Fatalf("ticket=%+v", got)
 			}
 		})
+	}
+}
+
+// TestIntakeQueryLogsAttribution reads the recorded shared scheduler shapes:
+// a decision record names the checkout path as repo, a merge-lane record
+// names AGENT_GH_REPO as repository. Neither an unset AGENT_GH_REPO nor a
+// repository-name log directory another bound project shares may attribute
+// a record to this project.
+func TestIntakeQueryLogsAttribution(t *testing.T) {
+	decisionTime := time.Date(2026, 11, 9, 9, 50, 0, 0, time.FixedZone("CST", 8*3600))
+	mergeTime := time.Date(2026, 11, 5, 13, 20, 0, 0, time.FixedZone("CST", 8*3600))
+	shared := func(t *testing.T, root string, synthetic ...string) {
+		t.Helper()
+		var lines []string
+		for _, name := range []string{"driver-journal-scheduler-decision.jsonl", "driver-logs-scheduler-repository.jsonl"} {
+			b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, strings.Split(strings.TrimSpace(string(b)), "\n")...)
+		}
+		writeLines(t, filepath.Join(root, "scheduler.log"), append(lines, synthetic...)...)
+	}
+	var data struct {
+		Records []map[string]any `json:"records"`
+	}
+	t.Run("decision records by checkout path", func(t *testing.T) {
+		r, _, root := evidenceRuntime(t, decisionTime, nil)
+		// Synthetic: the same ticket decided for another checkout.
+		shared(t, root, `{"time":"2026-11-09T09:45:20+08:00","msg":"scheduler decision","event":"launch","ticket":"OF-425","repo":"/home/laoxu/github/other"}`)
+		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-425", Window: 30 * time.Minute})
+		evidenceData(t, e, &data)
+		if e.Outcome != intake.OutcomeOK || len(data.Records) != 2 || data.Records[0]["event"] != "heartbeat" || data.Records[1]["event"] != "launch" {
+			t.Fatalf("evidence=%+v", e)
+		}
+	})
+	t.Run("merge-lane records by repository", func(t *testing.T) {
+		r, _, root := evidenceRuntime(t, mergeTime, nil)
+		shared(t, root)
+		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-384", Window: 30 * time.Minute})
+		evidenceData(t, e, &data)
+		if e.Outcome != intake.OutcomeOK || len(data.Records) != 1 || data.Records[0]["result"] != "green" {
+			t.Fatalf("evidence=%+v", e)
+		}
+	})
+	t.Run("unset AGENT_GH_REPO attributes nothing by repository", func(t *testing.T) {
+		r, _, root := evidenceRuntime(t, mergeTime, map[string]string{})
+		// Synthetic: a record with an empty repository.
+		shared(t, root, `{"time":"2026-11-05T13:10:00+08:00","msg":"blank","ticket":"OF-384","repository":""}`)
+		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-384", Window: 30 * time.Minute})
+		if e.Outcome != intake.OutcomeEmpty || strings.Contains(e.Data, "merge gate finished") || strings.Contains(e.Data, "blank") {
+			t.Fatalf("evidence=%+v", e)
+		}
+	})
+	t.Run("log directory another project shares is not read", func(t *testing.T) {
+		r, store, root := evidenceRuntime(t, time.Date(2026, 11, 7, 11, 40, 0, 0, time.FixedZone("CST", 8*3600)), nil)
+		copyRecorded(t, "driver-logs-executor-auth-failure.jsonl", filepath.Join(root, "orca-factory", "OF-427", "executor.log"))
+		// Synthetic: another bound project whose repository is also named orca-factory.
+		r.sources["ZY"] = newQuerySource(store, "/home/laoxu/github/fork/orca-factory", map[string]string{"AGENT_GH_REPO": "acme/orca-factory"})
+		e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryLogs, Ticket: "OF-427", Window: time.Hour})
+		if e.Outcome != intake.OutcomeFailed || !strings.Contains(e.Error, "被多个项目共用") || strings.Contains(e.Data, "no oauth token") {
+			t.Fatalf("evidence=%+v", e)
+		}
+	})
+}
+
+// TestIntakeQueryConfigFollowsProfile rereads agent-graph.env at query time
+// and refreshes the query source on every discovery round, so a changed
+// limit is reported with the file's own modification time.
+func TestIntakeQueryConfigFollowsProfile(t *testing.T) {
+	repo := t.TempDir()
+	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+	write := func(limit string, modified time.Time) map[string]string {
+		env := map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "vmxmy/orca-factory", "AGENT_ROLE_INTAKE": "claude:claude-opus-5-5:high", "AGENT_MAX_IN_FLIGHT": limit}
+		var b strings.Builder
+		for _, k := range []string{"AGENT_ISSUE_BACKEND", "AGENT_GH_REPO", "AGENT_ROLE_INTAKE", "AGENT_MAX_IN_FLIGHT"} {
+			fmt.Fprintf(&b, "%s=%s\n", k, env[k])
+		}
+		writeLines(t, profile, strings.TrimSpace(b.String()))
+		if err := os.Chtimes(profile, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+		return env
+	}
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	r := newProjectRuntime("/usr/bin/true", t.TempDir(), config.Tuning{})
+	first := time.Date(2026, 11, 9, 10, 0, 0, 0, time.UTC)
+	project := projects.Project{Path: repo, Remote: "github.com/vmxmy/orca-factory", Prefix: "OF", Name: "orca-factory", Repository: config.Repository{Env: write("2", first)}}
+	if _, err := r.resolve(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	second := first.Add(time.Hour)
+	write("5", second)
+	e := r.query(context.Background(), ofProject, intake.QueryRequest{Op: intake.QueryConfig})
+	if !strings.Contains(e.Data, `"AGENT_MAX_IN_FLIGHT":"5（agent-graph.env）"`) || !e.SourceGeneratedAt.Equal(second) {
+		t.Fatalf("evidence=%+v", e)
+	}
+	project.Repository.Env = map[string]string{"AGENT_GH_REPO": "vmxmy/renamed"}
+	if _, err := r.resolve(context.Background(), project); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.sources["OF"]; got.ghRepo != "vmxmy/renamed" || got.logKey != "renamed" {
+		t.Fatalf("source=%+v, want the current profile", got)
+	}
+}
+
+// TestIntakeQueryAgentWiring runs projectRuntime.agent, the Turn dispatcher
+// the gateway uses, over a built Runner whose claude replays the recorded
+// intake-query-v1 reply: the gateway answers that request from the bound
+// project and resumes the session, and only the final answer comes back.
+func TestIntakeQueryAgentWiring(t *testing.T) {
+	r, store, _ := evidenceRuntime(t, recordedStatusTime.Add(10*time.Second), nil)
+	dir := t.TempDir()
+	recorded, err := filepath.Abs(filepath.Join("..", "..", "testdata", "recorded", "claude-print-json-intake-query.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := "OF-427 带 auto-failed，只由处置 Agent 处理，不进普通领票；快照不证明 worker 存活。"
+	finalJSON, err := json.Marshal(map[string]any{"type": "result", "subtype": "success", "is_error": false, "result": final})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeLines(t, filepath.Join(dir, "final.json"), string(finalJSON))
+	claude := filepath.Join(dir, "claude")
+	writeLines(t, claude, "#!/bin/sh", "d=$(mktemp -d "+dir+"/call.XXXXXX)", "cat > $d/stdin",
+		"if grep -q 'intake-query-v1 查询结果' $d/stdin; then exec cat "+filepath.Join(dir, "final.json")+"; else exec cat "+recorded+"; fi")
+	bwrap := filepath.Join(dir, "bwrap")
+	writeLines(t, bwrap, "#!/bin/sh", "while [ \"$1\" != -- ]; do shift; done", "shift", "exec \"$@\"")
+	for _, path := range []string{claude, bwrap} {
+		if err := os.Chmod(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.built["OF"] = &intake.Runner{Claude: claude, Bwrap: bwrap, Checkout: t.TempDir(), Timeout: 10 * time.Second}
+	answer, err := r.agent(context.Background(), intake.Turn{Session: "s-427", Resume: true, Prompt: "[需求人] OF-427 为什么一直没被 driver 领取？", Project: ofProject})
+	if err != nil || answer != final {
+		t.Fatalf("answer=%q err=%v", answer, err)
+	}
+	if !slices.Equal(store.reads, []string{"OF-427"}) {
+		t.Fatalf("ledger reads=%v", store.reads)
+	}
+	calls, err := filepath.Glob(filepath.Join(dir, "call.*", "stdin"))
+	if err != nil || len(calls) != 2 {
+		t.Fatalf("calls=%v err=%v", calls, err)
+	}
+	var evidence string
+	for _, call := range calls {
+		b, err := os.ReadFile(call)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "intake-query-v1 查询结果") {
+			evidence = string(b)
+		}
+	}
+	for _, want := range []string{`"op": "ticket"`, `"op": "status"`, `"op": "logs"`, `"op": "maintenance"`, `\"labels\":[\"auto-failed\",\"auto-impl\"]`, "已用 4/4 次"} {
+		if !strings.Contains(evidence, want) {
+			t.Fatalf("evidence prompt lacks %q:\n%s", want, evidence)
+		}
 	}
 }

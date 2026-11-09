@@ -640,17 +640,17 @@ Agent 可在回复中输出 `intake-query-v1` 结构块，请求只读运行证�
 | op | 来源 | 返回 |
 | --- | --- | --- |
 | `status` | `driver status` 推送快照 | 本项目各票的归属、阶段、stage、blockedReason、队列与部署状态 |
-| `config` | 项目 `agent-graph.env` 与维护状态 | 各角色模型档位、候选与 lane 相关限制、维护模式 |
+| `config` | 查询时读取的项目 `agent-graph.env` 与维护状态 | 各角色模型档位、候选与 lane 相关限制、维护模式；`sourceGeneratedAt` 是文件修改时间，不证明调度器已采用该配置 |
 | `maintenance` | `driver maintenance status` | 维护模式、`writersActive`、`sessionsActive` |
 | `ticket` | 本项目账本实时读取 | 状态、标签、依赖、纳管、held、链接，以及账本归属事件推出的归属与阶段 |
-| `logs` | 本项目 executor/resolver 日志与带本仓库 `repository` 的 scheduler 记录 | 必要事件字段，凭据形态文本已脱敏 |
+| `logs` | 本项目 executor/resolver 日志，以及 `repo` 为本项目检出路径或 `repository` 为本项目 `AGENT_GH_REPO` 的 scheduler 记录 | 必要事件字段，凭据形态文本已脱敏；日志目录被多个项目共用时只读 scheduler 记录并注明 |
 
 边界：
 
 1. 项目取自会话绑定。请求只接受 `op`、`ticket`、`since`；带命令、路径、仓库等其他字段时整块拒绝。`ticket` 的前缀必须是本项目前缀；不同仓库的同名票号不会混读。
 2. 每条证据带 `collectedAt`、`source`、`sourceGeneratedAt`、`outcome`（ok、empty、partial、failed、rejected）、`complete` 和 `stale`。状态快照超过 120 秒标为过期，`sourceGeneratedAt` 保留快照自身的生成时间。
 3. 日志默认最近 30 分钟，允许 1 分钟至 24 小时，按时间稳定排序，最多 200 条，超出时省略较早记录并给出 `omittedOlder`。单条证据数据最多 64 KiB，按 UTF-8 边界截断并标 `truncated`。
-4. 每次查询限时 10 秒；每条用户消息最多执行 4 次查询，合计不超过 45 秒。额度用尽后 Agent 再答一轮；仍带查询块时网关删去该块，并在回复末尾注明未继续查询。
+4. 每次查询限时 10 秒；每条用户消息最多执行 4 次查询，合计不超过 45 秒，计时包含 Agent 续答轮次。草稿校验失败后的修正轮次共用同一额度。某次查询超时后，本条消息不再执行查询。额度用尽后 Agent 再答一轮；仍带查询块时网关删去该块，并在回复末尾注明未继续查询。
 5. 查询不写账本、不打标签、不派工、不控制服务；失败只作为证据返回。快照中的归属和阶段不证明 worker 存活。建票仍走 `intake-draft-v1` 确认提交或 `draft_ticket` 代建，放行仍由审批人批准。
 
 在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
