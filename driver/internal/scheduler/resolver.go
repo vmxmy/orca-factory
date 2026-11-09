@@ -118,7 +118,7 @@ func resolutionLines(comments []task.Comment) []string {
 }
 
 // ResolveTicket runs in its own terminal; only the scheduler applies proposals.
-func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string, heartbeat *orca.Heartbeat) error {
+func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket, terminal string, heartbeat *orca.Heartbeat) error {
 	session, err := maintenance.Session()
 	if err != nil {
 		return err
@@ -171,8 +171,9 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, terminal string, 
 		Repository      string
 		Ticket          Ticket
 		Comments        []task.Comment
-		OmittedComments int `json:",omitempty"`
-	}{env["AGENT_GH_REPO"], contextTicket, contextComments, omitted})
+		OmittedComments int             `json:",omitempty"`
+		Related         []relatedTicket `json:",omitempty"`
+	}{env["AGENT_GH_REPO"], contextTicket, contextComments, omitted, relatedTickets(t, snapshot)})
 	if err != nil {
 		return err
 	}
@@ -375,6 +376,34 @@ func resolverApproved(t Ticket) bool {
 	}
 	p, err := resolver.ParseResult(t.Resolution.Result)
 	return err == nil && p.Action == "merge" && p.Handoff.QueueID == t.Handoff.QueueID && p.Handoff.Head == t.Handoff.Head && p.Handoff.PR == t.Handoff.PR
+}
+
+// relatedTicket indexes another ticket the resolver may read on demand; its
+// full history stays out of this spec.
+type relatedTicket struct {
+	Identifier, Title string
+	Phase             machine.Phase
+	Owner             machine.Owner
+	Reason            string
+}
+
+const relatedTicketLimit = 10
+
+// relatedTickets lists the repository's other tickets held by the resolver or
+// a human, newest first, so a shared cause is visible across tickets.
+func relatedTickets(t Ticket, snapshot []Ticket) []relatedTicket {
+	held := []Ticket{}
+	for _, other := range snapshot {
+		if other.Repo == t.Repo && other.ID != t.ID && (other.Owner == machine.OwnerResolver || other.Owner == machine.OwnerHuman) {
+			held = append(held, other)
+		}
+	}
+	sort.SliceStable(held, func(i, j int) bool { return held[i].UpdatedAt.After(held[j].UpdatedAt) })
+	related := []relatedTicket{}
+	for _, other := range held[:min(len(held), relatedTicketLimit)] {
+		related = append(related, relatedTicket{other.Identifier, ledgerLine(other.Title), other.Phase, other.Owner, ledgerLine(other.NotifyReason)})
+	}
+	return related
 }
 
 // resolverEvidenceRunes bounds the comment evidence embedded in the resolver

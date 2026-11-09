@@ -67,7 +67,7 @@ func resolveTicket(args []string) int {
 		}
 		for _, ticket := range tickets {
 			if ticket.Identifier == args[0] {
-				err = runtime.ResolveTicket(runx.WithLogger(ctx, logger), ticket, os.Getenv("ORCA_TERMINAL_HANDLE"), heartbeat)
+				err = runtime.ResolveTicket(runx.WithLogger(ctx, logger), ticket, tickets, os.Getenv("ORCA_TERMINAL_HANDLE"), heartbeat)
 				if err != nil {
 					return 1, err
 				}

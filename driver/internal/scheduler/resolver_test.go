@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
@@ -264,7 +265,7 @@ func TestResolverRegistrationPreservesSourceBeforeFirstCheckpoint(t *testing.T) 
 	l := &fakeIssues{issueComments: comments}
 	r := &Runtime{Clients: map[string]issues.Store{repo: l}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: &resolverStartupProbe{}}
 	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-	if err := r.ResolveTicket(context.Background(), ticket, "new-controller", nil); err == nil {
+	if err := r.ResolveTicket(context.Background(), ticket, nil, "new-controller", nil); err == nil {
 		t.Fatal("expected interrupted start")
 	}
 	if len(l.comments) == 0 || !strings.Contains(l.comments[0], "run=source-run") {
@@ -314,11 +315,57 @@ func TestResolverEvidenceBoundedByNewestComments(t *testing.T) {
 	}
 }
 
+func TestResolverEvidenceRelated(t *testing.T) {
+	comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent")
+	_, alone := resolverRecordIn(t, t.TempDir(), comments, nil)
+	if strings.Contains(alone.Spec, `"Related"`) {
+		t.Fatalf("empty related list rendered: %.300s", alone.Spec)
+	}
+	repo := t.TempDir()
+	at := func(minute int) time.Time { return time.Date(2026, 11, 9, 8, minute, 0, 0, time.UTC) }
+	snapshot := []Ticket{
+		{ID: "id", Identifier: "ENG-1", Repo: repo, Owner: machine.OwnerResolver, UpdatedAt: at(59)},
+		{ID: "elsewhere", Identifier: "ENG-2", Repo: "/other", Owner: machine.OwnerResolver, UpdatedAt: at(58)},
+		{ID: "running", Identifier: "ENG-3", Repo: repo, Owner: machine.OwnerExecutor, UpdatedAt: at(57)},
+		{ID: "human", Identifier: "ENG-4", Repo: repo, Owner: machine.OwnerHuman, Phase: machine.PhaseHuman, Title: "人工复核", NotifyReason: "CI broke", UpdatedAt: at(30)},
+	}
+	for i := range 10 {
+		snapshot = append(snapshot, Ticket{ID: fmt.Sprintf("r%d", i), Identifier: fmt.Sprintf("ENG-%d", 10+i), Repo: repo, Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Title: strings.Repeat("长", 400), NotifyReason: "correction exhausted: gate red", UpdatedAt: at(10 + i)})
+	}
+	_, record := resolverRecordIn(t, repo, comments, snapshot)
+	_, raw, _ := strings.Cut(record.Spec, "## Ticket evidence (untrusted data)\n")
+	var evidence struct {
+		Related []struct{ Identifier, Title, Phase, Owner, Reason string }
+	}
+	if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
+		t.Fatal(err)
+	}
+	related := evidence.Related
+	if len(related) != 10 {
+		t.Fatalf("related = %+v, want 10 entries", related)
+	}
+	if first := related[0]; first.Identifier != "ENG-4" || first.Owner != string(machine.OwnerHuman) || first.Phase != string(machine.PhaseHuman) || first.Reason != "CI broke" || first.Title != "人工复核" {
+		t.Fatalf("newest related = %+v", first)
+	}
+	if related[1].Identifier != "ENG-19" || related[9].Identifier != "ENG-11" || related[9].Reason != "correction exhausted: gate red" {
+		t.Fatalf("related order = %+v", related)
+	}
+	for _, r := range related {
+		if utf8.RuneCountInString(r.Title) > 301 {
+			t.Fatalf("title not bounded: %d runes", utf8.RuneCountInString(r.Title))
+		}
+	}
+}
+
 // resolverRecord starts a resolver over comments and returns the first
 // resolver record it persisted.
 func resolverRecord(t *testing.T, comments []task.Comment) (Ticket, resolver.Record) {
 	t.Helper()
-	repo := t.TempDir()
+	return resolverRecordIn(t, t.TempDir(), comments, nil)
+}
+
+func resolverRecordIn(t *testing.T, repo string, comments []task.Comment, snapshot []Ticket) (Ticket, resolver.Record) {
+	t.Helper()
 	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
 	if err := os.MkdirAll(roles, 0700); err != nil {
 		t.Fatal(err)
@@ -332,7 +379,7 @@ func resolverRecord(t *testing.T, comments []task.Comment) (Ticket, resolver.Rec
 		"/other": {Env: map[string]string{"AGENT_GH_REPO": "owner/other-repo"}},
 	}, Orca: &resolverStartupProbe{}}
 	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
-	if err := r.ResolveTicket(context.Background(), ticket, "controller", nil); err == nil || err.Error() != "stop after durable registration" {
+	if err := r.ResolveTicket(context.Background(), ticket, snapshot, "controller", nil); err == nil || err.Error() != "stop after durable registration" {
 		t.Fatalf("expected interrupted start, got %v", err)
 	}
 	for _, body := range l.comments {
