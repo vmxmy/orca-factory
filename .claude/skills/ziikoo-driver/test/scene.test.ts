@@ -56,6 +56,7 @@ test('sceneOf 消费真实录制的 status/config 快照', () => {
   const scene = sceneOf(recordedRuntime, recordedConfig)
   expect(scene.state).toBe('stale')
   expect(scene.maintenance).toBe('draining')
+  expect(scene.nextScanAt).toBeUndefined()
   const rowsByName = new Map(scene.rows.map(row => [row.name, row]))
   expect(rowsByName.size).toBe(recordedConfig.repos.length)
   const factory = rowsByName.get('orca-factory')
@@ -63,10 +64,19 @@ test('sceneOf 消费真实录制的 status/config 快照', () => {
   const queued = factory?.parcels.find(parcel => parcel.identifier === 'OF-414')
   expect(queued?.station).toBe('merge')
   expect(queued?.unknownDeploy).toBe(false)
+  expect(queued?.owner).toBe('合并通道')
+  expect(queued?.queuePosition).toBe(1)
   const resolved = factory?.parcels.find(parcel => parcel.identifier === 'OF-415')
   expect(resolved?.station).toBe('repair')
   expect(resolved?.tone).toBe('attention')
+  expect(resolved?.owner).toBe('处置Agent')
+  expect(JSON.parse(JSON.stringify(resolved))).not.toHaveProperty('queuePosition')
   expect(factory?.deploy).toBe(true)
+})
+
+test('sceneOf 透传录制里的下次巡检时间', () => {
+  const scene = sceneOf(parseRuntime(RECORDED_DEPLOY_STATUS), parseConfig(RECORDED_CONFIG))
+  expect(scene.nextScanAt).toBe(Date.parse('2026-11-04T16:06:00+08:00'))
 })
 
 test('sceneOf 消费还原的部署屏障与未知阶段录制快照', () => {

@@ -51,6 +51,7 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
     since: o.since === undefined ? undefined : time(o, 'since', path),
     blockedReason: optionalText(o, 'blockedReason', path),
     deployment: o.deployment === undefined ? undefined : parseDeployment(o.deployment, `${path}.deployment`),
+    queuePosition: o.queuePosition === undefined ? undefined : count(o, 'queuePosition', path),
   }
 }
 

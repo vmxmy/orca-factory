@@ -91,6 +91,7 @@ export type RuntimeTicket = {
   since?: number
   blockedReason?: string
   deployment?: Deployment
+  queuePosition?: number
 }
 
 export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
@@ -100,6 +101,8 @@ export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' 
 export type Parcel = {
   identifier: string
   title: string
+  owner: string
+  queuePosition?: number
   phase: string
   label: string
   station: Station
@@ -114,6 +117,7 @@ export type Parcel = {
 
 export type Scene = {
   generatedAt: number
+  nextScanAt?: number
   state: string
   maintenance: string
   rows: { name: string; path: string; deploy: boolean; workers: number; parcels: Parcel[] }[]

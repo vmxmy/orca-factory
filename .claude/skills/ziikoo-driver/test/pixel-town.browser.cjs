@@ -704,7 +704,7 @@ else console.log(JSON.stringify(status));
         if (match) { clearTimeout(timer); resolve(match[1]) }
       })
     })
-    for (const resource of ['/', '/scene.js', '/town.mjs', ...fs.readdirSync(path.join(pageRoot,'components')).map(name=>'/components/'+name), '/snapshot', '/events']) {
+    for (const resource of ['/', '/scene.js', '/town.mjs', ...fs.readdirSync(path.join(pageRoot,'components')).map(name=>'/components/'+name), ...['diorama', 'vendor'].flatMap(folder => fs.readdirSync(path.join(pageRoot, folder)).map(name => `/${folder}/${name}`)), '/snapshot', '/events']) {
       assert.equal((await fetch(origin + resource)).status, 404)
       const authenticated = await fetch(`${origin}${resource}?t=${token}`)
       assert.ok(authenticated.status === 200 || (resource === '/snapshot' && authenticated.status === 503))

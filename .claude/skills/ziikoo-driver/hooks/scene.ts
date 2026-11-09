@@ -15,6 +15,8 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
   return {
     identifier: ticket.identifier,
     title: ticket.title ?? ticket.identifier,
+    owner: ticket.owner,
+    queuePosition: ticket.queuePosition,
     phase: ticket.phase,
     label: pos.label,
     station,
@@ -38,6 +40,7 @@ export const sceneOf = (runtime: Runtime, config: DriverConfig): Scene => {
   }
   return {
     generatedAt: runtime.generatedAt,
+    nextScanAt: runtime.nextScanAt,
     state: runtime.state,
     maintenance: config.overview.maintenance,
     rows: repos.map(repo => ({
