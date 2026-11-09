@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 )
@@ -38,5 +39,12 @@ func TestCorrectionStalledBeforeSecondFailureIsEmpty(t *testing.T) {
 	}
 	if s.sessions != 3 || s.children != 0 || len(o.starts) != 1 {
 		t.Fatalf("early verdict dispatched: sessions=%d children=%d starts=%d", s.sessions, s.children, len(o.starts))
+	}
+}
+
+func TestCorrectionStalledRecordedVerdict(t *testing.T) {
+	reason, stalled := stallVerdict(recorded(t, "correction-stalled.md"))
+	if !stalled || !strings.HasPrefix(reason, "两次 gate red 均停在 STEP check") || utf8.RuneCountInString(reason) != 200 {
+		t.Fatalf("stalled=%v reason=%q", stalled, reason)
 	}
 }

@@ -119,7 +119,7 @@ orca-factory-driver status --json
 
 worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
 
-correction coordinator 判定打回停滞时也不再派 worker。它读「历史 FAIL 摘要」，同一失败反复出现、写不出新做法时，在 correction 文件首行写 `STALLED: <理由>`。执行器在第 2 次及以后的 correction 读到这一行时写 `correctionStalled` 转移，把票交给处置 Agent，账本证据带 `停滞判断: <理由>`，correction 次数不再增加。第 1 次 correction 写出的 STALLED 按没有 correction 计一次基础设施预算。这个判断只能提前转处置，不重派、不放行。
+correction coordinator 判定打回停滞时也不再派 worker。它读「历史 FAIL 摘要」，同一失败反复出现、写不出新做法时，在 correction 文件首行写 `STALLED: <理由>`。执行器读第一个非空行，在第 2 次及以后的 correction 读到这一行时写 `correctionStalled` 转移，把票交给处置 Agent，账本证据带 `停滞判断: <理由>`，correction 次数不再增加。第 1 次 correction 写出的 STALLED 按没有 correction 计一次基础设施预算。这个判断只能提前转处置，不重派、不放行。
 
 无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 

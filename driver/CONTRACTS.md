@@ -17,6 +17,7 @@
 | 「A 被 B 阻塞」存在 B 上；查 A 的 `inverseRelations`（type `blocks`）及阻塞者 `state.type` | `linear-inverse-relations.json` | `task.TestRecordedInverseRelations` |
 | 调度器认领时写 `term=- run=-`，表示执行器尚未登记 | `linear-comment-ownership-unregistered.json` | `scheduler.TestRecordedOwnershipUnregistered` |
 | 审查员常把结尾的 verdict JSON 包在 Markdown 代码块里 | `reviewer-output-fenced.txt` | `executor.TestRecordedReviewerOutput` |
+| correction coordinator 判定停滞时，correction 文件只有一行 `STALLED: <理由>`，理由可超过 200 字符 | `correction-stalled.md`（2026-11-09，claude 2.1.319 按 `Commands.Correction` 的提示结构与工具集运行 `core/roles/correction.md`，`Correction: 2/3`；简报为构造的占位票 OF-999，历史 FAIL 摘要含两条相同失败。文件原样保存，无凭据） | `executor.TestCorrectionStalledRecordedVerdict` |
 | 历史执行器转人评论固定三行；调度器仍以「转人:」识别旧归属，并按容量接管为 resolver；新回执含 Agent处置、证据、处置要求、阶段与归属 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
 | git 的网络失败（TLS 握手、超时、解析失败）在 stderr 中报告，可重试；HTTP 403、404 不可重试 | `git-stderr-tls-failure.txt`、`git-stderr-auth-failure.txt` | `infra.TestRecordedGitNetworkFailureIsTransient` |
 | worker worktree 名为 `<票号>-<单元>`，本地分支是 Orca 起的（如 `vmxmy/ZII-893-executor`），`agent/<票号>/<单元>` 只是推送目标 | `git-worktree-list-porcelain.bin` | `executor.TestRecordedWorkerWorktree` |
@@ -77,7 +78,7 @@
 
 worker 失败报告可带一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`（OF-291）。这是 worker 正文里唯一由 driver 解析的信号：行首（去掉空白后）必须是该前缀，路径只能含 ASCII 字母、数字和 `_` `.` `/` `-`（这些路径会写进账本），不得是绝对路径或含 `..`，且不得匹配当前 `gate.spec` 的 `SCOPE`。匹配用 `task.ScopeMatch`，`*`、`?` 和普通字符类与 `gate.sh` 一致；SCOPE 含 `[!a]`、未闭合的 `[` 或 extglob 时两边可能不同，后果最多是多转一次处置 Agent。driver 不检查文件是否存在。任一条件不满足或 spec 不可读时整条声明作废，走普通 `workerFail`。声明成立时执行器走 `workerScopeBlocked` 转处置 Agent，`corrections` 不变。声明只能把票交给处置 Agent，不授权改范围或放行；gate 与审查规则不变。
 
-correction 文件首行（去掉首尾空白后）以 `STALLED:` 开头时是 coordinator 的停滞判断（OF-436），其余行忽略，也不派给 worker。执行器写 `correctionStalled` 事件：`corrections` 已达 2 时转处置 Agent，原因 `correction stalled: no progress across failures`，`corrections` 不变；不足 2 时按空会话计一次基础设施预算，重开 coordinator 会话。理由按 `worker_subject` 的规则清理（首行、剥离 ANSI、去控制字符、两次脱敏、最长 200 字符），以 `停滞判断: <理由>` 追加到转交证据，写进账本。判断只能提前转处置，不授权重派或放行。`machine.TestCorrectionStalledNeedsTwoFailures`、`executor.TestCorrectionStalledHandsOffToResolver`、`executor.TestCorrectionStalledBeforeSecondFailureIsEmpty` 覆盖。
+correction 文件的第一个非空行以 `STALLED:` 开头时是 coordinator 的停滞判断（OF-436），其余行忽略，也不派给 worker。执行器写 `correctionStalled` 事件：`corrections` 已达 2 时转处置 Agent，原因 `correction stalled: no progress across failures`，`corrections` 不变；不足 2 时按空会话计一次基础设施预算，重开 coordinator 会话。理由按 `worker_subject` 的规则清理（首行、剥离 ANSI、去控制字符、两次脱敏、最长 200 字符），以 `停滞判断: <理由>` 追加到转交证据，写进账本。判断只能提前转处置，不授权重派或放行。`machine.TestCorrectionStalledNeedsTwoFailures`、`executor.TestCorrectionStalledHandsOffToResolver`、`executor.TestCorrectionStalledBeforeSecondFailureIsEmpty`、`executor.TestCorrectionStalledRecordedVerdict` 覆盖。
 
 执行器日志的 `correction` 与 `resolver handoff` 记录带可选字段 `worker_subject`（OF-290）：worker 失败报告 `subject` 的第一行（以 `\n` 或 `\r` 为界），先剥离整段 ANSI CSI、OSC 序列，再去掉控制字符，并在去掉控制字符前后各按 stderr 的策略脱敏一次，最长 200 字符；没有 worker 报告的失败不带这个字段。`resolver handoff` 另带 `reason`、`evidence`，只在这四种转处置时写：打回耗尽、步骤的基础设施预算耗尽、SCOPE 缺文件、correction 停滞。其他转处置路径不写：`branchNo`、读取预算耗尽、恢复路径、合并通道、部署暂停、调度器。这段原文只进日志，账本与 `fail.log` 的 `FAIL:` 摘要仍只含标识符。`/ziikoo-driver` 用这些字段显示「最近异常」的补充。
 
