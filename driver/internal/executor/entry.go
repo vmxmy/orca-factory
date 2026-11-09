@@ -99,7 +99,8 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, err
 	}
 	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, name, ticket.Identifier, "executor")
-	e.Config.WorkerIdleTimeout = workerIdleTimeout(os.Getenv("AGENT_WORKER_IDLE_MINUTES"))
+	e.Config.WorkerIdleTimeout = envMinutes(os.Getenv("AGENT_WORKER_IDLE_MINUTES"), 15*time.Minute)
+	e.Config.WorkerMaxDuration = envMinutes(os.Getenv("AGENT_WORKER_MAX_MINUTES"), 120*time.Minute)
 	e.Config.Tier = "default"
 	e.Config.Escalate = values[4]
 	e.Config.TierSettings = map[string]string{"default": values[2], "strong": values[3]}
@@ -117,10 +118,10 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	return e.Start(ctx, ticket)
 }
 
-func workerIdleTimeout(value string) time.Duration {
+func envMinutes(value string, fallback time.Duration) time.Duration {
 	minutes, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || minutes <= 0 || minutes > int64((1<<63-1)/time.Minute) {
-		return 15 * time.Minute
+		return fallback
 	}
 	return time.Duration(minutes) * time.Minute
 }

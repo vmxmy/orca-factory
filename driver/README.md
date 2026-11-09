@@ -121,6 +121,12 @@ worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done -
 
 correction coordinator 判定打回停滞时也不再派 worker。它读「历史 FAIL 摘要」，同一失败反复出现、写不出新做法时，在 correction 文件首行写 `STALLED: <理由>`。执行器读第一个非空行，在第 2 次及以后的 correction 读到这一行时写 `correctionStalled` 转移，把票交给处置 Agent，账本证据带 `停滞判断: <理由>`，correction 次数不再增加。第 1 次 correction 写出的 STALLED 按没有 correction 计一次基础设施预算。这个判断只能提前转处置，不重派、不放行。
 
+worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺失或不是正整数时用默认值。
+- 终端空闲：worker 终端的 `lastOutputAt` 超过 `AGENT_WORKER_IDLE_MINUTES`（整数分钟，默认 15）未更新时，执行器先向该终端发一次提醒，每次派工只发一次。提醒确认开始新 turn 后重新计时；再满一个周期仍无输出时写 `workerStall`，计一次基础设施预算。终端继续静默时每满一个周期再计一次，第 3 次按预算耗尽转处置 Agent。终端有新输出时从新输出起计时。
+- 运行时长：单次派工从开始起满 `AGENT_WORKER_MAX_MINUTES`（整数分钟，默认 120）仍没有 `worker_done` 时，执行器写 `workerOverrun`，直接转处置 Agent，不计基础设施预算和 correction 次数。账本证据带 `运行超时: 已运行 <N> 分钟；终端最后输出 <时间>`。开始时间存在 checkpoint，执行器重启后沿用。
+
+依赖暂停期间两道看守都不触发。两种转处置都不释放、不停止 worker。
+
 无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 ### 守护进程被杀后的恢复

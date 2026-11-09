@@ -69,6 +69,7 @@ type Config struct {
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
 	PollInterval                                                        time.Duration
 	WorkerIdleTimeout                                                   time.Duration
+	WorkerMaxDuration                                                   time.Duration
 	Tier                                                                string
 }
 type Executor struct {
@@ -149,6 +150,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	if c.WorkerIdleTimeout <= 0 {
 		c.WorkerIdleTimeout = 15 * time.Minute
 	}
+	if c.WorkerMaxDuration <= 0 {
+		c.WorkerMaxDuration = 120 * time.Minute
+	}
 	if e.Now == nil {
 		e.Now = time.Now
 	}
@@ -190,7 +194,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	// diffBase is the head's merge-base with current main: a worker that rebased
 	// must not be charged for main's commits since the claim baseline.
 	var baseline, diffBase, taskID, spec, brief, head, failureOutput, failureSummary, reviewerTier string
-	var mergeGateOutput, mergeReviewOutput string
+	var mergeGateOutput, mergeReviewOutput, overrunEvidence string
 	var scopeBlocked []string
 	var failedSubject string
 	var reviewFail reviewFailure
@@ -217,7 +221,7 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		status.Push(e.Now(), func(view *status.View) {
 			status.SetTicket(view, status.Ticket{Repo: c.Repo, Identifier: t.Identifier, Owner: string(next.Owner), Phase: string(next.Phase)}, next.Owner == machine.OwnerExecutor || next.Owner == machine.OwnerMerge)
 		})
-		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections || ev == machine.EvWorkerScopeBlocked || ev == machine.EvCorrectionStalled) {
+		if next.Phase == machine.PhaseResolver && (next.Infra >= machine.DefaultLimits.Infra || next.Corrections > machine.DefaultLimits.Corrections || ev == machine.EvWorkerScopeBlocked || ev == machine.EvCorrectionStalled || ev == machine.EvWorkerOverrun) {
 			evidence := string(previous.Phase)
 			if previous.Phase == machine.PhaseReview {
 				evidence += "；审查命令档位: " + reviewerTier
@@ -230,6 +234,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			}
 			if ev == machine.EvCorrectionStalled {
 				evidence += "；停滞判断: " + result.StallReason
+			}
+			if ev == machine.EvWorkerOverrun {
+				evidence += "；" + overrunEvidence
 			}
 			e.logger().Info("resolver handoff", withWorkerSubject(failedSubject, "reason", next.HumanReason, "evidence", evidence)...)
 			return e.handoff(ctx, t, next, evidence, result.RunID, &cp)
@@ -423,16 +430,28 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return nil
 		}}
 		observeIdle := func() error {
-			if !idle.observe(ctx, e, cp.Worktree, c.WorkerIdleTimeout, result.State) {
+			ev := machine.EvWorkerStall
+			if ran := e.Now().Sub(cp.DispatchStartedAt); ran >= c.WorkerMaxDuration {
+				ev = machine.EvWorkerOverrun
+				overrunEvidence = fmt.Sprintf("运行超时: 已运行 %d 分钟；终端最后输出 %s", int(ran/time.Minute), idle.lastOutputText())
+			} else if !idle.observe(ctx, e, cp.Worktree, c.WorkerIdleTimeout, result.State) {
 				return nil
 			}
-			if err := transition(machine.EvWorkerStall, nil); err != nil {
+			if err := transition(ev, nil); err != nil {
 				return err
 			}
 			if result.State.Owner == machine.OwnerResolver {
 				return errBudgetExhausted
 			}
 			return nil
+		}
+		if !cp.Completed && cp.DispatchStartedAt.IsZero() {
+			next := cp
+			next.DispatchStartedAt = e.Now().UTC()
+			if err := saveCheckpoint(c, t, next); err != nil {
+				return result, err
+			}
+			cp = next
 		}
 		if !cp.Completed {
 			err = e.retryRead(ctx, t, &result, "task polling", func() error {

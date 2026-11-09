@@ -121,3 +121,30 @@ func TestCorrectionStalledNeedsTwoFailures(t *testing.T) {
 		t.Fatalf("late verdict: %+v", late)
 	}
 }
+
+// An overrun hands a live worker to the resolver without charging either
+// budget, and holds while a dependency is paused.
+func TestWorkerWatchdogOverrunEvent(t *testing.T) {
+	claimed, _, err := Step(Initial(), EvClaim, DefaultLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, _, err := Step(claimed, EvWorkerOverrun, DefaultLimits)
+	if err != nil || next.Phase != PhaseResolver || next.Owner != OwnerResolver || next.ExecAlive || next.Infra != 0 || next.Corrections != 0 || next.HumanReason != "worker overran: no worker_done within run limit" {
+		t.Fatalf("overrun: %+v err=%v", next, err)
+	}
+	paused := copyState(claimed)
+	paused.Paused[DepClaude] = true
+	held, fx, err := Step(paused, EvWorkerOverrun, DefaultLimits)
+	if err != nil || held.Phase != PhaseWorker || held.Owner != OwnerExecutor || len(fx) != 0 {
+		t.Fatalf("paused overrun: %+v fx=%v err=%v", held, fx, err)
+	}
+	reported, _, _ := Step(claimed, EvWorkerOK, DefaultLimits)
+	crashed, _, _ := Step(claimed, EvExecCrash, DefaultLimits)
+	for name, state := range map[string]State{"unclaimed": Initial(), "branch check": reported, "executor down": crashed} {
+		var rejected Rejected
+		if _, _, err := Step(state, EvWorkerOverrun, DefaultLimits); !errors.As(err, &rejected) {
+			t.Fatalf("%s accepted overrun: err=%v", name, err)
+		}
+	}
+}
