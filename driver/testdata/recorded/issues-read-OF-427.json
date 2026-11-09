@@ -1,0 +1,223 @@
+{
+ "ok": true,
+ "result": {
+  "issue": {
+   "blockedBy": [],
+   "comments": {
+    "nodes": [
+     {
+      "body": "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=2026-11-07T03:28:11Z",
+      "createdAt": "2026-11-07T11:28:20+08:00",
+      "id": "reczz28Wdh7CL48X",
+      "updatedAt": "2026-11-07T11:28:20+08:00"
+     },
+     {
+      "body": "intake 派工核验，2026-11-07 11:28:36 +08:00：\n票面已回读，全部正文内容、CHECK、SCOPE 与 estimate 均保留，飞书适配器仅重排结构段落。main 合同红测为 1 test、1 failure，断言缺失 labels/owner/phase。\ndriver 已领取 OF-427 并启动执行器，但执行器在 worker 派发前退出，exit_code=1。该票 executor.log 同次记录 gh auth token 退出 1，stderr 为 no oauth token found for github.com；随后 executor failed / command exited。\n因此票面的 In Progress / worker 运行中暂不能证明 worker 存活；尚无本票 worker-start 回执，未核实实际模型。未改标签、预算、归属或认证配置，请由 driver 按现有恢复/处置流程处理。功能尚未实现或上线。\n",
+      "createdAt": "2026-11-07T11:30:19+08:00",
+      "id": "reczz28WdjDbwApZ",
+      "updatedAt": "2026-11-07T11:30:19+08:00"
+     },
+     {
+      "body": "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-07T03:34:09Z",
+      "createdAt": "2026-11-07T11:34:10+08:00",
+      "id": "reczz28WdnHZhQ7n",
+      "updatedAt": "2026-11-07T11:34:10+08:00"
+     },
+     {
+      "body": "Agent处置: executor failed twice\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-07T03:40:58Z",
+      "createdAt": "2026-11-07T11:41:05+08:00",
+      "id": "reczz28WduaZa7nY",
+      "updatedAt": "2026-11-07T11:41:05+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_b6407777-4aed-41ac-a3be-cd94af3bdf2d run=- attempt=2",
+      "createdAt": "2026-11-07T11:41:31+08:00",
+      "id": "reczz28Wdv3ZvY1x",
+      "updatedAt": "2026-11-07T11:41:31+08:00"
+     },
+     {
+      "body": "通知: 转人 d1e48f3d3d87",
+      "createdAt": "2026-11-07T11:59:55+08:00",
+      "id": "reczz28WeETqRmRG",
+      "updatedAt": "2026-11-07T11:59:55+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T01:28:45Z",
+      "createdAt": "2026-11-09T09:28:50+08:00",
+      "id": "reczz28XOj8OtG4N",
+      "updatedAt": "2026-11-09T09:28:50+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_02fdac3e-6774-4d59-8c0b-56f6fce20459 run=- attempt=2",
+      "createdAt": "2026-11-09T09:29:20+08:00",
+      "id": "reczz28XOjfIFbEB",
+      "updatedAt": "2026-11-09T09:29:20+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T01:45:36Z",
+      "createdAt": "2026-11-09T09:45:40+08:00",
+      "id": "reczz28XP0vFjIL5",
+      "updatedAt": "2026-11-09T09:45:40+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_19ff9c4c-e6f5-47e6-b7dc-dee505176d32 run=- attempt=2",
+      "createdAt": "2026-11-09T09:46:11+08:00",
+      "id": "reczz28XP1SfkQTs",
+      "updatedAt": "2026-11-09T09:46:11+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T01:55:40Z",
+      "createdAt": "2026-11-09T09:55:45+08:00",
+      "id": "reczz28XPBYtLwXy",
+      "updatedAt": "2026-11-09T09:55:45+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_eae81cd7-919f-4023-8f4d-33570007238a run=- attempt=2",
+      "createdAt": "2026-11-09T09:56:16+08:00",
+      "id": "reczz28XPC7g0Jlh",
+      "updatedAt": "2026-11-09T09:56:16+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T02:46:35Z",
+      "createdAt": "2026-11-09T10:46:41+08:00",
+      "id": "reczz28XQ3NHjAmI",
+      "updatedAt": "2026-11-09T10:46:41+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_86bc64c2-513a-4341-b468-af3d7366c10f run=- attempt=2",
+      "createdAt": "2026-11-09T10:47:19+08:00",
+      "id": "reczz28XQ42YcDKi",
+      "updatedAt": "2026-11-09T10:47:19+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T02:57:20Z",
+      "createdAt": "2026-11-09T10:57:24+08:00",
+      "id": "reczz28XQEhBbTIg",
+      "updatedAt": "2026-11-09T10:57:24+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_ee819289-3e41-4ed3-ab36-593d4ef3a4a4 run=- attempt=2",
+      "createdAt": "2026-11-09T10:58:01+08:00",
+      "id": "reczz28XQFLb2NJC",
+      "updatedAt": "2026-11-09T10:58:01+08:00"
+     },
+     {
+      "body": "Agent处置: continue agent resolution\n证据: scheduler inspection\n处置要求: 完成处置并提交可验证的继续执行提案\n阶段: Agent处置\n归属: 处置Agent term=- run=- attempt=2 scheduler-attempt=2 since=2026-11-09T03:21:06Z",
+      "createdAt": "2026-11-09T11:21:12+08:00",
+      "id": "reczz28XQdpSkF2W",
+      "updatedAt": "2026-11-09T11:21:12+08:00"
+     },
+     {
+      "body": "阶段: Agent处置\n归属: 处置Agent term=term_9f652b90-d227-4c59-b92e-27673817aac1 run=- attempt=2",
+      "createdAt": "2026-11-09T11:21:44+08:00",
+      "id": "reczz28XQeOpgnqo",
+      "updatedAt": "2026-11-09T11:21:44+08:00"
+     }
+    ],
+    "pageInfo": {
+     "endCursor": "",
+     "hasNextPage": false
+    }
+   },
+   "commentsComplete": true,
+   "complete": true,
+   "createdAt": "2026-11-07T11:26:47+08:00",
+   "description": "## 现状\n用户要求飞书机器人能自行查证 driver 未领票等运行问题，并承担 intake 整理需求、建票的功能。当前 pi 只有 read/grep/glob，话题内只能读取仓库；driver/internal/intake/tickets.go 的 TicketContext 缺少标签、归属和阶段，driver/cmd/driver/feishu_gateway.go 的 intakeTickets 也未注入这些字段。机器人因此只能解释源码，要求用户手工粘贴 status。",
+   "estimate": 8,
+   "id": "18fabd1f-488d-428a-a81c-44db7b6382fa",
+   "identifier": "OF-427",
+   "inverseRelations": {
+    "nodes": [],
+    "pageInfo": {
+     "endCursor": "",
+     "hasNextPage": false
+    }
+   },
+   "labels": {
+    "nodes": [
+     {
+      "id": "auto-failed",
+      "name": "auto-failed"
+     },
+     {
+      "id": "auto-impl",
+      "name": "auto-impl"
+     }
+    ],
+    "pageInfo": {
+     "endCursor": "",
+     "hasNextPage": false
+    }
+   },
+   "metadata": {
+    "blockers": [],
+    "complete": true,
+    "createdAt": "0001-01-01T00:00:00Z",
+    "estimate": 8,
+    "id": "18fabd1f-488d-428a-a81c-44db7b6382fa",
+    "identifier": "OF-427",
+    "priority": 0,
+    "project": "github.com/vmxmy/orca-factory",
+    "related": [
+     "601737e9-0042-4bea-ac4b-84141bd84d03",
+     "d530a062-fa1c-4f5d-9902-f5e7d0e87fec",
+     "20f67bb3-122a-4d7d-9459-c169d2e4d7ad"
+    ],
+    "state": "In Progress",
+    "updatedAt": "0001-01-01T00:00:00Z"
+   },
+   "nativeState": "open",
+   "nativeStateReason": "",
+   "nativeUpdatedAt": "2026-11-09T11:21:10+08:00",
+   "number": 0,
+   "owner": "处置Agent",
+   "parent": "",
+   "phase": "Agent处置",
+   "priority": 0,
+   "project": {
+    "id": "github.com/vmxmy/orca-factory",
+    "name": "github.com/vmxmy/orca-factory"
+   },
+   "relations": {
+    "nodes": [
+     {
+      "id": "601737e9-0042-4bea-ac4b-84141bd84d03",
+      "relatedIssue": {
+       "id": "601737e9-0042-4bea-ac4b-84141bd84d03",
+       "identifier": "OF-417"
+      },
+      "type": "related"
+     },
+     {
+      "id": "d530a062-fa1c-4f5d-9902-f5e7d0e87fec",
+      "relatedIssue": {
+       "id": "d530a062-fa1c-4f5d-9902-f5e7d0e87fec",
+       "identifier": "OF-416"
+      },
+      "type": "related"
+     },
+     {
+      "id": "20f67bb3-122a-4d7d-9459-c169d2e4d7ad",
+      "relatedIssue": {
+       "id": "20f67bb3-122a-4d7d-9459-c169d2e4d7ad",
+       "identifier": "OF-16"
+      },
+      "type": "related"
+     }
+    ],
+    "pageInfo": {
+     "endCursor": "",
+     "hasNextPage": false
+    }
+   },
+   "state": {
+    "id": "started",
+    "name": "In Progress",
+    "type": "started"
+   },
+   "title": "feat(intake): 飞书机器人自主查证运行证据并完成需求建票",
+   "updatedAt": "2026-11-09T11:21:10+08:00",
+   "url": "https://qcnqhljeakpl.feishu.cn/base/VeQObWd9VaV66tsiM7GcN0Avnph?table=tblmC0IWUj4QJ3b6&record=reczz28WdfUHmLGH"
+  }
+ }
+}

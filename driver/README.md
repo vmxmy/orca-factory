@@ -622,9 +622,36 @@ Agent 失败或超过 5 分钟时回复“处理失败，请重试”并在 stde
 
 每轮调用 Agent 前，网关把该项目票据主账本的在途票（不含已关闭的
 Done/Canceled/Duplicate）写入检出根目录 `.intake/tickets.md`：每行票号、状态、标题、
-依赖票号（OF-33）。该文件只读给 Agent，经检出的 `.git/info/exclude`（worktree 取
+依赖票号（OF-33），以及标签、归属与阶段（OF-427）。归属与阶段只取 120 秒内的本项目
+调度快照，快照过期或缺失时写“未知”，不猜测。该文件只读给 Agent，经检出的 `.git/info/exclude`（worktree 取
 `git rev-parse --git-path info/exclude` 的路径）忽略，不进 git。账本读取失败时文件
 保留上一份、首行注明“账本读取失败，内容可能过期（时间）”，不阻断对话。
+
+### 运行证据查询（OF-427）
+
+Agent 可在回复中输出 `intake-query-v1` 结构块，请求只读运行证据。网关在沙箱外执行查询，
+把结果作为 `[网关]` 前缀的下一轮输入交回同一会话（claude `--resume` 或 pi RPC 续接），
+直到 Agent 给出不带查询块的最终回答。查询块和证据不在话题中显示。
+
+```intake-query-v1
+{"queries": [{"op": "status"}, {"op": "ticket", "ticket": "OF-12"}, {"op": "logs", "ticket": "OF-12", "since": "2h"}]}
+```
+
+| op | 来源 | 返回 |
+| --- | --- | --- |
+| `status` | `driver status` 推送快照 | 本项目各票的归属、阶段、stage、blockedReason、队列与部署状态 |
+| `config` | 查询时读取的项目 `agent-graph.env` 与维护状态 | 各角色模型档位、候选与 lane 相关限制、维护模式；`sourceGeneratedAt` 是文件修改时间，不证明调度器已采用该配置 |
+| `maintenance` | `driver maintenance status` | 维护模式、`writersActive`、`sessionsActive` |
+| `ticket` | 本项目账本实时读取 | 状态、标签、依赖、纳管、held、链接，以及账本归属事件推出的归属与阶段 |
+| `logs` | 本项目 executor/resolver 日志，以及 `repo` 为本项目检出路径或 `repository` 为本项目 `AGENT_GH_REPO` 的 scheduler 记录 | 必要事件字段，凭据形态文本已脱敏；executor/resolver 日志只带仓库名，账本项目行（含停用）或本机仓库中另有同名仓库时，只读 scheduler 记录并注明 |
+
+边界：
+
+1. 项目取自会话绑定。请求只接受 `op`、`ticket`、`since`；带命令、路径、仓库等其他字段时整块拒绝。`ticket` 的前缀必须是本项目前缀；不同仓库的同名票号不会混读。
+2. 每条证据带 `collectedAt`、`source`、`sourceGeneratedAt`、`outcome`（ok、empty、partial、failed、rejected）、`complete` 和 `stale`。状态快照超过 120 秒标为过期，`sourceGeneratedAt` 保留快照自身的生成时间。
+3. 日志默认最近 30 分钟，允许 1 分钟至 24 小时，按时间稳定排序，最多 200 条，超出时省略较早记录并给出 `omittedOlder`。单条证据数据最多 64 KiB，按 UTF-8 边界截断并标 `truncated`。
+4. 每次查询限时 10 秒；每条用户消息最多执行 4 次查询，合计不超过 45 秒。计时从本条消息第一次请求查询开始，按实际经过时间计算，包含 Agent 续答和草稿修正轮次。本条消息开始查询后，续答和草稿修正轮次都在该时限截止；超时时网关回复未能在时限内答复。草稿校验失败后的修正轮次共用同一额度。某次查询超时后，本条消息不再执行查询。额度用尽后 Agent 再答一轮；仍带查询块时网关删去该块，并在回复末尾注明未继续查询。
+5. 查询不写账本、不打标签、不派工、不控制服务；失败只作为证据返回。快照中的归属和阶段不证明 worker 存活。建票仍走 `intake-draft-v1` 确认提交或 `draft_ticket` 代建，放行仍由审批人批准。
 
 在飞书开发者后台启用应用机器人，将事件订阅方式设为“使用长连接接收事件”，添加
 `im.message.receive_v1`，申请 `im:message.group_at_msg:readonly` 和

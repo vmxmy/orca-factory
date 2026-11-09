@@ -13,9 +13,14 @@ import (
 // TicketContext is one ledger ticket the project's in-flight ticket list
 // shows the Agent before every turn (OF-33): an identifier, its ledger
 // state, its title, and the identifiers of the tickets it depends on.
+// Labels come from the ledger; Owner and Phase come from a fresh scheduler
+// status snapshot and stay empty when no fresh observation names the ticket,
+// which renders as unknown rather than guessed (OF-427).
 type TicketContext struct {
 	Identifier, State, Title string
 	Blockers                 []string
+	Labels                   []string
+	Owner, Phase             string
 }
 
 // ticketContextPath is where a project checkout carries its ticket list,
@@ -31,7 +36,8 @@ var staleTicketMarker = regexp.MustCompile(`^账本读取失败，内容可能�
 
 // renderTicketContext is .intake/tickets.md's content: one line per open
 // ticket (Done/Canceled/Duplicate tickets never show), each listing its
-// identifier, state, title and the tickets it depends on.
+// identifier, state, title, the tickets it depends on, its labels and its
+// scheduler owner and phase.
 func renderTicketContext(tickets []TicketContext) string {
 	var b strings.Builder
 	b.WriteString("本项目的在途票（关闭的 Done/Canceled/Duplicate 不列出）：\n")
@@ -45,7 +51,18 @@ func renderTicketContext(tickets []TicketContext) string {
 		if len(t.Blockers) > 0 {
 			deps = strings.Join(t.Blockers, ", ")
 		}
-		fmt.Fprintf(&b, "- %s [%s] %s（依赖：%s）\n", t.Identifier, t.State, t.Title, deps)
+		labels := "无"
+		if len(t.Labels) > 0 {
+			labels = strings.Join(t.Labels, ", ")
+		}
+		owner, phase := t.Owner, t.Phase
+		if owner == "" {
+			owner = "未知"
+		}
+		if phase == "" {
+			phase = "未知"
+		}
+		fmt.Fprintf(&b, "- %s [%s] %s（依赖：%s；标签：%s；归属：%s；阶段：%s）\n", t.Identifier, t.State, t.Title, deps, labels, owner, phase)
 	}
 	if open == 0 {
 		b.WriteString("（当前没有在途票）\n")

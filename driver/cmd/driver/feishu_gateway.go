@@ -105,26 +105,6 @@ func intakeLedger(ctx context.Context, env map[string]string, tuning config.Tuni
 	return issues.New(ctx, env, tuning)
 }
 
-// intakeTickets builds the ledger reader a Runner writes into
-// .intake/tickets.md before every Agent turn (OF-33).
-func intakeTickets(store issues.Store) func(context.Context) ([]intake.TicketContext, error) {
-	return func(ctx context.Context) ([]intake.TicketContext, error) {
-		tasks, err := store.List(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]intake.TicketContext, 0, len(tasks))
-		for _, task := range tasks {
-			blockers := make([]string, 0, len(task.BlockedBy))
-			for _, b := range task.BlockedBy {
-				blockers = append(blockers, b.Issue.Identifier)
-			}
-			out = append(out, intake.TicketContext{Identifier: task.Identifier, State: task.Metadata.State, Title: task.Title, Blockers: blockers})
-		}
-		return out, nil
-	}
-}
-
 // projectRuntime lazily builds and caches each eligible project's heavy
 // wiring (Feishu ledger Store validation, model/effort tier, Runner) by
 // prefix, across repeated discovery runs (OF-42): a new Feishu topic
@@ -149,10 +129,17 @@ type projectRuntime struct {
 	// Project only exposes the narrower intake.Ledger): the draft_ticket
 	// submission reads dependencies and creates tickets through it (OF-417).
 	ledgers map[string]issues.Store
+	// sources and readers back the Agent's read-only evidence queries
+	// (OF-427), keyed by the same prefix as ledgers. logOwners is the latest
+	// discovery round's logDirOwners.
+	sources   map[string]querySource
+	logOwners map[string]map[string]bool
+	readers   evidenceReaders
 }
 
 func newProjectRuntime(claude, cacheDir string, tuning config.Tuning) *projectRuntime {
-	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}, ledgers: map[string]issues.Store{}}
+	return &projectRuntime{claude: claude, cacheDir: cacheDir, tuning: tuning, built: map[string]*intake.Runner{}, projects: map[string]intake.Project{}, ledgers: map[string]issues.Store{},
+		sources: map[string]querySource{}, readers: defaultEvidenceReaders()}
 }
 
 // setPi installs the gateway-wide pi RPC configuration: the tier comes from
@@ -188,13 +175,15 @@ func (r *projectRuntime) stop() {
 
 // resolve returns the fully wired intake.Project for an eligible discovery
 // result, building and caching its Ledger Store and Runner the first time
-// this prefix is seen; later discovery rounds reuse the cached wiring.
+// this prefix is seen; later discovery rounds reuse the cached wiring but
+// refresh the query source from the current profile (OF-427).
 func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intake.Project, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	chat := p.Repository.Env["AGENT_FEISHU_NOTIFY_CHAT"]
 	if cached, ok := r.projects[p.Prefix]; ok {
 		cached.Chat = chat
+		r.sources[p.Prefix] = newQuerySource(r.ledgers[p.Prefix], p.Path, p.Remote, p.Repository.Env)
 		return cached, nil
 	}
 	model, effort, err := tierParts(p.Repository.Env)
@@ -224,7 +213,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store, Chat: chat}
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
-	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store)}
+	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
 	if piTier != "" {
 		runner.PiBinary = r.piBinary
 		runner.PiProvider, runner.PiModel, runner.PiThinking = piProvider, piModel, piThinking
@@ -235,16 +224,19 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	r.built[p.Prefix] = runner
 	r.projects[p.Prefix] = project
 	r.ledgers[p.Prefix] = store
+	r.sources[p.Prefix] = newQuerySource(store, p.Path, p.Remote, p.Repository.Env)
 	return project, nil
 }
 
 // agent is the Turn dispatcher passed to intake.New: every prefix a Turn can
 // name was already resolved (discoverIntakeProjects only ever hands the
 // gateway prefixes it resolved), so a miss here means no local repository
-// ever matched that project. After a successful turn it also submits any
-// draft_ticket block the answer carries, appending the receipt (OF-417).
+// ever matched that project. Each turn serves the Agent's read-only
+// intake-query-v1 loop against the bound project (OF-427); only the final
+// answer is shown, and only it may carry a draft_ticket block, whose
+// receipt is appended after submission (OF-417).
 func (r *projectRuntime) agent(ctx context.Context, t intake.Turn) (string, error) {
-	answer, err := r.turn(ctx, t)
+	answer, err := intake.RunQueries(ctx, r.turn, r.query, t)
 	if err != nil {
 		return "", err
 	}
@@ -521,7 +513,7 @@ func (r *projectRuntime) submitDraftTicket(ctx context.Context, t intake.Turn, a
 		fmt.Fprintln(os.Stderr, "intake draft ticket create failed:", err)
 		return header + "建票失败：" + err.Error(), true
 	}
-	return header + fmt.Sprintf("已建票 %s《%s》\n%s\n状态 Todo，未打 ready-for-agent；确认需求后由人打标放行", task.Metadata.Identifier, task.Title, task.URL), true
+	return header + fmt.Sprintf("已建票 %s《%s》\n%s\n状态 %s，未打 ready-for-agent；确认需求后由人打标放行", task.Metadata.Identifier, task.Title, task.URL, task.Metadata.State), true
 }
 
 // discoverIntakeProjects re-runs project discovery (OF-42: live Orca
@@ -588,6 +580,10 @@ func resolvePendingEnable(result projects.Result, rows []issues.LedgerProject) [
 // resolves. A row discovery did not consider eligible carries the rejection
 // reason discovery already gave it.
 func resolveIntakeProjects(ctx context.Context, result projects.Result, rows []issues.LedgerProject, runtime *projectRuntime) []intake.Project {
+	owners := logDirOwners(result, rows)
+	runtime.mu.Lock()
+	runtime.logOwners = owners
+	runtime.mu.Unlock()
 	rejections := make(map[string]projects.Rejection, len(result.Rejected))
 	for _, rejected := range result.Rejected {
 		rejections[rejected.Remote] = rejected

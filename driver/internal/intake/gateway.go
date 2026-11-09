@@ -403,8 +403,10 @@ func (g *Gateway) addReceipt(ctx context.Context, id string) {
 }
 
 // respond runs one agent turn under the concurrency limit, persists the
-// session, and sends the reply.
+// session, and sends the reply. The turn and its draft corrections share one
+// query allowance (OF-427).
 func (g *Gateway) respond(ctx context.Context, id, thread, path string, session Session, resume bool, sender, prompt string) error {
+	ctx = withQueryBudget(ctx)
 	g.addReceipt(ctx, id)
 	label := session.speakerLabel(sender)
 	select {

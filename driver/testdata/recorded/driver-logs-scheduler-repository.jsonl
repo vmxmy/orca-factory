@@ -1,0 +1,1 @@
+{"time":"2026-11-05T13:09:10.940549185+08:00","level":"INFO","msg":"merge gate finished","component":"scheduler","ticket":"OF-384","repository":"vmxmy/orca-factory","queue_id":"c8007480000d5670d8780505b03539ce858e2d99bf2ac55ad517f4309342f373","duration_ms":39303,"result":"green","worktree_cleanup_failed":false}
