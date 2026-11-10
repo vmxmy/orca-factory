@@ -7,11 +7,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 func TestHumanObservationFields(t *testing.T) {
@@ -68,5 +70,20 @@ func TestHumanObservationFields(t *testing.T) {
 				t.Errorf("%s: %s stage=%q kind=%v reason=%v, want human/%s/%q", path, row.Identifier, row.Stage, row.Kind, row.Reason, kinds[row.Identifier], reasons[row.Identifier])
 			}
 		}
+	}
+}
+
+// ZY-365's recorded ledger leaves a merged PR with a paused deployment, the
+// real merge-progress-v1 shape behind a deploy takeover.
+func TestRecordedDeployHumanObservation(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	ticket := Ticket{ID: "699afdbb-3850-4999-8363-389adbfa4ed9", Owner: machine.OwnerHuman, NotifyReason: "fallback"}
+	readMergeHandoff(&ticket, recording.Comments)
+	row := ObservationRow(ticket, nil, time.Time{})
+	if row.Stage != "human" || row.HumanKind != "deploy" || row.HumanReason != ticket.Progress.Deployment.Reason {
+		t.Fatalf("recorded deploy takeover: stage=%q kind=%q reason=%q, want human/deploy/%q", row.Stage, row.HumanKind, row.HumanReason, ticket.Progress.Deployment.Reason)
 	}
 }
