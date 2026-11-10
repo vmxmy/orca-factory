@@ -60,7 +60,7 @@ func (p tickPhases) milliseconds() map[string]int64 {
 
 // Counts describe the input snapshot, not tentative ownership writes. A missing
 // snapshot is explicit so zero candidates is not mistaken for an empty ledger.
-func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, timing tickPhases, err error) {
+func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot, fullSync bool, timing tickPhases, err error) {
 	total, candidates := 0, 0
 	for _, t := range tickets {
 		if owned(t) {
@@ -75,7 +75,7 @@ func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot bool, ti
 		limits[r.Path] = r.MaxInFlight
 	}
 	s.logger().Info("scheduler inspection", "event", "summary", "in_flight", total,
-		"candidates", candidates, "snapshot_available", snapshot, "max_in_flight", s.Config.MaxInFlight,
+		"candidates", candidates, "snapshot_available", snapshot, "full_sync", fullSync, "max_in_flight", s.Config.MaxInFlight,
 		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "phase_ms", timing.milliseconds(), "err", err)
 }
 

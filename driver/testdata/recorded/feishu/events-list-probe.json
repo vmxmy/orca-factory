@@ -1,0 +1,66 @@
+{
+  "request": {
+    "body": null,
+    "method": "GET",
+    "params": {
+      "limit": 1,
+      "offset": 0
+    },
+    "path": "/open-apis/base/v3/bases/BASE_TOKEN/tables/tbly6EHxFwxnP5DZ/records"
+  },
+  "response": {
+    "data": {
+      "data": [
+        [
+          "REDACTED",
+          "REDACTED",
+          "REDACTED",
+          "REDACTED",
+          "REDACTED",
+          "REDACTED",
+          "REDACTED"
+        ]
+      ],
+      "field_id_list": [
+        "fld0eNdYBc",
+        "fldEshtAlR",
+        "fldh7IppTd",
+        "fldi6BwYa4",
+        "fldnj5CgGe",
+        "fldRYaLK30",
+        "fldXCWNwLZ"
+      ],
+      "field_type_list": [
+        "text",
+        "select",
+        "created_at",
+        "updated_at",
+        "text",
+        "text",
+        "link"
+      ],
+      "fields": [
+        "摘要",
+        "来源",
+        "创建时间",
+        "修改时间",
+        "正文",
+        "操作者",
+        "票据"
+      ],
+      "has_more": true,
+      "query_context": {
+        "field_scope": "all_fields",
+        "record_scope": "all_records"
+      },
+      "record_id_list": [
+        "reczz28NOjoBnNxu"
+      ],
+      "rev": 9750,
+      "timezone": "Asia/Shanghai"
+    },
+    "error": {
+      "code": 0
+    }
+  }
+}
