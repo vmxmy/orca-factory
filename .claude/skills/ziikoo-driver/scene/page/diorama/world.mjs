@@ -161,12 +161,12 @@ const dressIsland = (parts, island) => {
   if (island.lantern) glow(parts.lantern, GLOW.lantern)
 }
 
-const buildIsland = (scene, island) => {
+const buildIsland = (scene, island, fade) => {
   const land = new THREE.Group()
   land.position.set(island.origin.x, 0, island.origin.z)
   land.userData.island = island.index
   scene.add(land)
-  const kit = kitOf(land, island.idle ? faded : plain)
+  const kit = kitOf(land, fade ? faded : plain)
   buildGround(kit, island.layout)
   dressIsland({ doors: buildMainline(kit, island.layout), lantern: buildMezzanine(kit), ...buildWaterfront(kit) }, island)
   return land
@@ -176,7 +176,7 @@ const buildParcel = (scene, view, origin) => {
   const group = new THREE.Group()
   const kit = kitOf(group)
   const body = kit.box([0.74, 0.74, 0.74], view.color, [0, 0, 0])
-  body.userData.identifier = view.identifier
+  body.userData.key = view.key
   kit.box([0.78, 0.16, 0.78], WORLD.ink, [0, 0.3, 0]).visible = view.band
   kit.box([0.3, 0.06, 0.3], WORLD.stamp, [0, 0.74, 0]).visible = view.stamp
   kit.box([1.25, 0.12, 1.25], WORLD.wood, [0, -0.12, 0]).visible = view.raft
@@ -211,9 +211,9 @@ export const createWorld = (canvas, archipelago) => {
   scene.add(sun)
   const sea = archipelago.global ? buildSea(scene) : null
   if (archipelago.hub) buildHub(scene, archipelago.hub)
-  const lands = archipelago.islands.map(island => buildIsland(scene, island))
+  const lands = archipelago.islands.map(island => buildIsland(scene, island, archipelago.global && island.idle))
   const parcels = new Map(
-    archipelago.islands.flatMap(island => island.parcels.map(view => [view.identifier, buildParcel(scene, view, island.origin)])),
+    archipelago.islands.flatMap(island => island.parcels.map(view => [view.key, buildParcel(scene, view, island.origin)])),
   )
   const raycaster = new THREE.Raycaster()
   const targets = [...lands, ...[...parcels.values()].map(parcel => parcel.body)]
@@ -227,14 +227,14 @@ export const createWorld = (canvas, archipelago) => {
     resize(width, height) {
       renderer.setSize(width, height, false)
     },
-    select(identifier) {
-      for (const parcel of parcels.values()) parcel.ring.visible = parcel.view.identifier === identifier
+    select(key) {
+      for (const parcel of parcels.values()) parcel.ring.visible = parcel.view.key === key
     },
     pick(ndc, camera) {
       raycaster.setFromCamera(ndc, camera)
       const hit = raycaster.intersectObjects(targets, true)[0]?.object
       if (!hit) return null
-      if (hit.userData.identifier) return { identifier: hit.userData.identifier }
+      if (hit.userData.key) return { key: hit.userData.key }
       return { island: hit.parent.userData.island }
     },
     animate(time, reduced) {

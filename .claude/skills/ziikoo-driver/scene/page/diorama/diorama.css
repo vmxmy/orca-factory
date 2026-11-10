@@ -275,7 +275,7 @@
 
 .diorama .list button {
   display: grid;
-  grid-template-columns: 8px 1fr auto;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
   gap: 2px 9px;
   padding: 8px;
   border: 1px solid var(--w-line);
@@ -305,13 +305,16 @@
 
 .diorama .list button span {
   grid-column: 2 / 4;
+  overflow: hidden;
   font-size: 11.5px;
   line-height: 1.45;
   color: var(--w-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .diorama .list button[data-island] {
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
 }
 

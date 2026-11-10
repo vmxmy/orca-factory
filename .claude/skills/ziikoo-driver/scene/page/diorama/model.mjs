@@ -193,9 +193,11 @@ const worstAlert = parcels => {
 
 const placed = (row, index) => {
   const island = islandOf(row)
-  const stuck = stuckOf(island)
+  const parcels = island.parcels.map(parcel => ({ ...parcel, key: `${index}/${parcel.identifier}` }))
+  const stuck = stuckOf({ parcels })
   return {
     ...island,
+    parcels,
     index,
     origin: { x: (index % ISLAND_COLUMNS) * ISLAND_COLUMN_STEP, z: Math.floor(index / ISLAND_COLUMNS) * ISLAND_ROW_STEP },
     plate: { name: island.name, inFlight: island.inFlight, barrier: island.lock === 'closed', stuck: stuck.length, alert: worstAlert(stuck) },

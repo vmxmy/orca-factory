@@ -97,7 +97,7 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 
 1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
-3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=<路径>` 打开该项目的岛（机位 `2`）。`?ticket=<票号>` 选中该票并打开机位 `3`。
+3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=<路径>` 打开该项目的岛（机位 `2`）。`?ticket=<票号>` 选中该票并打开机位 `3`；几个项目有同号票时取第一张。
 
 预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时。所以状态栏的快照年龄从 0 秒开始，40 秒后天空变成过期的雾色。
 
@@ -105,7 +105,7 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 
 - 每个项目是一座同构的岛，有自己的水道、栈桥、船闸与灯塔。岛按 Scene 的项目顺序排成两列，位置只取决于顺序。
 - 每座岛有一块铭牌：项目名、在途票数、闸关（部署屏障关闭时）与卡住的票数。有卡住的票时铭牌用告警色。
-- 没有在途票的岛是空闲岛，颜色淡向天空色。只在 `pickup` 工位的票不算在途。
+- 没有在途票的岛是空闲岛。只在 `pickup` 工位的票不算在途。有多个项目时，空闲岛的颜色淡向天空色；只有一个项目时不褪色。
 - 调度岛只有一座钟楼。它的铭牌写 driver 的 `state` 与下次巡检时间（`nextScanAt`）。
 - 位置表示阶段。工位来自 Scene 的 `station`：
 

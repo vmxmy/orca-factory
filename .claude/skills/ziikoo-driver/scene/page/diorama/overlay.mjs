@@ -74,7 +74,7 @@ export const createOverlay = (stage, archipelago, world, { onIsland }) => {
 
   const tickets = archipelago.tickets.map(parcel => ({
     parcel,
-    position: new Vector3(0, parcel.alert ? 2 : 1.1, 0).add(world.parcels.get(parcel.identifier).group.position),
+    position: new Vector3(0, parcel.alert ? 2 : 1.1, 0).add(world.parcels.get(parcel.key).group.position),
     node: element('span', {
       class: ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(),
       text: parcel.unknown ? `${parcel.identifier} · 未知` : parcel.identifier,
@@ -137,8 +137,8 @@ export const createOverlay = (stage, archipelago, world, { onIsland }) => {
       const taken = []
       const global = stop === 1
       const shown = tickets
-        .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.identifier === selected)
-        .sort((left, right) => Number(right.parcel.identifier === selected) - Number(left.parcel.identifier === selected))
+        .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.key === selected)
+        .sort((left, right) => Number(right.parcel.key === selected) - Number(left.parcel.key === selected))
       for (const ticket of tickets) ticket.node.hidden = !shown.includes(ticket)
       for (const ticket of shown) place(ticket.node, ticket.position, camera, taken)
       for (const plate of [...plates, ...(hub ? [hub] : [])]) {

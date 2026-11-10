@@ -13,7 +13,7 @@ const openingOf = ({ islands, tickets, global }, { path, ticket }) => {
   if (ticket) {
     const parcel = tickets.find(one => one.identifier === ticket)
     if (!parcel) throw new Error(`Scene 里没有票 ${ticket}`)
-    return { focus: parcel.island, stop: 3, selected: ticket }
+    return { focus: parcel.island, stop: 3, selected: parcel.key }
   }
   if (path) {
     const island = islands.find(one => one.path === path)
@@ -92,7 +92,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   const world = createWorld(canvas, archipelago)
   const lens = createCamera(archipelago)
-  const parcelOf = identifier => archipelago.tickets.find(parcel => parcel.identifier === identifier)
+  const parcelOf = key => archipelago.tickets.find(parcel => parcel.key === key)
   let margins = { top: 0, right: 0, bottom: 0, left: 0 }
 
   const refreshStatus = () => {
@@ -116,15 +116,15 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     refreshStatus()
     margins = hud.margins()
     lens.resize(stage.clientWidth, stage.clientHeight, margins)
-    if (stop === 3) lens.frameSlot(world.parcels.get(parcel.identifier).group.position)
+    if (stop === 3) lens.frameSlot(world.parcels.get(parcel.key).group.position)
     else if (stop === 2) lens.frameIsland(focus)
     else lens.frameAll()
     if (reduced) lens.snap()
   }
 
-  const select = identifier => {
-    const parcel = parcelOf(identifier)
-    selected = parcel ? identifier : null
+  const select = key => {
+    const parcel = parcelOf(key)
+    selected = parcel ? key : null
     world.select(selected)
     if (parcel && (parcel.island !== focus || stop === 1)) {
       focus = parcel.island
@@ -151,7 +151,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   pointer(canvas, lens, ndc => {
     const hit = world.pick(ndc, lens.camera)
-    if (hit?.identifier) select(hit.identifier)
+    if (hit?.key) select(hit.key)
     else if (hit && (stop === 1 || hit.island !== focus)) enter(hit.island)
     else select(null)
   })
@@ -197,7 +197,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     state: () => ({
       stop,
       focus: islands[focus].path,
-      selected,
+      selected: parcelOf(selected)?.identifier ?? null,
       reduced,
       view: { ...lens.view },
       goal: { ...lens.goal },

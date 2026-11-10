@@ -76,6 +76,10 @@ async function checkModel() {
   assert.deepEqual(busy.islands.map(one => one.idle), [false, true, false, true], 'an island without in-flight tickets is idle')
   assert.deepEqual(busy.stuck.map(one => [one.identifier, one.project]), [['C-1', 'c'], ['A-2', 'a']], 'stuck tickets must cross projects, longest stay first')
   assert.equal(busy.global, true)
+  const twins = model.archipelagoOf(sceneOf([named('x', [parcel('T-1', 'work')]), named('y', [parcel('T-1', 'gate')])]))
+  const [first, second] = twins.tickets
+  assert.ok(first.identifier === second.identifier && first.key !== second.key, 'the same ticket id in two projects must get two keys')
+  assert.deepEqual(twins.islands.map(island => island.parcels.map(one => one.key)), [[first.key], [second.key]], 'each key must stay on its own island')
   assert.equal(model.archipelagoOf(sceneOf([named('solo', [])])).global, false, 'a single project must have no global stop')
   console.log('PASS diorama archipelago model: fixed positions, plates, idle islands, cross-project stuck order, single project')
 }
@@ -174,7 +178,7 @@ async function checkMainPath(browser, url) {
       if (await page.evaluate(() => document.activeElement?.dataset.ticket)) break
       await page.keyboard.press('Tab')
     }
-    const focused = await page.evaluate(() => document.activeElement?.dataset.ticket)
+    const focused = await page.evaluate(() => document.activeElement?.querySelector('b').textContent)
     assert.equal(focused, 'OF-415', 'the stuck list must be reachable with Tab')
     await page.keyboard.press('Enter')
     const entered = await state(page)

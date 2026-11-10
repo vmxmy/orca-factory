@@ -35,19 +35,21 @@ const scanText = (nextScanAt, now) => {
 export const hubText = (scene, now) => ['调度岛', `driver ${scene.state}`, ...scanText(scene.nextScanAt, now)].join(' · ')
 
 const ticketButton = (parcel, details) =>
-  element('button', { type: 'button', 'data-ticket': parcel.identifier, 'aria-pressed': 'false' }, [
+  element('button', { type: 'button', 'data-ticket': parcel.key, 'aria-pressed': 'false' }, [
     swatch(parcel.color),
     element('b', { text: parcel.identifier }),
     ...details,
   ])
 
+const lineOf = text => element('span', { text, title: text })
+
 const stuckButton = parcel =>
   ticketButton(parcel, [
     element('em', { text: parcel.duration }),
-    element('span', { text: [parcel.project, parcel.stationName, parcel.reason || parcel.label].join(' · ') }),
+    lineOf([parcel.project, parcel.stationName, parcel.reason || parcel.label].join(' · ')),
   ])
 
-const listButton = parcel => ticketButton(parcel, [element('span', { text: `${parcel.project} · ${parcel.stationName}` })])
+const listButton = parcel => ticketButton(parcel, [lineOf(`${parcel.project} · ${parcel.stationName}`)])
 
 const islandButton = island =>
   element('button', { type: 'button', 'data-island': String(island.index), title: island.path, class: island.idle ? 'idle' : '' }, [
@@ -217,7 +219,7 @@ export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) =>
     },
     trip(parcel, island) {
       for (const button of panel.querySelectorAll('button[data-ticket]')) {
-        button.setAttribute('aria-pressed', String(button.dataset.ticket === parcel?.identifier))
+        button.setAttribute('aria-pressed', String(button.dataset.ticket === parcel?.key))
       }
       if (!parcel) {
         trip.replaceChildren(element('div', { class: 'trip-head' }, [element('span', { class: 'why', text: tripHint(island) })]))
