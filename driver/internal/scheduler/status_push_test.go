@@ -31,6 +31,7 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 		{ID: "missing", Identifier: "OF-7", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue},
 		{ID: "conflicting", Identifier: "OF-8", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, MergeProblem: "conflicting handoff", Handoff: &merge.Handoff{QueueID: "conflict", EnqueuedAt: enqueued.Add(-time.Hour)}},
 		{ID: "merged", Identifier: "OF-9", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "merged", Lane: 3, Corrections: 2, EnqueuedAt: enqueued.Add(-time.Hour)}, Progress: &merge.Progress{QueueID: "earlier", Corrections: 3}},
+		{ID: "malformed", Identifier: "OF-10", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "malformed", Lane: 4, Corrections: -1, EnqueuedAt: enqueued.Add(-time.Hour)}},
 	}}
 	s := setup(f)
 	if err := s.Tick(context.Background()); err != nil {
@@ -72,8 +73,8 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 			if err := json.Unmarshal(contents, &view); err != nil {
 				t.Fatal(err)
 			}
-			if len(view.Tickets) != 9 {
-				t.Errorf("tickets = %d, want 9 including the unowned deployment barrier", len(view.Tickets))
+			if len(view.Tickets) != 10 {
+				t.Errorf("tickets = %d, want 10 including the unowned deployment barrier", len(view.Tickets))
 			}
 			positions := map[string]int{"OF-1": 1, "OF-2": 2, "OF-4": 4, "OF-5": 3, "OF-6": 1}
 			lanes := map[string]string{"OF-1": "1", "OF-2": "2", "OF-9": "3"}

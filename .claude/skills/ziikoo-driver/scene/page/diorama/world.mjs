@@ -185,11 +185,11 @@ const buildParcel = (scene, view, island) => {
   kit.box([0.78, 0.16, 0.78], WORLD.ink, [0, 0.3, 0]).visible = view.band
   kit.box([0.3, 0.06, 0.3], WORLD.stamp, [0, 0.74, 0]).visible = view.stamp
   kit.box([1.25, 0.12, 1.25], WORLD.wood, [0, -0.12, 0]).visible = view.raft
-  const tape = view.tapesSpent ? shared(GLOW.bad, { emissive: GLOW.bad }) : shared(WORLD.cream)
+  const tape = shared(view.tapesSpent ? WORLD.ink : WORLD.cream)
   for (let index = 0; index < view.tapes; index++) {
     const strip = new THREE.Mesh(UNIT_BOX, tape)
-    strip.scale.set(0.12, 0.77, 0.8)
-    strip.position.set(((index + 0.5) / view.tapes - 0.5) * TAPE_SPAN, 0.37, 0)
+    strip.scale.set(0.07, 0.62, 0.04)
+    strip.position.set(((index + 0.5) / view.tapes - 0.5) * TAPE_SPAN, 0.37, 0.39)
     group.add(strip)
   }
   const markColor = GLOW[view.alert] ?? GLOW.warn

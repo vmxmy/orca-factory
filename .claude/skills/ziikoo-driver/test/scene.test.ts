@@ -59,6 +59,8 @@ test('sceneOf 透传 lane 与打回次数，缺字段时省略，形状不对时
   expect(Object.keys(JSON.parse(JSON.stringify(parcels[0])))).not.toContain('lane')
   Object.assign(status.tickets[2]!, { lane: 4 })
   expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].lane 不是 1–3 的整数')
+  Object.assign(status.tickets[2]!, { lane: 2, corrections: { count: 0, limit: 0 } })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].corrections.limit 不是 1–20 的整数')
 })
 
 test('sceneOf 消费真实录制的 status/config 快照', () => {

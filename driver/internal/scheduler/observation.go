@@ -22,8 +22,13 @@ func ObservationRow(t Ticket, repos []config.Repository) status.Ticket {
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
 			count = max(count, p.Corrections)
 		}
-		row.Lane = h.Lane
-		row.Corrections = &status.Corrections{Count: count, Limit: machine.DefaultLimits.Corrections}
+		// readMergeHandoff does not validate these fields; a malformed value is no evidence.
+		if h.Lane >= 1 && h.Lane <= 3 {
+			row.Lane = h.Lane
+		}
+		if count >= 0 {
+			row.Corrections = &status.Corrections{Count: count, Limit: machine.DefaultLimits.Corrections}
+		}
 	}
 	for _, repo := range repos {
 		if repo.Path == t.Repo {

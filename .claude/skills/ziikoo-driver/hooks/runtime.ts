@@ -41,9 +41,13 @@ const parseLane = (o: Fields, path: string): number => {
   return value
 }
 
+const MAX_CORRECTION_LIMIT = 20
+
 const parseCorrections = (value: unknown, path: string): Corrections => {
   const o = fields(value, path)
-  return { count: tally(o, 'count', path), limit: tally(o, 'limit', path) }
+  const limit = count(o, 'limit', path)
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CORRECTION_LIMIT) throw new Error(`${path}.limit 不是 1–${MAX_CORRECTION_LIMIT} 的整数`)
+  return { count: tally(o, 'count', path), limit }
 }
 
 const optionalText = (o: Fields, key: string, path: string) => (o[key] === undefined ? undefined : text(o, key, path))
