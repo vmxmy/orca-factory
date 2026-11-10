@@ -21,6 +21,13 @@ const ANSIBLE = '/home/laoxu/ansible'
 const TWIN = '/home/laoxu/github/token123'
 const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
 
+const brightness = hex => {
+  const r = hex >> 16 & 0xff
+  const g = hex >> 8 & 0xff
+  const b = hex & 0xff
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
 const parcel = (identifier, station, extra = {}) => ({
   identifier,
   title: identifier,
@@ -337,7 +344,11 @@ async function checkShoreline(browser, url) {
     assert.equal(new Set(result.skies.map(sky => sky.pattern)).size, 4, 'sea-pattern must follow all four sky states')
     assert.equal(new Set(result.skies.map(sky => sky.shore)).size, 4, 'shoreline must follow all four sea colors')
     assert.deepEqual(result.skies.map(sky => sky.sea), [0xb4d6cc, 0xc6d3cf, 0xb3bdba, 0x6b7876], 'the four sea base colors must stay unchanged')
-    for (const sky of result.skies) assert.ok(sky.shore > sky.sea, `${sky.kind} shoreline must be lighter than the sea`)
+    for (const sky of result.skies) {
+      const shoreBrightness = brightness(sky.shore)
+      const seaBrightness = brightness(sky.sea)
+      assert.ok(shoreBrightness > seaBrightness, `${sky.kind} shoreline brightness ${shoreBrightness} must exceed sea brightness ${seaBrightness}`)
+    }
     assert.equal(result.shadows, false, 'contact shadows must not enable renderer shadow maps')
     assert.deepEqual(result.single, [0, 0, 0], 'a single project must have no shoreline, contact-shadow or sea-pattern')
     assert.equal(result.released, result.owned, 'rebuilding must release every owned shoreline geometry')
