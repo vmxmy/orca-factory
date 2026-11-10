@@ -147,6 +147,7 @@ const viewOf = (parcel, station, slot, deploy) => {
     corrections: parcel.corrections,
     stages: parcel.stages,
     identifier: parcel.identifier,
+    url: parcel.url,
     title: parcel.title,
     owner: parcel.owner,
     color: ownerColor(parcel.owner),

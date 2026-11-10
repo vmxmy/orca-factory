@@ -14,6 +14,7 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
   else station = pos.label === '开 PR' ? 'pack' : 'merge'
   return {
     identifier: ticket.identifier,
+    url: ticket.url,
     title: ticket.title ?? ticket.identifier,
     owner: ticket.owner,
     queuePosition: ticket.queuePosition,

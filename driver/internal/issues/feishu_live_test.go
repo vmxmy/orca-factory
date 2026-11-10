@@ -161,13 +161,13 @@ func TestFeishuLive(t *testing.T) {
 		if record != "" {
 			tickets = append(tickets, record)
 		}
-		_, own, err := c.projects(discoveryCtx)
+		_, own, _, err := c.projects(discoveryCtx)
 		if err != nil {
 			t.Errorf("list 项目 for cleanup of 票据 IDs %v: %v", tickets, err)
 		} else {
 			filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
 			for {
-				rows, err := c.readAll(discoveryCtx, "票据", &filter)
+				rows, _, err := c.readAll(discoveryCtx, "票据", &filter)
 				if err != nil {
 					t.Errorf("list 票据 for cleanup IDs %v: %v", tickets, err)
 					break
@@ -198,7 +198,7 @@ func TestFeishuLive(t *testing.T) {
 		for {
 			for _, id := range tickets {
 				filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: []feishu.LinkRef{{ID: id}}}}}
-				rows, err := c.readAll(discoveryCtx, "事件", &filter)
+				rows, _, err := c.readAll(discoveryCtx, "事件", &filter)
 				if err != nil {
 					t.Errorf("list 事件 for 票据 ID %s, event IDs %v: %v", id, events, err)
 				}

@@ -88,6 +88,7 @@ export type Stage = { name: string; seconds: number }
 export type RuntimeTicket = {
   repo: string
   identifier: string
+  url?: string
   owner: string
   phase: string
   stage?: string
@@ -107,6 +108,7 @@ export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' 
 
 export type Parcel = {
   identifier: string
+  url?: string
   title: string
   owner: string
   queuePosition?: number

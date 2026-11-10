@@ -47,10 +47,25 @@ const ticketButton = (parcel, details) =>
 
 const lineOf = text => element('span', { text, title: text })
 
+const recordLink = parcel => {
+  if (!parcel.url) return []
+  let url
+  try {
+    url = new URL(parcel.url)
+  } catch {
+    return []
+  }
+  if (url.protocol !== 'https:') return []
+  return [element('a', { class: 'open-record', 'data-record': parcel.key, href: url.href, target: '_blank', rel: 'noopener noreferrer', text: '打开记录' })]
+}
+
 const stuckButton = parcel =>
-  ticketButton(parcel, [
-    element('em', { text: parcel.duration }),
-    lineOf([parcel.project, parcel.stationName, parcel.reason || parcel.label].join(' · ')),
+  element('div', { class: 'stuck-entry' }, [
+    ticketButton(parcel, [
+      element('em', { text: parcel.duration }),
+      lineOf([parcel.project, parcel.stationName, parcel.reason || parcel.label].join(' · ')),
+    ]),
+    ...recordLink(parcel),
   ])
 
 const listButton = parcel => ticketButton(parcel, [lineOf(`${parcel.project} · ${parcel.stationName}`)])
@@ -126,6 +141,7 @@ const tripActions = parcel =>
   element('div', { class: 'trip-actions' }, [
     element('button', { type: 'button', 'data-copy': parcel.identifier, text: '复制票号' }),
     element('button', { type: 'button', 'data-copy': detailText(parcel), text: '复制详情' }),
+    ...recordLink(parcel),
     element('span', { class: 'copied', role: 'status' }),
   ])
 
@@ -155,7 +171,7 @@ export const failureText = ({ command, exitCode, reason }) => `${command} 失败
 
 const keepFocus = (container, render) => {
   const active = container.contains(document.activeElement) ? document.activeElement : null
-  const held = active && ['ticket', 'island', 'copy'].find(name => active.dataset[name] !== undefined)
+  const held = active && ['ticket', 'island', 'copy', 'record'].find(name => active.dataset[name] !== undefined)
   const value = held && active.dataset[held]
   render()
   if (held) container.querySelector(`[data-${held}="${CSS.escape(value)}"]`)?.focus()
