@@ -25,7 +25,7 @@ const GLOW = {
   ok: 0x2f9a6a,
   waiting: 0xeea61b,
   failed: 0xe0442e,
-  unknown: 0x5f5b66,
+  unknown: 0x7f8fa0,
   lantern: 0xe0442e,
   warn: 0xeea61b,
   bad: 0xe0442e,
@@ -142,7 +142,8 @@ const buildWaterfront = kit => {
   kit.box([0.9, 3, 0.9], WORLD.cream, [16.2, 0, 6.6])
   kit.box([1.1, 0.2, 1.1], WORLD.tower, [16.2, 3, 6.6])
   const beacon = kit.box([0.6, 0.6, 0.6], WORLD.unlit, [16.2, 3.2, 6.6], { emissive: 0x000000 })
-  return { lock, beacon }
+  const halo = kit.box([0.8, 0.1, 0.8], GLOW.warn, [16.2, 3.45, 6.6], { emissive: GLOW.warn })
+  return { lock, beacon, halo }
 }
 
 const buildHub = (scene, hub) => {
@@ -160,6 +161,7 @@ const dressIsland = (parts, island) => {
   parts.doors.forEach((door, index) => door.material.emissive.setHex(index < island.working ? GLOW.door : 0x000000))
   parts.lock.position.y = LOCK_Y[island.lock] + 0.55
   if (island.beacon !== 'off') glow(parts.beacon, GLOW[island.beacon])
+  parts.halo.visible = island.beacon === 'unknown'
   if (island.lantern) glow(parts.lantern, GLOW.lantern)
 }
 

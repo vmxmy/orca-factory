@@ -116,9 +116,9 @@ const byQueuePosition = (left, right) =>
 
 export const mergeQueue = parcels => [...parcels].sort(byQueuePosition)
 
-const alertOf = (parcel, station) => {
-  if (parcel.tone === 'failed') return 'bad'
-  if (parcel.tone === 'attention' || parcel.unknownDeploy || station === 'unknown') return 'warn'
+const alertOf = (tone, station, unknownDeploy) => {
+  if (tone === 'failed') return 'bad'
+  if (tone === 'attention' || unknownDeploy || station === 'unknown') return 'warn'
   return null
 }
 
@@ -130,28 +130,32 @@ const deploymentOf = row => {
   return { lock: 'open', beacon: row.parcels.some(parcel => parcel.unknownDeploy) ? 'unknown' : 'ok' }
 }
 
-const viewOf = (parcel, station, slot) => ({
-  identifier: parcel.identifier,
-  title: parcel.title,
-  owner: parcel.owner,
-  color: ownerColor(parcel.owner),
-  station,
-  stationName: parcel.unknownDeploy ? `${STATION_NAMES[station]} · 部署未知` : STATION_NAMES[station],
-  track: TRACK.findIndex(step => step.station === station),
-  slot,
-  band: SEALED.has(station),
-  stamp: SEALED.has(station),
-  raft: AFLOAT.has(station) || (station === 'merge' && parcel.phase === '已合并'),
-  alert: alertOf(parcel, station),
-  unknown: station === 'unknown',
-  label: parcel.label,
-  phase: parcel.phase,
-  duration: parcel.duration,
-  since: parcel.since,
-  reason: parcel.reason || parcel.blocker,
-  queuePosition: parcel.queuePosition,
-  unknownDeploy: parcel.unknownDeploy,
-})
+const viewOf = (parcel, station, slot, deploy) => {
+  const unknownDeploy = parcel.unknownDeploy && deploy
+  return {
+    identifier: parcel.identifier,
+    title: parcel.title,
+    owner: parcel.owner,
+    color: ownerColor(parcel.owner),
+    station,
+    stationName: unknownDeploy ? `${STATION_NAMES[station]} · 部署未知` : STATION_NAMES[station],
+    track: TRACK.findIndex(step => step.station === station),
+    slot,
+    band: SEALED.has(station),
+    stamp: SEALED.has(station),
+    raft: AFLOAT.has(station) || (station === 'merge' && parcel.phase === '已合并'),
+    alert: alertOf(parcel.tone, station, unknownDeploy),
+    unknown: station === 'unknown',
+    label: parcel.label,
+    phase: parcel.phase,
+    duration: parcel.duration,
+    since: parcel.since,
+    reason: parcel.reason || parcel.blocker,
+    queuePosition: parcel.queuePosition,
+    unknownDeploy,
+    undeployed: parcel.unknownDeploy && !deploy,
+  }
+}
 
 export const islandOf = row => {
   const stations = new Map()
@@ -166,7 +170,7 @@ export const islandOf = row => {
   const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
     members.map((parcel, index) => {
-      const view = viewOf(parcel, station, rules[station](index))
+      const view = viewOf(parcel, station, rules[station](index), row.deploy)
       return view.raft && station === 'merge' ? { ...view, slot: { ...view.slot, y: view.slot.y + RAFT_HEIGHT } } : view
     }),
   )

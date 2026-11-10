@@ -43,6 +43,12 @@ const arrowOf = island =>
     element('span', { text: `${island.name} · ${island.plate.stuck} 张卡住` }),
   ])
 
+const heldOf = container => {
+  const active = document.activeElement
+  if (!container.contains(active) || active.dataset.island === undefined) return undefined
+  return { island: active.dataset.island, kind: active.classList.contains('arrow') ? 'arrow' : 'plate' }
+}
+
 const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 
 const settle = (rect, taken) => {
@@ -152,7 +158,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
 
   return {
     update(archipelago) {
-      refocus = anchored.contains(document.activeElement) ? document.activeElement.dataset.island : undefined
+      refocus ??= heldOf(anchored)
       islands = archipelago.islands
       plates = islands.map(island => itemOf(plateOf(island), anchorOf(island)))
       hub = archipelago.hub
@@ -198,7 +204,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
       for (const station of shown.stations) place(station, camera, taken)
       for (const { arrow, point } of pointing) pointTo(arrow, point, area)
       if (refocus === undefined) return
-      anchored.querySelector(`[data-island="${CSS.escape(refocus)}"]:not([hidden])`)?.focus({ preventScroll: true })
+      anchored.querySelector(`.${refocus.kind}[data-island="${CSS.escape(refocus.island)}"]:not([hidden])`)?.focus({ preventScroll: true })
       refocus = undefined
     },
     forgetSizes() {

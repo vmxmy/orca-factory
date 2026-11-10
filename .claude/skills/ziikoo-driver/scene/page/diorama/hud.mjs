@@ -18,7 +18,10 @@ const swatch = color => {
 
 const SKY_NOTES = { overcast: '维护中', dark: '没有快照' }
 const SEARCH_LIMIT = 8
-const UNKNOWN_DEPLOY_NOTE = '部署：未知 · driver 未提供 deployment'
+const deployNote = parcel => {
+  if (parcel.unknownDeploy) return ['部署：未知 · driver 未提供 deployment']
+  return parcel.undeployed ? ['部署：不适用 · 未配置部署'] : []
+}
 
 const sinceText = ms => {
   const seconds = Math.floor(Math.max(0, ms) / 1000)
@@ -78,8 +81,7 @@ const tripFoot = parcel => {
   if (parcel.unknown) notes.push(`工位未知 · 阶段 ${parcel.phase}`)
   else if (parcel.track < 0) notes.push(`不在主线：${parcel.stationName}`)
   if (parcel.queuePosition !== undefined) notes.push(`合并队列第 ${parcel.queuePosition} 位`)
-  const lines = notes.length === 0 ? [] : [notes.join(' · ')]
-  if (parcel.unknownDeploy) lines.push(UNKNOWN_DEPLOY_NOTE)
+  const lines = [...(notes.length === 0 ? [] : [notes.join(' · ')]), ...deployNote(parcel)]
   return lines.map(text => element('div', { class: 'trip-foot', text }))
 }
 
@@ -91,7 +93,7 @@ const detailText = parcel =>
     `真实阶段：${parcel.phase} / ${parcel.label}`,
     `已观察：${parcel.duration}`,
     ...(parcel.reason ? [`原因：${parcel.reason}`] : []),
-    ...(parcel.unknownDeploy ? [UNKNOWN_DEPLOY_NOTE] : []),
+    ...deployNote(parcel),
   ].join('\n')
 
 const tripActions = parcel =>

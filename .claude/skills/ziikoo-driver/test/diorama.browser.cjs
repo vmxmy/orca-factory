@@ -72,7 +72,11 @@ async function checkModel() {
   assert.deepEqual(model.stuckOf(blind).map(one => one.identifier), ['M-1'], 'an unknown deployment must count as stuck')
   assert.deepEqual([blind.lock, blind.beacon], ['open', 'unknown'], 'an unknown deployment must grey the lighthouse and keep the lock rule')
   assert.equal(model.islandOf(row([merged, parcel('M-2', 'dispatch', { deployment: 'failed' })])).beacon, 'failed', 'a failed deployment must outrank an unknown one')
-  assert.equal(model.islandOf({ ...row([merged]), deploy: false }).beacon, 'off', 'a project without deployment keeps its lighthouse off')
+  const undeployed = model.islandOf({ ...row([merged]), deploy: false })
+  assert.equal(undeployed.beacon, 'off', 'a project without deployment keeps its lighthouse off')
+  assert.deepEqual([undeployed.parcels[0].alert, undeployed.parcels[0].unknownDeploy, undeployed.parcels[0].undeployed], [null, false, true], 'a merged ticket in a project without deployment must not warn')
+  assert.deepEqual(model.stuckOf(undeployed), [], 'a merged ticket in a project without deployment is not stuck')
+  assert.equal(undeployed.parcels[0].stationName, model.STATION_NAMES.merge, 'a project without deployment must not say 部署未知')
   console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station, unknown deployment')
 
   const named = (name, parcels) => ({ ...row(parcels), name, path: `/${name}` })
@@ -295,9 +299,21 @@ async function checkReducedMotion(browser, url) {
     assert.ok(first.marks.length > 0, 'the recorded attention tickets must show markers')
     for (const mark of first.marks) assert.deepEqual(mark, { y: MARK_REST, rotation: 0 }, 'markers must not float when motion is reduced')
     await page.locator('button.plate[data-island="1"]').focus()
+    await page.evaluate(async () => {
+      const scene = await (await fetch('./diorama-scene.json')).json()
+      window.diorama.update(scene)
+      window.diorama.update(scene)
+    })
+    await frames(page)
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.island), '1', 'two Scenes before a frame must keep keyboard focus on the island plate')
+    await page.locator('canvas').focus()
+    for (let press = 0; press < 8; press++) await page.keyboard.press('ArrowDown')
+    await frames(page)
+    await page.locator('button.arrow[data-island="0"]').focus()
     await page.evaluate(async () => window.diorama.update(await (await fetch('./diorama-scene.json')).json()))
     await frames(page)
-    assert.equal(await page.evaluate(() => document.activeElement?.dataset.island), '1', 'a new Scene must keep keyboard focus on the island plate')
+    const arrowFocus = await page.evaluate(() => [document.activeElement?.classList.contains('arrow'), document.activeElement?.dataset.island])
+    assert.deepEqual(arrowFocus, [true, '0'], 'a new Scene must keep keyboard focus on the edge arrow, not move it to the plate')
     await page.locator('.stuck > .list button[data-ticket]').first().click()
     await page.locator('canvas').focus()
     await page.keyboard.press('3')
@@ -362,6 +378,7 @@ const pushedStatus = live => {
       { ...barrier, blockedReason: `deployment: ${paused.state}`, deployment: { ...barrier.deployment, state: paused.state, reason: paused.reason } },
       unmapped,
       { ...live.tickets.find(ticket => ticket.identifier === 'OF-415'), repo: TWIN, owner: '合并通道', phase: '已合并' },
+      { ...live.tickets.find(ticket => ticket.identifier === 'OF-419'), repo: ANSIBLE, owner: '合并通道', phase: '已合并' },
     ],
   }
 }
@@ -597,7 +614,17 @@ async function checkEntries(browser, live, model) {
   } finally {
     await twin.page.close()
   }
-  console.log('PASS production entries: ?project=, [ and ], island click, search Enter, URL, ?ticket= with a twin id, barrier, unknown station, unknown deployment')
+  const plain = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(ANSIBLE)}&ticket=OF-419`)
+  try {
+    await tripHas(plain.page, ['栈桥 · 已合并', '部署：不适用 · 未配置部署'])
+    assert.ok(!(await plain.page.locator('.trip').innerText()).includes('部署未知'), 'a project without deployment must not say 部署未知')
+    assert.ok((await copied(plain.page, '复制详情')).includes('部署：不适用 · 未配置部署'), 'copied detail must say deployment does not apply')
+    assert.ok(!(await plain.page.locator('.stuck > .list').innerText()).includes('ansible'), 'a merged ticket without deployment config is not stuck')
+    assert.deepEqual(plain.errors, [])
+  } finally {
+    await plain.page.close()
+  }
+  console.log('PASS production entries: ?project=, [ and ], island click, search Enter, URL, ?ticket= with a twin id, barrier, unknown station, unknown deployment, no deployment configured')
 }
 
 async function checkWithoutWebGL(browser, live) {
