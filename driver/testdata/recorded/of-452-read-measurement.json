@@ -1,0 +1,47 @@
+{
+  "ticket": "OF-452",
+  "status": "scope-blocked-before-implementation",
+  "method": "Read-only production Feishu Snapshot followed by SnapshotComments, two consecutive rounds using current Go client; schema/token initialization excluded. Transport counted every request including retries. No request or response bodies retained.",
+  "project": "github.com/vmxmy/orca-factory",
+  "rounds": [
+    {
+      "at": "2026-11-10T22:59:17+08:00",
+      "events": 1902,
+      "events_ms": 16520,
+      "events_requests": 25,
+      "round": 1,
+      "snapshot_ms": 1431,
+      "snapshot_requests": 2,
+      "tickets": 247,
+      "unchanged_histories": 0,
+      "unchanged_tickets": 0
+    },
+    {
+      "at": "2026-11-10T22:59:35+08:00",
+      "events": 1902,
+      "events_ms": 16370,
+      "events_requests": 25,
+      "round": 2,
+      "snapshot_ms": 1267,
+      "snapshot_requests": 2,
+      "tickets": 247,
+      "unchanged_histories": 247,
+      "unchanged_tickets": 247
+    }
+  ],
+  "recorded_regression": {
+    "test": "TestRecordedFeishuIdleInspectionReadsLess",
+    "first_requests": 4,
+    "second_requests": 4,
+    "ticket_and_event_sets_equal": true,
+    "result": "fails: second round must send fewer reads"
+  },
+  "blocker": {
+    "paths": [
+      "driver/internal/feishu/records.go",
+      "driver/internal/feishu/recorded_test.go"
+    ],
+    "reason": "Existing listing methods expose only offset/limit/filter, always fetching all fields. Modification-time deltas alone omit deletions and cannot match a full snapshot. A projected record ID/modification-time inventory plus BatchGet for changed records needs a client API extension and recorded transport tests outside SCOPE. The official installed lark-cli dry-run confirms GET records?field_id=fldUpdated&limit=100&offset=0.",
+    "remaining": "Implement incremental ticket/event reconciliation, deletion and dependency handling, startup/maintenance/periodic full refresh, summary full_sync, and CONTRACTS after scope correction."
+  }
+}
