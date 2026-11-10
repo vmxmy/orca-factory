@@ -262,9 +262,9 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `config.Load` 校验机器方案，`config.LoadRepository` 在仓库 env 上叠加所选方案。选名取仓库显式 `AGENT_PROFILE`，缺省取文件 `default`；显式空名不取 default。逐键优先级为仓库显式值（含空值）、所选方案、原有回退链。文件不存在或所选方案不存在时不补任何键。`Repository.Profile` 保存所选名字，`Repository.Sources` 保存生效键的 `repository` 或 `profile:<名>` 来源。方案文件按 home 路径在进程内首次加载后固定，添加、修改、删除或修复文件均需重启，不增加热重载。
 
-调度器、处置 Agent、需求助手使用 `LoadRepository`。`driver exec` 仍用 bash source 读取仓库 env，source 前清除 `AGENT_PROFILE` 与三个档位键，使继承环境不算仓库显式值；方案叠加与 `LoadRepository` 共用 `config.ApplyProfile`。角色回退规则保持不变。票面、评论不能指定方案，方案不包含审查命令，不做按票或成本的自动路由。README 的「模型方案」提供两个方案的配置示例。
+调度器、处置 Agent、需求助手使用 `LoadRepository`。`driver exec` 仍用 bash source 读取仓库 env，source 前清除 `AGENT_PROFILE` 与三个档位键，使继承环境不算仓库显式值；方案仍未补上的档位键回退到继承值，无方案文件时与改动前一致；方案叠加与 `LoadRepository` 共用 `config.ApplyProfile`。角色回退规则保持不变。票面、评论不能指定方案，方案不包含审查命令，不做按票或成本的自动路由。README 的「模型方案」提供两个方案的配置示例。
 
-验证：`config.TestRepositoryProfiles` 覆盖缺文件、补全、覆盖、显式空值、方案选择、未知键及非法值；`config.TestProfilesRequireRestart` 覆盖同进程文件修改不生效；`config.TestMachineConfigRejectsInvalidProfiles` 覆盖启动校验；`executor.TestExecUsesRepositoryProfiles` 对比 exec 初始化与 `LoadRepository` 的生效值；`executor.TestExecReadsRepositoryEnvWithBash` 覆盖 exec 保持 bash source 语义；`executor.TestExecIgnoresInheritedProfileKeys` 覆盖继承环境不影响方案选择与补值。
+验证：`config.TestRepositoryProfiles` 覆盖缺文件、补全、覆盖、显式空值、方案选择、未知键及非法值；`config.TestProfilesRequireRestart` 覆盖同进程文件修改不生效；`config.TestMachineConfigRejectsInvalidProfiles` 覆盖启动校验；`executor.TestExecUsesRepositoryProfiles` 对比 exec 初始化与 `LoadRepository` 的生效值；`executor.TestExecReadsRepositoryEnvWithBash` 覆盖 exec 保持 bash source 语义；`executor.TestExecIgnoresInheritedProfileKeys` 覆盖继承环境不影响方案选择与补值；`executor.TestExecFallsBackToInheritedTiersWithoutProfile` 覆盖无方案文件时沿用继承档位。
 
 ## driver config 快照
 

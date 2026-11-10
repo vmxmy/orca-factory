@@ -139,3 +139,24 @@ func TestExecIgnoresInheritedProfileKeys(t *testing.T) {
 		t.Fatalf("exec default=%q, LoadRepository default=%q", got, repository.Env["AGENT_TIER_DEFAULT"])
 	}
 }
+
+func TestExecFallsBackToInheritedTiersWithoutProfile(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_TIER_DEFAULT", "codex:inherited:high")
+	t.Setenv("AGENT_TIER_ESCALATE", "1")
+	repo := t.TempDir()
+	path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{executor.Config.TierSettings["default"], executor.Config.Escalate}; !reflect.DeepEqual(got, []string{"codex:inherited:high", "1"}) {
+		t.Fatalf("exec tiers=%q, want inherited values without profiles.toml", got)
+	}
+}
