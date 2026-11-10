@@ -117,7 +117,7 @@ token 经 import map 带到每个模块：
 - 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。闸门打开、项目配置了部署、但有 `unknownDeploy` 的票（已合并但 driver 没有提供 `deployment`）时，灯塔为冷灰色，外加一圈琥珀色细环，表示有部署但状态未知；熄灭的灯塔是暗色，没有细环。
 - 有等人批的票时，人工台的灯笼变红。
 - 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention`、工位未知，或项目配置了部署且票为 `unknownDeploy` 时为琥珀色。这种票工位名后加「部署未知」。项目没有配置部署时，已合并且没有 `deployment` 的票是正常状态，不告警，也不进「卡住的票」。
-- 快照过期：driver 状态为 `unknown` 时不判过期；其他非 `ok` 状态直接判过期。`ok` 快照带 `nextScanAt` 时，只有 `generatedAt + 快照年龄` 超过下次巡检时间加 150 秒宽限才过期；没有 `nextScanAt` 时，沿用快照年龄超过 40 秒的规则。宽限取 150 秒，因为 `nextScanAt` 是巡检开始时间，一轮巡检实测要 20–100 秒，新快照在巡检结束时才写出。
+- 快照过期：driver 状态为 `unknown` 时不判过期；其他非 `ok` 状态直接判过期。`ok` 快照带 `nextScanAt` 时，只有 `generatedAt + 快照年龄` 超过下次巡检时间加 150 秒宽限才过期；没有 `nextScanAt` 时，沿用快照年龄超过 40 秒的规则。宽限取 150 秒：serve 每 30 秒醒一次，下一轮巡检比 `nextScanAt` 晚 0–30 秒开始；巡检读完账本才写新快照，这一段中位约 57 秒。一周日志里超过这个宽限的巡检约占 0.4%。driver 活着但巡检持续失败时，`nextScanAt` 仍会后移，页面要等 driver 在 5 分钟后把状态改为 `stale` 才显示过期。
 - 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；快照过期为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
 - 沙盘不画 Scene 没有的数据，也不画占位。基础设施与执行器预算不画。依赖暂停的供给柱也不画：全局暂停机制已由 OF-214 删除，driver 没有这项数据。
 
@@ -153,7 +153,7 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 原样录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 

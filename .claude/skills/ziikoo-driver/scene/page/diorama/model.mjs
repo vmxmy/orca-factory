@@ -74,7 +74,7 @@ const layoutOf = count => {
 }
 
 const STALE_MS = 40_000
-// A scheduler scan takes up to 100 seconds, so the snapshot after nextScanAt arrives that much later.
+// serve starts the tick up to 30 seconds after nextScanAt, and the tick writes the snapshot about a minute in.
 const SCAN_GRACE_MS = 150_000
 
 export const staleOf = (scene, ageMs) => scene.state !== 'unknown' && (scene.state !== 'ok' || (
