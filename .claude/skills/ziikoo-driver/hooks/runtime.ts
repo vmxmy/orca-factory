@@ -68,6 +68,7 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
   return {
     repo: text(o, 'repo', path),
     identifier: text(o, 'identifier', path),
+    url: optionalText(o, 'url', path),
     owner: text(o, 'owner', path),
     phase: text(o, 'phase', path),
     stage: optionalText(o, 'stage', path),

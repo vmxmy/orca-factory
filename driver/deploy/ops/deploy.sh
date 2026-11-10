@@ -8,7 +8,18 @@ exec 9>"$STATE/deploy.lock"
 flock 9 || exit 1
 set -e
 cd "$REPO_DIR"
-git fetch -q origin
+fetch_attempt=1
+retry_delay=5
+until git fetch -q origin; do
+  if [ "$fetch_attempt" -ge 3 ]; then
+    echo "git fetch 失败：尚未 drain，未改动任何状态" >&2
+    exit 1
+  fi
+  echo "git fetch 失败，${retry_delay} 秒后重试" >&2
+  sleep "$retry_delay"
+  fetch_attempt=$((fetch_attempt + 1))
+  retry_delay=15
+done
 git merge --ff-only -q origin/main
 D="$HOME/.local/bin/orca-factory-driver"
 SHA=$(git rev-parse --short HEAD)

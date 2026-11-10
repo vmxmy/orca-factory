@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -64,6 +65,34 @@ func TestAdoptRejectsIncompleteDependency(t *testing.T) {
 	_, err := c.Adopt(context.Background(), "GH-1", []byte(`{"blockers":["01234567-1234-1234-1234-012345678901"],"related":[]}`))
 	if err == nil || f.writes != 0 {
 		t.Fatalf("incomplete dependency adopted: writes=%d err=%v", f.writes, err)
+	}
+}
+
+func TestAdoptDependencyErrorExplainsUUID(t *testing.T) {
+	for _, field := range []string{"blockers", "related"} {
+		t.Run(field, func(t *testing.T) {
+			c, f := newImportServer(t)
+			input := `{"blockers":["GH-2"],"related":[]}`
+			if field == "related" {
+				input = `{"blockers":[],"related":["GH-2"]}`
+			}
+			f.rows = []map[string]any{
+				{"node_id": "I_native_1", "number": 1, "title": "native", "body": "## 要做\n施工\nCHECK: make test\nSCOPE: driver/\nDEPENDENCIES: " + input, "state": "open"},
+				{"number": 2, "body": `<!-- orca-task-v1: {"id":"01234567-1234-1234-1234-012345678901","identifier":"GH-2","project":"o/r","state":"Done","complete":true,"blockers":[],"related":[]} -->`, "state": "closed"},
+			}
+			_, err := c.Adopt(context.Background(), "GH-1", []byte(input))
+			if err == nil {
+				t.Fatal("adopt accepted ticket number as dependency")
+			}
+			for _, want := range []string{field + "[0]", `"GH-2"`, "依赖须填票的 UUID", "issues issue <票号> --json", "取 `id`"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("dependency error %q missing %q", err, want)
+				}
+			}
+			if f.writes != 0 {
+				t.Fatalf("rejected adopt wrote %d requests", f.writes)
+			}
+		})
 	}
 }
 

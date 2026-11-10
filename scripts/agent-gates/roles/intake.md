@@ -37,6 +37,7 @@
 - CHECK 在 main 上实际运行一次，记录红因。只有断言失败算有效红。参数错误（unknown option、Usage）、路径或工作目录不对、零测试匹配（No test files found、0 tests、no tests to run）、命令不存在（command not found）都是无效红：不得建票，改写 CHECK 后重跑。建票入口按自检的 `CHECK 红因` 行拒绝这些信号。
 - SCOPE 的每个路径或 glob 在仓库里真实存在（新建文件写到已存在的目录下）。
 - 外部契约：新增或改变外部系统输出解析的票，SCOPE 含 `*_test.go` 与 `testdata/` 录制真实样本路径。
+- 录制样本：CHECK 或「要做」提到 `testdata/recorded` 或 `recorded/` 时，SCOPE 含 `driver/testdata/recorded/` 下的路径（如 `driver/testdata/recorded/*`）。建票入口在「外部契约样本」行不是「已含 `*_test.go` 与 `testdata/` 路径」时检查这一条，缺路径就拒绝建票并给出要加的 glob。
 - 字段形状样本：简报要求解析的每一种外部字段形状都有现网真实样本或录制来源，无样本的形状已删出简报。
 - 行为追踪：每条要改变的行为，其产生函数所在文件已纳入 SCOPE。建票入口读取本小节的 `- 行为追踪` 行，去掉路径后的 `:行号`，按 `gate.sh` 的 SCOPE glob 语义匹配；任一路径未覆盖就拒绝建票并列出缺失路径。没有该行或该行没有路径时放行。
 - lane 预判与 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 逐条比对一致。
