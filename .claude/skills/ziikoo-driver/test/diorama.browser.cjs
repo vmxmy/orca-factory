@@ -37,6 +37,27 @@ const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', depl
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+  const recorded = readJSON(path.join(preview, 'diorama-scene-next-scan.json'))
+  assert.equal(recorded.state, 'ok')
+  assert.equal(recorded.nextScanAt - recorded.generatedAt, 5_170, 'the recorded next scan interval must survive parseRuntime and sceneOf')
+  assert.deepEqual(
+    [41_000, 155_170, 155_171].map(age => model.staleOf(recorded, age)),
+    [false, false, true],
+    'the recorded ok snapshot must stay fresh through its next scan plus the 150-second scan grace and expire one millisecond later',
+  )
+  const generatedAt = 1e12
+  const scheduled = { state: 'ok', generatedAt, nextScanAt: generatedAt + 120_000 }
+  assert.deepEqual(
+    [90_000, 170_000, 270_000, 270_001, 280_000].map(age => model.staleOf(scheduled, age)),
+    [false, false, false, true, true],
+    'an ok snapshot must stay fresh through the next scan plus the 150-second scan grace and expire only after it',
+  )
+  assert.deepEqual(
+    [40_000, 40_001, 41_000].map(age => model.staleOf({ state: 'ok', generatedAt }, age)),
+    [false, true, true],
+    'an ok snapshot without a next scan must keep the 40-second expiry rule',
+  )
+  console.log('PASS diorama freshness model: next scan grace period, exact boundary, legacy expiry')
   const crowd = Array.from({ length: 7 }, (_, index) => parcel(`W-${index}`, 'work'))
   const island = model.islandOf(row([...STATIONS.map(station => parcel(`S-${station}`, station)), parcel('S-new', 'new-backend-stage'), ...crowd]))
   const find = identifier => island.parcels.find(one => one.identifier === identifier)
@@ -481,6 +502,12 @@ async function checkLiveUpdates(browser, live) {
     assert.ok(await paintedShare(page) > 0.2, 'the production page must render the islands')
     await waitLead(page, '已连接')
     assert.ok((await leadText(page)).includes('快照过期'), 'the recorded snapshot is days old and must read as stale')
+    const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+    const scanInterval = Date.parse(recorded.nextScanAt) - Date.parse(recorded.generatedAt)
+    const generatedAt = Date.now() - 60_000
+    live.write({ ...recorded, generatedAt: new Date(generatedAt).toISOString(), nextScanAt: new Date(generatedAt + scanInterval).toISOString() })
+    await waitLead(page, '快照过期', false)
+    for (const text of ['已连接', 'driver ok']) assert.ok((await leadText(page)).includes(text), `the recorded snapshot within the next scan grace period must show ${text}`)
     if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-global.png') })
     await page.locator('.stuck > .list button[data-ticket="0/OF-415"]').click()
     await settled(page)
@@ -688,9 +715,9 @@ async function checkProduction(browser, bun, model) {
 }
 
 async function main() {
-  const model = await checkModel()
   const { playwright, chrome, bun } = dependencies()
   execFileSync(bun, [path.join(preview, 'diorama-scene.ts')], { stdio: 'inherit' })
+  const model = await checkModel()
   const server = await serve()
   const url = `http://127.0.0.1:${server.address().port}/test/design-preview/diorama.html`
   try {

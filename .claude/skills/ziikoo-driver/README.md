@@ -117,7 +117,7 @@ token 经 import map 带到每个模块：
 - 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。闸门打开、项目配置了部署、但有 `unknownDeploy` 的票（已合并但 driver 没有提供 `deployment`）时，灯塔为冷灰色，外加一圈琥珀色细环，表示有部署但状态未知；熄灭的灯塔是暗色，没有细环。
 - 有等人批的票时，人工台的灯笼变红。
 - 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention`、工位未知，或项目配置了部署且票为 `unknownDeploy` 时为琥珀色。这种票工位名后加「部署未知」。项目没有配置部署时，已合并且没有 `deployment` 的票是正常状态，不告警，也不进「卡住的票」。
-- 快照过期：driver 状态不是 `unknown`，并且状态不是 `ok` 或快照超过 40 秒。
+- 快照过期：driver 状态为 `unknown` 时不判过期；其他非 `ok` 状态直接判过期。`ok` 快照带 `nextScanAt` 时，只有 `generatedAt + 快照年龄` 超过下次巡检时间加 150 秒宽限才过期；没有 `nextScanAt` 时，沿用快照年龄超过 40 秒的规则。宽限取 150 秒：serve 每 30 秒醒一次，下一轮巡检比 `nextScanAt` 晚 0–30 秒开始；巡检读完账本才写新快照，这一段中位约 57 秒。一周日志里超过这个宽限的巡检约占 0.4%。driver 活着但巡检持续失败时，`nextScanAt` 仍会后移，页面要等 driver 在 5 分钟后把状态改为 `stale` 才显示过期。
 - 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；快照过期为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
 - 沙盘不画 Scene 没有的数据，也不画占位。基础设施与执行器预算不画。依赖暂停的供给柱也不画：全局暂停机制已由 OF-214 删除，driver 没有这项数据。
 
@@ -153,11 +153,11 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 
-预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时。所以状态栏的快照年龄从 0 秒开始，40 秒后天空变成过期的雾色。预览没有连接状态，`window.diorama` 是完整的沙盘句柄。
+预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时，状态栏的快照年龄从 0 秒开始。`ok` 快照带 `nextScanAt` 时，超过下次巡检时间加 150 秒宽限才过期；没有该字段时，年龄超过 40 秒就过期。维护为 `running` 时，过期使天空变成雾色。预览没有连接状态，`window.diorama` 是完整的沙盘句柄。
 
 ## 复制
 
@@ -181,12 +181,12 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先运行沙盘视图模型断言，包括 `unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
 1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
 2. 预览减少动态与生命周期：标记不浮动，相机直接到达；连续两次 `update` 后铭牌焦点不丢，边缘箭头的焦点仍在箭头上，保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择，没有项目的 Scene 在改动前被拒绝；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
 3. 生产服务：用替身 `orca-factory-driver` 启动真实 `scene/server.ts`。`scene/page/` 下每个文件、`/`、`/snapshot` 与 `/events` 无 token 时返回 404，带 `t` 参数或 `X-Token` 头时可读，POST 返回 404；已删除的旧页面路径返回 404。
-4. 生产页面：首屏渲染与快照过期；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，维护中且快照过期时两项都写，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；没有项目的 Scene 卸载沙盘并写「暂无项目」，有项目后重新挂载；事件流被拒绝后写「连接已关闭」，不再写自动重连；每个页面请求都带 token，不写浏览器存储。
+4. 生产页面：首屏渲染与快照过期；录制快照重定时到年龄超过 40 秒但未到下次巡检加宽限时，不写「快照过期」，仍写「已连接」和 `driver ok`；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，维护中且快照过期时两项都写，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；没有项目的 Scene 卸载沙盘并写「暂无项目」，有项目后重新挂载；事件流被拒绝后写「连接已关闭」，不再写自动重连；每个页面请求都带 token，不写浏览器存储。
 5. 生产入口：`?project=`、`[` 与 `]`、点击岛、搜索回车、URL 跟随视图、部署暂停与未知工位的行程条、同号票在两个项目各列一条、`?project=&ticket=` 打开指定项目的同号票；该票已合并但没有 `deployment`，行程条、复制详情与「卡住的票」都写部署未知；没有配置部署的项目里同样的票写「部署：不适用 · 未配置部署」，不进「卡住的票」。
 6. 无 WebGL：页面写出含 WebGL 的原因，不留画布，没有页面错误。
 
