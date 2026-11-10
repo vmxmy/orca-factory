@@ -33,7 +33,7 @@ func TestHumanObservationFields(t *testing.T) {
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories)}); err != nil {
+	if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories, s.Now())}); err != nil {
 		t.Fatal(err)
 	}
 	for _, path := range []string{status.PushPath(), status.Path()} {

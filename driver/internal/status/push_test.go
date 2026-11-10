@@ -187,7 +187,7 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 	}
 	observedAt := start.Add(15 * time.Second)
 	rebuild := func(view *View) {
-		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "gate", Title: "新标题", BlockedReason: "等待观察"}}
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "gate", Title: "新标题", BlockedReason: "等待观察", Stages: []Stage{{Name: "gate", Seconds: 80}}}}
 	}
 	PushObservation(observedAt, start, rebuild)
 	view := Read(observedAt, 0)
@@ -195,6 +195,9 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 		t.Fatalf("observation lost ticket: %+v", view)
 	}
 	got := view.Tickets[0]
+	if len(got.Stages) != 0 {
+		t.Fatalf("older timeline must not describe newer executor phase: %+v", got.Stages)
+	}
 	if got.Phase != "审查" || !got.Since.Equal(before.Since) {
 		t.Fatalf("older ledger observation overwrote executor phase or since: %+v, before: %+v", got, before)
 	}
@@ -204,6 +207,9 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 	observedAt = start.Add(25 * time.Second)
 	PushObservation(observedAt, start.Add(20*time.Second), rebuild)
 	got = Read(observedAt, 0).Tickets[0]
+	if len(got.Stages) != 1 || got.Stages[0] != (Stage{Name: "gate", Seconds: 80}) {
+		t.Fatalf("matching phase lost its timeline: %+v", got.Stages)
+	}
 	if got.Phase != "gate" || !got.Since.Equal(observedAt) || !got.PushedAt.Equal(observedAt) {
 		t.Fatalf("newer ledger observation did not advance phase: %+v", got)
 	}

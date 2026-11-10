@@ -278,7 +278,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
-	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories)
+	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {

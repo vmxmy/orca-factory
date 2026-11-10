@@ -9,6 +9,7 @@ import type {
   LogIssue,
   Runtime,
   RuntimeTicket,
+  Stage,
   Timeline,
   TimelineEntry,
 } from '../types'
@@ -52,6 +53,16 @@ const parseCorrections = (value: unknown, path: string): Corrections => {
 
 const optionalText = (o: Fields, key: string, path: string) => (o[key] === undefined ? undefined : text(o, key, path))
 
+const parseStages = (value: unknown, path: string): Stage[] => {
+  const stages = list(value, path)
+  if (stages.length > 20) throw new Error(`${path} 超过 20 项`)
+  return stages.map((stage, index) => {
+    const at = `${path}[${index}]`
+    const o = fields(stage, at)
+    return { name: text(o, 'name', at), seconds: tally(o, 'seconds', at) }
+  })
+}
+
 const parseDeployment = (value: unknown, path: string): Deployment => {
   const o = fields(value, path)
   return {
@@ -79,6 +90,7 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
     queuePosition: o.queuePosition === undefined ? undefined : count(o, 'queuePosition', path),
     lane: o.lane === undefined ? undefined : parseLane(o, path),
     corrections: o.corrections === undefined ? undefined : parseCorrections(o.corrections, `${path}.corrections`),
+    stages: o.stages === undefined ? undefined : parseStages(o.stages, `${path}.stages`),
   }
 }
 

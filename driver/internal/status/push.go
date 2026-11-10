@@ -137,6 +137,12 @@ func normalize(view *View, now time.Time) {
 	if view.Tickets == nil {
 		view.Tickets = []Ticket{}
 	}
+	for i := range view.Tickets {
+		ticket := &view.Tickets[i]
+		if n := len(ticket.Stages); n > 0 && ticket.Stages[n-1].Name != ticket.Phase {
+			ticket.Stages = nil
+		}
+	}
 	hour := now.UTC().Truncate(time.Hour)
 	if !view.GitHub.Hour.IsZero() || view.GitHub.Requests != 0 || view.GitHub.Limits != nil {
 		if !view.GitHub.Hour.Equal(hour) {

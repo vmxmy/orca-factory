@@ -5,11 +5,28 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STATUS } from './sample-recorded'
+import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
 const runtime = () => parseRuntime(JSON.stringify(SAMPLE_STATUS))
+
+test('sceneOf 透传阶段时间，缺证据时省略，并拒绝非法秒数和超长时间线', () => {
+  const recorded = parseRuntime(RECORDED_STAGES_STATUS)
+  expect(recorded.tickets[0]?.stages).toEqual([
+    { name: '排队合并', seconds: 427 }, { name: 'Agent处置', seconds: 434 }, { name: '排队合并', seconds: 141 }, { name: 'Agent处置', seconds: 50 },
+  ])
+  const status = structuredClone(SAMPLE_STATUS)
+  const stages = JSON.parse(RECORDED_STAGES_STATUS).tickets[0].stages
+  Object.assign(status.tickets[2]!, { stages })
+  const parcels = sceneOf(parseRuntime(JSON.stringify(status)), config()).rows[0]!.parcels
+  expect(parcels[2]?.stages).toEqual(stages)
+  expect(Object.keys(JSON.parse(JSON.stringify(parcels[0])))).not.toContain('stages')
+  Object.assign(status.tickets[2]!, { stages: [{ name: 'gate', seconds: -1 }] })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].stages[0].seconds 不是非负整数')
+  Object.assign(status.tickets[2]!, { stages: Array.from({ length: 21 }, () => stages[0]) })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].stages 超过 20 项')
+})
 
 test('sceneOf 透传可选记录 url，缺字段时省略', () => {
   const status = structuredClone(SAMPLE_STATUS)

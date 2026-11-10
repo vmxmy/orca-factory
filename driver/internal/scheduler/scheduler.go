@@ -15,8 +15,10 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
@@ -24,7 +26,8 @@ import (
 )
 
 type Ticket struct {
-	Resolution *resolver.Record
+	stageTimeline []stageStart
+	Resolution    *resolver.Record
 	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
 	// reserved by an earlier squash intent for this queue.
 	deploymentReservedQueue             string
@@ -112,9 +115,32 @@ type Scheduler struct {
 	NextTickAt    time.Time
 	FullReconcile bool
 	adaptive      Adaptive
-	tokens        float64
-	refill        time.Time
-	initialized   bool
+	// rounds and maintenanceMode decide when a round's ledger reads skip the
+	// table-rev reuse (fullSync).
+	rounds          int
+	maintenanceMode string
+	tokens          float64
+	refill          time.Time
+	initialized     bool
+}
+
+// fullSyncEvery is how many rounds pass between full ledger reads, besides the
+// first round and the first round after maintenance returns to running.
+const fullSyncEvery = 10
+
+// fullSync is true when this round reads the ledger in full. An unreadable
+// maintenance state also reads in full, which is never wrong.
+func (s *Scheduler) fullSync() bool {
+	full := s.rounds%fullSyncEvery == 0
+	s.rounds++
+	state, err := maintenance.Read()
+	if err != nil {
+		s.maintenanceMode = ""
+		return true
+	}
+	recovered := s.maintenanceMode != "" && s.maintenanceMode != "running" && state.Mode == "running"
+	s.maintenanceMode = state.Mode
+	return full || recovered
 }
 
 func Acquire(path string) (*flock.Lock, error) { return flock.TryLock(path) }
@@ -155,12 +181,16 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	snapshot := false
 	timing := tickPhases{}
 	ctx = withPhases(ctx, timing)
+	full := s.fullSync()
+	if full {
+		ctx = issues.WithFullSync(ctx)
+	}
 	mark := started
 	lap := func(phase string) {
 		timing.add(phase, mark)
 		mark = time.Now()
 	}
-	defer func() { s.summary(started, tickets, snapshot, timing, tickErr) }()
+	defer func() { s.summary(started, tickets, snapshot, full, timing, tickErr) }()
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
@@ -221,7 +251,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
-	rows := ObservationRows(tickets, s.Repositories)
+	rows := ObservationRows(tickets, s.Repositories, s.clock())
 	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
 		view.Tickets = nil
 		for index, t := range tickets {

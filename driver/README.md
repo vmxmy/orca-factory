@@ -115,6 +115,8 @@ orca-factory-driver status --json
 
 `status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期。票行的 `backend` 是所在仓库选定的账本；`title` 是票的标题；`since` 是观察缓存第一次看到这张票处于当前归属、阶段与 stage 的时间，归属、阶段或 stage 变化后重新计时，只有实时观察缓存提供；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整或未完成的 blocker），只是观察，不授权任何动作。部署屏障中的票有 `deployment`，取自持久化部署进度，包含 `queueId`、`sha`、`workflow`、`state` 与 `reason`，smoke 命令不输出；没有部署进度时省略。`queuePosition` 是同仓库排队合并票的位次，从 1 起，按 `Handoff.EnqueuedAt` 先后、相同时按 `QueueID` 排序；没有 `Handoff`、有合并证据问题或不在排队合并阶段时省略。`lane` 取合并交接冻结的 lane；`corrections` 是 `{"count":n,"limit":m}`，`count` 是合并交接记下的打回次数（同一队列身份的合并进度记得更多时取进度的数），`limit` 是打回上限。这两项只在票有合并交接时出现，没有交接时省略；交接里的 lane 不在 1–3、打回次数为负数时省略对应字段；`count` 为 0 表示确认没有打回。它们只是观察，不是合并或恢复授权。以上字段在实时观察缓存与快照文件中一致。`stage=human` 的票行还有可选的 `humanKind` 与 `humanReason`。`humanKind` 优先取 `scope`，表示处置结果的 `ScopeRequest` 非空；其次取 `deploy`，表示已有合并 SHA 且部署未通过；其余为 `takeover`。`humanReason` 复用通知原因，将换行等空白折叠为空格，按 Unicode 字符截取前 120 个，空原因省略。其他 stage 省略这两个字段；旧快照也保留转人票。这些字段只是观察数据，不是放行或批准的授权，不触发通知或新评论。顶层 `nextScanAt` 是 serve 计划的下一次巡检时间，只在 `state` 为 `ok` 时出现，契约见 [CONTRACTS.md](CONTRACTS.md)。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成主账本没有任务。
 
+票行可选 `stages`，例如 `[{"name":"worker 运行中","seconds":120},{"name":"gate","seconds":80}]`。它复用本轮已读评论的阶段与时间戳，不增加飞书请求。记录按时间排序，连续同名阶段合为一项，最多保留最近 20 项；最后一项是当前阶段截至观察时刻已停留的整数秒数。没有有效时间线、时间晚于观察时刻或末项与当前阶段不一致时省略。实时缓存与旧快照使用同一投影；执行器的整行推送可能暂时清除该字段，下一轮完整观察再补齐。旧快照中的秒数不会随读取增长。`stages` 只是观察数据，不是合并或恢复授权，不改变 carry 规则与调度行为。
+
 票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
 
 worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
@@ -483,6 +485,33 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
+
+## 模型方案（profiles.toml）
+
+在 `~/.config/orca-factory/profiles.toml` 维护机器级模型方案。下面只有两个示例方案，模型名需换成你要使用的模型；driver 不会创建或修改这个文件。
+
+```toml
+default = "daily"
+
+[profile.daily]
+AGENT_TIER_DEFAULT = "codex:your-default-model:low"
+AGENT_TIER_STRONG = "claude:your-strong-model:high"
+AGENT_ROLE_INTAKE = "claude:your-intake-model:medium"
+AGENT_TIER_ESCALATE = "1"
+
+[profile.focused]
+AGENT_TIER_DEFAULT = "codex:your-focused-model:high"
+AGENT_ROLE_RESOLVER = "codex:your-resolver-model:high"
+AGENT_TIER_ESCALATE = "0"
+```
+
+仓库在 `scripts/agent-gates/agent-graph.env` 中设置 `AGENT_PROFILE=focused` 选择方案；未设置时取文件的 `default`。每个键分别取值：仓库显式赋值优先，其次是所选方案，再走原有角色回退链。仓库显式空值也阻止方案补值，但不取消原有角色回退。没有文件或找不到所选方案时，保持原有仓库配置行为。
+
+方案只允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE`。前四项为 `agent:model:effort`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令仍由仓库配置。
+
+修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手经 `LoadRepository` 读取生效值；`driver exec` 仍用 bash source 读取仓库 env，方案叠加与 `LoadRepository` 共用同一函数。票面和评论不能选择方案，也没有按票或成本的自动路由。
+
+运行 `orca-factory-driver config --json` 查看本次读取的配置。`repos[].profile` 是所选方案名，未选择时为空串；找不到该方案时仍显示所选名字。`roles[].source` 为 `repository`、`profile:<名>` 或内置回退的 `default`，`key` 标出回退后实际使用的键。`routing` 中来自方案的升档开关也标为 `profile:<名>`。此命令读取自己的进程配置，不能证明尚未重启的服务已经应用文件修改。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

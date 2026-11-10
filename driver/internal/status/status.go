@@ -30,7 +30,13 @@ type Corrections struct {
 	Limit int `json:"limit"`
 }
 
+type Stage struct {
+	Name    string `json:"name"`
+	Seconds int64  `json:"seconds"`
+}
+
 type Ticket struct {
+	Stages        []Stage      `json:"stages,omitempty"`
 	Deployment    *Deployment  `json:"deployment,omitempty"`
 	QueuePosition int          `json:"queuePosition,omitempty"`
 	Lane          int          `json:"lane,omitempty"`
