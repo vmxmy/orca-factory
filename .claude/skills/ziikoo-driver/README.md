@@ -199,7 +199,7 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 浏览器测试默认比对 `test/diorama-{global,island,ticket,global-stuck}.png` 四张基准。全局场景从已有录制预览中移除卡住的票；单岛场景打开 `orca-factory`，单票场景打开其中的 `OF-419`，有卡住票的全局场景保留完整录制。后三个场景均保留录制中的两张卡住票。
 
-每次截图使用新的页面，视口为 1280 × 800、设备缩放为 1、语言为 `zh-CN`、时区为 `Asia/Shanghai`、浅色模式。测试固定预览时钟为快照生成时刻，启用减少动态，并等待字体和相机就绪后截图，不比较动画帧。渲染沿用现有 Chrome SwiftShader，PNG 解码和像素比较使用浏览器 Canvas，没有新增依赖或联网下载。
+每次截图使用新的页面，视口为 1280 × 800、设备缩放为 1、语言为 `zh-CN`、时区为 `Asia/Shanghai`、浅色模式。测试固定预览时钟为快照生成时刻，启用减少动态，并等待字体和相机就绪后截图，不比较动画帧。Chrome 进程的 `LANG`、`LC_ALL`、`LANGUAGE` 固定为 `C.UTF-8`/`C`（`BROWSER_LOCALE_ENV`）：进程语言为 `zh_CN` 时，fontconfig 把拉丁文字和 `·` 回退到 Noto Sans CJK，四个场景各有上万像素不同。渲染沿用现有 Chrome SwiftShader，PNG 解码和像素比较使用浏览器 Canvas，没有新增依赖或联网下载。
 
 `MAX_CHANGED_PIXEL_RATIO` 是不同像素数除以总像素数；一个像素的任意 RGBA 通道不同就计为不同，不忽略抗锯齿。2026-11-10 在 Linux x86_64、Chrome 144.0.7559.96、Playwright 1.58.1、系统 Noto Sans 字体环境下，每个场景分别打开五次新页面，两两比较十组：
 

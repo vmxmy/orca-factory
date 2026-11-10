@@ -23,6 +23,7 @@ const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
 const BASELINE_VIEWPORT = { width: 1280, height: 800 }
 const MAX_CHANGED_PIXEL_RATIO = 0
 const BASELINE_LIMIT_BYTES = 2_000_000
+const BROWSER_LOCALE_ENV = { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', LANGUAGE: 'C' }
 const baselineFile = name => path.join(__dirname, `diorama-${name}.png`)
 
 const brightness = hex => {
@@ -963,6 +964,7 @@ async function main() {
       executablePath: chrome,
       headless: true,
       args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+      env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
       await checkBaselines(browser, url, model)
