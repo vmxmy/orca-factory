@@ -156,7 +156,7 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用；再把 `driver/testdata/recorded/driver-status-json-stale.json`（含等人批票 `ZY-428`）原样写成 `test/design-preview/diorama-scene-human.json`，并在其末尾追加两张由 `ZY-428` 展开、只改票号与 `since` 的票写成 `test/design-preview/diorama-scene-human-queue.json`，供等人批排序断言使用。四个文件都已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 
@@ -184,7 +184,7 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、真实录制 `since` 决定的等人批顺序、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
 1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
 2. 预览减少动态与生命周期：标记不浮动，相机直接到达；连续两次 `update` 后铭牌焦点不丢，边缘箭头的焦点仍在箭头上，保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择，没有项目的 Scene 在改动前被拒绝；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。

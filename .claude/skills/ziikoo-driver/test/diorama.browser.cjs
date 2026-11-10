@@ -114,6 +114,18 @@ async function checkModel() {
     assert.deepEqual(unchanged.parcels.map(one => one.identifier), ['Z-2', 'Z-1'], `${station} must retain input order`)
   }
   console.log('PASS human queue model: oldest at desk, missing times last, numeric ties, spacing and three slots per row')
+  const sample = 'driver/testdata/recorded/driver-status-json-stale.json'
+  const humanAt = file => model.archipelagoOf(readJSON(path.join(preview, file))).islands
+    .find(island => island.name === 'zhiyun-ai-dashboard').parcels.filter(one => one.station === 'human')
+  const [recordedHuman] = humanAt('diorama-scene-human.json')
+  assert.equal(recordedHuman.identifier, 'ZY-428', `${sample} must place ZY-428 at the human station`)
+  assert.equal(recordedHuman.since, 1_794_192_549_499, `${sample} since must reach the human sort as epoch milliseconds`)
+  assert.deepEqual(recordedHuman.slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} lone human ticket must stand on the desk`)
+  const recordedQueue = humanAt('diorama-scene-human-queue.json')
+  assert.deepEqual(recordedQueue.map(one => one.identifier), ['ZY-429', 'ZY-428', 'ZY-430'], `${sample} human queue must sort by recorded since, missing last`)
+  assert.deepEqual(recordedQueue[0].slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} oldest recorded human ticket must stand on the desk`)
+  assert.ok(Math.abs(Math.abs(recordedQueue[1].slot.x - recordedQueue[0].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, `${sample} first waiting ticket must be one human queue step from the desk`)
+  console.log(`PASS human queue recorded sample: ${sample} since sorts the desk and queue`)
   const merged = parcel('M-1', 'merge', { phase: '已合并', label: '已合并', unknownDeploy: true })
   const blind = model.islandOf(row([merged]))
   assert.deepEqual(
