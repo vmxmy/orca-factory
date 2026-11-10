@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -77,6 +79,62 @@ func TestAutoScopePreservesHumanGuards(t *testing.T) {
 			refusal, err := AutoApproveScope(context.Background(), ledger, "OF-12", 7, "", h.g.now())
 			if err != nil || !strings.Contains(refusal, tc.refusal) || len(h.ledger.edits) != 0 || len(h.ledger.events["canon-of12"]) != 1 {
 				t.Fatalf("refusal=%q err=%v ledger=%+v", refusal, err, h.ledger)
+			}
+		})
+	}
+}
+
+// The recorded ledger has no automatic receipt yet: the feature is unreleased.
+// Comments[2] of ledger-comments-human-release.json is a real driver receipt
+// read back from the ledger with the same shape applyScopeReview writes. The
+// derived receipts keep its ID, time, line breaks and resolver-state line and
+// replace only the leading "放行：<approver>" with "扩SCOPE：auto".
+func TestRecordedAutoScopeApprovalCount(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/ledger-comments-human-release.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded, &recording); err != nil {
+		t.Fatal(err)
+	}
+	receipt := recording.Comments[2]
+	const approver = "放行：ou_00000000000000000000000000000000"
+	if !strings.HasPrefix(receipt.Body, approver+" ") {
+		t.Fatalf("recorded receipt changed: %q", receipt.Body)
+	}
+	auto := receipt
+	auto.Body = "扩SCOPE：auto" + strings.TrimPrefix(receipt.Body, approver)
+	for _, tc := range []struct {
+		name     string
+		history  []task.Comment
+		approved string
+	}{
+		{name: "recorded human receipts", history: []task.Comment{receipt, receipt}, approved: "第 1 次"},
+		{name: "one auto receipt", history: []task.Comment{receipt, auto}, approved: "第 2 次"},
+		{name: "two auto receipts", history: []task.Comment{auto, auto}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := scopedTicket(t, `{"action":"escalate","class":"scope-extension","reason":"scope","body":"proof","scope":["new.go"]}`)
+			// Evidence is ordered by CreatedAt, so the current request follows the receipts.
+			request := task.Comment{Body: h.ledger.events["canon-of12"][0], CreatedAt: receipt.CreatedAt.Add(time.Hour)}
+			h.ledger.events["canon-of12"] = nil
+			ledger := &humanLedger{fakeLedger: h.ledger, comments: append(tc.history, request)}
+			refusal, err := AutoApproveScope(context.Background(), ledger, "OF-12", 7, "", h.g.now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			events := h.ledger.events["canon-of12"]
+			if tc.approved == "" {
+				if refusal != "每张票自动批准已达 2 次" || len(h.ledger.edits) != 0 || len(events) != 0 {
+					t.Fatalf("refusal=%q edits=%q events=%q", refusal, h.ledger.edits, events)
+				}
+				return
+			}
+			wantFace := "## 要做\nx\n\n## LANE 预判\n2\n\n## SCOPE\na.go b.go new.go\n\n## 依赖\nDEPENDENCIES: {}"
+			want := "扩SCOPE：auto 2026-11-01T12:00:00Z\n条件：AGENT_AUTO_REVIEW=scope；字面路径校验通过；1 个路径不超过 10；不命中 lane 3 或控制文件；本票" + tc.approved + "自动批准，不超过 2 次\n路径：new.go\n" + waitingReceipt
+			if refusal != "" || len(h.ledger.edits) != 1 || h.ledger.edits[0] != wantFace || len(events) != 1 || events[0] != want {
+				t.Fatalf("refusal=%q edits=%q events=%q", refusal, h.ledger.edits, events)
 			}
 		})
 	}
