@@ -91,10 +91,11 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.
+// Profile keys are unset first so only the repository file can mark them explicit.
 func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]string, error) {
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `unset AGENT_PROFILE AGENT_TIER_DEFAULT AGENT_TIER_STRONG AGENT_TIER_ESCALATE; source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}

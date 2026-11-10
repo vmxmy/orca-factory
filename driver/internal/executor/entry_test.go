@@ -109,3 +109,33 @@ func TestExecReadsRepositoryEnvWithBash(t *testing.T) {
 		t.Fatalf("install command=%q", got)
 	}
 }
+
+func TestExecIgnoresInheritedProfileKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_PROFILE", "alternate")
+	t.Setenv("AGENT_TIER_DEFAULT", "codex:inherited:high")
+	repo := t.TempDir()
+	for path, body := range map[string]string{
+		filepath.Join(home, ".config/orca-factory/profiles.toml"):  "default='daily'\n[profile.daily]\nAGENT_TIER_DEFAULT='codex:daily:low'\n[profile.alternate]\nAGENT_TIER_DEFAULT='codex:alternate:low'\n",
+		filepath.Join(repo, "scripts/agent-gates/agent-graph.env"): "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository, err := config.LoadRepository(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := executor.Config.TierSettings["default"]; got != "codex:daily:low" || repository.Env["AGENT_TIER_DEFAULT"] != got {
+		t.Fatalf("exec default=%q, LoadRepository default=%q", got, repository.Env["AGENT_TIER_DEFAULT"])
+	}
+}
