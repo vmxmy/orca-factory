@@ -95,6 +95,42 @@ async function checkModel() {
   assert.deepEqual(queue.map(one => one.identifier), ['Q-1', 'Q-2', 'Q-none'], 'merge queue must sort by position, missing last')
   assert.ok(queue[0].slot.x > queue[1].slot.x && queue[1].slot.x > queue[2].slot.x, 'queue head must stand nearest the lock')
   assert.equal(queue[2].queuePosition, undefined)
+  const humans = model.islandOf(row([
+    parcel('H-1', 'human', { since: 200 }),
+    parcel('H-2', 'human', { since: 100 }),
+  ])).parcels
+  assert.equal(humans[0].identifier, 'H-2', 'the oldest human ticket must occupy the desk despite ticket-number order')
+  assert.deepEqual(humans[0].slot, { x: 3, y: 1.7, z: -5.6 }, 'the oldest ticket must stand on the human desk')
+  assert.equal(model.HUMAN_QUEUE_STEP, 1.3)
+  assert.ok(Math.abs(Math.abs(humans[1].slot.x - humans[0].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, 'the first waiting ticket must be one human queue step from the desk')
+  const waiting = model.islandOf(row([
+    parcel('H-20', 'human'), parcel('H-10', 'human', { since: 100 }),
+    parcel('H-2', 'human', { since: 100 }), parcel('H-1', 'human', { since: 0 }),
+    parcel('H-3', 'human'),
+  ])).parcels
+  assert.deepEqual(waiting.map(one => one.identifier), ['H-1', 'H-2', 'H-10', 'H-3', 'H-20'], 'human queue must sort by since, then ticket number, with missing times last')
+  for (let index = 2; index <= 3; index++) {
+    assert.ok(Math.abs(Math.abs(waiting[index].slot.x - waiting[index - 1].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, 'waiting slots must be one human queue step apart')
+  }
+  assert.equal(waiting[4].slot.x, waiting[1].slot.x, 'human queue must wrap after three waiting tickets')
+  assert.ok(waiting[4].slot.y > waiting[1].slot.y)
+  for (const station of STATIONS.filter(station => !['human', 'merge'].includes(station))) {
+    const unchanged = model.islandOf(row([parcel('Z-2', station, { since: 200 }), parcel('Z-1', station, { since: 100 })]))
+    assert.deepEqual(unchanged.parcels.map(one => one.identifier), ['Z-2', 'Z-1'], `${station} must retain input order`)
+  }
+  console.log('PASS human queue model: oldest at desk, missing times last, numeric ties, spacing and three slots per row')
+  const sample = 'driver/testdata/recorded/driver-status-json-stale.json'
+  const humanAt = file => model.archipelagoOf(readJSON(path.join(preview, file))).islands
+    .find(island => island.name === 'zhiyun-ai-dashboard').parcels.filter(one => one.station === 'human')
+  const [recordedHuman] = humanAt('diorama-scene-human.json')
+  assert.equal(recordedHuman.identifier, 'ZY-428', `${sample} must place ZY-428 at the human station`)
+  assert.equal(recordedHuman.since, 1_794_192_549_499, `${sample} since must reach the human sort as epoch milliseconds`)
+  assert.deepEqual(recordedHuman.slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} lone human ticket must stand on the desk`)
+  const recordedQueue = humanAt('diorama-scene-human-queue.json')
+  assert.deepEqual(recordedQueue.map(one => one.identifier), ['ZY-429', 'ZY-428', 'ZY-430'], `${sample} human queue must sort by recorded since, missing last`)
+  assert.deepEqual(recordedQueue[0].slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} oldest recorded human ticket must stand on the desk`)
+  assert.ok(Math.abs(Math.abs(recordedQueue[1].slot.x - recordedQueue[0].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, `${sample} first waiting ticket must be one human queue step from the desk`)
+  console.log(`PASS human queue recorded sample: ${sample} since sorts the desk and queue`)
   const merged = parcel('M-1', 'merge', { phase: '已合并', label: '已合并', unknownDeploy: true })
   const blind = model.islandOf(row([merged]))
   assert.deepEqual(
@@ -267,6 +303,69 @@ const settled = page =>
     const { view, goal } = window.diorama.state()
     return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
   })
+
+async function checkHumanQueue(browser, url) {
+  const { page, errors } = await open(browser, url, { reducedMotion: 'reduce' })
+  const fixture = {
+    generatedAt: Date.now(), state: 'ok', maintenance: 'running',
+    rows: [row(Array.from({ length: 7 }, (_, index) => parcel(`H-${index + 1}`, 'human', { since: 700 - index * 100, tone: 'failed' })))],
+  }
+  try {
+    const geometry = await page.evaluate(async fixture => {
+      const THREE = await import('three')
+      const { createWorld } = await import('../../scene/page/diorama/world.mjs')
+      const { archipelagoOf } = await import('../../scene/page/diorama/model.mjs')
+      const add = THREE.Scene.prototype.add
+      let scene
+      THREE.Scene.prototype.add = function (...objects) {
+        scene = this
+        return add.apply(this, objects)
+      }
+      const world = createWorld(document.createElement('canvas'))
+      THREE.Scene.prototype.add = add
+      try {
+        world.build(archipelagoOf(fixture))
+        scene.updateMatrixWorld(true)
+        const meshes = []
+        scene.traverse(node => { if (node.isMesh) meshes.push(node) })
+        const platform = meshes.find(mesh => mesh.scale.y === 1.5 && mesh.scale.x > 10)
+        const bounds = new THREE.Box3().setFromObject(platform)
+        const ground = new THREE.Box3().setFromObject(meshes.find(mesh => mesh.name === 'ground'))
+        const containsXZ = (outer, inner) => ['x', 'z'].every(axis => inner.min[axis] >= outer.min[axis] && inner.max[axis] <= outer.max[axis])
+        const bodies = [...world.parcels.values()].map(one => new THREE.Box3().setFromObject(one.group.children.find(child => child.userData.key)))
+        return { count: bodies.length, onPlatform: bodies.every(body => containsXZ(bounds, body)), platformOnGround: containsXZ(ground, bounds) }
+      } finally {
+        world.dispose()
+      }
+    }, fixture)
+    assert.equal(geometry.count, 7, 'geometry assertions must include the desk and two full waiting rows')
+    assert.ok(geometry.onPlatform, 'every human box must stay inside the mezzanine footprint')
+    assert.ok(geometry.platformOnGround, 'the expanded mezzanine must stay inside the island')
+    await page.evaluate(fixture => window.diorama.update(fixture), fixture)
+    for (const width of [1440, 760]) {
+      await page.setViewportSize({ width, height: 900 })
+      await frames(page)
+      await settled(page)
+      const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ id: node.textContent, ...node.getBoundingClientRect().toJSON() })))
+      assert.equal(labels.length, 7)
+      const current = await state(page)
+      const { islandOf } = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+      const slots = islandOf(fixture.rows[0]).parcels
+      for (const label of labels) {
+        const slot = slots.find(one => one.identifier === label.id).slot
+        const pixel = pixelOf(current.view, slot, { width, height: 900 })
+        assert.ok(Math.abs(label.x + label.width / 2 - pixel.x) < 1, `${label.id} label must stay horizontally aligned with its box at width ${width}`)
+        for (const other of labels.filter(other => other.id !== label.id)) {
+          assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.id} and ${other.id} labels must not overlap at width ${width}`)
+        }
+      }
+    }
+    assert.deepEqual(errors, [])
+    console.log('PASS human queue geometry: boxes on platform, platform on island, labels separated and horizontally anchored')
+  } finally {
+    await page.close()
+  }
+}
 
 async function pixelDifference(page, expected, actual) {
   return page.evaluate(async ([before, after]) => {
@@ -1076,6 +1175,7 @@ async function main() {
     })
     try {
       await checkBaselines(browser, url, model)
+      await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)
