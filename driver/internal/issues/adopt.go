@@ -3,6 +3,7 @@ package issues
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -43,11 +44,14 @@ func (c *GitHub) Adopt(ctx context.Context, id string, raw []byte) (Task, error)
 	if len(dependencyLine) != 2 || decodeImportJSON([]byte(dependencyLine[1]), &declared) != nil || declared.Blockers == nil || declared.Related == nil || strings.Join(declared.Blockers, "\x00") != strings.Join(in.Blockers, "\x00") || strings.Join(declared.Related, "\x00") != strings.Join(in.Related, "\x00") {
 		return Task{}, errors.New("explicit body DEPENDENCIES must match adoption input")
 	}
-	for _, refs := range [][]string{in.Blockers, in.Related} {
-		for _, ref := range refs {
+	for _, deps := range []struct {
+		field string
+		refs  []string
+	}{{"blockers", in.Blockers}, {"related", in.Related}} {
+		for i, ref := range deps.refs {
 			dependency, err := c.Read(ctx, ref)
 			if err != nil || dependency.ID != ref || dependency.ID == task.ID || !dependency.Complete {
-				return Task{}, errors.New("dependency identity or completeness unavailable")
+				return Task{}, fmt.Errorf("%s[%d]=%q: dependency identity or completeness unavailable；依赖须填票的 UUID；用 `issues issue <票号> --json` 取 `id`", deps.field, i, ref)
 			}
 		}
 	}
