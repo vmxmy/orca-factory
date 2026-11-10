@@ -211,7 +211,7 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 | 单票 | 0 | 0 |
 | 有卡住票的全局 | 0 | 0 |
 
-阈值取实测最大值的三倍，即 `0 × 3 = 0`。四张基准合计 547,558 字节；测试强制总大小不超过 2,000,000 字节，超出时降低 `BASELINE_VIEWPORT` 再生成。不同 Chrome 或字体版本可能产生差异，复核时先对齐上述环境。
+阈值取实测最大值的三倍，即 `0 × 3 = 0`。四张基准合计 547,590 字节；测试强制总大小不超过 2,000,000 字节，超出时降低 `BASELINE_VIEWPORT` 再生成。不同 Chrome 或字体版本可能产生差异，复核时先对齐上述环境。
 
 在仓库根运行默认检查。缺少基准、尺寸不同、像素差异超阈值或总大小超限均以非零退出；默认不覆盖基准：
 
@@ -233,4 +233,4 @@ MEASURE_BASELINE=1 node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
 UPDATE_BASELINE=1 node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
 ```
 
-更新基准的提交必须在 PR 描述中说明画面为什么改变，并附截图供审阅。初次建立这组基准只记录现有沙盘画面，没有修改沙盘实现。首次验证曾在测试服务读取模块时临时把 `WORLD.base` 从 `0xf0dfc2` 改为 `0xff00ff`，确认像素断言失败并生成差异图；变更仅存在于该测试进程，退出即撤销，基准文件没有被覆盖。
+更新基准的提交必须在 PR 描述中说明画面为什么改变，并附截图供审阅。初次建立这组基准只记录现有沙盘画面，没有修改沙盘实现；合入 OF-457 后，有卡住票的三个场景按 main 上新增的「打开记录」链接重新生成。首次验证曾在测试服务读取模块时临时把 `WORLD.base` 从 `0xf0dfc2` 改为 `0xff00ff`，确认像素断言失败并生成差异图；变更仅存在于该测试进程，退出即撤销，基准文件没有被覆盖。
