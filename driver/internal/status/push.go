@@ -105,6 +105,8 @@ func carryTickets(before, after []Ticket, now time.Time, observation bool, obser
 			t.Owner = old.Owner
 			t.Phase = old.Phase
 			t.Stage = old.Stage
+			t.HumanKind = old.HumanKind
+			t.HumanReason = old.HumanReason
 			phaseChanged = false
 		}
 		if t.Title == "" {

@@ -15,6 +15,22 @@ import (
 // why work cannot advance but never authorizes an action.
 func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.Ticket {
 	row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
+	switch {
+	case owned(t):
+	case t.Candidate:
+		row.Stage = "candidate"
+	case t.Owner == machine.OwnerHuman:
+		row.Stage = "human"
+		row.HumanKind = "takeover"
+		if len(notificationScope(t)) > 0 {
+			row.HumanKind = "scope"
+		} else if p := t.Progress; p != nil && p.MergeSHA != "" && p.Deployment != nil && p.Deployment.State != "passed" {
+			row.HumanKind = "deploy"
+		}
+		_, reason := feishuNotification(t)
+		runes := []rune(strings.Join(strings.Fields(reason), " "))
+		row.HumanReason = string(runes[:min(len(runes), 120)])
+	}
 	row.Stages = stageDurations(t, now)
 	if p := t.Progress; p != nil && p.Deployment != nil {
 		row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
@@ -79,7 +95,7 @@ func SnapshotRows(tickets []Ticket, repos []config.Repository, now time.Time) []
 	snapshot := make([]status.Ticket, 0, len(tickets))
 	rows := ObservationRows(tickets, repos, now)
 	for index, ticket := range tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || DeploymentBarrier(ticket) {
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || rows[index].Stage == "human" || DeploymentBarrier(ticket) {
 			snapshot = append(snapshot, rows[index])
 		}
 	}
