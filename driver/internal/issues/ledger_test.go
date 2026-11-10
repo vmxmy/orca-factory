@@ -75,12 +75,9 @@ func TestLedgerStatsReadsTicketComments(t *testing.T) {
 			if !strings.Contains(out.String(), tc.want) {
 				t.Fatalf("stats=%q, want %q", out.String(), tc.want)
 			}
-			source := "source=ticket-comments\n"
-			if tc.ledgerTicket {
-				source = "source=ledger-ticket\n"
-			}
-			if !strings.Contains(out.String(), source) {
-				t.Fatalf("stats=%q, want %q", out.String(), source)
+			// The ledger-ticket output stays byte-for-byte unchanged; only the fallback names its source.
+			if tc.ledgerTicket == strings.HasSuffix(out.String(), "source=ticket-comments\n") || tc.ledgerTicket && strings.Contains(out.String(), "source=") {
+				t.Fatalf("stats=%q, ledger ticket=%v", out.String(), tc.ledgerTicket)
 			}
 			if len(f.writes) != 0 {
 				t.Fatalf("stats wrote records: %+v", f.writes)
