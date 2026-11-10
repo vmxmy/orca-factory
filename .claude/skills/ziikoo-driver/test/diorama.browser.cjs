@@ -1088,9 +1088,9 @@ const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket'
   .locator('path')
   .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
 
-// test/recorded/live-status-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
+// driver/testdata/recorded/driver-status-json-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
 async function checkRecordedHumanWaits(browser, live) {
-  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status-human.json'))
+  const recorded = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
   const repo = '/home/laoxu/github/orca-factory'
   const waiting = recorded.tickets.filter(ticket => ticket.repo === repo && ticket.stage === 'human')
   assert.deepEqual(waiting.map(ticket => [ticket.identifier, ticket.humanKind]), [
