@@ -5,6 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -139,50 +142,136 @@ func (l releaseLedger) ListComments(context.Context, string) ([]task.Comment, er
 	return l.comments, nil
 }
 
+const (
+	releaseRecordedQueue = "8b2bf83e0bc3f204cb1ba400e9336875b2ceabfb5b08afda3516c73608129a50"
+	releaseRecordedHead  = "1af93d0f2f736fbf02e3f36579f1b8be03f00c2d"
+	releaseRecordedMerge = "e51c6389bf0097a6c2a9b500f79c49805b6b1bd1"
+)
+
+func releaseRecordedPR(t *testing.T) github.PullRequest {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/github-pr-merged.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/vmxmy/orca-factory/pulls/133" {
+			t.Errorf("unexpected %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		if _, err := w.Write(raw); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := github.New(github.Options{BaseURL: server.URL, Token: func(context.Context) (string, error) { return "test-secret", nil }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr, err := client.GetPR(context.Background(), "vmxmy", "orca-factory", 133)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pr
+}
+
+func releaseRecordedComments(t *testing.T, name string) []task.Comment {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(raw, &recording); err != nil {
+		t.Fatal(err)
+	}
+	return recording.Comments
+}
+
+func releaseRewriteLine(t *testing.T, comment task.Comment, prefix string, edit func(map[string]any)) task.Comment {
+	t.Helper()
+	lines := strings.Split(comment.Body, "\n")
+	for i, line := range lines {
+		raw, ok := strings.CutPrefix(line, prefix)
+		if !ok {
+			continue
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+			t.Fatal(err)
+		}
+		edit(fields)
+		b, err := json.Marshal(fields)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines[i] = prefix + string(b)
+		comment.Body = strings.Join(lines, "\n")
+		return comment
+	}
+	t.Fatalf("comment %s has no %s line", comment.ID, prefix)
+	return comment
+}
+
+// The PR read-back replays github-pr-merged.json (PR 133). Comments replay
+// ledger-comments-human-release.json (no handoff) and
+// ledger-comments-selfdeploy-interrupted.json (OF-393 handoff and progress).
 func TestReleaseEvidence(t *testing.T) {
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
+	recordedPR := releaseRecordedPR(t)
+	if recordedPR.Number != 133 || recordedPR.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" || recordedPR.Head.SHA != "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a" {
+		t.Fatalf("recorded PR=%+v", recordedPR)
+	}
+	human := releaseRecordedComments(t, "ledger-comments-human-release.json")
+	selfDeploy := releaseRecordedComments(t, "ledger-comments-selfdeploy-interrupted.json")
+	handoff, progress := selfDeploy[0], selfDeploy[1]
+	withoutDeployment := func(edit func(map[string]any)) task.Comment {
+		return releaseRewriteLine(t, progress, merge.ProgressPrefix, func(fields map[string]any) {
+			delete(fields, "deployment")
+			if edit != nil {
+				edit(fields)
+			}
+		})
+	}
+	editHandoff := func(edit func(map[string]any)) task.Comment {
+		return releaseRewriteLine(t, handoff, merge.HandoffPrefix, edit)
+	}
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "lane 3", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
 		t.Run(name, func(t *testing.T) {
-			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "canonical", Identifier: "OF-461"}}}
-			pr := github.PullRequest{Number: 42, Merged: true, MergeSHA: releaseSHA}
-			pr.Head.SHA = strings.Repeat("a", 40)
-			pr.Base.Ref, pr.Base.Repo.FullName = "main", "owner/repo"
-			h := merge.Handoff{Version: 1, TicketID: "canonical", Identifier: "OF-461", Repository: "owner/repo", PR: 42, Head: pr.Head.SHA, Lane: 2, QueueID: "frozen", Corrections: 2, Infra: 3, Attempt: 4, CatchupRounds: 5}
-			p := merge.Progress{Version: 1, TicketID: "canonical", Repository: "owner/repo", PR: 42, Head: pr.Head.SHA, QueueID: "frozen", Main: strings.Repeat("b", 40), Phase: "merge-intent", Corrections: 3, Infra: 4, Attempt: 5, CatchupRounds: 6}
+			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
+			pr := recordedPR
+			pr.Number, pr.Head.SHA, pr.MergeSHA = 605, releaseRecordedHead, releaseRecordedMerge
+			identifier, number, sha := "OF-393", 605, releaseRecordedMerge
 			switch name {
+			case "manual":
+				ledger = releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "zy-366", Identifier: "ZY-366"}}, comments: human}
+				pr = recordedPR
+				identifier, number, sha = "ZY-366", 133, recordedPR.MergeSHA
+			case "handoff":
+				ledger.comments = []task.Comment{handoff}
+			case "known main":
+				ledger.comments = []task.Comment{handoff, withoutDeployment(nil)}
+			case "deployment":
+				ledger.comments = selfDeploy
 			case "unknown phase":
-				p.Phase = "future-phase"
+				ledger.comments = []task.Comment{handoff, withoutDeployment(func(fields map[string]any) { fields["phase"] = "future-phase" })}
 			case "invalid main":
-				p.Main = "not-a-sha"
+				ledger.comments = []task.Comment{handoff, withoutDeployment(func(fields map[string]any) { fields["main"] = "not-a-sha" })}
 			case "unmerged":
+				ledger.comments = []task.Comment{handoff}
 				pr.Merged = false
 			case "wrong sha":
-				pr.MergeSHA = strings.Repeat("c", 40)
-			case "wrong repo":
-				pr.Base.Repo.FullName = "other/repo"
+				ledger.comments = []task.Comment{handoff}
+				sha = recordedPR.MergeSHA
 			case "lane 3":
-				h.Lane = 3
-			case "deployment":
-				p.Deployment = &merge.DeploymentProgress{State: "pending"}
-			case "held":
-				ledger.ticket.Metadata.ImportHold = true
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["lane"] = 3 })}
 			case "wrong head":
-				h.Head = strings.Repeat("d", 40)
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["head"] = recordedPR.Head.SHA })}
+			case "held":
+				ledger.comments = []task.Comment{handoff}
+				ledger.ticket.Metadata.ImportHold = true
 			}
-			if name != "manual" {
-				b, err := json.Marshal(h)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ledger.comments = append(ledger.comments, task.Comment{ID: "1", Body: merge.HandoffPrefix + string(b)})
-			}
-			if name == "known main" || name == "deployment" || name == "unknown phase" || name == "invalid main" {
-				b, err := json.Marshal(p)
-				if err != nil {
-					t.Fatal(err)
-				}
-				ledger.comments = append(ledger.comments, task.Comment{ID: "2", Body: merge.ProgressPrefix + string(b)})
-			}
-			got, err := releaseEvidence(context.Background(), ledger, "OF-461", 42, releaseSHA, "owner/repo", pr)
+			got, err := releaseEvidence(context.Background(), ledger, identifier, number, sha, "vmxmy/orca-factory", pr)
 			if name != "manual" && name != "handoff" && name != "known main" {
 				if err == nil {
 					t.Fatalf("accepted %s: %+v", name, got)
@@ -192,21 +281,22 @@ func TestReleaseEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.TicketID != "canonical" || got.Head != strings.Repeat("a", 40) || got.MergeSHA != releaseSHA || got.Phase != "merged" || got.Deployment != nil {
+			if got.Phase != "merged" || got.Deployment != nil || got.Repository != "vmxmy/orca-factory" {
 				t.Fatalf("receipt=%+v", got)
 			}
-			if name == "manual" && got.QueueID != "" {
-				t.Fatalf("invented queue: %+v", got)
-			}
-			if name == "handoff" && (got.QueueID != "frozen" || got.Corrections != 2 || got.Infra != 3 || got.Attempt != 4 || got.CatchupRounds != 5) {
-				t.Fatalf("lost frozen identity/budget: %+v", got)
-			}
-			if name == "known main" {
-				if got.Main != strings.Repeat("b", 40) || got.MainUnknown || got.Corrections != 3 || got.Infra != 4 || got.Attempt != 5 || got.CatchupRounds != 6 {
-					t.Fatalf("lost prior progress: %+v", got)
+			switch name {
+			case "manual":
+				if got.TicketID != "zy-366" || got.QueueID != "" || got.Main != "" || !got.MainUnknown || got.PR != 133 || got.Head != "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a" || got.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" {
+					t.Fatalf("manual receipt=%+v", got)
 				}
-			} else if got.Main != "" || !got.MainUnknown {
-				t.Fatalf("invented main: %+v", got)
+			case "handoff":
+				if got.TicketID != "d8844eec-5be4-4de1-9e4e-c583c8b284a4" || got.QueueID != releaseRecordedQueue || got.Attempt != 1 || got.Corrections != 0 || got.Main != "" || !got.MainUnknown || got.PR != 605 || got.Head != releaseRecordedHead || got.MergeSHA != releaseRecordedMerge {
+					t.Fatalf("handoff receipt=%+v", got)
+				}
+			case "known main":
+				if got.QueueID != releaseRecordedQueue || got.Main != "a11d72cbc1420ee4123297be52a7f9a378e9a71b" || got.MainUnknown || got.Attempt != 1 {
+					t.Fatalf("known main receipt=%+v", got)
+				}
 			}
 		})
 	}
