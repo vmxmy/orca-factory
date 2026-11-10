@@ -214,14 +214,17 @@ func releaseRewriteLine(t *testing.T, comment task.Comment, prefix string, edit 
 	return comment
 }
 
-// The PR read-back replays github-pr-merged.json (PR 133). Comments replay
-// ledger-comments-human-release.json (no handoff) and
-// ledger-comments-selfdeploy-interrupted.json (OF-393 handoff and progress).
+// The PR read-back replays github-pr-merged.json (PR 133). That recording was
+// trimmed of base.repo, so the test fills base.repo.full_name, the field the
+// merge lane already checks. Comments replay ledger-comments-human-release.json
+// (no handoff) and ledger-comments-selfdeploy-interrupted.json (OF-393 handoff
+// and progress); budgets are edited to distinct values so the source is visible.
 func TestReleaseEvidence(t *testing.T) {
 	recordedPR := releaseRecordedPR(t)
 	if recordedPR.Number != 133 || recordedPR.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" || recordedPR.Head.SHA != "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a" {
 		t.Fatalf("recorded PR=%+v", recordedPR)
 	}
+	recordedPR.Base.Repo.FullName = "vmxmy/orca-factory"
 	human := releaseRecordedComments(t, "ledger-comments-human-release.json")
 	selfDeploy := releaseRecordedComments(t, "ledger-comments-selfdeploy-interrupted.json")
 	handoff, progress := selfDeploy[0], selfDeploy[1]
@@ -236,7 +239,11 @@ func TestReleaseEvidence(t *testing.T) {
 	editHandoff := func(edit func(map[string]any)) task.Comment {
 		return releaseRewriteLine(t, handoff, merge.HandoffPrefix, edit)
 	}
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "lane 3", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
+	budget := func(fields map[string]any, attempt, corrections, infra, catchup int) {
+		fields["attempt"], fields["corrections"], fields["infra"], fields["catchup_rounds"] = attempt, corrections, infra, catchup
+	}
+	budgetedHandoff := editHandoff(func(fields map[string]any) { budget(fields, 4, 2, 3, 5) })
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
 		t.Run(name, func(t *testing.T) {
 			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
 			pr := recordedPR
@@ -248,9 +255,9 @@ func TestReleaseEvidence(t *testing.T) {
 				pr = recordedPR
 				identifier, number, sha = "ZY-366", 133, recordedPR.MergeSHA
 			case "handoff":
-				ledger.comments = []task.Comment{handoff}
+				ledger.comments = []task.Comment{budgetedHandoff}
 			case "known main":
-				ledger.comments = []task.Comment{handoff, withoutDeployment(nil)}
+				ledger.comments = []task.Comment{budgetedHandoff, withoutDeployment(func(fields map[string]any) { budget(fields, 5, 3, 4, 6) })}
 			case "deployment":
 				ledger.comments = selfDeploy
 			case "unknown phase":
@@ -263,6 +270,9 @@ func TestReleaseEvidence(t *testing.T) {
 			case "wrong sha":
 				ledger.comments = []task.Comment{handoff}
 				sha = recordedPR.MergeSHA
+			case "wrong repo":
+				ledger.comments = []task.Comment{handoff}
+				pr.Base.Repo.FullName = "other/repo"
 			case "lane 3":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["lane"] = 3 })}
 			case "wrong head":
@@ -290,11 +300,11 @@ func TestReleaseEvidence(t *testing.T) {
 					t.Fatalf("manual receipt=%+v", got)
 				}
 			case "handoff":
-				if got.TicketID != "d8844eec-5be4-4de1-9e4e-c583c8b284a4" || got.QueueID != releaseRecordedQueue || got.Attempt != 1 || got.Corrections != 0 || got.Main != "" || !got.MainUnknown || got.PR != 605 || got.Head != releaseRecordedHead || got.MergeSHA != releaseRecordedMerge {
+				if got.TicketID != "d8844eec-5be4-4de1-9e4e-c583c8b284a4" || got.QueueID != releaseRecordedQueue || got.Attempt != 4 || got.Corrections != 2 || got.Infra != 3 || got.CatchupRounds != 5 || got.Main != "" || !got.MainUnknown || got.PR != 605 || got.Head != releaseRecordedHead || got.MergeSHA != releaseRecordedMerge {
 					t.Fatalf("handoff receipt=%+v", got)
 				}
 			case "known main":
-				if got.QueueID != releaseRecordedQueue || got.Main != "a11d72cbc1420ee4123297be52a7f9a378e9a71b" || got.MainUnknown || got.Attempt != 1 {
+				if got.QueueID != releaseRecordedQueue || got.Main != "a11d72cbc1420ee4123297be52a7f9a378e9a71b" || got.MainUnknown || got.Attempt != 5 || got.Corrections != 3 || got.Infra != 4 || got.CatchupRounds != 6 {
 					t.Fatalf("known main receipt=%+v", got)
 				}
 			}

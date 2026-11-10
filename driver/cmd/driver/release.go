@@ -176,8 +176,8 @@ func releaseSmoke(raw []byte) (string, error) {
 }
 
 func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string, number int, sha, repository string, pr github.PullRequest) (merge.Progress, error) {
-	if !pr.Merged || pr.Number != number || pr.MergeSHA != sha || pr.Base.Ref != "main" || len(pr.Head.SHA) != 40 {
-		return merge.Progress{}, errors.New("PR read-back does not confirm the merged PR and SHA")
+	if !pr.Merged || pr.Number != number || pr.MergeSHA != sha || pr.Base.Repo.FullName != repository || pr.Base.Ref != "main" || len(pr.Head.SHA) != 40 {
+		return merge.Progress{}, errors.New("PR read-back does not confirm the repository, merged PR and SHA")
 	}
 	ticket, err := ledger.Read(ctx, identifier)
 	if err != nil {
