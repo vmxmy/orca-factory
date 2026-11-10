@@ -132,6 +132,10 @@ func observationState(observedAt, now time.Time, staleAfter time.Duration) strin
 }
 
 func normalize(view *View, now time.Time) {
+	observed := view.GeneratedAt.In(now.Location())
+	if observed.Year() != now.Year() || observed.YearDay() != now.YearDay() {
+		view.Today = nil
+	}
 	if view.Tickets == nil {
 		view.Tickets = []Ticket{}
 	}

@@ -860,6 +860,25 @@ async function checkRecordLinks(browser, live) {
   }
 }
 
+async function checkToday(browser, live) {
+  live.write({ ...live.pushed, tickets: [], today: { merged: 3, escalated: 1, medianMinutes: 12.5 } })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 3 · 转人 1 · 周期中位 12.5 分')
+    const below = await page.evaluate(() => document.querySelector('.today').getBoundingClientRect().top >= document.querySelector('.status').getBoundingClientRect().bottom)
+    assert.equal(below, true, 'today output must sit below the status bar')
+    live.write({ ...live.pushed, tickets: [], today: { merged: 0 } })
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 0')
+    live.write({ ...live.pushed, tickets: [] })
+    await page.waitForFunction(() => document.querySelector('.today')?.hidden === true)
+    assert.deepEqual(errors, [])
+    console.log('PASS today output: idle scene, partial metrics, no evidence hides row')
+  } finally {
+    await page.close()
+    live.write(live.pushed)
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -890,6 +909,7 @@ async function checkProduction(browser, bun, model) {
     await checkLiveUpdates(browser, live)
     await checkEntries(browser, live, model)
     await checkRecordLinks(browser, live)
+    await checkToday(browser, live)
     await checkWithoutWebGL(browser, live)
   } finally {
     await server.halt()

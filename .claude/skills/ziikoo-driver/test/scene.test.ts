@@ -201,3 +201,13 @@ test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
   expect(parcel?.blocker).toBe('deployment: paused')
   expect(parcel?.reason).toBe('deployment: paused')
 })
+
+test('sceneOf 透传今日产出，缺字段不补零', () => {
+  const today = { merged: 3, escalated: 1, medianMinutes: 12.5 }
+  const scene = (extra: object) => JSON.parse(JSON.stringify(sceneOf(parseRuntime(JSON.stringify({ ...SAMPLE_STATUS, ...extra })), config())))
+  expect(scene({ today }).today).toEqual(today)
+  expect(scene({}).today).toBeUndefined()
+  expect(scene({ today: { merged: 0 } }).today).toEqual({ merged: 0 })
+  expect(() => scene({ today: { merged: -1 } })).toThrow()
+  expect(() => scene({ today: { medianMinutes: -1 } })).toThrow()
+})

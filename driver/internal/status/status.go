@@ -9,11 +9,18 @@ import (
 	"time"
 )
 
+type TodayOutput struct {
+	Merged        int      `json:"merged"`
+	Escalated     int      `json:"escalated"`
+	MedianMinutes *float64 `json:"medianMinutes,omitempty"`
+}
+
 type Snapshot struct {
-	GeneratedAt time.Time `json:"generatedAt"`
-	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
-	Tickets     []Ticket  `json:"tickets"`
-	GitHub      Usage     `json:"github,omitzero"`
+	Today       *TodayOutput `json:"today,omitempty"`
+	GeneratedAt time.Time    `json:"generatedAt"`
+	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
+	Tickets     []Ticket     `json:"tickets"`
+	GitHub      Usage        `json:"github,omitzero"`
 }
 
 type Deployment struct {
@@ -115,11 +122,12 @@ const DefaultStaleAfter = 5 * time.Minute
 // Partial writes retain it; zero means no scheduler observation is available.
 // View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
-	State       string    `json:"state"`
-	GeneratedAt time.Time `json:"generatedAt"`
-	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
-	Tickets     []Ticket  `json:"tickets"`
-	GitHub      Usage     `json:"github,omitzero"`
+	Today       *TodayOutput `json:"today,omitempty"`
+	State       string       `json:"state"`
+	GeneratedAt time.Time    `json:"generatedAt"`
+	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
+	Tickets     []Ticket     `json:"tickets"`
+	GitHub      Usage        `json:"github,omitzero"`
 }
 
 // Read observes only the disposable snapshot. Missing or damaged caches are unknown.
@@ -161,6 +169,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 		view.Tickets = snapshot.Tickets
 	}
 	view.GitHub = snapshot.GitHub
+	view.Today = snapshot.Today
 	normalize(&view, now)
 	dropNextScanUnlessOK(&view)
 	return view

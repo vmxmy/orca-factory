@@ -253,6 +253,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	s.dropIdleRetired(tickets)
 	rows := ObservationRows(tickets, s.Repositories, s.clock())
 	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
+		view.Today = nil
+		if source, ok := s.Backend.(interface {
+			TodayOutput(time.Time) *status.TodayOutput
+		}); ok {
+			view.Today = source.TodayOutput(s.clock())
+		}
 		view.Tickets = nil
 		for index, t := range tickets {
 			row := rows[index]
