@@ -34,24 +34,45 @@ const extremesOf = layout => [
   { x: 16.2, y: 3.8, z: 6.6 },
 ]
 
-export const createCamera = layout => {
+const HUB_TOP = 6
+
+const hubBox = hub => ({ left: hub.x - hub.half, right: hub.x + hub.half, back: hub.z - hub.half, front: hub.z + hub.half })
+
+const islandBox = ({ layout, origin }) => ({
+  left: origin.x + layout.ground.left,
+  right: origin.x + layout.water.right,
+  back: origin.z + Math.min(layout.water.back, layout.yard?.back ?? Infinity),
+  front: origin.z + layout.water.front,
+})
+
+const boundsOf = ({ islands, hub }) => {
+  const boxes = [...islands.map(islandBox), ...(hub ? [hubBox(hub)] : [])]
+  return {
+    left: Math.min(...boxes.map(box => box.left)) - BOUNDS_MARGIN,
+    right: Math.max(...boxes.map(box => box.right)) + BOUNDS_MARGIN,
+    back: Math.min(...boxes.map(box => box.back)) - BOUNDS_MARGIN,
+    front: Math.max(...boxes.map(box => box.front)) + BOUNDS_MARGIN,
+  }
+}
+
+const islandExtremes = ({ layout, origin }) => extremesOf(layout).map(point => ({ ...point, x: point.x + origin.x, z: point.z + origin.z }))
+
+const hubExtremes = hub => [...corners(hubBox(hub)), { x: hub.x, y: HUB_TOP, z: hub.z - 1 }]
+
+export const createCamera = archipelago => {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 600)
   camera.position.copy(DIRECTION).multiplyScalar(DISTANCE)
   camera.lookAt(0, 0, 0)
-  const extremes = extremesOf(layout)
-  const bounds = {
-    left: layout.ground.left - BOUNDS_MARGIN,
-    right: layout.water.right + BOUNDS_MARGIN,
-    back: Math.min(layout.water.back, layout.yard?.back ?? Infinity) - BOUNDS_MARGIN,
-    front: layout.water.front + BOUNDS_MARGIN,
-  }
+  const islands = archipelago.islands.map(islandExtremes)
+  const everything = [...islands.flat(), ...(archipelago.hub ? hubExtremes(archipelago.hub) : [])]
+  const bounds = boundsOf(archipelago)
   let viewport = { width: 1, height: 1, margins: { top: 0, right: 0, bottom: 0, left: 0 } }
-  let islandHalf = 10
-  const view = { half: islandHalf, x: 0, z: 0 }
+  let farthest = 10
+  const view = { half: farthest, x: 0, z: 0 }
   const goal = { ...view }
 
   const clamp = () => {
-    goal.half = Math.min(islandHalf * ZOOM_OUT_LIMIT, Math.max(MIN_HALF, goal.half))
+    goal.half = Math.min(farthest, Math.max(MIN_HALF, goal.half))
     goal.x = Math.min(bounds.right, Math.max(bounds.left, goal.x))
     goal.z = Math.min(bounds.front, Math.max(bounds.back, goal.z))
   }
@@ -64,7 +85,7 @@ export const createCamera = layout => {
     return groundAt(sx - offsetX / perUnit, sy + offsetY / perUnit)
   }
 
-  const islandFrame = () => {
+  const fit = extremes => {
     const points = extremes.map(screenOf)
     const xs = points.map(point => point.sx)
     const ys = points.map(point => point.sy)
@@ -92,14 +113,18 @@ export const createCamera = layout => {
     resize(width, height, margins) {
       if (width <= 0 || height <= 0) return
       viewport = { width, height, margins }
-      islandHalf = islandFrame().half
+      farthest = fit(everything).half * ZOOM_OUT_LIMIT
     },
-    frameIsland() {
-      Object.assign(goal, islandFrame())
+    frameAll() {
+      Object.assign(goal, fit(everything))
       clamp()
     },
-    frameSlot(slot) {
-      Object.assign(goal, { half: TICKET_HALF, ...targetFor(screenOf(slot), TICKET_HALF) })
+    frameIsland(index) {
+      Object.assign(goal, fit(islands[index]))
+      clamp()
+    },
+    frameSlot(point) {
+      Object.assign(goal, { half: TICKET_HALF, ...targetFor(screenOf(point), TICKET_HALF) })
       clamp()
     },
     drag(dxPixels, dyPixels) {

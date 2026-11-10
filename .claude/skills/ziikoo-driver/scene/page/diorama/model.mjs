@@ -48,6 +48,10 @@ const SEALED = new Set(['pack', 'merge', 'dispatch', 'smoke'])
 const AFLOAT = new Set(['dispatch', 'smoke'])
 const FAILED_DEPLOYMENTS = new Set(['paused', 'failed'])
 const GROUND_BACK = -8
+const ISLAND_COLUMNS = 2
+const ISLAND_COLUMN_STEP = 46
+const ISLAND_ROW_STEP = 24
+const HUB = { x: -30, z: 22, half: 3 }
 
 const layoutOf = count => {
   const columns = Math.min(count, BOOTHS_PER_ROW)
@@ -154,6 +158,7 @@ export const islandOf = row => {
   }
   if (stations.has('merge')) stations.set('merge', mergeQueue(stations.get('merge')))
   const working = stations.get('work')?.length ?? 0
+  const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
   const layout = layoutOf(Math.max(MIN_BOOTHS, working))
   const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
@@ -170,7 +175,8 @@ export const islandOf = row => {
     working,
     workers: row.workers,
     lantern: stations.has('human'),
-    idle: row.parcels.length === 0,
+    inFlight,
+    idle: inFlight === 0,
     ...deploymentOf(row),
   }
 }
@@ -179,3 +185,33 @@ export const stuckOf = island =>
   island.parcels
     .filter(parcel => parcel.alert !== null)
     .sort((left, right) => (left.since ?? Number.POSITIVE_INFINITY) - (right.since ?? Number.POSITIVE_INFINITY))
+
+const worstAlert = parcels => {
+  if (parcels.some(parcel => parcel.alert === 'bad')) return 'bad'
+  return parcels.length > 0 ? 'warn' : null
+}
+
+const placed = (row, index) => {
+  const island = islandOf(row)
+  const stuck = stuckOf(island)
+  return {
+    ...island,
+    index,
+    origin: { x: (index % ISLAND_COLUMNS) * ISLAND_COLUMN_STEP, z: Math.floor(index / ISLAND_COLUMNS) * ISLAND_ROW_STEP },
+    plate: { name: island.name, inFlight: island.inFlight, barrier: island.lock === 'closed', stuck: stuck.length, alert: worstAlert(stuck) },
+  }
+}
+
+export const archipelagoOf = scene => {
+  const islands = scene.rows.map(placed)
+  const tickets = islands.flatMap(island =>
+    island.parcels.map(parcel => ({ ...parcel, island: island.index, project: island.name, path: island.path })),
+  )
+  return {
+    islands,
+    tickets,
+    stuck: stuckOf({ parcels: tickets }),
+    global: islands.length > 1,
+    hub: islands.length > 1 ? HUB : null,
+  }
+}

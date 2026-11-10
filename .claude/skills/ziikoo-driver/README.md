@@ -79,15 +79,16 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 ## 沙盘预览
 
-沙盘预览是固定等距 three.js 沙盘的原型。它只画一座岛，不替换生产入口；按 `d` 打开的仍是像素工坊小镇。
+沙盘预览是固定等距 three.js 沙盘的原型。Scene 的每个项目画成一座岛，岛之间是海。它不替换生产入口；按 `d` 打开的仍是像素工坊小镇。
 
 模块位于 `scene/page/diorama/`：
 
-- `model.mjs`：纯视图模型，不依赖 DOM 与 three。它把每张票映射到工位、归属颜色、附件与告警。
-- `world.mjs`：程序化几何，包括岛、箱子、船闸、灯塔与灯笼。
-- `camera.mjs`：正交固定等距相机。
-- `hud.mjs`：状态栏、卡住的票与行程条。
-- `index.mjs`：`mountDiorama(stage, { scene, path, now })` 连接以上模块。
+- `model.mjs`：纯视图模型，不依赖 DOM 与 three。它把每张票映射到工位、归属颜色、附件与告警。`archipelagoOf` 给出每座岛的位置、铭牌与空闲标记，以及跨项目的卡住的票。
+- `world.mjs`：程序化几何，包括岛、海、调度岛、箱子、船闸、灯塔与灯笼。所有岛共用几何与材质。
+- `camera.mjs`：正交固定等距相机，负责各机位的取景与平移边界。
+- `hud.mjs`：状态栏、机位按钮、项目坞、搜索、卡住的票与行程条。
+- `overlay.mjs`：跟随场景的票号、工位标签、铭牌与边缘箭头。
+- `index.mjs`：`mountDiorama(stage, { scene, path, ticket, now })` 连接以上模块。
 - `diorama.css`：沙盘与 HUD 的样式。
 
 three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.core.min.js`、`LICENSE.three`）。它不走 CDN，也没有构建步骤。模块用裸说明符 `three` 导入，页面用 import map 指向 vendor 文件。`scene/server.ts` 凭 token 提供这些文件与沙盘模块；模块之间的相对导入不带 token，接入生产页面时需在 import map 里为每个模块写带 token 的 URL。
@@ -96,12 +97,16 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 
 1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
-3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。默认显示第一个有票的项目；`?project=<路径>` 选择其他项目。
+3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=<路径>` 打开该项目的岛（机位 `2`）。`?ticket=<票号>` 选中该票并打开机位 `3`。
 
 预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时。所以状态栏的快照年龄从 0 秒开始，40 秒后天空变成过期的雾色。
 
 读图规则：
 
+- 每个项目是一座同构的岛，有自己的水道、栈桥、船闸与灯塔。岛按 Scene 的项目顺序排成两列，位置只取决于顺序。
+- 每座岛有一块铭牌：项目名、在途票数、闸关（部署屏障关闭时）与卡住的票数。有卡住的票时铭牌用告警色。
+- 没有在途票的岛是空闲岛，颜色淡向天空色。只在 `pickup` 工位的票不算在途。
+- 调度岛只有一座钟楼。它的铭牌写 driver 的 `state` 与下次巡检时间（`nextScanAt`）。
 - 位置表示阶段。工位来自 Scene 的 `station`：
 
   | station | 位置 |
@@ -125,15 +130,21 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 - 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。
 - 有等人批的票时，人工台的灯笼变红。
 - 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention` 或工位未知时为琥珀色。
-- 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；driver 状态不是 `ok` 或快照超过 40 秒为雾色；其余为晴天。
+- 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；driver 状态不是 `ok` 或快照超过 40 秒为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
 - 沙盘不画 Scene 没有的数据：打回次数、预算、lane 与依赖暂停都不画，也不画占位。
 
 镜头与操作：
 
-- 相机是正交固定等距，没有旋转。机位 `2` 显示整座岛，机位 `3` 显示所选的票。
-- 拖动平移，滚轮或双指缩放，点击箱子选票，双击箱子进入机位 `3`。平移与缩放都有边界。
-- 方向键平移，`Home` 回到当前机位，`Esc` 退一级：机位 `3` 回到机位 `2`，机位 `2` 取消选择。
-- 「卡住的票」列出告警的票，停留最久的在前。「全部票」列出岛上每张票。列表按钮可用 Tab 与回车访问。
+- 相机是正交固定等距，没有旋转。机位 `1` 显示全部岛，机位 `2` 显示一座岛，机位 `3` 显示所选的票。数字键 `1`、`2`、`3` 直接切换机位。
+- 只有一个项目时没有机位 `1`，也没有海与调度岛，行为与单岛原型相同。
+- 拖动平移，滚轮或双指缩放，点击箱子选票，双击箱子进入机位 `3`。平移与缩放都有边界；机位 `1` 的平移不超出群岛范围。
+- 在机位 `1` 点击岛或铭牌进入该岛。`[` 与 `]` 切到上一座与下一座岛。
+- 方向键平移，`Home` 回到当前机位，`Esc` 退一级：机位 `3` 回到机位 `2`，机位 `2` 先取消选择，再回到机位 `1`。
+- 「卡住的票」跨项目列出告警的票，停留最久的在前，每条带项目名。点一条进入该票所在的岛并选中该票。「全部票」列出所有岛上的票。
+- 项目坞列出全部项目与卡住的票数，在机位 `2` 与 `3` 显示，在机位 `1` 隐藏。
+- 在机位 `1`，有卡住的票的岛在画面外时，画面边缘出现指向它的箭头。点箭头进入该岛。
+- `/` 打开搜索，按票号或项目名过滤，回车跳到第一条结果。焦点在搜索框或列表里时，数字键、`[`、`]`、`/` 与方向键不作用于沙盘。搜索框里的 `Esc` 只关闭搜索。
+- 项目坞、卡住的票、全部票与搜索都可用 Tab 与回车访问。
 - 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，并标出主线 8 段中的位置。合并队列中的票同时显示位次。
 - 系统开启减少动态时，相机直接到达目标，标记不浮动。
 
@@ -161,4 +172,4 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 `node .claude/skills/ziikoo-driver/test/pixel-town.browser.cjs` 从仓库根运行纯逻辑与真实 Chrome 验证，并启动隔离快照服务和替身 driver 的真实 Bun 服务测试资源认证。测试不读取生产状态，不依赖原型目录。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。生产服务测试同时检查 `diorama/` 与 `vendor/` 下每个文件的 token 门禁。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 先运行沙盘视图模型断言，再用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查：画面不空白，Tab 与回车可从列表选票，行程条显示该票的工位与归属，点击箱子可选票，拖动与按键后相机四元数不变，以及减少动态。依赖查找规则同上。依赖缺失或断言失败都以非零退出。
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 先运行沙盘视图模型断言，再用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene。模型断言包括群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里从机位 `1` 开始检查：画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票，项目坞出现；点击箱子可选票；拖动与按键后两次 `Esc` 回到机位 `1`，相机四元数不变；以及减少动态。依赖查找规则同上。依赖缺失或断言失败都以非零退出。

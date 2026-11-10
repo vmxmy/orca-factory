@@ -55,6 +55,29 @@ async function checkModel() {
   assert.ok(queue[0].slot.x > queue[1].slot.x && queue[1].slot.x > queue[2].slot.x, 'queue head must stand nearest the lock')
   assert.equal(queue[2].queuePosition, undefined)
   console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station')
+
+  const named = (name, parcels) => ({ ...row(parcels), name, path: `/${name}` })
+  const sceneOf = rows => ({ generatedAt: 0, state: 'ok', maintenance: 'running', rows })
+  const busy = model.archipelagoOf(sceneOf([
+    named('a', [parcel('A-1', 'work'), parcel('A-2', 'repair', { tone: 'attention', since: 300 })]),
+    named('b', []),
+    named('c', [parcel('C-1', 'human', { tone: 'failed', since: 100 }), parcel('C-2', 'dispatch', { deployment: 'pending' })]),
+    named('d', [parcel('D-1', 'pickup')]),
+  ]))
+  const calm = model.archipelagoOf(sceneOf(['a', 'b', 'c', 'd'].map(name => named(name, []))))
+  assert.deepEqual(busy.islands.map(one => one.origin), calm.islands.map(one => one.origin), 'island positions must follow row order, not state')
+  assert.equal(new Set(busy.islands.map(({ origin }) => `${origin.x},${origin.z}`)).size, 4, 'islands must not share a position')
+  assert.deepEqual(busy.islands.map(one => one.plate), [
+    { name: 'a', inFlight: 2, barrier: false, stuck: 1, alert: 'warn' },
+    { name: 'b', inFlight: 0, barrier: false, stuck: 0, alert: null },
+    { name: 'c', inFlight: 2, barrier: true, stuck: 1, alert: 'bad' },
+    { name: 'd', inFlight: 0, barrier: false, stuck: 0, alert: null },
+  ])
+  assert.deepEqual(busy.islands.map(one => one.idle), [false, true, false, true], 'an island without in-flight tickets is idle')
+  assert.deepEqual(busy.stuck.map(one => [one.identifier, one.project]), [['C-1', 'c'], ['A-2', 'a']], 'stuck tickets must cross projects, longest stay first')
+  assert.equal(busy.global, true)
+  assert.equal(model.archipelagoOf(sceneOf([named('solo', [])])).global, false, 'a single project must have no global stop')
+  console.log('PASS diorama archipelago model: fixed positions, plates, idle islands, cross-project stuck order, single project')
 }
 
 function dependencies() {
@@ -118,23 +141,32 @@ async function paintedShare(page) {
   }, png)
 }
 
-const pixelOf = (view, slot, size) => {
+const pixelOf = (view, point, size) => {
   const perUnit = size.height / (2 * view.half)
-  const dx = slot.x - view.x
-  const dz = slot.z - view.z
-  const y = slot.y + 0.37
+  const dx = point.x - view.x
+  const dz = point.z - view.z
+  const y = point.y + 0.37
   return {
     x: size.width / 2 + (perUnit * (dx - dz)) / Math.SQRT2,
     y: size.height / 2 - (perUnit * (2 * y - dx - dz)) / Math.sqrt(6),
   }
 }
 
+const settled = page =>
+  page.waitForFunction(() => {
+    const { view, goal } = window.diorama.state()
+    return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
+  })
+
 async function checkMainPath(browser, url) {
   const { page, errors } = await open(browser, url)
   try {
-    assert.ok(await paintedShare(page) > 0.2, 'the diorama must render geometry, not a blank sky')
-    const island = await page.evaluate(() => window.diorama.island)
-    assert.equal(island.path, '/home/laoxu/github/orca-factory', 'the default island must be the first project with tickets')
+    const start = await state(page)
+    assert.equal(start.stop, 1, 'several projects must open at the global stop')
+    assert.ok(await paintedShare(page) > 0.2, 'the global stop must render islands, not a blank sea')
+    const { islands } = await page.evaluate(() => window.diorama.archipelago)
+    assert.equal(await page.locator('button.plate:visible').count(), islands.length, 'every island must show its name plate')
+    assert.equal(await page.locator('.dock').isVisible(), false, 'the project dock must hide at the global stop')
     assert.equal(await page.locator('.stuck > .list button[data-ticket]').count(), 2)
 
     await page.locator('canvas').focus()
@@ -145,13 +177,18 @@ async function checkMainPath(browser, url) {
     const focused = await page.evaluate(() => document.activeElement?.dataset.ticket)
     assert.equal(focused, 'OF-415', 'the stuck list must be reachable with Tab')
     await page.keyboard.press('Enter')
+    const entered = await state(page)
+    assert.deepEqual([entered.stop, entered.focus, entered.selected], [2, '/home/laoxu/github/orca-factory', 'OF-415'], 'a stuck ticket must open its island and select it')
+    assert.equal(await page.locator('.dock').isVisible(), true, 'the project dock must show at the workshop stop')
     const trip = await page.locator('.trip').innerText()
     for (const text of ['OF-415', '归属 处置Agent', '处置塔前', '二线处理中']) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
 
+    await settled(page)
     const before = await state(page)
+    const island = islands.find(one => one.path === entered.focus)
     const target = island.parcels.find(one => one.identifier === 'OF-419')
     const size = page.viewportSize()
-    const point = pixelOf(before.view, target.slot, size)
+    const point = pixelOf(before.view, { x: target.slot.x + island.origin.x, y: target.slot.y, z: target.slot.z + island.origin.z }, size)
     await page.mouse.click(point.x, point.y)
     assert.equal((await state(page)).selected, 'OF-419', 'clicking a box must select its ticket')
     assert.ok((await page.locator('.trip').innerText()).includes('OF-419'))
@@ -168,12 +205,17 @@ async function checkMainPath(browser, url) {
     await frames(page)
     assert.equal((await state(page)).stop, 3, 'key 3 must move to the ticket stop')
     await page.keyboard.press('Escape')
+    assert.deepEqual([(await state(page)).stop, (await state(page)).selected], [2, 'OF-419'], 'Esc must step back from the ticket to the workshop')
+    await page.keyboard.press('Escape')
+    assert.deepEqual([(await state(page)).stop, (await state(page)).selected], [2, null], 'Esc must then clear the selection')
+    await page.keyboard.press('Escape')
     await frames(page)
     const after = await state(page)
-    assert.equal(after.stop, 2, 'Esc must step back to the workshop stop')
-    assert.deepEqual(after.quaternion, before.quaternion, 'the camera must never rotate')
+    assert.equal(after.stop, 1, 'Esc must finally step back to the global stop')
+    assert.equal(await page.locator('.dock').isVisible(), false)
+    assert.deepEqual(after.quaternion, start.quaternion, 'the camera must never rotate')
     assert.deepEqual(errors, [])
-    console.log('PASS diorama in real Chrome: painted island, Tab/Enter list, trip bar stage and owner, click pick, fixed rotation')
+    console.log('PASS diorama in real Chrome: global stop, plates, Tab/Enter stuck list opens the island, click pick, Esc back to global, fixed rotation')
   } finally {
     await page.close()
   }
