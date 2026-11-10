@@ -37,6 +37,14 @@ const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', depl
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+  const recorded = readJSON(path.join(preview, 'diorama-scene.json'))
+  assert.equal(recorded.state, 'ok')
+  assert.equal(recorded.nextScanAt - recorded.generatedAt, 68_579, 'the recorded next scan interval must survive parseRuntime and sceneOf')
+  assert.deepEqual(
+    [41_000, 108_579, 108_580].map(age => model.staleOf(recorded, age)),
+    [false, false, true],
+    'the recorded ok snapshot must stay fresh through its next scan plus 40 seconds and expire one millisecond later',
+  )
   const generatedAt = 1e12
   const scheduled = { state: 'ok', generatedAt, nextScanAt: generatedAt + 120_000 }
   assert.deepEqual(
@@ -494,6 +502,12 @@ async function checkLiveUpdates(browser, live) {
     assert.ok(await paintedShare(page) > 0.2, 'the production page must render the islands')
     await waitLead(page, '已连接')
     assert.ok((await leadText(page)).includes('快照过期'), 'the recorded snapshot is days old and must read as stale')
+    const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+    const scanInterval = Date.parse(recorded.nextScanAt) - Date.parse(recorded.generatedAt)
+    const generatedAt = Date.now() - 60_000
+    live.write({ ...recorded, generatedAt: new Date(generatedAt).toISOString(), nextScanAt: new Date(generatedAt + scanInterval).toISOString() })
+    await waitLead(page, '快照过期', false)
+    for (const text of ['已连接', 'driver ok']) assert.ok((await leadText(page)).includes(text), `the recorded snapshot within the next scan grace period must show ${text}`)
     if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-global.png') })
     await page.locator('.stuck > .list button[data-ticket="0/OF-415"]').click()
     await settled(page)
@@ -701,9 +715,9 @@ async function checkProduction(browser, bun, model) {
 }
 
 async function main() {
-  const model = await checkModel()
   const { playwright, chrome, bun } = dependencies()
   execFileSync(bun, [path.join(preview, 'diorama-scene.ts')], { stdio: 'inherit' })
+  const model = await checkModel()
   const server = await serve()
   const url = `http://127.0.0.1:${server.address().port}/test/design-preview/diorama.html`
   try {

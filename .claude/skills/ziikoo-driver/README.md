@@ -181,12 +181,12 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先运行沙盘视图模型断言，包括 `unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
 1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
 2. 预览减少动态与生命周期：标记不浮动，相机直接到达；连续两次 `update` 后铭牌焦点不丢，边缘箭头的焦点仍在箭头上，保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择，没有项目的 Scene 在改动前被拒绝；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
 3. 生产服务：用替身 `orca-factory-driver` 启动真实 `scene/server.ts`。`scene/page/` 下每个文件、`/`、`/snapshot` 与 `/events` 无 token 时返回 404，带 `t` 参数或 `X-Token` 头时可读，POST 返回 404；已删除的旧页面路径返回 404。
-4. 生产页面：首屏渲染与快照过期；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，维护中且快照过期时两项都写，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；没有项目的 Scene 卸载沙盘并写「暂无项目」，有项目后重新挂载；事件流被拒绝后写「连接已关闭」，不再写自动重连；每个页面请求都带 token，不写浏览器存储。
+4. 生产页面：首屏渲染与快照过期；录制快照重定时到年龄超过 40 秒但未到下次巡检加宽限时，不写「快照过期」，仍写「已连接」和 `driver ok`；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，维护中且快照过期时两项都写，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；没有项目的 Scene 卸载沙盘并写「暂无项目」，有项目后重新挂载；事件流被拒绝后写「连接已关闭」，不再写自动重连；每个页面请求都带 token，不写浏览器存储。
 5. 生产入口：`?project=`、`[` 与 `]`、点击岛、搜索回车、URL 跟随视图、部署暂停与未知工位的行程条、同号票在两个项目各列一条、`?project=&ticket=` 打开指定项目的同号票；该票已合并但没有 `deployment`，行程条、复制详情与「卡住的票」都写部署未知；没有配置部署的项目里同样的票写「部署：不适用 · 未配置部署」，不进「卡住的票」。
 6. 无 WebGL：页面写出含 WebGL 的原因，不留画布，没有页面错误。
 
