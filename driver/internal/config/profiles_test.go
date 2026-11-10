@@ -104,10 +104,17 @@ func TestMachineConfigRejectsInvalidProfiles(t *testing.T) {
 	}
 }
 
-func TestAssignedKeysFollowBashAssignments(t *testing.T) {
-	data := "PLAIN=1\n  export EXPORTED='codex:repository:high'\ndeclare -x DECLARED=2\nreadonly READONLY=3\n# COMMENTED=4\necho ECHOED=5\nunset PLAIN_UNSET\n"
-	want := map[string]bool{"PLAIN": true, "EXPORTED": true, "DECLARED": true, "READONLY": true}
-	if got := AssignedKeys([]byte(data)); !reflect.DeepEqual(got, want) {
-		t.Fatalf("assigned=%v, want %v", got, want)
+func TestAssignedKeysMatchParseEnv(t *testing.T) {
+	data := "PLAIN=1\n  QUOTED='codex:repository:high' # comment\nexport EXPORTED=2\ndeclare -x DECLARED=3\n# COMMENTED=4\nsource /etc/profile\nunset PLAIN\n"
+	env, err := ParseEnv(strings.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := map[string]bool{}
+	for key := range env {
+		parsed[key] = true
+	}
+	if got := AssignedKeys([]byte(data)); !reflect.DeepEqual(got, parsed) {
+		t.Fatalf("assigned=%v, ParseEnv keys=%v", got, parsed)
 	}
 }
