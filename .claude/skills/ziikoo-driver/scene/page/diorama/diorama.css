@@ -107,10 +107,27 @@
 }
 
 .diorama .status,
+.diorama .alarm,
 .diorama .dock,
 .diorama .side,
 .diorama .trip {
   pointer-events: auto;
+}
+
+.diorama .notice {
+  position: absolute;
+  inset: 14px auto auto 14px;
+  max-width: 60ch;
+  margin: 0;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.diorama .notice.failure {
+  border-color: var(--o-human);
 }
 
 .diorama .lead {
@@ -150,8 +167,23 @@
   background: var(--w-muted);
 }
 
-.diorama .status[data-sky="dark"]::before {
+.diorama .status[data-sky="dark"]::before,
+.diorama .status[data-online="false"]::before {
   background: var(--o-human);
+}
+
+.diorama .alarm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 7px 10px;
+  list-style: none;
+  background: var(--w-paper);
+  border: 1px solid var(--o-human);
+  font-size: 12px;
+  line-height: 1.4;
+  user-select: text;
 }
 
 .diorama .side {
@@ -484,6 +516,7 @@
   background: var(--w-paper);
   border: 1px solid var(--w-line);
   padding: 12px 14px;
+  user-select: text;
 }
 
 .diorama .trip-head {
@@ -543,6 +576,29 @@
 }
 
 .diorama .trip-foot {
+  font-size: 11.5px;
+  color: var(--w-muted);
+}
+
+.diorama .trip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+}
+
+.diorama .trip-actions button {
+  padding: 6px 10px;
+  border: 1px solid var(--w-line);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.diorama .trip-actions button:hover {
+  background: #f3e8d6;
+}
+
+.diorama .copied {
   font-size: 11.5px;
   color: var(--w-muted);
 }

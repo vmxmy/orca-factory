@@ -43,6 +43,12 @@ const arrowOf = island =>
     element('span', { text: `${island.name} · ${island.plate.stuck} 张卡住` }),
   ])
 
+const heldOf = container => {
+  const active = document.activeElement
+  if (!container.contains(active) || active.dataset.island === undefined) return undefined
+  return { island: active.dataset.island, kind: active.classList.contains('arrow') ? 'arrow' : 'plate' }
+}
+
 const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
 
 const settle = (rect, taken) => {
@@ -54,106 +60,159 @@ const settle = (rect, taken) => {
 
 const clampTo = (value, low, high) => Math.min(high, Math.max(low, value))
 
-export const createOverlay = (stage, archipelago, world, { onIsland }) => {
+const anchorOf = ({ origin, layout }) => new Vector3(origin.x + layout.tower, PLATE_Y, origin.z)
+
+const itemOf = (node, position) => ({ node, position, size: null })
+
+const reveal = (node, visible) => {
+  if (node.hidden === visible) node.hidden = !visible
+}
+
+const sizeOf = item => {
+  item.size ??= { width: item.node.offsetWidth, height: item.node.offsetHeight }
+  return item.size
+}
+
+const ticketLabel = parcel => ({
+  ...itemOf(
+    element('span', {
+      class: ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(),
+      text: parcel.unknown ? `${parcel.identifier} · 未知` : parcel.identifier,
+    }),
+    new Vector3(),
+  ),
+  parcel,
+  lift: new Vector3(0, parcel.alert ? 2 : 1.1, 0),
+})
+
+const areaOf = (margins, viewport) => ({
+  left: margins.left,
+  top: margins.top,
+  right: viewport.width - margins.right,
+  bottom: viewport.height - margins.bottom,
+})
+
+const inside = (point, area) => point.x >= area.left && point.x <= area.right && point.y >= area.top && point.y <= area.bottom
+
+const pointTo = (arrow, point, area) => {
+  const { width, height } = sizeOf(arrow)
+  const center = { x: (area.left + area.right) / 2, y: (area.top + area.bottom) / 2 }
+  const dx = point.x - center.x
+  const dy = point.y - center.y
+  const reach = Math.min((area.right - center.x) / Math.abs(dx), (area.bottom - center.y) / Math.abs(dy))
+  const halfWidth = width / 2 + ARROW_INSET
+  const halfHeight = height / 2 + ARROW_INSET
+  arrow.node.style.left = `${clampTo(center.x + dx * reach, area.left + halfWidth, area.right - halfWidth)}px`
+  arrow.node.style.top = `${clampTo(center.y + dy * reach, area.top + halfHeight, area.bottom - halfHeight)}px`
+  arrow.node.style.setProperty('--turn', `${Math.atan2(dy, dx)}rad`)
+}
+
+export const createOverlay = (stage, world, { onIsland }) => {
   const labels = element('div', { class: 'labels' })
   const anchored = element('div', { class: 'plates' })
   stage.append(labels, anchored)
-  const anchorOf = ({ origin, layout }) => new Vector3(origin.x + layout.tower, PLATE_Y, origin.z)
-  const plates = archipelago.islands.map(island => ({ node: plateOf(island), position: anchorOf(island) }))
-  const hub = archipelago.hub
-    ? { node: element('span', { class: 'plate hub', hidden: '' }), position: new Vector3(archipelago.hub.x, HUB_PLATE_Y, archipelago.hub.z) }
-    : null
-  const arrows = archipelago.islands
-    .filter(island => island.plate.alert !== null)
-    .map(island => ({ node: arrowOf(island), position: anchorOf(island) }))
-  anchored.append(...plates.map(plate => plate.node), ...(hub ? [hub.node] : []), ...arrows.map(arrow => arrow.node))
   anchored.addEventListener('click', event => {
     const button = event.target.closest('button[data-island]')
     if (button) onIsland(Number(button.dataset.island))
   })
-
-  const tickets = archipelago.tickets.map(parcel => ({
-    parcel,
-    position: new Vector3(0, parcel.alert ? 2 : 1.1, 0).add(world.parcels.get(parcel.key).group.position),
-    node: element('span', {
-      class: ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(),
-      text: parcel.unknown ? `${parcel.identifier} · 未知` : parcel.identifier,
-    }),
-  }))
-  labels.append(...tickets.map(ticket => ticket.node))
+  const projected = new Vector3()
+  let islands = []
+  let plates = []
+  let hub = null
+  let arrows = []
+  let tickets = []
   let stations = []
   let focused = null
+  let refocus
+  let viewport = { width: 0, height: 0 }
 
   const screenOf = (position, camera) => {
-    const point = position.clone().project(camera)
-    return { x: ((point.x + 1) / 2) * stage.clientWidth, y: ((1 - point.y) / 2) * stage.clientHeight }
+    projected.copy(position).project(camera)
+    return { x: ((projected.x + 1) / 2) * viewport.width, y: ((1 - projected.y) / 2) * viewport.height }
   }
 
-  const place = (node, position, camera, taken, inside = false) => {
-    node.hidden = false
-    const point = screenOf(position, camera)
+  const place = (item, camera, taken, clamped = false) => {
+    const { width, height } = sizeOf(item)
+    const point = screenOf(item.position, camera)
     const bottom = point.y - 6
-    const half = node.offsetWidth / 2
-    const onStage = point.x >= 0 && point.x <= stage.clientWidth
-    const x = inside && onStage ? clampTo(point.x, half + EDGE, stage.clientWidth - half - EDGE) : point.x
-    const rect = settle({ left: x - half, right: x + half, top: bottom - node.offsetHeight, bottom }, taken)
-    node.style.left = `${x}px`
-    node.style.top = `${rect.bottom}px`
+    const half = width / 2
+    const onStage = point.x >= 0 && point.x <= viewport.width
+    const x = clamped && onStage ? clampTo(point.x, half + EDGE, viewport.width - half - EDGE) : point.x
+    const rect = settle({ left: x - half, right: x + half, top: bottom - height, bottom }, taken)
+    item.node.style.left = `${x}px`
+    item.node.style.top = `${rect.bottom}px`
     taken.push(rect)
   }
 
-  const pointTo = (arrow, camera, margins) => {
-    const area = { left: margins.left, top: margins.top, right: stage.clientWidth - margins.right, bottom: stage.clientHeight - margins.bottom }
-    const { x, y } = screenOf(arrow.position, camera)
-    arrow.node.hidden = x >= area.left && x <= area.right && y >= area.top && y <= area.bottom
-    if (arrow.node.hidden) return
-    const center = { x: (area.left + area.right) / 2, y: (area.top + area.bottom) / 2 }
-    const dx = x - center.x
-    const dy = y - center.y
-    const reach = Math.min((area.right - center.x) / Math.abs(dx), (area.bottom - center.y) / Math.abs(dy))
-    const halfWidth = arrow.node.offsetWidth / 2 + ARROW_INSET
-    const halfHeight = arrow.node.offsetHeight / 2 + ARROW_INSET
-    arrow.node.style.left = `${clampTo(center.x + dx * reach, area.left + halfWidth, area.right - halfWidth)}px`
-    arrow.node.style.top = `${clampTo(center.y + dy * reach, area.top + halfHeight, area.bottom - halfHeight)}px`
-    arrow.node.style.setProperty('--turn', `${Math.atan2(dy, dx)}rad`)
+  const shownOf = (stop, selected) => {
+    const global = stop === 1
+    const marked = tickets
+      .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.key === selected)
+      .sort((left, right) => Number(right.parcel.key === selected) - Number(left.parcel.key === selected))
+    return {
+      tickets: marked,
+      plates: global ? [...plates, ...(hub ? [hub] : [])] : [],
+      stations: !global && viewport.width > LABEL_MIN_WIDTH ? stations : [],
+    }
   }
 
   return {
+    update(archipelago) {
+      refocus ??= heldOf(anchored)
+      islands = archipelago.islands
+      plates = islands.map(island => itemOf(plateOf(island), anchorOf(island)))
+      hub = archipelago.hub
+        ? itemOf(element('span', { class: 'plate hub', hidden: '' }), new Vector3(archipelago.hub.x, HUB_PLATE_Y, archipelago.hub.z))
+        : null
+      arrows = islands.filter(island => island.plate.alert !== null).map(island => itemOf(arrowOf(island), anchorOf(island)))
+      tickets = archipelago.tickets.map(ticketLabel)
+      for (const ticket of tickets) ticket.node.hidden = true
+      stations = []
+      focused = null
+      anchored.replaceChildren(...plates.map(plate => plate.node), ...(hub ? [hub.node] : []), ...arrows.map(arrow => arrow.node))
+      labels.replaceChildren(...tickets.map(ticket => ticket.node))
+    },
     focus(index) {
       if (index === focused) return
       focused = index
       for (const station of stations) station.node.remove()
-      const island = archipelago.islands[index]
-      stations = stationLabels(island).map(([text, x, y, z]) => ({
-        node: element('span', { class: 'label', text }),
-        position: new Vector3(x + island.origin.x, y, z + island.origin.z),
-      }))
+      const island = islands[index]
+      stations = stationLabels(island).map(([text, x, y, z]) =>
+        itemOf(element('span', { class: 'label', text, hidden: '' }), new Vector3(x + island.origin.x, y, z + island.origin.z)),
+      )
       labels.append(...stations.map(station => station.node))
     },
     hub(text) {
-      if (hub) hub.node.textContent = text
+      if (!hub || hub.node.textContent === text) return
+      hub.node.textContent = text
+      hub.size = null
     },
-    place(camera, { stop, selected, margins }) {
+    place(camera, { stop, selected, margins, size }) {
+      viewport = size
+      const shown = shownOf(stop, selected)
+      const area = areaOf(margins, viewport)
+      for (const ticket of shown.tickets) ticket.position.copy(world.parcels.get(ticket.parcel.key).group.position).add(ticket.lift)
+      const pointing = stop === 1
+        ? arrows.map(arrow => ({ arrow, point: screenOf(arrow.position, camera) })).filter(({ point }) => !inside(point, area))
+        : []
+      const visible = new Set([...shown.tickets, ...shown.plates, ...shown.stations, ...pointing.map(({ arrow }) => arrow)])
+      for (const item of [...tickets, ...plates, ...(hub ? [hub] : []), ...stations, ...arrows]) reveal(item.node, visible.has(item))
+      for (const item of visible) sizeOf(item)
       const taken = []
-      const global = stop === 1
-      const shown = tickets
-        .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.key === selected)
-        .sort((left, right) => Number(right.parcel.key === selected) - Number(left.parcel.key === selected))
-      for (const ticket of tickets) ticket.node.hidden = !shown.includes(ticket)
-      for (const ticket of shown) place(ticket.node, ticket.position, camera, taken)
-      for (const plate of [...plates, ...(hub ? [hub] : [])]) {
-        if (global) place(plate.node, plate.position, camera, taken, true)
-        else plate.node.hidden = true
-      }
-      const wide = !global && stage.clientWidth > LABEL_MIN_WIDTH
-      for (const station of stations) {
-        station.node.hidden = !wide
-        if (wide) place(station.node, station.position, camera, taken)
-      }
-      for (const arrow of arrows) {
-        if (global) pointTo(arrow, camera, margins)
-        else arrow.node.hidden = true
-      }
+      for (const ticket of shown.tickets) place(ticket, camera, taken)
+      for (const plate of shown.plates) place(plate, camera, taken, true)
+      for (const station of shown.stations) place(station, camera, taken)
+      for (const { arrow, point } of pointing) pointTo(arrow, point, area)
+      if (refocus === undefined) return
+      anchored.querySelector(`.${refocus.kind}[data-island="${CSS.escape(refocus.island)}"]:not([hidden])`)?.focus({ preventScroll: true })
+      refocus = undefined
+    },
+    forgetSizes() {
+      for (const item of [...tickets, ...plates, ...(hub ? [hub] : []), ...stations, ...arrows]) item.size = null
+    },
+    remove() {
+      labels.remove()
+      anchored.remove()
     },
   }
 }

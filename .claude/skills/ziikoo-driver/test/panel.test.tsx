@@ -138,7 +138,7 @@ test('不配置时自动选择绑定地址并复制 URL，非 SSH 会话打开�
   expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('0')
   expect(clipboard.texts).toContain('http://192.168.99.10:43210/?t=x')
   expect(calls).toContainEqual(['xdg-open', 'http://192.168.99.10:43210/?t=x'])
-  expect(toasts).toContain('已复制像素工坊 URL：http://192.168.99.10:43210/?t=x')
+  expect(toasts).toContain('已复制工坊沙盘 URL：http://192.168.99.10:43210/?t=x')
   await ui.unmount()
 })
 
@@ -150,7 +150,7 @@ test('SSH 会话里自动选择绑定地址后只复制 URL，不开本机浏览
   await ui.press({ key: 'scene' })
   expect(clipboard.texts).toContain('http://192.168.99.10:43210/?t=x')
   expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
-  expect(toasts).toContain('已复制像素工坊 URL：http://192.168.99.10:43210/?t=x（SSH 会话，请在远程浏览器粘贴）')
+  expect(toasts).toContain('已复制工坊沙盘 URL：http://192.168.99.10:43210/?t=x（SSH 会话，请在远程浏览器粘贴）')
   await ui.press({ key: 'scene' })
   expect(clipboard.texts).toHaveLength(2)
   expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
@@ -165,7 +165,7 @@ test('SSH_TTY 会话显式绑定回环地址时也只复制 URL', { options: { b
   await ui.press({ key: 'scene' })
   expect(clipboard.texts).toContain('http://127.0.0.1:4300/?t=x')
   expect(calls.some(argv => argv[0] === 'xdg-open')).toBe(false)
-  expect(toasts).toContain('已复制像素工坊 URL：http://127.0.0.1:4300/?t=x（SSH 会话，请在远程浏览器粘贴）')
+  expect(toasts).toContain('已复制工坊沙盘 URL：http://127.0.0.1:4300/?t=x（SSH 会话，请在远程浏览器粘贴）')
   await ui.unmount()
 })
 
@@ -180,7 +180,7 @@ test('非 SSH 会话显式绑定 nebula1 时也打开广播 URL', { options: { b
   await ui.unmount()
 })
 
-test('像素工坊按钮启动带 token 的 Bun 服务并打开监听 URL', { options: { bind: '127.0.0.1' } }, async ($, on) => {
+test('工坊沙盘按钮启动带 token 的 Bun 服务并打开监听 URL', { options: { bind: '127.0.0.1' } }, async ($, on) => {
   const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
   mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
   await $.command.run(runCommand)
@@ -296,7 +296,7 @@ test('录制的非法端口错误显示 stderr 最后一行', async ($, on) => {
   const ui = await $.ui.mount(PANE)
   await ui.press({ key: 'scene' })
   await clock.advance(60_000)
-  expect(toasts.some(text => text.includes('退出码 1') && text.includes('像素工坊服务端口必须是 0–65535 的整数，收到 abc'))).toBe(true)
+  expect(toasts.some(text => text.includes('退出码 1') && text.includes('工坊沙盘服务端口必须是 0–65535 的整数，收到 abc'))).toBe(true)
   await ui.unmount()
 })
 
@@ -958,10 +958,10 @@ const ticketRows = async (ui: Drawing) =>
   (await ui.findAll({ type: 'Box' })).filter(one => one.key?.startsWith('pipeline-')).map(one => one.key)
 
 const HELP = {
-  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 像素工坊',
-  detail: 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 像素工坊',
-  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 像素工坊',
-  other: 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框 · d 像素工坊',
+  list: '↑↓ 选择 · ⏎ 详情 · f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 工坊沙盘',
+  detail: 'q 返回 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 工坊沙盘',
+  environment: 'f 筛选 · r 刷新 · c 复制 · 1–5 切页 · Esc 回到输入框 · d 工坊沙盘',
+  other: 'r 刷新 · c 复制 · 1–5 切页 · Tab/↑↓ 移动 · Esc 回到输入框 · d 工坊沙盘',
 }
 
 test('按下票号进入详情，时间线按执行器日志列出中文事件', async ($, on) => {

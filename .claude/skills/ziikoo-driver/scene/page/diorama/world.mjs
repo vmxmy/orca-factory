@@ -25,6 +25,7 @@ const GLOW = {
   ok: 0x2f9a6a,
   waiting: 0xeea61b,
   failed: 0xe0442e,
+  unknown: 0x7f8fa0,
   lantern: 0xe0442e,
   warn: 0xeea61b,
   bad: 0xe0442e,
@@ -49,6 +50,7 @@ const MARK_Y = 1.45
 const IDLE_FADE = 0.55
 const SEA_Y = -0.7
 const SEA_SIZE = 4000
+const MOVE_MS = 1200
 const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1)
 const UNIT_CONE = new THREE.ConeGeometry(1, 1, 4)
 const MARK = new THREE.OctahedronGeometry(0.3)
@@ -140,7 +142,8 @@ const buildWaterfront = kit => {
   kit.box([0.9, 3, 0.9], WORLD.cream, [16.2, 0, 6.6])
   kit.box([1.1, 0.2, 1.1], WORLD.tower, [16.2, 3, 6.6])
   const beacon = kit.box([0.6, 0.6, 0.6], WORLD.unlit, [16.2, 3.2, 6.6], { emissive: 0x000000 })
-  return { lock, beacon }
+  const halo = kit.box([0.8, 0.1, 0.8], GLOW.warn, [16.2, 3.45, 6.6], { emissive: GLOW.warn })
+  return { lock, beacon, halo }
 }
 
 const buildHub = (scene, hub) => {
@@ -158,6 +161,7 @@ const dressIsland = (parts, island) => {
   parts.doors.forEach((door, index) => door.material.emissive.setHex(index < island.working ? GLOW.door : 0x000000))
   parts.lock.position.y = LOCK_Y[island.lock] + 0.55
   if (island.beacon !== 'off') glow(parts.beacon, GLOW[island.beacon])
+  parts.halo.visible = island.beacon === 'unknown'
   if (island.lantern) glow(parts.lantern, GLOW.lantern)
 }
 
@@ -172,7 +176,7 @@ const buildIsland = (scene, island, fade) => {
   return land
 }
 
-const buildParcel = (scene, view, origin) => {
+const buildParcel = (scene, view, island) => {
   const group = new THREE.Group()
   const kit = kitOf(group)
   const body = kit.box([0.74, 0.74, 0.74], view.color, [0, 0, 0])
@@ -187,9 +191,10 @@ const buildParcel = (scene, view, origin) => {
   group.add(mark)
   const ring = kit.box([1.2, 0.05, 1.2], WORLD.ink, [0, -0.02, 0])
   ring.visible = false
-  group.position.set(view.slot.x + origin.x, view.slot.y, view.slot.z + origin.z)
+  const target = new THREE.Vector3(view.slot.x + island.origin.x, view.slot.y, view.slot.z + island.origin.z)
+  group.position.copy(target)
   scene.add(group)
-  return { group, body, mark, ring, view }
+  return { id: `${island.path}\0${view.identifier}`, group, body, mark, ring, view, target, from: null, start: null }
 }
 
 const buildSea = scene => {
@@ -200,8 +205,57 @@ const buildSea = scene => {
   return sea
 }
 
-export const createWorld = (canvas, archipelago) => {
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+const SHARED_GEOMETRY = new Set([UNIT_BOX, UNIT_CONE, MARK])
+
+const release = group => {
+  const kept = new Set(palette.values())
+  group.traverse(node => {
+    if (!node.isMesh) return
+    if (!SHARED_GEOMETRY.has(node.geometry)) node.geometry.dispose()
+    if (!kept.has(node.material)) node.material.dispose()
+  })
+  group.removeFromParent()
+}
+
+const travel = (parcel, time, reduced) => {
+  parcel.start ??= time
+  const progress = reduced ? 1 : Math.min(1, (time - parcel.start) / MOVE_MS)
+  if (progress === 1) {
+    parcel.group.position.copy(parcel.target)
+    parcel.from = null
+    return
+  }
+  parcel.group.position.lerpVectors(parcel.from, parcel.target, progress * progress * (3 - 2 * progress))
+}
+
+const rendererOf = canvas => {
+  try {
+    return new THREE.WebGLRenderer({ canvas, antialias: true })
+  } catch (error) {
+    throw new Error(`浏览器无法创建 WebGL2 上下文，工坊沙盘无法绘制。请在浏览器设置里开启硬件加速或 WebGL 后刷新页面。（${error.message}）`, { cause: error })
+  }
+}
+
+const buildContent = (scene, archipelago, previous) => {
+  const content = new THREE.Group()
+  scene.add(content)
+  const sea = archipelago.global ? buildSea(content) : null
+  if (archipelago.hub) buildHub(content, archipelago.hub)
+  const lands = archipelago.islands.map(island => buildIsland(content, island, archipelago.global && island.idle))
+  const parcels = new Map(archipelago.islands.flatMap(island => island.parcels.map(view => {
+    const parcel = buildParcel(content, view, island)
+    const from = previous.get(parcel.id)
+    if (from && !from.equals(parcel.target)) {
+      parcel.from = from
+      parcel.group.position.copy(from)
+    }
+    return [view.key, parcel]
+  })))
+  return { content, sea, parcels, targets: [...lands, ...[...parcels.values()].map(parcel => parcel.body)] }
+}
+
+export const createWorld = canvas => {
+  const renderer = rendererOf(canvas)
   renderer.outputColorSpace = THREE.LinearSRGBColorSpace
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2))
   const scene = new THREE.Scene()
@@ -209,43 +263,53 @@ export const createWorld = (canvas, archipelago) => {
   const sun = new THREE.DirectionalLight(0xffffff, 0.62 * LIGHT_SCALE)
   sun.position.set(0.35, 1, 0.8)
   scene.add(sun)
-  const sea = archipelago.global ? buildSea(scene) : null
-  if (archipelago.hub) buildHub(scene, archipelago.hub)
-  const lands = archipelago.islands.map(island => buildIsland(scene, island, archipelago.global && island.idle))
-  const parcels = new Map(
-    archipelago.islands.flatMap(island => island.parcels.map(view => [view.key, buildParcel(scene, view, island.origin)])),
-  )
   const raycaster = new THREE.Raycaster()
-  const targets = [...lands, ...[...parcels.values()].map(parcel => parcel.body)]
+  let sky = 'clear'
+  let built = { content: null, sea: null, parcels: new Map(), targets: [] }
 
   return {
-    parcels,
+    get parcels() {
+      return built.parcels
+    },
+    build(archipelago) {
+      const previous = new Map([...built.parcels.values()].map(parcel => [parcel.id, parcel.group.position.clone()]))
+      if (built.content) release(built.content)
+      built = buildContent(scene, archipelago, previous)
+      built.sea?.material.color.setHex(SEAS[sky])
+    },
     setSky(kind) {
+      sky = kind
       renderer.setClearColor(SKIES[kind])
-      sea?.material.color.setHex(SEAS[kind])
+      built.sea?.material.color.setHex(SEAS[kind])
     },
     resize(width, height) {
       renderer.setSize(width, height, false)
     },
     select(key) {
-      for (const parcel of parcels.values()) parcel.ring.visible = parcel.view.key === key
+      for (const parcel of built.parcels.values()) parcel.ring.visible = parcel.view.key === key
     },
     pick(ndc, camera) {
       raycaster.setFromCamera(ndc, camera)
-      const hit = raycaster.intersectObjects(targets, true)[0]?.object
+      const hit = raycaster.intersectObjects(built.targets, true)[0]?.object
       if (!hit) return null
       if (hit.userData.key) return { key: hit.userData.key }
       return { island: hit.parent.userData.island }
     },
     animate(time, reduced) {
-      for (const parcel of parcels.values()) {
+      for (const parcel of built.parcels.values()) {
         const { mark, group } = parcel
+        if (parcel.from) travel(parcel, time, reduced)
         mark.position.y = reduced ? MARK_Y : MARK_Y + Math.sin(time / 500 + group.position.x) * 0.08
         mark.rotation.y = reduced ? 0 : time / 1400
       }
     },
     render(camera) {
       renderer.render(scene, camera)
+    },
+    dispose() {
+      if (built.content) release(built.content)
+      renderer.dispose()
+      renderer.forceContextLoss()
     },
   }
 }

@@ -59,13 +59,20 @@ const islandExtremes = ({ layout, origin }) => extremesOf(layout).map(point => (
 
 const hubExtremes = hub => [...corners(hubBox(hub)), { x: hub.x, y: HUB_TOP, z: hub.z - 1 }]
 
+const extentsOf = archipelago => {
+  const islands = archipelago.islands.map(islandExtremes)
+  return {
+    islands,
+    everything: [...islands.flat(), ...(archipelago.hub ? hubExtremes(archipelago.hub) : [])],
+    bounds: boundsOf(archipelago),
+  }
+}
+
 export const createCamera = archipelago => {
   const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 600)
   camera.position.copy(DIRECTION).multiplyScalar(DISTANCE)
   camera.lookAt(0, 0, 0)
-  const islands = archipelago.islands.map(islandExtremes)
-  const everything = [...islands.flat(), ...(archipelago.hub ? hubExtremes(archipelago.hub) : [])]
-  const bounds = boundsOf(archipelago)
+  let { islands, everything, bounds } = extentsOf(archipelago)
   let viewport = { width: 1, height: 1, margins: { top: 0, right: 0, bottom: 0, left: 0 } }
   let farthest = 10
   const view = { half: farthest, x: 0, z: 0 }
@@ -114,6 +121,11 @@ export const createCamera = archipelago => {
       if (width <= 0 || height <= 0) return
       viewport = { width, height, margins }
       farthest = fit(everything).half * ZOOM_OUT_LIMIT
+    },
+    retarget(next) {
+      ;({ islands, everything, bounds } = extentsOf(next))
+      farthest = fit(everything).half * ZOOM_OUT_LIMIT
+      clamp()
     },
     frameAll() {
       Object.assign(goal, fit(everything))

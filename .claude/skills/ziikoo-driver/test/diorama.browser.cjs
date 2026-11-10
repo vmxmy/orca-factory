@@ -3,15 +3,23 @@ const fs = require('node:fs')
 const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
-const { execFileSync } = require('node:child_process')
+const crypto = require('node:crypto')
+const { execFileSync, spawn } = require('node:child_process')
 const { pathToFileURL } = require('node:url')
 
 const plugin = path.resolve(__dirname, '..')
 const preview = path.join(plugin, 'test/design-preview')
+const pageRoot = path.join(plugin, 'scene/page')
+const shots = process.env.DIORAMA_SCREENSHOTS
 const servedRoots = [path.join(plugin, 'scene/page') + path.sep, preview + path.sep]
 const types = { '.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json' }
 const STATIONS = ['pickup', 'work', 'return', 'gate', 'review', 'pack', 'merge', 'dispatch', 'smoke', 'repair', 'human']
 const MARK_REST = 1.45
+const FACTORY = '/home/laoxu/github/orca-factory'
+const DASHBOARD = '/home/laoxu/github/zhiyun-ai-dashboard'
+const ANSIBLE = '/home/laoxu/ansible'
+const TWIN = '/home/laoxu/github/token123'
+const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
 
 const parcel = (identifier, station, extra = {}) => ({
   identifier,
@@ -54,7 +62,22 @@ async function checkModel() {
   assert.deepEqual(queue.map(one => one.identifier), ['Q-1', 'Q-2', 'Q-none'], 'merge queue must sort by position, missing last')
   assert.ok(queue[0].slot.x > queue[1].slot.x && queue[1].slot.x > queue[2].slot.x, 'queue head must stand nearest the lock')
   assert.equal(queue[2].queuePosition, undefined)
-  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station')
+  const merged = parcel('M-1', 'merge', { phase: '已合并', label: '已合并', unknownDeploy: true })
+  const blind = model.islandOf(row([merged]))
+  assert.deepEqual(
+    [blind.parcels[0].unknownDeploy, blind.parcels[0].alert, blind.parcels[0].stationName],
+    [true, 'warn', `${model.STATION_NAMES.merge} · 部署未知`],
+    'a merged ticket without deployment must warn and say so at its station',
+  )
+  assert.deepEqual(model.stuckOf(blind).map(one => one.identifier), ['M-1'], 'an unknown deployment must count as stuck')
+  assert.deepEqual([blind.lock, blind.beacon], ['open', 'unknown'], 'an unknown deployment must grey the lighthouse and keep the lock rule')
+  assert.equal(model.islandOf(row([merged, parcel('M-2', 'dispatch', { deployment: 'failed' })])).beacon, 'failed', 'a failed deployment must outrank an unknown one')
+  const undeployed = model.islandOf({ ...row([merged]), deploy: false })
+  assert.equal(undeployed.beacon, 'off', 'a project without deployment keeps its lighthouse off')
+  assert.deepEqual([undeployed.parcels[0].alert, undeployed.parcels[0].unknownDeploy, undeployed.parcels[0].undeployed], [null, false, true], 'a merged ticket in a project without deployment must not warn')
+  assert.deepEqual(model.stuckOf(undeployed), [], 'a merged ticket in a project without deployment is not stuck')
+  assert.equal(undeployed.parcels[0].stationName, model.STATION_NAMES.merge, 'a project without deployment must not say 部署未知')
+  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station, unknown deployment')
 
   const named = (name, parcels) => ({ ...row(parcels), name, path: `/${name}` })
   const sceneOf = rows => ({ generatedAt: 0, state: 'ok', maintenance: 'running', rows })
@@ -82,6 +105,7 @@ async function checkModel() {
   assert.deepEqual(twins.islands.map(island => island.parcels.map(one => one.key)), [[first.key], [second.key]], 'each key must stay on its own island')
   assert.equal(model.archipelagoOf(sceneOf([named('solo', [])])).global, false, 'a single project must have no global stop')
   console.log('PASS diorama archipelago model: fixed positions, plates, idle islands, cross-project stuck order, single project')
+  return model
 }
 
 function dependencies() {
@@ -118,15 +142,54 @@ const serve = () => {
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 const state = page => page.evaluate(() => window.diorama.state())
 
-async function open(browser, url, options = {}) {
+async function launchPage(browser, url, { webgl = true, ...options } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, ...options })
+  await page.addInitScript(enabled => {
+    const getContext = HTMLCanvasElement.prototype.getContext
+    const requestFrame = window.requestAnimationFrame
+    window.contexts = []
+    window.frameRequests = 0
+    HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+      if (kind.startsWith('webgl') && !enabled) return null
+      const context = getContext.call(this, kind, ...rest)
+      if (kind.startsWith('webgl')) window.contexts.push(context)
+      return context
+    }
+    window.requestAnimationFrame = callback => {
+      window.frameRequests++
+      return requestFrame.call(window, callback)
+    }
+  }, webgl)
   const errors = []
+  const requests = []
   page.on('pageerror', error => errors.push(error.message))
+  page.on('request', request => requests.push(request.url()))
   await page.goto(url)
-  await page.waitForFunction(() => window.diorama)
-  await frames(page)
-  return { page, errors }
+  return { page, errors, requests }
 }
+
+async function open(browser, url, options = {}) {
+  const opened = await launchPage(browser, url, options)
+  await opened.page.waitForFunction(() => window.diorama)
+  await frames(opened.page)
+  return opened
+}
+
+const layoutReadsOver20Frames = page =>
+  page.evaluate(async () => {
+    let reads = 0
+    const watched = [[HTMLElement.prototype, 'offsetWidth'], [HTMLElement.prototype, 'offsetHeight'], [Element.prototype, 'clientWidth'], [Element.prototype, 'clientHeight'], [Element.prototype, 'getBoundingClientRect']]
+    const saved = watched.map(([owner, name]) => [owner, name, Object.getOwnPropertyDescriptor(owner, name)])
+    for (const [owner, name, descriptor] of saved) {
+      const counted = descriptor.get
+        ? { get() { reads++; return descriptor.get.call(this) } }
+        : { value(...args) { reads++; return descriptor.value.apply(this, args) } }
+      Object.defineProperty(owner, name, { ...descriptor, ...counted })
+    }
+    for (let frame = 0; frame < 20; frame++) await new Promise(resolve => requestAnimationFrame(resolve))
+    for (const [owner, name, descriptor] of saved) Object.defineProperty(owner, name, descriptor)
+    return reads
+  })
 
 async function paintedShare(page) {
   const png = (await page.locator('canvas').screenshot()).toString('base64')
@@ -184,6 +247,9 @@ async function checkMainPath(browser, url) {
     const entered = await state(page)
     assert.deepEqual([entered.stop, entered.focus, entered.selected], [2, '/home/laoxu/github/orca-factory', 'OF-415'], 'a stuck ticket must open its island and select it')
     assert.equal(await page.locator('.dock').isVisible(), true, 'the project dock must show at the workshop stop')
+    await settled(page)
+    const reads = await layoutReadsOver20Frames(page)
+    assert.ok(reads <= 20, `label placement must not read layout more than once per frame (${reads} reads in 20 frames)`)
     const trip = await page.locator('.trip').innerText()
     for (const text of ['OF-415', '归属 处置Agent', '处置塔前', '二线处理中']) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
 
@@ -232,21 +298,387 @@ async function checkReducedMotion(browser, url) {
     assert.equal(first.reduced, true)
     assert.ok(first.marks.length > 0, 'the recorded attention tickets must show markers')
     for (const mark of first.marks) assert.deepEqual(mark, { y: MARK_REST, rotation: 0 }, 'markers must not float when motion is reduced')
+    await page.locator('button.plate[data-island="1"]').focus()
+    await page.evaluate(async () => {
+      const scene = await (await fetch('./diorama-scene.json')).json()
+      window.diorama.update(scene)
+      window.diorama.update(scene)
+    })
+    await frames(page)
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.island), '1', 'two Scenes before a frame must keep keyboard focus on the island plate')
+    await page.locator('canvas').focus()
+    for (let press = 0; press < 8; press++) await page.keyboard.press('ArrowDown')
+    await frames(page)
+    await page.locator('button.arrow[data-island="0"]').focus()
+    await page.evaluate(async () => window.diorama.update(await (await fetch('./diorama-scene.json')).json()))
+    await frames(page)
+    const arrowFocus = await page.evaluate(() => [document.activeElement?.classList.contains('arrow'), document.activeElement?.dataset.island])
+    assert.deepEqual(arrowFocus, [true, '0'], 'a new Scene must keep keyboard focus on the edge arrow, not move it to the plate')
     await page.locator('.stuck > .list button[data-ticket]').first().click()
     await page.locator('canvas').focus()
     await page.keyboard.press('3')
     const moved = await state(page)
     assert.equal(moved.stop, 3)
     assert.deepEqual(moved.view, moved.goal, 'the camera must jump straight to its goal when motion is reduced')
+    const reshape = change => page.evaluate(async change => {
+      const scene = await (await fetch('./diorama-scene.json')).json()
+      const parcels = scene.rows[0].parcels
+      if (change === 'move') parcels.find(one => one.identifier === 'OF-415').station = 'gate'
+      else scene.rows[0].parcels = parcels.filter(one => one.identifier !== 'OF-415')
+      window.diorama.update(scene)
+    }, change)
+    await reshape('move')
+    await frames(page)
+    const jumped = await state(page)
+    assert.deepEqual([jumped.stop, jumped.selected], [3, 'OF-415'], 'an update must keep the stop and the selection')
+    assert.notDeepEqual(jumped.target, moved.target, 'the selected box must get its new station')
+    assert.deepEqual(jumped.at, jumped.target, 'a moved box must jump to its new station when motion is reduced')
+    await reshape('remove')
+    assert.equal((await state(page)).selected, null, 'an update must clear a selection whose ticket left the Scene')
+    const refused = await page.evaluate(async () => {
+      const before = JSON.stringify(window.diorama.state())
+      const scene = await (await fetch('./diorama-scene.json')).json()
+      try {
+        window.diorama.update({ ...scene, rows: [] })
+      } catch (error) {
+        return { message: error.message, kept: JSON.stringify(window.diorama.state()) === before }
+      }
+      return { message: null, kept: JSON.stringify(window.diorama.state()) === before }
+    })
+    assert.ok(refused.message?.includes('没有项目') && refused.kept, `update must refuse an empty Scene before it changes anything: ${JSON.stringify(refused)}`)
+    const released = await page.evaluate(async () => {
+      window.diorama.dispose()
+      const requested = window.frameRequests
+      await new Promise(resolve => setTimeout(resolve, 200))
+      return { children: document.querySelector('.diorama').childElementCount, frames: window.frameRequests - requested, lost: window.contexts[0].isContextLost() }
+    })
+    assert.deepEqual(released, { children: 0, frames: 0, lost: true }, 'dispose must remove the stage content, stop the frame loop and release the WebGL context')
     assert.deepEqual(errors, [])
-    console.log('PASS diorama reduced motion: still markers, camera jumps to the goal')
+    console.log('PASS diorama reduced motion and lifecycle: still markers, camera and box jumps, update keeps or clears the selection, dispose releases')
   } finally {
     await page.close()
   }
 }
 
+const pushedStatus = live => {
+  const sample = fs.readFileSync(path.join(plugin, 'test/sample-recorded.ts'), 'utf8')
+  const [barrier, unmapped] = JSON.parse(JSON.parse(sample.match(/RECORDED_DEPLOY_STATUS: string = ("[\s\S]*?")\n/)[1])).tickets
+  const ledger = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-comments-deployment-retry-workflow.json'))
+  const paused = ledger.comments
+    .flatMap(comment => comment.body.split('\n'))
+    .filter(line => line.startsWith('merge-progress-v1: '))
+    .map(line => JSON.parse(line.slice('merge-progress-v1: '.length)).deployment)
+    .find(deployment => deployment.state === 'paused')
+  const changes = { 'OF-415': { owner: '执行器', phase: 'gate' }, 'OF-419': { title: 'A & B <img src=x onerror="window.__xss=1">' } }
+  return {
+    ...live,
+    state: 'unknown',
+    tickets: [
+      ...live.tickets.map(ticket => ({ ...ticket, ...changes[ticket.identifier] })),
+      { ...barrier, blockedReason: `deployment: ${paused.state}`, deployment: { ...barrier.deployment, state: paused.state, reason: paused.reason } },
+      unmapped,
+      { ...live.tickets.find(ticket => ticket.identifier === 'OF-415'), repo: TWIN, owner: '合并通道', phase: '已合并' },
+      { ...live.tickets.find(ticket => ticket.identifier === 'OF-419'), repo: ANSIBLE, owner: '合并通道', phase: '已合并' },
+    ],
+  }
+}
+
+const fakeDriver = (file, recordedConfig) => (status, { failing = false, config = recordedConfig } = {}) => {
+  fs.writeFileSync(file, `#!/usr/bin/env bun
+if (process.argv[2] === 'config') console.log(${JSON.stringify(JSON.stringify(config))})
+else if (${failing}) { console.error('fixture failure'); process.exit(7) }
+else console.log(${JSON.stringify(JSON.stringify(status))})
+`)
+  fs.chmodSync(file, 0o755)
+}
+
+const launchServer = (bun, temp, token, port) => {
+  const bunDir = path.isAbsolute(bun) ? `${path.dirname(bun)}:` : ''
+  const env = { ...process.env, PATH: `${temp}:${bunDir}${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: String(port) }
+  const child = spawn(bun, [path.join(plugin, 'scene/server.ts')], { env, stdio: ['ignore', 'pipe', 'inherit'] })
+  const origin = new Promise((resolve, reject) => {
+    let output = ''
+    const timer = setTimeout(() => reject(new Error('scene server did not listen')), 15000)
+    child.on('exit', code => reject(new Error(`scene server exited ${code}`)))
+    child.stdout.on('data', bytes => {
+      output += bytes
+      const match = /listening (http:\/\/[^/]+)/.exec(output)
+      if (match) {
+        clearTimeout(timer)
+        resolve(match[1])
+      }
+    })
+  })
+  const halt = () => new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve()
+    child.once('exit', resolve)
+    child.kill('SIGTERM')
+  })
+  return { origin, halt }
+}
+
+async function waitForSnapshot(origin, token) {
+  const deadline = Date.now() + 15000
+  for (;;) {
+    const response = await fetch(`${origin}/snapshot?t=${token}`)
+    if (response.status === 200) return response.json()
+    assert.equal(response.status, 503, 'the snapshot may only wait with 503')
+    assert.ok(Date.now() < deadline, 'the snapshot stayed 503 past the deadline')
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+}
+
+const pageFiles = dir =>
+  fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry => (entry.isDirectory() ? pageFiles(path.join(dir, entry.name)) : [path.join(dir, entry.name)]))
+
+async function checkTokens(origin, token) {
+  const files = pageFiles(pageRoot).filter(file => file !== path.join(pageRoot, 'index.html'))
+  const routes = ['/', '/snapshot', '/events', ...files.map(file => `/${path.relative(pageRoot, file)}`)]
+  for (const route of routes) {
+    assert.equal((await fetch(origin + route)).status, 404, `${route} must refuse a request without the token`)
+    for (const response of [await fetch(`${origin}${route}?t=${token}`), await fetch(origin + route, { headers: { 'X-Token': token } })]) {
+      assert.ok(response.status === 200 || (route === '/snapshot' && response.status === 503), `${route} must serve with the token (${response.status})`)
+      await response.body?.cancel()
+    }
+    assert.equal((await fetch(`${origin}${route}?t=${token}`, { method: 'POST' })).status, 404, `${route} must refuse POST`)
+  }
+  for (const retired of ['/scene.js', '/town.mjs', '/components/index.mjs', '/components/shared.css', '/vendor/OrbitControls.js']) {
+    assert.equal((await fetch(`${origin}${retired}?t=${token}`)).status, 404, `${retired} must stay retired`)
+  }
+}
+
+const leadText = page => page.locator('.lead').innerText()
+const waitLead = (page, text, present = true) =>
+  page.waitForFunction(([text, present]) => document.querySelector('.lead').innerText.includes(text) === present, [text, present], { timeout: 15000 })
+const tripHas = async (page, texts) => {
+  const trip = await page.locator('.trip').innerText()
+  for (const text of texts) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
+}
+
+async function copied(page, name) {
+  await page.evaluate(() => {
+    window.copied = undefined
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async text => { window.copied = text } })
+  })
+  await page.getByRole('button', { name }).click()
+  return page.waitForFunction(() => window.copied).then(handle => handle.jsonValue())
+}
+
+async function checkLiveUpdates(browser, live) {
+  const { page, errors, requests } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    assert.equal((await state(page)).stop, 1, 'several recorded projects must open at the global stop')
+    assert.ok(await paintedShare(page) > 0.2, 'the production page must render the islands')
+    await waitLead(page, '已连接')
+    assert.ok((await leadText(page)).includes('快照过期'), 'the recorded snapshot is days old and must read as stale')
+    if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-global.png') })
+    await page.locator('.stuck > .list button[data-ticket="0/OF-415"]').click()
+    await settled(page)
+    await tripHas(page, ['OF-415', '处置塔前', '二线处理中', '复制票号', '复制详情'])
+    const before = await state(page)
+    live.write(live.pushed)
+    await page.waitForFunction(() => document.querySelector('.trip').innerText.includes('检验间'), null, { timeout: 15000 })
+    const moved = await state(page)
+    assert.deepEqual([moved.stop, moved.focus, moved.selected], [2, FACTORY, 'OF-415'], 'a new Scene must keep the island and the selected ticket')
+    assert.deepEqual([moved.goal, moved.quaternion], [before.goal, before.quaternion], 'a new Scene must not move or rotate the camera')
+    assert.ok(['half', 'x', 'z'].every(key => Math.abs(moved.view[key] - before.view[key]) < 0.01), 'a new Scene must not jump the settled view')
+    assert.notDeepEqual(moved.target, before.target, 'the selected box must get its new station')
+    assert.notDeepEqual(moved.at, moved.target, 'the box must travel to its new station, not jump')
+    await page.waitForFunction(() => { const { at, target } = window.diorama.state(); return at.every((value, index) => value === target[index]) })
+    assert.equal(await page.evaluate(() => window.contexts.length), 1, 'a new Scene must reuse the WebGL context')
+    await waitLead(page, 'driver unknown')
+
+    await page.locator('.stuck > .list button[data-ticket="0/OF-419"]').click()
+    const detail = await copied(page, '复制详情')
+    for (const text of ['OF-419 · A & B <img src=x', '项目：orca-factory · /home/laoxu/github/orca-factory', '工位：处置塔前', '真实阶段：Agent处置 / 二线处理中']) {
+      assert.ok(detail.includes(text), `copied detail must carry ${text}: ${detail}`)
+    }
+    assert.equal(await copied(page, '复制票号'), 'OF-419')
+    assert.equal(await page.locator('.diorama img').count(), 0, 'Scene text must render as text')
+    assert.equal(await page.evaluate(() => window.__xss), undefined)
+
+    live.write(live.pushed, { failing: true })
+    await waitLead(page, 'fixture failure')
+    live.write(live.pushed)
+    await waitLead(page, 'fixture failure', false)
+    live.write(live.pushed, { failing: true })
+    await waitLead(page, 'fixture failure')
+    await live.stop()
+    await waitLead(page, '连接断开')
+    if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-offline.png') })
+    live.write({ ...live.pushed, state: 'stale' }, { config: { ...live.config, overview: { ...live.config.overview, maintenance: 'paused' } } })
+    await live.start()
+    await waitLead(page, '已连接')
+    await waitLead(page, '维护 paused')
+    for (const text of ['维护中', '快照过期']) assert.ok((await leadText(page)).includes(text), `maintenance with a stale snapshot must show ${text}`)
+    assert.ok(!(await leadText(page)).includes('fixture failure'), 'a failure that recovered while offline must not survive the reconnect')
+
+    const count = route => requests.filter(url => new URL(url).pathname === route).length
+    const [streams, snapshots] = [count('/events'), count('/snapshot')]
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+    assert.ok((await leadText(page)).includes('连接断开'), 'pagehide must stop reporting a live connection')
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+    await waitLead(page, '已连接')
+    assert.ok(count('/events') > streams && count('/snapshot') > snapshots, 'pageshow must reopen the stream and refetch the snapshot')
+
+    live.write({ ...live.pushed, tickets: [] }, { config: { ...live.config, repos: [] } })
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => !window.diorama && document.querySelector('.diorama .notice')?.textContent.includes('暂无项目'), null, { timeout: 15000 })
+    assert.equal(await page.locator('.diorama canvas').count(), 0, 'an empty Scene must unmount the diorama')
+    live.write(live.pushed)
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => window.diorama, null, { timeout: 15000 })
+    await waitLead(page, '已连接')
+    assert.equal(await page.locator('.diorama .notice').count(), 0, 'a Scene with projects must mount the diorama again')
+
+    const refuse = url => new URL(url).pathname === '/events'
+    await page.route(refuse, route => route.fulfill({ status: 404 }))
+    await live.stop()
+    await waitLead(page, '连接已关闭：请从 /ziikoo-driver 面板重新打开。')
+    assert.ok(!(await leadText(page)).includes('正在自动重连'), 'a closed stream must not promise a reconnect')
+    await page.unroute(refuse)
+    await live.start()
+
+    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0)
+    const own = requests.filter(url => url.startsWith(live.origin()))
+    for (const file of ['/live.mjs', '/diorama/overlay.mjs', '/diorama/diorama.css', '/vendor/three.core.min.js']) {
+      assert.ok(own.some(url => new URL(url).pathname === file), `the page must load ${file}`)
+    }
+    assert.ok(own.every(url => new URL(url).searchParams.get('t') === live.token), 'every page request must carry the token')
+    assert.deepEqual(errors, [])
+    console.log('PASS production page on the real server: render, update keeps camera and selection, box travels, copy, failures, offline, reconnect, maintenance with a stale snapshot, pagehide/pageshow, empty Scene, closed stream, tokens')
+  } finally {
+    await page.close()
+  }
+}
+
+async function checkEntries(browser, live, model) {
+  const { islands } = model.archipelagoOf(await waitForSnapshot(live.origin(), live.token))
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(ANSIBLE)}`)
+  const where = async () => {
+    const { stop, focus, selected } = await state(page)
+    return [stop, focus, selected]
+  }
+  const find = async text => {
+    await page.locator('canvas').focus()
+    await page.keyboard.press('/')
+    await page.keyboard.type(text)
+    await page.keyboard.press('Enter')
+  }
+  try {
+    assert.deepEqual(await where(), [2, ANSIBLE, null], '?project= must open that island')
+    await page.locator('canvas').focus()
+    await page.keyboard.press(']')
+    assert.deepEqual(await where(), [2, islands[3].path, null], '] must step to the next island')
+    await page.keyboard.press('[')
+    assert.deepEqual(await where(), [2, ANSIBLE, null], '[ must step back')
+    await page.keyboard.press('1')
+    await settled(page)
+    const dashboard = islands.find(island => island.path === DASHBOARD)
+    const ground = { x: dashboard.origin.x + (dashboard.layout.ground.left + dashboard.layout.ground.right) / 2, y: -0.37, z: dashboard.origin.z - 2.5 }
+    const point = pixelOf((await state(page)).view, ground, page.viewportSize())
+    await page.mouse.click(point.x, point.y)
+    assert.deepEqual((await where()).slice(0, 2), [2, DASHBOARD], 'clicking an island must enter it')
+
+    await find('ZY-365')
+    assert.deepEqual(await where(), [2, DASHBOARD, 'ZY-365'], 'search Enter must jump to the first match')
+    await tripHas(page, ['闸前水道', '部署暂停', 'deployment: paused'])
+    const url = new URL(page.url())
+    assert.deepEqual(['project', 'ticket', 't'].map(name => url.searchParams.get(name)), [DASHBOARD, 'ZY-365', live.token], 'the URL must follow the view')
+    await page.keyboard.press('3')
+    await settled(page)
+    if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-ticket.png') })
+    await find('ZY-366')
+    await tripHas(page, ['工位未知 · 阶段 准备镜像'])
+    await page.locator('canvas').focus()
+    await page.keyboard.press('/')
+    await page.keyboard.type('OF-415')
+    const twins = await page.locator('.results button[data-ticket]').evaluateAll(buttons => buttons.map(button => button.dataset.ticket))
+    assert.equal(new Set(twins).size, 2, `the same ticket id in two projects must list twice: ${twins}`)
+    assert.deepEqual(errors, [])
+  } finally {
+    await page.close()
+  }
+  const twin = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(TWIN)}&ticket=OF-415`)
+  try {
+    const { stop, focus, selected } = await state(twin.page)
+    assert.deepEqual([stop, focus, selected], [3, TWIN, 'OF-415'], '?project=&ticket= must open the ticket in that project')
+    await tripHas(twin.page, ['栈桥 · 部署未知', '部署：未知 · driver 未提供 deployment'])
+    assert.ok((await copied(twin.page, '复制详情')).includes('部署：未知 · driver 未提供 deployment'), 'copied detail must carry the unknown deployment')
+    assert.ok((await twin.page.locator('.stuck > .list').innerText()).includes('栈桥 · 部署未知'), 'an unknown deployment must list as stuck')
+    await settled(twin.page)
+    if (shots) await twin.page.screenshot({ path: path.join(shots, 'of444-prod-unknown-deploy.png') })
+    assert.deepEqual(twin.errors, [])
+  } finally {
+    await twin.page.close()
+  }
+  const plain = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(ANSIBLE)}&ticket=OF-419`)
+  try {
+    await tripHas(plain.page, ['栈桥 · 已合并', '部署：不适用 · 未配置部署'])
+    assert.ok(!(await plain.page.locator('.trip').innerText()).includes('部署未知'), 'a project without deployment must not say 部署未知')
+    assert.ok((await copied(plain.page, '复制详情')).includes('部署：不适用 · 未配置部署'), 'copied detail must say deployment does not apply')
+    assert.ok(!(await plain.page.locator('.stuck > .list').innerText()).includes('ansible'), 'a merged ticket without deployment config is not stuck')
+    assert.deepEqual(plain.errors, [])
+  } finally {
+    await plain.page.close()
+  }
+  console.log('PASS production entries: ?project=, [ and ], island click, search Enter, URL, ?ticket= with a twin id, barrier, unknown station, unknown deployment, no deployment configured')
+}
+
+async function checkWithoutWebGL(browser, live) {
+  const { page, errors } = await launchPage(browser, `${live.origin()}/?t=${live.token}`, { webgl: false })
+  try {
+    const failure = page.locator('.diorama .failure')
+    await failure.waitFor()
+    assert.ok((await failure.innerText()).includes('WebGL'), 'the page must say WebGL is unavailable')
+    assert.equal(await page.locator('canvas').count(), 0, 'the page must not leave a blank canvas')
+    assert.deepEqual(errors, [])
+    console.log('PASS production page without WebGL: clear reason, no blank canvas')
+  } finally {
+    await page.close()
+  }
+}
+
+async function checkProduction(browser, bun, model) {
+  const tempRoot = path.join(process.cwd(), '.omc/tmp')
+  fs.mkdirSync(tempRoot, { recursive: true })
+  const temp = fs.mkdtempSync(path.join(tempRoot, 'diorama-'))
+  const status = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+  const config = readJSON(path.join(plugin, 'test/recorded/live-config.json'))
+  const token = crypto.randomBytes(24).toString('hex')
+  const write = fakeDriver(path.join(temp, 'orca-factory-driver'), config)
+  write(status)
+  let server = launchServer(bun, temp, token, 0)
+  let origin = await server.origin
+  const live = {
+    token,
+    config,
+    write,
+    pushed: pushedStatus(status),
+    origin: () => origin,
+    stop: () => server.halt(),
+    async start() {
+      server = launchServer(bun, temp, token, new URL(origin).port)
+      origin = await server.origin
+    },
+  }
+  try {
+    await checkTokens(origin, token)
+    await waitForSnapshot(origin, token)
+    console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
+    await checkLiveUpdates(browser, live)
+    await checkEntries(browser, live, model)
+    await checkWithoutWebGL(browser, live)
+  } finally {
+    await server.halt()
+    fs.rmSync(temp, { recursive: true, force: true })
+  }
+}
+
 async function main() {
-  await checkModel()
+  const model = await checkModel()
   const { playwright, chrome, bun } = dependencies()
   execFileSync(bun, [path.join(preview, 'diorama-scene.ts')], { stdio: 'inherit' })
   const server = await serve()
@@ -260,6 +692,7 @@ async function main() {
     try {
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)
+      await checkProduction(browser, bun, model)
     } finally {
       await browser.close()
     }
