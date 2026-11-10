@@ -55,6 +55,7 @@ const MOVE_MS = 1200
 const UNIT_BOX = new THREE.BoxGeometry(1, 1, 1)
 const UNIT_CONE = new THREE.ConeGeometry(1, 1, 4)
 const MARK = new THREE.OctahedronGeometry(0.3)
+const BASE_SIDE = new THREE.Color(WORLD.base).multiplyScalar(0.72).getHex()
 
 const material = (color, options = {}) => new THREE.MeshLambertMaterial({ color, emissiveIntensity: 0.5, ...options })
 
@@ -92,16 +93,25 @@ const glow = (mesh, color) => {
   mesh.material.emissive.setHex(color)
 }
 
+const groundBlock = (kit, block) => {
+  const width = block.right - block.left
+  const depth = block.front - block.back
+  const x = (block.left + block.right) / 2
+  const z = (block.back + block.front) / 2
+  kit.box([width, 2.02, depth], BASE_SIDE, [x, -2.2, z]).name = 'ground-side'
+  kit.box([width, 0.18, depth], WORLD.base, [x, -0.18, z]).name = 'ground'
+}
+
 const buildGround = (kit, layout) => {
   const { ground, water } = layout
   const pathLeft = layout.tower + 1.2
   for (const block of [ground, layout.yard].filter(Boolean)) {
-    kit.box([block.right - block.left, 1.4, block.front - block.back], WORLD.base, [(block.left + block.right) / 2, -1.4, (block.back + block.front) / 2])
+    groundBlock(kit, block)
   }
-  kit.box([ground.right - pathLeft, 0.22, 1.7], WORLD.path, [(pathLeft + ground.right) / 2, 0, 0])
-  kit.box([4.6, 0.3, 1.3], WORLD.wood, [9.3, 0, 0])
-  kit.box([3.6, 0.9, water.front - water.back], WORLD.water, [13.2, -1.4, (water.back + water.front) / 2], { transparent: true, opacity: 0.92 })
-  kit.box([water.right - 15, 1.4, water.front - water.back], WORLD.base, [(15 + water.right) / 2, -1.4, (water.back + water.front) / 2])
+  kit.box([ground.right - pathLeft, 0.22, 1.7], WORLD.path, [(pathLeft + ground.right) / 2, 0, 0]).name = 'path'
+  kit.box([4.6, 0.3, 1.3], WORLD.wood, [9.3, 0, 0]).name = 'pier'
+  kit.box([3.6, 0.9, water.front - water.back], WORLD.water, [13.2, -1.4, (water.back + water.front) / 2], { transparent: true, opacity: 0.92 }).name = 'water'
+  groundBlock(kit, { ...water, left: 15 })
 }
 
 const buildMainline = (kit, layout) => {
@@ -152,7 +162,7 @@ const buildHub = (scene, hub) => {
   group.position.set(hub.x, 0, hub.z)
   scene.add(group)
   const kit = kitOf(group)
-  kit.box([hub.half * 2, 1.4, hub.half * 2], WORLD.base, [0, -1.4, 0])
+  groundBlock(kit, { left: -hub.half, right: hub.half, back: -hub.half, front: hub.half })
   kit.box([1.1, 4.2, 1.1], WORLD.tower, [0, 0, -1])
   kit.cone(0.95, 1.2, WORLD.roof, [0, 4.8, -1])
   kit.box([0.6, 0.6, 0.06], WORLD.cream, [0, 3.1, -0.42])
@@ -171,8 +181,8 @@ const buildIsland = (scene, island, fade) => {
   land.position.set(island.origin.x, 0, island.origin.z)
   land.userData.island = island.index
   scene.add(land)
+  buildGround(kitOf(land), island.layout)
   const kit = kitOf(land, fade ? faded : plain)
-  buildGround(kit, island.layout)
   dressIsland({ doors: buildMainline(kit, island.layout), lantern: buildMezzanine(kit), ...buildWaterfront(kit) }, island)
   return land
 }
@@ -209,18 +219,81 @@ const buildSea = scene => {
   const sea = new THREE.Mesh(new THREE.PlaneGeometry(SEA_SIZE, SEA_SIZE), material(SEAS.clear))
   sea.rotation.x = -Math.PI / 2
   sea.position.y = SEA_Y
+  sea.name = 'sea'
   scene.add(sea)
+  const vertices = []
+  for (let z = -SEA_SIZE / 2; z < SEA_SIZE / 2; z += 5) {
+    const left = -SEA_SIZE / 2, right = SEA_SIZE / 2, y = SEA_Y + 0.005
+    vertices.push(left, y, z, left, y, z + 0.09, right, y, z, right, y, z, left, y, z + 0.09, right, y, z + 0.09)
+  }
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+  geometry.computeVertexNormals()
+  const pattern = new THREE.Mesh(geometry, material(SEAS.clear, { transparent: true, opacity: 0.16, depthWrite: false }))
+  pattern.name = 'sea-pattern'
+  scene.add(pattern)
   return sea
+}
+
+const outline = ({ ground, yard, water }, margin) => {
+  const points = [[ground.left - margin, ground.front + margin]]
+  if (water) points.push(
+    [water.left - margin, ground.front + margin], [water.left - margin, water.front + margin],
+    [water.right + margin, water.front + margin], [water.right + margin, water.back - margin],
+    [water.left - margin, water.back - margin], [water.left - margin, ground.back - margin],
+  )
+  else points.push([ground.right + margin, ground.front + margin], [ground.right + margin, ground.back - margin])
+  if (yard) points.push([yard.right + margin, ground.back - margin], [yard.right + margin, yard.back - margin], [yard.left - margin, yard.back - margin])
+  points.push([ground.left - margin, ground.back - margin])
+  return points.map(([x, z]) => new THREE.Vector2(x, -z))
+}
+
+const buildShore = (content, layout, origin, shorelinePaint, contours) => {
+  const key = JSON.stringify([layout.ground, layout.yard, layout.water])
+  if (!contours.has(key)) {
+    const rim = new THREE.Shape(outline(layout, 0.22))
+    rim.holes.push(new THREE.Path(outline(layout, 0)))
+    contours.set(key, {
+      shadow: new THREE.ShapeGeometry(new THREE.Shape(outline(layout, 0.7))),
+      shoreline: new THREE.ShapeGeometry(rim),
+    })
+  }
+  const geometry = contours.get(key)
+  const shadow = new THREE.Mesh(geometry.shadow, shared(WORLD.dark, { transparent: true, opacity: 0.23, depthWrite: false }))
+  shadow.name = 'contact-shadow'
+  shadow.rotation.x = -Math.PI / 2
+  shadow.position.set(origin.x - 0.25, SEA_Y + 0.015, origin.z - 0.55)
+  content.add(shadow)
+  const shoreline = new THREE.Mesh(geometry.shoreline, shorelinePaint)
+  shoreline.name = 'shoreline'
+  shoreline.rotation.x = -Math.PI / 2
+  shoreline.position.set(origin.x, SEA_Y + 0.025, origin.z)
+  content.add(shoreline)
+}
+
+const tintSea = (built, sky) => {
+  if (!built.sea) return
+  const color = new THREE.Color(SEAS[sky])
+  built.sea.material.color.copy(color)
+  built.content.getObjectByName('sea-pattern').material.color.copy(color).lerp(new THREE.Color(0xffffff), 0.28)
+  built.content.getObjectByName('shoreline').material.color.copy(color).lerp(new THREE.Color(0xffffff), 0.48)
 }
 
 const SHARED_GEOMETRY = new Set([UNIT_BOX, UNIT_CONE, MARK])
 
 const release = group => {
   const kept = new Set(palette.values())
+  const released = new Set()
   group.traverse(node => {
     if (!node.isMesh) return
-    if (!SHARED_GEOMETRY.has(node.geometry)) node.geometry.dispose()
-    if (!kept.has(node.material)) node.material.dispose()
+    if (!SHARED_GEOMETRY.has(node.geometry) && !released.has(node.geometry)) {
+      node.geometry.dispose()
+      released.add(node.geometry)
+    }
+    if (!kept.has(node.material) && !released.has(node.material)) {
+      node.material.dispose()
+      released.add(node.material)
+    }
   })
   group.removeFromParent()
 }
@@ -248,6 +321,13 @@ const buildContent = (scene, archipelago, previous) => {
   const content = new THREE.Group()
   scene.add(content)
   const sea = archipelago.global ? buildSea(content) : null
+  if (sea) {
+    const shorelinePaint = material(SEAS.clear)
+    const contours = new Map()
+    for (const island of archipelago.islands) buildShore(content, island.layout, island.origin, shorelinePaint, contours)
+    const hub = archipelago.hub
+    buildShore(content, { ground: { left: -hub.half, right: hub.half, back: -hub.half, front: hub.half } }, hub, shorelinePaint, contours)
+  }
   if (archipelago.hub) buildHub(content, archipelago.hub)
   const lands = archipelago.islands.map(island => buildIsland(content, island, archipelago.global && island.idle))
   const parcels = new Map(archipelago.islands.flatMap(island => island.parcels.map(view => {
@@ -283,12 +363,12 @@ export const createWorld = canvas => {
       const previous = new Map([...built.parcels.values()].map(parcel => [parcel.id, parcel.group.position.clone()]))
       if (built.content) release(built.content)
       built = buildContent(scene, archipelago, previous)
-      built.sea?.material.color.setHex(SEAS[sky])
+      tintSea(built, sky)
     },
     setSky(kind) {
       sky = kind
       renderer.setClearColor(SKIES[kind])
-      built.sea?.material.color.setHex(SEAS[kind])
+      tintSea(built, kind)
     },
     resize(width, height) {
       renderer.setSize(width, height, false)
