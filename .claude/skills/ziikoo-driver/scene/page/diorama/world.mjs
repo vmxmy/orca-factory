@@ -45,6 +45,7 @@ const SEAS = {
   dark: 0x6b7876,
 }
 
+const TAPE_SPAN = 0.66
 const LOCK_Y = { closed: -0.6, open: -1.75 }
 const MARK_Y = 1.45
 const IDLE_FADE = 0.55
@@ -184,6 +185,13 @@ const buildParcel = (scene, view, island) => {
   kit.box([0.78, 0.16, 0.78], WORLD.ink, [0, 0.3, 0]).visible = view.band
   kit.box([0.3, 0.06, 0.3], WORLD.stamp, [0, 0.74, 0]).visible = view.stamp
   kit.box([1.25, 0.12, 1.25], WORLD.wood, [0, -0.12, 0]).visible = view.raft
+  const tape = view.tapesSpent ? shared(GLOW.bad, { emissive: GLOW.bad }) : shared(WORLD.cream)
+  for (let index = 0; index < view.tapes; index++) {
+    const strip = new THREE.Mesh(UNIT_BOX, tape)
+    strip.scale.set(0.12, 0.77, 0.8)
+    strip.position.set(((index + 0.5) / view.tapes - 0.5) * TAPE_SPAN, 0.37, 0)
+    group.add(strip)
+  }
   const markColor = GLOW[view.alert] ?? GLOW.warn
   const mark = new THREE.Mesh(MARK, shared(markColor, { emissive: markColor }))
   mark.position.y = MARK_Y

@@ -106,7 +106,7 @@ func TestReadViewJSON(t *testing.T) {
 	now := time.Date(2026, 10, 5, 8, 2, 0, 0, time.UTC)
 	path := filepath.Join(t.TempDir(), "status.json")
 	t.Setenv("DRIVER_STATUS_FILE", path)
-	input := `{"generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"pauses":[{"repo":"","dependency":"GitHub","kind":"credentials","start":"2026-10-05T07:59:00Z","duration":60000000000},{"repo":"/repo","start":"2026-10-05T07:00:00Z"}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+	input := `{"generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate","lane":2,"corrections":{"count":0,"limit":3}}],"pauses":[{"repo":"","dependency":"GitHub","kind":"credentials","start":"2026-10-05T07:59:00Z","duration":60000000000},{"repo":"/repo","start":"2026-10-05T07:00:00Z"}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
 	for _, tc := range []struct {
 		name, data, state string
 		missing           bool
@@ -135,7 +135,7 @@ func TestReadViewJSON(t *testing.T) {
 				t.Fatalf("view = %s", data)
 			}
 			if tc.name == "normal" {
-				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate"}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
+				want := `{"state":"ok","generatedAt":"2026-10-05T08:01:00Z","tickets":[{"repo":"/repo","identifier":"ZII-867","owner":"executor","phase":"gate","lane":2,"corrections":{"count":0,"limit":3}}],"github":{"hour":"2026-10-05T08:00:00Z","requests":12,"complexity":34,"limits":[{"repo":"/repo","requests":{"limit":100,"remaining":88,"reset":"2026-10-05T09:00:00Z"},"complexity":{"limit":1000,"remaining":966,"reset":"2026-10-05T09:00:00Z"}}]}}`
 				var expected map[string]any
 				if err := json.Unmarshal([]byte(want), &expected); err != nil {
 					t.Fatal(err)

@@ -24,16 +24,24 @@ type Deployment struct {
 	Reason   string `json:"reason,omitempty"`
 }
 
+// Corrections is the merge handoff's correction count against the executor limit.
+type Corrections struct {
+	Count int `json:"count"`
+	Limit int `json:"limit"`
+}
+
 type Ticket struct {
-	Deployment    *Deployment `json:"deployment,omitempty"`
-	QueuePosition int         `json:"queuePosition,omitempty"`
-	Repo          string      `json:"repo"`
-	Identifier    string      `json:"identifier"`
-	Owner         string      `json:"owner"`
-	Phase         string      `json:"phase"`
-	Backend       string      `json:"backend,omitempty"`
-	URL           string      `json:"url,omitempty"`
-	Held          bool        `json:"held,omitempty"`
+	Deployment    *Deployment  `json:"deployment,omitempty"`
+	QueuePosition int          `json:"queuePosition,omitempty"`
+	Lane          int          `json:"lane,omitempty"`
+	Corrections   *Corrections `json:"corrections,omitempty"`
+	Repo          string       `json:"repo"`
+	Identifier    string       `json:"identifier"`
+	Owner         string       `json:"owner"`
+	Phase         string       `json:"phase"`
+	Backend       string       `json:"backend,omitempty"`
+	URL           string       `json:"url,omitempty"`
+	Held          bool         `json:"held,omitempty"`
 	// BlockedReason explains why a visible ticket cannot advance.
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.

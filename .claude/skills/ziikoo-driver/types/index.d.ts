@@ -81,6 +81,8 @@ export type FetchKind = 'config' | 'status' | 'doctor' | 'logs'
 
 export type Deployment = { queueId: string; sha: string; workflow?: string; state: string; reason?: string }
 
+export type Corrections = { count: number; limit: number }
+
 export type RuntimeTicket = {
   repo: string
   identifier: string
@@ -92,6 +94,8 @@ export type RuntimeTicket = {
   blockedReason?: string
   deployment?: Deployment
   queuePosition?: number
+  lane?: number
+  corrections?: Corrections
 }
 
 export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
@@ -103,6 +107,8 @@ export type Parcel = {
   title: string
   owner: string
   queuePosition?: number
+  lane?: number
+  corrections?: Corrections
   phase: string
   label: string
   station: Station

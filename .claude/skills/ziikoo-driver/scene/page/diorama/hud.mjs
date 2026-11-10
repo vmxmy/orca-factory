@@ -76,6 +76,20 @@ const tripTrack = parcel =>
     return element('span', { class: state, text: step.name })
   }))
 
+const correctionBudget = ({ count, limit }, spent) =>
+  element('span', { class: spent ? 'spent' : '' }, [
+    `打回 ${count}/${limit}`,
+    element('span', { class: 'pips', 'aria-hidden': 'true' }, Array.from({ length: limit }, (_, index) => element('i', { class: index < count ? 'on' : '' }))),
+  ])
+
+const tripBudget = parcel => {
+  const parts = [
+    ...(parcel.corrections ? [correctionBudget(parcel.corrections, parcel.tapesSpent)] : []),
+    ...(parcel.lane === undefined ? [] : [element('span', { text: `lane ${parcel.lane}` })]),
+  ]
+  return parts.length === 0 ? [] : [element('div', { class: 'trip-budget' }, parts)]
+}
+
 const tripFoot = parcel => {
   const notes = []
   if (parcel.unknown) notes.push(`工位未知 · 阶段 ${parcel.phase}`)
@@ -92,6 +106,8 @@ const detailText = parcel =>
     `工位：${parcel.stationName}`,
     `真实阶段：${parcel.phase} / ${parcel.label}`,
     `已观察：${parcel.duration}`,
+    ...(parcel.corrections ? [`打回：${parcel.corrections.count}/${parcel.corrections.limit}`] : []),
+    ...(parcel.lane === undefined ? [] : [`lane：${parcel.lane}`]),
     ...(parcel.reason ? [`原因：${parcel.reason}`] : []),
     ...deployNote(parcel),
   ].join('\n')
@@ -314,7 +330,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
         trip.replaceChildren(element('div', { class: 'trip-head' }, [element('span', { class: 'why', text: tripHint(island) })]))
         return
       }
-      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripTrack(parcel), ...tripFoot(parcel), tripActions(parcel)))
+      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel), tripActions(parcel)))
     },
     remove() {
       hud.remove()

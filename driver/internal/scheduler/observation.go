@@ -17,6 +17,14 @@ func ObservationRow(t Ticket, repos []config.Repository) status.Ticket {
 	if p := t.Progress; p != nil && p.Deployment != nil {
 		row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
 	}
+	if h := t.Handoff; h != nil {
+		count := h.Corrections
+		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
+			count = max(count, p.Corrections)
+		}
+		row.Lane = h.Lane
+		row.Corrections = &status.Corrections{Count: count, Limit: machine.DefaultLimits.Corrections}
+	}
 	for _, repo := range repos {
 		if repo.Path == t.Repo {
 			row.Backend, _ = issues.Backend(repo.Env)

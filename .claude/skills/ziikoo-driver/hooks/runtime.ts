@@ -1,6 +1,7 @@
 import type {
   Alert,
   Checkout,
+  Corrections,
   Deployment,
   DoctorCheck,
   Fetched,
@@ -24,6 +25,25 @@ const count = (o: Fields, key: string, path: string): number => {
   const value = o[key]
   if (typeof value !== 'number') throw new Error(`${path}.${key} 不是数字`)
   return value
+}
+
+const tally = (o: Fields, key: string, path: string): number => {
+  const value = count(o, key, path)
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${path}.${key} 不是非负整数`)
+  return value
+}
+
+const LANES = [1, 2, 3]
+
+const parseLane = (o: Fields, path: string): number => {
+  const value = count(o, 'lane', path)
+  if (!LANES.includes(value)) throw new Error(`${path}.lane 不是 1–3 的整数`)
+  return value
+}
+
+const parseCorrections = (value: unknown, path: string): Corrections => {
+  const o = fields(value, path)
+  return { count: tally(o, 'count', path), limit: tally(o, 'limit', path) }
 }
 
 const optionalText = (o: Fields, key: string, path: string) => (o[key] === undefined ? undefined : text(o, key, path))
@@ -52,6 +72,8 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
     blockedReason: optionalText(o, 'blockedReason', path),
     deployment: o.deployment === undefined ? undefined : parseDeployment(o.deployment, `${path}.deployment`),
     queuePosition: o.queuePosition === undefined ? undefined : count(o, 'queuePosition', path),
+    lane: o.lane === undefined ? undefined : parseLane(o, path),
+    corrections: o.corrections === undefined ? undefined : parseCorrections(o.corrections, `${path}.corrections`),
   }
 }
 
