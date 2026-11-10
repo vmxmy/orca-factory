@@ -511,6 +511,7 @@ func readOwnership(t *Ticket, comments []task.Comment) error {
 	t.Attempt = max(t.Attempt, schedulerAttempt)
 	refresh := task.ReadGateSpecRefresh(comments)
 	t.GateSpecRefresh = refresh.Exited && refresh.ExitedAttempt == t.Attempt
+	t.stageTimeline = readStageTimeline(comments)
 	return nil
 }
 

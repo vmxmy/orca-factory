@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -161,6 +162,43 @@ type Feishu struct {
 	sleep           func(context.Context, time.Duration) error
 	mu              sync.Mutex
 	cached          map[string]Task
+	// snapshot and histories keep the last scheduler reads with the table revs
+	// they were read at; an unchanged rev means an unchanged table.
+	snapMu    sync.Mutex
+	snapshot  feishuSnapshot
+	histories map[string]feishuHistory
+}
+
+type feishuSnapshot struct {
+	valid       bool
+	projectsRev int64
+	ticketsRev  int64
+	rows        []task.Issue
+}
+
+type feishuHistory struct {
+	rev      int64
+	comments []task.Comment
+}
+
+type fullSyncKey struct{}
+
+// WithFullSync makes Snapshot and SnapshotComments under ctx read every record
+// instead of reusing results whose table rev has not changed.
+func WithFullSync(ctx context.Context) context.Context {
+	return context.WithValue(ctx, fullSyncKey{}, true)
+}
+
+func fullSync(ctx context.Context) bool {
+	full, _ := ctx.Value(fullSyncKey{}).(bool)
+	return full
+}
+
+// tableRev reads one record only for its table rev; any write to the table,
+// including a deletion, changes the rev.
+func (c *Feishu) tableRev(ctx context.Context, table string) (int64, error) {
+	page, err := c.client.ListRecords(ctx, c.base, c.tables[table].id, 0, 1)
+	return page.Rev, err
 }
 
 var _ Store = (*Feishu)(nil)
@@ -312,18 +350,19 @@ func (c *Feishu) Repository() string { return c.repo }
 
 // readAll pages through one listing; every page must carry the same table rev.
 // A write landing mid-read restarts the listing, a bounded number of times.
-func (c *Feishu) readAll(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, error) {
+func (c *Feishu) readAll(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, int64, error) {
 	var err error
 	for range feishuReadAttempts {
 		var records []feishu.Record
-		if records, err = c.readPages(ctx, table, filter); !errors.Is(err, errFeishuTableChanged) {
-			return records, err
+		var rev int64
+		if records, rev, err = c.readPages(ctx, table, filter); !errors.Is(err, errFeishuTableChanged) {
+			return records, rev, err
 		}
 	}
-	return nil, err
+	return nil, 0, err
 }
 
-func (c *Feishu) readPages(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, error) {
+func (c *Feishu) readPages(ctx context.Context, table string, filter *feishu.Filter) ([]feishu.Record, int64, error) {
 	id := c.tables[table].id
 	records := []feishu.Record{}
 	var rev int64
@@ -345,19 +384,19 @@ func (c *Feishu) readPages(ctx context.Context, table string, filter *feishu.Fil
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if offset == 0 {
 			rev = page.Rev
 		} else if page.Rev != rev {
-			return nil, fmt.Errorf("%w: %s (rev %d, %d)", errFeishuTableChanged, table, rev, page.Rev)
+			return nil, 0, fmt.Errorf("%w: %s (rev %d, %d)", errFeishuTableChanged, table, rev, page.Rev)
 		}
 		records = append(records, page.Records...)
 		if !page.HasMore {
-			return records, nil
+			return records, rev, nil
 		}
 		if len(page.Records) == 0 {
-			return nil, fmt.Errorf("feishu table %s returned an empty page with more pending", table)
+			return nil, 0, fmt.Errorf("feishu table %s returned an empty page with more pending", table)
 		}
 		offset += len(page.Records)
 	}
@@ -446,7 +485,7 @@ func (c *Feishu) ledgerProjectRow(r feishu.Record) (LedgerProject, error) {
 
 // LedgerProjects lists every row of the ledger's 项目 table.
 func (c *Feishu) LedgerProjects(ctx context.Context) ([]LedgerProject, error) {
-	rows, err := c.readAll(ctx, "项目", nil)
+	rows, _, err := c.readAll(ctx, "项目", nil)
 	if err != nil {
 		return nil, err
 	}
@@ -461,30 +500,30 @@ func (c *Feishu) LedgerProjects(ctx context.Context) ([]LedgerProject, error) {
 	return out, nil
 }
 
-func (c *Feishu) projects(ctx context.Context) (map[string]feishuProject, string, error) {
-	rows, err := c.readAll(ctx, "项目", nil)
+func (c *Feishu) projects(ctx context.Context) (map[string]feishuProject, string, int64, error) {
+	rows, rev, err := c.readAll(ctx, "项目", nil)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 	all := map[string]feishuProject{}
 	own := ""
 	for _, r := range rows {
 		row, err := c.ledgerProjectRow(r)
 		if err != nil {
-			return nil, "", err
+			return nil, "", 0, err
 		}
 		all[r.ID] = feishuProject{prefix: row.Prefix, enabled: row.Enabled}
 		if row.Remote == c.repo {
 			if own != "" {
-				return nil, "", errors.New("feishu project repository duplicated")
+				return nil, "", 0, errors.New("feishu project repository duplicated")
 			}
 			own = r.ID
 		}
 	}
 	if own == "" || !component.MatchString(all[own].prefix) {
-		return nil, "", errors.New("feishu project missing or without a valid 编号前缀")
+		return nil, "", 0, errors.New("feishu project missing or without a valid 编号前缀")
 	}
-	return all, own, nil
+	return all, own, rev, nil
 }
 
 var autoNumber = regexp.MustCompile(`([0-9]+)$`)
@@ -591,15 +630,23 @@ func closedState(state string) bool {
 
 // List reads this project's tickets and the records their links reference.
 func (c *Feishu) List(ctx context.Context) ([]Task, error) {
-	projects, own, err := c.projects(ctx)
+	tasks, _, err := c.list(ctx)
+	return tasks, err
+}
+
+// list also reports the table revs of its reads; valid is false when the
+// 票据 reads disagree on one.
+func (c *Feishu) list(ctx context.Context) ([]Task, feishuSnapshot, error) {
+	projects, own, projectsRev, err := c.projects(ctx)
 	if err != nil {
-		return nil, err
+		return nil, feishuSnapshot{}, err
 	}
 	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "项目", Operator: "intersects", Value: []feishu.LinkRef{{ID: own}}}}}
-	records, err := c.readAll(ctx, "票据", &filter)
+	records, ticketsRev, err := c.readAll(ctx, "票据", &filter)
 	if err != nil {
-		return nil, err
+		return nil, feishuSnapshot{}, err
 	}
+	revs := feishuSnapshot{valid: true, projectsRev: projectsRev, ticketsRev: ticketsRev}
 	known := map[string]feishuTicketRow{}
 	rows := make([]feishuTicketRow, 0, len(records))
 	for _, r := range records {
@@ -608,10 +655,10 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 			continue
 		}
 		if err != nil {
-			return nil, err
+			return nil, feishuSnapshot{}, err
 		}
 		if row.project != own {
-			return nil, errors.New("feishu ticket filter returned another project")
+			return nil, feishuSnapshot{}, errors.New("feishu ticket filter returned another project")
 		}
 		known[row.record] = row
 		rows = append(rows, row)
@@ -627,15 +674,16 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 	for chunk := range slices.Chunk(missing, feishuBatchLimit) {
 		page, err := c.client.BatchGet(ctx, c.base, c.tables["票据"].id, chunk)
 		if err != nil {
-			return nil, err
+			return nil, feishuSnapshot{}, err
 		}
+		revs.valid = revs.valid && page.Rev == ticketsRev
 		for _, r := range page.Records {
 			row, err := c.row(r)
 			if errors.Is(err, errFeishuRowUnsettled) {
 				continue
 			}
 			if err != nil {
-				return nil, err
+				return nil, feishuSnapshot{}, err
 			}
 			known[row.record] = row
 		}
@@ -645,7 +693,7 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 	for _, row := range rows {
 		task := c.task(row, known, projects)
 		if ids[task.ID] || ids[task.Identifier] {
-			return nil, errors.New("duplicate canonical task identity")
+			return nil, feishuSnapshot{}, errors.New("duplicate canonical task identity")
 		}
 		ids[task.ID], ids[task.Identifier] = true, true
 		tasks = append(tasks, task)
@@ -657,7 +705,7 @@ func (c *Feishu) List(ctx context.Context) ([]Task, error) {
 		c.cached[t.Identifier] = t
 	}
 	c.mu.Unlock()
-	return tasks, nil
+	return tasks, revs, nil
 }
 
 func identifier(row feishuTicketRow, projects map[string]feishuProject) string {
@@ -735,7 +783,22 @@ func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 			return nil, errors.New("snapshot repository mismatch")
 		}
 	}
-	tasks, err := c.List(ctx)
+	c.snapMu.Lock()
+	defer c.snapMu.Unlock()
+	if !fullSync(ctx) && c.snapshot.valid {
+		projectsRev, err := c.tableRev(ctx, "项目")
+		if err != nil {
+			return nil, err
+		}
+		ticketsRev, err := c.tableRev(ctx, "票据")
+		if err != nil {
+			return nil, err
+		}
+		if projectsRev == c.snapshot.projectsRev && ticketsRev == c.snapshot.ticketsRev {
+			return slices.Clone(c.snapshot.rows), nil
+		}
+	}
+	tasks, revs, err := c.list(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -743,7 +806,9 @@ func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 	for _, t := range tasks {
 		rows = append(rows, t.Issue)
 	}
-	return rows, nil
+	revs.rows = rows
+	c.snapshot = revs
+	return slices.Clone(rows), nil
 }
 
 func (c *Feishu) Read(ctx context.Context, id string) (Task, error) {
@@ -791,7 +856,7 @@ func (e *CommentsError) Unwrap() error { return e.Err }
 // ListComments returns the ticket's events oldest first. An event whose
 // 修改时间 differs from its 创建时间 was edited and is an evidence conflict.
 func (c *Feishu) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
-	rows, err := c.SnapshotComments(ctx, []string{id})
+	rows, err := c.readHistories(ctx, []string{id})
 	var ticketErr *CommentsError
 	if errors.As(err, &ticketErr) {
 		return nil, ticketErr.Err
@@ -799,22 +864,55 @@ func (c *Feishu) ListComments(ctx context.Context, id string) ([]task.Comment, e
 	if err != nil {
 		return nil, err
 	}
-	return rows[id], nil
+	return rows[id].comments, nil
 }
 
 // SnapshotComments lists the 事件 of many tickets with one filtered listing per
 // chunk of tickets, instead of one listing per ticket. Each ticket gets exactly
 // what its own ListComments returns; the first ticket in ids order whose read
-// fails ends the call with a *CommentsError.
+// fails ends the call with a *CommentsError. Histories read at the current
+// 事件 rev are reused without a listing.
 func (c *Feishu) SnapshotComments(ctx context.Context, ids []string) (map[string][]task.Comment, error) {
-	out := make(map[string][]task.Comment, len(ids))
+	c.snapMu.Lock()
+	defer c.snapMu.Unlock()
+	reused := map[string]feishuHistory{}
+	if !fullSync(ctx) && len(c.histories) > 0 {
+		rev, err := c.tableRev(ctx, "事件")
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range ids {
+			if h, ok := c.histories[id]; ok && h.rev == rev {
+				reused[id] = h
+			}
+		}
+	}
+	stale := slices.DeleteFunc(slices.Clone(ids), func(id string) bool {
+		_, ok := reused[id]
+		return ok
+	})
+	histories, err := c.readHistories(ctx, stale)
+	if err != nil {
+		return nil, err
+	}
+	maps.Copy(histories, reused)
+	c.histories = histories
+	out := make(map[string][]task.Comment, len(histories))
+	for id, h := range histories {
+		out[id] = slices.Clone(h.comments)
+	}
+	return out, nil
+}
+
+func (c *Feishu) readHistories(ctx context.Context, ids []string) (map[string]feishuHistory, error) {
+	out := make(map[string]feishuHistory, len(ids))
 	for chunk := range slices.Chunk(ids, feishuEventFilterLimit) {
 		reads := c.readEvents(ctx, chunk)
 		for i, id := range chunk {
 			if reads[i].err != nil {
 				return nil, &CommentsError{ID: id, Err: reads[i].err}
 			}
-			out[id] = reads[i].history
+			out[id] = feishuHistory{rev: reads[i].rev, comments: reads[i].history}
 		}
 	}
 	return out, nil
@@ -822,6 +920,7 @@ func (c *Feishu) SnapshotComments(ctx context.Context, ids []string) (map[string
 
 type ticketEvents struct {
 	history []task.Comment
+	rev     int64
 	err     error
 }
 
@@ -855,7 +954,7 @@ func (c *Feishu) readEvents(ctx context.Context, chunk []string) []ticketEvents 
 		return reads
 	}
 	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: refs}}}
-	records, err := c.readAll(ctx, "事件", &filter)
+	records, rev, err := c.readAll(ctx, "事件", &filter)
 	if err != nil {
 		return failAll(err)
 	}
@@ -884,6 +983,7 @@ func (c *Feishu) readEvents(ctx context.Context, chunk []string) []ticketEvents 
 		if reads[i].err != nil {
 			continue
 		}
+		reads[i].rev = rev
 		history := reads[i].history
 		sort.SliceStable(history, func(a, b int) bool { return history[a].CreatedAt.Before(history[b].CreatedAt) })
 		reads[i].history, reads[i].err = decodeImportedHistory(history)

@@ -105,6 +105,8 @@ func carryTickets(before, after []Ticket, now time.Time, observation bool, obser
 			t.Owner = old.Owner
 			t.Phase = old.Phase
 			t.Stage = old.Stage
+			t.HumanKind = old.HumanKind
+			t.HumanReason = old.HumanReason
 			phaseChanged = false
 		}
 		if t.Title == "" {
@@ -134,6 +136,12 @@ func observationState(observedAt, now time.Time, staleAfter time.Duration) strin
 func normalize(view *View, now time.Time) {
 	if view.Tickets == nil {
 		view.Tickets = []Ticket{}
+	}
+	for i := range view.Tickets {
+		ticket := &view.Tickets[i]
+		if n := len(ticket.Stages); n > 0 && ticket.Stages[n-1].Name != ticket.Phase {
+			ticket.Stages = nil
+		}
 	}
 	hour := now.UTC().Truncate(time.Hour)
 	if !view.GitHub.Hour.IsZero() || view.GitHub.Requests != 0 || view.GitHub.Limits != nil {

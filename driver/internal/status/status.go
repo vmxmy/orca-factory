@@ -30,7 +30,13 @@ type Corrections struct {
 	Limit int `json:"limit"`
 }
 
+type Stage struct {
+	Name    string `json:"name"`
+	Seconds int64  `json:"seconds"`
+}
+
 type Ticket struct {
+	Stages        []Stage      `json:"stages,omitempty"`
 	Deployment    *Deployment  `json:"deployment,omitempty"`
 	QueuePosition int          `json:"queuePosition,omitempty"`
 	Lane          int          `json:"lane,omitempty"`
@@ -45,8 +51,10 @@ type Ticket struct {
 	// BlockedReason explains why a visible ticket cannot advance.
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
-	Stage string `json:"stage,omitempty"`
-	Title string `json:"title,omitempty"`
+	Stage       string `json:"stage,omitempty"`
+	HumanKind   string `json:"humanKind,omitempty"`
+	HumanReason string `json:"humanReason,omitempty"`
+	Title       string `json:"title,omitempty"`
 	// Since is when the push cache first saw this owner, phase and stage.
 	Since    time.Time `json:"since,omitzero"`
 	PushedAt time.Time `json:"pushedAt,omitzero"`

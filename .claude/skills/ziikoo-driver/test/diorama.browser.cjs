@@ -20,6 +20,11 @@ const DASHBOARD = '/home/laoxu/github/zhiyun-ai-dashboard'
 const ANSIBLE = '/home/laoxu/ansible'
 const TWIN = '/home/laoxu/github/token123'
 const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
+const BASELINE_VIEWPORT = { width: 1280, height: 800 }
+const MAX_CHANGED_PIXEL_RATIO = 0
+const BASELINE_LIMIT_BYTES = 2_000_000
+const BROWSER_LOCALE_ENV = { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', LANGUAGE: 'C' }
+const baselineFile = name => path.join(__dirname, `diorama-${name}.png`)
 
 const brightness = hex => {
   const r = hex >> 16 & 0xff
@@ -359,6 +364,118 @@ async function checkHumanQueue(browser, url) {
     console.log('PASS human queue geometry: boxes on platform, platform on island, labels separated and horizontally anchored')
   } finally {
     await page.close()
+  }
+}
+
+async function pixelDifference(page, expected, actual) {
+  return page.evaluate(async ([before, after]) => {
+    const decode = async encoded => createImageBitmap(await (await fetch(`data:image/png;base64,${encoded}`)).blob())
+    const images = await Promise.all([decode(before), decode(after)])
+    const [width, height] = [images[0].width, images[0].height]
+    if (images.some(image => image.width !== width || image.height !== height)) throw new Error('baseline dimensions differ')
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d')
+    const pixels = images.map(image => {
+      context.drawImage(image, 0, 0)
+      image.close()
+      return context.getImageData(0, 0, width, height)
+    })
+    const diff = context.createImageData(width, height)
+    let changed = 0
+    for (let i = 0; i < diff.data.length; i += 4) {
+      const mismatch = [0, 1, 2, 3].some(channel => pixels[0].data[i + channel] !== pixels[1].data[i + channel])
+      if (mismatch) changed++
+      diff.data[i] = mismatch ? 255 : pixels[1].data[i] / 4
+      diff.data[i + 1] = mismatch ? 0 : pixels[1].data[i + 1] / 4
+      diff.data[i + 2] = mismatch ? 255 : pixels[1].data[i + 2] / 4
+      diff.data[i + 3] = 255
+    }
+    context.putImageData(diff, 0, 0)
+    const blob = await canvas.convertToBlob({ type: 'image/png' })
+    const png = await new Promise(resolve => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result.split(',')[1])
+      reader.readAsDataURL(blob)
+    })
+    return { changed, ratio: changed / (width * height), png }
+  }, [expected.toString('base64'), actual.toString('base64')])
+}
+
+async function checkBaselines(browser, url, model) {
+  const recorded = readJSON(path.join(preview, 'diorama-scene.json'))
+  const stuck = new Set(model.archipelagoOf(recorded).stuck.map(ticket => ticket.identifier))
+  const normal = structuredClone(recorded)
+  for (const row of normal.rows) row.parcels = row.parcels.filter(ticket => !stuck.has(ticket.identifier))
+  const scenes = [
+    { name: 'global', scene: normal, query: '', stop: 1, stuck: 0 },
+    { name: 'island', scene: recorded, query: `?project=${encodeURIComponent(FACTORY)}`, stop: 2, stuck: 2 },
+    { name: 'ticket', scene: recorded, query: `?project=${encodeURIComponent(FACTORY)}&ticket=OF-419`, stop: 3, stuck: 2 },
+    { name: 'global-stuck', scene: recorded, query: '', stop: 1, stuck: 2 },
+  ]
+  const update = process.env.UPDATE_BASELINE === '1'
+  const repeats = process.env.MEASURE_BASELINE === '1' ? 5 : 1
+  const captured = []
+  const failures = []
+  const decoder = await browser.newPage()
+  try {
+    for (const fixture of scenes) {
+      const samples = []
+      for (let run = 0; run < repeats; run++) {
+        const page = await browser.newPage({
+          viewport: BASELINE_VIEWPORT, deviceScaleFactor: 1, reducedMotion: 'reduce',
+          locale: 'zh-CN', timezoneId: 'Asia/Shanghai', colorScheme: 'light',
+        })
+        const errors = []
+        page.on('pageerror', error => errors.push(error.message))
+        try {
+          await page.addInitScript(() => { performance.now = () => 0 })
+          await page.route('**/diorama-scene.json', route => route.fulfill({ json: fixture.scene }))
+          await page.goto(url + fixture.query)
+          await page.waitForFunction(() => window.diorama)
+          await page.evaluate(() => document.fonts.ready)
+          await settled(page)
+          await frames(page)
+          assert.equal((await state(page)).stop, fixture.stop, fixture.name)
+          assert.equal(await page.locator('.stuck > .list button[data-ticket]').count(), fixture.stuck, fixture.name)
+          if (fixture.stop === 3) assert.equal((await state(page)).selected, 'OF-419')
+          assert.deepEqual(errors, [])
+          samples.push(await page.screenshot({ animations: 'disabled' }))
+        } finally {
+          await page.close()
+        }
+      }
+      if (repeats === 5) {
+        let maximum = 0
+        for (let i = 0; i < samples.length; i++) {
+          for (let j = 0; j < i; j++) maximum = Math.max(maximum, (await pixelDifference(decoder, samples[i], samples[j])).ratio)
+        }
+        console.log(`MEASURE ${fixture.name}: 5 fresh renders, maximum changed pixel ratio=${maximum}, 3x=${maximum * 3}`)
+      }
+      const actual = samples[0]
+      captured.push({ name: fixture.name, png: actual })
+      if (update) continue
+      const file = baselineFile(fixture.name)
+      assert.ok(fs.existsSync(file), `missing baseline ${file}; create explicitly with UPDATE_BASELINE=1`)
+      const expected = fs.readFileSync(file)
+      const difference = await pixelDifference(decoder, expected, actual)
+      console.log(`BASELINE ${fixture.name}: ${difference.changed} changed pixels, ratio=${difference.ratio}, threshold=${MAX_CHANGED_PIXEL_RATIO}`)
+      if (difference.ratio > MAX_CHANGED_PIXEL_RATIO) {
+        const temporary = path.resolve('.omc/tmp')
+        fs.mkdirSync(temporary, { recursive: true })
+        const output = fs.mkdtempSync(path.join(temporary, `diorama-${fixture.name}-`))
+        fs.writeFileSync(path.join(output, 'expected.png'), expected)
+        fs.writeFileSync(path.join(output, 'actual.png'), actual)
+        fs.writeFileSync(path.join(output, 'diff.png'), Buffer.from(difference.png, 'base64'))
+        failures.push(`${fixture.name}: ${difference.changed} changed pixels; diff: ${output}/diff.png`)
+      }
+    }
+    const bytes = captured.reduce((sum, shot) => sum + (update ? shot.png.length : fs.statSync(baselineFile(shot.name)).size), 0)
+    assert.ok(bytes <= BASELINE_LIMIT_BYTES, `baselines total ${bytes} bytes exceeds ${BASELINE_LIMIT_BYTES}; reduce BASELINE_VIEWPORT`)
+    assert.deepEqual(failures, [], 'visual baselines differ')
+    if (update) for (const shot of captured) fs.writeFileSync(baselineFile(shot.name), shot.png)
+    console.log(`PASS diorama visual baselines: 4 scenes, ${bytes} bytes${update ? ' (updated explicitly)' : ''}`)
+  } finally {
+    await decoder.close()
   }
 }
 
@@ -733,10 +850,18 @@ async function checkLiveUpdates(browser, live) {
     await page.locator('.stuck > .list button[data-ticket="0/OF-415"]').click()
     await settled(page)
     await tripHas(page, ['OF-415', '处置塔前', '二线处理中', '复制票号', '复制详情'])
+    assert.equal(await page.locator('.trip .stage-time').count(), 0, 'missing stages must not draw durations')
+    const timed = structuredClone(live.pushed)
+    const ticket = timed.tickets.find(ticket => ticket.identifier === 'OF-415' && ticket.repo === FACTORY)
+    ticket.stages = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-stages.json')).tickets[0].stages
     const before = await state(page)
-    live.write(live.pushed)
+    live.write(timed)
     await page.waitForFunction(() => document.querySelector('.trip').innerText.includes('检验间'), null, { timeout: 15000 })
     const moved = await state(page)
+    assert.deepEqual(await page.locator('.trip .stage-time').allTextContents(), ['7 分钟', '7 分钟', '2 分钟', '50 秒'])
+    assert.equal(await page.locator('.trip .track .longest').count(), 1, 'only one longest stage is highlighted')
+    assert.equal(await page.locator('.trip .track .longest').getAttribute('title'), 'Agent处置 · 434 秒 · 停留最长', 'the recorded 434-second stage is the longest')
+    assert.equal(await page.locator('.trip .track .now').innerText(), 'Agent处置\n50 秒', 'last stage is the current stage')
     assert.deepEqual([moved.stop, moved.focus, moved.selected], [2, FACTORY, 'OF-415'], 'a new Scene must keep the island and the selected ticket')
     assert.deepEqual([moved.goal, moved.quaternion], [before.goal, before.quaternion], 'a new Scene must not move or rotate the camera')
     assert.ok(['half', 'x', 'z'].every(key => Math.abs(moved.view[key] - before.view[key]) < 0.01), 'a new Scene must not jump the settled view')
@@ -999,8 +1124,10 @@ async function main() {
       executablePath: chrome,
       headless: true,
       args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+      env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
       await checkMainPath(browser, url)
