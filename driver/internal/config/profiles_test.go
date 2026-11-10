@@ -103,3 +103,11 @@ func TestMachineConfigRejectsInvalidProfiles(t *testing.T) {
 		t.Fatalf("error exposes profile value: %v", err)
 	}
 }
+
+func TestAssignedKeysFollowBashAssignments(t *testing.T) {
+	data := "PLAIN=1\n  export EXPORTED='codex:repository:high'\ndeclare -x DECLARED=2\nreadonly READONLY=3\n# COMMENTED=4\necho ECHOED=5\nunset PLAIN_UNSET\n"
+	want := map[string]bool{"PLAIN": true, "EXPORTED": true, "DECLARED": true, "READONLY": true}
+	if got := AssignedKeys([]byte(data)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("assigned=%v, want %v", got, want)
+	}
+}

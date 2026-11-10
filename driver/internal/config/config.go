@@ -172,12 +172,15 @@ func ModelProxyURL(home string) (string, error) {
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 
-// AssignedKeys reports the keys ParseEnv would read as explicit, without reading
-// values, so bash-only quoting accepted by driver exec does not fail it.
+var bashAssignment = regexp.MustCompile(`^(?:(?:export|declare|typeset|readonly)(?:[ \t]+-[A-Za-z]+)*[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)=`)
+
+// AssignedKeys reports the keys a bash-sourced env file assigns at line start,
+// including through export and similar builtins. Values are not read, so
+// bash-only quoting accepted by driver exec does not fail it.
 func AssignedKeys(data []byte) map[string]bool {
 	keys := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
-		if match := assignment.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+		if match := bashAssignment.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
 			keys[match[1]] = true
 		}
 	}
