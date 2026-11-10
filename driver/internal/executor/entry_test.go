@@ -1,11 +1,13 @@
 package executor
 
 import (
-	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 )
 
 func TestExecutorStateRoot(t *testing.T) {
@@ -64,15 +66,19 @@ func TestExecUsesRepositoryProfiles(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			executor, loaded, err := repositoryExecutor(repo)
+			executor, _, err := repositoryExecutor(context.Background(), repo)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !reflect.DeepEqual(loaded.Env, repository.Env) {
-				t.Fatalf("exec env=%v, repository env=%v", loaded.Env, repository.Env)
+			exec := []string{executor.Config.TierSettings["default"], executor.Config.TierSettings["strong"], executor.Config.Escalate}
+			if want := []string{tc.wantDefault, tc.wantStrong, tc.wantEscalate}; !reflect.DeepEqual(exec, want) {
+				t.Fatalf("exec tiers=%q, want %q", exec, want)
 			}
-			if executor.Config.TierSettings["default"] != tc.wantDefault || executor.Config.TierSettings["strong"] != tc.wantStrong || executor.Config.Escalate != tc.wantEscalate {
-				t.Fatalf("executor config=%+v", executor.Config)
+			if tc.name != "missing profile" {
+				loaded := []string{repository.Env["AGENT_TIER_DEFAULT"], repository.Env["AGENT_TIER_STRONG"], repository.Env["AGENT_TIER_ESCALATE"]}
+				if !reflect.DeepEqual(loaded, exec) {
+					t.Fatalf("LoadRepository tiers=%q, exec tiers=%q", loaded, exec)
+				}
 			}
 			if executor.Config.Agent != "codex" {
 				t.Fatalf("agent=%q", executor.Config.Agent)
@@ -81,5 +87,25 @@ func TestExecUsesRepositoryProfiles(t *testing.T) {
 				t.Fatalf("default model must omit effort: %+v", executor.Config)
 			}
 		})
+	}
+}
+
+func TestExecReadsRepositoryEnvWithBash(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex:model:high\nAGENT_INSTALL_CMD='printf '\\''ok'\\'''\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := executor.Tools.(*Commands).InstallCommand; got != "printf 'ok'" {
+		t.Fatalf("install command=%q", got)
 	}
 }

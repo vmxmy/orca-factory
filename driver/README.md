@@ -505,7 +505,7 @@ AGENT_TIER_ESCALATE = "0"
 
 方案只允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE`。前四项为 `agent:model:effort`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令仍由仓库配置。
 
-修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手与 `driver exec` 共用 `LoadRepository` 的生效值。票面和评论不能选择方案，也没有按票或成本的自动路由。
+修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手经 `LoadRepository` 读取生效值；`driver exec` 仍用 bash source 读取仓库 env，方案叠加与 `LoadRepository` 共用同一函数。票面和评论不能选择方案，也没有按票或成本的自动路由。
 
 运行 `orca-factory-driver config --json` 查看本次读取的配置。`repos[].profile` 是所选方案名，未选择时为空串；找不到该方案时仍显示所选名字。`roles[].source` 为 `repository`、`profile:<名>` 或内置回退的 `default`，`key` 标出回退后实际使用的键。`routing` 中来自方案的升档开关也标为 `profile:<名>`。此命令读取自己的进程配置，不能证明尚未重启的服务已经应用文件修改。
 

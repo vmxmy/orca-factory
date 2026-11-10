@@ -20,9 +20,10 @@ type profileFile struct {
 // but changes to profiles.toml require a restart, including creation or removal.
 var machineProfiles sync.Map
 
-// applyProfile fills only keys absent from the repository, preserving explicitly
-// empty assignments. Every profile is validated before any is applied.
-func applyProfile(env map[string]string) (string, map[string]string, error) {
+// ApplyProfile fills only keys absent from env, preserving explicitly empty
+// assignments. Every profile is validated before any is applied. It is the single
+// profile overlay shared by LoadRepository and driver exec.
+func ApplyProfile(env map[string]string) (string, map[string]string, error) {
 	selected := env["AGENT_PROFILE"]
 	sources := make(map[string]string, len(env))
 	for key := range env {

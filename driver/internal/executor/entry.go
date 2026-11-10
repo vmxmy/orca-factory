@@ -45,7 +45,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("cannot locate repository")
 	}
 	repo := strings.TrimSpace(string(b))
-	e, repository, err := repositoryExecutor(repo)
+	e, storeEnv, err := repositoryExecutor(ctx, repo)
 	if err != nil {
 		return Result{}, err
 	}
@@ -54,7 +54,7 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
 	}
-	store, err := issues.New(ctx, repository.Env, cfg.Tuning)
+	store, err := issues.New(ctx, storeEnv, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
 	}
@@ -89,48 +89,58 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 	return e.Start(ctx, ticket)
 }
 
-func repositoryExecutor(path string) (Executor, config.Repository, error) {
-	repository, err := config.LoadRepository(path)
+// repositoryExecutor sources agent-graph.env with bash, as exec always has, and
+// applies the machine profile through the same function LoadRepository uses.
+func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]string, error) {
+	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+	// Only selected, noncredential fields leave this subprocess.
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
-		return Executor{}, config.Repository{}, err
+		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
-	env := repository.Env
-	owner, name, ok := strings.Cut(env["AGENT_GH_REPO"], "/")
-	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(env["AGENT_ROLE_REVIEWER_CMD"]) == "" {
-		return Executor{}, config.Repository{}, errors.New("repository profile requires GitHub repository and reviewer")
+	values := strings.Split(string(b), "\x00")
+	if len(values) != 22 {
+		return Executor{}, nil, errors.New("invalid repository profile")
 	}
-	threshold := env["AGENT_REVIEWER_SMALL_MAX_ESTIMATE"]
-	if threshold == "" {
-		threshold = "2"
+	owner, name, ok := strings.Cut(values[0], "/")
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
+		return Executor{}, nil, errors.New("repository profile requires GitHub repository and reviewer")
 	}
-	maximum, err := strconv.ParseFloat(threshold, 64)
+	maximum, err := strconv.ParseFloat(values[6], 64)
 	if err != nil {
-		return Executor{}, config.Repository{}, errors.New("invalid reviewer estimate threshold")
+		return Executor{}, nil, errors.New("invalid reviewer estimate threshold")
 	}
-	parts := strings.Split(env["AGENT_TIER_DEFAULT"], ":")
+	tiers := map[string]string{}
+	for i, key := range []string{"AGENT_PROFILE", "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
+		if values[13+2*i] == "set" {
+			tiers[key] = values[14+2*i]
+		}
+	}
+	if _, _, err := config.ApplyProfile(tiers); err != nil {
+		return Executor{}, nil, err
+	}
+	escalate := tiers["AGENT_TIER_ESCALATE"]
+	if escalate == "" {
+		escalate = "0"
+	}
+	parts := strings.Split(tiers["AGENT_TIER_DEFAULT"], ":")
 	if len(parts) != 3 || parts[0] == "" {
-		return Executor{}, config.Repository{}, errors.New("repository profile requires default worker tier")
+		return Executor{}, nil, errors.New("repository profile requires default worker tier")
 	}
-	cfg := Config{Repo: path, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
-		Agent: parts[0], Model: parts[1], Effort: parts[2],
-		TierSettings: map[string]string{"default": env["AGENT_TIER_DEFAULT"], "strong": env["AGENT_TIER_STRONG"]},
-		Escalate:     env["AGENT_TIER_ESCALATE"], Lane3Globs: strings.Fields(env["AGENT_LANE3_GLOBS"])}
+	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
+		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: escalate,
+		TierSettings: map[string]string{"default": tiers["AGENT_TIER_DEFAULT"], "strong": tiers["AGENT_TIER_STRONG"]},
+		Lane3Globs:   strings.Fields(values[7])}
 	if cfg.Model == "" {
 		cfg.Effort = ""
 	}
-	if cfg.Escalate == "" {
-		cfg.Escalate = "0"
-	}
-	install := env["AGENT_INSTALL_CMD"]
-	if install == "" {
-		install = "true"
-	}
 	proxy, err := config.ModelProxyURL(home())
 	if err != nil {
-		return Executor{}, config.Repository{}, err
+		return Executor{}, nil, err
 	}
-	commands := &Commands{ModelProxyURL: proxy, ReviewerCommand: env["AGENT_ROLE_REVIEWER_CMD"], ReviewerSmallCommand: env["AGENT_ROLE_REVIEWER_CMD_SMALL"], ReviewerSmallMaxEstimate: &maximum, InstallCommand: install}
-	return Executor{Config: cfg, Tools: commands}, repository, nil
+	commands := &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[5], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[12], ModelProxyURL: proxy}
+	store := map[string]string{"AGENT_ISSUE_BACKEND": values[8], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[9], "AGENT_FEISHU_BASE": values[10], "AGENT_FEISHU_PROJECT": values[11]}
+	return Executor{Config: cfg, Tools: commands}, store, nil
 }
 
 func envMinutes(value string, fallback time.Duration) time.Duration {

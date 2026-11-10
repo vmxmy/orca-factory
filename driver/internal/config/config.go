@@ -122,7 +122,7 @@ func LoadRepository(path string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	profile, sources, err := applyProfile(env)
+	profile, sources, err := ApplyProfile(env)
 	if err != nil {
 		return Repository{}, err
 	}
