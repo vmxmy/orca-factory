@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -114,5 +115,34 @@ func TestStageDurationsBoundedAndWithoutEvidence(t *testing.T) {
 				t.Fatalf("want most recent 20 stages including current, got %+v", stages)
 			}
 		})
+	}
+}
+
+// The recorded ledger interleaves stage comments with merge-progress-only
+// comments and repeats stages, the real shapes the timeline must fold.
+func TestRecordedStageDurations(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-deployment-retry-workflow.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	ticket, err := InspectOwnership(recording.Comments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now, err := time.Parse(time.RFC3339, "2026-11-04T15:53:00+08:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []status.Stage{{Name: "排队合并", Seconds: 427}, {Name: "Agent处置", Seconds: 434}, {Name: "排队合并", Seconds: 141}, {Name: "Agent处置", Seconds: 50}}
+	got := ObservationRow(ticket, nil, now).Stages
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("stages = %+v, want %+v", got, want)
+	}
+	var sample status.View
+	if err := json.Unmarshal(recorded(t, "driver-status-json-stages.json"), &sample); err != nil {
+		t.Fatal(err)
+	}
+	if len(sample.Tickets) != 1 || sample.Tickets[0].Identifier != "ZY-365" || !reflect.DeepEqual(sample.Tickets[0].Stages, got) {
+		t.Fatalf("driver-status-json-stages.json differs from driver output %+v: %+v", got, sample.Tickets)
 	}
 }

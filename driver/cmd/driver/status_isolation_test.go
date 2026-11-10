@@ -1,10 +1,13 @@
 package main
 
 import (
-	"github.com/vmxmy/orca-factory/driver/internal/status"
-	"github.com/vmxmy/orca-factory/driver/testsupport"
+	"bytes"
+	"os"
 	"testing"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/status"
+	"github.com/vmxmy/orca-factory/driver/testsupport"
 )
 
 func TestPackageStatusIsolation(t *testing.T) {
@@ -16,4 +19,18 @@ func TestPackageStatusIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestRecordedStagesPanelSample(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/driver-status-json-stages.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	panelSample, err := os.ReadFile("../../../.claude/skills/ziikoo-driver/test/sample-recorded.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(panelSample, []byte("RECORDED_STAGES_STATUS: string = String.raw`"+string(bytes.TrimSpace(raw))+"`")) {
+		t.Fatal("panel RECORDED_STAGES_STATUS differs from driver-status-json-stages.json")
+	}
 }

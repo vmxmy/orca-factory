@@ -1,0 +1,1 @@
+{"state":"stale","generatedAt":"2026-11-04T15:53:00+08:00","tickets":[{"stages":[{"name":"排队合并","seconds":427},{"name":"Agent处置","seconds":434},{"name":"排队合并","seconds":141},{"name":"Agent处置","seconds":50}],"repo":"vmxmy/zhiyun-ai-dashboard","identifier":"ZY-365","owner":"处置Agent","phase":"Agent处置","since":"2026-11-04T15:53:00+08:00","pushedAt":"2026-11-04T15:53:00+08:00"}]}
