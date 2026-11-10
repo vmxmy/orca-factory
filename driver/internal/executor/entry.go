@@ -91,17 +91,18 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.
-// Profile keys are unset first so only the repository file can mark them explicit;
-// inherited tier values stay the fallback below the profile, as before profiles.
+// The first source keeps the inherited environment and yields the values exec used
+// before profiles. The second unsets the profile keys first, so only the repository
+// file marks them explicit. Only keys the profile fills replace the first values.
 func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]string, error) {
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `driver_inherited=("${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"); unset AGENT_PROFILE AGENT_TIER_DEFAULT AGENT_TIER_STRONG AGENT_TIER_ESCALATE; source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}" "${driver_inherited[@]}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `(source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}") || exit; unset AGENT_PROFILE AGENT_TIER_DEFAULT AGENT_TIER_STRONG AGENT_TIER_ESCALATE; source "$1" >/dev/null || exit; printf '%s\0' "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 28 {
+	if len(values) != 22 {
 		return Executor{}, nil, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -118,25 +119,24 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 			tiers[key] = values[14+2*i]
 		}
 	}
-	if _, _, err := config.ApplyProfile(tiers); err != nil {
+	_, sources, err := config.ApplyProfile(tiers)
+	if err != nil {
 		return Executor{}, nil, err
 	}
+	effective := map[string]string{}
 	for i, key := range []string{"AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
-		if _, filled := tiers[key]; !filled && values[21+2*i] == "set" {
-			tiers[key] = values[22+2*i]
+		effective[key] = values[2+i]
+		if strings.HasPrefix(sources[key], "profile:") {
+			effective[key] = tiers[key]
 		}
 	}
-	escalate := tiers["AGENT_TIER_ESCALATE"]
-	if escalate == "" {
-		escalate = "0"
-	}
-	parts := strings.Split(tiers["AGENT_TIER_DEFAULT"], ":")
+	parts := strings.Split(effective["AGENT_TIER_DEFAULT"], ":")
 	if len(parts) != 3 || parts[0] == "" {
 		return Executor{}, nil, errors.New("repository profile requires default worker tier")
 	}
 	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
-		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: escalate,
-		TierSettings: map[string]string{"default": tiers["AGENT_TIER_DEFAULT"], "strong": tiers["AGENT_TIER_STRONG"]},
+		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: effective["AGENT_TIER_ESCALATE"],
+		TierSettings: map[string]string{"default": effective["AGENT_TIER_DEFAULT"], "strong": effective["AGENT_TIER_STRONG"]},
 		Lane3Globs:   strings.Fields(values[7])}
 	if cfg.Model == "" {
 		cfg.Effort = ""
