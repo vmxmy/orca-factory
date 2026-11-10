@@ -139,8 +139,14 @@ func TestFeishuWriteUnmanagedRowRejectsUpdate(t *testing.T) {
 	f.rows["tblT"] = append(f.rows["tblT"], unmanagedFeishuRow())
 	c := newFeishuTest(t, f)
 	ctx := context.Background()
-	if _, err := c.UpdateIssue(ctx, "OF-4", "In Progress", []string{"auto-impl"}, nil); err == nil || !strings.Contains(err.Error(), "adoption required") {
+	_, err := c.UpdateIssue(ctx, "OF-4", "In Progress", []string{"auto-impl"}, nil)
+	if err == nil {
 		t.Fatalf("unmanaged update: %v", err)
+	}
+	for _, want := range []string{"adoption required", "issues adopt --id <票> --input", `"blockers":[],"related":[]`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("unmanaged update error %q missing %q", err, want)
+		}
 	}
 	if _, err := c.Edit(ctx, "OF-4", []byte(`{"title":"x"}`)); err == nil || !strings.Contains(err.Error(), "adoption required") {
 		t.Fatalf("unmanaged edit: %v", err)
@@ -257,6 +263,34 @@ func TestFeishuWriteAdoptRequiresBriefAndManagedDependencies(t *testing.T) {
 	}
 	if len(f.writes) != 0 {
 		t.Fatalf("rejected adopt wrote %+v", f.writes)
+	}
+}
+
+func TestFeishuWriteAdoptDependencyErrorExplainsUUID(t *testing.T) {
+	for _, tc := range []struct {
+		input string
+		field string
+	}{
+		{`{"blockers":["OF-1"],"related":[]}`, "blockers[0]"},
+		{`{"blockers":[],"related":["` + feishuUUIDC + `","OF-1"]}`, "related[1]"},
+	} {
+		t.Run(tc.field, func(t *testing.T) {
+			f := newFeishuFake(t)
+			f.rows["tblT"] = append(f.rows["tblT"], unmanagedFeishuRow())
+			c := newFeishuTest(t, f)
+			_, err := c.Adopt(context.Background(), "OF-4", []byte(tc.input))
+			if err == nil {
+				t.Fatal("adopt accepted ticket number as dependency")
+			}
+			for _, want := range []string{tc.field, `"OF-1"`, "依赖须填票的 UUID", "issues issue <票号> --json", "取 `id`"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("dependency error %q missing %q", err, want)
+				}
+			}
+			if len(f.writes) != 0 {
+				t.Fatalf("rejected adopt wrote %+v", f.writes)
+			}
+		})
 	}
 }
 
