@@ -41,16 +41,16 @@ async function checkModel() {
   assert.equal(recorded.state, 'ok')
   assert.equal(recorded.nextScanAt - recorded.generatedAt, 5_170, 'the recorded next scan interval must survive parseRuntime and sceneOf')
   assert.deepEqual(
-    [41_000, 45_170, 45_171].map(age => model.staleOf(recorded, age)),
+    [41_000, 155_170, 155_171].map(age => model.staleOf(recorded, age)),
     [false, false, true],
-    'the recorded ok snapshot must stay fresh through its next scan plus 40 seconds and expire one millisecond later',
+    'the recorded ok snapshot must stay fresh through its next scan plus the 150-second scan grace and expire one millisecond later',
   )
   const generatedAt = 1e12
   const scheduled = { state: 'ok', generatedAt, nextScanAt: generatedAt + 120_000 }
   assert.deepEqual(
-    [90_000, 150_000, 160_000, 160_001, 170_000].map(age => model.staleOf(scheduled, age)),
+    [90_000, 170_000, 270_000, 270_001, 280_000].map(age => model.staleOf(scheduled, age)),
     [false, false, false, true, true],
-    'an ok snapshot must stay fresh through the next scan plus 40 seconds and expire only after that grace period',
+    'an ok snapshot must stay fresh through the next scan plus the 150-second scan grace and expire only after it',
   )
   assert.deepEqual(
     [40_000, 40_001, 41_000].map(age => model.staleOf({ state: 'ok', generatedAt }, age)),

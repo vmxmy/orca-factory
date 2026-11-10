@@ -74,9 +74,11 @@ const layoutOf = count => {
 }
 
 const STALE_MS = 40_000
+// A scheduler scan takes up to 100 seconds, so the snapshot after nextScanAt arrives that much later.
+const SCAN_GRACE_MS = 150_000
 
 export const staleOf = (scene, ageMs) => scene.state !== 'unknown' && (scene.state !== 'ok' || (
-  scene.nextScanAt !== undefined ? scene.generatedAt + ageMs > scene.nextScanAt + STALE_MS : ageMs > STALE_MS
+  scene.nextScanAt !== undefined ? scene.generatedAt + ageMs > scene.nextScanAt + SCAN_GRACE_MS : ageMs > STALE_MS
 ))
 
 export const skyOf = (scene, ageMs) => {
