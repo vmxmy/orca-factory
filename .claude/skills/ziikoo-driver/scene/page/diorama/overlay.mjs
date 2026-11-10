@@ -73,12 +73,33 @@ const sizeOf = item => {
   return item.size
 }
 
+const HUMAN_BADGES = new Map([
+  ['scope', { label: '等批准', path: 'M12 2 15 4 19 5 20 9 22 12 20 15 19 19 15 20 12 22 9 20 5 19 4 15 2 12 4 9 5 5 9 4Z M7 12 10 15 17 8' }],
+  ['deploy', { label: '等部署', path: 'M3 15H21L18 21H6Z M12 3V15 M10 5 4 12H10Z M14 7 19 12H14Z' }],
+  ['takeover', { label: '等接手', path: 'M14 3A6 6 0 0 0 7 10L3 14A3 3 0 0 0 7 18L11 14A6 6 0 0 0 19 7L15 11 11 7Z' }],
+])
+
+const humanBadge = kind => {
+  const badge = HUMAN_BADGES.get(kind)
+  if (!badge) return []
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+  for (const [name, value] of Object.entries({ class: 'human-badge', viewBox: '0 0 24 24', role: 'img', 'aria-label': badge.label })) {
+    svg.setAttribute(name, value)
+  }
+  const path = document.createElementNS(svg.namespaceURI, 'path')
+  path.setAttribute('d', badge.path)
+  svg.append(path)
+  return [svg]
+}
+
 const ticketLabel = parcel => ({
   ...itemOf(
     element('span', {
       class: ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(),
-      text: parcel.unknown ? `${parcel.identifier} · 未知` : parcel.identifier,
-    }),
+    }, [
+      ...humanBadge(parcel.humanKind),
+      [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
+    ]),
     new Vector3(),
   ),
   parcel,

@@ -11,6 +11,27 @@ import { SAMPLE_STATUS } from './sample-runtime'
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
 const runtime = () => parseRuntime(JSON.stringify(SAMPLE_STATUS))
 
+test('人工等待类别与原因透传，未知类别及缺字段省略', () => {
+  for (const humanKind of ['scope', 'deploy', 'takeover', 'future', '', null, 3, {}, undefined]) {
+    const status = structuredClone(SAMPLE_STATUS)
+    Object.assign(status.tickets[0]!, { humanKind, humanReason: '<待确认> & 接手' })
+    const parsed = parseRuntime(JSON.stringify(status))
+    const parcel = sceneOf(parsed, config()).rows[0]!.parcels[0]
+    for (const value of [parsed.tickets[0], parcel]) {
+      expect(value).toHaveProperty('humanReason', '<待确认> & 接手')
+      if (humanKind === 'scope' || humanKind === 'deploy' || humanKind === 'takeover') {
+        expect(value).toHaveProperty('humanKind', humanKind)
+      } else {
+        expect(JSON.parse(JSON.stringify(value))).not.toHaveProperty('humanKind')
+      }
+    }
+  }
+  for (const value of [runtime().tickets[0], sceneOf(runtime(), config()).rows[0]!.parcels[0]]) {
+    expect(JSON.parse(JSON.stringify(value))).not.toHaveProperty('humanKind')
+    expect(JSON.parse(JSON.stringify(value))).not.toHaveProperty('humanReason')
+  }
+})
+
 test('sceneOf 透传阶段时间，缺证据时省略，并拒绝非法秒数和超长时间线', () => {
   const recorded = parseRuntime(RECORDED_STAGES_STATUS)
   expect(recorded.tickets[0]?.stages).toEqual([

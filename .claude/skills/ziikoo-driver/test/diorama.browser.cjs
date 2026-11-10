@@ -977,6 +977,51 @@ async function checkRecordLinks(browser, live) {
   }
 }
 
+async function checkHumanWaits(browser, live) {
+  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+  const template = recorded.tickets.find(ticket => ticket.identifier === 'OF-415')
+  const humanReason = '<img src=x onerror="window.__humanXss=1"> & 等待确认'
+  const kinds = ['scope', 'deploy', 'takeover', 'future', undefined]
+  const since = new Date(Date.parse(recorded.generatedAt) - 31 * 60_000).toISOString()
+  const tickets = kinds.map((humanKind, index) => ({
+    ...template, identifier: `WAIT-${index}`, stage: 'human', humanKind, humanReason,
+    since: index === 2 ? undefined : since,
+  }))
+  live.write({ ...recorded, tickets })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(template.repo)}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('WAIT-0'))
+    const names = ['等批准', '等部署', '等接手']
+    const shapes = []
+    for (const [index, name] of names.entries()) {
+      const label = page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` })
+      const badge = label.getByRole('img', { name, exact: true })
+      assert.equal(await badge.count(), 1, `${kinds[index]} must draw its named badge`)
+      assert.equal(await badge.evaluate(node => node.tagName), 'svg')
+      const paths = await badge.locator('path').evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
+      assert.ok(paths.length > 0 && paths.every(value => value.length > 10), `${name} must contain drawn paths`)
+      shapes.push(JSON.stringify(paths))
+      assert.equal(await badge.evaluate(node => getComputedStyle(node).color), await label.evaluate(node => getComputedStyle(node).color), 'badges must inherit the existing alert color')
+      assert.equal(await label.isVisible(), true)
+    }
+    assert.equal(new Set(shapes).size, 3, 'approval, deployment and takeover must have different shapes')
+    for (const index of [3, 4]) {
+      assert.equal(await page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` }).locator('svg').count(), 0, 'unknown and absent kinds must not draw a badge')
+    }
+    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-0' }).textContent(), 'WAIT-0 · 31 分钟')
+    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-2' }).textContent(), 'WAIT-2', 'missing since must not display a duration')
+    await page.locator('.stuck > .list button[data-ticket="0/WAIT-0"]').click()
+    assert.equal(await page.locator('.trip .human-reason').textContent(), humanReason)
+    assert.equal(await page.locator('.trip .human-reason *').count(), 0, 'humanReason must be a text node')
+    assert.equal(await page.evaluate(() => window.__humanXss), undefined)
+    if (shots) await page.screenshot({ path: path.join(shots, 'of475-human-waits.png') })
+    assert.deepEqual(errors, [])
+    console.log('PASS human waits: three distinct badges, existing colors, unknown kind omitted, duration from since, literal reason text')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -1004,6 +1049,8 @@ async function checkProduction(browser, bun, model) {
     await checkTokens(origin, token)
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
+    await checkHumanWaits(browser, live)
+    live.write(status)
     await checkLiveUpdates(browser, live)
     await checkEntries(browser, live, model)
     await checkRecordLinks(browser, live)

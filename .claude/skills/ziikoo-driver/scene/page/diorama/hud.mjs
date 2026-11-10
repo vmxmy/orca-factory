@@ -83,6 +83,7 @@ const tripHead = parcel =>
     element('span', { class: 'own' }, [swatch(parcel.color), `归属 ${parcel.owner}`]),
     element('span', { text: `${parcel.stationName} · ${parcel.label} · 已停留 ${parcel.duration}` }),
     ...(parcel.reason ? [element('span', { class: 'why', text: parcel.reason })] : []),
+    ...(parcel.humanReason ? [element('span', { class: 'why human-reason', text: parcel.humanReason })] : []),
   ])
 
 const tripTrack = parcel => {
