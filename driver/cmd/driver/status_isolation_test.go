@@ -34,3 +34,17 @@ func TestRecordedStagesPanelSample(t *testing.T) {
 		t.Fatal("panel RECORDED_STAGES_STATUS differs from driver-status-json-stages.json")
 	}
 }
+
+func TestRecordedTodayPanelSample(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/driver-status-json-today.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	panelSample, err := os.ReadFile("../../../.claude/skills/ziikoo-driver/test/sample-recorded.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(panelSample, []byte("RECORDED_TODAY_STATUS: string = String.raw`"+string(bytes.TrimSpace(raw))+"`")) {
+		t.Fatal("panel RECORDED_TODAY_STATUS differs from driver-status-json-today.json")
+	}
+}

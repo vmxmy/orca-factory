@@ -35,6 +35,7 @@ type OrcaClient interface {
 	TerminalClose(context.Context, string) error
 }
 type Runtime struct {
+	todayRuns            []todayRun
 	GitHub               *github.Client
 	Clients              map[string]issues.Store
 	Repositories         map[string]config.Repository
@@ -252,6 +253,7 @@ func (e *SnapshotEvidenceError) Error() string { return e.Err.Error() }
 func (e *SnapshotEvidenceError) Unwrap() error { return e.Err }
 
 func (r *Runtime) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	r.todayRuns = nil
 	groups := map[issues.Store][]config.Repository{}
 	order := []issues.Store{}
 	for _, repo := range repos {
@@ -335,6 +337,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		}
 	}
 	phases(ctx).add("events", eventsStart)
+	r.todayRuns = append(r.todayRuns, readTodayRuns(snapshot, commentsByID, repoOf)...)
 	tickets := []Ticket{}
 	var problems []error
 	for _, issue := range snapshot {

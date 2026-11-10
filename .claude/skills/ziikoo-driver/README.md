@@ -46,6 +46,8 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 工坊沙盘是固定等距的 three.js 沙盘。Scene 的每个项目画成一座岛，岛之间是海。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面打开时读 `/snapshot` 并订阅 `/events`，先到的 Scene 画出首屏，之后的 Scene 原地更新。页面只读，不提供推进票据的操作。
 
+状态条下方显示今日产出，例如「今日：合并 3 · 转人 1 · 周期中位 12.5 分」，空闲时仍显示。插件把 `status.today` 透传为 `Scene.today`，每项缺字段时不画该项，全部缺失时隐藏整行；有证据的 0 照常显示；周期分钟数按一位小数显示。统计按 driver 服务的本地日期计算，跨午夜的运行归到结束当天，周期取 ledger 记录中的分钟数中位数，不另发飞书请求。跨日后 driver 会省略旧汇总，下一轮观察再更新。`scene.test.ts` 与 `diorama.browser.cjs` 读取录制样本 `driver/testdata/recorded/driver-status-json-today.json`（插件内嵌为 `RECORDED_TODAY_STATUS`），断言真实输出的解析与「今日：合并 1 · 转人 0 · 周期中位 37.1 分」。
+
 ### 服务与访问
 
 默认不需要任何配置，按 `d` 即可取得工坊沙盘 URL。服务绑定全部接口 `0.0.0.0`，广播地址依次选择 `nebula1` 的 IPv4、第一个非回环 IPv4、`127.0.0.1`。端口优先使用 `43210`，被占用时自动改用随机端口。
