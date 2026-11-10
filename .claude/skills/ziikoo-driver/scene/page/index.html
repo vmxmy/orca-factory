@@ -4,10 +4,24 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
-<title>工坊小镇 · ziikoo-driver</title>
+<title>工坊沙盘 · ziikoo-driver</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="./components/shared.css?t=__TOKEN__">
-<script type="module" src="./scene.js?t=__TOKEN__"></script>
+<link rel="stylesheet" href="./diorama/diorama.css?t=__TOKEN__">
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three.module.min.js?t=__TOKEN__",
+    "./vendor/three.core.min.js": "./vendor/three.core.min.js?t=__TOKEN__",
+    "./diorama/index.mjs": "./diorama/index.mjs?t=__TOKEN__",
+    "./diorama/model.mjs": "./diorama/model.mjs?t=__TOKEN__",
+    "./diorama/world.mjs": "./diorama/world.mjs?t=__TOKEN__",
+    "./diorama/camera.mjs": "./diorama/camera.mjs?t=__TOKEN__",
+    "./diorama/hud.mjs": "./diorama/hud.mjs?t=__TOKEN__",
+    "./diorama/overlay.mjs": "./diorama/overlay.mjs?t=__TOKEN__"
+  }
+}
+</script>
+<script type="module" src="./live.mjs?t=__TOKEN__"></script>
 </head>
-<body></body>
+<body><main class="diorama" aria-label="工坊沙盘"></main></body>
 </html>

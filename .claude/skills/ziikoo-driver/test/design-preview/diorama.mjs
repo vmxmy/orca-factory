@@ -16,7 +16,7 @@ try {
   })
 } catch (error) {
   const failure = document.createElement('p')
-  failure.className = 'failure'
+  failure.className = 'notice failure'
   failure.textContent = error.message
   stage.append(failure)
   throw error

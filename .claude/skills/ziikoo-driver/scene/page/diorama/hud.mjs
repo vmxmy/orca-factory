@@ -80,10 +80,54 @@ const tripFoot = parcel => {
   return notes.length === 0 ? [] : [element('div', { class: 'trip-foot', text: notes.join(' · ') })]
 }
 
+const detailText = parcel =>
+  [
+    `${parcel.identifier} · ${parcel.title}`,
+    `项目：${parcel.project} · ${parcel.path}`,
+    `工位：${parcel.stationName}`,
+    `真实阶段：${parcel.phase} / ${parcel.label}`,
+    `已观察：${parcel.duration}`,
+    ...(parcel.reason ? [`原因：${parcel.reason}`] : []),
+  ].join('\n')
+
+const tripActions = parcel =>
+  element('div', { class: 'trip-actions' }, [
+    element('button', { type: 'button', 'data-copy': parcel.identifier, text: '复制票号' }),
+    element('button', { type: 'button', 'data-copy': detailText(parcel), text: '复制详情' }),
+    element('span', { class: 'copied', role: 'status' }),
+  ])
+
+const copyText = async text => {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const area = element('textarea', { readonly: '', 'aria-hidden': 'true' })
+  area.value = text
+  area.style.cssText = 'position:fixed;left:-9999px;top:0'
+  document.body.append(area)
+  area.select()
+  try {
+    if (!document.execCommand('copy')) throw new Error('浏览器拒绝复制')
+  } finally {
+    area.remove()
+  }
+}
+
 const tripHint = island =>
   island
     ? `${island.name}：点一只箱子，或从右侧列表选一张票，看它的行程。`
     : '全局：点一座岛进入项目，或从「卡住的票」直接跳到那张票。'
+
+export const failureText = ({ command, exitCode, reason }) => `${command} 失败${exitCode == null ? '' : `（退出码 ${exitCode}）`}：${reason}`
+
+const keepFocus = (container, render) => {
+  const active = container.contains(document.activeElement) ? document.activeElement : null
+  const held = active && ['ticket', 'island', 'copy'].find(name => active.dataset[name] !== undefined)
+  const value = held && active.dataset[held]
+  render()
+  if (held) container.querySelector(`[data-${held}="${CSS.escape(value)}"]`)?.focus()
+}
 
 const searchResults = ({ islands, tickets }, query) => {
   const needle = query.trim().toLowerCase()
@@ -94,13 +138,13 @@ const searchResults = ({ islands, tickets }, query) => {
   ].slice(0, SEARCH_LIMIT)
 }
 
-const stopButtons = global => [
-  ...(global ? [['1', '1 全局']] : []),
+const stopButtons = () => [
+  ['1', '1 全局'],
   ['2', '2 工坊'],
   ['3', '3 这张票'],
 ].map(([stop, text]) => element('button', { type: 'button', 'data-stop': stop, 'aria-pressed': 'false', text }))
 
-const createSearch = (archipelago, pick) => {
+const createSearch = (source, pick) => {
   const input = element('input', { type: 'search', placeholder: '票号或项目名', 'aria-label': '搜索票号或项目名', autocomplete: 'off', spellcheck: 'false' })
   const results = element('div', { class: 'list results' })
   const form = element('form', { class: 'search', role: 'search', hidden: '' }, [input, results])
@@ -119,10 +163,11 @@ const createSearch = (archipelago, pick) => {
     input.select()
     input.focus()
   }
-  input.addEventListener('input', () => {
-    const found = searchResults(archipelago, input.value)
+  const refresh = () => {
+    const found = searchResults(source(), input.value)
     results.replaceChildren(...(found.length > 0 || input.value.trim() === '' ? found : [element('p', { text: '没有匹配的票或项目' })]))
-  })
+  }
+  input.addEventListener('input', refresh)
   form.addEventListener('submit', event => {
     event.preventDefault()
     results.querySelector('button')?.click()
@@ -140,34 +185,36 @@ const createSearch = (archipelago, pick) => {
     pick(button)
   })
   toggle.addEventListener('click', () => (form.hidden ? open() : close()))
-  return { form, toggle, open }
+  return { form, toggle, open, refresh: () => keepFocus(results, refresh) }
 }
 
-export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) => {
+export const createHud = (stage, { onSelect, onStop, onIsland }) => {
+  let archipelago = { islands: [], tickets: [], stuck: [], global: false }
+  let connection = null
   const pick = button => {
     if (button.dataset.ticket) onSelect(button.dataset.ticket)
     else if (button.dataset.island) onIsland(Number(button.dataset.island))
   }
   const status = element('div', { class: 'status', role: 'status' })
-  const dock = element('nav', { class: 'dock', 'aria-label': '项目坞', hidden: '' }, archipelago.islands.map(islandButton))
-  const stops = element('div', { class: 'stops', role: 'group', 'aria-label': '机位' }, stopButtons(archipelago.global))
-  const search = createSearch(archipelago, pick)
-  const stuck = archipelago.stuck
-  const panel = element('section', { class: stuck.length === 0 ? 'stuck clear' : 'stuck', 'aria-label': '卡住的票' }, [
-    element('h2', {}, [
-      element('span', { text: stuck.length === 0 ? '没有卡住的票' : '卡住的票' }),
-      element('span', { text: stuck.length === 0 ? '' : `${stuck.length} 张` }),
-    ]),
-    element('div', { class: 'list' }, stuck.map(stuckButton)),
-    element('details', {}, [
-      element('summary', { text: `全部票 · ${archipelago.tickets.length} 张` }),
-      element('div', { class: 'list' }, archipelago.tickets.map(listButton)),
-    ]),
+  const alarm = element('ul', { class: 'alarm', role: 'alert', hidden: '' })
+  const dock = element('nav', { class: 'dock', 'aria-label': '项目坞', hidden: '' })
+  const stops = element('div', { class: 'stops', role: 'group', 'aria-label': '机位' }, stopButtons())
+  const search = createSearch(() => archipelago, pick)
+  const heading = element('span')
+  const count = element('span')
+  const stuckList = element('div', { class: 'list' })
+  const summary = element('summary')
+  const allList = element('div', { class: 'list' })
+  const panel = element('section', { class: 'stuck', 'aria-label': '卡住的票' }, [
+    element('h2', {}, [heading, count]),
+    stuckList,
+    element('details', {}, [summary, allList]),
   ])
-  const lead = element('div', { class: 'lead' }, [status, dock])
+  const lead = element('div', { class: 'lead' }, [status, alarm, dock])
   const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle]), search.form, panel])
   const trip = element('div', { class: 'trip', 'aria-live': 'polite' })
-  stage.append(element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip]))
+  const hud = element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip])
+  stage.append(hud)
 
   stops.addEventListener('click', event => {
     const button = event.target.closest('button[data-stop]')
@@ -179,14 +226,46 @@ export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) =>
       if (button) pick(button)
     })
   }
+  trip.addEventListener('click', async event => {
+    const button = event.target.closest('button[data-copy]')
+    if (!button) return
+    const note = trip.querySelector('.copied')
+    try {
+      await copyText(button.dataset.copy)
+      note.textContent = '已复制到剪贴板'
+    } catch {
+      note.textContent = '浏览器限制了复制，请手动选择行程栏中的文字。'
+    }
+  })
 
   return {
     openSearch: search.open,
+    update(next) {
+      archipelago = next
+      const { stuck, tickets, islands } = next
+      panel.classList.toggle('clear', stuck.length === 0)
+      heading.textContent = stuck.length === 0 ? '没有卡住的票' : '卡住的票'
+      count.textContent = stuck.length === 0 ? '' : `${stuck.length} 张`
+      summary.textContent = `全部票 · ${tickets.length} 张`
+      keepFocus(dock, () => dock.replaceChildren(...islands.map(islandButton)))
+      keepFocus(stuckList, () => stuckList.replaceChildren(...stuck.map(stuckButton)))
+      keepFocus(allList, () => allList.replaceChildren(...tickets.map(listButton)))
+      search.refresh()
+    },
+    link(next) {
+      connection = next
+      const lines = [
+        ...(next.online ? [] : ['连接断开：画面停在最后一份快照，正在自动重连。']),
+        ...next.failures.map(failureText),
+      ]
+      alarm.replaceChildren(...lines.map(text => element('li', { text })))
+      alarm.hidden = lines.length === 0
+    },
     margins() {
       const frame = stage.getBoundingClientRect()
       const sideBox = side.getBoundingClientRect()
       const docked = sideBox.left > frame.left + frame.width / 2
-      const topEdge = docked ? status.getBoundingClientRect().bottom : sideBox.bottom
+      const topEdge = docked ? (alarm.hidden ? status : alarm).getBoundingClientRect().bottom : sideBox.bottom
       return {
         top: topEdge - frame.top + 12,
         right: docked ? frame.right - sideBox.left + 12 : 16,
@@ -196,6 +275,7 @@ export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) =>
     },
     status(island, scene, now, sky) {
       const parts = [
+        ...(connection ? [connection.online ? '已连接' : '连接断开'] : []),
         island ? island.name : `${archipelago.islands.length} 个项目`,
         ...(SKY_NOTES[sky] ? [SKY_NOTES[sky]] : []),
         `driver ${scene.state}`,
@@ -206,11 +286,13 @@ export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) =>
       status.textContent = parts.join(' · ')
       status.title = island?.path ?? ''
       status.dataset.sky = sky
+      if (connection) status.dataset.online = String(connection.online)
     },
     stops(current, selectable, focus) {
       for (const button of stops.querySelectorAll('button')) {
         button.setAttribute('aria-pressed', String(Number(button.dataset.stop) === current))
       }
+      stops.querySelector('[data-stop="1"]').hidden = !archipelago.global
       stops.querySelector('[data-stop="3"]').disabled = !selectable
       dock.hidden = !archipelago.global || current === 1
       for (const button of dock.querySelectorAll('button')) {
@@ -225,7 +307,10 @@ export const createHud = (stage, archipelago, { onSelect, onStop, onIsland }) =>
         trip.replaceChildren(element('div', { class: 'trip-head' }, [element('span', { class: 'why', text: tripHint(island) })]))
         return
       }
-      trip.replaceChildren(tripHead(parcel), tripTrack(parcel), ...tripFoot(parcel))
+      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripTrack(parcel), ...tripFoot(parcel), tripActions(parcel)))
+    },
+    remove() {
+      hud.remove()
     },
   }
 }

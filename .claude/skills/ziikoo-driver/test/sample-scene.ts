@@ -30,7 +30,7 @@ export const SAMPLE_SCENE_PORT_IN_USE = {
 }
 
 export const SAMPLE_SCENE_BAD_PORT = {
-  stderr: `像素工坊服务端口必须是 0–65535 的整数，收到 abc
+  stderr: `工坊沙盘服务端口必须是 0–65535 的整数，收到 abc
 `,
   exitCode: 1,
 }

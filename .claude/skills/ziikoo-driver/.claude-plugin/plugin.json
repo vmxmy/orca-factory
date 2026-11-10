@@ -6,13 +6,13 @@
   "userConfig": {
     "bind": {
       "type": "string",
-      "title": "像素工坊服务绑定地址",
+      "title": "工坊沙盘服务绑定地址",
       "description": "auto 为自动：绑定全部接口，广播地址按 nebula1 → 第一个非回环 IPv4 → 127.0.0.1 选；也可填 IP、接口名或 0.0.0.0 覆盖",
       "default": "auto"
     },
     "port": {
       "type": "number",
-      "title": "像素工坊服务端口",
+      "title": "工坊沙盘服务端口",
       "description": "0 为自动：优先 43210，被占用时改用随机端口；可填 1–65535 固定端口",
       "default": 0
     }

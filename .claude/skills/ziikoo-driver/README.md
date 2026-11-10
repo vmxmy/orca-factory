@@ -40,68 +40,54 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 面板打开后持有键盘：`r` 刷新，`c` 复制当前视图，`1`–`5` 切页（运行组 1 流水线、2 健康；配置组 3 模型、4 调度、5 环境），Tab 或 ↑↓ 在按钮、票行和仓库下拉之间移动，回车按下焦点所在的按钮，`f` 把焦点移进筛选框（流水线与环境页），`q` 从详情返回，Esc 回到输入框。焦点在筛选框里时输入的数字和字母进入框内，不触发热键。底部的帮助条随当前视图换成对应的按键说明。
 
-按 `d` 或头部「像素工坊」按钮打开浏览器小镇。
+按 `d` 或头部「工坊沙盘」按钮打开浏览器里的工坊沙盘。
 
-## 像素工坊小镇
+## 工坊沙盘
 
-页面使用本地 HTML、CSS 与 Canvas 2D 绘制米色纸张、木梁、草地、河流和像素工坊，无外部 CDN 或图片设计稿。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面通过 `/snapshot` 与 `/events` 读取同一份 Scene，不提供推进票据的操作。
+工坊沙盘是固定等距的 three.js 沙盘。Scene 的每个项目画成一座岛，岛之间是海。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面打开时读 `/snapshot` 并订阅 `/events`，先到的 Scene 画出首屏，之后的 Scene 原地更新。页面只读，不提供推进票据的操作。
 
-### 共享组件与设计基准
+### 服务与访问
 
-视觉从用户确认的设计稿提取为共享组件：页面外壳、项目导航、详情手记、小镇场景、工坊场景、设备与传送带位于 `scene/page/components/`，入口是 `scene/page/components/index.mjs`；`index.html` 经 `scene.js` 引用入口模块，`components/shared.css` 是唯一布局样式表。生产页面与 `test/design-preview/` 的组件化预览引用同一组组件文件，不维护两套绘图或两份 CSS；预览只替换数据适配与演示控件。
-
-确认的设计基准是 `test/recorded/pixel-town-approved.html`（用户确认的原 demo 快照，SHA-256 `bcefe437e0f396e2fd5138efd47dc2fca155ebf47aa1bb2eb9a08ad0601319f4`，验收脚本每次运行先核对摘要）。视觉对照方法是 `node test/pixel-town-parity.browser.cjs`：在相同 Chrome、字体、视口（1440×1000、1920×1080、390×844）、DPR=1、减少动态与冻结时钟下（Chrome 加 `--disable-partial-raster`：局部重栅格化会在高负载时让基准自身的图标抗锯齿逐帧变化），对独立基准连截两帧确认稳定，再逐帧比较原 demo、组件预览与生产入口；原 demo 与组件预览必须零像素差异，生产入口的工坊画布必须与基准逐字节一致，页面外壳各区域尺寸与基准吻合。对照产物（原图、候选图、差异图、生产画布）写入 `.omc/tmp/pixel-town-parity/`。生产入口与 demo 的固定差异只有：真实数据文字与实时状态说明、隐藏演示数量输入与演示推进按钮、真实未知阶段的异常提示，以及空闲院落按真实票据推导（没有票的项目熄窗并摆长椅；demo 只把 `gpt-ziikoo-app` 画成空闲，count=8 时生成的 4 个无票项目仍亮窗）。因此生产画布与按同一空闲输入渲染的组件预览（`?idle=` 列出无票项目）逐字节比较；工坊视图不画空闲状态，或空闲输入与 demo 相同时，再与基准画布逐字节比较。
-
-总览的每座建筑对应一个 `row.path`，单项目居中，多项目按双列向下延伸。侧栏或顶部搜索可按项目名、完整路径、票号和标题定位；同名项目通过路径区分。同名票通过项目路径与票号区分。点击建筑或「进入工坊」看详情，点击「小镇总览」回到刚查看的项目。长名称在入口截断，完整名称、路径和标题在详情展示。没有项目时显示空态并禁用入口。
-
-拖动平移，滚轮或加减按钮缩放，「复位」定位当前项目或选择。地图获得焦点后，方向键平移，`+` / `-` 缩放，`Home` 复位。侧栏项目、工位和票据都能通过 Tab 与回车访问。手机端详情在地图下方，选中票据自动定位在可见地图内。总览只绘制可见区域，缓存与画布按视口分配，不限制项目总数。浏览器验收覆盖 0、1、2、4、6、12、24、100、1000 和 1001 个项目。
-
-工坊主线是 U 形传送带，依次经过领取公告板、施工锻炉、门禁扫描架、审查书桌、开 PR 包装台、合并轨道、部署吊运架与 smoke 检测舱。修理架、返工转盘与人工圆桌位于支线。包裹就是 Scene 的真实票据，阶段直接沿用 `hooks/scene.ts` 的判定；点击工位查看节点说明和数量，点击包裹查看真实阶段、停留时长、原因和部署状态。「需要关注」汇总异常票据。未配置部署明确显示不适用，`unknownDeploy` 显示未知，无法识别的 station 显示未知阶段。
-
-仍存在的项目、选择与相机按身份保留；单项目与双列布局切换时相机跟随锚点。阶段变化沿传送带补间，返工沿支线返回施工；首次连接和 SSE 重连按最新快照定位，不补播离线历史。页面隐藏（pagehide）时主动关闭事件流，浏览器前进后退缓存（BFCache）恢复（persisted pageshow）时重建连接并拉取最新快照。相同快照不会重播动画，包裹消失也不代表成功。支持系统的减少动态设置，停用补间后仍正常更新状态和定位。过期快照、断线、命令错误、维护模式及 paused / failed 部署状态持续显示，恢复消息清除对应错误。
-
-默认不需要任何配置，按 `d` 即可取得像素工坊 URL。服务绑定全部接口 `0.0.0.0`，广播地址依次选择 `nebula1` 的 IPv4、第一个非回环 IPv4、`127.0.0.1`。端口优先使用 `43210`，被占用时自动改用随机端口。
+默认不需要任何配置，按 `d` 即可取得工坊沙盘 URL。服务绑定全部接口 `0.0.0.0`，广播地址依次选择 `nebula1` 的 IPv4、第一个非回环 IPv4、`127.0.0.1`。端口优先使用 `43210`，被占用时自动改用随机端口。
 
 面板先复制完整 URL 并显示提醒。`SSH_CONNECTION` 或 `SSH_TTY` 任一非空即视为 SSH 会话，此时只复制 URL，提醒末尾写「SSH 会话，请在远程浏览器粘贴」，请在能访问该地址的远程浏览器打开。非 SSH 会话复制后会通过 `xdg-open` 用同一个广播 URL 打开本机浏览器。显式绑定回环地址也按此 SSH 规则处理。Nebula relay 对应用透明，仍然使用对端 Nebula 地址。
 
 `/config` 中的两个选项只作覆盖，不填即可用，下一次启动工坊服务时生效：
 
-- `bind`（工坊服务绑定地址）：默认 `auto`，使用上述自动规则；也可填 IP、接口名或 `0.0.0.0`。接口名取该接口第一个 IPv4 地址；显式 `0.0.0.0` 同样按上述优先级选择广播地址。
-- `port`（工坊服务端口）：默认 `0`，优先 `43210`，占用时退到随机端口；可设为 1–65535 的固定端口，固定端口被占用时会报错。
+- `bind`（工坊沙盘服务绑定地址）：默认 `auto`，使用上述自动规则；也可填 IP、接口名或 `0.0.0.0`。接口名取该接口第一个 IPv4 地址；显式 `0.0.0.0` 同样按上述优先级选择广播地址。
+- `port`（工坊沙盘服务端口）：默认 `0`，优先 `43210`，占用时退到随机端口；可设为 1–65535 的固定端口，固定端口被占用时会报错。
 
 服务运行期间再按 `d` 会复制已有 URL，并按当前会话的 SSH 状态决定是否打开本机浏览器；修改绑定配置后需等旧服务退出，再按 `d` 启动。
 
-每次启动生成随机 token，它是服务唯一的访问门禁。页面、脚本、快照和 SSE 都要求 URL 的 `t` 参数或 `X-Token` 头；缺失或不符返回 404。URL 含 token，不要外传；自动模式绑定全部接口，局域网主机凭 token 也能访问。Nebula 入站防火墙由主机 `/etc/nebula/config.yml` 决定，本 mod 不修改它。连续 15 分钟没有 SSE 订阅者时服务自动退出。
+每次启动生成随机 token，它是服务唯一的访问门禁。页面、脚本、样式、vendor 文件、快照和 SSE 都要求 URL 的 `t` 参数或 `X-Token` 头；缺失或不符返回 404，非 GET 请求也返回 404。URL 含 token，不要外传；自动模式绑定全部接口，局域网主机凭 token 也能访问。Nebula 入站防火墙由主机 `/etc/nebula/config.yml` 决定，本 mod 不修改它。连续 15 分钟没有 SSE 订阅者时服务自动退出。
 
-浏览器需要 Canvas 2D、ES 模块、EventSource 与 ResizeObserver 支持。绘图与布局模块随插件发布，所有模块 URL 都携带本次服务的 token，不写入浏览器持久化存储。Mac 继续使用原有地址、端口与 token 访问规则，无需重新配置。
+浏览器需要 WebGL2、ES 模块与 import map、EventSource 与 ResizeObserver 支持。页面不写入浏览器持久化存储。
 
-已知限制：子进程随会话或热重载结束，再按 `d` 重起；复制失败时提醒给出原因与 URL，没有 `xdg-open` 或打开失败时也可手动粘贴 URL。固定端口只固定地址与端口，每次重启 token 都会变化，旧的收藏 URL 需更新。Scene 透传 driver 给出的合并队列位次 `queuePosition`；像素工坊小镇仍按服务端首次看到票的顺序排列包裹，不代表真实 FIFO，沙盘预览按位次排队。Scene 未提供负责人、历史时间线、PR 链接或完整部署对象时，页面不会补造这些字段；门禁设备动画不代表测试通过。票据很多时可滚动侧栏或搜索定位，不会把地图整体缩成缩略图。
+已知限制：子进程随会话或热重载结束，再按 `d` 重起；复制失败时提醒给出原因与 URL，没有 `xdg-open` 或打开失败时也可手动粘贴 URL。固定端口只固定地址与端口，每次重启 token 都会变化，旧的收藏 URL 需更新。Scene 未提供负责人、历史时间线、PR 链接或完整部署对象时，页面不会补造这些字段。票据很多时可滚动侧栏或用搜索定位。
 
-## 沙盘预览
+### 页面模块
 
-沙盘预览是固定等距 three.js 沙盘的原型。Scene 的每个项目画成一座岛，岛之间是海。它不替换生产入口；按 `d` 打开的仍是像素工坊小镇。
+- `scene/page/index.html`：样式表、入口模块与 import map。服务返回页面时把 `__TOKEN__` 换成本次 token。
+- `scene/page/live.mjs`：读快照、接事件流、挂载沙盘，并维护连接状态与错误列表。
+- `scene/page/diorama/model.mjs`：纯视图模型，不依赖 DOM 与 three。它把每张票映射到工位、归属颜色、附件与告警。`archipelagoOf` 给出每座岛的位置、铭牌与空闲标记，以及跨项目的卡住的票。
+- `scene/page/diorama/world.mjs`：程序化几何，包括岛、海、调度岛、箱子、船闸、灯塔与灯笼。所有岛共用几何与材质。新 Scene 只重建场景内容，渲染器与 WebGL 上下文不变。
+- `scene/page/diorama/camera.mjs`：正交固定等距相机，负责各机位的取景与平移边界。
+- `scene/page/diorama/hud.mjs`：状态栏、告警框、机位按钮、项目坞、搜索、卡住的票与行程条。
+- `scene/page/diorama/overlay.mjs`：跟随场景的票号、工位标签、铭牌与边缘箭头。标签尺寸在首次显示或文字变化时测量一次并缓存；画布尺寸由 `ResizeObserver` 提供，每帧不读布局。
+- `scene/page/diorama/index.mjs`：`mountDiorama(stage, { scene, path, ticket, now, onView })` 连接以上模块，返回 `update(scene)`、`link({ online, failures })`、`dispose()` 与 `state()`。
+- `scene/page/diorama/diorama.css`：沙盘与 HUD 的样式。
 
-模块位于 `scene/page/diorama/`：
+three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.core.min.js`、`LICENSE.three`）。它不走 CDN，也没有构建步骤。模块用裸说明符 `three` 导入。
 
-- `model.mjs`：纯视图模型，不依赖 DOM 与 three。它把每张票映射到工位、归属颜色、附件与告警。`archipelagoOf` 给出每座岛的位置、铭牌与空闲标记，以及跨项目的卡住的票。
-- `world.mjs`：程序化几何，包括岛、海、调度岛、箱子、船闸、灯塔与灯笼。所有岛共用几何与材质。
-- `camera.mjs`：正交固定等距相机，负责各机位的取景与平移边界。
-- `hud.mjs`：状态栏、机位按钮、项目坞、搜索、卡住的票与行程条。
-- `overlay.mjs`：跟随场景的票号、工位标签、铭牌与边缘箭头。
-- `index.mjs`：`mountDiorama(stage, { scene, path, ticket, now })` 连接以上模块。
-- `diorama.css`：沙盘与 HUD 的样式。
+token 经 import map 带到每个模块：
 
-three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.core.min.js`、`LICENSE.three`）。它不走 CDN，也没有构建步骤。模块用裸说明符 `three` 导入，页面用 import map 指向 vendor 文件。`scene/server.ts` 凭 token 提供这些文件与沙盘模块；模块之间的相对导入不带 token，接入生产页面时需在 import map 里为每个模块写带 token 的 URL。
+1. `index.html` 的样式表与入口 `live.mjs` 直接带 `?t=__TOKEN__`。
+2. import map 把 `three` 映射到带 token 的 `three.module.min.js`。
+3. `three.module.min.js` 内部的相对导入先解析成无 token 的 `./vendor/three.core.min.js`，import map 再把它换成带 token 的 URL。
+4. 沙盘模块之间的相对导入同理：import map 为每个 `./diorama/*.mjs` 写带 token 的 URL。
+5. 新增页面文件时，同时登记到 `scene/server.ts` 的白名单与 import map。
 
-打开预览：
-
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
-2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
-3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=<路径>` 打开该项目的岛（机位 `2`）。`?ticket=<票号>` 选中该票并打开机位 `3`；几个项目有同号票时取第一张。
-
-预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时。所以状态栏的快照年龄从 0 秒开始，40 秒后天空变成过期的雾色。
-
-读图规则：
+### 读图规则
 
 - 每个项目是一座同构的岛，有自己的水道、栈桥、船闸与灯塔。岛按 Scene 的项目顺序排成两列，位置只取决于顺序。
 - 每座岛有一块铭牌：项目名、在途票数、闸关（部署屏障关闭时）与卡住的票数。有卡住的票时铭牌用告警色。
@@ -133,10 +119,10 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 - 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；driver 状态不是 `ok` 或快照超过 40 秒为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
 - 沙盘不画 Scene 没有的数据：打回次数、预算、lane 与依赖暂停都不画，也不画占位。
 
-镜头与操作：
+### 镜头与操作
 
 - 相机是正交固定等距，没有旋转。机位 `1` 显示全部岛，机位 `2` 显示一座岛，机位 `3` 显示所选的票。数字键 `1`、`2`、`3` 直接切换机位。
-- 只有一个项目时没有机位 `1`，也没有海与调度岛，行为与单岛原型相同。
+- 只有一个项目时没有机位 `1`，也没有海与调度岛。
 - 拖动平移，滚轮或双指缩放，点击箱子选票，双击箱子进入机位 `3`。平移与缩放都有边界；机位 `1` 的平移不超出群岛范围。
 - 在机位 `1` 点击岛或铭牌进入该岛。`[` 与 `]` 切到上一座与下一座岛。
 - 方向键平移，`Home` 回到当前机位，`Esc` 退一级：机位 `3` 回到机位 `2`，机位 `2` 先取消选择，再回到机位 `1`。
@@ -144,9 +130,31 @@ three.js 0.180.0 位于 `scene/page/vendor/`（`three.module.min.js`、`three.co
 - 项目坞列出全部项目与卡住的票数，在机位 `2` 与 `3` 显示，在机位 `1` 隐藏。
 - 在机位 `1`，有卡住的票的岛在画面外时，画面边缘出现指向它的箭头。点箭头进入该岛。
 - `/` 打开搜索，按票号或项目名过滤，回车跳到第一条结果。焦点在搜索框或列表里时，数字键、`[`、`]`、`/` 与方向键不作用于沙盘。搜索框里的 `Esc` 只关闭搜索。
-- 项目坞、卡住的票、全部票与搜索都可用 Tab 与回车访问。
+- 项目坞、卡住的票、全部票、搜索与行程条的按钮都可用 Tab 与回车访问。
 - 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，并标出主线 8 段中的位置。合并队列中的票同时显示位次。
-- 系统开启减少动态时，相机直接到达目标，标记不浮动。
+- 行程条下方有「复制票号」与「复制详情」。详情每项一行：票号与标题、项目名与路径、工位、真实阶段、已观察时长，有原因时再加原因。安全上下文里用 Clipboard API；经 Nebula 地址打开的 HTTP 页面不是安全上下文，改用 `execCommand('copy')`。两种都失败时，提示手动选择行程栏中的文字。
+- URL 跟随视图：机位 `2` 与 `3` 写 `?project=<路径>`，有选中的票时再写 `?ticket=<票号>`；机位 `1` 去掉这两项。`t` 保持不变。打开带这两项的 URL 回到同一视图；同号票按 `project` 选所在项目，没有 `project` 时取第一张。URL 指向的项目或票已不在 Scene 时，按默认机位打开。
+- 系统开启减少动态时，相机直接到达目标，标记不浮动，箱子直接到达新工位。
+
+### 连接与更新
+
+- 新 Scene 原地更新：不重建 WebGL 上下文，相机、当前岛、机位与所选票保持不变。所选票离开 Scene 时取消选择，机位 `3` 退回机位 `2`；当前岛离开 Scene 时回到默认机位。
+- 票换了工位时，箱子在 1.2 秒内移到新工位。相同 Scene 不会重播移动；箱子消失不代表成功。
+- 状态栏依次写连接状态（「已连接」或「连接断开」）、项目、天空说明（快照过期、维护中、没有快照）、`driver <state>`、快照年龄、维护模式与下次巡检时间。断线时状态点变红。
+- 状态栏下方的告警框在有内容时出现：断线时第一行写「连接断开：画面停在最后一份快照，正在自动重连。」；`status`、`config` 命令失败或快照读取失败时每项一行，写命令、退出码与原因。收到恢复消息时删除对应行，重连成功时清空，服务再按当前状态重发。
+- 首次连接和 SSE 重连按最新快照定位，不补播离线历史。页面隐藏（pagehide）时主动关闭事件流；浏览器前进后退缓存（BFCache）恢复（persisted pageshow）时重建连接并重新读取快照。
+- 浏览器不能创建 WebGL2 上下文时，页面不留空白画布，写出原因并提示开启硬件加速或 WebGL。
+- 生产页面在 `window.diorama` 上只暴露只读的 `state()`，供浏览器测试读取机位、选择与相机状态。
+
+### 预览
+
+预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
+
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
+2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
+3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
+
+预览以快照的 `generatedAt` 为时间起点，打开后按真实流逝计时。所以状态栏的快照年龄从 0 秒开始，40 秒后天空变成过期的雾色。预览没有连接状态，`window.diorama` 是完整的沙盘句柄。
 
 ## 复制
 
@@ -170,6 +178,13 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/pixel-town.browser.cjs` 从仓库根运行纯逻辑与真实 Chrome 验证，并启动隔离快照服务和替身 driver 的真实 Bun 服务测试资源认证。测试不读取生产状态，不依赖原型目录。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。生产服务测试同时检查 `diorama/` 与 `vendor/` 下每个文件的 token 门禁。
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先运行沙盘视图模型断言，包括群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 先运行沙盘视图模型断言，再用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene。模型断言包括群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里从机位 `1` 开始检查：画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票，项目坞出现；点击箱子可选票；拖动与按键后两次 `Esc` 回到机位 `1`，相机四元数不变；以及减少动态。依赖查找规则同上。依赖缺失或断言失败都以非零退出。
+1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
+2. 预览减少动态与生命周期：标记不浮动，相机直接到达；`update` 保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
+3. 生产服务：用替身 `orca-factory-driver` 启动真实 `scene/server.ts`。`scene/page/` 下每个文件、`/`、`/snapshot` 与 `/events` 无 token 时返回 404，带 `t` 参数或 `X-Token` 头时可读，POST 返回 404；已删除的旧页面路径返回 404。
+4. 生产页面：首屏渲染与快照过期；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；每个页面请求都带 token，不写浏览器存储。
+5. 生产入口：`?project=`、`[` 与 `]`、点击岛、搜索回车、URL 跟随视图、部署暂停与未知工位的行程条、同号票在两个项目各列一条、`?project=&ticket=` 打开指定项目的同号票。
+6. 无 WebGL：页面写出含 WebGL 的原因，不留画布，没有页面错误。
+
+设置 `DIORAMA_SCREENSHOTS=<目录>` 时，生产检查另存全局、单票与断线三张截图。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。测试不读取生产状态；替身与临时文件放在 `.omc/tmp/`，结束时删除。
