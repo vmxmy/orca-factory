@@ -346,7 +346,7 @@ async function checkHumanQueue(browser, url) {
       await page.setViewportSize({ width, height: 900 })
       await frames(page)
       await settled(page)
-      const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ id: node.textContent, ...node.getBoundingClientRect().toJSON() })))
+      const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ id: node.textContent.split(' · ')[0], ...node.getBoundingClientRect().toJSON() })))
       assert.equal(labels.length, 7)
       const current = await state(page)
       const { islandOf } = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
@@ -1076,6 +1076,42 @@ async function checkRecordLinks(browser, live) {
   }
 }
 
+const HUMAN_BADGE_EXPECTED = {
+  scope: { name: '等批准', paths: ['M12 2 15 4 19 5 20 9 22 12 20 15 19 19 15 20 12 22 9 20 5 19 4 15 2 12 4 9 5 5 9 4Z M7 12 10 15 17 8'] },
+  deploy: { name: '等部署', paths: ['M3 15H21L18 21H6Z M12 3V15 M10 5 4 12H10Z M14 7 19 12H14Z'] },
+  takeover: { name: '等接手', paths: ['M14 3A6 6 0 0 0 7 10L3 14A3 3 0 0 0 7 18L11 14A6 6 0 0 0 19 7L15 11 11 7Z'] },
+}
+
+const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket')
+  .filter({ hasText: new RegExp(`^${identifier}( · |$)`) })
+  .getByRole('img', { name: HUMAN_BADGE_EXPECTED[kind].name, exact: true })
+  .locator('path')
+  .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
+
+// test/recorded/live-status-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
+async function checkRecordedHumanWaits(browser, live) {
+  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status-human.json'))
+  const repo = '/home/laoxu/github/orca-factory'
+  const waiting = recorded.tickets.filter(ticket => ticket.repo === repo && ticket.stage === 'human')
+  assert.deepEqual(waiting.map(ticket => [ticket.identifier, ticket.humanKind]), [
+    ['OF-451', 'takeover'], ['OF-452', 'takeover'], ['OF-453', 'scope'], ['OF-461', 'scope'], ['OF-467', 'takeover'],
+  ])
+  live.write(recorded)
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(repo)}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('OF-453'))
+    for (const ticket of waiting) {
+      assert.deepEqual(await humanBadgePaths(page, ticket.identifier, ticket.humanKind), HUMAN_BADGE_EXPECTED[ticket.humanKind].paths, `${ticket.identifier} must draw the ${ticket.humanKind} badge from the recorded status`)
+    }
+    await page.locator('.stuck > .list button[data-ticket="0/OF-453"]').click()
+    assert.equal(await page.locator('.trip .human-reason').textContent(), waiting.find(ticket => ticket.identifier === 'OF-453').humanReason)
+    assert.deepEqual(errors, [])
+    console.log('PASS recorded human waits: production status --json humanKind/humanReason drive badges and reason')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkHumanWaits(browser, live) {
   const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
   const template = recorded.tickets.find(ticket => ticket.identifier === 'OF-415')
@@ -1090,20 +1126,15 @@ async function checkHumanWaits(browser, live) {
   const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(template.repo)}`)
   try {
     await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('WAIT-0'))
-    const names = ['等批准', '等部署', '等接手']
-    const shapes = []
-    for (const [index, name] of names.entries()) {
+    for (const [index, kind] of kinds.slice(0, 3).entries()) {
       const label = page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` })
-      const badge = label.getByRole('img', { name, exact: true })
-      assert.equal(await badge.count(), 1, `${kinds[index]} must draw its named badge`)
+      const badge = label.getByRole('img', { name: HUMAN_BADGE_EXPECTED[kind].name, exact: true })
+      assert.equal(await badge.count(), 1, `${kind} must draw its named badge`)
       assert.equal(await badge.evaluate(node => node.tagName), 'svg')
-      const paths = await badge.locator('path').evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
-      assert.ok(paths.length > 0 && paths.every(value => value.length > 10), `${name} must contain drawn paths`)
-      shapes.push(JSON.stringify(paths))
+      assert.deepEqual(await humanBadgePaths(page, `WAIT-${index}`, kind), HUMAN_BADGE_EXPECTED[kind].paths, `${kind} must draw its own shape`)
       assert.equal(await badge.evaluate(node => getComputedStyle(node).color), await label.evaluate(node => getComputedStyle(node).color), 'badges must inherit the existing alert color')
       assert.equal(await label.isVisible(), true)
     }
-    assert.equal(new Set(shapes).size, 3, 'approval, deployment and takeover must have different shapes')
     for (const index of [3, 4]) {
       assert.equal(await page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` }).locator('svg').count(), 0, 'unknown and absent kinds must not draw a badge')
     }
@@ -1148,6 +1179,7 @@ async function checkProduction(browser, bun, model) {
     await checkTokens(origin, token)
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
+    await checkRecordedHumanWaits(browser, live)
     await checkHumanWaits(browser, live)
     live.write(status)
     await checkLiveUpdates(browser, live)
