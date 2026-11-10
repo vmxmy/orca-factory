@@ -17,7 +17,9 @@ import (
 func TestHumanObservationFields(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
-	scope := &resolver.Record{Phase: "human", Result: `{"action":"escalate","class":"scope-extension","scope":["driver/README.md"],"reason":"need scope","body":"evidence"}`}
+	// resolver-escalate-scope.json is stdout of the real resolver model given
+	// core/roles/resolver.md and a written scenario.
+	scope := &resolver.Record{Phase: "human", Result: string(recorded(t, "resolver-escalate-scope.json"))}
 	f := &fakeBackend{tickets: []Ticket{
 		{Identifier: "scope", Repo: "a", Owner: machine.OwnerHuman, Resolution: scope, NotifyReason: "扩大范围\r\n等待批准"},
 		{Identifier: "deploy", Repo: "a", Owner: machine.OwnerHuman, NotifyReason: "fallback", Progress: &merge.Progress{Phase: "merged", MergeSHA: "merged-sha", Deployment: &merge.DeploymentProgress{State: "paused", Reason: "smoke failed"}}},
