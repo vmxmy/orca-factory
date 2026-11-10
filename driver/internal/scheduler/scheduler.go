@@ -262,14 +262,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		view.Tickets = nil
 		for index, t := range tickets {
 			row := rows[index]
-			switch {
-			case owned(t):
-			case t.Candidate:
-				row.Stage = "candidate"
-			case t.Owner == machine.OwnerHuman:
-				row.Stage = "human"
-			case DeploymentBarrier(t):
-			default:
+			if !owned(t) && row.Stage == "" && !DeploymentBarrier(t) {
 				continue
 			}
 			view.Tickets = append(view.Tickets, row)
