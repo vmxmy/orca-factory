@@ -21,6 +21,13 @@ const ANSIBLE = '/home/laoxu/ansible'
 const TWIN = '/home/laoxu/github/token123'
 const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
 
+const brightness = hex => {
+  const r = hex >> 16 & 0xff
+  const g = hex >> 8 & 0xff
+  const b = hex & 0xff
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
 const parcel = (identifier, station, extra = {}) => ({
   identifier,
   title: identifier,
@@ -255,6 +262,121 @@ const settled = page =>
     const { view, goal } = window.diorama.state()
     return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
   })
+
+async function checkShoreline(browser, url) {
+  const { page, errors } = await open(browser, url, { reducedMotion: 'reduce' })
+  try {
+    const result = await page.evaluate(async () => {
+      const THREE = await import('three')
+      const { createWorld } = await import('../../scene/page/diorama/world.mjs')
+      const { archipelagoOf } = await import('../../scene/page/diorama/model.mjs')
+      const fixture = await (await fetch('./diorama-scene.json')).json()
+      const archipelago = archipelagoOf(fixture)
+      const canvas = document.createElement('canvas')
+      const add = THREE.Scene.prototype.add
+      let scene, renderer
+      THREE.Scene.prototype.add = function (...objects) {
+        scene = this
+        return add.apply(this, objects)
+      }
+      const world = createWorld(canvas)
+      THREE.Scene.prototype.add = add
+      scene.onBeforeRender = value => { renderer = value }
+      const camera = new THREE.PerspectiveCamera()
+      let worldDisposed = false
+      const meshes = name => {
+        const found = []
+        scene.traverse(node => { if (node.isMesh && node.name === name) found.push(node) })
+        return found
+      }
+      const counts = () => ['contact-shadow', 'shoreline', 'sea-pattern'].map(name => meshes(name).length)
+      try {
+        world.build(archipelago)
+        world.render(camera)
+        const global = counts()
+        const contours = archipelago.islands.map(island => ({
+          shore: meshes('shoreline').filter(mesh => mesh.position.x === island.origin.x && mesh.position.z === island.origin.z).length,
+          shadow: meshes('contact-shadow').filter(mesh => mesh.position.x < island.origin.x && mesh.position.x > island.origin.x - 1 && mesh.position.z < island.origin.z && mesh.position.z > island.origin.z - 1).length,
+        }))
+        const lands = archipelago.islands.map(island => {
+          const land = scene.children.flatMap(node => node.children).find(node => node.userData.island === island.index)
+          return { idle: island.idle, colors: Object.fromEntries(land.children.filter(node => ['ground', 'ground-side', 'path', 'pier', 'water'].includes(node.name)).map(node => [node.name, node.material.color.getHex()])) }
+        })
+        const surface = meshes('sea-pattern')[0]
+        const before = surface?.matrix.toArray()
+        world.animate(1000, true)
+        world.animate(9000, true)
+        world.render(camera)
+        const still = JSON.stringify(before) === JSON.stringify(surface?.matrix.toArray())
+        const skies = ['clear', 'fog', 'overcast', 'dark'].map(kind => {
+          world.setSky(kind)
+          return { kind, pattern: surface?.material.color.getHex(), shore: meshes('shoreline')[0]?.material.color.getHex(), sea: meshes('sea')[0]?.material.color.getHex() }
+        })
+        const owned = new Set([...meshes('contact-shadow'), ...meshes('shoreline'), ...meshes('sea-pattern')].map(mesh => mesh.geometry))
+        const disposed = new Set()
+        for (const geometry of owned) geometry.addEventListener('dispose', () => disposed.add(geometry))
+        world.build(archipelagoOf({ ...fixture, rows: [fixture.rows[0]] }))
+        world.render(camera)
+        const single = counts()
+        world.build(archipelago)
+        world.render(camera)
+        const rebuilt = counts()
+        const finalResources = new Set([...meshes('contact-shadow'), ...meshes('shoreline'), ...meshes('sea-pattern')].map(mesh => mesh.geometry))
+        for (const mesh of [...meshes('shoreline'), ...meshes('sea-pattern')]) finalResources.add(mesh.material)
+        const finalDisposals = new Map()
+        for (const resource of finalResources) resource.addEventListener('dispose', () => finalDisposals.set(resource, (finalDisposals.get(resource) ?? 0) + 1))
+        world.dispose()
+        worldDisposed = true
+        return { global, contours, islands: archipelago.islands.length, lands, still, skies, released: disposed.size, owned: owned.size, single, rebuilt, afterDispose: counts(), finalDisposals: [...finalResources].map(resource => finalDisposals.get(resource) ?? 0), shadows: renderer.shadowMap.enabled }
+      } finally {
+        if (!worldDisposed) world.dispose()
+      }
+    })
+    assert.deepEqual(result.global, [result.islands + 1, result.islands + 1, 1], 'shoreline: every project island and the hub need contact-shadow and shoreline meshes, plus one sea-pattern')
+    assert.ok(result.contours.every(contour => contour.shore === 1 && contour.shadow === 1), 'each island must have its own shoreline and a shadow offset away from the sun')
+    const idle = result.lands.find(land => land.idle)
+    const active = result.lands.find(land => !land.idle)
+    assert.ok(idle && active, 'shoreline fixture must contain idle and active islands')
+    assert.deepEqual(Object.keys(active.colors).sort(), ['ground', 'ground-side', 'path', 'pier', 'water'], 'the ground color assertion must cover every terrain material')
+    assert.equal(active.colors.ground, 0xf0dfc2, 'the ground top must retain WORLD.base')
+    assert.deepEqual(idle.colors, active.colors, 'idle ground, paths and waterways must keep the active island colors')
+    assert.equal(result.still, true, 'sea-pattern must remain static with reduced motion')
+    assert.equal(new Set(result.skies.map(sky => sky.pattern)).size, 4, 'sea-pattern must follow all four sky states')
+    assert.equal(new Set(result.skies.map(sky => sky.shore)).size, 4, 'shoreline must follow all four sea colors')
+    assert.deepEqual(result.skies.map(sky => sky.sea), [0xb4d6cc, 0xc6d3cf, 0xb3bdba, 0x6b7876], 'the four sea base colors must stay unchanged')
+    for (const sky of result.skies) {
+      const shoreBrightness = brightness(sky.shore)
+      const seaBrightness = brightness(sky.sea)
+      assert.ok(shoreBrightness > seaBrightness, `${sky.kind} shoreline brightness ${shoreBrightness} must exceed sea brightness ${seaBrightness}`)
+    }
+    assert.equal(result.shadows, false, 'contact shadows must not enable renderer shadow maps')
+    assert.deepEqual(result.single, [0, 0, 0], 'a single project must have no shoreline, contact-shadow or sea-pattern')
+    assert.equal(result.released, result.owned, 'rebuilding must release every owned shoreline geometry')
+    assert.deepEqual(result.rebuilt, result.global, 'rebuilding the islands must restore each shoreline once')
+    assert.deepEqual(result.afterDispose, [0, 0, 0], 'dispose must leave no shoreline meshes in the scene')
+    assert.ok(result.finalDisposals.every(count => count === 1), 'dispose must release every owned coast geometry and shared shoreline material exactly once')
+    if (shots) {
+      for (const sky of ['clear', 'fog', 'overcast', 'dark']) {
+        await page.evaluate(async sky => {
+          const fixture = await (await fetch('./diorama-scene.json')).json()
+          window.diorama.update({ ...fixture, state: sky === 'dark' ? 'unknown' : sky === 'fog' ? 'stale' : 'ok', maintenance: sky === 'overcast' ? 'paused' : 'running' })
+        }, sky)
+        await frames(page)
+        await page.screenshot({ path: path.join(shots, `of447-global-${sky}.png`) })
+      }
+      await page.evaluate(async () => {
+        const fixture = await (await fetch('./diorama-scene.json')).json()
+        window.diorama.update({ ...fixture, rows: [fixture.rows[0]] })
+      })
+      await frames(page)
+      await page.screenshot({ path: path.join(shots, 'of447-single.png') })
+    }
+    assert.deepEqual(errors, [])
+    console.log('PASS shoreline in real Chrome: island and hub contours, idle ground colors, four skies, static sea-pattern, single project and disposal')
+  } finally {
+    await page.close()
+  }
+}
 
 async function checkMainPath(browser, url) {
   const { page, errors } = await open(browser, url)
@@ -727,6 +849,7 @@ async function main() {
       args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
     })
     try {
+      await checkShoreline(browser, url)
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)
       await checkProduction(browser, bun, model)
