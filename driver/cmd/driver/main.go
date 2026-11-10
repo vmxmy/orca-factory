@@ -30,10 +30,11 @@ func init() {
 }
 
 func run(args []string) int {
+	help := strings.Replace(topLevelHelp, "  resume-deployment", releaseHelp+"  resume-deployment", 1)
 	if len(args) > 0 {
 		switch args[0] {
 		case "--help", "-h", "help":
-			fmt.Print(topLevelHelp)
+			fmt.Print(help)
 			return 0
 		}
 		if command, ok := commands[args[0]]; ok {
@@ -41,7 +42,7 @@ func run(args []string) int {
 		}
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", args[0])
 	}
-	fmt.Fprint(os.Stderr, topLevelHelp)
+	fmt.Fprint(os.Stderr, help)
 	return 2
 }
 

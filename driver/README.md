@@ -170,6 +170,20 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 `merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，清理 worktree 与分支，再把票标为 Done。检出同样由 `ORCA_FACTORY_REPO` 指定。
 
+人工合并 PR 后，可在已加载项目 `agent-graph.env` 的终端执行：
+
+```sh
+set -a
+. scripts/agent-gates/agent-graph.env
+set +a
+orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
+# 同时完成票据时，在上面的命令末尾加 --done
+```
+
+`release` 先回读 GitHub，确认 PR 已合入该仓库的 main 且合并提交与 `--sha` 相符，再运行安装的 `~/.local/share/orca-factory-ops/deploy.sh`，最后用安装后的二进制执行 `doctor --json`。它不替代 drain 与备份，这两步仍由部署脚本完成。脚本部署当前 origin/main，可能包含指定合并提交之后的变更；评论分别记录合并提交与 doctor 观察到的实际部署版本。
+
+部署失败、doctor 返回非零、报告含 `fail` 或 `unknown`、报告无法解析或缺少部署版本时，命令输出原因并以非零退出，不写评论、不置 Done。全部通过后写一条人工合并形态的 `merge-progress-v1` 评论，不带 `deployment` 对象；默认不改票据状态，只有 `--done` 才在评论写入成功后置 Done。评论或状态写入失败也返回非零。该命令不合并 PR，不处理 lane 3；已有 deployment 回执的票使用 `resume-deployment` 对账。
+
 ### 自部署（OF-152）
 
 仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor --json`。状态目录指 `~/.local/state/orca-factory/`。
