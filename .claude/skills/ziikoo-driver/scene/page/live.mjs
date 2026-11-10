@@ -10,14 +10,16 @@ stage.append(notice)
 const failures = new Map()
 let diorama = null
 let broken = false
+let empty = false
 let connected = false
+let closed = false
 let events
 let snapshotRequest
 
 const report = () => {
   const listed = [...failures.values()]
-  if (diorama) diorama.link({ online: connected, failures: listed })
-  else if (!broken) notice.textContent = ['等待 driver 快照', connected ? '已连接' : '连接断开', ...listed.map(failureText)].join(' · ')
+  if (diorama) diorama.link({ online: connected, closed, failures: listed })
+  else if (!broken) notice.textContent = [empty ? '暂无项目' : '等待 driver 快照', connected ? '已连接' : '连接断开', ...listed.map(failureText)].join(' · ')
 }
 
 const fail = (command, reason) => {
@@ -57,12 +59,20 @@ const mount = scene => {
   window.diorama = Object.freeze({ state: () => diorama.state() })
 }
 
+const unmount = () => {
+  diorama?.dispose()
+  diorama = null
+  delete window.diorama
+  empty = true
+  stage.append(notice)
+}
+
 const receive = scene => {
   if (broken) return
   if (!Array.isArray(scene?.rows)) return fail('snapshot', '快照缺少 rows')
-  if (scene.rows.length === 0) return fail('snapshot', '快照里没有项目')
   failures.delete('snapshot')
-  if (diorama) diorama.update(scene)
+  if (scene.rows.length === 0) unmount()
+  else if (diorama) diorama.update(scene)
   else mount(scene)
   report()
 }
@@ -86,6 +96,7 @@ const connect = () => {
   events = new EventSource(resource('/events'))
   events.onopen = () => {
     connected = true
+    closed = false
     failures.clear()
     report()
   }
@@ -98,7 +109,10 @@ const connect = () => {
       const failure = JSON.parse(event.data)
       if (failure.recovered) failures.delete(failure.command)
       else failures.set(failure.command, failure)
-    } else connected = false
+    } else {
+      connected = false
+      closed = event.target.readyState === EventSource.CLOSED
+    }
     report()
   })
 }

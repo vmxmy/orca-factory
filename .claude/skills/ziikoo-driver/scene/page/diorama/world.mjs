@@ -25,6 +25,7 @@ const GLOW = {
   ok: 0x2f9a6a,
   waiting: 0xeea61b,
   failed: 0xe0442e,
+  unknown: 0x5f5b66,
   lantern: 0xe0442e,
   warn: 0xeea61b,
   bad: 0xe0442e,

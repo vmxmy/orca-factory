@@ -62,7 +62,18 @@ async function checkModel() {
   assert.deepEqual(queue.map(one => one.identifier), ['Q-1', 'Q-2', 'Q-none'], 'merge queue must sort by position, missing last')
   assert.ok(queue[0].slot.x > queue[1].slot.x && queue[1].slot.x > queue[2].slot.x, 'queue head must stand nearest the lock')
   assert.equal(queue[2].queuePosition, undefined)
-  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station')
+  const merged = parcel('M-1', 'merge', { phase: '已合并', label: '已合并', unknownDeploy: true })
+  const blind = model.islandOf(row([merged]))
+  assert.deepEqual(
+    [blind.parcels[0].unknownDeploy, blind.parcels[0].alert, blind.parcels[0].stationName],
+    [true, 'warn', `${model.STATION_NAMES.merge} · 部署未知`],
+    'a merged ticket without deployment must warn and say so at its station',
+  )
+  assert.deepEqual(model.stuckOf(blind).map(one => one.identifier), ['M-1'], 'an unknown deployment must count as stuck')
+  assert.deepEqual([blind.lock, blind.beacon], ['open', 'unknown'], 'an unknown deployment must grey the lighthouse and keep the lock rule')
+  assert.equal(model.islandOf(row([merged, parcel('M-2', 'dispatch', { deployment: 'failed' })])).beacon, 'failed', 'a failed deployment must outrank an unknown one')
+  assert.equal(model.islandOf({ ...row([merged]), deploy: false }).beacon, 'off', 'a project without deployment keeps its lighthouse off')
+  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station, unknown deployment')
 
   const named = (name, parcels) => ({ ...row(parcels), name, path: `/${name}` })
   const sceneOf = rows => ({ generatedAt: 0, state: 'ok', maintenance: 'running', rows })
@@ -283,6 +294,10 @@ async function checkReducedMotion(browser, url) {
     assert.equal(first.reduced, true)
     assert.ok(first.marks.length > 0, 'the recorded attention tickets must show markers')
     for (const mark of first.marks) assert.deepEqual(mark, { y: MARK_REST, rotation: 0 }, 'markers must not float when motion is reduced')
+    await page.locator('button.plate[data-island="1"]').focus()
+    await page.evaluate(async () => window.diorama.update(await (await fetch('./diorama-scene.json')).json()))
+    await frames(page)
+    assert.equal(await page.evaluate(() => document.activeElement?.dataset.island), '1', 'a new Scene must keep keyboard focus on the island plate')
     await page.locator('.stuck > .list button[data-ticket]').first().click()
     await page.locator('canvas').focus()
     await page.keyboard.press('3')
@@ -304,6 +319,17 @@ async function checkReducedMotion(browser, url) {
     assert.deepEqual(jumped.at, jumped.target, 'a moved box must jump to its new station when motion is reduced')
     await reshape('remove')
     assert.equal((await state(page)).selected, null, 'an update must clear a selection whose ticket left the Scene')
+    const refused = await page.evaluate(async () => {
+      const before = JSON.stringify(window.diorama.state())
+      const scene = await (await fetch('./diorama-scene.json')).json()
+      try {
+        window.diorama.update({ ...scene, rows: [] })
+      } catch (error) {
+        return { message: error.message, kept: JSON.stringify(window.diorama.state()) === before }
+      }
+      return { message: null, kept: JSON.stringify(window.diorama.state()) === before }
+    })
+    assert.ok(refused.message?.includes('没有项目') && refused.kept, `update must refuse an empty Scene before it changes anything: ${JSON.stringify(refused)}`)
     const released = await page.evaluate(async () => {
       window.diorama.dispose()
       const requested = window.frameRequests
@@ -335,7 +361,7 @@ const pushedStatus = live => {
       ...live.tickets.map(ticket => ({ ...ticket, ...changes[ticket.identifier] })),
       { ...barrier, blockedReason: `deployment: ${paused.state}`, deployment: { ...barrier.deployment, state: paused.state, reason: paused.reason } },
       unmapped,
-      { ...live.tickets.find(ticket => ticket.identifier === 'OF-415'), repo: TWIN },
+      { ...live.tickets.find(ticket => ticket.identifier === 'OF-415'), repo: TWIN, owner: '合并通道', phase: '已合并' },
     ],
   }
 }
@@ -463,10 +489,11 @@ async function checkLiveUpdates(browser, live) {
     await live.stop()
     await waitLead(page, '连接断开')
     if (shots) await page.screenshot({ path: path.join(shots, 'of444-prod-offline.png') })
-    live.write(live.pushed, { config: { ...live.config, overview: { ...live.config.overview, maintenance: 'paused' } } })
+    live.write({ ...live.pushed, state: 'stale' }, { config: { ...live.config, overview: { ...live.config.overview, maintenance: 'paused' } } })
     await live.start()
     await waitLead(page, '已连接')
     await waitLead(page, '维护 paused')
+    for (const text of ['维护中', '快照过期']) assert.ok((await leadText(page)).includes(text), `maintenance with a stale snapshot must show ${text}`)
     assert.ok(!(await leadText(page)).includes('fixture failure'), 'a failure that recovered while offline must not survive the reconnect')
 
     const count = route => requests.filter(url => new URL(url).pathname === route).length
@@ -477,6 +504,26 @@ async function checkLiveUpdates(browser, live) {
     await waitLead(page, '已连接')
     assert.ok(count('/events') > streams && count('/snapshot') > snapshots, 'pageshow must reopen the stream and refetch the snapshot')
 
+    live.write({ ...live.pushed, tickets: [] }, { config: { ...live.config, repos: [] } })
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => !window.diorama && document.querySelector('.diorama .notice')?.textContent.includes('暂无项目'), null, { timeout: 15000 })
+    assert.equal(await page.locator('.diorama canvas').count(), 0, 'an empty Scene must unmount the diorama')
+    live.write(live.pushed)
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => window.diorama, null, { timeout: 15000 })
+    await waitLead(page, '已连接')
+    assert.equal(await page.locator('.diorama .notice').count(), 0, 'a Scene with projects must mount the diorama again')
+
+    const refuse = url => new URL(url).pathname === '/events'
+    await page.route(refuse, route => route.fulfill({ status: 404 }))
+    await live.stop()
+    await waitLead(page, '连接已关闭：请从 /ziikoo-driver 面板重新打开。')
+    assert.ok(!(await leadText(page)).includes('正在自动重连'), 'a closed stream must not promise a reconnect')
+    await page.unroute(refuse)
+    await live.start()
+
     assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0)
     const own = requests.filter(url => url.startsWith(live.origin()))
     for (const file of ['/live.mjs', '/diorama/overlay.mjs', '/diorama/diorama.css', '/vendor/three.core.min.js']) {
@@ -484,7 +531,7 @@ async function checkLiveUpdates(browser, live) {
     }
     assert.ok(own.every(url => new URL(url).searchParams.get('t') === live.token), 'every page request must carry the token')
     assert.deepEqual(errors, [])
-    console.log('PASS production page on the real server: render, update keeps camera and selection, box travels, copy, failures, offline, reconnect, pagehide/pageshow, tokens')
+    console.log('PASS production page on the real server: render, update keeps camera and selection, box travels, copy, failures, offline, reconnect, maintenance with a stale snapshot, pagehide/pageshow, empty Scene, closed stream, tokens')
   } finally {
     await page.close()
   }
@@ -541,11 +588,16 @@ async function checkEntries(browser, live, model) {
   try {
     const { stop, focus, selected } = await state(twin.page)
     assert.deepEqual([stop, focus, selected], [3, TWIN, 'OF-415'], '?project=&ticket= must open the ticket in that project')
-    await tripHas(twin.page, ['处置塔前'])
+    await tripHas(twin.page, ['栈桥 · 部署未知', '部署：未知 · driver 未提供 deployment'])
+    assert.ok((await copied(twin.page, '复制详情')).includes('部署：未知 · driver 未提供 deployment'), 'copied detail must carry the unknown deployment')
+    assert.ok((await twin.page.locator('.stuck > .list').innerText()).includes('栈桥 · 部署未知'), 'an unknown deployment must list as stuck')
+    await settled(twin.page)
+    if (shots) await twin.page.screenshot({ path: path.join(shots, 'of444-prod-unknown-deploy.png') })
+    assert.deepEqual(twin.errors, [])
   } finally {
     await twin.page.close()
   }
-  console.log('PASS production entries: ?project=, [ and ], island click, search Enter, URL, ?ticket= with a twin id, barrier and unknown station')
+  console.log('PASS production entries: ?project=, [ and ], island click, search Enter, URL, ?ticket= with a twin id, barrier, unknown station, unknown deployment')
 }
 
 async function checkWithoutWebGL(browser, live) {

@@ -1,6 +1,6 @@
 import { createCamera } from './camera.mjs'
 import { createHud, hubText } from './hud.mjs'
-import { archipelagoOf, skyOf } from './model.mjs'
+import { archipelagoOf, skyOf, staleOf } from './model.mjs'
 import { createOverlay } from './overlay.mjs'
 import { createWorld } from './world.mjs'
 
@@ -102,9 +102,10 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   const refreshStatus = () => {
     const at = now()
-    const sky = skyOf(current, at - current.generatedAt)
+    const age = at - current.generatedAt
+    const sky = skyOf(current, age)
     world.setSky(sky)
-    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, sky)
+    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky, stale: staleOf(current, age) })
     overlay.hub(hubText(current, at))
   }
 
@@ -196,6 +197,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   const observer = new ResizeObserver(() => {
     size = { width: stage.clientWidth, height: stage.clientHeight }
+    overlay.forgetSizes()
     world.resize(size.width, size.height)
     setStop(stop)
     lens.snap()
@@ -213,6 +215,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   request = requestAnimationFrame(frame)
 
   const update = next => {
+    if (next.rows.length === 0) throw new Error('Scene 里没有项目，沙盘不能更新；请先 dispose，有项目后再重新挂载')
     const held = { path: archipelago.islands[focus].path, ticket: parcelOf(selected)?.identifier }
     current = next
     show(archipelagoOf(next))

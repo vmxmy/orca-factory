@@ -73,7 +73,7 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 - `scene/page/diorama/world.mjs`：程序化几何，包括岛、海、调度岛、箱子、船闸、灯塔与灯笼。所有岛共用几何与材质。新 Scene 只重建场景内容，渲染器与 WebGL 上下文不变。
 - `scene/page/diorama/camera.mjs`：正交固定等距相机，负责各机位的取景与平移边界。
 - `scene/page/diorama/hud.mjs`：状态栏、告警框、机位按钮、项目坞、搜索、卡住的票与行程条。
-- `scene/page/diorama/overlay.mjs`：跟随场景的票号、工位标签、铭牌与边缘箭头。标签尺寸在首次显示或文字变化时测量一次并缓存；画布尺寸由 `ResizeObserver` 提供，每帧不读布局。
+- `scene/page/diorama/overlay.mjs`：跟随场景的票号、工位标签、铭牌与边缘箭头。标签尺寸在首次显示或文字变化时测量一次并缓存，舞台尺寸变化时清空缓存；画布尺寸由 `ResizeObserver` 提供，每帧不读布局。
 - `scene/page/diorama/index.mjs`：`mountDiorama(stage, { scene, path, ticket, now, onView })` 连接以上模块，返回 `update(scene)`、`link({ online, failures })`、`dispose()` 与 `state()`。
 - `scene/page/diorama/diorama.css`：沙盘与 HUD 的样式。
 
@@ -113,10 +113,11 @@ token 经 import map 带到每个模块：
 - 工作间数量取 3 和 `work` 工位票数中的较大值，不按 `workers` 画。不超过 5 间时排成一排；超过 5 间时，工作间排到高台左侧，每排 5 间，向岛的后方延伸。工作间标签写「工作间 · <work 工位票数>/<workers>」，容量只用文字表达。施工中的票点亮对应工作间的门。
 - 箱子颜色表示归属：无、执行器、合并通道、处置Agent、人。未知归属使用「无」的颜色。
 - 腰封与印章表示已封箱（`pack` 及之后）。木筏表示在水上（`dispatch`、`smoke`，或阶段为「已合并」仍在栈桥）。
-- 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。
+- 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。闸门打开、项目配置了部署、但有 `unknownDeploy` 的票（已合并但 driver 没有提供 `deployment`）时，灯塔为灰色。
 - 有等人批的票时，人工台的灯笼变红。
-- 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention` 或工位未知时为琥珀色。
-- 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；driver 状态不是 `ok` 或快照超过 40 秒为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
+- 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention`、工位未知或 `unknownDeploy` 时为琥珀色。`unknownDeploy` 的票工位名后加「部署未知」。
+- 快照过期：driver 状态不是 `unknown`，并且状态不是 `ok` 或快照超过 40 秒。
+- 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；快照过期为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
 - 沙盘不画 Scene 没有的数据：打回次数、预算、lane 与依赖暂停都不画，也不画占位。
 
 ### 镜头与操作
@@ -130,9 +131,9 @@ token 经 import map 带到每个模块：
 - 项目坞列出全部项目与卡住的票数，在机位 `2` 与 `3` 显示，在机位 `1` 隐藏。
 - 在机位 `1`，有卡住的票的岛在画面外时，画面边缘出现指向它的箭头。点箭头进入该岛。
 - `/` 打开搜索，按票号或项目名过滤，回车跳到第一条结果。焦点在搜索框或列表里时，数字键、`[`、`]`、`/` 与方向键不作用于沙盘。搜索框里的 `Esc` 只关闭搜索。
-- 项目坞、卡住的票、全部票、搜索与行程条的按钮都可用 Tab 与回车访问。
-- 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，并标出主线 8 段中的位置。合并队列中的票同时显示位次。
-- 行程条下方有「复制票号」与「复制详情」。详情每项一行：票号与标题、项目名与路径、工位、真实阶段、已观察时长，有原因时再加原因。安全上下文里用 Clipboard API；经 Nebula 地址打开的 HTTP 页面不是安全上下文，改用 `execCommand('copy')`。两种都失败时，提示手动选择行程栏中的文字。
+- 项目坞、卡住的票、全部票、搜索与行程条的按钮都可用 Tab 与回车访问。新 Scene 重建铭牌与箭头后，焦点回到同一座岛的按钮。
+- 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，并标出主线 8 段中的位置。合并队列中的票同时显示位次。`unknownDeploy` 的票在脚注另起一行写「部署：未知 · driver 未提供 deployment」。
+- 行程条下方有「复制票号」与「复制详情」。详情每项一行：票号与标题、项目名与路径、工位、真实阶段、已观察时长，有原因时再加原因，`unknownDeploy` 的票再加「部署：未知 · driver 未提供 deployment」。安全上下文里用 Clipboard API；经 Nebula 地址打开的 HTTP 页面不是安全上下文，改用 `execCommand('copy')`。两种都失败时，提示手动选择行程栏中的文字。
 - URL 跟随视图：机位 `2` 与 `3` 写 `?project=<路径>`，有选中的票时再写 `?ticket=<票号>`；机位 `1` 去掉这两项。`t` 保持不变。打开带这两项的 URL 回到同一视图；同号票按 `project` 选所在项目，没有 `project` 时取第一张。URL 指向的项目或票已不在 Scene 时，按默认机位打开。
 - 系统开启减少动态时，相机直接到达目标，标记不浮动，箱子直接到达新工位。
 
@@ -140,8 +141,9 @@ token 经 import map 带到每个模块：
 
 - 新 Scene 原地更新：不重建 WebGL 上下文，相机、当前岛、机位与所选票保持不变。所选票离开 Scene 时取消选择，机位 `3` 退回机位 `2`；当前岛离开 Scene 时回到默认机位。
 - 票换了工位时，箱子在 1.2 秒内移到新工位。相同 Scene 不会重播移动；箱子消失不代表成功。
-- 状态栏依次写连接状态（「已连接」或「连接断开」）、项目、天空说明（快照过期、维护中、没有快照）、`driver <state>`、快照年龄、维护模式与下次巡检时间。断线时状态点变红。
-- 状态栏下方的告警框在有内容时出现：断线时第一行写「连接断开：画面停在最后一份快照，正在自动重连。」；`status`、`config` 命令失败或快照读取失败时每项一行，写命令、退出码与原因。收到恢复消息时删除对应行，重连成功时清空，服务再按当前状态重发。
+- Scene 没有项目时卸载沙盘，写「暂无项目」；之后收到有项目的 Scene 时重新挂载。`update` 收到没有项目的 Scene 时在改动任何状态前抛出错误。
+- 状态栏依次写连接状态（「已连接」或「连接断开」）、项目、天空说明（维护中、没有快照）、快照过期、`driver <state>`、快照年龄、维护模式与下次巡检时间。快照过期单独判断，维护中且过期时两项都写。断线时状态点变红。
+- 状态栏下方的告警框在有内容时出现：断线后浏览器仍在重连（`EventSource` 为 `CONNECTING`）时第一行写「连接断开：画面停在最后一份快照，正在自动重连。」；事件流已关闭不再重连（`CLOSED`，例如 token 失效）时写「连接已关闭：请从 /ziikoo-driver 面板重新打开。」；`status`、`config` 命令失败或快照读取失败时每项一行，写命令、退出码与原因。收到恢复消息时删除对应行，重连成功时清空，服务再按当前状态重发。
 - 首次连接和 SSE 重连按最新快照定位，不补播离线历史。页面隐藏（pagehide）时主动关闭事件流；浏览器前进后退缓存（BFCache）恢复（persisted pageshow）时重建连接并重新读取快照。
 - 浏览器不能创建 WebGL2 上下文时，页面不留空白画布，写出原因并提示开启硬件加速或 WebGL。
 - 生产页面在 `window.diorama` 上只暴露只读的 `state()`，供浏览器测试读取机位、选择与相机状态。
@@ -178,13 +180,13 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先运行沙盘视图模型断言，包括群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先运行沙盘视图模型断言，包括 `unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
 1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
-2. 预览减少动态与生命周期：标记不浮动，相机直接到达；`update` 保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
+2. 预览减少动态与生命周期：标记不浮动，相机直接到达；`update` 后铭牌焦点不丢，保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择，没有项目的 Scene 在改动前被拒绝；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
 3. 生产服务：用替身 `orca-factory-driver` 启动真实 `scene/server.ts`。`scene/page/` 下每个文件、`/`、`/snapshot` 与 `/events` 无 token 时返回 404，带 `t` 参数或 `X-Token` 头时可读，POST 返回 404；已删除的旧页面路径返回 404。
-4. 生产页面：首屏渲染与快照过期；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；每个页面请求都带 token，不写浏览器存储。
-5. 生产入口：`?project=`、`[` 与 `]`、点击岛、搜索回车、URL 跟随视图、部署暂停与未知工位的行程条、同号票在两个项目各列一条、`?project=&ticket=` 打开指定项目的同号票。
+4. 生产页面：首屏渲染与快照过期；替身推送新 Scene 后机位、所选票与相机目标不变，箱子补间到新工位，WebGL 上下文只建一次，状态栏出现 `driver unknown`；「复制票号」「复制详情」的内容，标题按文本显示；命令失败、恢复、再失败、服务停止后的「连接断开」、重启后的「已连接」与新维护模式，维护中且快照过期时两项都写，离线期间已恢复的失败不残留；pagehide 与 pageshow 重建连接并重新读快照；没有项目的 Scene 卸载沙盘并写「暂无项目」，有项目后重新挂载；事件流被拒绝后写「连接已关闭」，不再写自动重连；每个页面请求都带 token，不写浏览器存储。
+5. 生产入口：`?project=`、`[` 与 `]`、点击岛、搜索回车、URL 跟随视图、部署暂停与未知工位的行程条、同号票在两个项目各列一条、`?project=&ticket=` 打开指定项目的同号票；该票已合并但没有 `deployment`，行程条、复制详情与「卡住的票」都写部署未知。
 6. 无 WebGL：页面写出含 WebGL 的原因，不留画布，没有页面错误。
 
-设置 `DIORAMA_SCREENSHOTS=<目录>` 时，生产检查另存全局、单票与断线三张截图。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。测试不读取生产状态；替身与临时文件放在 `.omc/tmp/`，结束时删除。
+设置 `DIORAMA_SCREENSHOTS=<目录>` 时，生产检查另存全局、单票、断线与部署未知四张截图。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。测试不读取生产状态；替身与临时文件放在 `.omc/tmp/`，结束时删除。

@@ -75,11 +75,12 @@ const layoutOf = count => {
 
 const STALE_MS = 40_000
 
+export const staleOf = (scene, ageMs) => scene.state !== 'unknown' && (scene.state !== 'ok' || ageMs > STALE_MS)
+
 export const skyOf = (scene, ageMs) => {
   if (scene.state === 'unknown') return 'dark'
   if (scene.maintenance !== 'running') return 'overcast'
-  if (scene.state !== 'ok' || ageMs > STALE_MS) return 'fog'
-  return 'clear'
+  return staleOf(scene, ageMs) ? 'fog' : 'clear'
 }
 
 const lined = (first, step, perLine) => index => ({
@@ -117,7 +118,7 @@ export const mergeQueue = parcels => [...parcels].sort(byQueuePosition)
 
 const alertOf = (parcel, station) => {
   if (parcel.tone === 'failed') return 'bad'
-  if (parcel.tone === 'attention' || station === 'unknown') return 'warn'
+  if (parcel.tone === 'attention' || parcel.unknownDeploy || station === 'unknown') return 'warn'
   return null
 }
 
@@ -125,7 +126,8 @@ const deploymentOf = row => {
   const holding = row.parcels.map(parcel => parcel.deployment).filter(state => state !== undefined && state !== 'passed')
   if (holding.some(state => FAILED_DEPLOYMENTS.has(state))) return { lock: 'closed', beacon: 'failed' }
   if (holding.length > 0) return { lock: 'closed', beacon: 'waiting' }
-  return { lock: 'open', beacon: row.deploy ? 'ok' : 'off' }
+  if (!row.deploy) return { lock: 'open', beacon: 'off' }
+  return { lock: 'open', beacon: row.parcels.some(parcel => parcel.unknownDeploy) ? 'unknown' : 'ok' }
 }
 
 const viewOf = (parcel, station, slot) => ({
@@ -134,7 +136,7 @@ const viewOf = (parcel, station, slot) => ({
   owner: parcel.owner,
   color: ownerColor(parcel.owner),
   station,
-  stationName: STATION_NAMES[station],
+  stationName: parcel.unknownDeploy ? `${STATION_NAMES[station]} · 部署未知` : STATION_NAMES[station],
   track: TRACK.findIndex(step => step.station === station),
   slot,
   band: SEALED.has(station),
@@ -148,6 +150,7 @@ const viewOf = (parcel, station, slot) => ({
   since: parcel.since,
   reason: parcel.reason || parcel.blocker,
   queuePosition: parcel.queuePosition,
+  unknownDeploy: parcel.unknownDeploy,
 })
 
 export const islandOf = row => {

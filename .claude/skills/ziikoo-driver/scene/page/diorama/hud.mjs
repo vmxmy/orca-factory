@@ -16,8 +16,9 @@ const swatch = color => {
   return node
 }
 
-const SKY_NOTES = { fog: '快照过期', overcast: '维护中', dark: '没有快照' }
+const SKY_NOTES = { overcast: '维护中', dark: '没有快照' }
 const SEARCH_LIMIT = 8
+const UNKNOWN_DEPLOY_NOTE = '部署：未知 · driver 未提供 deployment'
 
 const sinceText = ms => {
   const seconds = Math.floor(Math.max(0, ms) / 1000)
@@ -77,7 +78,9 @@ const tripFoot = parcel => {
   if (parcel.unknown) notes.push(`工位未知 · 阶段 ${parcel.phase}`)
   else if (parcel.track < 0) notes.push(`不在主线：${parcel.stationName}`)
   if (parcel.queuePosition !== undefined) notes.push(`合并队列第 ${parcel.queuePosition} 位`)
-  return notes.length === 0 ? [] : [element('div', { class: 'trip-foot', text: notes.join(' · ') })]
+  const lines = notes.length === 0 ? [] : [notes.join(' · ')]
+  if (parcel.unknownDeploy) lines.push(UNKNOWN_DEPLOY_NOTE)
+  return lines.map(text => element('div', { class: 'trip-foot', text }))
 }
 
 const detailText = parcel =>
@@ -88,6 +91,7 @@ const detailText = parcel =>
     `真实阶段：${parcel.phase} / ${parcel.label}`,
     `已观察：${parcel.duration}`,
     ...(parcel.reason ? [`原因：${parcel.reason}`] : []),
+    ...(parcel.unknownDeploy ? [UNKNOWN_DEPLOY_NOTE] : []),
   ].join('\n')
 
 const tripActions = parcel =>
@@ -255,7 +259,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
     link(next) {
       connection = next
       const lines = [
-        ...(next.online ? [] : ['连接断开：画面停在最后一份快照，正在自动重连。']),
+        ...(next.online ? [] : [next.closed ? '连接已关闭：请从 /ziikoo-driver 面板重新打开。' : '连接断开：画面停在最后一份快照，正在自动重连。']),
         ...next.failures.map(failureText),
       ]
       alarm.replaceChildren(...lines.map(text => element('li', { text })))
@@ -273,11 +277,12 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
         left: docked && !dock.hidden ? dock.getBoundingClientRect().right - frame.left + 12 : 16,
       }
     },
-    status(island, scene, now, sky) {
+    status(island, scene, now, { sky, stale }) {
       const parts = [
         ...(connection ? [connection.online ? '已连接' : '连接断开'] : []),
         island ? island.name : `${archipelago.islands.length} 个项目`,
         ...(SKY_NOTES[sky] ? [SKY_NOTES[sky]] : []),
+        ...(stale ? ['快照过期'] : []),
         `driver ${scene.state}`,
         `快照 ${sinceText(now - scene.generatedAt)}前`,
         `维护 ${scene.maintenance}`,

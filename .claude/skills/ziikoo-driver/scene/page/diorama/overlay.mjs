@@ -117,6 +117,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
   let tickets = []
   let stations = []
   let focused = null
+  let refocus
   let viewport = { width: 0, height: 0 }
 
   const screenOf = (position, camera) => {
@@ -151,6 +152,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
 
   return {
     update(archipelago) {
+      refocus = anchored.contains(document.activeElement) ? document.activeElement.dataset.island : undefined
       islands = archipelago.islands
       plates = islands.map(island => itemOf(plateOf(island), anchorOf(island)))
       hub = archipelago.hub
@@ -195,6 +197,12 @@ export const createOverlay = (stage, world, { onIsland }) => {
       for (const plate of shown.plates) place(plate, camera, taken, true)
       for (const station of shown.stations) place(station, camera, taken)
       for (const { arrow, point } of pointing) pointTo(arrow, point, area)
+      if (refocus === undefined) return
+      anchored.querySelector(`[data-island="${CSS.escape(refocus)}"]:not([hidden])`)?.focus({ preventScroll: true })
+      refocus = undefined
+    },
+    forgetSizes() {
+      for (const item of [...tickets, ...plates, ...(hub ? [hub] : []), ...stations, ...arrows]) item.size = null
     },
     remove() {
       labels.remove()
