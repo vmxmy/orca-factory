@@ -22,15 +22,16 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
 	enqueued := time.Date(2026, 11, 5, 8, 0, 0, 0, time.UTC)
 	f := &fakeBackend{tickets: []Ticket{
-		{ID: "second", Identifier: "OF-2", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "second", EnqueuedAt: enqueued.Add(time.Minute)}},
-		{ID: "first", Identifier: "OF-1", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "first", EnqueuedAt: enqueued}},
-		{ID: "deployed", Identifier: "OF-3", Repo: "a", Owner: machine.OwnerNone, Phase: machine.PhaseMerged, Progress: &merge.Progress{QueueID: "deploy", MergeSHA: "merged-sha", Phase: "merged", Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending", Reason: "waiting for workflow", Smoke: "private-smoke-command"}}},
+		{ID: "second", Identifier: "OF-2", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "second", Lane: 2, Corrections: 1, EnqueuedAt: enqueued.Add(time.Minute)}, Progress: &merge.Progress{QueueID: "second", Corrections: 2}},
+		{ID: "first", Identifier: "OF-1", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "first", Lane: 1, EnqueuedAt: enqueued}},
+		{ID: "deployed", Identifier: "OF-3", Repo: "a", Owner: machine.OwnerNone, Phase: machine.PhaseMerged, Progress: &merge.Progress{QueueID: "deploy", MergeSHA: "merged-sha", Phase: "merged", Corrections: 1, Deployment: &merge.DeploymentProgress{Workflow: "deploy.yml", State: "pending", Reason: "waiting for workflow", Smoke: "private-smoke-command"}}},
 		{ID: "tie-last", Identifier: "OF-4", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "z", EnqueuedAt: enqueued.Add(2 * time.Minute)}},
 		{ID: "tie-first", Identifier: "OF-5", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "a", EnqueuedAt: enqueued.Add(2 * time.Minute)}},
 		{ID: "other-repo", Identifier: "OF-6", Repo: "b", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, Handoff: &merge.Handoff{QueueID: "other", EnqueuedAt: enqueued.Add(time.Hour)}},
 		{ID: "missing", Identifier: "OF-7", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue},
 		{ID: "conflicting", Identifier: "OF-8", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue, MergeProblem: "conflicting handoff", Handoff: &merge.Handoff{QueueID: "conflict", EnqueuedAt: enqueued.Add(-time.Hour)}},
-		{ID: "merged", Identifier: "OF-9", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "merged", EnqueuedAt: enqueued.Add(-time.Hour)}},
+		{ID: "merged", Identifier: "OF-9", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "merged", Lane: 3, Corrections: 2, EnqueuedAt: enqueued.Add(-time.Hour)}, Progress: &merge.Progress{QueueID: "earlier", Corrections: 3}},
+		{ID: "malformed", Identifier: "OF-10", Repo: "a", Owner: machine.OwnerMerge, Phase: machine.PhaseMerged, Handoff: &merge.Handoff{QueueID: "malformed", Lane: 4, Corrections: -1, EnqueuedAt: enqueued.Add(-time.Hour)}},
 	}}
 	s := setup(f)
 	if err := s.Tick(context.Background()); err != nil {
@@ -65,15 +66,20 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 					Identifier    string             `json:"identifier"`
 					QueuePosition *int               `json:"queuePosition"`
 					Deployment    *status.Deployment `json:"deployment"`
+					Lane          json.RawMessage    `json:"lane"`
+					Corrections   map[string]int     `json:"corrections"`
 				} `json:"tickets"`
 			}
 			if err := json.Unmarshal(contents, &view); err != nil {
 				t.Fatal(err)
 			}
-			if len(view.Tickets) != 9 {
-				t.Errorf("tickets = %d, want 9 including the unowned deployment barrier", len(view.Tickets))
+			if len(view.Tickets) != 10 {
+				t.Errorf("tickets = %d, want 10 including the unowned deployment barrier", len(view.Tickets))
 			}
 			positions := map[string]int{"OF-1": 1, "OF-2": 2, "OF-4": 4, "OF-5": 3, "OF-6": 1}
+			lanes := map[string]string{"OF-1": "1", "OF-2": "2", "OF-9": "3"}
+			unused := map[string]int{"count": 0, "limit": 3}
+			corrections := map[string]map[string]int{"OF-1": unused, "OF-2": {"count": 2, "limit": 3}, "OF-4": unused, "OF-5": unused, "OF-6": unused, "OF-8": unused, "OF-9": {"count": 2, "limit": 3}}
 			foundDeployment := false
 			for _, row := range view.Tickets {
 				if want, queued := positions[row.Identifier]; queued {
@@ -82,6 +88,12 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 					}
 				} else if row.QueuePosition != nil {
 					t.Errorf("%s unexpectedly has queuePosition %d", row.Identifier, *row.QueuePosition)
+				}
+				if string(row.Lane) != lanes[row.Identifier] {
+					t.Errorf("%s lane = %q, want %q", row.Identifier, string(row.Lane), lanes[row.Identifier])
+				}
+				if want := corrections[row.Identifier]; !reflect.DeepEqual(row.Corrections, want) {
+					t.Errorf("%s corrections = %v, want %v", row.Identifier, row.Corrections, want)
 				}
 				if row.Identifier == "OF-3" {
 					foundDeployment = true
@@ -123,6 +135,9 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 		}
 		if !reflect.DeepEqual(liveRow.Deployment, legacyRow.Deployment) {
 			t.Errorf("%s deployment differs: live = %+v, snapshot = %+v", identifier, liveRow.Deployment, legacyRow.Deployment)
+		}
+		if liveRow.Lane != legacyRow.Lane || !reflect.DeepEqual(liveRow.Corrections, legacyRow.Corrections) {
+			t.Errorf("%s lane or corrections differ: live = %d %+v, snapshot = %d %+v", identifier, liveRow.Lane, liveRow.Corrections, legacyRow.Lane, legacyRow.Corrections)
 		}
 	}
 }

@@ -130,9 +130,17 @@ const deploymentOf = row => {
   return { lock: 'open', beacon: row.parcels.some(parcel => parcel.unknownDeploy) ? 'unknown' : 'ok' }
 }
 
+const tapesOf = corrections =>
+  corrections === undefined
+    ? { tapes: 0, tapesSpent: false }
+    : { tapes: Math.min(corrections.count, corrections.limit), tapesSpent: corrections.count >= corrections.limit }
+
 const viewOf = (parcel, station, slot, deploy) => {
   const unknownDeploy = parcel.unknownDeploy && deploy
   return {
+    ...tapesOf(parcel.corrections),
+    lane: parcel.lane,
+    corrections: parcel.corrections,
     identifier: parcel.identifier,
     title: parcel.title,
     owner: parcel.owner,

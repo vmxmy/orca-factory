@@ -575,6 +575,45 @@
   color: #fff;
 }
 
+.diorama .trip-budget {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 14px;
+  font-size: 11.5px;
+  color: var(--w-muted);
+}
+
+.diorama .trip-budget .spent {
+  color: var(--o-human);
+}
+
+.diorama .pips {
+  display: inline-flex;
+  gap: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.diorama .pips i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--w-muted);
+}
+
+.diorama .pips i.on {
+  background: var(--w-muted);
+}
+
+.diorama .spent .pips i {
+  border-color: var(--o-human);
+}
+
+.diorama .spent .pips i.on {
+  background: var(--o-human);
+}
+
 .diorama .trip-foot {
   font-size: 11.5px;
   color: var(--w-muted);

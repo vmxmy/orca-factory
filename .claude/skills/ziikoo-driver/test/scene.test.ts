@@ -50,6 +50,19 @@ test('sceneOf 沿用部署、候选、人工、处置、阶段与回流的优先
   expect(scene.rows[0]?.workers).toBe(Number(SAMPLE_CONFIG.scheduler.find(one => one.key === 'max_in_flight')?.value))
 })
 
+test('sceneOf 透传 lane 与打回次数，缺字段时省略，形状不对时报错', () => {
+  const status = structuredClone(SAMPLE_STATUS)
+  Object.assign(status.tickets[2]!, { lane: 2, corrections: { count: 0, limit: 3 } })
+  const parcels = sceneOf(parseRuntime(JSON.stringify(status)), config()).rows[0]!.parcels
+  expect([parcels[2]?.lane, parcels[2]?.corrections]).toEqual([2, { count: 0, limit: 3 }])
+  expect(Object.keys(JSON.parse(JSON.stringify(parcels[0])))).not.toContain('corrections')
+  expect(Object.keys(JSON.parse(JSON.stringify(parcels[0])))).not.toContain('lane')
+  Object.assign(status.tickets[2]!, { lane: 4 })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].lane 不是 1–3 的整数')
+  Object.assign(status.tickets[2]!, { lane: 2, corrections: { count: 0, limit: 0 } })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].corrections.limit 不是 1–20 的整数')
+})
+
 test('sceneOf 消费真实录制的 status/config 快照', () => {
   const recordedRuntime = parseRuntime(RECORDED_STATUS)
   const recordedConfig = parseConfig(RECORDED_CONFIG)

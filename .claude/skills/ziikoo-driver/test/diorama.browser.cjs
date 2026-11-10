@@ -77,7 +77,17 @@ async function checkModel() {
   assert.deepEqual([undeployed.parcels[0].alert, undeployed.parcels[0].unknownDeploy, undeployed.parcels[0].undeployed], [null, false, true], 'a merged ticket in a project without deployment must not warn')
   assert.deepEqual(model.stuckOf(undeployed), [], 'a merged ticket in a project without deployment is not stuck')
   assert.equal(undeployed.parcels[0].stationName, model.STATION_NAMES.merge, 'a project without deployment must not say 部署未知')
-  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station, unknown deployment')
+  const taped = model.islandOf(row([
+    parcel('C-2', 'merge', { lane: 2, corrections: { count: 2, limit: 3 } }),
+    parcel('C-4', 'repair', { corrections: { count: 4, limit: 3 } }),
+    parcel('C-none', 'merge'),
+  ])).parcels
+  assert.deepEqual(
+    Object.fromEntries(taped.map(one => [one.identifier, [one.tapes, one.tapesSpent, one.lane]])),
+    { 'C-2': [2, false, 2], 'C-4': [3, true, undefined], 'C-none': [0, false, undefined] },
+    'tapes must equal the correction count up to the limit, turn spent at the limit, and stay absent without corrections',
+  )
+  console.log('PASS diorama view model: station mapping, booths, queue order, missing position, unknown station, unknown deployment, correction tapes')
 
   const named = (name, parcels) => ({ ...row(parcels), name, path: `/${name}` })
   const sceneOf = rows => ({ generatedAt: 0, state: 'ok', maintenance: 'running', rows })
