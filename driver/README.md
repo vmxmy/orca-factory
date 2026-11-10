@@ -482,6 +482,33 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
 
+## 模型方案（profiles.toml）
+
+在 `~/.config/orca-factory/profiles.toml` 维护机器级模型方案。下面只有两个示例方案，模型名需换成你要使用的模型；driver 不会创建或修改这个文件。
+
+```toml
+default = "daily"
+
+[profile.daily]
+AGENT_TIER_DEFAULT = "codex:your-default-model:low"
+AGENT_TIER_STRONG = "claude:your-strong-model:high"
+AGENT_ROLE_INTAKE = "claude:your-intake-model:medium"
+AGENT_TIER_ESCALATE = "1"
+
+[profile.focused]
+AGENT_TIER_DEFAULT = "codex:your-focused-model:high"
+AGENT_ROLE_RESOLVER = "codex:your-resolver-model:high"
+AGENT_TIER_ESCALATE = "0"
+```
+
+仓库在 `scripts/agent-gates/agent-graph.env` 中设置 `AGENT_PROFILE=focused` 选择方案；未设置时取文件的 `default`。每个键分别取值：仓库显式赋值优先，其次是所选方案，再走原有角色回退链。仓库显式空值也阻止方案补值，但不取消原有角色回退。没有文件或找不到所选方案时，保持原有仓库配置行为。
+
+方案只允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE`。前四项为 `agent:model:effort`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令仍由仓库配置。
+
+修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手与 `driver exec` 共用 `LoadRepository` 的生效值。票面和评论不能选择方案，也没有按票或成本的自动路由。
+
+运行 `orca-factory-driver config --json` 查看本次读取的配置。`repos[].profile` 是所选方案名，未选择时为空串；找不到该方案时仍显示所选名字。`roles[].source` 为 `repository`、`profile:<名>` 或内置回退的 `default`，`key` 标出回退后实际使用的键。`routing` 中来自方案的升档开关也标为 `profile:<名>`。此命令读取自己的进程配置，不能证明尚未重启的服务已经应用文件修改。
+
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 
 reviewer 经本机模型代理访问模型时，在机器 `~/.config/orca-factory/driver.env` 设置 `AGENT_MODEL_PROXY_URL=http://<主机>:<端口>`，不要把地址写进仓库 `agent-graph.env` 的审查命令。

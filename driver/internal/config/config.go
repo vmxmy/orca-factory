@@ -26,6 +26,8 @@ type Repository struct {
 	MaxInFlight int
 	StaleHours  int
 	Env         map[string]string
+	Profile     string
+	Sources     map[string]string
 }
 type Config struct {
 	MaxInFlight int
@@ -41,6 +43,9 @@ type Config struct {
 // A missing machine file yields default limits. It lists no repositories:
 // serve discovers them (projects.Discover, OF-43).
 func Load(home string) (Config, error) {
+	if _, err := loadProfiles(home); err != nil {
+		return Config{}, err
+	}
 	raw := struct {
 		MaxInFlight int         `toml:"max_in_flight"`
 		FactoryRoot string      `toml:"factory_root"`
@@ -117,7 +122,11 @@ func LoadRepository(path string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env}, nil
+	profile, sources, err := applyProfile(env)
+	if err != nil {
+		return Repository{}, err
+	}
+	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env, Profile: profile, Sources: sources}, nil
 }
 func positive(env map[string]string, key string, fallback int) (int, error) {
 	value, ok := env[key]

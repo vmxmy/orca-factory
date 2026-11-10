@@ -256,6 +256,16 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 - `nextScanAt`（OF-238）：serve 计划下一次巡检（`scheduler.Serve` 调用 `Tick`）的时间，RFC3339（带时区偏移与纳秒，和 `generatedAt` 同一个时钟），取自 `Scheduler.NextTickAt`，即上一轮 `Tick` 结束时的时钟加 `NextInterval`（自适应间隔，最长 3 分钟，见 `scheduler/adaptive.go`）。serve 每轮巡检后写入快照文件与实时观察缓存。`state` 不是 `ok` 时省略；serve 还没完成第一轮巡检、或写快照的 driver 早于本字段时也没有这个键。它只是观察，不改变调度，也不是恢复授权。`cmd/driver.TestStatusServeRecordsNextScan` 覆盖写出、两条读路径与实时缓存过期时的省略；快照文件过期走同一个判断，没有单独测试。
 
+## 机器级模型方案
+
+`~/.config/orca-factory/profiles.toml` 的顶层为可选的 `default = "<方案名>"` 和 `[profile.<名>]` 表。方案表仅接受 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE` 字符串键值。角色值为 `agent:model:effort`，agent 不可空，model 可空；升档开关沿用仓库的 `"0"` / `"1"` 格式。未知顶层键、未知方案键（包括未选中的方案）、TOML 语法或值格式错误使整份文件加载失败，错误不包含配置值。
+
+`config.Load` 校验机器方案，`config.LoadRepository` 在仓库 env 上叠加所选方案。选名取仓库显式 `AGENT_PROFILE`，缺省取文件 `default`；显式空名不取 default。逐键优先级为仓库显式值（含空值）、所选方案、原有回退链。文件不存在或所选方案不存在时不补任何键。`Repository.Profile` 保存所选名字，`Repository.Sources` 保存生效键的 `repository` 或 `profile:<名>` 来源。方案文件按 home 路径在进程内首次加载后固定，添加、修改、删除或修复文件均需重启，不增加热重载。
+
+调度器、处置 Agent、需求助手和 `driver exec` 均使用 `LoadRepository`；exec 不再通过 shell 单独解析 env。角色回退规则保持不变。票面、评论不能指定方案，方案不包含审查命令，不做按票或成本的自动路由。README 的「模型方案」提供两个方案的配置示例。
+
+验证：`config.TestRepositoryProfiles` 覆盖缺文件、补全、覆盖、显式空值、方案选择、未知键及非法值；`config.TestProfilesRequireRestart` 覆盖同进程文件修改不生效；`config.TestMachineConfigRejectsInvalidProfiles` 覆盖启动校验；`executor.TestExecUsesRepositoryProfiles` 对比 exec 初始化与 `LoadRepository` 的生效值。
+
 ## driver config 快照
 
 `orca-factory-driver config --json` 输出 driver 当前生效的模型、调度参数与环境，以及每项的来源（`driver-config-v1`）。字段名、取值和顺序以本节为准，消费方（如 Claude mod `/ziikoo-driver`）不自行解析配置文件。不带参数时输出同样内容的中文纯文本。
@@ -277,9 +287,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
       "remote": "github.com/vmxmy/orca-factory",
       "path": "/home/laoxu/github/orca-factory",
       "prefix": "OF",
+      "profile": "daily",
       "roles": [
-        {"role": "worker_default", "agent": "codex", "model": "gpt-6.1-sol", "effort": "high", "key": "AGENT_TIER_DEFAULT", "raw": "codex:gpt-6.1-sol:high"},
-        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER_CMD", "raw": "env -u ORCA_PANE_KEY ... codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -"}
+        {"role": "worker_default", "agent": "codex", "model": "gpt-6.1-sol", "effort": "high", "key": "AGENT_TIER_DEFAULT", "raw": "codex:gpt-6.1-sol:high", "source": "profile:daily"},
+        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER_CMD", "raw": "env -u ORCA_PANE_KEY ... codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -", "source": "repository"}
       ],
       "routing": [
         {"key": "AGENT_TIER_ESCALATE", "value": "1", "source": "agent-graph.env", "set": true}
@@ -307,6 +318,8 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `overview.snapshot`：取自 `status.Read` 的 `state`。
 - `overview.factoryRoot`：`config.Load` 的 `FactoryRoot`，未配置时为空串。
 - `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
+- `repos[].profile`：仓库选择的方案名，未选择时为空串。文件或方案不存在时仍保留显式选择的名字。快照读取当前命令进程的配置，不查询常驻服务缓存。
+- `roles[].source`：实际取值键来自仓库时为 `repository`，来自方案时为 `profile:<名>`，内置 `codex` 回退为 `default`。角色回退到 strong 时沿用 strong 键的来源。
 - `roles[].role` 只有七种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
   - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），strong 只在打回后升档时使用。
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
@@ -315,7 +328,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `second_reviewer`：来源为 `AGENT_ROLE_SECOND_REVIEWER_CMD`，shell 命令的解析规则与 `reviewer` 相同。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `routing`：固定顺序的十二个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；没有时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- `routing`：固定顺序的十二个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_TIER_ESCALATE` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。
@@ -323,8 +336,8 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   3. 在服务 `PATH` 中查找的工具 `go`、`gh`、`git`、`jq`、`claude`、`codex`，`value` 是找到的路径，找不到时 `set` 为 false。
 
   服务环境读不到时省略第 2、3 组，并在 `problems` 记一条。
-- `source` 只有五种：`driver.toml`、`default`、`driver.env`、`agent-graph.env`、`service`。
-- `problems`：每个读失败的来源记一行中文原因，不含任何环境变量值。`driver.toml` 中 driver 不认识的键（toml MetaData 的 `Undecoded()`）每个记一行，例如「driver.toml 的 scheduler.resume_fraction 不被识别，不生效」。需求助手档位过不了 `tierParts` 的仓库记一行「<前缀> 的需求助手档位不是 claude，需求助手不可用」。有 problems 时命令仍输出 JSON 并以 0 退出；参数错误以 2 退出。
+- `source` 取值为 `driver.toml`、`default`、`driver.env`、`agent-graph.env`、`service`、`repository` 或 `profile:<名>`；角色使用 `repository`，路由保留已有的 `agent-graph.env` 来源名。
+- `problems`：每个读失败的来源记一行中文原因，不含任何环境变量值。`profiles.toml` 无效时记录加载错误，不列出仓库与调度项。`driver.toml` 中 driver 不认识的键（toml MetaData 的 `Undecoded()`）每个记一行，例如「driver.toml 的 scheduler.resume_fraction 不被识别，不生效」。需求助手档位过不了 `tierParts` 的仓库记一行「<前缀> 的需求助手档位不是 claude，需求助手不可用」。有 problems 时命令仍输出 JSON 并以 0 退出；参数错误以 2 退出。
 - 凭据铁律：任何 `secret` 项的值、`driver.env` 中服务白名单以外的值、代理地址里的用户名和密码，都不得出现在输出的任何位置。
 
 验证：`TestDriverConfigShowsEffectiveValuesWithoutSecrets` 用假飞书账本、假 Orca 仓库清单和读不到的服务运行 `config --json`，断言假凭据不出现在输出中、调度项来源、角色回退与 reviewer 命令解析，以及 `problems` 记下未识别键与服务环境。

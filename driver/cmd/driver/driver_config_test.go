@@ -41,6 +41,16 @@ func TestConfigContractListsEveryRoleAndRoutingKey(t *testing.T) {
 // a machine whose only eligible repository is the factory itself, with a
 // driver.env holding credentials and a service the test cannot reach.
 func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
+	for _, withProfile := range []bool{false, true} {
+		name := "repository"
+		if withProfile {
+			name = "profile"
+		}
+		t.Run(name, func(t *testing.T) { testConfigSnapshot(t, withProfile) })
+	}
+}
+
+func testConfigSnapshot(t *testing.T, withProfile bool) {
 	const appSecret = "fake-app-secret-7f3a"
 	const envSecret = "fake-driverenv-token-91c2"
 	const proxyPassword = "fake-proxy-pass-55d0"
@@ -74,6 +84,11 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		"",
 	}, "\n"))
 
+	if withProfile {
+		writeTestFile(t, filepath.Join(f.home, ".config/orca-factory/profiles.toml"),
+			"default='daily'\n[profile.daily]\nAGENT_TIER_DEFAULT='codex:profile:high'\nAGENT_ROLE_RESOLVER='codex:resolver:high'\nAGENT_TIER_ESCALATE='1'\n")
+	}
+
 	var code int
 	out := captureStdout(t, func() { code = run([]string{"config", "--json"}) })
 	if code != 0 {
@@ -91,11 +106,12 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 		Set    bool    `json:"set"`
 		Secret bool    `json:"secret"`
 	}
-	type role struct{ Role, Agent, Model, Effort, Key, Raw string }
+	type role struct{ Role, Agent, Model, Effort, Key, Raw, Source string }
 	var snapshot struct {
 		Schema string `json:"schema"`
 		Repos  []struct {
 			Name    string  `json:"name"`
+			Profile string  `json:"profile"`
 			Roles   []role  `json:"roles"`
 			Routing []entry `json:"routing"`
 		} `json:"repos"`
@@ -158,12 +174,22 @@ func TestDriverConfigShowsEffectiveValuesWithoutSecrets(t *testing.T) {
 	if v := routing["AGENT_DEPLOY_WORKFLOW"].Value; v == nil || *v != "Deploy to Cloudflare" {
 		t.Fatalf("deploy workflow value: %+v", routing["AGENT_DEPLOY_WORKFLOW"])
 	}
+	if withProfile && snapshot.Repos[0].Profile != "daily" {
+		t.Fatalf("profile=%q, want daily", snapshot.Repos[0].Profile)
+	}
+	if got := routing["AGENT_TIER_ESCALATE"]; withProfile && (got.Source != "profile:daily" || got.Value == nil || *got.Value != "1") {
+		t.Fatalf("escalation=%+v", got)
+	}
+
 	wantRoles := []role{
-		{"worker_default", "codex", "", "", "AGENT_TIER_DEFAULT", "codex::low"},
-		{"worker_strong", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high"},
-		{"reviewer", "codex", "gpt-6-astra", "xhigh", "AGENT_ROLE_REVIEWER_CMD", "env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -"},
-		{"resolver", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high"},
-		{"intake", "codex", "gpt-6.1-sol", "high", "AGENT_ROLE_INTAKE", "codex:gpt-6.1-sol:high"},
+		{"worker_default", "codex", "", "", "AGENT_TIER_DEFAULT", "codex::low", "repository"},
+		{"worker_strong", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high", "repository"},
+		{"reviewer", "codex", "gpt-6-astra", "xhigh", "AGENT_ROLE_REVIEWER_CMD", "env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -", "repository"},
+		{"resolver", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high", "repository"},
+		{"intake", "codex", "gpt-6.1-sol", "high", "AGENT_ROLE_INTAKE", "codex:gpt-6.1-sol:high", "repository"},
+	}
+	if withProfile {
+		wantRoles[3] = role{"resolver", "codex", "resolver", "high", "AGENT_ROLE_RESOLVER", "codex:resolver:high", "profile:daily"}
 	}
 	if got := snapshot.Repos[0].Roles; len(got) != len(wantRoles) {
 		t.Fatalf("roles=%+v, want %+v", got, wantRoles)
