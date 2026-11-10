@@ -154,12 +154,15 @@ func TestExecKeepsBaselineTiersWithoutProfile(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(path, []byte("AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\n"+tc.env), 0600); err != nil {
+			if err := os.WriteFile(path, []byte("AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nprintf x >> sourced\n"+tc.env), 0600); err != nil {
 				t.Fatal(err)
 			}
 			executor, _, err := repositoryExecutor(context.Background(), repo)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if sourced, err := os.ReadFile(filepath.Join(repo, "sourced")); err != nil || string(sourced) != "x" {
+				t.Fatalf("repository env sourced %q times, want once: %v", sourced, err)
 			}
 			if got := []string{executor.Config.TierSettings["default"], executor.Config.Escalate}; !reflect.DeepEqual(got, []string{tc.wantDefault, tc.wantEscalate}) {
 				t.Fatalf("exec tiers=%q, want %q without profiles.toml", got, []string{tc.wantDefault, tc.wantEscalate})

@@ -91,18 +91,22 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 
 // repositoryExecutor sources agent-graph.env with bash, as exec always has, and
 // applies the machine profile through the same function LoadRepository uses.
-// The first source keeps the inherited environment and yields the values exec used
-// before profiles. The second unsets the profile keys first, so only the repository
-// file marks them explicit. Only keys the profile fills replace the first values.
+// It sources once with the inherited environment, so values are those exec used
+// before profiles. Keys count as explicit only when the file assigns them, as in
+// LoadRepository; only keys the profile then fills replace the sourced values.
 func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]string, error) {
 	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+	data, err := os.ReadFile(profile)
+	if err != nil {
+		return Executor{}, nil, errors.New("repository profile could not be loaded")
+	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `(source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}") || exit; unset AGENT_PROFILE AGENT_TIER_DEFAULT AGENT_TIER_STRONG AGENT_TIER_ESCALATE; source "$1" >/dev/null || exit; printf '%s\0' "${AGENT_PROFILE+set}" "${AGENT_PROFILE-}" "${AGENT_TIER_DEFAULT+set}" "${AGENT_TIER_DEFAULT-}" "${AGENT_TIER_STRONG+set}" "${AGENT_TIER_STRONG-}" "${AGENT_TIER_ESCALATE+set}" "${AGENT_TIER_ESCALATE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 22 {
+	if len(values) != 15 {
 		return Executor{}, nil, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -113,10 +117,11 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 	if err != nil {
 		return Executor{}, nil, errors.New("invalid reviewer estimate threshold")
 	}
+	assigned := config.AssignedKeys(data)
 	tiers := map[string]string{}
-	for i, key := range []string{"AGENT_PROFILE", "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
-		if values[13+2*i] == "set" {
-			tiers[key] = values[14+2*i]
+	for key, value := range map[string]string{"AGENT_TIER_DEFAULT": values[2], "AGENT_TIER_STRONG": values[3], "AGENT_TIER_ESCALATE": values[4], "AGENT_PROFILE": values[13]} {
+		if assigned[key] {
+			tiers[key] = value
 		}
 	}
 	_, sources, err := config.ApplyProfile(tiers)

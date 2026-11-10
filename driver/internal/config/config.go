@@ -172,6 +172,18 @@ func ModelProxyURL(home string) (string, error) {
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 
+// AssignedKeys reports the keys ParseEnv would read as explicit, without reading
+// values, so bash-only quoting accepted by driver exec does not fail it.
+func AssignedKeys(data []byte) map[string]bool {
+	keys := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if match := assignment.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			keys[match[1]] = true
+		}
+	}
+	return keys
+}
+
 // ParseEnv accepts only KEY=value assignments. Quotes delimit literal strings;
 // substitutions and shell statements are never evaluated. A # outside quotes
 // starts a comment when preceded by whitespace (or at the start of the value).
