@@ -13,6 +13,7 @@ import (
 )
 
 // StatsStore selects the backend's statistics source without changing append storage.
+// An empty source keeps the original output without a source line.
 type StatsStore interface {
 	ListStatsIssues(context.Context) ([]Issue, string, error)
 }
@@ -79,8 +80,7 @@ func (l *Ledger) Stats(ctx context.Context, all bool, out, warnings io.Writer) e
 	if err := writeStats(out, rows); err != nil {
 		return err
 	}
-	// Ledger-ticket output keeps its existing byte contract; only the fallback names its source.
-	if source == "ticket-comments" {
+	if source != "" {
 		_, err = fmt.Fprintf(out, "source=%s\n", source)
 	}
 	return err

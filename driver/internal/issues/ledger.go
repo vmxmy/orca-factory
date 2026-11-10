@@ -15,10 +15,14 @@ func (s *LedgerStore) ListIssues(ctx context.Context) ([]ledger.Issue, error) {
 	return books, err
 }
 
-// ListStatsIssues prefers ledger tickets; only Feishu falls back to task comments.
+// ListStatsIssues prefers ledger tickets; only Feishu falls back to task comments,
+// so only Feishu names a source and other backends keep their original output.
 func (s *LedgerStore) ListStatsIssues(ctx context.Context) ([]ledger.Issue, string, error) {
 	books, tickets, err := s.listIssues(ctx)
-	if _, feishu := s.Client.(*Feishu); feishu && len(books) == 0 {
+	if _, feishu := s.Client.(*Feishu); !feishu {
+		return books, "", err
+	}
+	if len(books) == 0 {
 		return tickets, "ticket-comments", err
 	}
 	return books, "ledger-ticket", err

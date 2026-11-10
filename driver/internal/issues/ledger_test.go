@@ -33,12 +33,12 @@ func TestLedgerStatsReadsTicketComments(t *testing.T) {
 	for _, tc := range []struct {
 		name                   string
 		ledgerTicket, old, all bool
-		want                   string
+		want, source           string
 	}{
-		{name: "ticket comments", want: "runs=2 merged=2 escalated=0 no_ticket=0\n"},
-		{name: "ledger preferred", ledgerTicket: true, want: "runs=1 merged=0 escalated=1 no_ticket=0\n"},
-		{name: "old comments excluded", old: true, want: "runs=0\n"},
-		{name: "all includes old comments", old: true, all: true, want: "runs=2 merged=2 escalated=0 no_ticket=0\n"},
+		{name: "ticket comments", want: "runs=2 merged=2 escalated=0 no_ticket=0\n", source: "ticket-comments"},
+		{name: "ledger preferred", ledgerTicket: true, want: "runs=1 merged=0 escalated=1 no_ticket=0\n", source: "ledger-ticket"},
+		{name: "old comments excluded", old: true, want: "runs=0\n", source: "ticket-comments"},
+		{name: "all includes old comments", old: true, all: true, want: "runs=2 merged=2 escalated=0 no_ticket=0\n", source: "ticket-comments"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFeishuFake(t)
@@ -72,12 +72,8 @@ func TestLedgerStatsReadsTicketComments(t *testing.T) {
 			if err := book.Stats(context.Background(), tc.all, &out, &warnings); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Fatalf("stats=%q, want %q", out.String(), tc.want)
-			}
-			// The ledger-ticket output stays byte-for-byte unchanged; only the fallback names its source.
-			if tc.ledgerTicket == strings.HasSuffix(out.String(), "source=ticket-comments\n") || tc.ledgerTicket && strings.Contains(out.String(), "source=") {
-				t.Fatalf("stats=%q, ledger ticket=%v", out.String(), tc.ledgerTicket)
+			if !strings.HasPrefix(out.String(), tc.want) || !strings.HasSuffix(out.String(), "\nsource="+tc.source+"\n") {
+				t.Fatalf("stats=%q, want %q and source=%s", out.String(), tc.want, tc.source)
 			}
 			if len(f.writes) != 0 {
 				t.Fatalf("stats wrote records: %+v", f.writes)
