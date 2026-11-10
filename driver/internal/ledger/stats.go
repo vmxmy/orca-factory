@@ -12,10 +12,23 @@ import (
 	"time"
 )
 
-// Stats includes every row on a ledger issue whose update or comment timestamps
+// StatsStore selects the backend's statistics source without changing append storage.
+// Stores without it retain the ledger-ticket-only output contract.
+type StatsStore interface {
+	ListStatsIssues(context.Context) ([]Issue, string, error)
+}
+
+// Stats includes every row on a source issue whose update or comment timestamps
 // overlap the last seven days. It is an issue window, not a row timestamp filter.
 func (l *Ledger) Stats(ctx context.Context, all bool, out, warnings io.Writer) error {
-	issues, err := l.store.ListIssues(ctx)
+	var issues []Issue
+	var source string
+	var err error
+	if store, ok := l.store.(StatsStore); ok {
+		issues, source, err = store.ListStatsIssues(ctx)
+	} else {
+		issues, err = l.store.ListIssues(ctx)
+	}
 	if err != nil {
 		return err
 	}
@@ -26,7 +39,7 @@ func (l *Ledger) Stats(ctx context.Context, all bool, out, warnings io.Writer) e
 	rows := []map[string]any{}
 	seen := map[string]bool{}
 	for _, issue := range issues {
-		if _, ok := Number(issue.Title); !ok {
+		if _, ok := Number(issue.Title); !ok && source != "ticket-comments" {
 			continue
 		}
 		comments, err := l.store.ListComments(ctx, issue.ID)
@@ -64,7 +77,13 @@ func (l *Ledger) Stats(ctx context.Context, all bool, out, warnings io.Writer) e
 			}
 		}
 	}
-	return writeStats(out, rows)
+	if err := writeStats(out, rows); err != nil {
+		return err
+	}
+	if source != "" {
+		_, err = fmt.Fprintf(out, "source=%s\n", source)
+	}
+	return err
 }
 
 func number(n float64) string { return strconv.FormatFloat(n, 'f', -1, 64) }

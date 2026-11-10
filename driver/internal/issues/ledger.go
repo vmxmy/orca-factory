@@ -11,17 +11,34 @@ import (
 type LedgerStore struct{ Client Store }
 
 func (s *LedgerStore) ListIssues(ctx context.Context) ([]ledger.Issue, error) {
+	books, _, err := s.listIssues(ctx)
+	return books, err
+}
+
+// ListStatsIssues prefers ledger tickets; only Feishu falls back to task comments.
+func (s *LedgerStore) ListStatsIssues(ctx context.Context) ([]ledger.Issue, string, error) {
+	books, tickets, err := s.listIssues(ctx)
+	if _, feishu := s.Client.(*Feishu); feishu && len(books) == 0 {
+		return tickets, "ticket-comments", err
+	}
+	return books, "ledger-ticket", err
+}
+
+func (s *LedgerStore) listIssues(ctx context.Context) ([]ledger.Issue, []ledger.Issue, error) {
 	rows, err := s.Client.List(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	out := []ledger.Issue{}
+	books, tickets := []ledger.Issue{}, []ledger.Issue{}
 	for _, r := range rows {
+		issue := ledger.Issue{ID: r.ID, Title: r.Title, State: r.State.Name, UpdatedAt: r.UpdatedAt}
 		if _, ok := ledger.Number(r.Title); ok {
-			out = append(out, ledger.Issue{ID: r.ID, Title: r.Title, State: r.State.Name, UpdatedAt: r.UpdatedAt})
+			books = append(books, issue)
+		} else {
+			tickets = append(tickets, issue)
 		}
 	}
-	return out, nil
+	return books, tickets, nil
 }
 func (s *LedgerStore) CreateIssue(ctx context.Context, title, state string) (ledger.Issue, error) {
 	if _, ok := ledger.Number(title); !ok || !validState(state) {
