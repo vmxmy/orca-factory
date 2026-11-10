@@ -75,7 +75,9 @@ const layoutOf = count => {
 
 const STALE_MS = 40_000
 
-export const staleOf = (scene, ageMs) => scene.state !== 'unknown' && (scene.state !== 'ok' || ageMs > STALE_MS)
+export const staleOf = (scene, ageMs) => scene.state !== 'unknown' && (scene.state !== 'ok' || (
+  scene.nextScanAt !== undefined ? scene.generatedAt + ageMs > scene.nextScanAt + STALE_MS : ageMs > STALE_MS
+))
 
 export const skyOf = (scene, ageMs) => {
   if (scene.state === 'unknown') return 'dark'

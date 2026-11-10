@@ -37,6 +37,19 @@ const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', depl
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+  const generatedAt = 1e12
+  const scheduled = { state: 'ok', generatedAt, nextScanAt: generatedAt + 120_000 }
+  assert.deepEqual(
+    [90_000, 150_000, 160_000, 160_001, 170_000].map(age => model.staleOf(scheduled, age)),
+    [false, false, false, true, true],
+    'an ok snapshot must stay fresh through the next scan plus 40 seconds and expire only after that grace period',
+  )
+  assert.deepEqual(
+    [40_000, 40_001, 41_000].map(age => model.staleOf({ state: 'ok', generatedAt }, age)),
+    [false, true, true],
+    'an ok snapshot without a next scan must keep the 40-second expiry rule',
+  )
+  console.log('PASS diorama freshness model: next scan grace period, exact boundary, legacy expiry')
   const crowd = Array.from({ length: 7 }, (_, index) => parcel(`W-${index}`, 'work'))
   const island = model.islandOf(row([...STATIONS.map(station => parcel(`S-${station}`, station)), parcel('S-new', 'new-backend-stage'), ...crowd]))
   const find = identifier => island.parcels.find(one => one.identifier === identifier)
