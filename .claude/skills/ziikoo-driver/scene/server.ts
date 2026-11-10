@@ -105,7 +105,7 @@ const files: Record<string, { path: string; type: string }> = {
   '/town.mjs': { path: 'town.mjs', type: 'text/javascript; charset=utf-8' },
   ...Object.fromEntries(['index', 'shell', 'primitives', 'town', 'equipment', 'workshop', 'navigation', 'details', 'camera', 'controls', 'geometry'].map(name => [`/components/${name}.mjs`, {path:`components/${name}.mjs`, type:'text/javascript; charset=utf-8'}])),
   '/components/shared.css': {path:'components/shared.css', type:'text/css; charset=utf-8'},
-  ...Object.fromEntries(['index', 'model', 'world', 'camera', 'hud'].map(name => [`/diorama/${name}.mjs`, { path: `diorama/${name}.mjs`, type: 'text/javascript; charset=utf-8' }])),
+  ...Object.fromEntries(['index', 'model', 'world', 'camera', 'hud', 'overlay'].map(name => [`/diorama/${name}.mjs`, { path: `diorama/${name}.mjs`, type: 'text/javascript; charset=utf-8' }])),
   '/diorama/diorama.css': { path: 'diorama/diorama.css', type: 'text/css; charset=utf-8' },
   '/vendor/three.module.min.js': { path: 'vendor/three.module.min.js', type: 'text/javascript; charset=utf-8' },
   '/vendor/three.core.min.js': { path: 'vendor/three.core.min.js', type: 'text/javascript; charset=utf-8' },

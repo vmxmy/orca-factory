@@ -1,125 +1,37 @@
-import { Vector3 } from 'three'
-
 import { createCamera } from './camera.mjs'
-import { createHud } from './hud.mjs'
-import { islandOf, skyOf } from './model.mjs'
+import { createHud, hubText } from './hud.mjs'
+import { archipelagoOf, skyOf } from './model.mjs'
+import { createOverlay } from './overlay.mjs'
 import { createWorld } from './world.mjs'
 
 const CLICK_TOLERANCE = 6
 const WHEEL_STEP = 1.1
-const LABEL_MIN_WIDTH = 620
-const LABEL_GAP = 2
 const STATUS_INTERVAL = 1000
 const NUDGES = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }
 
-const stationLabels = ({ layout, working, workers }) => [
-  ['主账本', layout.tower, 2.6, 0],
-  [`工作间 · ${working}/${workers}`, layout.booths.reduce((sum, booth) => sum + booth.x, 0) / layout.booths.length, 1.9, layout.booths[0].z],
-  ['检验间 · gate', -1, 2.2, 0],
-  ['审查', 2.5, 2.7, 0],
-  ['封箱 · 开 PR', 5.5, 0.6, 0],
-  ['栈桥 · 合并队列', 9.3, 0.5, 0],
-  ['船闸 · 部署屏障', 11.2, 1.6, 3],
-  ['灯塔 · smoke', 16.2, 4, 6.6],
-  ['回流坡道 · correction', -6.5, 1.9, -4.6],
-  ['处置塔', -1, 5.3, -6.3],
-  ['等人批', 3.4, 4.5, -6.2],
-]
-
-const tag = (parent, className, text) => {
-  const node = document.createElement('span')
-  node.className = className
-  node.textContent = text
-  parent.append(node)
-  return node
+const openingOf = ({ islands, tickets, global }, { path, ticket }) => {
+  if (ticket) {
+    const parcel = tickets.find(one => one.identifier === ticket)
+    if (!parcel) throw new Error(`Scene 里没有票 ${ticket}`)
+    return { focus: parcel.island, stop: 3, selected: parcel.key }
+  }
+  if (path) {
+    const island = islands.find(one => one.path === path)
+    if (!island) throw new Error(`Scene 里没有项目 ${path}`)
+    return { focus: island.index, stop: 2, selected: null }
+  }
+  if (islands.length === 0) throw new Error('Scene 里没有项目')
+  return { focus: (islands.find(one => !one.idle) ?? islands[0]).index, stop: global ? 1 : 2, selected: null }
 }
 
-export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => {
-  const row = scene.rows.find(one => one.path === path)
-  if (!row) throw new Error(`Scene 里没有项目 ${path}`)
-  const island = islandOf(row)
-  const motion = matchMedia('(prefers-reduced-motion: reduce)')
-  let reduced = motion.matches
-  motion.addEventListener('change', () => {
-    reduced = motion.matches
-  })
+const canvasHelp = global =>
+  [
+    '工坊沙盘。拖动平移，滚轮缩放，方向键平移，Home 复位，Esc 退一级。',
+    global ? '数字键 1 看全部岛、2 回工坊、3 看这张票，[ 和 ] 切换项目，/ 搜索。' : '数字键 2 回工坊、3 看这张票，/ 搜索。',
+    '票也可以从右侧列表选择。',
+  ].join('')
 
-  const canvas = document.createElement('canvas')
-  canvas.tabIndex = 0
-  canvas.setAttribute('aria-label', `${island.name} 工坊沙盘。拖动平移，滚轮缩放，数字键 2 回工坊、3 看这张票，方向键平移，Home 复位，Esc 退一级。票也可以从右侧列表选择。`)
-  const labels = document.createElement('div')
-  labels.className = 'labels'
-  stage.append(canvas, labels)
-
-  const world = createWorld(canvas, island)
-  const lens = createCamera(island.layout)
-  const parcelOf = identifier => island.parcels.find(parcel => parcel.identifier === identifier)
-  let stop = 2
-  let selected = null
-
-  const setStop = next => {
-    const parcel = parcelOf(selected)
-    stop = next === 3 && parcel ? 3 : 2
-    lens.resize(stage.clientWidth, stage.clientHeight, hud.margins())
-    if (stop === 3) lens.frameSlot(parcel.slot)
-    else lens.frameIsland()
-    if (reduced) lens.snap()
-    hud.stops(stop, parcel !== undefined)
-  }
-
-  const select = identifier => {
-    selected = parcelOf(identifier) ? identifier : null
-    world.select(selected)
-    hud.trip(parcelOf(selected))
-    if (stop === 3) setStop(selected ? 3 : 2)
-    else hud.stops(stop, selected !== null)
-  }
-
-  const hud = createHud(stage, island, { onSelect: select, onStop: setStop })
-  hud.trip(undefined)
-  hud.stops(stop, false)
-
-  const stations = stationLabels(island).map(([text, x, y, z]) => ({
-    node: tag(labels, 'label', text),
-    position: new Vector3(x, y, z),
-  }))
-  const tickets = island.parcels.map(parcel => ({
-    parcel,
-    position: new Vector3(0, parcel.alert ? 2 : 1.1, 0).add(world.parcels.get(parcel.identifier).group.position),
-    node: tag(labels, ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(), parcel.unknown ? `${parcel.identifier} · 未知` : parcel.identifier),
-  }))
-  const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom
-  const settle = (rect, taken) => {
-    const blocker = taken.find(other => overlaps(rect, other))
-    if (!blocker) return rect
-    const lift = rect.bottom - blocker.top + LABEL_GAP
-    return settle({ ...rect, top: rect.top - lift, bottom: rect.bottom - lift }, taken)
-  }
-  const place = (node, position, taken) => {
-    node.hidden = false
-    const point = position.clone().project(lens.camera)
-    const x = ((point.x + 1) / 2) * stage.clientWidth
-    const bottom = ((1 - point.y) / 2) * stage.clientHeight - 6
-    const half = node.offsetWidth / 2
-    const rect = settle({ left: x - half, right: x + half, top: bottom - node.offsetHeight, bottom }, taken)
-    node.style.left = `${x}px`
-    node.style.top = `${rect.bottom}px`
-    taken.push(rect)
-  }
-  const placeLabels = () => {
-    const taken = []
-    const shown = tickets
-      .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.identifier === selected)
-      .sort((left, right) => Number(right.parcel.identifier === selected) - Number(left.parcel.identifier === selected))
-    for (const ticket of tickets) ticket.node.hidden = !shown.includes(ticket)
-    for (const ticket of shown) place(ticket.node, ticket.position, taken)
-    const wide = stage.clientWidth > LABEL_MIN_WIDTH
-    for (const station of stations) {
-      station.node.hidden = !wide
-      if (wide) place(station.node, station.position, taken)
-    }
-  }
-
+const pointer = (canvas, lens, onClick) => {
   const pointers = new Map()
   let travelled = 0
   let pinch = 0
@@ -150,39 +62,119 @@ export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => 
     pointers.delete(event.pointerId)
     if (travelled > CLICK_TOLERANCE) return
     const bounds = canvas.getBoundingClientRect()
-    const ndc = {
+    onClick({
       x: ((event.clientX - bounds.left) / bounds.width) * 2 - 1,
       y: -((event.clientY - bounds.top) / bounds.height) * 2 + 1,
-    }
-    select(world.pick(ndc, lens.camera))
+    })
   })
   canvas.addEventListener('pointercancel', event => pointers.delete(event.pointerId))
-  canvas.addEventListener('dblclick', () => {
-    if (selected) setStop(3)
-  })
   canvas.addEventListener('wheel', event => {
     event.preventDefault()
     if (event.deltaY === 0) return
     lens.zoom(event.deltaY > 0 ? WHEEL_STEP : 1 / WHEEL_STEP)
   }, { passive: false })
-  stage.addEventListener('keydown', event => {
-    const key = event.key
-    if (key === '2' || key === '3') setStop(Number(key))
-    else if (key === 'Home') setStop(stop)
-    else if (key === 'Escape' && stop === 3) setStop(2)
-    else if (key === 'Escape' && selected) select(null)
-    else if (NUDGES[key] && event.target === canvas) lens.nudge(...NUDGES[key])
-    else return
-    event.preventDefault()
+}
+
+export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now() }) => {
+  const archipelago = archipelagoOf(scene)
+  const { islands, global } = archipelago
+  let { focus, stop, selected } = openingOf(archipelago, { path, ticket })
+  const motion = matchMedia('(prefers-reduced-motion: reduce)')
+  let reduced = motion.matches
+  motion.addEventListener('change', () => {
+    reduced = motion.matches
   })
+
+  const canvas = document.createElement('canvas')
+  canvas.tabIndex = 0
+  canvas.setAttribute('aria-label', canvasHelp(global))
+  stage.append(canvas)
+
+  const world = createWorld(canvas, archipelago)
+  const lens = createCamera(archipelago)
+  const parcelOf = key => archipelago.tickets.find(parcel => parcel.key === key)
+  let margins = { top: 0, right: 0, bottom: 0, left: 0 }
 
   const refreshStatus = () => {
     const at = now()
     const sky = skyOf(scene, at - scene.generatedAt)
     world.setSky(sky)
-    hud.status(scene, at, sky)
+    hud.status(stop === 1 ? null : islands[focus], scene, at, sky)
+    overlay.hub(hubText(scene, at))
   }
-  refreshStatus()
+
+  const showSelection = () => {
+    hud.stops(stop, selected !== null, focus)
+    hud.trip(parcelOf(selected), stop === 1 ? null : islands[focus])
+  }
+
+  const setStop = next => {
+    const parcel = parcelOf(selected)
+    stop = next === 3 && parcel ? 3 : next === 1 && global ? 1 : 2
+    showSelection()
+    overlay.focus(focus)
+    refreshStatus()
+    margins = hud.margins()
+    lens.resize(stage.clientWidth, stage.clientHeight, margins)
+    if (stop === 3) lens.frameSlot(world.parcels.get(parcel.key).group.position)
+    else if (stop === 2) lens.frameIsland(focus)
+    else lens.frameAll()
+    if (reduced) lens.snap()
+  }
+
+  const select = key => {
+    const parcel = parcelOf(key)
+    selected = parcel ? key : null
+    world.select(selected)
+    if (parcel && (parcel.island !== focus || stop === 1)) {
+      focus = parcel.island
+      setStop(2)
+    } else if (stop === 3) setStop(selected ? 3 : 2)
+    else showSelection()
+  }
+
+  const enter = index => {
+    focus = index
+    selected = null
+    world.select(null)
+    setStop(2)
+  }
+
+  const back = () => {
+    if (stop === 3) setStop(2)
+    else if (selected) select(null)
+    else if (stop === 2 && global) setStop(1)
+  }
+
+  const hud = createHud(stage, archipelago, { onSelect: select, onStop: setStop, onIsland: enter })
+  const overlay = createOverlay(stage, archipelago, world, { onIsland: enter })
+
+  pointer(canvas, lens, ndc => {
+    const hit = world.pick(ndc, lens.camera)
+    if (hit?.key) select(hit.key)
+    else if (hit && (stop === 1 || hit.island !== focus)) enter(hit.island)
+    else select(null)
+  })
+  canvas.addEventListener('dblclick', () => {
+    if (selected) setStop(3)
+  })
+
+  const stopKeys = global ? ['1', '2', '3'] : ['2', '3']
+  stage.addEventListener('keydown', event => {
+    const { key, target } = event
+    if (target.closest('input')) return
+    if (key === 'Escape') back()
+    else if (key === 'Home') setStop(stop)
+    else if (target.closest('.list, .dock')) return
+    else if (stopKeys.includes(key)) setStop(Number(key))
+    else if ((key === '[' || key === ']') && global) enter((focus + (key === ']' ? 1 : islands.length - 1)) % islands.length)
+    else if (key === '/') hud.openSearch()
+    else if (NUDGES[key] && target === canvas) lens.nudge(...NUDGES[key])
+    else return
+    event.preventDefault()
+  })
+
+  world.select(selected)
   setInterval(refreshStatus, STATUS_INTERVAL)
 
   new ResizeObserver(() => {
@@ -194,17 +186,18 @@ export const mountDiorama = (stage, { scene, path, now = () => Date.now() }) => 
   const frame = time => {
     lens.step(reduced)
     world.animate(time, reduced)
-    placeLabels()
+    overlay.place(lens.camera, { stop, selected, margins })
     world.render(lens.camera)
     requestAnimationFrame(frame)
   }
   requestAnimationFrame(frame)
 
   return {
-    island,
+    archipelago,
     state: () => ({
       stop,
-      selected,
+      focus: islands[focus].path,
+      selected: parcelOf(selected)?.identifier ?? null,
       reduced,
       view: { ...lens.view },
       goal: { ...lens.goal },
