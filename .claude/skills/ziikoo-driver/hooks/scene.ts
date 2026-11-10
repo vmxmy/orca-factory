@@ -19,6 +19,7 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
     queuePosition: ticket.queuePosition,
     lane: ticket.lane,
     corrections: ticket.corrections,
+    stages: ticket.stages,
     phase: ticket.phase,
     label: pos.label,
     station,

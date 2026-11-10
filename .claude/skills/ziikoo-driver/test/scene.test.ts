@@ -11,6 +11,19 @@ import { SAMPLE_STATUS } from './sample-runtime'
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
 const runtime = () => parseRuntime(JSON.stringify(SAMPLE_STATUS))
 
+test('sceneOf 透传阶段时间，缺证据时省略，并拒绝非法秒数和超长时间线', () => {
+  const status = structuredClone(SAMPLE_STATUS)
+  const stages = [{ name: 'worker 运行中', seconds: 120 }, { name: 'gate', seconds: 80 }]
+  Object.assign(status.tickets[2]!, { stages })
+  const parcels = sceneOf(parseRuntime(JSON.stringify(status)), config()).rows[0]!.parcels
+  expect(parcels[2]?.stages).toEqual(stages)
+  expect(Object.keys(JSON.parse(JSON.stringify(parcels[0])))).not.toContain('stages')
+  Object.assign(status.tickets[2]!, { stages: [{ name: 'gate', seconds: -1 }] })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].stages[0].seconds 不是非负整数')
+  Object.assign(status.tickets[2]!, { stages: Array.from({ length: 21 }, () => stages[0]) })
+  expect(() => parseRuntime(JSON.stringify(status))).toThrow('tickets[2].stages 超过 20 项')
+})
+
 test('sceneOf 将 candidate 放到领取台，保留锁链原因', () => {
   const scene = sceneOf(runtime(), config())
   const parcel = scene.rows.flatMap(row => row.parcels).find(one => one.identifier === 'ZW-8')

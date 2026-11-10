@@ -145,6 +145,7 @@ const viewOf = (parcel, station, slot, deploy) => {
     ...tapesOf(parcel.corrections),
     lane: parcel.lane,
     corrections: parcel.corrections,
+    stages: parcel.stages,
     identifier: parcel.identifier,
     title: parcel.title,
     owner: parcel.owner,

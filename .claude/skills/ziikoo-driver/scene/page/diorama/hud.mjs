@@ -70,11 +70,21 @@ const tripHead = parcel =>
     ...(parcel.reason ? [element('span', { class: 'why', text: parcel.reason })] : []),
   ])
 
-const tripTrack = parcel =>
-  element('div', { class: 'track' }, TRACK.map((step, index) => {
+const tripTrack = parcel => {
+  if (parcel.stages?.length) {
+    const longest = parcel.stages.reduce((best, stage, index) => stage.seconds > parcel.stages[best].seconds ? index : best, 0)
+    return element('div', { class: 'track timed' }, parcel.stages.map((stage, index) =>
+      element('span', {
+        class: `${index === parcel.stages.length - 1 ? 'now' : 'done'}${index === longest ? ' longest' : ''}`,
+        title: `${stage.name} · ${stage.seconds} 秒${index === longest ? ' · 停留最长' : ''}`,
+      }, [stage.name, element('small', { class: 'stage-time', text: sinceText(stage.seconds * 1000) })]),
+    ))
+  }
+  return element('div', { class: 'track' }, TRACK.map((step, index) => {
     const state = parcel.track < 0 ? '' : index < parcel.track ? 'done' : index === parcel.track ? 'now' : ''
     return element('span', { class: state, text: step.name })
   }))
+}
 
 const correctionBudget = ({ count, limit }, spent) =>
   element('span', { class: spent ? 'spent' : '' }, [

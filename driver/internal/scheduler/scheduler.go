@@ -24,7 +24,8 @@ import (
 )
 
 type Ticket struct {
-	Resolution *resolver.Record
+	stageTimeline []stageStart
+	Resolution    *resolver.Record
 	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
 	// reserved by an earlier squash intent for this queue.
 	deploymentReservedQueue             string
@@ -221,7 +222,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
-	rows := ObservationRows(tickets, s.Repositories)
+	rows := ObservationRows(tickets, s.Repositories, s.clock())
 	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
 		view.Tickets = nil
 		for index, t := range tickets {
