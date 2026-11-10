@@ -337,7 +337,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       const metrics = [
         ...(output?.merged === undefined ? [] : [`合并 ${output.merged}`]),
         ...(output?.escalated === undefined ? [] : [`转人 ${output.escalated}`]),
-        ...(output?.medianMinutes === undefined ? [] : [`周期中位 ${output.medianMinutes} 分`]),
+        ...(output?.medianMinutes === undefined ? [] : [`周期中位 ${Number(output.medianMinutes.toFixed(1))} 分`]),
       ]
       today.hidden = metrics.length === 0
       today.textContent = metrics.length === 0 ? '' : `今日：${metrics.join(' · ')}`

@@ -21,3 +21,8 @@ export const RECORDED_LEDGER_DEPLOYMENT: string = String.raw`{"comments":[{"id":
 // 固定观察时刻 2026-11-04T15:53:00+08:00 推送状态后运行 `status --json` 的 stdout，不是生产 CLI 抓取（生产部署前无 stages 字段）。
 // cmd/driver 的 TestRecordedStagesPanelSample 校验两边一致；scheduler.TestRecordedStageDurations 校验它等于 driver 对录制账本的输出。
 export const RECORDED_STAGES_STATUS: string = String.raw`{"state":"stale","generatedAt":"2026-11-04T15:53:00+08:00","tickets":[{"stages":[{"name":"排队合并","seconds":427},{"name":"Agent处置","seconds":434},{"name":"排队合并","seconds":141},{"name":"Agent处置","seconds":50}],"repo":"vmxmy/zhiyun-ai-dashboard","identifier":"ZY-365","owner":"处置Agent","phase":"Agent处置","since":"2026-11-04T15:53:00+08:00","pushedAt":"2026-11-04T15:53:00+08:00"}]}`
+
+// driver/testdata/recorded/driver-status-json-today.json 的原文：2026-11-11 由 OF-462 分支 driver 以 driver/testdata/recorded/ledger-ticket-comments.json
+// 的录制 ledger 评论为输入、固定观察时刻 2026-11-09T13:00:00+08:00 运行一轮 Tick 后输出的 `status --json`，不是生产 CLI 抓取（生产部署前无 today 字段）。
+// cmd/driver 的 TestRecordedTodayPanelSample 校验两边一致；scheduler.TestRecordedTodayOutput 校验它等于 driver 对录制账本的输出。
+export const RECORDED_TODAY_STATUS: string = String.raw`{"today":{"merged":1,"escalated":0,"medianMinutes":37.10948458495},"state":"ok","generatedAt":"2026-11-09T13:00:00+08:00","tickets":[]}`

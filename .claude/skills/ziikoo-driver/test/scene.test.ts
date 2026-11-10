@@ -5,7 +5,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS } from './sample-recorded'
+import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -203,6 +203,9 @@ test('录制的部署暂停记录驱动 sceneOf 的部署异常分支', () => {
 })
 
 test('sceneOf 透传今日产出，缺字段不补零', () => {
+  const recorded = parseRuntime(RECORDED_TODAY_STATUS)
+  expect(recorded.today).toEqual({ merged: 1, escalated: 0, medianMinutes: 37.10948458495 })
+  expect(sceneOf(recorded, config()).today).toEqual({ merged: 1, escalated: 0, medianMinutes: 37.10948458495 })
   const today = { merged: 3, escalated: 1, medianMinutes: 12.5 }
   const scene = (extra: object) => JSON.parse(JSON.stringify(sceneOf(parseRuntime(JSON.stringify({ ...SAMPLE_STATUS, ...extra })), config())))
   expect(scene({ today }).today).toEqual(today)

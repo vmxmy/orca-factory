@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -114,5 +115,38 @@ func TestRecordedTodayLedgerComments(t *testing.T) {
 	rows = append(rows, task.Issue{ID: "book", Title: "[ledger] agent-graph"})
 	if got := todayOutput(readTodayRuns(rows, comments, repos), now); got != nil {
 		t.Fatalf("ledger ticket must take precedence over task comments: %+v", got)
+	}
+}
+
+// driver-status-json-today.json is the `status --json` stdout this pipeline
+// produced from the recorded ledger comments at the fixed observation time.
+func TestRecordedTodayOutput(t *testing.T) {
+	var samples []struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-ticket-comments.json"), &samples); err != nil {
+		t.Fatal(err)
+	}
+	var comments []task.Comment
+	for _, sample := range samples {
+		comments = append(comments, sample.Comments...)
+	}
+	now, err := time.Parse(time.RFC3339, "2026-11-09T13:00:00+08:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	f := &todayIssues{fakeIssues: fakeIssues{issues: []task.Issue{{ID: "closed", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Done"}}}, issueComments: comments}}
+	r := &Runtime{Clients: map[string]issues.Store{"a": f}, Orca: &fakeOrca{automations: receipt(`{"automations":[]}`)}}
+	s := setup(&fakeBackend{})
+	s.Backend, s.Now = r, func() time.Time { return now }
+	s.Repositories = []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1", "AGENT_SCOPE_AVOID": "0"}}}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var got bytes.Buffer
+	if err := json.NewEncoder(&got).Encode(status.Read(now, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if want := recorded(t, "driver-status-json-today.json"); !bytes.Equal(got.Bytes(), want) {
+		t.Fatalf("driver-status-json-today.json differs from driver output:\n got %s\nwant %s", got.Bytes(), want)
 	}
 }
