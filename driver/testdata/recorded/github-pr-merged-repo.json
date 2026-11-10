@@ -1,0 +1,23 @@
+{
+ "number": 637,
+ "state": "closed",
+ "merged": true,
+ "mergeable": null,
+ "mergeable_state": "unknown",
+ "merge_commit_sha": "ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c",
+ "html_url": "https://github.com/vmxmy/orca-factory/pull/637",
+ "head": {
+  "ref": "agent/OF-457/executor",
+  "sha": "30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0",
+  "repo": {
+   "full_name": "vmxmy/orca-factory"
+  }
+ },
+ "base": {
+  "ref": "main",
+  "sha": "b8f669275bd05e4028b3ae4cd757e587d9ff983a",
+  "repo": {
+   "full_name": "vmxmy/orca-factory"
+  }
+ }
+}

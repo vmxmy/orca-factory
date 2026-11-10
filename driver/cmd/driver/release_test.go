@@ -150,12 +150,12 @@ const (
 
 func releaseRecordedPR(t *testing.T) github.PullRequest {
 	t.Helper()
-	raw, err := os.ReadFile("../../testdata/recorded/github-pr-merged.json")
+	raw, err := os.ReadFile("../../testdata/recorded/github-pr-merged-repo.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/vmxmy/orca-factory/pulls/133" {
+		if r.URL.Path != "/repos/vmxmy/orca-factory/pulls/637" {
 			t.Errorf("unexpected %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -169,7 +169,7 @@ func releaseRecordedPR(t *testing.T) github.PullRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pr, err := client.GetPR(context.Background(), "vmxmy", "orca-factory", 133)
+	pr, err := client.GetPR(context.Background(), "vmxmy", "orca-factory", 637)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,17 +214,14 @@ func releaseRewriteLine(t *testing.T, comment task.Comment, prefix string, edit 
 	return comment
 }
 
-// The PR read-back replays github-pr-merged.json (PR 133). That recording was
-// trimmed of base.repo, so the test fills base.repo.full_name, the field the
-// merge lane already checks. Comments replay ledger-comments-human-release.json
+// The PR read-back replays github-pr-merged-repo.json (PR 637). Comments replay ledger-comments-human-release.json
 // (no handoff) and ledger-comments-selfdeploy-interrupted.json (OF-393 handoff
 // and progress); budgets are edited to distinct values so the source is visible.
 func TestReleaseEvidence(t *testing.T) {
 	recordedPR := releaseRecordedPR(t)
-	if recordedPR.Number != 133 || recordedPR.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" || recordedPR.Head.SHA != "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a" {
+	if recordedPR.Number != 637 || recordedPR.MergeSHA != "ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c" || recordedPR.Head.SHA != "30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0" || recordedPR.Base.Repo.FullName != "vmxmy/orca-factory" {
 		t.Fatalf("recorded PR=%+v", recordedPR)
 	}
-	recordedPR.Base.Repo.FullName = "vmxmy/orca-factory"
 	human := releaseRecordedComments(t, "ledger-comments-human-release.json")
 	selfDeploy := releaseRecordedComments(t, "ledger-comments-selfdeploy-interrupted.json")
 	handoff, progress := selfDeploy[0], selfDeploy[1]
@@ -253,7 +250,7 @@ func TestReleaseEvidence(t *testing.T) {
 			case "manual":
 				ledger = releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "zy-366", Identifier: "ZY-366"}}, comments: human}
 				pr = recordedPR
-				identifier, number, sha = "ZY-366", 133, recordedPR.MergeSHA
+				identifier, number, sha = "ZY-366", 637, recordedPR.MergeSHA
 			case "handoff":
 				ledger.comments = []task.Comment{budgetedHandoff}
 			case "known main":
@@ -296,7 +293,7 @@ func TestReleaseEvidence(t *testing.T) {
 			}
 			switch name {
 			case "manual":
-				if got.TicketID != "zy-366" || got.QueueID != "" || got.Main != "" || !got.MainUnknown || got.PR != 133 || got.Head != "e9efe2887b6bc803d7c2a71c381fbc45cd3cc40a" || got.MergeSHA != "0ab0047178cd32132001eef0682d50a77a6f2622" {
+				if got.TicketID != "zy-366" || got.QueueID != "" || got.Main != "" || !got.MainUnknown || got.PR != 637 || got.Head != "30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0" || got.MergeSHA != "ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c" {
 					t.Fatalf("manual receipt=%+v", got)
 				}
 			case "handoff":
