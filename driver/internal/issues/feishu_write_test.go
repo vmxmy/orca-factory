@@ -793,3 +793,54 @@ func TestFeishuPurgeEmptyEvents(t *testing.T) {
 		t.Fatalf("rerun=%+v err=%v writes=%d deletes=%d", again, err, len(f.writes), len(f.deletes))
 	}
 }
+
+func TestCreateRequiresRecordedSampleScope(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/feishu-description-recorded-sample-scope.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	replace := func(description, old, replacement string) string {
+		if !strings.Contains(description, old) {
+			t.Fatalf("recorded OF-446 description lacks %q", old)
+		}
+		return strings.Replace(description, old, replacement, 1)
+	}
+	of446 := string(recorded)
+	readsSample := replace(of446, "\n## 要做\n", "\n## 要做\n0. 断言读取 `driver/testdata/recorded/driver-status-json-next-scan.json` 中的真实 status 快照。\n")
+	originalScope := replace(readsSample, "\n## SCOPE\n.claude/skills/ziikoo-driver/* driver/testdata/recorded/driver-status-json-next-scan.json\n", "\n## SCOPE\n.claude/skills/ziikoo-driver/*\n")
+	claimsSample := replace(originalScope, "- 外部契约样本：不解析新的外部输出", "- 外部契约样本：已含 `*_test.go` 与 `testdata/` 路径")
+	brief := func(todo, check, scope string) string {
+		return FeishuBrief{Todo: todo, Check: check, Scope: scope, Body: "## intake 自检\n- 外部契约样本：不涉及"}.Description()
+	}
+	for _, test := range []struct {
+		name        string
+		description string
+		rejected    bool
+	}{
+		{name: "recorded OF-446 without sample reference", description: of446},
+		{name: "recorded OF-446 reading sample with extended scope", description: readsSample},
+		{name: "recorded OF-446 reading sample with original scope", description: originalScope, rejected: true},
+		{name: "self check claims sample paths", description: claimsSample},
+		{name: "CHECK reads recorded outside scope", description: brief("1. 修", "grep -q nextScanAt driver/testdata/recorded/status.json && make test", "driver/internal/issues/*"), rejected: true},
+		{name: "todo mentions recorded directory", description: brief("1. 测试读 recorded/ 下的样本", "make test", "driver/internal/issues/*"), rejected: true},
+		{name: "scope glob covers recorded", description: brief("1. 测试读 testdata/recorded 样本", "make test", "driver/*")},
+		{name: "scope lists recorded file", description: brief("1. 测试读 testdata/recorded 样本", "make test", "driver/internal/issues/* driver/testdata/recorded/status.json")},
+		{name: "no recorded reference", description: brief("1. 修", "make test", "driver/internal/issues/*")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newFeishuFake(t)
+			client := newFeishuTest(t, f)
+			fastReadBack(client)
+			_, err := client.Create(context.Background(), CreateInput{Title: "录制样本", Description: test.description})
+			if test.rejected {
+				if err == nil || len(f.writes) != 0 || !strings.Contains(err.Error(), "driver/testdata/recorded/*") {
+					t.Fatalf("recorded sample outside SCOPE must be rejected with the glob to add: writes=%d err=%v", len(f.writes), err)
+				}
+				return
+			}
+			if err != nil || len(f.writes) != 1 {
+				t.Fatalf("ticket not affected by recorded sample rule was rejected: writes=%d err=%v", len(f.writes), err)
+			}
+		})
+	}
+}

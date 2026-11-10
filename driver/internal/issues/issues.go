@@ -500,6 +500,9 @@ func (c *GitHub) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if err := requireBehaviorTraceInScope(ctx, in.Description); err != nil {
 		return Task{}, err
 	}
+	if err := requireRecordedSampleScope(ctx, in.Description); err != nil {
+		return Task{}, err
+	}
 	if (in.Blockers == nil || in.Related == nil) && in.State != "" && in.State != "Todo" {
 		return Task{}, errors.New("explicit adoption required for native create state")
 	}
