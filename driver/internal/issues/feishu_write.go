@@ -177,12 +177,12 @@ func (x feishuIndex) adopted(row feishuTicketRow) bool {
 }
 
 // links resolves canonical dependency IDs to adopted records other than self.
-func (x feishuIndex) links(self string, ids []string) ([]feishu.LinkRef, error) {
+func (x feishuIndex) links(self, field string, ids []string) ([]feishu.LinkRef, error) {
 	records := make([]string, 0, len(ids))
-	for _, id := range ids {
+	for i, id := range ids {
 		dep, ok := x.byCanonical[id]
 		if !ok || id == self || !x.adopted(dep) {
-			return nil, errors.New("dependency identity or completeness unavailable")
+			return nil, fmt.Errorf("%s[%d]=%q: dependency identity or completeness unavailable；依赖须填票的 UUID；用 `issues issue <票号> --json` 取 `id`", field, i, id)
 		}
 		records = append(records, dep.record)
 	}
@@ -301,7 +301,7 @@ func (c *Feishu) UpdateIssue(ctx context.Context, id, state string, add, remove 
 		return task.Issue{}, err
 	}
 	if !t.Metadata.Complete {
-		return task.Issue{}, errors.New("explicit adoption required before update")
+		return task.Issue{}, errors.New("explicit adoption required before update；用 `issues adopt --id <票> --input` 纳管，输入须含 `\"blockers\":[],\"related\":[]`")
 	}
 	if state != "" && !validState(state) {
 		return task.Issue{}, errors.New("unknown task state")
@@ -406,6 +406,9 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 		return Task{}, err
 	}
 	if err := requireBehaviorTraceInScope(ctx, in.Description); err != nil {
+		return Task{}, err
+	}
+	if err := requireRecordedSampleScope(ctx, in.Description); err != nil {
 		return Task{}, err
 	}
 	adopt := in.Blockers != nil && in.Related != nil
@@ -652,10 +655,10 @@ func (c *Feishu) dependencyCells(ctx context.Context, row map[string]any, self s
 	if err != nil {
 		return err
 	}
-	if row["阻塞于"], err = x.links(self, blockers); err != nil {
+	if row["阻塞于"], err = x.links(self, "blockers", blockers); err != nil {
 		return err
 	}
-	if row["相关"], err = x.links(self, related); err != nil {
+	if row["相关"], err = x.links(self, "related", related); err != nil {
 		return err
 	}
 	brief.Blockers, brief.Related = blockers, related

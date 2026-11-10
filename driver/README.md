@@ -145,6 +145,8 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 上线时先完成检查与审查，保存旧二进制及其提交信息。人工部署使用仓库内的 [deploy/ops/deploy.sh](deploy/ops/deploy.sh)，`install` 把它装到 `~/.local/share/orca-factory-ops/deploy.sh`。脚本按下列顺序执行，备份旧二进制到 `~/.local/state/orca-factory/deploy-backups/`，并与自部署共用 `deploy.lock`。构建用的检出由环境变量 `ORCA_FACTORY_REPO` 指定，默认 `$HOME/github/orca-factory`。部署顺序：
 
+在 drain 前，脚本先运行 `git fetch -q origin`，仅在非零退出时重试，最多尝试 3 次，两次等待分别为 5 秒、15 秒。三次均失败时输出「尚未 drain，未改动任何状态」并以非零状态退出，不进入排空、备份或重启。重试仅覆盖 drain 前的 fetch；随后的 `git merge --ff-only` 和 drain 之后的步骤均不重试。
+
 1. 运行 `orca-factory-driver maintenance drain`。
 2. 运行 `orca-factory-driver maintenance status`，等 `writersActive` 与 `sessionsActive` 都为 false（没有正在运行的执行器、处置 Agent 和已准入写入）。不要求在途票归零：drain 拒绝重新派工，在途票（例如等待 correction 重新派工的票）可能永远不归零；重启后执行器从 checkpoint 恢复。等待超时（建议 1 小时）时先运行 `maintenance resume`，放弃本次部署。
 3. 替换二进制并重启服务。
