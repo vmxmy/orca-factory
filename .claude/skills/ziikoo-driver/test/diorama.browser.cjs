@@ -917,6 +917,58 @@ async function checkWithoutWebGL(browser, live) {
   }
 }
 
+async function checkRecordLinks(browser, live) {
+  const url = 'https://records.example.test/base?record=rec123&view=%22grid%22'
+  const urls = [url, undefined, 'javascript:window.__xss=1', 'JaVaScRiPt:alert(1)', 'http://records.example.test/', 'data:text/html,unsafe', 'file:///etc/passwd', '//records.example.test/', '/record/123', 'https://']
+  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+  const template = recorded.tickets.find(ticket => ticket.identifier === 'OF-415')
+  const tickets = urls.map((url, index) => ({ ...template, identifier: `RECORD-${index}`, url }))
+  live.write({ ...recorded, tickets })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.stuck > .list').textContent.includes('RECORD-0'))
+    const listLink = page.locator('.stuck > .list').getByRole('link', { name: '打开记录', exact: true })
+    assert.equal(await listLink.count(), 1, 'only the HTTPS record may have a stuck-list link')
+    await page.locator('.stuck > .list button[data-ticket="0/RECORD-0"]').focus()
+    await page.keyboard.press('Tab')
+    assert.equal(await listLink.evaluate(link => link === document.activeElement), true, 'Tab must reach the record link next to its ticket')
+    const before = await state(page)
+    await page.context().route('https://records.example.test/**', route => route.fulfill({ body: 'record' }))
+    const popupReady = page.waitForEvent('popup')
+    await page.keyboard.press('Enter')
+    const popup = await popupReady
+    await popup.waitForLoadState()
+    assert.equal(popup.url(), url)
+    assert.equal(await popup.evaluate(() => window.opener), null, 'the record tab must not access its opener')
+    await popup.close()
+    assert.equal((await state(page)).selected, before.selected, 'opening a record must not select a different ticket')
+    for (const [index, value] of urls.entries()) {
+      await page.locator(`.stuck > .list button[data-ticket="0/RECORD-${index}"]`).click()
+      const tripLink = page.locator('.trip').getByRole('link', { name: '打开记录', exact: true })
+      assert.equal(await tripLink.count(), index === 0 ? 1 : 0, `trip record link for ${value}`)
+      if (index !== 0) continue
+      for (const link of [listLink, tripLink]) {
+        assert.equal(await link.getAttribute('href'), url)
+        assert.equal(await link.evaluate(link => link.protocol), 'https:')
+        assert.equal(await link.getAttribute('target'), '_blank')
+        assert.equal(await link.getAttribute('rel'), 'noopener noreferrer')
+        assert.equal(await link.evaluate(link => link.closest('button')), null, 'links must not nest inside a button')
+      }
+      await page.getByRole('button', { name: '复制详情', exact: true }).focus()
+      await page.keyboard.press('Tab')
+      assert.equal(await tripLink.evaluate(link => link === document.activeElement), true, 'Tab must reach the trip record link')
+      live.write({ ...recorded, tickets: tickets.map(ticket => ({ ...ticket, title: 'updated record' })) })
+      await page.waitForFunction(() => document.querySelector('.trip .title').textContent === 'updated record')
+      assert.equal(await tripLink.evaluate(link => link === document.activeElement), true, 'a new Scene must preserve focus on the record link')
+    }
+    assert.equal(await page.evaluate(() => window.__xss), undefined)
+    assert.deepEqual(errors, [])
+    console.log('PASS record links: HTTPS only, missing and unsafe URLs omitted, safe new tab, Tab and Enter, focus survives updates')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -946,6 +998,7 @@ async function checkProduction(browser, bun, model) {
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
     await checkLiveUpdates(browser, live)
     await checkEntries(browser, live, model)
+    await checkRecordLinks(browser, live)
     await checkWithoutWebGL(browser, live)
   } finally {
     await server.halt()

@@ -1,14 +1,86 @@
 package issues
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/ledger"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
+
+func TestLedgerStatsReadsTicketComments(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/ledger-ticket-comments.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var samples []struct {
+		Ticket   string
+		Comments []task.Comment
+	}
+	if err := json.Unmarshal(raw, &samples); err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 2 {
+		t.Fatalf("recorded tickets=%d", len(samples))
+	}
+	for _, tc := range []struct {
+		name                   string
+		ledgerTicket, old, all bool
+		want, source           string
+	}{
+		{name: "ticket comments", want: "runs=2 merged=2 escalated=0 no_ticket=0\n", source: "ticket-comments"},
+		{name: "ledger preferred", ledgerTicket: true, want: "runs=1 merged=0 escalated=1 no_ticket=0\n", source: "ledger-ticket"},
+		{name: "old comments excluded", old: true, want: "runs=0\n", source: "ticket-comments"},
+		{name: "all includes old comments", old: true, all: true, want: "runs=2 merged=2 escalated=0 no_ticket=0\n", source: "ticket-comments"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFeishuFake(t)
+			for i, sample := range samples {
+				for j, comment := range sample.Comments {
+					at := comment.CreatedAt.Format(time.RFC3339Nano)
+					f.rows["tblE"] = append(f.rows["tblE"], feishuRow{
+						"_id": fmt.Sprintf("recE%d%d", i, j), "票据": []feishu.LinkRef{{ID: []string{"recA", "recB"}[i]}},
+						"创建时间": at, "修改时间": at, "正文": comment.Body,
+					})
+				}
+			}
+			// Repeat a recorded run on another ticket to exercise the global dedup key.
+			f.rows["tblE"] = append(f.rows["tblE"], feishuRow{"_id": "recDuplicate", "票据": []feishu.LinkRef{{ID: "recB"}}, "创建时间": "2026-11-09T04:40:00Z", "修改时间": "2026-11-09T04:40:00Z", "正文": samples[0].Comments[0].Body})
+			if tc.ledgerTicket {
+				f.rows["tblT"][1]["标题"] = ledger.Title
+				f.rows["tblE"] = f.rows["tblE"][:1]
+				f.rows["tblE"] = append(f.rows["tblE"], feishuRow{"_id": "recLedger", "票据": []feishu.LinkRef{{ID: "recB"}}, "创建时间": "2026-11-09T04:40:00Z", "修改时间": "2026-11-09T04:40:00Z", "正文": `ledger {"ticket":"ledger-only","started_at":"2026-11-09T00:00:00Z","outcome":"escalated"}`})
+			}
+			now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+			if tc.old {
+				now = now.Add(30 * 24 * time.Hour)
+			}
+			book := ledger.New(&LedgerStore{Client: newFeishuTest(t, f)}, ledger.Options{Now: func() time.Time { return now }, Ticks: make(chan time.Time)})
+			t.Cleanup(func() {
+				if err := book.Close(context.Background()); err != nil {
+					t.Error(err)
+				}
+			})
+			var out, warnings bytes.Buffer
+			if err := book.Stats(context.Background(), tc.all, &out, &warnings); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(out.String(), tc.want) || !strings.HasSuffix(out.String(), "\nsource="+tc.source+"\n") {
+				t.Fatalf("stats=%q, want %q and source=%s", out.String(), tc.want, tc.source)
+			}
+			if len(f.writes) != 0 {
+				t.Fatalf("stats wrote records: %+v", f.writes)
+			}
+		})
+	}
+}
 
 func TestGitHubLedgerRotatesAt400Comments(t *testing.T) {
 	c, f := newImportServer(t)

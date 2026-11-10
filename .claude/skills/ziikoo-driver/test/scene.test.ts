@@ -11,6 +11,18 @@ import { SAMPLE_STATUS } from './sample-runtime'
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
 const runtime = () => parseRuntime(JSON.stringify(SAMPLE_STATUS))
 
+test('sceneOf 透传可选记录 url，缺字段时省略', () => {
+  const status = structuredClone(SAMPLE_STATUS)
+  const url = 'https://example.feishu.cn/base/records?record=rec123&view=grid'
+  Object.assign(status.tickets[0]!, { url })
+  const parsed = parseRuntime(JSON.stringify(status))
+  expect(parsed.tickets[0]).toHaveProperty('url', url)
+  const parcels = sceneOf(parsed, config()).rows[0]!.parcels
+  expect(parcels[0]).toHaveProperty('url', url)
+  expect(JSON.parse(JSON.stringify(parsed.tickets[1]))).not.toHaveProperty('url')
+  expect(JSON.parse(JSON.stringify(parcels[1]))).not.toHaveProperty('url')
+})
+
 test('sceneOf 将 candidate 放到领取台，保留锁链原因', () => {
   const scene = sceneOf(runtime(), config())
   const parcel = scene.rows.flatMap(row => row.parcels).find(one => one.identifier === 'ZW-8')

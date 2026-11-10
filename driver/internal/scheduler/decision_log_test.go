@@ -287,3 +287,42 @@ func TestSchedulerMaintenanceRefusalDeferred(t *testing.T) {
 		}
 	}
 }
+
+func TestSchedulerSummaryFullSync(t *testing.T) {
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	s := setup(&fakeBackend{})
+	round := func() any {
+		t.Helper()
+		for _, row := range captureDecisions(t, s) {
+			if row["event"] == "summary" {
+				return row["full_sync"]
+			}
+		}
+		t.Fatal("no summary")
+		return nil
+	}
+	got := []any{}
+	for range fullSyncEvery + 1 {
+		got = append(got, round())
+	}
+	want := []any{true}
+	for range fullSyncEvery - 1 {
+		want = append(want, false)
+	}
+	want = append(want, true)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("full_sync by round = %v, want start and every %d rounds: %v", got, fullSyncEvery, want)
+	}
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if full := round(); full != false {
+		t.Fatalf("draining round full_sync = %v", full)
+	}
+	if err := maintenance.Set("running"); err != nil {
+		t.Fatal(err)
+	}
+	if full := round(); full != true {
+		t.Fatalf("round after maintenance recovery full_sync = %v", full)
+	}
+}

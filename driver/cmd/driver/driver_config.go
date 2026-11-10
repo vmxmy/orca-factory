@@ -59,6 +59,7 @@ type configRepo struct {
 	Remote  string        `json:"remote"`
 	Path    string        `json:"path"`
 	Prefix  string        `json:"prefix"`
+	Profile string        `json:"profile"`
 	Roles   []configRole  `json:"roles"`
 	Routing []configEntry `json:"routing"`
 }
@@ -70,6 +71,7 @@ type configRole struct {
 	Effort string `json:"effort"`
 	Key    string `json:"key"`
 	Raw    string `json:"raw"`
+	Source string `json:"source"`
 }
 
 // configEntry carries no Value for a secret or an unset service key.
@@ -180,7 +182,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 	s.Environment = append(s.Environment, serviceEntries(ctx, &s.Problems)...)
 	cfg, err := config.Load(home)
 	if err != nil {
-		s.Problems = append(s.Problems, "driver.toml 无法加载（"+err.Error()+"），调度项与仓库未列出")
+		s.Problems = append(s.Problems, "driver 配置无法加载（"+err.Error()+"），调度项与仓库未列出")
 		return s
 	}
 	s.Overview.FactoryRoot = cfg.FactoryRoot
@@ -191,8 +193,20 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		return s
 	}
 	for _, p := range result.Eligible {
-		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix,
-			Roles: repositoryRoles(p.Repository.Env), Routing: repositoryRouting(p.Repository.Env)})
+		roles := repositoryRoles(p.Repository.Env)
+		for i := range roles {
+			if source, ok := p.Repository.Sources[roles[i].Key]; ok {
+				roles[i].Source = source
+			}
+		}
+		routing := repositoryRouting(p.Repository.Env)
+		for i := range routing {
+			if source := p.Repository.Sources[routing[i].Key]; strings.HasPrefix(source, "profile:") {
+				routing[i].Source = source
+			}
+		}
+		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix, Profile: p.Repository.Profile,
+			Roles: roles, Routing: routing})
 		if _, _, err := tierParts(p.Repository.Env); err != nil {
 			s.Problems = append(s.Problems, p.Prefix+" 的需求助手档位不是 claude，需求助手不可用")
 		}
@@ -312,10 +326,10 @@ func proxyWithoutUserinfo(raw string) (string, bool) {
 func repositoryRoles(env map[string]string) []configRole {
 	roles := []configRole{}
 	for _, def := range configRoles {
-		role := configRole{Role: def.role, Raw: def.fallback}
+		role := configRole{Role: def.role, Raw: def.fallback, Source: sourceDefault}
 		for _, key := range def.keys {
 			if env[key] != "" {
-				role.Key, role.Raw = key, env[key]
+				role.Key, role.Raw, role.Source = key, env[key], "repository"
 				break
 			}
 		}
@@ -418,6 +432,9 @@ func writeConfigText(out io.Writer, s configSnapshot) error {
 		o.Build, o.Service, o.Maintenance, o.Snapshot, o.FactoryRoot)
 	for _, repo := range s.Repos {
 		fmt.Fprintf(&b, "\n模型：%s（%s，%s）\n  %s\n", repo.Name, repo.Prefix, repo.Remote, repo.Path)
+		if repo.Profile != "" {
+			fmt.Fprintf(&b, "  方案        %s\n", repo.Profile)
+		}
 		for _, r := range repo.Roles {
 			model := r.Model
 			if model == "" {
@@ -427,7 +444,7 @@ func writeConfigText(out io.Writer, s configSnapshot) error {
 			if source == "" {
 				source = "内置回退"
 			}
-			fmt.Fprintf(&b, "  %-15s %s / %s / %s  [%s]\n", r.Role, r.Agent, model, r.Effort, source)
+			fmt.Fprintf(&b, "  %-15s %s / %s / %s  [%s]\n", r.Role, r.Agent, model, r.Effort, r.Source+" / "+source)
 		}
 		b.WriteString("  路由\n")
 		writeConfigEntries(&b, "    ", repo.Routing)
