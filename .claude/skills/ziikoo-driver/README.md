@@ -153,7 +153,7 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`。该文件已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 原样录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 

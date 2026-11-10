@@ -37,11 +37,11 @@ const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', depl
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
-  const recorded = readJSON(path.join(preview, 'diorama-scene.json'))
+  const recorded = readJSON(path.join(preview, 'diorama-scene-next-scan.json'))
   assert.equal(recorded.state, 'ok')
-  assert.equal(recorded.nextScanAt - recorded.generatedAt, 68_579, 'the recorded next scan interval must survive parseRuntime and sceneOf')
+  assert.equal(recorded.nextScanAt - recorded.generatedAt, 5_170, 'the recorded next scan interval must survive parseRuntime and sceneOf')
   assert.deepEqual(
-    [41_000, 108_579, 108_580].map(age => model.staleOf(recorded, age)),
+    [41_000, 45_170, 45_171].map(age => model.staleOf(recorded, age)),
     [false, false, true],
     'the recorded ok snapshot must stay fresh through its next scan plus 40 seconds and expire one millisecond later',
   )
