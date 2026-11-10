@@ -2,6 +2,7 @@ package status
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,5 +247,27 @@ func TestPushRestampsRewrittenRow(t *testing.T) {
 	})
 	if got := Read(observedAt, 0).Tickets[0]; got.Phase != "审查" {
 		t.Fatalf("stale ledger read replaced a row rewritten from the cache: %+v", got)
+	}
+}
+
+func TestObservationKeepsHumanFieldsWithNewerStage(t *testing.T) {
+	for _, human := range []bool{false, true} {
+		t.Run(fmt.Sprint(human), func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			t.Setenv("DRIVER_STATUS_FILE", "")
+			now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+			active := Ticket{Repo: "repo", Identifier: "OF-474", Owner: "执行器", Phase: "worker"}
+			waiting := Ticket{Repo: "repo", Identifier: "OF-474", Owner: "人", Stage: "human", HumanKind: "scope", HumanReason: "expand scope"}
+			old, incoming := active, waiting
+			if human {
+				old, incoming = waiting, active
+			}
+			Push(now, func(v *View) { SetTicket(v, old, true) })
+			PushObservation(now.Add(time.Second), now.Add(-time.Second), func(v *View) { v.Tickets = []Ticket{incoming} })
+			got := Read(now.Add(time.Second), 0).Tickets[0]
+			if got.Stage != old.Stage || got.HumanKind != old.HumanKind || got.HumanReason != old.HumanReason {
+				t.Fatalf("newer stage and human fields differ: got %+v, want %+v", got, old)
+			}
+		})
 	}
 }
