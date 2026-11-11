@@ -122,6 +122,10 @@ type Scheduler struct {
 	tokens          float64
 	refill          time.Time
 	initialized     bool
+	// tickStarted and tickEnded bound Serve's latest Tick; wakeReason names
+	// why the next one runs.
+	tickStarted, tickEnded time.Time
+	wakeReason             string
 }
 
 // fullSyncEvery is how many rounds pass between full ledger reads, besides the
@@ -427,6 +431,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
+			t.Terminal, t.Run = "-", ""
 			if err := s.launch(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
@@ -553,7 +558,12 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 		if ctx.Err() != nil {
 			return nil
 		}
+		s.wake()
 		if !s.clock().Before(s.NextTickAt) {
+			if s.wakeReason == "" {
+				s.wakeReason = "interval"
+			}
+			s.tickStarted = s.clock()
 			if err = s.Tick(ctx); err != nil && report != nil && !transientSnapshotFailure(err) {
 				report(err)
 			}
@@ -561,7 +571,8 @@ func Serve(ctx context.Context, lockPath string, initialize func(context.Context
 			if delay <= 0 {
 				delay = time.Minute
 			}
-			s.NextTickAt = s.clock().Add(delay)
+			s.tickEnded = s.clock()
+			s.NextTickAt, s.wakeReason = s.tickEnded.Add(delay), ""
 		}
 		if err = wait(ctx); err != nil {
 			if ctx.Err() != nil {

@@ -31,7 +31,7 @@ type correctionBaselineOrca struct{ *recoveryOrca }
 
 func (o *correctionBaselineOrca) TaskList(ctx context.Context, run string) ([]orca.Task, error) {
 	if len(o.starts) == 0 {
-		return []orca.Task{{ID: "child_task", RunID: run, ParentID: "task_one", Status: "blocked"}}, nil
+		return []orca.Task{{ID: "child_task", RunID: run, ParentID: "task_one", Status: "ready"}}, nil
 	}
 	return o.recoveryOrca.TaskList(ctx, run)
 }

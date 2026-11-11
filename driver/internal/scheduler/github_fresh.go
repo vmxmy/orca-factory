@@ -61,10 +61,11 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 		return fmt.Errorf("task ownership or recovery evidence changed: %w", errResnapshot)
 	}
 	closed := task.State.Name == "Canceled" || task.State.Name == "Cancelled" || task.State.Name == "Duplicate" || (task.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)
-	if closed && !DeploymentBarrier(fresh) {
+	releasing := action == Resolve && task.State.Name == "Done" && landedDonePending(fresh)
+	if closed && !releasing && !DeploymentBarrier(fresh) {
 		return errors.New("task was closed before decision")
 	}
-	if action == Resolve && (!task.Metadata.Complete || task.Metadata.ImportHold || task.NativeState != "open" && !DeploymentBarrier(fresh)) {
+	if action == Resolve && (!task.Metadata.Complete || task.Metadata.ImportHold || task.NativeState != "open" && !DeploymentBarrier(fresh) && !releasing) {
 		return errors.New("resolver requires managed open task or historical deployment barrier")
 	}
 	if action == Claim || action == Resume || action == Merge || action == githubSquash {

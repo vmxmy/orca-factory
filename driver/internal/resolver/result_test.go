@@ -47,3 +47,21 @@ func TestHumanTicketEscalateCarriesScope(t *testing.T) {
 		t.Fatalf("other class exposed scope %v", got)
 	}
 }
+
+func TestResolutionAcceptsLandedDoneProposal(t *testing.T) {
+	p, err := ParseResult(`{"action":"landed-done","pr":133,"sha":"0ab0047178cd32132001eef0682d50a77a6f2622","reason":"merged and verified"}`)
+	if err != nil || p.Action != "landed-done" || p.PR != 133 || p.SHA != "0ab0047178cd32132001eef0682d50a77a6f2622" {
+		t.Fatalf("landed-done rejected: %+v %v", p, err)
+	}
+}
+
+func TestResolutionRejectsMalformedLandedDoneProposal(t *testing.T) {
+	for _, body := range []string{
+		`{"action":"landed-done","pr":0,"sha":"0ab0047178cd32132001eef0682d50a77a6f2622","reason":"checked"}`,
+		`{"action":"landed-done","pr":133,"sha":"bad","reason":"checked"}`,
+	} {
+		if _, err := ParseResult(body); err == nil {
+			t.Fatalf("accepted malformed landed-done: %s", body)
+		}
+	}
+}

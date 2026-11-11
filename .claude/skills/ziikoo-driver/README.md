@@ -46,6 +46,8 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 工坊沙盘是固定等距的 three.js 沙盘。Scene 的每个项目画成一座岛，岛之间是海。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面打开时读 `/snapshot` 并订阅 `/events`，先到的 Scene 画出首屏，之后的 Scene 原地更新。页面只读，不提供推进票据的操作。
 
+`/live.mjs`、`/diorama/*.mjs` 与 `/diorama/diorama.css` 使用 `Cache-Control: public, max-age=300`，`/vendor/*` 使用 `public, max-age=86400`；`/`、`/snapshot` 与 `/events` 保持 `no-store`。事件流连接数由 `ZIIKOO_SCENE_MAX_CLIENTS` 限制，默认 50，必须是正整数；达到上限时新连接返回 503 并带 `Retry-After: 5`，连接断开后释放名额。
+
 状态条下方显示今日产出，例如「今日：合并 3 · 转人 1 · 周期中位 12.5 分」，空闲时仍显示。插件把 `status.today` 透传为 `Scene.today`，每项缺字段时不画该项，全部缺失时隐藏整行；有证据的 0 照常显示；周期分钟数按一位小数显示。统计按 driver 服务的本地日期计算，跨午夜的运行归到结束当天，周期取 ledger 记录中的分钟数中位数，不另发飞书请求。跨日后 driver 会省略旧汇总，下一轮观察再更新。`scene.test.ts` 与 `diorama.browser.cjs` 读取录制样本 `driver/testdata/recorded/driver-status-json-today.json`（插件内嵌为 `RECORDED_TODAY_STATUS`），断言真实输出的解析与「今日：合并 1 · 转人 0 · 周期中位 37.1 分」。
 
 ### 服务与访问

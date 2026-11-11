@@ -48,7 +48,11 @@ func (m *mergeIssues) Snapshot(context.Context, []string, time.Time) ([]task.Iss
 }
 func (m *mergeIssues) Repository() string { return "o/r" }
 func (m *mergeIssues) Read(context.Context, string) (issues.Task, error) {
-	return issues.Task{Issue: m.issue, URL: "https://tickets.example/" + m.issue.ID, Complete: true, NativeState: "open", Metadata: issues.Metadata{Complete: true}}, nil
+	native := "open"
+	if m.issue.State.Name == "Done" {
+		native = "closed"
+	}
+	return issues.Task{Issue: m.issue, URL: "https://tickets.example/" + m.issue.ID, Complete: true, NativeState: native, Metadata: issues.Metadata{Complete: true}}, nil
 }
 func (m *mergeIssues) ListComments(context.Context, string) ([]task.Comment, error) {
 	return m.rows, nil
