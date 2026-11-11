@@ -174,9 +174,15 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		if err != nil {
 			return false, err
 		}
+		_, prevAgent, prevModel, prevEffort, err := correctionTier(c, result.State.Corrections-1)
+		if err != nil {
+			return false, err
+		}
 		// Same tier + a live worker terminal means the settled worker can be reused
-		// instead of launching a fresh agent (ZII-904).
-		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort
+		// instead of launching a fresh agent (ZII-904). The terminal ran the previous
+		// correction's tier, so a chain returning to the entry model starts fresh.
+		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort &&
+			agent == prevAgent && model == prevModel && effort == prevEffort
 		handle := cp.Terminal
 		if sameTier && handle == "" && result.DispatchID != "" {
 			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})
@@ -191,10 +197,6 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		}
 		canReuse := sameTier && handle != ""
 		if tierEscalation(c) && !sameTier {
-			_, prevAgent, prevModel, prevEffort, prevErr := correctionTier(c, result.State.Corrections-1)
-			if prevErr != nil {
-				return false, prevErr
-			}
 			change := fmt.Sprintf("correction %d → 升至 %s（%s:%s:%s → %s:%s:%s）", result.State.Corrections, tier,
 				prevAgent, prevModel, prevEffort, agent, model, effort)
 			if err = e.comment(ctx, t.ID, change); err != nil {
@@ -277,8 +279,8 @@ func correctionTier(c Config, n int) (tier, agent, model, effort string, err err
 			err = errors.New("worker tier is not in the tier chain")
 			return
 		}
-		if next := min(index+n, len(tiers)-1); next != index {
-			tier = tiers[next]
+		if n > 0 {
+			tier = tiers[min(index+n, len(tiers)-1)]
 			value := c.TierSettings[tier]
 			if value == "" {
 				value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tier))

@@ -268,6 +268,9 @@ func TestCorrectionTierFollowsChain(t *testing.T) {
 	off.Escalate = "0"
 	strong := chain
 	strong.Tier = "strong"
+	defaultStrong := chain
+	defaultStrong.TierChain = nil
+	defaultStrong.Tier = "strong"
 	for _, tc := range []struct {
 		name string
 		c    Config
@@ -278,6 +281,7 @@ func TestCorrectionTierFollowsChain(t *testing.T) {
 		{"second correction", chain, 2, []string{"max", "codex", "max", "xhigh"}},
 		{"chain end holds", chain, 5, []string{"max", "codex", "max", "xhigh"}},
 		{"strong entry", strong, 1, []string{"max", "codex", "max", "xhigh"}},
+		{"default chain strong entry", defaultStrong, 1, []string{"strong", "claude", "strong", "high"}},
 		{"escalation off", off, 2, []string{"default", "codex", "daily", "low"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

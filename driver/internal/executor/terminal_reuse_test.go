@@ -164,6 +164,30 @@ func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 	}
 }
 
+// A chain that returns to an earlier model must not reuse the previous tier's terminal.
+func TestCorrectionChainReturnToEntryModelStartsFreshAgent(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.gateReds = 2
+	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}}
+	e.Orca = ro
+	e.Config.Escalate = "1"
+	e.Config.Tier = "default"
+	e.Config.Agent, e.Config.Model, e.Config.Effort = "codex", "gpt-6-astra", "low"
+	e.Config.TierChain = []string{"default", "strong", "max"}
+	e.Config.TierSettings = map[string]string{"default": "codex:gpt-6-astra:low", "strong": "claude:claude-opus-5-5:high", "max": "codex:gpt-6-astra:low"}
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(ro.started) != 3 {
+		t.Fatalf("want initial and two correction dispatches: %+v", ro.started)
+	}
+	last := ro.started[2]
+	if last.Terminal != "" || last.Agent != "codex" || last.Model != "gpt-6-astra" || last.Effort != "low" {
+		t.Fatalf("second correction must start the max tier fresh: %+v", last)
+	}
+}
+
 // A stale-terminal rejection falls back to a fresh agent without failing the run.
 func TestCorrectionReuseRejectedFallsBack(t *testing.T) {
 	e, o, tools, service, _, ticket := recoveryFixture(t)

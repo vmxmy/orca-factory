@@ -548,7 +548,7 @@ AGENT_TIER_ESCALATE = "0"
 
 方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 与其他 `AGENT_TIER_<大写档名>`。角色值与档值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
 
-升档链 `AGENT_TIER_CHAIN` 是空格分隔的小写档名，默认 `default strong`；每个档名由 `AGENT_TIER_<大写名>` 配置，例如链 `default strong max` 需要 `AGENT_TIER_MAX`。仓库 env 与方案都可提供这些键。`AGENT_TIER_ESCALATE=1` 时，第 n 次 correction 从入口档（默认 default）升 n 级，到链尾保持；链里有未配置的档或缺少 default 时，`driver exec` 启动即报错。`AGENT_TIER_ESCALATE=0` 时不升档，也不检查链。升档评论写成 `correction <n> → 升至 <档>（<旧 agent:model:effort> → <新 agent:model:effort>）`。
+升档链 `AGENT_TIER_CHAIN` 是空格分隔的小写档名，默认 `default strong`；每个档名由 `AGENT_TIER_<大写名>` 配置，例如链 `default strong max` 需要 `AGENT_TIER_MAX`。仓库 env 与方案都可提供这些键。`AGENT_TIER_ESCALATE=1` 时，第 n 次 correction 从入口档（默认 default）升 n 级，到链尾保持；链里有未配置的档或缺少 default 时，`driver exec` 启动即报错。`AGENT_TIER_ESCALATE=0` 时不升档，也不检查链中各档是否已配置；链本身的格式错误仍在启动时报错。升档评论写成 `correction <n> → 升至 <档>（<旧 agent:model:effort> → <新 agent:model:effort>）`。
 
 修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手经 `LoadRepository` 读取生效值；`driver exec` 仍用 bash source 读取仓库 env，方案叠加与 `LoadRepository` 共用同一函数。票面和评论不能选择方案，也没有按票或成本的自动路由。
 
