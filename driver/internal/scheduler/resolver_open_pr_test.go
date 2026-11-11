@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -151,7 +153,8 @@ func TestResolverOpenPR(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			runtime := &Runtime{GitHub: gh, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
+			wakeRoot := t.TempDir()
+			runtime := &Runtime{GitHub: gh, StateRoot: wakeRoot, Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_GH_REPO": "o/r"}}}}
 			raw, _ := json.Marshal(map[string]string{"action": "open-pr", "branch": branch, "head": head, "title": "Recover PR", "body": "Verified fix", "reason": "gate passed"})
 			ticket := Ticket{ID: created.ID, Identifier: identifier, Repo: "/repo", Owner: machine.OwnerResolver, Phase: machine.PhaseResolver, Resolution: &resolver.Record{Version: 1, Attempt: 2, Phase: "result", Result: string(raw)}}
 			initial, err := json.Marshal(ticket.Resolution)
@@ -185,6 +188,9 @@ func TestResolverOpenPR(t *testing.T) {
 				t.Fatalf("missing receipt: %q %v", body, err)
 			}
 			success := mode == "create" || mode == "existing"
+			if _, err := os.Stat(filepath.Join(wakeRoot, wakeFile)); success != (err == nil) {
+				t.Fatalf("redispatch wake requested=%v, want %v", err == nil, success)
+			}
 			if mode == "non-agent-branch" {
 				if record.Phase != "waiting" || record.Outcome != "failed" || !strings.Contains(record.Result, "agent/<票号>/<单元>") || strings.Contains(body, "归属: 人") {
 					t.Fatalf("non-agent branch not retried: %+v %q", record, body)

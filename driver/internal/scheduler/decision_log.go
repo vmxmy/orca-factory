@@ -76,7 +76,7 @@ func (s *Scheduler) summary(start time.Time, tickets []Ticket, snapshot, fullSyn
 	}
 	s.logger().Info("scheduler inspection", "event", "summary", "in_flight", total,
 		"candidates", candidates, "snapshot_available", snapshot, "full_sync", fullSync, "max_in_flight", s.Config.MaxInFlight,
-		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "phase_ms", timing.milliseconds(), "err", err)
+		"repository_limits", limits, "retired", s.retiredPaths(), "duration_ms", time.Since(start).Milliseconds(), "phase_ms", timing.milliseconds(), "wake_reason", s.wakeReason, "err", err)
 }
 
 func evidence(negative bool, err error) any {

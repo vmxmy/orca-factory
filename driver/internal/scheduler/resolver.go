@@ -216,6 +216,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 			return err
 		}
 		if p.Phase == "result" || p.Phase == "waiting" || p.Phase == "applied" {
+			r.wakeFor(ctx, t, *p)
 			return nil
 		}
 		timer := time.NewTimer(15 * time.Second)
