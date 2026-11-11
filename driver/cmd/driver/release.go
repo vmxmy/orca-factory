@@ -245,8 +245,8 @@ func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string
 	}
 	p := merge.Progress{Version: 1, TicketID: ticket.ID, Repository: repository, PR: number, Head: pr.Head.SHA, MainUnknown: true, MergeSHA: sha, Phase: "merged"}
 	if handoff != nil {
-		if handoff.Version != 1 || handoff.TicketID != ticket.ID || handoff.Identifier != identifier || handoff.Repository != repository || handoff.PR != number || handoff.Head != pr.Head.SHA || handoff.QueueID == "" || handoff.Lane < 1 || handoff.Lane > 2 {
-			return merge.Progress{}, errors.New("handoff identity mismatch or unsupported lane")
+		if handoff.Version != 1 || handoff.TicketID != ticket.ID || handoff.Identifier != identifier || handoff.Repository != repository || handoff.PR != number || handoff.Head != pr.Head.SHA || handoff.QueueID == "" || handoff.Unit == "" || handoff.Baseline == "" || handoff.Run == "" || handoff.Task == "" || !filepath.IsAbs(handoff.Worktree) || handoff.EnqueuedAt.IsZero() || handoff.Validated() != nil {
+			return merge.Progress{}, errors.New("handoff identity mismatch, unvalidated or unsupported lane")
 		}
 		p.QueueID, p.Corrections, p.Infra, p.Attempt, p.CatchupRounds = handoff.QueueID, handoff.Corrections, handoff.Infra, handoff.Attempt, handoff.CatchupRounds
 	}

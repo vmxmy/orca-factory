@@ -235,7 +235,14 @@ func TestReleaseEvidence(t *testing.T) {
 	}
 	human := releaseRecordedComments(t, "ledger-comments-human-release.json")
 	selfDeploy := releaseRecordedComments(t, "ledger-comments-selfdeploy-interrupted.json")
-	handoff, progress := selfDeploy[0], selfDeploy[1]
+	// The recording redacts the frozen gate and review outputs; restore a
+	// validating lane 1 set so only the edited field decides each case.
+	handoff := releaseRewriteLine(t, selfDeploy[0], merge.HandoffPrefix, func(fields map[string]any) {
+		fields["gate_spec"] = "UNIT: executor\nSCOPE: driver/cmd/driver/release.go\nCHECK: make test"
+		fields["gate_output"] = "UNIT executor\nVERDICT green\nSTEP all\nREASON all gates passed\nEVIDENCE\nSCOPE driver/cmd/driver/release.go\nLANE 1\n"
+		fields["review_output"] = `{"unit":"executor","verdict":"green","step":"review"}`
+	})
+	progress := selfDeploy[1]
 	withoutDeployment := func(edit func(map[string]any)) task.Comment {
 		return releaseRewriteLine(t, progress, merge.ProgressPrefix, func(fields map[string]any) {
 			delete(fields, "deployment")
@@ -251,7 +258,7 @@ func TestReleaseEvidence(t *testing.T) {
 		fields["attempt"], fields["corrections"], fields["infra"], fields["catchup_rounds"] = attempt, corrections, infra, catchup
 	}
 	budgetedHandoff := editHandoff(func(fields map[string]any) { budget(fields, 4, 2, 3, 5) })
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "invalid head", "invalid budget", "invalid prior budget", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "invalid head", "invalid budget", "invalid prior budget", "deployment", "held", "wrong head", "unknown phase", "invalid main", "incomplete handoff", "unvalidated handoff"} {
 		t.Run(name, func(t *testing.T) {
 			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
 			pr := recordedPR
@@ -271,7 +278,7 @@ func TestReleaseEvidence(t *testing.T) {
 			case "known main":
 				ledger.comments = []task.Comment{budgetedHandoff, withoutDeployment(func(fields map[string]any) { budget(fields, 5, 3, 4, 6) })}
 			case "deployment":
-				ledger.comments = selfDeploy
+				ledger.comments = []task.Comment{handoff, progress}
 			case "unknown phase":
 				ledger.comments = []task.Comment{handoff, withoutDeployment(func(fields map[string]any) { fields["phase"] = "future-phase" })}
 			case "invalid main":
@@ -289,6 +296,10 @@ func TestReleaseEvidence(t *testing.T) {
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["lane"] = 3 })}
 			case "wrong head":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["head"] = recordedPR.Head.SHA })}
+			case "incomplete handoff":
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { delete(fields, "unit") })}
+			case "unvalidated handoff":
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["review_output"] = "" })}
 			case "invalid head":
 				pr.Head.SHA = strings.Repeat("z", 40)
 			case "invalid budget":
@@ -330,5 +341,30 @@ func TestReleaseEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// doctor-json.json is a real `orca-factory-driver doctor --json` read-back
+// whose warn checks still count as a passed smoke.
+func TestReleaseSmokeRecorded(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/doctor-json.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	running, err := releaseSmoke(raw)
+	if err != nil || running != "0aa1ad4027a2f198dfcdfa69aafc04ebbebeb014" {
+		t.Fatalf("running=%q err=%v", running, err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal(raw, &report); err != nil {
+		t.Fatal(err)
+	}
+	report["checks"].(map[string]any)["ledger"].(map[string]any)["status"] = "unknown"
+	failed, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := releaseSmoke(failed); err == nil || !strings.Contains(err.Error(), "ledger: unknown") {
+		t.Fatalf("unknown check accepted: %v", err)
 	}
 }
