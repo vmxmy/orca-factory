@@ -8,6 +8,7 @@ func TestReviewerCommandMatchesExistingSamples(t *testing.T) {
 	}{
 		{"codex", "codex:gpt-6-astra:high", "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -"},
 		{"claude", "claude:claude-fable-5-1:high", "claude -p --model claude-fable-5-1 --effort high --tools Read,Grep,Glob --permission-mode dontAsk --restricted --strict-mcp-config"},
+		{"codex default model keeps effort", "codex::high", "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -c model_reasoning_effort=high --sandbox read-only -"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

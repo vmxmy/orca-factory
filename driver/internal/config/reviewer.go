@@ -29,7 +29,7 @@ func GenerateReviewerCommand(value string) (string, error) {
 		if model != "" {
 			command += " -m " + model
 		}
-		if model != "" && effort != "" {
+		if effort != "" {
 			command += " -c model_reasoning_effort=" + effort
 		}
 		return command + " --sandbox read-only -", nil
