@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -31,6 +32,7 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
 	var p *resolver.Record
 	failures, failedAttempt := 0, 0
+	topUsed := false
 	for _, c := range rows {
 		if p != nil && p.Phase == "applied" && strings.HasPrefix(c.Body, "Agent处置: ") {
 			next := *p
@@ -54,6 +56,11 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 			case next.Phase == "waiting" && next.Outcome == resolver.Undispatched:
 			case next.Phase == "waiting" || next.Phase == "applied":
 				failures, failedAttempt = 0, 0
+			}
+			topUsed = topUsed || next.Top || next.TopUsed
+			next.TopUsed = topUsed
+			if next.Phase == "applied" || (next.Phase == "waiting" && next.Outcome == "succeeded") {
+				next.Top = false
 			}
 			p = &next
 		}
@@ -89,7 +96,11 @@ func (s resolutionStore) Save(ctx context.Context, p resolver.Record) error {
 	if len(before) > 0 && before[len(before)-1] == line {
 		return nil
 	}
-	if _, err = client.CreateComment(ctx, s.ticket.ID, line); err == nil {
+	body := line
+	if p.TopModelAccepted && (len(before) == 0 || !strings.Contains(before[len(before)-1], `"top_model_accepted":true`)) {
+		body = fmt.Sprintf("终审模型：%s 已接受 %s effort=%s；依据 worker-start launch.effective 与 worker 回报，dispatch=%s\n%s", p.Agent, p.Model, p.Effort, p.Dispatch, line)
+	}
+	if _, err = client.CreateComment(ctx, s.ticket.ID, body); err == nil {
 		return nil
 	}
 	// A newer record from another writer may follow ours; finding ours after
@@ -126,6 +137,9 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	defer session()
 	if err := r.verifyFreshDecision(ctx, t, Resolve); err != nil {
 		return err
+	}
+	if p := t.Resolution; p != nil && p.Top && p.Phase == "waiting" && p.Failures >= topFailureLimit {
+		return r.escalateResolution(ctx, t, p, "终审自己的第二次失败", p.Result)
 	}
 	oc, ok := r.Orca.(resolver.Orca)
 	if !ok || terminal == "" {
@@ -184,8 +198,18 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if tier == "" {
 		tier = "codex"
 	}
+	if t.Resolution != nil && t.Resolution.Top {
+		tier = env["AGENT_ROLE_RESOLVER_TOP"]
+		if t.Resolution.Agent != "" {
+			tier = strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+		}
+		role = append(role, []byte("\n\n"+topResolverPrompt)...)
+	}
 	parts := strings.Split(tier, ":")
-	if len(parts) > 3 || (parts[0] != "codex" && parts[0] != "claude") {
+	if len(parts) > 3 || (parts[0] != "codex" && parts[0] != "claude") || (t.Resolution != nil && t.Resolution.Top && (len(parts) != 3 || parts[1] == "" || parts[2] == "")) {
+		if t.Resolution != nil && t.Resolution.Top {
+			return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP 无效，不更换模型", "需要配置明确的终审档位")
+		}
 		return errors.New("invalid resolver agent tier")
 	}
 	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: parts[0], Now: r.Now, Heartbeat: heartbeat, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
@@ -238,10 +262,11 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 		return errors.New("resolver result missing")
 	}
 	decision, err := resolver.ParseResult(p.Result)
-	if err == nil && decision.Action == "escalate" {
+	topScope := err == nil && p.Top && len(decision.ScopeRequest()) > 0
+	if err == nil && decision.Action == "escalate" && !topScope {
 		return r.escalateResolution(ctx, t, p, decision.Reason, decision.Body)
 	}
-	if p.Outcome == "failed" {
+	if p.Outcome == "failed" && !topScope {
 		return r.retryResolution(ctx, t, p, p.Result)
 	}
 	if p.SourceRun != "" {
@@ -255,6 +280,12 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	}
 	if err != nil {
 		return r.retryResolution(ctx, t, p, "invalid result; provide a structured, validated resolution")
+	}
+	if p.Top && (decision.Action == "ruling" || len(decision.ScopeRequest()) > 0) {
+		return r.applyTopResolution(ctx, t, p, decision)
+	}
+	if decision.Action == "ruling" {
+		return r.retryResolution(ctx, t, p, "ruling 仅限终审处置")
 	}
 	if decision.Action == "open-pr" {
 		return r.openResolutionPR(ctx, t, p, decision)
@@ -289,8 +320,8 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if err != nil {
 		return err
 	}
-	if !prMatchesHandoff(pr, h) {
-		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, handoffBranch(h), h.Head, h.Repository))
+	if !mergechannel.PRMatchesHandoff(pr, h) {
+		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, mergechannel.HandoffBranch(h), h.Head, h.Repository))
 	}
 	if t.Handoff != nil && h.QueueID == t.Handoff.QueueID {
 		if t.Progress != nil && (t.Progress.Phase == "human" || t.Progress.Phase == "correction") {
@@ -437,7 +468,11 @@ func landedDonePending(t Ticket) bool {
 const resolverFailureLimit = 3
 
 func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Record, reason string) error {
-	if failures := p.Failures + 1; failures >= resolverFailureLimit {
+	limit := resolverFailureLimit
+	if p.Top {
+		limit = topFailureLimit
+	}
+	if failures := p.Failures + 1; failures >= limit {
 		return r.escalateResolution(ctx, t, p, fmt.Sprintf("处置连续失败 %d 次: %s", failures, reason), fmt.Sprintf("resolver attempt=%d dispatch=%s", p.Attempt, p.Dispatch))
 	}
 	next := *p
@@ -456,6 +491,20 @@ func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Rec
 // stops automatic dispatch until a person writes a new resolver receipt.
 func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
 	next := *p
+	if !p.TopUsed && !p.Top && autoReviewEnabled(r.Repositories[t.Repo].Env, "top") {
+		next.Top, next.TopUsed, next.TopReason = true, true, reason+"\n"+evidence
+		if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
+			next.TopClass = decision.Class
+		}
+		next.Agent, next.Model, next.Effort = "", "", ""
+		next.Phase, next.Outcome, next.Result = "waiting", "", ""
+		next.RetryAt = time.Time{}
+		raw, err := json.Marshal(next)
+		if err != nil {
+			return err
+		}
+		return r.mergeComment(ctx, t, "Agent处置: 终审处置\n阶段: Agent处置\n归属: 处置Agent\n"+resolver.Prefix+string(raw))
+	}
 	next.Phase, next.Outcome = "human", "failed"
 	next.RetryAt = time.Time{}
 	raw, err := json.Marshal(next)

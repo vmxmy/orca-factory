@@ -314,10 +314,16 @@ func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review,
 		}
 		return "已放行 " + r.ticket, true
 	}
+	if r.verb == feishu.VerbRuling {
+		if err := applyRuling(ctx, p.Ledger, ticket, record, sender, r.reason, g.now()); err != nil {
+			return failedReply, false
+		}
+		return "已裁定 " + r.ticket, true
+	}
 	body := fmt.Sprintf("%s：%s %s", r.verb, sender, g.now().Format(time.RFC3339))
 	note := strings.Join(strings.Fields(r.reason), " ")
 	switch r.verb {
-	case feishu.VerbRuling, feishu.VerbCancel:
+	case feishu.VerbCancel:
 		body += "\n理由：" + note
 	case feishu.VerbScope:
 		paths, refusal := scopeAddition(r, record, p.Lane3Globs)
