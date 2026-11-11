@@ -16,6 +16,12 @@ process.on('unhandledRejection', failWith)
 
 const token = process.env.ZIIKOO_SCENE_TOKEN || fail('缺少 ZIIKOO_SCENE_TOKEN')
 
+const maxClientsText = process.env.ZIIKOO_SCENE_MAX_CLIENTS ?? '50'
+const maxClients = Number(maxClientsText)
+if (!/^\d+$/.test(maxClientsText) || !Number.isSafeInteger(maxClients) || maxClients <= 0) {
+  fail(`工坊沙盘事件流客户端上限必须是正整数，收到 ${maxClientsText}`)
+}
+
 const bind = process.env.ZIIKOO_SCENE_BIND ?? 'auto'
 const portText = process.env.ZIIKOO_SCENE_PORT ?? '0'
 const port = Number(portText)
@@ -123,6 +129,9 @@ const listen = (listenPort: number) => {
         return Response.json(current ?? { reason: '等待 driver 快照' }, { status: current ? 200 : 503, headers })
       }
       if (url.pathname === '/events') {
+        if (clients.size >= maxClients) {
+          return new Response(null, { status: 503, headers: { ...headers, 'Retry-After': '5' } })
+        }
         let client: ReadableStreamDefaultController<Uint8Array>
         let keepalive: ReturnType<typeof setInterval>
         const detach = () => {
@@ -148,7 +157,8 @@ const listen = (listenPort: number) => {
       }
       const file = files[url.pathname]
       if (!file) return new Response(null, { status: 404 })
-      return new Response(Bun.file(new URL(`./page/${file.path}`, import.meta.url)), { headers: { ...headers, 'Content-Type': file.type } })
+      const cacheControl = url.pathname.startsWith('/vendor/') ? 'public, max-age=86400' : 'public, max-age=300'
+      return new Response(Bun.file(new URL(`./page/${file.path}`, import.meta.url)), { headers: { 'Cache-Control': cacheControl, 'Referrer-Policy': 'no-referrer', 'Content-Type': file.type } })
     },
   })
 }
