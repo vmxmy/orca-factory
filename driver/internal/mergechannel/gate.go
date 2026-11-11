@@ -1,4 +1,4 @@
-package scheduler
+package mergechannel
 
 import (
 	"context"
@@ -13,23 +13,32 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
+// Gate supplies the inspection-time inputs. Prepare returns a run that retains
+// only frozen data and the runner, never the scheduler command callback.
+type Gate struct {
+	Handoff merge.Handoff
+	Env     map[string]string
+	Command func(context.Context, string, string, ...string) ([]byte, error)
+	Run     func(context.Context, runx.Spec) ([]byte, error)
+}
+
 // Prepare freezes the whole original gate for c on the inspection goroutine:
 // the script and project hooks from c's main, the frozen spec and the
 // repository env. The gate runs later on a validation goroutine, where it must
 // not read the runtime, which the next inspection updates.
-func (a *mergeAdapter) Prepare(ctx context.Context, c merge.Candidate) (merge.GateRun, error) {
-	h := *a.ticket.Handoff
+func (a Gate) Prepare(ctx context.Context, c merge.Candidate) (merge.GateRun, error) {
+	h := a.Handoff
 	if err := h.Validated(); err != nil {
 		return nil, err
 	}
-	script, err := a.runtime.command(ctx, c.Request.Path, "git", "show", c.Main+":scripts/agent-gates/gate.sh")
+	script, err := a.Command(ctx, c.Request.Path, "git", "show", c.Main+":scripts/agent-gates/gate.sh")
 	if err != nil {
 		return nil, safeMergeGateError(err)
 	}
 	if len(script) == 0 {
 		return nil, errors.New("original merge gate unavailable")
 	}
-	repoEnv := a.runtime.Repositories[a.ticket.Repo].Env
+	repoEnv := a.Env
 	env := map[string]string{}
 	for _, entry := range os.Environ() {
 		k, v, ok := strings.Cut(entry, "=")
@@ -45,7 +54,7 @@ func (a *mergeAdapter) Prepare(ctx context.Context, c merge.Candidate) (merge.Ga
 	for k, v := range env {
 		entries = append(entries, k+"="+v)
 	}
-	run := a.runtime.Run
+	run := a.Run
 	if run == nil {
 		run = runx.Run
 	}

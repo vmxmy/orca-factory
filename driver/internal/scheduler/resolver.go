@@ -16,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -289,8 +290,8 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if err != nil {
 		return err
 	}
-	if !prMatchesHandoff(pr, h) {
-		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, handoffBranch(h), h.Head, h.Repository))
+	if !mergechannel.PRMatchesHandoff(pr, h) {
+		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, mergechannel.HandoffBranch(h), h.Head, h.Repository))
 	}
 	if t.Handoff != nil && h.QueueID == t.Handoff.QueueID {
 		if t.Progress != nil && (t.Progress.Phase == "human" || t.Progress.Phase == "correction") {
