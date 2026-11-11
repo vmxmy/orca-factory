@@ -468,7 +468,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 终审标记持久化在票据回执中，每票只进入一次，不补派历史转人票。终审明确转人或第二次失败才发卡片，scope/release 不再覆盖该决定；正常裁定后恢复普通处置。终审不直接写 Done、合并或自动批准取消，gate、审查、CI 与 lane 3 约束保持不变。
 
 
-本仓库配置为 `AGENT_AUTO_REVIEW=scope,release,top`；缺省不含 `release` 时保持原人工卡片流程。含 `release` 时，转人卡片发送前会重读票据和评论，在 `humanReleaseRefusal` 为空、没有既往 `放行：` 评论、且转人原因不含“需要授权”“凭证”“不可逆”“生产 DDL”“数据”时自动写入一次 `放行：auto` 与 waiting 回执，不发卡片。escalate 转人按 resolver 结果中的完整原因判断；其他转人的原因已被截断时不自动放行。lane 3、部署 paused、证据冲突、既有人工或自动放行，以及命中这些禁止字样的原因继续发卡片并写明未自动放行原因。两项都启用时先判扩 SCOPE：批准则不再放行；未批准再判放行，两项都未通过时卡片的“未自动批准”行依次写 `扩SCOPE：<原因>；放行：<原因>`。
+本仓库配置为 `AGENT_AUTO_REVIEW=scope,release,top`。以下 scope/release 自动审批只适用于未进入过终审的转人票；含 `release` 时，转人卡片发送前会重读票据和评论，在 `humanReleaseRefusal` 为空、没有既往 `放行：` 评论、且转人原因不含“需要授权”“凭证”“不可逆”“生产 DDL”“数据”时自动写入一次 `放行：auto` 与 waiting 回执，不发卡片。escalate 转人按 resolver 结果中的完整原因判断；其他转人的原因已被截断时不自动放行。lane 3、部署 paused、证据冲突、既有人工或自动放行，以及命中这些禁止字样的原因继续发卡片并写明未自动放行原因。两项都启用时先判扩 SCOPE：批准则不再放行；未批准再判放行，两项都未通过时卡片的“未自动批准”行依次写 `扩SCOPE：<原因>；放行：<原因>`。
 
 启用后，调度器在飞书转人卡片发送前重读票据和评论。最新 `resolver-state` 必须仍是本次 `human`，且申请是 `action=escalate`、`class=scope-extension` 的非空 `scope` 数组。自动批准沿用人工扩 SCOPE 的校验：票未取消、有 SCOPE 和 LANE 预判、不属 lane 3、合并证据有效且部署屏障未暂停。另须同时满足：
 
