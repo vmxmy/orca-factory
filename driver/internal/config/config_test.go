@@ -66,6 +66,41 @@ func TestMachineAndRepositoryConfig(t *testing.T) {
 	}
 }
 
+func TestRepositoryAgentMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, assignment, want string
+		invalid                bool
+	}{
+		{"default", "", "", false},
+		{"manual", "AGENT_MODE=manual\n", "manual", false},
+		{"auto", "AGENT_MODE=auto\n", "auto", false},
+		{"empty", "AGENT_MODE=\n", "", true},
+		{"unknown", "AGENT_MODE=automatic\n", "", true},
+		{"case sensitive", "AGENT_MODE=AUTO\n", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			dir := filepath.Join(repo, "scripts", "agent-gates")
+			if err := os.MkdirAll(dir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "agent-graph.env"), []byte(tc.assignment), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadRepository(repo)
+			if tc.invalid {
+				if err == nil || !strings.Contains(err.Error(), "AGENT_MODE") {
+					t.Fatalf("invalid mode must fail with its key: %v", err)
+				}
+				return
+			}
+			if err != nil || got.Env["AGENT_MODE"] != tc.want {
+				t.Fatalf("mode=%q err=%v, want %q", got.Env["AGENT_MODE"], err, tc.want)
+			}
+		})
+	}
+}
+
 func TestRejectNonFiniteTokenRefill(t *testing.T) {
 	for _, value := range []string{"nan", "inf", "-inf"} {
 		t.Run(value, func(t *testing.T) {

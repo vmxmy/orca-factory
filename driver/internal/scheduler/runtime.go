@@ -391,6 +391,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = candidate
+		ticket.Parked, ticket.Resumed = parkedState(issue, comments)
 		ticket.Blocked = issue.Blocked()
 		ticket.Held, ticket.Number = issue.Held, issue.Number
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
@@ -404,7 +405,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 				ticket.Blockers = append(ticket.Blockers, relation.Issue.Identifier)
 			}
 		}
-		if ticket.Legacy || ticket.Candidate || owned(ticket) || ticket.Owner == machine.OwnerHuman || ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
+		if ticket.Legacy || ticket.Candidate || owned(ticket) || ticket.Owner == machine.OwnerHuman || ticket.Parked != "" || ticket.MergeProblem != "" || DeploymentBarrier(ticket) {
 			if scopeEnabled[path] {
 				ticket.Scope, err = r.ticketScope(ctx, ticket)
 				if err != nil {
@@ -431,18 +432,20 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 // issueEligibility shares only label/state policy. Ownership, blockers and
 // complete fresh evidence remain independent checks at the action boundary.
 func issueEligibility(issue task.Issue) (candidate, claimed, failed bool) {
-	ready := false
+	ready, parked := false, false
 	for _, label := range issue.Labels.Nodes {
 		switch label.Name {
 		case "ready-for-agent":
 			ready = true
+		case parkedLabel:
+			parked = true
 		case "auto-impl":
 			claimed = true
 		case "auto-failed":
 			failed = true
 		}
 	}
-	candidate = ready && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
+	candidate = ready && !parked && !claimed && !failed && (issue.State.Name == "Todo" || issue.State.Name == "Backlog")
 	return candidate, claimed, failed
 }
 

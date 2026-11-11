@@ -368,6 +368,18 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 验证：`TestDriverConfigShowsEffectiveValuesWithoutSecrets` 用假飞书账本、假 Orca 仓库清单和读不到的服务运行 `config --json`，断言假凭据不出现在输出中、调度项来源、角色回退与 reviewer 命令解析，以及 `problems` 记下未识别键与服务环境。
 
 
+### 手动与自动模式（OF-479）
+
+- 仓库 env 键 `AGENT_MODE` 只接受 `manual` 与 `auto`，缺省 `manual`；显式空值或其他值使 `config.LoadRepository` 报错（`config.TestRepositoryAgentMode`）。
+- `auto` 时 `autoReviewEnabled` 对 `scope`、`release`、`top` 返回 true；终审失败上限由 `topLimit` 取 `resolverFailureLimit`。`auto` 下终审自己的 escalate 计为一次失败，经 `retryResolution` 在同一档位重试，到上限后搁置。`escalateResolution` 在 `auto` 下不写 `转人:` 与 `归属: 人`：`mustHuman` 命中时直接搁置，否则先进终审，终审已用过则搁置。`mustHuman` 是 escalate `class` 命中 `intake.TopMustHuman`（与 `ApplyTopReview` 共用的六类表），或结构化证据为 lane 3 handoff、部署 `paused`、`MergeProblem` 非空，或票面 `## LANE 预判` 为 3（`intake.FaceLaneThree`，与 `humanReleaseRefusal` 共用 `laneHeading`；前几项都未命中时才回读票面）。合并通道 `merge.HumanDirect`（lane 3）在 `auto` 下同样搁置。
+- 飞书通知前的扩 SCOPE 与放行自动审查只认 `AGENT_AUTO_REVIEW` 显式开关（`explicitAutoReview`）：`auto` 不产生转人票，通知路径上的转人票都是切换前的历史票，按原手动流程处理。
+- 搁置先调用 `UpdateIssue(id, "Todo", ["parked"], ["ready-for-agent","auto-impl","auto-failed"])`，成功后写评论 `搁置：<原因>\n已完成：<证据>\n阶段: 待领\n归属: 无\n<回执>`。处置路径的回执是 `phase=applied, outcome=failed` 的 resolver-state，之后的 `Agent处置:` 事件按既有规则重开为新 attempt；合并路径的回执是 `phase=human` 的 merge-progress。标签先写，票在可被领取前不会失去归属。
+- `parkedState` 从标签 `parked` 与最新 `搁置：` 首行读出 `Ticket.Parked`；没有 `parked` 标签而最新的归属事件仍是 `搁置：` 时置 `Ticket.Resumed`，表示人已恢复该票。`issueEligibility` 与 claim 前的新鲜回读拒绝 `parked`；`ObservationRow` 写 `blockedReason: parked: <原因>`，优先于 `MergeProblem`，搁置票进入状态快照与实时状态；`feishuNotification` 对搁置票先于证据冲突与部署失败返回类别 `搁置`，以票 ID 为去重标识，每票只写一次 `通知:` 事件并发文字消息，不发卡片。
+- 搁置票若仍有部署屏障或冲突证据，仍进入 `MergeQueue`；`AdvanceMerges` 遇到队首 `Parked` 非空或刚恢复（`Resumed`）时与处置、人工队首一样暂停该仓库合并通道，也不执行自部署批次恢复（`resumeDeployBatch`），不改写归属。恢复票改派处置时，带部署屏障的票同时留在 `MergeQueue`，后续 PR 不越过该屏障。
+- 恢复：人重新加 `ready-for-agent` 并去掉 `parked`。没有合并证据的票按普通候选领取；带冻结 handoff 或 `MergeProblem` 的票（claim 会拒绝）由 `resumesResolution` 改派 `Agent处置: parked ticket resumed`；该判断先于合并通道分支，带部署屏障或冲突证据的票也不会滞留在合并通道，处置 Agent 从既有证据继续。lane 3 仍只能由人合并，处置 Agent 无法合并时会再次搁置。
+- 验证：`scheduler.TestAgentModeEscalationAfterTop`、`TestAutoModeImpliesTopReview`、`TestAutoModeParksMustHumanClassBeforeTop`（读录制样本 `resolver-escalate-credentials.json`，并用搁置写出的评论回读 `parkedState`）、`TestAutoModeParksMustHumanEvidenceBeforeTop`、`TestAutoModeTopRetriesUpToResolverLimit`、`TestAutoModeParksLane3`、`TestParkedTicketIsNotClaimed`、`TestParkedTicketStatusAndNotification`、`TestResumedParkedTicketWithMergeEvidenceReturnsToResolver`、`TestParkedMergeHeadPausesLane`、`TestResumedBarrierHoldsMergeLane`、`TestRecordedParkedStateReadsLedger`、`TestAutoReleaseBeforeHumanCard/auto_mode_keeps_historical_ticket`。
+- 搁置样本 `testdata/recorded/ledger-issue-parked-resume.json` 是真实账本回读（2026-11-12）：按 OF-485 先例，在生产 Base 建未启用的临时项目（仓库远端 `github.com/vmxmy/of479-park-sandbox-*`，前缀 `OFPRK`，生产 driver 按项目过滤不读取）和票 OFPRK-494，票面 `## LANE 预判` 为 3。先写一条 `Agent处置` 回执（escalate、`class=other`），再由本分支 `applyResolution` 在 `AGENT_MODE=auto` 下经 `mustHuman` 回读真实票面、`parkTicket` 写入标签与 `搁置：` 评论；随后经 `UpdateIssue` 加回 `ready-for-agent`、去掉 `parked`。两个时点各用 `driver issues read --id OFPRK-494 --json` 录制，字段原样（无凭据）。录制后已删除事件、票和项目行。生产 `标签` 字段已有 `parked` 选项。`TestRecordedParkedStateReadsLedger` 断言搁置原因、恢复判断与释放归属；`TestAutoModeParksMustHumanEvidenceBeforeTop/ticket_face_lane_3` 用样本中的真实票面。
+
 ### 终审处置（OF-477）
 
 - 仓库 env 新键 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort` 与 `AGENT_AUTO_REVIEW` 的 `top` 开关均缺省为空。普通处置保留 `AGENT_ROLE_RESOLVER`/strong 的解析。top 必须显式给完整 agent/model/effort，不回退普通档位；已开始的终审重试保持冻结档位。

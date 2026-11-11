@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -138,7 +139,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if err := r.verifyFreshDecision(ctx, t, Resolve); err != nil {
 		return err
 	}
-	if p := t.Resolution; p != nil && p.Top && p.Phase == "waiting" && p.Failures >= topFailureLimit {
+	if p := t.Resolution; p != nil && p.Top && p.Phase == "waiting" && p.Failures >= topLimit(r.Repositories[t.Repo].Env) {
 		return r.escalateResolution(ctx, t, p, "终审自己的第二次失败", p.Result)
 	}
 	oc, ok := r.Orca.(resolver.Orca)
@@ -264,6 +265,16 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	decision, err := resolver.ParseResult(p.Result)
 	topScope := err == nil && p.Top && len(decision.ScopeRequest()) > 0
 	if err == nil && decision.Action == "escalate" && !topScope {
+		// Auto mode keeps the final resolver on its tier up to the retry limit.
+		if p.Top && autoMode(r.Repositories[t.Repo].Env) {
+			human, humanErr := r.mustHuman(ctx, t, decision.Class)
+			if humanErr != nil {
+				return humanErr
+			}
+			if !human {
+				return r.retryResolution(ctx, t, p, decision.Reason)
+			}
+		}
 		return r.escalateResolution(ctx, t, p, decision.Reason, decision.Body)
 	}
 	if p.Outcome == "failed" && !topScope {
@@ -470,7 +481,7 @@ const resolverFailureLimit = 3
 func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Record, reason string) error {
 	limit := resolverFailureLimit
 	if p.Top {
-		limit = topFailureLimit
+		limit = topLimit(r.Repositories[t.Repo].Env)
 	}
 	if failures := p.Failures + 1; failures >= limit {
 		return r.escalateResolution(ctx, t, p, fmt.Sprintf("处置连续失败 %d 次: %s", failures, reason), fmt.Sprintf("resolver attempt=%d dispatch=%s", p.Attempt, p.Dispatch))
@@ -488,14 +499,26 @@ func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Rec
 }
 
 // escalateResolution hands the ticket to a human; the human resolver phase
-// stops automatic dispatch until a person writes a new resolver receipt.
+// stops automatic dispatch until a person writes a new resolver receipt. Auto
+// mode parks the ticket instead.
 func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
-	next := *p
-	if !p.TopUsed && !p.Top && autoReviewEnabled(r.Repositories[t.Repo].Env, "top") {
-		next.Top, next.TopUsed, next.TopReason = true, true, reason+"\n"+evidence
-		if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
-			next.TopClass = decision.Class
+	env := r.Repositories[t.Repo].Env
+	class := ""
+	if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
+		class = decision.Class
+	}
+	if autoMode(env) {
+		human, err := r.mustHuman(ctx, t, class)
+		if err != nil {
+			return err
 		}
+		if human {
+			return r.parkResolution(ctx, t, p, reason, evidence)
+		}
+	}
+	next := *p
+	if !p.TopUsed && !p.Top && autoReviewEnabled(env, "top") {
+		next.Top, next.TopUsed, next.TopReason, next.TopClass = true, true, reason+"\n"+evidence, class
 		next.Agent, next.Model, next.Effort = "", "", ""
 		next.Phase, next.Outcome, next.Result = "waiting", "", ""
 		next.RetryAt = time.Time{}
@@ -505,6 +528,9 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 		}
 		return r.mergeComment(ctx, t, "Agent处置: 终审处置\n阶段: Agent处置\n归属: 处置Agent\n"+resolver.Prefix+string(raw))
 	}
+	if autoMode(env) {
+		return r.parkResolution(ctx, t, p, reason, evidence)
+	}
 	next.Phase, next.Outcome = "human", "failed"
 	next.RetryAt = time.Time{}
 	raw, err := json.Marshal(next)
@@ -513,6 +539,75 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	}
 	body := fmt.Sprintf("转人: %s\n证据: %s\n阶段: %s\n归属: %s\n%s%s", ledgerLine(reason), ledgerLine(evidence), machine.PhaseHuman, machine.OwnerHuman, resolver.Prefix, raw)
 	return r.mergeComment(ctx, t, body)
+}
+
+const parkedLabel = "parked"
+
+// parkResolution parks with an applied resolver receipt; a later Agent处置
+// event reopens it as a new attempt.
+func (r *Runtime) parkResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
+	next := *p
+	next.Phase, next.Outcome = "applied", "failed"
+	next.RetryAt = time.Time{}
+	raw, err := json.Marshal(next)
+	if err != nil {
+		return err
+	}
+	return r.parkTicket(ctx, t, reason, evidence, resolver.Prefix+string(raw))
+}
+
+// parkTicket stops automatic work without a human owner. Labels change first:
+// a ticket must never lose its owner while it can still be claimed. A person
+// resumes it by restoring ready-for-agent and removing parked.
+func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, receipt string) error {
+	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Todo", []string{parkedLabel}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
+		return fmt.Errorf("park labels unconfirmed: %w", err)
+	}
+	body := fmt.Sprintf("搁置：%s\n已完成：%s\n阶段: %s\n归属: %s\n%s", ledgerLine(reason), ledgerLine(evidence), machine.PhaseUnclaimed, machine.OwnerNone, receipt)
+	if err := r.mergeComment(ctx, t, body); err != nil {
+		return err
+	}
+	r.board(ctx, t, machine.PhaseUnclaimed, "搁置："+ledgerLine(reason))
+	return nil
+}
+
+// parkedState returns the latest 搁置 reason of a ticket labeled parked. Without
+// the label, resumed reports that 搁置 is still the latest ownership event: a
+// person restored the ticket.
+func parkedState(issue task.Issue, comments []task.Comment) (reason string, resumed bool) {
+	rows := append([]task.Comment(nil), comments...)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	parkedLast := false
+	for _, c := range rows {
+		line, park := strings.CutPrefix(c.Body, "搁置：")
+		if park {
+			reason = strings.SplitN(line, "\n", 2)[0]
+		}
+		if park || strings.Contains("\n"+c.Body, "\n归属: ") {
+			parkedLast = park
+		}
+	}
+	if !slices.ContainsFunc(issue.Labels.Nodes, func(l task.NamedID) bool { return l.Name == parkedLabel }) {
+		return "", parkedLast
+	}
+	if reason == "" {
+		reason = "parked label"
+	}
+	return reason, false
+}
+
+// mustHuman reports what only a person may decide: a class from the table shared
+// with the final resolver, lane 3 from the handoff or the ticket face, paused
+// deployment or conflicting merge evidence.
+func (r *Runtime) mustHuman(ctx context.Context, t Ticket, class string) (bool, error) {
+	if intake.TopMustHuman(class) || t.MergeProblem != "" || (t.Handoff != nil && t.Handoff.Lane == 3) || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State == "paused") {
+		return true, nil
+	}
+	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
+	if err != nil {
+		return false, fmt.Errorf("read ticket face: %w", err)
+	}
+	return intake.FaceLaneThree(description), nil
 }
 
 // ledgerLine keeps agent text on one line so it cannot forge ledger fields.

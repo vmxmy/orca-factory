@@ -94,6 +94,8 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 				ready = true
 			case "auto-impl", "auto-failed":
 				return errors.New("task already claimed or failed")
+			case parkedLabel:
+				return errors.New("task is parked")
 			}
 		}
 		if !ready {

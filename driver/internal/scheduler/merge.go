@@ -110,8 +110,12 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			}
 			return a.EnqueuedAt.Before(b.EnqueuedAt)
 		})
-		if head := rows[0]; head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman {
-			if p := head.Progress; p != nil && deploymentBatchBinding(p.Deployment) != nil {
+		// A parked or just resumed head awaits a person or the resolver: no
+		// automatic recovery may rewrite its ownership.
+		head := rows[0]
+		waiting := head.Parked != "" || head.Resumed
+		if waiting || head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman {
+			if p := head.Progress; !waiting && p != nil && deploymentBatchBinding(p.Deployment) != nil {
 				rolled, err := fileExists(r.selfMarker(deploymentSHA(p), markerRolledBack))
 				if err != nil {
 					problems = append(problems, err)
@@ -125,6 +129,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 				}
 			}
 			reason := string(head.Owner)
+			if head.Parked != "" {
+				reason = "parked: " + head.Parked
+			}
 			if p := head.Progress; p != nil && p.Deployment != nil && p.Deployment.Reason != "" {
 				reason = p.Deployment.Reason
 			}

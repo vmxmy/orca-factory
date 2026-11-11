@@ -48,6 +48,7 @@
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
 - 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。默认调度器把票转人工、通知一次。仓库启用 `AGENT_AUTO_REVIEW=top` 时，新转人请求先进入一次终审；已有历史转人票不补派。修复已推送、只差人裁定时按以下类别填写 `class`，并带 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。凭证、环境、授权、不可逆操作、生产 DDL、生产数据阻塞必须分别填 `class=credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data`；其余阻塞填 `class=other`；每个 escalate 都必须带 class，不带 class 按未分类处理。`other` 表示不属于六类禁止阻塞，也不符合已推送修复的 `scope-extension` 或 `brief-interpretation` 条件，不要求 head。普通转人时 `scope-extension`、`brief-interpretation` 与 head 触发交叉复审并记录结果；终审的 scope-extension 可由调度器按自动扩 SCOPE 限制批准。`scope-extension` 再带 `scope`（仓库内字面路径数组）时，审批人可在飞书卡片一键同意；只列确实需要的文件。
+- 仓库 `AGENT_MODE=auto` 时调度器不转人：escalate 先进终审，终审的 escalate 与失败在同一档位最多重试 3 次；重试用尽，或 `class` 属于六类禁止阻塞、票带 lane 3 handoff、票面 LANE 预判为 3、部署 paused、证据冲突时，票被搁置（`搁置：` 评论、`parked` 标签、释放归属）。人重新加 `ready-for-agent` 并去掉 `parked` 后，票重新领取；带冻结合并证据的票回到 Agent处置。escalate 的写法与 class 规则不变；搁置不是批准。
 - 可重试的暂时失败用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器退避重试，连续 3 次失败转人工。
 - 报告后停止操作，等待控制器释放 worker。
 

@@ -23,6 +23,21 @@ const (
 	topBlockProductionData = "production-data"
 )
 
+// TopMustHuman reports an escalation class that only a human may decide.
+func TopMustHuman(class string) bool {
+	switch class {
+	case topBlockCredentials, topBlockEnvironment, topBlockAuthorization, topBlockIrreversible, topBlockProductionDDL, topBlockProductionData:
+		return true
+	}
+	return false
+}
+
+// FaceLaneThree reports a ticket face that predicts lane 3.
+func FaceLaneThree(description string) bool {
+	m := laneHeading.FindStringSubmatch(description)
+	return m != nil && m[1] == "3"
+}
+
 const (
 	topRulingScopeExtension      = "scope-extension"
 	topRulingBriefInterpretation = "brief-interpretation"
@@ -57,8 +72,7 @@ func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt 
 	if refusal := humanReleaseRefusal(id, ticket.Description, latest); refusal != "" {
 		return refusal, nil
 	}
-	switch record.TopClass {
-	case topBlockCredentials, topBlockEnvironment, topBlockAuthorization, topBlockIrreversible, topBlockProductionDDL, topBlockProductionData:
+	if TopMustHuman(record.TopClass) {
 		return "必须转人：" + record.TopClass, nil
 	}
 	decision, err := resolver.ParseResult(record.Result)
