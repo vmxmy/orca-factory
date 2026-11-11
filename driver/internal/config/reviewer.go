@@ -47,10 +47,11 @@ func GenerateReviewerCommand(value string) (string, error) {
 	}
 }
 
-// ResolveReviewerCommand applies the reviewer role precedence: an explicit
+// ReviewerKey picks the key that configures one reviewer role: an explicit
 // repository structured key, an explicit repository command key, then a
-// structured value supplied by the selected machine profile.
-func ResolveReviewerCommand(env, sources map[string]string, structuredKey, commandKey string) (string, error) {
+// structured value supplied by the selected machine profile. A key missing
+// from sources but present in env counts as repository-assigned.
+func ReviewerKey(env, sources map[string]string, structuredKey, commandKey string) string {
 	source := func(key string) string {
 		if value, ok := sources[key]; ok {
 			return value
@@ -60,14 +61,24 @@ func ResolveReviewerCommand(env, sources map[string]string, structuredKey, comma
 		}
 		return ""
 	}
-	if source(structuredKey) == "repository" {
-		return GenerateReviewerCommand(env[structuredKey])
+	switch {
+	case source(structuredKey) == "repository":
+		return structuredKey
+	case source(commandKey) == "repository":
+		return commandKey
+	case strings.HasPrefix(source(structuredKey), "profile:"):
+		return structuredKey
 	}
-	if source(commandKey) == "repository" {
+	return ""
+}
+
+// ResolveReviewerCommand returns the command for the key ReviewerKey picks.
+func ResolveReviewerCommand(env, sources map[string]string, structuredKey, commandKey string) (string, error) {
+	switch ReviewerKey(env, sources, structuredKey, commandKey) {
+	case structuredKey:
+		return GenerateReviewerCommand(env[structuredKey])
+	case commandKey:
 		return strings.TrimSpace(env[commandKey]), nil
-	}
-	if strings.HasPrefix(source(structuredKey), "profile:") {
-		return GenerateReviewerCommand(env[structuredKey])
 	}
 	return "", nil
 }

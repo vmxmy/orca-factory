@@ -219,7 +219,7 @@ func configEvidence(readers evidenceReaders, source querySource, now time.Time) 
 	}
 	type tier struct{ Role, Agent, Model, Effort string }
 	tiers := []tier{}
-	for _, role := range repositoryRoles(env) {
+	for _, role := range repositoryRoles(env, nil) {
 		tiers = append(tiers, tier{role.Role, role.Agent, role.Model, role.Effort})
 	}
 	mode := "unknown"

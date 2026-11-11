@@ -323,24 +323,23 @@ func proxyWithoutUserinfo(raw string) (string, bool) {
 	return u.String(), true
 }
 
-func repositoryRoles(env map[string]string, sourceMaps ...map[string]string) []configRole {
-	sources := map[string]string{}
-	if len(sourceMaps) > 0 && sourceMaps[0] != nil {
-		sources = sourceMaps[0]
-	}
+func repositoryRoles(env, sources map[string]string) []configRole {
 	roles := []configRole{}
 	for _, def := range configRoles {
 		if def.role == "reviewer" || def.role == "reviewer_small" || def.role == "second_reviewer" {
-			structuredKey, commandKey := reviewerKeys(def.role)
-			key, raw, source, ok := reviewerRoleValue(env, sources, structuredKey, commandKey)
-			if !ok {
+			structuredKey := def.keys[0]
+			key := config.ReviewerKey(env, sources, structuredKey, def.keys[1])
+			if key == "" || env[key] == "" {
 				continue
 			}
-			role := configRole{Role: def.role, Key: key, Raw: raw, Source: source}
+			role := configRole{Role: def.role, Key: key, Raw: env[key], Source: "repository"}
+			if source, ok := sources[key]; ok {
+				role.Source = source
+			}
 			if key == structuredKey {
-				role.Agent, role.Model, role.Effort = splitTier(raw)
+				role.Agent, role.Model, role.Effort = splitTier(role.Raw)
 			} else {
-				role.Agent, role.Model, role.Effort = parseReviewerCommand(raw)
+				role.Agent, role.Model, role.Effort = def.parse(role.Raw)
 			}
 			roles = append(roles, role)
 			continue
@@ -359,39 +358,6 @@ func repositoryRoles(env map[string]string, sourceMaps ...map[string]string) []c
 		roles = append(roles, role)
 	}
 	return roles
-}
-
-func reviewerKeys(role string) (structured, command string) {
-	switch role {
-	case "reviewer":
-		return "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_CMD"
-	case "reviewer_small":
-		return "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_REVIEWER_CMD_SMALL"
-	default:
-		return "AGENT_ROLE_SECOND_REVIEWER", "AGENT_ROLE_SECOND_REVIEWER_CMD"
-	}
-}
-
-func reviewerRoleValue(env, sources map[string]string, structuredKey, commandKey string) (key, raw, source string, ok bool) {
-	valueSource := func(k string) string {
-		if source, found := sources[k]; found {
-			return source
-		}
-		if _, found := env[k]; found {
-			return sourceRepository
-		}
-		return ""
-	}
-	if valueSource(structuredKey) == "repository" {
-		return structuredKey, env[structuredKey], "repository", env[structuredKey] != ""
-	}
-	if valueSource(commandKey) == "repository" {
-		return commandKey, env[commandKey], "repository", env[commandKey] != ""
-	}
-	if strings.HasPrefix(valueSource(structuredKey), "profile:") {
-		return structuredKey, env[structuredKey], valueSource(structuredKey), env[structuredKey] != ""
-	}
-	return "", "", "", false
 }
 
 func repositoryRouting(env map[string]string) []configEntry {
