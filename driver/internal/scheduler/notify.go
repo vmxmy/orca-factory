@@ -4,11 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -25,23 +28,39 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	if category == "" {
 		return nil
 	}
-	settings, err := config.FeishuNotifySettings(env)
-	if err != nil {
-		return err
-	}
-	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
-	if chat == "" {
-		return nil
-	}
-	reason = strings.Join(strings.Fields(reason), " ")
 	human := category == "转人" && t.Resolution != nil && t.Resolution.Phase == "human"
+	reason = strings.Join(strings.Fields(reason), " ")
 	identity := reason
 	if human {
 		identity = fmt.Sprintf("%s attempt=%d", reason, t.Resolution.Attempt)
 	}
 	digest := sha256.Sum256([]byte(identity))
 	marker := fmt.Sprintf("通知: %s %x", category, digest[:6])
+	// A notified request already had its auto review; skip the ledger reread.
 	if t.NotifyEvents[marker] {
+		return nil
+	}
+	autoRefusal := ""
+	if human && slices.ContainsFunc(strings.Split(env["AGENT_AUTO_REVIEW"], ","), func(flag string) bool { return strings.TrimSpace(flag) == "scope" }) {
+		now := time.Now()
+		if r.Now != nil {
+			now = r.Now()
+		}
+		var err error
+		autoRefusal, err = intake.AutoApproveScope(ctx, r.Clients[t.Repo], t.ID, t.Resolution.Attempt, env["AGENT_LANE3_GLOBS"], now)
+		if err != nil {
+			return fmt.Errorf("auto scope review: %w", err)
+		}
+		if autoRefusal == "" {
+			return nil
+		}
+	}
+	settings, err := config.FeishuNotifySettings(env)
+	if err != nil {
+		return err
+	}
+	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
+	if chat == "" {
 		return nil
 	}
 	client := r.Clients[t.Repo]
@@ -53,7 +72,7 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return fmt.Errorf("notification event write: %w", err)
 	}
 	if human {
-		card := feishu.HumanCard{Ticket: t.Identifier, Title: t.Title, Reason: reason, URL: t.URL, Attempt: t.Resolution.Attempt}
+		card := feishu.HumanCard{Ticket: t.Identifier, Title: t.Title, Reason: reason, URL: t.URL, Attempt: t.Resolution.Attempt, AutoReviewRefusal: autoRefusal}
 		card.Scope = notificationScope(t)
 		return sender.SendCard(ctx, chat, card.JSON())
 	}

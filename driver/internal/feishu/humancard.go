@@ -29,6 +29,7 @@ type HumanCard struct {
 	Ticket, Title, Reason, URL string
 	Attempt                    int
 	Scope                      []string
+	AutoReviewRefusal          string
 }
 
 func plainDiv(content string) map[string]any {
@@ -60,6 +61,9 @@ func (c HumanCard) button(name, label, verb, style string) map[string]any {
 // they stay plain_text and cannot add links or mentions.
 func (c HumanCard) JSON() string {
 	elements := []any{plainDiv(c.Title), plainDiv("原因：" + c.Reason)}
+	if c.AutoReviewRefusal != "" {
+		elements = append(elements, plainDiv("未自动批准："+c.AutoReviewRefusal))
+	}
 	form := []any{
 		map[string]any{"tag": "input", "name": HumanNoteField, "required": false, "placeholder": buttonText("裁定或取消时填写理由")},
 		c.button("human_release", "放行", VerbRelease, "primary"),

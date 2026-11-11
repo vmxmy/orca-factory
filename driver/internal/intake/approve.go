@@ -298,21 +298,15 @@ func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review,
 		if refusal != "" {
 			return refusal, false
 		}
-		face, changed, found := withScope(ticket.Description, paths)
-		if !found {
-			return r.ticket + " 票面缺少 SCOPE，不放行", false
+		refusal, err := applyScopeReview(ctx, p.Ledger, ticket, record, paths, body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "intake scope review %s failed: %v\n", r.ticket, err)
+			return failedReply, false
 		}
-		if changed {
-			patch, err := json.Marshal(map[string]string{"description": face})
-			if err != nil {
-				return failedReply, false
-			}
-			if _, err := p.Ledger.Edit(ctx, ticket.Metadata.ID, patch); err != nil {
-				fmt.Fprintf(os.Stderr, "intake scope edit %s failed: %v\n", r.ticket, err)
-				return failedReply, false
-			}
+		if refusal != "" {
+			return r.ticket + " " + refusal, false
 		}
-		body += "\n路径：" + strings.Join(paths, " ")
+		return "已" + r.verb + " " + r.ticket, true
 	}
 	if r.verb != feishu.VerbCancel {
 		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
