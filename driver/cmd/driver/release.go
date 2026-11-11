@@ -181,7 +181,7 @@ func releaseSmoke(raw []byte) (string, error) {
 }
 
 func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string, number int, sha, repository string, lane3 []string, pr github.PullRequest, files []github.File) (merge.Progress, error) {
-	if !pr.Merged || pr.Number != number || pr.MergeSHA != sha || pr.Base.Repo.FullName != repository || pr.Base.Ref != "main" || len(pr.Head.SHA) != 40 {
+	if !pr.Merged || pr.Number != number || pr.MergeSHA != sha || pr.Base.Repo.FullName != repository || pr.Base.Ref != "main" || len(pr.Head.SHA) != 40 || strings.Trim(pr.Head.SHA, "0123456789abcdefABCDEF") != "" {
 		return merge.Progress{}, errors.New("PR read-back does not confirm the repository, merged PR and SHA")
 	}
 	// GitHub compare lists at most 300 files without flagging the cut.
@@ -258,6 +258,9 @@ func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string
 		if prior.Main != "" {
 			p.Main, p.MainUnknown = prior.Main, false
 		}
+	}
+	if (p.QueueID != "" && p.Attempt < 1) || p.Corrections < 0 || p.Infra < 0 || p.CatchupRounds < 0 {
+		return merge.Progress{}, errors.New("invalid merge budget")
 	}
 	return p, nil
 }

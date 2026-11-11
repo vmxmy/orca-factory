@@ -251,7 +251,7 @@ func TestReleaseEvidence(t *testing.T) {
 		fields["attempt"], fields["corrections"], fields["infra"], fields["catchup_rounds"] = attempt, corrections, infra, catchup
 	}
 	budgetedHandoff := editHandoff(func(fields map[string]any) { budget(fields, 4, 2, 3, 5) })
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "invalid head", "invalid budget", "invalid prior budget", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
 		t.Run(name, func(t *testing.T) {
 			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
 			pr := recordedPR
@@ -289,6 +289,12 @@ func TestReleaseEvidence(t *testing.T) {
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["lane"] = 3 })}
 			case "wrong head":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["head"] = recordedPR.Head.SHA })}
+			case "invalid head":
+				pr.Head.SHA = strings.Repeat("z", 40)
+			case "invalid budget":
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { budget(fields, 0, -1, 0, 0) })}
+			case "invalid prior budget":
+				ledger.comments = []task.Comment{handoff, withoutDeployment(func(fields map[string]any) { fields["infra"] = -1 })}
 			case "no files":
 				ledger.comments = []task.Comment{handoff}
 				files = nil
