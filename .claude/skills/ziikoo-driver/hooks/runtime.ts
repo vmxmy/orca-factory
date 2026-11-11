@@ -87,6 +87,8 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
     title: optionalText(o, 'title', path),
     since: o.since === undefined ? undefined : time(o, 'since', path),
     blockedReason: optionalText(o, 'blockedReason', path),
+    humanKind: o.humanKind === 'scope' || o.humanKind === 'deploy' || o.humanKind === 'takeover' ? o.humanKind : undefined,
+    humanReason: optionalText(o, 'humanReason', path),
     deployment: o.deployment === undefined ? undefined : parseDeployment(o.deployment, `${path}.deployment`),
     queuePosition: o.queuePosition === undefined ? undefined : count(o, 'queuePosition', path),
     lane: o.lane === undefined ? undefined : parseLane(o, path),

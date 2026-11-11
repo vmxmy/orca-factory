@@ -85,6 +85,8 @@ export type Corrections = { count: number; limit: number }
 
 export type Stage = { name: string; seconds: number }
 
+export type HumanKind = 'scope' | 'deploy' | 'takeover'
+
 export type RuntimeTicket = {
   repo: string
   identifier: string
@@ -95,6 +97,8 @@ export type RuntimeTicket = {
   title?: string
   since?: number
   blockedReason?: string
+  humanKind?: HumanKind
+  humanReason?: string
   deployment?: Deployment
   queuePosition?: number
   lane?: number
@@ -124,6 +128,8 @@ export type Parcel = {
   since?: number
   duration: string
   reason?: string
+  humanKind?: HumanKind
+  humanReason?: string
   blocker?: string
   deployment?: string
   unknownDeploy: boolean
