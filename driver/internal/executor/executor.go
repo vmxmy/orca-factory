@@ -65,6 +65,7 @@ type Config struct {
 	Lane3Globs                                                          []string
 	Machine                                                             string
 	TierSettings                                                        map[string]string
+	TierChain                                                           []string
 	Escalate                                                            string
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
 	PollInterval                                                        time.Duration

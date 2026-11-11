@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -14,6 +15,31 @@ import (
 type profileFile struct {
 	Default  string                       `toml:"default"`
 	Profiles map[string]map[string]string `toml:"profile"`
+}
+
+// DefaultTierChain is the correction escalation chain when AGENT_TIER_CHAIN is unset.
+const DefaultTierChain = "default strong"
+
+var (
+	tierName = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+	tierKey  = regexp.MustCompile(`^AGENT_TIER_[A-Z][A-Z0-9_]*$`)
+)
+
+// TierChain parses AGENT_TIER_CHAIN: space-separated tier names, each configured
+// by AGENT_TIER_<upper name>. Unset or blank means DefaultTierChain.
+func TierChain(value string) ([]string, error) {
+	names := strings.Fields(value)
+	if len(names) == 0 {
+		names = strings.Fields(DefaultTierChain)
+	}
+	seen := map[string]bool{}
+	for _, name := range names {
+		if !tierName.MatchString(name) || name == "chain" || name == "escalate" || seen[name] {
+			return nil, errors.New("AGENT_TIER_CHAIN requires distinct lowercase tier names")
+		}
+		seen[name] = true
+	}
+	return names, nil
 }
 
 // Cache each machine file for the process lifetime: repository discovery repeats,
@@ -94,8 +120,18 @@ func readProfiles(path string) (profileFile, error) {
 				if value != "0" && value != "1" {
 					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires 0 or 1", name, key)
 				}
+			case "AGENT_TIER_CHAIN":
+				if _, err := TierChain(value); err != nil {
+					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s: %w", name, key, err)
+				}
 			default:
-				return profileFile{}, fmt.Errorf("profiles.toml: unknown key profile.%s.%s", name, key)
+				if !tierKey.MatchString(key) {
+					return profileFile{}, fmt.Errorf("profiles.toml: unknown key profile.%s.%s", name, key)
+				}
+				parts := strings.Split(value, ":")
+				if len(parts) != 3 || parts[0] == "" {
+					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires agent:model:effort", name, key)
+				}
 			}
 		}
 	}

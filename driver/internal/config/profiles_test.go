@@ -34,6 +34,9 @@ AGENT_TIER_DEFAULT = "codex:alternate:high"
 		{name: "unknown top level", file: "unknown='hidden'\n" + profiles, wantErr: "unknown"},
 		{name: "invalid syntax", file: "default = [", wantErr: "profiles.toml"},
 		{name: "invalid role value", file: "[profile.daily]\nAGENT_TIER_DEFAULT='broken'\n", wantErr: "AGENT_TIER_DEFAULT"},
+		{name: "fills tier chain", file: "default='daily'\n[profile.daily]\nAGENT_TIER_CHAIN='default strong max'\nAGENT_TIER_MAX='codex:max:high'\n", want: map[string]string{"AGENT_TIER_CHAIN": "default strong max", "AGENT_TIER_MAX": "codex:max:high"}},
+		{name: "invalid chain tier value", file: "[profile.daily]\nAGENT_TIER_MAX='broken'\n", wantErr: "AGENT_TIER_MAX"},
+		{name: "invalid chain name", file: "[profile.daily]\nAGENT_TIER_CHAIN='default Max!'\n", wantErr: "AGENT_TIER_CHAIN"},
 		{name: "invalid escalation", file: "[profile.daily]\nAGENT_TIER_ESCALATE='codex:model:high'\n", wantErr: "AGENT_TIER_ESCALATE"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

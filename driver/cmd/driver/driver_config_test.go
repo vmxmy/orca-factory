@@ -177,6 +177,9 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	if withProfile && snapshot.Repos[0].Profile != "daily" {
 		t.Fatalf("profile=%q, want daily", snapshot.Repos[0].Profile)
 	}
+	if got := routing["AGENT_TIER_CHAIN"]; got.Value == nil || *got.Value != "default strong" || got.Source != "default" || !got.Set {
+		t.Fatalf("tier chain=%+v", got)
+	}
 	if got := routing["AGENT_TIER_ESCALATE"]; withProfile && (got.Source != "profile:daily" || got.Value == nil || *got.Value != "1") {
 		t.Fatalf("escalation=%+v", got)
 	}

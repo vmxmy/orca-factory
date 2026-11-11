@@ -2,7 +2,7 @@
 
 这是用于取代 LLM coordinator 的 Go 驱动器，包含调度器、单票执行器、合并通道、部署屏障、用量账本和处置 Agent；整体演进计划见地图 [ZII-826](https://linear.app/ziikoo/issue/ZII-826)。
 
-调度器推进已验证的队首 PR：head 落后 main 时先对固定 head/main 的合并结果跑完整 gate，未落后时直接以 head CI 为准；GitHub 回读确认 squash 后按该 SHA 验证部署及 smoke，全部通过才写回 Done、放行下一 PR。合并通道自己保证合并结果基于最新 main，因此 main 的分支保护不得开启“合并前须与 main 同步”（`required_status_checks.strict`），否则落后的 PR 永远不会变成 `clean`。交接、合并 intent 和部署进度存在配置选定的票据主账本评论，重启按冻结身份恢复；缺验证证据或 CI 未明确成功继续等待，lane 2 未自动合并、命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `AGENT_LANE3_GLOBS` 则转处置 Agent 复核或直接转人工并移出队列（详见下文）。合并结果 gate（含 `AGENT_INSTALL_CMD`）在 serve 进程内后台运行，巡检不等待它，照常派工与认领；gate 结束后的下一轮巡检再按结果 squash、转打回或等待。每仓库同一时间只有一个合并 gate 或 squash：队首换人时旧 gate 不取消，新队首等它退出，旧结果丢弃。结论只在内存：红结论在打回写入失败时重试仍判红、不重跑；serve 重启时正在跑的 gate 被杀掉并清理 worktree，下一轮重跑，不当成绿。合并结果 gate/correction 的 #142 接点与持久格式见 `CONTRACTS.md`。自部署的 `awaitIdle` 与维护冻结看不到后台合并 gate：部署重启会打断别的仓库正在跑的 gate，下一轮重跑（`agent-gate-heavy.flock` 随进程释放，不会残留）；自部署由 `installSelf` 自动执行，这个缺口记在 OF-300。
+调度器推进已验证的队首 PR：head 落后 main 时先对固定 head/main 的合并结果跑完整 gate，未落后时直接以 head CI 为准；GitHub 回读确认 squash 后按该 SHA 验证部署及 smoke，全部通过才写回 Done、放行下一 PR；连续且已就绪的自部署 PR 可按下文批规则先合并、再共享部署。合并通道自己保证合并结果基于最新 main，因此 main 的分支保护不得开启“合并前须与 main 同步”（`required_status_checks.strict`），否则落后的 PR 永远不会变成 `clean`。交接、合并 intent 和部署进度存在配置选定的票据主账本评论，重启按冻结身份恢复；缺验证证据或 CI 未明确成功继续等待，lane 2 未自动合并、命中 `AGENT_LANE2_MANUAL_GLOBS` 或 `AGENT_LANE3_GLOBS` 则转处置 Agent 复核或直接转人工并移出队列（详见下文）。合并结果 gate（含 `AGENT_INSTALL_CMD`）在 serve 进程内后台运行，巡检不等待它，照常派工与认领；gate 结束后的下一轮巡检再按结果 squash、转打回或等待。每仓库同一时间只有一个合并 gate 或 squash：队首换人时旧 gate 不取消，新队首等它退出，旧结果丢弃。结论只在内存：红结论在打回写入失败时重试仍判红、不重跑；serve 重启时正在跑的 gate 被杀掉并清理 worktree，下一轮重跑，不当成绿。合并结果 gate/correction 的 #142 接点与持久格式见 `CONTRACTS.md`。自部署的 `awaitIdle` 与维护冻结看不到后台合并 gate：部署重启会打断别的仓库正在跑的 gate，下一轮重跑（`agent-gate-heavy.flock` 随进程释放，不会残留）；自部署由 `installSelf` 自动执行，这个缺口记在 OF-300。
 
 `driver serve --dry-run` 不合并、不写回、不 fetch；scope 使用已读取的声明。旧票检查若需要 fetch 会打印省略原因并报告等待，不据此推断可以释放或重派。
 
@@ -191,6 +191,14 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 ### 自部署（OF-152）
 
 仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor --json`。状态目录指 `~/.local/state/orca-factory/`。
+
+连续自部署 PR 按同仓库 FIFO 组批，代码常量 `selfDeployBatchLimit` 默认为 3。队首合并后，只尝试紧邻、交接已冻结、CI 全绿、smoke 配置相同且尚未开始部署的下一票。每票仍通过原有 gate、审查、CI 和 lane 检查，不跨仓库、不跳过等待票；下一票需要异步 gate 时，先部署已经合并的票。后续候选在合并前未就绪或出错时结束扩批，已确认合并的前缀照常部署，该候选留待成为队首时处理；GitHub 回读该候选已合并或无法回读时保留屏障、不部署前缀，下一轮回读对账后整批部署最终 SHA。已有恢复决定的单票不加入新批，单票仍沿用原来的部署记录。
+
+每票 `merge-progress-v1.merge_sha` 保留自己的 squash SHA。批内 `deployment.batch` 共享成员的 `ticket_id`、`queue_id`、`merge_sha` 与最后一票的部署 `sha`，绑定后不可改。以下步骤中的 `<sha>`、版本核对、备份、看守和 smoke 环境 `AGENT_MERGE_SHA` 都使用该最终部署 SHA。整批只构建安装一次，正常运行只 smoke 一次；所有成员的 intent 写入确认后才执行，所有成员的 passed 写入确认后才逐票 Done。
+
+部署或 smoke 失败归属整批，所有成员进入部署暂停、不写 Done，二进制已替换时仍由 `rollbackSelf` 恢复批前版本。smoke 失败先尽力写全批 paused，再回滚并保持 draining 重启；恢复进程完成本批维护排空的收尾。看守回滚后也按批成员暂停。评论写入不完整时保留仓库屏障：执行状态分歧转处置 Agent；某票已确认 passed 而其他票仍为同一 smoke-intent 时，补齐同一次成功结果，不重复 smoke。
+
+批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
 2. 账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
@@ -560,11 +568,13 @@ AGENT_TIER_ESCALATE = "0"
 
 仓库在 `scripts/agent-gates/agent-graph.env` 中设置 `AGENT_PROFILE=focused` 选择方案；未设置时取文件的 `default`。每个键分别取值：仓库显式赋值优先，其次是所选方案，再走原有角色回退链。仓库显式空值也阻止方案补值，但不取消原有角色回退。没有文件或找不到所选方案时，保持原有仓库配置行为。
 
-方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`。角色值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
+方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 与其他 `AGENT_TIER_<大写档名>`。角色值与档值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
+
+升档链 `AGENT_TIER_CHAIN` 是空格分隔的小写档名，默认 `default strong`；每个档名由 `AGENT_TIER_<大写名>` 配置，例如链 `default strong max` 需要 `AGENT_TIER_MAX`。仓库 env 与方案都可提供这些键。`AGENT_TIER_ESCALATE=1` 时，第 n 次 correction 从入口档（默认 default）升 n 级，到链尾保持；链里有未配置的档或缺少 default 时，`driver exec` 启动即报错。`AGENT_TIER_ESCALATE=0` 时不升档，也不检查链中各档是否已配置；链本身的格式错误仍在启动时报错。升档评论写成 `correction <n> → 升至 <档>（<旧 agent:model:effort> → <新 agent:model:effort>）`。
 
 修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手经 `LoadRepository` 读取生效值；`driver exec` 仍用 bash source 读取仓库 env，方案叠加与 `LoadRepository` 共用同一函数。票面和评论不能选择方案，也没有按票或成本的自动路由。
 
-运行 `orca-factory-driver config --json` 查看本次读取的配置。`repos[].profile` 是所选方案名，未选择时为空串；找不到该方案时仍显示所选名字。`roles[].source` 为 `repository`、`profile:<名>` 或内置回退的 `default`，`key` 标出回退后实际使用的键。`routing` 中来自方案的升档开关也标为 `profile:<名>`。此命令读取自己的进程配置，不能证明尚未重启的服务已经应用文件修改。
+运行 `orca-factory-driver config --json` 查看本次读取的配置。`repos[].profile` 是所选方案名，未选择时为空串；找不到该方案时仍显示所选名字。`roles[].source` 为 `repository`、`profile:<名>` 或内置回退的 `default`，`key` 标出回退后实际使用的键。`routing` 中来自方案的升档开关与升档链也标为 `profile:<名>`。此命令读取自己的进程配置，不能证明尚未重启的服务已经应用文件修改。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

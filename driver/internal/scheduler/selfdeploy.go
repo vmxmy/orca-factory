@@ -150,14 +150,14 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
-	if err = os.Remove(r.selfMarker(p.MergeSHA, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err = os.Remove(r.selfMarker(deploymentSHA(p), markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	p.Deployment.State = "deploy-intent"
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
 	}
-	replaced, err := r.installSelf(ctx, t.Repo, p.MergeSHA)
+	replaced, err := r.installSelf(ctx, t.Repo, deploymentSHA(p))
 	if err == nil {
 		return errSelfDeployRestarting
 	}
@@ -166,7 +166,7 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	if replaced {
-		return errors.Join(err, r.rollbackSelf(ctx, p, "self deployment failed before restart"))
+		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment failed before restart"), r.rollbackSelf(ctx, p, "self deployment failed before restart"))
 	}
 	return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
 }
@@ -313,10 +313,19 @@ func (r *Runtime) settleSelf(sha string) error {
 }
 
 func (r *Runtime) pauseSelf(ctx context.Context, t Ticket, p *merge.Progress, reason string) error {
-	if err := r.stopGuard(ctx, p.MergeSHA); err != nil {
+	if err := r.stopGuard(ctx, deploymentSHA(p)); err != nil {
 		return err
 	}
-	return errors.Join(r.pauseDeployment(ctx, t, p, reason), r.settleSelf(p.MergeSHA))
+	if batch, ok := ctx.Value(deployBatchKey{}).(*deployBatch); ok {
+		if p.Deployment.State == "paused" && p.Deployment.Reason != "" {
+			reason = p.Deployment.Reason
+		}
+		if err := r.batchReceipt(ctx, batch, p.Deployment, reason); err != nil {
+			return errors.Join(errors.New(reason), err)
+		}
+		return errors.Join(errors.New(reason), r.settleSelf(deploymentSHA(p)))
+	}
+	return errors.Join(r.pauseDeployment(ctx, t, p, reason), r.settleSelf(deploymentSHA(p)))
 }
 
 // verifyInstalled checks this process, not the file: right after the
@@ -344,7 +353,7 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
-	sha := p.MergeSHA
+	sha := deploymentSHA(p)
 	reason, err := os.ReadFile(r.selfMarker(sha, markerRolledBack))
 	if err == nil {
 		if len(reason) == 0 {
@@ -373,7 +382,7 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		if ctx.Err() != nil {
 			return errors.Join(err, ctx.Err())
 		}
-		return errors.Join(err, r.rollbackSelf(ctx, p, "self deployment smoke failed; previous driver restored"))
+		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment smoke failed; previous driver restored"), r.rollbackSelf(ctx, p, "self deployment smoke failed; previous driver restored"))
 	}
 	if err = touch(r.selfMarker(sha, markerSmokePassed)); err != nil {
 		return err
@@ -407,7 +416,7 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 // counts reinstalls, so the pending receipt differs from the first one and is
 // recorded.
 func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
-	installing, err := fileExists(r.selfMarker(p.MergeSHA, markerInstalling))
+	installing, err := fileExists(r.selfMarker(deploymentSHA(p), markerInstalling))
 	if err != nil {
 		return err
 	}
@@ -478,7 +487,7 @@ func (r *Runtime) serveReady(ctx context.Context) error {
 // reads the rolled-back marker, pauses for the resolver and resumes. If the
 // marker is lost, it finds a version that is not the squash SHA and pauses too.
 func (r *Runtime) rollbackSelf(ctx context.Context, p *merge.Progress, reason string) error {
-	sha := p.MergeSHA
+	sha := deploymentSHA(p)
 	if err := r.stopGuard(ctx, sha); err != nil {
 		return err
 	}

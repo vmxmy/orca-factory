@@ -111,6 +111,19 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			return a.EnqueuedAt.Before(b.EnqueuedAt)
 		})
 		if head := rows[0]; head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman {
+			if p := head.Progress; p != nil && deploymentBatchBinding(p.Deployment) != nil {
+				rolled, err := fileExists(r.selfMarker(deploymentSHA(p), markerRolledBack))
+				if err != nil {
+					problems = append(problems, err)
+				}
+				drained, drainErr := fileExists(r.selfMarker(deploymentSHA(p), markerDrained))
+				if drainErr != nil {
+					problems = append(problems, drainErr)
+				}
+				if rolled && r.Version != deploymentSHA(p) || !rolled && drained {
+					problems = append(problems, r.resumeDeployBatch(ctx, rows, p.Deployment.Batch))
+				}
+			}
 			reason := string(head.Owner)
 			if p := head.Progress; p != nil && p.Deployment != nil && p.Deployment.Reason != "" {
 				reason = p.Deployment.Reason
@@ -118,13 +131,17 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			runx.LoggerFrom(ctx).Info("merge lane paused: head ticket awaits recovery", "ticket", head.Identifier, "repo", repo, "owner", head.Owner, "reason", reason, "queued", len(rows)-1)
 			continue
 		}
-		if err := r.advanceMerge(ctx, rows[0]); err != nil {
+		if err := r.advanceMergeQueue(ctx, rows); err != nil {
 			problems = append(problems, fmt.Errorf("merge waiting %s: %w", rows[0].Identifier, err))
 		}
 	}
 	return errors.Join(problems...)
 }
-func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) {
+func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) error {
+	return r.mergeTicket(ctx, t, nil)
+}
+
+func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.Progress) error) (resultErr error) {
 	if err := r.verifyFreshDecision(ctx, t, ""); err != nil {
 		return err
 	}
@@ -219,6 +236,9 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 		mergechannel.RetainMergeProgress(&progress, a.ticket.Progress)
 	}
 	progress.Deployment = deploymentFor(a.ticket, env)
+	if merged != nil {
+		return merged(&progress)
+	}
 	if progress.Deployment != nil {
 		if err := r.advanceDeployment(ctx, t, &progress); err != nil {
 			return err
