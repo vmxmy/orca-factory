@@ -22,6 +22,7 @@ import (
 type deployBatchIssues struct {
 	issues.Store
 	tickets []*mergeIssues
+	heads   map[int]string
 }
 
 func (b *deployBatchIssues) item(id string) *mergeIssues {
@@ -56,7 +57,7 @@ func (b *deployBatchIssues) Repository() string { return "o/r" }
 func newBatchFixture(t *testing.T, count int) (*mergeFixture, *selfDeployHost, *deployBatchIssues, *[]bool) {
 	t.Helper()
 	f, host := newSelfDeployFixture(t)
-	store := &deployBatchIssues{}
+	store := &deployBatchIssues{heads: map[int]string{}}
 	var original merge.Handoff
 	raw := strings.TrimPrefix(strings.Split(f.tracker.rows[0].Body, "\n")[2], merge.HandoffPrefix)
 	if err := json.Unmarshal([]byte(raw), &original); err != nil {
@@ -86,7 +87,7 @@ func newBatchFixture(t *testing.T, count int) (*mergeFixture, *selfDeployHost, *
 			prs := []map[string]any{}
 			for i := 1; i <= count; i++ {
 				if !merged[i-1] {
-					prs = append(prs, batchPR(f, i, false))
+					prs = append(prs, batchPR(f, i, false, store.heads[i]))
 				}
 			}
 			if err := json.NewEncoder(w).Encode(prs); err != nil {
@@ -103,7 +104,7 @@ func newBatchFixture(t *testing.T, count int) (*mergeFixture, *selfDeployHost, *
 				}
 				return
 			}
-			if err := json.NewEncoder(w).Encode(batchPR(f, n, merged[n-1])); err != nil {
+			if err := json.NewEncoder(w).Encode(batchPR(f, n, merged[n-1], store.heads[n])); err != nil {
 				t.Error(err)
 			}
 			return
@@ -115,8 +116,11 @@ func newBatchFixture(t *testing.T, count int) (*mergeFixture, *selfDeployHost, *
 	f.runtime.Clients[f.repos[0].Path] = store
 	return f, host, store, &merged
 }
-func batchPR(f *mergeFixture, n int, merged bool) map[string]any {
-	return map[string]any{"number": n, "state": "open", "draft": false, "merged": merged, "mergeable": true, "mergeable_state": "clean", "head": map[string]any{"sha": f.head, "ref": fmt.Sprintf("agent/ENG-%d/executor", n), "repo": map[string]any{"full_name": "o/r"}}, "base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": "o/r"}}, "body": fmt.Sprintf("关联票: ENG-%d", n), "merge_commit_sha": fmt.Sprintf("%040x", n)}
+func batchPR(f *mergeFixture, n int, merged bool, head string) map[string]any {
+	if head == "" {
+		head = f.head
+	}
+	return map[string]any{"number": n, "state": "open", "draft": false, "merged": merged, "mergeable": true, "mergeable_state": "clean", "head": map[string]any{"sha": head, "ref": fmt.Sprintf("agent/ENG-%d/executor", n), "repo": map[string]any{"full_name": "o/r"}}, "base": map[string]any{"ref": "main", "repo": map[string]any{"full_name": "o/r"}}, "body": fmt.Sprintf("关联票: ENG-%d", n), "merge_commit_sha": fmt.Sprintf("%040x", n)}
 }
 func batchProgress(t *testing.T, store *mergeIssues) *merge.Progress {
 	t.Helper()
@@ -149,6 +153,35 @@ func TestDeployBatchSharesInstallAndSmoke(t *testing.T) {
 		}
 	}
 }
+
+func TestDeployBatchCandidateHeadChangedDeploysConfirmedPrefix(t *testing.T) {
+	f, host, store, merged := newBatchFixture(t, 2)
+	store.heads[2] = fmt.Sprintf("%040x", 99)
+	firstServe(t, f, host)
+	if f.puts != 1 || (*merged)[1] || host.builds != 1 {
+		t.Fatalf("candidate head changed: merges=%d merged=%v builds=%d", f.puts, *merged, host.builds)
+	}
+	_ = serveAs(f, host, fmt.Sprintf("%040x", 1))
+	if store.tickets[0].issue.State.Name != "Done" || host.builds != 1 || host.smokes != 1 || batchProgress(t, store.tickets[0]).Deployment.Batch != nil {
+		t.Fatalf("confirmed prefix did not finish as a single deployment: state=%s builds=%d smokes=%d deployment=%+v", store.tickets[0].issue.State.Name, host.builds, host.smokes, batchProgress(t, store.tickets[0]).Deployment)
+	}
+	if store.tickets[1].issue.State.Name == "Done" {
+		t.Fatal("candidate with changed head completed")
+	}
+}
+
+func TestDeployBatchCandidateReceiptFailedDeploysConfirmedPrefix(t *testing.T) {
+	f, host, store, _ := newBatchFixture(t, 2)
+	store.tickets[1].failBody = `"phase":"merged"`
+	firstServe(t, f, host)
+	if f.puts != 2 || host.builds != 1 {
+		t.Fatalf("candidate receipt failed: merges=%d builds=%d", f.puts, host.builds)
+	}
+	if batchProgress(t, store.tickets[0]).Deployment.Batch != nil {
+		t.Fatal("unconfirmed candidate joined the deployment batch")
+	}
+}
+
 func TestDeployBatchSmokeFailurePausesEveryTicket(t *testing.T) {
 	f, host, store, _ := newBatchFixture(t, 2)
 	firstServe(t, f, host)

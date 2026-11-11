@@ -9,6 +9,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 const selfDeployBatchLimit = 3
@@ -101,12 +102,14 @@ func (r *Runtime) advanceMergeQueue(ctx context.Context, rows []Ticket) error {
 		if len(batch.tickets) > 0 {
 			gh, err := r.githubClient()
 			if err != nil {
-				return err
+				runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
+				break
 			}
 			owner, repo, _ := strings.Cut(t.Handoff.Repository, "/")
 			checks, err := gh.MergeChecks(ctx, owner, repo, t.Handoff.Head)
 			if err != nil {
-				return err
+				runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
+				break
 			}
 			if !checks.Green {
 				break
@@ -126,7 +129,11 @@ func (r *Runtime) advanceMergeQueue(ctx context.Context, rows []Ticket) error {
 			return nil
 		})
 		if err != nil {
-			return err
+			if len(batch.tickets) == 0 {
+				return err
+			}
+			runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
+			break
 		}
 		if !captured {
 			break
