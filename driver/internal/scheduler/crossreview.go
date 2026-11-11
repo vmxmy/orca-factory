@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -374,8 +375,13 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 	if err != nil || decision.Action != "escalate" || !crossReviewClasses[decision.Class] {
 		return nil
 	}
-	env := r.Repositories[t.Repo].Env
-	first, second := strings.TrimSpace(env["AGENT_ROLE_REVIEWER_CMD"]), strings.TrimSpace(env["AGENT_ROLE_SECOND_REVIEWER_CMD"])
+	repository := r.Repositories[t.Repo]
+	env := repository.Env
+	commands, err := config.ResolveReviewerCommands(env, repository.Sources)
+	if err != nil {
+		return err
+	}
+	first, second := commands.Main, commands.Second
 	if first == "" || second == "" {
 		return nil
 	}

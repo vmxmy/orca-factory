@@ -46,6 +46,13 @@ func ApplyProfile(env map[string]string) (string, map[string]string, error) {
 			sources[key] = "profile:" + selected
 		}
 	}
+	for _, key := range []string{"AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER"} {
+		if value, ok := env[key]; ok {
+			if _, err := GenerateReviewerCommand(value); err != nil {
+				return "", nil, fmt.Errorf("repository profile key %s: %w", key, err)
+			}
+		}
+	}
 	return selected, sources, nil
 }
 
@@ -78,6 +85,10 @@ func readProfiles(path string) (profileFile, error) {
 				parts := strings.Split(value, ":")
 				if len(parts) != 3 || parts[0] == "" {
 					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires agent:model:effort", name, key)
+				}
+			case "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
+				if _, err := GenerateReviewerCommand(value); err != nil {
+					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s: %w", name, key, err)
 				}
 			case "AGENT_TIER_ESCALATE":
 				if value != "0" && value != "1" {

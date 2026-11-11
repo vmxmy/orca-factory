@@ -101,38 +101,50 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 15 {
+	if len(values) != 19 {
 		return Executor{}, nil, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
-	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) {
 		return Executor{}, nil, errors.New("repository profile requires GitHub repository and reviewer")
 	}
-	maximum, err := strconv.ParseFloat(values[6], 64)
+	maximum, err := strconv.ParseFloat(values[10], 64)
 	if err != nil {
 		return Executor{}, nil, errors.New("invalid reviewer estimate threshold")
 	}
 	assigned := config.AssignedKeys(data)
-	tiers := map[string]string{}
-	for key, value := range map[string]string{"AGENT_TIER_DEFAULT": values[2], "AGENT_TIER_STRONG": values[3], "AGENT_TIER_ESCALATE": values[4], "AGENT_PROFILE": values[13]} {
+	explicit := map[string]string{}
+	for key, value := range map[string]string{
+		"AGENT_GH_REPO": values[0], "AGENT_ROLE_REVIEWER_CMD": values[1], "AGENT_ROLE_REVIEWER": values[2],
+		"AGENT_ROLE_REVIEWER_CMD_SMALL": values[3], "AGENT_ROLE_REVIEWER_SMALL": values[4],
+		"AGENT_ROLE_SECOND_REVIEWER_CMD": values[5], "AGENT_ROLE_SECOND_REVIEWER": values[6],
+		"AGENT_TIER_DEFAULT": values[7], "AGENT_TIER_STRONG": values[8], "AGENT_TIER_ESCALATE": values[9],
+		"AGENT_REVIEWER_SMALL_MAX_ESTIMATE": values[10], "AGENT_LANE3_GLOBS": values[11], "AGENT_ISSUE_BACKEND": values[12],
+		"AGENT_GH_API_URL": values[13], "AGENT_FEISHU_BASE": values[14], "AGENT_FEISHU_PROJECT": values[15],
+		"AGENT_INSTALL_CMD": values[16], "AGENT_PROFILE": values[17],
+	} {
 		if assigned[key] {
-			tiers[key] = value
+			explicit[key] = value
 		}
 	}
-	_, sources, err := config.ApplyProfile(tiers)
+	_, sources, err := config.ApplyProfile(explicit)
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	commands, err := config.ResolveReviewerCommands(explicit, sources)
 	if err != nil {
 		return Executor{}, nil, err
 	}
 	effective := map[string]string{}
 	for i, key := range []string{"AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
-		effective[key] = values[2+i]
+		effective[key] = values[7+i]
 		if strings.HasPrefix(sources[key], "profile:") {
-			effective[key] = tiers[key]
+			effective[key] = explicit[key]
 		}
 	}
 	parts := strings.Split(effective["AGENT_TIER_DEFAULT"], ":")
@@ -150,9 +162,12 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 	if err != nil {
 		return Executor{}, nil, err
 	}
-	commands := &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[5], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[12], ModelProxyURL: proxy}
-	store := map[string]string{"AGENT_ISSUE_BACKEND": values[8], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[9], "AGENT_FEISHU_BASE": values[10], "AGENT_FEISHU_PROJECT": values[11]}
-	return Executor{Config: cfg, Tools: commands}, store, nil
+	if commands.Main == "" {
+		return Executor{}, nil, errors.New("repository profile requires GitHub repository and reviewer")
+	}
+	tools := &Commands{ReviewerCommand: commands.Main, ReviewerSmallCommand: commands.Small, ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[16], ModelProxyURL: proxy}
+	store := map[string]string{"AGENT_ISSUE_BACKEND": values[12], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[13], "AGENT_FEISHU_BASE": values[14], "AGENT_FEISHU_PROJECT": values[15]}
+	return Executor{Config: cfg, Tools: tools}, store, nil
 }
 
 func envMinutes(value string, fallback time.Duration) time.Duration {
