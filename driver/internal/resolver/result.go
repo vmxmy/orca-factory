@@ -40,6 +40,7 @@ func ParseResult(body string) (Resolution, error) {
 		return p, errors.New("invalid resolver result")
 	}
 	switch p.Action {
+	case "ruling":
 	case "open-pr":
 		if strings.TrimSpace(p.Branch) == "" || strings.TrimSpace(p.Title) == "" || strings.TrimSpace(p.Body) == "" || len(p.Head) != 40 || strings.Trim(p.Head, "0123456789abcdef") != "" {
 			return p, errors.New("resolver requires branch, full head SHA, title and body")
