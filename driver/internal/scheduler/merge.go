@@ -230,9 +230,8 @@ func (r *Runtime) advanceMerge(ctx context.Context, t Ticket) (resultErr error) 
 	if err = r.mergeComment(ctx, t, merge.ProgressPrefix+string(b)); err != nil {
 		return err
 	}
-	issue, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"})
-	if err != nil || issue.State.Name != "Done" {
-		return errors.New("completion write unconfirmed")
+	if err = r.markDone(ctx, t); err != nil {
+		return err
 	}
 	r.writeMergeLedger(ctx, t, *h, sha)
 	// A failed final comment must not suppress cleanup after confirmed Done.

@@ -13,6 +13,16 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
+// markDone records the terminal ticket state and confirms the backend's
+// response before the caller writes its ownership-release receipt.
+func (r *Runtime) markDone(ctx context.Context, t Ticket) error {
+	issue, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Done", nil, []string{"auto-impl", "ready-for-agent"})
+	if err != nil || issue.State.Name != "Done" {
+		return fmt.Errorf("completion write unconfirmed")
+	}
+	return nil
+}
+
 // cleanupMerged is best effort after confirmed Done. Frozen handoff identity
 // survives a missing local checkpoint; cleanup never changes ticket ownership.
 func (r *Runtime) cleanupMerged(ctx context.Context, t Ticket) {
