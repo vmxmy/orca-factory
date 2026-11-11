@@ -167,6 +167,8 @@ const viewOf = (parcel, station, slot, deploy) => {
     duration: parcel.duration,
     since: parcel.since,
     reason: parcel.reason || parcel.blocker,
+    humanKind: parcel.humanKind,
+    humanReason: parcel.humanReason,
     queuePosition: parcel.queuePosition,
     unknownDeploy,
     undeployed: parcel.unknownDeploy && !deploy,
