@@ -58,6 +58,7 @@ type Progress struct {
 // DeploymentProgress extends v1 receipts without changing the frozen Handoff.
 // Smoke is stored only in durable evidence; observation views omit the command.
 type DeploymentProgress struct {
+	Batch                *DeploymentBatch    `json:"batch,omitempty"`
 	StartedAt            time.Time           `json:"started_at,omitzero"`
 	WorkflowRetryPending bool                `json:"workflow_retry_pending,omitempty"`
 	Recovery             *DeploymentRecovery `json:"recovery,omitempty"`
@@ -82,4 +83,15 @@ type DeploymentRecovery struct {
 	Operator string    `json:"operator"`
 	Reason   string    `json:"reason"`
 	At       time.Time `json:"at"`
+}
+
+// DeploymentBatch binds one install to independently frozen PR receipts.
+type DeploymentBatch struct {
+	SHA     string             `json:"sha"`
+	Members []DeploymentMember `json:"members"`
+}
+type DeploymentMember struct {
+	TicketID string `json:"ticket_id"`
+	QueueID  string `json:"queue_id"`
+	MergeSHA string `json:"merge_sha"`
 }
