@@ -427,6 +427,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			t.Attempt = action.Attempt
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
+			t.Terminal, t.Run = "-", ""
 			if err := s.launch(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}

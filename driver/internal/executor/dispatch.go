@@ -152,8 +152,8 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 	// PendingParent was persisted before child creation and is cleared durably
 	// before WorkerStart. Only that boundary can prove we never started a worker.
 	if cp.PendingParent != "" && report == nil {
-		if cp.Run == "" || match.RunID != cp.Run || (cp.Task != "" && cp.Task != match.ID) || match.Status != "blocked" || cp.Dispatch != "" || match.DispatchID != "" || !filepath.IsAbs(cp.Worktree) || (strings.TrimSpace(string(match.Result)) != "" && strings.TrimSpace(string(match.Result)) != "null") {
-			return nil, errors.New("unconfirmed correction child; reconcile active dispatch")
+		if cp.Run == "" || match.RunID != cp.Run || (cp.Task != "" && cp.Task != match.ID) || match.Status != "ready" || cp.Dispatch != "" || match.DispatchID != "" || !filepath.IsAbs(cp.Worktree) || (strings.TrimSpace(string(match.Result)) != "" && strings.TrimSpace(string(match.Result)) != "null") {
+			return nil, errUnconfirmedChild
 		}
 		cp.Pending = false
 	}
@@ -170,6 +170,25 @@ func recoverDispatch(tasks []orca.Task, cp *checkpoint, branch string) (*checkpo
 		cp.PendingParent = ""
 	}
 	return cp, nil
+}
+
+var errUnconfirmedChild = errors.New("unconfirmed correction child; reconcile active dispatch")
+
+// confirmUnstartedChild completes the PendingParent proof for a child that
+// recoverDispatch adopted. A dispatch queued on a busy terminal leaves its task
+// ready, so only a complete worker-list without a dispatch on the child proves
+// no worker runs it (maintenance-refused-child.json).
+func (e *Executor) confirmUnstartedChild(ctx context.Context, cp *checkpoint) error {
+	workers, err := e.Orca.Workers(ctx, orca.ListOptions{Run: cp.Run, IncludeRemote: true})
+	if err != nil {
+		return fmt.Errorf("%w: worker list unconfirmed: %v", errUnconfirmedChild, safeDependencyError(err))
+	}
+	for _, worker := range workers {
+		if worker.TaskID == "" || worker.TaskID == cp.Task {
+			return errUnconfirmedChild
+		}
+	}
+	return nil
 }
 
 // Child creation is itself an uncertain mutation. Checkpoint its parent before
