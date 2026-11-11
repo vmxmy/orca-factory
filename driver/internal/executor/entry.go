@@ -154,7 +154,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
 		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: effective["AGENT_TIER_ESCALATE"],
 		TierSettings: map[string]string{"default": effective["AGENT_TIER_DEFAULT"], "strong": effective["AGENT_TIER_STRONG"]},
-		Lane3Globs:   strings.Fields(values[7])}
+		Lane3Globs:   strings.Fields(values[11])}
 	if cfg.Model == "" {
 		cfg.Effort = ""
 	}

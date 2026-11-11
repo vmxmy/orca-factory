@@ -40,7 +40,7 @@ type querySource struct {
 type evidenceReaders struct {
 	status      func(now time.Time, staleAfter time.Duration) status.View
 	maintenance func() (maintenance.Observation, error)
-	profile     func(repo string) (map[string]string, time.Time, error)
+	profile     func(repo string) (config.Repository, time.Time, error)
 	logRoot     string
 	now         func() time.Time
 }
@@ -51,16 +51,16 @@ func defaultEvidenceReaders() evidenceReaders {
 
 // readProfile rereads the repository's agent-graph.env at query time, so a
 // config query never serves the copy cached when the project was resolved.
-func readProfile(repo string) (map[string]string, time.Time, error) {
+func readProfile(repo string) (config.Repository, time.Time, error) {
 	info, err := os.Stat(filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env"))
 	if err != nil {
-		return nil, time.Time{}, err
+		return config.Repository{}, time.Time{}, err
 	}
 	repository, err := config.LoadRepository(repo)
 	if err != nil {
-		return nil, time.Time{}, err
+		return config.Repository{}, time.Time{}, err
 	}
-	return repository.Env, info.ModTime(), nil
+	return repository, info.ModTime(), nil
 }
 
 func newQuerySource(store issues.Store, repo, remote string, env map[string]string) querySource {
@@ -200,14 +200,14 @@ var configKeys = []string{"AGENT_MAX_IN_FLIGHT", "AGENT_STALE_HOURS", "AGENT_REV
 
 func configEvidence(readers evidenceReaders, source querySource, now time.Time) intake.Evidence {
 	e := intake.Evidence{Source: "repository agent-graph.env + maintenance", CollectedAt: now, Outcome: intake.OutcomeOK, Complete: true}
-	env, modified, err := readers.profile(source.repo)
+	repository, modified, err := readers.profile(source.repo)
 	if err != nil {
 		e.Outcome, e.Complete, e.Error = intake.OutcomeFailed, false, "仓库配置读取失败"
 		return e
 	}
 	e.SourceGeneratedAt = modified
 	limits := map[string]string{}
-	for _, item := range repositoryRouting(env) {
+	for _, item := range repositoryRouting(repository.Env) {
 		if !slices.Contains(configKeys, item.Key) {
 			continue
 		}
@@ -219,7 +219,7 @@ func configEvidence(readers evidenceReaders, source querySource, now time.Time) 
 	}
 	type tier struct{ Role, Agent, Model, Effort string }
 	tiers := []tier{}
-	for _, role := range repositoryRoles(env, nil) {
+	for _, role := range repositoryRoles(repository.Env, repository.Sources) {
 		tiers = append(tiers, tier{role.Role, role.Agent, role.Model, role.Effort})
 	}
 	mode := "unknown"
