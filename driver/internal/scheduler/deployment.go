@@ -57,6 +57,9 @@ func deploymentFor(t Ticket, env map[string]string) *merge.DeploymentProgress {
 }
 
 func (r *Runtime) deploymentReceipt(ctx context.Context, t Ticket, p *merge.Progress) error {
+	if batch, ok := ctx.Value(deployBatchKey{}).(*deployBatch); ok {
+		return r.batchReceipt(ctx, batch, p.Deployment, "")
+	}
 	b, _ := json.Marshal(p)
 	return r.mergeComment(ctx, t, merge.ProgressPrefix+string(b))
 }
@@ -153,6 +156,9 @@ func (r *Runtime) advanceDeployment(ctx context.Context, t Ticket, p *merge.Prog
 }
 
 func (r *Runtime) pauseDeployment(ctx context.Context, t Ticket, p *merge.Progress, reason string) error {
+	if batch, ok := ctx.Value(deployBatchKey{}).(*deployBatch); ok {
+		return errors.Join(errors.New(reason), r.batchReceipt(ctx, batch, p.Deployment, reason))
+	}
 	d := p.Deployment
 	if d.State != "paused" {
 		d.State = "paused"
@@ -183,7 +189,7 @@ func (r *Runtime) runSmoke(ctx context.Context, t Ticket, p *merge.Progress) ([]
 			env = append(env, item)
 		}
 	}
-	env = append(env, "AGENT_MERGE_SHA="+p.MergeSHA, "AGENT_GH_REPO="+p.Repository)
+	env = append(env, "AGENT_MERGE_SHA="+deploymentSHA(p), "AGENT_GH_REPO="+p.Repository)
 	run := r.Run
 	if run == nil {
 		run = runx.Run
@@ -235,6 +241,17 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	if t.MergeProblem != "" || p == nil || h == nil || p.Deployment == nil || p.QueueID != queue || p.QueueID != h.QueueID || p.MergeSHA != sha || p.Version != 1 || p.TicketID != t.ID || p.Repository != h.Repository || p.Head != h.Head || p.PR != h.PR || p.Phase != "merged" {
 		return rejectDeploymentProposal("recovery identity mismatch")
 	}
+	if p.Deployment.Batch != nil {
+		replay, err := r.replayBatchRecovery(ctx, t, action, operator, reason)
+		if err != nil {
+			return err
+		}
+		if replay != nil {
+			next := *p
+			next.Deployment = replay
+			return r.recoverDeployBatch(ctx, t, &next, deploymentRecoveryBody(t, &next, operator), dry)
+		}
+	}
 	next := *p
 	deployment := *p.Deployment
 	next.Deployment = &deployment
@@ -246,6 +263,10 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	switch action {
 	case "confirm-passed":
 		d.State = "passed"
+		if d.Batch != nil {
+			d.SmokeStarted = true
+			d.SmokePassed = true
+		}
 	case "retry-workflow":
 		// A self deployment has no workflow; retry-workflow reinstalls it.
 		if (d.Workflow == "" && !d.Self) || d.SmokeStarted || d.Self && !selfReinstallable(d.Recovery) {
@@ -253,7 +274,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 		}
 		d.State = "pending"
 	case "retry-smoke":
-		if d.Smoke == "" || !d.SmokeStarted {
+		if d.Smoke == "" || !d.SmokeStarted && d.Batch == nil {
 			return rejectDeploymentProposal("no smoke execution to reconcile")
 		}
 		d.State = retrySmokeState(d.Self)
@@ -275,9 +296,17 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	if !deploymentTransition(t.Progress, p) {
 		return rejectDeploymentProposal("invalid or stale deployment recovery")
 	}
+	body := deploymentRecoveryBody(t, p, operator)
+	if d.Batch != nil {
+		return r.recoverDeployBatch(ctx, t, p, body, dry)
+	}
 	if dry {
 		return nil
 	}
+	return r.mergeComment(ctx, t, body)
+}
+
+func deploymentRecoveryBody(t Ticket, p *merge.Progress, operator string) string {
 	b, _ := json.Marshal(p)
 	body := "阶段: 排队合并\n归属: 合并通道\n" + merge.ProgressPrefix + string(b)
 	if t.Resolution != nil && t.Resolution.Phase == "result" && operator == "resolver:"+t.Resolution.Dispatch {
@@ -286,7 +315,7 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 		raw, _ := json.Marshal(settled)
 		body += "\n" + resolver.Prefix + string(raw)
 	}
-	return r.mergeComment(ctx, t, body)
+	return body
 }
 
 func deploymentIdentity(t Ticket) error {

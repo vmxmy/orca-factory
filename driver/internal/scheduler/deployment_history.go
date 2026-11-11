@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"reflect"
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -10,6 +11,9 @@ import (
 // historical reset remains a barrier even if later records look consistent.
 func deploymentTransition(old, next *merge.Progress) bool {
 	n := next.Deployment
+	if !validDeploymentBatch(next) {
+		return false
+	}
 	if old == nil || old.Deployment == nil {
 		if n == nil {
 			return true
@@ -18,9 +22,12 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		if old != nil && old.QueueID == next.QueueID && (old.Phase == "merge-intent" || old.Phase == "merged") {
 			return false
 		}
-		return n.State == "pending" && !n.SmokeStarted && !n.SmokePassed && !n.WorkflowRetryPending && n.Recovery == nil
+		return n.Batch == nil && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed && !n.WorkflowRetryPending && n.Recovery == nil
 	}
 	d := old.Deployment
+	if !reflect.DeepEqual(d.Batch, deploymentBatchBinding(n)) && (d.Batch != nil || d.State != "pending" || n == nil || n.State != "pending" || old.Phase != "merged" || next.Phase != "merged") {
+		return false
+	}
 	if n == nil || old.QueueID != next.QueueID || old.TicketID != next.TicketID || old.Repository != next.Repository || old.PR != next.PR || old.Head != next.Head || (old.MergeSHA != "" && old.MergeSHA != next.MergeSHA) || d.Workflow != n.Workflow || d.Smoke != n.Smoke || d.Self != n.Self || d.AutoRerun != n.AutoRerun || n.Reruns < d.Reruns {
 		return false
 	}
@@ -31,11 +38,14 @@ func deploymentTransition(old, next *merge.Progress) bool {
 		}
 		switch r.Action {
 		case "confirm-passed":
+			if n.Batch != nil {
+				return n.State == "passed" && n.SmokeStarted && n.SmokePassed
+			}
 			return n.State == "passed" && n.SmokeStarted == d.SmokeStarted && n.SmokePassed == d.SmokePassed
 		case "retry-workflow":
 			return (d.Workflow != "" || d.Self && selfReinstallable(d.Recovery)) && !d.SmokeStarted && n.State == "pending" && !n.SmokeStarted && !n.SmokePassed
 		case "retry-smoke":
-			return d.Smoke != "" && d.SmokeStarted && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
+			return d.Smoke != "" && (d.SmokeStarted || n.Batch != nil) && n.State == retrySmokeState(n.Self) && !n.SmokeStarted && !n.SmokePassed
 		default:
 			return false
 		}
