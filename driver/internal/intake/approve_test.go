@@ -92,6 +92,70 @@ func TestAutoReleaseHuman(t *testing.T) {
 	}
 }
 
+// The notice reason is the ledger's 转人 line, cut at 300 runes with "…".
+func TestAutoReleaseHumanChecksFullReason(t *testing.T) {
+	long := strings.Repeat("网", 300)
+	for _, tc := range []struct{ name, result, refusal string }{
+		{name: "escalation reason beyond the notice", result: `{"action":"escalate","reason":"` + long + `需要授权","body":"proof"}`, refusal: "禁止字样：需要授权"},
+		{name: "truncated notice without escalation", result: "worker failed", refusal: "截断"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ledger := humanTicket(t)
+			record, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "human", "result": tc.result})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ledger.events["canon-of12"] = []string{"resolver-state " + string(record)}
+			released, refusal, err := AutoReleaseHuman(context.Background(), ledger, "canon-of12", 7, long+"…", time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
+			if err != nil || released || !strings.Contains(refusal, tc.refusal) || len(ledger.events["canon-of12"]) != 1 {
+				t.Fatalf("released=%v refusal=%q err=%v events=%q", released, refusal, err, ledger.events["canon-of12"])
+			}
+		})
+	}
+}
+
+// ledger-comments-human-release.json records a transfer, an approver's release,
+// and a second transfer of the same ticket.
+func TestRecordedAutoReleaseOncePerTicket(t *testing.T) {
+	recorded, err := os.ReadFile("../../testdata/recorded/ledger-comments-human-release.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded, &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		comments []task.Comment
+		attempt  int
+		refusal  string
+	}{
+		{name: "first transfer", comments: recording.Comments[:2], attempt: 1},
+		{name: "transfer after a release", comments: recording.Comments, attempt: 2, refusal: "本票此前已有放行记录"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ledger := humanTicket(t)
+			ledger.events["canon-of12"] = nil
+			ledger.comments = tc.comments
+			transfer, _, _ := strings.Cut(tc.comments[len(tc.comments)-2].Body, "\n")
+			reason := strings.TrimPrefix(transfer, "转人: ")
+			released, refusal, err := AutoReleaseHuman(context.Background(), ledger, "canon-of12", tc.attempt, reason, time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
+			events := ledger.events["canon-of12"]
+			if tc.refusal != "" {
+				if err != nil || released || refusal != tc.refusal || len(events) != 0 {
+					t.Fatalf("released=%v refusal=%q err=%v events=%q", released, refusal, err, events)
+				}
+				return
+			}
+			want := "放行：auto 2026-11-10T00:00:00Z\n" + `resolver-state {"version":1,"attempt":1,"phase":"waiting"}`
+			if err != nil || !released || refusal != "" || len(events) != 1 || events[0] != want {
+				t.Fatalf("released=%v refusal=%q err=%v events=%q", released, refusal, err, events)
+			}
+		})
+	}
+}
+
 const waitingReceipt = `resolver-state {"version":1,"attempt":7,"phase":"waiting"}`
 
 func TestHumanTicketRuling(t *testing.T) {

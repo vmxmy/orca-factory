@@ -47,15 +47,22 @@ func AutoReleaseHuman(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if refusal := humanReleaseRefusal(id, ticket.Description, latest); refusal != "" {
 		return false, refusal, nil
 	}
-	if strings.TrimSpace(reason) == "" {
-		if decision, parseErr := resolver.ParseResult(record.Result); parseErr != nil {
-			return false, "转人原因证据无效", nil
-		} else {
-			reason = decision.Reason
-		}
+	// The notice reason is the ledger line, cut at 300 runes. Only an escalation
+	// keeps the full reason, in the resolver result.
+	reasons := []string{reason}
+	decision, parseErr := resolver.ParseResult(record.Result)
+	switch {
+	case parseErr == nil && decision.Action == "escalate":
+		reasons = append(reasons, decision.Reason)
+	case strings.TrimSpace(reason) == "":
+		return false, "转人原因证据无效", nil
+	case strings.HasSuffix(reason, "…"):
+		return false, "转人原因已截断，无法核对完整原因", nil
 	}
-	if refusal := autoReleaseReasonRefusal(reason); refusal != "" {
-		return false, refusal, nil
+	for _, r := range reasons {
+		if refusal := autoReleaseReasonRefusal(r); refusal != "" {
+			return false, refusal, nil
+		}
 	}
 	for _, comment := range comments {
 		if strings.HasPrefix(comment.Body, "放行：") {
