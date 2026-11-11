@@ -69,5 +69,9 @@ func (r *Runtime) openResolutionPR(ctx context.Context, t Ticket, p *resolver.Re
 	next.RetryAt = time.Time{}
 	raw, _ := json.Marshal(next)
 	body := fmt.Sprintf("处置证据: open-pr pr=%d head=%s branch=%s\n处置要求: 等待 CI 并提交 merge handoff\n阶段: Agent处置\n归属: 处置Agent\n%s%s", pr.Number, proposal.Head, proposal.Branch, resolver.Prefix, raw)
-	return r.mergeComment(ctx, t, body)
+	if err := r.mergeComment(ctx, t, body); err != nil {
+		return err
+	}
+	r.wakeFor(ctx, t, next)
+	return nil
 }
