@@ -102,6 +102,7 @@ var configRoles = []struct {
 
 var configRouting = []struct{ key, fallback string }{
 	{"AGENT_TIER_ESCALATE", ""},
+	{"AGENT_TIER_CHAIN", config.DefaultTierChain},
 	{"AGENT_REVIEWER_SMALL_MAX_ESTIMATE", "2"},
 	{"AGENT_MAX_IN_FLIGHT", "4"},
 	{"AGENT_STALE_HOURS", "8"},

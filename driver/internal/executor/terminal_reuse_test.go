@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -141,15 +142,18 @@ func TestCorrectionReusesWorkerTerminal(t *testing.T) {
 func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 	e, o, tools, _, l, ticket := recoveryFixture(t)
 	tools.gateReds = 1
-	_ = l
 	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}}
 	e.Orca = ro
 	e.Config.Escalate = "1"
 	e.Config.Tier = "default"
+	e.Config.Agent, e.Config.Model, e.Config.Effort = "codex", "gpt-6-astra", "low"
 	e.Config.TierSettings = map[string]string{"strong": "codex:gpt-6-astra:medium"}
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil || result.State.Owner != machine.OwnerMerge {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if want := "correction 1 → 升至 strong（codex:gpt-6-astra:low → codex:gpt-6-astra:medium）"; !slices.Contains(l.comments, want) {
+		t.Fatalf("comments=%q, want %q", l.comments, want)
 	}
 	if len(ro.started) < 2 {
 		t.Fatalf("no correction dispatch: %+v", ro.started)
@@ -157,6 +161,30 @@ func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 	last := ro.started[len(ro.started)-1]
 	if last.Terminal != "" || last.Agent == "" {
 		t.Fatalf("escalation must start a fresh agent: %+v", last)
+	}
+}
+
+// A chain that returns to an earlier model must not reuse the previous tier's terminal.
+func TestCorrectionChainReturnToEntryModelStartsFreshAgent(t *testing.T) {
+	e, o, tools, _, _, ticket := recoveryFixture(t)
+	tools.gateReds = 2
+	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}}
+	e.Orca = ro
+	e.Config.Escalate = "1"
+	e.Config.Tier = "default"
+	e.Config.Agent, e.Config.Model, e.Config.Effort = "codex", "gpt-6-astra", "low"
+	e.Config.TierChain = []string{"default", "strong", "max"}
+	e.Config.TierSettings = map[string]string{"default": "codex:gpt-6-astra:low", "strong": "claude:claude-opus-5-5:high", "max": "codex:gpt-6-astra:low"}
+	result, err := e.Execute(context.Background(), ticket)
+	if err != nil || result.State.Owner != machine.OwnerMerge {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if len(ro.started) != 3 {
+		t.Fatalf("want initial and two correction dispatches: %+v", ro.started)
+	}
+	last := ro.started[2]
+	if last.Terminal != "" || last.Agent != "codex" || last.Model != "gpt-6-astra" || last.Effort != "low" {
+		t.Fatalf("second correction must start the max tier fresh: %+v", last)
 	}
 }
 
