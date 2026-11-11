@@ -114,6 +114,9 @@ func LoadRepository(path string) (Repository, error) {
 	if parseErr != nil || closeErr != nil {
 		return Repository{}, errors.New("invalid repository profile")
 	}
+	if mode, explicit := env["AGENT_MODE"]; explicit && mode != "manual" && mode != "auto" {
+		return Repository{}, errors.New("AGENT_MODE must be manual or auto")
+	}
 	limit, err := positive(env, "AGENT_MAX_IN_FLIGHT", 4)
 	if err != nil {
 		return Repository{}, err
