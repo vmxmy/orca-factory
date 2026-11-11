@@ -28,6 +28,28 @@ func TestRecordedEscalateBlockClass(t *testing.T) {
 	}
 }
 
+func TestRecordedEscalateUnclassified(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-escalate-unclassified.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParseResult(string(raw))
+	if err != nil || p.Action != "escalate" || p.Class != "" {
+		t.Fatalf("old unclassified escalation rejected: %+v %v", p, err)
+	}
+}
+
+func TestRecordedEscalateOther(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-escalate-other.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParseResult(string(raw))
+	if err != nil || p.Action != "escalate" || p.Class != "other" || p.Head != "" {
+		t.Fatalf("other escalation rejected: %+v %v", p, err)
+	}
+}
+
 func TestResolutionRejectsUnstructuredOrUnknownDecision(t *testing.T) {
 	for _, body := range []string{`done`, `{"action":"done","reason":"looks good"}`, `{"action":"merge","reason":"checked"}`, `{"action":"retry-smoke","queue":"q","sha":"a","reason":"checked"}`} {
 		if _, err := ParseResult(body); err == nil {

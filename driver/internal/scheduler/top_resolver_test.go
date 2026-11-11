@@ -63,6 +63,73 @@ func TestTopResolverPreservesBlockClass(t *testing.T) {
 	}
 }
 
+func TestTopResolverUnclassifiedEscalationRejectsRuling(t *testing.T) {
+	testTopResolverRecordedEscalation(t, "resolver-escalate-unclassified.json", "", false)
+}
+
+func TestTopResolverOtherEscalationAcceptsRuling(t *testing.T) {
+	testTopResolverRecordedEscalation(t, "resolver-escalate-other.json", "other", true)
+}
+
+func testTopResolverRecordedEscalation(t *testing.T, filename, class string, allowed bool) {
+	t.Helper()
+	decision, err := os.ReadFile("../../testdata/recorded/" + filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &topStore{fakeIssues: fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+string(raw))}}
+	r := &Runtime{Clients: map[string]issues.Store{"/repo": store}, Repositories: map[string]config.Repository{"/repo": {Env: map[string]string{"AGENT_AUTO_REVIEW": "top"}}}}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+	if err := r.applyResolution(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	ticket = fromEvidence(t, ticket, store.issueComments)
+	if !ticket.Resolution.Top || ticket.Resolution.Phase != "waiting" || ticket.Resolution.TopClass != class || len(store.comments) != 1 {
+		t.Fatalf("escalation did not enter final review with original class: %+v %q", ticket.Resolution, store.comments)
+	}
+	if class == "" {
+		if strings.Contains(store.comments[0], `"top_class"`) {
+			t.Fatalf("unclassified escalation gained a class: %q", store.comments)
+		}
+	} else if !strings.Contains(store.comments[0], `"top_class":"other"`) {
+		t.Fatalf("other class missing from receipt: %q", store.comments)
+	}
+	ruling, err := os.ReadFile("../../testdata/recorded/resolver-top-ruling.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := *ticket.Resolution
+	next.Attempt++
+	next.Phase, next.Outcome, next.Result = "result", "succeeded", string(ruling)
+	if err := (resolutionStore{r, ticket}).Save(context.Background(), next); err != nil {
+		t.Fatal(err)
+	}
+	ticket = fromEvidence(t, ticket, store.issueComments)
+	if err := r.applyResolution(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	after := fromEvidence(t, ticket, store.issueComments)
+	if allowed {
+		last := store.comments[len(store.comments)-1]
+		if after.Resolution.Phase != "waiting" || !strings.HasPrefix(last, "裁定：top-resolver ") {
+			t.Fatalf("classified escalation did not receive ruling: %+v %q", after.Resolution, store.comments)
+		}
+		return
+	}
+	if after.Resolution.Phase != "human" {
+		t.Errorf("unclassified escalation released: %+v", after.Resolution)
+	}
+	for _, comment := range store.comments {
+		if strings.HasPrefix(comment, "裁定：") {
+			t.Errorf("unclassified escalation received ruling: %s", comment)
+		}
+	}
+}
+
 func TestTopResolverTierAndPrompt(t *testing.T) {
 	repo := t.TempDir()
 	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
@@ -155,8 +222,11 @@ func TestTopResolverRuling(t *testing.T) {
 		name, reason, class, evidence string
 		allowed                       bool
 	}{
-		{name: "普通裁定", reason: "按已有 CHECK 实施", allowed: true},
-		{name: "无害文字", reason: "无需授权，不触碰生产数据", allowed: true},
+		{name: "普通裁定", reason: "按已有 CHECK 实施", class: "other", allowed: true},
+		{name: "无害文字", reason: "无需授权，不触碰生产数据", class: "brief-interpretation", allowed: true},
+		{name: "SCOPE 裁定", reason: "确认所需路径", class: "scope-extension", allowed: true},
+		{name: "未分类", class: ""},
+		{name: "未知类别", class: "unknown"},
 		{name: "凭证缺失", class: "credentials"},
 		{name: "环境阻塞", class: "environment"},
 		{name: "需要授权", class: "authorization"},

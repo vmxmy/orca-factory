@@ -23,6 +23,12 @@ const (
 	topBlockProductionData = "production-data"
 )
 
+const (
+	topRulingScopeExtension      = "scope-extension"
+	topRulingBriefInterpretation = "brief-interpretation"
+	topRulingOther               = "other"
+)
+
 // ApplyTopReview uses the human ruling and scope writers after re-reading the
 // exact final-review result. A stale result never grants authority.
 func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time) (string, error) {
@@ -64,6 +70,11 @@ func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt 
 	}
 	if decision.Action != "ruling" || record.Outcome != "succeeded" {
 		return "不是成功的终审 ruling", nil
+	}
+	switch record.TopClass {
+	case topRulingScopeExtension, topRulingBriefInterpretation, topRulingOther:
+	default:
+		return "必须转人：原转人阻塞未分类", nil
 	}
 	return "", applyRuling(ctx, ledger, ticket, record, "top-resolver", decision.Reason, now)
 }

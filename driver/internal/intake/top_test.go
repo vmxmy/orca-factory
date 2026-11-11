@@ -22,7 +22,7 @@ func TestTopRulingIgnoresBoundaryWords(t *testing.T) {
 	if !strings.Contains(string(decision), "无需授权") {
 		t.Fatal("recording no longer covers harmless boundary words")
 	}
-	raw, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "result", "top": true, "top_reason": "票面口径二选一", "outcome": "succeeded", "result": string(decision)})
+	raw, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "result", "top": true, "top_class": "brief-interpretation", "top_reason": "票面口径二选一", "outcome": "succeeded", "result": string(decision)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,12 +79,30 @@ func TestTopRulingCannotReplaceOriginalBlock(t *testing.T) {
 	}
 }
 
+func TestTopRulingRejectsUnclassifiedBlock(t *testing.T) {
+	for _, class := range []string{"", "unknown"} {
+		t.Run(class, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.tasks[0].Description = "## LANE 预判\n2"
+			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 7, Phase: "result", Top: true, TopClass: class, Outcome: "succeeded", Result: `{"action":"ruling","reason":"可以继续"}`})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ledger.events["canon-of12"] = []string{resolver.Prefix + string(raw)}
+			refusal, err := ApplyTopReview(context.Background(), ledger, "canon-of12", 7, "", time.Now())
+			if err != nil || refusal != "必须转人：原转人阻塞未分类" || len(ledger.events["canon-of12"]) != 1 {
+				t.Fatalf("unclassified block released: refusal=%q err=%v events=%q", refusal, err, ledger.events["canon-of12"])
+			}
+		})
+	}
+}
+
 func TestTopRulingChecksTicketBoundary(t *testing.T) {
 	for _, face := range []string{"## LANE 预判\n3", "## Change\n调整实现"} {
 		t.Run(face, func(t *testing.T) {
 			h, ledger := humanTicket(t)
 			h.ledger.tasks[0].Description = face
-			ledger.events["canon-of12"] = []string{`resolver-state {"version":1,"attempt":7,"phase":"result","top":true,"outcome":"succeeded","result":"{\"action\":\"ruling\",\"reason\":\"继续实施\"}"}`}
+			ledger.events["canon-of12"] = []string{`resolver-state {"version":1,"attempt":7,"phase":"result","top":true,"top_class":"brief-interpretation","outcome":"succeeded","result":"{\"action\":\"ruling\",\"reason\":\"继续实施\"}"}`}
 			refusal, err := ApplyTopReview(context.Background(), ledger, "canon-of12", 7, "", time.Now())
 			if err != nil || refusal == "" || len(ledger.events["canon-of12"]) != 1 {
 				t.Fatalf("ticket boundary bypassed: %q %v", refusal, err)
