@@ -379,11 +379,21 @@ func (r *Runtime) applyLandedDone(ctx context.Context, t Ticket, p *resolver.Rec
 	if err != nil {
 		return err
 	}
+	lane3 := strings.Fields(r.Repositories[t.Repo].Env["AGENT_LANE3_GLOBS"])
 	driverChange := false
 	for _, file := range changed.Files {
-		if strings.HasPrefix(file.Filename, "driver/") || strings.HasPrefix(file.PreviousFilename, "driver/") {
-			driverChange = true
-			break
+		for _, name := range []string{file.Filename, file.PreviousFilename} {
+			if name == "" {
+				continue
+			}
+			for _, pattern := range lane3 {
+				if task.ScopeMatch(pattern, name) {
+					return reject("merged change touches lane 3 path " + name)
+				}
+			}
+			if strings.HasPrefix(name, "driver/") {
+				driverChange = true
+			}
 		}
 	}
 	installed := "not involved"

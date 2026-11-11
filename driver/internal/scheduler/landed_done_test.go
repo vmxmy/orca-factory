@@ -49,6 +49,9 @@ func landedDoneRuntime(t *testing.T, proposal resolver.Resolution, mode string, 
 			if mode == "driver-not-installed" {
 				files = append(files, map[string]string{"filename": "driver/internal/scheduler/resolver.go"})
 			}
+			if mode == "lane3-files" {
+				files = append(files, map[string]string{"filename": "deploy/install.sh"})
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
 		default:
 			t.Errorf("unexpected GitHub request: %s", r.URL.Path)
@@ -71,7 +74,7 @@ func landedDoneRuntime(t *testing.T, proposal resolver.Resolution, mode string, 
 		rows = append(rows, task.Comment{ID: "handoff", Body: merge.HandoffPrefix + string(h), CreatedAt: unixSecond(3)})
 	}
 	tracker := &mergeIssues{issue: task.Issue{ID: "id", Identifier: "OF-1", State: task.NamedID{Name: "In Progress"}}, rows: rows}
-	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/r"}}
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_GH_REPO": "o/r", "AGENT_LANE3_GLOBS": "deploy/*"}}
 	runtime := &Runtime{GitHub: gh, Clients: map[string]issues.Store{"/repo": tracker}, Repositories: map[string]config.Repository{"/repo": repo}, Version: landedSHA, DriverPath: "/driver"}
 	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, rows)
 	return runtime, tracker, ticket
@@ -104,6 +107,7 @@ func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 		{name: "sha mismatch", mode: "sha-mismatch"},
 		{name: "not ancestor", mode: "not-ancestor"},
 		{name: "lane 3", mode: "ok", h: &merge.Handoff{QueueID: "q", Lane: 3}},
+		{name: "lane 3 files without handoff", mode: "lane3-files"},
 		{name: "frozen queue", mode: "ok", h: &merge.Handoff{QueueID: "q", Lane: 2}},
 		{name: "driver not installed", mode: "driver-not-installed"},
 	}
