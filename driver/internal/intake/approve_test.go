@@ -114,6 +114,30 @@ func TestAutoReleaseHumanChecksFullReason(t *testing.T) {
 	}
 }
 
+// resolver-escalate-class.json is a real escalation. A truncated notice is
+// released only because the full reason is read from the resolver result.
+func TestRecordedAutoReleaseReadsEscalationReason(t *testing.T) {
+	result, err := os.ReadFile("../../testdata/recorded/resolver-escalate-class.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var escalation struct{ Reason string }
+	if err := json.Unmarshal(result, &escalation); err != nil {
+		t.Fatal(err)
+	}
+	_, ledger := humanTicket(t)
+	record, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "human", "result": strings.TrimSpace(string(result))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.events["canon-of12"] = []string{"resolver-state " + string(record)}
+	notice := string([]rune(escalation.Reason)[:20]) + "…"
+	released, refusal, err := AutoReleaseHuman(context.Background(), ledger, "canon-of12", 7, notice, time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC))
+	if events := ledger.events["canon-of12"]; err != nil || !released || refusal != "" || len(events) != 2 || !strings.HasPrefix(events[1], "放行：auto ") {
+		t.Fatalf("released=%v refusal=%q err=%v events=%q", released, refusal, err, events)
+	}
+}
+
 // ledger-comments-human-release.json records a transfer, an approver's release,
 // and a second transfer of the same ticket.
 func TestRecordedAutoReleaseOncePerTicket(t *testing.T) {
