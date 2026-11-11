@@ -190,3 +190,35 @@ func TestExecReadsLane3Globs(t *testing.T) {
 		t.Fatalf("lane 3 globs=%q", got)
 	}
 }
+
+func TestExecUsesProfileTierChain(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	repo := t.TempDir()
+	for path, body := range map[string]string{
+		filepath.Join(home, ".config/orca-factory/profiles.toml"): "default='daily'\n[profile.daily]\n" +
+			"AGENT_TIER_DEFAULT='codex:daily:low'\nAGENT_TIER_STRONG='claude:strong:high'\n" +
+			"AGENT_TIER_CHAIN='default strong max'\nAGENT_TIER_MAX='codex:max:high'\nAGENT_TIER_ESCALATE='1'\n",
+		filepath.Join(repo, "scripts/agent-gates/agent-graph.env"): "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\n",
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []int{2, 3} {
+		tier, agent, model, effort, err := correctionTier(executor.Config, n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := []string{tier, agent, model, effort}, []string{"max", "codex", "max", "high"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("correction %d tier=%q, want %q", n, got, want)
+		}
+	}
+}
