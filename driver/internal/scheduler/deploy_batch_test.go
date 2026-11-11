@@ -170,15 +170,23 @@ func TestDeployBatchCandidateHeadChangedDeploysConfirmedPrefix(t *testing.T) {
 	}
 }
 
-func TestDeployBatchCandidateReceiptFailedDeploysConfirmedPrefix(t *testing.T) {
+func TestDeployBatchCandidateReceiptFailedHoldsBarrier(t *testing.T) {
 	f, host, store, _ := newBatchFixture(t, 2)
 	store.tickets[1].failBody = `"phase":"merged"`
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	host.cancel = cancel
+	_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(ctx)
+	if f.puts != 2 || host.builds != 0 {
+		t.Fatalf("squashed candidate without receipt deployed the older prefix: merges=%d builds=%d", f.puts, host.builds)
+	}
+	store.tickets[1].failBody = ""
 	firstServe(t, f, host)
 	if f.puts != 2 || host.builds != 1 {
-		t.Fatalf("candidate receipt failed: merges=%d builds=%d", f.puts, host.builds)
+		t.Fatalf("reconciled batch: merges=%d builds=%d", f.puts, host.builds)
 	}
-	if batchProgress(t, store.tickets[0]).Deployment.Batch != nil {
-		t.Fatal("unconfirmed candidate joined the deployment batch")
+	if binding := batchProgress(t, store.tickets[0]).Deployment.Batch; binding == nil || binding.SHA != fmt.Sprintf("%040x", 2) || len(binding.Members) != 2 {
+		t.Fatalf("reconciled batch does not install the final main: %+v", binding)
 	}
 }
 

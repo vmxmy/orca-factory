@@ -143,7 +143,7 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 - 新部署字段在 squash intent 之前持久；实际 SHA 只来自 GitHub 已合并 PR 回读。smoke 必须在其 intent 写回确认后执行，执行成功但通过回执无法确认时保留屏障，重建调度器要求人工对账。
 - 从项目全量分页 Snapshot 及批量事件读取（SnapshotComments）重建屏障，先读取持久证据再筛选活动票。Done、auto-failed、归属为人或无的票，只要仍有未完成/冲突的部署证据便继续参与该仓库 FIFO。部署字段消失、配置不一致或身份冲突不会静默放行。
 - GitHub 使用 [workflow runs REST API](https://docs.github.com/en/rest/actions/workflow-runs)：固定 workflow 与 `head_sha=<实际 squash SHA>`，显式核对响应身份和完整分页。显示名从 workflows 集合唯一解析。完整空集合返回 absent；缺失/未知/仍运行的回执保持 pending，已完成的明确失败转人；成功才 smoke。多个历史 run 以最新 run 的完成结论为准，但仍运行的旧 run 保守等待。
-- 自部署批（OF-485）：同仓库 FIFO 连续且冻结交接、CI 与原合并校验均就绪的 self PR 可合并后共享部署，`scheduler.selfDeployBatchLimit=3` 限制一批最多 3 票；不等待后续异步 gate，不跨仓库、不跳过未就绪票、不放宽 lane。只合并 smoke 配置相同、尚未开始部署且没有 recovery 的票。单票不写批字段。后续候选未就绪或出错时结束扩批，已确认合并的前缀照常部署，该候选留待成为队首时处理。
+- 自部署批（OF-485）：同仓库 FIFO 连续且冻结交接、CI 与原合并校验均就绪的 self PR 可合并后共享部署，`scheduler.selfDeployBatchLimit=3` 限制一批最多 3 票；不等待后续异步 gate，不跨仓库、不跳过未就绪票、不放宽 lane。只合并 smoke 配置相同、尚未开始部署且没有 recovery 的票。单票不写批字段。后续候选在合并前未就绪或出错时结束扩批，已确认合并的前缀照常部署，该候选留待成为队首时处理；GitHub 回读该候选已合并或无法回读时保留屏障、不部署前缀，下一轮回读对账后整批部署最终 SHA。
 - `deployment.batch` 是可选增量字段，包含最终部署 `sha` 及有序 `members[{ticket_id,queue_id,merge_sha}]`。只允许从已合并、pending 的无批记录绑定一次，之后不可改或移除；每票自己的外层 `merge_sha`、head、main、queue_id 和 handoff 都保留。备份、构建、看守、版本校验与 smoke 环境改用 batch.sha；每票保留独立 progress，部署状态与正常 smoke 结果共享。
 - 全批 intent 确认后才安装和 smoke，全批 passed 确认后才逐票 Done。每次重启回读全批身份；缺成员或身份冲突保留屏障，执行状态分歧暂停。已有 passed 与同批 smoke-intent 的部分写入可补齐成功结果，Done 写入重试不重复部署。部分 intent 写入不授权安装。
 - 批内部署或 smoke 失败一并转处置 Agent 并保持非 Done。二进制替换后的失败先尝试逐票写 paused，再沿用 `rollbackSelf` 恢复批前备份并重启，旧进程按最终 SHA 的回滚标记解除本批 draining；看守恢复也暂停整批。暂停写入失败仍回滚，回读恢复后继续对账，不能把写失败当通过。

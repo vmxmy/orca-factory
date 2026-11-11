@@ -54,6 +54,18 @@ func validDeploymentBatch(p *merge.Progress) bool {
 	return found
 }
 
+// candidateMerged reads GitHub, not the ledger: a squash whose merged receipt
+// failed is only visible there.
+func (r *Runtime) candidateMerged(ctx context.Context, t Ticket) (bool, error) {
+	gh, err := r.githubClient()
+	if err != nil {
+		return false, err
+	}
+	owner, repo, _ := strings.Cut(t.Handoff.Repository, "/")
+	p, err := gh.GetPR(ctx, owner, repo, t.Handoff.PR)
+	return p.Merged, err
+}
+
 func (r *Runtime) refreshBatchTicket(ctx context.Context, t Ticket) (Ticket, error) {
 	comments, err := r.Clients[t.Repo].ListComments(ctx, t.ID)
 	if err != nil {
@@ -100,19 +112,24 @@ func (r *Runtime) advanceMergeQueue(ctx context.Context, rows []Ticket) error {
 			break
 		}
 		if len(batch.tickets) > 0 {
-			gh, err := r.githubClient()
+			merged, err := r.candidateMerged(ctx, t)
 			if err != nil {
-				runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
-				break
+				return err
 			}
-			owner, repo, _ := strings.Cut(t.Handoff.Repository, "/")
-			checks, err := gh.MergeChecks(ctx, owner, repo, t.Handoff.Head)
-			if err != nil {
-				runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
-				break
-			}
-			if !checks.Green {
-				break
+			if !merged {
+				gh, err := r.githubClient()
+				if err != nil {
+					return err
+				}
+				owner, repo, _ := strings.Cut(t.Handoff.Repository, "/")
+				checks, err := gh.MergeChecks(ctx, owner, repo, t.Handoff.Head)
+				if err != nil {
+					runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
+					break
+				}
+				if !checks.Green {
+					break
+				}
 			}
 		}
 		captured := false
@@ -131,6 +148,11 @@ func (r *Runtime) advanceMergeQueue(ctx context.Context, rows []Ticket) error {
 		if err != nil {
 			if len(batch.tickets) == 0 {
 				return err
+			}
+			// Deploying the prefix after this candidate squashed would install an older main.
+			merged, readErr := r.candidateMerged(ctx, t)
+			if readErr != nil || merged {
+				return errors.Join(err, readErr)
 			}
 			runx.LoggerFrom(ctx).Info("self deployment batch stopped at candidate", "ticket", t.Identifier, "err", err)
 			break

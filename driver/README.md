@@ -192,7 +192,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 仓库 `agent-graph.env` 设 `AGENT_SELF_DEPLOY=1` 时，serve 在合并通道的部署屏障里自己执行上述顺序。该开关要求 `AGENT_SMOKE_CMD` 非空、`AGENT_DEPLOY_WORKFLOW` 为空。本仓库的 smoke 是 `orca-factory-driver doctor --json`。状态目录指 `~/.local/state/orca-factory/`。
 
-连续自部署 PR 按同仓库 FIFO 组批，代码常量 `selfDeployBatchLimit` 默认为 3。队首合并后，只尝试紧邻、交接已冻结、CI 全绿、smoke 配置相同且尚未开始部署的下一票。每票仍通过原有 gate、审查、CI 和 lane 检查，不跨仓库、不跳过等待票；下一票需要异步 gate 时，先部署已经合并的票。后续候选未就绪或出错时结束扩批，已确认合并的前缀照常部署，该候选留待成为队首时处理。已有恢复决定的单票不加入新批，单票仍沿用原来的部署记录。
+连续自部署 PR 按同仓库 FIFO 组批，代码常量 `selfDeployBatchLimit` 默认为 3。队首合并后，只尝试紧邻、交接已冻结、CI 全绿、smoke 配置相同且尚未开始部署的下一票。每票仍通过原有 gate、审查、CI 和 lane 检查，不跨仓库、不跳过等待票；下一票需要异步 gate 时，先部署已经合并的票。后续候选在合并前未就绪或出错时结束扩批，已确认合并的前缀照常部署，该候选留待成为队首时处理；GitHub 回读该候选已合并或无法回读时保留屏障、不部署前缀，下一轮回读对账后整批部署最终 SHA。已有恢复决定的单票不加入新批，单票仍沿用原来的部署记录。
 
 每票 `merge-progress-v1.merge_sha` 保留自己的 squash SHA。批内 `deployment.batch` 共享成员的 `ticket_id`、`queue_id`、`merge_sha` 与最后一票的部署 `sha`，绑定后不可改。以下步骤中的 `<sha>`、版本核对、备份、看守和 smoke 环境 `AGENT_MERGE_SHA` 都使用该最终部署 SHA。整批只构建安装一次，正常运行只 smoke 一次；所有成员的 intent 写入确认后才执行，所有成员的 passed 写入确认后才逐票 Done。
 
