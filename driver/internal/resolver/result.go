@@ -17,6 +17,7 @@ type Resolution struct {
 	Reason  string         `json:"reason"`
 	Handoff *merge.Handoff `json:"handoff,omitempty"`
 	Queue   string         `json:"queue,omitempty"`
+	PR      int            `json:"pr,omitempty"`
 	SHA     string         `json:"sha,omitempty"`
 	// Class is the kind of block an escalate reports. It only selects whether
 	// the shadow cross review runs; a human still receives the ticket.
@@ -54,6 +55,10 @@ func ParseResult(body string) (Resolution, error) {
 	case "retry-workflow", "retry-smoke", "confirm-passed":
 		if p.Queue == "" || len(p.SHA) != 40 || strings.Trim(p.SHA, "0123456789abcdef") != "" {
 			return p, errors.New("resolver requires pinned deployment identity")
+		}
+	case "landed-done":
+		if p.PR < 1 || len(p.SHA) != 40 || strings.Trim(p.SHA, "0123456789abcdef") != "" {
+			return p, errors.New("resolver requires merged PR number and full merge SHA")
 		}
 	default:
 		return p, errors.New("unknown resolver action")

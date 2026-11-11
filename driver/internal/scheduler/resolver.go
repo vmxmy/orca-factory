@@ -258,6 +258,9 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if decision.Action == "open-pr" {
 		return r.openResolutionPR(ctx, t, p, decision)
 	}
+	if decision.Action == "landed-done" {
+		return r.applyLandedDone(ctx, t, p, decision)
+	}
 	if decision.Action != "merge" {
 		if err = r.ResumeDeployment(ctx, t.Identifier, decision.Queue, decision.SHA, decision.Action, "resolver:"+p.Dispatch, decision.Reason, false); err != nil {
 			if errors.Is(err, errDeploymentProposal) {
@@ -328,6 +331,80 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	t.Handoff = h
 	r.board(ctx, t, machine.PhaseMergeQueue, decision.Reason)
 	return nil
+}
+
+func (r *Runtime) applyLandedDone(ctx context.Context, t Ticket, p *resolver.Record, proposal resolver.Resolution) error {
+	reject := func(reason string) error {
+		return r.retryResolution(ctx, t, p, "landed-done rejected: "+reason)
+	}
+	if t.Handoff != nil && t.Handoff.Lane == 3 {
+		return reject("lane 3 tickets cannot be completed by resolver")
+	}
+	if t.Handoff != nil || t.Progress != nil || t.MergeProblem != "" {
+		return reject("ticket still has a merge handoff or frozen queue identity")
+	}
+	gh, err := r.githubClient()
+	if err != nil {
+		return err
+	}
+	owner, repo, ok := strings.Cut(r.Repositories[t.Repo].Env["AGENT_GH_REPO"], "/")
+	if !ok || owner == "" || repo == "" {
+		return reject("GitHub repository unavailable")
+	}
+	pr, err := gh.GetPR(ctx, owner, repo, proposal.PR)
+	if err != nil {
+		return err
+	}
+	if !pr.Merged || pr.MergeSHA != proposal.SHA || pr.Base.Ref != "main" {
+		return reject(fmt.Sprintf("PR #%d is not merged to main at %s", proposal.PR, proposal.SHA))
+	}
+	mainSHA, err := gh.BranchSHA(ctx, owner, repo, "main")
+	if err != nil {
+		return err
+	}
+	comparison, err := gh.Compare(ctx, owner, repo, proposal.SHA, "main")
+	if err != nil {
+		return err
+	}
+	if comparison.MergeBaseCommit.SHA != proposal.SHA {
+		return reject("merge SHA is not an ancestor of origin/main")
+	}
+	if mainSHA == "" {
+		return reject("origin/main SHA is unavailable")
+	}
+	if !commitID(pr.Head.SHA) {
+		return reject("merged PR head SHA is unavailable")
+	}
+	changed, err := gh.Compare(ctx, owner, repo, "main", pr.Head.SHA)
+	if err != nil {
+		return err
+	}
+	driverChange := false
+	for _, file := range changed.Files {
+		if strings.HasPrefix(file.Filename, "driver/") || strings.HasPrefix(file.PreviousFilename, "driver/") {
+			driverChange = true
+			break
+		}
+	}
+	installed := "not involved"
+	if driverChange {
+		ok, err := r.verifyInstalled(ctx, proposal.SHA)
+		if err != nil {
+			return reject("installed driver version could not be verified")
+		}
+		if !ok {
+			return reject("installed driver does not contain the merge SHA")
+		}
+		installed = "contains sha"
+	}
+	next := *p
+	next.Phase = "applied"
+	raw, _ := json.Marshal(next)
+	body := fmt.Sprintf("已落地: PR #%d squash %s\n核对: PR merged=true base=main merge_sha=%s; origin/main=%s ancestor=true; merge handoff=none; lane!=3; driver=%s\n阶段: %s\n归属: %s\n%s", proposal.PR, proposal.SHA, proposal.SHA, mainSHA, installed, machine.PhaseMerged, machine.OwnerNone, resolver.Prefix+string(raw))
+	if err := r.markDone(ctx, t); err != nil {
+		return err
+	}
+	return r.mergeComment(ctx, t, body)
 }
 
 const resolverFailureLimit = 3

@@ -16,6 +16,7 @@
 - `Agent处置: worker overran: no worker_done within run limit` 事件表示 worker 单次派工运行满时长上限仍未回报 `worker_done`。执行器没有停止或释放 worker，它可能仍在运行。证据里的「运行超时」给出已运行时长和终端最后输出时间。先读 worker 终端与分支，判断它是否仍在推进，再按本文件的规则停止它或复用它的工作。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
+- 对已合并但票据尚未收尾的票，只有在 GitHub 回读 PR 为 MERGED 且 `merge_commit_sha` 等于提案 `sha`、该 SHA 是 `origin/main` 的祖先、票据没有未完成合并交接或冻结队列身份、不是 lane 3，并且涉及 `driver/` 时已安装版本包含该 SHA 后，才提交 `landed-done` 提案；调度器会重新核对这些条件、写入核对评论并置 Done。
 
 ## Does Not Own
 
@@ -43,6 +44,7 @@
 - 通过 Orca `worker_done` 提交结果。成功 body 必须是一个 JSON 对象，不附 Markdown 围栏。
 - 开 PR 提案：`{"action":"open-pr","branch":"已推送分支","head":"40 位完整提交 SHA","title":"PR 标题","body":"PR 正文","reason":"已完成检查与开 PR 原因"}`；所有字段必填，reason 为单行。统一票据存储由调度器在正文首行添加票据关联链接，与执行器一致。branch 不以 `agent/<票号>/` 开头时调度器不建 PR，退回重试处置。远端 head 不符、分支不存在或建 PR 失败会记录证据并转人，不自动重试。
 - 合并提案：`{"action":"merge","reason":"具体处置与复核证据摘要","handoff":{完整 merge handoff}}`。
+- 已落地提案：`{"action":"landed-done","pr":<PR 编号>,"sha":"40 位合并提交 SHA","reason":"逐项核对原因"}`；该提案只报告事实，不授权跳过合并交接、lane 3 或自部署核对。
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
 - 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。调度器把票转人工、通知一次，不再派处置 Agent。修复已推送、只差人裁定时再加 `class` 和 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。其他阻塞不填。这两个字段只触发交叉复审并记录结果，票仍然转人。`scope-extension` 再带 `scope`（仓库内字面路径数组）时，审批人可在飞书卡片一键同意；只列确实需要的文件。
