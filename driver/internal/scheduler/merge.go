@@ -110,7 +110,7 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 			}
 			return a.EnqueuedAt.Before(b.EnqueuedAt)
 		})
-		if head := rows[0]; head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman {
+		if head := rows[0]; head.Owner == machine.OwnerResolver || head.Owner == machine.OwnerHuman || head.Parked != "" {
 			if p := head.Progress; p != nil && deploymentBatchBinding(p.Deployment) != nil {
 				rolled, err := fileExists(r.selfMarker(deploymentSHA(p), markerRolledBack))
 				if err != nil {
@@ -125,6 +125,9 @@ func (r *Runtime) AdvanceMerges(ctx context.Context, tickets []Ticket) error {
 				}
 			}
 			reason := string(head.Owner)
+			if head.Parked != "" {
+				reason = "parked: " + head.Parked
+			}
 			if p := head.Progress; p != nil && p.Deployment != nil && p.Deployment.Reason != "" {
 				reason = p.Deployment.Reason
 			}

@@ -32,6 +32,12 @@ func TopMustHuman(class string) bool {
 	return false
 }
 
+// FaceLaneThree reports a ticket face that predicts lane 3.
+func FaceLaneThree(description string) bool {
+	m := laneHeading.FindStringSubmatch(description)
+	return m != nil && m[1] == "3"
+}
+
 const (
 	topRulingScopeExtension      = "scope-extension"
 	topRulingBriefInterpretation = "brief-interpretation"

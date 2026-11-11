@@ -338,6 +338,12 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				continue
 			}
 			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
+		} else if t.resumesResolution() {
+			// Before the merge lane: conflicting evidence stops that lane forever.
+			if total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight {
+				continue
+			}
+			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "parked ticket resumed"}
 		} else if t.Owner == machine.OwnerMerge || DeploymentBarrier(t) {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
@@ -388,11 +394,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					action = Action{Kind: Resume, Attempt: next.Attempt, Phase: next.Phase}
 				}
 			}
-		} else if t.resumesResolution() {
-			if total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight {
-				continue
-			}
-			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "parked ticket resumed"}
 		} else if t.Legacy {
 			legacy, readErr := s.Backend.InspectLegacy(ctx, t)
 			if readErr != nil {

@@ -103,6 +103,8 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 
 func feishuNotification(t Ticket) (string, string) {
 	switch {
+	case t.Parked != "":
+		return "搁置", t.Parked
 	case t.MergeProblem != "":
 		return "证据冲突", t.MergeProblem
 	case t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State == "paused":
@@ -111,8 +113,6 @@ func feishuNotification(t Ticket) (string, string) {
 			reason = t.NotifyReason
 		}
 		return "部署失败", reason
-	case t.Parked != "":
-		return "搁置", t.Parked
 	case t.Owner == machine.OwnerHuman && (t.Resolution == nil || t.Resolution.Phase != "waiting"):
 		return "转人", t.NotifyReason
 	default:

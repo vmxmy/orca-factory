@@ -266,8 +266,14 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	topScope := err == nil && p.Top && len(decision.ScopeRequest()) > 0
 	if err == nil && decision.Action == "escalate" && !topScope {
 		// Auto mode keeps the final resolver on its tier up to the retry limit.
-		if p.Top && autoMode(r.Repositories[t.Repo].Env) && !mustHuman(t, decision.Class) {
-			return r.retryResolution(ctx, t, p, decision.Reason)
+		if p.Top && autoMode(r.Repositories[t.Repo].Env) {
+			human, humanErr := r.mustHuman(ctx, t, decision.Class)
+			if humanErr != nil {
+				return humanErr
+			}
+			if !human {
+				return r.retryResolution(ctx, t, p, decision.Reason)
+			}
 		}
 		return r.escalateResolution(ctx, t, p, decision.Reason, decision.Body)
 	}
@@ -501,8 +507,14 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
 		class = decision.Class
 	}
-	if autoMode(env) && mustHuman(t, class) {
-		return r.parkResolution(ctx, t, p, reason, evidence)
+	if autoMode(env) {
+		human, err := r.mustHuman(ctx, t, class)
+		if err != nil {
+			return err
+		}
+		if human {
+			return r.parkResolution(ctx, t, p, reason, evidence)
+		}
 	}
 	next := *p
 	if !p.TopUsed && !p.Top && autoReviewEnabled(env, "top") {
@@ -585,10 +597,17 @@ func parkedState(issue task.Issue, comments []task.Comment) (reason string, resu
 }
 
 // mustHuman reports what only a person may decide: a class from the table shared
-// with the final resolver, or structured lane 3, paused deployment or conflicting
-// merge evidence.
-func mustHuman(t Ticket, class string) bool {
-	return intake.TopMustHuman(class) || t.MergeProblem != "" || (t.Handoff != nil && t.Handoff.Lane == 3) || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State == "paused")
+// with the final resolver, lane 3 from the handoff or the ticket face, paused
+// deployment or conflicting merge evidence.
+func (r *Runtime) mustHuman(ctx context.Context, t Ticket, class string) (bool, error) {
+	if intake.TopMustHuman(class) || t.MergeProblem != "" || (t.Handoff != nil && t.Handoff.Lane == 3) || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State == "paused") {
+		return true, nil
+	}
+	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
+	if err != nil {
+		return false, fmt.Errorf("read ticket face: %w", err)
+	}
+	return intake.FaceLaneThree(description), nil
 }
 
 // ledgerLine keeps agent text on one line so it cannot forge ledger fields.

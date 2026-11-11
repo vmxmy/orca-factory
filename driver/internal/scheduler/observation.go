@@ -56,10 +56,10 @@ func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.T
 	switch {
 	case t.Held:
 		row.BlockedReason = "import held"
-	case t.MergeProblem != "":
-		row.BlockedReason = t.MergeProblem
 	case t.Parked != "":
 		row.BlockedReason = "parked: " + t.Parked
+	case t.MergeProblem != "":
+		row.BlockedReason = t.MergeProblem
 	case !t.Blocked:
 	case t.BlockersIncomplete:
 		row.BlockedReason = "dependency evidence incomplete"

@@ -128,17 +128,19 @@ func TestAutoModeParksMustHumanClassBeforeTop(t *testing.T) {
 
 func TestAutoModeParksMustHumanEvidenceBeforeTop(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		edit func(*Ticket)
+		name        string
+		description string
+		edit        func(*Ticket)
 	}{
-		{"evidence conflict", func(t *Ticket) { t.MergeProblem = "conflicting handoff" }},
-		{"deployment paused", func(t *Ticket) {
+		{"evidence conflict", "", func(t *Ticket) { t.MergeProblem = "conflicting handoff" }},
+		{"deployment paused", "", func(t *Ticket) {
 			t.Progress = &merge.Progress{Version: 1, Phase: "merged", Deployment: &merge.DeploymentProgress{State: "paused"}}
 		}},
-		{"lane 3", func(t *Ticket) { t.Handoff = &merge.Handoff{Version: 1, Lane: 3} }},
+		{"lane 3", "", func(t *Ticket) { t.Handoff = &merge.Handoff{Version: 1, Lane: 3} }},
+		{"ticket face lane 3", "## LANE 预判\n3（网关按 AGENT_LANE2_GLOBS / AGENT_LANE3_GLOBS 计算）\n", func(*Ticket) {}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &labelStore{fakeIssues: fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"result","outcome":"failed","result":"{\"action\":\"escalate\",\"reason\":\"无法继续\",\"body\":\"已核对\",\"class\":\"other\"}"}`)}}
+			store := &labelStore{fakeIssues: fakeIssues{description: tc.description, issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"result","outcome":"failed","result":"{\"action\":\"escalate\",\"reason\":\"无法继续\",\"body\":\"已核对\",\"class\":\"other\"}"}`)}}
 			r := modeRuntime(store, map[string]string{"AGENT_MODE": "auto"})
 			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
 			tc.edit(&ticket)
@@ -198,7 +200,7 @@ func TestParkedTicketStatusAndNotification(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
-	ticket := Ticket{ID: "id", Repo: "a", Identifier: "OF-9", Owner: machine.OwnerNone, Parked: "缺少部署凭证"}
+	ticket := Ticket{ID: "id", Repo: "a", Identifier: "OF-9", Owner: machine.OwnerNone, Parked: "缺少部署凭证", MergeProblem: "conflicting handoff"}
 	if rows := SnapshotRows([]Ticket{ticket}, nil, time.Now()); len(rows) != 1 {
 		t.Fatalf("parked ticket missing from status: %+v", rows)
 	}
@@ -214,8 +216,11 @@ func TestParkedTicketStatusAndNotification(t *testing.T) {
 	sender.start(t)
 	r := modeRuntime(store, map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_MODE": "auto"})
 	ticket.Repo = "/repo"
-	for _, reason := range []string{"缺少部署凭证", "lane 3 path .env"} {
-		ticket.Parked = reason
+	for _, edit := range []func(){
+		func() { ticket.Parked, ticket.MergeProblem = "缺少部署凭证", "" },
+		func() { ticket.Parked, ticket.MergeProblem = "部署暂停", "conflicting handoff" },
+	} {
+		edit()
 		ticket.NotifyEvents = map[string]bool{}
 		for _, c := range store.issueComments {
 			ticket.NotifyEvents[c.Body] = true
@@ -230,12 +235,29 @@ func TestParkedTicketStatusAndNotification(t *testing.T) {
 }
 
 func TestResumedParkedTicketWithMergeEvidenceReturnsToResolver(t *testing.T) {
-	f := &fakeBackend{tickets: []Ticket{{ID: "p", Identifier: "OF-9", Repo: "a", Candidate: true, Resumed: true, Handoff: &merge.Handoff{Version: 1, Lane: 3, QueueID: "q1"}}}}
-	if err := setup(f).Tick(context.Background()); err != nil {
+	for name, problem := range map[string]string{"lane 3 handoff": "", "evidence conflict": "conflicting handoff"} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeBackend{tickets: []Ticket{{ID: "p", Identifier: "OF-9", Repo: "a", Candidate: true, Resumed: true, MergeProblem: problem, Handoff: &merge.Handoff{Version: 1, Lane: 3, QueueID: "q1"}}}}
+			if err := setup(f).Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
+				t.Fatalf("resumed parked ticket actions=%+v", f.actions)
+			}
+		})
+	}
+}
+
+func TestParkedMergeHeadPausesLane(t *testing.T) {
+	store := &labelStore{}
+	r := modeRuntime(store, map[string]string{"AGENT_MODE": "auto"})
+	paused := &merge.Progress{Version: 1, QueueID: "q1", Phase: "merged", MergeSHA: strings.Repeat("b", 40), Deployment: &merge.DeploymentProgress{State: "paused", Reason: "smoke failed"}}
+	head := Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo", Owner: machine.OwnerNone, Parked: "smoke failed", Handoff: &merge.Handoff{Version: 1, QueueID: "q1", EnqueuedAt: time.Unix(1, 0)}, Progress: paused}
+	if err := r.AdvanceMerges(context.Background(), []Ticket{head}); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
-		t.Fatalf("resumed parked ticket actions=%+v", f.actions)
+	if len(store.comments) != 0 || store.updates != 0 {
+		t.Fatalf("parked merge head resumed automatic work: comments=%q updates=%d", store.comments, store.updates)
 	}
 }
 
@@ -250,5 +272,34 @@ func TestAutoModeParksLane3(t *testing.T) {
 	last := store.comments[len(store.comments)-1]
 	if after.Owner != machine.OwnerNone || !strings.HasPrefix(last, "搁置：lane 3 path .env\n") || !strings.Contains(last, merge.ProgressPrefix) || !slices.Contains(store.add, "parked") {
 		t.Fatalf("lane 3 not parked: owner=%s comment=%q add=%q", after.Owner, last, store.add)
+	}
+}
+
+func TestRecordedParkedStateReadsLedger(t *testing.T) {
+	var ledger struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-human-release.json"), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	var read struct{ Result struct{ Issue issues.Task } }
+	if err := json.Unmarshal(recorded(t, "issues-read-OF-427.json"), &read); err != nil {
+		t.Fatal(err)
+	}
+	store := &labelStore{}
+	if err := modeRuntime(store, map[string]string{"AGENT_MODE": "auto"}).parkTicket(context.Background(), Ticket{ID: "id", Identifier: "ZY-366", Repo: "/repo"}, "缺少部署凭证", "已核对", ""); err != nil {
+		t.Fatal(err)
+	}
+	park := task.Comment{ID: "park", Body: store.comments[0], CreatedAt: ledger.Comments[3].CreatedAt.Add(time.Minute)}
+	comments := append([]task.Comment{park}, ledger.Comments[:4]...)
+	restored := read.Result.Issue.Issue
+	parked := restored
+	parked.Labels.Nodes = append(slices.Clone(restored.Labels.Nodes), task.NamedID{ID: parkedLabel, Name: parkedLabel})
+	if reason, resumed := parkedState(parked, comments); reason != "缺少部署凭证" || resumed {
+		t.Fatalf("parked read reason=%q resumed=%v", reason, resumed)
+	}
+	if reason, resumed := parkedState(restored, comments); reason != "" || !resumed {
+		t.Fatalf("restored read reason=%q resumed=%v", reason, resumed)
+	}
+	if _, resumed := parkedState(restored, append(comments, ledger.Comments[4])); resumed {
+		t.Fatal("a later ownership event still reads as a resumed park")
 	}
 }
