@@ -379,6 +379,9 @@ func (r *Runtime) applyLandedDone(ctx context.Context, t Ticket, p *resolver.Rec
 	if err != nil {
 		return err
 	}
+	if len(changed.Files) == 0 || len(changed.Files) >= 300 {
+		return reject(fmt.Sprintf("merged change file list is incomplete (%d files)", len(changed.Files)))
+	}
 	lane3 := strings.Fields(r.Repositories[t.Repo].Env["AGENT_LANE3_GLOBS"])
 	driverChange := false
 	for _, file := range changed.Files {
@@ -407,14 +410,27 @@ func (r *Runtime) applyLandedDone(ctx context.Context, t Ticket, p *resolver.Rec
 		}
 		installed = "contains sha"
 	}
-	next := *p
-	next.Phase = "applied"
-	raw, _ := json.Marshal(next)
-	body := fmt.Sprintf("已落地: PR #%d squash %s\n核对: PR merged=true base=main merge_sha=%s; origin/main=%s ancestor=true; merge handoff=none; lane!=3; driver=%s\n阶段: %s\n归属: %s\n%s", proposal.PR, proposal.SHA, proposal.SHA, mainSHA, installed, machine.PhaseMerged, machine.OwnerNone, resolver.Prefix+string(raw))
+	evidence := fmt.Sprintf("已落地: PR #%d squash %s\n核对: PR merged=true base=main merge_sha=%s; origin/main=%s ancestor=true; merge handoff=none; lane!=3; driver=%s", proposal.PR, proposal.SHA, proposal.SHA, mainSHA, installed)
+	if err := r.mergeComment(ctx, t, evidence); err != nil {
+		return err
+	}
 	if err := r.markDone(ctx, t); err != nil {
 		return err
 	}
-	return r.mergeComment(ctx, t, body)
+	next := *p
+	next.Phase = "applied"
+	raw, _ := json.Marshal(next)
+	return r.mergeComment(ctx, t, fmt.Sprintf("阶段: %s\n归属: %s\n%s", machine.PhaseMerged, machine.OwnerNone, resolver.Prefix+string(raw)))
+}
+
+// landedDonePending lets a confirmed Done ticket finish its ownership release
+// when that last receipt failed after the state write.
+func landedDonePending(t Ticket) bool {
+	if t.Owner != machine.OwnerResolver || t.Resolution == nil || t.Resolution.Phase != "result" {
+		return false
+	}
+	decision, err := resolver.ParseResult(t.Resolution.Result)
+	return err == nil && decision.Action == "landed-done"
 }
 
 const resolverFailureLimit = 3
