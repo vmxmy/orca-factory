@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type scopeStore struct {
@@ -132,22 +134,29 @@ func TestAutoScopeSkipsNotifiedHumanTicket(t *testing.T) {
 
 func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 	for _, tc := range []struct {
-		name, flags, reason, description, evidence string
-		released, card                             bool
+		name, flags, reason, description, evidence, scope, want string
+		released, scoped                                        bool
 	}{
 		{name: "all conditions", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", released: true},
-		{name: "second transfer", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "放行：auto 2026-11-09T00:00:00Z\nresolver-state {\"version\":1,\"attempt\":6,\"phase\":\"waiting\"}", card: true},
-		{name: "forbidden reason", flags: "release", reason: "需要授权后再处理", description: "## LANE 预判\n2", card: true},
-		{name: "lane 3", flags: "release", reason: "普通原因", description: "## LANE 预判\n3", card: true},
-		{name: "paused", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "merge-progress-v1: {\"version\":1,\"deployment\":{\"state\":\"paused\"}}", card: true},
-		{name: "default", reason: "普通原因", description: "## LANE 预判\n2", card: true},
+		{name: "second transfer", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "放行：auto 2026-11-09T00:00:00Z\nresolver-state {\"version\":1,\"attempt\":6,\"phase\":\"waiting\"}", want: "此前已有放行"},
+		{name: "forbidden reason", flags: "release", reason: "需要授权后再处理", description: "## LANE 预判\n2", want: "禁止字样：需要授权"},
+		{name: "forbidden reason with scope flag", flags: "scope,release", reason: "生产 DDL 待确认", description: "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n", want: "禁止字样：生产 DDL"},
+		{name: "scope request with both flags", flags: "scope,release", reason: "普通原因", description: "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n", scope: "src/new.go", scoped: true},
+		{name: "lane 3", flags: "release", reason: "普通原因", description: "## LANE 预判\n3", want: "lane 3"},
+		{name: "paused", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "merge-progress-v1: {\"version\":1,\"deployment\":{\"state\":\"paused\"}}", want: "paused"},
+		{name: "default", reason: "普通原因", description: "## LANE 预判\n2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			store := &scopeStore{face: tc.description}
 			sender := &notifySender{store: &store.notifyStore}
 			sender.start(t)
-			result, _ := json.Marshal(map[string]any{"action": "escalate", "reason": tc.reason, "body": "proof", "class": "brief-interpretation"})
+			escalation := map[string]any{"action": "escalate", "reason": tc.reason, "body": "proof", "class": "brief-interpretation"}
+			if tc.scope != "" {
+				escalation["class"] = "scope-extension"
+				escalation["scope"] = strings.Fields(tc.scope)
+			}
+			result, _ := json.Marshal(escalation)
 			record := resolver.Record{Version: 1, Attempt: 7, Phase: "human", Result: string(result)}
 			raw, _ := json.Marshal(record)
 			bodies := []string{}
@@ -165,19 +174,24 @@ func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 			if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
 				t.Fatal(err)
 			}
-			if tc.released {
-				if len(sender.messages) != 0 || len(store.issueComments) != 2 || !strings.HasPrefix(store.issueComments[1].Body, "放行：auto ") || !strings.Contains(store.issueComments[1].Body, `"phase":"waiting"`) {
+			last := store.issueComments[len(store.issueComments)-1].Body
+			switch {
+			case tc.released:
+				if len(sender.messages) != 0 || len(store.issueComments) != 2 || !strings.HasPrefix(last, "放行：auto ") || !strings.Contains(last, `"phase":"waiting"`) {
 					t.Fatalf("release comments=%v messages=%q", store.issueComments, sender.messages)
 				}
-				return
-			}
-			if tc.card {
-				if len(sender.messages) != 1 || (tc.flags != "" && !strings.Contains(sender.messages[0], "未自动批准")) {
+			case tc.scoped:
+				if len(sender.messages) != 0 || len(store.issueComments) != 2 || !strings.HasPrefix(last, "扩SCOPE：auto ") {
+					t.Fatalf("scope comments=%v messages=%q", store.issueComments, sender.messages)
+				}
+			default:
+				if len(sender.messages) != 1 || (tc.flags != "" && !strings.Contains(sender.messages[0], "未自动批准")) || !strings.Contains(sender.messages[0], tc.want) {
 					t.Fatalf("card=%q comments=%v", sender.messages, store.issueComments)
 				}
-				return
+				if slices.ContainsFunc(store.issueComments, func(c task.Comment) bool { return strings.HasPrefix(c.Body, "放行：auto") && c.Body != tc.evidence }) {
+					t.Fatalf("unexpected release comments=%v", store.issueComments)
+				}
 			}
-			t.Fatalf("case has no expected result")
 		})
 	}
 }
