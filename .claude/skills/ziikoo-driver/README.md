@@ -46,6 +46,8 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 工坊沙盘是固定等距的 three.js 沙盘。Scene 的每个项目画成一座岛，岛之间是海。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面打开时读 `/snapshot` 并订阅 `/events`，先到的 Scene 画出首屏，之后的 Scene 原地更新。页面只读，不提供推进票据的操作。
 
+状态条下方显示今日产出，例如「今日：合并 3 · 转人 1 · 周期中位 12.5 分」，空闲时仍显示。插件把 `status.today` 透传为 `Scene.today`，每项缺字段时不画该项，全部缺失时隐藏整行；有证据的 0 照常显示；周期分钟数按一位小数显示。统计按 driver 服务的本地日期计算，跨午夜的运行归到结束当天，周期取 ledger 记录中的分钟数中位数，不另发飞书请求。跨日后 driver 会省略旧汇总，下一轮观察再更新。`scene.test.ts` 与 `diorama.browser.cjs` 读取录制样本 `driver/testdata/recorded/driver-status-json-today.json`（插件内嵌为 `RECORDED_TODAY_STATUS`），断言真实输出的解析与「今日：合并 1 · 转人 0 · 周期中位 37.1 分」。
+
 ### 服务与访问
 
 默认不需要任何配置，按 `d` 即可取得工坊沙盘 URL。服务绑定全部接口 `0.0.0.0`，广播地址依次选择 `nebula1` 的 IPv4、第一个非回环 IPv4、`127.0.0.1`。端口优先使用 `43210`，被占用时自动改用随机端口。
@@ -117,7 +119,7 @@ token 经 import map 带到每个模块：
 - 腰封与印章表示已封箱（`pack` 及之后）。木筏表示在水上（`dispatch`、`smoke`，或阶段为「已合并」仍在栈桥）。
 - 胶带表示打回次数，来自 status 的 `corrections`。胶带是竖贴在箱子正面的浅色窄条，不翻过箱顶，不盖住审查章，与横向的腰封不同。条数等于 `count`，最多画 `limit` 条。`count` 达到 `limit` 时胶带改为深色，不发光，在红色的「人」箱上也能看清。没有 `corrections` 的票（还没有合并交接）不画胶带；`count` 为 0 时也没有胶带。
 - 船闸与灯塔来自 `deployment`。有未通过的部署时闸门关闭；其中有 `paused` 或 `failed` 时灯塔为红色，否则为琥珀色。没有待处理的部署时闸门打开；项目配置了部署时灯塔为绿色，未配置时灯塔熄灭。闸门打开、项目配置了部署、但有 `unknownDeploy` 的票（已合并但 driver 没有提供 `deployment`）时，灯塔为冷灰色，外加一圈琥珀色细环，表示有部署但状态未知；熄灭的灯塔是暗色，没有细环。
-- 有等人批的票时，人工台的灯笼变红。
+- 有等人批的票时，人工台的灯笼变红。等人批按等待时间排，最久的在人工台。
 - 告警标记：`tone` 为 `failed` 时为红色；`tone` 为 `attention`、工位未知，或项目配置了部署且票为 `unknownDeploy` 时为琥珀色。这种票工位名后加「部署未知」。项目没有配置部署时，已合并且没有 `deployment` 的票是正常状态，不告警，也不进「卡住的票」。
 - 快照过期：driver 状态为 `unknown` 时不判过期；其他非 `ok` 状态直接判过期。`ok` 快照带 `nextScanAt` 时，只有 `generatedAt + 快照年龄` 超过下次巡检时间加 150 秒宽限才过期；没有 `nextScanAt` 时，沿用快照年龄超过 40 秒的规则。宽限取 150 秒：serve 每 30 秒醒一次，下一轮巡检比 `nextScanAt` 晚 0–30 秒开始；巡检读完账本才写新快照，这一段中位约 57 秒。一周日志里超过这个宽限的巡检约占 0.4%。driver 活着但巡检持续失败时，`nextScanAt` 仍会后移，页面要等 driver 在 5 分钟后把状态改为 `stale` 才显示过期。
 - 天空：driver 状态 `unknown` 为暗色；维护不是 `running` 为阴天；快照过期为雾色；其余为晴天。有多个项目时，海的颜色随天空变化。
@@ -136,7 +138,7 @@ token 经 import map 带到每个模块：
 - 在机位 `1`，有卡住的票的岛在画面外时，画面边缘出现指向它的箭头。点箭头进入该岛。
 - `/` 打开搜索，按票号或项目名过滤，回车跳到第一条结果。焦点在搜索框或列表里时，数字键、`[`、`]`、`/` 与方向键不作用于沙盘。搜索框里的 `Esc` 只关闭搜索。
 - 项目坞、卡住的票、全部票、搜索与行程条的按钮都可用 Tab 与回车访问。新 Scene 重建铭牌与箭头后，焦点回到同一座岛的同类按钮（铭牌或箭头）。
-- 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，并标出主线 8 段中的位置。主线下方一行小字：有 `corrections` 时写「打回 n/上限」并画上限个小格，已用的格子填色，达到上限时这一项变红；有 `lane` 时写「lane N」。缺哪项就不写哪项。合并队列中的票同时显示位次。`unknownDeploy` 的票在脚注另起一行：项目配置了部署时写「部署：未知 · driver 未提供 deployment」，没有配置时写「部署：不适用 · 未配置部署」。
+- 行程条显示所选票的票号、标题、归属、工位、阶段、停留时长与原因，没有 `stages` 时标出主线 8 段中的位置，不画阶段时长。有 `stages` 时按时间顺序画实际阶段格，每格显示停留时间，最后一格标为当前阶段；停留最长的一格加粗并加棕色边框，同值时标出最早的一格，悬停可读精确秒数。`Parcel.stages` 透传 driver 的 `[{"name":"gate","seconds":80}]`，最多 20 项；秒数截至观察时刻，页面不自行累加。阶段时间只复用 driver 已读的评论，不新增飞书请求，只是观察数据，不是合并或恢复授权。行程格下方一行小字：有 `corrections` 时写「打回 n/上限」并画上限个小格，已用的格子填色，达到上限时这一项变红；有 `lane` 时写「lane N」。缺哪项就不写哪项。合并队列中的票同时显示位次。`unknownDeploy` 的票在脚注另起一行：项目配置了部署时写「部署：未知 · driver 未提供 deployment」，没有配置时写「部署：不适用 · 未配置部署」。
 - 行程条下方有「复制票号」与「复制详情」。详情每项一行：票号与标题、项目名与路径、工位、真实阶段、已观察时长，有 `corrections` 时加「打回：n/上限」，有 `lane` 时加「lane：N」，有原因时再加原因，`unknownDeploy` 的票再加行程条脚注里的部署那一行。安全上下文里用 Clipboard API；经 Nebula 地址打开的 HTTP 页面不是安全上下文，改用 `execCommand('copy')`。两种都失败时，提示手动选择行程栏中的文字。
 - URL 跟随视图：机位 `2` 与 `3` 写 `?project=<路径>`，有选中的票时再写 `?ticket=<票号>`；机位 `1` 去掉这两项。`t` 保持不变。打开带这两项的 URL 回到同一视图；同号票按 `project` 选所在项目，没有 `project` 时取第一张。URL 指向的项目或票已不在 Scene 时，按默认机位打开。
 - 系统开启减少动态时，相机直接到达目标，标记不浮动，箱子直接到达新工位。
@@ -156,7 +158,7 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用。两个文件都已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用；再把 `driver/testdata/recorded/driver-status-json-stale.json`（含等人批票 `ZY-428`）原样写成 `test/design-preview/diorama-scene-human.json`，并在其末尾追加两张由 `ZY-428` 展开、只改票号与 `since` 的票写成 `test/design-preview/diorama-scene-human-queue.json`，供等人批排序断言使用。四个文件都已列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 
@@ -184,7 +186,7 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 测试在引擎底层替身 `process.run`，用 `test/sample-config.ts`、`test/sample-runtime.ts` 的样本和 `test/sample-logs.ts`（ZY-220 的真实执行器日志录制，已按上面的 grep 过滤；另有一份按 driver 源码字段名构造的异常记录样本）走真实取数路径。`test/sample-scene.ts` 内嵌服务 `listening` 行与启动失败 stderr 的实跑原文；这些输出由 `scene/server.ts` 自己写出，未捕获异常也由它转成一行原因，所以 mod 只取 stderr 非空末行。
 
-`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
+`node .claude/skills/ziikoo-driver/test/diorama.browser.cjs` 从仓库根运行。它先用 `test/design-preview/diorama-scene.ts` 从真实录制生成 Scene，再运行沙盘视图模型断言，包括真实录制的 `nextScanAt` 宽限、真实录制 `since` 决定的等人批顺序、`unknownDeploy` 的告警、工位文字与灰色灯塔，以及群岛：岛的位置只取决于顺序，铭牌、空闲标记与跨项目卡住的票。随后在真实 Chrome（`--use-angle=swiftshader --enable-unsafe-swiftshader`）里检查预览与生产页面：
 
 1. 预览主路径：机位 `1` 画面不空白，每座岛一块铭牌，项目坞隐藏；Tab 与回车从「卡住的票」进入该票的岛并选中该票；稳定后 20 帧内读布局不超过 20 次；点击箱子可选票；拖动与按键后 `Esc` 逐级回到机位 `1`，相机四元数不变。
 2. 预览减少动态与生命周期：标记不浮动，相机直接到达；连续两次 `update` 后铭牌焦点不丢，边缘箭头的焦点仍在箭头上，保持机位与所选票，箱子直接到达新工位，所选票离开时取消选择，没有项目的 Scene 在改动前被拒绝；`dispose` 清空舞台、停止帧循环并释放 WebGL 上下文。
@@ -195,3 +197,42 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 7. 海岸：每座项目岛和调度岛都有接触阴影与水线，全局存在海面条带；空闲岛的地面、路径、栈桥和水道与非空闲岛同色；四种天空更新条带和水线颜色，减少动态时条带静止；单项目没有这三类网格，重建与 `dispose` 释放新增资源且无残留。
 
 设置 `DIORAMA_SCREENSHOTS=<目录>` 时，预览检查保存 `of447-global-clear.png`、`of447-global-fog.png`、`of447-global-overcast.png`、`of447-global-dark.png` 和 `of447-single.png`，生产检查另存全局、单票、断线与部署未知四张截图。Playwright 优先从 `PLAYWRIGHT_PATH`、本地包或 `npm root -g` 读取；Chrome 可通过 `CHROME_PATH` 指定，Bun 可通过 `BUN_PATH` 指定。依赖缺失、断言失败或服务未启动都以非零退出，缺依赖不会跳过。测试不读取生产状态；替身与临时文件放在 `.omc/tmp/`，结束时删除。
+
+### 截图基准
+
+浏览器测试默认比对 `test/diorama-{global,island,ticket,global-stuck}.png` 四张基准。全局场景从已有录制预览中移除卡住的票；单岛场景打开 `orca-factory`，单票场景打开其中的 `OF-419`，有卡住票的全局场景保留完整录制。后三个场景均保留录制中的两张卡住票。
+
+每次截图使用新的页面，视口为 1280 × 800、设备缩放为 1、语言为 `zh-CN`、时区为 `Asia/Shanghai`、浅色模式。测试固定预览时钟为快照生成时刻，启用减少动态，并等待字体和相机就绪后截图，不比较动画帧。Chrome 进程的 `LANG`、`LC_ALL`、`LANGUAGE` 固定为 `C.UTF-8`/`C`（`BROWSER_LOCALE_ENV`）：进程语言为 `zh_CN` 时，fontconfig 把拉丁文字和 `·` 回退到 Noto Sans CJK，四个场景各有上万像素不同。渲染沿用现有 Chrome SwiftShader，PNG 解码和像素比较使用浏览器 Canvas，没有新增依赖或联网下载。
+
+`MAX_CHANGED_PIXEL_RATIO` 是不同像素数除以总像素数；一个像素的任意 RGBA 通道不同就计为不同，不忽略抗锯齿。2026-11-10 在 Linux x86_64、Chrome 144.0.7559.96、Playwright 1.58.1、系统 Noto Sans 字体环境下，每个场景分别打开五次新页面，两两比较十组：
+
+| 场景 | 五次渲染的最大差异像素数 | 最大差异比例 |
+| --- | ---: | ---: |
+| 全局 | 0 | 0 |
+| 单岛 | 0 | 0 |
+| 单票 | 0 | 0 |
+| 有卡住票的全局 | 0 | 0 |
+
+阈值取实测最大值的三倍，即 `0 × 3 = 0`。四张基准合计 547,590 字节；测试强制总大小不超过 2,000,000 字节，超出时降低 `BASELINE_VIEWPORT` 再生成。不同 Chrome 或字体版本可能产生差异，复核时先对齐上述环境。
+
+在仓库根运行默认检查。缺少基准、尺寸不同、像素差异超阈值或总大小超限均以非零退出；默认不覆盖基准：
+
+```sh
+node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
+```
+
+像素差异超阈值时，输出列出差异像素数和 `.omc/tmp/diorama-<场景>-<随机后缀>/diff.png`。同目录保留 `expected.png` 和 `actual.png`；差异图用洋红色标出变化像素，其余像素调暗。这些诊断图片保留供检查，不随生产服务的临时文件清理。
+
+用下面的命令重复测量，每个场景输出 `MEASURE` 行中的最大差异比例和三倍值。命令仍执行默认基准检查，任何断言失败都以非零退出，不修改阈值或基准：
+
+```sh
+MEASURE_BASELINE=1 node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
+```
+
+确认画面变化符合预期后，显式更新全部四张基准。截图或大小检查失败时非零退出；更新后继续运行原有浏览器检查，其他断言失败也会非零退出：
+
+```sh
+UPDATE_BASELINE=1 node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
+```
+
+更新基准的提交必须在 PR 描述中说明画面为什么改变，并附截图供审阅。初次建立这组基准只记录现有沙盘画面，没有修改沙盘实现；合入 OF-457 后，有卡住票的三个场景按 main 上新增的「打开记录」链接重新生成。首次验证曾在测试服务读取模块时临时把 `WORLD.base` 从 `0xf0dfc2` 改为 `0xff00ff`，确认像素断言失败并生成差异图；变更仅存在于该测试进程，退出即撤销，基准文件没有被覆盖。

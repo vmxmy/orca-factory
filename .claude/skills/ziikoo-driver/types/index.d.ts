@@ -83,6 +83,8 @@ export type Deployment = { queueId: string; sha: string; workflow?: string; stat
 
 export type Corrections = { count: number; limit: number }
 
+export type Stage = { name: string; seconds: number }
+
 export type RuntimeTicket = {
   repo: string
   identifier: string
@@ -97,9 +99,12 @@ export type RuntimeTicket = {
   queuePosition?: number
   lane?: number
   corrections?: Corrections
+  stages?: Stage[]
 }
 
-export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
+export type Today = { merged?: number; escalated?: number; medianMinutes?: number }
+
+export type Runtime = { today?: Today; state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
 
 export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' | 'merge' | 'dispatch' | 'smoke' | 'repair' | 'human' | 'unknown'
 
@@ -111,6 +116,7 @@ export type Parcel = {
   queuePosition?: number
   lane?: number
   corrections?: Corrections
+  stages?: Stage[]
   phase: string
   label: string
   station: Station
@@ -124,6 +130,7 @@ export type Parcel = {
 }
 
 export type Scene = {
+  today?: Today
   generatedAt: number
   nextScanAt?: number
   state: string

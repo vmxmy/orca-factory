@@ -3,6 +3,7 @@ package scheduler
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -12,8 +13,25 @@ import (
 
 // ObservationRow is the credential-free status view of one ticket. It explains
 // why work cannot advance but never authorizes an action.
-func ObservationRow(t Ticket, repos []config.Repository) status.Ticket {
+func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.Ticket {
 	row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
+	switch {
+	case owned(t):
+	case t.Candidate:
+		row.Stage = "candidate"
+	case t.Owner == machine.OwnerHuman:
+		row.Stage = "human"
+		row.HumanKind = "takeover"
+		if len(notificationScope(t)) > 0 {
+			row.HumanKind = "scope"
+		} else if p := t.Progress; p != nil && p.MergeSHA != "" && p.Deployment != nil && p.Deployment.State != "passed" {
+			row.HumanKind = "deploy"
+		}
+		_, reason := feishuNotification(t)
+		runes := []rune(strings.Join(strings.Fields(reason), " "))
+		row.HumanReason = string(runes[:min(len(runes), 120)])
+	}
+	row.Stages = stageDurations(t, now)
 	if p := t.Progress; p != nil && p.Deployment != nil {
 		row.Deployment = &status.Deployment{QueueID: p.QueueID, SHA: p.MergeSHA, Workflow: p.Deployment.Workflow, State: p.Deployment.State, Reason: p.Deployment.Reason}
 	}
@@ -49,11 +67,11 @@ func ObservationRow(t Ticket, repos []config.Repository) status.Ticket {
 	return row
 }
 
-func ObservationRows(tickets []Ticket, repos []config.Repository) []status.Ticket {
+func ObservationRows(tickets []Ticket, repos []config.Repository, now time.Time) []status.Ticket {
 	rows := make([]status.Ticket, len(tickets))
 	queues := map[string][]int{}
 	for index, ticket := range tickets {
-		rows[index] = ObservationRow(ticket, repos)
+		rows[index] = ObservationRow(ticket, repos, now)
 		if ticket.Phase == machine.PhaseMergeQueue && ticket.Handoff != nil && ticket.MergeProblem == "" {
 			queues[ticket.Repo] = append(queues[ticket.Repo], index)
 		}
@@ -73,11 +91,11 @@ func ObservationRows(tickets []Ticket, repos []config.Repository) []status.Ticke
 	return rows
 }
 
-func SnapshotRows(tickets []Ticket, repos []config.Repository) []status.Ticket {
+func SnapshotRows(tickets []Ticket, repos []config.Repository, now time.Time) []status.Ticket {
 	snapshot := make([]status.Ticket, 0, len(tickets))
-	rows := ObservationRows(tickets, repos)
+	rows := ObservationRows(tickets, repos, now)
 	for index, ticket := range tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || DeploymentBarrier(ticket) {
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || rows[index].Stage == "human" || DeploymentBarrier(ticket) {
 			snapshot = append(snapshot, rows[index])
 		}
 	}

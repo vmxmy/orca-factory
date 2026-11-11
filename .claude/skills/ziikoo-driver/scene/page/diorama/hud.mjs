@@ -85,11 +85,21 @@ const tripHead = parcel =>
     ...(parcel.reason ? [element('span', { class: 'why', text: parcel.reason })] : []),
   ])
 
-const tripTrack = parcel =>
-  element('div', { class: 'track' }, TRACK.map((step, index) => {
+const tripTrack = parcel => {
+  if (parcel.stages?.length) {
+    const longest = parcel.stages.reduce((best, stage, index) => stage.seconds > parcel.stages[best].seconds ? index : best, 0)
+    return element('div', { class: 'track timed' }, parcel.stages.map((stage, index) =>
+      element('span', {
+        class: `${index === parcel.stages.length - 1 ? 'now' : 'done'}${index === longest ? ' longest' : ''}`,
+        title: `${stage.name} · ${stage.seconds} 秒${index === longest ? ' · 停留最长' : ''}`,
+      }, [stage.name, element('small', { class: 'stage-time', text: sinceText(stage.seconds * 1000) })]),
+    ))
+  }
+  return element('div', { class: 'track' }, TRACK.map((step, index) => {
     const state = parcel.track < 0 ? '' : index < parcel.track ? 'done' : index === parcel.track ? 'now' : ''
     return element('span', { class: state, text: step.name })
   }))
+}
 
 const correctionBudget = ({ count, limit }, spent) =>
   element('span', { class: spent ? 'spent' : '' }, [
@@ -234,6 +244,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
     else if (button.dataset.island) onIsland(Number(button.dataset.island))
   }
   const status = element('div', { class: 'status', role: 'status' })
+  const today = element('div', { class: 'today', hidden: '' })
   const alarm = element('ul', { class: 'alarm', role: 'alert', hidden: '' })
   const dock = element('nav', { class: 'dock', 'aria-label': '项目坞', hidden: '' })
   const stops = element('div', { class: 'stops', role: 'group', 'aria-label': '机位' }, stopButtons())
@@ -248,7 +259,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
     stuckList,
     element('details', {}, [summary, allList]),
   ])
-  const lead = element('div', { class: 'lead' }, [status, alarm, dock])
+  const lead = element('div', { class: 'lead' }, [status, today, alarm, dock])
   const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle]), search.form, panel])
   const trip = element('div', { class: 'trip', 'aria-live': 'polite' })
   const hud = element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip])
@@ -303,7 +314,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       const frame = stage.getBoundingClientRect()
       const sideBox = side.getBoundingClientRect()
       const docked = sideBox.left > frame.left + frame.width / 2
-      const topEdge = docked ? (alarm.hidden ? status : alarm).getBoundingClientRect().bottom : sideBox.bottom
+      const topEdge = docked ? (alarm.hidden ? (today.hidden ? status : today) : alarm).getBoundingClientRect().bottom : sideBox.bottom
       return {
         top: topEdge - frame.top + 12,
         right: docked ? frame.right - sideBox.left + 12 : 16,
@@ -322,6 +333,14 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
         `维护 ${scene.maintenance}`,
         ...scanText(scene.nextScanAt, now),
       ]
+      const output = scene.today
+      const metrics = [
+        ...(output?.merged === undefined ? [] : [`合并 ${output.merged}`]),
+        ...(output?.escalated === undefined ? [] : [`转人 ${output.escalated}`]),
+        ...(output?.medianMinutes === undefined ? [] : [`周期中位 ${Number(output.medianMinutes.toFixed(1))} 分`]),
+      ]
+      today.hidden = metrics.length === 0
+      today.textContent = metrics.length === 0 ? '' : `今日：${metrics.join(' · ')}`
       status.textContent = parts.join(' · ')
       status.title = island?.path ?? ''
       status.dataset.sky = sky

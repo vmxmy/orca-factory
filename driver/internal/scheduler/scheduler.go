@@ -26,7 +26,8 @@ import (
 )
 
 type Ticket struct {
-	Resolution *resolver.Record
+	stageTimeline []stageStart
+	Resolution    *resolver.Record
 	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy
 	// reserved by an earlier squash intent for this queue.
 	deploymentReservedQueue             string
@@ -250,19 +251,18 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
-	rows := ObservationRows(tickets, s.Repositories)
+	rows := ObservationRows(tickets, s.Repositories, s.clock())
 	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
+		view.Today = nil
+		if source, ok := s.Backend.(interface {
+			TodayOutput(time.Time) *status.TodayOutput
+		}); ok {
+			view.Today = source.TodayOutput(s.clock())
+		}
 		view.Tickets = nil
 		for index, t := range tickets {
 			row := rows[index]
-			switch {
-			case owned(t):
-			case t.Candidate:
-				row.Stage = "candidate"
-			case t.Owner == machine.OwnerHuman:
-				row.Stage = "human"
-			case DeploymentBarrier(t):
-			default:
+			if !owned(t) && row.Stage == "" && !DeploymentBarrier(t) {
 				continue
 			}
 			view.Tickets = append(view.Tickets, row)

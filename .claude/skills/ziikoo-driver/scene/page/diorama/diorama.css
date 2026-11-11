@@ -139,6 +139,14 @@
   min-height: 0;
 }
 
+.diorama .today {
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .diorama .status {
   display: flex;
   align-items: center;
@@ -587,6 +595,27 @@
 .diorama .track span.now {
   background: var(--w-ink);
   color: #fff;
+}
+
+.diorama .track.timed {
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+}
+
+.diorama .track.timed > span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.diorama .track .stage-time {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.diorama .track span.longest {
+  box-shadow: inset 0 0 0 2px #b75b17;
+  font-weight: bold;
 }
 
 .diorama .trip-budget {

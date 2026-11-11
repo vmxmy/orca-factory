@@ -34,6 +34,8 @@ export const STATION_NAMES = {
   unknown: '账簿塔旁 · 工位未知',
 }
 
+export const HUMAN_QUEUE_STEP = 1.3
+
 const MIN_BOOTHS = 3
 const BOOTH_STEP = 2
 const BOOTHS_PER_ROW = 5
@@ -109,7 +111,7 @@ const slotRules = layout => ({
   smoke: lined({ x: 13.2, y: -0.42, z: 5.4 }, { x: 0, z: 1.4 }, 3),
   return: lined({ x: -6.5, y: 1.5, z: -5.4 }, { x: 0.95, z: 0 }, 3),
   repair: lined({ x: -1, y: 1.5, z: -4.7 }, { x: -0.95, z: 0 }, 4),
-  human: doorway({ x: 3, y: 1.7, z: -5.6 }, { x: 2.05, y: 1.5, z: -5.6 }, { x: -0.95, z: 0 }, 3),
+  human: doorway({ x: 3, y: 1.7, z: -5.6 }, { x: 3 + HUMAN_QUEUE_STEP, y: 1.5, z: -5.6 }, { x: HUMAN_QUEUE_STEP, z: 0 }, 3),
   unknown: lined({ x: layout.tower - 0.2, y: 0, z: 1.75 }, { x: -0.95, z: 0 }, 2),
 })
 
@@ -145,6 +147,7 @@ const viewOf = (parcel, station, slot, deploy) => {
     ...tapesOf(parcel.corrections),
     lane: parcel.lane,
     corrections: parcel.corrections,
+    stages: parcel.stages,
     identifier: parcel.identifier,
     url: parcel.url,
     title: parcel.title,
@@ -177,6 +180,9 @@ export const islandOf = row => {
     stations.set(station, [...(stations.get(station) ?? []), parcel])
   }
   if (stations.has('merge')) stations.set('merge', mergeQueue(stations.get('merge')))
+  stations.get('human')?.sort((left, right) =>
+    (left.since ?? Infinity) - (right.since ?? Infinity) || left.identifier.localeCompare(right.identifier, undefined, { numeric: true }),
+  )
   const working = stations.get('work')?.length ?? 0
   const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
   const layout = layoutOf(Math.max(MIN_BOOTHS, working))
