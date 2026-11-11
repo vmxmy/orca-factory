@@ -23,21 +23,28 @@ const Prefix = "resolver-state "
 const StartUnobservedWindow = 10 * time.Minute
 
 type Record struct {
-	SourceRun string    `json:"source_run,omitempty"`
-	Creator   string    `json:"creator,omitempty"`
-	Version   int       `json:"version"`
-	Attempt   int       `json:"attempt"`
-	Phase     string    `json:"phase"`
-	Run       string    `json:"run,omitempty"`
-	Task      string    `json:"task,omitempty"`
-	Dispatch  string    `json:"dispatch,omitempty"`
-	Spec      string    `json:"spec"`
-	Agent     string    `json:"agent"`
-	Model     string    `json:"model,omitempty"`
-	Effort    string    `json:"effort,omitempty"`
-	Result    string    `json:"result,omitempty"`
-	Outcome   string    `json:"outcome,omitempty"`
-	RetryAt   time.Time `json:"retry_at,omitempty"`
+	TopLaunchAccepted bool      `json:"top_launch_accepted,omitempty"`
+	TopModelAccepted  bool      `json:"top_model_accepted,omitempty"`
+	TopLaunchError    string    `json:"top_launch_error,omitempty"`
+	Top               bool      `json:"top,omitempty"`
+	TopUsed           bool      `json:"top_used,omitempty"`
+	TopReason         string    `json:"top_reason,omitempty"`
+	TopClass          string    `json:"top_class,omitempty"`
+	SourceRun         string    `json:"source_run,omitempty"`
+	Creator           string    `json:"creator,omitempty"`
+	Version           int       `json:"version"`
+	Attempt           int       `json:"attempt"`
+	Phase             string    `json:"phase"`
+	Run               string    `json:"run,omitempty"`
+	Task              string    `json:"task,omitempty"`
+	Dispatch          string    `json:"dispatch,omitempty"`
+	Spec              string    `json:"spec"`
+	Agent             string    `json:"agent"`
+	Model             string    `json:"model,omitempty"`
+	Effort            string    `json:"effort,omitempty"`
+	Result            string    `json:"result,omitempty"`
+	Outcome           string    `json:"outcome,omitempty"`
+	RetryAt           time.Time `json:"retry_at,omitempty"`
 	// UnobservedSince is when this dispatch was first seen pending without a
 	// started turn; the ledger keeps it so a restart does not reopen the window.
 	UnobservedSince time.Time `json:"unobserved_since,omitzero"`
@@ -90,6 +97,10 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
+	top, topUsed, topReason, topClass := false, false, "", ""
+	if p != nil {
+		top, topUsed, topReason, topClass = p.Top, p.TopUsed, p.TopReason, p.TopClass
+	}
 	attempt := 1
 	sourceRun := c.SourceRun
 	if p != nil && p.SourceRun != "" {
@@ -114,7 +125,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		}
 	}
 	if p == nil {
-		p = &Record{SourceRun: sourceRun, Creator: c.Terminal, Version: 1, Attempt: attempt, Phase: "pending", Spec: c.Spec, Agent: c.Agent, Model: c.Model, Effort: c.Effort}
+		p = &Record{Top: top, TopUsed: topUsed, TopReason: topReason, TopClass: topClass, SourceRun: sourceRun, Creator: c.Terminal, Version: 1, Attempt: attempt, Phase: "pending", Spec: c.Spec, Agent: c.Agent, Model: c.Model, Effort: c.Effort}
 		if p.Model == "" {
 			p.Effort = ""
 		}
@@ -179,11 +190,36 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			}
 			return nil, errors.Join(callErr, errors.New("resolver dispatch receipt missing identity"))
 		}
+		if p.Top {
+			var launch struct {
+				Effective struct{ Agent, Model, Effort string }
+			}
+			if json.Unmarshal(receipt["launch"], &launch) == nil && launch.Effective.Agent == p.Agent && launch.Effective.Model == p.Model && launch.Effective.Effort == p.Effort {
+				p.TopLaunchAccepted = true
+			} else {
+				p.TopLaunchError = "终审模型未被接受或无法核实，不更换模型"
+			}
+		}
 		p.Phase = "running"
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err
 		}
 		return p, callErr
+	}
+	if p.Phase == "running" && p.Top && !p.TopLaunchAccepted {
+		_, stopErr := c.Orca.WorkerStop(ctx, request("stop"), p.Dispatch)
+		row, readErr := c.dispatchRow(ctx, p)
+		if readErr != nil {
+			return nil, errors.Join(stopErr, readErr)
+		}
+		if row == nil || !DispatchEnded(row.Status) {
+			return nil, errors.Join(stopErr, errors.New("终审模型未确认，停止派工未核实"))
+		}
+		result, _ := json.Marshal(Resolution{Action: "escalate", Reason: "终审模型未被接受或无法核实，不更换模型", Body: "指定档位未获完整接受回执；已停止并核实 dispatch " + p.Dispatch})
+		p.Result, p.Outcome, p.Phase = string(result), "failed", "settled"
+		if err = c.Store.Save(ctx, *p); err != nil {
+			return nil, err
+		}
 	}
 	if p.Phase == "running" {
 		tasks, err := c.Orca.TaskList(ctx, p.Run)
@@ -247,12 +283,19 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 				return nil, errors.New("resolver report is not settled")
 			}
 			p.Result, p.Outcome, p.Phase = report.Body, report.Outcome, "settled"
+			if p.Top && p.TopLaunchAccepted {
+				p.TopModelAccepted = true
+			}
 		}
 		if !found {
 			return nil, errors.New("resolver task absent from complete read")
 		}
 		if p.Phase == "running" {
 			return p, c.awaitTurnStart(ctx, p, now, request("stop"))
+		}
+		if p.Top && !p.TopModelAccepted {
+			result, _ := json.Marshal(Resolution{Action: "escalate", Reason: "终审模型未获响应，不更换模型", Body: p.Result})
+			p.Result, p.Outcome = string(result), "failed"
 		}
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err

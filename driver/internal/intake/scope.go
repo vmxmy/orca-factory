@@ -79,6 +79,10 @@ func AutoReleaseHuman(ctx context.Context, ledger ScopeLedger, id string, attemp
 // scope write as intake. A nonempty refusal leaves the request for a human.
 // An empty refusal also covers a stale snapshot whose request already settled.
 func AutoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time) (refusal string, err error) {
+	return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, false)
+}
+
+func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time, top bool) (refusal string, err error) {
 	ticket, err := ledger.Read(ctx, id)
 	if err != nil {
 		return "", err
@@ -92,7 +96,14 @@ func AutoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if json.Unmarshal([]byte(latest[resolver.Prefix]), &record) != nil || record.Version != 1 || record.Attempt < 1 || record.Phase == "" {
 		return "resolver-state 证据无效", nil
 	}
-	if record.Attempt != attempt || record.Phase != "human" {
+	phase, sender, flag := "human", "auto", "scope"
+	if top {
+		phase, sender, flag = "result", "top-resolver", "top"
+	}
+	if top && !record.Top {
+		return "不是终审提案", nil
+	}
+	if record.Attempt != attempt || record.Phase != phase {
 		return "", nil
 	}
 	if ticket.Metadata.State == "Canceled" {
@@ -117,15 +128,15 @@ func AutoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	}
 	approvals := 0
 	for _, comment := range comments {
-		if strings.HasPrefix(comment.Body, "扩SCOPE：auto ") {
+		if strings.HasPrefix(comment.Body, "扩SCOPE：auto ") || strings.HasPrefix(comment.Body, "扩SCOPE：top-resolver ") {
 			approvals++
 		}
 	}
 	if approvals >= 2 {
 		return "每张票自动批准已达 2 次", nil
 	}
-	conditions := fmt.Sprintf("AGENT_AUTO_REVIEW=scope；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次", len(paths), approvals+1)
-	body := fmt.Sprintf("扩SCOPE：auto %s\n条件：%s", now.Format(time.RFC3339), conditions)
+	conditions := fmt.Sprintf("AGENT_AUTO_REVIEW=%s；字面路径校验通过；%d 个路径不超过 10；不命中 lane 3 或控制文件；本票第 %d 次自动批准，不超过 2 次", flag, len(paths), approvals+1)
+	body := fmt.Sprintf("扩SCOPE：%s %s\n条件：%s", sender, now.Format(time.RFC3339), conditions)
 	return applyScopeReview(ctx, ledger, ticket, record, paths, body)
 }
 

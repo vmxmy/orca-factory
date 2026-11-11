@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -41,9 +40,8 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return nil
 	}
 	var refusals []string
-	flags := strings.Split(env["AGENT_AUTO_REVIEW"], ",")
 	enabled := func(name string) bool {
-		return human && slices.ContainsFunc(flags, func(flag string) bool { return strings.TrimSpace(flag) == name })
+		return human && !t.Resolution.TopUsed && !t.Resolution.Top && autoReviewEnabled(env, name)
 	}
 	now := time.Now()
 	if r.Now != nil {
