@@ -475,7 +475,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 #### 交叉复审（只记录，OF-342）
 
-处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了 `AGENT_ROLE_SECOND_REVIEWER_CMD` 时，调度器在转人后后台运行 `AGENT_ROLE_REVIEWER_CMD` 和第二 reviewer。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令只拿到 `HOME` 和 `PATH`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
+处置 Agent 的 `escalate` 带 `class`（`scope-extension` 或 `brief-interpretation`）和已推送的 `head`，且仓库配置了第二审查员时，调度器在转人后后台运行 reviewer 和第二 reviewer。审查角色优先取 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_SECOND_REVIEWER`（`agent:model:effort`，只支持 `codex` 与 `claude`），再取对应 `_CMD`，最后取方案里的结构化键；driver 统一生成 codex 的现网前缀与只读沙箱参数、claude 的现网只读参数。每个仓库同时只跑一个，提示词内嵌在 driver，两条命令只拿到 `HOME` 和 `PATH`。结果写成一条 `cross-review-v1:` 事件，`would_release` 记录本来是否放行。这一步**不放行**：票仍归人，不改标签，也不进合并队列，gate 也不运行。
 
 `would_release` 为 true 要同时满足：两个 reviewer 都判 green，都没有判定新增权限或资金能力，改动路径都不在禁改范围。禁改范围是 `crossReviewForbidden`（`driver/internal/scheduler/crossreview.go`）、`AGENT_LANE3_GLOBS`、`AGENT_LANE2_MANUAL_GLOBS` 和 `AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS`。reviewer 输出不合格、失败或超时都算不放行。serve 退出时取消进行中的复审，重启后按账本重跑。
 
@@ -539,7 +539,7 @@ AGENT_TIER_ESCALATE = "0"
 
 仓库在 `scripts/agent-gates/agent-graph.env` 中设置 `AGENT_PROFILE=focused` 选择方案；未设置时取文件的 `default`。每个键分别取值：仓库显式赋值优先，其次是所选方案，再走原有角色回退链。仓库显式空值也阻止方案补值，但不取消原有角色回退。没有文件或找不到所选方案时，保持原有仓库配置行为。
 
-方案只允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE`。前四项为 `agent:model:effort`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令仍由仓库配置。
+方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`。角色值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
 
 修改方案文件后重启 driver；同一进程只读取一次，包括文件不存在的情况。调度器、处置 Agent、需求助手经 `LoadRepository` 读取生效值；`driver exec` 仍用 bash source 读取仓库 env，方案叠加与 `LoadRepository` 共用同一函数。票面和评论不能选择方案，也没有按票或成本的自动路由。
 

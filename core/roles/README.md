@@ -12,7 +12,7 @@
 | `driver-worker.md` | driver 执行器派的 worker | 原文 + `local-worker.md`（若有）+ 简报，作为 task spec |
 | `correction.md` | driver 执行器的 correction 会话 | 原文 + correction 文件路径、失败原因、简报，作为 prompt |
 | `resolver.md` | driver resolve 启动的处置 Agent | 接管异常、预算耗尽和审批等待；提交经验证的合并/部署提案 |
-| `reviewer.md` | lane 2 异构审查命令 | 原文 + 简报经 stdin 喂给 `$AGENT_ROLE_REVIEWER_CMD` |
+| `reviewer.md` | lane 2 异构审查命令 | driver 按结构化角色或 `_CMD` 生成命令，原文 + 简报经 stdin 喂给 reviewer |
 | `local-worker.md` | 项目特化（可选） | 追加在 `worker.md` 或 `driver-worker.md` 之后，只能加约束 |
 
 共享九份（`intake.md` `intake-chat.md` `onboard.md` `coordinator.md` `worker.md` `driver-worker.md` `correction.md` `reviewer.md` `resolver.md`）由 orca-factory 分发，项目不改；项目规矩写 `local-worker.md`（模板在 orca-factory `templates/local-worker.md.example`）。

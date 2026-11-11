@@ -93,9 +93,9 @@ var configRoles = []struct {
 }{
 	{"worker_default", []string{"AGENT_TIER_DEFAULT"}, "", dispatchTier},
 	{"worker_strong", []string{"AGENT_TIER_STRONG"}, "", dispatchTier},
-	{"reviewer", []string{"AGENT_ROLE_REVIEWER_CMD"}, "", parseReviewerCommand},
-	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
-	{"second_reviewer", []string{"AGENT_ROLE_SECOND_REVIEWER_CMD"}, "", parseReviewerCommand},
+	{"reviewer", []string{"AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_CMD"}, "", parseReviewerCommand},
+	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
+	{"second_reviewer", []string{"AGENT_ROLE_SECOND_REVIEWER", "AGENT_ROLE_SECOND_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
@@ -193,7 +193,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		return s
 	}
 	for _, p := range result.Eligible {
-		roles := repositoryRoles(p.Repository.Env)
+		roles := repositoryRoles(p.Repository.Env, p.Repository.Sources)
 		for i := range roles {
 			if source, ok := p.Repository.Sources[roles[i].Key]; ok {
 				roles[i].Source = source
@@ -323,9 +323,27 @@ func proxyWithoutUserinfo(raw string) (string, bool) {
 	return u.String(), true
 }
 
-func repositoryRoles(env map[string]string) []configRole {
+func repositoryRoles(env, sources map[string]string) []configRole {
 	roles := []configRole{}
 	for _, def := range configRoles {
+		if def.role == "reviewer" || def.role == "reviewer_small" || def.role == "second_reviewer" {
+			structuredKey := def.keys[0]
+			key := config.ReviewerKey(env, sources, structuredKey, def.keys[1])
+			if key == "" || env[key] == "" {
+				continue
+			}
+			role := configRole{Role: def.role, Key: key, Raw: env[key], Source: "repository"}
+			if source, ok := sources[key]; ok {
+				role.Source = source
+			}
+			if key == structuredKey {
+				role.Agent, role.Model, role.Effort = splitTier(role.Raw)
+			} else {
+				role.Agent, role.Model, role.Effort = def.parse(role.Raw)
+			}
+			roles = append(roles, role)
+			continue
+		}
 		role := configRole{Role: def.role, Raw: def.fallback, Source: sourceDefault}
 		for _, key := range def.keys {
 			if env[key] != "" {
