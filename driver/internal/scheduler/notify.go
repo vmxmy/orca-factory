@@ -29,6 +29,17 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return nil
 	}
 	human := category == "转人" && t.Resolution != nil && t.Resolution.Phase == "human"
+	reason = strings.Join(strings.Fields(reason), " ")
+	identity := reason
+	if human {
+		identity = fmt.Sprintf("%s attempt=%d", reason, t.Resolution.Attempt)
+	}
+	digest := sha256.Sum256([]byte(identity))
+	marker := fmt.Sprintf("通知: %s %x", category, digest[:6])
+	// A notified request already had its auto review; skip the ledger reread.
+	if t.NotifyEvents[marker] {
+		return nil
+	}
 	autoRefusal := ""
 	if human && slices.ContainsFunc(strings.Split(env["AGENT_AUTO_REVIEW"], ","), func(flag string) bool { return strings.TrimSpace(flag) == "scope" }) {
 		now := time.Now()
@@ -50,16 +61,6 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
-		return nil
-	}
-	reason = strings.Join(strings.Fields(reason), " ")
-	identity := reason
-	if human {
-		identity = fmt.Sprintf("%s attempt=%d", reason, t.Resolution.Attempt)
-	}
-	digest := sha256.Sum256([]byte(identity))
-	marker := fmt.Sprintf("通知: %s %x", category, digest[:6])
-	if t.NotifyEvents[marker] {
 		return nil
 	}
 	client := r.Clients[t.Repo]

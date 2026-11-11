@@ -99,3 +99,33 @@ func TestAutoScopeBeforeHumanCard(t *testing.T) {
 		})
 	}
 }
+
+func TestAutoScopeSkipsNotifiedHumanTicket(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	store := &scopeStore{face: "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"}
+	sender := &notifySender{store: &store.notifyStore}
+	sender.start(t)
+	result, _ := json.Marshal(map[string]any{"action": "escalate", "reason": "needs ruling", "body": "proof", "class": "brief-interpretation"})
+	record := resolver.Record{Version: 1, Attempt: 7, Phase: "human", Result: string(result)}
+	raw, _ := json.Marshal(record)
+	store.issueComments = evidenceComments(resolver.Prefix + string(raw))
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_AUTO_REVIEW": "scope"}}
+	runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}}
+	ticket := Ticket{ID: "id", Identifier: "OF-9", Repo: repo.Path, Owner: machine.OwnerHuman, NotifyReason: "needs ruling", Resolution: &record}
+	if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	ticket.NotifyEvents = map[string]bool{}
+	for _, comment := range store.issueComments {
+		if strings.HasPrefix(comment.Body, "通知: ") {
+			ticket.NotifyEvents[comment.Body] = true
+		}
+	}
+	reads := store.reads
+	if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if len(ticket.NotifyEvents) != 1 || store.reads != reads || len(sender.messages) != 1 {
+		t.Fatalf("markers=%v reads %d -> %d cards=%d", ticket.NotifyEvents, reads, store.reads, len(sender.messages))
+	}
+}
