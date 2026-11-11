@@ -14,6 +14,7 @@
 | Orca 变更请求重用 request-id 但输入（含调用终端）不同 → `request_mismatch`，不可重试 | `orca-run-create-request-mismatch.json` | `orca.TestRecordedRequestMismatch` |
 | `orca terminal list` 的完整枚举字段（totalCount、truncated、hostScope） | `orca-terminal-list.json` | `scheduler.TestRecordedTerminalList` |
 | 票面 CHECK、SCOPE、CHECK_TEST_FILES 中的反斜杠按原文保留，写入简报与 gate spec 时不还原 Markdown 转义；已冻结的 handoff 和 spec 保持原值（OF-377） | `linear-description-escaped.md` | `executor.TestRecordedTicketDescriptions`、`executor.TestParseTicketKeepsCheckBackslashes`、`executor.TestArtifactsKeepTicketFields`、`executor.TestStartExistingPRPreservesFrozenHandoff` |
+| 自动放行仅接受不含 `autoReleaseForbiddenReasonPhrases` 中禁止字样的转人原因：`需要授权`、`凭证`、`不可逆`、`生产 DDL`、`数据`；每张票最多一次且复用人工放行回执格式。通知原因是截到 300 字符的转人行：escalate 转人另查 resolver 结果中的完整原因，其他转人原因已截断时不自动放行（OF-468） | `ledger-comments-human-release.json`、`resolver-escalate-class.json` | `scheduler.TestAutoReleaseBeforeHumanCard`、`intake.TestAutoReleaseHuman`、`intake.TestAutoReleaseHumanChecksFullReason`、`intake.TestRecordedAutoReleaseOncePerTicket`、`intake.TestRecordedAutoReleaseReadsEscalationReason` |
 | 票面「CHECK:」的下一行是「断言:」，不属于命令 | `linear-description-check-assertion.md` | 同上 |
 | 小节标题可能带说明，如「## 要做（接口票）」 | `linear-description-heading-note.md` | 同上 |
 | 飞书票面在 `## intake 自检` 内用 ``- 行为追踪：说明 → `仓库路径:起始行-结束行`；…`` 列出文件。建票只校验该行的路径，按 SCOPE glob 匹配，忽略「要做」中的 `method/path`、`Origin/Sec-Fetch-Site`。ZY-333 录制时的 SCOPE 已覆盖全部追踪文件 | `feishu-description-behavior-trace.md`（2026-11-01，在 zhiyun-ai-dashboard 运行 `scripts/agent-gates/agent-graph.sh issues read --id ZY-333 --json`，保留 description 原文。已核对无凭据或会话内容，无需脱敏） | `issues.TestCreateRejectsBehaviorTraceOutsideScope` |
@@ -282,7 +283,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 ## 机器级模型方案
 
-`~/.config/orca-factory/profiles.toml` 的顶层为可选的 `default = "<方案名>"` 和 `[profile.<名>]` 表。方案表仅接受 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_TIER_ESCALATE` 字符串键值。角色值为 `agent:model:effort`，agent 不可空，model 可空；升档开关沿用仓库的 `"0"` / `"1"` 格式。未知顶层键、未知方案键（包括未选中的方案）、TOML 语法或值格式错误使整份文件加载失败，错误不包含配置值。
+`~/.config/orca-factory/profiles.toml` 的顶层为可选的 `default = "<方案名>"` 和 `[profile.<名>]` 表。方案表仅接受 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE` 字符串键值。角色值为 `agent:model:effort`，agent 不可空，审查角色只允许 `codex` 或 `claude`，model 可空；升档开关沿用仓库的 `"0"` / `"1"` 格式。未知顶层键、未知方案键（包括未选中的方案）、TOML 语法或值格式错误使整份文件加载失败，错误不包含配置值。
 
 `config.Load` 校验机器方案，`config.LoadRepository` 在仓库 env 上叠加所选方案。选名取仓库显式 `AGENT_PROFILE`，缺省取文件 `default`；显式空名不取 default。逐键优先级为仓库显式值（含空值）、所选方案、原有回退链。文件不存在或所选方案不存在时不补任何键。`Repository.Profile` 保存所选名字，`Repository.Sources` 保存生效键的 `repository` 或 `profile:<名>` 来源。方案文件按 home 路径在进程内首次加载后固定，添加、修改、删除或修复文件均需重启，不增加热重载。
 
@@ -314,7 +315,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
       "profile": "daily",
       "roles": [
         {"role": "worker_default", "agent": "codex", "model": "gpt-6.1-sol", "effort": "high", "key": "AGENT_TIER_DEFAULT", "raw": "codex:gpt-6.1-sol:high", "source": "profile:daily"},
-        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER_CMD", "raw": "env -u ORCA_PANE_KEY ... codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -", "source": "repository"}
+        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER", "raw": "codex:gpt-6-astra:high", "source": "repository"}
       ],
       "routing": [
         {"key": "AGENT_TIER_ESCALATE", "value": "1", "source": "agent-graph.env", "set": true}
@@ -349,8 +350,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
   - 施工与处置角色的 `model` 为空时 `effort` 也为空，与派工时不传 effort 一致；`intake` 照原样保留 effort。
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
-  - `reviewer` / `reviewer_small`：`AGENT_ROLE_REVIEWER_CMD` / `AGENT_ROLE_REVIEWER_CMD_SMALL` 是 shell 命令。跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
-  - `second_reviewer`：来源为 `AGENT_ROLE_SECOND_REVIEWER_CMD`，shell 命令的解析规则与 `reviewer` 相同。
+  - `reviewer` / `reviewer_small` / `second_reviewer`：优先读取对应的结构化键 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_REVIEWER_SMALL` / `AGENT_ROLE_SECOND_REVIEWER`（直接给出 `agent`、`model`、`effort`），再读取仓库的 `_CMD` 键，最后读取方案中的结构化键。结构化键只支持 `codex` 与 `claude`；`_CMD` 仍按旧规则解析：跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
 - `routing`：固定顺序的十二个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_TIER_ESCALATE` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。

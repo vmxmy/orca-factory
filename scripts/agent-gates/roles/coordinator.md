@@ -30,7 +30,7 @@
 - 核追溯块：先于 diff。缺块、条目数 < 简报 Change 条目数、任一条无 文件:行/测试名 → 不读 diff，直接 `VERDICT red STEP handoff`，计一次 correction。
 - 追溯块的每条 文件:行 要在 diff 里出现；指到没改的行按缺失处理。
 - 核档位：派工回执的 `launch.effective` 与解析出的 agent/model/effort 一致；不一致以回执为准并在评论里写明。回执缺字段时看进程参数（`workflow.md §6`）。
-- lane 2：gate 绿后再跑 `$AGENT_ROLE_REVIEWER_CMD`（非空时）；任一 finding 带 文件:行 → `VERDICT red STEP review` 打回。
+- lane 2：gate 绿后按 driver 的结构化角色优先级运行 reviewer（`AGENT_ROLE_REVIEWER` / `AGENT_ROLE_REVIEWER_SMALL`，再 `_CMD`，最后方案结构化键）；结构化值为 `agent:model:effort`，只支持 `codex` 与 `claude`，driver 生成对应的只读命令。任一 finding 带 文件:行 → `VERDICT red STEP review` 打回。
 
 ## Handoff
 

@@ -207,3 +207,12 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 		}
 	}
 }
+
+func TestRepositoryRolesWithoutSourcesKeepsReviewerCommand(t *testing.T) {
+	command := "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -"
+	roles := repositoryRoles(map[string]string{"AGENT_ROLE_REVIEWER_CMD": command}, nil)
+	want := configRole{Role: "reviewer", Agent: "codex", Model: "gpt-6-astra", Effort: "high", Key: "AGENT_ROLE_REVIEWER_CMD", Raw: command, Source: "repository"}
+	if len(roles) == 0 || roles[0] != want {
+		t.Fatalf("roles=%+v, want first %+v", roles, want)
+	}
+}

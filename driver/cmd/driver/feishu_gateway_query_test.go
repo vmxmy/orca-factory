@@ -15,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -111,7 +112,9 @@ func evidenceRuntime(t *testing.T, now time.Time, env map[string]string) (*proje
 	if env == nil {
 		env = map[string]string{"AGENT_GH_REPO": "vmxmy/orca-factory"}
 	}
-	r.readers.profile = func(string) (map[string]string, time.Time, error) { return env, recordedStatusTime, nil }
+	r.readers.profile = func(string) (config.Repository, time.Time, error) {
+		return config.Repository{Env: env}, recordedStatusTime, nil
+	}
 	r.sources["OF"] = newQuerySource(store, "/home/laoxu/github/orca-factory", "github.com/vmxmy/orca-factory", env)
 	return r, store, stateRoot
 }
@@ -608,5 +611,21 @@ func TestIntakeQueryAgentWiring(t *testing.T) {
 		if !strings.Contains(evidence, want) {
 			t.Fatalf("evidence prompt lacks %q:\n%s", want, evidence)
 		}
+	}
+}
+
+func TestIntakeQueryConfigKeepsRepositoryReviewerCommandOverProfile(t *testing.T) {
+	home, repo := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	writeLines(t, filepath.Join(home, ".config", "orca-factory", "profiles.toml"), "default='daily'\n[profile.daily]\nAGENT_ROLE_REVIEWER='claude:profile-model:low'")
+	writeLines(t, filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env"), "AGENT_GH_REPO=vmxmy/orca-factory\nAGENT_ROLE_REVIEWER_CMD='env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -'")
+	readers := defaultEvidenceReaders()
+	readers.maintenance = func() (maintenance.Observation, error) {
+		return maintenance.Observation{State: maintenance.State{Mode: "normal"}}, nil
+	}
+	e := configEvidence(readers, querySource{repo: repo}, time.Now())
+	if e.Outcome != intake.OutcomeOK || !strings.Contains(e.Data, `"Role":"reviewer","Agent":"codex","Model":"gpt-6-astra"`) || strings.Contains(e.Data, "profile-model") {
+		t.Fatalf("evidence=%+v", e)
 	}
 }

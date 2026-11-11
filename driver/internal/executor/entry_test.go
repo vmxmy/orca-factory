@@ -170,3 +170,23 @@ func TestExecKeepsBaselineTiersWithoutProfile(t *testing.T) {
 		})
 	}
 }
+
+func TestExecReadsLane3Globs(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	path := filepath.Join(repo, "scripts/agent-gates/agent-graph.env")
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	body := "AGENT_GH_REPO=owner/repo\nAGENT_ROLE_REVIEWER_CMD='review command'\nAGENT_TIER_DEFAULT=codex:model:high\nAGENT_LANE3_GLOBS='.env* *secrets*'\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	executor, _, err := repositoryExecutor(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := executor.Config.Lane3Globs; !reflect.DeepEqual(got, []string{".env*", "*secrets*"}) {
+		t.Fatalf("lane 3 globs=%q", got)
+	}
+}

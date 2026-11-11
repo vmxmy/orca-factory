@@ -40,21 +40,36 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	if t.NotifyEvents[marker] {
 		return nil
 	}
-	autoRefusal := ""
-	if human && slices.ContainsFunc(strings.Split(env["AGENT_AUTO_REVIEW"], ","), func(flag string) bool { return strings.TrimSpace(flag) == "scope" }) {
-		now := time.Now()
-		if r.Now != nil {
-			now = r.Now()
-		}
-		var err error
-		autoRefusal, err = intake.AutoApproveScope(ctx, r.Clients[t.Repo], t.ID, t.Resolution.Attempt, env["AGENT_LANE3_GLOBS"], now)
+	var refusals []string
+	flags := strings.Split(env["AGENT_AUTO_REVIEW"], ",")
+	enabled := func(name string) bool {
+		return human && slices.ContainsFunc(flags, func(flag string) bool { return strings.TrimSpace(flag) == name })
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	if enabled("scope") {
+		refusal, err := intake.AutoApproveScope(ctx, r.Clients[t.Repo], t.ID, t.Resolution.Attempt, env["AGENT_LANE3_GLOBS"], now)
 		if err != nil {
 			return fmt.Errorf("auto scope review: %w", err)
 		}
-		if autoRefusal == "" {
+		if refusal == "" {
 			return nil
 		}
+		refusals = append(refusals, "扩SCOPE："+refusal)
 	}
+	if enabled("release") {
+		released, refusal, err := intake.AutoReleaseHuman(ctx, r.Clients[t.Repo], t.ID, t.Resolution.Attempt, reason, now)
+		if err != nil {
+			return fmt.Errorf("auto release review: %w", err)
+		}
+		if released || refusal == "" {
+			return nil
+		}
+		refusals = append(refusals, "放行："+refusal)
+	}
+	autoRefusal := strings.Join(refusals, "；")
 	settings, err := config.FeishuNotifySettings(env)
 	if err != nil {
 		return err
