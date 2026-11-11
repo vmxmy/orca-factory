@@ -285,6 +285,11 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			if err != nil {
 				return result, err
 			}
+			if cp.PendingParent != "" {
+				if err = e.confirmUnstartedChild(ctx, cp); err != nil {
+					return result, err
+				}
+			}
 			if cp.Pending && cp.PendingParent == "" && cp.Task != "" {
 				err = e.retryRead(ctx, t, &result, "resume dispatch lookup", func() error {
 					return e.pendingDispatch(ctx, cp)

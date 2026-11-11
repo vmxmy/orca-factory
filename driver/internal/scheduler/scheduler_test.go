@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 )
 
 type fakeBackend struct {
@@ -404,5 +406,46 @@ func TestTickHandsMergeQueueToMerger(t *testing.T) {
 	}
 	if len(m.got) != 1 || len(m.got[0]) != 1 || m.got[0][0].ID != "pr-open" {
 		t.Fatalf("merger saw %v", m.got)
+	}
+}
+
+// ledgerBackend decides from a fixed snapshot but applies and launches through
+// the real Runtime, so the launch rereads the reservation the Resume wrote.
+type ledgerBackend struct {
+	fakeBackend
+	runtime *Runtime
+}
+
+func (b *ledgerBackend) Apply(ctx context.Context, t Ticket, a Action) error {
+	b.actions = append(b.actions, a)
+	return b.runtime.Apply(ctx, t, a)
+}
+func (b *ledgerBackend) Launch(ctx context.Context, t Ticket) error {
+	return b.runtime.Launch(ctx, t)
+}
+
+// OF-458's ledger: a correction executor registered its run, then exited on a
+// maintenance refusal. The Resume reservation is written with run=-, and its
+// launch must accept that reservation: a deferred launch leaves an unregistered
+// claim that the next round counts as a failed executor.
+func TestMaintenanceRefusedCorrectionResumeLaunches(t *testing.T) {
+	comments := evidenceComments(
+		"阶段: worker 运行中\n归属: 执行器 term=term_00d4edb4-af2e-4c2f-aaa7-6cd06a108537 run=run_37842cdf5951 attempt=1 since=2026-11-10T15:48:16Z",
+		"阶段: gate",
+		"阶段: 写 correction",
+		"correction 1 → 升至 strong",
+		maintenance.RefusedLine+"派工未发往 Orca，维护恢复后重放 term=term_00d4edb4-af2e-4c2f-aaa7-6cd06a108537",
+	)
+	lc := &fakeIssues{issueComments: comments}
+	oc := &fakeOrca{}
+	f := &ledgerBackend{fakeBackend: fakeBackend{absent: true, inactive: true}, runtime: &Runtime{Clients: map[string]issues.Store{"a": lc}, Orca: oc, DriverPath: "/opt/driver"}}
+	s := setup(&f.fakeBackend)
+	s.Backend = f
+	f.tickets = []Ticket{fromEvidence(t, Ticket{ID: "id", Identifier: "OF-458", Repo: "a", UpdatedAt: s.Now()}, comments)}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.actions) != 1 || f.actions[0].Kind != Resume || f.actions[0].Attempt != 1 || f.actions[0].Phase != machine.PhaseCorrection || len(oc.launches) != 1 {
+		t.Fatalf("refused correction not relaunched at its attempt: actions=%+v launches=%d ledger=%q", f.actions, len(oc.launches), lc.comments)
 	}
 }

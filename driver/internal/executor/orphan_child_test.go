@@ -21,7 +21,7 @@ type lostChildService struct {
 
 func (s *lostChildService) ChildTask(_ context.Context, run, parent, spec, request string) (string, error) {
 	s.children++
-	s.child = orca.Task{ID: "child_task", RunID: run, ParentID: parent, Spec: spec, Status: "blocked"}
+	s.child = orca.Task{ID: "child_task", RunID: run, ParentID: parent, Spec: spec, Status: "ready"}
 	return "", s.cause
 }
 
