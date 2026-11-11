@@ -131,6 +131,20 @@ func TestLandedDoneReleaseRetriesAfterDone(t *testing.T) {
 	}
 }
 
+func TestLandedDoneEvidenceFailureLeavesTicketUnchanged(t *testing.T) {
+	proposal := resolver.Resolution{Action: "landed-done", PR: 133, SHA: landedSHA, Reason: "verified"}
+	runtime, tracker, ticket := landedDoneRuntime(t, proposal, "ok", nil)
+	tracker.labels = true
+	tracker.issue.Labels.Nodes = []task.NamedID{{Name: "auto-impl"}}
+	tracker.failBody = "已落地:"
+	if err := runtime.applyResolution(context.Background(), ticket); err == nil {
+		t.Fatal("verification comment failure was not reported")
+	}
+	if tracker.issue.State.Name != "In Progress" || len(tracker.issue.Labels.Nodes) != 1 || len(tracker.bodies) != 0 {
+		t.Fatalf("ticket changed before verification evidence was written: state=%s labels=%v comments=%q", tracker.issue.State.Name, tracker.issue.Labels.Nodes, tracker.bodies)
+	}
+}
+
 func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 	proposal := resolver.Resolution{Action: "landed-done", PR: 133, SHA: landedSHA, Reason: "verified"}
 	cases := []struct {
