@@ -1,0 +1,178 @@
+{
+  "parked": {
+    "blockedBy": [],
+    "comments": {
+      "nodes": [
+        {
+          "body": "Agent处置: 录制沙箱\n阶段: Agent处置\n归属: 处置Agent\nresolver-state {\"version\":1,\"attempt\":1,\"phase\":\"result\",\"spec\":\"\",\"agent\":\"\",\"result\":\"{\\\"action\\\":\\\"escalate\\\",\\\"reason\\\":\\\"lane 3 路径须人合并\\\",\\\"body\\\":\\\"已核对票面\\\",\\\"class\\\":\\\"other\\\"}\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+          "createdAt": "2026-11-12T00:37:40+08:00",
+          "id": "reczz28YRHOlJ7eR",
+          "updatedAt": "2026-11-12T00:37:40+08:00"
+        },
+        {
+          "body": "搁置：lane 3 路径须人合并\n已完成：已核对票面\n阶段: 待领\n归属: 无\nresolver-state {\"version\":1,\"attempt\":1,\"phase\":\"applied\",\"spec\":\"\",\"agent\":\"\",\"result\":\"{\\\"action\\\":\\\"escalate\\\",\\\"reason\\\":\\\"lane 3 路径须人合并\\\",\\\"body\\\":\\\"已核对票面\\\",\\\"class\\\":\\\"other\\\"}\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+          "createdAt": "2026-11-12T00:38:04+08:00",
+          "id": "reczz28YRHq5IoHX",
+          "updatedAt": "2026-11-12T00:38:04+08:00"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": false
+      }
+    },
+    "commentsComplete": true,
+    "complete": false,
+    "createdAt": "2026-11-12T00:37:37+08:00",
+    "description": "## 现状\nOF-479 搁置录制沙箱票，录制后删除，不领取。\n\n## LANE 预判\n3（依据：命中 `$AGENT_LANE3_GLOBS` 的 `.env*`）\n\n## 要做\n1. 无（只用于录制搁置样本）。\n\n## 验收\nCHECK: test -f .env.sandbox\n\n## SCOPE\n.env.sandbox\n\n## 依赖\nDEPENDENCIES: {\"blockers\":[],\"related\":[]}\n",
+    "estimate": null,
+    "id": "ed573b60-8d00-4df4-b037-7bc8b4c49a67",
+    "identifier": "OFPRK-494",
+    "inverseRelations": {
+      "nodes": [],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": true
+      }
+    },
+    "labels": {
+      "nodes": [
+        {
+          "id": "parked",
+          "name": "parked"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": false
+      }
+    },
+    "metadata": {
+      "blockers": [],
+      "complete": true,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "id": "ed573b60-8d00-4df4-b037-7bc8b4c49a67",
+      "identifier": "OFPRK-494",
+      "priority": 0,
+      "project": "github.com/vmxmy/of479-park-sandbox-90c079a1",
+      "related": [],
+      "state": "Todo",
+      "updatedAt": "0001-01-01T00:00:00Z"
+    },
+    "nativeState": "open",
+    "nativeStateReason": "",
+    "nativeUpdatedAt": "2026-11-12T00:38:00+08:00",
+    "number": 0,
+    "owner": "无",
+    "parent": "",
+    "phase": "待领",
+    "priority": 0,
+    "project": {
+      "id": "github.com/vmxmy/of479-park-sandbox-90c079a1",
+      "name": "github.com/vmxmy/of479-park-sandbox-90c079a1"
+    },
+    "relations": {
+      "nodes": [],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": true
+      }
+    },
+    "state": {
+      "id": "unstarted",
+      "name": "Todo",
+      "type": "unstarted"
+    },
+    "title": "OF-479 搁置录制沙箱",
+    "updatedAt": "2026-11-12T00:38:00+08:00",
+    "url": "https://qcnqhljeakpl.feishu.cn/base/VeQObWd9VaV66tsiM7GcN0Avnph?table=tblmC0IWUj4QJ3b6&record=reczz28YRHLgCLjr"
+  },
+  "resumed": {
+    "blockedBy": [],
+    "comments": {
+      "nodes": [
+        {
+          "body": "Agent处置: 录制沙箱\n阶段: Agent处置\n归属: 处置Agent\nresolver-state {\"version\":1,\"attempt\":1,\"phase\":\"result\",\"spec\":\"\",\"agent\":\"\",\"result\":\"{\\\"action\\\":\\\"escalate\\\",\\\"reason\\\":\\\"lane 3 路径须人合并\\\",\\\"body\\\":\\\"已核对票面\\\",\\\"class\\\":\\\"other\\\"}\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+          "createdAt": "2026-11-12T00:37:40+08:00",
+          "id": "reczz28YRHOlJ7eR",
+          "updatedAt": "2026-11-12T00:37:40+08:00"
+        },
+        {
+          "body": "搁置：lane 3 路径须人合并\n已完成：已核对票面\n阶段: 待领\n归属: 无\nresolver-state {\"version\":1,\"attempt\":1,\"phase\":\"applied\",\"spec\":\"\",\"agent\":\"\",\"result\":\"{\\\"action\\\":\\\"escalate\\\",\\\"reason\\\":\\\"lane 3 路径须人合并\\\",\\\"body\\\":\\\"已核对票面\\\",\\\"class\\\":\\\"other\\\"}\",\"outcome\":\"failed\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+          "createdAt": "2026-11-12T00:38:04+08:00",
+          "id": "reczz28YRHq5IoHX",
+          "updatedAt": "2026-11-12T00:38:04+08:00"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": false
+      }
+    },
+    "commentsComplete": true,
+    "complete": false,
+    "createdAt": "2026-11-12T00:37:37+08:00",
+    "description": "## 现状\nOF-479 搁置录制沙箱票，录制后删除，不领取。\n\n## LANE 预判\n3（依据：命中 `$AGENT_LANE3_GLOBS` 的 `.env*`）\n\n## 要做\n1. 无（只用于录制搁置样本）。\n\n## 验收\nCHECK: test -f .env.sandbox\n\n## SCOPE\n.env.sandbox\n\n## 依赖\nDEPENDENCIES: {\"blockers\":[],\"related\":[]}\n",
+    "estimate": null,
+    "id": "ed573b60-8d00-4df4-b037-7bc8b4c49a67",
+    "identifier": "OFPRK-494",
+    "inverseRelations": {
+      "nodes": [],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": true
+      }
+    },
+    "labels": {
+      "nodes": [
+        {
+          "id": "ready-for-agent",
+          "name": "ready-for-agent"
+        }
+      ],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": false
+      }
+    },
+    "metadata": {
+      "blockers": [],
+      "complete": true,
+      "createdAt": "0001-01-01T00:00:00Z",
+      "id": "ed573b60-8d00-4df4-b037-7bc8b4c49a67",
+      "identifier": "OFPRK-494",
+      "priority": 0,
+      "project": "github.com/vmxmy/of479-park-sandbox-90c079a1",
+      "related": [],
+      "state": "Todo",
+      "updatedAt": "0001-01-01T00:00:00Z"
+    },
+    "nativeState": "open",
+    "nativeStateReason": "",
+    "nativeUpdatedAt": "2026-11-12T00:38:33+08:00",
+    "number": 0,
+    "owner": "无",
+    "parent": "",
+    "phase": "待领",
+    "priority": 0,
+    "project": {
+      "id": "github.com/vmxmy/of479-park-sandbox-90c079a1",
+      "name": "github.com/vmxmy/of479-park-sandbox-90c079a1"
+    },
+    "relations": {
+      "nodes": [],
+      "pageInfo": {
+        "endCursor": "",
+        "hasNextPage": true
+      }
+    },
+    "state": {
+      "id": "unstarted",
+      "name": "Todo",
+      "type": "unstarted"
+    },
+    "title": "OF-479 搁置录制沙箱",
+    "updatedAt": "2026-11-12T00:38:33+08:00",
+    "url": "https://qcnqhljeakpl.feishu.cn/base/VeQObWd9VaV66tsiM7GcN0Avnph?table=tblmC0IWUj4QJ3b6&record=reczz28YRHLgCLjr"
+  }
+}

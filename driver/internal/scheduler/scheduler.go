@@ -340,6 +340,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
 		} else if t.resumesResolution() {
 			// Before the merge lane: conflicting evidence stops that lane forever.
+			// The barrier still holds the lane until the resolver clears it.
+			if DeploymentBarrier(t) {
+				s.MergeQueue = append(s.MergeQueue, t)
+			}
 			if total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight {
 				continue
 			}
