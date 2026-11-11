@@ -106,7 +106,9 @@ export type RuntimeTicket = {
   stages?: Stage[]
 }
 
-export type Runtime = { state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
+export type Today = { merged?: number; escalated?: number; medianMinutes?: number }
+
+export type Runtime = { today?: Today; state: string; generatedAt: number; nextScanAt?: number; tickets: RuntimeTicket[] }
 
 export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' | 'merge' | 'dispatch' | 'smoke' | 'repair' | 'human' | 'unknown'
 
@@ -134,6 +136,7 @@ export type Parcel = {
 }
 
 export type Scene = {
+  today?: Today
   generatedAt: number
   nextScanAt?: number
   state: string

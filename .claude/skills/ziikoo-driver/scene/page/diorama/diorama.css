@@ -151,6 +151,14 @@
   min-height: 0;
 }
 
+.diorama .today {
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .diorama .status {
   display: flex;
   align-items: center;

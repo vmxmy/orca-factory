@@ -46,6 +46,7 @@ export const sceneOf = (runtime: Runtime, config: DriverConfig): Scene => {
   }
   return {
     generatedAt: runtime.generatedAt,
+    today: runtime.today,
     nextScanAt: runtime.nextScanAt,
     state: runtime.state,
     maintenance: config.overview.maintenance,

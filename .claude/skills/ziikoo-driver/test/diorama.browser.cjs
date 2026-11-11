@@ -1152,6 +1152,28 @@ async function checkHumanWaits(browser, live) {
   }
 }
 
+async function checkToday(browser, live) {
+  const { today } = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-today.json'))
+  live.write({ ...live.pushed, tickets: [], today })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 1 · 转人 0 · 周期中位 37.1 分')
+    const below = await page.evaluate(() => document.querySelector('.today').getBoundingClientRect().top >= document.querySelector('.status').getBoundingClientRect().bottom)
+    assert.equal(below, true, 'today output must sit below the status bar')
+    live.write({ ...live.pushed, tickets: [], today: { merged: 3, escalated: 1, medianMinutes: 12.5 } })
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 3 · 转人 1 · 周期中位 12.5 分')
+    live.write({ ...live.pushed, tickets: [], today: { merged: 0 } })
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 0')
+    live.write({ ...live.pushed, tickets: [] })
+    await page.waitForFunction(() => document.querySelector('.today')?.hidden === true)
+    assert.deepEqual(errors, [])
+    console.log('PASS today output: recorded sample, partial metrics, no evidence hides row')
+  } finally {
+    await page.close()
+    live.write(live.pushed)
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -1185,6 +1207,7 @@ async function checkProduction(browser, bun, model) {
     await checkLiveUpdates(browser, live)
     await checkEntries(browser, live, model)
     await checkRecordLinks(browser, live)
+    await checkToday(browser, live)
     await checkWithoutWebGL(browser, live)
   } finally {
     await server.halt()

@@ -10,6 +10,7 @@ import type {
   Runtime,
   RuntimeTicket,
   Stage,
+  Today,
   Timeline,
   TimelineEntry,
 } from '../types'
@@ -96,10 +97,22 @@ const parseTicket = (value: unknown, path: string): RuntimeTicket => {
   }
 }
 
+const parseToday = (value: unknown): Today => {
+  const o = fields(value, 'today')
+  const medianMinutes = o.medianMinutes === undefined ? undefined : count(o, 'medianMinutes', 'today')
+  if (medianMinutes !== undefined && (!Number.isFinite(medianMinutes) || medianMinutes < 0)) throw new Error('today.medianMinutes 不是非负有限数字')
+  return {
+    merged: o.merged === undefined ? undefined : tally(o, 'merged', 'today'),
+    escalated: o.escalated === undefined ? undefined : tally(o, 'escalated', 'today'),
+    medianMinutes,
+  }
+}
+
 export const parseRuntime = (stdout: string): Runtime => {
   const o = fields(JSON.parse(stdout), '输出')
   return {
     state: text(o, 'state', '输出'),
+    today: o.today === undefined ? undefined : parseToday(o.today),
     generatedAt: time(o, 'generatedAt', '输出'),
     nextScanAt: o.nextScanAt === undefined ? undefined : time(o, 'nextScanAt', '输出'),
     tickets: list(o.tickets, 'tickets').map((one, i) => parseTicket(one, `tickets[${i}]`)),
