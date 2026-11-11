@@ -180,7 +180,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 # 同时完成票据时，在上面的命令末尾加 --done
 ```
 
-`release` 先回读 GitHub，确认 PR 已合入该仓库的 main 且合并提交与 `--sha` 相符，再运行安装的 `~/.local/share/orca-factory-ops/deploy.sh`，最后用安装后的二进制执行 `doctor --json`。它不替代 drain 与备份，这两步仍由部署脚本完成。脚本部署当前 origin/main，可能包含指定合并提交之后的变更；评论分别记录合并提交与 doctor 观察到的实际部署版本。
+`release` 先回读 GitHub，确认 PR 已合入该仓库的 main 且合并提交与 `--sha` 相符，并读取合并提交改动的文件；任一文件命中 `AGENT_LANE3_GLOBS` 时拒绝。之后运行安装的 `~/.local/share/orca-factory-ops/deploy.sh`，最后用安装后的二进制执行 `doctor --json`。它不替代 drain 与备份，这两步仍由部署脚本完成。脚本部署当前 origin/main，可能包含指定合并提交之后的变更；评论分别记录合并提交与 doctor 观察到的实际部署版本。
 
 部署失败、doctor 返回非零、报告含 `fail` 或 `unknown`、报告无法解析或缺少部署版本时，命令输出原因并以非零退出，不写评论、不置 Done。全部通过后写一条人工合并形态的 `merge-progress-v1` 评论，不带 `deployment` 对象；默认不改票据状态，只有 `--done` 才在评论写入成功后置 Done。评论或状态写入失败也返回非零。该命令不合并 PR，不处理 lane 3；已有 deployment 回执的票使用 `resume-deployment` 对账。
 

@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 const releaseHelp = `  release <票号> --pr <编号> --sha <合并提交> [--done]
@@ -67,7 +68,11 @@ func init() {
 				if err != nil {
 					return merge.Progress{}, err
 				}
-				return releaseEvidence(ctx, ledger, ticket, pr, sha, env["AGENT_GH_REPO"], merged)
+				comparison, err := gh.Compare(ctx, owner, repo, sha+"^", sha)
+				if err != nil {
+					return merge.Progress{}, err
+				}
+				return releaseEvidence(ctx, ledger, ticket, pr, sha, env["AGENT_GH_REPO"], strings.Fields(os.Getenv("AGENT_LANE3_GLOBS")), merged, comparison.Files)
 			},
 			comment: func(ctx context.Context, id, body string) error {
 				_, err := ledger.CreateComment(ctx, id, body)
@@ -175,9 +180,20 @@ func releaseSmoke(raw []byte) (string, error) {
 	return running, nil
 }
 
-func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string, number int, sha, repository string, pr github.PullRequest) (merge.Progress, error) {
+func releaseEvidence(ctx context.Context, ledger issues.Store, identifier string, number int, sha, repository string, lane3 []string, pr github.PullRequest, files []github.File) (merge.Progress, error) {
 	if !pr.Merged || pr.Number != number || pr.MergeSHA != sha || pr.Base.Repo.FullName != repository || pr.Base.Ref != "main" || len(pr.Head.SHA) != 40 {
 		return merge.Progress{}, errors.New("PR read-back does not confirm the repository, merged PR and SHA")
+	}
+	// GitHub compare lists at most 300 files without flagging the cut.
+	if len(files) == 0 || len(files) >= 300 {
+		return merge.Progress{}, errors.New("merge commit changed files are unavailable or truncated")
+	}
+	for _, file := range files {
+		for _, glob := range lane3 {
+			if task.ScopeMatch(glob, file.Filename) || (file.PreviousFilename != "" && task.ScopeMatch(glob, file.PreviousFilename)) {
+				return merge.Progress{}, fmt.Errorf("lane 3 path %s requires a human release", file.Filename)
+			}
+		}
 	}
 	ticket, err := ledger.Read(ctx, identifier)
 	if err != nil {

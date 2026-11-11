@@ -148,16 +148,22 @@ const (
 	releaseRecordedMerge = "e51c6389bf0097a6c2a9b500f79c49805b6b1bd1"
 )
 
-func releaseRecordedPR(t *testing.T) github.PullRequest {
+func releaseRecordedGitHub(t *testing.T) (github.PullRequest, []github.File) {
 	t.Helper()
-	raw, err := os.ReadFile("../../testdata/recorded/github-pr-merged-repo.json")
-	if err != nil {
-		t.Fatal(err)
+	recorded := map[string]string{
+		"/repos/vmxmy/orca-factory/pulls/637": "github-pr-merged-repo.json",
+		"/repos/vmxmy/orca-factory/compare/ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c^...ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c": "github-compare-main-files.json",
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/repos/vmxmy/orca-factory/pulls/637" {
+		name, ok := recorded[r.URL.Path]
+		if !ok {
 			t.Errorf("unexpected %s", r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		raw, err := os.ReadFile("../../testdata/recorded/" + name)
+		if err != nil {
+			t.Error(err)
 			return
 		}
 		if _, err := w.Write(raw); err != nil {
@@ -173,7 +179,11 @@ func releaseRecordedPR(t *testing.T) github.PullRequest {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pr
+	comparison, err := client.Compare(context.Background(), "vmxmy", "orca-factory", pr.MergeSHA+"^", pr.MergeSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pr, comparison.Files
 }
 
 func releaseRecordedComments(t *testing.T, name string) []task.Comment {
@@ -214,11 +224,12 @@ func releaseRewriteLine(t *testing.T, comment task.Comment, prefix string, edit 
 	return comment
 }
 
-// The PR read-back replays github-pr-merged-repo.json (PR 637). Comments replay ledger-comments-human-release.json
+// The PR read-back replays github-pr-merged-repo.json (PR 637) and its changed
+// files replay github-compare-main-files.json. Comments replay ledger-comments-human-release.json
 // (no handoff) and ledger-comments-selfdeploy-interrupted.json (OF-393 handoff
 // and progress); budgets are edited to distinct values so the source is visible.
 func TestReleaseEvidence(t *testing.T) {
-	recordedPR := releaseRecordedPR(t)
+	recordedPR, recordedFiles := releaseRecordedGitHub(t)
 	if recordedPR.Number != 637 || recordedPR.MergeSHA != "ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c" || recordedPR.Head.SHA != "30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0" || recordedPR.Base.Repo.FullName != "vmxmy/orca-factory" {
 		t.Fatalf("recorded PR=%+v", recordedPR)
 	}
@@ -240,13 +251,17 @@ func TestReleaseEvidence(t *testing.T) {
 		fields["attempt"], fields["corrections"], fields["infra"], fields["catchup_rounds"] = attempt, corrections, infra, catchup
 	}
 	budgetedHandoff := editHandoff(func(fields map[string]any) { budget(fields, 4, 2, 3, 5) })
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "deployment", "held", "wrong head", "unknown phase", "invalid main"} {
 		t.Run(name, func(t *testing.T) {
 			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
 			pr := recordedPR
 			pr.Number, pr.Head.SHA, pr.MergeSHA = 605, releaseRecordedHead, releaseRecordedMerge
 			identifier, number, sha := "OF-393", 605, releaseRecordedMerge
+			files := recordedFiles
 			switch name {
+			case "lane 3 manual":
+				files = append(append([]github.File(nil), recordedFiles...), github.File{Filename: ".env.production", Status: "modified"})
+				fallthrough
 			case "manual":
 				ledger = releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "zy-366", Identifier: "ZY-366"}}, comments: human}
 				pr = recordedPR
@@ -274,11 +289,14 @@ func TestReleaseEvidence(t *testing.T) {
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["lane"] = 3 })}
 			case "wrong head":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["head"] = recordedPR.Head.SHA })}
+			case "no files":
+				ledger.comments = []task.Comment{handoff}
+				files = nil
 			case "held":
 				ledger.comments = []task.Comment{handoff}
 				ledger.ticket.Metadata.ImportHold = true
 			}
-			got, err := releaseEvidence(context.Background(), ledger, identifier, number, sha, "vmxmy/orca-factory", pr)
+			got, err := releaseEvidence(context.Background(), ledger, identifier, number, sha, "vmxmy/orca-factory", strings.Fields(".env* *secrets*"), pr, files)
 			if name != "manual" && name != "handoff" && name != "known main" {
 				if err == nil {
 					t.Fatalf("accepted %s: %+v", name, got)
