@@ -26,6 +26,8 @@ type Repository struct {
 	MaxInFlight int
 	StaleHours  int
 	Env         map[string]string
+	Profile     string
+	Sources     map[string]string
 }
 type Config struct {
 	MaxInFlight int
@@ -41,6 +43,9 @@ type Config struct {
 // A missing machine file yields default limits. It lists no repositories:
 // serve discovers them (projects.Discover, OF-43).
 func Load(home string) (Config, error) {
+	if _, err := loadProfiles(home); err != nil {
+		return Config{}, err
+	}
 	raw := struct {
 		MaxInFlight int         `toml:"max_in_flight"`
 		FactoryRoot string      `toml:"factory_root"`
@@ -117,7 +122,11 @@ func LoadRepository(path string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env}, nil
+	profile, sources, err := ApplyProfile(env)
+	if err != nil {
+		return Repository{}, err
+	}
+	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env, Profile: profile, Sources: sources}, nil
 }
 func positive(env map[string]string, key string, fallback int) (int, error) {
 	value, ok := env[key]
@@ -162,6 +171,19 @@ func ModelProxyURL(home string) (string, error) {
 }
 
 var assignment = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+
+// AssignedKeys reports the keys ParseEnv reads as explicit, so driver exec and
+// LoadRepository agree. Shell statements such as export stay ignored, as in
+// ParseEnv. Values are not read, so bash-only quoting does not fail it.
+func AssignedKeys(data []byte) map[string]bool {
+	keys := map[string]bool{}
+	for _, line := range strings.Split(string(data), "\n") {
+		if match := assignment.FindStringSubmatch(strings.TrimSpace(line)); match != nil {
+			keys[match[1]] = true
+		}
+	}
+	return keys
+}
 
 // ParseEnv accepts only KEY=value assignments. Quotes delimit literal strings;
 // substitutions and shell statements are never evaluated. A # outside quotes

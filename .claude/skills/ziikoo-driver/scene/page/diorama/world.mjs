@@ -136,7 +136,7 @@ const buildMainline = (kit, layout) => {
 }
 
 const buildMezzanine = kit => {
-  kit.box([13, 1.5, 3], WORLD.mezzanine, [-1.5, 0, -5.6])
+  kit.box([15.5, 1.5, 3], WORLD.mezzanine, [-0.25, 0, -5.6])
   for (let step = 0; step < 5; step++) kit.box([1.3, 0.3 * (step + 1), 0.62], WORLD.mezzanine, [-1, 0, -1.2 - step * 0.62])
   kit.box([1, 0.14, 2.4], WORLD.mezzanine, [-6.5, 1.05, -3.3]).rotation.x = -0.42
   kit.box([1.5, 2.6, 1.5], WORLD.tower, [-1, 1.5, -6.3])

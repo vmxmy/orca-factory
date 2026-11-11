@@ -72,9 +72,7 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	}
 	if human {
 		card := feishu.HumanCard{Ticket: t.Identifier, Title: t.Title, Reason: reason, URL: t.URL, Attempt: t.Resolution.Attempt, AutoReviewRefusal: autoRefusal}
-		if decision, err := resolver.ParseResult(t.Resolution.Result); err == nil {
-			card.Scope = decision.ScopeRequest()
-		}
+		card.Scope = notificationScope(t)
 		return sender.SendCard(ctx, chat, card.JSON())
 	}
 	body := fmt.Sprintf("%s %s\n类别: %s\n原因: %s\n%s", t.Identifier, t.Title, category, reason, t.URL)
@@ -127,4 +125,15 @@ func readFeishuNotification(t *Ticket, comments []task.Comment) {
 	if t.NotifyReason == "" {
 		t.NotifyReason = "等待处置"
 	}
+}
+
+func notificationScope(t Ticket) []string {
+	if t.Resolution == nil {
+		return nil
+	}
+	decision, err := resolver.ParseResult(t.Resolution.Result)
+	if err != nil {
+		return nil
+	}
+	return decision.ScopeRequest()
 }

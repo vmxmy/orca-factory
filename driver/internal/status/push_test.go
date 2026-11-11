@@ -2,6 +2,7 @@ package status
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -186,7 +187,7 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 	}
 	observedAt := start.Add(15 * time.Second)
 	rebuild := func(view *View) {
-		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "gate", Title: "新标题", BlockedReason: "等待观察"}}
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "OF-386", Owner: "执行器", Phase: "gate", Title: "新标题", BlockedReason: "等待观察", Stages: []Stage{{Name: "gate", Seconds: 80}}}}
 	}
 	PushObservation(observedAt, start, rebuild)
 	view := Read(observedAt, 0)
@@ -194,6 +195,9 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 		t.Fatalf("observation lost ticket: %+v", view)
 	}
 	got := view.Tickets[0]
+	if len(got.Stages) != 0 {
+		t.Fatalf("older timeline must not describe newer executor phase: %+v", got.Stages)
+	}
 	if got.Phase != "审查" || !got.Since.Equal(before.Since) {
 		t.Fatalf("older ledger observation overwrote executor phase or since: %+v, before: %+v", got, before)
 	}
@@ -203,6 +207,9 @@ func TestObservationKeepsNewerExecutorPhase(t *testing.T) {
 	observedAt = start.Add(25 * time.Second)
 	PushObservation(observedAt, start.Add(20*time.Second), rebuild)
 	got = Read(observedAt, 0).Tickets[0]
+	if len(got.Stages) != 1 || got.Stages[0] != (Stage{Name: "gate", Seconds: 80}) {
+		t.Fatalf("matching phase lost its timeline: %+v", got.Stages)
+	}
 	if got.Phase != "gate" || !got.Since.Equal(observedAt) || !got.PushedAt.Equal(observedAt) {
 		t.Fatalf("newer ledger observation did not advance phase: %+v", got)
 	}
@@ -246,5 +253,27 @@ func TestPushRestampsRewrittenRow(t *testing.T) {
 	})
 	if got := Read(observedAt, 0).Tickets[0]; got.Phase != "审查" {
 		t.Fatalf("stale ledger read replaced a row rewritten from the cache: %+v", got)
+	}
+}
+
+func TestObservationKeepsHumanFieldsWithNewerStage(t *testing.T) {
+	for _, human := range []bool{false, true} {
+		t.Run(fmt.Sprint(human), func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			t.Setenv("DRIVER_STATUS_FILE", "")
+			now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+			active := Ticket{Repo: "repo", Identifier: "OF-474", Owner: "执行器", Phase: "worker"}
+			waiting := Ticket{Repo: "repo", Identifier: "OF-474", Owner: "人", Stage: "human", HumanKind: "scope", HumanReason: "expand scope"}
+			old, incoming := active, waiting
+			if human {
+				old, incoming = waiting, active
+			}
+			Push(now, func(v *View) { SetTicket(v, old, true) })
+			PushObservation(now.Add(time.Second), now.Add(-time.Second), func(v *View) { v.Tickets = []Ticket{incoming} })
+			got := Read(now.Add(time.Second), 0).Tickets[0]
+			if got.Stage != old.Stage || got.HumanKind != old.HumanKind || got.HumanReason != old.HumanReason {
+				t.Fatalf("newer stage and human fields differ: got %+v, want %+v", got, old)
+			}
+		})
 	}
 }

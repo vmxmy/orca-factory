@@ -20,6 +20,11 @@ const DASHBOARD = '/home/laoxu/github/zhiyun-ai-dashboard'
 const ANSIBLE = '/home/laoxu/ansible'
 const TWIN = '/home/laoxu/github/token123'
 const readJSON = file => JSON.parse(fs.readFileSync(file, 'utf8'))
+const BASELINE_VIEWPORT = { width: 1280, height: 800 }
+const MAX_CHANGED_PIXEL_RATIO = 0
+const BASELINE_LIMIT_BYTES = 2_000_000
+const BROWSER_LOCALE_ENV = { LANG: 'C.UTF-8', LC_ALL: 'C.UTF-8', LANGUAGE: 'C' }
+const baselineFile = name => path.join(__dirname, `diorama-${name}.png`)
 
 const brightness = hex => {
   const r = hex >> 16 & 0xff
@@ -90,6 +95,42 @@ async function checkModel() {
   assert.deepEqual(queue.map(one => one.identifier), ['Q-1', 'Q-2', 'Q-none'], 'merge queue must sort by position, missing last')
   assert.ok(queue[0].slot.x > queue[1].slot.x && queue[1].slot.x > queue[2].slot.x, 'queue head must stand nearest the lock')
   assert.equal(queue[2].queuePosition, undefined)
+  const humans = model.islandOf(row([
+    parcel('H-1', 'human', { since: 200 }),
+    parcel('H-2', 'human', { since: 100 }),
+  ])).parcels
+  assert.equal(humans[0].identifier, 'H-2', 'the oldest human ticket must occupy the desk despite ticket-number order')
+  assert.deepEqual(humans[0].slot, { x: 3, y: 1.7, z: -5.6 }, 'the oldest ticket must stand on the human desk')
+  assert.equal(model.HUMAN_QUEUE_STEP, 1.3)
+  assert.ok(Math.abs(Math.abs(humans[1].slot.x - humans[0].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, 'the first waiting ticket must be one human queue step from the desk')
+  const waiting = model.islandOf(row([
+    parcel('H-20', 'human'), parcel('H-10', 'human', { since: 100 }),
+    parcel('H-2', 'human', { since: 100 }), parcel('H-1', 'human', { since: 0 }),
+    parcel('H-3', 'human'),
+  ])).parcels
+  assert.deepEqual(waiting.map(one => one.identifier), ['H-1', 'H-2', 'H-10', 'H-3', 'H-20'], 'human queue must sort by since, then ticket number, with missing times last')
+  for (let index = 2; index <= 3; index++) {
+    assert.ok(Math.abs(Math.abs(waiting[index].slot.x - waiting[index - 1].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, 'waiting slots must be one human queue step apart')
+  }
+  assert.equal(waiting[4].slot.x, waiting[1].slot.x, 'human queue must wrap after three waiting tickets')
+  assert.ok(waiting[4].slot.y > waiting[1].slot.y)
+  for (const station of STATIONS.filter(station => !['human', 'merge'].includes(station))) {
+    const unchanged = model.islandOf(row([parcel('Z-2', station, { since: 200 }), parcel('Z-1', station, { since: 100 })]))
+    assert.deepEqual(unchanged.parcels.map(one => one.identifier), ['Z-2', 'Z-1'], `${station} must retain input order`)
+  }
+  console.log('PASS human queue model: oldest at desk, missing times last, numeric ties, spacing and three slots per row')
+  const sample = 'driver/testdata/recorded/driver-status-json-stale.json'
+  const humanAt = file => model.archipelagoOf(readJSON(path.join(preview, file))).islands
+    .find(island => island.name === 'zhiyun-ai-dashboard').parcels.filter(one => one.station === 'human')
+  const [recordedHuman] = humanAt('diorama-scene-human.json')
+  assert.equal(recordedHuman.identifier, 'ZY-428', `${sample} must place ZY-428 at the human station`)
+  assert.equal(recordedHuman.since, 1_794_192_549_499, `${sample} since must reach the human sort as epoch milliseconds`)
+  assert.deepEqual(recordedHuman.slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} lone human ticket must stand on the desk`)
+  const recordedQueue = humanAt('diorama-scene-human-queue.json')
+  assert.deepEqual(recordedQueue.map(one => one.identifier), ['ZY-429', 'ZY-428', 'ZY-430'], `${sample} human queue must sort by recorded since, missing last`)
+  assert.deepEqual(recordedQueue[0].slot, { x: 3, y: 1.7, z: -5.6 }, `${sample} oldest recorded human ticket must stand on the desk`)
+  assert.ok(Math.abs(Math.abs(recordedQueue[1].slot.x - recordedQueue[0].slot.x) - model.HUMAN_QUEUE_STEP) < 1e-9, `${sample} first waiting ticket must be one human queue step from the desk`)
+  console.log(`PASS human queue recorded sample: ${sample} since sorts the desk and queue`)
   const merged = parcel('M-1', 'merge', { phase: '已合并', label: '已合并', unknownDeploy: true })
   const blind = model.islandOf(row([merged]))
   assert.deepEqual(
@@ -262,6 +303,181 @@ const settled = page =>
     const { view, goal } = window.diorama.state()
     return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
   })
+
+async function checkHumanQueue(browser, url) {
+  const { page, errors } = await open(browser, url, { reducedMotion: 'reduce' })
+  const fixture = {
+    generatedAt: Date.now(), state: 'ok', maintenance: 'running',
+    rows: [row(Array.from({ length: 7 }, (_, index) => parcel(`H-${index + 1}`, 'human', { since: 700 - index * 100, tone: 'failed' })))],
+  }
+  try {
+    const geometry = await page.evaluate(async fixture => {
+      const THREE = await import('three')
+      const { createWorld } = await import('../../scene/page/diorama/world.mjs')
+      const { archipelagoOf } = await import('../../scene/page/diorama/model.mjs')
+      const add = THREE.Scene.prototype.add
+      let scene
+      THREE.Scene.prototype.add = function (...objects) {
+        scene = this
+        return add.apply(this, objects)
+      }
+      const world = createWorld(document.createElement('canvas'))
+      THREE.Scene.prototype.add = add
+      try {
+        world.build(archipelagoOf(fixture))
+        scene.updateMatrixWorld(true)
+        const meshes = []
+        scene.traverse(node => { if (node.isMesh) meshes.push(node) })
+        const platform = meshes.find(mesh => mesh.scale.y === 1.5 && mesh.scale.x > 10)
+        const bounds = new THREE.Box3().setFromObject(platform)
+        const ground = new THREE.Box3().setFromObject(meshes.find(mesh => mesh.name === 'ground'))
+        const containsXZ = (outer, inner) => ['x', 'z'].every(axis => inner.min[axis] >= outer.min[axis] && inner.max[axis] <= outer.max[axis])
+        const bodies = [...world.parcels.values()].map(one => new THREE.Box3().setFromObject(one.group.children.find(child => child.userData.key)))
+        return { count: bodies.length, onPlatform: bodies.every(body => containsXZ(bounds, body)), platformOnGround: containsXZ(ground, bounds) }
+      } finally {
+        world.dispose()
+      }
+    }, fixture)
+    assert.equal(geometry.count, 7, 'geometry assertions must include the desk and two full waiting rows')
+    assert.ok(geometry.onPlatform, 'every human box must stay inside the mezzanine footprint')
+    assert.ok(geometry.platformOnGround, 'the expanded mezzanine must stay inside the island')
+    await page.evaluate(fixture => window.diorama.update(fixture), fixture)
+    for (const width of [1440, 760]) {
+      await page.setViewportSize({ width, height: 900 })
+      await frames(page)
+      await settled(page)
+      const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ id: node.textContent, ...node.getBoundingClientRect().toJSON() })))
+      assert.equal(labels.length, 7)
+      const current = await state(page)
+      const { islandOf } = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+      const slots = islandOf(fixture.rows[0]).parcels
+      for (const label of labels) {
+        const slot = slots.find(one => one.identifier === label.id).slot
+        const pixel = pixelOf(current.view, slot, { width, height: 900 })
+        assert.ok(Math.abs(label.x + label.width / 2 - pixel.x) < 1, `${label.id} label must stay horizontally aligned with its box at width ${width}`)
+        for (const other of labels.filter(other => other.id !== label.id)) {
+          assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.id} and ${other.id} labels must not overlap at width ${width}`)
+        }
+      }
+    }
+    assert.deepEqual(errors, [])
+    console.log('PASS human queue geometry: boxes on platform, platform on island, labels separated and horizontally anchored')
+  } finally {
+    await page.close()
+  }
+}
+
+async function pixelDifference(page, expected, actual) {
+  return page.evaluate(async ([before, after]) => {
+    const decode = async encoded => createImageBitmap(await (await fetch(`data:image/png;base64,${encoded}`)).blob())
+    const images = await Promise.all([decode(before), decode(after)])
+    const [width, height] = [images[0].width, images[0].height]
+    if (images.some(image => image.width !== width || image.height !== height)) throw new Error('baseline dimensions differ')
+    const canvas = new OffscreenCanvas(width, height)
+    const context = canvas.getContext('2d')
+    const pixels = images.map(image => {
+      context.drawImage(image, 0, 0)
+      image.close()
+      return context.getImageData(0, 0, width, height)
+    })
+    const diff = context.createImageData(width, height)
+    let changed = 0
+    for (let i = 0; i < diff.data.length; i += 4) {
+      const mismatch = [0, 1, 2, 3].some(channel => pixels[0].data[i + channel] !== pixels[1].data[i + channel])
+      if (mismatch) changed++
+      diff.data[i] = mismatch ? 255 : pixels[1].data[i] / 4
+      diff.data[i + 1] = mismatch ? 0 : pixels[1].data[i + 1] / 4
+      diff.data[i + 2] = mismatch ? 255 : pixels[1].data[i + 2] / 4
+      diff.data[i + 3] = 255
+    }
+    context.putImageData(diff, 0, 0)
+    const blob = await canvas.convertToBlob({ type: 'image/png' })
+    const png = await new Promise(resolve => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result.split(',')[1])
+      reader.readAsDataURL(blob)
+    })
+    return { changed, ratio: changed / (width * height), png }
+  }, [expected.toString('base64'), actual.toString('base64')])
+}
+
+async function checkBaselines(browser, url, model) {
+  const recorded = readJSON(path.join(preview, 'diorama-scene.json'))
+  const stuck = new Set(model.archipelagoOf(recorded).stuck.map(ticket => ticket.identifier))
+  const normal = structuredClone(recorded)
+  for (const row of normal.rows) row.parcels = row.parcels.filter(ticket => !stuck.has(ticket.identifier))
+  const scenes = [
+    { name: 'global', scene: normal, query: '', stop: 1, stuck: 0 },
+    { name: 'island', scene: recorded, query: `?project=${encodeURIComponent(FACTORY)}`, stop: 2, stuck: 2 },
+    { name: 'ticket', scene: recorded, query: `?project=${encodeURIComponent(FACTORY)}&ticket=OF-419`, stop: 3, stuck: 2 },
+    { name: 'global-stuck', scene: recorded, query: '', stop: 1, stuck: 2 },
+  ]
+  const update = process.env.UPDATE_BASELINE === '1'
+  const repeats = process.env.MEASURE_BASELINE === '1' ? 5 : 1
+  const captured = []
+  const failures = []
+  const decoder = await browser.newPage()
+  try {
+    for (const fixture of scenes) {
+      const samples = []
+      for (let run = 0; run < repeats; run++) {
+        const page = await browser.newPage({
+          viewport: BASELINE_VIEWPORT, deviceScaleFactor: 1, reducedMotion: 'reduce',
+          locale: 'zh-CN', timezoneId: 'Asia/Shanghai', colorScheme: 'light',
+        })
+        const errors = []
+        page.on('pageerror', error => errors.push(error.message))
+        try {
+          await page.addInitScript(() => { performance.now = () => 0 })
+          await page.route('**/diorama-scene.json', route => route.fulfill({ json: fixture.scene }))
+          await page.goto(url + fixture.query)
+          await page.waitForFunction(() => window.diorama)
+          await page.evaluate(() => document.fonts.ready)
+          await settled(page)
+          await frames(page)
+          assert.equal((await state(page)).stop, fixture.stop, fixture.name)
+          assert.equal(await page.locator('.stuck > .list button[data-ticket]').count(), fixture.stuck, fixture.name)
+          if (fixture.stop === 3) assert.equal((await state(page)).selected, 'OF-419')
+          assert.deepEqual(errors, [])
+          samples.push(await page.screenshot({ animations: 'disabled' }))
+        } finally {
+          await page.close()
+        }
+      }
+      if (repeats === 5) {
+        let maximum = 0
+        for (let i = 0; i < samples.length; i++) {
+          for (let j = 0; j < i; j++) maximum = Math.max(maximum, (await pixelDifference(decoder, samples[i], samples[j])).ratio)
+        }
+        console.log(`MEASURE ${fixture.name}: 5 fresh renders, maximum changed pixel ratio=${maximum}, 3x=${maximum * 3}`)
+      }
+      const actual = samples[0]
+      captured.push({ name: fixture.name, png: actual })
+      if (update) continue
+      const file = baselineFile(fixture.name)
+      assert.ok(fs.existsSync(file), `missing baseline ${file}; create explicitly with UPDATE_BASELINE=1`)
+      const expected = fs.readFileSync(file)
+      const difference = await pixelDifference(decoder, expected, actual)
+      console.log(`BASELINE ${fixture.name}: ${difference.changed} changed pixels, ratio=${difference.ratio}, threshold=${MAX_CHANGED_PIXEL_RATIO}`)
+      if (difference.ratio > MAX_CHANGED_PIXEL_RATIO) {
+        const temporary = path.resolve('.omc/tmp')
+        fs.mkdirSync(temporary, { recursive: true })
+        const output = fs.mkdtempSync(path.join(temporary, `diorama-${fixture.name}-`))
+        fs.writeFileSync(path.join(output, 'expected.png'), expected)
+        fs.writeFileSync(path.join(output, 'actual.png'), actual)
+        fs.writeFileSync(path.join(output, 'diff.png'), Buffer.from(difference.png, 'base64'))
+        failures.push(`${fixture.name}: ${difference.changed} changed pixels; diff: ${output}/diff.png`)
+      }
+    }
+    const bytes = captured.reduce((sum, shot) => sum + (update ? shot.png.length : fs.statSync(baselineFile(shot.name)).size), 0)
+    assert.ok(bytes <= BASELINE_LIMIT_BYTES, `baselines total ${bytes} bytes exceeds ${BASELINE_LIMIT_BYTES}; reduce BASELINE_VIEWPORT`)
+    assert.deepEqual(failures, [], 'visual baselines differ')
+    if (update) for (const shot of captured) fs.writeFileSync(baselineFile(shot.name), shot.png)
+    console.log(`PASS diorama visual baselines: 4 scenes, ${bytes} bytes${update ? ' (updated explicitly)' : ''}`)
+  } finally {
+    await decoder.close()
+  }
+}
 
 async function checkShoreline(browser, url) {
   const { page, errors } = await open(browser, url, { reducedMotion: 'reduce' })
@@ -634,10 +850,18 @@ async function checkLiveUpdates(browser, live) {
     await page.locator('.stuck > .list button[data-ticket="0/OF-415"]').click()
     await settled(page)
     await tripHas(page, ['OF-415', '处置塔前', '二线处理中', '复制票号', '复制详情'])
+    assert.equal(await page.locator('.trip .stage-time').count(), 0, 'missing stages must not draw durations')
+    const timed = structuredClone(live.pushed)
+    const ticket = timed.tickets.find(ticket => ticket.identifier === 'OF-415' && ticket.repo === FACTORY)
+    ticket.stages = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-stages.json')).tickets[0].stages
     const before = await state(page)
-    live.write(live.pushed)
+    live.write(timed)
     await page.waitForFunction(() => document.querySelector('.trip').innerText.includes('检验间'), null, { timeout: 15000 })
     const moved = await state(page)
+    assert.deepEqual(await page.locator('.trip .stage-time').allTextContents(), ['7 分钟', '7 分钟', '2 分钟', '50 秒'])
+    assert.equal(await page.locator('.trip .track .longest').count(), 1, 'only one longest stage is highlighted')
+    assert.equal(await page.locator('.trip .track .longest').getAttribute('title'), 'Agent处置 · 434 秒 · 停留最长', 'the recorded 434-second stage is the longest')
+    assert.equal(await page.locator('.trip .track .now').innerText(), 'Agent处置\n50 秒', 'last stage is the current stage')
     assert.deepEqual([moved.stop, moved.focus, moved.selected], [2, FACTORY, 'OF-415'], 'a new Scene must keep the island and the selected ticket')
     assert.deepEqual([moved.goal, moved.quaternion], [before.goal, before.quaternion], 'a new Scene must not move or rotate the camera')
     assert.ok(['half', 'x', 'z'].every(key => Math.abs(moved.view[key] - before.view[key]) < 0.01), 'a new Scene must not jump the settled view')
@@ -800,6 +1024,80 @@ async function checkWithoutWebGL(browser, live) {
   }
 }
 
+async function checkRecordLinks(browser, live) {
+  const url = 'https://records.example.test/base?record=rec123&view=%22grid%22'
+  const urls = [url, undefined, 'javascript:window.__xss=1', 'JaVaScRiPt:alert(1)', 'http://records.example.test/', 'data:text/html,unsafe', 'file:///etc/passwd', '//records.example.test/', '/record/123', 'https://']
+  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+  const template = recorded.tickets.find(ticket => ticket.identifier === 'OF-415')
+  const tickets = urls.map((url, index) => ({ ...template, identifier: `RECORD-${index}`, url }))
+  live.write({ ...recorded, tickets })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.stuck > .list').textContent.includes('RECORD-0'))
+    const listLink = page.locator('.stuck > .list').getByRole('link', { name: '打开记录', exact: true })
+    assert.equal(await listLink.count(), 1, 'only the HTTPS record may have a stuck-list link')
+    await page.locator('.stuck > .list button[data-ticket="0/RECORD-0"]').focus()
+    await page.keyboard.press('Tab')
+    assert.equal(await listLink.evaluate(link => link === document.activeElement), true, 'Tab must reach the record link next to its ticket')
+    const before = await state(page)
+    await page.context().route('https://records.example.test/**', route => route.fulfill({ body: 'record' }))
+    const popupReady = page.waitForEvent('popup')
+    await page.keyboard.press('Enter')
+    const popup = await popupReady
+    await popup.waitForLoadState()
+    assert.equal(popup.url(), url)
+    assert.equal(await popup.evaluate(() => window.opener), null, 'the record tab must not access its opener')
+    await popup.close()
+    assert.equal((await state(page)).selected, before.selected, 'opening a record must not select a different ticket')
+    for (const [index, value] of urls.entries()) {
+      await page.locator(`.stuck > .list button[data-ticket="0/RECORD-${index}"]`).click()
+      const tripLink = page.locator('.trip').getByRole('link', { name: '打开记录', exact: true })
+      assert.equal(await tripLink.count(), index === 0 ? 1 : 0, `trip record link for ${value}`)
+      if (index !== 0) continue
+      for (const link of [listLink, tripLink]) {
+        assert.equal(await link.getAttribute('href'), url)
+        assert.equal(await link.evaluate(link => link.protocol), 'https:')
+        assert.equal(await link.getAttribute('target'), '_blank')
+        assert.equal(await link.getAttribute('rel'), 'noopener noreferrer')
+        assert.equal(await link.evaluate(link => link.closest('button')), null, 'links must not nest inside a button')
+      }
+      await page.getByRole('button', { name: '复制详情', exact: true }).focus()
+      await page.keyboard.press('Tab')
+      assert.equal(await tripLink.evaluate(link => link === document.activeElement), true, 'Tab must reach the trip record link')
+      live.write({ ...recorded, tickets: tickets.map(ticket => ({ ...ticket, title: 'updated record' })) })
+      await page.waitForFunction(() => document.querySelector('.trip .title').textContent === 'updated record')
+      assert.equal(await tripLink.evaluate(link => link === document.activeElement), true, 'a new Scene must preserve focus on the record link')
+    }
+    assert.equal(await page.evaluate(() => window.__xss), undefined)
+    assert.deepEqual(errors, [])
+    console.log('PASS record links: HTTPS only, missing and unsafe URLs omitted, safe new tab, Tab and Enter, focus survives updates')
+  } finally {
+    await page.close()
+  }
+}
+
+async function checkToday(browser, live) {
+  const { today } = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-today.json'))
+  live.write({ ...live.pushed, tickets: [], today })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}`)
+  try {
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 1 · 转人 0 · 周期中位 37.1 分')
+    const below = await page.evaluate(() => document.querySelector('.today').getBoundingClientRect().top >= document.querySelector('.status').getBoundingClientRect().bottom)
+    assert.equal(below, true, 'today output must sit below the status bar')
+    live.write({ ...live.pushed, tickets: [], today: { merged: 3, escalated: 1, medianMinutes: 12.5 } })
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 3 · 转人 1 · 周期中位 12.5 分')
+    live.write({ ...live.pushed, tickets: [], today: { merged: 0 } })
+    await page.waitForFunction(() => document.querySelector('.today')?.textContent === '今日：合并 0')
+    live.write({ ...live.pushed, tickets: [] })
+    await page.waitForFunction(() => document.querySelector('.today')?.hidden === true)
+    assert.deepEqual(errors, [])
+    console.log('PASS today output: recorded sample, partial metrics, no evidence hides row')
+  } finally {
+    await page.close()
+    live.write(live.pushed)
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -829,6 +1127,8 @@ async function checkProduction(browser, bun, model) {
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
     await checkLiveUpdates(browser, live)
     await checkEntries(browser, live, model)
+    await checkRecordLinks(browser, live)
+    await checkToday(browser, live)
     await checkWithoutWebGL(browser, live)
   } finally {
     await server.halt()
@@ -847,8 +1147,11 @@ async function main() {
       executablePath: chrome,
       headless: true,
       args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+      env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkBaselines(browser, url, model)
+      await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)

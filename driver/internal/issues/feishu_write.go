@@ -130,7 +130,7 @@ type feishuIndex struct {
 }
 
 func (c *Feishu) ticketIndex(ctx context.Context) (feishuIndex, error) {
-	records, err := c.readAll(ctx, "票据", nil)
+	records, _, err := c.readAll(ctx, "票据", nil)
 	if err != nil {
 		return feishuIndex{}, err
 	}
@@ -426,7 +426,7 @@ func (c *Feishu) Create(ctx context.Context, in CreateInput) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
-	_, own, err := c.projects(ctx)
+	_, own, _, err := c.projects(ctx)
 	if err != nil {
 		return Task{}, err
 	}
@@ -502,7 +502,7 @@ func (c *Feishu) CreateLedgerProject(ctx context.Context, row LedgerProject) (Le
 // already enabled is returned unchanged with no write and no event, so a
 // repeated approver click converges without a duplicate event.
 func (c *Feishu) EnableLedgerProject(ctx context.Context, remote, operator string) (LedgerProject, error) {
-	records, err := c.readAll(ctx, "项目", nil)
+	records, _, err := c.readAll(ctx, "项目", nil)
 	if err != nil {
 		return LedgerProject{}, err
 	}
@@ -575,7 +575,7 @@ func (c *Feishu) PurgeEmptyEvents(ctx context.Context, id, operator string, appl
 		return PurgeEmptyReport{}, err
 	}
 	filter := feishu.Filter{Logic: "and", Conditions: []feishu.Condition{{Field: "票据", Operator: "intersects", Value: linkRefs(t.nativeID)}}}
-	records, err := c.readAll(ctx, "事件", &filter)
+	records, _, err := c.readAll(ctx, "事件", &filter)
 	if err != nil {
 		return PurgeEmptyReport{}, err
 	}

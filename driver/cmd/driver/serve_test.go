@@ -285,3 +285,25 @@ func TestStatusBackendForwardsHeartbeatLiveness(t *testing.T) {
 		t.Fatalf("liveness=%q err=%v, want dead", got, err)
 	}
 }
+
+type todayStatusBackend struct{ statusFakeBackend }
+
+func (b *todayStatusBackend) TodayOutput(time.Time) *status.TodayOutput {
+	median := 12.5
+	return &status.TodayOutput{Merged: 3, Escalated: 1, MedianMinutes: &median}
+}
+
+func TestStatusBackendForwardsToday(t *testing.T) {
+	now := time.Now()
+	backend := &statusBackend{Backend: &todayStatusBackend{}}
+	snapshot := collectStatus(&scheduler.Scheduler{}, backend, nil, now)
+	if snapshot.Today == nil || snapshot.Today.Merged != 3 || snapshot.Today.Escalated != 1 || snapshot.Today.MedianMinutes == nil || *snapshot.Today.MedianMinutes != 12.5 {
+		t.Fatalf("serve snapshot dropped today: %+v", snapshot.Today)
+	}
+	source, ok := scheduler.Backend(backend).(interface {
+		TodayOutput(time.Time) *status.TodayOutput
+	})
+	if !ok || source.TodayOutput(now).Merged != 3 {
+		t.Fatal("scheduler cannot read today through statusBackend")
+	}
+}

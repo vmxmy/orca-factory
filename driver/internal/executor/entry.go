@@ -45,33 +45,16 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("cannot locate repository")
 	}
 	repo := strings.TrimSpace(string(b))
-	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
-	// Only selected, noncredential fields leave this subprocess.
-	b, err = runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	e, storeEnv, err := repositoryExecutor(ctx, repo)
 	if err != nil {
-		return Result{}, errors.New("repository profile could not be loaded")
+		return Result{}, err
 	}
-	values := strings.Split(string(b), "\x00")
-	if len(values) != 14 {
-		return Result{}, errors.New("invalid repository profile")
-	}
-	owner, name, ok := strings.Cut(values[0], "/")
-	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
-		return Result{}, errors.New("repository profile requires GitHub repository and reviewer")
-	}
-	maximum, err := strconv.ParseFloat(values[6], 64)
-	if err != nil {
-		return Result{}, errors.New("invalid reviewer estimate threshold")
-	}
+	e.Config.Terminal = terminal
 	cfg, err := config.Load(home())
 	if err != nil {
 		return Result{}, errors.New("driver configuration could not be loaded")
 	}
-	proxy, err := config.ModelProxyURL(home())
-	if err != nil {
-		return Result{}, err
-	}
-	store, err := issues.New(ctx, map[string]string{"AGENT_ISSUE_BACKEND": values[8], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[9], "AGENT_FEISHU_BASE": values[10], "AGENT_FEISHU_PROJECT": values[11]}, cfg.Tuning)
+	store, err := issues.New(ctx, storeEnv, cfg.Tuning)
 	if err != nil {
 		return Result{}, err
 	}
@@ -93,29 +76,83 @@ func RunTicket(ctx context.Context, identifier string, merging bool) (result Res
 		return Result{}, errors.New("GitHub initialization failed")
 	}
 	oc := &orca.Client{WorkerStartWait: cfg.Tuning.Orca.WorkerStartWait, Timeout: cfg.Tuning.Orca.CallTimeout}
-	e := Executor{Orca: oc, Issues: store, GitHub: gc, Tools: &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[5], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[12], ModelProxyURL: proxy}, Config: Config{Repo: repo, Owner: owner, Repository: name, Terminal: terminal, Unit: "executor"}}
+	e.Orca, e.Issues, e.GitHub = oc, store, gc
 	e.Config.Root, err = executorStateRoot()
 	if err != nil {
 		return Result{}, err
 	}
-	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, name, ticket.Identifier, "executor")
+	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
 	e.Config.WorkerIdleTimeout = envMinutes(os.Getenv("AGENT_WORKER_IDLE_MINUTES"), 15*time.Minute)
 	e.Config.WorkerMaxDuration = envMinutes(os.Getenv("AGENT_WORKER_MAX_MINUTES"), 120*time.Minute)
-	e.Config.Tier = "default"
-	e.Config.Escalate = values[4]
-	e.Config.TierSettings = map[string]string{"default": values[2], "strong": values[3]}
-	parts := strings.Split(values[2], ":")
-	if len(parts) != 3 || parts[0] == "" {
-		return Result{}, errors.New("repository profile requires default worker tier")
-	}
-	e.Config.Agent, e.Config.Model, e.Config.Effort = parts[0], parts[1], parts[2]
-	if e.Config.Model == "" {
-		e.Config.Effort = ""
-	}
 	delegated = true
 	e.Config.Merging = merging
-	e.Config.Lane3Globs = strings.Fields(values[7])
 	return e.Start(ctx, ticket)
+}
+
+// repositoryExecutor sources agent-graph.env with bash, as exec always has, and
+// applies the machine profile through the same function LoadRepository uses.
+// It sources once with the inherited environment, so values are those exec used
+// before profiles. Keys count as explicit only when the file assigns them, as in
+// LoadRepository; only keys the profile then fills replace the sourced values.
+func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]string, error) {
+	profile := filepath.Join(repo, "scripts", "agent-gates", "agent-graph.env")
+	data, err := os.ReadFile(profile)
+	if err != nil {
+		return Executor{}, nil, errors.New("repository profile could not be loaded")
+	}
+	// Only selected, noncredential fields leave this subprocess.
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_ROLE_REVIEWER_CMD_SMALL:-}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	if err != nil {
+		return Executor{}, nil, errors.New("repository profile could not be loaded")
+	}
+	values := strings.Split(string(b), "\x00")
+	if len(values) != 15 {
+		return Executor{}, nil, errors.New("invalid repository profile")
+	}
+	owner, name, ok := strings.Cut(values[0], "/")
+	if !ok || !component.MatchString(owner) || !component.MatchString(name) || strings.TrimSpace(values[1]) == "" {
+		return Executor{}, nil, errors.New("repository profile requires GitHub repository and reviewer")
+	}
+	maximum, err := strconv.ParseFloat(values[6], 64)
+	if err != nil {
+		return Executor{}, nil, errors.New("invalid reviewer estimate threshold")
+	}
+	assigned := config.AssignedKeys(data)
+	tiers := map[string]string{}
+	for key, value := range map[string]string{"AGENT_TIER_DEFAULT": values[2], "AGENT_TIER_STRONG": values[3], "AGENT_TIER_ESCALATE": values[4], "AGENT_PROFILE": values[13]} {
+		if assigned[key] {
+			tiers[key] = value
+		}
+	}
+	_, sources, err := config.ApplyProfile(tiers)
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	effective := map[string]string{}
+	for i, key := range []string{"AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
+		effective[key] = values[2+i]
+		if strings.HasPrefix(sources[key], "profile:") {
+			effective[key] = tiers[key]
+		}
+	}
+	parts := strings.Split(effective["AGENT_TIER_DEFAULT"], ":")
+	if len(parts) != 3 || parts[0] == "" {
+		return Executor{}, nil, errors.New("repository profile requires default worker tier")
+	}
+	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
+		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: effective["AGENT_TIER_ESCALATE"],
+		TierSettings: map[string]string{"default": effective["AGENT_TIER_DEFAULT"], "strong": effective["AGENT_TIER_STRONG"]},
+		Lane3Globs:   strings.Fields(values[7])}
+	if cfg.Model == "" {
+		cfg.Effort = ""
+	}
+	proxy, err := config.ModelProxyURL(home())
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	commands := &Commands{ReviewerCommand: values[1], ReviewerSmallCommand: values[5], ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[12], ModelProxyURL: proxy}
+	store := map[string]string{"AGENT_ISSUE_BACKEND": values[8], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[9], "AGENT_FEISHU_BASE": values[10], "AGENT_FEISHU_PROJECT": values[11]}
+	return Executor{Config: cfg, Tools: commands}, store, nil
 }
 
 func envMinutes(value string, fallback time.Duration) time.Duration {

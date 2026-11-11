@@ -50,7 +50,7 @@ func TestLiveStatusCarriesDeploymentAndQueuePosition(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			contents := data
 			if name == "snapshot" {
-				if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories)}); err != nil {
+				if err := status.Write(status.Snapshot{GeneratedAt: s.Now(), Tickets: SnapshotRows(f.tickets, s.Repositories, s.Now())}); err != nil {
 					t.Fatal(err)
 				}
 				contents, err = os.ReadFile(status.Path())

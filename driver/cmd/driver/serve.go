@@ -208,6 +208,15 @@ func (b *statusBackend) Snapshot(ctx context.Context, repos []config.Repository)
 	return tickets, err
 }
 
+func (b *statusBackend) TodayOutput(now time.Time) *status.TodayOutput {
+	if source, ok := b.Backend.(interface {
+		TodayOutput(time.Time) *status.TodayOutput
+	}); ok {
+		return source.TodayOutput(now)
+	}
+	return nil
+}
+
 func (b *statusBackend) ActualChanges(ctx context.Context, ticket scheduler.Ticket) ([]string, bool, error) {
 	if source, ok := b.Backend.(interface {
 		ActualChanges(context.Context, scheduler.Ticket) ([]string, bool, error)
@@ -278,7 +287,8 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 
 func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *scheduler.Runtime, now time.Time) status.Snapshot {
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
-	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories)
+	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
+	snapshot.Today = backend.TodayOutput(now)
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {

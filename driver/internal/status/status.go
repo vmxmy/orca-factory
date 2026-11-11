@@ -9,11 +9,18 @@ import (
 	"time"
 )
 
+type TodayOutput struct {
+	Merged        int      `json:"merged"`
+	Escalated     int      `json:"escalated"`
+	MedianMinutes *float64 `json:"medianMinutes,omitempty"`
+}
+
 type Snapshot struct {
-	GeneratedAt time.Time `json:"generatedAt"`
-	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
-	Tickets     []Ticket  `json:"tickets"`
-	GitHub      Usage     `json:"github,omitzero"`
+	Today       *TodayOutput `json:"today,omitempty"`
+	GeneratedAt time.Time    `json:"generatedAt"`
+	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
+	Tickets     []Ticket     `json:"tickets"`
+	GitHub      Usage        `json:"github,omitzero"`
 }
 
 type Deployment struct {
@@ -30,7 +37,13 @@ type Corrections struct {
 	Limit int `json:"limit"`
 }
 
+type Stage struct {
+	Name    string `json:"name"`
+	Seconds int64  `json:"seconds"`
+}
+
 type Ticket struct {
+	Stages        []Stage      `json:"stages,omitempty"`
 	Deployment    *Deployment  `json:"deployment,omitempty"`
 	QueuePosition int          `json:"queuePosition,omitempty"`
 	Lane          int          `json:"lane,omitempty"`
@@ -45,8 +58,10 @@ type Ticket struct {
 	// BlockedReason explains why a visible ticket cannot advance.
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.
-	Stage string `json:"stage,omitempty"`
-	Title string `json:"title,omitempty"`
+	Stage       string `json:"stage,omitempty"`
+	HumanKind   string `json:"humanKind,omitempty"`
+	HumanReason string `json:"humanReason,omitempty"`
+	Title       string `json:"title,omitempty"`
 	// Since is when the push cache first saw this owner, phase and stage.
 	Since    time.Time `json:"since,omitzero"`
 	PushedAt time.Time `json:"pushedAt,omitzero"`
@@ -109,11 +124,12 @@ const DefaultStaleAfter = 5 * time.Minute
 // Partial writes retain it; zero means no scheduler observation is available.
 // View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
-	State       string    `json:"state"`
-	GeneratedAt time.Time `json:"generatedAt"`
-	NextScanAt  time.Time `json:"nextScanAt,omitzero"`
-	Tickets     []Ticket  `json:"tickets"`
-	GitHub      Usage     `json:"github,omitzero"`
+	Today       *TodayOutput `json:"today,omitempty"`
+	State       string       `json:"state"`
+	GeneratedAt time.Time    `json:"generatedAt"`
+	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
+	Tickets     []Ticket     `json:"tickets"`
+	GitHub      Usage        `json:"github,omitzero"`
 }
 
 // Read observes only the disposable snapshot. Missing or damaged caches are unknown.
@@ -155,6 +171,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 		view.Tickets = snapshot.Tickets
 	}
 	view.GitHub = snapshot.GitHub
+	view.Today = snapshot.Today
 	normalize(&view, now)
 	dropNextScanUnlessOK(&view)
 	return view

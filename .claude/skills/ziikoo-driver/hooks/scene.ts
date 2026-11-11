@@ -14,11 +14,13 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
   else station = pos.label === '开 PR' ? 'pack' : 'merge'
   return {
     identifier: ticket.identifier,
+    url: ticket.url,
     title: ticket.title ?? ticket.identifier,
     owner: ticket.owner,
     queuePosition: ticket.queuePosition,
     lane: ticket.lane,
     corrections: ticket.corrections,
+    stages: ticket.stages,
     phase: ticket.phase,
     label: pos.label,
     station,
@@ -42,6 +44,7 @@ export const sceneOf = (runtime: Runtime, config: DriverConfig): Scene => {
   }
   return {
     generatedAt: runtime.generatedAt,
+    today: runtime.today,
     nextScanAt: runtime.nextScanAt,
     state: runtime.state,
     maintenance: config.overview.maintenance,

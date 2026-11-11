@@ -1,0 +1,22 @@
+[
+  {
+    "ticket": "OF-427",
+    "comments": [
+      {
+        "createdAt": "2026-11-09T12:36:50+08:00",
+        "updatedAt": "2026-11-09T12:36:50+08:00",
+        "body": "ledger {\"ticket\":\"OF-427\",\"lane\":2,\"outcome\":\"merged\",\"pr\":620,\"minutes\":37.10948458495,\"started_at\":\"2026-11-09T03:59:38Z\",\"finished_at\":\"2026-11-09T04:36:44.569075567Z\"}"
+      }
+    ]
+  },
+  {
+    "ticket": "OF-393",
+    "comments": [
+      {
+        "createdAt": "2026-11-05T20:10:50+08:00",
+        "updatedAt": "2026-11-05T20:10:50+08:00",
+        "body": "ledger {\"ticket\":\"OF-393\",\"lane\":1,\"outcome\":\"merged\",\"pr\":605,\"minutes\":171.51085908686667,\"started_at\":\"2026-11-05T09:19:13.307197764Z\",\"finished_at\":\"2026-11-05T12:10:43.958743079Z\"}"
+      }
+    ]
+  }
+]
