@@ -1,0 +1,106 @@
+{
+  "tickets": [
+    {
+      "id": "8051d595-6ad9-4847-8df0-fd22e1fd49ed",
+      "identifier": "OF-456",
+      "comments": [
+        {
+          "id": "reczz28Y1aOIFiAo",
+          "body": "PR 已开: https://github.com/vmxmy/orca-factory/pull/636\n阶段: 排队合并\n归属: 合并通道 term=term_8e53d886-6ae7-4bc2-b499-f497c835e12c run=run_84e5ce530bfd attempt=1 since=2026-11-10T15:29:35Z\nmerge-handoff-v1: {\"version\":1,\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"identifier\":\"OF-456\",\"repository\":\"vmxmy/orca-factory\",\"unit\":\"executor\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"baseline\":\"6c369ec594e5270cea3a8e6c3721c716b953fabe\",\"gate_spec\":\"REDACTED\",\"gate_output\":\"REDACTED\",\"review_output\":\"REDACTED\",\"lane\":2,\"run\":\"run_84e5ce530bfd\",\"task\":\"task_cfd635af6602\",\"dispatch\":\"ctx_b283b01b84a8\",\"worktree\":\"/home/laoxu/orca/workspaces/orca-factory/OF-456-executor\",\"attempt\":1,\"corrections\":0,\"infra\":0,\"catchup_rounds\":0,\"enqueued_at\":\"2026-11-10T15:29:35.607589447Z\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\"}",
+          "createdAt": "2026-11-10T23:29:36+08:00",
+          "updatedAt": "2026-11-10T23:29:36+08:00"
+        },
+        {
+          "id": "reczz28Y1c0ZRE0k",
+          "body": "merge-progress-v1: {\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"6c369ec594e5270cea3a8e6c3721c716b953fabe\",\"merge_sha\":\"\",\"phase\":\"waiting\"}",
+          "createdAt": "2026-11-10T23:31:08+08:00",
+          "updatedAt": "2026-11-10T23:31:08+08:00"
+        },
+        {
+          "id": "reczz28Y1lHkfqN6",
+          "body": "merge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"\",\"phase\":\"merge-intent\"}",
+          "createdAt": "2026-11-10T23:39:55+08:00",
+          "updatedAt": "2026-11-10T23:39:55+08:00"
+        },
+        {
+          "id": "reczz28Y1lVxPFNd",
+          "body": "merge-progress-v1: {\"deployment\":{\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-10T23:40:08+08:00",
+          "updatedAt": "2026-11-10T23:40:08+08:00"
+        },
+        {
+          "id": "5",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.933512409+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "6",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"deploy-intent\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.933638011+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "7",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"smoke_started\":true,\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"smoke-intent\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.944617667+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "8",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"smoke_started\":true,\"smoke_passed\":true,\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"passed\"},\"attempt\":1,\"reason\":\"head CI or mergeability not ready\",\"version\":1,\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"repository\":\"vmxmy/orca-factory\",\"pr\":636,\"head\":\"7dd3e12b3184687bf4ffeab927a5f78e1ecba643\",\"main\":\"b8f669275bd05e4028b3ae4cd757e587d9ff983a\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.945081092+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "2651c80e-4255-4991-b8cf-664cf66bbd51",
+      "identifier": "OF-457",
+      "comments": [
+        {
+          "id": "reczz28Y1jsdDmFd",
+          "body": "PR 已开: https://github.com/vmxmy/orca-factory/pull/637\n阶段: 排队合并\n归属: 合并通道 term=term_8691901e-81ae-4162-957f-c47a78569274 run=run_3c5907b5d135 attempt=1 since=2026-11-10T15:38:34Z\nmerge-handoff-v1: {\"version\":1,\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"identifier\":\"OF-457\",\"repository\":\"vmxmy/orca-factory\",\"unit\":\"executor\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"baseline\":\"6c369ec594e5270cea3a8e6c3721c716b953fabe\",\"gate_spec\":\"REDACTED\",\"gate_output\":\"REDACTED\",\"review_output\":\"REDACTED\",\"lane\":2,\"run\":\"run_3c5907b5d135\",\"task\":\"task_442d87f634b5\",\"dispatch\":\"ctx_d43e522062d1\",\"worktree\":\"/home/laoxu/orca/workspaces/orca-factory/OF-457-executor\",\"attempt\":1,\"corrections\":0,\"infra\":0,\"catchup_rounds\":0,\"enqueued_at\":\"2026-11-10T15:38:34.639866889Z\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\"}",
+          "createdAt": "2026-11-10T23:38:35+08:00",
+          "updatedAt": "2026-11-10T23:38:35+08:00"
+        },
+        {
+          "id": "reczz28Y1ybqXTKa",
+          "body": "merge-progress-v1: {\"deployment\":{\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"\",\"phase\":\"merge-intent\"}",
+          "createdAt": "2026-11-10T23:52:32+08:00",
+          "updatedAt": "2026-11-10T23:52:32+08:00"
+        },
+        {
+          "id": "reczz28Y1ypF35zj",
+          "body": "merge-progress-v1: {\"deployment\":{\"started_at\":\"2026-11-10T15:52:43.450581569Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-10T23:52:44+08:00",
+          "updatedAt": "2026-11-10T23:52:44+08:00"
+        },
+        {
+          "id": "4",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"pending\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.933531331+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "5",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"deploy-intent\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.933663665+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "6",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"smoke_started\":true,\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"smoke-intent\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.944670467+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        },
+        {
+          "id": "7",
+          "body": "merge-progress-v1: {\"deployment\":{\"batch\":{\"sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"members\":[{\"ticket_id\":\"8051d595-6ad9-4847-8df0-fd22e1fd49ed\",\"queue_id\":\"a89ff74bf351deec6fe93023f4fbf76a2984294e150687d1e552a9c00a5384ad\",\"merge_sha\":\"dc64f401e8cf0e6addc09350d3430d588604089b\"},{\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\"}]},\"started_at\":\"2026-11-10T15:40:07.387253301Z\",\"smoke_started\":true,\"smoke_passed\":true,\"self\":true,\"smoke\":\"\\\"$HOME/.local/bin/orca-factory-driver\\\" doctor --json\",\"state\":\"passed\"},\"attempt\":1,\"version\":1,\"queue_id\":\"8075ca2f6eb57a0cf39df5d7380c8ee90c02e13463f11d34d52311f1e6d549bb\",\"ticket_id\":\"2651c80e-4255-4991-b8cf-664cf66bbd51\",\"repository\":\"vmxmy/orca-factory\",\"pr\":637,\"head\":\"30124f99e6a0ef649eba7f4a8b3f72c15d58f4c0\",\"main\":\"dc64f401e8cf0e6addc09350d3430d588604089b\",\"merge_sha\":\"ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c\",\"phase\":\"merged\"}",
+          "createdAt": "2026-11-11T17:18:20.945146376+08:00",
+          "updatedAt": "0001-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}

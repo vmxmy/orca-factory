@@ -456,3 +456,42 @@ func TestDeployBatchPartialSmokeRecoverySurvivesTick(t *testing.T) {
 		}
 	}
 }
+
+// OF-456 and OF-457 merged back to back on 2026-11-10 and deployed one by
+// one. The sample keeps their real handoffs and merged receipts; the batch
+// receipts after them were written by the OF-485 branch driver from that input.
+func TestRecordedSelfDeployBatch(t *testing.T) {
+	var recording struct {
+		Tickets []struct {
+			ID       string
+			Comments []task.Comment
+		}
+	}
+	if err := json.Unmarshal(recorded(t, "ledger-comments-selfdeploy-batch.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	if len(recording.Tickets) != 2 {
+		t.Fatalf("members: %d", len(recording.Tickets))
+	}
+	var shared *merge.DeploymentProgress
+	for i, member := range recording.Tickets {
+		ticket := Ticket{ID: member.ID}
+		readMergeHandoff(&ticket, member.Comments)
+		p := ticket.Progress
+		if ticket.MergeProblem != "" || p == nil || p.Deployment == nil || p.Deployment.State != "passed" || !validDeploymentBatch(p) {
+			t.Fatalf("member %d: problem=%q progress=%+v", i, ticket.MergeProblem, p)
+		}
+		b := p.Deployment.Batch
+		if b.SHA != "ffbd6bfebe098d1ea0ca9b531de1814ed9940b0c" || len(b.Members) != 2 {
+			t.Fatalf("batch: %+v", b)
+		}
+		want := merge.DeploymentMember{TicketID: ticket.ID, QueueID: ticket.Handoff.QueueID, MergeSHA: p.MergeSHA}
+		if b.Members[i] != want || deploymentSHA(p) != b.SHA {
+			t.Fatalf("member %d: got %+v want %+v", i, b.Members[i], want)
+		}
+		if shared != nil && !reflect.DeepEqual(shared, p.Deployment) {
+			t.Fatalf("smoke not shared: %+v vs %+v", shared, p.Deployment)
+		}
+		shared = p.Deployment
+	}
+}
