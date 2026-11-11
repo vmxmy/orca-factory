@@ -258,7 +258,7 @@ func TestReleaseEvidence(t *testing.T) {
 		fields["attempt"], fields["corrections"], fields["infra"], fields["catchup_rounds"] = attempt, corrections, infra, catchup
 	}
 	budgetedHandoff := editHandoff(func(fields map[string]any) { budget(fields, 4, 2, 3, 5) })
-	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "invalid head", "invalid budget", "invalid prior budget", "deployment", "held", "wrong head", "unknown phase", "invalid main", "incomplete handoff", "unvalidated handoff"} {
+	for _, name := range []string{"manual", "handoff", "known main", "unmerged", "wrong sha", "wrong repo", "lane 3", "lane 3 manual", "no files", "invalid head", "invalid budget", "invalid prior budget", "deployment", "held", "wrong head", "unknown phase", "invalid main", "incomplete handoff", "no dispatch", "unvalidated handoff"} {
 		t.Run(name, func(t *testing.T) {
 			ledger := releaseLedger{ticket: issues.Task{Issue: task.Issue{ID: "d8844eec-5be4-4de1-9e4e-c583c8b284a4", Identifier: "OF-393"}}}
 			pr := recordedPR
@@ -298,6 +298,8 @@ func TestReleaseEvidence(t *testing.T) {
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["head"] = recordedPR.Head.SHA })}
 			case "incomplete handoff":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { delete(fields, "unit") })}
+			case "no dispatch":
+				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["dispatch"] = "" })}
 			case "unvalidated handoff":
 				ledger.comments = []task.Comment{editHandoff(func(fields map[string]any) { fields["review_output"] = "" })}
 			case "invalid head":
