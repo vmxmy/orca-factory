@@ -19,8 +19,7 @@ type Resolution struct {
 	Queue   string         `json:"queue,omitempty"`
 	PR      int            `json:"pr,omitempty"`
 	SHA     string         `json:"sha,omitempty"`
-	// Class is the kind of block an escalate reports. It only selects whether
-	// the shadow cross review runs; a human still receives the ticket.
+	// Class identifies the escalation block for cross review and final review.
 	Class string `json:"class,omitempty"`
 	// Scope lists the files a scope-extension escalate asks a human to add.
 	Scope []string `json:"scope,omitempty"`

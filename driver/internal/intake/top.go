@@ -14,7 +14,14 @@ import (
 // TopMustEscalate is the final resolver's non-delegable decision boundary.
 const TopMustEscalate = "lane 3；凭证、环境或授权类阻塞；不可逆操作；生产 DDL 与数据；部署 paused；证据冲突；终审自己的第二次失败"
 
-const topForbiddenPhrases = "lane 3|lane=3|凭证|环境|授权|不可逆|生产 ddl|数据|paused|证据冲突|第二次失败|credential|environment|authorization|irreversible|production ddl|production data|evidence conflict"
+const (
+	topBlockCredentials    = "credentials"
+	topBlockEnvironment    = "environment"
+	topBlockAuthorization  = "authorization"
+	topBlockIrreversible   = "irreversible"
+	topBlockProductionDDL  = "production-ddl"
+	topBlockProductionData = "production-data"
+)
 
 // ApplyTopReview uses the human ruling and scope writers after re-reading the
 // exact final-review result. A stale result never grants authority.
@@ -44,15 +51,13 @@ func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt 
 	if refusal := humanReleaseRefusal(id, ticket.Description, latest); refusal != "" {
 		return refusal, nil
 	}
+	switch record.TopClass {
+	case topBlockCredentials, topBlockEnvironment, topBlockAuthorization, topBlockIrreversible, topBlockProductionDDL, topBlockProductionData:
+		return "必须转人：" + record.TopClass, nil
+	}
 	decision, err := resolver.ParseResult(record.Result)
 	if err != nil {
 		return "终审提案无效", nil
-	}
-	text := strings.ToLower(ticket.Description + "\n" + record.TopReason + "\n" + decision.Reason + "\n" + decision.Body)
-	for _, phrase := range strings.Split(topForbiddenPhrases, "|") {
-		if strings.Contains(text, phrase) {
-			return "必须转人：" + phrase, nil
-		}
 	}
 	if decision.Action == "escalate" && len(decision.ScopeRequest()) > 0 {
 		return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, true)

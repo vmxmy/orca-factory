@@ -29,6 +29,7 @@ type Record struct {
 	Top               bool      `json:"top,omitempty"`
 	TopUsed           bool      `json:"top_used,omitempty"`
 	TopReason         string    `json:"top_reason,omitempty"`
+	TopClass          string    `json:"top_class,omitempty"`
 	SourceRun         string    `json:"source_run,omitempty"`
 	Creator           string    `json:"creator,omitempty"`
 	Version           int       `json:"version"`
@@ -96,9 +97,9 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	top, topUsed, topReason := false, false, ""
+	top, topUsed, topReason, topClass := false, false, "", ""
 	if p != nil {
-		top, topUsed, topReason = p.Top, p.TopUsed, p.TopReason
+		top, topUsed, topReason, topClass = p.Top, p.TopUsed, p.TopReason, p.TopClass
 	}
 	attempt := 1
 	sourceRun := c.SourceRun
@@ -124,7 +125,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		}
 	}
 	if p == nil {
-		p = &Record{Top: top, TopUsed: topUsed, TopReason: topReason, SourceRun: sourceRun, Creator: c.Terminal, Version: 1, Attempt: attempt, Phase: "pending", Spec: c.Spec, Agent: c.Agent, Model: c.Model, Effort: c.Effort}
+		p = &Record{Top: top, TopUsed: topUsed, TopReason: topReason, TopClass: topClass, SourceRun: sourceRun, Creator: c.Terminal, Version: 1, Attempt: attempt, Phase: "pending", Spec: c.Spec, Agent: c.Agent, Model: c.Model, Effort: c.Effort}
 		if p.Model == "" {
 			p.Effort = ""
 		}

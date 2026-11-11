@@ -2,8 +2,31 @@ package resolver
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
+
+func TestRecordedTopRuling(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-top-ruling.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParseResult(string(raw))
+	if err != nil || p.Action != "ruling" || strings.TrimSpace(p.Reason) == "" || strings.ContainsAny(p.Reason, "\r\n") {
+		t.Fatalf("recorded ruling rejected: %+v %v", p, err)
+	}
+}
+
+func TestRecordedEscalateBlockClass(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-escalate-credentials.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := ParseResult(string(raw))
+	if err != nil || p.Action != "escalate" || p.Class != "credentials" {
+		t.Fatalf("recorded block class rejected: %+v %v", p, err)
+	}
+}
 
 func TestResolutionRejectsUnstructuredOrUnknownDecision(t *testing.T) {
 	for _, body := range []string{`done`, `{"action":"done","reason":"looks good"}`, `{"action":"merge","reason":"checked"}`, `{"action":"retry-smoke","queue":"q","sha":"a","reason":"checked"}`} {

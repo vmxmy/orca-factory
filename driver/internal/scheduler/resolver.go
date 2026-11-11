@@ -58,6 +58,9 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 			}
 			topUsed = topUsed || next.Top || next.TopUsed
 			next.TopUsed = topUsed
+			if next.Phase == "applied" || (next.Phase == "waiting" && next.Outcome == "succeeded") {
+				next.Top = false
+			}
 			p = &next
 		}
 	}
@@ -489,6 +492,9 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	next := *p
 	if !p.TopUsed && !p.Top && autoReviewEnabled(r.Repositories[t.Repo].Env, "top") {
 		next.Top, next.TopUsed, next.TopReason = true, true, reason+"\n"+evidence
+		if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
+			next.TopClass = decision.Class
+		}
 		next.Agent, next.Model, next.Effort = "", "", ""
 		next.Phase, next.Outcome, next.Result = "waiting", "", ""
 		next.RetryAt = time.Time{}

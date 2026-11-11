@@ -3,12 +3,36 @@ package intake
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 )
+
+func TestTopRulingIgnoresBoundaryWords(t *testing.T) {
+	h, ledger := humanTicket(t)
+	h.ledger.tasks[0].Description = "## LANE 预判\n2\n\n## Change\n无需授权，在测试环境调整数据结构，不得操作生产数据。"
+	decision, err := os.ReadFile("../../testdata/recorded/resolver-top-ruling.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(decision), "无需授权") {
+		t.Fatal("recording no longer covers harmless boundary words")
+	}
+	raw, err := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "result", "top": true, "top_reason": "票面口径二选一", "outcome": "succeeded", "result": string(decision)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ledger.events["canon-of12"] = []string{resolver.Prefix + string(raw)}
+	refusal, err := ApplyTopReview(context.Background(), ledger, "canon-of12", 7, "", time.Now())
+	events := ledger.events["canon-of12"]
+	if err != nil || refusal != "" || len(events) != 2 || !strings.HasPrefix(events[1], "裁定：top-resolver ") {
+		t.Fatalf("boundary words blocked ruling: refusal=%q err=%v events=%q", refusal, err, events)
+	}
+}
 
 func TestTopScopeUsesAutomaticLimits(t *testing.T) {
 	for _, path := range []string{"src/new.go", "../secret", ".github/workflows/go.yml", "core/gate.sh", "billing/key", "a b c d e f g h i j k"} {
@@ -35,13 +59,20 @@ func TestTopScopeUsesAutomaticLimits(t *testing.T) {
 }
 
 func TestTopRulingCannotReplaceOriginalBlock(t *testing.T) {
-	for _, reason := range []string{"需要授权", "凭证不足", "生产 DDL", "不可逆", "environment unavailable", "证据冲突"} {
-		t.Run(reason, func(t *testing.T) {
-			_, ledger := humanTicket(t)
-			record, _ := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "result", "top": true, "top_reason": reason, "outcome": "succeeded", "result": `{"action":"ruling","reason":"可以继续"}`})
+	for _, class := range []string{"credentials", "environment", "authorization", "irreversible", "production-ddl", "production-data", "证据冲突"} {
+		t.Run(class, func(t *testing.T) {
+			h, ledger := humanTicket(t)
+			h.ledger.tasks[0].Description = "## LANE 预判\n2"
+			record, _ := json.Marshal(map[string]any{"version": 1, "attempt": 7, "phase": "result", "top": true, "top_class": class, "outcome": "succeeded", "result": `{"action":"ruling","reason":"可以继续"}`})
 			ledger.events["canon-of12"] = []string{resolver.Prefix + string(record)}
+			want := "必须转人：" + class
+			if class == "证据冲突" {
+				ledger.events["canon-of12"] = append(ledger.events["canon-of12"], merge.HandoffPrefix+"invalid")
+				want = "canon-of12 证据冲突：merge-handoff-v1 解析失败"
+			}
+			before := len(ledger.events["canon-of12"])
 			refusal, err := ApplyTopReview(context.Background(), ledger, "canon-of12", 7, "", time.Now())
-			if err != nil || refusal == "" || len(ledger.events["canon-of12"]) != 1 {
+			if err != nil || refusal != want || len(ledger.events["canon-of12"]) != before {
 				t.Fatalf("original block overwritten: %q %v", refusal, err)
 			}
 		})
@@ -49,7 +80,7 @@ func TestTopRulingCannotReplaceOriginalBlock(t *testing.T) {
 }
 
 func TestTopRulingChecksTicketBoundary(t *testing.T) {
-	for _, face := range []string{"## LANE 预判\n3", "## LANE 预判\n2\n## Change\n执行生产 DDL"} {
+	for _, face := range []string{"## LANE 预判\n3", "## Change\n调整实现"} {
 		t.Run(face, func(t *testing.T) {
 			h, ledger := humanTicket(t)
 			h.ledger.tasks[0].Description = face
