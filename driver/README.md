@@ -443,9 +443,11 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 处置 Agent 在权限内无法解决时提交 `escalate`，调度器把票转人工（`阶段: 转人`、`归属: 人`），写一条 `转人:` 事件并通知一次，不再派处置 Agent。可重试的失败（outcome=failed、无效或被拒提案）退避 5 分钟后重派；同一票连续 3 次失败同样转人工。
 
-#### 按规则自动批准扩 SCOPE（OF-467）
+#### 按规则自动批准扩 SCOPE 与放行（OF-467、OF-468）
 
-仓库 `scripts/agent-gates/agent-graph.env` 的 `AGENT_AUTO_REVIEW` 是逗号分隔的开关列表，缺省为空，保持原人工卡片流程。目前仅识别 `scope`，未知项不启用任何行为。本仓库按用户 2026-11-10 的要求设置 `AGENT_AUTO_REVIEW=scope`。
+仓库 `scripts/agent-gates/agent-graph.env` 的 `AGENT_AUTO_REVIEW` 是逗号分隔的开关列表，缺省为空，保持原人工卡片流程；未知项不启用任何行为。
+
+本仓库配置为 `AGENT_AUTO_REVIEW=scope,release`；缺省不含 `release` 时保持原人工卡片流程。含 `release` 时，转人卡片发送前会重读票据和评论，在 `humanReleaseRefusal` 为空、没有既往 `放行：` 评论、且转人原因不含“需要授权”“凭证”“不可逆”“生产 DDL”“数据”时自动写入一次 `放行：auto` 与 waiting 回执，不发卡片。lane 3、部署 paused、证据冲突、既有人工或自动放行，以及命中这些禁止字样的原因继续发卡片并写明未自动放行原因。
 
 启用后，调度器在飞书转人卡片发送前重读票据和评论。最新 `resolver-state` 必须仍是本次 `human`，且申请是 `action=escalate`、`class=scope-extension` 的非空 `scope` 数组。自动批准沿用人工扩 SCOPE 的校验：票未取消、有 SCOPE 和 LANE 预判、不属 lane 3、合并证据有效且部署屏障未暂停。另须同时满足：
 

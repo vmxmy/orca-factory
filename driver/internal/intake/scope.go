@@ -20,6 +20,54 @@ type ScopeLedger interface {
 	CreateComment(context.Context, string, string) (task.Comment, error)
 }
 
+// AutoReleaseHuman rechecks a human transfer and writes the same release
+// receipt as an approver when the release review is safe and has not already
+// happened for this ticket. A stale resolver state is left for the next scan.
+func AutoReleaseHuman(ctx context.Context, ledger ScopeLedger, id string, attempt int, reason string, now time.Time) (released bool, refusal string, err error) {
+	ticket, err := ledger.Read(ctx, id)
+	if err != nil {
+		return false, "", err
+	}
+	comments, err := ledger.ListComments(ctx, ticket.Metadata.ID)
+	if err != nil {
+		return false, "", err
+	}
+	latest := latestHumanEvidence(comments)
+	raw, ok := latest[resolver.Prefix]
+	var record resolver.Record
+	if !ok || json.Unmarshal([]byte(raw), &record) != nil || record.Version != 1 || record.Attempt < 1 || record.Phase == "" {
+		return false, "resolver-state 证据无效", nil
+	}
+	if record.Attempt != attempt || record.Phase != "human" {
+		return false, "", nil
+	}
+	if ticket.Metadata.State == "Canceled" {
+		return false, "票已取消", nil
+	}
+	if refusal := humanReleaseRefusal(id, ticket.Description, latest); refusal != "" {
+		return false, refusal, nil
+	}
+	if strings.TrimSpace(reason) == "" {
+		if decision, parseErr := resolver.ParseResult(record.Result); parseErr != nil {
+			return false, "转人原因证据无效", nil
+		} else {
+			reason = decision.Reason
+		}
+	}
+	if refusal := autoReleaseReasonRefusal(reason); refusal != "" {
+		return false, refusal, nil
+	}
+	for _, comment := range comments {
+		if strings.HasPrefix(comment.Body, "放行：") {
+			return false, "本票此前已有放行记录", nil
+		}
+	}
+	if err := applyHumanRelease(ctx, ledger, ticket, record, "auto", now); err != nil {
+		return false, "", err
+	}
+	return true, "", nil
+}
+
 // AutoApproveScope rechecks the current human request before using the same
 // scope write as intake. A nonempty refusal leaves the request for a human.
 // An empty refusal also covers a stale snapshot whose request already settled.

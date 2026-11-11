@@ -41,7 +41,22 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return nil
 	}
 	autoRefusal := ""
-	if human && slices.ContainsFunc(strings.Split(env["AGENT_AUTO_REVIEW"], ","), func(flag string) bool { return strings.TrimSpace(flag) == "scope" }) {
+	flags := strings.Split(env["AGENT_AUTO_REVIEW"], ",")
+	if human && slices.ContainsFunc(flags, func(flag string) bool { return strings.TrimSpace(flag) == "release" }) {
+		now := time.Now()
+		if r.Now != nil {
+			now = r.Now()
+		}
+		released, refusal, err := intake.AutoReleaseHuman(ctx, r.Clients[t.Repo], t.ID, t.Resolution.Attempt, reason, now)
+		if err != nil {
+			return fmt.Errorf("auto release review: %w", err)
+		}
+		if released {
+			return nil
+		}
+		autoRefusal = refusal
+	}
+	if human && slices.ContainsFunc(flags, func(flag string) bool { return strings.TrimSpace(flag) == "scope" }) {
 		now := time.Now()
 		if r.Now != nil {
 			now = r.Now()

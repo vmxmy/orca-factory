@@ -34,6 +34,11 @@ var (
 	nextHeading   = regexp.MustCompile(`(?m)^## `)
 	literalPath   = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_./@+-]*$`)
 	ticketID      = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-[0-9]+$`)
+
+	// autoReleaseForbiddenReasonPhrases are reasons that require an explicit
+	// human release because they can imply authorization, credentials, or
+	// irreversible production/data changes.
+	autoReleaseForbiddenReasonPhrases = [...]string{"需要授权", "凭证", "不可逆", "生产 DDL", "数据"}
 )
 
 // review carries intake approval/rejection or a decision on a human ticket.
@@ -207,6 +212,21 @@ func humanReleaseRefusal(ticket string, description string, latest map[string]st
 	return ""
 }
 
+func autoReleaseReasonRefusal(reason string) string {
+	for _, phrase := range autoReleaseForbiddenReasonPhrases {
+		if strings.Contains(reason, phrase) {
+			return "转人原因含禁止字样：" + phrase
+		}
+	}
+	return ""
+}
+
+func applyHumanRelease(ctx context.Context, ledger ScopeLedger, ticket issues.Task, record resolver.Record, sender string, now time.Time) error {
+	body := fmt.Sprintf("放行：%s %s\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", sender, now.Format(time.RFC3339), resolver.Prefix, record.Attempt)
+	_, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body)
+	return err
+}
+
 // scopeAddition resolves the paths a scope extension adds: the command's own,
 // or for a card press the list the latest escalation declared. refusal, when
 // not empty, is why they may not be added.
@@ -287,6 +307,12 @@ func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review,
 		if refusal := humanReleaseRefusal(r.ticket, ticket.Description, latest); refusal != "" {
 			return refusal, false
 		}
+	}
+	if r.verb == feishu.VerbRelease {
+		if err := applyHumanRelease(ctx, p.Ledger, ticket, record, sender, g.now()); err != nil {
+			return failedReply, false
+		}
+		return "已放行 " + r.ticket, true
 	}
 	body := fmt.Sprintf("%s：%s %s", r.verb, sender, g.now().Format(time.RFC3339))
 	note := strings.Join(strings.Fields(r.reason), " ")

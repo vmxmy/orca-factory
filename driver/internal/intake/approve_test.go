@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,21 @@ func TestHumanTicketRelease(t *testing.T) {
 	h.command(t, "om_repeat", "ou_APPROVER2", "放行 OF-12")
 	if len(h.ledger.events["canon-of12"]) != 2 || !strings.Contains(h.replyTo(t, "om_repeat"), "waiting") {
 		t.Fatalf("repeat events=%q reply=%q", h.ledger.events, h.replyTo(t, "om_repeat"))
+	}
+}
+
+func TestAutoReleaseHuman(t *testing.T) {
+	_, ledger := humanTicket(t)
+	result := `{"action":"escalate","reason":"普通原因","body":"proof"}`
+	record := `{"version":1,"attempt":7,"phase":"human","result":` + strconv.Quote(result) + `}`
+	ledger.events["canon-of12"] = []string{"resolver-state " + record}
+	now := time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC)
+	released, refusal, err := AutoReleaseHuman(context.Background(), ledger, "canon-of12", 7, "普通原因", now)
+	if err != nil || !released || refusal != "" {
+		t.Fatalf("released=%v refusal=%q err=%v", released, refusal, err)
+	}
+	if got := ledger.events["canon-of12"]; len(got) != 2 || !strings.HasPrefix(got[1], "放行：auto 2026-11-10T00:00:00Z") {
+		t.Fatalf("events=%q", got)
 	}
 }
 

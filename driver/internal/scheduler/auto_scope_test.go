@@ -129,3 +129,55 @@ func TestAutoScopeSkipsNotifiedHumanTicket(t *testing.T) {
 		t.Fatalf("markers=%v reads %d -> %d cards=%d", ticket.NotifyEvents, reads, store.reads, len(sender.messages))
 	}
 }
+
+func TestAutoReleaseBeforeHumanCard(t *testing.T) {
+	for _, tc := range []struct {
+		name, flags, reason, description, evidence string
+		released, card                             bool
+	}{
+		{name: "all conditions", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", released: true},
+		{name: "second transfer", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "放行：auto 2026-11-09T00:00:00Z\nresolver-state {\"version\":1,\"attempt\":6,\"phase\":\"waiting\"}", card: true},
+		{name: "forbidden reason", flags: "release", reason: "需要授权后再处理", description: "## LANE 预判\n2", card: true},
+		{name: "lane 3", flags: "release", reason: "普通原因", description: "## LANE 预判\n3", card: true},
+		{name: "paused", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "merge-progress-v1: {\"version\":1,\"deployment\":{\"state\":\"paused\"}}", card: true},
+		{name: "default", reason: "普通原因", description: "## LANE 预判\n2", card: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			store := &scopeStore{face: tc.description}
+			sender := &notifySender{store: &store.notifyStore}
+			sender.start(t)
+			result, _ := json.Marshal(map[string]any{"action": "escalate", "reason": tc.reason, "body": "proof", "class": "brief-interpretation"})
+			record := resolver.Record{Version: 1, Attempt: 7, Phase: "human", Result: string(result)}
+			raw, _ := json.Marshal(record)
+			bodies := []string{}
+			if tc.evidence != "" {
+				bodies = append(bodies, tc.evidence)
+			}
+			bodies = append(bodies, resolver.Prefix+string(raw))
+			if tc.name == "paused" {
+				bodies = append([]string{resolver.Prefix + string(raw)}, tc.evidence)
+			}
+			store.issueComments = evidenceComments(bodies...)
+			repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_AUTO_REVIEW": tc.flags}}
+			runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}, Now: func() time.Time { return time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC) }}
+			ticket := Ticket{ID: "id", Identifier: "OF-9", Repo: repo.Path, Owner: machine.OwnerHuman, NotifyReason: tc.reason, Resolution: &record}
+			if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			if tc.released {
+				if len(sender.messages) != 0 || len(store.issueComments) != 2 || !strings.HasPrefix(store.issueComments[1].Body, "放行：auto ") || !strings.Contains(store.issueComments[1].Body, `"phase":"waiting"`) {
+					t.Fatalf("release comments=%v messages=%q", store.issueComments, sender.messages)
+				}
+				return
+			}
+			if tc.card {
+				if len(sender.messages) != 1 || (tc.flags != "" && !strings.Contains(sender.messages[0], "未自动批准")) {
+					t.Fatalf("card=%q comments=%v", sender.messages, store.issueComments)
+				}
+				return
+			}
+			t.Fatalf("case has no expected result")
+		})
+	}
+}
