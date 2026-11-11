@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 	"github.com/vmxmy/orca-factory/driver/internal/usage"
@@ -233,7 +233,7 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 	}
 	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged", CatchupRounds: rounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
-		retainMergeProgress(&progress, a.ticket.Progress)
+		mergechannel.RetainMergeProgress(&progress, a.ticket.Progress)
 	}
 	progress.Deployment = deploymentFor(a.ticket, env)
 	if merged != nil {
@@ -321,6 +321,16 @@ type mergeAdapter struct {
 	owner, repo, main string
 }
 
+func (a *mergeAdapter) Prepare(ctx context.Context, c merge.Candidate) (merge.GateRun, error) {
+	gate := mergechannel.Gate{
+		Handoff: *a.ticket.Handoff,
+		Env:     a.runtime.Repositories[a.ticket.Repo].Env,
+		Command: a.runtime.command,
+		Run:     a.runtime.Run,
+	}
+	return gate.Prepare(ctx, c)
+}
+
 // mergeValidations is created on first use by the inspection goroutine and
 // lives as long as the serve process.
 func (r *Runtime) mergeValidations() *merge.Validations {
@@ -352,18 +362,12 @@ func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
 	if p.Number != h.PR || p.Head.SHA != h.Head || p.Head.Repo.FullName != h.Repository || p.Base.Ref != "main" || p.Base.Repo.FullName != h.Repository {
 		return p, errors.New("PR identity changed")
 	}
-	if want := handoffBranch(h); p.Head.Ref != want {
+	if want := mergechannel.HandoffBranch(h); p.Head.Ref != want {
 		return p, fmt.Errorf("%w: head ref %s, want %s", errHeadRef, p.Head.Ref, want)
 	}
 	return p, nil
 }
 
-// prMatchesHandoff is the PR identity the merge lane accepts for a handoff.
-func prMatchesHandoff(p github.PullRequest, h *merge.Handoff) bool {
-	return p.Number == h.PR && p.Head.SHA == h.Head && p.Head.Ref == handoffBranch(h) && p.Head.Repo.FullName == h.Repository && p.Base.Ref == "main" && p.Base.Repo.FullName == h.Repository
-}
-
-func handoffBranch(h *merge.Handoff) string { return "agent/" + h.Identifier + "/" + h.Unit }
 func (a *mergeAdapter) Snapshot(ctx context.Context, _ merge.Request) (merge.Snapshot, error) {
 	p, err := a.readPR(ctx)
 	if err != nil {
@@ -434,7 +438,7 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 	h := a.ticket.Handoff
 	intent := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: head, Main: main, Phase: "merge-intent", CatchupRounds: req.CatchupRounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
-		retainMergeProgress(&intent, a.ticket.Progress)
+		mergechannel.RetainMergeProgress(&intent, a.ticket.Progress)
 	}
 	intent.Deployment = deploymentFor(a.ticket, a.runtime.Repositories[a.ticket.Repo].Env)
 	raw, _ := json.Marshal(intent)
@@ -467,37 +471,7 @@ func (a *mergeAdapter) Squash(ctx context.Context, req merge.Request, head, main
 }
 
 func (a *mergeAdapter) policy(files []string) error {
-	env := a.runtime.Repositories[a.ticket.Repo].Env
-	lane := a.ticket.Handoff.Lane
-	if lane == 2 && env["AGENT_LANE2_AUTOMERGE"] != "1" && !resolverApproved(a.ticket) {
-		return merge.ErrReviewRequired
-	}
-	for _, key := range []string{"AGENT_LANE3_GLOBS", "AGENT_LANE2_MANUAL_GLOBS", "AGENT_LANE2_GLOBS"} {
-		for _, pattern := range strings.Fields(env[key]) {
-			if _, err := path.Match(pattern, ""); err != nil {
-				return errors.New("invalid merge policy glob")
-			}
-			for _, file := range files {
-				if !task.ScopeMatch(pattern, file) {
-					continue
-				}
-				switch key {
-				case "AGENT_LANE3_GLOBS":
-					return merge.ErrHumanRequired
-				case "AGENT_LANE2_MANUAL_GLOBS":
-					if resolverApproved(a.ticket) {
-						continue
-					}
-					return merge.ErrReviewRequired
-				default: // AGENT_LANE2_GLOBS
-					if lane != 2 {
-						return merge.ErrReviewRequired
-					}
-				}
-			}
-		}
-	}
-	return nil
+	return mergechannel.Policy(a.runtime.Repositories[a.ticket.Repo].Env, a.ticket.Handoff.Lane, resolverApproved(a.ticket), files)
 }
 
 // writeMergeLedger appends one deduped ledger row for a confirmed merge without

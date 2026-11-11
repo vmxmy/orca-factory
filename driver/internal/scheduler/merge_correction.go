@@ -9,6 +9,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 )
 
 // Persist the decision atomically with ownership before starting a terminal.
@@ -17,7 +18,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	h := t.Handoff
 	p := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: main, Phase: "waiting", Corrections: h.Corrections + result.Corrections, CatchupRounds: result.Rounds, Infra: h.Infra, Attempt: max(1, h.Attempt), Reason: result.Reason}
 	if t.Progress != nil && t.Progress.QueueID == h.QueueID {
-		retainMergeProgress(&p, t.Progress)
+		mergechannel.RetainMergeProgress(&p, t.Progress)
 	}
 	human := result.Status == merge.Human || p.Corrections > machine.DefaultLimits.Corrections
 	// A lane 2 review keeps the waiting phase so the resolver can approve the
@@ -95,7 +96,7 @@ func mergeRounds(t Ticket) (int, error) {
 	if p.QueueID != h.QueueID {
 		return h.CatchupRounds, nil
 	}
-	if !progressMatchesHandoff(p, h) {
+	if !mergechannel.ProgressMatchesHandoff(p, h) {
 		return 0, errors.New("conflicting merge decision")
 	}
 	if p.Phase == "correction" || p.Phase == "human" {
@@ -113,31 +114,8 @@ func laneCatchupRounds(t Ticket) (int, error) {
 	if t.Progress == nil || t.Progress.QueueID != t.Handoff.QueueID {
 		return t.Handoff.CatchupRounds, nil
 	}
-	if !progressMatchesHandoff(t.Progress, t.Handoff) {
+	if !mergechannel.ProgressMatchesHandoff(t.Progress, t.Handoff) {
 		return 0, errors.New("conflicting merge decision")
 	}
 	return max(t.Handoff.CatchupRounds, t.Progress.CatchupRounds), nil
-}
-
-func progressMatchesHandoff(p *merge.Progress, h *merge.Handoff) bool {
-	return p.Version == 1 && p.TicketID == h.TicketID && p.Repository == h.Repository && p.PR == h.PR && p.Head == h.Head && p.CatchupRounds >= 0
-}
-
-// Progress extensions share one receipt; carry both budgets and deployment when
-// writing another phase of the same queue identity.
-func retainMergeProgress(next, prior *merge.Progress) {
-	if prior == nil || prior.QueueID != next.QueueID {
-		return
-	}
-	next.Deployment = prior.Deployment
-	if next.Main == "" {
-		next.Main = prior.Main
-	}
-	next.Corrections = max(next.Corrections, prior.Corrections)
-	next.CatchupRounds = max(next.CatchupRounds, prior.CatchupRounds)
-	next.Infra = max(next.Infra, prior.Infra)
-	next.Attempt = max(next.Attempt, prior.Attempt)
-	if next.Reason == "" {
-		next.Reason = prior.Reason
-	}
 }
