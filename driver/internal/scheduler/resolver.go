@@ -265,6 +265,10 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	decision, err := resolver.ParseResult(p.Result)
 	topScope := err == nil && p.Top && len(decision.ScopeRequest()) > 0
 	if err == nil && decision.Action == "escalate" && !topScope {
+		// Auto mode keeps the final resolver on its tier up to the retry limit.
+		if p.Top && autoMode(r.Repositories[t.Repo].Env) && !mustHuman(t, decision.Class) {
+			return r.retryResolution(ctx, t, p, decision.Reason)
+		}
 		return r.escalateResolution(ctx, t, p, decision.Reason, decision.Body)
 	}
 	if p.Outcome == "failed" && !topScope {
@@ -497,7 +501,7 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 	if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
 		class = decision.Class
 	}
-	if autoMode(env) && intake.TopMustHuman(class) {
+	if autoMode(env) && mustHuman(t, class) {
 		return r.parkResolution(ctx, t, p, reason, evidence)
 	}
 	next := *p
@@ -555,19 +559,36 @@ func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, re
 	return nil
 }
 
-// parkedReason returns the latest 搁置 reason of a ticket labeled parked.
-func parkedReason(issue task.Issue, comments []task.Comment) string {
-	if !slices.ContainsFunc(issue.Labels.Nodes, func(l task.NamedID) bool { return l.Name == parkedLabel }) {
-		return ""
-	}
-	reason := "parked label"
-	latest := time.Time{}
-	for _, c := range comments {
-		if line, ok := strings.CutPrefix(c.Body, "搁置："); ok && !c.CreatedAt.Before(latest) {
-			reason, latest = strings.SplitN(line, "\n", 2)[0], c.CreatedAt
+// parkedState returns the latest 搁置 reason of a ticket labeled parked. Without
+// the label, resumed reports that 搁置 is still the latest ownership event: a
+// person restored the ticket.
+func parkedState(issue task.Issue, comments []task.Comment) (reason string, resumed bool) {
+	rows := append([]task.Comment(nil), comments...)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	parkedLast := false
+	for _, c := range rows {
+		line, park := strings.CutPrefix(c.Body, "搁置：")
+		if park {
+			reason = strings.SplitN(line, "\n", 2)[0]
+		}
+		if park || strings.Contains("\n"+c.Body, "\n归属: ") {
+			parkedLast = park
 		}
 	}
-	return reason
+	if !slices.ContainsFunc(issue.Labels.Nodes, func(l task.NamedID) bool { return l.Name == parkedLabel }) {
+		return "", parkedLast
+	}
+	if reason == "" {
+		reason = "parked label"
+	}
+	return reason, false
+}
+
+// mustHuman reports what only a person may decide: a class from the table shared
+// with the final resolver, or structured lane 3, paused deployment or conflicting
+// merge evidence.
+func mustHuman(t Ticket, class string) bool {
+	return intake.TopMustHuman(class) || t.MergeProblem != "" || (t.Handoff != nil && t.Handoff.Lane == 3) || (t.Progress != nil && t.Progress.Deployment != nil && t.Progress.Deployment.State == "paused")
 }
 
 // ledgerLine keeps agent text on one line so it cannot forge ledger fields.

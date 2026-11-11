@@ -38,6 +38,7 @@ type Ticket struct {
 	URL, Title                          string
 	NotifyReason                        string
 	Parked                              string // latest 搁置 reason while labeled parked
+	Resumed                             bool   // parked ticket a person restored to ready-for-agent
 	NotifyEvents                        map[string]bool
 	CrossReviewed                       map[string]bool
 	Number                              int
@@ -135,6 +136,12 @@ const fullSyncEvery = 10
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
+// resumesResolution reports a restored parked ticket whose frozen merge evidence
+// forbids a fresh claim; Agent处置 continues from that evidence instead.
+func (t Ticket) resumesResolution() bool {
+	return t.Candidate && t.Resumed && (t.Handoff != nil || t.MergeProblem != "")
+}
+
 func (s *Scheduler) fullSync() bool {
 	full := s.rounds%fullSyncEvery == 0
 	s.rounds++
@@ -267,7 +274,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		view.Tickets = nil
 		for index, t := range tickets {
 			row := rows[index]
-			if !owned(t) && row.Stage == "" && !DeploymentBarrier(t) {
+			if !owned(t) && row.Stage == "" && t.Parked == "" && !DeploymentBarrier(t) {
 				continue
 			}
 			view.Tickets = append(view.Tickets, row)
@@ -381,6 +388,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					action = Action{Kind: Resume, Attempt: next.Attempt, Phase: next.Phase}
 				}
 			}
+		} else if t.resumesResolution() {
+			if total >= s.Config.MaxInFlight || count[t.Repo] >= r.MaxInFlight {
+				continue
+			}
+			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "parked ticket resumed"}
 		} else if t.Legacy {
 			legacy, readErr := s.Backend.InspectLegacy(ctx, t)
 			if readErr != nil {
@@ -480,7 +492,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
-		if !t.Candidate {
+		if !t.Candidate || t.resumesResolution() {
 			continue
 		}
 		reason := ""

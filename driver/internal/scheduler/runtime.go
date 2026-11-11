@@ -391,7 +391,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		}
 		ticket.Legacy = claimed && ticket.Owner == "" && !failed
 		ticket.Candidate = candidate
-		ticket.Parked = parkedReason(issue, comments)
+		ticket.Parked, ticket.Resumed = parkedState(issue, comments)
 		ticket.Blocked = issue.Blocked()
 		ticket.Held, ticket.Number = issue.Held, issue.Number
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage

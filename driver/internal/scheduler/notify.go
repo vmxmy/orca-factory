@@ -33,6 +33,9 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 	if human {
 		identity = fmt.Sprintf("%s attempt=%d", reason, t.Resolution.Attempt)
 	}
+	if category == "搁置" {
+		identity = t.ID
+	}
 	digest := sha256.Sum256([]byte(identity))
 	marker := fmt.Sprintf("通知: %s %x", category, digest[:6])
 	// A notified request already had its auto review; skip the ledger reread.
@@ -40,8 +43,10 @@ func (r *Runtime) NotifyFeishu(ctx context.Context, t Ticket) error {
 		return nil
 	}
 	var refusals []string
+	// Auto mode never hands a ticket to a human, so a human ticket here predates
+	// the switch and keeps its manual handling: only explicit flags apply.
 	enabled := func(name string) bool {
-		return human && !t.Resolution.TopUsed && !t.Resolution.Top && autoReviewEnabled(env, name)
+		return human && !t.Resolution.TopUsed && !t.Resolution.Top && explicitAutoReview(env, name)
 	}
 	now := time.Now()
 	if r.Now != nil {

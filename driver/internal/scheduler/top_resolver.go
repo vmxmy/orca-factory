@@ -57,9 +57,10 @@ func (r *Runtime) applyTopResolution(ctx context.Context, t Ticket, p *resolver.
 }
 
 func autoReviewEnabled(env map[string]string, name string) bool {
-	if autoMode(env) && slices.Contains([]string{"scope", "release", "top"}, name) {
-		return true
-	}
+	return (autoMode(env) && slices.Contains([]string{"scope", "release", "top"}, name)) || explicitAutoReview(env, name)
+}
+
+func explicitAutoReview(env map[string]string, name string) bool {
 	for _, flag := range strings.Split(env["AGENT_AUTO_REVIEW"], ",") {
 		if strings.TrimSpace(flag) == name {
 			return true

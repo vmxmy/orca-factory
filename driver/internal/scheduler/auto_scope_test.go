@@ -134,8 +134,8 @@ func TestAutoScopeSkipsNotifiedHumanTicket(t *testing.T) {
 
 func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 	for _, tc := range []struct {
-		name, flags, reason, description, evidence, scope, want string
-		released, scoped                                        bool
+		name, flags, mode, reason, description, evidence, scope, want string
+		released, scoped                                              bool
 	}{
 		{name: "all conditions", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", released: true},
 		{name: "second transfer", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "放行：auto 2026-11-09T00:00:00Z\nresolver-state {\"version\":1,\"attempt\":6,\"phase\":\"waiting\"}", want: "此前已有放行"},
@@ -145,6 +145,7 @@ func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 		{name: "lane 3", flags: "release", reason: "普通原因", description: "## LANE 预判\n3", want: "lane 3"},
 		{name: "paused", flags: "release", reason: "普通原因", description: "## LANE 预判\n2", evidence: "merge-progress-v1: {\"version\":1,\"deployment\":{\"state\":\"paused\"}}", want: "paused"},
 		{name: "default", reason: "普通原因", description: "## LANE 预判\n2"},
+		{name: "auto mode keeps historical ticket", mode: "auto", reason: "普通原因", description: "## LANE 预判\n2"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -168,7 +169,7 @@ func TestAutoReleaseBeforeHumanCard(t *testing.T) {
 				bodies = append([]string{resolver.Prefix + string(raw)}, tc.evidence)
 			}
 			store.issueComments = evidenceComments(bodies...)
-			repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_AUTO_REVIEW": tc.flags}}
+			repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_NOTIFY_CHAT": "oc_chat", "AGENT_AUTO_REVIEW": tc.flags, "AGENT_MODE": tc.mode}}
 			runtime := &Runtime{Clients: map[string]issues.Store{repo.Path: store}, Repositories: map[string]config.Repository{repo.Path: repo}, Now: func() time.Time { return time.Date(2026, 11, 10, 0, 0, 0, 0, time.UTC) }}
 			ticket := Ticket{ID: "id", Identifier: "OF-9", Repo: repo.Path, Owner: machine.OwnerHuman, NotifyReason: tc.reason, Resolution: &record}
 			if err := runtime.NotifyFeishu(context.Background(), ticket); err != nil {

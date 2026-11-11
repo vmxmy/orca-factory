@@ -371,10 +371,12 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 ### 手动与自动模式（OF-479）
 
 - 仓库 env 键 `AGENT_MODE` 只接受 `manual` 与 `auto`，缺省 `manual`；显式空值或其他值使 `config.LoadRepository` 报错（`config.TestRepositoryAgentMode`）。
-- `auto` 时 `autoReviewEnabled` 对 `scope`、`release`、`top` 返回 true；终审失败上限由 `topLimit` 取 `resolverFailureLimit`。`escalateResolution` 在 `auto` 下不写 `转人:` 与 `归属: 人`：escalate `class` 命中 `intake.TopMustHuman`（与 `ApplyTopReview` 共用的六类表）时直接搁置，否则先进终审，终审已用过则搁置。合并通道 `merge.HumanDirect`（lane 3）在 `auto` 下同样搁置。
+- `auto` 时 `autoReviewEnabled` 对 `scope`、`release`、`top` 返回 true；终审失败上限由 `topLimit` 取 `resolverFailureLimit`。`auto` 下终审自己的 escalate 计为一次失败，经 `retryResolution` 在同一档位重试，到上限后搁置。`escalateResolution` 在 `auto` 下不写 `转人:` 与 `归属: 人`：`mustHuman` 命中时直接搁置，否则先进终审，终审已用过则搁置。`mustHuman` 是 escalate `class` 命中 `intake.TopMustHuman`（与 `ApplyTopReview` 共用的六类表），或结构化证据为 lane 3 handoff、部署 `paused`、`MergeProblem` 非空。合并通道 `merge.HumanDirect`（lane 3）在 `auto` 下同样搁置。
+- 飞书通知前的扩 SCOPE 与放行自动审查只认 `AGENT_AUTO_REVIEW` 显式开关（`explicitAutoReview`）：`auto` 不产生转人票，通知路径上的转人票都是切换前的历史票，按原手动流程处理。
 - 搁置先调用 `UpdateIssue(id, "Todo", ["parked"], ["ready-for-agent","auto-impl","auto-failed"])`，成功后写评论 `搁置：<原因>\n已完成：<证据>\n阶段: 待领\n归属: 无\n<回执>`。处置路径的回执是 `phase=applied, outcome=failed` 的 resolver-state，之后的 `Agent处置:` 事件按既有规则重开为新 attempt；合并路径的回执是 `phase=human` 的 merge-progress。标签先写，票在可被领取前不会失去归属。
-- 调度器从标签 `parked` 与最新 `搁置：` 首行读出 `Ticket.Parked`。`issueEligibility` 与 claim 前的新鲜回读拒绝 `parked`；`ObservationRow` 写 `blockedReason: parked: <原因>` 且搁置票进入状态快照；`feishuNotification` 返回类别 `搁置`，按原因写一次 `通知:` 事件并发文字消息，不发卡片。
-- 验证：`scheduler.TestAgentModeEscalationAfterTop`、`TestAutoModeImpliesTopReview`、`TestAutoModeParksMustHumanClassBeforeTop`、`TestAutoModeTopRetriesUpToResolverLimit`、`TestAutoModeParksLane3`、`TestParkedTicketIsNotClaimed`、`TestParkedTicketStatusAndNotification`。
+- `parkedState` 从标签 `parked` 与最新 `搁置：` 首行读出 `Ticket.Parked`；没有 `parked` 标签而最新的归属事件仍是 `搁置：` 时置 `Ticket.Resumed`，表示人已恢复该票。`issueEligibility` 与 claim 前的新鲜回读拒绝 `parked`；`ObservationRow` 写 `blockedReason: parked: <原因>`，搁置票进入状态快照与实时状态；`feishuNotification` 返回类别 `搁置`，以票 ID 为去重标识，每票只写一次 `通知:` 事件并发文字消息，不发卡片。
+- 恢复：人重新加 `ready-for-agent` 并去掉 `parked`。没有合并证据的票按普通候选领取；带冻结 handoff 或 `MergeProblem` 的票（claim 会拒绝）由 `resumesResolution` 改派 `Agent处置: parked ticket resumed`，处置 Agent 从既有证据继续。lane 3 仍只能由人合并，处置 Agent 无法合并时会再次搁置。
+- 验证：`scheduler.TestAgentModeEscalationAfterTop`、`TestAutoModeImpliesTopReview`、`TestAutoModeParksMustHumanClassBeforeTop`（读录制样本 `resolver-escalate-credentials.json`，并用搁置写出的评论回读 `parkedState`）、`TestAutoModeParksMustHumanEvidenceBeforeTop`、`TestAutoModeTopRetriesUpToResolverLimit`、`TestAutoModeParksLane3`、`TestParkedTicketIsNotClaimed`、`TestParkedTicketStatusAndNotification`、`TestResumedParkedTicketWithMergeEvidenceReturnsToResolver`、`TestAutoReleaseBeforeHumanCard/auto_mode_keeps_historical_ticket`。
 
 ### 终审处置（OF-477）
 
