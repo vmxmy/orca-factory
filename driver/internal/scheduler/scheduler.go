@@ -37,6 +37,7 @@ type Ticket struct {
 	ID, Identifier, Repo, Terminal, Run string
 	URL, Title                          string
 	NotifyReason                        string
+	Parked                              string // latest 搁置 reason while labeled parked
 	NotifyEvents                        map[string]bool
 	CrossReviewed                       map[string]bool
 	Number                              int

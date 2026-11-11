@@ -457,6 +457,20 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 处置 Agent 在权限内无法解决时提交 `escalate`，调度器把票转人工（`阶段: 转人`、`归属: 人`），写一条 `转人:` 事件并通知一次，不再派处置 Agent。可重试的失败（outcome=failed、无效或被拒提案）退避 5 分钟后重派；同一票连续 3 次失败同样转人工。
 
+#### 手动与自动模式（OF-479）
+
+仓库 env 键 `AGENT_MODE` 取 `manual` 或 `auto`，缺省 `manual`，行为与原流程相同；其他值（含空值）使仓库配置加载失败。从 `manual` 切到 `auto` 不补处理已转人的历史票。
+
+`auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
+
+1. 普通处置 escalate 先进入一次终审。
+2. 终审失败按 `resolverFailureLimit`（3 次）在同一档位重试。
+3. 终审仍失败、明确 escalate，或命中必须由人决定的情形，票进入搁置。escalate 的 `class` 属于六类禁止阻塞（`intake.TopMustHuman`，与终审共用）时不进终审，直接搁置；lane 3 的合并通道转人同样改为搁置。
+
+搁置时调度器先把票状态改为 `Todo`、加标签 `parked`、移除 `ready-for-agent`、`auto-impl`、`auto-failed`，再写 `搁置：<原因>\n已完成：<证据>\n阶段: 待领\n归属: 无` 加原回执，释放处置归属。带 `parked` 的票不被领取或派工；`driver status` 的票行带 `blockedReason: parked: <原因>`；飞书按原因只发一条不带按钮的文字通知。人要接手时重新加 `ready-for-agent` 并去掉 `parked`。搁置不是批准，不放宽 gate、审查、CI、lane 3、生产 DDL 与数据的约束。
+
+本仓库配置为 `AGENT_MODE=auto`（用户 2026-11-11 要求）；切回 `manual` 即恢复现状。
+
 #### 按规则自动批准扩 SCOPE 与放行（OF-467、OF-468）
 
 仓库 `scripts/agent-gates/agent-graph.env` 的 `AGENT_AUTO_REVIEW` 是逗号分隔的开关列表，缺省为空，保持原人工卡片流程；未知项不启用任何行为。

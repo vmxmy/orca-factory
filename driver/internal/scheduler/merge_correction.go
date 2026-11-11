@@ -35,6 +35,9 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	}
 	raw, _ := json.Marshal(p)
 	body := merge.ProgressPrefix + string(raw)
+	if direct && autoMode(r.Repositories[t.Repo].Env) {
+		return r.parkTicket(ctx, t, p.Reason, "merge policy", body)
+	}
 	if human || review || direct {
 		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
 			return errors.New("merge escalation unconfirmed")

@@ -58,6 +58,8 @@ func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.T
 		row.BlockedReason = "import held"
 	case t.MergeProblem != "":
 		row.BlockedReason = t.MergeProblem
+	case t.Parked != "":
+		row.BlockedReason = "parked: " + t.Parked
 	case !t.Blocked:
 	case t.BlockersIncomplete:
 		row.BlockedReason = "dependency evidence incomplete"
@@ -95,7 +97,7 @@ func SnapshotRows(tickets []Ticket, repos []config.Repository, now time.Time) []
 	snapshot := make([]status.Ticket, 0, len(tickets))
 	rows := ObservationRows(tickets, repos, now)
 	for index, ticket := range tickets {
-		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || rows[index].Stage == "human" || DeploymentBarrier(ticket) {
+		if ticket.Owner == machine.OwnerExecutor || ticket.Owner == machine.OwnerMerge || rows[index].Stage == "human" || ticket.Parked != "" || DeploymentBarrier(ticket) {
 			snapshot = append(snapshot, rows[index])
 		}
 	}

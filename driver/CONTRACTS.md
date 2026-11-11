@@ -362,6 +362,14 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 验证：`TestDriverConfigShowsEffectiveValuesWithoutSecrets` 用假飞书账本、假 Orca 仓库清单和读不到的服务运行 `config --json`，断言假凭据不出现在输出中、调度项来源、角色回退与 reviewer 命令解析，以及 `problems` 记下未识别键与服务环境。
 
 
+### 手动与自动模式（OF-479）
+
+- 仓库 env 键 `AGENT_MODE` 只接受 `manual` 与 `auto`，缺省 `manual`；显式空值或其他值使 `config.LoadRepository` 报错（`config.TestRepositoryAgentMode`）。
+- `auto` 时 `autoReviewEnabled` 对 `scope`、`release`、`top` 返回 true；终审失败上限由 `topLimit` 取 `resolverFailureLimit`。`escalateResolution` 在 `auto` 下不写 `转人:` 与 `归属: 人`：escalate `class` 命中 `intake.TopMustHuman`（与 `ApplyTopReview` 共用的六类表）时直接搁置，否则先进终审，终审已用过则搁置。合并通道 `merge.HumanDirect`（lane 3）在 `auto` 下同样搁置。
+- 搁置先调用 `UpdateIssue(id, "Todo", ["parked"], ["ready-for-agent","auto-impl","auto-failed"])`，成功后写评论 `搁置：<原因>\n已完成：<证据>\n阶段: 待领\n归属: 无\n<回执>`。处置路径的回执是 `phase=applied, outcome=failed` 的 resolver-state，之后的 `Agent处置:` 事件按既有规则重开为新 attempt；合并路径的回执是 `phase=human` 的 merge-progress。标签先写，票在可被领取前不会失去归属。
+- 调度器从标签 `parked` 与最新 `搁置：` 首行读出 `Ticket.Parked`。`issueEligibility` 与 claim 前的新鲜回读拒绝 `parked`；`ObservationRow` 写 `blockedReason: parked: <原因>` 且搁置票进入状态快照；`feishuNotification` 返回类别 `搁置`，按原因写一次 `通知:` 事件并发文字消息，不发卡片。
+- 验证：`scheduler.TestAgentModeEscalationAfterTop`、`TestAutoModeImpliesTopReview`、`TestAutoModeParksMustHumanClassBeforeTop`、`TestAutoModeTopRetriesUpToResolverLimit`、`TestAutoModeParksLane3`、`TestParkedTicketIsNotClaimed`、`TestParkedTicketStatusAndNotification`。
+
 ### 终审处置（OF-477）
 
 - 仓库 env 新键 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort` 与 `AGENT_AUTO_REVIEW` 的 `top` 开关均缺省为空。普通处置保留 `AGENT_ROLE_RESOLVER`/strong 的解析。top 必须显式给完整 agent/model/effort，不回退普通档位；已开始的终审重试保持冻结档位。
