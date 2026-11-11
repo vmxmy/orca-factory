@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -141,15 +142,18 @@ func TestCorrectionReusesWorkerTerminal(t *testing.T) {
 func TestCorrectionEscalationStartsFreshAgent(t *testing.T) {
 	e, o, tools, _, l, ticket := recoveryFixture(t)
 	tools.gateReds = 1
-	_ = l
 	ro := &reuseOrca{recoveryOrca: o, handles: map[string]string{"ctx_one": "term_reuse"}}
 	e.Orca = ro
 	e.Config.Escalate = "1"
 	e.Config.Tier = "default"
+	e.Config.Agent, e.Config.Model, e.Config.Effort = "codex", "gpt-6-astra", "low"
 	e.Config.TierSettings = map[string]string{"strong": "codex:gpt-6-astra:medium"}
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil || result.State.Owner != machine.OwnerMerge {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	if want := "correction 1 → 升至 strong（codex:gpt-6-astra:low → codex:gpt-6-astra:medium）"; !slices.Contains(l.comments, want) {
+		t.Fatalf("comments=%q, want %q", l.comments, want)
 	}
 	if len(ro.started) < 2 {
 		t.Fatalf("no correction dispatch: %+v", ro.started)

@@ -278,7 +278,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 ## 机器级模型方案
 
-`~/.config/orca-factory/profiles.toml` 的顶层为可选的 `default = "<方案名>"` 和 `[profile.<名>]` 表。方案表仅接受 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE` 字符串键值。角色值为 `agent:model:effort`，agent 不可空，审查角色只允许 `codex` 或 `claude`，model 可空；升档开关沿用仓库的 `"0"` / `"1"` 格式。未知顶层键、未知方案键（包括未选中的方案）、TOML 语法或值格式错误使整份文件加载失败，错误不包含配置值。
+`~/.config/orca-factory/profiles.toml` 的顶层为可选的 `default = "<方案名>"` 和 `[profile.<名>]` 表。方案表仅接受 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 与其他 `AGENT_TIER_<大写档名>` 字符串键值。角色值与档值为 `agent:model:effort`，agent 不可空，审查角色只允许 `codex` 或 `claude`，model 可空；升档开关沿用仓库的 `"0"` / `"1"` 格式；升档链为空格分隔、互不重复的小写档名（`[a-z][a-z0-9_]*`）。未知顶层键、未知方案键（包括未选中的方案）、TOML 语法或值格式错误使整份文件加载失败，错误不包含配置值。
 
 `config.Load` 校验机器方案，`config.LoadRepository` 在仓库 env 上叠加所选方案。选名取仓库显式 `AGENT_PROFILE`，缺省取文件 `default`；显式空名不取 default。逐键优先级为仓库显式值（含空值）、所选方案、原有回退链。文件不存在或所选方案不存在时不补任何键。`Repository.Profile` 保存所选名字，`Repository.Sources` 保存生效键的 `repository` 或 `profile:<名>` 来源。方案文件按 home 路径在进程内首次加载后固定，添加、修改、删除或修复文件均需重启，不增加热重载。
 
@@ -313,7 +313,8 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
         {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER", "raw": "codex:gpt-6-astra:high", "source": "repository"}
       ],
       "routing": [
-        {"key": "AGENT_TIER_ESCALATE", "value": "1", "source": "agent-graph.env", "set": true}
+        {"key": "AGENT_TIER_ESCALATE", "value": "1", "source": "agent-graph.env", "set": true},
+        {"key": "AGENT_TIER_CHAIN", "value": "default strong", "source": "default", "set": true}
       ]
     }
   ],
@@ -341,13 +342,13 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `repos[].profile`：仓库选择的方案名，未选择时为空串。文件或方案不存在时仍保留显式选择的名字。快照读取当前命令进程的配置，不查询常驻服务缓存。
 - `roles[].source`：实际取值键来自仓库时为 `repository`，来自方案时为 `profile:<名>`，内置 `codex` 回退为 `default`。角色回退到 strong 时沿用 strong 键的来源。
 - `roles[].role` 只有七种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
-  - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），strong 只在打回后升档时使用。
+  - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），其后的档只在打回后升档时使用。
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
   - 施工与处置角色的 `model` 为空时 `effort` 也为空，与派工时不传 effort 一致；`intake` 照原样保留 effort。
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
   - `reviewer` / `reviewer_small` / `second_reviewer`：优先读取对应的结构化键 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_REVIEWER_SMALL` / `AGENT_ROLE_SECOND_REVIEWER`（直接给出 `agent`、`model`、`effort`），再读取仓库的 `_CMD` 键，最后读取方案中的结构化键。结构化键只支持 `codex` 与 `claude`；`_CMD` 仍按旧规则解析：跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `routing`：固定顺序的十二个键：`AGENT_TIER_ESCALATE`、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_TIER_ESCALATE` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- `routing`：固定顺序的十三个键：`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN`（默认 `default strong`）、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。

@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -189,7 +191,13 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		}
 		canReuse := sameTier && handle != ""
 		if tierEscalation(c) && !sameTier {
-			if err = e.comment(ctx, t.ID, fmt.Sprintf("correction %d → 升至 %s", result.State.Corrections, tier)); err != nil {
+			_, prevAgent, prevModel, prevEffort, prevErr := correctionTier(c, result.State.Corrections-1)
+			if prevErr != nil {
+				return false, prevErr
+			}
+			change := fmt.Sprintf("correction %d → 升至 %s（%s:%s:%s → %s:%s:%s）", result.State.Corrections, tier,
+				prevAgent, prevModel, prevEffort, agent, model, effort)
+			if err = e.comment(ctx, t.ID, change); err != nil {
 				return false, errors.New("tier comment failed")
 			}
 		}
@@ -251,32 +259,42 @@ func stallVerdict(correction []byte) (string, bool) {
 }
 
 func correctionTier(c Config, n int) (tier, agent, model, effort string, err error) {
-	tiers := []string{"default", "strong"}
-	index := 0
-	if c.Tier == "strong" {
-		index = 1
-	} else if c.Tier != "" && c.Tier != "default" {
+	tiers := c.TierChain
+	if len(tiers) == 0 {
+		tiers = strings.Fields(config.DefaultTierChain)
+	}
+	tier = c.Tier
+	if tier == "" {
+		tier = "default"
+	} else if tier != "default" && tier != "strong" {
 		err = errors.New("invalid worker tier")
 		return
 	}
 	agent, model, effort = c.Agent, c.Model, c.Effort
 	if tierEscalation(c) {
-		index = min(index+n, len(tiers)-1)
-		value := c.TierSettings[tiers[index]]
-		if value == "" {
-			value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tiers[index]))
-		}
-		parts := strings.Split(value, ":")
-		if len(parts) != 3 || parts[0] == "" {
-			err = errors.New("escalated tier requires agent:model:effort configuration")
+		index := slices.Index(tiers, tier)
+		if index < 0 {
+			err = errors.New("worker tier is not in the tier chain")
 			return
 		}
-		agent, model, effort = parts[0], parts[1], parts[2]
+		if next := min(index+n, len(tiers)-1); next != index {
+			tier = tiers[next]
+			value := c.TierSettings[tier]
+			if value == "" {
+				value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tier))
+			}
+			parts := strings.Split(value, ":")
+			if len(parts) != 3 || parts[0] == "" {
+				err = errors.New("escalated tier requires agent:model:effort configuration")
+				return
+			}
+			agent, model, effort = parts[0], parts[1], parts[2]
+		}
 	}
 	if model == "" {
 		effort = ""
 	}
-	return tiers[index], agent, model, effort, nil
+	return tier, agent, model, effort, nil
 }
 
 func tierEscalation(c Config) bool {

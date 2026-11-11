@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -101,12 +103,12 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}"; for k in $(compgen -v AGENT_TIER_); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	values := strings.Split(string(b), "\x00")
-	if len(values) != 19 {
+	if len(values) < 19 || len(values)%2 == 0 {
 		return Executor{}, nil, errors.New("invalid repository profile")
 	}
 	owner, name, ok := strings.Cut(values[0], "/")
@@ -118,8 +120,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("invalid reviewer estimate threshold")
 	}
 	assigned := config.AssignedKeys(data)
-	explicit := map[string]string{}
-	for key, value := range map[string]string{
+	sourced := map[string]string{
 		"AGENT_GH_REPO": values[0], "AGENT_ROLE_REVIEWER_CMD": values[1], "AGENT_ROLE_REVIEWER": values[2],
 		"AGENT_ROLE_REVIEWER_CMD_SMALL": values[3], "AGENT_ROLE_REVIEWER_SMALL": values[4],
 		"AGENT_ROLE_SECOND_REVIEWER_CMD": values[5], "AGENT_ROLE_SECOND_REVIEWER": values[6],
@@ -127,7 +128,14 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		"AGENT_REVIEWER_SMALL_MAX_ESTIMATE": values[10], "AGENT_LANE3_GLOBS": values[11], "AGENT_ISSUE_BACKEND": values[12],
 		"AGENT_GH_API_URL": values[13], "AGENT_FEISHU_BASE": values[14], "AGENT_FEISHU_PROJECT": values[15],
 		"AGENT_INSTALL_CMD": values[16], "AGENT_PROFILE": values[17],
-	} {
+	}
+	for i := 18; i+1 < len(values); i += 2 {
+		if _, fixed := sourced[values[i]]; !fixed {
+			sourced[values[i]] = values[i+1]
+		}
+	}
+	explicit := map[string]string{}
+	for key, value := range sourced {
 		if assigned[key] {
 			explicit[key] = value
 		}
@@ -140,21 +148,38 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 	if err != nil {
 		return Executor{}, nil, err
 	}
-	effective := map[string]string{}
-	for i, key := range []string{"AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_TIER_ESCALATE"} {
-		effective[key] = values[7+i]
+	effective := func(key string) string {
 		if strings.HasPrefix(sources[key], "profile:") {
-			effective[key] = explicit[key]
+			return explicit[key]
 		}
+		return sourced[key]
 	}
-	parts := strings.Split(effective["AGENT_TIER_DEFAULT"], ":")
+	parts := strings.Split(effective("AGENT_TIER_DEFAULT"), ":")
 	if len(parts) != 3 || parts[0] == "" {
 		return Executor{}, nil, errors.New("repository profile requires default worker tier")
 	}
+	chain, err := config.TierChain(effective("AGENT_TIER_CHAIN"))
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	settings := map[string]string{"default": effective("AGENT_TIER_DEFAULT"), "strong": effective("AGENT_TIER_STRONG")}
+	escalate := effective("AGENT_TIER_ESCALATE")
+	for _, tier := range chain {
+		key := "AGENT_TIER_" + strings.ToUpper(tier)
+		settings[tier] = effective(key)
+		if escalate != "1" {
+			continue
+		}
+		if tierParts := strings.Split(settings[tier], ":"); len(tierParts) != 3 || tierParts[0] == "" {
+			return Executor{}, nil, fmt.Errorf("AGENT_TIER_CHAIN tier %s requires %s as agent:model:effort", tier, key)
+		}
+	}
+	if escalate == "1" && !slices.Contains(chain, "default") {
+		return Executor{}, nil, errors.New("AGENT_TIER_CHAIN requires the default tier")
+	}
 	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
-		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: effective["AGENT_TIER_ESCALATE"],
-		TierSettings: map[string]string{"default": effective["AGENT_TIER_DEFAULT"], "strong": effective["AGENT_TIER_STRONG"]},
-		Lane3Globs:   strings.Fields(values[11])}
+		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: escalate,
+		TierSettings: settings, TierChain: chain, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {
 		cfg.Effort = ""
 	}
