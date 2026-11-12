@@ -566,6 +566,32 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			}) {
 				t.Error("no nonzero elapsed idle wait receipt before timeout")
 			}
+			round1 := f.tracker.bodies[timeoutReceipt]
+			n := len(f.tracker.bodies)
+			now = now.Add(15 * time.Minute)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "drained") {
+				t.Fatalf("second idle timeout: builds=%d state=%s mode=%s drained=%t", h.builds, lastState(f), maintenanceMode(t), markerExists(f, selfSHA, "drained"))
+			}
+			if !slices.ContainsFunc(f.tracker.bodies[n:], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲，已等待 ")
+			}) {
+				t.Error("second idle wait did not write a new progress receipt")
+			}
+			if !slices.ContainsFunc(f.tracker.bodies[n:], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲超时，已等待 ")
+			}) {
+				t.Error("second idle wait did not write a new timeout receipt")
+			}
+			var lastWaitReceipt string
+			for _, body := range f.tracker.bodies {
+				if strings.Contains(body, "等待会话空闲") {
+					lastWaitReceipt = body
+				}
+			}
+			if lastWaitReceipt == round1 || !strings.Contains(lastWaitReceipt, "第 2 轮") {
+				t.Errorf("second idle wait receipt did not identify round 2: %s", lastWaitReceipt)
+			}
 			release()
 			release = nil
 			now = now.Add(15*time.Minute - time.Nanosecond)

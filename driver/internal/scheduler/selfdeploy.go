@@ -51,8 +51,8 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // guard or the binary may have changed, so the install is not redone until a
 // recovery returns the deployment to pending; the guard reads smoke-passed;
 // rolled-back tells the restored serve to pause and resume, and holds the
-// reason when serve itself rolled back. idle-timeout records the last idle
-// timeout; no new drain starts until selfDeployIdleRetry has elapsed.
+// reason when serve itself rolled back. idle-timeout records the last timeout
+// time and timeout count; no new drain starts until selfDeployIdleRetry has elapsed.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
@@ -152,8 +152,14 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	d := p.Deployment
 	sha := deploymentSHA(p)
 	idleTimeout := r.selfMarker(sha, markerIdleTimeout)
+	timeouts := 0
 	if data, err := os.ReadFile(idleTimeout); err == nil {
-		timedOut, err := time.Parse(time.RFC3339Nano, string(data))
+		timestamp, count, _ := strings.Cut(string(data), " ")
+		timedOut, err := time.Parse(time.RFC3339Nano, timestamp)
+		if err != nil {
+			return err
+		}
+		timeouts, err = strconv.Atoi(count)
 		if err != nil {
 			return err
 		}
@@ -167,6 +173,7 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	round := timeouts + 1
 	unlock, err := r.deployLock()
 	if err != nil {
 		return err
@@ -180,7 +187,7 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	}
 	if err == nil {
 		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
-			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s", elapsed)
+			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s（第 %d 轮）", elapsed, round)
 			if err := r.deploymentReceipt(ctx, t, p); err != nil {
 				runx.LoggerFrom(ctx).Warn("self deployment idle progress receipt failed", "err", err)
 			}
@@ -201,10 +208,10 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 			if markerErr := os.MkdirAll(filepath.Dir(idleTimeout), 0700); markerErr != nil {
 				return errors.Join(err, markerErr)
 			}
-			if markerErr := os.WriteFile(idleTimeout, []byte(now.UTC().Format(time.RFC3339Nano)), 0600); markerErr != nil {
+			if markerErr := os.WriteFile(idleTimeout, []byte(now.UTC().Format(time.RFC3339Nano)+" "+strconv.Itoa(round)), 0600); markerErr != nil {
 				return errors.Join(err, markerErr)
 			}
-			d.Reason = err.Error()
+			d.Reason = fmt.Sprintf("%s（第 %d 轮）", err.Error(), round)
 			return errors.Join(err, r.deploymentReceipt(ctx, t, p))
 		}
 		return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
