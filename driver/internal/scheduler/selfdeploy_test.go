@@ -11,10 +11,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 // unrelatedDoctorFails is what doctor reports right after a long drain: these
@@ -519,19 +523,107 @@ func TestSelfDeployWaitsForLockAndIdle(t *testing.T) {
 			t.Fatalf("deployed under a held deploy.lock: builds=%d state=%s", h.builds, lastState(f))
 		}
 	})
-	t.Run("sessions active", func(t *testing.T) {
-		f, h := newSelfDeployFixture(t)
-		wait, poll := selfDeployIdleWait, selfDeployIdlePoll
-		selfDeployIdleWait, selfDeployIdlePoll = 50*time.Millisecond, 10*time.Millisecond
-		t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll = wait, poll })
-		release, err := maintenance.Session()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer release()
-		_ = serveAs(f, h, "old")
-		if h.builds != 0 || installed(t, h.driver) != "old" || lastState(f) != "paused" || maintenanceMode(t) != "running" {
-			t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
-		}
-	})
+}
+
+func TestSelfDeployAwaitIdleBeyondOneHour(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("canceled=%t", canceled), func(t *testing.T) {
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			t.Setenv("DRIVER_STATUS_FILE", "")
+			release, err := maintenance.Session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			if err := maintenance.Set("draining"); err != nil {
+				t.Fatal(err)
+			}
+			synctest.Test(t, func(t *testing.T) {
+				ticket := Ticket{Repo: "/repo", Identifier: "OF-497", Owner: machine.OwnerMerge, Phase: machine.PhaseMergeQueue,
+					Progress: &merge.Progress{QueueID: "queue-497", MergeSHA: selfSHA, Deployment: &merge.DeploymentProgress{State: "deploy-intent", Self: true}}}
+				observedAt := time.Now()
+				status.PushObservation(observedAt, observedAt, func(view *status.View) {
+					view.Tickets = []status.Ticket{
+						{Repo: ticket.Repo, Identifier: ticket.Identifier, Owner: string(ticket.Owner), Phase: string(ticket.Phase), QueuePosition: 1, Backend: "feishu", Title: "self deployment"},
+						{Repo: "/other", Identifier: "OTHER-1", BlockedReason: "import held"},
+					}
+				})
+				liveTicket := func(identifier string) status.Ticket {
+					t.Helper()
+					for _, row := range status.Read(time.Now(), 0).Tickets {
+						if row.Identifier == identifier {
+							return row
+						}
+					}
+					t.Fatalf("ticket %s missing from status", identifier)
+					return status.Ticket{}
+				}
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				done := make(chan error, 1)
+				go func() { done <- (&Runtime{}).awaitIdle(ctx, ticket) }()
+				synctest.Wait()
+				time.Sleep(selfDeployIdleWait - selfDeployIdlePoll)
+				synctest.Wait()
+				if row := liveTicket(ticket.Identifier); row.BlockedReason != "" {
+					t.Fatalf("early idle warning: %+v", row)
+				}
+				time.Sleep(4 * selfDeployIdlePoll)
+				synctest.Wait()
+				select {
+				case err := <-done:
+					t.Fatalf("awaitIdle returned with an active session after one hour: %v", err)
+				default:
+				}
+				state, err := maintenance.Status()
+				if err != nil || state.Mode != "draining" || !state.SessionsActive {
+					t.Fatalf("waiting changed maintenance or released the session: %+v, %v", state, err)
+				}
+				row := liveTicket(ticket.Identifier)
+				if row.BlockedReason != "waiting for idle sessions (>1h)" || row.Deployment == nil || row.Deployment.State != "deploy-intent" || row.Deployment.QueueID != "queue-497" || row.Deployment.SHA != selfSHA {
+					t.Fatalf("missing deployment wait status: %+v", row)
+				}
+				if row.QueuePosition != 1 || row.Backend != "feishu" || row.Title != "self deployment" {
+					t.Fatalf("wait status lost ticket metadata: %+v", row)
+				}
+				if view := status.Read(time.Now(), 0); !view.GeneratedAt.Equal(observedAt) || len(view.Tickets) != 2 || liveTicket("OTHER-1").BlockedReason != "import held" {
+					t.Fatalf("wait status changed observation freshness or other tickets: %+v", view)
+				}
+				written, err := os.Stat(status.PushPath())
+				if err != nil {
+					t.Fatal(err)
+				}
+				time.Sleep(3 * selfDeployIdlePoll)
+				synctest.Wait()
+				after, err := os.Stat(status.PushPath())
+				if err != nil || !os.SameFile(written, after) {
+					t.Fatalf("idle polling rewrote the status cache: %v", err)
+				}
+				var want error
+				if canceled {
+					cancel()
+					want = ctx.Err()
+				} else {
+					release()
+					time.Sleep(selfDeployIdlePoll)
+				}
+				synctest.Wait()
+				select {
+				case err := <-done:
+					if err != want {
+						t.Fatalf("awaitIdle = %v, want %v", err, want)
+					}
+				default:
+					t.Fatal("awaitIdle did not finish after session exit or cancellation")
+				}
+				if row := liveTicket(ticket.Identifier); row.BlockedReason != "" {
+					t.Fatalf("finished idle wait retained warning: %+v", row)
+				}
+				if maintenanceMode(t) != "draining" {
+					t.Fatal("awaitIdle changed maintenance mode")
+				}
+			})
+		})
+	}
 }

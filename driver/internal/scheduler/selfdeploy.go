@@ -17,6 +17,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 // Self deployment follows README "部署顺序" from inside serve. The restart
@@ -37,8 +38,7 @@ const (
 	selfDeployGuardLockWait = selfDeploySmokeTimeout + 2*time.Minute
 )
 
-// Variables so tests can shorten the one-hour idle wait.
-var selfDeployIdleWait, selfDeployIdlePoll = time.Hour, 15 * time.Second
+const selfDeployIdleWait, selfDeployIdlePoll = time.Hour, 15 * time.Second
 
 // One restart command queues both jobs; systemd does not order them.
 // Restarting the driver unit stops this serve.
@@ -157,7 +157,8 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
 	}
-	replaced, err := r.installSelf(ctx, t.Repo, deploymentSHA(p))
+	t.Progress = p
+	replaced, err := r.installSelf(ctx, t)
 	if err == nil {
 		return errSelfDeployRestarting
 	}
@@ -173,14 +174,15 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 
 // installSelf arms the guard before the rename, so a serve killed between the
 // rename and the restart still gets the rollback if the new binary fails.
-func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced bool, err error) {
+func (r *Runtime) installSelf(ctx context.Context, t Ticket) (replaced bool, err error) {
+	sha := deploymentSHA(t.Progress)
 	if err = touch(r.selfMarker(sha, markerDrained)); err != nil {
 		return false, err
 	}
 	if err = maintenance.SetWithin("draining", maintenanceWait); err != nil {
 		return false, err
 	}
-	if err = r.awaitIdle(ctx); err != nil {
+	if err = r.awaitIdle(ctx, t); err != nil {
 		return false, err
 	}
 	backup := r.selfBackup(sha)
@@ -192,7 +194,7 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 		return false, fmt.Errorf("backup driver: %w", err)
 	}
 	built := r.DriverPath + ".new"
-	if err = r.buildSelf(ctx, repo, sha, built); err != nil {
+	if err = r.buildSelf(ctx, t.Repo, sha, built); err != nil {
 		return false, err
 	}
 	if err = touch(r.selfMarker(sha, markerInstalling)); err != nil {
@@ -207,11 +209,30 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 	return true, r.restartServices(ctx)
 }
 
-// awaitIdle waits until no executor, resolver or admitted write remains, as
-// deploy.sh does, for at most one hour.
-func (r *Runtime) awaitIdle(ctx context.Context) error {
-	deadline := time.Now().Add(selfDeployIdleWait)
+// awaitIdle waits until no executor, resolver or admitted write remains.
+func (r *Runtime) awaitIdle(ctx context.Context, t Ticket) error {
+	showWait := func(reason string) {
+		now := time.Now()
+		status.Push(now, func(view *status.View) {
+			observed := ObservationRow(t, nil, now)
+			row := observed
+			for _, cached := range view.Tickets {
+				if cached.Repo == t.Repo && cached.Identifier == t.Identifier {
+					row = cached
+					break
+				}
+			}
+			row.Deployment = observed.Deployment
+			row.BlockedReason = reason
+			status.SetTicket(view, row, true)
+		})
+	}
+	warnAt := time.Now().Add(selfDeployIdleWait)
+	warned := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		state, err := maintenance.Status()
 		if err != nil {
 			return err
@@ -219,8 +240,10 @@ func (r *Runtime) awaitIdle(ctx context.Context) error {
 		if !state.WritersActive && !state.SessionsActive {
 			return nil
 		}
-		if !time.Now().Before(deadline) {
-			return errors.New("sessions still active after one hour; deployment abandoned")
+		if !warned && !time.Now().Before(warnAt) {
+			showWait("waiting for idle sessions (>1h)")
+			warned = true
+			defer showWait("")
 		}
 		timer := time.NewTimer(selfDeployIdlePoll)
 		select {
