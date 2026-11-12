@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -18,6 +19,108 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
+
+func TestServeWaitWakesAtNextTick(t *testing.T) {
+	root := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := &scheduler.Scheduler{NextTickAt: start.Add(2 * time.Second)}
+		wait := newServeWait(s, root)
+		if err := wait(t.Context(), start.Add(workspaceReclaimInterval)); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed != 2*time.Second {
+			t.Fatalf("wait took %s, want 2s", elapsed)
+		}
+	})
+}
+
+func TestServeWaitWakesOnRequest(t *testing.T) {
+	for _, beforeWait := range []bool{false, true} {
+		name := "during wait"
+		if beforeWait {
+			name = "between waits"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			synctest.Test(t, func(t *testing.T) {
+				s := &scheduler.Scheduler{NextTickAt: time.Now().Add(time.Minute)}
+				wait := newServeWait(s, root)
+				for _, reason := range []string{"first", "replacement"} {
+					writeWake := func() {
+						data := []byte(`{"reason":"` + reason + `","at":"` + time.Now().Format(time.RFC3339Nano) + `"}`)
+						path := filepath.Join(root, "scheduler-wake.json")
+						if err := os.WriteFile(path+".tmp", data, 0600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(path+".tmp", path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if beforeWait {
+						writeWake()
+					} else {
+						go func() {
+							time.Sleep(100 * time.Millisecond)
+							writeWake()
+						}()
+					}
+					start := time.Now()
+					if err := wait(t.Context(), start.Add(workspaceReclaimInterval)); err != nil {
+						t.Fatal(err)
+					}
+					if elapsed := time.Since(start); elapsed > time.Second {
+						t.Fatalf("%s wake took %s, want at most 1s", reason, elapsed)
+					}
+				}
+				start := time.Now()
+				s.NextTickAt = start.Add(2 * time.Second)
+				if err := wait(t.Context(), start.Add(workspaceReclaimInterval)); err != nil {
+					t.Fatal(err)
+				}
+				if elapsed := time.Since(start); elapsed != 2*time.Second {
+					t.Fatalf("unchanged wake interrupted wait after %s", elapsed)
+				}
+			})
+		})
+	}
+}
+
+func TestServeWaitReclaimDeadline(t *testing.T) {
+	root := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := &scheduler.Scheduler{NextTickAt: start.Add(time.Hour)}
+		wait := newServeWait(s, root)
+		if err := wait(t.Context(), start.Add(workspaceReclaimInterval)); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(start); elapsed != 10*time.Minute {
+			t.Fatalf("reclaim wait took %s, want 10m", elapsed)
+		}
+	})
+}
+
+func TestServeWaitCancellation(t *testing.T) {
+	root := t.TempDir()
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		s := &scheduler.Scheduler{NextTickAt: start.Add(time.Minute)}
+		wait := newServeWait(s, root)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+		if err := wait(ctx, start.Add(workspaceReclaimInterval)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("wait returned %v, want context.Canceled", err)
+		}
+		if elapsed := time.Since(start); elapsed != 100*time.Millisecond {
+			t.Fatalf("canceled wait took %s, want 100ms", elapsed)
+		}
+	})
+}
 
 type statusFakeBackend struct {
 	scheduler.Backend

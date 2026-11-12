@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -56,6 +57,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 	ctx = runx.WithLogger(ctx, logger)
 	var served *scheduler.Runtime
 	var nextReclaim time.Time
+	var wait func(context.Context, time.Time) error
 	err = serveWithStatus(ctx, filepath.Join(home, ".local", "state", "orca-factory", "driver-serve.lock"), func(ctx context.Context) (*scheduler.Scheduler, *scheduler.Runtime, error) {
 		cfg, err := config.Load(home)
 		if err != nil {
@@ -78,6 +80,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
 		}
 		served = runtime
+		wait = newServeWait(s, runtime.StateRoot)
 		return s, runtime, nil
 	}, func(ctx context.Context) error {
 		if now := time.Now(); served != nil && !now.Before(nextReclaim) {
@@ -86,7 +89,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 				logger.Warn("workspace reclaim incomplete", "err", err)
 			}
 		}
-		return sleepContext(ctx, 30*time.Second)
+		return wait(ctx, nextReclaim)
 	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
 	if served != nil {
 		if closeErr := served.Close(mergeGateDrain); closeErr != nil {
@@ -121,6 +124,38 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // workspaceReclaimInterval spaces serve's workspace reclaim (OF-96): each run
 // lists the Orca workspaces of every tracked repository.
 const workspaceReclaimInterval = 10 * time.Minute
+
+func newServeWait(s *scheduler.Scheduler, stateRoot string) func(context.Context, time.Time) error {
+	wakePath := filepath.Join(stateRoot, "scheduler-wake.json")
+	lastWake, _ := os.ReadFile(wakePath)
+	return func(ctx context.Context, nextReclaim time.Time) error {
+		deadline := s.NextTickAt
+		if nextReclaim.Before(deadline) {
+			deadline = nextReclaim
+		}
+		timer := time.NewTimer(time.Until(deadline))
+		defer timer.Stop()
+		poll := time.NewTicker(time.Second)
+		defer poll.Stop()
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			// Scheduler owns parsing and read errors; this only detects new requests.
+			if raw, err := os.ReadFile(wakePath); err == nil && !bytes.Equal(raw, lastWake) {
+				lastWake = raw
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+				return nil
+			case <-poll.C:
+			}
+		}
+	}
+}
 
 func projectSource(cfg config.Config) func(context.Context) (projects.Result, error) {
 	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
