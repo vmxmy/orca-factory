@@ -37,8 +37,8 @@ const (
 	selfDeployGuardLockWait = selfDeploySmokeTimeout + 2*time.Minute
 )
 
-// Variables so tests can shorten the idle wait and retry interval.
-var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry = time.Hour, 15 * time.Second, 15 * time.Minute
+// Variables so tests can shorten the idle wait, retry and report intervals.
+var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Second, 15 * time.Minute, 10 * time.Minute
 
 var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
 
@@ -51,12 +51,14 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // guard or the binary may have changed, so the install is not redone until a
 // recovery returns the deployment to pending; the guard reads smoke-passed;
 // rolled-back tells the restored serve to pause and resume, and holds the
-// reason when serve itself rolled back.
+// reason when serve itself rolled back. idle-timeout records the last idle
+// timeout; no new drain starts until selfDeployIdleRetry has elapsed.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
 	markerSmokePassed = "smoke-passed"
 	markerRolledBack  = "rolled-back"
+	markerIdleTimeout = "idle-timeout"
 )
 
 // selfDeployGuardScript runs in its own transient unit, so it outlives the
@@ -148,50 +150,67 @@ func guardUnit(sha string) string {
 // whose deploy-intent cannot return to pending without a new recovery decision.
 func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	d := p.Deployment
-	if d.Reruns > 0 && strings.HasPrefix(d.Reason, errSelfDeployIdleTimeout.Error()) {
+	sha := deploymentSHA(p)
+	idleTimeout := r.selfMarker(sha, markerIdleTimeout)
+	if data, err := os.ReadFile(idleTimeout); err == nil {
+		timedOut, err := time.Parse(time.RFC3339Nano, string(data))
+		if err != nil {
+			return err
+		}
 		now := time.Now()
 		if r.Now != nil {
 			now = r.Now()
 		}
-		if remaining := d.StartedAt.Add(selfDeployIdleRetry).Sub(now); remaining > 0 {
-			return fmt.Errorf("%s；%s 后重试", d.Reason, remaining.Round(time.Second))
+		if remaining := timedOut.Add(selfDeployIdleRetry).Sub(now); remaining > 0 {
+			return fmt.Errorf("%w，%s 后重试", errSelfDeployIdleTimeout, remaining)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	unlock, err := r.deployLock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if err = os.Remove(r.selfMarker(deploymentSHA(p), markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	d.Reason = "等待会话空闲，已等待 0s"
-	if err = r.deploymentReceipt(ctx, t, p); err != nil {
-		return err
-	}
-	if err = touch(r.selfMarker(deploymentSHA(p), markerDrained)); err == nil {
+	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
 		err = maintenance.SetWithin("draining", maintenanceWait)
 	}
 	if err == nil {
-		err = r.awaitIdle(ctx)
+		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
+			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s", elapsed)
+			if err := r.deploymentReceipt(ctx, t, p); err != nil {
+				runx.LoggerFrom(ctx).Warn("self deployment idle progress receipt failed", "err", err)
+			}
+		})
 	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return err
 		}
 		if errors.Is(err, errSelfDeployIdleTimeout) {
-			if resumeErr := r.settleSelf(deploymentSHA(p)); resumeErr != nil {
+			if resumeErr := r.settleSelf(sha); resumeErr != nil {
 				return errors.Join(err, resumeErr, r.pauseSelf(ctx, t, p, "idle wait timed out but maintenance resume failed"))
 			}
-			d.Reason = err.Error()
-			d.StartedAt = time.Now().UTC()
+			now := time.Now()
 			if r.Now != nil {
-				d.StartedAt = r.Now().UTC()
+				now = r.Now()
 			}
-			d.Reruns++
+			if markerErr := os.MkdirAll(filepath.Dir(idleTimeout), 0700); markerErr != nil {
+				return errors.Join(err, markerErr)
+			}
+			if markerErr := os.WriteFile(idleTimeout, []byte(now.UTC().Format(time.RFC3339Nano)), 0600); markerErr != nil {
+				return errors.Join(err, markerErr)
+			}
+			d.Reason = err.Error()
 			return errors.Join(err, r.deploymentReceipt(ctx, t, p))
 		}
 		return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
+	}
+	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	d.State, d.Reason = "deploy-intent", ""
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
@@ -239,10 +258,12 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 }
 
 // awaitIdle waits until no executor, resolver or admitted write remains, as
-// deploy.sh does, for at most one hour.
-func (r *Runtime) awaitIdle(ctx context.Context) error {
+// deploy.sh does, for at most one hour. Before timing out, it reports elapsed
+// time at selfDeployIdleReport intervals.
+func (r *Runtime) awaitIdle(ctx context.Context, report func(elapsed time.Duration)) error {
 	started := time.Now()
 	deadline := started.Add(selfDeployIdleWait)
+	reported := time.Duration(-1)
 	for {
 		state, err := maintenance.Status()
 		if err != nil {
@@ -250,6 +271,10 @@ func (r *Runtime) awaitIdle(ctx context.Context) error {
 		}
 		if !state.WritersActive && !state.SessionsActive {
 			return nil
+		}
+		if step := time.Since(started).Truncate(selfDeployIdleReport); step > reported {
+			report(step)
+			reported = step
 		}
 		if !time.Now().Before(deadline) {
 			return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, time.Since(started).Round(time.Millisecond))

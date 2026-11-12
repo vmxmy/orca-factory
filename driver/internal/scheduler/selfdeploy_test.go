@@ -536,9 +536,9 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			builds := h.builds
 			now := time.Now()
 			f.runtime.Now = func() time.Time { return now }
-			wait, poll := selfDeployIdleWait, selfDeployIdlePoll
-			selfDeployIdleWait, selfDeployIdlePoll = 50*time.Millisecond, 10*time.Millisecond
-			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll = wait, poll })
+			wait, poll, report := selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport
+			selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = 50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
+			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = wait, poll, report })
 			release, err := maintenance.Session()
 			if err != nil {
 				t.Fatal(err)
@@ -555,6 +555,17 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			if markerExists(f, selfSHA, "drained") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "等待会话空闲超时，已等待 ") {
 				t.Fatal("timeout did not release its drain or report the elapsed idle wait")
 			}
+			if !markerExists(f, selfSHA, "idle-timeout") {
+				t.Error("timeout did not persist the idle-timeout marker")
+			}
+			timeoutReceipt := slices.IndexFunc(f.tracker.bodies, func(body string) bool {
+				return strings.Contains(body, "等待会话空闲超时，已等待 ")
+			})
+			if !slices.ContainsFunc(f.tracker.bodies[:timeoutReceipt], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲，已等待 ") && !strings.Contains(body, "等待会话空闲，已等待 0s")
+			}) {
+				t.Error("no nonzero elapsed idle wait receipt before timeout")
+			}
 			release()
 			release = nil
 			now = now.Add(15*time.Minute - time.Nanosecond)
@@ -569,6 +580,9 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			}
 			if h.builds != builds+1 || lastState(f) != "passed" || maintenanceMode(t) != "running" || f.tracker.issue.State.Name != "Done" {
 				t.Fatalf("retry: builds=%d state=%s mode=%s ticket=%s", h.builds, lastState(f), maintenanceMode(t), f.tracker.issue.State.Name)
+			}
+			if markerExists(f, selfSHA, "idle-timeout") {
+				t.Error("successful idle wait retained the idle-timeout marker")
 			}
 		})
 	}

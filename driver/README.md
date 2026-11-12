@@ -211,7 +211,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 失败与崩溃：
 
-- 第 2 步等待空闲超时：释放本次 `drained` 标记对应的 drain，恢复 `running`，回执保持 `pending`，`reruns` 加 1，`started_at` 更新为超时时刻。评论原因写明「等待会话空闲超时」和已等时长；至少 15 分钟后由下一轮 Tick 重试，serve 重启仍沿用回执计时。重试间隔由 `selfDeployIdleRetry` 控制，测试可缩短。等待期间不构建、不暂停合并通道，也不转处置 Agent；原 FIFO 部署屏障仍保留。`retry-workflow` 授权的重装也遵守此规则。
+- 第 2 步等待空闲超时：释放本次 `drained` 标记对应的 drain，恢复 `running`，回执保持 `pending`，不修改 `reruns` 或 `started_at`。把 UTC 的 `RFC3339Nano` 超时时刻写入本机 `<state root>/self-deploy/<sha>.idle-timeout`；重试以该 marker 计时，`selfDeployIdleRetry` 默认 15 分钟，到期前不重新 drain 或构建，serve 重启后仍有效。空闲等待成功后删除 marker。等待期间每 `selfDeployIdleReport`（默认 10 分钟）在既有 `reason` 字段回报「等待会话空闲，已等待 …」，超时写「等待会话空闲超时，已等待 …」；`reason` 仅供展示，不参与重试判定。等待中的进度回执写入失败只记 WARN，不中断等待。等待期间不构建、不暂停合并通道，也不转处置 Agent；原 FIFO 部署屏障仍保留。`retry-workflow` 授权的重装也遵守此规则。
 - 排空的其他错误、第 4 到 6 步失败或超时后恢复维护模式失败：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
 - 第 7 步失败：从备份恢复二进制，写 `rolled-back` 标记，重启。恢复后的 serve 读到标记，写 `paused` 并 resume。
 - 第 2 步中 serve 被杀：回执仍为 `pending`，下一轮重新等待空闲。
