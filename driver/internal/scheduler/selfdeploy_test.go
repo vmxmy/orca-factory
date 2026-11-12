@@ -519,19 +519,97 @@ func TestSelfDeployWaitsForLockAndIdle(t *testing.T) {
 			t.Fatalf("deployed under a held deploy.lock: builds=%d state=%s", h.builds, lastState(f))
 		}
 	})
-	t.Run("sessions active", func(t *testing.T) {
-		f, h := newSelfDeployFixture(t)
-		wait, poll := selfDeployIdleWait, selfDeployIdlePoll
-		selfDeployIdleWait, selfDeployIdlePoll = 50*time.Millisecond, 10*time.Millisecond
-		t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll = wait, poll })
-		release, err := maintenance.Session()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer release()
-		_ = serveAs(f, h, "old")
-		if h.builds != 0 || installed(t, h.driver) != "old" || lastState(f) != "paused" || maintenanceMode(t) != "running" {
-			t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
-		}
-	})
+}
+
+func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			if recovery {
+				h.guardErr = errors.New("guard unavailable")
+				firstServe(t, f, h)
+				h.guardErr = nil
+				if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-workflow", "operator", "guard repaired", false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			builds := h.builds
+			now := time.Now()
+			f.runtime.Now = func() time.Time { return now }
+			wait, poll, report := selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport
+			selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = 50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
+			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = wait, poll, report })
+			release, err := maintenance.Session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if release != nil {
+					release()
+				}
+			})
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+				t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
+			}
+			if markerExists(f, selfSHA, "drained") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "等待会话空闲超时，已等待 ") {
+				t.Fatal("timeout did not release its drain or report the elapsed idle wait")
+			}
+			if !markerExists(f, selfSHA, "idle-timeout") {
+				t.Error("timeout did not persist the idle-timeout marker")
+			}
+			timeoutReceipt := slices.IndexFunc(f.tracker.bodies, func(body string) bool {
+				return strings.Contains(body, "等待会话空闲超时，已等待 ")
+			})
+			if !slices.ContainsFunc(f.tracker.bodies[:timeoutReceipt], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲，已等待 ") && !strings.Contains(body, "等待会话空闲，已等待 0s")
+			}) {
+				t.Error("no nonzero elapsed idle wait receipt before timeout")
+			}
+			round1 := f.tracker.bodies[timeoutReceipt]
+			n := len(f.tracker.bodies)
+			now = now.Add(15 * time.Minute)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "drained") {
+				t.Fatalf("second idle timeout: builds=%d state=%s mode=%s drained=%t", h.builds, lastState(f), maintenanceMode(t), markerExists(f, selfSHA, "drained"))
+			}
+			if !slices.ContainsFunc(f.tracker.bodies[n:], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲，已等待 ")
+			}) {
+				t.Error("second idle wait did not write a new progress receipt")
+			}
+			if !slices.ContainsFunc(f.tracker.bodies[n:], func(body string) bool {
+				return strings.Contains(body, "等待会话空闲超时，已等待 ")
+			}) {
+				t.Error("second idle wait did not write a new timeout receipt")
+			}
+			var lastWaitReceipt string
+			for _, body := range f.tracker.bodies {
+				if strings.Contains(body, "等待会话空闲") {
+					lastWaitReceipt = body
+				}
+			}
+			if lastWaitReceipt == round1 || !strings.Contains(lastWaitReceipt, "第 2 轮") {
+				t.Errorf("second idle wait receipt did not identify round 2: %s", lastWaitReceipt)
+			}
+			release()
+			release = nil
+			now = now.Add(15*time.Minute - time.Nanosecond)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+				t.Fatalf("retried before 15 minutes: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
+			}
+			now = now.Add(time.Nanosecond)
+			firstServe(t, f, h)
+			if err := serveAs(f, h, selfSHA); err != nil {
+				t.Fatal(err)
+			}
+			if h.builds != builds+1 || lastState(f) != "passed" || maintenanceMode(t) != "running" || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("retry: builds=%d state=%s mode=%s ticket=%s", h.builds, lastState(f), maintenanceMode(t), f.tracker.issue.State.Name)
+			}
+			if markerExists(f, selfSHA, "idle-timeout") {
+				t.Error("successful idle wait retained the idle-timeout marker")
+			}
+		})
+	}
 }

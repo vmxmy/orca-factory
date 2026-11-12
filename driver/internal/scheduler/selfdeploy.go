@@ -20,8 +20,8 @@ import (
 )
 
 // Self deployment follows README "部署顺序" from inside serve. The restart
-// stops this process, so the deploy-intent receipt is written before anything
-// changes and the next serve resumes from it. A deploy-intent whose install
+// stops this process, so deploy-intent is recorded before the build or install
+// and the next serve resumes from it. A deploy-intent whose install
 // may have started is never installed twice; one interrupted before the
 // install returns to pending. Every other state converges in whichever serve
 // reads it: passed, or paused with the drain this deployment started resumed.
@@ -37,8 +37,10 @@ const (
 	selfDeployGuardLockWait = selfDeploySmokeTimeout + 2*time.Minute
 )
 
-// Variables so tests can shorten the one-hour idle wait.
-var selfDeployIdleWait, selfDeployIdlePoll = time.Hour, 15 * time.Second
+// Variables so tests can shorten the idle wait, retry and report intervals.
+var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Second, 15 * time.Minute, 10 * time.Minute
+
+var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
 
 // One restart command queues both jobs; systemd does not order them.
 // Restarting the driver unit stops this serve.
@@ -49,12 +51,14 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // guard or the binary may have changed, so the install is not redone until a
 // recovery returns the deployment to pending; the guard reads smoke-passed;
 // rolled-back tells the restored serve to pause and resume, and holds the
-// reason when serve itself rolled back.
+// reason when serve itself rolled back. idle-timeout records the last timeout
+// time and timeout count; no new drain starts until selfDeployIdleRetry has elapsed.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
 	markerSmokePassed = "smoke-passed"
 	markerRolledBack  = "rolled-back"
+	markerIdleTimeout = "idle-timeout"
 )
 
 // selfDeployGuardScript runs in its own transient unit, so it outlives the
@@ -141,19 +145,81 @@ func guardUnit(sha string) string {
 	return "orca-factory-self-deploy-guard-" + sha[:12]
 }
 
-// deploySelf records deploy-intent, then installs. Any failure pauses the
-// deployment for the resolver; a failure after the binary was replaced
-// restores the backup first.
+// deploySelf waits in pending, then records deploy-intent before installing.
+// Keeping the idle wait in pending also permits retries after retry-workflow,
+// whose deploy-intent cannot return to pending without a new recovery decision.
 func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) error {
+	d := p.Deployment
+	sha := deploymentSHA(p)
+	idleTimeout := r.selfMarker(sha, markerIdleTimeout)
+	timeouts := 0
+	if data, err := os.ReadFile(idleTimeout); err == nil {
+		timestamp, count, _ := strings.Cut(string(data), " ")
+		timedOut, err := time.Parse(time.RFC3339Nano, timestamp)
+		if err != nil {
+			return err
+		}
+		timeouts, err = strconv.Atoi(count)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		if r.Now != nil {
+			now = r.Now()
+		}
+		if remaining := timedOut.Add(selfDeployIdleRetry).Sub(now); remaining > 0 {
+			return fmt.Errorf("%w，%s 后重试", errSelfDeployIdleTimeout, remaining)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	round := timeouts + 1
 	unlock, err := r.deployLock()
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	if err = os.Remove(r.selfMarker(deploymentSHA(p), markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	p.Deployment.State = "deploy-intent"
+	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
+		err = maintenance.SetWithin("draining", maintenanceWait)
+	}
+	if err == nil {
+		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
+			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s（第 %d 轮）", elapsed, round)
+			if err := r.deploymentReceipt(ctx, t, p); err != nil {
+				runx.LoggerFrom(ctx).Warn("self deployment idle progress receipt failed", "err", err)
+			}
+		})
+	}
+	if err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
+		if errors.Is(err, errSelfDeployIdleTimeout) {
+			if resumeErr := r.settleSelf(sha); resumeErr != nil {
+				return errors.Join(err, resumeErr, r.pauseSelf(ctx, t, p, "idle wait timed out but maintenance resume failed"))
+			}
+			now := time.Now()
+			if r.Now != nil {
+				now = r.Now()
+			}
+			if markerErr := os.MkdirAll(filepath.Dir(idleTimeout), 0700); markerErr != nil {
+				return errors.Join(err, markerErr)
+			}
+			if markerErr := os.WriteFile(idleTimeout, []byte(now.UTC().Format(time.RFC3339Nano)+" "+strconv.Itoa(round)), 0600); markerErr != nil {
+				return errors.Join(err, markerErr)
+			}
+			d.Reason = fmt.Sprintf("%s（第 %d 轮）", err.Error(), round)
+			return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+		}
+		return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
+	}
+	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	d.State, d.Reason = "deploy-intent", ""
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
 	}
@@ -174,15 +240,6 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 // installSelf arms the guard before the rename, so a serve killed between the
 // rename and the restart still gets the rollback if the new binary fails.
 func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced bool, err error) {
-	if err = touch(r.selfMarker(sha, markerDrained)); err != nil {
-		return false, err
-	}
-	if err = maintenance.SetWithin("draining", maintenanceWait); err != nil {
-		return false, err
-	}
-	if err = r.awaitIdle(ctx); err != nil {
-		return false, err
-	}
 	backup := r.selfBackup(sha)
 	exists, err := fileExists(backup)
 	if err == nil && !exists {
@@ -208,9 +265,12 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 }
 
 // awaitIdle waits until no executor, resolver or admitted write remains, as
-// deploy.sh does, for at most one hour.
-func (r *Runtime) awaitIdle(ctx context.Context) error {
-	deadline := time.Now().Add(selfDeployIdleWait)
+// deploy.sh does, for at most one hour. Before timing out, it reports elapsed
+// time at selfDeployIdleReport intervals.
+func (r *Runtime) awaitIdle(ctx context.Context, report func(elapsed time.Duration)) error {
+	started := time.Now()
+	deadline := started.Add(selfDeployIdleWait)
+	reported := time.Duration(-1)
 	for {
 		state, err := maintenance.Status()
 		if err != nil {
@@ -219,8 +279,12 @@ func (r *Runtime) awaitIdle(ctx context.Context) error {
 		if !state.WritersActive && !state.SessionsActive {
 			return nil
 		}
+		if step := time.Since(started).Truncate(selfDeployIdleReport); step > reported {
+			report(step)
+			reported = step
+		}
 		if !time.Now().Before(deadline) {
-			return errors.New("sessions still active after one hour; deployment abandoned")
+			return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, time.Since(started).Round(time.Millisecond))
 		}
 		timer := time.NewTimer(selfDeployIdlePoll)
 		select {
