@@ -519,19 +519,57 @@ func TestSelfDeployWaitsForLockAndIdle(t *testing.T) {
 			t.Fatalf("deployed under a held deploy.lock: builds=%d state=%s", h.builds, lastState(f))
 		}
 	})
-	t.Run("sessions active", func(t *testing.T) {
-		f, h := newSelfDeployFixture(t)
-		wait, poll := selfDeployIdleWait, selfDeployIdlePoll
-		selfDeployIdleWait, selfDeployIdlePoll = 50*time.Millisecond, 10*time.Millisecond
-		t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll = wait, poll })
-		release, err := maintenance.Session()
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer release()
-		_ = serveAs(f, h, "old")
-		if h.builds != 0 || installed(t, h.driver) != "old" || lastState(f) != "paused" || maintenanceMode(t) != "running" {
-			t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
-		}
-	})
+}
+
+func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
+	for _, recovery := range []bool{false, true} {
+		t.Run(fmt.Sprintf("recovery=%t", recovery), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			if recovery {
+				h.guardErr = errors.New("guard unavailable")
+				firstServe(t, f, h)
+				h.guardErr = nil
+				if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", selfSHA, "retry-workflow", "operator", "guard repaired", false); err != nil {
+					t.Fatal(err)
+				}
+			}
+			builds := h.builds
+			now := time.Now()
+			f.runtime.Now = func() time.Time { return now }
+			wait, poll := selfDeployIdleWait, selfDeployIdlePoll
+			selfDeployIdleWait, selfDeployIdlePoll = 50*time.Millisecond, 10*time.Millisecond
+			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll = wait, poll })
+			release, err := maintenance.Session()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if release != nil {
+					release()
+				}
+			})
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+				t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
+			}
+			if markerExists(f, selfSHA, "drained") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "等待会话空闲超时，已等待 ") {
+				t.Fatal("timeout did not release its drain or report the elapsed idle wait")
+			}
+			release()
+			release = nil
+			now = now.Add(15*time.Minute - time.Nanosecond)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+				t.Fatalf("retried before 15 minutes: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
+			}
+			now = now.Add(time.Nanosecond)
+			firstServe(t, f, h)
+			if err := serveAs(f, h, selfSHA); err != nil {
+				t.Fatal(err)
+			}
+			if h.builds != builds+1 || lastState(f) != "passed" || maintenanceMode(t) != "running" || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("retry: builds=%d state=%s mode=%s ticket=%s", h.builds, lastState(f), maintenanceMode(t), f.tracker.issue.State.Name)
+			}
+		})
+	}
 }

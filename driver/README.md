@@ -201,8 +201,8 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
-2. 账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
-3. 写 `self-deploy/<sha>.drained` 标记，drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+3. 空闲后，账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
 4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
 5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。
 6. 写 `self-deploy/<sha>.installing` 标记，用 `systemd-run --user --on-active=600` 起看守单元 `orca-factory-self-deploy-guard-<sha前12位>`，再用 rename 原子替换二进制。
@@ -211,9 +211,11 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 失败与崩溃：
 
-- 第 3 到 6 步失败（含等待空闲超时）：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
+- 第 2 步等待空闲超时：释放本次 `drained` 标记对应的 drain，恢复 `running`，回执保持 `pending`，`reruns` 加 1，`started_at` 更新为超时时刻。评论原因写明「等待会话空闲超时」和已等时长；至少 15 分钟后由下一轮 Tick 重试，serve 重启仍沿用回执计时。重试间隔由 `selfDeployIdleRetry` 控制，测试可缩短。等待期间不构建、不暂停合并通道，也不转处置 Agent；原 FIFO 部署屏障仍保留。`retry-workflow` 授权的重装也遵守此规则。
+- 排空的其他错误、第 4 到 6 步失败或超时后恢复维护模式失败：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
 - 第 7 步失败：从备份恢复二进制，写 `rolled-back` 标记，重启。恢复后的 serve 读到标记，写 `paused` 并 resume。
-- 第 2 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。部署没有恢复记录时，新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
+- 第 2 步中 serve 被杀：回执仍为 `pending`，下一轮重新等待空闲。
+- 第 3 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。部署没有恢复记录时，新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
 - 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
 - `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
 - 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记在暂停时保留，`passed` 回执确认后删除，或账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前删除，所以暂停回执丢失不会触发重装。有恢复记录（`retry-smoke` 或 `retry-workflow`）的部署版本不符时一律暂停，不看标记。
@@ -222,7 +224,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
 - 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元最多等 7 分钟取得 `deploy.lock`，等不到只记日志退出。取得锁后确认仍无 `smoke-passed` 标记、且已安装二进制的 `version` 仍是 squash SHA，才换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，停看守、写 `paused`、resume 并删除标记。serve 的 smoke 与标记写入都在锁内，看守不会在 smoke 进行中换回旧二进制；人工 `deploy.sh` 装的版本不是 squash SHA，看守不会把它换掉。
 
-处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（等待空闲超时、构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。重装再次在安装前被打断时暂停，可再次 `retry-workflow`。smoke 开始过、或上次恢复是 `retry-smoke` 的部署拒绝 `retry-workflow`（`retry-smoke` 会清除 smoke 开始标志，恢复记录仍保留）。人工已用 `deploy.sh` 部署时，用 `confirm-passed` 放行。
+处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。重装写入 `deploy-intent` 后、安装前再次被打断时暂停，可再次 `retry-workflow`。smoke 开始过、或上次恢复是 `retry-smoke` 的部署拒绝 `retry-workflow`（`retry-smoke` 会清除 smoke 开始标志，恢复记录仍保留）。人工已用 `deploy.sh` 部署时，用 `confirm-passed` 放行。
 
 ## 调度范围（项目发现）
 
