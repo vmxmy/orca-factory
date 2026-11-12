@@ -86,7 +86,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 				logger.Warn("workspace reclaim incomplete", "err", err)
 			}
 		}
-		return sleepContext(ctx, 30*time.Second)
+		return waitForWake(ctx, served.StateRoot, 30*time.Second)
 	}, func(err error) { logger.Error("scheduler error", "err", err); fmt.Fprintln(os.Stderr, err) })
 	if served != nil {
 		if closeErr := served.Close(mergeGateDrain); closeErr != nil {
@@ -115,6 +115,30 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	case <-timer.C:
 		return nil
+	}
+}
+
+func waitForWake(ctx context.Context, root string, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	path := filepath.Join(root, "scheduler-wake.json")
+	var modified time.Time
+	if info, err := os.Stat(path); err == nil {
+		modified = info.ModTime()
+	}
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case <-ticker.C:
+			if info, err := os.Stat(path); err == nil && !info.ModTime().Equal(modified) {
+				return nil
+			}
+		}
 	}
 }
 
