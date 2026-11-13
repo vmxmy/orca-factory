@@ -332,7 +332,7 @@ const release = group => {
   group.removeFromParent()
 }
 
-const travel = (parcel, time, reduced) => {
+const parcelTransition = (parcel, time, reduced) => {
   parcel.start ??= time
   const progress = reduced ? 1 : Math.min(1, (time - parcel.start) / MOVE_MS)
   if (progress === 1) {
@@ -453,7 +453,7 @@ export const createWorld = canvas => {
     animate(time, reduced) {
       for (const parcel of built.parcels.values()) {
         const { mark, group } = parcel
-        if (parcel.from) travel(parcel, time, reduced)
+        if (parcel.from) parcelTransition(parcel, time, reduced)
         mark.position.y = reduced ? MARK_Y : MARK_Y + Math.sin(time / 500 + group.position.x) * 0.08
         mark.rotation.y = reduced ? 0 : time / 1400
       }

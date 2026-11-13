@@ -243,6 +243,37 @@
   max-height: 100%;
 }
 
+.diorama .event-feed {
+  align-self: stretch;
+  flex-shrink: 0;
+  max-height: 18vh;
+  overflow: auto;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.diorama .event-feed h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--w-muted);
+}
+
+.diorama .event-feed ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.diorama .event-feed li + li {
+  margin-top: 6px;
+}
+
 .diorama .tools {
   display: flex;
   gap: 6px;

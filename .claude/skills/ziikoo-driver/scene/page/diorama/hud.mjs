@@ -18,6 +18,7 @@ const swatch = color => {
 
 const SKY_NOTES = { overcast: '维护中', dark: '没有快照' }
 const SEARCH_LIMIT = 8
+const EVENT_FEED = 8
 const deployNote = parcel => {
   if (parcel.unknownDeploy) return ['部署：未知 · driver 未提供 deployment']
   return parcel.undeployed ? ['部署：不适用 · 未配置部署'] : []
@@ -283,8 +284,10 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
     stuckList,
     element('details', {}, [summary, allList]),
   ])
+  const eventList = element('ol', { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions', 'aria-label': '票据变化' })
+  const feed = element('section', { class: 'event-feed', hidden: '', 'aria-label': '最近事件' }, [element('h2', { text: '最近事件' }), eventList])
   const lead = element('div', { class: 'lead' }, [status, today, alarm, dock])
-  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle]), search.form, panel])
+  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle]), search.form, panel, feed])
   const trip = element('div', { class: 'trip', 'aria-live': 'polite' })
   const hud = element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip])
   stage.append(hud)
@@ -313,6 +316,13 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
 
   return {
     openSearch: search.open,
+    events(changes) {
+      for (const change of changes) {
+        eventList.prepend(element('li', { 'data-event': change.type, text: change.text, title: change.path }))
+      }
+      while (eventList.children.length > EVENT_FEED) eventList.lastElementChild.remove()
+      feed.hidden = eventList.children.length === 0
+    },
     update(next) {
       archipelago = next
       const { stuck, tickets, islands } = next
