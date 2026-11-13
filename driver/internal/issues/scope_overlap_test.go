@@ -88,3 +88,9 @@ func TestCreateRejectsOverlappingScope(t *testing.T) {
 		})
 	}
 }
+
+func closeFeishuTickets(f *feishuFake) {
+	for _, row := range f.rows["tblT"] {
+		row["状态"] = []string{"Done"}
+	}
+}

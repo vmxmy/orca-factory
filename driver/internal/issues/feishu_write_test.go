@@ -314,6 +314,7 @@ func TestFeishuWriteHeldTaskReadopts(t *testing.T) {
 
 func TestFeishuWriteCreateStructuredAndAdopted(t *testing.T) {
 	f := newFeishuFake(t)
+	closeFeishuTickets(f)
 	f.staleReads = 2
 	c := newFeishuTest(t, f)
 	fastReadBack(c)
@@ -568,10 +569,11 @@ func selfCheckDescription(redReason string) string {
 }
 
 func TestCreateAcceptsAssertionFailureCheckRed(t *testing.T) {
-	f := newFeishuFake(t)
-	c := newFeishuTest(t, f)
-	fastReadBack(c)
 	for _, reason := range []string{"断言失败 AssertionError: expected 1 to be 0", "断言失败：LiteLLM usage 记录缺失，expected 10 tests to report usage"} {
+		f := newFeishuFake(t)
+		closeFeishuTickets(f)
+		c := newFeishuTest(t, f)
+		fastReadBack(c)
 		if _, err := c.Create(context.Background(), CreateInput{Title: "有效红", Description: selfCheckDescription(reason)}); err != nil {
 			t.Fatalf("assertion failure red %q rejected: %v", reason, err)
 		}
@@ -728,6 +730,7 @@ func TestCreateRejectsBehaviorTraceOutsideScope(t *testing.T) {
 					var writeCount func() int
 					if backend == "feishu" {
 						fake := newFeishuFake(t)
+						closeFeishuTickets(fake)
 						client := newFeishuTest(t, fake)
 						fastReadBack(client)
 						store = client
@@ -863,6 +866,7 @@ func TestCreateRequiresRecordedSampleScope(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			f := newFeishuFake(t)
+			closeFeishuTickets(f)
 			client := newFeishuTest(t, f)
 			fastReadBack(client)
 			_, err := client.Create(context.Background(), CreateInput{Title: "录制样本", Description: test.description})
