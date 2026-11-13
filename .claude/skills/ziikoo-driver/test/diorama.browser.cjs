@@ -49,6 +49,14 @@ const row = (parcels, workers = 3) => ({ name: 'fixture', path: '/fixture', depl
 
 async function checkModel() {
   const model = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
+  assert.deepEqual(model.STAGE_BASELINE_MINUTES, { human: 98, repair: 47, merge: 41, work: 19.5, return: 19, review: 3.4, gate: 1.4 })
+  const timing = minutes => model.archipelagoOf({ generatedAt: 10_000_000, rows: [row([parcel('T-1', 'repair', { since: 10_000_000 - minutes * 60_000 })])] }).tickets[0]
+  assert.deepEqual([47, 47.001, 94, 94.001].map(minutes => timing(minutes).overdue), [null, 'warn', 'warn', 'bad'], 'rings use strict one- and two-baseline thresholds')
+  const untimed = model.archipelagoOf({ generatedAt: 10_000_000, rows: [row([
+    parcel('missing', 'repair'), parcel('unmeasured', 'pack', { since: 0 }), parcel('future', 'repair', { since: 20_000_000 }),
+  ])] }).tickets
+  assert.deepEqual(untimed.map(ticket => ticket.overdue), [null, null, null], 'missing since, missing baseline and future since must not claim overtime')
+  console.log('PASS stage baseline model: measured values, strict thresholds, missing times and baselines')
   const recorded = readJSON(path.join(preview, 'diorama-scene-next-scan.json'))
   assert.equal(recorded.state, 'ok')
   assert.equal(recorded.nextScanAt - recorded.generatedAt, 5_170, 'the recorded next scan interval must survive parseRuntime and sceneOf')
@@ -523,6 +531,49 @@ async function pixelDifference(page, expected, actual) {
     })
     return { changed, ratio: changed / (width * height), png }
   }, [expected.toString('base64'), actual.toString('base64')])
+}
+
+async function checkStageBaselines(browser, url) {
+  const { page, errors } = await open(browser, `${url}?project=${encodeURIComponent(FACTORY)}&ticket=OF-415`, { reducedMotion: 'reduce' })
+  try {
+    await tripHas(page, ['已停留 8 小时 8 分', '均 47 分', '超基线'])
+    assert.ok((await page.locator('.label.ticket').filter({ hasText: 'OF-415' }).textContent()).includes('8 小时 8 分 · 超基线'))
+    await page.getByRole('button', { name: '2 工坊', exact: true }).click()
+    const labels = await page.locator('.labels').textContent()
+    for (const text of ['主账本 · 无基线', '封箱 · 开 PR · 无基线', '船闸 · 部署屏障 · 无基线', '灯塔 · smoke · 无基线', '处置塔 · 均 47 分']) assert.ok(labels.includes(text), text)
+    const result = await page.evaluate(async () => {
+      const THREE = await import('three')
+      const { createWorld } = await import('../../scene/page/diorama/world.mjs')
+      const add = THREE.Scene.prototype.add
+      let scene
+      THREE.Scene.prototype.add = function (...objects) { scene = this; return add.apply(this, objects) }
+      const world = createWorld(document.createElement('canvas'))
+      THREE.Scene.prototype.add = add
+      try {
+        const archipelago = window.diorama.archipelago
+        world.build(archipelago)
+        const ticket = archipelago.tickets.find(ticket => ticket.identifier === 'OF-415' && ticket.path === '/home/laoxu/github/orca-factory')
+        const ring = world.parcels.get(ticket.key).group.getObjectByName('overdue-ring')
+        const tiles = []
+        scene.traverse(node => { if (node.name === 'baseline-tile') tiles.push(node) })
+        world.focus(1, ticket.island)
+        const globalTiles = tiles.filter(tile => tile.visible).length
+        world.focus(2, ticket.island)
+        return {
+          ring: ring && { visible: ring.visible, color: ring.material.color.getHex(), shape: ring.geometry.type },
+          globalTiles,
+          localTiles: tiles.filter(tile => tile.visible).map(tile => tile.parent.userData.island),
+          island: ticket.island,
+        }
+      } finally { world.dispose() }
+    })
+    assert.deepEqual(result.ring, { visible: true, color: 0xe0442e, shape: 'RingGeometry' }, 'OF-415 must carry a red ring after eight hours at repair')
+    assert.equal(result.globalTiles, 0, 'global view must hide all baseline tiles')
+    assert.ok(result.localTiles.length > 0, 'workshop must draw baseline tiles')
+    assert.ok(result.localTiles.every(island => island === result.island), 'neighboring islands must not show colored baseline tiles')
+    assert.deepEqual(errors, [])
+    console.log('PASS stage baselines: repair red ring, duration and baseline comparison, missing baselines, focused island tiles')
+  } finally { await page.close() }
 }
 
 async function checkBaselines(browser, url, model) {
@@ -1362,6 +1413,7 @@ async function main() {
       env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkStageBaselines(browser, url)
       await checkStationTagsAndNeighborhood(browser, url)
       await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)

@@ -1,4 +1,4 @@
-import { TRACK } from './model.mjs'
+import { BASELINE_COLORS, baselineColor, baselineText, TRACK } from './model.mjs'
 
 export const element = (tag, attributes = {}, children = []) => {
   const node = document.createElement(tag)
@@ -100,6 +100,29 @@ const tripTrack = parcel => {
     const state = parcel.track < 0 ? '' : index < parcel.track ? 'done' : index === parcel.track ? 'now' : ''
     return element('span', { class: state, text: step.name })
   }))
+}
+
+const tripBaseline = parcel => {
+  const bars = []
+  if (parcel.baselineMinutes !== undefined && parcel.elapsedMinutes !== undefined) {
+    const maximum = Math.max(parcel.baselineMinutes, parcel.elapsedMinutes)
+    for (const [name, minutes, color] of [
+      ['工位平均', parcel.baselineMinutes, baselineColor(parcel.station)],
+      ['已停留', parcel.elapsedMinutes, parcel.overdue === 'bad' ? '#e0442e' : parcel.overdue === 'warn' ? '#eea61b' : '#9d98a8'],
+    ]) {
+      const bar = element('i')
+      bar.style.width = `${minutes / maximum * 100}%`
+      bar.style.background = color
+      bars.push(element('div', { class: 'baseline-row', 'aria-label': `${name} ${minutes.toFixed(1)} 分` }, [name, bar]))
+    }
+  }
+  return element('div', { class: 'trip-baseline' }, [
+    element('span', { class: parcel.overdue ?? '', text: `已停留 ${parcel.duration} · ${baselineText(parcel.station)}${parcel.overdue ? ' · 超基线' : ''}` }),
+    ...bars,
+    element('div', { class: 'baseline-legend' }, [
+      '工位均值 0 分 ', ...BASELINE_COLORS.map(swatch), ' 100 分 · 超 1 倍琥珀环，超 2 倍红环',
+    ]),
+  ])
 }
 
 const correctionBudget = ({ count, limit }, spent) =>
@@ -366,7 +389,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
         trip.replaceChildren(element('div', { class: 'trip-head' }, [element('span', { class: 'why', text: tripHint(island) })]))
         return
       }
-      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel), tripActions(parcel)))
+      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripBaseline(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel), tripActions(parcel)))
     },
     remove() {
       hud.remove()

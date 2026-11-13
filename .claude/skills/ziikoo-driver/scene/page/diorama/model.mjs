@@ -8,6 +8,26 @@ export const OWNER_COLORS = {
 
 export const ownerColor = owner => OWNER_COLORS[owner] ?? OWNER_COLORS.无
 
+// 2026-11-13 实测：31 张票各阶段停留的算术平均，单位为分钟；未测工位不补值。
+export const STAGE_BASELINE_MINUTES = Object.freeze({
+  human: 98,
+  repair: 47,
+  merge: 41,
+  work: 19.5,
+  return: 19,
+  review: 3.4,
+  gate: 1.4,
+})
+
+export const baselineText = station => STAGE_BASELINE_MINUTES[station] === undefined ? '无基线' : `均 ${STAGE_BASELINE_MINUTES[station]} 分`
+
+export const BASELINE_COLORS = ['#deebf7', '#9ecae1', '#4292c6', '#2171b5', '#084594']
+export const baselineColor = station => {
+  const minutes = STAGE_BASELINE_MINUTES[station]
+  if (minutes === undefined) return null
+  return BASELINE_COLORS[Math.min(BASELINE_COLORS.length - 1, Math.floor(minutes / 100 * BASELINE_COLORS.length))]
+}
+
 export const TRACK = [
   { station: 'pickup', name: '待领' },
   { station: 'work', name: '施工' },
@@ -149,8 +169,11 @@ const tapesOf = corrections =>
     ? { tapes: 0, tapesSpent: false }
     : { tapes: Math.min(corrections.count, corrections.limit), tapesSpent: corrections.count >= corrections.limit }
 
-const viewOf = (parcel, station, slot, deploy) => {
+const viewOf = (parcel, station, slot, deploy, now) => {
   const unknownDeploy = parcel.unknownDeploy && deploy
+  const baselineMinutes = STAGE_BASELINE_MINUTES[station]
+  const elapsedMinutes = parcel.since === undefined || now === undefined ? undefined : Math.max(0, now - parcel.since) / 60_000
+  const overdue = baselineMinutes === undefined || elapsedMinutes === undefined ? null : elapsedMinutes > baselineMinutes * 2 ? 'bad' : elapsedMinutes > baselineMinutes ? 'warn' : null
   return {
     ...tapesOf(parcel.corrections),
     lane: parcel.lane,
@@ -173,6 +196,9 @@ const viewOf = (parcel, station, slot, deploy) => {
     label: parcel.label,
     phase: parcel.phase,
     duration: parcel.duration,
+    baselineMinutes,
+    elapsedMinutes,
+    overdue,
     since: parcel.since,
     reason: parcel.reason || parcel.blocker,
     humanKind: parcel.humanKind,
@@ -183,7 +209,7 @@ const viewOf = (parcel, station, slot, deploy) => {
   }
 }
 
-export const islandOf = row => {
+export const islandOf = (row, now) => {
   const stations = new Map()
   for (const parcel of row.parcels) {
     const station = stationOf(parcel.station)
@@ -199,7 +225,7 @@ export const islandOf = row => {
   const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
     members.map((parcel, index) => {
-      const view = viewOf(parcel, station, rules[station](index), row.deploy)
+      const view = viewOf(parcel, station, rules[station](index), row.deploy, now)
       return view.raft && station === 'merge' ? { ...view, slot: { ...view.slot, y: view.slot.y + RAFT_HEIGHT } } : view
     }),
   )
@@ -227,8 +253,8 @@ const worstAlert = parcels => {
   return parcels.length > 0 ? 'warn' : null
 }
 
-const placed = (row, index) => {
-  const island = islandOf(row)
+const placed = (row, index, now) => {
+  const island = islandOf(row, now)
   const parcels = island.parcels.map(parcel => ({ ...parcel, key: `${index}/${parcel.identifier}` }))
   const stuck = stuckOf({ parcels })
   return {
@@ -241,7 +267,7 @@ const placed = (row, index) => {
 }
 
 export const archipelagoOf = scene => {
-  const islands = scene.rows.map(placed)
+  const islands = scene.rows.map((row, index) => placed(row, index, scene.generatedAt))
   const tickets = islands.flatMap(island =>
     island.parcels.map(parcel => ({ ...parcel, island: island.index, project: island.name, path: island.path })),
   )

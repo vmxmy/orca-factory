@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { stationNeighborhood } from './model.mjs'
+import { baselineText, stationNeighborhood } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -127,10 +127,10 @@ const humanBadge = kind => {
 const ticketLabel = parcel => ({
   ...itemOf(
     element('span', {
-      class: ['label', 'ticket', parcel.alert ?? ''].join(' ').trim(),
+      class: ['label', 'ticket', parcel.alert === 'bad' ? 'bad' : parcel.overdue ?? parcel.alert ?? ''].join(' ').trim(),
     }, [
       ...humanBadge(parcel.humanKind),
-      [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
+      [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.overdue ? ['超基线'] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
     ]),
     new Vector3(),
   ),
@@ -204,7 +204,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
     const global = stop === 1
     const neighborhood = stop === 3 ? stationNeighborhood(tickets.find(ticket => ticket.parcel.key === selected).parcel.station) : null
     const marked = tickets
-      .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.key === selected)
+      .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.overdue || ticket.parcel.key === selected)
       .sort((left, right) => Number(right.parcel.key === selected) - Number(left.parcel.key === selected))
     return {
       tickets: marked,
@@ -316,7 +316,7 @@ export const createOverlay = (stage, world, { onIsland }) => {
       }
       const island = islands[index]
       stations = stationLabels(island).map(([station, text, x, y, z]) =>
-        ({ ...itemOf(element('span', { class: 'label', text, hidden: '' }), new Vector3(x + island.origin.x, y, z + island.origin.z)), station, marker: markerOf() }),
+        ({ ...itemOf(element('span', { class: 'label', text: `${text} · ${baselineText(station)}`, hidden: '' }), new Vector3(x + island.origin.x, y, z + island.origin.z)), station, marker: markerOf() }),
       )
       labels.append(...stations.flatMap(station => [station.node, station.marker]))
     },

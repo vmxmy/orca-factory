@@ -770,3 +770,33 @@
     font-size: 9px;
   }
 }
+.diorama .trip-baseline {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0;
+  font: 12px/1.4 var(--text);
+}
+
+.diorama .baseline-row {
+  display: grid;
+  grid-template-columns: 5em 1fr;
+  align-items: center;
+}
+
+.diorama .baseline-row i {
+  display: block;
+  height: 6px;
+  border-radius: 2px;
+}
+
+.diorama .baseline-legend {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.diorama .baseline-legend i {
+  width: 10px;
+  height: 8px;
+}
