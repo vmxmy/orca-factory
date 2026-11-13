@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { stationNeighborhood, slotRules } from './model.mjs'
 
 THREE.ColorManagement.enabled = false
 
@@ -71,6 +72,12 @@ const faded = color => new THREE.Color(color).lerp(SKY_TONE, IDLE_FADE).getHex()
 const plain = color => color
 
 const kitOf = (parent, tone = plain) => ({
+  station(name) {
+    const group = new THREE.Group()
+    group.userData.station = name
+    parent.add(group)
+    return kitOf(group, tone)
+  },
   box([w, h, d], color, [x, y, z], options = {}) {
     const paint = tone(color)
     const mesh = new THREE.Mesh(UNIT_BOX, 'emissive' in options ? material(paint, options) : shared(paint, options))
@@ -114,42 +121,52 @@ const buildGround = (kit, layout) => {
   groundBlock(kit, { ...water, left: 15 })
 }
 
-const buildMainline = (kit, layout) => {
+const buildMainline = (islandKit, layout) => {
+  let kit = islandKit.station('pickup')
   const tiers = [[1.9, 0.5, WORLD.tower], [1.6, 0.5, WORLD.cream], [1.9, 0.5, WORLD.tower], [1.6, 0.5, WORLD.cream], [1.9, 0.4, WORLD.tower]]
   tiers.reduce((y, [width, height, color]) => {
     kit.box([width, height, width], color, [layout.tower, y, 0])
     return y + height
   }, 0)
+  kit = islandKit.station('work')
   const doors = layout.booths.map(({ x, z }) => {
     kit.box([1.5, 1.5, 1.3], WORLD.mezzanine, [x, 0, z])
     kit.box([1.7, 0.2, 1.5], WORLD.roof, [x, 1.5, z])
     return kit.box([0.7, 0.95, 0.06], WORLD.dark, [x, 0.22, z + 0.67], { emissive: 0x000000 })
   })
+  kit = islandKit.station('gate')
   kit.box([1.7, 1.7, 1.7], WORLD.glass, [-1, 0.22, 0], { transparent: true, opacity: 0.34 })
   for (const [x, z] of [[-1.8, -0.8], [-1.8, 0.8], [-0.2, -0.8], [-0.2, 0.8]]) kit.box([0.12, 1.8, 0.12], WORLD.cream, [x, 0.22, z])
   kit.box([1.84, 0.12, 1.84], WORLD.cream, [-1, 1.96, 0])
+  kit = islandKit.station('review')
   kit.box([0.3, 2, 0.3], WORLD.tower, [2.5, 0.22, -0.95])
   kit.box([0.3, 2, 0.3], WORLD.tower, [2.5, 0.22, 0.95])
   kit.box([0.5, 0.35, 2.5], WORLD.tower, [2.5, 2.2, 0])
-  kit.box([1.5, 0.22, 1.5], WORLD.mezzanine, [5.5, 0.22, 0])
+  islandKit.station('pack').box([1.5, 0.22, 1.5], WORLD.mezzanine, [5.5, 0.22, 0])
   return doors
 }
 
-const buildMezzanine = kit => {
+const buildMezzanine = islandKit => {
+  let kit = islandKit
   kit.box([15.5, 1.5, 3], WORLD.mezzanine, [-0.25, 0, -5.6])
   for (let step = 0; step < 5; step++) kit.box([1.3, 0.3 * (step + 1), 0.62], WORLD.mezzanine, [-1, 0, -1.2 - step * 0.62])
+  kit = islandKit.station('return')
   kit.box([1, 0.14, 2.4], WORLD.mezzanine, [-6.5, 1.05, -3.3]).rotation.x = -0.42
+  kit = islandKit.station('repair')
   kit.box([1.5, 2.6, 1.5], WORLD.tower, [-1, 1.5, -6.3])
   kit.cone(1.2, 1.1, WORLD.roof, [-1, 4.65, -6.3])
+  kit = islandKit.station('human')
   kit.box([1.8, 0.2, 1.6], WORLD.cream, [3, 1.5, -5.6])
   kit.box([0.12, 2.3, 0.12], WORLD.dark, [4.2, 1.5, -6.6])
   return kit.box([0.42, 0.5, 0.42], WORLD.unlit, [4.2, 3.8, -6.6], { emissive: 0x000000 })
 }
 
-const buildWaterfront = kit => {
+const buildWaterfront = islandKit => {
+  let kit = islandKit.station('dispatch')
   kit.box([0.4, 1.5, 0.5], WORLD.tower, [11.2, 0, 3])
   kit.box([0.4, 2.9, 0.5], WORLD.tower, [15.2, -1.4, 3])
   const lock = kit.box([3.6, 1.1, 0.3], WORLD.dark, [13.2, LOCK_Y.closed, 3])
+  kit = islandKit.station('smoke')
   kit.box([0.9, 3, 0.9], WORLD.cream, [16.2, 0, 6.6])
   kit.box([1.1, 0.2, 1.1], WORLD.tower, [16.2, 3, 6.6])
   const beacon = kit.box([0.6, 0.6, 0.6], WORLD.unlit, [16.2, 3.2, 6.6], { emissive: 0x000000 })
@@ -339,7 +356,7 @@ const buildContent = (scene, archipelago, previous) => {
     }
     return [view.key, parcel]
   })))
-  return { content, sea, parcels, targets: [...lands, ...[...parcels.values()].map(parcel => parcel.body)] }
+  return { content, sea, parcels, lands, targets: [...lands, ...[...parcels.values()].map(parcel => parcel.body)] }
 }
 
 export const createWorld = canvas => {
@@ -354,16 +371,42 @@ export const createWorld = canvas => {
   const raycaster = new THREE.Raycaster()
   let sky = 'clear'
   let built = { content: null, sea: null, parcels: new Map(), targets: [] }
+  let islands = []
 
   return {
     get parcels() {
       return built.parcels
     },
     build(archipelago) {
+      islands = archipelago.islands
       const previous = new Map([...built.parcels.values()].map(parcel => [parcel.id, parcel.group.position.clone()]))
       if (built.content) release(built.content)
       built = buildContent(scene, archipelago, previous)
       tintSea(built, sky)
+    },
+    neighborhood(key) {
+      const selected = built.parcels.get(key)
+      const island = islands.find(one => one.parcels.some(parcel => parcel.key === key))
+      const { station } = selected.view
+      const rules = slotRules(island.layout)
+      const bounds = new THREE.Box3()
+      for (const name of stationNeighborhood(station)) {
+        const slot = rules[name](0)
+        const point = new THREE.Vector3(slot.x + island.origin.x, slot.y, slot.z + island.origin.z)
+        bounds.expandByPoint(point.clone().addScalar(-0.4))
+        bounds.expandByPoint(point.clone().add(new THREE.Vector3(0.4, 2, 0.4)))
+      }
+      const land = built.lands[island.index]
+      land.updateWorldMatrix(true, true)
+      land.traverse(node => {
+        if (node.userData.station === (station === 'unknown' ? 'pickup' : station) || station === 'merge' && node.name === 'pier') bounds.expandByObject(node)
+      })
+      for (const parcel of built.parcels.values()) {
+        if (parcel.view.station !== station || !island.parcels.some(one => one.key === parcel.view.key)) continue
+        bounds.expandByPoint(parcel.target.clone().addScalar(-0.4))
+        bounds.expandByPoint(parcel.target.clone().add(new THREE.Vector3(0.4, 2, 0.4)))
+      }
+      return [bounds.min.x, bounds.max.x].flatMap(x => [bounds.min.y, bounds.max.y].flatMap(y => [bounds.min.z, bounds.max.z].map(z => ({ x, y, z }))))
     },
     setSky(kind) {
       sky = kind
@@ -381,7 +424,9 @@ export const createWorld = canvas => {
       const hit = raycaster.intersectObjects(built.targets, true)[0]?.object
       if (!hit) return null
       if (hit.userData.key) return { key: hit.userData.key }
-      return { island: hit.parent.userData.island }
+      let land = hit.parent
+      while (land.userData.island === undefined) land = land.parent
+      return { island: land.userData.island }
     },
     animate(time, reduced) {
       for (const parcel of built.parcels.values()) {

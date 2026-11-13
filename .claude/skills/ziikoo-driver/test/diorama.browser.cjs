@@ -304,6 +304,105 @@ const settled = page =>
     return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
   })
 
+async function checkStationTagsAndNeighborhood(browser, url) {
+  const { page, errors } = await open(browser, `${url}?project=${encodeURIComponent(FACTORY)}&ticket=OF-419`, { reducedMotion: 'reduce' })
+  try {
+    for (const width of [1280, 760]) {
+      await page.setViewportSize({ width, height: 900 })
+      await frames(page)
+      await settled(page)
+      const result = await page.evaluate(async () => {
+        const THREE = await import('three')
+        const { createWorld } = await import('../../scene/page/diorama/world.mjs')
+        const add = THREE.Scene.prototype.add
+        let scene
+        THREE.Scene.prototype.add = function (...objects) {
+          scene = this
+          return add.apply(this, objects)
+        }
+        const world = createWorld(document.createElement('canvas'))
+        THREE.Scene.prototype.add = add
+        let bounds
+        try {
+          world.build(window.diorama.archipelago)
+          scene.updateMatrixWorld(true)
+          bounds = new THREE.Box3()
+          scene.traverse(node => {
+            let island = node.parent
+            while (island && island.userData.island === undefined) island = island.parent
+            if (island?.userData.island !== window.diorama.archipelago.islands.find(one => one.path === window.diorama.state().focus).index) return
+            if (node.isMesh && ((node.scale.x === 1.5 && node.scale.y === 2.6) || node.geometry.type === 'ConeGeometry' && node.position.y === 4.65)) {
+              bounds.union(new THREE.Box3().setFromObject(node))
+            }
+          })
+          if (bounds.isEmpty()) throw new Error('repair tower geometry not found')
+        } finally {
+          world.dispose()
+        }
+        const { view } = window.diorama.state()
+        const camera = new THREE.OrthographicCamera(-view.half * innerWidth / innerHeight, view.half * innerWidth / innerHeight, view.half, -view.half, 0.1, 600)
+        camera.position.set(1, 1, 1).normalize().multiplyScalar(200)
+        camera.lookAt(0, 0, 0)
+        camera.position.add(new THREE.Vector3(view.x, 0, view.z))
+        camera.updateMatrixWorld()
+        const points = [bounds.min.x, bounds.max.x].flatMap(x => [bounds.min.y, bounds.max.y].flatMap(y => [bounds.min.z, bounds.max.z].map(z => new THREE.Vector3(x, y, z).project(camera))))
+        const labels = [...document.querySelectorAll('.label:not([hidden])')].map(node => ({ text: node.textContent, ...node.getBoundingClientRect().toJSON() }))
+        return { points: points.map(point => [(point.x + 1) / 2, (1 - point.y) / 2]), labels }
+      })
+      for (const [x, y] of result.points) {
+        assert.ok(x >= 0.18 && x <= 0.82 && y >= 0.18 && y <= 0.82, `repair tower must have 18% padding on every side at width ${width}: ${x}, ${y}`)
+      }
+      assert.ok(result.labels.some(label => label.text.includes('OF-419') && label.text.includes('+1')), 'selected OF-419 must represent overlapping OF-415 with +1')
+      for (const [index, label] of result.labels.entries()) {
+        for (const other of result.labels.slice(index + 1)) {
+          assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.text} and ${other.text} must not overlap`)
+        }
+      }
+    }
+    const crowded = await page.evaluate(async () => {
+      const THREE = await import('three')
+      const { createOverlay } = await import('../../scene/page/diorama/overlay.mjs')
+      const host = document.createElement('div')
+      host.className = 'diorama'
+      document.body.append(host)
+      const tickets = [0, 1].flatMap(island => ['repair', 'human'].map(station => ({
+        island, station, key: `${island}/${station}`, identifier: `LONG-${island}-${station}`, alert: 'warn', since: 0, duration: '等待'.repeat(80),
+      })))
+      const world = { parcels: new Map(tickets.map(ticket => [ticket.key, { group: { position: new THREE.Vector3(0, -2, 0) } }])) }
+      const overlay = createOverlay(host, world, { onIsland() {} })
+      try {
+        overlay.update({ islands: [], hub: null, tickets })
+        const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
+        camera.position.set(0, 0, 10)
+        camera.updateMatrixWorld()
+        const size = { width: 340, height: 240 }
+        const margins = { top: 8, right: 8, bottom: 8, left: 8 }
+        overlay.place(camera, { stop: 2, selected: null, margins, size })
+        const markers = [...host.querySelectorAll('.tag-marker:not([hidden])')].map(node => ({ text: node.textContent, ids: JSON.parse(node.dataset.tickets), ...node.getBoundingClientRect().toJSON() }))
+        const legend = host.querySelector('.tag-legend')
+        return { markers, legend: { text: legend.textContent, ...legend.getBoundingClientRect().toJSON() } }
+      } finally {
+        overlay.remove()
+        host.remove()
+      }
+    })
+    assert.equal(crowded.markers.length, 4, 'unplaceable tags must become numbered circles without folding different stations or projects together')
+    assert.deepEqual(crowded.markers.map(marker => marker.text), ['1', '2', '3', '4'])
+    for (const [index, marker] of crowded.markers.entries()) {
+      assert.equal(marker.ids.length, 1)
+      assert.ok(crowded.legend.text.includes(`${marker.text} · ${marker.ids[0]}`), 'each numbered circle must have a readable legend entry')
+      assert.ok(marker.left >= 8 && marker.right <= 332 && marker.top >= 8 && marker.bottom <= 232, 'numbered circles must stay in the usable viewport')
+      for (const other of [...crowded.markers.slice(index + 1), crowded.legend]) {
+        assert.ok(marker.right <= other.left || other.right <= marker.left || marker.bottom <= other.top || other.bottom <= marker.top, 'numbered circles and legend must not overlap')
+      }
+    }
+    assert.deepEqual(errors, [])
+    console.log('PASS station tags and neighborhood: OF-415/OF-419 fold with +1, labels do not overlap, repair tower has 18% padding')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkHumanQueue(browser, url) {
   const { page, errors } = await open(browser, url, { reducedMotion: 'reduce' })
   const fixture = {
@@ -346,22 +445,19 @@ async function checkHumanQueue(browser, url) {
       await page.setViewportSize({ width, height: 900 })
       await frames(page)
       await settled(page)
-      const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ id: node.textContent.split(' · ')[0], ...node.getBoundingClientRect().toJSON() })))
-      assert.equal(labels.length, 7)
-      const current = await state(page)
-      const { islandOf } = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/model.mjs')))
-      const slots = islandOf(fixture.rows[0]).parcels
-      for (const label of labels) {
-        const slot = slots.find(one => one.identifier === label.id).slot
-        const pixel = pixelOf(current.view, slot, { width, height: 900 })
-        assert.ok(Math.abs(label.x + label.width / 2 - pixel.x) < 1, `${label.id} label must stay horizontally aligned with its box at width ${width}`)
-        for (const other of labels.filter(other => other.id !== label.id)) {
-          assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.id} and ${other.id} labels must not overlap at width ${width}`)
+      const labels = await page.locator('.label[data-tickets]:visible').evaluateAll(nodes => nodes.map(node => ({ ids: JSON.parse(node.dataset.tickets), ...node.getBoundingClientRect().toJSON() })))
+      assert.deepEqual(labels.flatMap(label => label.ids).sort(), fixture.rows[0].parcels.map(parcel => parcel.identifier).sort(), 'folded labels must account for all seven waiting tickets exactly once')
+      for (const [index, label] of labels.entries()) {
+        for (const other of labels.slice(index + 1)) {
+          assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.ids} and ${other.ids} labels must not overlap at width ${width}`)
         }
       }
+      await page.locator('.stuck > .list button[data-ticket="0/H-3"]').click()
+      await frames(page)
+      assert.equal(await page.locator('.label.ticket:visible').filter({ hasText: 'H-3' }).count(), 1, 'selecting a folded ticket must make it the visible representative')
     }
     assert.deepEqual(errors, [])
-    console.log('PASS human queue geometry: boxes on platform, platform on island, labels separated and horizontally anchored')
+    console.log('PASS human queue geometry: boxes on platform, platform on island, folded labels retain every ticket and selection')
   } finally {
     await page.close()
   }
@@ -703,10 +799,10 @@ async function checkReducedMotion(browser, url) {
     assert.deepEqual([jumped.stop, jumped.selected], [3, 'OF-415'], 'an update must keep the stop and the selection')
     assert.notDeepEqual(jumped.target, moved.target, 'the selected box must get its new station')
     assert.deepEqual(jumped.at, jumped.target, 'a moved box must jump to its new station when motion is reduced')
-    const distance = Math.hypot(jumped.goal.x - jumped.target[0], jumped.goal.z - jumped.target[2])
-    assert.ok(distance < 2, `the ticket camera must follow the next scan within one booth spacing (2), got ${distance}`)
+    const point = pixelOf(jumped.view, { x: jumped.target[0], y: jumped.target[1], z: jumped.target[2] }, { width: 1440, height: 900 })
+    assert.ok(point.x >= 1440 * 0.18 && point.x <= 1440 * 0.82 && point.y >= 900 * 0.18 && point.y <= 900 * 0.82, 'a station change must frame the new neighborhood with padding')
     assert.deepEqual(jumped.view, jumped.goal, 'refocusing after a station change must jump immediately')
-    assert.equal(jumped.goal.half, moved.goal.half, 'refocusing must keep the ticket framing size')
+    assert.notEqual(jumped.goal.half, moved.goal.half, 'refocusing must fit the new neighborhood instead of keeping a fixed ticket size')
     await reshape('remove')
     assert.equal((await state(page)).selected, null, 'an update must clear a selection whose ticket left the Scene')
     const refused = await page.evaluate(async () => {
@@ -1088,7 +1184,7 @@ const HUMAN_BADGE_EXPECTED = {
 }
 
 const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket')
-  .filter({ hasText: new RegExp(`^${identifier}( · |$)`) })
+  .filter({ hasText: new RegExp(`^${identifier}( · | \\+|$)`) })
   .getByRole('img', { name: HUMAN_BADGE_EXPECTED[kind].name, exact: true })
   .locator('path')
   .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
@@ -1106,6 +1202,8 @@ async function checkRecordedHumanWaits(browser, live) {
   try {
     await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('OF-453'))
     for (const ticket of waiting) {
+      await page.locator(`.stuck > .list button[data-ticket="0/${ticket.identifier}"]`).click()
+      await frames(page)
       assert.deepEqual(await humanBadgePaths(page, ticket.identifier, ticket.humanKind), HUMAN_BADGE_EXPECTED[ticket.humanKind].paths, `${ticket.identifier} must draw the ${ticket.humanKind} badge from the recorded status`)
     }
     await page.locator('.stuck > .list button[data-ticket="0/OF-453"]').click()
@@ -1132,6 +1230,8 @@ async function checkHumanWaits(browser, live) {
   try {
     await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('WAIT-0'))
     for (const [index, kind] of kinds.slice(0, 3).entries()) {
+      await page.locator(`.stuck > .list button[data-ticket="0/WAIT-${index}"]`).click()
+      await frames(page)
       const label = page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` })
       const badge = label.getByRole('img', { name: HUMAN_BADGE_EXPECTED[kind].name, exact: true })
       assert.equal(await badge.count(), 1, `${kind} must draw its named badge`)
@@ -1143,8 +1243,8 @@ async function checkHumanWaits(browser, live) {
     for (const index of [3, 4]) {
       assert.equal(await page.locator('.label.ticket').filter({ hasText: `WAIT-${index}` }).locator('svg').count(), 0, 'unknown and absent kinds must not draw a badge')
     }
-    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-0' }).textContent(), 'WAIT-0 · 31 分钟')
-    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-2' }).textContent(), 'WAIT-2', 'missing since must not display a duration')
+    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-0' }).evaluate(node => node.childNodes[1].textContent), 'WAIT-0 · 31 分钟')
+    assert.equal(await page.locator('.label.ticket').filter({ hasText: 'WAIT-2' }).evaluate(node => node.childNodes[1].textContent), 'WAIT-2', 'missing since must not display a duration')
     await page.locator('.stuck > .list button[data-ticket="0/WAIT-0"]').click()
     assert.equal(await page.locator('.trip .human-reason').textContent(), humanReason)
     assert.equal(await page.locator('.trip .human-reason *').count(), 0, 'humanReason must be a text node')
@@ -1234,6 +1334,7 @@ async function main() {
       env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkStationTagsAndNeighborhood(browser, url)
       await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
