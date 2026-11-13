@@ -148,7 +148,7 @@ func TestFeishuLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "driver/internal/issues", Body: "## 现状\n真实环境测试 " + stamp}
+	brief := FeishuBrief{Todo: "TestFeishuLive 验收票，测试结束后删除。", Check: "true", Scope: "testdata/feishu-live/" + stamp, Body: "## 现状\n真实环境测试 " + stamp}
 	var created Task
 	var record string
 	var event string
