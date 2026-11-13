@@ -100,7 +100,7 @@ const doorway = (inside, waiting, step, perLine) => {
   return index => (index === 0 ? inside : queue(index - 1))
 }
 
-const slotRules = layout => ({
+export const slotRules = layout => ({
   pickup: lined({ x: layout.tower + 1.6, y: 0.22, z: 0 }, { x: 0.95, z: 0 }, 3),
   work: index => ({ x: layout.booths[index].x, y: 0.22, z: layout.booths[index].z + DOOR_TO_SLOT }),
   gate: doorway({ x: -1, y: 0.22, z: 0 }, { x: -2.3, y: 0.22, z: 0 }, { x: -0.95, z: 0 }, 2),
@@ -116,6 +116,14 @@ const slotRules = layout => ({
 })
 
 export const stationOf = station => (Object.hasOwn(STATION_NAMES, station) ? station : 'unknown')
+
+export const stationNeighborhood = station => {
+  const branches = { return: ['work', 'return', 'repair'], repair: ['return', 'repair', 'human'], human: ['repair', 'human', 'gate'], unknown: ['pickup', 'unknown'] }
+  if (branches[station]) return branches[station]
+  const track = TRACK.map(step => step.station)
+  const index = track.indexOf(station)
+  return track.slice(Math.max(0, index - 1), index + 2)
+}
 
 const byQueuePosition = (left, right) =>
   (left.queuePosition ?? Number.POSITIVE_INFINITY) - (right.queuePosition ?? Number.POSITIVE_INFINITY)

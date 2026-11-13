@@ -4,7 +4,7 @@ const ROOT2 = Math.SQRT2
 const ROOT6 = Math.sqrt(6)
 const DIRECTION = new THREE.Vector3(1, 1, 1).normalize()
 const DISTANCE = 200
-const TICKET_HALF = 4.2
+const NEIGHBORHOOD_MARGIN = 0.18
 const MIN_HALF = 3.4
 const ZOOM_OUT_LIMIT = 1.25
 const FIT_PADDING = 1.04
@@ -84,26 +84,26 @@ export const createCamera = archipelago => {
     goal.z = Math.min(bounds.front, Math.max(bounds.back, goal.z))
   }
 
-  const targetFor = ({ sx, sy }, half) => {
-    const { height, margins } = viewport
+  const targetFor = ({ sx, sy }, half, margins) => {
+    const { height } = viewport
     const perUnit = height / (2 * half)
     const offsetX = (margins.left - margins.right) / 2
     const offsetY = (margins.top - margins.bottom) / 2
     return groundAt(sx - offsetX / perUnit, sy + offsetY / perUnit)
   }
 
-  const fit = extremes => {
+  const fit = (extremes, margins = viewport.margins) => {
     const points = extremes.map(screenOf)
     const xs = points.map(point => point.sx)
     const ys = points.map(point => point.sy)
-    const { width, height, margins } = viewport
+    const { width, height } = viewport
     const usableWidth = Math.max(1, width - margins.left - margins.right)
     const usableHeight = Math.max(1, height - margins.top - margins.bottom)
     const spanX = Math.max(...xs) - Math.min(...xs)
     const spanY = Math.max(...ys) - Math.min(...ys)
     const half = FIT_PADDING * Math.max((spanY * height) / (2 * usableHeight), (spanX * height) / (2 * usableWidth))
     const center = { sx: (Math.max(...xs) + Math.min(...xs)) / 2, sy: (Math.max(...ys) + Math.min(...ys)) / 2 }
-    return { half, ...targetFor(center, half) }
+    return { half, ...targetFor(center, half, margins) }
   }
 
   const panScreen = (sx, sy) => {
@@ -113,17 +113,10 @@ export const createCamera = archipelago => {
     clamp()
   }
 
-  function refocusOnMove(point) {
-    Object.assign(goal, targetFor(screenOf(point), goal.half))
-    clamp()
-    Object.assign(view, goal)
-  }
-
   return {
     camera,
     view,
     goal,
-    refocusOnMove,
     resize(width, height, margins) {
       if (width <= 0 || height <= 0) return
       viewport = { width, height, margins }
@@ -142,8 +135,17 @@ export const createCamera = archipelago => {
       Object.assign(goal, fit(islands[index]))
       clamp()
     },
-    frameSlot(point) {
-      Object.assign(goal, { half: TICKET_HALF, ...targetFor(screenOf(point), TICKET_HALF) })
+    frameNeighborhood(points) {
+      const { width, height, margins } = viewport
+      const horizontal = (width - margins.left - margins.right) * NEIGHBORHOOD_MARGIN
+      const vertical = (height - margins.top - margins.bottom) * NEIGHBORHOOD_MARGIN
+      Object.assign(goal, fit(points, {
+        left: Math.max(width * NEIGHBORHOOD_MARGIN, margins.left + horizontal),
+        right: Math.max(width * NEIGHBORHOOD_MARGIN, margins.right + horizontal),
+        top: Math.max(height * NEIGHBORHOOD_MARGIN, margins.top + vertical),
+        bottom: Math.max(height * NEIGHBORHOOD_MARGIN, margins.bottom + vertical),
+      }))
+      farthest = Math.max(farthest, goal.half)
       clamp()
     },
     drag(dxPixels, dyPixels) {

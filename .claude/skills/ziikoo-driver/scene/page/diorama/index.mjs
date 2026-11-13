@@ -124,7 +124,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     refreshStatus()
     margins = hud.margins()
     lens.resize(size.width, size.height, margins)
-    if (stop === 3) lens.frameSlot(world.parcels.get(parcel.key).target)
+    if (stop === 3) lens.frameNeighborhood(world.neighborhood(parcel.key))
     else if (stop === 2) lens.frameIsland(focus)
     else lens.frameAll()
     if (reduced) lens.snap()
@@ -237,7 +237,12 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     overlay.focus(focus)
     showSelection()
     refreshStatus()
-    if (stop === 3 && parcel.station !== held.station) lens.refocusOnMove(world.parcels.get(parcel.key).target)
+    if (stop === 3 && parcel.station !== held.station) {
+      margins = hud.margins()
+      lens.resize(size.width, size.height, margins)
+      lens.frameNeighborhood(world.neighborhood(parcel.key))
+      lens.snap()
+    }
   }
 
   return {

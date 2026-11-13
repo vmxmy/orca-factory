@@ -74,6 +74,33 @@
   background: var(--o-human);
 }
 
+.diorama .label.tag-marker {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--w-ink);
+  color: #fff;
+  text-align: center;
+  line-height: 24px;
+}
+
+.diorama .tag-legend {
+  position: absolute;
+  padding: 6px;
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-line;
+  overflow: auto;
+  user-select: text;
+}
+
+.diorama .fold-count:not(:empty) {
+  font-weight: 700;
+}
+
 .diorama .human-badge {
   width: 14px;
   height: 14px;
