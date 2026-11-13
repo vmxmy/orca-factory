@@ -59,6 +59,12 @@ GitHub 客户端读取 rate-limit 响应头，只供看板与 status 观测额�
 
 启动时 driver 读取三张表的字段并校验。缺字段、类型不符或缺选项时启动失败，不领票。
 
+### 建票校验
+
+飞书 `Create` 在行为追踪校验后，读取同仓库未完成票的 SCOPE。新票与已有票的 SCOPE 重叠且未在 `blockers` 或 `related` 中声明该票时，拒绝创建并列出冲突票号、UUID 和双方 SCOPE 项。Done、Canceled 和 Duplicate 的票不参与比较；其他仓库的票不参与比较。
+
+字面路径与 glob 使用 gate 的匹配规则，`*` 可跨目录；两个 glob 按固定前缀目录保守判断，目录相同或一方包含另一方时视为重叠。发生冲突时，按实际关系把冲突票 UUID 加入 `blockers` 或 `related`，并显式提交两份完整数组；确认需求重复则不建票。系统不自动添加关系，也不补扫已有票。此校验不受调度器的 `AGENT_SCOPE_AVOID` 或 `AGENT_SCOPE_SHARED` 设置影响。
+
 ### 可选群通知
 
 1. 在应用开发者后台启用机器人能力，申请并发布 `im:message:send_as_bot` 权限，参见[发送消息接口](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/create)。
