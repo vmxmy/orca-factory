@@ -44,10 +44,12 @@ type Tickets interface {
 }
 
 type Monitor struct {
-	StateDir string // the supervisor's --state-dir
-	Record   string // this monitor's own state file
-	Tickets  Tickets
-	Run      func(context.Context, runx.Spec) ([]byte, error)
+	StateDir  string // the supervisor's --state-dir
+	GoMod     string // the repository's driver/go.mod
+	ImageFile string // the supervisor's --image-file
+	Record    string // this monitor's own state file
+	Tickets   Tickets
+	Run       func(context.Context, runx.Spec) ([]byte, error)
 }
 
 type record struct {
@@ -251,6 +253,33 @@ func (m *Monitor) probe(ctx context.Context, now time.Time, rec *record) (map[st
 		if lease.Active && lease.Phase == "registering" && now.Sub(modified) > grace {
 			problems[fmt.Sprintf("slot-%d-registering", slot)] = fmt.Sprintf("槽位 %d：租约 `%s` 自 %s 停在 registering（unresolved registration intent）", slot, lease.Name, modified.UTC().Format(time.RFC3339))
 		}
+	}
+	mod, err := os.ReadFile(m.GoMod)
+	if err != nil {
+		return nil, fmt.Errorf("runner go.mod unreadable: %w", err)
+	}
+	want := ""
+	for _, line := range strings.Split(string(mod), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "toolchain" {
+			want = strings.TrimPrefix(fields[1], "go")
+			break
+		}
+	}
+	if want == "" {
+		return nil, errors.New("runner go.mod has no toolchain directive")
+	}
+	version := "未知"
+	imageID, err := os.ReadFile(m.ImageFile)
+	if err == nil && strings.TrimSpace(string(imageID)) != "" {
+		out, err := m.Run(ctx, runx.Spec{Path: "docker", Args: []string{"image", "inspect", strings.TrimSpace(string(imageID)), "--format", `{{ index .Config.Labels "orca.go-toolchain" }}`}, Timeout: 10 * time.Second})
+		label := strings.TrimSpace(string(out))
+		if err == nil && label != "" && label != "<no value>" {
+			version = label
+		}
+	}
+	if version != want {
+		problems["toolchain-stale"] = fmt.Sprintf("镜像 Go %s，go.mod 要 %s，CI 每次会重新下载，约 3 分钟；参见 scripts/local-runner/README.md 的 Manual image updates", version, want)
 	}
 	return problems, nil
 }
