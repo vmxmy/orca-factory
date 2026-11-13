@@ -777,3 +777,53 @@ func TestIntakeApprove(t *testing.T) {
 		}
 	})
 }
+
+func TestExtendWorkerScopeUsesLiteralPaths(t *testing.T) {
+	for _, file := range []string{"pkg/a_test.go pkg/b_test.go", "pkg/a_test.go\npkg/b_test.go", "pkg/../a_test.go", "/pkg/a_test.go", "pkg/*_test.go"} {
+		t.Run(file, func(t *testing.T) {
+			h := scopedTicket(t, "")
+			h.ledger.tasks[0].Description = "## SCOPE\npkg/a.go\n"
+			ok, err := ExtendWorkerScope(context.Background(), h.ledger, "canon-of12", "pkg/a.go", []string{file}, "")
+			if err != nil || ok || len(h.ledger.edits) != 0 {
+				t.Fatalf("invalid literal approved: ok=%v err=%v edits=%q", ok, err, h.ledger.edits)
+			}
+		})
+	}
+}
+
+func TestExtendWorkerScopeKeepsAuditOnRetry(t *testing.T) {
+	h := scopedTicket(t, "")
+	h.ledger.tasks[0].Description = "## SCOPE\npkg/a.go\n\n## CHECK\ngo test ./pkg\n"
+	ledger := &humanLedger{fakeLedger: h.ledger, commentErr: errors.New("comment unavailable")}
+	ok, err := ExtendWorkerScope(context.Background(), ledger, "canon-of12", "pkg/a.go", []string{"pkg/a_test.go"}, "")
+	if ok || err == nil || len(h.ledger.edits) != 0 {
+		t.Fatalf("scope expanded without audit: ok=%v err=%v edits=%q", ok, err, h.ledger.edits)
+	}
+	ledger.commentErr = nil
+	for range 2 {
+		ok, err = ExtendWorkerScope(context.Background(), ledger, "canon-of12", "pkg/a.go", []string{"pkg/a_test.go"}, "")
+		if !ok || err != nil {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+	}
+	if len(h.ledger.edits) != 1 || h.ledger.tasks[0].Description != "## SCOPE\npkg/a.go pkg/a_test.go\n\n## CHECK\ngo test ./pkg\n" {
+		t.Fatalf("scope writes=%q", h.ledger.edits)
+	}
+	if events := h.ledger.events["canon-of12"]; len(events) != 2 || events[1] != "自动扩 SCOPE：pkg/a_test.go，依据：同包 Go 测试" {
+		t.Fatalf("duplicate or missing audit: %q", events)
+	}
+}
+
+func TestExtendWorkerScopeRejectsProtectedPaths(t *testing.T) {
+	for _, directory := range []string{".github", "scripts/agent-gates", "driver/deploy", "production", "migrations", "data", "credentials", "secrets", ".env.local"} {
+		t.Run(directory, func(t *testing.T) {
+			h := scopedTicket(t, "")
+			scope := directory + "/a.go"
+			h.ledger.tasks[0].Description = "## SCOPE\n" + scope + "\n"
+			ok, err := ExtendWorkerScope(context.Background(), h.ledger, "canon-of12", scope, []string{directory + "/a_test.go"}, "")
+			if ok || err != nil || len(h.ledger.edits) != 0 || len(h.ledger.events["canon-of12"]) != 1 {
+				t.Fatalf("protected scope changed: ok=%v err=%v edits=%q", ok, err, h.ledger.edits)
+			}
+		})
+	}
+}

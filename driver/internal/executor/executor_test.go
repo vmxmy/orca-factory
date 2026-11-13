@@ -337,3 +337,86 @@ func (*fakeOrca) TerminalSend(context.Context, string, string) (orca.Receipt, er
 func (f *fakeOrca) Workers(context.Context, orca.ListOptions) ([]orca.Worker, error) {
 	return nil, nil
 }
+
+type scopeIssues struct {
+	*budgetIssues
+	description string
+}
+
+func (s *scopeIssues) Read(ctx context.Context, id string) (issues.Task, error) {
+	issue, err := s.budgetIssues.Read(ctx, id)
+	issue.Description = s.description
+	issue.Metadata.ID = id
+	return issue, err
+}
+
+func (s *scopeIssues) Edit(ctx context.Context, id string, patch []byte) (issues.Task, error) {
+	var fields struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(patch, &fields); err != nil {
+		return issues.Task{}, err
+	}
+	s.description = fields.Description
+	return s.Read(ctx, id)
+}
+
+func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
+	for _, tc := range []struct {
+		name, enabled, files, lane3 string
+		extended                    bool
+	}{
+		{"same package test", "1", "unit/change_test.go", "", true},
+		{"package docs", "1", "unit/README.md", "", true},
+		{"mixed unsafe file", "1", "unit/change_test.go other/unsafe.go", "", false},
+		{"lane three", "1", "unit/change_test.go", "unit/*_test.go", false},
+		{"disabled", "", "unit/change_test.go", "", false},
+		{"other package test", "1", "other/change_test.go", "", false},
+		{"credential path", "1", "unit/secrets_test.go", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("AGENT_WORKER_AUTO_SCOPE", tc.enabled)
+			e, o, tools, recovery, ledger, ticket := recoveryFixture(t)
+			ticket.Scope = "unit/change.go"
+			store := &scopeIssues{budgetIssues: ledger, description: "## SCOPE\nunit/change.go\n\n## CHECK\ngo test ./unit\n"}
+			e.Issues = store
+			e.Config.Lane3Globs = strings.Fields(tc.lane3)
+			o.failFirst = true
+			o.failBody = "SCOPE-BLOCKED: " + tc.files
+			result, err := e.Execute(context.Background(), ticket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.State.Infra != 0 {
+				t.Fatalf("infra charged: %+v", result.State)
+			}
+			if !tc.extended {
+				if result.State.Owner != machine.OwnerResolver || result.State.Corrections != 0 || recovery.sessions != 0 {
+					t.Fatalf("unsafe request did not reach resolver: %+v", result.State)
+				}
+				if strings.Contains(store.description, tc.files) || strings.Contains(strings.Join(ledger.comments, "\n"), "自动扩 SCOPE：") {
+					t.Fatalf("unsafe request changed scope: %s %q", store.description, ledger.comments)
+				}
+				return
+			}
+			if result.State.Owner != machine.OwnerMerge || result.State.Corrections != 1 || recovery.sessions != 1 || len(o.starts) != 2 {
+				t.Fatalf("safe request did not use correction: %+v sessions=%d starts=%d", result.State, recovery.sessions, len(o.starts))
+			}
+			wantScope := "unit/change.go " + tc.files
+			if !strings.Contains(store.description, "## SCOPE\n"+wantScope+"\n") || !strings.Contains(recovery.requests[0].Brief, "SCOPE: "+wantScope+"\n") {
+				t.Fatalf("scope not propagated: face=%q brief=%q", store.description, recovery.requests[0].Brief)
+			}
+			spec, err := os.ReadFile(filepath.Join(e.Config.Root, e.Config.Repository, ticket.Identifier, "gate.spec"))
+			if err != nil || !strings.Contains(string(spec), "SCOPE: "+wantScope+"\n") || tools.gateCalls != 1 || tools.reviewCalls != 1 {
+				t.Fatalf("gate/review skipped or stale spec: %s err=%v calls=%d/%d", spec, err, tools.gateCalls, tools.reviewCalls)
+			}
+			category := "同包 Go 测试"
+			if tc.files == "unit/README.md" {
+				category = "同包 README"
+			}
+			if !strings.Contains(strings.Join(ledger.comments, "\n"), "自动扩 SCOPE："+tc.files+"，依据："+category) {
+				t.Fatalf("missing scope audit: %q", ledger.comments)
+			}
+		})
+	}
+}

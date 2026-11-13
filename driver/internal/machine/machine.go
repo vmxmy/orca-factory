@@ -96,6 +96,9 @@ const (
 	// SCOPE. A worker cannot change them, so a correction would only repeat it.
 	EvWorkerScopeBlocked Event = "workerScopeBlocked"
 
+	// EvWorkerScopeExtended charges a correction after a safe scope extension.
+	EvWorkerScopeExtended Event = "workerScopeExtended"
+
 	// EvCorrectionStalled is the coordinator's verdict that the FAIL history
 	// repeats without progress. It needs stallMinCorrections charged failures to
 	// compare; an earlier verdict counts as a session without a correction.
@@ -226,7 +229,7 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			s.Phase = PhaseBranchCheck
 			fx = append(fx, "worker-release")
 		}
-	case EvWorkerFail:
+	case EvWorkerFail, EvWorkerScopeExtended:
 		if s.Phase != PhaseWorker || !s.ExecAlive {
 			return reject("没有在运行且有人接收的 worker")
 		}
