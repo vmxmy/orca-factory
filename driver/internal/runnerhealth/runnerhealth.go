@@ -274,7 +274,7 @@ func (m *Monitor) probe(ctx context.Context, now time.Time, rec *record) (map[st
 	if err == nil && strings.TrimSpace(string(imageID)) != "" {
 		out, err := m.Run(ctx, runx.Spec{Path: "docker", Args: []string{"image", "inspect", strings.TrimSpace(string(imageID)), "--format", `{{ index .Config.Labels "orca.go-toolchain" }}`}, Timeout: 10 * time.Second})
 		label := strings.TrimSpace(string(out))
-		if err == nil && label != "" && label != "<no value>" {
+		if err == nil && label != "" {
 			version = label
 		}
 	}

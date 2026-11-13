@@ -112,7 +112,6 @@ func TestProbeReportsStaleToolchain(t *testing.T) {
 	}{
 		{name: "outdated", label: "1.26.4\n", want: "镜像 Go 1.26.4"},
 		{name: "missing label", want: "镜像 Go 未知"},
-		{name: "absent label value", label: "<no value>\n", want: "镜像 Go 未知"},
 		{name: "inspect failed", label: "1.27.4", err: errors.New("image not found"), want: "镜像 Go 未知"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
@@ -160,6 +159,36 @@ func TestProbeToolchainFresh(t *testing.T) {
 	}
 	if inspections != 1 || len(problems) != 0 {
 		t.Fatalf("inspections = %d, problems = %v", inspections, problems)
+	}
+}
+
+// Real `docker image inspect` stdout for a labelled and an unlabelled runner
+// image (driver/CONTRACTS.md); go.mod in configureToolchain pins 1.27.4.
+func TestRecordedToolchainLabel(t *testing.T) {
+	for sample, want := range map[string]string{
+		"docker-image-inspect-go-toolchain-label.txt":         "",
+		"docker-image-inspect-go-toolchain-label-missing.txt": "镜像 Go 未知，go.mod 要 1.27.4",
+	} {
+		t.Run(sample, func(t *testing.T) {
+			stdout, err := os.ReadFile(filepath.Join("../../testdata/recorded", sample))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := &Monitor{StateDir: t.TempDir(), Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+				if spec.Path == "docker" {
+					return stdout, nil
+				}
+				return healthyUnits(ctx, spec)
+			}}
+			configureToolchain(t, m)
+			problems, err := m.probe(context.Background(), time.Now(), &record{Restarts: map[string]int{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := problems["toolchain-stale"]; (want == "") != (len(problems) == 0) || !strings.HasPrefix(got, want) {
+				t.Errorf("problems = %v, want toolchain-stale prefix %q", problems, want)
+			}
+		})
 	}
 }
 
