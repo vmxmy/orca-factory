@@ -94,3 +94,41 @@ func closeFeishuTickets(f *feishuFake) {
 		row["状态"] = []string{"Done"}
 	}
 }
+
+// The recorded Base holds ticket A (In Progress, canonical UUID) and ticket B
+// (Todo, no canonical UUID), both with SCOPE driver/**.
+func TestRecordedCreateRejectsOverlappingScope(t *testing.T) {
+	ticketB := feishuTicketRow{record: recTicketB}.id()
+	for _, tt := range []struct {
+		name              string
+		blockers, related []string
+		conflicts         []string
+	}{
+		{name: "undeclared", blockers: []string{}, related: []string{}, conflicts: []string{"(" + feishuUUIDA + "): \"driver/internal/issues/x.go\" 与 \"driver/**\"", "(" + ticketB + "): \"driver/internal/issues/x.go\" 与 \"driver/**\""}},
+		{name: "only A declared", blockers: []string{feishuUUIDA}, related: []string{}, conflicts: []string{"(" + ticketB + ")"}},
+		{name: "both declared", blockers: []string{feishuUUIDA}, related: []string{ticketB}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := newRecordedFeishuBase(t).backend(t)
+			brief := FeishuBrief{Todo: "修改文件", Check: "make test", Scope: "driver/internal/issues/x.go", Blockers: tt.blockers, Related: tt.related}
+			err := c.requireScopeDependencies(context.Background(), CreateInput{Title: "新票", Description: brief.Description(), Blockers: tt.blockers, Related: tt.related})
+			if len(tt.conflicts) == 0 {
+				if err != nil {
+					t.Fatalf("declared dependencies rejected: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("recorded open tickets did not conflict")
+			}
+			for _, want := range tt.conflicts {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if len(tt.conflicts) == 1 && strings.Contains(err.Error(), feishuUUIDA) {
+				t.Errorf("declared blocker still listed: %v", err)
+			}
+		})
+	}
+}
