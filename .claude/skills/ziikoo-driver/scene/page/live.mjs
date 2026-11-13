@@ -17,6 +17,7 @@ let closed = false
 let events
 let snapshotRequest
 let previousTickets = null
+let undelivered = []
 
 const report = () => {
   const listed = [...failures.values()]
@@ -96,7 +97,11 @@ const receive = scene => {
   if (scene.rows.length === 0) unmount()
   else if (diorama) diorama.update(scene)
   else mount(scene)
-  diorama?.notify(changes)
+  const pending = [...undelivered, ...changes]
+  if (diorama) {
+    diorama.notify(pending)
+    undelivered = []
+  } else undelivered = pending
   report()
 }
 

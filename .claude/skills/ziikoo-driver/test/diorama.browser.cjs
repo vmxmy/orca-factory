@@ -1437,6 +1437,65 @@ async function checkParcelTransitions(browser, live) {
   console.log('PASS parcel transitions: next scan, frame 72 arrival, reduced motion in two frames, sidebar enter/leave/move/alert, deduplication and feed limit')
 }
 
+// driver/testdata/recorded/driver-status-json-{stale,next-scan}.json：本机生产 `orca-factory-driver status --json` 原文。
+async function checkRecordedTicketEvents(browser, live) {
+  const stale = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-stale.json'))
+  const nextScan = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-next-scan.json'))
+  const key = ticket => `${ticket.repo}\0${ticket.identifier}`
+  const staleKeys = new Set(stale.tickets.map(key))
+  const nextKeys = new Set(nextScan.tickets.map(key))
+  const leaving = stale.tickets.filter(ticket => !nextKeys.has(key(ticket)))
+  const entering = nextScan.tickets.filter(ticket => !staleKeys.has(key(ticket)))
+  live.write(stale)
+  await live.stop()
+  await live.start()
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(FACTORY)}`)
+  try {
+    assert.equal(await page.locator('.event-feed li').count(), 0, 'the initial recorded snapshot must not create historical events')
+    const moved = structuredClone(stale)
+    moved.generatedAt = new Date(Date.parse(stale.generatedAt) + 5000).toISOString()
+    const resolver = stale.tickets.find(ticket => ticket.repo === FACTORY && ticket.identifier === 'OF-425')
+    const moving = moved.tickets.find(ticket => ticket.repo === FACTORY && ticket.identifier === 'OF-426')
+    Object.assign(moving, { owner: resolver.owner, phase: resolver.phase })
+    live.write(moved)
+    const movement = page.locator('.event-feed [data-event="move"]').filter({ hasText: 'OF-426' })
+    await movement.waitFor()
+    for (const text of ['OF-426', '移动', '栈桥', '处置塔前']) {
+      assert.ok((await movement.innerText()).includes(text), `the recorded OF-426 move must show ${text}`)
+    }
+    assert.equal(await page.locator('.event-feed [data-event="alert"]').filter({ hasText: 'OF-426' }).count(), 1)
+
+    live.write(nextScan)
+    await page.locator('.event-feed [data-event="enter"]').filter({ hasText: 'OF-447' }).waitFor()
+    for (const [type, tickets] of [['leave', leaving], ['enter', entering]]) {
+      for (const ticket of tickets) {
+        assert.equal(await page.locator(`.event-feed [data-event="${type}"]`).filter({ hasText: ticket.identifier }).count(), 1, `${type} must identify recorded ticket ${key(ticket)}`)
+      }
+    }
+    assert.equal(await page.locator('.event-feed [data-event="alert"]').filter({ hasText: 'OF-446' }).count(), 1)
+
+    live.write({ ...nextScan, tickets: [] }, { config: { ...live.config, repos: [] } })
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => !window.diorama && document.querySelector('.diorama .notice')?.textContent.includes('暂无项目'), null, { timeout: 15000 })
+    live.write(nextScan, { config: live.config })
+    await live.stop()
+    await live.start()
+    await page.waitForFunction(() => window.diorama, null, { timeout: 15000 })
+    for (const identifier of ['OF-446', 'OF-447']) {
+      assert.equal(await page.locator('.event-feed [data-event="leave"]').filter({ hasText: identifier }).count(), 1, `${identifier} must retain its leave event across an empty Scene and remount`)
+      assert.equal(await page.locator('.event-feed [data-event="enter"]').filter({ hasText: identifier }).count(), 1, `${identifier} must enter again after remount`)
+    }
+    assert.deepEqual(errors, [])
+    console.log('PASS recorded ticket events: production status --json move, alert, enter, leave, empty Scene and remount')
+  } finally {
+    await page.close()
+    live.write(live.pushed)
+    await live.stop()
+    await live.start()
+  }
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -1465,6 +1524,7 @@ async function checkProduction(browser, bun, model) {
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
     await checkParcelTransitions(browser, live)
+    await checkRecordedTicketEvents(browser, live)
     await checkRecordedHumanWaits(browser, live)
     await checkHumanWaits(browser, live)
     live.write(status)
