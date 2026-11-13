@@ -510,12 +510,12 @@
   transform: translate(-50%, -100%);
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 9px;
+  gap: 6px;
+  padding: 3px 6px;
   background: var(--w-paper);
   border: 1px solid var(--w-line);
   color: var(--w-ink);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.2;
   white-space: nowrap;
   pointer-events: auto;
@@ -776,13 +776,6 @@
     max-width: 160px;
   }
 
-  .diorama .plate {
-    gap: 6px;
-    padding: 3px 6px;
-    font-size: 11px;
-  }
-
-  .diorama .plate span,
   .diorama .plate.hub {
     display: none;
   }
