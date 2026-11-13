@@ -163,6 +163,48 @@ func TestProbeToolchainFresh(t *testing.T) {
 	}
 }
 
+func TestStaleToolchainTicketChecksImageVersion(t *testing.T) {
+	tickets := &fakeTickets{}
+	m := &Monitor{
+		StateDir: t.TempDir(),
+		Record:   filepath.Join(t.TempDir(), "runner-health.json"),
+		Tickets:  tickets,
+		Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+			if spec.Path == "docker" {
+				return []byte("1.26.4\n"), nil
+			}
+			return healthyUnits(ctx, spec)
+		},
+	}
+	configureToolchain(t, m)
+	start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	if err := m.Poll(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets.created) != 0 {
+		t.Fatalf("created %d tickets before grace elapsed", len(tickets.created))
+	}
+	if err := m.Poll(context.Background(), start.Add(11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets.created) != 1 {
+		t.Fatalf("created %d tickets, want 1", len(tickets.created))
+	}
+	description := tickets.created[0].Description
+	_, acceptance, _ := strings.Cut(description, "\nCHECK: ")
+	check, _, _ := strings.Cut(acceptance, "\n")
+	for _, want := range []string{"docker image inspect", "orca.go-toolchain", "image-id.txt", "driver/go.mod"} {
+		if !strings.Contains(check, want) {
+			t.Errorf("CHECK lacks %q: %s", want, check)
+		}
+	}
+	_, actions, _ := strings.Cut(description, "## 要做\n")
+	actions, _, _ = strings.Cut(actions, "\n## 验收")
+	if !strings.Contains(actions, "Manual image updates") {
+		t.Errorf("ticket actions lack Manual image updates: %s", actions)
+	}
+}
+
 func writeLease(t *testing.T, dir, phase string, modified time.Time) {
 	t.Helper()
 	path := filepath.Join(dir, "slot-3.json")
@@ -207,6 +249,9 @@ func TestStuckRegistrationOpensOneAgentTicketThenCommentsRecovery(t *testing.T) 
 				t.Fatalf("created %d tickets, want 1", len(tickets.created))
 			}
 			in := tickets.created[0]
+			if strings.Contains(in.Description, "orca.go-toolchain") {
+				t.Errorf("slot-only ticket includes toolchain check:\n%s", in.Description)
+			}
 			if strings.Join(in.Labels, ",") != "ready-for-agent" || in.Blockers == nil || in.Related == nil {
 				t.Fatalf("ticket must be agent-claimable and managed: %+v", in)
 			}
