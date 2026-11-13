@@ -113,10 +113,17 @@ export const createCamera = archipelago => {
     clamp()
   }
 
+  function refocusOnMove(point) {
+    Object.assign(goal, targetFor(screenOf(point), goal.half))
+    clamp()
+    Object.assign(view, goal)
+  }
+
   return {
     camera,
     view,
     goal,
+    refocusOnMove,
     resize(width, height, margins) {
       if (width <= 0 || height <= 0) return
       viewport = { width, height, margins }

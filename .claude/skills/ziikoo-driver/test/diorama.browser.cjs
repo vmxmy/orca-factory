@@ -691,6 +691,7 @@ async function checkReducedMotion(browser, url) {
     assert.deepEqual(moved.view, moved.goal, 'the camera must jump straight to its goal when motion is reduced')
     const reshape = change => page.evaluate(async change => {
       const scene = await (await fetch('./diorama-scene.json')).json()
+      scene.generatedAt += 5_000
       const parcels = scene.rows[0].parcels
       if (change === 'move') parcels.find(one => one.identifier === 'OF-415').station = 'gate'
       else scene.rows[0].parcels = parcels.filter(one => one.identifier !== 'OF-415')
@@ -702,6 +703,10 @@ async function checkReducedMotion(browser, url) {
     assert.deepEqual([jumped.stop, jumped.selected], [3, 'OF-415'], 'an update must keep the stop and the selection')
     assert.notDeepEqual(jumped.target, moved.target, 'the selected box must get its new station')
     assert.deepEqual(jumped.at, jumped.target, 'a moved box must jump to its new station when motion is reduced')
+    const distance = Math.hypot(jumped.goal.x - jumped.target[0], jumped.goal.z - jumped.target[2])
+    assert.ok(distance < 2, `the ticket camera must follow the next scan within one booth spacing (2), got ${distance}`)
+    assert.deepEqual(jumped.view, jumped.goal, 'refocusing after a station change must jump immediately')
+    assert.equal(jumped.goal.half, moved.goal.half, 'refocusing must keep the ticket framing size')
     await reshape('remove')
     assert.equal((await state(page)).selected, null, 'an update must clear a selection whose ticket left the Scene')
     const refused = await page.evaluate(async () => {

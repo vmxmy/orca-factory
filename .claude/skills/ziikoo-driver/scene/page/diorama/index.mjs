@@ -216,7 +216,8 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   const update = next => {
     if (next.rows.length === 0) throw new Error('Scene 里没有项目，沙盘不能更新；请先 dispose，有项目后再重新挂载')
-    const held = { path: archipelago.islands[focus].path, ticket: parcelOf(selected)?.identifier }
+    const previous = parcelOf(selected)
+    const held = { path: archipelago.islands[focus].path, ticket: previous?.identifier, station: previous?.station }
     current = next
     show(archipelagoOf(next))
     const island = archipelago.islands.find(one => one.path === held.path)
@@ -236,6 +237,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     overlay.focus(focus)
     showSelection()
     refreshStatus()
+    if (stop === 3 && parcel.station !== held.station) lens.refocusOnMove(world.parcels.get(parcel.key).target)
   }
 
   return {
