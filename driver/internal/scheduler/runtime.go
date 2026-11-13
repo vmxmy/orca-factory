@@ -138,7 +138,14 @@ func (r *Runtime) watchRunners(repo config.Repository) {
 		return
 	}
 	record := filepath.Join(filepath.Dir(r.runnerState), "orca-factory", "runner-health.json")
-	r.Runners = &runnerhealth.Monitor{StateDir: r.runnerState, Record: record, Tickets: client, Run: runx.Run}
+	r.Runners = &runnerhealth.Monitor{
+		StateDir:  r.runnerState,
+		GoMod:     filepath.Join(repo.Path, "driver", "go.mod"),
+		ImageFile: filepath.Join(filepath.Dir(filepath.Dir(r.runnerState)), "lib", "orca-go-isolated-runner", "image-id.txt"),
+		Record:    record,
+		Tickets:   client,
+		Run:       runx.Run,
+	}
 }
 
 func (r *Runtime) CheckRunners(ctx context.Context) error {

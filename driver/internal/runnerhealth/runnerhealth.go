@@ -44,10 +44,12 @@ type Tickets interface {
 }
 
 type Monitor struct {
-	StateDir string // the supervisor's --state-dir
-	Record   string // this monitor's own state file
-	Tickets  Tickets
-	Run      func(context.Context, runx.Spec) ([]byte, error)
+	StateDir  string // the supervisor's --state-dir
+	GoMod     string // the repository's driver/go.mod
+	ImageFile string // the supervisor's --image-file
+	Record    string // this monitor's own state file
+	Tickets   Tickets
+	Run       func(context.Context, runx.Spec) ([]byte, error)
 }
 
 type record struct {
@@ -252,6 +254,33 @@ func (m *Monitor) probe(ctx context.Context, now time.Time, rec *record) (map[st
 			problems[fmt.Sprintf("slot-%d-registering", slot)] = fmt.Sprintf("槽位 %d：租约 `%s` 自 %s 停在 registering（unresolved registration intent）", slot, lease.Name, modified.UTC().Format(time.RFC3339))
 		}
 	}
+	mod, err := os.ReadFile(m.GoMod)
+	if err != nil {
+		return nil, fmt.Errorf("runner go.mod unreadable: %w", err)
+	}
+	want := ""
+	for _, line := range strings.Split(string(mod), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[0] == "toolchain" {
+			want = strings.TrimPrefix(fields[1], "go")
+			break
+		}
+	}
+	if want == "" {
+		return nil, errors.New("runner go.mod has no toolchain directive")
+	}
+	version := "未知"
+	imageID, err := os.ReadFile(m.ImageFile)
+	if err == nil && strings.TrimSpace(string(imageID)) != "" {
+		out, err := m.Run(ctx, runx.Spec{Path: "docker", Args: []string{"image", "inspect", strings.TrimSpace(string(imageID)), "--format", `{{ index .Config.Labels "orca.go-toolchain" }}`}, Timeout: 10 * time.Second})
+		label := strings.TrimSpace(string(out))
+		if err == nil && label != "" {
+			version = label
+		}
+	}
+	if version != want {
+		problems["toolchain-stale"] = fmt.Sprintf("镜像 Go %s，go.mod 要 %s，CI 每次会重新下载，约 3 分钟；参见 scripts/local-runner/README.md 的 Manual image updates", version, want)
+	}
 	return problems, nil
 }
 
@@ -286,18 +315,28 @@ func ticket(problems map[string]string) issues.CreateInput {
 		evidence = append(evidence, "- "+detail)
 	}
 	sort.Strings(evidence)
+	title := "ops(runner): 隔离 CI runner 槽位停摆"
+	status := "driver 调度器检测到隔离 CI runner 槽位停摆超过 10 分钟，CI 只能靠其余槽位排队："
+	var toolchainAction, toolchainCheck, toolchainAssertion string
+	if _, stale := problems["toolchain-stale"]; stale {
+		title = "ops(runner): 隔离 CI runner 异常"
+		status = "driver 调度器检测到隔离 CI runner 异常持续超过 10 分钟："
+		toolchainAction = "\n4. 按 `scripts/local-runner/README.md` 的 Manual image updates 重建镜像。"
+		toolchainCheck = ` && image="$(cat ~/.local/lib/orca-go-isolated-runner/image-id.txt)" && label="$(docker image inspect "$image" --format '{{ index .Config.Labels "orca.go-toolchain" }}')" && want="$(awk '$1=="toolchain"{sub(/^go/,"",$2);print $2}' driver/go.mod)" && test -n "$want" && test "$label" = "$want"`
+		toolchainAssertion = "镜像标签 `orca.go-toolchain` 等于 `driver/go.mod` 的 toolchain 版本。"
+	}
 	description := `## 现状
-driver 调度器检测到隔离 CI runner 槽位停摆超过 10 分钟，CI 只能靠其余槽位排队：
+` + status + `
 ` + strings.Join(evidence, "\n") + `
 
 ## 要做
 1. 按 ` + "`scripts/local-runner/README.md`" + ` 诊断：` + "`journalctl --user -u orca-go-isolated-runner@<槽位> -n 50`" + `，查看 ` + "`~/.local/state/orca-go-isolated-runner/slot-<槽位>.json`" + `。
 2. 租约停在 registering 时，严格按 README「unresolved registration intent」一段做显式维护：停该槽位、持槽位锁、分页核对 GitHub 无同名 runner、确认无同名容器，归档租约与观察记录到 ` + "`maintenance/`" + `，再启动槽位。只动出问题的槽位，不删除任何文件。
-3. 其他原因（镜像、代理、Docker）按 README 对应段处理；若根因在 ` + "`scripts/local-runner/`" + ` 代码，在 SCOPE 内修复并补测试。
+3. 其他原因（镜像、代理、Docker）按 README 对应段处理；若根因在 ` + "`scripts/local-runner/`" + ` 代码，在 SCOPE 内修复并补测试。` + toolchainAction + `
 
 ## 验收
-CHECK: for s in 1 2 3 4; do systemctl --user is-active --quiet orca-go-isolated-runner@$s || exit 1; done; ! grep -qs '"phase": "registering"' ~/.local/state/orca-go-isolated-runner/slot-*.json
-断言: 4 个槽位服务均 active，且没有停在 registering 的租约；告警时为红。
+CHECK: for s in 1 2 3 4; do systemctl --user is-active --quiet orca-go-isolated-runner@$s || exit 1; done; ! grep -qs '"phase": "registering"' ~/.local/state/orca-go-isolated-runner/slot-*.json` + toolchainCheck + `
+断言: 4 个槽位服务均 active，且没有停在 registering 的租约；告警时为红。` + toolchainAssertion + `
 
 ## LANE 预判
 2（依据：命中 ` + "`$AGENT_LANE2_GLOBS`" + ` 的 ` + "`scripts/*`" + `）
@@ -313,7 +352,7 @@ DEPENDENCIES: {"blockers":[],"related":[]}
 由 driver 调度器 runner 检测自动开票；同一故障只开一张，恢复后在本票评论。`
 	estimate := 1.0
 	return issues.CreateInput{
-		Title:       "ops(runner): 隔离 CI runner 槽位停摆",
+		Title:       title,
 		Description: description,
 		State:       "Todo",
 		Labels:      []string{"ready-for-agent"},

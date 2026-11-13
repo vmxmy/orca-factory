@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -81,8 +82,198 @@ func (f *fakeTickets) CreateComment(_ context.Context, id, body string) (task.Co
 	return task.Comment{}, nil
 }
 
-func healthyUnits(context.Context, runx.Spec) ([]byte, error) {
+func healthyUnits(_ context.Context, spec runx.Spec) ([]byte, error) {
+	if spec.Path == "docker" {
+		return []byte("1.27.4\n"), nil
+	}
 	return []byte("ActiveState=active\nNRestarts=0\n"), nil
+}
+
+func configureToolchain(t *testing.T, m *Monitor) {
+	t.Helper()
+	dir := t.TempDir()
+	m.GoMod = filepath.Join(dir, "go.mod")
+	m.ImageFile = filepath.Join(dir, "image-id.txt")
+	for path, content := range map[string]string{
+		m.GoMod:     "module example.test/runner\n\ngo 1.25\n\ntoolchain go1.27.4 // pinned for CI\n",
+		m.ImageFile: "sha256:runner-image\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestProbeReportsStaleToolchain(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		label string
+		err   error
+		want  string
+	}{
+		{name: "outdated", label: "1.26.4\n", want: "镜像 Go 1.26.4"},
+		{name: "missing label", want: "镜像 Go 未知"},
+		{name: "inspect failed", label: "1.27.4", err: errors.New("image not found"), want: "镜像 Go 未知"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			inspections := 0
+			m := &Monitor{StateDir: t.TempDir(), Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+				if spec.Path != "docker" {
+					return healthyUnits(ctx, spec)
+				}
+				inspections++
+				want := []string{"image", "inspect", "sha256:runner-image", "--format", `{{ index .Config.Labels "orca.go-toolchain" }}`}
+				if !slices.Equal(spec.Args, want) {
+					t.Fatalf("inspect args = %q, want %q", spec.Args, want)
+				}
+				return []byte(scenario.label), scenario.err
+			}}
+			configureToolchain(t, m)
+			problems, err := m.probe(context.Background(), time.Now(), &record{Restarts: map[string]int{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{scenario.want, "go.mod 要 1.27.4", "CI 每次会重新下载，约 3 分钟", "scripts/local-runner/README.md", "Manual image updates"} {
+				if !strings.Contains(problems["toolchain-stale"], want) {
+					t.Errorf("toolchain problem = %q, want %q", problems["toolchain-stale"], want)
+				}
+			}
+			if inspections != 1 || len(problems) != 1 {
+				t.Errorf("inspections = %d, problems = %v", inspections, problems)
+			}
+		})
+	}
+}
+
+func TestProbeToolchainFresh(t *testing.T) {
+	inspections := 0
+	m := &Monitor{StateDir: t.TempDir(), Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path == "docker" {
+			inspections++
+		}
+		return healthyUnits(ctx, spec)
+	}}
+	configureToolchain(t, m)
+	problems, err := m.probe(context.Background(), time.Now(), &record{Restarts: map[string]int{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inspections != 1 || len(problems) != 0 {
+		t.Fatalf("inspections = %d, problems = %v", inspections, problems)
+	}
+}
+
+// Real `docker image inspect` stdout for a labelled and an unlabelled runner
+// image (driver/CONTRACTS.md); go.mod in configureToolchain pins 1.27.4.
+func TestRecordedToolchainLabel(t *testing.T) {
+	for sample, want := range map[string]string{
+		"docker-image-inspect-go-toolchain-label.txt":         "",
+		"docker-image-inspect-go-toolchain-label-missing.txt": "镜像 Go 未知，go.mod 要 1.27.4",
+	} {
+		t.Run(sample, func(t *testing.T) {
+			stdout, err := os.ReadFile(filepath.Join("../../testdata/recorded", sample))
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := &Monitor{StateDir: t.TempDir(), Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+				if spec.Path == "docker" {
+					return stdout, nil
+				}
+				return healthyUnits(ctx, spec)
+			}}
+			configureToolchain(t, m)
+			problems, err := m.probe(context.Background(), time.Now(), &record{Restarts: map[string]int{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := problems["toolchain-stale"]; (want == "") != (len(problems) == 0) || !strings.HasPrefix(got, want) {
+				t.Errorf("problems = %v, want toolchain-stale prefix %q", problems, want)
+			}
+		})
+	}
+}
+
+func TestStaleToolchainTicketChecksImageVersion(t *testing.T) {
+	tickets := &fakeTickets{}
+	m := &Monitor{
+		StateDir: t.TempDir(),
+		Record:   filepath.Join(t.TempDir(), "runner-health.json"),
+		Tickets:  tickets,
+		Run: func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+			if spec.Path == "docker" {
+				return []byte("1.26.4\n"), nil
+			}
+			return healthyUnits(ctx, spec)
+		},
+	}
+	configureToolchain(t, m)
+	start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	if err := m.Poll(context.Background(), start); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets.created) != 0 {
+		t.Fatalf("created %d tickets before grace elapsed", len(tickets.created))
+	}
+	if err := m.Poll(context.Background(), start.Add(11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets.created) != 1 {
+		t.Fatalf("created %d tickets, want 1", len(tickets.created))
+	}
+	description := tickets.created[0].Description
+	_, acceptance, _ := strings.Cut(description, "\nCHECK: ")
+	check, _, _ := strings.Cut(acceptance, "\n")
+	_, toolchainCheck, found := strings.Cut(check, "slot-*.json && ")
+	if !found {
+		t.Fatalf("CHECK lacks the toolchain comparison: %s", check)
+	}
+	for _, tc := range []struct {
+		name, label, goMod string
+		dockerFails, pass  bool
+	}{
+		{name: "fresh", label: "1.27.4", goMod: "toolchain go1.27.4\n", pass: true},
+		{name: "stale", label: "1.26.4", goMod: "toolchain go1.27.4\n"},
+		{name: "inspect fails and go.mod missing", dockerFails: true},
+		{name: "label missing and no toolchain", goMod: "go 1.25\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range map[string]string{
+				"bin/docker": "#!/bin/sh\nprintf '%s\\n' \"$LABEL\"\n[ -z \"$FAIL\" ]\n",
+				".local/lib/orca-go-isolated-runner/image-id.txt": "sha256:runner-image\n",
+			} {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.goMod != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "driver"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "driver", "go.mod"), []byte(tc.goMod), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fail := ""
+			if tc.dockerFails {
+				fail = "1"
+			}
+			cmd := exec.Command("bash", "-c", toolchainCheck)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "HOME="+dir, "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"), "LABEL="+tc.label, "FAIL="+fail)
+			if err := cmd.Run(); (err == nil) != tc.pass {
+				t.Errorf("toolchain CHECK error = %v, want pass %v: %s", err, tc.pass, toolchainCheck)
+			}
+		})
+	}
+	_, actions, _ := strings.Cut(description, "## 要做\n")
+	actions, _, _ = strings.Cut(actions, "\n## 验收")
+	if !strings.Contains(actions, "Manual image updates") {
+		t.Errorf("ticket actions lack Manual image updates: %s", actions)
+	}
 }
 
 func writeLease(t *testing.T, dir, phase string, modified time.Time) {
@@ -119,6 +310,7 @@ func TestStuckRegistrationOpensOneAgentTicketThenCommentsRecovery(t *testing.T) 
 			writeLease(t, dir, "registering", start)
 			tickets := &fakeTickets{state: "open", workflowState: scenario.state, labels: slices.Clone(scenario.labels), history: scenario.history}
 			m := &Monitor{StateDir: dir, Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+			configureToolchain(t, m)
 			for _, minutes := range []int{15, 20, 26, 31} {
 				if err := m.Poll(context.Background(), start.Add(time.Duration(minutes)*time.Minute)); err != nil {
 					t.Fatal(err)
@@ -128,6 +320,9 @@ func TestStuckRegistrationOpensOneAgentTicketThenCommentsRecovery(t *testing.T) 
 				t.Fatalf("created %d tickets, want 1", len(tickets.created))
 			}
 			in := tickets.created[0]
+			if strings.Contains(in.Description, "orca.go-toolchain") {
+				t.Errorf("slot-only ticket includes toolchain check:\n%s", in.Description)
+			}
 			if strings.Join(in.Labels, ",") != "ready-for-agent" || in.Blockers == nil || in.Related == nil {
 				t.Fatalf("ticket must be agent-claimable and managed: %+v", in)
 			}
@@ -175,6 +370,7 @@ func TestBriefProblemDoesNotAlert(t *testing.T) {
 	writeLease(t, dir, "registering", start)
 	tickets := &fakeTickets{state: "open"}
 	m := &Monitor{StateDir: dir, Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+	configureToolchain(t, m)
 	if err := m.Poll(context.Background(), start.Add(11*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -189,12 +385,16 @@ func TestBriefProblemDoesNotAlert(t *testing.T) {
 
 func TestRestartLoopIsAProblem(t *testing.T) {
 	restarts := 0
-	run := func(context.Context, runx.Spec) ([]byte, error) {
+	run := func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path == "docker" {
+			return healthyUnits(ctx, spec)
+		}
 		restarts += 10
 		return []byte("ActiveState=activating\nNRestarts=" + strconv.Itoa(restarts) + "\n"), nil
 	}
 	tickets := &fakeTickets{state: "open"}
 	m := &Monitor{StateDir: t.TempDir(), Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: run}
+	configureToolchain(t, m)
 	start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	for _, minutes := range []int{0, 5, 10, 15} {
 		if err := m.Poll(context.Background(), start.Add(time.Duration(minutes)*time.Minute)); err != nil {
@@ -213,6 +413,7 @@ func outage(t *testing.T, tickets *fakeTickets) (*Monitor, time.Time) {
 	start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
 	writeLease(t, dir, "registering", start)
 	m := &Monitor{StateDir: dir, Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+	configureToolchain(t, m)
 	for _, minutes := range []int{15, 20, 26, 31} {
 		if err := m.Poll(context.Background(), start.Add(time.Duration(minutes)*time.Minute)); err != nil {
 			t.Fatal(err)

@@ -2,6 +2,7 @@ FROM ghcr.io/actions/actions-runner@sha256:660f7b9d1e0007274f7c867e220b3c382137e
 USER root
 RUN sed -i -E 's#https?://(archive|security).ubuntu.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' /etc/apt/sources.list.d/ubuntu.sources && apt-get update && apt-get install -y --no-install-recommends bash git make gcc libc6-dev ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
 ARG GO_VERSION
+LABEL orca.go-toolchain=$GO_VERSION
 ARG GO_SHA256
 ARG GO_DOWNLOAD_BASE_URL=https://mirrors.aliyun.com/golang
 # The tool cache and module cache live outside the per-job _work tmpfs so every job starts with them.
