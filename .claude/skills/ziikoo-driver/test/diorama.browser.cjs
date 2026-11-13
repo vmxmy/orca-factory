@@ -229,7 +229,7 @@ const serve = () => {
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 const state = page => page.evaluate(() => window.diorama.state())
 
-async function launchPage(browser, url, { webgl = true, ...options } = {}) {
+async function launchPage(browser, url, { webgl = true, controlledFrames = false, ...options } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, ...options })
   await page.addInitScript(enabled => {
     const getContext = HTMLCanvasElement.prototype.getContext
@@ -247,6 +247,20 @@ async function launchPage(browser, url, { webgl = true, ...options } = {}) {
       return requestFrame.call(window, callback)
     }
   }, webgl)
+  if (controlledFrames) await page.addInitScript(() => {
+    let sequence = 0
+    let time = 0
+    const pending = new Map()
+    window.requestAnimationFrame = callback => { pending.set(++sequence, callback); return sequence }
+    window.cancelAnimationFrame = id => pending.delete(id)
+    window.stepFrame = () => {
+      const callbacks = [...pending.values()]
+      pending.clear()
+      for (const callback of callbacks) callback(time)
+      time += 1000 / 60
+      return window.diorama.state()
+    }
+  })
   const errors = []
   const requests = []
   page.on('pageerror', error => errors.push(error.message))
@@ -933,12 +947,13 @@ const pushedStatus = live => {
 }
 
 const fakeDriver = (file, recordedConfig) => (status, { failing = false, config = recordedConfig } = {}) => {
-  fs.writeFileSync(file, `#!/usr/bin/env bun
+  fs.writeFileSync(`${file}.next`, `#!/usr/bin/env bun
 if (process.argv[2] === 'config') console.log(${JSON.stringify(JSON.stringify(config))})
 else if (${failing}) { console.error('fixture failure'); process.exit(7) }
 else console.log(${JSON.stringify(JSON.stringify(status))})
 `)
-  fs.chmodSync(file, 0o755)
+  fs.chmodSync(`${file}.next`, 0o755)
+  fs.renameSync(`${file}.next`, file)
 }
 
 const launchServer = (bun, temp, token, port) => {
@@ -1358,6 +1373,70 @@ async function checkToday(browser, live) {
   }
 }
 
+async function checkParcelTransitions(browser, live) {
+  const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
+  for (const reducedMotion of ['no-preference', 'reduce']) {
+    live.write(recorded)
+    await live.stop()
+    await live.start()
+    const { page, errors } = await launchPage(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(FACTORY)}&ticket=OF-415`, { reducedMotion, controlledFrames: true })
+    try {
+      await page.waitForFunction(() => window.diorama && document.querySelector('.trip').textContent.includes('处置塔前'), null, { polling: 50 })
+      const before = await page.evaluate(() => window.stepFrame())
+      assert.equal(await page.locator('.event-feed li').count(), 0, 'initial snapshots must not create historical events')
+      const next = structuredClone(recorded)
+      next.generatedAt = new Date(Date.parse(recorded.generatedAt) + 5000).toISOString()
+      const moving = next.tickets.find(ticket => ticket.identifier === 'OF-415' && ticket.repo === FACTORY)
+      Object.assign(moving, { owner: '执行器', phase: 'gate' })
+      live.write(next)
+      await page.waitForFunction(() => document.querySelector('.trip').textContent.includes('检验间'), null, { polling: 50 })
+      const first = await page.evaluate(() => window.stepFrame())
+      assert.notDeepEqual(first.target, before.target)
+      if (reducedMotion === 'reduce') {
+        const second = await page.evaluate(() => window.stepFrame())
+        assert.deepEqual(second.at, second.target, 'reduced motion must arrive within two frames')
+      } else {
+        assert.deepEqual(first.at, before.at, 'the first transition frame starts at the previous station')
+        const positions = await page.evaluate(() => Array.from({ length: 73 }, () => window.stepFrame()))
+        for (const [index, position] of positions.entries()) {
+          if (index < 71) assert.notDeepEqual(position.at, position.target, `frame ${index + 1} must precede arrival at frame 72`)
+        }
+        assert.deepEqual(positions[72].at, positions[72].target, 'the box must arrive after 1.2 seconds at 60 fps')
+      }
+      const feed = page.locator('.side .event-feed')
+      assert.equal(await feed.count(), 1, 'events must live in the sidebar')
+      const movement = await feed.locator('[data-event="move"]').innerText()
+      for (const text of ['移动', 'OF-415', '处置塔前', '检验间']) assert.ok(movement.includes(text), movement)
+      assert.equal(await feed.locator('li').count(), 1)
+      live.write({ ...next, state: 'unknown', generatedAt: new Date(Date.parse(next.generatedAt) + 5000).toISOString() })
+      await page.waitForFunction(() => document.querySelector('.status').textContent.includes('driver unknown'), null, { polling: 50 })
+      assert.equal(await feed.locator('li').count(), 1, 'identical ticket states must not repeat events on the next scan')
+      const changed = structuredClone(next)
+      changed.tickets = changed.tickets.filter(ticket => ticket.identifier !== 'OF-419')
+      changed.tickets.push({ ...moving, identifier: 'FEED-1' })
+      Object.assign(changed.tickets.find(ticket => ticket.identifier === 'OF-415'), { owner: '处置Agent', phase: 'Agent处置', blockedReason: '<img src=x> failure' })
+      live.write(changed)
+      await page.waitForFunction(() => document.querySelector('.event-feed [data-event="alert"]'), null, { polling: 50 })
+      for (const [type, identifier] of [['enter', 'FEED-1'], ['leave', 'OF-419'], ['alert', 'OF-415']]) {
+        assert.ok((await feed.locator(`[data-event="${type}"]`).innerText()).includes(identifier), `${type} must identify the changed ticket`)
+      }
+      assert.equal(await feed.locator('img').count(), 0, 'event details must remain text')
+      changed.tickets.push(...Array.from({ length: 12 }, (_, index) => ({ ...moving, identifier: `FEED-${index + 2}` })))
+      live.write(changed)
+      await page.waitForFunction(() => document.querySelector('.event-feed').textContent.includes('FEED-13'), null, { polling: 50 })
+      assert.equal(await feed.locator('li').count(), 8, 'the sidebar must keep only the eight most recent events')
+      assert.ok(!(await feed.innerText()).includes('OF-419'), 'the oldest event must be evicted')
+      assert.deepEqual(errors, [])
+    } finally {
+      await page.close()
+    }
+  }
+  live.write(recorded)
+  await live.stop()
+  await live.start()
+  console.log('PASS parcel transitions: next scan, frame 72 arrival, reduced motion in two frames, sidebar enter/leave/move/alert, deduplication and feed limit')
+}
+
 async function checkProduction(browser, bun, model) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
@@ -1385,6 +1464,7 @@ async function checkProduction(browser, bun, model) {
     await checkTokens(origin, token)
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
+    await checkParcelTransitions(browser, live)
     await checkRecordedHumanWaits(browser, live)
     await checkHumanWaits(browser, live)
     live.write(status)

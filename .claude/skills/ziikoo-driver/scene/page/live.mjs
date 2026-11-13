@@ -1,5 +1,6 @@
 import { failureText } from './diorama/hud.mjs'
 import { mountDiorama } from './diorama/index.mjs'
+import { archipelagoOf } from './diorama/model.mjs'
 
 const token = new URL(import.meta.url).searchParams.get('t')
 const resource = pathname => `${pathname}?t=${encodeURIComponent(token)}`
@@ -15,6 +16,7 @@ let connected = false
 let closed = false
 let events
 let snapshotRequest
+let previousTickets = null
 
 const report = () => {
   const listed = [...failures.values()]
@@ -71,9 +73,30 @@ const receive = scene => {
   if (broken) return
   if (!Array.isArray(scene?.rows)) return fail('snapshot', '快照缺少 rows')
   failures.delete('snapshot')
+  const tickets = new Map(archipelagoOf(scene).tickets.map(ticket => [`${ticket.path}\0${ticket.identifier}`, ticket]))
+  const changes = []
+  const add = (type, ticket, detail) => changes.push({ type, text: `${ticket.project} · ${ticket.identifier} · ${detail}`, path: ticket.path })
+  if (previousTickets) {
+    for (const [id, ticket] of tickets) {
+      const previous = previousTickets.get(id)
+      if (!previous) add('enter', ticket, `进入 · ${ticket.stationName}`)
+      else if (ticket.station !== previous.station) add('move', ticket, `移动 · ${previous.stationName} → ${ticket.stationName}`)
+      else if (ticket.phase !== previous.phase || ticket.owner !== previous.owner || ticket.label !== previous.label) {
+        add('move', ticket, `移动 · ${ticket.stationName} · ${previous.label} → ${ticket.label} · ${ticket.owner}`)
+      }
+      if (ticket.alert && (ticket.alert !== previous?.alert || ticket.reason !== previous?.reason)) {
+        add('alert', ticket, `告警 · ${ticket.stationName} · ${ticket.reason || ticket.label}`)
+      }
+    }
+    for (const [id, ticket] of previousTickets) {
+      if (!tickets.has(id)) add('leave', ticket, `离开 · ${ticket.stationName}`)
+    }
+  }
+  previousTickets = tickets
   if (scene.rows.length === 0) unmount()
   else if (diorama) diorama.update(scene)
   else mount(scene)
+  diorama?.notify(changes)
   report()
 }
 

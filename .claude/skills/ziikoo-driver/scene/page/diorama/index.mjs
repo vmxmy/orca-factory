@@ -251,6 +251,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       return archipelago
     },
     update,
+    notify: hud.events,
     link(next) {
       hud.link(next)
       refreshStatus()
