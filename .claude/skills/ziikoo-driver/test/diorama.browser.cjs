@@ -396,8 +396,36 @@ async function checkStationTagsAndNeighborhood(browser, url) {
         assert.ok(marker.right <= other.left || other.right <= marker.left || marker.bottom <= other.top || other.bottom <= marker.top, 'numbered circles and legend must not overlap')
       }
     }
+    const edgeGroup = await page.evaluate(async () => {
+      const THREE = await import('three')
+      const { createOverlay } = await import('../../scene/page/diorama/overlay.mjs')
+      const host = document.createElement('div')
+      host.className = 'diorama'
+      document.body.append(host)
+      const tickets = ['EDGE-LEFT-0001', 'EDGE-RIGHT-0002'].map(identifier => ({
+        island: 0, station: 'repair', key: identifier, identifier, alert: 'warn',
+      }))
+      const world = { parcels: new Map(tickets.map((ticket, index) => [ticket.key, {
+        group: { position: new THREE.Vector3(index === 0 ? -10.588 : -8.824, -2, 0) },
+      }])) }
+      const overlay = createOverlay(host, world, { onIsland() {} })
+      try {
+        overlay.update({ islands: [], hub: null, tickets })
+        const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
+        camera.position.set(0, 0, 10)
+        camera.updateMatrixWorld()
+        const size = { width: 340, height: 240 }
+        const margins = { top: 8, right: 8, bottom: 8, left: 8 }
+        overlay.place(camera, { stop: 2, selected: null, margins, size })
+        return [...host.querySelectorAll('.label:not([hidden])')].map(node => JSON.parse(node.dataset.tickets))
+      } finally {
+        overlay.remove()
+        host.remove()
+      }
+    })
+    assert.ok(edgeGroup.some(ids => ids.includes('EDGE-LEFT-0001') && ids.includes('EDGE-RIGHT-0002')), 'when the representative anchor leaves the viewport, an in-viewport group member must not be silently dropped')
     assert.deepEqual(errors, [])
-    console.log('PASS station tags and neighborhood: OF-415/OF-419 fold with +1, labels do not overlap, repair tower has 18% padding')
+    console.log('PASS station tags and neighborhood: OF-415/OF-419 fold with +1, labels do not overlap, repair tower has 18% padding, folded groups retain visible members')
   } finally {
     await page.close()
   }

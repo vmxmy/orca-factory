@@ -233,13 +233,24 @@ export const createOverlay = (stage, world, { onIsland }) => {
     const tags = [...groups, ...shown.stations.map(item => ({ item, point: screenOf(item.position, camera) }))]
     const overflow = []
     for (const tag of tags) {
-      const rect = fitTag(tag.point, sizeOf(tag.item), taken, area)
+      const points = tag.members ? tag.members.map(member => member.point) : [tag.point]
+      let rect
+      for (const point of points) {
+        rect = fitTag(point, sizeOf(tag.item), taken, area)
+        if (rect) break
+      }
       tag.rect = rect
       reveal(tag.item.node, Boolean(rect))
       if (rect) {
         positionTag(tag.item.node, rect)
         taken.push(rect)
-      } else if (inside(tag.point, areaOf({ left: 0, top: 0, right: 0, bottom: 0 }, viewport))) overflow.push(tag)
+      } else {
+        const point = points.find(candidate => inside(candidate, areaOf({ left: 0, top: 0, right: 0, bottom: 0 }, viewport)))
+        if (point) {
+          tag.point = point
+          overflow.push(tag)
+        }
+      }
     }
     reveal(legend, overflow.length > 0)
     if (overflow.length === 0) return
