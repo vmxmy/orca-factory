@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { stationNeighborhood, slotRules } from './model.mjs'
+import { baselineColor, STAGE_BASELINE_MINUTES, stationNeighborhood, slotRules } from './model.mjs'
 
 THREE.ColorManagement.enabled = false
 
@@ -201,6 +201,17 @@ const buildIsland = (scene, island, fade) => {
   buildGround(kitOf(land), island.layout)
   const kit = kitOf(land, fade ? faded : plain)
   dressIsland({ doors: buildMainline(kit, island.layout), lantern: buildMezzanine(kit), ...buildWaterfront(kit) }, island)
+  const rules = slotRules(island.layout)
+  for (const station of Object.keys(STAGE_BASELINE_MINUTES)) {
+    const count = station === 'work' ? island.layout.booths.length : 1
+    for (let index = 0; index < count; index++) {
+      const slot = rules[station](index)
+      const tile = kitOf(land).box([1.7, 0.025, 1.5], baselineColor(station), [slot.x, slot.y + 0.005, slot.z])
+      tile.material = new THREE.MeshBasicMaterial({ color: baselineColor(station) })
+      tile.name = 'baseline-tile'
+      tile.visible = false
+    }
+  }
   return land
 }
 
@@ -226,6 +237,12 @@ const buildParcel = (scene, view, island) => {
   group.add(mark)
   const ring = kit.box([1.2, 0.05, 1.2], WORLD.ink, [0, -0.02, 0])
   ring.visible = false
+  const overdueRing = new THREE.Mesh(new THREE.RingGeometry(0.65, 0.78, 48), shared(GLOW[view.overdue] ?? GLOW.warn))
+  overdueRing.name = 'overdue-ring'
+  overdueRing.rotation.x = -Math.PI / 2
+  overdueRing.position.y = 0.05
+  overdueRing.visible = Boolean(view.overdue)
+  group.add(overdueRing)
   const target = new THREE.Vector3(view.slot.x + island.origin.x, view.slot.y, view.slot.z + island.origin.z)
   group.position.copy(target)
   scene.add(group)
@@ -418,6 +435,11 @@ export const createWorld = canvas => {
     },
     select(key) {
       for (const parcel of built.parcels.values()) parcel.ring.visible = parcel.view.key === key
+    },
+    focus(stop, index) {
+      for (const land of built.lands) land.traverse(node => {
+        if (node.name === 'baseline-tile') node.visible = stop !== 1 && land.userData.island === index
+      })
     },
     pick(ndc, camera) {
       raycaster.setFromCamera(ndc, camera)

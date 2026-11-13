@@ -110,6 +110,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   }
 
   const showSelection = () => {
+    world.focus(stop, focus)
     const parcel = parcelOf(selected)
     hud.stops(stop, parcel !== undefined, focus)
     hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus])
