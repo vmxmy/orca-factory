@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -240,6 +241,10 @@ func scopeAddition(r review, record resolver.Record, lane3Globs string) (paths [
 	if len(paths) == 0 {
 		return nil, r.ticket + " 处置 Agent 没有申请 SCOPE，请发 扩SCOPE " + r.ticket + " <路径...>"
 	}
+	return validateScopeAddition(paths, lane3Globs)
+}
+
+func validateScopeAddition(paths []string, lane3Globs string) ([]string, string) {
 	for _, p := range paths {
 		segments := strings.Split(p, "/")
 		if !literalPath.MatchString(p) || slices.Contains(segments, "") || slices.Contains(segments, ".") || slices.Contains(segments, "..") {
@@ -252,6 +257,80 @@ func scopeAddition(r review, record resolver.Record, lane3Globs string) (paths [
 		}
 	}
 	return paths, ""
+}
+
+// ExtendWorkerScope approves only same-package Go tests and README files beside
+// literal Go sources already in scope. A refusal leaves the whole request untouched.
+// If the ticket scope already contains the paths, no comment or edit is written.
+// Otherwise the audit precedes the edit; retrying a failed edit writes the same audit again.
+func ExtendWorkerScope(ctx context.Context, ledger ScopeLedger, id, scope string, additions []string, lane3Globs string) (bool, error) {
+	paths, refusal := validateScopeAddition(additions, lane3Globs)
+	if refusal != "" || len(paths) == 0 {
+		return false, nil
+	}
+	var audit []string
+	for _, file := range paths {
+		category := safeWorkerScopeFile(file, strings.Fields(scope))
+		if category == "" {
+			return false, nil
+		}
+		audit = append(audit, "自动扩 SCOPE："+file+"，依据："+category)
+	}
+	ticket, err := ledger.Read(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if ticket.Metadata.State == "Canceled" {
+		return false, nil
+	}
+	if lane := laneHeading.FindStringSubmatch(ticket.Description); len(lane) > 1 && lane[1] == "3" {
+		return false, nil
+	}
+	face, changed, found := withScope(ticket.Description, paths)
+	if !found {
+		return false, nil
+	}
+	if changed {
+		if _, err := ledger.CreateComment(ctx, id, strings.Join(audit, "\n")); err != nil {
+			return false, err
+		}
+		patch, err := json.Marshal(map[string]string{"description": face})
+		if err != nil {
+			return false, err
+		}
+		if _, err := ledger.Edit(ctx, id, patch); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func safeWorkerScopeFile(file string, scope []string) string {
+	for _, segment := range strings.Split(strings.ToLower(file), "/") {
+		if strings.HasPrefix(segment, ".env") || strings.Contains(segment, "secret") || strings.Contains(segment, "credential") {
+			return ""
+		}
+		switch segment {
+		case ".github", "agent-gates", "deploy", "prod", "production", "migrations", "data":
+			return ""
+		}
+	}
+	category := ""
+	switch {
+	case strings.HasSuffix(file, "_test.go"):
+		category = "同包 Go 测试"
+	case path.Base(file) == "README.md":
+		category = "同包 README"
+	default:
+		return ""
+	}
+	for _, source := range scope {
+		if _, refusal := validateScopeAddition([]string{source}, ""); refusal == "" &&
+			strings.HasSuffix(source, ".go") && !strings.HasSuffix(source, "_test.go") && path.Dir(source) == path.Dir(file) {
+			return category
+		}
+	}
+	return ""
 }
 
 // withScope merges paths into the ticket face's SCOPE section. Paths an

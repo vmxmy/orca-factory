@@ -17,6 +17,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -491,6 +492,20 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			failedSubject = workerSubject(report)
 			if scopeBlocked = scopeBlockedFiles(report.Body, spec); len(scopeBlocked) > 0 {
 				event = machine.EvWorkerScopeBlocked
+				if os.Getenv("AGENT_WORKER_AUTO_SCOPE") == "1" && cp.MergeSpec == "" {
+					extended, extendErr := intake.ExtendWorkerScope(ctx, e.Issues, t.ID, t.Scope, scopeBlocked, strings.Join(c.Lane3Globs, " "))
+					if extendErr != nil {
+						return result, extendErr
+					}
+					if extended {
+						t.Scope += " " + strings.Join(scopeBlocked, " ")
+						brief, spec, err = writeArtifacts(c, t, branch)
+						if err != nil {
+							return result, err
+						}
+						event = machine.EvWorkerScopeExtended
+					}
+				}
 			}
 		}
 		if report.Provenance == provenanceExecutorUnstarted {

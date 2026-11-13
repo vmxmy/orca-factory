@@ -123,7 +123,14 @@ orca-factory-driver status --json
 
 票面 CHECK 写错导致执行器反复 correction 时，先改正票面，再在账本追加一条以 `gate-spec-refresh:` 开头的评论，例如 `gate-spec-refresh: 已改正 CHECK`。执行器在下一次 gate 运行前写回执 `gate-spec-refresh 已执行 attempt=N term=<终端>` 并退出；调度器按原 attempt 重启该阶段，新执行器用新票面重写 `gate.spec`，不计执行器失败和 correction 次数。每个 attempt 只生效一次，同一 attempt 内再写的指令被忽略。指令到达时若执行器已进入交接，账本出现 `gate-spec-refresh 未执行：已进入交接，按旧 spec 冻结`，交接按旧 spec 继续。指令只作用于执行器阶段；已进入合并交接的票不受影响。指令没有作者校验，契约见 [CONTRACTS.md](CONTRACTS.md)。
 
-worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
+默认情况下，worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done --outcome failed` 的正文里单独写一行 `SCOPE-BLOCKED: <文件路径> [<文件路径>…]`，执行器读当前 `gate.spec`，确认每个路径都是只含 ASCII 字母、数字和 `_` `.` `/` `-` 的仓库相对路径，且不匹配 `SCOPE`，就写 `workerScopeBlocked` 转移，把票交给处置 Agent，账本证据列出这些文件，不消耗 correction 次数。任一路径不合格时整行作废，这次失败仍按普通 worker 失败打回。写在其他位置的文字不算信号。
+
+在 driver 进程环境设置 `AGENT_WORKER_AUTO_SCOPE=1` 可启用安全文件自动扩 SCOPE，默认关闭，其他值也视为关闭。该开关从进程环境读取，仅写入 `agent-graph.env` 不会生效。它独立于处置阶段的 `AGENT_AUTO_REVIEW=scope`。
+
+启用后，执行器只自动批准已有字面 Go 源文件同目录的 `*_test.go` 和 `README.md`，类别分别是「同包 Go 测试」和「同包 README」。原 SCOPE 中的 glob 和测试文件不能作为同包依据。所有申请路径仍须通过 intake 共用的字面路径与 lane 3 校验。路径任一段为 `.github`、`agent-gates`、`deploy`、`prod`、`production`、`migrations`、`data`，以 `.env` 开头，或含 `secret`、`credential` 时拒绝自动扩展，比较不区分大小写。混入任何非安全文件就整批交处置 Agent，取消的票、票面 lane 3、缺少 SCOPE 或已有冻结合并 spec 的票也不自动扩展。
+
+自动批准先写审计评论，每个文件一行 `自动扩 SCOPE：<路径>，依据：<类别>`，再更新票面 SCOPE、当前简报和 gate spec。票面 SCOPE 已包含这些路径时，不再写评论和票面。评论成功但写票面失败后重试，会再写一条相同审计评论。任一读写失败都会停止本次执行，不派 correction。成功后通过 `workerScopeExtended` 进入 correction，消耗一次 correction，不消耗 infra，仍受 correction 总次数限制。后续 gate、审查、CI 和 SCOPE 校验照常执行，凭据、生产 DDL 与数据不在自动批准范围内。
+
 
 correction coordinator 判定打回停滞时也不再派 worker。它读「历史 FAIL 摘要」，同一失败反复出现、写不出新做法时，在 correction 文件首行写 `STALLED: <理由>`。执行器读第一个非空行，在第 2 次及以后的 correction 读到这一行时写 `correctionStalled` 转移，把票交给处置 Agent，账本证据带 `停滞判断: <理由>`，correction 次数不再增加。第 1 次 correction 写出的 STALLED 按没有 correction 计一次基础设施预算。这个判断只能提前转处置，不重派、不放行。
 
