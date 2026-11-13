@@ -44,6 +44,8 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 ## 工坊沙盘
 
+「这张票」视图跟随票换站。
+
 工坊沙盘是固定等距的 three.js 沙盘。Scene 的每个项目画成一座岛，岛之间是海。服务运行在本机 Bun 中，只运行 `orca-factory-driver status --json`（每 5 秒）和 `config --json`（每 60 秒），不读配置文件。页面打开时读 `/snapshot` 并订阅 `/events`，先到的 Scene 画出首屏，之后的 Scene 原地更新。页面只读，不提供推进票据的操作。
 
 `/live.mjs`、`/diorama/*.mjs` 与 `/diorama/diorama.css` 使用 `Cache-Control: public, max-age=300`，`/vendor/*` 使用 `public, max-age=86400`；`/`、`/snapshot` 与 `/events` 保持 `no-store`。事件流连接数由 `ZIIKOO_SCENE_MAX_CLIENTS` 限制，默认 50，必须是正整数；达到上限时新连接返回 503 并带 `Retry-After: 5`，连接断开后释放名额。
@@ -148,7 +150,7 @@ token 经 import map 带到每个模块：
 
 ### 连接与更新
 
-- 新 Scene 原地更新：不重建 WebGL 上下文，相机、当前岛、机位与所选票保持不变。所选票离开 Scene 时取消选择，机位 `3` 退回机位 `2`；当前岛离开 Scene 时回到默认机位。
+- 新 Scene 原地更新：不重建 WebGL 上下文，当前岛、机位与所选票保持不变。相机仅在机位 `3` 的所选票换站时立即重新取景，保持当前缩放。所选票离开 Scene 时取消选择，机位 `3` 退回机位 `2`；当前岛离开 Scene 时回到默认机位。
 - 票换了工位时，箱子在 1.2 秒内移到新工位。相同 Scene 不会重播移动；箱子消失不代表成功。
 - Scene 没有项目时卸载沙盘，写「暂无项目」；之后收到有项目的 Scene 时重新挂载。`update` 收到没有项目的 Scene 时在改动任何状态前抛出错误。
 - 状态栏依次写连接状态（「已连接」或「连接断开」）、项目、天空说明（维护中、没有快照）、快照过期、`driver <state>`、快照年龄、维护模式与下次巡检时间。快照过期单独判断，维护中且过期时两项都写。断线时状态点变红。
