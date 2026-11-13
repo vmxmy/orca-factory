@@ -184,6 +184,7 @@ async function checkModel() {
     { name: 'd', inFlight: 0, barrier: false, stuck: 0, alert: null },
   ])
   assert.deepEqual(busy.islands.map(one => one.idle), [false, true, false, true], 'an island without in-flight tickets is idle')
+  assert.deepEqual(busy.islands.map(one => one.status), ['busy', 'idle', 'busy', 'idle'], 'in-flight tickets make an island busy; pickup-only islands remain idle')
   assert.deepEqual(busy.stuck.map(one => [one.identifier, one.project]), [['C-1', 'c'], ['A-2', 'a']], 'stuck tickets must cross projects, longest stay first')
   assert.equal(busy.global, true)
   const twins = model.archipelagoOf(sceneOf([named('x', [parcel('T-1', 'work')]), named('y', [parcel('T-1', 'gate')])]))
@@ -587,6 +588,27 @@ async function checkStageBaselines(browser, url) {
     assert.ok(result.localTiles.every(island => island === result.island), 'neighboring islands must not show colored baseline tiles')
     assert.deepEqual(errors, [])
     console.log('PASS stage baselines: repair red ring, duration and baseline comparison, missing baselines, focused island tiles')
+  } finally { await page.close() }
+}
+
+async function checkIslandStatus(browser, url) {
+  const { page, errors } = await open(browser, url)
+  try {
+    const plates = page.locator('button.plate:visible')
+    assert.equal(await plates.count(), 6, 'the recorded fixture must show all six project plates')
+    const factory = plates.filter({ has: page.locator('b', { hasText: /^orca-factory$/ }) })
+    assert.equal(await factory.locator('span').first().innerText(), '忙碌 · 在途 2', 'orca-factory must show its busy status and two in-flight tickets')
+    const idle = plates.filter({ hasNot: page.locator('b', { hasText: /^orca-factory$/ }) })
+    assert.equal(await idle.count(), 5)
+    for (const plate of await idle.all()) {
+      assert.equal(await plate.locator('span').first().innerText(), '空闲', 'every other recorded project must be idle')
+    }
+    await page.setViewportSize({ width: 600, height: 800 })
+    await frames(page)
+    assert.equal(await factory.locator('span').first().isVisible(), true, 'busy status must stay visible on narrow screens')
+    for (const plate of await idle.all()) assert.equal(await plate.locator('span').first().isVisible(), true, 'idle status must stay visible on narrow screens')
+    assert.deepEqual(errors, [])
+    console.log('PASS island status: six recorded projects, busy factory with two in-flight tickets, five idle islands')
   } finally { await page.close() }
 }
 
@@ -1555,6 +1577,7 @@ async function main() {
     try {
       await checkStageBaselines(browser, url)
       await checkStationTagsAndNeighborhood(browser, url)
+      await checkIslandStatus(browser, url)
       await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)

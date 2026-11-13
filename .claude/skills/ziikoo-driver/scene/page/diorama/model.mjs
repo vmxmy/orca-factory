@@ -8,6 +8,10 @@ export const OWNER_COLORS = {
 
 export const ownerColor = owner => OWNER_COLORS[owner] ?? OWNER_COLORS.无
 
+export const ISLAND_STATUS = Object.freeze({ IDLE: 'idle', BUSY: 'busy' })
+
+export const islandStatusOf = inFlight => inFlight > 0 ? ISLAND_STATUS.BUSY : ISLAND_STATUS.IDLE
+
 // 2026-11-13 实测：31 张票各阶段停留的算术平均，单位为分钟；未测工位不补值。
 export const STAGE_BASELINE_MINUTES = Object.freeze({
   human: 98,
@@ -221,6 +225,7 @@ export const islandOf = (row, now) => {
   )
   const working = stations.get('work')?.length ?? 0
   const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
+  const status = islandStatusOf(inFlight)
   const layout = layoutOf(Math.max(MIN_BOOTHS, working))
   const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
@@ -238,7 +243,8 @@ export const islandOf = (row, now) => {
     workers: row.workers,
     lantern: stations.has('human'),
     inFlight,
-    idle: inFlight === 0,
+    status,
+    idle: status === ISLAND_STATUS.IDLE,
     ...deploymentOf(row),
   }
 }

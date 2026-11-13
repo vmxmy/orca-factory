@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { baselineText, stationNeighborhood } from './model.mjs'
+import { ISLAND_STATUS, baselineText, stationNeighborhood } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -27,13 +27,13 @@ const stationLabels = ({ layout, working, workers }) => [
 const plateOf = island =>
   element('button', {
     type: 'button',
-    class: ['plate', island.idle ? 'idle' : '', island.plate.alert ?? ''].join(' ').trim(),
+    class: ['plate', island.status, island.plate.alert ?? ''].join(' ').trim(),
     'data-island': String(island.index),
     title: island.path,
     hidden: '',
   }, [
     element('b', { text: island.name }),
-    element('span', { text: island.idle ? '空闲' : `在途 ${island.plate.inFlight}` }),
+    element('span', { text: island.status === ISLAND_STATUS.IDLE ? '空闲' : `忙碌 · 在途 ${island.plate.inFlight}` }),
     ...(island.plate.barrier ? [element('span', { text: '闸关' })] : []),
     ...(island.plate.stuck > 0 ? [element('em', { text: `${island.plate.stuck} 张卡住` })] : []),
   ])
