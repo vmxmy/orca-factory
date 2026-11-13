@@ -65,6 +65,7 @@ type Config struct {
 	Lane3Globs                                                          []string
 	Machine                                                             string
 	TierSettings                                                        map[string]string
+	WorkerSkills                                                        []string
 	TierChain                                                           []string
 	Escalate                                                            string
 	Repo, Owner, Repository, Terminal, Unit, Root, Agent, Model, Effort string
@@ -376,10 +377,11 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			result.DispatchID = cp.Dispatch
 			return nil
 		}
-		workerSpec, err := workerTaskSpec(c.Repo, brief)
+		workerSpec, err := workerTaskSpec(c.Repo, brief, c.WorkerSkills)
 		if err != nil {
 			return err
 		}
+		e.logger().Info("worker skills", "worker_skills", strings.Join(c.WorkerSkills, ","), "correction", cp.Corrections)
 		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
 			return err
 		}

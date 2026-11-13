@@ -208,10 +208,11 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				return errors.New("missing correction worker effect")
 			}
 			cp.Corrections = result.State.Corrections
-			childSpec, err := workerTaskSpec(c.Repo, fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief))
+			childSpec, err := workerTaskSpec(c.Repo, fmt.Sprintf("correction %d/3\n%s\n%s", cp.Corrections, correction, brief), c.WorkerSkills)
 			if err != nil {
 				return err
 			}
+			e.logger().Info("worker skills", "worker_skills", strings.Join(c.WorkerSkills, ","), "correction", cp.Corrections)
 			if canReuse {
 				// startDispatch creates the child once and clears PendingParent before
 				// attempting the terminal-bound worker start.
