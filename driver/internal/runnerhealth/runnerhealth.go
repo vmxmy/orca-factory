@@ -322,7 +322,7 @@ func ticket(problems map[string]string) issues.CreateInput {
 		title = "ops(runner): 隔离 CI runner 异常"
 		status = "driver 调度器检测到隔离 CI runner 异常持续超过 10 分钟："
 		toolchainAction = "\n4. 按 `scripts/local-runner/README.md` 的 Manual image updates 重建镜像。"
-		toolchainCheck = ` && test "$(docker image inspect "$(cat ~/.local/lib/orca-go-isolated-runner/image-id.txt)" --format '{{ index .Config.Labels "orca.go-toolchain" }}')" = "$(awk '$1=="toolchain"{sub(/^go/,"",$2);print $2}' driver/go.mod)"`
+		toolchainCheck = ` && image="$(cat ~/.local/lib/orca-go-isolated-runner/image-id.txt)" && label="$(docker image inspect "$image" --format '{{ index .Config.Labels "orca.go-toolchain" }}')" && want="$(awk '$1=="toolchain"{sub(/^go/,"",$2);print $2}' driver/go.mod)" && test -n "$want" && test "$label" = "$want"`
 		toolchainAssertion = "镜像标签 `orca.go-toolchain` 等于 `driver/go.mod` 的 toolchain 版本。"
 	}
 	description := `## 现状

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -222,10 +223,51 @@ func TestStaleToolchainTicketChecksImageVersion(t *testing.T) {
 	description := tickets.created[0].Description
 	_, acceptance, _ := strings.Cut(description, "\nCHECK: ")
 	check, _, _ := strings.Cut(acceptance, "\n")
-	for _, want := range []string{"docker image inspect", "orca.go-toolchain", "image-id.txt", "driver/go.mod"} {
-		if !strings.Contains(check, want) {
-			t.Errorf("CHECK lacks %q: %s", want, check)
-		}
+	_, toolchainCheck, found := strings.Cut(check, "slot-*.json && ")
+	if !found {
+		t.Fatalf("CHECK lacks the toolchain comparison: %s", check)
+	}
+	for _, tc := range []struct {
+		name, label, goMod string
+		dockerFails, pass  bool
+	}{
+		{name: "fresh", label: "1.27.4", goMod: "toolchain go1.27.4\n", pass: true},
+		{name: "stale", label: "1.26.4", goMod: "toolchain go1.27.4\n"},
+		{name: "inspect fails and go.mod missing", dockerFails: true},
+		{name: "label missing and no toolchain", goMod: "go 1.25\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, body := range map[string]string{
+				"bin/docker": "#!/bin/sh\nprintf '%s\\n' \"$LABEL\"\n[ -z \"$FAIL\" ]\n",
+				".local/lib/orca-go-isolated-runner/image-id.txt": "sha256:runner-image\n",
+			} {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(dir, name)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.goMod != "" {
+				if err := os.MkdirAll(filepath.Join(dir, "driver"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "driver", "go.mod"), []byte(tc.goMod), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			fail := ""
+			if tc.dockerFails {
+				fail = "1"
+			}
+			cmd := exec.Command("bash", "-c", toolchainCheck)
+			cmd.Dir = dir
+			cmd.Env = append(os.Environ(), "HOME="+dir, "PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"), "LABEL="+tc.label, "FAIL="+fail)
+			if err := cmd.Run(); (err == nil) != tc.pass {
+				t.Errorf("toolchain CHECK error = %v, want pass %v: %s", err, tc.pass, toolchainCheck)
+			}
+		})
 	}
 	_, actions, _ := strings.Cut(description, "## 要做\n")
 	actions, _, _ = strings.Cut(actions, "\n## 验收")
