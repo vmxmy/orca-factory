@@ -261,8 +261,8 @@ func validateScopeAddition(paths []string, lane3Globs string) ([]string, string)
 
 // ExtendWorkerScope approves only same-package Go tests and README files beside
 // literal Go sources already in scope. A refusal leaves the whole request untouched.
-// The audit records authorization before editing the face, so an interrupted edit
-// can be retried without losing the reason for an expanded scope.
+// If the ticket scope already contains the paths, no comment or edit is written.
+// Otherwise the audit precedes the edit; retrying a failed edit writes the same audit again.
 func ExtendWorkerScope(ctx context.Context, ledger ScopeLedger, id, scope string, additions []string, lane3Globs string) (bool, error) {
 	paths, refusal := validateScopeAddition(additions, lane3Globs)
 	if refusal != "" || len(paths) == 0 {
@@ -290,17 +290,10 @@ func ExtendWorkerScope(ctx context.Context, ledger ScopeLedger, id, scope string
 	if !found {
 		return false, nil
 	}
-	comments, err := ledger.ListComments(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	body := strings.Join(audit, "\n")
-	if !slices.ContainsFunc(comments, func(c task.Comment) bool { return c.Body == body }) {
-		if _, err := ledger.CreateComment(ctx, id, body); err != nil {
+	if changed {
+		if _, err := ledger.CreateComment(ctx, id, strings.Join(audit, "\n")); err != nil {
 			return false, err
 		}
-	}
-	if changed {
 		patch, err := json.Marshal(map[string]string{"description": face})
 		if err != nil {
 			return false, err
