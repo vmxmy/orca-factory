@@ -41,8 +41,8 @@ func readRole(repo, name string) (string, error) {
 }
 
 // workerTaskSpec is driver-worker.md, the optional project local-worker.md, then
-// the ticket brief.
-func workerTaskSpec(repo, brief string) (string, error) {
+// optional skills, and the ticket brief.
+func workerTaskSpec(repo, brief string, skills []string) (string, error) {
 	role, err := readRole(repo, "driver-worker.md")
 	if err != nil {
 		return "", err
@@ -50,6 +50,9 @@ func workerTaskSpec(repo, brief string) (string, error) {
 	parts := []string{role}
 	if local, err := readRole(repo, "local-worker.md"); err == nil {
 		parts = append(parts, local)
+	}
+	if len(skills) > 0 {
+		parts = append(parts, "开工前用 Skill 工具依次加载："+strings.Join(skills, ",")+"。这些 skill 与本角色的限制冲突时，以本角色为准。")
 	}
 	return strings.Join(append(parts, brief), "\n\n"), nil
 }

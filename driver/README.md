@@ -127,6 +127,14 @@ worker 报告缺 SCOPE 外文件时不进 correction。worker 在 `worker_done -
 
 correction coordinator 判定打回停滞时也不再派 worker。它读「历史 FAIL 摘要」，同一失败反复出现、写不出新做法时，在 correction 文件首行写 `STALLED: <理由>`。执行器读第一个非空行，在第 2 次及以后的 correction 读到这一行时写 `correctionStalled` 转移，把票交给处置 Agent，账本证据带 `停滞判断: <理由>`，correction 次数不再增加。第 1 次 correction 写出的 STALLED 按没有 correction 计一次基础设施预算。这个判断只能提前转处置，不重派、不放行。
 
+worker 可通过仓库 `scripts/agent-gates/agent-graph.env` 中的 `AGENT_WORKER_SKILLS` 配置开工前加载的技能，例如 `AGENT_WORKER_SKILLS=tdd,pkg:review_2-A`。值是逗号分隔的非空技能名，每个名字只允许 ASCII 字母、数字、连字符、下划线和冒号，不允许空格或空项。缺省或显式空值不插入任何内容，仓库不默认开启；仓库未赋值时沿用执行器进程环境，仓库赋值优先。非法值让执行器启动失败，错误包含键名和非法值，driver 不检查技能是否存在。
+
+首轮 worker 和 correction 子任务都在角色文本 `driver-worker.md`、可选的 `local-worker.md` 之后、简报之前收到以下指令，名字保持配置顺序：
+
+> 开工前用 Skill 工具依次加载：tdd,pkg:review_2-A。这些 skill 与本角色的限制冲突时，以本角色为准。
+
+此设置只对支持 Skill 工具的 agent（claude 系）有效，其他 agent 会忽略加载指令。角色限制优先于 skill，不使用斜杠命令注入。所有 worker 档位共用本次执行器读取的列表，不按单票或标签指定，也不作用于 reviewer、resolver。执行器在生成首轮和纠正派工提示词时记录 `worker skills` 日志，`worker_skills` 是逗号分隔的列表，空配置记录空字符串，`correction` 是纠正次数。
+
 worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺失或不是正整数时用默认值。
 - 终端空闲：worker 终端的 `lastOutputAt` 超过 `AGENT_WORKER_IDLE_MINUTES`（整数分钟，默认 15）未更新时，执行器先向该终端发一次提醒，每次派工只发一次。提醒确认开始新 turn 后重新计时；再满一个周期仍无输出时写 `workerStall`，计一次基础设施预算。终端继续静默时每满一个周期再计一次，第 3 次按预算耗尽转处置 Agent。终端有新输出时从新输出起计时。
 - 运行时长：单次派工从开始起满 `AGENT_WORKER_MAX_MINUTES`（整数分钟，默认 120）仍没有 `worker_done` 时，执行器写 `workerOverrun`，直接转处置 Agent，不计基础设施预算和 correction 次数。账本证据带 `运行超时: 已运行 <N> 分钟；终端最后输出 <时间>`。开始时间存在 checkpoint，执行器重启后沿用。
