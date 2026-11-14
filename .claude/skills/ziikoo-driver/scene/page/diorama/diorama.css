@@ -9,6 +9,7 @@
   --o-human: #e0442e;
   --text: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --event-feed-max-height: min(40vh, 280px);
   position: fixed;
   inset: 0;
   overflow: hidden;
@@ -246,7 +247,7 @@
 .diorama .event-feed {
   align-self: stretch;
   flex-shrink: 0;
-  max-height: 18vh;
+  max-height: var(--event-feed-max-height);
   overflow: auto;
   background: var(--w-paper);
   border: 1px solid var(--w-line);
