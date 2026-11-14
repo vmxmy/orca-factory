@@ -548,6 +548,32 @@ async function pixelDifference(page, expected, actual) {
   }, [expected.toString('base64'), actual.toString('base64')])
 }
 
+async function checkEventFeedHeight(browser, url) {
+  const { page, errors } = await open(browser, url)
+  try {
+    await page.evaluate(() => window.diorama.notify(Array.from({ length: 8 }, (_, index) => ({
+      type: 'enter', text: `进入 FEED-${index + 1} · 检验间`, path: '/fixture',
+    }))))
+    const feed = page.locator('.side .event-feed')
+    assert.equal(await feed.locator('li').count(), 8)
+    const full = await feed.evaluate(node => ({ scroll: node.scrollHeight, client: node.clientHeight }))
+    assert.ok(full.scroll <= full.client, `eight events must fit at 1440×900: scrollHeight=${full.scroll}, clientHeight=${full.client}`)
+
+    await page.setViewportSize({ width: 1440, height: 300 })
+    const short = await feed.evaluate(node => {
+      node.scrollTop = node.scrollHeight
+      return { scroll: node.scrollHeight, client: node.clientHeight, top: node.scrollTop, overflow: getComputedStyle(node).overflowY }
+    })
+    assert.ok(short.scroll > short.client, 'short viewports must constrain the event feed height')
+    assert.equal(short.overflow, 'auto')
+    assert.ok(short.top > 0, 'short viewports must allow scrolling to the last event')
+    assert.deepEqual(errors, [])
+    console.log('PASS event feed height: eight events fit at 1440×900; short viewports retain scrolling')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkStageBaselines(browser, url) {
   const { page, errors } = await open(browser, `${url}?project=${encodeURIComponent(FACTORY)}&ticket=OF-415`, { reducedMotion: 'reduce' })
   try {
@@ -1575,6 +1601,7 @@ async function main() {
       env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkEventFeedHeight(browser, url)
       await checkStageBaselines(browser, url)
       await checkStationTagsAndNeighborhood(browser, url)
       await checkIslandStatus(browser, url)
