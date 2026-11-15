@@ -29,6 +29,7 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	direct := result.Status == merge.HumanDirect && !human
 	if result.Status == merge.Correction {
 		p.Phase = "correction"
+		p.Attempt = max(p.Attempt, t.Attempt)
 	}
 	if human || direct {
 		p.Phase = "human"

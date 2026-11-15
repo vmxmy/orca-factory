@@ -405,3 +405,120 @@ func TestLaunchOrdinaryCorrectionKeepsRecoveryRoute(t *testing.T) {
 		t.Fatalf("ordinary correction wrongly requires merge evidence: %+v", o.launches)
 	}
 }
+
+func mergeCorrectionFixture(t *testing.T, schedulerAttempt int) (*Runtime, Ticket, *fakeIssues, *fakeOrca) {
+	t.Helper()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	h := merge.Handoff{Version: 1, TicketID: "id", Identifier: "ENG-1", Repository: "o/r", Unit: "executor", PR: 1, Head: strings.Repeat("a", 40), Baseline: strings.Repeat("b", 40), Run: "original_run", Task: "original_task", Dispatch: "original_dispatch", Attempt: 1, Corrections: 1, Infra: 2, QueueID: "original_queue", EnqueuedAt: time.Unix(1, 0)}
+	raw, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := evidenceComments(fmt.Sprintf("阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=%d scheduler-attempt=%d", schedulerAttempt, schedulerAttempt), "阶段: 排队合并\n归属: 合并通道\n"+merge.HandoffPrefix+string(raw))
+	client := &fakeIssues{issueComments: rows}
+	oc := &fakeOrca{}
+	rt := &Runtime{Clients: map[string]issues.Store{"/repo": client}, Repositories: map[string]config.Repository{"/repo": {Path: "/repo", Env: map[string]string{}}}, Orca: oc, DriverPath: "/driver"}
+	return rt, fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, rows), client, oc
+}
+
+func TestMergeCorrectionReservationPreservesSchedulerAttempt(t *testing.T) {
+	for _, tc := range []struct{ scheduler, want int }{{0, 1}, {1, 1}, {2, 2}, {3, 3}} {
+		t.Run(fmt.Sprint("scheduler_", tc.scheduler), func(t *testing.T) {
+			rt, ticket, client, oc := mergeCorrectionFixture(t, tc.scheduler)
+			frozen := *ticket.Handoff
+			original := append([]task.Comment(nil), client.issueComments...)
+			err := rt.mergeDecision(context.Background(), ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "merged-result gate failed; return to scheduler"})
+			if err != nil {
+				t.Fatalf("correction reservation must launch with existing scheduler attempt %d: %v", tc.scheduler, err)
+			}
+			if len(oc.launches) != 1 || !strings.HasPrefix(oc.launches[0].Command, "exec '/driver' exec --merging 'ENG-1'") {
+				t.Fatalf("correction launch count/mode: %+v", oc.launches)
+			}
+			after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, client.issueComments)
+			if after.Run != "original_run" || after.Attempt != tc.want || after.Owner != machine.OwnerExecutor || after.Terminal != "-" || after.Phase != machine.PhaseCorrection {
+				t.Fatalf("reservation changed: %+v", after)
+			}
+			if !reflect.DeepEqual(after.Handoff, &frozen) || !reflect.DeepEqual(*ticket.Handoff, frozen) || !reflect.DeepEqual(client.issueComments[:len(original)], original) {
+				t.Fatal("frozen handoff or history mutated")
+			}
+			if after.Progress == nil || after.Progress.Corrections != 2 || after.Progress.Infra != 2 || after.Progress.Attempt != tc.want {
+				t.Fatalf("correction/infra budget or attempt changed: %+v", after.Progress)
+			}
+			if len(client.comments) != 1 || !strings.Contains(client.comments[0], fmt.Sprintf("归属: 执行器 term=- run=original_run attempt=%d\n", tc.want)) {
+				t.Fatalf("durable reservation differs from effective attempt: %v", client.comments)
+			}
+		})
+	}
+}
+
+type correctionRaceIssues struct {
+	*fakeIssues
+	afterReservation func()
+}
+
+func (c *correctionRaceIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	row, err := c.fakeIssues.CreateComment(ctx, id, body)
+	if err == nil {
+		c.afterReservation()
+	}
+	return row, err
+}
+
+func TestMergeCorrectionRejectsChangedReservation(t *testing.T) {
+	for _, change := range []string{"owner", "terminal", "run", "attempt", "phase", "handoff", "progress", "resolver"} {
+		t.Run(change, func(t *testing.T) {
+			rt, ticket, client, oc := mergeCorrectionFixture(t, 3)
+			raced := false
+			rt.Clients[ticket.Repo] = &correctionRaceIssues{fakeIssues: client, afterReservation: func() {
+				raced = true
+				after := fromEvidence(t, Ticket{ID: ticket.ID, Identifier: ticket.Identifier, Repo: ticket.Repo}, client.issueComments)
+				owner, terminal, run, attempt, phase := machine.OwnerExecutor, "-", "original_run", after.Attempt, machine.PhaseCorrection
+				var body string
+				switch change {
+				case "owner":
+					owner = machine.OwnerResolver
+				case "terminal":
+					terminal = "other_terminal"
+				case "run":
+					run = "other_run"
+				case "attempt":
+					attempt++
+				case "phase":
+					phase = machine.PhaseWorker
+				case "handoff":
+					h := *after.Handoff
+					h.Head = strings.Repeat("d", 40)
+					raw, err := json.Marshal(h)
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = merge.HandoffPrefix + string(raw)
+				case "progress":
+					p := *after.Progress
+					p.Infra++
+					raw, err := json.Marshal(p)
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = merge.ProgressPrefix + string(raw)
+				case "resolver":
+					body = `resolver-state {"version":1,"attempt":1,"phase":"waiting"}`
+				}
+				if body == "" {
+					body = fmt.Sprintf("阶段: %s\n归属: %s term=%s run=%s attempt=%d", phase, owner, terminal, run, attempt)
+				}
+				if _, err := client.CreateComment(context.Background(), ticket.ID, body); err != nil {
+					t.Fatal(err)
+				}
+			}}
+			err := rt.mergeDecision(context.Background(), ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "gate failed"})
+			want := errReservationChanged
+			if change == "handoff" || change == "progress" || change == "resolver" {
+				want = errLaunchEvidenceChanged
+			}
+			if !raced || !errors.Is(err, want) || len(oc.launches) != 0 || len(client.comments) != 2 {
+				t.Fatalf("race ignored or retried: raced=%v error=%v launches=%v writes=%v", raced, err, oc.launches, client.comments)
+			}
+		})
+	}
+}
