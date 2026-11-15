@@ -33,7 +33,7 @@ const plateOf = island =>
     hidden: '',
   }, [
     element('b', { text: island.name }),
-    element('span', { text: island.status === ISLAND_STATUS.IDLE ? '空闲' : `忙碌 · 在途 ${island.plate.inFlight}` }),
+    element('span', { text: island.status === ISLAND_STATUS.BLOCKED ? `${island.stalled ? '依赖停滞' : '依赖等待'} ${island.blocked}` : island.status === ISLAND_STATUS.IDLE ? '空闲' : `忙碌 · 在途 ${island.plate.inFlight}` }),
     ...(island.plate.barrier ? [element('span', { text: '闸关' })] : []),
     ...(island.plate.stuck > 0 ? [element('em', { text: `${island.plate.stuck} 张卡住` })] : []),
   ])

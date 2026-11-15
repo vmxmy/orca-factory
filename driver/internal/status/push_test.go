@@ -277,3 +277,23 @@ func TestObservationKeepsHumanFieldsWithNewerStage(t *testing.T) {
 		})
 	}
 }
+
+func TestObservationCannotUndoExecutorRegistration(t *testing.T) {
+	for _, phase := range []string{"worker 运行中", "gate"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			t.Setenv("DRIVER_STATUS_FILE", "")
+			now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+			Push(now.Add(time.Second), func(view *View) {
+				SetTicket(view, Ticket{Repo: "/repo", Identifier: "WAW-530", Owner: "执行器", Phase: phase}, true)
+			})
+			PushObservation(now.Add(2*time.Second), now, func(view *View) {
+				view.Tickets = []Ticket{{Repo: "/repo", Identifier: "WAW-530", Owner: "执行器", Phase: "worker 运行中", ExecutionState: "unregistered", BlockedReason: "executor start unconfirmed: terminal/run not registered"}}
+			})
+			row := Read(now.Add(2*time.Second), 0).Tickets[0]
+			if row.ExecutionState != "" || row.BlockedReason != "" || row.Phase != phase {
+				t.Fatalf("older snapshot undid registration: %+v", row)
+			}
+		})
+	}
+}

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const ExecutorStartUnconfirmed = "executor start unconfirmed: terminal/run not registered"
+
 type TodayOutput struct {
 	Merged        int      `json:"merged"`
 	Escalated     int      `json:"escalated"`
@@ -42,19 +44,36 @@ type Stage struct {
 	Seconds int64  `json:"seconds"`
 }
 
+// Dependency describes an unresolved root. Candidate is label/state eligibility,
+// not permission to claim. Status is waiting, stalled, unknown, or cycle.
+type Dependency struct {
+	Identifier string   `json:"identifier"`
+	Title      string   `json:"title,omitempty"`
+	State      string   `json:"state,omitempty"`
+	Labels     []string `json:"labels"`
+	Owner      string   `json:"owner"`
+	Candidate  bool     `json:"candidate"`
+	Status     string   `json:"status"`
+	Reason     string   `json:"reason"`
+	Chain      []string `json:"chain"`
+	Affected   []string `json:"affected"`
+}
+
 type Ticket struct {
-	Stages        []Stage      `json:"stages,omitempty"`
-	Deployment    *Deployment  `json:"deployment,omitempty"`
-	QueuePosition int          `json:"queuePosition,omitempty"`
-	Lane          int          `json:"lane,omitempty"`
-	Corrections   *Corrections `json:"corrections,omitempty"`
-	Repo          string       `json:"repo"`
-	Identifier    string       `json:"identifier"`
-	Owner         string       `json:"owner"`
-	Phase         string       `json:"phase"`
-	Backend       string       `json:"backend,omitempty"`
-	URL           string       `json:"url,omitempty"`
-	Held          bool         `json:"held,omitempty"`
+	ExecutionState string       `json:"executionState,omitempty"`
+	Dependencies   []Dependency `json:"dependencies,omitempty"`
+	Stages         []Stage      `json:"stages,omitempty"`
+	Deployment     *Deployment  `json:"deployment,omitempty"`
+	QueuePosition  int          `json:"queuePosition,omitempty"`
+	Lane           int          `json:"lane,omitempty"`
+	Corrections    *Corrections `json:"corrections,omitempty"`
+	Repo           string       `json:"repo"`
+	Identifier     string       `json:"identifier"`
+	Owner          string       `json:"owner"`
+	Phase          string       `json:"phase"`
+	Backend        string       `json:"backend,omitempty"`
+	URL            string       `json:"url,omitempty"`
+	Held           bool         `json:"held,omitempty"`
 	// BlockedReason explains why a visible ticket cannot advance.
 	BlockedReason string `json:"blockedReason,omitempty"`
 	// Stage distinguishes candidate (待领) and human (转人) tickets from in-flight ones.

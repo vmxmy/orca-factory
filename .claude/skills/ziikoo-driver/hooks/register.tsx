@@ -31,7 +31,7 @@ import {
   sortedChecks,
 } from './plain'
 import type { Badge } from './plain'
-import { barriersOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
+import { barriersOf, blockedOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
 import { TRACK, duration, position } from './ticket'
 import {
   NO_MATCH,
@@ -610,11 +610,11 @@ const pipelinePage = (
   if (state.kind === 'failed') return failedView(ui, state)
   const { tickets } = state.value
   const segment = segmentWidth(cols)
-  const waiting = tickets.filter(t => t.stage === 'candidate').length
+  const waiting = tickets.filter(t => t.stage === 'candidate' && !t.blockedReason).length
   return (
     <ui.Box flexDirection="column">
       {bar}
-      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}`}</ui.Text>
+      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}${blockedOf(tickets) > 0 ? `   依赖等待 ${blockedOf(tickets)}` : ''}`}</ui.Text>
       {trendView(ui, samples, state.fetchedAt, cols)}
       {segment !== null && <ui.Box marginTop={1}>{trackLabels(ui, segment)}</ui.Box>}
       {config.repos.map(one => {

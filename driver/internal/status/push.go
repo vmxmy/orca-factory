@@ -101,7 +101,11 @@ func carryTickets(before, after []Ticket, now time.Time, observation bool, obser
 		t := &after[i]
 		old, ok := previous[[2]string{t.Repo, t.Identifier}]
 		phaseChanged := old.Owner != t.Owner || old.Phase != t.Phase || old.Stage != t.Stage
-		if observation && ok && old.PushedAt.After(observedFrom) && phaseChanged {
+		if observation && ok && old.PushedAt.After(observedFrom) && (phaseChanged || old.ExecutionState != t.ExecutionState) {
+			if t.ExecutionState == "unregistered" && t.BlockedReason == ExecutorStartUnconfirmed {
+				t.BlockedReason = old.BlockedReason
+			}
+			t.ExecutionState = old.ExecutionState
 			t.Owner = old.Owner
 			t.Phase = old.Phase
 			t.Stage = old.Stage

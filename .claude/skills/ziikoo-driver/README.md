@@ -4,7 +4,7 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 运行组看 driver 现在在做什么：
 
-- 流水线：顶部是在途、部署屏障、待领计数，下一行是趋势小图：近 30 分钟每分钟一格，格高是该分钟内读到的最大在途数，没读到的分钟（包括 driver 没有快照的时候）画灰点 `·`，面板窄时只画最近能放下的几格。每个项目一个圆角框，上框线左边是项目名和前缀，右边是检出与 core 同步徽标（doctor 读取中时灰显「检查中…」）；面板窄到两者在框线上放不下时，徽标退回框内第一行靠右。每张票一行：票号、阶段轨道（领、施工、门禁、审查、合并、部署）、阶段名、在当前阶段停留的时长（10 小时以上只写小时，满 24 小时改写天，如「1 天 2 小时」，10 天以上只写天）；下一行灰显标题，卡住时再多一行原因。轨道每段 2 到 6 列，随面板宽度伸缩；每段 5 列以上时轨道上方写全称，更窄时写单字（领 施 门 审 合 部）；连 2 列都放不下时只显示阶段名。没配部署的仓库不画部署点。没有票的项目框里写「空闲」；status 带下次巡检时间（`nextScanAt`）时写成「空闲 · 下次巡检约 2 分钟后」（以这次读取的时刻算），时间已过写「空闲 · 即将巡检」。颜色只表示状态：完成绿、当前蓝、需要注意黄（correction、二线处理中、快照过期）、失败红。
+- 流水线：顶部是在途、部署屏障、可领取候选与依赖等待计数，下一行是趋势小图：近 30 分钟每分钟一格，格高是该分钟内读到的最大在途数，没读到的分钟（包括 driver 没有快照的时候）画灰点 `·`，面板窄时只画最近能放下的几格。每个项目一个圆角框，上框线左边是项目名和前缀，右边是检出与 core 同步徽标（doctor 读取中时灰显「检查中…」）；面板窄到两者在框线上放不下时，徽标退回框内第一行靠右。每张票一行：票号、阶段轨道（领、施工、门禁、审查、合并、部署）、阶段名、在当前阶段停留的时长（10 小时以上只写小时，满 24 小时改写天，如「1 天 2 小时」，10 天以上只写天）；下一行灰显标题，卡住时再多一行原因。轨道每段 2 到 6 列，随面板宽度伸缩；每段 5 列以上时轨道上方写全称，更窄时写单字（领 施 门 审 合 部）；连 2 列都放不下时只显示阶段名。没配部署的仓库不画部署点。没有票的项目框里写「空闲」；status 带下次巡检时间（`nextScanAt`）时写成「空闲 · 下次巡检约 2 分钟后」（以这次读取的时刻算），时间已过写「空闲 · 即将巡检」。颜色只表示状态：完成绿、当前蓝、需要注意黄（correction、二线处理中、快照过期）、失败红。
   - 详情：每张票的这一行（票号到停留时长）整行是一个按钮，焦点所在的行整行反色；用 ↑↓ 把焦点移到某一行按回车（或点击行内任意位置），页面换成这张票的详情。标题行和原因行不在按钮里。打开面板或切到流水线页时，焦点直接落在第一张票上（按仓库顺序，仓库内按 status 的顺序）；从详情返回时落回刚才那张票；10 秒轮询不移动焦点。上面是「← 返回」（热键 `q`），下面一个框写阶段与停留时长、归属、仓库和原因；票已不在 status 列表里时写「已不在在途列表」。再下面的「时间线」框每条一行：本地时间与中文事件名（认领、worker 失败、gate 通过、进入排队合并等），worker 失败、gate 未通过这类需要回头看的事件黄字，合并冲突、执行器崩溃这类错误红字；只显示最后 15 条，更早的在最上面写「更早 N 条」。时间线下面的「最近异常」框列出同一份日志里最近 5 条需要回头看的记录，每条一行：本地时间、中文说明和灰字补充。记录分三类：退出码非 0 的外部命令（「git 退出码 128」，补充 stderr 第一行）和超时的外部命令（「orca 超时」），结果不是 ok 的步骤（「reviewer 出错」，补充「结论 red」），打回修改（「打回：gate red」，补充 fail_summary 第一行）。同一次失败先记失败的命令、一秒内再记出错的步骤，两条合成一行，写步骤名，补充里先写步骤的结论（若有），再写命令的退出码或超时和 stderr 第一行（如「open-pr 出错 gh 退出码 1：pull request create failed…」）。命令和步骤出错红字，打回黄字，补充放不下时截断。没有这几类记录时不画这个框。切到别的页时详情关闭。
   - 筛选：内容最上面是「筛选」按钮（热键 `f`）和它右边一直显示的输入框，按 `f` 把焦点移进输入框。按票号或标题过滤（不区分大小写），边输入边生效；输入框旁的提示是「确定」，回车后焦点落到第一张匹配的票上，再按回车即进入详情；没有匹配的票时焦点落到「筛选」按钮上。提交后输入框会被清空，按钮上显示当前生效的筛选（如「筛选：ZY」），在空输入框里回车即清除筛选。没有匹配票的项目框里写「无匹配」。切页时筛选清空。
 - 健康：分「运行状态」（构建短 sha、服务状态、维护模式、状态快照）、「doctor 检查」（每项一行：中文名、通过 / 注意 / 失败 / 未知、原因）、「问题」三个框。
@@ -24,7 +24,7 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 面板关着时也能看到 driver 的动向。每次读到 status（后台、面板轮询、打开面板、按 `r`）都更新输入框下方的状态栏：
 
 - `Driver 在途 N`：N 是没有阶段标记的票数，与流水线页的「在途」相同。有部署屏障时加 ` · 部署屏障 B`，快照过期时加 ` · 快照过期`。
-- `Driver 空闲`：没有在途票（过期时同样加后缀）。
+- `Driver 空闲`：没有在途票且没有依赖阻塞（过期时同样加后缀）。
 - `Driver 没有可用的快照`：driver 还没写出快照。
 - `Driver 状态读取失败`：命令失败或输出无法解析。
 
@@ -98,8 +98,8 @@ token 经 import map 带到每个模块：
 ### 读图规则
 
 - 每个项目是一座同构的岛，有自己的水道、栈桥、船闸与灯塔。岛按 Scene 的项目顺序排成两列，位置只取决于顺序。
-- 全局视图中，每座岛的铭牌单行显示项目名与状态：在途数大于 0 时写「忙碌 · 在途 N」，否则写「空闲」，窄屏也保留状态。部署屏障关闭时追加「闸关」，有卡住的票时追加票数并使用告警色。
-- 没有在途票的岛是空闲岛。只在 `pickup` 工位的票不算在途。有多个项目时，空闲岛只褪建筑，颜色淡向晴天天空色；地面、路径、栈桥与岛上水道保持原色。只有一个项目时不褪色。
+- 全局视图中，每座岛的铭牌单行显示项目名与状态：在途数大于 0 时写「忙碌 · 在途 N」，否则有阻塞候选时写「依赖等待 N」，根诊断为 stalled、cycle 或 unknown 时写「依赖停滞 N」，没有阻塞候选时写「空闲」，窄屏也保留状态。部署屏障关闭时追加「闸关」，有卡住的票时追加票数并使用告警色。
+- 没有在途票且没有依赖阻塞的岛是空闲岛。只在 `pickup` 工位的票不算在途。有多个项目时，空闲岛只褪建筑，颜色淡向晴天天空色；地面、路径、栈桥与岛上水道保持原色。只有一个项目时不褪色。
 - 多项目视图中，项目岛与调度岛的底座沉入海面，侧壁比地面深。浅色水线沿岛的轮廓围一圈，外侧的半透明接触阴影向光源反方向偏移，让岛与海面接触的位置可见。阴影不用渲染器阴影贴图。
 - 海面有极淡的等距条带，始终静止，也遵循减少动态偏好。条带与水线的颜色由当前海色派生，随晴天、雾天、阴天和暗色天空一起更新；四种天空下都保留阴影与水线。只有一个项目时不画海面条带、接触阴影和水线。
 - 调度岛只有一座钟楼。它的铭牌写 driver 的 `state` 与下次巡检时间（`nextScanAt`）。
@@ -169,7 +169,7 @@ token 经 import map 带到每个模块：
 
 预览用录制的 Scene 离线打开同一套沙盘模块，不需要 Bun 服务：
 
-1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用；再把 `driver/testdata/recorded/driver-status-json-stale.json`（含等人批票 `ZY-428`）原样写成 `test/design-preview/diorama-scene-human.json`，并在其末尾追加两张由 `ZY-428` 展开、只改票号与 `since` 的票写成 `test/design-preview/diorama-scene-human-queue.json`，供等人批排序断言使用。四个文件都已列入 `.gitignore`。
+1. 在本目录运行 `bun test/design-preview/diorama-scene.ts`。脚本把 `test/recorded/live-status.json` 与 `test/recorded/live-config.json` 送入 `parseRuntime`、`parseConfig` 与 `sceneOf`，写出 `test/design-preview/diorama-scene.json`；同样把 `driver/testdata/recorded/driver-status-json-next-scan.json`（2026-11-10 本机生产 `orca-factory-driver status --json` 录制，带 `nextScanAt`）写成 `test/design-preview/diorama-scene-next-scan.json`，供 `nextScanAt` 宽限断言使用；再把 `driver/testdata/recorded/driver-status-json-stale.json`（含等人批票 `ZY-428`）原样写成 `test/design-preview/diorama-scene-human.json`，并在其末尾追加两张由 `ZY-428` 展开、只改票号与 `since` 的票写成 `test/design-preview/diorama-scene-human-queue.json`，供等人批排序断言使用。另从 driver 生成的合成依赖快照 `driver-status-json-dependencies.json` 生成 `diorama-scene-dependencies.json`，覆盖隐藏根与传递阻塞；共五个生成文件都列入 `.gitignore`。
 2. 在本目录启动静态服务，例如 `python3 -m http.server 8000`。
 3. 打开 `http://127.0.0.1:8000/test/design-preview/diorama.html`。有多个项目时默认显示机位 `1`；只有一个项目时显示机位 `2`。`?project=` 与 `?ticket=` 的规则与生产页面相同。
 
@@ -213,7 +213,7 @@ claude plugin validate .claude/skills/ziikoo-driver && claude plugin test .claud
 
 浏览器测试默认比对 `test/diorama-{global,island,ticket,global-stuck}.png` 四张基准。全局场景从已有录制预览中移除卡住的票；单岛场景打开 `orca-factory`，单票场景打开其中的 `OF-419`，有卡住票的全局场景保留完整录制。后三个场景均保留录制中的两张卡住票。
 
-OF-515 为岛牌增加「忙碌」文字并缩小字号、间距与内边距，因此更新两张全局基准。六项目录制夹具另有文字断言：`orca-factory` 显示「忙碌 · 在途 2」，其他五个项目显示「空闲」；窄屏仍能看到状态。模型断言覆盖只有待领票时仍为空闲。
+OF-515 为岛牌增加「忙碌」文字并缩小字号、间距与内边距，因此更新两张全局基准。六项目录制夹具另有文字断言：`orca-factory` 显示「忙碌 · 在途 2」，其他五个项目显示「空闲」；窄屏仍能看到状态。模型断言覆盖只有无阻塞待领票时仍为空闲。
 
 每次截图使用新的页面，视口为 1280 × 800、设备缩放为 1、语言为 `zh-CN`、时区为 `Asia/Shanghai`、浅色模式。测试固定预览时钟为快照生成时刻，启用减少动态，并等待字体和相机就绪后截图，不比较动画帧。Chrome 进程的 `LANG`、`LC_ALL`、`LANGUAGE` 固定为 `C.UTF-8`/`C`（`BROWSER_LOCALE_ENV`）：进程语言为 `zh_CN` 时，fontconfig 把拉丁文字和 `·` 回退到 Noto Sans CJK，四个场景各有上万像素不同。渲染沿用现有 Chrome SwiftShader，PNG 解码和像素比较使用浏览器 Canvas，没有新增依赖或联网下载。
 
@@ -249,3 +249,7 @@ UPDATE_BASELINE=1 node .claude/skills/ziikoo-driver/test/diorama.browser.cjs
 ```
 
 更新基准的提交必须在 PR 描述中说明画面为什么改变，并附截图供审阅。初次建立这组基准只记录现有沙盘画面，没有修改沙盘实现；合入 OF-457 后，有卡住票的三个场景按 main 上新增的「打开记录」链接重新生成。OF-475 在票号标签后追加停留时长，因此更新这三个场景的基准。OF-512 将同工位相交标签折叠，并将单票镜头改为邻域取景，再次更新单岛、单票和有卡住票的全局基准；无卡住票的全局基准保持一致。首次验证曾在测试服务读取模块时临时把 `WORLD.base` 从 `0xf0dfc2` 改为 `0xff00ff`，确认像素断言失败并生成差异图；变更仅存在于该测试进程，退出即撤销，基准文件没有被覆盖。
+
+依赖诊断随 `status.tickets[].dependencies` 解析。根票的 title、state、labels、owner、候选资格、reason、chain 与 affected 由 driver 写进 blockedReason，卡片原因区直接展示；旧 driver 只有 blockedReason 时仍显示依赖等待。阻塞候选使用告警色、进入卡住列表，不计入普通待领数。没有在途票而有 stalled 或 cycle 根时，状态栏显示「Driver 依赖停滞」；已有执行者的根显示依赖等待。
+
+`executionState=unregistered` 的执行器归属显示「启动待确认」和告警色；派发被接受但 terminal/run 未登记时，不能据此称执行器正在运行。缺票、关系不完整和未确认启动等 unknown 依赖根统一显示依赖停滞，原因中保留未知证据，已有登记归属的根才按正常依赖等待展示。

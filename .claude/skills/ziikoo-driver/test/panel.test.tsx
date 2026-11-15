@@ -533,10 +533,10 @@ test('流水线页按项目画阶段轨道，没配部署的仓库没有部署�
   expect(await row('OF-1')).toBe(OF1_ROW)
   expect(await row('OF-3')).toBe(['OF-3     ', '●━━━━━●━━━━━●━━━━━●━━━━━●━━━━━◉     ', 'smoke         ', '2 小时 5 分 '].join(''))
   expect(await row('ZW-7')).toBe(['ZW-7     ', '●━━━━━◉─────○─────○─────○           ', 'worker 运行中 ', '30 秒       '].join(''))
-  expect((await exactText(ui, '◉')).map(one => one.props.color)).toEqual(['suggestion', 'warning', 'suggestion', 'suggestion', 'suggestion'])
+  expect((await exactText(ui, '◉')).map(one => one.props.color)).toEqual(['suggestion', 'warning', 'suggestion', 'suggestion', 'warning'])
   expect((await exactText(ui, '写 correction ')).map(one => one.props.color)).toEqual(['warning'])
 
-  expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 4   部署屏障 1   待领 1')
+  expect((await ui.find({ type: 'Text', text: /^在途/ }))?.text).toBe('在途 4   部署屏障 1   待领 0   依赖等待 1')
   expect((await exactText(ui, '快照 8 秒前')).map(one => one.props.dimColor)).toEqual([true])
   expect(await exactText(ui, '流水线冒烟（OF）')).toHaveLength(1)
   expect(await exactText(ui, '↳ 部署 · smoke-intent · abc1234')).toHaveLength(1)
@@ -1461,7 +1461,7 @@ test('c 键复制当前视图：流水线写成不带列宽和框线的纯文本
   expect(clipboard.texts).toEqual([
     [
       'Driver 流水线 · active · 006396a · 快照 8 秒前',
-      '在途 4   部署屏障 1   待领 1',
+      '在途 4   部署屏障 1   待领 0   依赖等待 1',
       '',
       'orca-factory（OF）：main ✓ · core ✓',
       'OF-1 · gate · 4 分钟',
@@ -1475,7 +1475,7 @@ test('c 键复制当前视图：流水线写成不带列宽和框线的纯文本
       'ziikoo-web（ZW）：在 feat/login · core ✓',
       'ZW-7 · worker 运行中 · 30 秒',
       '  改登录页',
-      'ZW-8 · 待领',
+      'ZW-8 · 依赖等待',
       '  ↳ blocked by ZW-7',
       '',
       'ansible（AN）：main ✓ · 落后 2 · 未提交改动 · core 待同步 #12',

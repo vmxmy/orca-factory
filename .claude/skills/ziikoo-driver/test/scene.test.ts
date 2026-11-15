@@ -2,10 +2,10 @@ import { expect, test } from 'claude-code/testing'
 
 import type { Runtime } from '../types'
 import { parseConfig } from '../hooks/config'
-import { parseRuntime } from '../hooks/runtime'
+import { parseRuntime, statusLine } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
+import { GENERATED_DEPENDENCIES_STATUS, RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -234,4 +234,39 @@ test('sceneOf 透传今日产出，缺字段不补零', () => {
   expect(scene({ today: { merged: 0 } }).today).toEqual({ merged: 0 })
   expect(() => scene({ today: { merged: -1 } })).toThrow()
   expect(() => scene({ today: { medianMinutes: -1 } })).toThrow()
+})
+
+test('依赖阻塞候选显示等待而不是普通待领', () => {
+ const status = runtime()
+ const candidate = status.tickets.find(ticket => ticket.stage === 'candidate')!
+ expect(sceneOf(status, config()).rows.flatMap(row => row.parcels).find(parcel => parcel.identifier === candidate.identifier)).toHaveProperty('label', '依赖等待')
+ expect(sceneOf(status, config()).rows.flatMap(row => row.parcels).find(parcel => parcel.identifier === candidate.identifier)).toHaveProperty('tone', 'attention')
+})
+
+test('隐藏根依赖快照在解析、状态栏和沙盘中保留原因与影响范围', () => {
+ const parsed = parseRuntime(GENERATED_DEPENDENCIES_STATUS)
+ expect(parsed.tickets[0]?.dependencies?.[0]).toHaveProperty('identifier', 'WAW-522')
+ expect(parsed.tickets[0]?.dependencies?.[0]).toHaveProperty('affected', ['WAW-523', 'WAW-529'])
+ expect(statusLine({kind: 'ready', value: parsed, fetchedAt: parsed.generatedAt})).toBe('Driver 依赖停滞')
+ const parcels = sceneOf(parsed, config()).rows.flatMap(row => row.parcels)
+ expect(parcels.map(parcel => parcel.label)).toEqual(['依赖停滞', '依赖停滞'])
+ expect(parcels.map(parcel => parcel.dependencyStatus)).toEqual(['stalled', 'stalled'])
+ expect(parcels[1]?.reason).toContain('WAW-529 -> WAW-523 -> WAW-522')
+ const waiting = structuredClone(parsed)
+ for (const ticket of waiting.tickets) ticket.dependencies![0]!.status = 'waiting'
+ expect(statusLine({kind: 'ready', value: waiting, fetchedAt: parsed.generatedAt})).toBe('Driver 依赖等待')
+})
+
+test('占位执行归属显示启动待确认，未知依赖证据显示停滞', () => {
+ const pending = structuredClone(SAMPLE_STATUS)
+ Object.assign(pending.tickets[0]!, {executionState: 'unregistered', blockedReason: 'executor start unconfirmed: terminal/run not registered'})
+ const parsed = parseRuntime(JSON.stringify(pending))
+ const parcel = sceneOf(parsed, config()).rows.flatMap(row => row.parcels).find(ticket => ticket.identifier === pending.tickets[0]!.identifier)
+ expect(parcel?.label).toBe('启动待确认')
+ expect(parcel?.station).toBe('work')
+ expect(parcel?.tone).toBe('attention')
+ const unknown = parseRuntime(GENERATED_DEPENDENCIES_STATUS)
+ for (const ticket of unknown.tickets) ticket.dependencies![0]!.status = 'unknown'
+ expect(statusLine({kind: 'ready', value: unknown, fetchedAt: unknown.generatedAt})).toBe('Driver 依赖停滞')
+ expect(sceneOf(unknown, config()).rows.flatMap(row => row.parcels)[0]?.label).toBe('依赖停滞')
 })

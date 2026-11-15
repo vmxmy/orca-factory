@@ -424,6 +424,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 			tickets = append(tickets, ticket)
 		}
 	}
+	dependencyDiagnostics(snapshot, commentsByID, tickets)
 	if r.closed == nil {
 		r.closed = map[string]map[string]closedTicket{}
 	}

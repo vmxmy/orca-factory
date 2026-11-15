@@ -19,7 +19,7 @@ Commands:
       [常驻][写入] 唯一调度器：发现、认领、恢复执行器、推进合并与发布；持有单实例锁。
       生产由 systemd 服务 orca-factory-driver.service 运行，不要再启动第二个。
       --dry-run 只读推演一次：不合并、不写回、不 fetch。
-  status [--json]
+  status [--json] | status --fresh --repo <path> [--json]
       [只读] 输出调度器观察快照：在途票、候选票、阻塞原因、配额。快照可能过期，不授权任何动作。
   doctor [--json]
       [只读] 运行态健康自检：服务 PATH、运行版本、维护状态、项目检出、core 同步 PR、

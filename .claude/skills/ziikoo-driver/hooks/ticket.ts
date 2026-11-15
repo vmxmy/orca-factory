@@ -1,4 +1,5 @@
 import type { RuntimeTicket } from '../types'
+import { dependencyStatus } from './runtime'
 
 export const TRACK = ['领', '施工', '门禁', '审查', '合并', '部署']
 
@@ -22,7 +23,8 @@ const DEPLOY_LABELS: Record<string, string> = { pending: '等部署', 'deploy-in
 export const position = (t: RuntimeTicket): Position => {
   const d = t.deployment
   if (d && d.state !== 'passed') return { at: TRACK.length - 1, tone: d.state === 'paused' ? 'failed' : 'current', label: DEPLOY_LABELS[d.state] ?? d.state }
-  if (t.stage === 'candidate') return { at: 0, tone: 'current', label: '待领' }
+  if (t.executionState === 'unregistered') return { at: 1, tone: 'attention', label: '启动待确认' }
+  if (t.stage === 'candidate') return { at: 0, tone: t.blockedReason ? 'attention' : 'current', label: dependencyStatus(t) === 'stalled' || dependencyStatus(t) === 'unknown' ? '依赖停滞' : t.blockedReason ? '依赖等待' : '待领' }
   if (t.stage === 'human') return { at: null, tone: 'attention', label: '转人' }
   if (t.owner === '处置Agent') return { at: null, tone: 'attention', label: '二线处理中' }
   const at = PHASE_AT[t.phase]

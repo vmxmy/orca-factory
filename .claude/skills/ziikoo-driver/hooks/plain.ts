@@ -14,7 +14,7 @@ import type {
   Timeline,
 } from '../types'
 import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, routingSummary } from './config'
-import { barriersOf, inFlightOf } from './runtime'
+import { barriersOf, blockedOf, inFlightOf } from './runtime'
 import { NO_MATCH, clockTime, failureTitle, matches, reasonOf } from './view'
 import { duration, position } from './ticket'
 
@@ -131,12 +131,12 @@ const ticketLines = (t: RuntimeTicket, now: number) => {
 
 const pipelineBlocks = (config: DriverConfig, state: Ready<Runtime>, checks: Fetched<Health>, wanted: string) => {
   const { tickets } = state.value
-  const waiting = tickets.filter(t => t.stage === 'candidate').length
+  const waiting = tickets.filter(t => t.stage === 'candidate' && !t.blockedReason).length
   const { service, build } = config.overview
   return [
     [
       [titled('流水线', wanted), service, build.slice(0, 7), freshness(state.value, state.fetchedAt)].join(' · '),
-      `在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}`,
+      `在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}${blockedOf(tickets) > 0 ? `   依赖等待 ${blockedOf(tickets)}` : ''}`,
     ],
     ...config.repos.map(one => {
       const own = shownTickets(one, tickets, wanted)
