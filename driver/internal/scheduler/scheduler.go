@@ -26,6 +26,7 @@ import (
 )
 
 type Ticket struct {
+	ScopeWaits    []status.ScopeWait
 	Dependencies  []status.Dependency
 	stageTimeline []stageStart
 	Resolution    *resolver.Record
@@ -264,6 +265,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
+	conflicts := s.scopeConflicts(ctx, tickets, repos)
+	observeScopeWaits(tickets, repos, conflicts)
 	rows := ObservationRows(tickets, s.Repositories, s.clock())
 	status.PushObservation(s.clock(), observedFrom, func(view *status.View) {
 		view.Today = nil
@@ -302,7 +305,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			count[t.Repo]++
 		}
 	}
-	conflicts := s.scopeConflicts(ctx, tickets, repos)
 	for _, t := range tickets {
 		if !allowed[t.Repo] {
 			continue
@@ -516,7 +518,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = "owned"
 		case total >= s.Config.MaxInFlight || count[t.Repo] >= repos[t.Repo].MaxInFlight:
 			reason = "capacity"
-		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && scopesOverlap(scope, conflicts[t.Repo]):
+		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && len(scopeMatches(scope, conflicts[t.Repo])) > 0:
 			reason = "scope"
 		case !s.token(claimNow):
 			reason = "token"
@@ -536,7 +538,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		total++
 		count[t.Repo]++
 		// An uncertain claim still reserves its scope for this tick.
-		conflicts[t.Repo] = append(conflicts[t.Repo], scope...)
+		conflicts[t.Repo] = append(conflicts[t.Repo], scopeReservation{identifier: t.Identifier, scope: scope, source: "declared"})
 		err = s.Backend.Apply(ctx, t, Action{Kind: Claim, Attempt: state.Attempt, Phase: state.Phase})
 		result := outcome(err)
 		s.decision(t, "claim", "", "result", result, "err", err)

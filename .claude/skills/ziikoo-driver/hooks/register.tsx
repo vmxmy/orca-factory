@@ -31,7 +31,7 @@ import {
   sortedChecks,
 } from './plain'
 import type { Badge } from './plain'
-import { barriersOf, blockedOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
+import { barriersOf, blockedOf, schedulingOf, inFlightOf, noticeOf, parseHealth, parseRuntime, parseTimeline, statusLine } from './runtime'
 import { TRACK, duration, position } from './ticket'
 import {
   NO_MATCH,
@@ -614,7 +614,7 @@ const pipelinePage = (
   return (
     <ui.Box flexDirection="column">
       {bar}
-      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}${blockedOf(tickets) > 0 ? `   依赖等待 ${blockedOf(tickets)}` : ''}`}</ui.Text>
+      <ui.Text>{`在途 ${inFlightOf(tickets)}   部署屏障 ${barriersOf(tickets)}   待领 ${waiting}${blockedOf(tickets) > 0 ? `   依赖等待 ${blockedOf(tickets)}` : ''}${schedulingOf(tickets) > 0 ? `   调度等待 ${schedulingOf(tickets)}` : ''}`}</ui.Text>
       {trendView(ui, samples, state.fetchedAt, cols)}
       {segment !== null && <ui.Box marginTop={1}>{trackLabels(ui, segment)}</ui.Box>}
       {config.repos.map(one => {

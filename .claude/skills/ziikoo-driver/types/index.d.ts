@@ -100,7 +100,10 @@ export type Dependency = {
   affected: string[]
 }
 
+export type ScopeWait = {identifier:string;candidatePath:string;occupiedPath:string;rule:string;source:string}
+
 export type RuntimeTicket = {
+  scopeWaits?: ScopeWait[]
   executionState?: string
   dependencies?: Dependency[]
   repo: string
@@ -128,6 +131,7 @@ export type Runtime = { today?: Today; state: string; generatedAt: number; nextS
 export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' | 'merge' | 'dispatch' | 'smoke' | 'repair' | 'human' | 'unknown'
 
 export type Parcel = {
+  schedulingWait?: boolean
   dependencyStatus?: string
   identifier: string
   url?: string

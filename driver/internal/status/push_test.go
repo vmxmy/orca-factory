@@ -297,3 +297,19 @@ func TestObservationCannotUndoExecutorRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestObservationDropsScopeWaitAfterNewerOwnership(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	now := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	Push(now.Add(time.Second), func(view *View) {
+		SetTicket(view, Ticket{Repo: "/repo", Identifier: "WAW-532", Owner: "执行器", Phase: "worker 运行中"}, true)
+	})
+	PushObservation(now.Add(2*time.Second), now, func(view *View) {
+		view.Tickets = []Ticket{{Repo: "/repo", Identifier: "WAW-532", Stage: "candidate", BlockedReason: "scope wait: WAW-530", ScopeWaits: []ScopeWait{{Identifier: "WAW-530", CandidatePath: "src/*", OccupiedPath: "src/a.ts", Source: "actual", Rule: "candidate-pattern"}}}}
+	})
+	row := Read(now.Add(2*time.Second), 0).Tickets[0]
+	if row.Owner != "执行器" || row.Stage != "" || len(row.ScopeWaits) != 0 || row.BlockedReason != "" {
+		t.Fatalf("candidate scope wait survived newer ownership: %+v", row)
+	}
+}

@@ -5,7 +5,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime, statusLine } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { GENERATED_DEPENDENCIES_STATUS, RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
+import { GENERATED_SCOPE_STATUS, GENERATED_DEPENDENCIES_STATUS, RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -269,4 +269,22 @@ test('占位执行归属显示启动待确认，未知依赖证据显示停滞',
  for (const ticket of unknown.tickets) ticket.dependencies![0]!.status = 'unknown'
  expect(statusLine({kind: 'ready', value: unknown, fetchedAt: unknown.generatedAt})).toBe('Driver 依赖停滞')
  expect(sceneOf(unknown, config()).rows.flatMap(row => row.parcels)[0]?.label).toBe('依赖停滞')
+})
+
+test('SCOPE占用显示调度等待，与依赖等待分开', () => {
+ const parsed = parseRuntime(GENERATED_SCOPE_STATUS)
+ expect(parsed.tickets[1]).toHaveProperty('scopeWaits', [{identifier:'WAW-530',candidatePath:'src/callback/*',occupiedPath:'src/callback/payload.ts',rule:'candidate-pattern',source:'actual'}])
+ expect(statusLine({kind:'ready',value:parsed,fetchedAt:parsed.generatedAt})).toBe('Driver 在途 1 · 调度等待 2')
+ const parcels = sceneOf(parsed, config()).rows.flatMap(row => row.parcels).filter(parcel => parcel.identifier !== 'WAW-530')
+ expect(parcels.map(parcel => parcel.label)).toEqual(['调度等待','调度等待'])
+ expect(parcels[0]?.reason).toContain('WAW-530 candidate=src/callback/* occupied=src/callback/payload.ts rule=candidate-pattern source=actual')
+})
+
+test('依赖优先于同票SCOPE观察，等待只计一类', () => {
+ const dependencies=parseRuntime(GENERATED_DEPENDENCIES_STATUS)
+ dependencies.tickets[0]!.scopeWaits=parseRuntime(GENERATED_SCOPE_STATUS).tickets[1]!.scopeWaits
+ expect(statusLine({kind:'ready',value:dependencies,fetchedAt:dependencies.generatedAt})).toBe('Driver 依赖停滞')
+ const parcel=sceneOf(dependencies,config()).rows.flatMap(row=>row.parcels)[0]
+ expect(parcel?.label).toBe('依赖停滞')
+ expect(parcel?.schedulingWait).toBe(false)
 })

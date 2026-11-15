@@ -59,7 +59,16 @@ type Dependency struct {
 	Affected   []string `json:"affected"`
 }
 
+type ScopeWait struct {
+	Identifier    string `json:"identifier"`
+	CandidatePath string `json:"candidatePath"`
+	OccupiedPath  string `json:"occupiedPath"`
+	Rule          string `json:"rule"`
+	Source        string `json:"source"`
+}
+
 type Ticket struct {
+	ScopeWaits     []ScopeWait  `json:"scopeWaits,omitempty"`
 	ExecutionState string       `json:"executionState,omitempty"`
 	Dependencies   []Dependency `json:"dependencies,omitempty"`
 	Stages         []Stage      `json:"stages,omitempty"`

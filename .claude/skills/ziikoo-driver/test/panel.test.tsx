@@ -2,6 +2,7 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 
+import { GENERATED_SCOPE_STATUS } from './sample-recorded'
 import { SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
@@ -1569,4 +1570,18 @@ test('复制跟随选中的仓库和筛选词，模型页不带原始配置', as
   await ui.press({ key: 'copy' })
   expect(clipboard.texts[2]).toContain('Driver 模型 · ziikoo-web')
   await ui.unmount()
+})
+
+test('SCOPE调度等待计数与复制文本保留具体占用路径', async ($, on) => {
+ const status=JSON.parse(GENERATED_SCOPE_STATUS)
+ for (const ticket of status.tickets) ticket.repo=SAMPLE_CONFIG.repos[0]!.path
+ const {clipboard}=runtimeEngine(on,status)
+ await $.command.run(runCommand)
+ const ui=await $.ui.mount(PANE)
+ expect((await ui.find({type:'Text',text:/^在途/}))?.text).toBe('在途 1   部署屏障 0   待领 0   调度等待 2')
+ await ui.press({key:'copy'})
+ expect(clipboard.texts[0]).toContain('WAW-532 · 调度等待')
+ expect(clipboard.texts[0]).toContain('WAW-530 candidate=src/callback/* occupied=src/callback/payload.ts rule=candidate-pattern source=actual')
+ expect(clipboard.texts[0]).not.toContain('依赖等待')
+ await ui.unmount()
 })

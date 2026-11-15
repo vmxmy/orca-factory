@@ -658,6 +658,26 @@ async function checkIslandStatus(browser, url) {
   } finally { await page.close() }
 }
 
+async function checkScopeWait(browser, url) {
+ const {page,errors}=await open(browser,url)
+ try {
+  const scope=readJSON(path.join(preview,'diorama-scene-scope.json'))
+  await page.evaluate(scene=>window.diorama.update(scene),scope)
+  await frames(page)
+  const plate=page.locator('button.plate:visible').filter({has:page.locator('b',{hasText:/^\/fixture\/wecom-agent-workbench$/})})
+  assert.ok((await plate.innerText()).includes('调度等待 2'),'scope waits must have their own plate count')
+  assert.ok(!(await plate.innerText()).includes('依赖等待'),'scope waits must not be labelled dependency waits')
+  const waiting=page.locator('.stuck > .list button[data-ticket]').filter({hasText:'WAW-532'})
+  assert.ok((await waiting.innerText()).includes('WAW-530 candidate=src/callback/* occupied=src/callback/payload.ts rule=candidate-pattern source=actual'))
+  await waiting.click()
+  await frames(page)
+  assert.ok((await page.locator('.trip-head').innerText()).includes('调度等待'))
+  assert.ok((await page.locator('.trip-head').innerText()).includes('occupied=src/callback/payload.ts'))
+  assert.deepEqual(errors,[])
+  console.log('PASS scope scheduling wait in Chrome: distinct count, occupying ticket, actual matched path/rule, list and detail')
+ } finally {await page.close()}
+}
+
 async function checkBaselines(browser, url, model) {
   const recorded = readJSON(path.join(preview, 'diorama-scene.json'))
   const stuck = new Set(model.archipelagoOf(recorded).stuck.map(ticket => ticket.identifier))
@@ -1625,6 +1645,7 @@ async function main() {
       await checkStageBaselines(browser, url)
       await checkStationTagsAndNeighborhood(browser, url)
       await checkIslandStatus(browser, url)
+      await checkScopeWait(browser,url)
       await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
