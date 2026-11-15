@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -109,6 +110,12 @@ func carryTickets(before, after []Ticket, now time.Time, observation bool, obser
 			t.Owner = old.Owner
 			t.Phase = old.Phase
 			t.Stage = old.Stage
+			if t.Stage != "candidate" {
+				t.ScopeWaits = nil
+				if strings.HasPrefix(t.BlockedReason, "scope wait: ") {
+					t.BlockedReason = old.BlockedReason
+				}
+			}
 			t.HumanKind = old.HumanKind
 			t.HumanReason = old.HumanReason
 			phaseChanged = false

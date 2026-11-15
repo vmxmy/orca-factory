@@ -21,3 +21,5 @@ const queue = { ...staleStatus, tickets: [...staleStatus.tickets, { ...waiting, 
 writeFileSync(new URL('./diorama-scene-human-queue.json', import.meta.url), JSON.stringify(sceneOf(parseRuntime(JSON.stringify(queue)), config)))
 
 writeFileSync(new URL('./diorama-scene-dependencies.json', import.meta.url), JSON.stringify(sceneOf(parseRuntime(driverRecorded('driver-status-json-dependencies.json')), config)))
+
+writeFileSync(new URL('./diorama-scene-scope.json', import.meta.url), JSON.stringify(sceneOf(parseRuntime(driverRecorded('driver-status-json-scope-wait.json')), config)))

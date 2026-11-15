@@ -104,7 +104,7 @@ func TestScopeActualChanges(t *testing.T) {
 			{"src/[ab]?.go", "src/a1.go", true}, {"src/*", "docs/*", false},
 			{"src", "src-other/file", false}, {"same/*", "same/*", true},
 		} {
-			if got := scopesOverlap([]string{tc.a}, []string{tc.b}); got != tc.want {
+			if got := scopeOverlapRule(tc.a, tc.b) != ""; got != tc.want {
 				t.Errorf("overlap(%q,%q)=%v", tc.a, tc.b, got)
 			}
 		}

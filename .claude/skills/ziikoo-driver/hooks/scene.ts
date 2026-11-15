@@ -1,6 +1,6 @@
 import type { DriverConfig, Parcel, Runtime, RuntimeTicket, Scene, Station } from '../types'
 import { position, duration } from './ticket'
-import { dependencyStatus } from './runtime'
+import { dependencyStatus, scopeWaiting } from './runtime'
 import { deploys } from './config'
 
 const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
@@ -16,6 +16,7 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
   return {
     identifier: ticket.identifier,
     dependencyStatus: dependencyStatus(ticket),
+    schedulingWait: scopeWaiting(ticket),
     url: ticket.url,
     title: ticket.title ?? ticket.identifier,
     owner: ticket.owner,

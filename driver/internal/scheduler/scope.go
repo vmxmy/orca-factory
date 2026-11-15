@@ -2,10 +2,12 @@ package scheduler
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -15,22 +17,78 @@ type actualChangeReader interface {
 	ActualChanges(context.Context, Ticket) ([]string, bool, error)
 }
 
-func (s *Scheduler) scopeConflicts(ctx context.Context, tickets []Ticket, repos map[string]config.Repository) map[string][]string {
-	conflicts := map[string][]string{}
-	reader, canRead := s.Backend.(actualChangeReader)
-	for _, t := range tickets {
-		if (!owned(t) && !t.Legacy) || repos[t.Repo].Env["AGENT_SCOPE_AVOID"] == "0" {
+type scopeReservation struct {
+	identifier string
+	scope      []string
+	source     string
+}
+
+func (s *Scheduler) scopeConflicts(ctx context.Context, tickets []Ticket, repos map[string]config.Repository) map[string][]scopeReservation {
+	reader, _ := s.Backend.(actualChangeReader)
+	return scopeReservations(ctx, tickets, repos, reader)
+}
+
+func scopeReservations(ctx context.Context, tickets []Ticket, repos map[string]config.Repository, reader actualChangeReader) map[string][]scopeReservation {
+	reservations := map[string][]scopeReservation{}
+	for _, ticket := range tickets {
+		if (!owned(ticket) && !ticket.Legacy) || repos[ticket.Repo].Env["AGENT_SCOPE_AVOID"] == "0" {
 			continue
 		}
-		scope := t.Scope
-		if canRead {
-			if files, found, err := reader.ActualChanges(ctx, t); err == nil && found {
-				scope = files
+		scope, source := ticket.Scope, "declared"
+		if reader != nil {
+			if files, found, err := reader.ActualChanges(ctx, ticket); err == nil && found {
+				scope, source = files, "actual"
 			}
 		}
-		conflicts[t.Repo] = append(conflicts[t.Repo], avoidedScope(scope, repos[t.Repo])...)
+		reservations[ticket.Repo] = append(reservations[ticket.Repo], scopeReservation{identifier: ticket.Identifier, scope: avoidedScope(scope, repos[ticket.Repo]), source: source})
 	}
-	return conflicts
+	return reservations
+}
+
+// ObserveScopeWaits reads the same owned-ticket reservations as Tick. It does
+// not predict reservations made by candidates claimed later in that tick.
+func ObserveScopeWaits(ctx context.Context, tickets []Ticket, repos []config.Repository, reader actualChangeReader) {
+	byPath := make(map[string]config.Repository, len(repos))
+	for _, repo := range repos {
+		byPath[repo.Path] = repo
+	}
+	observeScopeWaits(tickets, byPath, scopeReservations(ctx, tickets, byPath, reader))
+}
+
+func observeScopeWaits(tickets []Ticket, repos map[string]config.Repository, reservations map[string][]scopeReservation) {
+	for index := range tickets {
+		ticket := &tickets[index]
+		ticket.ScopeWaits = nil
+		if !ticket.Candidate || owned(*ticket) || repos[ticket.Repo].Env["AGENT_SCOPE_AVOID"] == "0" {
+			continue
+		}
+		ticket.ScopeWaits = scopeMatches(avoidedScope(ticket.Scope, repos[ticket.Repo]), reservations[ticket.Repo])
+	}
+}
+
+func scopeMatches(candidate []string, reservations []scopeReservation) []status.ScopeWait {
+	var matches []status.ScopeWait
+	for _, reservation := range reservations {
+		for _, path := range candidate {
+			for _, occupied := range reservation.scope {
+				if rule := scopeOverlapRule(path, occupied); rule != "" {
+					match := status.ScopeWait{Identifier: reservation.identifier, CandidatePath: path, OccupiedPath: occupied, Rule: rule, Source: reservation.source}
+					if !slices.Contains(matches, match) {
+						matches = append(matches, match)
+					}
+				}
+			}
+		}
+	}
+	return matches
+}
+
+func scopeWaitReason(matches []status.ScopeWait) string {
+	reasons := make([]string, 0, len(matches))
+	for _, match := range matches {
+		reasons = append(reasons, fmt.Sprintf("%s candidate=%s occupied=%s rule=%s source=%s", match.Identifier, match.CandidatePath, match.OccupiedPath, match.Rule, match.Source))
+	}
+	return "scope wait: " + strings.Join(reasons, "; ")
 }
 
 // avoidedScope drops entries wholly covered by AGENT_SCOPE_SHARED. Concurrent
@@ -49,15 +107,21 @@ func avoidedScope(scope []string, repo config.Repository) []string {
 	return kept
 }
 
-func scopesOverlap(a, b []string) bool {
-	for _, x := range a {
-		for _, y := range b {
-			if x == y || strings.HasPrefix(x, strings.TrimSuffix(y, "/")+"/") || strings.HasPrefix(y, strings.TrimSuffix(x, "/")+"/") || task.ScopeMatch(x, y) || task.ScopeMatch(y, x) {
-				return true
-			}
-		}
+func scopeOverlapRule(candidate, occupied string) string {
+	switch {
+	case candidate == occupied:
+		return "equal"
+	case strings.HasPrefix(candidate, strings.TrimSuffix(occupied, "/")+"/"):
+		return "occupied-directory"
+	case strings.HasPrefix(occupied, strings.TrimSuffix(candidate, "/")+"/"):
+		return "candidate-directory"
+	case task.ScopeMatch(candidate, occupied):
+		return "candidate-pattern"
+	case task.ScopeMatch(occupied, candidate):
+		return "occupied-pattern"
+	default:
+		return ""
 	}
-	return false
 }
 
 func declaredScope(body string) []string {

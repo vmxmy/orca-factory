@@ -11,6 +11,7 @@ import type {
   Runtime,
   RuntimeTicket,
   Stage,
+  ScopeWait,
   Today,
   Timeline,
   TimelineEntry,
@@ -89,9 +90,15 @@ const parseDependency = (value: unknown, path: string): Dependency => {
   }
 }
 
+const parseScopeWait = (value: unknown, path: string): ScopeWait => {
+ const o=fields(value,path)
+ return {identifier:text(o,'identifier',path),candidatePath:text(o,'candidatePath',path),occupiedPath:text(o,'occupiedPath',path),rule:text(o,'rule',path),source:text(o,'source',path)}
+}
+
 const parseTicket = (value: unknown, path: string): RuntimeTicket => {
   const o = fields(value, path)
   return {
+    scopeWaits: o.scopeWaits === undefined ? undefined : list(o.scopeWaits, `${path}.scopeWaits`).map((one,index)=>parseScopeWait(one,`${path}.scopeWaits[${index}]`)),
     executionState: optionalText(o, 'executionState', path),
     dependencies: o.dependencies === undefined ? undefined : list(o.dependencies, `${path}.dependencies`).map((one, index) => parseDependency(one, `${path}.dependencies[${index}]`)),
     repo: text(o, 'repo', path),
@@ -139,14 +146,18 @@ export const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.st
 
 const holdsDeploy = (t: RuntimeTicket) => t.deployment !== undefined && t.deployment.state !== 'passed'
 
+export const scopeWaiting = (ticket: RuntimeTicket) => ticket.stage === 'candidate' && ticket.blockedReason?.startsWith('scope wait: ') === true
+export const schedulingOf = (tickets: RuntimeTicket[]) => tickets.filter(scopeWaiting).length
+
 export const dependencyStatus = (ticket: RuntimeTicket): string | undefined => {
+  if (scopeWaiting(ticket)) return undefined
   const statuses = ticket.dependencies?.map(dependency => dependency.status) ?? []
   if (statuses.some(status => status === 'stalled' || status === 'cycle')) return 'stalled'
   if (statuses.some(status => status !== 'waiting')) return 'unknown'
   return ticket.blockedReason ? 'waiting' : undefined
 }
 
-export const blockedOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === 'candidate' && t.blockedReason).length
+export const blockedOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === 'candidate' && t.blockedReason && !scopeWaiting(t)).length
 
 export const barriersOf = (tickets: RuntimeTicket[]) => tickets.filter(holdsDeploy).length
 
@@ -158,8 +169,9 @@ export const statusLine = (state: Fetched<Runtime>): string | undefined => {
   const inFlight = inFlightOf(tickets)
   const barriers = barriersOf(tickets)
   return [
-    inFlight === 0 ? (tickets.some(ticket => dependencyStatus(ticket) === 'stalled' || dependencyStatus(ticket) === 'unknown') ? 'Driver 依赖停滞' : blockedOf(tickets) > 0 ? 'Driver 依赖等待' : 'Driver 空闲') : `Driver 在途 ${inFlight}`,
+    inFlight === 0 ? (tickets.some(ticket => dependencyStatus(ticket) === 'stalled' || dependencyStatus(ticket) === 'unknown') ? 'Driver 依赖停滞' : blockedOf(tickets) > 0 ? 'Driver 依赖等待' : schedulingOf(tickets) > 0 ? 'Driver 调度等待' : 'Driver 空闲') : `Driver 在途 ${inFlight}`,
     ...(barriers === 0 ? [] : [`部署屏障 ${barriers}`]),
+    ...(schedulingOf(tickets) === 0 ? [] : [`调度等待 ${schedulingOf(tickets)}`]),
     ...(snapshot === 'ok' ? [] : ['快照过期']),
   ].join(' · ')
 }

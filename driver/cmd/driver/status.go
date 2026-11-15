@@ -106,6 +106,7 @@ func freshStatusSnapshot(ctx context.Context, repo config.Repository, reader iss
 	if err != nil {
 		return status.View{}, err
 	}
+	scheduler.ObserveScopeWaits(ctx, tickets, []config.Repository{repo}, runtime)
 	now := time.Now()
 	return status.View{State: "ok", GeneratedAt: now, Tickets: scheduler.ObservationRows(tickets, []config.Repository{repo}, now)}, nil
 }

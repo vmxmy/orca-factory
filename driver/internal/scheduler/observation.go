@@ -14,7 +14,7 @@ import (
 // ObservationRow is the credential-free status view of one ticket. It explains
 // why work cannot advance but never authorizes an action.
 func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.Ticket {
-	row := status.Ticket{Dependencies: t.Dependencies, Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
+	row := status.Ticket{ScopeWaits: t.ScopeWaits, Dependencies: t.Dependencies, Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
 	switch {
 	case owned(t):
 	case t.Candidate:
@@ -60,6 +60,8 @@ func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.T
 		row.BlockedReason = "parked: " + t.Parked
 	case t.MergeProblem != "":
 		row.BlockedReason = t.MergeProblem
+	case !t.Blocked && len(t.ScopeWaits) > 0:
+		row.BlockedReason = scopeWaitReason(t.ScopeWaits)
 	case !t.Blocked:
 	case len(t.Dependencies) > 0:
 		row.BlockedReason = dependencyReason(t.Dependencies)

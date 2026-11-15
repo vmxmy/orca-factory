@@ -226,7 +226,12 @@ export const islandOf = (row, now) => {
   const working = stations.get('work')?.length ?? 0
   const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
   const blocked = row.parcels.filter(parcel => parcel.station === 'pickup' && parcel.blocker).length
+  const scheduling = row.parcels.filter(parcel => parcel.station === 'pickup' && parcel.schedulingWait).length
   const stalled = row.parcels.some(parcel => parcel.dependencyStatus === 'stalled' || parcel.dependencyStatus === 'unknown')
+  const waitLabel = [
+    ...(blocked > scheduling ? [`${stalled ? '依赖停滞' : '依赖等待'} ${blocked - scheduling}`] : []),
+    ...(scheduling > 0 ? [`调度等待 ${scheduling}`] : []),
+  ].join(' · ')
   const status = inFlight === 0 && blocked > 0 ? ISLAND_STATUS.BLOCKED : islandStatusOf(inFlight)
   const layout = layoutOf(Math.max(MIN_BOOTHS, working))
   const rules = slotRules(layout)
@@ -247,6 +252,8 @@ export const islandOf = (row, now) => {
     inFlight,
     status,
     blocked,
+    scheduling,
+    waitLabel,
     stalled,
     idle: status === ISLAND_STATUS.IDLE,
     ...deploymentOf(row),
