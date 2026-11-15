@@ -3,6 +3,7 @@ import type {
   Checkout,
   Corrections,
   Deployment,
+  Dependency,
   DoctorCheck,
   Fetched,
   Health,
@@ -75,9 +76,24 @@ const parseDeployment = (value: unknown, path: string): Deployment => {
   }
 }
 
+const parseDependency = (value: unknown, path: string): Dependency => {
+  const o = fields(value, path)
+  const strings = (key: string) => list(o[key], `${path}.${key}`).map((value, index) => {
+    if (typeof value !== 'string') throw new Error(`${path}.${key}[${index}] 不是字符串`)
+    return value
+  })
+  return {
+    identifier: text(o, 'identifier', path), title: optionalText(o, 'title', path), state: optionalText(o, 'state', path),
+    labels: strings('labels'), owner: text(o, 'owner', path), candidate: flag(o, 'candidate', path),
+    status: text(o, 'status', path), reason: text(o, 'reason', path), chain: strings('chain'), affected: strings('affected'),
+  }
+}
+
 const parseTicket = (value: unknown, path: string): RuntimeTicket => {
   const o = fields(value, path)
   return {
+    executionState: optionalText(o, 'executionState', path),
+    dependencies: o.dependencies === undefined ? undefined : list(o.dependencies, `${path}.dependencies`).map((one, index) => parseDependency(one, `${path}.dependencies[${index}]`)),
     repo: text(o, 'repo', path),
     identifier: text(o, 'identifier', path),
     url: optionalText(o, 'url', path),
@@ -123,6 +139,15 @@ export const inFlightOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.st
 
 const holdsDeploy = (t: RuntimeTicket) => t.deployment !== undefined && t.deployment.state !== 'passed'
 
+export const dependencyStatus = (ticket: RuntimeTicket): string | undefined => {
+  const statuses = ticket.dependencies?.map(dependency => dependency.status) ?? []
+  if (statuses.some(status => status === 'stalled' || status === 'cycle')) return 'stalled'
+  if (statuses.some(status => status !== 'waiting')) return 'unknown'
+  return ticket.blockedReason ? 'waiting' : undefined
+}
+
+export const blockedOf = (tickets: RuntimeTicket[]) => tickets.filter(t => t.stage === 'candidate' && t.blockedReason).length
+
 export const barriersOf = (tickets: RuntimeTicket[]) => tickets.filter(holdsDeploy).length
 
 export const statusLine = (state: Fetched<Runtime>): string | undefined => {
@@ -133,7 +158,7 @@ export const statusLine = (state: Fetched<Runtime>): string | undefined => {
   const inFlight = inFlightOf(tickets)
   const barriers = barriersOf(tickets)
   return [
-    inFlight === 0 ? 'Driver 空闲' : `Driver 在途 ${inFlight}`,
+    inFlight === 0 ? (tickets.some(ticket => dependencyStatus(ticket) === 'stalled' || dependencyStatus(ticket) === 'unknown') ? 'Driver 依赖停滞' : blockedOf(tickets) > 0 ? 'Driver 依赖等待' : 'Driver 空闲') : `Driver 在途 ${inFlight}`,
     ...(barriers === 0 ? [] : [`部署屏障 ${barriers}`]),
     ...(snapshot === 'ok' ? [] : ['快照过期']),
   ].join(' · ')

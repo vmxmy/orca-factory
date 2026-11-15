@@ -16,6 +16,11 @@ func (s *Scheduler) pushTicket(t Ticket, a Action) {
 		owner = machine.OwnerNone
 	}
 	status.Push(s.clock(), func(view *status.View) {
-		status.SetTicket(view, status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(owner), Phase: string(a.Phase)}, owner == machine.OwnerExecutor || owner == machine.OwnerMerge || owner == machine.OwnerResolver)
+		row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(owner), Phase: string(a.Phase)}
+		if owner == machine.OwnerExecutor {
+			row.ExecutionState = "unregistered"
+			row.BlockedReason = status.ExecutorStartUnconfirmed
+		}
+		status.SetTicket(view, row, owner == machine.OwnerExecutor || owner == machine.OwnerMerge || owner == machine.OwnerResolver)
 	})
 }

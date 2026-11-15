@@ -1,5 +1,6 @@
 import type { DriverConfig, Parcel, Runtime, RuntimeTicket, Scene, Station } from '../types'
 import { position, duration } from './ticket'
+import { dependencyStatus } from './runtime'
 import { deploys } from './config'
 
 const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
@@ -8,12 +9,13 @@ const parcelOf = (ticket: RuntimeTicket, now: number): Parcel => {
   if (pos.at === 5) station = ticket.deployment?.state === 'smoke-intent' ? 'smoke' : 'dispatch'
   else if (pos.at === 0) station = 'pickup'
   else if (pos.at === null) station = ticket.stage === 'human' ? 'human' : ticket.owner === '处置Agent' ? 'repair' : 'unknown'
-  else if (pos.at === 1) station = pos.tone === 'attention' ? 'return' : 'work'
+  else if (pos.at === 1) station = ticket.phase === '写 correction' ? 'return' : 'work'
   else if (pos.at === 2) station = 'gate'
   else if (pos.at === 3) station = 'review'
   else station = pos.label === '开 PR' ? 'pack' : 'merge'
   return {
     identifier: ticket.identifier,
+    dependencyStatus: dependencyStatus(ticket),
     url: ticket.url,
     title: ticket.title ?? ticket.identifier,
     owner: ticket.owner,

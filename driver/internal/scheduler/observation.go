@@ -14,7 +14,7 @@ import (
 // ObservationRow is the credential-free status view of one ticket. It explains
 // why work cannot advance but never authorizes an action.
 func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.Ticket {
-	row := status.Ticket{Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
+	row := status.Ticket{Dependencies: t.Dependencies, Repo: t.Repo, Identifier: t.Identifier, Owner: string(t.Owner), Phase: string(t.Phase), URL: t.URL, Held: t.Held, Title: t.Title}
 	switch {
 	case owned(t):
 	case t.Candidate:
@@ -61,10 +61,18 @@ func ObservationRow(t Ticket, repos []config.Repository, now time.Time) status.T
 	case t.MergeProblem != "":
 		row.BlockedReason = t.MergeProblem
 	case !t.Blocked:
+	case len(t.Dependencies) > 0:
+		row.BlockedReason = dependencyReason(t.Dependencies)
 	case t.BlockersIncomplete:
 		row.BlockedReason = "dependency evidence incomplete"
 	case len(t.Blockers) > 0:
 		row.BlockedReason = "blocked by " + strings.Join(t.Blockers, ", ")
+	}
+	if executorUnregistered(t) {
+		row.ExecutionState = "unregistered"
+		if row.BlockedReason == "" {
+			row.BlockedReason = status.ExecutorStartUnconfirmed
+		}
 	}
 	return row
 }
@@ -109,4 +117,8 @@ func SnapshotRows(tickets []Ticket, repos []config.Repository, now time.Time) []
 		return a.Identifier < b.Identifier
 	})
 	return snapshot
+}
+
+func executorUnregistered(t Ticket) bool {
+	return t.Owner == machine.OwnerExecutor && (t.Terminal == "" || t.Terminal == "-" || t.Run == "")
 }

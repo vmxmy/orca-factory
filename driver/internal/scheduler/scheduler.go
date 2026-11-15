@@ -26,6 +26,7 @@ import (
 )
 
 type Ticket struct {
+	Dependencies  []status.Dependency
 	stageTimeline []stageStart
 	Resolution    *resolver.Record
 	// Rebuilt from history so #142 waiting receipts cannot erase a nil policy

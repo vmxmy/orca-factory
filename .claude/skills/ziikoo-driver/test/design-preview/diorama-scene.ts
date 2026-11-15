@@ -19,3 +19,5 @@ const older = staleStatus.tickets.find((ticket: { identifier: string }) => ticke
 const { since: _since, ...untimed } = waiting
 const queue = { ...staleStatus, tickets: [...staleStatus.tickets, { ...waiting, identifier: 'ZY-429', since: older.since }, { ...untimed, identifier: 'ZY-430' }] }
 writeFileSync(new URL('./diorama-scene-human-queue.json', import.meta.url), JSON.stringify(sceneOf(parseRuntime(JSON.stringify(queue)), config)))
+
+writeFileSync(new URL('./diorama-scene-dependencies.json', import.meta.url), JSON.stringify(sceneOf(parseRuntime(driverRecorded('driver-status-json-dependencies.json')), config)))

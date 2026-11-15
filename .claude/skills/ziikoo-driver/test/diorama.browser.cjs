@@ -635,6 +635,26 @@ async function checkIslandStatus(browser, url) {
     for (const plate of await idle.all()) assert.equal(await plate.locator('span').first().isVisible(), true, 'idle status must stay visible on narrow screens')
     assert.deepEqual(errors, [])
     console.log('PASS island status: six recorded projects, busy factory with two in-flight tickets, five idle islands')
+    const blocked = readJSON(path.join(preview, 'diorama-scene-dependencies.json'))
+    await page.setViewportSize({ width: 1280, height: 800 })
+    await page.evaluate(scene => window.diorama.update(scene), blocked)
+    await frames(page)
+    const stalled = page.locator('button.plate:visible').filter({ has: page.locator('b', { hasText: /^\/fixture\/wecom-agent-workbench$/ }) })
+    assert.equal(await stalled.locator('span').first().innerText(), '依赖停滞 2')
+    assert.ok((await page.locator('.stuck').innerText()).includes('WAW-523 -> WAW-522'), 'hidden root path must be visible in stuck list')
+    assert.ok((await page.locator('.stuck').innerText()).includes('missing ready-for-agent'), 'hidden root reason must be visible in stuck list')
+    assert.deepEqual(errors, [])
+    console.log('PASS hidden dependency root in Chrome: stalled island, title/state/labels/owner, root reason and transitive affected tickets')
+    const startup = structuredClone(blocked)
+    for (const row of startup.rows) row.parcels = row.path === '/fixture/wecom-agent-workbench' ? [parcel('WAW-530', 'work', { label: '启动待确认', tone: 'attention', reason: 'executor start unconfirmed: terminal/run not registered' })] : []
+    await page.evaluate(scene => window.diorama.update(scene), startup)
+    await frames(page)
+    await page.locator('.stuck > .list button[data-ticket]').filter({ hasText: 'WAW-530' }).click()
+    await frames(page)
+    assert.ok((await page.locator('.trip-head').innerText()).includes('启动待确认'))
+    assert.ok((await page.locator('.stuck').innerText()).includes('terminal/run not registered'))
+    assert.deepEqual(errors, [])
+    console.log('PASS unconfirmed executor startup in Chrome: pending startup label and missing registration reason')
   } finally { await page.close() }
 }
 
@@ -1520,7 +1540,7 @@ async function checkRecordedTicketEvents(browser, live) {
         assert.equal(await page.locator(`.event-feed [data-event="${type}"]`).filter({ hasText: ticket.identifier }).count(), 1, `${type} must identify recorded ticket ${key(ticket)}`)
       }
     }
-    assert.equal(await page.locator('.event-feed [data-event="alert"]').filter({ hasText: 'OF-446' }).count(), 1)
+    assert.equal(await page.locator('.event-feed [data-event="alert"]').filter({ hasText: 'OF-446' }).count(), 2, 'OF-446 gains a dependency alert when entering and clears it on the next recorded snapshot')
 
     live.write({ ...nextScan, tickets: [] }, { config: { ...live.config, repos: [] } })
     await live.stop()

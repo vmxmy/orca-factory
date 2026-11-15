@@ -87,7 +87,22 @@ export type Stage = { name: string; seconds: number }
 
 export type HumanKind = 'scope' | 'deploy' | 'takeover'
 
+export type Dependency = {
+  identifier: string
+  title?: string
+  state?: string
+  labels: string[]
+  owner: string
+  candidate: boolean
+  status: string
+  reason: string
+  chain: string[]
+  affected: string[]
+}
+
 export type RuntimeTicket = {
+  executionState?: string
+  dependencies?: Dependency[]
   repo: string
   identifier: string
   url?: string
@@ -113,6 +128,7 @@ export type Runtime = { today?: Today; state: string; generatedAt: number; nextS
 export type Station = 'pickup' | 'work' | 'return' | 'gate' | 'review' | 'pack' | 'merge' | 'dispatch' | 'smoke' | 'repair' | 'human' | 'unknown'
 
 export type Parcel = {
+  dependencyStatus?: string
   identifier: string
   url?: string
   title: string

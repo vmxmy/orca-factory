@@ -279,7 +279,11 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 ## driver status 快照
 
-`orca-factory-driver status --json` 输出 `status.Read` 的 `View`：`state`（`ok`、`stale`、`unknown`）、`generatedAt`、`tickets`，有 GitHub 用量时另有 `github`。票行字段见 `driver/README.md`「排查停止推进」。
+`orca-factory-driver status --json` 输出 `status.Read` 的 `View`：`state`（`ok`、`stale`、`unknown`）、`generatedAt`、`tickets`，有 GitHub 用量时另有 `github`。票行字段见 `driver/README.md`「排查停止推进」。`status --fresh --repo <path> --json` 使用同一形状，但直接只读该仓库完整账本，不更新缓存、不运行调度动作。读取失败输出 unknown、空 tickets 并退出 1，不回落缓存。
+
+- `executionState=unregistered` 表示执行器归属缺 terminal 或 run 登记，`term=-` 也视为未登记。票行说明启动待确认，依赖根报告 unknown；不改变恢复、重发或容量判定。
+
+- `dependencies` 是票行可选的根依赖诊断数组，字段与枚举见 driver README。它来自 Runtime 完整快照和已读归属评论，不把隐藏根加入调度票列表，不修改 `issueEligibility` 或 fresh claim 检查。根的 `candidate` 是标签与状态候选资格，不是领取授权。缺票、截断关系、未知状态、环与有界遍历耗尽有显式诊断；受影响可见票按 identifier 去重排序。`blockedReason` 保留字符串契约，并在有诊断时包含根状态、标签、归属、原因、路径和影响票。
 
 - `pushedAt`（OF-386）：`PushObservation` 给全部票行记录当前时钟；`Push` 只给本次 `SetTicket` 写入的票行记录，其他票行保留原值；零值省略。`Tick` 在调用 `Backend.Snapshot` 前记录 `observedFrom`，并传给 `PushObservation`。同一仓库、同一票的缓存行若在 `observedFrom` 之后写入，且归属、阶段或 `stage` 与账本重建行不同，观察合并保留缓存的归属、阶段、`stage` 和 `since`，仍更新 `title`、`blockedReason` 等观察字段。其他情况下采用重建状态，仅在归属、阶段或 `stage` 变化时重置 `since`，新行初始化 `since`。执行器、配额和暂停调用的 `Push` 仍直接应用更新。`status.TestObservationKeepsNewerExecutorPhase` 覆盖旧账本读数保留审查阶段与 `since`、观察字段刷新，以及新账本读数进入 gate。`status.TestExecutorPushDoesNotPinOtherTickets` 覆盖其他票的 `Push` 不阻止本票采用账本新阶段。`SetTicket` 清除传入行的 `pushedAt`，所以从缓存复制后改写的行也会重新记录；`status.TestPushRestampsRewrittenRow` 覆盖这种情况。
 

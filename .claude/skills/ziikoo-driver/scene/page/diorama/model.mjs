@@ -8,7 +8,7 @@ export const OWNER_COLORS = {
 
 export const ownerColor = owner => OWNER_COLORS[owner] ?? OWNER_COLORS.无
 
-export const ISLAND_STATUS = Object.freeze({ IDLE: 'idle', BUSY: 'busy' })
+export const ISLAND_STATUS = Object.freeze({ IDLE: 'idle', BUSY: 'busy', BLOCKED: 'blocked' })
 
 export const islandStatusOf = inFlight => inFlight > 0 ? ISLAND_STATUS.BUSY : ISLAND_STATUS.IDLE
 
@@ -225,7 +225,9 @@ export const islandOf = (row, now) => {
   )
   const working = stations.get('work')?.length ?? 0
   const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
-  const status = islandStatusOf(inFlight)
+  const blocked = row.parcels.filter(parcel => parcel.station === 'pickup' && parcel.blocker).length
+  const stalled = row.parcels.some(parcel => parcel.dependencyStatus === 'stalled' || parcel.dependencyStatus === 'unknown')
+  const status = inFlight === 0 && blocked > 0 ? ISLAND_STATUS.BLOCKED : islandStatusOf(inFlight)
   const layout = layoutOf(Math.max(MIN_BOOTHS, working))
   const rules = slotRules(layout)
   const parcels = [...stations].flatMap(([station, members]) =>
@@ -244,6 +246,8 @@ export const islandOf = (row, now) => {
     lantern: stations.has('human'),
     inFlight,
     status,
+    blocked,
+    stalled,
     idle: status === ISLAND_STATUS.IDLE,
     ...deploymentOf(row),
   }

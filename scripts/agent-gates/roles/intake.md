@@ -19,6 +19,7 @@
     `scripts/agent-gates/agent-graph.sh issues create --input <JSON文件>`。
   - 对已存在的原生票，先核对正文与完整依赖，再 `issues adopt --id <ID> --input <依赖JSON>`；未纳管票可见但不能自动领取。
 - `auto-failed` 票由 resolver 接管：读取处置进度并汇报；不清空失败标签、预算或历史记录来重开执行。
+- 建票或补 `ready-for-agent` 后，运行 `orca-factory-driver status --fresh --repo "$PWD" --json`。退出非零或 `state` 不是 `ok` 时报告读取失败，保留错误并重查，不用旧缓存判断成功。逐票读取 `dependencies`：`waiting` 表示根票已有归属或是自动候选，仍要等容量、维护、scope 等领取检查；`stalled` 表示无人处理且缺资格；`unknown`、`cycle` 表示证据不足或依赖环。后面三种都报告根票 `identifier/title/state/labels/owner/reason/chain/affected`。若图中所有候选都被这些根阻塞且没有执行者，报告「依赖停滞」及受影响票，不能把候选数当作可执行数。补好票面和真实依赖后重跑，直到每个开发分支都有可推进的根或明确负责人及后续操作。根票的 `candidate` 仅表示标签与状态候选资格，不授权领取。
 - 汇报：`scripts/agent-gates/agent-graph.sh ledger stats`（按 lane、按 tier 的首跑通过率）；`scripts/agent-gates/agent-graph.sh issues list-issues --json` 过滤本周 Done。
 
 ## Does Not Own
