@@ -3,6 +3,7 @@ package resolver
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"strings"
 )
@@ -45,8 +46,11 @@ func ParseResult(body string) (Resolution, error) {
 			return p, errors.New("resolver requires branch, full head SHA, title and body")
 		}
 	case "merge":
-		if p.Handoff == nil || p.Handoff.Validated() != nil || p.Handoff.QueueID == "" {
+		if p.Handoff == nil || p.Handoff.QueueID == "" {
 			return p, errors.New("resolver requires validated merge handoff")
+		}
+		if err := p.Handoff.Validated(); err != nil {
+			return p, fmt.Errorf("resolver requires validated merge handoff: %w", err)
 		}
 	case "escalate":
 		if strings.TrimSpace(p.Body) == "" {

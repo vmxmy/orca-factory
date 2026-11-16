@@ -192,6 +192,8 @@ $FACTORY/bin/orca-factory init $REPO
 
 `check` 的退出码分三态（OF-53）：0 为一致；3 为 core 落后，副本里不一致的文件都是 factory git 历史中的已提交版本或 core 新增文件，输出 `BEHIND`，`orca-factory update` 即可修复；core 已删除的文件（如 `linear-precheck.sh`）若副本仍等于某个已提交版本，同样是 `BEHIND`，`update` 删除它；1 为本地改动（`DIFFERS` / `OVERRIDDEN`，含 core 已删除但副本被改过的文件，`update` 保留它，需人工删除）或项目文件问题。接入后 factory 再改 core，项目只会落后，不会被移出 driver 接管。driver serve 自动给该仓库开 `chore/orca-factory-core-sync-<factory短SHA>` 同步 PR（只含 `scripts/agent-gates/`，不自动合并），合并它即回到一致。流程见 [driver/README.md](driver/README.md) 的“调度范围（项目发现）”。
 
+声明新测试 `CHECK_IS_NEW_TEST: yes` 前，按 [角色与 gate spec](core/roles/README.md#新测试的确定性证据) 提供断言 manifest 和全部测试依赖。以下接入语法检查使用原有非新测试协议，不需要 manifest。
+
 ## 5. 验收
 
 依次跑，全部通过才进第 6 步。

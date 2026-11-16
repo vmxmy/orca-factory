@@ -53,9 +53,9 @@ type Tools interface {
 	Review(context.Context, string, string, string, *float64) (string, string, error)
 }
 type Ticket struct {
-	Estimate                                             *float64
-	ID, Identifier, Title, Todo, Check, Scope, TestFiles string
-	Lane                                                 int
+	Estimate                                                        *float64
+	ID, Identifier, Title, Todo, Check, Scope, TestFiles, Assertion string
+	Lane                                                            int
 	// Number is the GitHub issue number; 0 for other backends.
 	Number  int
 	NewTest bool
@@ -159,7 +159,10 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 	if e.Now == nil {
 		e.Now = time.Now
 	}
-	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || c.Repo == "" || c.Terminal == "" || t.ID == "" || t.Todo == "" || t.Check == "" || t.Scope == "" || strings.ContainsAny(t.Check+t.Scope+t.TestFiles, "\r\n") || (t.NewTest && t.TestFiles == "") || t.Lane < 1 || t.Lane > 2 {
+	if t.NewTest && strings.TrimSpace(t.Assertion) == "" {
+		return result, errors.New("new-test evidence requires CHECK_ASSERTION in CHECK_TEST_FILES; add a version 1 JSON assertion manifest and request gate-spec-refresh before handoff; frozen work requires a fresh reviewed handoff")
+	}
+	if !component.MatchString(t.Identifier) || !component.MatchString(c.Unit) || !component.MatchString(c.Repository) || c.Repo == "" || c.Terminal == "" || t.ID == "" || t.Todo == "" || t.Check == "" || t.Scope == "" || strings.ContainsAny(t.Check+t.Scope+t.TestFiles+t.Assertion, "\r\n") || (t.NewTest && t.TestFiles == "") || t.Lane < 1 || t.Lane > 2 {
 		return result, errors.New("invalid executor configuration or ticket brief")
 	}
 	if e.Orca == nil || e.Issues == nil || e.GitHub == nil || e.Tools == nil {

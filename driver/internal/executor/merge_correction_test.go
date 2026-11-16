@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 
 func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	e, o, tools, recovery, l, ticket := recoveryFixture(t)
+	ticket.NewTest, ticket.TestFiles, ticket.Assertion = true, "test/probe.sh test/assertion.json", "test/assertion.json"
 	tools.gateReds = 1
 	first, err := e.Execute(context.Background(), ticket)
 	if err != nil {
@@ -46,7 +48,12 @@ func TestStartMergeCorrectionRepairsExistingPR(t *testing.T) {
 	g.existing.Head.SHA = "repaired-sha"
 	e.Config.Terminal = "new-executor"
 	e.Now = func() time.Time { return time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC) }
+	ticket.Assertion = "test/changed.json"
 	result, err := e.Start(context.Background(), ticket)
+	frozen, readErr := os.ReadFile(filepath.Join(e.Config.Root, e.Config.Repository, ticket.Identifier, "gate.spec"))
+	if readErr != nil || !strings.Contains(string(frozen), "CHECK_ASSERTION: test/assertion.json\n") || strings.Contains(string(frozen), "CHECK_ASSERTION: test/changed.json") {
+		t.Fatalf("frozen assertion replaced during correction: %s %v", frozen, readErr)
+	}
 	if err != nil || result.State.Owner != machine.OwnerMerge || recovery.sessions != 2 || recovery.children != 2 || len(o.starts) != 3 {
 		t.Fatalf("correction bypassed: result=%+v err=%v sessions=%d children=%d starts=%d", result, err, recovery.sessions, recovery.children, len(o.starts))
 	}

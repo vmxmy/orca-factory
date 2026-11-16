@@ -888,3 +888,12 @@ systemctl --user stop orca-factory-feishu-gateway.service
 首次安装时，若已有 `orca-factory-driver.service.d/proxy.conf`，安装器复制其内容；
 网关已有的代理文件不会被覆盖。后续代理变更分别维护两个服务的 drop-in，执行
 `systemctl --user daemon-reload`，再重启需要应用变更的服务。网关服务不依赖 serve 启停。
+
+
+### 新测试门禁升级
+
+执行器把完整正文的 `CHECK_ASSERTION` 原文写入简报和 gate spec，并冻结到 handoff。字段格式、probe 约束与升级步骤见 [角色与 gate spec](../core/roles/README.md#新测试的确定性证据)。
+旧 `CHECK_IS_NEW_TEST: no` 行为不变。旧 `yes` 缺字段时，执行器日志与 gate stderr 明示 `CHECK_ASSERTION` 迁移原因，不作为有效红证据继续运行。
+未交接工作补字段后走 `gate-spec-refresh`；冻结工作由 resolver 提交新的完整验证交接，不改旧 queue ID 所指的证据。
+冻结 handoff 校验失败从合并推进返回明确错误，保留原有合并归属与队列；查看 Driver 巡检错误中的迁移原因，不能将它解释为待领取。
+checkpoint 格式、累计预算、attempt 与请求 UUID 继续沿用现有契约；正常 correction 的计数和派工身份仍按原流程推进。
