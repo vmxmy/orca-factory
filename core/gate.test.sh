@@ -42,6 +42,14 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u3' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 
 [[ $rc == 1 && "$(field "$out" STEP)" == suppression ]]
 [[ "$(field "$out" LANE)" == 1 ]]
 
+# A missing baseline helper cannot prove an assertion failed.
+R="$(mkrepo missing-helper)"
+printf 'source src/helper.sh\nprintf "1\\n"\n' > "$R/src/probe.sh"
+printf 'true\n' > "$R/src/helper.sh"
+printf '{"version":1,"id":"unchanged-value","probe":["bash","-e","src/probe.sh"],"expected":1}\n' > "$R/src/assertion.json"
+out="$("$GATE" "$R" "$(spec 'UNIT: missing-helper' 'SCOPE: src/*' 'CHECK: bash -e src/probe.sh' 'CHECK_IS_NEW_TEST: yes' 'CHECK_TEST_FILES: src/probe.sh src/assertion.json' 'CHECK_ASSERTION: src/assertion.json')" 2>&1)" && rc=0 || rc=$?
+[[ $rc == 2 && -z "$(field "$out" VERDICT)" ]] || { printf 'ASSERT: missing baseline helper must be infrastructure failure, got rc=%s\n%s\n' "$rc" "$out"; exit 1; }
+
 # CHECK_IS_NEW_TEST=yes and check passes on base -> red check-red-on-base
 R="$(mkrepo newtest)"; echo 'exit 0' > "$R/src/t.test.sh"
 out="$("$GATE" "$R" "$(spec 'UNIT: u4' 'SCOPE: src/*' 'CHECK: bash src/t.test.sh' 'CHECK_IS_NEW_TEST: yes' 'CHECK_TEST_FILES: src/t.test.sh')")" && rc=0 || rc=$?
