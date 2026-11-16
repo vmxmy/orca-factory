@@ -9,6 +9,7 @@
     - 外部契约：票新增或改变对外部系统输出（HTTP、CLI、Prometheus、云 API）的解析时，SCOPE 含对应 `*_test.go` 与同包 `testdata/` 下的录制真实样本路径；需新录制时，「要做」写明录制来源及是否需要 lane 3 凭证。
     - 字段形状样本：简报要求解析的每一种外部字段形状都必须有现网真实样本或可执行的录制来源；无样本的形状不写进简报，等它在现网出现后另开票。
     - 行为追踪：对简报要求改变的每条行为，追到实际产生该行为的函数所在文件（白名单、生命周期、请求构造），并纳入 SCOPE。
+  - 声明 `CHECK_IS_NEW_TEST: yes` 时，按 `roles/README.md` 的“新测试的确定性证据”在完整正文提供 `CHECK_TEST_FILES` 和 `CHECK_ASSERTION`；不把缺依赖或任意非零退出当作基线断言失败。
   - 写 `CHECK`：一条在 main 上可执行的命令 + 断言描述；最好是一条实现前会红、实现后会绿的断言。
   - 按 `$AGENT_LANE2_GLOBS` / `$AGENT_LANE3_GLOBS` 预判 lane，告诉用户；命中 lane 3 的需求不建 `ready-for-agent` 票，直接告诉用户这是人做的事。
   - 定 estimate：施工档位不看 estimate（`workflow.md §6`）；estimate 不大于 `AGENT_REVIEWER_SMALL_MAX_ESTIMATE` 时走小票审查。

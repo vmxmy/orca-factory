@@ -25,6 +25,18 @@ func (h Handoff) Validated() error {
 		}
 		spec[k] = strings.TrimSpace(v)
 	}
+	if spec["CHECK_IS_NEW_TEST"] == "yes" {
+		assertion := spec["CHECK_ASSERTION"]
+		declared := false
+		for _, file := range strings.Fields(spec["CHECK_TEST_FILES"]) {
+			if file == assertion {
+				declared = true
+			}
+		}
+		if assertion == "" || !declared {
+			return errors.New("frozen new-test evidence requires CHECK_ASSERTION in CHECK_TEST_FILES; request a fresh reviewed handoff through the resolver, without rewriting frozen history")
+		}
+	}
 	gate := map[string]string{}
 	for _, line := range strings.Split(h.GateOutput, "\n") {
 		fields := strings.Fields(line)

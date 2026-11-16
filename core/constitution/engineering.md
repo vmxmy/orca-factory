@@ -10,10 +10,10 @@
 
 ## 2. 先红后绿
 
-- 先写会红的断言（`CHECK`），在 base 上确认它红，再写刚好让它变绿的实现。gate 的 `check-red-on-base` 步会复核：新测试在 origin/main 上必须失败。
+- 先写会红的断言（`CHECK`），在 base 上确认它红，再写刚好让它变绿的实现。gate 的 `check-red-on-base` 步用冻结 manifest 的固定 JSON 比较器复核，base 的实际值必须与 expected 不等，head 必须相等。
 - 新测试只锁这次改动能破坏的行为。样式和文案不加新测试。
 - 断言不得同义反复：期望值不得用实现同款调用生成；不得只断言"不抛错"或"返回非空"。
-- `CHECK_IS_NEW_TEST: yes` 必须同时给 `CHECK_TEST_FILES`。
+- `CHECK_IS_NEW_TEST: yes` 必须同时给 `CHECK_TEST_FILES` 和其中的 `CHECK_ASSERTION` manifest。观察脚本退出 0 并输出一个 JSON 实际值；准备失败、崩溃、非零退出和零输出不算断言失败。格式与旧票升级见 `roles/README.md` 的“新测试的确定性证据”。
 
 ## 3. 只改 SCOPE
 

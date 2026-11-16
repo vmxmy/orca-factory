@@ -42,6 +42,7 @@ SCOPE="$(spec_get SCOPE)"
 CHECK="$(spec_get CHECK)"
 CHECK_IS_NEW_TEST="$(spec_get CHECK_IS_NEW_TEST)"
 CHECK_TEST_FILES="$(spec_get CHECK_TEST_FILES)"
+CHECK_ASSERTION="$(spec_get CHECK_ASSERTION)"
 CHECK_IS_NEW_TEST="${CHECK_IS_NEW_TEST:-no}"
 for k in UNIT SCOPE CHECK; do
   [[ -n "${!k}" ]] || { echo "spec missing $k" >&2; exit 2; }
@@ -49,14 +50,20 @@ done
 if [[ "$CHECK_IS_NEW_TEST" == yes && -z "$CHECK_TEST_FILES" ]]; then
   echo "spec missing CHECK_TEST_FILES" >&2; exit 2
 fi
+if [[ "$CHECK_IS_NEW_TEST" == yes && -z "$CHECK_ASSERTION" ]]; then
+  echo "new-test evidence requires CHECK_ASSERTION: add a version 1 JSON assertion manifest to CHECK_TEST_FILES; refresh pre-handoff gate specs, or request a fresh reviewed handoff for frozen work" >&2
+  exit 2
+fi
 
 LOG_DIR="$WT/.omc/gates/$UNIT"
 mkdir -p "$LOG_DIR"
 LOG="$LOG_DIR/gate.log"
 TMP_BASE=""
+TMP_ASSERTION=""
 # flock is released with its descriptor, so a SIGKILLed gate cannot leave it held.
 LOCK="${TMPDIR:-/tmp}/agent-gate-heavy.flock"
 cleanup() {
+  if [[ -n "$TMP_ASSERTION" ]]; then rm -rf "$TMP_ASSERTION"; fi
   if [[ -n "$TMP_BASE" ]]; then git -C "$WT" worktree remove --force "$TMP_BASE" >/dev/null 2>&1 || true; fi
 }
 trap cleanup EXIT
@@ -136,20 +143,144 @@ fi
 log "--- [suppression] hits:" "$HITS"
 [[ -z "$HITS" ]] || verdict red suppression "added lines contain suppression markers" "$HITS"
 
-# 3. check-red-on-base
-if [[ "$CHECK_IS_NEW_TEST" == yes ]]; then
-  TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/agent-gate-base.XXXXXX")"
-  rmdir "$TMP_BASE"
-  git -C "$WT" worktree add --detach "$TMP_BASE" "$BASE" >> "$LOG" 2>&1
-  for f in $CHECK_TEST_FILES; do
-    mkdir -p "$TMP_BASE/$(dirname "$f")"
-    cp "$WT/$f" "$TMP_BASE/$f"
+assertion_infra() {
+  log "--- [assertion] infrastructure failure: $*"
+  echo "assertion infrastructure failure: $* (see $LOG)" >&2
+  exit 2
+}
+
+assertion_file() {
+  local root="$1" path="$2" part current="$1"
+  [[ "$path" =~ ^[a-zA-Z0-9_./-]+$ && "$path" != /* ]] || return 1
+  local remaining="$path"
+  while [[ -n "$remaining" ]]; do
+    part="${remaining%%/*}"
+    [[ -n "$part" && "$part" != . && "$part" != .. ]] || return 1
+    current="$current/$part"
+    [[ ! -L "$current" ]] || return 1
+    if [[ "$remaining" == */* ]]; then remaining="${remaining#*/}"; else remaining=""; fi
   done
-  if [[ -d "$WT/node_modules" && ! -e "$TMP_BASE/node_modules" ]]; then ln -s "$WT/node_modules" "$TMP_BASE/node_modules"; fi
-  if [[ -d "$WT/web/node_modules" && ! -e "$TMP_BASE/web/node_modules" ]]; then ln -s "$WT/web/node_modules" "$TMP_BASE/web/node_modules"; fi
-  if run check-red-on-base "$TMP_BASE" "$CHECK"; then
-    verdict red check-red-on-base "new test already passes on base, not a check" "$(tail20)"
+  [[ -f "$root/$path" ]]
+}
+
+assertion_json() {
+  python3 -I - "$@" 3<<< "${ASSERTION_MANIFEST:-}" <<'PYTHON'
+import json
+import os
+import sys
+from decimal import Decimal
+from pathlib import Path
+
+
+def reject_constant(_):
+    raise ValueError("non-finite number is not JSON")
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON object key")
+        result[key] = value
+    return result
+
+
+def parse(text):
+    return json.loads(text, parse_int=Decimal, parse_float=Decimal,
+                      parse_constant=reject_constant, object_pairs_hook=unique_object)
+
+
+def typed(value):
+    if isinstance(value, dict):
+        return ("object", {key: typed(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return ("array", [typed(item) for item in value])
+    return (type(value).__name__, value)
+
+
+try:
+    if sys.argv[1] == "freeze":
+        raw = Path(sys.argv[2]).read_bytes().decode("utf-8")
+        parse(raw)
+        print(json.dumps(raw, ensure_ascii=True))
+    else:
+        with os.fdopen(3, encoding="ascii") as snapshot:
+            manifest = parse(json.load(snapshot))
+        actual = parse(Path(sys.argv[2]).read_bytes().decode("utf-8"))
+        sys.exit(0 if typed(actual) == typed(manifest["expected"]) else 42)
+except (ValueError, OSError, ArithmeticError, RecursionError) as error:
+    print("invalid assertion JSON: " + str(error), file=sys.stderr)
+    sys.exit(2)
+PYTHON
+}
+
+run_assertion() {
+  local phase="$1" dir="$2" rc=0 outcome arg assertions=0
+  local argv=()
+  while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j 'fromjson | .probe[] + "\u0000"' <<< "$ASSERTION_MANIFEST")
+  log "--- [assertion-$phase] id=$ASSERTION_ID_JSON manifest_digest=$ASSERTION_DIGEST"
+  (cd "$dir" && timeout -k 5 60 "${argv[@]}") > "$TMP_ASSERTION/actual.json" 2> "$TMP_ASSERTION/stderr" || rc=$?
+  log "$(cat "$TMP_ASSERTION/stderr")" "$(cat "$TMP_ASSERTION/actual.json")" "--- [assertion-$phase] probe exit $rc"
+  outcome=infrastructure_failed
+  if [[ "$rc" == 0 ]]; then
+    rc=0
+    assertion_json compare "$TMP_ASSERTION/actual.json" 2>> "$LOG" || rc=$?
+    case "$rc" in
+      0) outcome=passed; assertions=1 ;;
+      42) outcome=assertion_failed; assertions=1 ;;
+    esac
   fi
+  local record
+  record="$(jq -cn --argjson id "$ASSERTION_ID_JSON" --arg digest "$ASSERTION_DIGEST" --arg phase "$phase" --arg outcome "$outcome" --argjson assertions "$assertions" '{version:1,id:$id,manifest_digest:$digest,phase:$phase,outcome:$outcome,assertions:$assertions}')" || assertion_infra "cannot record comparator result"
+  log "$record"
+  [[ "$outcome" != infrastructure_failed ]] || assertion_infra "$phase probe did not produce one JSON observation with exit 0"
+  ASSERTION_OUTCOME="$outcome"
+}
+
+if [[ "$CHECK_IS_NEW_TEST" == yes ]]; then
+  command -v jq > /dev/null && command -v timeout > /dev/null && command -v python3 > /dev/null || assertion_infra "jq, timeout and Python3 are required"
+  TMP_ASSERTION="$(mktemp -d "${TMPDIR:-/tmp}/agent-gate-assertion.XXXXXX")" || assertion_infra "cannot freeze assertion"
+  declared=" "
+  for f in $CHECK_TEST_FILES; do
+    assertion_file "$WT" "$f" || assertion_infra "invalid, missing or symlinked CHECK_TEST_FILES path: $f"
+    [[ "$declared" != *" $f "* ]] || assertion_infra "duplicate CHECK_TEST_FILES path: $f"
+    declared+="$f "
+    mkdir -p "$TMP_ASSERTION/files/$(dirname "$f")" && cp "$WT/$f" "$TMP_ASSERTION/files/$f" || assertion_infra "cannot freeze test dependency: $f"
+  done
+  [[ "$declared" == *" $CHECK_ASSERTION "* ]] || assertion_infra "CHECK_ASSERTION must be in CHECK_TEST_FILES"
+  ASSERTION_MANIFEST="$(assertion_json freeze "$TMP_ASSERTION/files/$CHECK_ASSERTION" 2>> "$LOG")" || assertion_infra "malformed CHECK_ASSERTION JSON"
+  jq -e '
+    fromjson |
+    if type == "object" and keys == ["expected","id","probe","version"] and .version == 1
+      and (.id | type == "string" and length > 0 and (contains("\u0000") | not))
+      and (.probe | type == "array" and length > 0 and all(.[]; type == "string" and (contains("\u0000") | not)))
+      and (.probe[0] | length > 0)
+    then . else error("expected version 1 assertion with id, probe argv and expected JSON") end
+  ' <<< "$ASSERTION_MANIFEST" > /dev/null 2>> "$LOG" || assertion_infra "malformed CHECK_ASSERTION manifest"
+  ASSERTION_ID_JSON="$(jq -c 'fromjson | .id' <<< "$ASSERTION_MANIFEST")" || assertion_infra "cannot read assertion id"
+  ASSERTION_DIGEST="$(jq -j . <<< "$ASSERTION_MANIFEST" | git hash-object --stdin)" || assertion_infra "cannot digest assertion"
+  readonly ASSERTION_MANIFEST ASSERTION_ID_JSON ASSERTION_DIGEST
+  TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/agent-gate-base.XXXXXX")" || assertion_infra "cannot prepare base"
+  rmdir "$TMP_BASE"
+  git -C "$WT" worktree add --detach "$TMP_BASE" "$BASE" >> "$LOG" 2>&1 || assertion_infra "cannot check out base"
+  for f in $CHECK_TEST_FILES; do
+    parent="$(dirname "$f")"
+    current="$TMP_BASE"
+    remaining="$parent"
+    while [[ "$remaining" != . && -n "$remaining" ]]; do
+      part="${remaining%%/*}"; current="$current/$part"
+      [[ ! -L "$current" ]] || assertion_infra "symlinked baseline test parent: $f"
+      if [[ "$remaining" == */* ]]; then remaining="${remaining#*/}"; else remaining=""; fi
+    done
+    [[ ! -L "$TMP_BASE/$f" ]] || assertion_infra "symlinked baseline test file: $f"
+    mkdir -p "$TMP_BASE/$parent" && cp "$TMP_ASSERTION/files/$f" "$TMP_BASE/$f" || assertion_infra "cannot prepare test dependency: $f"
+  done
+  if [[ -d "$WT/node_modules" && ! -e "$TMP_BASE/node_modules" ]]; then ln -s "$WT/node_modules" "$TMP_BASE/node_modules" || assertion_infra "cannot prepare node_modules"; fi
+  if [[ -d "$WT/web/node_modules" && ! -e "$TMP_BASE/web/node_modules" ]]; then ln -s "$WT/web/node_modules" "$TMP_BASE/web/node_modules" || assertion_infra "cannot prepare web/node_modules"; fi
+  run_assertion base "$TMP_BASE"
+  [[ "$ASSERTION_OUTCOME" == assertion_failed ]] || verdict red check-red-on-base "new assertion already passes on base" "$ASSERTION_ID_JSON"
+  run_assertion head "$WT"
+  [[ "$ASSERTION_OUTCOME" == passed ]] || verdict red check-assertion "new assertion fails on head" "$ASSERTION_ID_JSON"
 fi
 
 # 4. project checks: scripts/agent-gates/gate.project.sh (heavy, serialized).

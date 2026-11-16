@@ -354,7 +354,7 @@ func TestFeishuWriteCreateStructuredAndAdopted(t *testing.T) {
 }
 
 func TestFeishuWriteBriefDescriptionRoundTrip(t *testing.T) {
-	brief := FeishuBrief{Todo: "做 A\n第二步", Check: "cd driver && go test ./... -run 'TestX'", Scope: "driver/internal/issues\ndriver/internal/feishu", Body: "## 现状\n说明\n\n## 背景\n更多", Blockers: []string{feishuUUIDA}, Related: []string{feishuUUIDC}}
+	brief := FeishuBrief{Todo: "做 A\n第二步", Check: "cd driver && go test ./... -run 'TestX'", Scope: "driver/internal/issues\ndriver/internal/feishu", Body: "## 现状\n说明\n\n## 背景\n更多\n\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: test/probe.sh test/assertion.json\nCHECK_ASSERTION: test/assertion.json", Blockers: []string{feishuUUIDA}, Related: []string{feishuUUIDC}}
 	description := brief.Description()
 	parsed, deps, err := parseFeishuDescription(description)
 	if err != nil {

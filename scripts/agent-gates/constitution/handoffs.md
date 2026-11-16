@@ -27,7 +27,7 @@ gate 输出、coordinator 打回、reviewer 结论都用同一格式：
 ```
 UNIT      <unit>
 VERDICT   red|green
-STEP      <scope|suppression|check-red-on-base|<project 步名>|check|lane|handoff|review|ci>
+STEP      <scope|suppression|check-red-on-base|check-assertion|<project 步名>|check|lane|handoff|review|ci>
 REASON    <一句话>
 EVIDENCE  <文件:行 + 输出摘录，≤20 行>
 SCOPE     <gate spec 的 SCOPE>

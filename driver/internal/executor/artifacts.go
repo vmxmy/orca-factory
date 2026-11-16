@@ -18,6 +18,7 @@ Change:
 CHECK: {{.Ticket.Check}}
 SCOPE: {{.Ticket.Scope}}
 CHECK_TEST_FILES: {{.Ticket.TestFiles}}
+CHECK_ASSERTION: {{.Ticket.Assertion}}
 Gate spec: {{.Spec}}
 Branch: {{.Branch}}
 `
@@ -26,6 +27,7 @@ SCOPE: {{.Ticket.Scope}}
 CHECK: {{.Ticket.Check}}
 CHECK_IS_NEW_TEST: {{if .Ticket.NewTest}}yes{{else}}no{{end}}
 CHECK_TEST_FILES: {{.Ticket.TestFiles}}
+CHECK_ASSERTION: {{.Ticket.Assertion}}
 LANE: {{.Ticket.Lane}}
 `
 
@@ -154,14 +156,16 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 	section := ""
 	known := func(s string) bool {
 		switch s {
-		case "要做", "CHECK", "SCOPE", "CHECK_TEST_FILES", "CHECK_IS_NEW_TEST":
+		case "要做", "CHECK", "SCOPE", "CHECK_TEST_FILES", "CHECK_IS_NEW_TEST", "CHECK_ASSERTION":
 			return true
 		}
 		return false
 	}
 	clean := func(s string) string { return strings.Trim(strings.TrimSpace(s), "` ") }
 	// Single-line fields end at their own line; the following 断言 line belongs to the ticket text.
-	singleLine := func(s string) bool { return s == "CHECK" || s == "CHECK_TEST_FILES" || s == "CHECK_IS_NEW_TEST" }
+	singleLine := func(s string) bool {
+		return s == "CHECK" || s == "CHECK_TEST_FILES" || s == "CHECK_IS_NEW_TEST" || s == "CHECK_ASSERTION"
+	}
 	for _, line := range strings.Split(description, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
@@ -210,6 +214,7 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 	t.Check = strings.TrimSpace(strings.Join(fields["CHECK"], " "))
 	t.Scope = strings.TrimSpace(strings.Join(fields["SCOPE"], " "))
 	t.TestFiles = strings.TrimSpace(strings.Join(fields["CHECK_TEST_FILES"], " "))
+	t.Assertion = strings.TrimSpace(strings.Join(fields["CHECK_ASSERTION"], " "))
 	t.NewTest = strings.TrimSpace(strings.Join(fields["CHECK_IS_NEW_TEST"], " ")) == "yes"
 	if t.Todo == "" || t.Check == "" || t.Scope == "" {
 		return Ticket{}, fmt.Errorf("ticket requires 要做, CHECK and SCOPE")

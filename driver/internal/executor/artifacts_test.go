@@ -37,7 +37,7 @@ func TestArtifactsKeepTicketFields(t *testing.T) {
 	check := `grep -q "\[worker\].*gate\.spec" driver.log && printf "\"%s\"\n" "$CHECK"`
 	scope := `driver/internal/executor/\*.go`
 	testFiles := `driver/internal/executor/parse\_escape_test.go`
-	description := "## 要做\n\n1. preserve ticket fields\n\nCHECK: " + check + "\nSCOPE: " + scope + "\nCHECK_TEST_FILES: " + testFiles + "\n"
+	description := "## 要做\n\n1. preserve ticket fields\n\nCHECK: " + check + "\nSCOPE: " + scope + "\nCHECK_TEST_FILES: " + testFiles + "\nCHECK_ASSERTION: test/assertion.json\n"
 	ticket, err := ParseTicket("id", "ZY-366", "t", description)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestArtifactsKeepTicketFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, content := range map[string]string{"brief": brief, "spec": string(spec)} {
-		for field, want := range map[string]string{"CHECK": check, "SCOPE": scope, "CHECK_TEST_FILES": testFiles} {
+		for field, want := range map[string]string{"CHECK": check, "SCOPE": scope, "CHECK_TEST_FILES": testFiles, "CHECK_ASSERTION": "test/assertion.json"} {
 			if !strings.Contains(content, "\n"+field+": "+want+"\n") {
 				t.Errorf("%s does not preserve %s=%q: %s", name, field, want, content)
 			}

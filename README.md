@@ -50,7 +50,9 @@ agent 会调研目标仓库、确认无法推导的决定、生成三份项目�
 
 1. driver 持有单实例锁，完整发现当前主账本。只有已纳管、open、非 held、带 `ready-for-agent`、无未完成依赖的 Todo 票才可领取；关键动作前完整 fresh 回读。
 2. coordinator（claude）领票、按 blast radius 拆分、写 gate spec 与 task spec，派 Codex 工人在独立 worktree 实现。
-3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试在 base 上必红、项目检查（类型/lint/守卫/定向测试）、CHECK。
+3. 工人改到绿后自跑 `gate.sh`；coordinator 不信自报，从 origin/main 取 `gate.project.sh` 独立复跑：范围、lane、抑制标记、新测试用冻结 JSON manifest 证明 base 断言失败、head 断言通过、项目检查（类型/lint/守卫/定向测试）、CHECK。
 4. 红了打回工人修，最多 3 次；3 次不过由 resolver 接管排障与修复。
 5. lane 1 绿 → 开 PR、等 CI、squash 自合、等部署、冒烟、票置 Done；lane 2 → 检查通过后合并，需额外审批的交给 resolver 复核；lane 3 → gate 判红，由 resolver 查明范围与权限，仍不得绕过限制。
 6. 每轮记账到 `.omc/agent-graph/runs.jsonl`（含 lane 与 tier），首跑通过率低就先改拆分与 spec，再谈加守卫；某档通过率低就调该档的 `agent:model:effort`。
+
+新测试的 manifest 格式与旧票升级见 [角色与 gate spec](core/roles/README.md#新测试的确定性证据)。旧 `CHECK_IS_NEW_TEST: yes` 需要补充 `CHECK_ASSERTION`；已冻结记录保持原样，缺证据时交 resolver 生成新的已审查交接。

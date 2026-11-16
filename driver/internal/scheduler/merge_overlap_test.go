@@ -271,11 +271,20 @@ func TestRuntimeOverlapExecutesOriginalGateScript(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "scripts/agent-gates/gate.project.sh"), []byte("#!/bin/sh\nset -e\necho '== merged-project'\ntest \"$(head -1 shared)\" = worker\ntest \"$(tail -1 shared)\" = main\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	for name, content := range map[string]string{
+		"assertion.json": `{"version":1,"id":"merged-worker","probe":["bash","probe.sh"],"expected":"worker"}`,
+		"probe.sh":       "head -1 shared | jq -R .\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	gitMergeTest(t, dir, "add", ".")
 	gitMergeTest(t, dir, "commit", "-m", "trusted gate")
 	f.main = gitMergeTest(t, dir, "rev-parse", "HEAD")
 	rewriteHandoff(t, f, func(h map[string]any) {
-		h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nCHECK_IS_NEW_TEST: no\nLANE: 1\n"
+		h["gate_output"] = strings.ReplaceAll(h["gate_output"].(string), "SCOPE feature shared", "SCOPE feature shared assertion.json probe.sh")
+		h["gate_spec"] = "UNIT: executor\nSCOPE: feature shared assertion.json probe.sh\nCHECK: test \"$(head -1 shared)\" = worker && test \"$(tail -1 shared)\" = main\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: assertion.json probe.sh\nCHECK_ASSERTION: assertion.json\nLANE: 1\n"
 	})
 	closeMergeGates(t, f.runtime)
 	if err := tickPastMergeGate(t, &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}, f.runtime, f); err != nil {

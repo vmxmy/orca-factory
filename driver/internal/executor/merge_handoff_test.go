@@ -44,6 +44,7 @@ func TestExecuteFreezesMergeHandoff(t *testing.T) {
 
 func TestStartExistingPRPreservesFrozenHandoff(t *testing.T) {
 	e, _, l, g, _, ticket := fixture(t, strings.Repeat("b", 40))
+	ticket.NewTest, ticket.TestFiles, ticket.Assertion = true, "test/probe.sh test/assertion.json", "test/assertion.json"
 	result, err := e.Execute(context.Background(), ticket)
 	if err != nil {
 		t.Fatal(err)
@@ -51,6 +52,7 @@ func TestStartExistingPRPreservesFrozenHandoff(t *testing.T) {
 	g.existing = &result.PR
 	g.existing.Head.SHA = strings.Repeat("b", 40)
 	before := append([]string(nil), l.comments...)
+	ticket.Assertion = "test/changed.json"
 	e.Config.Merging = true
 	resumed, err := e.Start(context.Background(), ticket)
 	if err != nil {

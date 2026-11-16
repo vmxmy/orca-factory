@@ -413,3 +413,11 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `resolver.TestRecordedEscalateUnclassified` 验证旧无 class 提案仍合法；`intake.TestTopRulingRejectsUnclassifiedBlock` 与 `scheduler.TestTopResolverRuling/未分类`、`TestTopResolverRuling/未知类别` 拒绝缺省及未知类别。`scheduler.TestTopResolverUnclassifiedEscalationRejectsRuling` 回放旧普通处置样本，再回放成功 ruling，验证进入 human 且没有裁定评论；`resolver.TestRecordedEscalateOther` 与 `scheduler.TestTopResolverOtherEscalationAcceptsRuling` 回放新 `other` 样本，验证持久化 `top_class=other` 并接受终审裁定。
 - 样本 `testdata/recorded/resolver-top-ruling.json`、`resolver-escalate-credentials.json` 为 2026-11-11 真实模型 stdout 原样保存，场景手写，已核对无凭据。输入均含更新后的 `core/roles/resolver.md` 全文；终审另含 `topResolverPrompt` 原文和 lane 2 票面口径二选一场景，普通处置场景为缺少部署凭证。Claude Code 2.1.322 分别使用 `--model claude-fable-5-2 --effort xhigh` 与 `--model claude-opus-5-5 --effort high`，均以 `-p --output-format text --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence` 录制，退出 0、stderr 为空；未配置模型回退。
 - 新样本 `testdata/recorded/resolver-escalate-unclassified.json`、`resolver-escalate-other.json` 为 2026-11-11 真实 stdout，未手改。均用 Claude Code 2.1.322，以 `--model claude-opus-5-5 --effort high -p --output-format text --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence` 录制，退出 0、stderr 为空。旧样本角色输入来自 `git show "$(git merge-base origin/main HEAD)":scripts/agent-gates/roles/resolver.md`，录制时基线为 `98487ec02be58badacd2073a898faed5bfd3aa42`；场景沿用缺少部署凭证，输出不含 class。新样本角色输入为本次更新后的 `core/roles/resolver.md` 全文；场景为票面两条 Change 对同一列表要求相反的排序方向，CHECK 无法裁定、修复未推送、无 head、无 SCOPE 缺口且不属六类禁止阻塞，输出 `class=other`。两次输入均仅要求离线输出 JSON 提案，不调用工具、不发消息、不改文件。
+
+
+## 新测试证据
+
+`CHECK_ASSERTION` 是完整票面中的新增字段，解析、简报、gate spec、刷新与冻结交接保留其原文，不解码 CHECK 或 CHECK_TEST_FILES 的既有转义。
+实际协议与旧票迁移见 [角色与 gate spec](../core/roles/README.md#新测试的确定性证据)。
+本协议的合成回归在 `core/gate.test.sh`、`executor.TestArtifactsKeepTicketFields`、`executor.TestParseTicketAssertionFields`、`executor.TestGateSpecRefreshCarriesAssertion`、`scheduler.TestFrozenHandoffAssertionMigration` 与 `scheduler.TestRuntimeOverlapExecutesOriginalGateScript`，不是生产输出的录制样本。
+历史 `testdata/recorded/` 描述、handoff 与 checkpoint 不重写。飞书正文解析与渲染由 `issues.TestFeishuWriteBriefDescriptionRoundTrip` 和 `issues.TestFeishuReadRenderedBriefParses` 覆盖。

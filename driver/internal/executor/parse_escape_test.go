@@ -53,3 +53,13 @@ func TestParseTicketHeadingWithNote(t *testing.T) {
 		t.Fatalf("Todo=%q Scope=%q", got.Todo, got.Scope)
 	}
 }
+
+func TestParseTicketAssertionFields(t *testing.T) {
+	for _, assertion := range []string{"test/assertion.json", `test/escaped\_assertion.json`} {
+		description := "## 要做\nx\nCHECK: true\nSCOPE: test/*\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: test/probe.sh " + assertion + "\n## CHECK_ASSERTION\n" + assertion + "\n断言: plain ticket text\n"
+		got, err := ParseTicket("id", "OF-1", "t", description)
+		if err != nil || !got.NewTest || got.Assertion != assertion || got.TestFiles != "test/probe.sh "+assertion {
+			t.Fatalf("assertion fields: %+v %v", got, err)
+		}
+	}
+}
