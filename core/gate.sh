@@ -163,9 +163,10 @@ assertion_file() {
   [[ -f "$root/$path" ]]
 }
 
-assertion_compare() {
-  python3 -I - "$ASSERTION_MANIFEST" "${1:-}" <<'PYTHON'
+assertion_json() {
+  python3 -I - "$@" 3<<< "${ASSERTION_MANIFEST:-}" <<'PYTHON'
 import json
+import os
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -184,8 +185,8 @@ def unique_object(pairs):
     return result
 
 
-def parse(path):
-    return json.loads(Path(path).read_bytes().decode("utf-8"), parse_int=Decimal, parse_float=Decimal,
+def parse(text):
+    return json.loads(text, parse_int=Decimal, parse_float=Decimal,
                       parse_constant=reject_constant, object_pairs_hook=unique_object)
 
 
@@ -198,9 +199,14 @@ def typed(value):
 
 
 try:
-    manifest = parse(sys.argv[1])
-    if sys.argv[2]:
-        actual = parse(sys.argv[2])
+    if sys.argv[1] == "freeze":
+        raw = Path(sys.argv[2]).read_bytes().decode("utf-8")
+        parse(raw)
+        print(json.dumps(raw, ensure_ascii=True))
+    else:
+        with os.fdopen(3, encoding="ascii") as snapshot:
+            manifest = parse(json.load(snapshot))
+        actual = parse(Path(sys.argv[2]).read_bytes().decode("utf-8"))
         sys.exit(0 if typed(actual) == typed(manifest["expected"]) else 42)
 except (ValueError, OSError, ArithmeticError, RecursionError) as error:
     print("invalid assertion JSON: " + str(error), file=sys.stderr)
@@ -211,14 +217,14 @@ PYTHON
 run_assertion() {
   local phase="$1" dir="$2" rc=0 outcome arg assertions=0
   local argv=()
-  while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j '.probe[] + "\u0000"' "$ASSERTION_MANIFEST")
+  while IFS= read -r -d '' arg; do argv+=("$arg"); done < <(jq -j 'fromjson | .probe[] + "\u0000"' <<< "$ASSERTION_MANIFEST")
   log "--- [assertion-$phase] id=$ASSERTION_ID_JSON manifest_digest=$ASSERTION_DIGEST"
   (cd "$dir" && timeout -k 5 60 "${argv[@]}") > "$TMP_ASSERTION/actual.json" 2> "$TMP_ASSERTION/stderr" || rc=$?
   log "$(cat "$TMP_ASSERTION/stderr")" "$(cat "$TMP_ASSERTION/actual.json")" "--- [assertion-$phase] probe exit $rc"
   outcome=infrastructure_failed
   if [[ "$rc" == 0 ]]; then
     rc=0
-    assertion_compare "$TMP_ASSERTION/actual.json" 2>> "$LOG" || rc=$?
+    assertion_json compare "$TMP_ASSERTION/actual.json" 2>> "$LOG" || rc=$?
     case "$rc" in
       0) outcome=passed; assertions=1 ;;
       42) outcome=assertion_failed; assertions=1 ;;
@@ -242,18 +248,17 @@ if [[ "$CHECK_IS_NEW_TEST" == yes ]]; then
     mkdir -p "$TMP_ASSERTION/files/$(dirname "$f")" && cp "$WT/$f" "$TMP_ASSERTION/files/$f" || assertion_infra "cannot freeze test dependency: $f"
   done
   [[ "$declared" == *" $CHECK_ASSERTION "* ]] || assertion_infra "CHECK_ASSERTION must be in CHECK_TEST_FILES"
-  ASSERTION_MANIFEST="$TMP_ASSERTION/files/$CHECK_ASSERTION"
-  assertion_compare 2>> "$LOG" || assertion_infra "malformed CHECK_ASSERTION JSON"
-  jq -e -s '
-    if length != 1 then error("one manifest required") else .[0] end |
+  ASSERTION_MANIFEST="$(assertion_json freeze "$TMP_ASSERTION/files/$CHECK_ASSERTION" 2>> "$LOG")" || assertion_infra "malformed CHECK_ASSERTION JSON"
+  jq -e '
+    fromjson |
     if type == "object" and keys == ["expected","id","probe","version"] and .version == 1
       and (.id | type == "string" and length > 0 and (contains("\u0000") | not))
       and (.probe | type == "array" and length > 0 and all(.[]; type == "string" and (contains("\u0000") | not)))
       and (.probe[0] | length > 0)
     then . else error("expected version 1 assertion with id, probe argv and expected JSON") end
-  ' "$ASSERTION_MANIFEST" > /dev/null 2>> "$LOG" || assertion_infra "malformed CHECK_ASSERTION manifest"
-  ASSERTION_ID_JSON="$(jq -c '.id' "$ASSERTION_MANIFEST")" || assertion_infra "cannot read assertion id"
-  ASSERTION_DIGEST="$(git hash-object "$ASSERTION_MANIFEST")" || assertion_infra "cannot digest assertion"
+  ' <<< "$ASSERTION_MANIFEST" > /dev/null 2>> "$LOG" || assertion_infra "malformed CHECK_ASSERTION manifest"
+  ASSERTION_ID_JSON="$(jq -c 'fromjson | .id' <<< "$ASSERTION_MANIFEST")" || assertion_infra "cannot read assertion id"
+  ASSERTION_DIGEST="$(jq -j . <<< "$ASSERTION_MANIFEST" | git hash-object --stdin)" || assertion_infra "cannot digest assertion"
   readonly ASSERTION_MANIFEST ASSERTION_ID_JSON ASSERTION_DIGEST
   TMP_BASE="$(mktemp -d "${TMPDIR:-/tmp}/agent-gate-base.XXXXXX")" || assertion_infra "cannot prepare base"
   rmdir "$TMP_BASE"

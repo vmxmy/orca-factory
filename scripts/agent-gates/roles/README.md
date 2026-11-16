@@ -90,9 +90,10 @@ CHECK_ASSERTION: test/value.assertion.json
 `probe` 是非空 argv 数组，gate 直接执行它，不作 shell 求值。观察脚本从实现读取实际值，退出 0，stdout 仅输出一个 JSON 值。
 错误诊断写 stderr。gate 内固定的 JSON 深度相等比较器完成一次带 `id` 的断言。
 比较器需要 `jq`、GNU `timeout` 和 Python3，缺少任何一个都是退出 2 的基础设施错误。
-Python3 标准库直接读取冻结 manifest 与观察文件的原始字节，按 UTF-8 严格解析 JSON，拒绝原始 NUL、无效编码、NaN、Infinity、前导零和重复对象键。
+Python3 标准库读取 manifest 与观察文件的原始字节，按 UTF-8 严格解析 JSON，拒绝原始 NUL、无效编码、NaN、Infinity、前导零和重复对象键。
 expected 中合法的 `\u0000` 转义仍受支持。数字按十进制精确比较；布尔值与数字分开，`true` 不等于 `1`。
-同一份冻结 manifest、ID、expected 和内容摘要用于 base 与 head。base 值不等才证明断言失败，head 值必须相等，然后运行项目检查与原有 `CHECK`。
+gate 将已验证的 manifest 原文保存在不可变内存快照中。base 与 head 的 ID、probe argv、expected 和原始内容摘要均来自该快照，不重新读取 manifest 路径。
+probe 修改工作树或临时依赖副本中的 manifest 不会改变断言。base 值不等才证明断言失败，head 值必须相等，然后运行项目检查与原有 `CHECK`。
 `CHECK` 打印的通过、失败或测试数量不构成新测试证据。
 
 每个 probe 的时限为 60 秒，超时后最迟再过 5 秒强制终止。超时、信号、非零退出、空输出、多个 JSON 值、非法 JSON、无效 manifest、缺失依赖或失败的准备步骤均为基础设施失败，退出 2，没有 `VERDICT` 块。
