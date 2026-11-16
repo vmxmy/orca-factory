@@ -3,6 +3,7 @@ set -Eeuo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GATE="$ROOT/scripts/agent-gates/gate.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+export TMPDIR="$TMP"
 export GATE_BASE=origin/main
 unset GATE_PROJECT_SRC AGENT_LANE2_GLOBS AGENT_LANE3_GLOBS   # temp repos have no gate.project.sh at origin/main -> project step skipped
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
