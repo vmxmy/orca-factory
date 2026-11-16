@@ -149,7 +149,6 @@ assertion_infra() {
   exit 2
 }
 
-# Reject symlinked parents as well as symlinked files before copying across worktrees.
 assertion_file() {
   local root="$1" path="$2" part current="$1"
   [[ "$path" =~ ^[a-zA-Z0-9_./-]+$ && "$path" != /* ]] || return 1
@@ -232,7 +231,6 @@ run_assertion() {
   ASSERTION_OUTCOME="$outcome"
 }
 
-# 3. The trusted comparator owns the assertion result; probe stdout is only a value.
 if [[ "$CHECK_IS_NEW_TEST" == yes ]]; then
   command -v jq > /dev/null && command -v timeout > /dev/null && command -v python3 > /dev/null || assertion_infra "jq, timeout and Python3 are required"
   TMP_ASSERTION="$(mktemp -d "${TMPDIR:-/tmp}/agent-gate-assertion.XXXXXX")" || assertion_infra "cannot freeze assertion"
@@ -262,7 +260,6 @@ if [[ "$CHECK_IS_NEW_TEST" == yes ]]; then
   git -C "$WT" worktree add --detach "$TMP_BASE" "$BASE" >> "$LOG" 2>&1 || assertion_infra "cannot check out base"
   for f in $CHECK_TEST_FILES; do
     parent="$(dirname "$f")"
-    # Existing baseline directories must not redirect a declared test outside the checkout.
     current="$TMP_BASE"
     remaining="$parent"
     while [[ "$remaining" != . && -n "$remaining" ]]; do

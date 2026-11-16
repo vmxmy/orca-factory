@@ -42,7 +42,6 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u3' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 
 [[ $rc == 1 && "$(field "$out" STEP)" == suppression ]]
 [[ "$(field "$out" LANE)" == 1 ]]
 
-# A missing baseline helper cannot prove an assertion failed.
 R="$(mkrepo missing-helper)"
 printf 'source src/helper.sh\nprintf "1\\n"\n' > "$R/src/probe.sh"
 printf 'true\n' > "$R/src/helper.sh"
