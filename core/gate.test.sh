@@ -78,6 +78,49 @@ records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/comparator/gate.log")"
 jq -e -s 'length == 2 and .[0].phase == "base" and .[0].outcome == "assertion_failed" and .[1].phase == "head" and .[1].outcome == "passed" and all(.[]; .assertions == 1 and .id == "value-is-two") and .[0].manifest_digest == .[1].manifest_digest' <<< "$records" > /dev/null
 printf 'trusted comparator mismatch then equality: PASS\n'
 
+for failure in nul-key nul-number nul-string nul-prefix nul-suffix invalid-utf8 utf-16-le utf-16-be; do
+  assertion_repo "manifest-$failure"
+  python3 -I - "$R/src/assertion.json" "$failure" <<'PYTHON'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+raw = path.read_bytes()
+case = sys.argv[2]
+if case == "nul-key":
+    raw = raw.replace(b'"version"', b'"ver\x00sion"')
+elif case == "nul-number":
+    raw = raw.replace(b'"version":1', b'"version":\x001')
+elif case == "nul-string":
+    raw = raw.replace(b'value-is-two', b'value-is-\x00two')
+elif case == "nul-prefix":
+    raw = b"\x00" + raw
+elif case == "nul-suffix":
+    raw += b"\x00"
+elif case == "invalid-utf8":
+    raw = raw.replace(b'value-is-two', b'value-is-\xfftwo')
+else:
+    raw = raw.decode("utf-8").encode(case)
+path.write_bytes(raw)
+PYTHON
+  out="$("$GATE" "$R" "$(assertion_spec "manifest-$failure")" 2>&1)" && rc=0 || rc=$?
+  [[ $rc == 2 && "$out" == *'assertion infrastructure failure:'* && -z "$(field "$out" VERDICT)" ]] || { printf 'ASSERT: malformed manifest %s must be infrastructure failure, got rc=%s\n%s\n' "$failure" "$rc" "$out"; exit 1; }
+  printf 'reject manifest %s: PASS\n' "$failure"
+done
+
+assertion_repo escaped-nul-expected
+cat > "$R/src/probe.sh" <<'PROBE'
+printf '{"value":"%s\\u0000é"}\n' "$(cat src/value)"
+PROBE
+jq '.expected = {"value":"2\u0000é"}' "$R/src/assertion.json" > "$TMP/manifest"
+cp "$TMP/manifest" "$R/src/assertion.json"
+digest="$(git hash-object "$R/src/assertion.json")"
+out="$("$GATE" "$R" "$(assertion_spec escaped-nul-expected)")"
+[[ "$(field "$out" VERDICT)" == green ]]
+records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/escaped-nul-expected/gate.log")"
+jq -e -s --arg digest "$digest" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == "passed" and all(.[]; .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
+printf 'escaped NUL and UTF-8 expected value with original digest: PASS\n'
+
 for failure in false crash signal timeout no-output malformed nonfinite infinity leading-zero duplicate-json multiple forged; do
   assertion_repo "$failure"
   case "$failure" in
