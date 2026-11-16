@@ -78,6 +78,61 @@ records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/comparator/gate.log")"
 jq -e -s 'length == 2 and .[0].phase == "base" and .[0].outcome == "assertion_failed" and .[1].phase == "head" and .[1].outcome == "passed" and all(.[]; .assertions == 1 and .id == "value-is-two") and .[0].manifest_digest == .[1].manifest_digest' <<< "$records" > /dev/null
 printf 'trusted comparator mismatch then equality: PASS\n'
 
+for mutation in head-expected base-expected base-argv base-identity; do
+  assertion_repo "freeze-private-$mutation"
+  jq --arg mutation "$mutation" '.probe += [$mutation] | if ($mutation | endswith("expected")) then .expected = {value:3} else . end' "$R/src/assertion.json" > "$TMP/manifest"
+  cp "$TMP/manifest" "$R/src/assertion.json"
+  digest="$(git -C "$R" hash-object src/assertion.json)"
+  cat > "$R/src/probe.sh" <<'PROBE'
+python3 -I - "$1" <<'PYTHON'
+import json
+import os
+import sys
+from pathlib import Path
+
+mutation = sys.argv[1]
+value = int(Path("src/value").read_text())
+if (mutation.startswith("base-") and value == 1) or (mutation.startswith("head-") and value == 2):
+    path = next(Path(os.environ["TMPDIR"]).glob("agent-gate-assertion.*/files/src/assertion.json"))
+    manifest = json.loads(path.read_bytes())
+    if mutation.endswith("expected"):
+        manifest["expected"] = {"value": 2}
+    elif mutation.endswith("argv"):
+        manifest["probe"] = ["false"]
+    else:
+        manifest["id"] = "changed"
+    path.write_text(json.dumps(manifest))
+print(json.dumps({"value": value}))
+PYTHON
+PROBE
+  out="$("$GATE" "$R" "$(assertion_spec "freeze-private-$mutation")" 2>&1)" && rc=0 || rc=$?
+  if [[ "$mutation" == *expected ]]; then
+    [[ $rc == 1 && "$(field "$out" STEP)" == check-assertion ]] || { printf 'ASSERT: private %s changed frozen expectation, got rc=%s\n%s\n' "$mutation" "$rc" "$out"; exit 1; }
+    outcome=assertion_failed
+  else
+    [[ $rc == 0 && "$(field "$out" VERDICT)" == green ]] || { printf 'ASSERT: private %s changed frozen probe, got rc=%s\n%s\n' "$mutation" "$rc" "$out"; exit 1; }
+    outcome=passed
+  fi
+  records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/freeze-private-$mutation/gate.log")"
+  jq -e -s --arg digest "$digest" --arg outcome "$outcome" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == $outcome and all(.[]; .id == "value-is-two" and .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
+  printf 'frozen private %s: PASS\n' "$mutation"
+done
+
+assertion_repo large-manifest
+python3 -I - "$R/src/assertion.json" <<'PYTHON'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+path.write_bytes(b" " * 262144 + path.read_bytes())
+PYTHON
+digest="$(git -C "$R" hash-object src/assertion.json)"
+out="$("$GATE" "$R" "$(assertion_spec large-manifest)")"
+[[ "$(field "$out" VERDICT)" == green ]]
+records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/large-manifest/gate.log")"
+jq -e -s --arg digest "$digest" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == "passed" and all(.[]; .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
+printf 'large manifest with original digest: PASS\n'
+
 for failure in nul-key nul-number nul-string nul-prefix nul-suffix invalid-utf8 utf-16-le utf-16-be; do
   assertion_repo "manifest-$failure"
   python3 -I - "$R/src/assertion.json" "$failure" <<'PYTHON'
