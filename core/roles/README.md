@@ -90,7 +90,8 @@ CHECK_ASSERTION: test/value.assertion.json
 `probe` 是非空 argv 数组，gate 直接执行它，不作 shell 求值。观察脚本从实现读取实际值，退出 0，stdout 仅输出一个 JSON 值。
 错误诊断写 stderr。gate 内固定的 JSON 深度相等比较器完成一次带 `id` 的断言。
 比较器需要 `jq`、GNU `timeout` 和 Python3，缺少任何一个都是退出 2 的基础设施错误。
-Python3 标准库严格解析 JSON，拒绝 NaN、Infinity、前导零和重复对象键。数字按十进制精确比较；布尔值与数字分开，`true` 不等于 `1`。
+Python3 标准库直接读取冻结 manifest 与观察文件的原始字节，按 UTF-8 严格解析 JSON，拒绝原始 NUL、无效编码、NaN、Infinity、前导零和重复对象键。
+expected 中合法的 `\u0000` 转义仍受支持。数字按十进制精确比较；布尔值与数字分开，`true` 不等于 `1`。
 同一份冻结 manifest、ID、expected 和内容摘要用于 base 与 head。base 值不等才证明断言失败，head 值必须相等，然后运行项目检查与原有 `CHECK`。
 `CHECK` 打印的通过、失败或测试数量不构成新测试证据。
 
@@ -102,8 +103,9 @@ base 已相等时是 `VERDICT red STEP check-red-on-base`；head 不相等时是
 
 ## 升级已有新测试票
 
-先升级 Factory 并运行 `bin/orca-factory update <repo-path>`，再按 Factory 的 `driver/DEVELOPMENT.md` 验证和更新 Driver。
-本仓库用 `bin/orca-factory update .` 更新安装副本，消费者也走相同分发入口。
+先升级 Factory，再从 Factory 源码检出目录运行 `bin/orca-factory update /absolute/path/to/consumer-repo`，参数为消费者仓库的绝对路径。
+消费者仓库不包含 `bin/orca-factory`。只有更新 Factory 自身的安装副本时，才在 Factory 源码检出目录运行 `bin/orca-factory update .`。
+分发后，按 Factory 的 `driver/DEVELOPMENT.md` 验证和更新 Driver。
 
 旧 `CHECK_IS_NEW_TEST: yes` 缺少 manifest 时明确拒绝；不把任意失败当红，也不自动改成 `no`。
 票的完整正文承载 `CHECK_IS_NEW_TEST`、`CHECK_TEST_FILES` 和 `CHECK_ASSERTION`；飞书保留在正文，不新增表字段。
