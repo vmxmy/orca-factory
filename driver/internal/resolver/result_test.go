@@ -110,3 +110,10 @@ func TestResolutionRejectsMalformedLandedDoneProposal(t *testing.T) {
 		}
 	}
 }
+
+func TestResolverMergeExplainsAssertionMigration(t *testing.T) {
+	_, err := ParseResult(`{"action":"merge","reason":"verified","handoff":{"lane":1,"queue_id":"frozen-q","gate_spec":"CHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: test/probe.sh"}}`)
+	if err == nil || !strings.Contains(err.Error(), "CHECK_ASSERTION") || !strings.Contains(err.Error(), "fresh reviewed handoff") {
+		t.Fatalf("lost migration diagnostic: %v", err)
+	}
+}
