@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-GATE="$ROOT/scripts/agent-gates/gate.sh"
+GATE="$(cd "$(dirname "$0")" && pwd)/gate.sh"
+GATE_LOG_DIR=".omc/gates"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 export TMPDIR="$TMP"
 export GATE_BASE=origin/main
@@ -27,8 +27,8 @@ R="$(mkrepo green)"; echo 'changed' > "$R/src/a.js"
 out="$("$GATE" "$R" "$(spec 'UNIT: u1' 'SCOPE: src/*' 'CHECK: true')")"
 [[ "$(field "$out" VERDICT)" == green && "$(field "$out" STEP)" == all ]]
 [[ "$(field "$out" LANE)" == 1 ]]
-[[ -f "$R/.omc/gates/u1/gate.log" ]]
-grep -q 'no gate.project.sh at origin/main, skipped' "$R/.omc/gates/u1/gate.log"
+[[ -f "$R/$GATE_LOG_DIR/u1/gate.log" ]]
+grep -q 'no gate.project.sh at origin/main, skipped' "$R/$GATE_LOG_DIR/u1/gate.log"
 
 # File outside SCOPE -> red scope
 R="$(mkrepo scope)"; echo 'x' > "$R/other.txt"
@@ -75,7 +75,7 @@ assertion_spec() { spec "UNIT: $1" 'SCOPE: src/*' 'CHECK: true' 'CHECK_IS_NEW_TE
 assertion_repo comparator
 out="$("$GATE" "$R" "$(assertion_spec comparator)")"
 [[ "$(field "$out" VERDICT)" == green ]]
-records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/comparator/gate.log")"
+records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/comparator/gate.log")"
 jq -e -s 'length == 2 and .[0].phase == "base" and .[0].outcome == "assertion_failed" and .[1].phase == "head" and .[1].outcome == "passed" and all(.[]; .assertions == 1 and .id == "value-is-two") and .[0].manifest_digest == .[1].manifest_digest' <<< "$records" > /dev/null
 printf 'trusted comparator mismatch then equality: PASS\n'
 
@@ -114,7 +114,7 @@ PROBE
     [[ $rc == 0 && "$(field "$out" VERDICT)" == green ]] || { printf 'ASSERT: private %s changed frozen probe, got rc=%s\n%s\n' "$mutation" "$rc" "$out"; exit 1; }
     outcome=passed
   fi
-  records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/freeze-private-$mutation/gate.log")"
+  records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/freeze-private-$mutation/gate.log")"
   jq -e -s --arg digest "$digest" --arg outcome "$outcome" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == $outcome and all(.[]; .id == "value-is-two" and .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
   printf 'frozen private %s: PASS\n' "$mutation"
 done
@@ -130,7 +130,7 @@ PYTHON
 digest="$(git -C "$R" hash-object src/assertion.json)"
 out="$("$GATE" "$R" "$(assertion_spec large-manifest)")"
 [[ "$(field "$out" VERDICT)" == green ]]
-records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/large-manifest/gate.log")"
+records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/large-manifest/gate.log")"
 jq -e -s --arg digest "$digest" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == "passed" and all(.[]; .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
 printf 'large manifest with original digest: PASS\n'
 
@@ -173,7 +173,7 @@ cp "$TMP/manifest" "$R/src/assertion.json"
 digest="$(git hash-object "$R/src/assertion.json")"
 out="$("$GATE" "$R" "$(assertion_spec escaped-nul-expected)")"
 [[ "$(field "$out" VERDICT)" == green ]]
-records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/escaped-nul-expected/gate.log")"
+records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/escaped-nul-expected/gate.log")"
 jq -e -s --arg digest "$digest" 'length == 2 and .[0].outcome == "assertion_failed" and .[1].outcome == "passed" and all(.[]; .manifest_digest == $digest and .assertions == 1)' <<< "$records" > /dev/null
 printf 'escaped NUL and UTF-8 expected value with original digest: PASS\n'
 
@@ -195,7 +195,7 @@ for failure in false crash signal timeout no-output malformed nonfinite infinity
   esac
   out="$("$GATE" "$R" "$(assertion_spec "$failure")" 2>&1)" && rc=0 || rc=$?
   [[ $rc == 2 && -z "$(field "$out" VERDICT)" ]] || { printf 'ASSERT: %s rc=%s\n%s\n' "$failure" "$rc" "$out"; exit 1; }
-  grep -q '"outcome":"infrastructure_failed","assertions":0' "$R/.omc/gates/$failure/gate.log"
+  grep -q '"outcome":"infrastructure_failed","assertions":0' "$R/$GATE_LOG_DIR/$failure/gate.log"
   printf 'reject %s: PASS\n' "$failure"
 done
 
@@ -211,7 +211,7 @@ jq '.id = "value-is-two\n"' "$R/src/assertion.json" > "$TMP/manifest"
 cp "$TMP/manifest" "$R/src/assertion.json"
 out="$("$GATE" "$R" "$(assertion_spec escaped-identity)")"
 [[ "$(field "$out" VERDICT)" == green ]]
-records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/escaped-identity/gate.log")"
+records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/escaped-identity/gate.log")"
 jq -e -s 'length == 2 and all(.[]; .id == "value-is-two\n")' <<< "$records" > /dev/null
 
 assertion_repo comparator-crash
@@ -257,7 +257,7 @@ if [[ "$(cat src/value)" == 1 ]]; then echo '{"value":1}'; fi
 PROBE
 out="$("$GATE" "$R" "$(assertion_spec head-no-output)" 2>&1)" && rc=0 || rc=$?
 [[ $rc == 2 && -z "$(field "$out" VERDICT)" ]]
-grep -q '"phase":"head","outcome":"infrastructure_failed","assertions":0' "$R/.omc/gates/head-no-output/gate.log"
+grep -q '"phase":"head","outcome":"infrastructure_failed","assertions":0' "$R/$GATE_LOG_DIR/head-no-output/gate.log"
 
 assertion_repo final-check
 S="$(assertion_spec final-check)"
@@ -272,7 +272,7 @@ printf '{"value":%s}\n' "$(cat src/value)"
 PROBE
 out="$("$GATE" "$R" "$(assertion_spec freeze)")"
 [[ "$(field "$out" VERDICT)" == green ]]
-records="$(sed -n '/^{"version":1,/p' "$R/.omc/gates/freeze/gate.log")"
+records="$(sed -n '/^{"version":1,/p' "$R/$GATE_LOG_DIR/freeze/gate.log")"
 jq -e -s 'length == 2 and all(.[]; .id == "value-is-two" and .assertions == 1) and .[0].manifest_digest == .[1].manifest_digest' <<< "$records" > /dev/null
 
 assertion_repo head-mismatch
