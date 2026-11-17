@@ -426,18 +426,37 @@ func (l *clockedIssues) ListComments(ctx context.Context, id string) ([]task.Com
 	}
 	return comments, err
 }
-func (l *clockedIssues) park(at time.Time) {
-	l.comments = append(l.comments,
-		"搁置：处置连续失败\n已完成：resolver attempt=1\n阶段: 待领\n归属: 无",
-		"阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")
-	l.at = append(l.at, at, at.Add(time.Minute))
+
+// park appends the recorded 搁置 comment (归属: 无) at its recorded time and the
+// scheduler's next claim one minute later.
+func (l *clockedIssues) park(release task.Comment) {
+	l.comments = append(l.comments, release.Body, "阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")
+	l.at = append(l.at, release.CreatedAt, release.CreatedAt.Add(time.Minute))
+}
+
+func recordedRelease(t *testing.T) task.Comment {
+	t.Helper()
+	var recording struct {
+		Parked struct{ Comments task.Connection[task.Comment] }
+	}
+	if err := json.Unmarshal(recorded(t, "ledger-issue-parked-resume.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	for _, comment := range recording.Parked.Comments.Nodes {
+		if strings.Contains(comment.Body, "\n归属: 无\n") && !comment.CreatedAt.IsZero() {
+			return comment
+		}
+	}
+	t.Fatal("recorded park comment without 归属: 无")
+	return task.Comment{}
 }
 
 func TestReclaimAfterParkGetsFreshCorrectionBudget(t *testing.T) {
 	ctx := context.Background()
+	release := recordedRelease(t)
 	t.Run("new claim after park", func(t *testing.T) {
-		e, o, tools, _, _, ticket := recoveryFixture(t)
-		clock := time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC)
+		e, o, tools, service, _, ticket := recoveryFixture(t)
+		clock := release.CreatedAt.Add(-time.Hour)
 		e.Now = func() time.Time { return clock }
 		l := &clockedIssues{now: e.Now}
 		e.Issues = l
@@ -446,14 +465,18 @@ func TestReclaimAfterParkGetsFreshCorrectionBudget(t *testing.T) {
 		if err != nil || result.State.Owner != machine.OwnerResolver || len(o.starts) != 4 {
 			t.Fatalf("precondition: result=%+v err=%v starts=%d", result, err, len(o.starts))
 		}
-		clock = clock.Add(time.Hour)
-		l.park(clock)
-		clock = clock.Add(2 * time.Minute)
+		l.park(release)
+		clock = release.CreatedAt.Add(2 * time.Minute)
+		e.Config.Terminal = "term_reclaim"
+		service.complete = true
 		tools.gateReds = 1
-		starts := len(o.starts)
+		starts, used := len(o.starts), len(o.used)
 		result, err = e.Start(ctx, ticket)
 		if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 1 || len(o.starts) <= starts || o.starts[starts].Spec == "" {
-			t.Fatalf("re-claim did not start fresh: result=%+v err=%v newStarts=%d", result, err, len(o.starts)-starts)
+			t.Fatalf("re-claim did not start a fresh worker: result=%+v err=%v newStarts=%d", result, err, len(o.starts)-starts)
+		}
+		if len(o.used) != used {
+			t.Fatalf("re-claim took over the archived Run: %v", o.used[used:])
 		}
 		archived, err := filepath.Glob(filepath.Join(filepath.Dir(checkpointPath(e.Config, ticket)), "executor-*.json"))
 		if err != nil || len(archived) != 1 {
@@ -462,18 +485,17 @@ func TestReclaimAfterParkGetsFreshCorrectionBudget(t *testing.T) {
 	})
 	t.Run("restart within the same claim", func(t *testing.T) {
 		e, o, _, _, _, ticket := recoveryFixture(t)
-		parked := time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC)
-		e.Now = func() time.Time { return parked.Add(time.Hour) }
+		e.Now = func() time.Time { return release.CreatedAt.Add(time.Hour) }
 		l := &clockedIssues{now: e.Now}
 		e.Issues = l
-		l.park(parked)
-		started := parked.Add(2 * time.Minute).Format(time.RFC3339)
+		l.park(release)
+		started := release.CreatedAt.Add(2 * time.Minute).Format(time.RFC3339)
 		if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one", Corrections: 2, StartedAt: started}); err != nil {
 			t.Fatal(err)
 		}
 		result, err := e.Start(ctx, ticket)
-		if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 2 || len(o.starts) != 0 {
-			t.Fatalf("restart dropped checkpoint: result=%+v err=%v starts=%d", result, err, len(o.starts))
+		if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 2 || len(o.starts) != 0 || !reflect.DeepEqual(o.used, []string{"run_one"}) {
+			t.Fatalf("restart dropped checkpoint: result=%+v err=%v starts=%d used=%v", result, err, len(o.starts), o.used)
 		}
 	})
 }

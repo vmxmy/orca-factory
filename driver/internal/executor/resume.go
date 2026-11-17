@@ -176,8 +176,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		return result, err
 	}
 	cp, err := readCheckpoint(c, t)
+	released := false
 	if err == nil && cp != nil {
-		cp, err = e.reservedCheckpoint(ctx, c, t, cp)
+		cp, released, err = e.reservedCheckpoint(ctx, c, t, cp)
 	}
 	e.recoverySnapshot(ctx, t, cp)
 	if cp != nil {
@@ -256,7 +257,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		cp.Completed, cp.Settled = false, false
 	}
 	r := e.recovery()
-	if head != "" && r != nil && (cp == nil || (!cp.Pending && cp.Task == "")) {
+	// A complete commit left by a released claim is that claim's work; the new
+	// claim starts a fresh worker instead of verifying it as its own.
+	if head != "" && r != nil && !released && (cp == nil || (!cp.Pending && cp.Task == "")) {
 		var complete bool
 		err = e.retryRead(ctx, t, &result, "resume commit lookup", func() error {
 			var readErr error
@@ -332,21 +335,22 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	delegated = true
 	return e.execute(ctx, t, nil, result.State.Infra)
 }
+
 // reservedCheckpoint archives a checkpoint whose first dispatch predates the
 // ticket's latest release ("归属: 无", e.g. 搁置): the later claim is a new
 // reservation with a fresh Run and correction budget (OF-569). A checkpoint
 // without StartedAt cannot be dated and stays in use.
-func (e *Executor) reservedCheckpoint(ctx context.Context, c Config, t Ticket, cp *checkpoint) (*checkpoint, error) {
+func (e *Executor) reservedCheckpoint(ctx context.Context, c Config, t Ticket, cp *checkpoint) (*checkpoint, bool, error) {
 	if cp.StartedAt == "" {
-		return cp, nil
+		return cp, false, nil
 	}
 	started, err := time.Parse(time.RFC3339, cp.StartedAt)
 	if err != nil {
-		return nil, errors.New("invalid recovery state")
+		return nil, false, errors.New("invalid recovery state")
 	}
 	comments, err := e.Issues.ListComments(ctx, t.ID)
 	if err != nil {
-		return nil, safeDependencyError(err)
+		return nil, false, safeDependencyError(err)
 	}
 	released := false
 	for _, comment := range comments {
@@ -359,15 +363,15 @@ func (e *Executor) reservedCheckpoint(ctx context.Context, c Config, t Ticket, c
 		}
 	}
 	if !released {
-		return cp, nil
+		return cp, false, nil
 	}
 	path := checkpointPath(c, t)
 	archive := filepath.Join(filepath.Dir(path), "executor-"+started.UTC().Format("20060102T150405Z")+".json")
 	if err := os.Rename(path, archive); err != nil {
-		return nil, errors.New("cannot archive released recovery state")
+		return nil, false, errors.New("cannot archive released recovery state")
 	}
 	e.recoveryPath(cp, "released-checkpoint-archived")
-	return nil, nil
+	return nil, true, nil
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {
 	b, err := c.run(ctx, repo, "git", "show", "-s", "--format=%(trailers:key=agent-status,valueonly)", head)

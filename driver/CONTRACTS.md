@@ -77,7 +77,7 @@
 
 执行器派工恢复保留旧 `executor.json` 字段及请求 UUID 的终端作用域；新增可选 `PendingParent` 记录未确认的 correction 子任务创建。首轮与 correction 都在变更前写入 pending，每次新 dispatch 清除上一轮的完成与释放资格；回执伴随错误返回时仍保留可用的 task、dispatch 和 worktree 身份。
 
-`executor.json` 只属于写入它的那次认领（OF-569）。`Executor.Start` 读到 checkpoint 后，把它的 `StartedAt`（首次派工时间）与账本中 `归属: 无` 行（搁置、释放）的评论时间比较。有 `归属: 无` 晚于 `StartedAt` 时，checkpoint 属于上一次认领：执行器把它改名归档为同目录的 `executor-<StartedAt 的 UTC 紧凑时间>.json`，不删除，再按无 checkpoint 的新认领处理，从新的 Run、新的 worker 和新的 correction 预算开始。同一次认领内的进程重启没有更晚的 `归属: 无`，照常沿用 checkpoint。没有 `StartedAt` 的 checkpoint 无法定时，照常沿用。`executor.TestReclaimAfterParkGetsFreshCorrectionBudget` 覆盖。
+`executor.json` 只属于写入它的那次认领（OF-569）。`Executor.Start` 读到 checkpoint 后，把它的 `StartedAt`（首次派工时间）与账本中 `归属: 无` 行（搁置、释放）的评论时间比较。有 `归属: 无` 晚于 `StartedAt` 时，checkpoint 属于上一次认领：执行器把它改名归档为同目录的 `executor-<StartedAt 的 UTC 紧凑时间>.json`，不删除，再按新认领处理，从新的 Run、新的 worker 和新的 correction 预算开始；分支上旧认领留下的 `agent-status: complete` 提交不当作本次认领的产物，执行器照常派出首轮 worker，也不接管旧 Run。同一次认领内的进程重启没有更晚的 `归属: 无`，照常沿用 checkpoint。没有 `StartedAt` 的 checkpoint 无法定时，照常沿用。`executor.TestReclaimAfterParkGetsFreshCorrectionBudget` 读取录制样本 `ledger-issue-parked-resume.json` 的搁置评论覆盖。
 
 当前 task 的权威报告优先于旧提交的 `agent-status: complete`。pending 派工不能由旧 complete 或已有 PR 放行；缺失、歧义或显式截断的任务证据只允许停止对账，不授权重放旧终端请求。`task-list` 缺失 `dispatch_id` 时仍可根据 task 报告恢复，但不会臆造 dispatch 来释放 worker。子任务通过真实 `parent_id` 与 pending parent 对账；尚无权威报告的未确认派工保持 pending，待后续重新启动对账。
 
