@@ -93,7 +93,7 @@ run() {
 tail20() { printf '%s' "$OUT" | tail -n 20; }
 
 # 1. scope
-CHANGED="$( { git -C "$WT" diff --name-only "$BASE...HEAD"; git -C "$WT" diff --name-only HEAD; git -C "$WT" ls-files --others --exclude-standard; } | sed '/^$/d' | sort -u)"
+CHANGED="$( { git -C "$WT" diff --no-renames --name-only "$BASE...HEAD"; git -C "$WT" diff --no-renames --name-only HEAD; git -C "$WT" ls-files --others --exclude-standard; } | sed '/^$/d' | sort -u)"
 log "--- [scope] changed files:" "$CHANGED"
 [[ -n "$CHANGED" ]] || verdict red scope "empty diff" ""
 OUT_OF_SCOPE=""

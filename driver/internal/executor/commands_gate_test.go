@@ -4,12 +4,36 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
+
+func TestChangedFilesDisablesRenames(t *testing.T) {
+	var calls []runx.Spec
+	c := &Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		calls = append(calls, s)
+		return []byte("other.txt\x00src/other.txt\x00"), nil
+	}}
+	files, err := c.ChangedFiles(context.Background(), "/repo/demo", "base-sha", "head-sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls=%+v, want one git diff", calls)
+	}
+	s := calls[0]
+	want := []string{"diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", "base-sha..head-sha", "--"}
+	if s.Path != "git" || s.Dir != "/repo/demo" || !slices.Equal(s.Args, want) {
+		t.Fatalf("diff spec=%+v, want git %v in /repo/demo", s, want)
+	}
+	if !slices.Equal(files, []string{"other.txt", "src/other.txt"}) {
+		t.Fatalf("files=%v, want source and destination", files)
+	}
+}
 
 func gateRecorder(installErr error) (*Commands, *[]runx.Spec) {
 	var calls []runx.Spec
