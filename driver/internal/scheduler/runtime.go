@@ -359,7 +359,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		// Ownership, not the auto-impl label, determines in-flight admission. Read
 		// comments even when a user removed the label from a still-owned ticket.
 		comments := commentsByID[issue.ID]
-		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, Title: issue.Title, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt}
+		ticket := Ticket{ID: issue.ID, Identifier: issue.Identifier, URL: issue.URL, Title: issue.Title, Repo: path, Priority: issue.Priority, CreatedAt: issue.CreatedAt, UpdatedAt: issue.UpdatedAt, AutoFailed: failed}
 		if err = readOwnership(&ticket, comments); err != nil {
 			readFeishuNotification(&ticket, comments)
 			ticket.MergeProblem = err.Error()
