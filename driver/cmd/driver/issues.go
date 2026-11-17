@@ -218,7 +218,7 @@ func runIssues(args []string) int {
 		var raw []byte
 		raw, err = issueInput(*bodyFile)
 		if err == nil {
-			c, e := gh.CreateComment(ctx, *id, string(raw))
+			c, e := issues.CreateOperatorComment(ctx, gh, *id, string(raw))
 			err = e
 			result = map[string]any{"comment": c}
 		}

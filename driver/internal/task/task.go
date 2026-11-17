@@ -79,6 +79,12 @@ func (i Issue) Blocked() bool {
 	return false
 }
 
+// Event sources a ledger backend may record. Empty means the backend keeps no source.
+const (
+	SourceDriver   = "driver"
+	SourceOperator = "operator"
+)
+
 type Comment struct {
 	Source    string    `json:"source,omitempty"`
 	User      *NamedID  `json:"user,omitempty"`
@@ -87,3 +93,7 @@ type Comment struct {
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
+
+// CarriesProtocol reports whether handoff, progress, phase and ownership lines
+// in the event may be trusted. Operator events carry user text, so they cannot.
+func (c Comment) CarriesProtocol() bool { return c.Source != SourceOperator }

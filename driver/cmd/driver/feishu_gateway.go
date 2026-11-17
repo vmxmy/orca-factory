@@ -469,7 +469,7 @@ func createDraftTicket(ctx context.Context, store issues.Store, session, prompt 
 // failure is logged and left in the receipt but does not undo the creation.
 func auditDraftTicket(ctx context.Context, store issues.Store, t issues.Task, session, prompt string) error {
 	body := fmt.Sprintf("来源审计：intake 会话 %s\n需求原话摘要：%s", session, draftTicketSummary(prompt))
-	if _, err := store.CreateComment(ctx, t.ID, body); err != nil {
+	if _, err := issues.CreateOperatorComment(ctx, store, t.ID, body); err != nil {
 		return fmt.Errorf("审计评论写入失败: %w", err)
 	}
 	return nil

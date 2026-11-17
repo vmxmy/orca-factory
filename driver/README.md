@@ -24,6 +24,8 @@ bin/orca-factory bootstrap <factory 仓库地址或本地路径>
 
 `driver issues snapshot/read/create/adopt/update/comment` 是统一 GitHub CLI。原生未纳管票可见但不领取；adopt 校验「要做」、CHECK、SCOPE 和正文 `DEPENDENCIES` 的完整 canonical ID 数组。旧 UUID/ZII 与 checkpoint/receipts 身份不变，GitHub repo/number/URL 独立。发现缓存与历史来源时间不授权关键动作；认领、恢复、resolver、proposal、squash 和 smoke 都使用完整 fresh 证据。
 
+`issues comment` 写入的事件在飞书账本里是 operator 来源。调度器和执行器不采信 operator 事件里的 `merge-handoff-v1`、`merge-progress-v1`、`阶段:`、`归属:` 与 `转人: `，所以不能靠手写评论改归属或合并状态。人工恢复领取用 `issues update` 改标签，部署屏障用 `resume-deployment`，人工合并后用 `release`，转人票用飞书卡片。规则见 [CONTRACTS.md](CONTRACTS.md) 的「合并交接」。
+
 关闭或 ImportHold 禁止新执行/合并，历史部署屏障仍在 FIFO 中观察对账。auto-failed 不普通重试。任务 PR 引用 Issue URL，不用 Closes/Fixes 提前关闭票。看板与 status 只展示 GitHub request 额度。
 
 迁移及生产切换见 [票据主账本](../docs/agents/issue-tracker.md)。`driver maintenance drain|freeze|resume|status` 保存本机维护状态；drain 禁新派工，freeze 需本机合作 sessions/writes 空闲并阻外部写入。这不证明远端写者已退出。真实导出、held import、release-hold 和配置切换分别授权，不因为部署二进制就切 backend。`driver issues backend` 只读输出当前进程选定的后端与 `AGENT_GH_REPO`。

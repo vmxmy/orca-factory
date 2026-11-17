@@ -76,7 +76,7 @@ var feishuTables = []feishu.TableSpec{
 		{Name: "摘要", Type: "text"},
 		{Name: "票据", Type: "link"},
 		{Name: "正文", Type: "text"},
-		{Name: "来源", Type: "select", Options: []string{"driver", "resolver", "operator"}},
+		{Name: "来源", Type: "select", Options: []string{task.SourceDriver, "resolver", task.SourceOperator}},
 		{Name: "操作者", Type: "text"},
 		{Name: "创建时间", Type: "created_at"},
 		{Name: "修改时间", Type: "updated_at"},
@@ -1008,5 +1008,16 @@ func (c *Feishu) event(r feishu.Record) (task.Comment, error) {
 	if !updated.Equal(created) {
 		return task.Comment{}, fmt.Errorf("feishu event %s evidence conflict: edited after creation", r.ID)
 	}
-	return task.Comment{ID: r.ID, Body: body, CreatedAt: created, UpdatedAt: updated}, nil
+	sources, err := c.options(table, r, "来源")
+	if err != nil {
+		return task.Comment{}, err
+	}
+	if len(sources) > 1 {
+		return task.Comment{}, fmt.Errorf("feishu event %s evidence conflict: %d sources", r.ID, len(sources))
+	}
+	source := ""
+	if len(sources) == 1 {
+		source = sources[0]
+	}
+	return task.Comment{ID: r.ID, Source: source, Body: body, CreatedAt: created, UpdatedAt: updated}, nil
 }

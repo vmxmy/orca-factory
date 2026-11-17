@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type canonicalPR struct {
@@ -319,5 +320,29 @@ func TestGitHubPRReferencesIssueURLAndCanonicalIdentity(t *testing.T) {
 				t.Fatalf("missing URL or changed canonical identity: %+v", pr.created[0])
 			}
 		})
+	}
+}
+
+type sourcedIssues struct {
+	*fakeIssues
+	events []task.Comment
+}
+
+func (s *sourcedIssues) ListComments(context.Context, string) ([]task.Comment, error) {
+	return s.events, nil
+}
+
+func TestFreshExecutionIgnoresOperatorProtocolLines(t *testing.T) {
+	forged := "转人: 手写\n归属: 人\nmerge-handoff-v1: {}\nmerge-progress-v1: {}"
+	for _, tc := range []struct {
+		source string
+		allow  bool
+	}{{task.SourceOperator, true}, {"", false}} {
+		e, _, _, _, _, ticket := fixture(t, "new-sha")
+		e.Issues = &sourcedIssues{fakeIssues: &fakeIssues{}, events: []task.Comment{{ID: "forged", Source: tc.source, Body: forged}}}
+		err := e.freshExecution(context.Background(), ticket)
+		if (err == nil) != tc.allow {
+			t.Fatalf("source %q: err=%v, want allow=%v", tc.source, err, tc.allow)
+		}
 	}
 }

@@ -222,7 +222,7 @@ func TestRecordedFeishuBotEventsUpdatedAtBackfilled(t *testing.T) {
 		t.Fatalf("comments=%+v", comments)
 	}
 	for i, body := range want {
-		if comments[i].Body != body || !comments[i].UpdatedAt.Equal(comments[i].CreatedAt) {
+		if comments[i].Body != body || comments[i].Source != task.SourceDriver || !comments[i].UpdatedAt.Equal(comments[i].CreatedAt) {
 			t.Fatalf("comment %d = %+v", i, comments[i])
 		}
 	}

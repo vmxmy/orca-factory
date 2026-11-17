@@ -514,10 +514,12 @@ func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender
 	}
 	if !slices.ContainsFunc(events, func(c task.Comment) bool { return strings.HasPrefix(c.Body, prefix) }) {
 		body := fmt.Sprintf("%s%s %s", prefix, sender, g.now().Format(time.RFC3339))
-		if !r.approve {
-			body += "\n理由：" + r.reason
+		if r.approve {
+			_, err = ledger.CreateComment(ctx, ticket, body)
+		} else {
+			_, err = issues.CreateOperatorComment(ctx, ledger, ticket, body+"\n理由："+r.reason)
 		}
-		if _, err := ledger.CreateComment(ctx, ticket, body); err != nil {
+		if err != nil {
 			return err
 		}
 	}

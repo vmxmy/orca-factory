@@ -31,6 +31,9 @@ func readMergeHandoff(t *Ticket, comments []task.Comment) {
 	})
 	seen := map[string]string{}
 	for _, c := range rows {
+		if !c.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(c.Body, "\n") {
 			if strings.HasPrefix(line, merge.ProgressPrefix) {
 				var p merge.Progress
