@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -320,5 +321,66 @@ func TestRuntimeMergeGateInfrastructureRerunsWithoutBudget(t *testing.T) {
 				t.Fatalf("infrastructure spent budget or did not rerun: runs=%d puts=%d bodies=%v", runs.Load(), f.puts, f.tracker.bodies)
 			}
 		})
+	}
+}
+
+func TestMergeGateInfrastructureRerunsAreBounded(t *testing.T) {
+	f := overlapFixture(t, false)
+	closeMergeGates(t, f.runtime)
+	f.repos[0].Env["AGENT_INSTALL_CMD"] = "make deps"
+	var installs, gates atomic.Int32
+	f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path != "bash" {
+			return runx.Run(ctx, s)
+		}
+		if s.Args[0] == "-c" {
+			installs.Add(1)
+			return nil, errors.New("install failed")
+		}
+		gates.Add(1)
+		return []byte(mergedGreen), nil
+	}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := tickAlone(t, s); err != nil {
+			t.Fatal(err)
+		}
+		awaitMergeGate(t, f.runtime, f)
+		err := tickAlone(t, s)
+		if attempt < 3 {
+			if err == nil || len(f.tracker.bodies) != 0 {
+				t.Fatalf("failure %d must remain retryable without a receipt: err=%v bodies=%v", attempt, err, f.tracker.bodies)
+			}
+		} else if err != nil {
+			t.Errorf("third failure must transfer ownership: %v", err)
+		}
+	}
+	progress := mergeProgress(t, f.tracker.bodies)
+	if len(progress) != 1 {
+		t.Errorf("want one escalation receipt after three failures, got %+v", progress)
+	} else {
+		p := progress[0]
+		if p.Phase != "human" || p.QueueID != "q1" || p.Head != f.head || p.Main != f.main || p.Corrections != 0 || p.Infra != 0 || p.CatchupRounds != 0 {
+			t.Errorf("escalation changed identity or spent existing budgets: %+v", p)
+		}
+		if !strings.Contains(p.Reason, "3") || !strings.Contains(p.Reason, "install") {
+			t.Errorf("receipt must name three failures and the install step: %q", p.Reason)
+		}
+	}
+	tickets, err := f.runtime.Snapshot(context.Background(), f.repos)
+	if err != nil || len(tickets) != 1 {
+		t.Fatalf("read ownership: tickets=%+v err=%v", tickets, err)
+	}
+	if tickets[0].Owner != machine.OwnerResolver || tickets[0].Phase != machine.PhaseResolver {
+		t.Errorf("ticket did not leave the merge queue for resolver: %+v", tickets[0])
+	}
+	for range 2 {
+		if err := f.runtime.AdvanceMerges(context.Background(), tickets); err != nil {
+			t.Errorf("merge inspection after escalation: %v", err)
+		}
+		awaitMergeGate(t, f.runtime, f)
+	}
+	if installs.Load() != 3 || gates.Load() != 0 || f.puts != 0 || len(f.runtime.Orca.(*fakeOrca).launches) != 0 {
+		t.Errorf("unbounded reruns or unintended work: installs=%d gates=%d squashes=%d launches=%d", installs.Load(), gates.Load(), f.puts, len(f.runtime.Orca.(*fakeOrca).launches))
 	}
 }
