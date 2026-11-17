@@ -406,3 +406,74 @@ func (o *recoveryOrca) WorkerRelease(ctx context.Context, id, dispatch string) (
 	o.releases++
 	return orca.Receipt{}, o.releaseErr
 }
+
+// clockedIssues stamps each comment with the test clock so a park comment can
+// fall after the checkpoint's dispatch start.
+type clockedIssues struct {
+	budgetIssues
+	now func() time.Time
+	at  []time.Time
+}
+
+func (l *clockedIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	l.at = append(l.at, l.now())
+	return l.budgetIssues.CreateComment(ctx, id, body)
+}
+func (l *clockedIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	comments, err := l.budgetIssues.ListComments(ctx, id)
+	for i := range comments {
+		comments[i].CreatedAt = l.at[i]
+	}
+	return comments, err
+}
+func (l *clockedIssues) park(at time.Time) {
+	l.comments = append(l.comments,
+		"搁置：处置连续失败\n已完成：resolver attempt=1\n阶段: 待领\n归属: 无",
+		"阶段: worker 运行中\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1")
+	l.at = append(l.at, at, at.Add(time.Minute))
+}
+
+func TestReclaimAfterParkGetsFreshCorrectionBudget(t *testing.T) {
+	ctx := context.Background()
+	t.Run("new claim after park", func(t *testing.T) {
+		e, o, tools, _, _, ticket := recoveryFixture(t)
+		clock := time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC)
+		e.Now = func() time.Time { return clock }
+		l := &clockedIssues{now: e.Now}
+		e.Issues = l
+		tools.gateReds = 5
+		result, err := e.Execute(ctx, ticket)
+		if err != nil || result.State.Owner != machine.OwnerResolver || len(o.starts) != 4 {
+			t.Fatalf("precondition: result=%+v err=%v starts=%d", result, err, len(o.starts))
+		}
+		clock = clock.Add(time.Hour)
+		l.park(clock)
+		clock = clock.Add(2 * time.Minute)
+		tools.gateReds = 1
+		starts := len(o.starts)
+		result, err = e.Start(ctx, ticket)
+		if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 1 || len(o.starts) <= starts || o.starts[starts].Spec == "" {
+			t.Fatalf("re-claim did not start fresh: result=%+v err=%v newStarts=%d", result, err, len(o.starts)-starts)
+		}
+		archived, err := filepath.Glob(filepath.Join(filepath.Dir(checkpointPath(e.Config, ticket)), "executor-*.json"))
+		if err != nil || len(archived) != 1 {
+			t.Fatalf("old checkpoint not archived: %v %v", archived, err)
+		}
+	})
+	t.Run("restart within the same claim", func(t *testing.T) {
+		e, o, _, _, _, ticket := recoveryFixture(t)
+		parked := time.Date(2026, 10, 5, 6, 0, 0, 0, time.UTC)
+		e.Now = func() time.Time { return parked.Add(time.Hour) }
+		l := &clockedIssues{now: e.Now}
+		e.Issues = l
+		l.park(parked)
+		started := parked.Add(2 * time.Minute).Format(time.RFC3339)
+		if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one", Corrections: 2, StartedAt: started}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := e.Start(ctx, ticket)
+		if err != nil || result.State.Owner != machine.OwnerMerge || result.State.Corrections != 2 || len(o.starts) != 0 {
+			t.Fatalf("restart dropped checkpoint: result=%+v err=%v starts=%d", result, err, len(o.starts))
+		}
+	})
+}

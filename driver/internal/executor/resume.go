@@ -176,6 +176,9 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 		return result, err
 	}
 	cp, err := readCheckpoint(c, t)
+	if err == nil && cp != nil {
+		cp, err = e.reservedCheckpoint(ctx, c, t, cp)
+	}
 	e.recoverySnapshot(ctx, t, cp)
 	if cp != nil {
 		if cp.Completed {
@@ -328,6 +331,43 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 	e.recoveryPath(cp, "new-worker")
 	delegated = true
 	return e.execute(ctx, t, nil, result.State.Infra)
+}
+// reservedCheckpoint archives a checkpoint whose first dispatch predates the
+// ticket's latest release ("归属: 无", e.g. 搁置): the later claim is a new
+// reservation with a fresh Run and correction budget (OF-569). A checkpoint
+// without StartedAt cannot be dated and stays in use.
+func (e *Executor) reservedCheckpoint(ctx context.Context, c Config, t Ticket, cp *checkpoint) (*checkpoint, error) {
+	if cp.StartedAt == "" {
+		return cp, nil
+	}
+	started, err := time.Parse(time.RFC3339, cp.StartedAt)
+	if err != nil {
+		return nil, errors.New("invalid recovery state")
+	}
+	comments, err := e.Issues.ListComments(ctx, t.ID)
+	if err != nil {
+		return nil, safeDependencyError(err)
+	}
+	released := false
+	for _, comment := range comments {
+		for _, line := range strings.Split(comment.Body, "\n") {
+			owner, ok := strings.CutPrefix(line, "归属: ")
+			fields := strings.Fields(owner)
+			if ok && len(fields) > 0 && fields[0] == string(machine.OwnerNone) && comment.CreatedAt.After(started) {
+				released = true
+			}
+		}
+	}
+	if !released {
+		return cp, nil
+	}
+	path := checkpointPath(c, t)
+	archive := filepath.Join(filepath.Dir(path), "executor-"+started.UTC().Format("20060102T150405Z")+".json")
+	if err := os.Rename(path, archive); err != nil {
+		return nil, errors.New("cannot archive released recovery state")
+	}
+	e.recoveryPath(cp, "released-checkpoint-archived")
+	return nil, nil
 }
 func (c *Commands) Complete(ctx context.Context, repo, head string) (bool, error) {
 	b, err := c.run(ctx, repo, "git", "show", "-s", "--format=%(trailers:key=agent-status,valueonly)", head)
