@@ -545,6 +545,8 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
 
+执行器的 lane 2 reviewer 也在被审分支的检出里运行，但它的角色 `reviewer.md` 与 `constitution/` 下的文件由 driver 从 diff 基线读出，内联进 stdin。被审分支修改这些文件，不改变本次审查的规则（OF-557）。
+
 人工处理完转人工的票后，`AGENT_FEISHU_APPROVERS` 中的审批人可在飞书群发送
 `@机器人 放行 OF-N`，让网关重读票据与评论。只有最新 `resolver-state` 的 phase 为
 `human` 才会生效，网关追加同一条评论，包含 `放行：<审批人 open_id> <时间>` 与
