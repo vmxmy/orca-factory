@@ -596,7 +596,8 @@ func TestMergeQueueReleasesHeadWhenPRChangedOrClosed(t *testing.T) {
 				original.ServeHTTP(w, r)
 			})
 			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
-			for i := 0; i < 2; i++ {
+			// A transient snapshot failure keeps the FIFO head and retries on the next tick.
+			for i := 0; i < 5 && f.tracker.issue.State.Name != "Done"; i++ {
 				// Resolver dispatch is outside this fixture; inspect its durable ownership below.
 				_ = s.Tick(context.Background())
 			}
