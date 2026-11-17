@@ -232,7 +232,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
-2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+2. 保持 `deployment.state=pending`，先读维护模式。模式是 `running` 时，写 `self-deploy/<sha>.drained` 标记并 drain，部署结束时凭该标记恢复 `running`。模式是人工设的 `draining` 时，照常部署，不写标记，结束后维护模式仍是 `draining`，由人工恢复。模式是 `frozen` 时，不构建、不重启，部署保持 `pending`，回执 `reason` 写「维护模式为 frozen，暂不部署」，下一轮再读；空闲等待结束后、写 `deploy-intent` 前再核对一次，此时是 `frozen` 同样不部署，并删除本次的 `drained` 标记，维护状态改由人工管理。随后等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
 3. 空闲后，账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
 4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
 5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。

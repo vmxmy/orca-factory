@@ -42,6 +42,8 @@ var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry, selfDeployIdleR
 
 var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
 
+var errSelfDeployFrozen = errors.New("维护模式为 frozen，暂不部署")
+
 // One restart command queues both jobs; systemd does not order them.
 // Restarting the driver unit stops this serve.
 var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-driver"}
@@ -182,8 +184,9 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
-		err = maintenance.SetWithin("draining", maintenanceWait)
+	if err = r.drainSelf(sha); errors.Is(err, errSelfDeployFrozen) {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
 	}
 	if err == nil {
 		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
@@ -219,6 +222,10 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
 	d.State, d.Reason = "deploy-intent", ""
 	if err = r.deploymentReceipt(ctx, t, p); err != nil {
 		return err
@@ -235,6 +242,47 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment failed before restart"), r.rollbackSelf(ctx, p, "self deployment failed before restart"))
 	}
 	return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
+}
+
+// drainSelf drains only from running and then owns the resume through the
+// drained marker. A drain the operator set is used as is and stays after the
+// deployment; a marker left by an earlier interrupted wait keeps its claim.
+func (r *Runtime) drainSelf(sha string) error {
+	if err := r.refuseFrozen(sha); err != nil {
+		return err
+	}
+	owned, err := fileExists(r.selfMarker(sha, markerDrained))
+	if err != nil {
+		return err
+	}
+	state, err := maintenance.Read()
+	if err != nil {
+		return err
+	}
+	if state.Mode == "draining" && !owned {
+		return nil
+	}
+	if err = touch(r.selfMarker(sha, markerDrained)); err != nil {
+		return err
+	}
+	return maintenance.SetWithin("draining", maintenanceWait)
+}
+
+// refuseFrozen keeps the deployment pending under an operator freeze. The
+// freeze takes over any drain this deployment started, so the drained marker
+// is dropped and the operator's later mode is never overwritten.
+func (r *Runtime) refuseFrozen(sha string) error {
+	state, err := maintenance.Read()
+	if err != nil {
+		return err
+	}
+	if state.Mode != "frozen" {
+		return nil
+	}
+	if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return errSelfDeployFrozen
 }
 
 // installSelf arms the guard before the rename, so a serve killed between the

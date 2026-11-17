@@ -613,3 +613,48 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 		})
 	}
 }
+
+func TestSelfDeployKeepsOperatorDrain(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err != nil {
+		t.Fatal(err)
+	}
+	if mode := maintenanceMode(t); mode != "draining" || h.builds != 1 || lastState(f) != "passed" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("self deployment under an operator drain: mode=%s builds=%d state=%s", mode, h.builds, lastState(f))
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreeze(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "pending" || h.builds != 0 {
+		t.Fatalf("setup: state=%s builds=%d", lastState(f), h.builds)
+	}
+	if err = maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if err = maintenance.Set("frozen"); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if mode := maintenanceMode(t); mode != "frozen" || h.builds != 0 || h.restarts != 0 || lastState(f) != "pending" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("self deployment under an operator freeze: mode=%s builds=%d restarts=%d state=%s", mode, h.builds, h.restarts, lastState(f))
+	}
+	if !strings.Contains(f.tracker.bodies[len(f.tracker.bodies)-1], "frozen") {
+		t.Errorf("pending receipt does not name the freeze: %s", f.tracker.bodies[len(f.tracker.bodies)-1])
+	}
+}
