@@ -140,21 +140,23 @@ for language in js go; do
       SRC_PATHS=('*.go') ;;
   esac
   HITS="$( { git -C "$WT" diff "$BASE" -- "${SRC_PATHS[@]}" | grep -E '^\+' | grep -Ev '^\+\+\+' || true; } | grep -E "$SUPP_RE" || true)"
-  UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard -- "${SRC_PATHS[@]}")"
-  if [[ -n "$UNTRACKED" ]]; then
-    while IFS= read -r f; do
-      HITS+="$(grep -HnE "$SUPP_RE" "$WT/$f" 2>/dev/null || true)"$'\n'
-    done <<< "$UNTRACKED"
-    HITS="$(printf '%s' "$HITS" | sed '/^$/d')"
-  fi
+  git -C "$WT" ls-files -z --others --exclude-standard -- "${SRC_PATHS[@]}" > "$LOG_DIR/untracked.paths"
+  while IFS= read -r -d '' f; do
+    HITS+=$'\n'"$(grep -HnE "$SUPP_RE" "$WT/$f" 2>/dev/null || true)"
+  done < "$LOG_DIR/untracked.paths"
+  HITS="$(printf '%s' "$HITS" | sed '/^$/d')"
   log "--- [suppression] $language hits:" "$HITS"
   [[ -z "$HITS" ]] || verdict red suppression "added lines contain suppression markers" "$HITS"
 done
-while IFS= read -r f; do
-  if [[ "${f##*/}" == .golangci.* && -e "$WT/$f" ]]; then
-    verdict red suppression "golangci configuration added or modified" "$f"
-  fi
-done <<< "$CHANGED"
+GOLANGCI=':(glob)**/.golangci.*'
+git -C "$WT" diff -z --name-only --diff-filter=d "$BASE" -- "$GOLANGCI" > "$LOG_DIR/golangci.paths"
+git -C "$WT" ls-files -z --others --exclude-standard -- "$GOLANGCI" >> "$LOG_DIR/golangci.paths"
+GOLANGCI_HITS=""
+while IFS= read -r -d '' f; do
+  GOLANGCI_HITS+="$f"$'\n'
+done < "$LOG_DIR/golangci.paths"
+log "--- [suppression] golangci configs:" "$GOLANGCI_HITS"
+[[ -z "$GOLANGCI_HITS" ]] || verdict red suppression "golangci configuration added or modified" "$GOLANGCI_HITS"
 
 assertion_infra() {
   log "--- [assertion] infrastructure failure: $*"

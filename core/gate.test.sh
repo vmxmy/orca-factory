@@ -61,9 +61,10 @@ for state in untracked staged committed; do
   done
 done
 
-for config in .golangci.yml src/.golangci.yaml src/.golangci.toml src/.golangci.json; do
+for config in .golangci.yml src/.golangci.yaml src/.golangci.toml src/.golangci.json 'src/中文/.golangci.yml'; do
   for state in untracked modified committed; do
-    R="$(mkrepo "go-config-${config##*.}-$state")"
+    R="$(mkrepo "go-config-${config//[^a-z]/-}-$state")"
+    mkdir -p "$R/$(dirname "$config")"
     if [[ "$state" == modified ]]; then
       printf 'version: "2"\n' > "$R/$config"
       git -C "$R" add "$config"
@@ -75,9 +76,21 @@ for config in .golangci.yml src/.golangci.yaml src/.golangci.toml src/.golangci.
       git -C "$R" add "$config"
       git -C "$R" -c commit.gpgsign=false commit -qm config
     fi
-    out="$("$GATE" "$R" "$(spec 'UNIT: go-config' 'SCOPE: src/* .golangci.*' 'CHECK: true')")" && rc=0 || rc=$?
+    out="$("$GATE" "$R" "$(spec 'UNIT: go-config' 'SCOPE: *' 'CHECK: true')")" && rc=0 || rc=$?
     [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == suppression ]] || { printf 'ASSERT: go suppression %s config %s must be rejected, got rc=%s\n%s\n' "$state" "$config" "$rc" "$out"; exit 1; }
   done
+done
+
+for state in untracked committed; do
+  R="$(mkrepo "go-non-ascii-$state")"
+  mkdir -p "$R/src/中文"
+  printf 't.Skip("later")\n' > "$R/src/中文/a_test.go"
+  if [[ "$state" == committed ]]; then
+    git -C "$R" add -A
+    git -C "$R" -c commit.gpgsign=false commit -qm suppression
+  fi
+  out="$("$GATE" "$R" "$(spec 'UNIT: go-non-ascii' 'SCOPE: *' 'CHECK: true')")" && rc=0 || rc=$?
+  [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == suppression ]] || { printf 'ASSERT: go suppression %s non-ASCII path must be rejected, got rc=%s\n%s\n' "$state" "$rc" "$out"; exit 1; }
 done
 
 R="$(mkrepo go-existing)"
