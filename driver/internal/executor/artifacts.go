@@ -166,6 +166,14 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 	singleLine := func(s string) bool {
 		return s == "CHECK" || s == "CHECK_TEST_FILES" || s == "CHECK_IS_NEW_TEST" || s == "CHECK_ASSERTION"
 	}
+	seen := map[string]bool{}
+	start := func(field string) error {
+		if field != "要做" && seen[field] {
+			return fmt.Errorf("ticket repeats field %s", field)
+		}
+		seen[field] = true
+		return nil
+	}
 	for _, line := range strings.Split(description, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
@@ -181,6 +189,9 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 			}
 		}
 		if known(text) {
+			if err := start(text); err != nil {
+				return Ticket{}, err
+			}
 			section = text
 			continue
 		}
@@ -190,6 +201,9 @@ func ParseTicket(id, identifier, title, description string) (Ticket, error) {
 		}
 		key = strings.TrimSuffix(clean(key), "**")
 		if ok && known(key) {
+			if err := start(key); err != nil {
+				return Ticket{}, err
+			}
 			section = key
 			if value = clean(strings.TrimPrefix(value, "**")); value != "" {
 				fields[key] = append(fields[key], value)
