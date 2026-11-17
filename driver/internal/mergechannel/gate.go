@@ -88,7 +88,7 @@ func (g mergeGate) Run(ctx context.Context, wt string) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return safeMergeGateError(&infra.Ticket{Err: errors.New("merge install failed")})
+			return &infra.Ticket{Err: errors.New("merge install failed")}
 		}
 	}
 	output, err := g.run(ctx, runx.Spec{Path: "bash", Args: []string{gatePath, wt, specPath}, Dir: g.checkout, Env: g.env, Timeout: 30 * time.Minute})

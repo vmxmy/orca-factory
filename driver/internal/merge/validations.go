@@ -43,12 +43,30 @@ const (
 
 var ErrValidationsClosed = errors.New("merge validations closed")
 
+// InfraFailure is a merged-result gate infrastructure failure. Consecutive
+// counts the failures in a row for the same queue entry, head and main; Step
+// is the innermost reason of the last one.
+type InfraFailure struct {
+	Consecutive int
+	Step        string
+	Err         error
+}
+
+func (e *InfraFailure) Error() string { return e.Err.Error() }
+func (e *InfraFailure) Unwrap() error { return e.Err }
+
+type infraStreak struct {
+	queue, head, main string
+	failures          int
+}
+
 // Validations runs at most one merged-result gate per repository beside the
 // scheduler's inspections. Verdicts live only in this process: a restarted
 // serve starts empty, so it reruns a gate and never infers green.
 type Validations struct {
 	mu     sync.Mutex
 	runs   map[string]*validation
+	infra  map[string]infraStreak
 	base   context.Context
 	stop   context.CancelFunc
 	wg     sync.WaitGroup
@@ -64,7 +82,7 @@ type validation struct {
 
 func NewValidations() *Validations {
 	base, stop := context.WithCancel(context.Background())
-	return &Validations{runs: map[string]*validation{}, base: base, stop: stop}
+	return &Validations{runs: map[string]*validation{}, infra: map[string]infraStreak{}, base: base, stop: stop}
 }
 
 // Validate answers for c without waiting on a gate. A gate still running for
@@ -73,7 +91,9 @@ func NewValidations() *Validations {
 // queue entry is discarded and a gate for c starts. Green and red verdicts stay
 // until another candidate replaces them, so a failed squash or correction write
 // replays the same decision; infrastructure failures and Stale are consumed so
-// the next call reruns the gate. A Red verdict reports the main it validated.
+// the next call reruns the gate. Each infrastructure failure is returned as an
+// InfraFailure counting the failures in a row for the same queue entry, head
+// and main; any verdict resets the count. A Red verdict reports the main it validated.
 // ErrWorktreeCleanup accompanies the first Green or Red it is reported with.
 func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate Gate) (Verdict, string, error) {
 	repo := c.Request.Repository
@@ -91,6 +111,11 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 			verdict, main, err := run.verdict(c)
 			if verdict != VerdictGreen && verdict != VerdictRed {
 				delete(v.runs, repo)
+			}
+			if verdict == "" {
+				err = v.countInfra(run, err)
+			} else {
+				delete(v.infra, repo)
 			}
 			v.mu.Unlock()
 			return verdict, main, err
@@ -112,6 +137,23 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 	v.wg.Add(1)
 	go v.run(runx.WithLogger(v.base, runx.LoggerFrom(ctx)), run, git, prepared)
 	return VerdictRunning, "", nil
+}
+
+// countInfra extends the repository's streak when run failed on the same
+// queue entry, head and main as the previous failure, and restarts it otherwise.
+func (v *Validations) countInfra(run *validation, err error) error {
+	c := run.candidate
+	streak := infraStreak{queue: c.Request.QueueID, head: c.Head, main: c.Main}
+	if last := v.infra[c.Request.Repository]; last.queue == streak.queue && last.head == streak.head && last.main == streak.main {
+		streak.failures = last.failures
+	}
+	streak.failures++
+	v.infra[c.Request.Repository] = streak
+	step := run.err
+	for inner := errors.Unwrap(step); inner != nil; inner = errors.Unwrap(step) {
+		step = inner
+	}
+	return &InfraFailure{Consecutive: streak.failures, Step: step.Error(), Err: err}
 }
 
 // verdict reads an exited run for the same queue entry.

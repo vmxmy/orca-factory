@@ -6,11 +6,17 @@ package merge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 )
 
 var ErrGateRed = errors.New("merged-result gate red")
+
+// MaxGateInfraFailures bounds consecutive merged-result gate infrastructure
+// failures for one queue entry, head and main. They spend no budget, so a
+// failure that always recurs would otherwise hold the repository lane forever.
+const MaxGateInfraFailures = 3
 
 var ErrMainAdvanced = errors.New("main advanced during merge validation")
 
@@ -335,6 +341,10 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		}
 		verdict, validated, err := c.validations.Validate(ctx, Candidate{Request: e.request, Head: s.Head, Main: s.Main, Tree: tree}, c.git, c.gate)
 		if verdict == "" {
+			var infra *InfraFailure
+			if errors.As(err, &infra) && infra.Consecutive >= MaxGateInfraFailures {
+				return finish(Human, fmt.Sprintf("merged-result gate infrastructure failed %d times in a row; last step: %s", infra.Consecutive, infra.Step))
+			}
 			return r, err
 		}
 		// A cleanup failure is reported beside the verdict without spending a correction.
