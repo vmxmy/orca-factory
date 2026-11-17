@@ -6,11 +6,101 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
+
+func TestLane2GlobApprovalDoesNotLoop(t *testing.T) {
+	f := newMergeFixture(t)
+	f.tracker.labels = true
+	f.repos[0].Env["AGENT_LANE2_GLOBS"] = "feature"
+	var frozen Ticket
+	readMergeHandoff(&frozen, f.tracker.rows)
+	handoff, err := json.Marshal(frozen.Handoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.rows[0].Body = "阶段: 排队合并\n归属: 合并通道\nmerge-handoff-v1: " + string(handoff)
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertLane2Review(t, f.tracker.bodies)
+	if f.puts != 0 {
+		t.Fatalf("unapproved handoff merged: puts=%d", f.puts)
+	}
+	proposal, err := json.Marshal(resolver.Resolution{Action: "merge", Reason: "lane 2 diff reviewed", Handoff: frozen.Handoff})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "result", CreatedAt: time.Now(), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
+	for range 3 {
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if f.tracker.issue.State.Name == "Done" {
+			break
+		}
+	}
+	if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
+		t.Fatalf("approved lane 1 handoff hit lane 2 review again: puts=%d state=%s bodies=%q", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)
+	}
+	var current Ticket
+	readMergeHandoff(&current, f.tracker.rows)
+	if current.MergeProblem != "" || !reflect.DeepEqual(current.Handoff, frozen.Handoff) {
+		t.Fatalf("approval changed frozen handoff: before=%+v after=%+v problem=%s", frozen.Handoff, current.Handoff, current.MergeProblem)
+	}
+	reviews := 0
+	for _, body := range f.tracker.bodies {
+		if strings.HasPrefix(body, "Agent处置: lane 2 复核") {
+			reviews++
+		}
+	}
+	if reviews != 1 {
+		t.Fatalf("review count=%d, want 1", reviews)
+	}
+}
+
+func TestMergeReviewCommentFailureRecovers(t *testing.T) {
+	f := newMergeFixture(t)
+	f.tracker.labels = true
+	f.tracker.failBody = "Agent处置: lane 2 复核"
+	f.repos[0].Env["AGENT_LANE2_GLOBS"] = "feature"
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	if err := s.Tick(context.Background()); err == nil || !strings.Contains(err.Error(), "merge receipt write unconfirmed") {
+		t.Fatalf("comment failure not reported: %v", err)
+	}
+	if f.puts != 0 || len(f.tracker.bodies) != 0 {
+		t.Fatalf("failed review wrote a receipt or merged: puts=%d bodies=%q", f.puts, f.tracker.bodies)
+	}
+	f.tracker.failBody = ""
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatalf("review did not recover after comment write failure: %v", err)
+	}
+	assertLane2Review(t, f.tracker.bodies)
+	var current Ticket
+	if err := readOwnership(&current, f.tracker.rows); err != nil {
+		t.Fatal(err)
+	}
+	readMergeHandoff(&current, f.tracker.rows)
+	if current.Owner != machine.OwnerResolver || current.Phase != machine.PhaseResolver || current.Progress == nil || current.Progress.Phase != "waiting" || current.Progress.QueueID != "q1" {
+		t.Fatalf("review ownership not persisted: %+v", current)
+	}
+	if !slices.ContainsFunc(f.tracker.issue.Labels.Nodes, func(label task.NamedID) bool { return label.Name == "auto-failed" }) || f.puts != 0 || len(f.tracker.bodies) != 1 {
+		t.Fatalf("review not persisted exactly once: puts=%d labels=%v bodies=%q", f.puts, f.tracker.issue.Labels.Nodes, f.tracker.bodies)
+	}
+}
 
 func assertHumanEscalation(t *testing.T, bodies []string) {
 	t.Helper()
