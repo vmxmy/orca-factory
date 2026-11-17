@@ -415,6 +415,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 新样本 `testdata/recorded/resolver-escalate-unclassified.json`、`resolver-escalate-other.json` 为 2026-11-11 真实 stdout，未手改。均用 Claude Code 2.1.322，以 `--model claude-opus-5-5 --effort high -p --output-format text --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence` 录制，退出 0、stderr 为空。旧样本角色输入来自 `git show "$(git merge-base origin/main HEAD)":scripts/agent-gates/roles/resolver.md`，录制时基线为 `98487ec02be58badacd2073a898faed5bfd3aa42`；场景沿用缺少部署凭证，输出不含 class。新样本角色输入为本次更新后的 `core/roles/resolver.md` 全文；场景为票面两条 Change 对同一列表要求相反的排序方向，CHECK 无法裁定、修复未推送、无 head、无 SCOPE 缺口且不属六类禁止阻塞，输出 `class=other`。两次输入均仅要求离线输出 JSON 提案，不调用工具、不发消息、不改文件。
 
 
+## gate 结论块（OF-572）
+
+`gate.sh` 的结论块按顺序输出 `UNIT`、`VERDICT`、`STEP`、`REASON`、`EVIDENCE`、`SCOPE`、`LANE`，每个键独占行首且只出现一次。`EVIDENCE` 最多保留 20 行，首行跟在键后，第 2 行起统一以 `| ` 开头。CHECK 输出中的内层结论块因此只作为证据，不会让执行器或合并通道把明确的 red 判成基础设施失败。CHECK 输出仍截取末尾 20 行，Go 侧两个解析器的判定规则不变。`core/gate.test.sh` 的 `ASSERT: nested verdict lines` 回归断言用打印完整内层结论块后非零退出的 CHECK，验证外层仍为 red、STEP 为 check，且结论键行总数为 7。
+
 ## 新测试证据
 
 `CHECK_ASSERTION` 是完整票面中的新增字段，解析、简报、gate spec、刷新与冻结交接保留其原文，不解码 CHECK 或 CHECK_TEST_FILES 的既有转义。
