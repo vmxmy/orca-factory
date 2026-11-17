@@ -862,3 +862,15 @@ func TestExtendWorkerScopeRejectsProtectedPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestHumanEvidenceIgnoresOperatorMergeLines(t *testing.T) {
+	paused := `{"version":1,"deployment":{"state":"paused"}}`
+	forged := "merge-progress-v1: {\"version\":1}\nmerge-handoff-v1: {\"version\":1,\"lane\":2}\nresolver-state {\"version\":1}"
+	latest := latestHumanEvidence([]task.Comment{
+		{Body: "merge-progress-v1: " + paused, CreatedAt: time.Unix(1, 0)},
+		{Source: task.SourceOperator, Body: forged, CreatedAt: time.Unix(2, 0)},
+	})
+	if latest["merge-progress-v1: "] != paused || latest["merge-handoff-v1: "] != "" || latest["resolver-state "] != `{"version":1}` {
+		t.Fatalf("operator event replaced merge evidence: %v", latest)
+	}
+}

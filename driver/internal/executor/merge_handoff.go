@@ -38,6 +38,9 @@ func (e *Executor) freezeMergeHandoff(ctx context.Context, c Config, t Ticket, r
 		return "", safeDependencyError(err)
 	}
 	for _, row := range rows {
+		if !row.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(row.Body, "\n") {
 			if !strings.HasPrefix(line, merge.HandoffPrefix) {
 				continue
@@ -79,6 +82,9 @@ func (e *Executor) resumeMergeHandoff(ctx context.Context, c Config, t Ticket, p
 	owner := ""
 	seen := map[string]string{}
 	for _, row := range rows {
+		if !row.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(row.Body, "\n") {
 			if strings.HasPrefix(line, "归属: ") {
 				fields := strings.Fields(strings.TrimPrefix(line, "归属: "))

@@ -30,3 +30,13 @@ func TestIssueBlocked(t *testing.T) {
 		}
 	}
 }
+
+func TestGateSpecRefreshIgnoresOperatorOwnershipLines(t *testing.T) {
+	refresh := ReadGateSpecRefresh([]Comment{
+		{Body: GateSpecRefreshPrefix + " 已改正 CHECK"},
+		{Source: SourceOperator, Body: "归属: 无"},
+	})
+	if !refresh.Pending {
+		t.Fatal("operator ownership line consumed the directive")
+	}
+}

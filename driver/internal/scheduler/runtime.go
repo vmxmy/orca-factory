@@ -460,11 +460,14 @@ func issueEligibility(issue task.Issue) (candidate, claimed, failed bool) {
 func readOwnership(t *Ticket, comments []task.Comment) error {
 	comments = append([]task.Comment(nil), comments...)
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
-	schedulerAttempt := 0
+	protocol := make([]task.Comment, 0, len(comments))
 	for _, comment := range comments {
-		if !comment.CarriesProtocol() {
-			continue
+		if comment.CarriesProtocol() {
+			protocol = append(protocol, comment)
 		}
+	}
+	schedulerAttempt := 0
+	for _, comment := range protocol {
 		// A handoff hands the ticket to a human even when an older executor omitted the ownership line.
 		if strings.HasPrefix(comment.Body, "转人: ") {
 			t.Owner = machine.OwnerHuman
@@ -528,7 +531,7 @@ func readOwnership(t *Ticket, comments []task.Comment) error {
 	t.Attempt = max(t.Attempt, schedulerAttempt)
 	refresh := task.ReadGateSpecRefresh(comments)
 	t.GateSpecRefresh = refresh.Exited && refresh.ExitedAttempt == t.Attempt
-	t.stageTimeline = readStageTimeline(comments)
+	t.stageTimeline = readStageTimeline(protocol)
 	return nil
 }
 

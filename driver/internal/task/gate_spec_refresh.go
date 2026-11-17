@@ -55,6 +55,9 @@ func ReadGateSpecRefresh(comments []Comment) GateSpecRefresh {
 			refresh.Exited, refresh.ExitedAttempt = !refresh.Done[attempt], attempt
 			refresh.Done[attempt] = true
 		}
+		if !comment.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(comment.Body, "\n") {
 			owner, ok := strings.CutPrefix(line, "归属: ")
 			if !ok {

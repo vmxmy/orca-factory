@@ -175,7 +175,7 @@ func latestHumanEvidence(comments []task.Comment) map[string]string {
 	for _, comment := range rows {
 		for _, line := range strings.Split(comment.Body, "\n") {
 			for _, prefix := range []string{resolver.Prefix, merge.HandoffPrefix, merge.ProgressPrefix} {
-				if raw, ok := strings.CutPrefix(line, prefix); ok {
+				if raw, ok := strings.CutPrefix(line, prefix); ok && (prefix == resolver.Prefix || comment.CarriesProtocol()) {
 					latest[prefix] = raw
 				}
 			}

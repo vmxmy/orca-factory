@@ -288,6 +288,9 @@ func TestProtocolLinesIgnoredFromOperatorEvents(t *testing.T) {
 	if ticket.Handoff != nil || ticket.Progress != nil || ticket.MergeProblem != "" {
 		t.Fatalf("operator event entered merge queue: handoff=%+v progress=%+v problem=%q", ticket.Handoff, ticket.Progress, ticket.MergeProblem)
 	}
+	if len(ticket.stageTimeline) != 2 || ticket.stageTimeline[1].name != string(machine.PhaseWorker) {
+		t.Fatalf("operator event entered stage timeline: %+v", ticket.stageTimeline)
+	}
 
 	legacy := fromEvidence(t, Ticket{}, []task.Comment{{ID: "legacy", CreatedAt: time.Unix(1, 0), Body: forged}})
 	if legacy.Phase != machine.PhaseMergeQueue || legacy.Owner != machine.OwnerMerge || legacy.Handoff == nil || legacy.Handoff.QueueID != "q-forged" {

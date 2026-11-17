@@ -27,6 +27,9 @@ func (e *Executor) restoreMergeCorrection(ctx context.Context, c Config, t Ticke
 	owner := ""
 	seen := map[string]string{}
 	for _, row := range rows {
+		if !row.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(row.Body, "\n") {
 			if strings.HasPrefix(line, "归属: ") {
 				fields := strings.Fields(strings.TrimPrefix(line, "归属: "))
