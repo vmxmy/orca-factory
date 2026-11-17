@@ -130,18 +130,31 @@ fi
 log "--- [lane] $LANE"
 
 # 2. suppression
-SUPP_RE='@ts-nocheck|@ts-ignore|@ts-expect-error|as any|\.only\(|\.skip\('
-SRC_PATHS=('*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' ':!scripts/agent-gates/*')
-HITS="$( { git -C "$WT" diff "$BASE" -- "${SRC_PATHS[@]}" | grep -E '^\+' | grep -Ev '^\+\+\+' || true; } | grep -E "$SUPP_RE" || true)"
-UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard -- "${SRC_PATHS[@]}")"
-if [[ -n "$UNTRACKED" ]]; then
-  while IFS= read -r f; do
-    HITS+="$(grep -HnE "$SUPP_RE" "$WT/$f" 2>/dev/null || true)"$'\n'
-  done <<< "$UNTRACKED"
-  HITS="$(printf '%s' "$HITS" | sed '/^$/d')"
-fi
-log "--- [suppression] hits:" "$HITS"
-[[ -z "$HITS" ]] || verdict red suppression "added lines contain suppression markers" "$HITS"
+for language in js go; do
+  case "$language" in
+    js)
+      SUPP_RE='@ts-nocheck|@ts-ignore|@ts-expect-error|as any|\.only\(|\.skip\('
+      SRC_PATHS=('*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' ':!scripts/agent-gates/*') ;;
+    go)
+      SUPP_RE='(^|[^[:alnum:]_])t[[:space:]]*\.[[:space:]]*Skip(f|Now)?[[:space:]]*\(|//[[:space:]]*nolint([[:space:]:]|$)'
+      SRC_PATHS=('*.go') ;;
+  esac
+  HITS="$( { git -C "$WT" diff "$BASE" -- "${SRC_PATHS[@]}" | grep -E '^\+' | grep -Ev '^\+\+\+' || true; } | grep -E "$SUPP_RE" || true)"
+  UNTRACKED="$(git -C "$WT" ls-files --others --exclude-standard -- "${SRC_PATHS[@]}")"
+  if [[ -n "$UNTRACKED" ]]; then
+    while IFS= read -r f; do
+      HITS+="$(grep -HnE "$SUPP_RE" "$WT/$f" 2>/dev/null || true)"$'\n'
+    done <<< "$UNTRACKED"
+    HITS="$(printf '%s' "$HITS" | sed '/^$/d')"
+  fi
+  log "--- [suppression] $language hits:" "$HITS"
+  [[ -z "$HITS" ]] || verdict red suppression "added lines contain suppression markers" "$HITS"
+done
+while IFS= read -r f; do
+  if [[ "${f##*/}" == .golangci.* && -e "$WT/$f" ]]; then
+    verdict red suppression "golangci configuration added or modified" "$f"
+  fi
+done <<< "$CHANGED"
 
 assertion_infra() {
   log "--- [assertion] infrastructure failure: $*"
