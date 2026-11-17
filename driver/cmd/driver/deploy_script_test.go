@@ -11,6 +11,130 @@ import (
 	"time"
 )
 
+func TestMergeScriptKeepsWorktreeWithUnmergedWork(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		change    string
+		keep      bool
+		doneFails bool
+	}{
+		{name: "different PR", change: "diverged", keep: true},
+		{name: "commits after PR head", change: "ahead", keep: true},
+		{name: "unstaged changes", change: "unstaged", keep: true},
+		{name: "staged changes", change: "staged", keep: true},
+		{name: "untracked files", change: "untracked", keep: true},
+		{name: "clean PR head"},
+		{name: "ancestor of PR head", change: "ancestor"},
+		{name: "ignored files", change: "ignored"},
+		{name: "Done update fails", doneFails: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			bin := filepath.Join(home, "bin")
+			repo := filepath.Join(home, "repo")
+			wt := filepath.Join(home, "worktree")
+			for _, dir := range []string{bin, repo, filepath.Join(home, ".config/orca-factory"), filepath.Join(repo, "scripts/agent-gates")} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write := func(path, body string) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("HOME", home)
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("ORCA_FACTORY_REPO", repo)
+			t.Setenv("DONE_FAILS", strconv.FormatBool(tc.doneFails))
+			git := func(dir string, args ...string) string {
+				t.Helper()
+				cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+				out, err := cmd.CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v\n%s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			git(repo, "init", "-b", "main")
+			git(repo, "config", "user.email", "test@example.com")
+			git(repo, "config", "user.name", "Test")
+			git(repo, "config", "commit.gpgsign", "false")
+			write(filepath.Join(repo, ".gitignore"), "ignored\nscripts/\n")
+			write(filepath.Join(repo, "tracked"), "base\n")
+			git(repo, "add", ".")
+			git(repo, "commit", "-m", "base")
+			base := git(repo, "rev-parse", "HEAD")
+			git(repo, "commit", "--allow-empty", "-m", "PR head")
+			t.Setenv("PR_HEAD", git(repo, "rev-parse", "HEAD"))
+			git(repo, "init", "--bare", filepath.Join(home, "remote.git"))
+			git(repo, "remote", "add", "origin", filepath.Join(home, "remote.git"))
+			git(repo, "worktree", "add", "-b", "candidate", wt)
+			switch tc.change {
+			case "diverged", "ancestor":
+				git(wt, "reset", "--hard", base)
+				if tc.change == "diverged" {
+					git(wt, "commit", "--allow-empty", "-m", "another PR")
+				}
+			case "ahead":
+				git(wt, "commit", "--allow-empty", "-m", "unmerged work")
+			case "unstaged", "staged":
+				write(filepath.Join(wt, "tracked"), "local changes\n")
+				if tc.change == "staged" {
+					git(wt, "add", "tracked")
+				}
+			case "untracked", "ignored":
+				write(filepath.Join(wt, tc.change), "local file\n")
+			}
+			write(filepath.Join(bin, "gh"), `#!/bin/bash
+set -eu
+case "$*" in
+  "pr checks "*" --json name "*) echo 8 ;;
+  "pr checks "*" --watch "*|"pr merge "*) ;;
+  "pr view "*" --json headRefOid "*) echo "$PR_HEAD" ;;
+  "pr view "*" --json state,mergeCommit "*) echo 'MERGED abc1234' ;;
+  *) exit 99 ;;
+esac
+`)
+			write(filepath.Join(home, ".config/orca-factory/driver.env"), "")
+			write(filepath.Join(repo, "scripts/agent-gates/agent-graph.sh"), `#!/bin/bash
+set -eu
+[ "$*" = 'issues status set OF-565 --to Done' ] || exit 99
+echo attempted > "$HOME/done-attempted"
+echo '{"name":"Done"}'
+[ "$DONE_FAILS" = false ] || exit 42
+`)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(ctx, "bash", "../../deploy/ops/merge.sh", "123", "OF-565", wt).CombinedOutput()
+			if (err != nil) != tc.doneFails {
+				t.Errorf("exit error = %v, want failure %v; output:\n%s", err, tc.doneFails, output)
+			}
+			if _, err := os.Stat(filepath.Join(home, "done-attempted")); err != nil {
+				t.Errorf("Done update was not attempted: %v; output:\n%s", err, output)
+			}
+			_, statErr := os.Stat(wt)
+			if tc.keep {
+				if statErr != nil {
+					t.Fatalf("worktree must be preserved: %v; output:\n%s", statErr, output)
+				}
+				git(repo, "show-ref", "--verify", "refs/heads/candidate")
+				if !strings.Contains(string(output), "保留 worktree") {
+					t.Errorf("missing retention reason; output:\n%s", output)
+				}
+			} else {
+				if !os.IsNotExist(statErr) {
+					t.Errorf("worktree must be removed, stat error = %v; output:\n%s", statErr, output)
+				}
+				if branches := git(repo, "branch", "--list", "candidate"); branches != "" {
+					t.Errorf("branch must be removed, got %q", branches)
+				}
+			}
+		})
+	}
+}
+
 func TestDeployFetchRetry(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

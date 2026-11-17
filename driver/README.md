@@ -203,7 +203,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 每个文件按内容决定动作：不存在时 `create`；内容相同时 `unchanged`，不写入；内容不同时 `replace`，先把旧文件改名为 `<文件>.bak-<UTC 时间>` 再写入。二进制只做 `create`、`unchanged` 或 `replace`，不留备份，备份由 `deploy.sh` 负责。`install --dry-run` 逐个列出动作和路径，不写文件、不运行命令。写完后运行 `systemctl --user daemon-reload` 和 `systemctl --user enable orca-factory-driver-watch.timer`。连续运行两次，第二次不写任何文件。
 
-`merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，清理 worktree 与分支，再把票标为 Done。检出同样由 `ORCA_FACTORY_REPO` 指定。
+`merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，再把票标为 Done。只有 worktree 的 HEAD 等于 GitHub 返回的 PR head 或是它的祖先，且没有未提交改动时，才清理 worktree 与分支。未跟踪文件也会阻止清理，忽略文件除外。不满足条件或无法确认时保留 worktree 与分支，输出原因并继续后续步骤。置 Done 失败时脚本以非零状态退出。检出同样由 `ORCA_FACTORY_REPO` 指定。
 
 人工合并 PR 后，可在已加载项目 `agent-graph.env` 的终端执行：
 
