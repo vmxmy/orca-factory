@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -22,6 +24,8 @@ import (
 )
 
 type mergeTransport struct{ url string }
+
+var squashCommitPath = regexp.MustCompile(`/commits/[0-9a-f]{40}$`)
 
 func (m mergeTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	c := r.Clone(r.Context())
@@ -118,6 +122,9 @@ type mergeFixture struct {
 	merged       bool
 	checkState   string
 	prBody       map[string]any
+	// squashParent is the parent GitHub reports for the squash commit; empty
+	// means the current main.
+	squashParent string
 	server       *httptest.Server
 	// rejectPuts makes that many squash PUTs fail without merging.
 	rejectPuts int
@@ -189,6 +196,15 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 				main = strings.Repeat("c", 40)
 			}
 			if _, err := fmt.Fprintf(w, `{"object":{"sha":%q}}`, main); err != nil {
+				t.Error(err)
+				return
+			}
+		case squashCommitPath.MatchString(r.URL.Path):
+			parent := f.squashParent
+			if parent == "" {
+				parent = f.main
+			}
+			if _, err := fmt.Fprintf(w, `{"sha":%q,"parents":[{"sha":%q}]}`, path.Base(r.URL.Path), parent); err != nil {
 				t.Error(err)
 				return
 			}
@@ -770,5 +786,43 @@ func TestRuntimeMergeCanceledTicketIsNotAdvanced(t *testing.T) {
 	}
 	if f.puts != 0 || f.tracker.issue.State.Name != "Canceled" {
 		t.Fatalf("canceled ticket advanced: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
+	}
+}
+
+// A squash whose parent is not the pinned main was merged onto an unvalidated
+// main: the ticket goes to the resolver with both commits, never Done or deployed.
+func TestSquashRejectsMovedBase(t *testing.T) {
+	for _, moved := range []bool{true, false} {
+		t.Run(fmt.Sprint("moved=", moved), func(t *testing.T) {
+			f := newMergeFixture(t)
+			f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
+			moving := strings.Repeat("c", 40)
+			if moved {
+				f.squashParent = moving
+			}
+			smokes := 0
+			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path == "bash" {
+					smokes++
+					return nil, nil
+				}
+				return runx.Run(ctx, s)
+			}
+			_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if !moved {
+				if f.tracker.issue.State.Name != "Done" || smokes != 1 {
+					t.Fatalf("equal parent changed flow: state=%s smokes=%d %v", f.tracker.issue.State.Name, smokes, f.tracker.bodies)
+				}
+				return
+			}
+			if f.puts != 1 || f.tracker.issue.State.Name == "Done" || smokes != 0 || strings.Contains(bodies, `"phase":"merged"`) {
+				t.Fatalf("moved base completed: puts=%d state=%s smokes=%d %v", f.puts, f.tracker.issue.State.Name, smokes, f.tracker.bodies)
+			}
+			last := f.tracker.bodies[len(f.tracker.bodies)-1]
+			if !strings.Contains(last, "Agent处置: ") || !strings.Contains(last, "归属: 处置Agent") || !strings.Contains(last, f.main) || !strings.Contains(last, "parent "+moving) {
+				t.Fatalf("resolver event lacks pinned main and actual parent: %s", last)
+			}
+		})
 	}
 }

@@ -68,6 +68,24 @@ func (c *Client) BranchSHA(ctx context.Context, owner, repo, branch string) (str
 	return commit.SHA, err
 }
 
+// CommitParents returns a commit's parent SHAs in order. A squash commit has
+// exactly one: the main it was written onto.
+func (c *Client) CommitParents(ctx context.Context, owner, repo, sha string) ([]string, error) {
+	var commit struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := c.request(ctx, http.MethodGet, repoPath(owner, repo)+"/commits/"+url.PathEscape(sha), nil, &commit); err != nil {
+		return nil, err
+	}
+	parents := make([]string, 0, len(commit.Parents))
+	for _, p := range commit.Parents {
+		parents = append(parents, p.SHA)
+	}
+	return parents, nil
+}
+
 // CreatePR serializes find/create in this client and recovers uncertain writes
 // by reading before returning an error. It never blindly replays a POST.
 func (c *Client) CreatePR(ctx context.Context, owner, repo string, input CreatePRRequest) (PullRequest, error) {

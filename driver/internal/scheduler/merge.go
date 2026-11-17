@@ -238,6 +238,18 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 	if !commitID(sha) {
 		return errors.New("merged SHA missing")
 	}
+	// GitHub's merge API cannot pin base: a merge outside the lane after the last
+	// main read lands this head on a main no gate validated.
+	if a.main != "" {
+		parents, err := r.GitHub.CommitParents(ctx, owner, repo, sha)
+		if err != nil {
+			return fmt.Errorf("squash parent unavailable: %w", err)
+		}
+		if len(parents) != 1 || parents[0] != a.main {
+			reason := fmt.Sprintf("squash %s landed on parent %s, not pinned main %s", sha, strings.Join(parents, ","), a.main)
+			return r.mergeDecision(ctx, a.ticket, a.main, merge.Result{Status: merge.Human, Reason: reason, Rounds: rounds})
+		}
+	}
 	progress := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: a.main, MainUnknown: a.main == "", MergeSHA: sha, Phase: "merged", CatchupRounds: rounds, Corrections: h.Corrections, Infra: h.Infra, Attempt: h.Attempt}
 	if a.ticket.Progress != nil && a.ticket.Progress.QueueID == h.QueueID {
 		mergechannel.RetainMergeProgress(&progress, a.ticket.Progress)
