@@ -187,7 +187,7 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 	if err != nil {
 		return err
 	}
-	sha := ""
+	sha, receipted := "", false
 	if pr.Merged {
 		sha = pr.MergeSHA
 		if p := t.Progress; p != nil && p.QueueID == h.QueueID {
@@ -195,6 +195,7 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 				return errors.New("conflicting merge progress")
 			}
 			a.main = p.Main
+			receipted = p.Phase == "merged"
 		}
 	} else {
 		if err = r.verifyFreshDecision(ctx, t, githubSquash); err != nil {
@@ -239,8 +240,10 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 		return errors.New("merged SHA missing")
 	}
 	// GitHub's merge API cannot pin base: a merge outside the lane after the last
-	// main read lands this head on a main no gate validated.
-	if a.main != "" {
+	// main read lands this head on a main no gate validated. A merged receipt
+	// either passed this comparison or came from driver release, whose main is
+	// historical and answered for by the person who released.
+	if a.main != "" && !receipted {
 		parents, err := r.GitHub.CommitParents(ctx, owner, repo, sha)
 		if err != nil {
 			return fmt.Errorf("squash parent unavailable: %w", err)

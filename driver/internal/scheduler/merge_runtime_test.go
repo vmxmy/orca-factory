@@ -825,4 +825,19 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 			}
 		})
 	}
+	// driver release keeps a historical main in its merged receipt; the person
+	// who released that squash already answered for its base.
+	t.Run("released", func(t *testing.T) {
+		f := newMergeFixture(t)
+		f.merged = true
+		f.squashParent = strings.Repeat("c", 40)
+		raw := fmt.Sprintf(`{"attempt":1,"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"merged"}`, f.head, f.main, strings.Repeat("a", 40))
+		f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "release", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
+		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if bodies := strings.Join(f.tracker.bodies, "\n"); f.tracker.issue.State.Name != "Done" || strings.Contains(bodies, "Agent处置: ") {
+			t.Fatalf("released squash sent to resolver: state=%s %v", f.tracker.issue.State.Name, f.tracker.bodies)
+		}
+	})
 }
