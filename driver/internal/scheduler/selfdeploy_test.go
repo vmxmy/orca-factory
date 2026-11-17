@@ -32,6 +32,7 @@ type selfDeployHost struct {
 	guardErr                 error
 	smokeOut                 []byte
 	smokeErr                 error
+	gateway                  string
 	kill                     string
 	cancel                   context.CancelFunc
 }
@@ -58,6 +59,8 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 	case s.Path == "systemd-run":
 		h.guard = s.Args
 		return nil, h.guardErr
+	case s.Path == "systemctl" && slices.Contains(s.Args, "show") && slices.Contains(s.Args, "orca-factory-feishu-gateway"):
+		return []byte(h.gateway), nil
 	case s.Path == "systemctl" && slices.Contains(s.Args, "show"):
 		return fmt.Appendf(nil, "MainPID=%d\nActiveState=active\n", os.Getpid()), nil
 	case s.Path == "systemctl" && slices.Contains(s.Args, "stop"):
@@ -92,7 +95,7 @@ func newSelfDeployFixture(t *testing.T) (*mergeFixture, *selfDeployHost) {
 	f := newMergeFixture(t)
 	root := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)
-	h := &selfDeployHost{driver: filepath.Join(t.TempDir(), "orca-factory-driver"), smokeOut: []byte(unrelatedDoctorFails), smokeErr: errors.New("exit status 1"), cancel: func() {}}
+	h := &selfDeployHost{driver: filepath.Join(t.TempDir(), "orca-factory-driver"), smokeOut: []byte(unrelatedDoctorFails), smokeErr: errors.New("exit status 1"), gateway: "LoadState=loaded\nActiveState=active\n", cancel: func() {}}
 	if err := os.WriteFile(h.driver, fakeDriver("old"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +216,30 @@ func TestSelfDeploySmokeFailureRollsBack(t *testing.T) {
 	err := serveAs(f, h, "old")
 	if h.builds != 1 || h.smokes != 1 || h.restarts != 2 || f.tracker.issue.State.Name == "Done" || maintenanceMode(t) != "running" {
 		t.Fatalf("paused deployment acted again: err=%v builds=%d smokes=%d restarts=%d state=%s", err, h.builds, h.smokes, h.restarts, f.tracker.issue.State.Name)
+	}
+}
+
+// The gateway unit runs the same binary: a crash-looping gateway fails the
+// smoke, while a machine without the unit deploys as before.
+func TestSelfDeploySmokeRequiresGatewayActive(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.gateway = "LoadState=loaded\nActiveState=activating\n"
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err == nil || !strings.Contains(err.Error(), "orca-factory-feishu-gateway") {
+		t.Fatalf("smoke passed with a crash-looping gateway: err=%v", err)
+	}
+	if f.tracker.issue.State.Name == "Done" || installed(t, h.driver) != "old" || !markerExists(f, selfSHA, "rolled-back") {
+		t.Fatalf("gateway failure did not roll back: state=%s installed=%q ledger=%s", f.tracker.issue.State.Name, installed(t, h.driver), lastState(f))
+	}
+
+	f, h = newSelfDeployFixture(t)
+	h.gateway = "LoadState=not-found\nActiveState=inactive\n"
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err != nil {
+		t.Fatalf("missing gateway unit failed the deployment: %v", err)
+	}
+	if f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" {
+		t.Fatalf("deployment without a gateway unit: state=%s ledger=%s", f.tracker.issue.State.Name, lastState(f))
 	}
 }
 

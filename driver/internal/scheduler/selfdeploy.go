@@ -494,7 +494,8 @@ func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progr
 }
 
 // selfSmoke judges only what this deployment can break: the version (checked
-// before), the serve unit running this process, the config loading (doctor
+// before), the serve unit running this process, the installed gateway unit
+// running the same binary, the config loading (doctor
 // reports at all) and Orca answering. Other doctor fails, such as an old
 // fetch or a long drain, are the environment's and only logged.
 func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) error {
@@ -522,6 +523,9 @@ func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) er
 	if err := r.serveReady(ctx); err != nil {
 		return err
 	}
+	if err := r.gatewayReady(ctx); err != nil {
+		return err
+	}
 	if _, err := r.Orca.AutomationsList(ctx); err != nil {
 		return fmt.Errorf("orca unreachable: %w", err)
 	}
@@ -530,9 +534,34 @@ func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) er
 
 // serveReady requires systemd to run this very process as the active serve.
 func (r *Runtime) serveReady(ctx context.Context) error {
-	out, err := r.runFor(ctx, 30*time.Second, "", "systemctl", "--user", "show", "--property=ActiveState,MainPID", "orca-factory-driver")
+	props, err := r.unitProperties(ctx, "orca-factory-driver", "ActiveState,MainPID")
 	if err != nil {
 		return err
+	}
+	if props["ActiveState"] != "active" || props["MainPID"] != strconv.Itoa(os.Getpid()) {
+		return errors.New("orca-factory-driver unit is not active with this serve as its main process")
+	}
+	return nil
+}
+
+// gatewayReady requires the installed gateway unit, which runs the same
+// binary, to be active; a machine without the unit has nothing to check.
+func (r *Runtime) gatewayReady(ctx context.Context) error {
+	const unit = "orca-factory-feishu-gateway"
+	props, err := r.unitProperties(ctx, unit, "LoadState,ActiveState")
+	if err != nil {
+		return err
+	}
+	if props["LoadState"] == "not-found" || props["ActiveState"] == "active" {
+		return nil
+	}
+	return fmt.Errorf("%s unit is %s, not active", unit, props["ActiveState"])
+}
+
+func (r *Runtime) unitProperties(ctx context.Context, unit, properties string) (map[string]string, error) {
+	out, err := r.runFor(ctx, 30*time.Second, "", "systemctl", "--user", "show", "--property="+properties, unit)
+	if err != nil {
+		return nil, err
 	}
 	props := map[string]string{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -540,10 +569,7 @@ func (r *Runtime) serveReady(ctx context.Context) error {
 			props[key] = value
 		}
 	}
-	if props["ActiveState"] != "active" || props["MainPID"] != strconv.Itoa(os.Getpid()) {
-		return errors.New("orca-factory-driver unit is not active with this serve as its main process")
-	}
-	return nil
+	return props, nil
 }
 
 // rollbackSelf restores the binary this deployment replaced and restarts,
