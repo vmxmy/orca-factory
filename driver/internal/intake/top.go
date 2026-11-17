@@ -32,10 +32,11 @@ func TopMustHuman(class string) bool {
 	return false
 }
 
-// FaceLaneThree reports a ticket face that predicts lane 3.
+// FaceLaneThree reports a ticket face that predicts lane 3 in any LANE
+// heading; humanReleaseRefusal uses the same reading.
 func FaceLaneThree(description string) bool {
-	m := laneHeading.FindStringSubmatch(description)
-	return m != nil && m[1] == "3"
+	three, _ := faceLaneThree(description)
+	return three
 }
 
 const (
