@@ -13,6 +13,11 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
+const (
+	gateTimeout  = 60 * time.Minute
+	gateLockWait = 30 * time.Minute
+)
+
 // Commands runs all subprocesses through runx. ReviewerCommand is trusted local
 // configuration, never ticket text. Run may be replaced by a fake in tests.
 type Commands struct {
@@ -119,7 +124,13 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 			return "", &infra.Ticket{Err: errors.New("verification install failed")}
 		}
 	}
-	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
+	b, err := c.runSpec(ctx, runx.Spec{
+		Path:    filepath.Join(repo, "scripts", "agent-gates", "gate.sh"),
+		Args:    []string{dir, spec},
+		Dir:     repo,
+		Env:     append(os.Environ(), fmt.Sprintf("GATE_LOCK_WAIT=%d", gateLockWait/time.Second)),
+		Timeout: gateTimeout,
+	})
 	return string(b), err
 }
 func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate *float64) (out, tier string, err error) {
