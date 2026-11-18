@@ -84,6 +84,17 @@ func TestRecordedMergeHeadModified(t *testing.T) {
 	}
 }
 
+// The squash of PR #676 has one parent: the main it was written onto.
+func TestRecordedSquashCommitParents(t *testing.T) {
+	c := recordedServer(t, map[string]string{
+		"/commits/d37586176226acaace864834a4fd28bc962a5931": "github-commit-squash-parents.json",
+	}, nil)
+	parents, err := c.CommitParents(context.Background(), "vmxmy", "orca-factory", "d37586176226acaace864834a4fd28bc962a5931")
+	if err != nil || len(parents) != 1 || parents[0] != "acdc109058ba678153b57aa42722b8ce70772c08" {
+		t.Fatalf("parents=%v err=%v", parents, err)
+	}
+}
+
 // Recorded through gh api repos/vmxmy/orca-factory/actions/workflows/go.yml/runs
 // for a pushed SHA that the workflow never ran on.
 func TestRecordedDeploymentWithoutRuns(t *testing.T) {
