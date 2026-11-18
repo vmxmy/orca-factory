@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -644,8 +645,16 @@ func TestSelfDeployIdleWaitDoesNotBlockOtherRepositories(t *testing.T) {
 			release()
 		}
 	})
-	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	var logs strings.Builder
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 	for round := 1; round <= 2; round++ {
+		if round == 2 {
+			// A manual deploy.sh may take deploy.lock between ticks and resume on exit.
+			if err := maintenance.SetWithin("running", time.Second); err != nil {
+				t.Fatal(err)
+			}
+		}
+		logs.Reset()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		err := s.Tick(ctx)
 		blocked := ctx.Err()
@@ -656,7 +665,18 @@ func TestSelfDeployIdleWaitDoesNotBlockOtherRepositories(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "等待会话空闲，已等待 ") {
 			t.Fatalf("round %d did not report the idle wait: %v", round, err)
 		}
-		t.Logf("round %d: %v", round, err)
+		refused := false
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "event=claim") && strings.Contains(line, "ticket=OTHER-1") && strings.Contains(line, "result=deferred") && strings.Contains(line, "maintenance blocks new claim or dispatch") {
+				refused = true
+			}
+		}
+		if !refused {
+			t.Fatalf("round %d did not refuse repository B's claim through the drain:\n%s", round, logs.String())
+		}
+		if maintenanceMode(t) != "draining" {
+			t.Fatalf("round %d left the idle wait without the drain: mode=%s", round, maintenanceMode(t))
+		}
 	}
 	if maintenanceMode(t) != "draining" || h.builds != 0 || lastState(f) != "pending" || !markerExists(f, selfSHA, "idle-wait") {
 		t.Fatalf("idle wait state: mode=%s builds=%d state=%s", maintenanceMode(t), h.builds, lastState(f))

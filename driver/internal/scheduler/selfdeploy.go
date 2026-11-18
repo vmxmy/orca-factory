@@ -207,12 +207,17 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
+	}
+	// deploy.lock is released between ticks, so a manual deploy.sh may have
+	// resumed in the meantime. Drain again, keeping the original wait start.
+	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
+		var state maintenance.State
+		if state, err = maintenance.Read(); err == nil && (!waiting || state.Mode == "running") {
 			err = maintenance.SetWithin("draining", maintenanceWait)
 		}
-		if err == nil {
-			err = writeIdleWait(idleWait, now, -1)
-		}
+	}
+	if err == nil && !waiting {
+		err = writeIdleWait(idleWait, now, -1)
 	}
 	if err == nil {
 		err = r.awaitIdle(idleWait, now, func(elapsed time.Duration) {

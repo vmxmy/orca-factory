@@ -240,7 +240,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。取得锁后先核对当前 serve 的 `main.version`：它等于 squash SHA，或在仓库检出里是 squash SHA 的后代（`git merge-base --is-ancestor`，`deploy.sh` 写入的短 SHA 也适用），说明人工部署已上线更新的提交（OF-558）。这时不 drain、不备份、不构建、不替换，账本写 `deploy-intent` 后直接走第 8 步的 smoke。祖先关系查不出来（例如检出里没有该版本）时记 WARN，按不包含处理，照常安装。
-2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，再写 `self-deploy/<sha>.idle-wait` 标记（`<RFC3339Nano 开始时刻> <已回报的等待时长>`）记下等待起点。之后每轮巡检取锁、检查一次 `writersActive` 与 `sessionsActive`，都为 false 才继续；否则本轮放锁返回等待，下一轮再查，最多 1 小时（OF-580）。等待不占用调度循环：同一 serve 的其他仓库照常合并、部署、回收已有执行器与处置结果，status 快照照常刷新；drain 是全局维护状态，所有仓库的新认领与派工照旧被拒，本仓库合并队列仍等这次部署完成。
+2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，再写 `self-deploy/<sha>.idle-wait` 标记（`<RFC3339Nano 开始时刻> <已回报的等待时长>`）记下等待起点。之后每轮巡检取锁，维护状态已变回 `running`（例如两轮之间人工 `deploy.sh` 退出时恢复）就重新 drain，不重设等待起点；再检查一次 `writersActive` 与 `sessionsActive`，都为 false 才继续；否则本轮放锁返回等待，下一轮再查，最多 1 小时（OF-580）。等待不占用调度循环：同一 serve 的其他仓库照常合并、部署、回收已有执行器与处置结果，status 快照照常刷新；drain 是全局维护状态，所有仓库的新认领与派工照旧被拒，本仓库合并队列仍等这次部署完成。
 3. 空闲后，账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
 4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
 5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。
