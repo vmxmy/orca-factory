@@ -17,6 +17,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -273,6 +276,69 @@ func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
 	}
 }
 
+func TestResolverRequeueAfterTwoCatchupRoundsGetsAttempt(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	base := Ticket{ID: "id", Identifier: "ENG-1", Repo: f.repos[0].Path}
+	old := fromEvidence(t, base, f.tracker.rows)
+	progress := merge.Progress{
+		Version: 1, QueueID: old.Handoff.QueueID, TicketID: old.ID,
+		Repository: old.Handoff.Repository, PR: old.Handoff.PR, Head: old.Handoff.Head,
+		Main: f.main, Phase: "human", CatchupRounds: 2, Attempt: 1,
+		Reason: "main advanced for two rounds",
+	}
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, "阶段: Agent处置\n归属: 处置Agent\n"+merge.ProgressPrefix+string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	h := *old.Handoff
+	h.QueueID, h.CatchupRounds = "q2", 2
+	proposal, err := json.Marshal(resolver.Resolution{Action: "merge", Reason: "revalidated", Handoff: &h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, "阶段: Agent处置\n归属: 处置Agent\n"+resolver.Prefix+string(record)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.runtime.applyResolution(ctx, fromEvidence(t, base, f.tracker.rows)); err != nil {
+		t.Fatal(err)
+	}
+	queued := fromEvidence(t, base, f.tracker.rows)
+	if queued.Handoff.QueueID != "q2" || queued.Owner != machine.OwnerMerge {
+		t.Fatalf("resolver did not enqueue new handoff: %+v", queued)
+	}
+	f.rejectPuts = 1
+	err = f.runtime.advanceMerge(ctx, queued)
+	after := fromEvidence(t, base, f.tracker.rows)
+	if after.Progress != nil && after.Progress.Reason == "catch-up budget exhausted" {
+		t.Fatal("new queue's first Next returned catch-up budget exhausted")
+	}
+	if err == nil || err.Error() != "squash merge unconfirmed" || f.puts != 1 {
+		t.Fatalf("new queue's first Next must attempt squash, not exhaust catch-up: puts=%d err=%v", f.puts, err)
+	}
+
+	progress.QueueID, progress.Phase = h.QueueID, "waiting"
+	raw, err = json.Marshal(progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, merge.ProgressPrefix+string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	err = f.runtime.advanceMerge(ctx, fromEvidence(t, base, f.tracker.rows))
+	after = fromEvidence(t, base, f.tracker.rows)
+	if err != nil || after.Progress == nil || after.Progress.QueueID != h.QueueID || after.Progress.Reason != "catch-up budget exhausted" || after.Owner != machine.OwnerResolver || f.puts != 1 {
+		t.Fatalf("same queue must reject a third catch-up: puts=%d progress=%+v owner=%s err=%v", f.puts, after.Progress, after.Owner, err)
+	}
+}
+
 func rewriteHandoff(t *testing.T, f *mergeFixture, edit func(map[string]any)) {
 	t.Helper()
 	parts := strings.Split(f.tracker.rows[0].Body, "merge-handoff-v1: ")
@@ -395,8 +461,15 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 				delete(f.prBody, "mergeable")
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+			if f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
 				t.Fatalf("unsafe evidence %s: err=%v puts=%d state=%s", kind, err, f.puts, f.tracker.issue.State.Name)
+			}
+			if kind == "changed-head" {
+				if err != nil || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "Agent处置: PR identity changed\n证据: PR head/base 与冻结 handoff 不符\n处置要求:") {
+					t.Fatalf("changed head did not transfer for review: err=%v bodies=%q", err, f.tracker.bodies)
+				}
+			} else if err == nil {
+				t.Fatalf("unsafe evidence %s did not wait", kind)
 			}
 		})
 	}
@@ -539,6 +612,88 @@ func (m *mergeTickets) CreateComment(ctx context.Context, id, body string) (task
 }
 func (m *mergeTickets) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	return m.row(id).UpdateIssue(ctx, id, state, add, remove)
+}
+
+func TestMergeQueueReleasesHeadWhenPRChangedOrClosed(t *testing.T) {
+	for _, scenario := range []string{"head changed", "base changed", "closed", "mergeability unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newMergeFixture(t)
+			first := *f.tracker
+			first.issue.ID, first.issue.Identifier = "first", "ENG-2"
+			first.rows = append([]task.Comment(nil), f.tracker.rows...)
+			ff := *f
+			ff.tracker = &first
+			rewriteHandoff(t, &ff, func(h map[string]any) {
+				h["ticket_id"], h["identifier"], h["pr"] = "first", "ENG-2", 2
+				h["queue_id"], h["enqueued_at"] = "q0", "2026-10-06T00:00:00Z"
+			})
+			f.runtime.Clients[f.repos[0].Path] = &mergeTickets{rows: []*mergeIssues{f.tracker, &first}}
+			raw, err := json.Marshal(f.prBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pr map[string]any
+			if err := json.Unmarshal(raw, &pr); err != nil {
+				t.Fatal(err)
+			}
+			pr["number"], pr["body"] = 2, "Fixes ENG-2"
+			pr["head"].(map[string]any)["ref"] = "agent/ENG-2/executor"
+			event := "PR identity changed"
+			switch scenario {
+			case "head changed":
+				pr["head"].(map[string]any)["sha"] = strings.Repeat("b", 40)
+			case "base changed":
+				pr["base"].(map[string]any)["ref"] = "release"
+			case "closed":
+				pr["state"], pr["mergeable"] = "closed", nil
+				event = "PR closed without merge"
+			case "mergeability unknown":
+				pr["mergeable"] = nil
+			}
+			original := f.server.Config.Handler
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/pulls/2") {
+					if err := json.NewEncoder(w).Encode(pr); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				original.ServeHTTP(w, r)
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			// A transient snapshot failure keeps the FIFO head and retries on the next tick.
+			for i := 0; i < 5 && f.tracker.issue.State.Name != "Done"; i++ {
+				// Resolver dispatch is outside this fixture; inspect its durable ownership below.
+				_ = s.Tick(context.Background())
+			}
+			rows, err := f.runtime.Snapshot(context.Background(), f.repos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var owner machine.Owner
+			for _, row := range rows {
+				if row.ID == first.issue.ID {
+					owner = row.Owner
+				}
+			}
+			queued := slices.ContainsFunc(s.MergeQueue, func(row Ticket) bool { return row.ID == first.issue.ID })
+			if scenario == "mergeability unknown" {
+				if !queued || owner != machine.OwnerMerge || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+					t.Fatalf("unknown mergeability did not retain FIFO head: queued=%v owner=%s puts=%d next=%s", queued, owner, f.puts, f.tracker.issue.State.Name)
+				}
+				return
+			}
+			if queued || owner != machine.OwnerResolver || first.issue.State.Name != "In Progress" {
+				t.Fatalf("invalid PR retained queue ownership: queued=%v owner=%s state=%s", queued, owner, first.issue.State.Name)
+			}
+			if f.puts != 1 || !f.merged || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("next PR did not merge: puts=%d merged=%v state=%s", f.puts, f.merged, f.tracker.issue.State.Name)
+			}
+			if !strings.Contains(strings.Join(first.bodies, "\n"), "Agent处置: "+event) {
+				t.Fatalf("missing specific resolver event: %q", first.bodies)
+			}
+		})
+	}
 }
 
 func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {

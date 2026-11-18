@@ -1,0 +1,14 @@
+{
+  "comments": [
+    {
+      "id": "reczz28az6e8lNox",
+      "body": "resolver-state {\"top_launch_accepted\":true,\"top\":true,\"top_used\":true,\"top_reason\":\"REDACTED\",\"creator\":\"term_eb18b36c-9a70-4013-aaf6-be6f6e0c3a99\",\"version\":1,\"attempt\":7,\"phase\":\"waiting\",\"run\":\"run_e636e186df7b\",\"task\":\"task_e1adc29ffec0\",\"dispatch\":\"ctx_a92e5eb52788\",\"spec\":\"REDACTED\",\"agent\":\"claude\",\"model\":\"claude-fable-5-2\",\"effort\":\"xhigh\",\"result\":\"终审模型未获响应，不更换模型\",\"outcome\":\"failed\",\"retry_at\":\"2026-11-18T11:06:02.618653327+08:00\"}",
+      "createdAt": "2026-11-18T11:01:04+08:00"
+    },
+    {
+      "id": "reczz28azmPB0S1c",
+      "body": "resolver-state {\"top_launch_accepted\":true,\"top\":true,\"top_used\":true,\"top_reason\":\"REDACTED\",\"creator\":\"term_865c3a08-5e5e-4e62-b9f1-32ec8e293121\",\"version\":1,\"attempt\":8,\"phase\":\"running\",\"run\":\"run_bee681a1711c\",\"task\":\"task_4cf24f3afd1f\",\"dispatch\":\"ctx_e48abaabae95\",\"spec\":\"REDACTED\",\"agent\":\"claude\",\"model\":\"claude-fable-5-2\",\"effort\":\"xhigh\",\"retry_at\":\"0001-01-01T00:00:00Z\"}",
+      "createdAt": "2026-11-18T11:40:36+08:00"
+    }
+  ]
+}

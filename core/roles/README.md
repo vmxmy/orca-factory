@@ -66,6 +66,7 @@ Constraints:
 
 gate spec 与简报分开放：`.omc/tmp/<ID>/<unit>.gate.spec` 只含 `UNIT / SCOPE / CHECK / CHECK_IS_NEW_TEST / CHECK_TEST_FILES / CHECK_ASSERTION`。
 
+gate 的 `suppression` 步也检查 Go：`*.go` 新增行中的 `t.Skip(...)`、`t.Skipf(...)`、`t.SkipNow()` 和 `//nolint`（含指定规则）会判红；新增或修改任意目录下的 `.golangci.*` 配置同样判红。已有且未改动的标记和配置不受影响。不提供放行开关；确需新增 skip 时，与 TS 抑制标记一样转人处理。
 
 ## 新测试的确定性证据
 

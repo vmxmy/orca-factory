@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -320,5 +321,59 @@ func TestRuntimeMergeGateInfrastructureRerunsWithoutBudget(t *testing.T) {
 				t.Fatalf("infrastructure spent budget or did not rerun: runs=%d puts=%d bodies=%v", runs.Load(), f.puts, f.tracker.bodies)
 			}
 		})
+	}
+}
+
+func TestMergeGateInfrastructureRerunsAreBounded(t *testing.T) {
+	f := overlapFixture(t, false)
+	closeMergeGates(t, f.runtime)
+	f.repos[0].Env["AGENT_INSTALL_CMD"] = "make deps"
+	var installs, gates atomic.Int32
+	f.runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path != "bash" {
+			return runx.Run(ctx, spec)
+		}
+		if spec.Args[0] == "-c" {
+			installs.Add(1)
+			return nil, errors.New("install failed")
+		}
+		gates.Add(1)
+		return []byte(mergedGreen), nil
+	}
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := tickAlone(t, s); err != nil {
+			t.Fatal(err)
+		}
+		awaitMergeGate(t, f.runtime, f)
+		err := tickAlone(t, s)
+		if attempt < 3 && (err == nil || len(f.tracker.bodies) != 0) {
+			t.Fatalf("attempt %d lost infrastructure error or wrote a decision: err=%v bodies=%v", attempt, err, f.tracker.bodies)
+		}
+		if attempt == 3 && err != nil {
+			t.Fatalf("third infrastructure failure did not transfer ownership: %v", err)
+		}
+	}
+	rows, err := f.runtime.Snapshot(context.Background(), f.repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Owner != machine.OwnerResolver {
+		t.Fatalf("ticket not assigned to resolver: %+v", rows)
+	}
+	progress := mergeProgress(t, f.tracker.bodies)
+	if len(progress) != 1 || progress[0].Phase != "human" || progress[0].QueueID != "q1" || progress[0].Corrections != 0 || progress[0].Infra != 0 || !strings.Contains(progress[0].Reason, "3 consecutive infrastructure failures") {
+		t.Fatalf("missing bounded infrastructure receipt or budget changed: %+v", progress)
+	}
+	if body := strings.Join(f.tracker.bodies, "\n"); !strings.Contains(body, "失败次数: 3") || !strings.Contains(body, "最后失败步骤: gate") {
+		t.Fatalf("receipt lacks failure evidence: %s", body)
+	}
+	// Resolver dispatch is outside this fixture; subsequent ticks must drop the merge entry.
+	for i := 0; i < 3; i++ {
+		_ = tickAlone(t, s)
+		awaitMergeGate(t, f.runtime, f)
+	}
+	if len(s.MergeQueue) != 0 || installs.Load() != 3 || gates.Load() != 0 || f.puts != 0 {
+		t.Fatalf("failed ticket kept rerunning: queued=%d installs=%d gates=%d merges=%d", len(s.MergeQueue), installs.Load(), gates.Load(), f.puts)
 	}
 }

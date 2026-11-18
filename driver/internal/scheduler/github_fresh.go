@@ -60,6 +60,10 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 	if fresh.Owner != t.Owner || fresh.Phase != t.Phase || fresh.Terminal != t.Terminal || fresh.Run != t.Run || fresh.Attempt != t.Attempt || fresh.MaintenanceRefused != t.MaintenanceRefused || fresh.GateSpecRefresh != t.GateSpecRefresh || !reflect.DeepEqual(fresh.Handoff, t.Handoff) || !reflect.DeepEqual(fresh.Progress, t.Progress) || fresh.MergeProblem != t.MergeProblem {
 		return fmt.Errorf("task ownership or recovery evidence changed: %w", errResnapshot)
 	}
+	_, _, failed := issueEligibility(task.Issue)
+	if t.Owner == machine.OwnerExecutor && t.AutoFailed != failed {
+		return fmt.Errorf("task failure label changed: %w", errResnapshot)
+	}
 	closed := task.State.Name == "Canceled" || task.State.Name == "Cancelled" || task.State.Name == "Duplicate" || (task.State.Name == "Done" && fresh.Owner != machine.OwnerMerge)
 	releasing := action == Resolve && task.State.Name == "Done" && landedDonePending(fresh)
 	if closed && !releasing && !DeploymentBarrier(fresh) {
