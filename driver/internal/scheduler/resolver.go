@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -333,6 +335,41 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	}
 	if !mergechannel.PRMatchesHandoff(pr, h) {
 		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, mergechannel.HandoffBranch(h), h.Head, h.Repository))
+	}
+	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("read ticket face for resolver gate_spec: %w", err)
+	}
+	face, err := executor.ParseTicket(t.ID, t.Identifier, t.Title, description)
+	if err != nil {
+		return r.retryResolution(ctx, t, p, "cannot validate gate_spec: ticket requires 要做, CHECK and SCOPE")
+	}
+	newTest := "no"
+	if face.NewTest {
+		newTest = "yes"
+	}
+	expected := map[string]string{
+		"UNIT": h.Unit, "SCOPE": face.Scope, "CHECK": face.Check,
+		"CHECK_IS_NEW_TEST": newTest, "CHECK_TEST_FILES": face.TestFiles,
+		"CHECK_ASSERTION": face.Assertion, "LANE": strconv.Itoa(face.Lane),
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(h.GateSpec, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(line, ":")
+		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
+		want, known := expected[key]
+		if !ok || !known || seen[key] || value != want {
+			return r.retryResolution(ctx, t, p, "gate_spec differs from driver-parsed ticket fields; use the ticket's gate spec")
+		}
+		seen[key] = true
+	}
+	for key, value := range expected {
+		if !seen[key] && value != "" && !(key == "CHECK_IS_NEW_TEST" && value == "no") {
+			return r.retryResolution(ctx, t, p, "gate_spec missing driver-parsed ticket field: "+key)
+		}
 	}
 	if t.Handoff != nil && h.QueueID == t.Handoff.QueueID {
 		if t.Progress != nil && (t.Progress.Phase == "human" || t.Progress.Phase == "correction") {

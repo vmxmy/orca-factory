@@ -48,14 +48,15 @@ func snapshotFailureReason(err error) string {
 }
 
 type Request struct {
-	Repository     string // canonical owner/repository; identical for every local checkout
-	Path           string // local checkout used by Git implementations
-	Number         int
-	Ticket         string // ticket identifier, for logs only
-	QueueID        string // frozen handoff queue_id; with the head it identifies a gate verdict
-	DeployWorkflow string // AGENT_DEPLOY_WORKFLOW
-	SmokeCommand   string // AGENT_SMOKE_CMD
-	CatchupRounds  int    // carry Result.Rounds when the scheduler resubmits a correction
+	Repository       string // canonical owner/repository; identical for every local checkout
+	Path             string // local checkout used by Git implementations
+	Number           int
+	Ticket           string // ticket identifier, for logs only
+	QueueID          string // frozen handoff queue_id; with the head it identifies a gate verdict
+	DeployWorkflow   string // AGENT_DEPLOY_WORKFLOW
+	SmokeCommand     string // AGENT_SMOKE_CMD
+	CatchupRounds    int    // carry Result.Rounds when the scheduler resubmits a correction
+	ExternalEvidence bool   // gate evidence came from an agent rather than the driver
 }
 
 type Snapshot struct {
@@ -308,7 +309,7 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 	if s.Head == "" || s.Main == "" {
 		return r, errors.New("incomplete merge snapshot")
 	}
-	if s.Behind {
+	if s.Behind || e.request.ExternalEvidence {
 		if c.git == nil {
 			return r, errors.New("merge validation dependencies required")
 		}

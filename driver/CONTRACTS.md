@@ -212,6 +212,9 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 验证：runx `TestExternalCallLog`，Orca `TestGitHubRequestLog`、`TestOrcaReadRequestID`、`TestOrcaFailureProcessLog`，命令入口 `TestExecCompatibility`。真实请求头来自上述录制文件，测试不依赖网络。
 ## Resolver 处置
 
+- OF-577：调度器接受 merge 提案前调用 `executor.ParseTicket` 解析当前票面，逐字段核对 gate_spec 的 UNIT、SCOPE、CHECK、CHECK_IS_NEW_TEST、CHECK_TEST_FILES、CHECK_ASSERTION 与 LANE；UNIT 绑定交接单元，LANE 使用 driver 的解析值，实际合并批准仍取 gate 的 lane。缺失必填字段、重复字段、未知字段或值不一致均拒绝；缺省的新测试标记视为 no，空的可选字段允许省略。读取失败保留原状态，票面不可解析或 spec 不一致退回处置并说明原因。处置 Agent 不能决定 gate_spec。
+- `merge.Request.ExternalEvidence` 标记处置来源的 gate 证据；scheduler 按 `resolverApproved` 填写。该来源即使未落后 main，也在固定 head/main 的合并结果上由 driver 运行 gate，green 后才允许 squash，red 走既有 correction 路径；非处置交接和 lane 2 批准规则保持原行为。`scheduler.TestResolverHandoffIsGatedByDriverBeforeSquash` 覆盖等待、green 和 red，`scheduler.TestResolverCannotReplaceGateSpec` 覆盖票面字段被替换的拒绝。这些是合成行为回归，不是新的外部响应录制。
+
 - 开 PR 结果格式：`{"action":"open-pr","branch":"agent/OF-5/executor","head":"c4e86ec5465d1e2d1f6aea45053e663b54a1350b","title":"修复标题","body":"修复说明","reason":"gate 已通过"}`。五个载荷字段都必填，head 为 40 位十六进制 SHA，reason 保持单行。`resolver.TestResolverOpenPRResult` 读取 `orca-task-list.json`，保留真实 `worker_report` 信封，仅替换其 `body`，并从 `github-pr-open-clean.json` 读取示例 head；`scheduler.TestResolverOpenPR` 读取该 PR 样本和 `github-commit-main.json` 覆盖 GitHub 响应。
 - 调度器核对远端分支 head 后按分支 FindOpenPR，无已有 PR 才 CreatePR。复用已有 PR 时，正文前缀须匹配当前票据链接及 canonical identifier / ID。新 PR 正文首行为票据关联链接，后附 canonical identifier / ID，与执行器一致。处置证据事件记录 PR 号和 head，并以 waiting 状态开启下一次处置，等待 CI 后提交 merge handoff。
 - 分支读取失败、head 不符、PR 查询或创建失败、PR 回执 head 不符均写证据并转人，resolver-state 的 human 状态禁止自动重试；需要人工核实并明确更新处置回执后才能继续。事件写入失败则保留原回执以便对账，已有 PR 按分支复用。`scheduler.TestResolverOpenPR` 覆盖 PR 创建与复用、head 不符、操作失败及票据关联冲突，包含 CreatePR 内部二次查询和失败后回读的复用路径。
