@@ -556,6 +556,7 @@ type runtimeFailureOrca struct {
 	fakeOrca
 	failing       bool
 	probes        int
+	creates       int
 	failureClient *orca.Client
 	success       orca.Receipt
 	closed        []string
@@ -564,6 +565,8 @@ type runtimeFailureOrca struct {
 func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
 	if opts.Command == "true" {
 		o.probes++
+	} else {
+		o.creates++
 	}
 	if o.failing {
 		return o.failureClient.TerminalCreate(ctx, opts)
@@ -787,28 +790,72 @@ func TestOrcaRuntimeRetryKeepsReservationUntilTerminalCreateAnswers(t *testing.T
 	}
 }
 
-// A merge correction launches through the merge lane, outside the claim loop;
-// its terminal create rejection still counts toward the pause.
+// correctionTickets records executor-owned correction reservations, as the merge
+// lane leaves them before it launches the correction executor.
+func correctionTickets(t *testing.T, x runtimeFailureFixture, ids ...string) []Ticket {
+	t.Helper()
+	tickets := make([]Ticket, 0, len(ids))
+	for _, id := range ids {
+		repo := "/merge-" + id
+		store := &fakeIssues{issues: []task.Issue{{ID: id, Identifier: id, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+		body := fmt.Sprintf("阶段: %s\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=%s", machine.PhaseCorrection, x.now.Format(time.RFC3339))
+		if _, err := store.CreateComment(context.Background(), id, body); err != nil {
+			t.Fatal(err)
+		}
+		x.r.Clients[repo] = store
+		x.r.Repositories[repo] = config.Repository{Path: repo}
+		tickets = append(tickets, fromEvidence(t, Ticket{ID: id, Identifier: id, Repo: repo}, store.issueComments))
+	}
+	return tickets
+}
+
+// The merge lane launches corrections through Runtime.Launch, outside the claim
+// loop, and joins every repository's error. Each terminal create rejection in
+// the batch counts, and the threshold stops the rest of the batch.
 func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
 	x := newRuntimeFailureFixture(t, 0)
 	s, b := x.s, x.b
 	s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
-	store := &fakeIssues{issues: []task.Issue{{ID: "OF-9", Identifier: "OF-9", State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
-	body := fmt.Sprintf("阶段: %s\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=%s", machine.PhaseCorrection, x.now.Format(time.RFC3339))
-	if _, err := store.CreateComment(context.Background(), "OF-9", body); err != nil {
-		t.Fatal(err)
-	}
-	x.r.Clients["/repo"] = store
-	x.r.Repositories["/repo"] = config.Repository{Path: "/repo"}
-	ticket := fromEvidence(t, Ticket{ID: "OF-9", Identifier: "OF-9", Repo: "/repo"}, store.issueComments)
+	tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
 	b.merge = func(ctx context.Context) error {
-		return fmt.Errorf("merge waiting %s: %w", ticket.Identifier, b.runtime.Launch(ctx, ticket))
+		var problems []error
+		for _, ticket := range tickets {
+			problems = append(problems, fmt.Errorf("merge waiting %s: %w", ticket.Identifier, b.runtime.Launch(ctx, ticket)))
+		}
+		return errors.Join(problems...)
 	}
-	for i := 0; i < orcaRuntimeFailureThreshold; i++ {
-		_ = s.Tick(context.Background())
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); !got.Paused || got.Failures != orcaRuntimeFailureThreshold || b.notices != 1 {
+		t.Fatalf("batched merge correction runtime errors not counted: %+v notices=%d", got, b.notices)
 	}
-	if got := s.OrcaRuntime(); !got.Paused || b.notices != 1 {
-		t.Fatalf("merge correction runtime errors not counted: %+v notices=%d", got, b.notices)
+	if x.oc.creates != orcaRuntimeFailureThreshold {
+		t.Fatalf("terminal create continued after the threshold: creates=%d", x.oc.creates)
+	}
+	for _, ticket := range tickets {
+		if _, ok := s.runtimePending[ticket.ID]; !ok {
+			t.Fatalf("correction reservation %s not kept for retry: %v", ticket.Identifier, s.runtimePending)
+		}
+	}
+}
+
+// Any terminal create success ends the consecutive run, including one from a
+// merge correction the scheduler never sees succeed.
+func TestOrcaRuntimeMergeCorrectionSuccessClearsCount(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 0)
+	s, b := x.s, x.b
+	s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+	tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
+	b.merge = func(ctx context.Context) error {
+		var problems []error
+		for i, ticket := range tickets {
+			x.oc.failing = i != 2
+			problems = append(problems, b.runtime.Launch(ctx, ticket))
+		}
+		return errors.Join(problems...)
+	}
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); got.Paused || got.Failures != 1 {
+		t.Fatalf("success between failures did not restart the count: %+v", got)
 	}
 }
 

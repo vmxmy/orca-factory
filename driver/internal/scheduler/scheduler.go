@@ -326,7 +326,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			ProbeOrcaRuntime(context.Context, string) error
 		})
 		if !ok {
-			return errors.New("orca runtime fault: terminal creation paused")
+			return errOrcaRuntimePaused
 		}
 		repo := ""
 		for _, ticket := range tickets {
@@ -547,9 +547,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}); ok && !s.orcaRuntime.Paused {
 		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
 			problems = append(problems, err)
-			var runtimeErr *terminalCreateRuntimeError
-			if errors.As(err, &runtimeErr) {
-				s.recordOrcaRuntimeFailure(ctx, runtimeErr.ticket)
+			for _, runtimeErr := range terminalCreateRuntimeErrors(err) {
+				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 			}
 		}
 	}
@@ -773,7 +772,7 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 	var uncertain *terminalCreateUncertainError
 	switch {
 	case errors.As(err, &runtimeErr):
-		s.recordOrcaRuntimeFailure(ctx, t)
+		s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 	case result == "success":
 		delete(s.runtimePending, t.ID)
 		s.orcaRuntime = status.OrcaRuntime{}
@@ -783,12 +782,15 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 	return err
 }
 
-func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, t Ticket) {
+// recordOrcaRuntimeFailure keeps the reservation for retry and mirrors the
+// Runtime's consecutive count, which also sees merge-correction launches.
+func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *terminalCreateRuntimeError) {
+	t := runtimeErr.ticket
 	if s.runtimePending == nil {
 		s.runtimePending = map[string]Ticket{}
 	}
 	s.runtimePending[t.ID] = t
-	s.orcaRuntime.Failures++
+	s.orcaRuntime.Failures = runtimeErr.failures
 	if s.orcaRuntime.Failures < orcaRuntimeFailureThreshold || s.orcaRuntime.Paused {
 		return
 	}
@@ -804,3 +806,20 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, t Ticket) {
 
 // OrcaRuntime is the terminal-create fault state serve publishes in its status.
 func (s *Scheduler) OrcaRuntime() status.OrcaRuntime { return s.orcaRuntime }
+
+// terminalCreateRuntimeErrors finds every rejection in a joined merge-lane error.
+func terminalCreateRuntimeErrors(err error) []*terminalCreateRuntimeError {
+	switch e := err.(type) {
+	case *terminalCreateRuntimeError:
+		return []*terminalCreateRuntimeError{e}
+	case interface{ Unwrap() []error }:
+		var found []*terminalCreateRuntimeError
+		for _, inner := range e.Unwrap() {
+			found = append(found, terminalCreateRuntimeErrors(inner)...)
+		}
+		return found
+	case interface{ Unwrap() error }:
+		return terminalCreateRuntimeErrors(e.Unwrap())
+	}
+	return nil
+}
