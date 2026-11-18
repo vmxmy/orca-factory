@@ -762,6 +762,31 @@ func TestSelfDeployKeepsOperatorFreezeBetweenReadAndResume(t *testing.T) {
 	}
 }
 
+func TestSelfDeployKeepsOperatorDrainBetweenReadAndDrain(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error { return errors.New("build failed") }
+	drained := false
+	read := selfDeployMaintenanceRead
+	t.Cleanup(func() { selfDeployMaintenanceRead = read })
+	selfDeployMaintenanceRead = func() (maintenance.State, error) {
+		state, err := read()
+		if err == nil && state.Mode == "running" && !drained {
+			drained = true
+			if err := maintenance.Set("draining"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state, err
+	}
+	_ = serveAs(f, h, "old")
+	if !drained {
+		t.Fatal("setup: the operator drain was never set")
+	}
+	if mode := maintenanceMode(t); mode != "draining" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("operator drain between read and drain was taken over: mode=%s drained=%t", mode, markerExists(f, selfSHA, "drained"))
+	}
+}
+
 func TestSelfDeployKeepsOperatorFreezeWhenRunningContainsSHA(t *testing.T) {
 	f, h := newSelfDeployFixture(t)
 	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)

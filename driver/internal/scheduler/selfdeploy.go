@@ -286,43 +286,30 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 // drainSelf drains only from running and then owns the resume through the
 // drained marker. A drain already in place is left as is: one the operator set
 // stays after the deployment, and one this deployment set keeps its marker.
+// The drain writes only while the mode is still running, so an operator
+// drain or freeze landing after the read is kept.
 func (r *Runtime) drainSelf(sha string) error {
-	state, release, err := holdMode()
+	state, err := selfDeployMaintenanceRead()
 	if err != nil {
 		return err
 	}
-	defer release()
-	switch state.Mode {
-	case "frozen":
+	if state.Mode == "frozen" {
 		return r.yieldToFreeze(sha)
-	case "running":
-		if err = touch(r.selfMarker(sha, markerDrained)); err != nil {
-			return err
-		}
-		return maintenance.SetWithin("draining", maintenanceWait)
 	}
-	return nil
-}
-
-// holdMode reads the maintenance mode under the writes guard. An operator
-// freeze takes that lock exclusively, so no freeze lands between this read
-// and the caller's mode write before release. Under a freeze it reports
-// frozen and holds nothing.
-func holdMode() (maintenance.State, func(), error) {
-	release, err := maintenance.Write()
-	if err != nil {
-		state, readErr := selfDeployMaintenanceRead()
-		if readErr == nil && state.Mode == "frozen" {
-			return state, func() {}, nil
-		}
-		return maintenance.State{}, nil, err
+	if state.Mode != "running" {
+		return nil
 	}
-	state, err := selfDeployMaintenanceRead()
-	if err != nil {
-		release()
-		return maintenance.State{}, nil, err
+	marker := r.selfMarker(sha, markerDrained)
+	if err = touch(marker); err != nil {
+		return err
 	}
-	return state, release, nil
+	if err = maintenance.SetFromWithin("running", "draining", maintenanceWait); !errors.Is(err, maintenance.ErrModeChanged) {
+		return err
+	}
+	if err = os.Remove(marker); err != nil {
+		return err
+	}
+	return r.drainSelf(sha)
 }
 
 // refuseFrozen keeps the deployment pending under an operator freeze.
@@ -509,16 +496,14 @@ func (r *Runtime) settleSelf(sha string) error {
 		return err
 	}
 	if drained {
-		state, release, err := holdMode()
+		state, err := selfDeployMaintenanceRead()
 		if err != nil {
 			return err
 		}
 		if state.Mode == "draining" {
-			err = maintenance.SetWithin("running", maintenanceWait)
-		}
-		release()
-		if err != nil {
-			return err
+			if err = maintenance.SetFromWithin("draining", "running", maintenanceWait); err != nil && !errors.Is(err, maintenance.ErrModeChanged) {
+				return err
+			}
 		}
 		if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil {
 			return err
