@@ -537,7 +537,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 `top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-18 要求使用 `codex:gpt-6.2-astra:max`。运维修改该配置后，已进入终审的票在下一轮派工时使用当前配置并写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。driver 不因模型不可用而自行换模型，重试与搁置次数不变。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
 
-终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 2 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
+终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 operator 来源的 `裁定理由：`，再写 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 2 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
 
 终审标记持久化在票据回执中，每票只进入一次，不补派历史转人票。终审明确转人或第二次失败才发卡片，scope/release 不再覆盖该决定；终审结果一经接受就结束当前 `top`：applied 或 waiting + outcome=succeeded 回执在读取时恢复普通处置，`top_used` 仍为 true，再转人直接发卡片。只有失败未达两次的终审重试及尚未派出的入口/undispatched 回执保留 `top`。终审不直接写 Done、合并或自动批准取消，gate、审查、CI 与 lane 3 约束保持不变。
 
@@ -583,7 +583,7 @@ gate、审查与 CI 仍按原流程执行。票面缺少 `LANE 预判`、票面�
 放弃实施时，审批人可发送 `@机器人 取消 OF-N <理由>`。只有最新 resolver-state
 的 phase 为 human 才能取消，先写 `取消：<审批人 open_id> <时间>` 与 `理由：<理由>`
 事件，再把状态改为 Canceled。事件已存在则只补状态，已是 Canceled 时只回复现状。
-理由写入事件前折叠为单行，理由内容不会成为状态记录。
+理由写入事件前折叠为单行，这条事件为 operator 来源，理由内容不会成为状态记录。
 
 需要操作员主动恢复时，保留原命令：先停止 `driver serve` 服务/进程；真实恢复命令使用同一单实例锁，若服务仍在运行则拒绝写入。核对生产 workflow 的 SHA 和 smoke 的实际执行结果后，先只读验证（替换示例值）：
 
@@ -723,7 +723,7 @@ Canceled 则只回复现状。“转人”类别通知列出这两条可用命�
 通知不列出。人工恢复的记录格式见前面的转人恢复小节。
 
 转人票还可以用 `裁定 OF-N <理由>` 和 `扩SCOPE OF-N <路径...>`（OF-354），授权和拒绝条件与
-`放行` 相同。裁定追加一条评论，包含操作者、时间、折叠成单行的理由和 waiting 回执。
+`放行` 相同。裁定追加两条事件：先写 operator 来源的 `裁定理由：<折叠成单行的理由>`，再写 driver 来源的 `裁定：<操作者> <时间>` 与 waiting 回执。
 扩SCOPE 只接受仓库内的字面路径（不含 glob 和 `..`），命中项目 `AGENT_LANE3_GLOBS` 时拒绝。
 它先把路径并入票面 SCOPE，再写操作者、路径和 waiting 回执。两者都由下一个处置 Agent 接着做。
 
