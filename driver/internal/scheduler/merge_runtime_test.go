@@ -17,6 +17,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -395,8 +396,15 @@ func TestRuntimeMergeConservativeEvidence(t *testing.T) {
 				delete(f.prBody, "mergeable")
 			}
 			err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			if err == nil || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+			if f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
 				t.Fatalf("unsafe evidence %s: err=%v puts=%d state=%s", kind, err, f.puts, f.tracker.issue.State.Name)
+			}
+			if kind == "changed-head" {
+				if err != nil || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "Agent处置: PR identity changed\n证据: PR head/base 与冻结 handoff 不符\n处置要求:") {
+					t.Fatalf("changed head did not transfer for review: err=%v bodies=%q", err, f.tracker.bodies)
+				}
+			} else if err == nil {
+				t.Fatalf("unsafe evidence %s did not wait", kind)
 			}
 		})
 	}
@@ -539,6 +547,88 @@ func (m *mergeTickets) CreateComment(ctx context.Context, id, body string) (task
 }
 func (m *mergeTickets) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	return m.row(id).UpdateIssue(ctx, id, state, add, remove)
+}
+
+func TestMergeQueueReleasesHeadWhenPRChangedOrClosed(t *testing.T) {
+	for _, scenario := range []string{"head changed", "base changed", "closed", "mergeability unknown"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := newMergeFixture(t)
+			first := *f.tracker
+			first.issue.ID, first.issue.Identifier = "first", "ENG-2"
+			first.rows = append([]task.Comment(nil), f.tracker.rows...)
+			ff := *f
+			ff.tracker = &first
+			rewriteHandoff(t, &ff, func(h map[string]any) {
+				h["ticket_id"], h["identifier"], h["pr"] = "first", "ENG-2", 2
+				h["queue_id"], h["enqueued_at"] = "q0", "2026-10-06T00:00:00Z"
+			})
+			f.runtime.Clients[f.repos[0].Path] = &mergeTickets{rows: []*mergeIssues{f.tracker, &first}}
+			raw, err := json.Marshal(f.prBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pr map[string]any
+			if err := json.Unmarshal(raw, &pr); err != nil {
+				t.Fatal(err)
+			}
+			pr["number"], pr["body"] = 2, "Fixes ENG-2"
+			pr["head"].(map[string]any)["ref"] = "agent/ENG-2/executor"
+			event := "PR identity changed"
+			switch scenario {
+			case "head changed":
+				pr["head"].(map[string]any)["sha"] = strings.Repeat("b", 40)
+			case "base changed":
+				pr["base"].(map[string]any)["ref"] = "release"
+			case "closed":
+				pr["state"], pr["mergeable"] = "closed", nil
+				event = "PR closed without merge"
+			case "mergeability unknown":
+				pr["mergeable"] = nil
+			}
+			original := f.server.Config.Handler
+			f.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/pulls/2") {
+					if err := json.NewEncoder(w).Encode(pr); err != nil {
+						t.Error(err)
+					}
+					return
+				}
+				original.ServeHTTP(w, r)
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			// A transient snapshot failure keeps the FIFO head and retries on the next tick.
+			for i := 0; i < 5 && f.tracker.issue.State.Name != "Done"; i++ {
+				// Resolver dispatch is outside this fixture; inspect its durable ownership below.
+				_ = s.Tick(context.Background())
+			}
+			rows, err := f.runtime.Snapshot(context.Background(), f.repos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var owner machine.Owner
+			for _, row := range rows {
+				if row.ID == first.issue.ID {
+					owner = row.Owner
+				}
+			}
+			queued := slices.ContainsFunc(s.MergeQueue, func(row Ticket) bool { return row.ID == first.issue.ID })
+			if scenario == "mergeability unknown" {
+				if !queued || owner != machine.OwnerMerge || f.puts != 0 || f.tracker.issue.State.Name != "In Progress" {
+					t.Fatalf("unknown mergeability did not retain FIFO head: queued=%v owner=%s puts=%d next=%s", queued, owner, f.puts, f.tracker.issue.State.Name)
+				}
+				return
+			}
+			if queued || owner != machine.OwnerResolver || first.issue.State.Name != "In Progress" {
+				t.Fatalf("invalid PR retained queue ownership: queued=%v owner=%s state=%s", queued, owner, first.issue.State.Name)
+			}
+			if f.puts != 1 || !f.merged || f.tracker.issue.State.Name != "Done" {
+				t.Fatalf("next PR did not merge: puts=%d merged=%v state=%s", f.puts, f.merged, f.tracker.issue.State.Name)
+			}
+			if !strings.Contains(strings.Join(first.bodies, "\n"), "Agent处置: "+event) {
+				t.Fatalf("missing specific resolver event: %q", first.bodies)
+			}
+		})
+	}
 }
 
 func TestRuntimeMergeFIFOIsFrozenAcrossRestarts(t *testing.T) {

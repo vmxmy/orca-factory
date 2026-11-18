@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // unrelatedDoctorFails is what doctor reports right after a long drain: these
@@ -32,8 +35,10 @@ type selfDeployHost struct {
 	guardErr                 error
 	smokeOut                 []byte
 	smokeErr                 error
+	gateway                  string
 	kill                     string
 	cancel                   context.CancelFunc
+	build                    func() error
 }
 
 func (h *selfDeployHost) killed(step string) bool {
@@ -52,12 +57,19 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 			return nil, context.Canceled
 		}
 		h.builds++
+		if h.build != nil {
+			if err := h.build(); err != nil {
+				return nil, err
+			}
+		}
 		out := s.Args[slices.Index(s.Args, "-o")+1]
 		ldflags := s.Args[slices.Index(s.Args, "-ldflags")+1]
 		return nil, os.WriteFile(out, fakeDriver(strings.TrimPrefix(ldflags, "-X main.version=")), 0700)
 	case s.Path == "systemd-run":
 		h.guard = s.Args
 		return nil, h.guardErr
+	case s.Path == "systemctl" && slices.Contains(s.Args, "show") && slices.Contains(s.Args, "orca-factory-feishu-gateway"):
+		return []byte(h.gateway), nil
 	case s.Path == "systemctl" && slices.Contains(s.Args, "show"):
 		return fmt.Appendf(nil, "MainPID=%d\nActiveState=active\n", os.Getpid()), nil
 	case s.Path == "systemctl" && slices.Contains(s.Args, "stop"):
@@ -92,7 +104,7 @@ func newSelfDeployFixture(t *testing.T) (*mergeFixture, *selfDeployHost) {
 	f := newMergeFixture(t)
 	root := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", root)
-	h := &selfDeployHost{driver: filepath.Join(t.TempDir(), "orca-factory-driver"), smokeOut: []byte(unrelatedDoctorFails), smokeErr: errors.New("exit status 1"), cancel: func() {}}
+	h := &selfDeployHost{driver: filepath.Join(t.TempDir(), "orca-factory-driver"), smokeOut: []byte(unrelatedDoctorFails), smokeErr: errors.New("exit status 1"), gateway: "LoadState=loaded\nActiveState=active\n", cancel: func() {}}
 	if err := os.WriteFile(h.driver, fakeDriver("old"), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -213,6 +225,30 @@ func TestSelfDeploySmokeFailureRollsBack(t *testing.T) {
 	err := serveAs(f, h, "old")
 	if h.builds != 1 || h.smokes != 1 || h.restarts != 2 || f.tracker.issue.State.Name == "Done" || maintenanceMode(t) != "running" {
 		t.Fatalf("paused deployment acted again: err=%v builds=%d smokes=%d restarts=%d state=%s", err, h.builds, h.smokes, h.restarts, f.tracker.issue.State.Name)
+	}
+}
+
+// The gateway unit runs the same binary: a crash-looping gateway fails the
+// smoke, while a machine without the unit deploys as before.
+func TestSelfDeploySmokeRequiresGatewayActive(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.gateway = "LoadState=loaded\nActiveState=activating\n"
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err == nil || !strings.Contains(err.Error(), "orca-factory-feishu-gateway") {
+		t.Fatalf("smoke passed with a crash-looping gateway: err=%v", err)
+	}
+	if f.tracker.issue.State.Name == "Done" || installed(t, h.driver) != "old" || !markerExists(f, selfSHA, "rolled-back") {
+		t.Fatalf("gateway failure did not roll back: state=%s installed=%q ledger=%s", f.tracker.issue.State.Name, installed(t, h.driver), lastState(f))
+	}
+
+	f, h = newSelfDeployFixture(t)
+	h.gateway = "LoadState=not-found\nActiveState=inactive\n"
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err != nil {
+		t.Fatalf("missing gateway unit failed the deployment: %v", err)
+	}
+	if f.tracker.issue.State.Name != "Done" || lastState(f) != "passed" {
+		t.Fatalf("deployment without a gateway unit: state=%s ledger=%s", f.tracker.issue.State.Name, lastState(f))
 	}
 }
 
@@ -536,9 +572,6 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			builds := h.builds
 			now := time.Now()
 			f.runtime.Now = func() time.Time { return now }
-			wait, poll, report := selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport
-			selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = 50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
-			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = wait, poll, report })
 			release, err := maintenance.Session()
 			if err != nil {
 				t.Fatal(err)
@@ -549,7 +582,14 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 				}
 			})
 			_ = serveAs(f, h, "old")
-			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+			if maintenanceMode(t) != "draining" || !markerExists(f, selfSHA, "idle-wait") {
+				t.Fatalf("idle wait did not start: mode=%s", maintenanceMode(t))
+			}
+			now = now.Add(selfDeployIdleReport)
+			_ = serveAs(f, h, "old")
+			now = now.Add(selfDeployIdleWait - selfDeployIdleReport)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "idle-wait") {
 				t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
 			}
 			if markerExists(f, selfSHA, "drained") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "等待会话空闲超时，已等待 ") {
@@ -569,6 +609,8 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			round1 := f.tracker.bodies[timeoutReceipt]
 			n := len(f.tracker.bodies)
 			now = now.Add(15 * time.Minute)
+			_ = serveAs(f, h, "old")
+			now = now.Add(selfDeployIdleWait)
 			_ = serveAs(f, h, "old")
 			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "drained") {
 				t.Fatalf("second idle timeout: builds=%d state=%s mode=%s drained=%t", h.builds, lastState(f), maintenanceMode(t), markerExists(f, selfSHA, "drained"))
@@ -609,6 +651,270 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			}
 			if markerExists(f, selfSHA, "idle-timeout") {
 				t.Error("successful idle wait retained the idle-timeout marker")
+			}
+		})
+	}
+}
+
+func TestSelfDeployKeepsOperatorDrain(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	if err := maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	firstServe(t, f, h)
+	if err := serveAs(f, h, selfSHA); err != nil {
+		t.Fatal(err)
+	}
+	if mode := maintenanceMode(t); mode != "draining" || h.builds != 1 || lastState(f) != "passed" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("self deployment under an operator drain: mode=%s builds=%d state=%s", mode, h.builds, lastState(f))
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreeze(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "pending" || h.builds != 0 {
+		t.Fatalf("setup: state=%s builds=%d", lastState(f), h.builds)
+	}
+	if err = maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if err = maintenance.Set("frozen"); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if mode := maintenanceMode(t); mode != "frozen" || h.builds != 0 || h.restarts != 0 || lastState(f) != "pending" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("self deployment under an operator freeze: mode=%s builds=%d restarts=%d state=%s", mode, h.builds, h.restarts, lastState(f))
+	}
+	if !strings.Contains(f.tracker.bodies[len(f.tracker.bodies)-1], "frozen") {
+		t.Errorf("pending receipt does not name the freeze: %s", f.tracker.bodies[len(f.tracker.bodies)-1])
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreezeDuringIdleWait(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	now := time.Now()
+	f.runtime.Now = func() time.Time { return now }
+	release, err := maintenance.Session()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	release()
+	if !markerExists(f, selfSHA, "idle-wait") || maintenanceMode(t) != "draining" {
+		t.Fatalf("setup: idle-wait=%t mode=%s", markerExists(f, selfSHA, "idle-wait"), maintenanceMode(t))
+	}
+	if err = maintenance.Set("frozen"); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(selfDeployIdleWait)
+	_ = serveAs(f, h, "old")
+	if mode := maintenanceMode(t); mode != "frozen" || h.builds != 0 || lastState(f) != "pending" || markerExists(f, selfSHA, "drained") || markerExists(f, selfSHA, "idle-wait") {
+		t.Fatalf("operator freeze during the idle wait: mode=%s builds=%d state=%s drained=%t idle-wait=%t", mode, h.builds, lastState(f), markerExists(f, selfSHA, "drained"), markerExists(f, selfSHA, "idle-wait"))
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreezeDuringFailedBuild(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error {
+		if err := maintenance.Set("frozen"); err != nil {
+			t.Error(err)
+		}
+		return errors.New("build failed")
+	}
+	_ = serveAs(f, h, "old")
+	if mode := maintenanceMode(t); h.builds != 1 || mode != "frozen" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("operator freeze during a failed build: builds=%d mode=%s drained=%t state=%s", h.builds, mode, markerExists(f, selfSHA, "drained"), lastState(f))
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreezeBetweenReadAndResume(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error { return errors.New("build failed") }
+	var freezeErr error
+	froze := false
+	read := selfDeployMaintenanceRead
+	t.Cleanup(func() { selfDeployMaintenanceRead = read })
+	selfDeployMaintenanceRead = func() (maintenance.State, error) {
+		state, err := read()
+		if err == nil && state.Mode == "draining" && !froze {
+			froze = true
+			freezeErr = maintenance.Set("frozen")
+		}
+		return state, err
+	}
+	_ = serveAs(f, h, "old")
+	if !froze {
+		t.Fatal("setup: the operator freeze was never attempted")
+	}
+	if mode := maintenanceMode(t); freezeErr == nil && mode != "frozen" {
+		t.Fatalf("operator freeze between read and resume was overwritten: mode=%s", mode)
+	}
+}
+
+func TestSelfDeployKeepsOperatorDrainBetweenReadAndDrain(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error { return errors.New("build failed") }
+	drained := false
+	read := selfDeployMaintenanceRead
+	t.Cleanup(func() { selfDeployMaintenanceRead = read })
+	selfDeployMaintenanceRead = func() (maintenance.State, error) {
+		state, err := read()
+		if err == nil && state.Mode == "running" && !drained {
+			drained = true
+			if err := maintenance.Set("draining"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return state, err
+	}
+	_ = serveAs(f, h, "old")
+	if !drained {
+		t.Fatal("setup: the operator drain was never set")
+	}
+	if mode := maintenanceMode(t); mode != "draining" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("operator drain between read and drain was taken over: mode=%s drained=%t", mode, markerExists(f, selfSHA, "drained"))
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreezeWhenRunningContainsSHA(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "pending" {
+		t.Fatalf("setup: state=%s", lastState(f))
+	}
+	if err = maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if err = maintenance.Set("frozen"); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, selfSHA)
+	if mode := maintenanceMode(t); mode != "frozen" || h.builds != 0 || h.restarts != 0 || h.smokes != 0 || lastState(f) != "pending" || f.tracker.issue.State.Name == "Done" {
+		t.Fatalf("operator freeze with the squash SHA already running: mode=%s builds=%d restarts=%d smokes=%d state=%s ledger=%s", mode, h.builds, h.restarts, h.smokes, lastState(f), f.tracker.issue.State.Name)
+	}
+}
+
+func TestSelfDeployIdleWaitDoesNotBlockOtherRepositories(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	b := &mergeIssues{labels: true, issue: task.Issue{
+		ID: "b", Identifier: "OTHER-1", Project: task.NamedID{ID: "o/s"},
+		State:  task.NamedID{Name: "Todo"},
+		Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}},
+	}}
+	repo := config.Repository{Path: t.TempDir(), StaleHours: 8, MaxInFlight: 3,
+		Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/s", "AGENT_SCOPE_AVOID": "0"}}
+	f.repos = append(f.repos, repo)
+	f.runtime.Repositories[repo.Path] = repo
+	store := &mergeTickets{rows: []*mergeIssues{f.tracker, b}}
+	f.runtime.Clients[f.repos[0].Path], f.runtime.Clients[repo.Path] = store, store
+	release, err := maintenance.Session()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if release != nil {
+			release()
+		}
+	})
+	var logs strings.Builder
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime, Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	for round := 1; round <= 2; round++ {
+		if round == 2 {
+			// A manual deploy.sh may take deploy.lock between ticks and resume on exit.
+			if err := maintenance.SetWithin("running", time.Second); err != nil {
+				t.Fatal(err)
+			}
+		}
+		logs.Reset()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := s.Tick(ctx)
+		blocked := ctx.Err()
+		cancel()
+		if blocked != nil {
+			t.Fatalf("round %d blocked on the idle wait: %v", round, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "等待会话空闲，已等待 ") {
+			t.Fatalf("round %d did not report the idle wait: %v", round, err)
+		}
+		refused := false
+		for _, line := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(line, "event=claim") && strings.Contains(line, "ticket=OTHER-1") && strings.Contains(line, "result=deferred") && strings.Contains(line, "maintenance blocks new claim or dispatch") {
+				refused = true
+			}
+		}
+		if !refused {
+			t.Fatalf("round %d did not refuse repository B's claim through the drain:\n%s", round, logs.String())
+		}
+		if maintenanceMode(t) != "draining" {
+			t.Fatalf("round %d left the idle wait without the drain: mode=%s", round, maintenanceMode(t))
+		}
+	}
+	if maintenanceMode(t) != "draining" || h.builds != 0 || lastState(f) != "pending" || !markerExists(f, selfSHA, "idle-wait") {
+		t.Fatalf("idle wait state: mode=%s builds=%d state=%s", maintenanceMode(t), h.builds, lastState(f))
+	}
+	claimed := Ticket{}
+	if err := readOwnership(&claimed, b.rows); err != nil {
+		t.Fatal(err)
+	}
+	if claimed.Owner != "" {
+		t.Errorf("repository B was claimed during the drain: owner=%q", claimed.Owner)
+	}
+	release()
+	release = nil
+	firstServe(t, f, h)
+	if h.builds != 1 || lastState(f) != "deploy-intent" || markerExists(f, selfSHA, "idle-wait") {
+		t.Fatalf("idle deployment: builds=%d state=%s idle-wait=%t", h.builds, lastState(f), markerExists(f, selfSHA, "idle-wait"))
+	}
+}
+
+// A manual deploy.sh while the deployment waited in pending may already run a
+// descendant of the squash SHA, recorded as a full or a short SHA; installing
+// the squash build would roll production back.
+func TestSelfDeployDoesNotDowngradeInstalledDriver(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		t.Run(fmt.Sprintf("short=%t", short), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			repo := f.repos[0].Path
+			tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+			squash := gitMergeTest(t, repo, "commit-tree", tree, "-p", f.main, "-m", "squash")
+			newer := gitMergeTest(t, repo, "commit-tree", tree, "-p", squash, "-m", "manual deploy")
+			gitMergeTest(t, repo, "update-ref", "refs/heads/main", newer)
+			f.prBody["merge_commit_sha"] = squash
+			running := newer
+			if short {
+				running = newer[:7]
+			}
+			if err := os.WriteFile(h.driver, fakeDriver(running), 0700); err != nil {
+				t.Fatal(err)
+			}
+			f.runtime.Version = running
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			receipts := strings.Join(f.tracker.bodies, "\n")
+			if h.builds != 0 || h.restarts != 0 || h.guard != nil || installed(t, h.driver) != running || h.smokes != 1 || !strings.Contains(receipts, `"state":"smoke-intent"`) || lastState(f) != "passed" || f.tracker.issue.State.Name != "Done" || maintenanceMode(t) != "running" {
+				t.Fatalf("downgraded or skipped smoke: builds=%d restarts=%d guard=%v installed=%q smokes=%d state=%s ledger=%s mode=%s", h.builds, h.restarts, h.guard, installed(t, h.driver), h.smokes, lastState(f), f.tracker.issue.State.Name, maintenanceMode(t))
 			}
 		})
 	}

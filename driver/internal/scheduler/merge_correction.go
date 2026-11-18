@@ -21,8 +21,6 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		mergechannel.RetainMergeProgress(&p, t.Progress)
 	}
 	human := result.Status == merge.Human || p.Corrections > machine.DefaultLimits.Corrections
-	// A lane 2 review keeps the waiting phase so the resolver can approve the
-	// same frozen handoff instead of revalidating a new queue identity.
 	review := result.Status == merge.Review && !human
 	// Lane 3 never reaches a resolver: automerge authorization excludes it, so
 	// the ticket transfers straight to a human instead of Agent处置.
@@ -46,8 +44,16 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 			event, evidence, demand := p.Reason, "merge validation", "检查合并结果并重新排队"
 			if review && strings.HasPrefix(p.Reason, errHeadRef.Error()) {
 				event, evidence, demand = p.Reason, "PR head ref", "把 head 推到 agent/<票号>/<单元>，open-pr 后提交新的 merge handoff"
+			} else if review && p.Reason == errPRIdentity.Error() {
+				event, evidence, demand = p.Reason, "PR head/base 与冻结 handoff 不符", "核对 PR 当前 head、base 与仓库，重新验证 gate 和 review 后提交新的 merge handoff 与 queue_id，不得批准旧 handoff"
+			} else if review && p.Reason == errPRClosed.Error() {
+				event, evidence, demand = p.Reason, "PR state=closed 且 merged=false", "核对 PR 关闭原因并决定后续处理，不得直接批准旧 handoff；如需继续合并，验证有效的 open PR 后提交新的 merge handoff 与 queue_id，不自动重开或重建 PR"
 			} else if review {
 				event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
+			}
+			if result.InfrastructureFailures > 0 {
+				evidence = fmt.Sprintf("merge validation\n失败次数: %d\n最后失败步骤: %s", result.InfrastructureFailures, result.InfrastructureStep)
+				demand = "修复合并验证基础设施后重新排队"
 			}
 			body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 		}
