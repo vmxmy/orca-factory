@@ -38,9 +38,19 @@ const (
 )
 
 // Variables so tests can shorten the idle wait, retry and report intervals.
-var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Second, 15 * time.Minute, 10 * time.Minute
+var selfDeployIdleWait, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Minute, 10 * time.Minute
 
 var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
+
+var errSelfDeployFrozen = errors.New("维护模式为 frozen，暂不部署")
+
+// selfDeployMaintenanceRead lets tests act as an operator between the mode
+// read and the mode write.
+var selfDeployMaintenanceRead = maintenance.Read
+
+// errSelfDeployIdleWaiting ends this repository's deployment step for the
+// tick while sessions remain; the next tick checks again.
+var errSelfDeployIdleWaiting = errors.New("等待会话空闲")
 
 // One restart command queues both jobs; systemd does not order them.
 // Restarting the driver unit stops this serve.
@@ -53,12 +63,15 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // rolled-back tells the restored serve to pause and resume, and holds the
 // reason when serve itself rolled back. idle-timeout records the last timeout
 // time and timeout count; no new drain starts until selfDeployIdleRetry has elapsed.
+// idle-wait holds when the current idle wait began and the last reported
+// elapsed step, so the wait spans ticks.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
 	markerSmokePassed = "smoke-passed"
 	markerRolledBack  = "rolled-back"
 	markerIdleTimeout = "idle-timeout"
+	markerIdleWait    = "idle-wait"
 )
 
 // selfDeployGuardScript runs in its own transient unit, so it outlives the
@@ -148,9 +161,15 @@ func guardUnit(sha string) string {
 // deploySelf waits in pending, then records deploy-intent before installing.
 // Keeping the idle wait in pending also permits retries after retry-workflow,
 // whose deploy-intent cannot return to pending without a new recovery decision.
+// Each tick checks idleness once and returns, so other repositories keep
+// being scheduled while this deployment waits.
 func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	d := p.Deployment
 	sha := deploymentSHA(p)
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
 	idleTimeout := r.selfMarker(sha, markerIdleTimeout)
 	timeouts := 0
 	if data, err := os.ReadFile(idleTimeout); err == nil {
@@ -162,10 +181,6 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		timeouts, err = strconv.Atoi(count)
 		if err != nil {
 			return err
-		}
-		now := time.Now()
-		if r.Now != nil {
-			now = r.Now()
 		}
 		if remaining := timedOut.Add(selfDeployIdleRetry).Sub(now); remaining > 0 {
 			return fmt.Errorf("%w，%s 后重试", errSelfDeployIdleTimeout, remaining)
@@ -179,14 +194,42 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
-	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
+	if r.runningContains(ctx, t.Repo, sha) {
+		if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		d.State, d.Reason = "deploy-intent", ""
+		if err = r.deploymentReceipt(ctx, t, p); err != nil {
+			return err
+		}
+		return r.smokeSelf(ctx, t, p)
+	}
+	idleWait := r.selfMarker(sha, markerIdleWait)
+	waiting, err := fileExists(idleWait)
+	if err != nil {
 		return err
 	}
-	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
-		err = maintenance.SetWithin("draining", maintenanceWait)
+	if !waiting {
+		if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	// deploy.lock is released between ticks, so a manual deploy.sh may have
+	// resumed in the meantime. drainSelf drains again from running, keeping
+	// the original wait start.
+	if err = r.drainSelf(sha); errors.Is(err, errSelfDeployFrozen) {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
+	if err == nil && !waiting {
+		err = writeIdleWait(idleWait, now, -1)
 	}
 	if err == nil {
-		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
+		err = r.awaitIdle(idleWait, now, func(elapsed time.Duration) {
 			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s（第 %d 轮）", elapsed, round)
 			if err := r.deploymentReceipt(ctx, t, p); err != nil {
 				runx.LoggerFrom(ctx).Warn("self deployment idle progress receipt failed", "err", err)
@@ -194,16 +237,12 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		})
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, errSelfDeployIdleWaiting) {
 			return err
 		}
 		if errors.Is(err, errSelfDeployIdleTimeout) {
 			if resumeErr := r.settleSelf(sha); resumeErr != nil {
 				return errors.Join(err, resumeErr, r.pauseSelf(ctx, t, p, "idle wait timed out but maintenance resume failed"))
-			}
-			now := time.Now()
-			if r.Now != nil {
-				now = r.Now()
 			}
 			if markerErr := os.MkdirAll(filepath.Dir(idleTimeout), 0700); markerErr != nil {
 				return errors.Join(err, markerErr)
@@ -217,6 +256,13 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
 	}
 	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
+	if err = os.Remove(idleWait); err != nil {
 		return err
 	}
 	d.State, d.Reason = "deploy-intent", ""
@@ -235,6 +281,79 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment failed before restart"), r.rollbackSelf(ctx, p, "self deployment failed before restart"))
 	}
 	return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
+}
+
+// drainSelf drains only from running and then owns the resume through the
+// drained marker. A drain already in place is left as is: one the operator set
+// stays after the deployment, and one this deployment set keeps its marker.
+// The drain writes only while the mode is still running, so an operator
+// drain or freeze landing after the read is kept.
+func (r *Runtime) drainSelf(sha string) error {
+	state, err := selfDeployMaintenanceRead()
+	if err != nil {
+		return err
+	}
+	if state.Mode == "frozen" {
+		return r.yieldToFreeze(sha)
+	}
+	if state.Mode != "running" {
+		return nil
+	}
+	marker := r.selfMarker(sha, markerDrained)
+	if err = touch(marker); err != nil {
+		return err
+	}
+	if err = maintenance.SetFromWithin("running", "draining", maintenanceWait); !errors.Is(err, maintenance.ErrModeChanged) {
+		return err
+	}
+	if err = os.Remove(marker); err != nil {
+		return err
+	}
+	return r.drainSelf(sha)
+}
+
+// refuseFrozen keeps the deployment pending under an operator freeze.
+func (r *Runtime) refuseFrozen(sha string) error {
+	state, err := maintenance.Read()
+	if err != nil {
+		return err
+	}
+	if state.Mode != "frozen" {
+		return nil
+	}
+	return r.yieldToFreeze(sha)
+}
+
+// yieldToFreeze hands the maintenance state to the operator's freeze: the
+// drained marker is dropped so their later mode is never overwritten, and the
+// idle wait is dropped so a later deployment waits afresh.
+func (r *Runtime) yieldToFreeze(sha string) error {
+	for _, kind := range []string{markerDrained, markerIdleWait} {
+		if err := os.Remove(r.selfMarker(sha, kind)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return errSelfDeployFrozen
+}
+
+// runningContains reports whether this serve's version is the squash SHA or
+// a descendant of it, by ancestry in the repository checkout: deploy.sh
+// records a short SHA, and a manual deployment may run a later main. A
+// version the checkout cannot resolve counts as not containing it, so the
+// deployment installs as before.
+func (r *Runtime) runningContains(ctx context.Context, repo, sha string) bool {
+	if r.Version == sha {
+		return true
+	}
+	if r.Version == "" {
+		return false
+	}
+	_, err := r.runFor(ctx, time.Minute, repo, "git", "merge-base", "--is-ancestor", sha, r.Version)
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		runx.LoggerFrom(ctx).Warn("self deployment cannot tell whether the running driver contains the squash SHA; installing", "running", r.Version, "sha", sha, "err", err)
+	}
+	return err == nil
 }
 
 // installSelf arms the guard before the rename, so a serve killed between the
@@ -264,36 +383,49 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 	return true, r.restartServices(ctx)
 }
 
-// awaitIdle waits until no executor, resolver or admitted write remains, as
-// deploy.sh does, for at most one hour. Before timing out, it reports elapsed
-// time at selfDeployIdleReport intervals.
-func (r *Runtime) awaitIdle(ctx context.Context, report func(elapsed time.Duration)) error {
-	started := time.Now()
-	deadline := started.Add(selfDeployIdleWait)
-	reported := time.Duration(-1)
-	for {
-		state, err := maintenance.Status()
-		if err != nil {
+// awaitIdle checks once whether no executor, resolver or admitted write
+// remains, as deploy.sh does. Measured from the idle-wait marker, it reports
+// elapsed time at selfDeployIdleReport intervals and times out after
+// selfDeployIdleWait; otherwise it returns errSelfDeployIdleWaiting.
+func (r *Runtime) awaitIdle(marker string, now time.Time, report func(elapsed time.Duration)) error {
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return err
+	}
+	startText, reportedText, _ := strings.Cut(string(data), " ")
+	started, err := time.Parse(time.RFC3339Nano, startText)
+	if err != nil {
+		return err
+	}
+	reported, err := time.ParseDuration(reportedText)
+	if err != nil {
+		return err
+	}
+	state, err := maintenance.Status()
+	if err != nil {
+		return err
+	}
+	if !state.WritersActive && !state.SessionsActive {
+		return nil
+	}
+	elapsed := now.Sub(started)
+	if step := elapsed.Truncate(selfDeployIdleReport); step > reported {
+		report(step)
+		if err = writeIdleWait(marker, started, step); err != nil {
 			return err
 		}
-		if !state.WritersActive && !state.SessionsActive {
-			return nil
-		}
-		if step := time.Since(started).Truncate(selfDeployIdleReport); step > reported {
-			report(step)
-			reported = step
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, time.Since(started).Round(time.Millisecond))
-		}
-		timer := time.NewTimer(selfDeployIdlePoll)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
 	}
+	if elapsed >= selfDeployIdleWait {
+		return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, elapsed.Round(time.Millisecond))
+	}
+	return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleWaiting, elapsed.Round(time.Second))
+}
+
+func writeIdleWait(path string, started time.Time, reported time.Duration) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(started.UTC().Format(time.RFC3339Nano)+" "+reported.String()), 0600)
 }
 
 // buildSelf builds the exact squash SHA in a throwaway worktree under the
@@ -353,22 +485,32 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 	return nil
 }
 
-// settleSelf resumes the drain this deployment started and clears its
-// rollback marker, so a later retry-smoke is judged afresh. The installing
-// marker stays through a pause: only passed or a new install from pending
-// clears it.
+// settleSelf resumes the drain this deployment started and clears its idle
+// wait and rollback markers, so a later retry is judged afresh. A mode the
+// operator changed after the drain, such as a freeze during the build, is
+// theirs and stays. The installing marker stays through a pause: only passed
+// or a new install from pending clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
 		return err
 	}
 	if drained {
-		if err = maintenance.SetWithin("running", maintenanceWait); err != nil {
+		state, err := selfDeployMaintenanceRead()
+		if err != nil {
 			return err
+		}
+		if state.Mode == "draining" {
+			if err = maintenance.SetFromWithin("draining", "running", maintenanceWait); err != nil && !errors.Is(err, maintenance.ErrModeChanged) {
+				return err
+			}
 		}
 		if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil {
 			return err
 		}
+	}
+	if err = os.Remove(r.selfMarker(sha, markerIdleWait)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if err = os.Remove(r.selfMarker(sha, markerRolledBack)); errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -417,6 +559,13 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	return r.smokeSelf(ctx, t, p)
+}
+
+// smokeSelf runs under deploy.lock. A serve that already contains the squash
+// SHA without being it was not installed by this deployment, so a failed
+// smoke pauses instead of restoring the backup over it.
+func (r *Runtime) smokeSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	sha := deploymentSHA(p)
 	reason, err := os.ReadFile(r.selfMarker(sha, markerRolledBack))
 	if err == nil {
@@ -432,7 +581,8 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err != nil {
 		return err
 	}
-	if !ok {
+	contained := !ok && r.runningContains(ctx, t.Repo, sha)
+	if !ok && !contained {
 		return r.retryOrPauseSelf(ctx, t, p)
 	}
 	d := p.Deployment
@@ -445,6 +595,9 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = r.selfSmoke(ctx, observed, p); err != nil {
 		if ctx.Err() != nil {
 			return errors.Join(err, ctx.Err())
+		}
+		if contained {
+			return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment smoke failed; the running driver already contains the squash SHA, nothing to roll back"))
 		}
 		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment smoke failed; previous driver restored"), r.rollbackSelf(ctx, p, "self deployment smoke failed; previous driver restored"))
 	}
@@ -494,7 +647,8 @@ func (r *Runtime) retryOrPauseSelf(ctx context.Context, t Ticket, p *merge.Progr
 }
 
 // selfSmoke judges only what this deployment can break: the version (checked
-// before), the serve unit running this process, the config loading (doctor
+// before), the serve unit running this process, the installed gateway unit
+// running the same binary, the config loading (doctor
 // reports at all) and Orca answering. Other doctor fails, such as an old
 // fetch or a long drain, are the environment's and only logged.
 func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) error {
@@ -522,6 +676,9 @@ func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) er
 	if err := r.serveReady(ctx); err != nil {
 		return err
 	}
+	if err := r.gatewayReady(ctx); err != nil {
+		return err
+	}
 	if _, err := r.Orca.AutomationsList(ctx); err != nil {
 		return fmt.Errorf("orca unreachable: %w", err)
 	}
@@ -530,9 +687,34 @@ func (r *Runtime) selfSmoke(ctx context.Context, t Ticket, p *merge.Progress) er
 
 // serveReady requires systemd to run this very process as the active serve.
 func (r *Runtime) serveReady(ctx context.Context) error {
-	out, err := r.runFor(ctx, 30*time.Second, "", "systemctl", "--user", "show", "--property=ActiveState,MainPID", "orca-factory-driver")
+	props, err := r.unitProperties(ctx, "orca-factory-driver", "ActiveState,MainPID")
 	if err != nil {
 		return err
+	}
+	if props["ActiveState"] != "active" || props["MainPID"] != strconv.Itoa(os.Getpid()) {
+		return errors.New("orca-factory-driver unit is not active with this serve as its main process")
+	}
+	return nil
+}
+
+// gatewayReady requires the installed gateway unit, which runs the same
+// binary, to be active; a machine without the unit has nothing to check.
+func (r *Runtime) gatewayReady(ctx context.Context) error {
+	const unit = "orca-factory-feishu-gateway"
+	props, err := r.unitProperties(ctx, unit, "LoadState,ActiveState")
+	if err != nil {
+		return err
+	}
+	if props["LoadState"] == "not-found" || props["ActiveState"] == "active" {
+		return nil
+	}
+	return fmt.Errorf("%s unit is %s, not active", unit, props["ActiveState"])
+}
+
+func (r *Runtime) unitProperties(ctx context.Context, unit, properties string) (map[string]string, error) {
+	out, err := r.runFor(ctx, 30*time.Second, "", "systemctl", "--user", "show", "--property="+properties, unit)
+	if err != nil {
+		return nil, err
 	}
 	props := map[string]string{}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -540,10 +722,7 @@ func (r *Runtime) serveReady(ctx context.Context) error {
 			props[key] = value
 		}
 	}
-	if props["ActiveState"] != "active" || props["MainPID"] != strconv.Itoa(os.Getpid()) {
-		return errors.New("orca-factory-driver unit is not active with this serve as its main process")
-	}
-	return nil
+	return props, nil
 }
 
 // rollbackSelf restores the binary this deployment replaced and restarts,

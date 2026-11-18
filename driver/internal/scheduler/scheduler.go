@@ -53,6 +53,7 @@ type Ticket struct {
 	Phase                               machine.Phase
 	Attempt                             int
 	Candidate, Legacy, Blocked, Held    bool
+	AutoFailed                          bool
 	// MaintenanceRefused marks an executor that exited on a maintenance
 	// refusal after its latest ownership line; it resumes without a failure.
 	MaintenanceRefused bool
@@ -121,11 +122,12 @@ type Scheduler struct {
 	adaptive      Adaptive
 	// rounds and maintenanceMode decide when a round's ledger reads skip the
 	// table-rev reuse (fullSync).
-	rounds          int
-	maintenanceMode string
-	tokens          float64
-	refill          time.Time
-	initialized     bool
+	rounds           int
+	maintenanceMode  string
+	tokens           float64
+	refill           time.Time
+	initialized      bool
+	lastRecoveryRepo string
 	// tickStarted and tickEnded bound Serve's latest Tick; wakeReason names
 	// why the next one runs.
 	tickStarted, tickEnded time.Time
@@ -209,6 +211,26 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("invalid scheduler configuration")
 	}
 	now := s.clock()
+	admitted := 0
+	takeToken := func() bool {
+		if admitted >= s.Config.TokenBucket.Capacity || !s.token(s.clock()) {
+			return false
+		}
+		admitted++
+		return true
+	}
+	tokenWait := func(t Ticket) {
+		status.Push(s.clock(), func(view *status.View) {
+			for i := range view.Tickets {
+				row := &view.Tickets[i]
+				if row.Repo == t.Repo && row.Identifier == t.Identifier {
+					row.BlockedReason = "token"
+					row.PushedAt = time.Time{}
+					return
+				}
+			}
+		})
+	}
 	s.MergeQueue = nil
 	// A failed rediscovery is already logged and keeps the previous projects.
 	_ = s.RefreshProjects(ctx)
@@ -305,7 +327,20 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			count[t.Repo]++
 		}
 	}
-	for _, t := range tickets {
+	start := 0
+	for i, repo := range s.Repositories {
+		if repo.Path == s.lastRecoveryRepo {
+			start = i + 1
+			break
+		}
+	}
+	order := make(map[string]int, len(s.Repositories))
+	for i := range s.Repositories {
+		order[s.Repositories[(start+i)%len(s.Repositories)].Path] = i
+	}
+	recovery := append([]Ticket(nil), tickets...)
+	sort.SliceStable(recovery, func(i, j int) bool { return order[recovery[i].Repo] < order[recovery[j].Repo] })
+	for _, t := range recovery {
 		if !allowed[t.Repo] {
 			continue
 		}
@@ -385,7 +420,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					}
 				}
 			}
-			if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+			if t.AutoFailed {
+				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "failed executor requires agent resolution"}
+			} else if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "in-flight ticket exceeded stale limit"}
 			} else if t.MaintenanceRefused || t.GateSpecRefresh {
 				action = Action{Kind: Resume, Attempt: t.Attempt, Phase: t.Phase}
@@ -421,8 +458,13 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		} else {
 			continue
 		}
-		if (action.Kind == Resume || action.Kind == Resolve) && !s.token(now) {
-			continue
+		if action.Kind == Resume || action.Kind == Resolve {
+			if !takeToken() {
+				s.decision(t, "skip", "token", "action", action.Kind)
+				tokenWait(t)
+				continue
+			}
+			s.lastRecoveryRepo = t.Repo
 		}
 		// Reserve before an external write: a failed response may already have
 		// persisted ownership. Do not oversubscribe on an uncertain result.
@@ -488,7 +530,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	lap("runners")
-	claimNow := s.clock()
 	sort.SliceStable(tickets, func(i, j int) bool {
 		a, b := tickets[i], tickets[j]
 		if priority(a.Priority) != priority(b.Priority) {
@@ -520,10 +561,13 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = "capacity"
 		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && len(scopeMatches(scope, conflicts[t.Repo])) > 0:
 			reason = "scope"
-		case !s.token(claimNow):
+		case !takeToken():
 			reason = "token"
 		}
 		if reason != "" {
+			if reason == "token" {
+				tokenWait(t)
+			}
 			if reason == "blocked" {
 				s.decision(t, "skip", reason, "blockers", t.Blockers, "blockers_incomplete", t.BlockersIncomplete)
 			} else {
