@@ -358,10 +358,11 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		// gate.sh reads `KEY:` only at line start and compares values exactly, so
+		// lines must match the executor rendering byte for byte, not after trimming.
 		key, value, ok := strings.Cut(line, ":")
-		key, value = strings.TrimSpace(key), strings.TrimSpace(value)
 		want, known := expected[key]
-		if !ok || !known || seen[key] || value != want {
+		if !ok || !known || seen[key] || value != " "+want && (want != "" || value != "") {
 			return r.retryResolution(ctx, t, p, "gate_spec differs from driver-parsed ticket fields; use the ticket's gate spec")
 		}
 		seen[key] = true

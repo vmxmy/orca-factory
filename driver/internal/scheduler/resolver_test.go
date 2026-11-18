@@ -109,12 +109,24 @@ func (m resolverMergeIssues) Description(context.Context, string) (string, error
 	return "要做: implement feature\nSCOPE: feature\nCHECK: true", nil
 }
 
+type resolverFaceIssues struct {
+	*mergeIssues
+	face string
+}
+
+func (m resolverFaceIssues) Description(context.Context, string) (string, error) {
+	return m.face, nil
+}
+
 func resolverMergeProposal(t *testing.T, f *mergeFixture, edit func(*merge.Handoff)) {
 	t.Helper()
 	f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
-	rewriteHandoff(t, f, func(h map[string]any) {
-		h["gate_spec"] = "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n"
-	})
+	resolverFrozenProposal(t, f, "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n", edit)
+}
+
+func resolverFrozenProposal(t *testing.T, f *mergeFixture, spec string, edit func(*merge.Handoff)) {
+	t.Helper()
+	rewriteHandoff(t, f, func(h map[string]any) { h["gate_spec"] = spec })
 	var h merge.Handoff
 	if err := json.Unmarshal([]byte(strings.Split(f.tracker.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
 		t.Fatal(err)
@@ -226,6 +238,66 @@ func TestResolverCannotReplaceGateSpec(t *testing.T) {
 			bodies := strings.Join(f.tracker.bodies, "\n")
 			if !strings.Contains(bodies, "gate_spec") || !strings.Contains(bodies, `"phase":"waiting"`) || strings.Contains(bodies, "归属: 合并通道") || f.puts != 0 {
 				t.Fatalf("replacement gate spec accepted: puts=%d bodies=%s", f.puts, bodies)
+			}
+		})
+	}
+}
+
+// gate.sh reads only `KEY: value` lines that start at column 0 and compares
+// values exactly, so a spec line differing only in whitespace would pass a
+// trimmed comparison yet change what the gate executes.
+func TestResolverGateSpecLinesMatchDriverRendering(t *testing.T) {
+	face := "要做: implement feature\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: feature_test.go\nCHECK_ASSERTION: feature_test.go"
+	spec := "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: feature_test.go\nCHECK_ASSERTION: feature_test.go\nLANE: 2\n"
+	for name, line := range map[string]string{"leading space": " CHECK_IS_NEW_TEST: yes", "trailing space": "CHECK_IS_NEW_TEST: yes ", "no separator space": "CHECK_IS_NEW_TEST:yes"} {
+		t.Run(name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			f.runtime.Clients[f.repos[0].Path] = resolverFaceIssues{f.tracker, face}
+			resolverFrozenProposal(t, f, spec, func(h *merge.Handoff) {
+				h.QueueID = "replacement"
+				h.GateSpec = strings.Replace(h.GateSpec, "CHECK_IS_NEW_TEST: yes", line, 1)
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if !strings.Contains(bodies, "gate_spec differs") || strings.Contains(bodies, "归属: 合并通道") || f.puts != 0 {
+				t.Fatalf("gate_spec line %q accepted: puts=%d bodies=%s", line, f.puts, bodies)
+			}
+		})
+	}
+}
+
+// The recorded face keeps Markdown escapes in CHECK; the executor renders them
+// verbatim (OF-377), so a resolver spec must too.
+func TestRecordedResolverGateSpec(t *testing.T) {
+	face, err := os.ReadFile("../../testdata/recorded/linear-description-escaped.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := `set -a; . scripts/agent-gates/agent-graph.env; set +a; \[\[ $AGENT_ROLE_REVIEWER_CMD == claude\\ -p\* \]\] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`
+	scope := "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env"
+	spec := "UNIT: executor\nSCOPE: " + scope + "\nCHECK: " + check + "\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n"
+	for name, accepted := range map[string]bool{"rendered": true, "unescaped": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			closeMergeGates(t, f.runtime)
+			f.runtime.Clients[f.repos[0].Path] = resolverFaceIssues{f.tracker, string(face)}
+			resolverFrozenProposal(t, f, spec, func(h *merge.Handoff) {
+				h.QueueID = "recorded"
+				h.GateOutput = strings.Replace(h.GateOutput, "SCOPE feature", "SCOPE "+scope, 1)
+				if !accepted {
+					h.GateSpec = strings.Replace(h.GateSpec, `\[\[`, "[[", 1)
+				}
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if strings.Contains(bodies, "gate_spec differs") == accepted || strings.Contains(bodies, `"queue_id":"recorded"`) != accepted {
+				t.Fatalf("recorded face spec accepted=%v: bodies=%s", accepted, bodies)
 			}
 		})
 	}
