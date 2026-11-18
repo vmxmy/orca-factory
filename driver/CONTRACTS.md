@@ -111,7 +111,13 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 
 ## 调度器
 
-令牌在轮内按认领阶段的时钟和 `refill_per_second` 补充，受 `capacity` 封顶，避免 resume 耗尽轮初令牌后让候选认领整轮饿死；resume/resolve 仍用轮初时钟，与认领共用同一令牌桶。
+恢复与处置按仓库轮转，保留仓库内的快照顺序。下一轮从上一轮最后获得恢复或处置令牌的仓库之后开始；没有获得令牌时保留游标，重启或该仓库退出发现清单后从清单首仓库开始。认领仍按优先级、创建时间、票 ID 排序。
+
+认领、恢复和处置共用令牌桶，每次申请令牌都读取当前时钟，按实际经过的秒数与 `refill_per_second` 补充，桶内最多保留 `capacity` 个令牌。一轮三类动作合计最多申请成功 `capacity` 次，即使轮内有补充也不突破该上限；外部写入失败或启动结果不确定仍消耗这次名额。默认容量、默认补充速率、全局与每仓库在途上限不变。
+
+缺少令牌或达到轮次上限时，决策日志写 `event=skip, reason=token`；恢复和处置还带 `action=resume` 或 `action=resolve`。实时 status 快照对应票的 `blockedReason` 为 `token`，下轮完整观察重新计算，成功推进会清除这项等待原因。只读账本的 `status --fresh` 不预测本轮名额分配。
+
+`TestTokenFairnessAcrossRepositories` 覆盖 A 仓库 8 张票、B 仓库 1 张票、容量 4 时 B 在三轮内获得名额；`TestTokenSkipIsObservable` 覆盖日志和 status 等待原因；`TestTokenRefillDuringRound` 覆盖三类动作的轮内补充；`TestClaimsRespectRoundTokenLimit` 覆盖恢复与认领共用的轮次上限。
 
 ## GitHub Issues（#172 / #173）
 
