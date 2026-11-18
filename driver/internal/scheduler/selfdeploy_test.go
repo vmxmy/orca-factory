@@ -965,3 +965,33 @@ func TestSelfDeployConfirmPassedAfterRollbackRequiresInstalledVersion(t *testing
 		}
 	}
 }
+
+func TestSelfDeployConfirmPassedAcceptsContainedVersion(t *testing.T) {
+	for _, versionKind := range []string{"exact", "short", "descendant"} {
+		t.Run(versionKind, func(t *testing.T) {
+			f, host := newSelfDeployFixture(t)
+			repo := f.repos[0].Path
+			sha := f.main
+			f.prBody["merge_commit_sha"] = sha
+			host.guardErr = errors.New("guard unavailable")
+			firstServe(t, f, host)
+			f.runtime.Version = sha
+			switch versionKind {
+			case "short":
+				f.runtime.Version = sha[:7]
+			case "descendant":
+				tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+				f.runtime.Version = gitMergeTest(t, repo, "commit-tree", tree, "-p", sha, "-m", "later deployment")
+			}
+			before := len(f.tracker.bodies)
+			for _, dry := range []bool{true, false} {
+				if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "confirm-passed", "operator", "manual deployment verified", dry); err != nil {
+					t.Fatal(err)
+				}
+				if dry && len(f.tracker.bodies) != before || !dry && lastState(f) != "passed" {
+					t.Fatalf("confirmation state: dry=%t receipts=%q", dry, f.tracker.bodies[before:])
+				}
+			}
+		})
+	}
+}

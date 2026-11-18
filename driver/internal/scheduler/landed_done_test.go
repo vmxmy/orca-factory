@@ -197,7 +197,7 @@ func TestLandedDoneAcceptsDescendantInstalledVersion(t *testing.T) {
 
 func testLandedDoneInstalledVersion(t *testing.T, descendant bool) {
 	t.Helper()
-	f := newMergeFixture(t)
+	f, host := newSelfDeployFixture(t)
 	repo := f.repos[0].Path
 	sha := f.main
 	running := sha[:7]
@@ -208,13 +208,15 @@ func testLandedDoneInstalledVersion(t *testing.T, descendant bool) {
 	proposal := resolver.Resolution{Action: "landed-done", PR: 133, SHA: sha, Reason: "verified"}
 	runtime, tracker, ticket := landedDoneRuntime(t, proposal, "ok", nil)
 	runtime.Version = running
+	runtime.DriverPath = host.driver
+	runtime.Run = host.run
 	runtime.Clients[repo] = tracker
 	runtime.Repositories[repo] = runtime.Repositories[ticket.Repo]
 	ticket.Repo = repo
 	if err := runtime.applyResolution(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
-	if tracker.issue.State.Name != "Done" || len(tracker.bodies) != 2 || !strings.Contains(tracker.bodies[0], "driver=contains sha") {
+	if tracker.issue.State.Name != "Done" || len(tracker.bodies) != 2 || !strings.Contains(tracker.bodies[0], "driver=contains sha") || !strings.Contains(tracker.bodies[1], "归属: 无") {
 		t.Fatalf("contained commit not completed: state=%s comments=%q", tracker.issue.State.Name, tracker.bodies)
 	}
 }
