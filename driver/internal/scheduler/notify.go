@@ -158,3 +158,19 @@ func notificationScope(t Ticket) []string {
 	}
 	return decision.ScopeRequest()
 }
+
+func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
+	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
+	if err != nil {
+		return err
+	}
+	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
+	if chat == "" {
+		return nil
+	}
+	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
+	if err != nil {
+		return err
+	}
+	return sender.SendText(ctx, chat, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。请重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。")
+}

@@ -363,6 +363,7 @@ func TestDeployBatchPartialSmokeIntentCanRecover(t *testing.T) {
 			_ = serveAs(f, host, fmt.Sprintf("%040x", 2))
 			store.tickets[1].failBody = ""
 			_ = serveAs(f, host, fmt.Sprintf("%040x", 2))
+			f.runtime.Version = fmt.Sprintf("%040x", 2)
 			if err := f.runtime.ResumeDeployment(context.Background(), "ENG-2", "q2", fmt.Sprintf("%040x", 2), action, "operator", "batch reconciled", false); err != nil {
 				t.Fatal(err)
 			}
@@ -383,12 +384,22 @@ func TestDeployBatchPartialRecoveryCanReplay(t *testing.T) {
 			f, host, store, _ := newBatchFixture(t, 2)
 			host.guardErr = errors.New("guard unavailable")
 			firstServe(t, f, host)
+			f.runtime.Version = fmt.Sprintf("%040x", 2)
 			store.tickets[1].failBody = `"action":"confirm-passed"`
 			ctx := context.Background()
 			if err := f.runtime.ResumeDeployment(ctx, "ENG-1", "q1", fmt.Sprintf("%040x", 1), "confirm-passed", "operator", "batch reconciled", false); err == nil {
 				t.Fatal("lost recovery write accepted")
 			}
 			store.tickets[1].failBody = ""
+			f.runtime.Version = fmt.Sprintf("%040x", 1)
+			for _, dry := range []bool{true, false} {
+				before := []int{len(store.tickets[0].bodies), len(store.tickets[1].bodies)}
+				err := f.runtime.ResumeDeployment(ctx, fmt.Sprintf("ENG-%d", selected), fmt.Sprintf("q%d", selected), fmt.Sprintf("%040x", selected), "confirm-passed", "operator", "batch reconciled", dry)
+				if !errors.Is(err, errDeploymentProposal) || len(store.tickets[0].bodies) != before[0] || len(store.tickets[1].bodies) != before[1] {
+					t.Fatalf("replay accepted stale installed version: %v", err)
+				}
+			}
+			f.runtime.Version = fmt.Sprintf("%040x", 2)
 			if err := f.runtime.ResumeDeployment(ctx, fmt.Sprintf("ENG-%d", selected), fmt.Sprintf("q%d", selected), fmt.Sprintf("%040x", selected), "confirm-passed", "operator", "batch reconciled", false); err != nil {
 				t.Fatal(err)
 			}
@@ -501,5 +512,26 @@ func TestRecordedSelfDeployBatch(t *testing.T) {
 			t.Fatalf("smoke not shared: %+v vs %+v", shared, p.Deployment)
 		}
 		shared = p.Deployment
+	}
+}
+
+func TestDeployBatchConfirmPassedRequiresBatchInstalledVersion(t *testing.T) {
+	for _, dry := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry=%t", dry), func(t *testing.T) {
+			f, host, store, _ := newBatchFixture(t, 2)
+			host.guardErr = errors.New("guard unavailable")
+			firstServe(t, f, host)
+			f.runtime.Version = fmt.Sprintf("%040x", 1)
+			before := []int{len(store.tickets[0].bodies), len(store.tickets[1].bodies)}
+			err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", f.runtime.Version, "confirm-passed", "operator", "batch reconciled", dry)
+			if !errors.Is(err, errDeploymentProposal) {
+				t.Fatalf("accepted only selected member's version: %v", err)
+			}
+			for i, ticket := range store.tickets {
+				if len(ticket.bodies) != before[i] || batchProgress(t, ticket).Deployment.State != "paused" {
+					t.Fatal("rejected recovery changed a batch member")
+				}
+			}
+		})
 	}
 }

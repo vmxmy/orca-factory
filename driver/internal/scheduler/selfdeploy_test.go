@@ -919,3 +919,79 @@ func TestSelfDeployDoesNotDowngradeInstalledDriver(t *testing.T) {
 		})
 	}
 }
+
+func TestSelfDeployConfirmPassedAfterRollbackRequiresInstalledVersion(t *testing.T) {
+	for _, running := range []string{"old", "", "unknown", "exact", "short", "descendant"} {
+		for _, dry := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/dry=%t", running, dry), func(t *testing.T) {
+				f, h := newSelfDeployFixture(t)
+				repo := f.repos[0].Path
+				tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+				sha := gitMergeTest(t, repo, "commit-tree", tree, "-p", f.main, "-m", "squash")
+				newer := gitMergeTest(t, repo, "commit-tree", tree, "-p", sha, "-m", "manual deployment")
+				f.prBody["merge_commit_sha"] = sha
+				firstServe(t, f, h)
+				h.smokeOut, h.smokeErr = nil, errors.New("driver.toml does not load")
+				_ = serveAs(f, h, sha)
+				_ = serveAs(f, h, "old")
+				if lastState(f) != "paused" || installed(t, h.driver) != "old" {
+					t.Fatalf("rollback not established: state=%s installed=%s", lastState(f), installed(t, h.driver))
+				}
+				recovered := *f.runtime
+				recovered.GitHub = nil
+				versions := map[string]string{"old": f.main, "": "", "unknown": "unknown", "exact": sha, "short": sha[:7], "descendant": newer[:7]}
+				recovered.Version = versions[running]
+				if err := os.WriteFile(h.driver, fakeDriver(recovered.Version), 0700); err != nil {
+					t.Fatal(err)
+				}
+				before := len(f.tracker.bodies)
+				builds, restarts, smokes := h.builds, h.restarts, h.smokes
+				err := recovered.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "confirm-passed", "operator", "checked installed version", dry)
+				accepted := running == "exact" || running == "short" || running == "descendant"
+				if accepted && err != nil || !accepted && !errors.Is(err, errDeploymentProposal) {
+					t.Fatalf("confirm-passed accepted=%t: %v", accepted, err)
+				}
+				if dry || !accepted {
+					if len(f.tracker.bodies) != before || lastState(f) != "paused" {
+						t.Fatalf("recovery changed paused barrier: state=%s comments=%q", lastState(f), f.tracker.bodies[before:])
+					}
+				} else if lastState(f) != "passed" || len(f.tracker.bodies) != before+1 {
+					t.Fatalf("recovery not recorded: state=%s comments=%q", lastState(f), f.tracker.bodies[before:])
+				}
+				if h.builds != builds || h.restarts != restarts || h.smokes != smokes {
+					t.Fatal("confirm-passed ran deployment or smoke")
+				}
+			})
+		}
+	}
+}
+
+func TestSelfDeployConfirmPassedAcceptsContainedVersion(t *testing.T) {
+	for _, versionKind := range []string{"exact", "short", "descendant"} {
+		t.Run(versionKind, func(t *testing.T) {
+			f, host := newSelfDeployFixture(t)
+			repo := f.repos[0].Path
+			sha := f.main
+			f.prBody["merge_commit_sha"] = sha
+			host.guardErr = errors.New("guard unavailable")
+			firstServe(t, f, host)
+			f.runtime.Version = sha
+			switch versionKind {
+			case "short":
+				f.runtime.Version = sha[:7]
+			case "descendant":
+				tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+				f.runtime.Version = gitMergeTest(t, repo, "commit-tree", tree, "-p", sha, "-m", "later deployment")
+			}
+			before := len(f.tracker.bodies)
+			for _, dry := range []bool{true, false} {
+				if err := f.runtime.ResumeDeployment(context.Background(), "ENG-1", "q1", sha, "confirm-passed", "operator", "manual deployment verified", dry); err != nil {
+					t.Fatal(err)
+				}
+				if dry && len(f.tracker.bodies) != before || !dry && lastState(f) != "passed" {
+					t.Fatalf("confirmation state: dry=%t receipts=%q", dry, f.tracker.bodies[before:])
+				}
+			}
+		})
+	}
+}

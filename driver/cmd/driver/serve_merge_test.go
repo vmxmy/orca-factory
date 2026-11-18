@@ -116,6 +116,11 @@ func TestServeRuntimeActuallyMergesAndDryRunIsReadOnly(t *testing.T) {
 						t.Error(err)
 						return
 					}
+				case strings.HasSuffix(r.URL.Path, "/commits/"+strings.Repeat("c", 40)):
+					if _, err := fmt.Fprintf(w, `{"sha":%q,"parents":[{"sha":%q}]}`, strings.Repeat("c", 40), main); err != nil {
+						t.Error(err)
+						return
+					}
 				case strings.HasSuffix(r.URL.Path, "/check-runs"):
 					if _, err := fmt.Fprintf(w, `{"total_count":1,"check_runs":[{"id":1,"status":"completed","conclusion":"success","head_sha":%q}]}`, head); err != nil {
 						t.Error(err)

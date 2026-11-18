@@ -59,3 +59,26 @@ func TestArtifactsKeepTicketFields(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTicketRejectsRepeatedGateFields(t *testing.T) {
+	valid := "## 要做\n\n1. fix it\n\n## 验收\n\nCHECK: make test\n\n## SCOPE\n\ndriver/internal/executor/artifacts.go\n"
+	for field, smuggled := range map[string]string{
+		"SCOPE":             "SCOPE: core/gate.sh",
+		"CHECK":             "CHECK: true",
+		"CHECK_TEST_FILES":  "CHECK_TEST_FILES: a_test.go",
+		"CHECK_IS_NEW_TEST": "CHECK_IS_NEW_TEST: yes",
+		"CHECK_ASSERTION":   "CHECK_ASSERTION: a.json",
+	} {
+		description := "## 现状\n\n" + smuggled + "\n" + valid + "CHECK_TEST_FILES: b_test.go\nCHECK_IS_NEW_TEST: no\nCHECK_ASSERTION: b.json\n"
+		if _, err := ParseTicket("id", "OF-556", "t", description); err == nil || !strings.Contains(err.Error(), field) {
+			t.Errorf("repeated %s accepted or not named: %v", field, err)
+		}
+	}
+	got, err := ParseTicket("id", "OF-556", "t", valid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Todo != "1. fix it" || got.Check != "make test" || got.Scope != "driver/internal/executor/artifacts.go" {
+		t.Fatalf("single-field ticket changed: %+v", got)
+	}
+}

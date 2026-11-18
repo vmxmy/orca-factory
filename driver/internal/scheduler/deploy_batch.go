@@ -105,6 +105,14 @@ func (r *Runtime) advanceMergeQueue(ctx context.Context, rows []Ticket) error {
 	if head.Owner != machine.OwnerMerge || policy.State != "pending" || policy.Recovery != nil || policy.Reruns != 0 || !policy.StartedAt.IsZero() {
 		return r.advanceMerge(ctx, head)
 	}
+	// A later squash already merged but paused awaits recovery; installing the
+	// prefix now would deploy an older main before that decision.
+	for _, t := range rows[1:] {
+		if p := t.Progress; p != nil && t.Handoff != nil && p.QueueID == t.Handoff.QueueID && p.Phase == "merged" && p.Deployment != nil && p.Deployment.State == "paused" && p.Deployment.Batch == nil {
+			runx.LoggerFrom(ctx).Info("self deployment held behind a paused merged squash", "ticket", head.Identifier, "held_by", t.Identifier)
+			return nil
+		}
+	}
 	batch := &deployBatch{}
 	for _, t := range rows[:min(len(rows), selfDeployBatchLimit)] {
 		d := deploymentFor(t, r.Repositories[t.Repo].Env)
@@ -331,6 +339,9 @@ func (r *Runtime) recoverDeployBatch(ctx context.Context, t Ticket, p *merge.Pro
 	batch, err := r.loadDeployBatch(ctx, []Ticket{t}, p.Deployment.Batch)
 	if err != nil {
 		return err
+	}
+	if p.Deployment.Recovery.Action == "confirm-passed" && !r.runningContains(ctx, t.Repo, p.Deployment.Batch.SHA) {
+		return rejectDeploymentProposal("installed driver does not contain the batch SHA")
 	}
 	if p.Deployment.Recovery.Action == "retry-smoke" {
 		reserved := false

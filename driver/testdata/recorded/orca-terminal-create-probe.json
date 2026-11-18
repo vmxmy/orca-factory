@@ -1,0 +1,22 @@
+{
+  "id": "5be3618a-a6f4-4bd3-909b-ef4ba54210e0",
+  "ok": true,
+  "result": {
+    "terminal": {
+      "handle": "term_4aa07a88-df90-4866-aa2e-dcefaf47537c",
+      "tabId": "77fa8dda-4930-4359-a16e-01a39ee60981",
+      "paneKey": "77fa8dda-4930-4359-a16e-01a39ee60981:74ddaa43-199e-4e3e-9f7d-8cd14578ce3c",
+      "ptyId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-576-executor@@c40c4d39",
+      "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-576-executor",
+      "title": "OF-576 runtime probe recording",
+      "executionHostId": "local",
+      "incarnationId": "afe627f1-0082-40f2-83ee-80940f8e437f",
+      "hostPlatform": "linux",
+      "surface": "background",
+      "warning": "Terminal term_4aa07a88-df90-4866-aa2e-dcefaf47537c is running, but Orca could not make it discoverable. Run `orca terminal focus --terminal term_4aa07a88-df90-4866-aa2e-dcefaf47537c` to reveal and focus it."
+    }
+  },
+  "_meta": {
+    "runtimeId": "e8e31c36-9dc1-45b8-8141-2019a90cbe73"
+  }
+}

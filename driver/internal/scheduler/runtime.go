@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -69,6 +70,9 @@ type Runtime struct {
 	reviews *crossReviews
 	// merges runs merged-result gates beside the inspections.
 	merges *merge.Validations
+	// orcaFailures counts consecutive terminal create runtime_error answers
+	// across every launch path; any terminal create success resets it.
+	orcaFailures int
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -652,10 +656,19 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		// A merge-lane conflict resume runs the executor as a merge resolver.
 		verb = " exec --merging "
 	}
+	if r.orcaFailures >= orcaRuntimeFailureThreshold {
+		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
+	}
 	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
-		return fmt.Errorf("executor launch uncertain: %w", err)
+		var rejected *orca.RejectedError
+		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
+			r.orcaFailures++
+			return &terminalCreateRuntimeError{err: err, ticket: t, failures: r.orcaFailures}
+		}
+		return &terminalCreateUncertainError{fmt.Errorf("executor launch uncertain: %w", err)}
 	}
+	r.orcaFailures = 0
 	return nil
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
@@ -760,4 +773,45 @@ func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, 
 // start leaves evidence. The identifier is validated before it reaches the shell.
 func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
+}
+
+// OrcaTerminalCreateFailures is the consecutive terminal create runtime_error
+// count, including launches the scheduler only sees through the merge lane.
+func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
+
+var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
+
+// terminalCreateRuntimeError is a launch that created no terminal: Orca refused
+// terminal create with runtime_error, or the fault had already paused creation.
+// failures is the consecutive count after this launch.
+type terminalCreateRuntimeError struct {
+	err      error
+	ticket   Ticket
+	failures int
+}
+
+func (e *terminalCreateRuntimeError) Error() string { return e.err.Error() }
+func (e *terminalCreateRuntimeError) Unwrap() error { return e.err }
+
+// terminalCreateUncertainError is any other terminal create failure; the
+// terminal may exist, so ordinary liveness judgement applies.
+type terminalCreateUncertainError struct{ err error }
+
+func (e *terminalCreateUncertainError) Error() string { return e.err.Error() }
+func (e *terminalCreateUncertainError) Unwrap() error { return e.err }
+
+// ProbeOrcaRuntime exercises terminal creation without starting an executor.
+func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
+	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + repo, Title: "driver Orca runtime probe", Command: "true"})
+	if err != nil {
+		return err
+	}
+	var terminal struct {
+		Handle string `json:"handle"`
+	}
+	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
+		return errors.New("orca probe terminal handle missing")
+	}
+	r.orcaFailures = 0
+	return r.Orca.TerminalClose(ctx, terminal.Handle)
 }
