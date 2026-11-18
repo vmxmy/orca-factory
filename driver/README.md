@@ -162,6 +162,8 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 依赖暂停期间两道看守都不触发。两种转处置都不释放、不停止 worker。
 
+执行器验证已推送提交时，gate 子进程的总时限为 60 分钟，显式传入 `GATE_LOCK_WAIT=1800`，允许最多等待重锁 30 分钟。安装命令等通用调用和 reviewer 仍限时 10 分钟。worker 看守只在等待 worker 结果时运行；进入 gate 阶段后，执行器的独立心跳仍每 30 秒更新，等锁不会停止心跳。
+
 无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 ### 守护进程被杀后的恢复
@@ -182,10 +184,12 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 在 drain 前，脚本先运行 `git fetch -q origin`，仅在非零退出时重试，最多尝试 3 次，两次等待分别为 5 秒、15 秒。三次均失败时输出「尚未 drain，未改动任何状态」并以非零状态退出，不进入排空、备份或重启。重试仅覆盖 drain 前的 fetch；随后的 `git merge --ff-only` 和 drain 之后的步骤均不重试。
 
-1. 运行 `orca-factory-driver maintenance drain`。
+1. 运行 `orca-factory-driver maintenance drain`，成功后注册退出 trap，负责失败时恢复派工。
 2. 运行 `orca-factory-driver maintenance status`，等 `writersActive` 与 `sessionsActive` 都为 false（没有正在运行的执行器、处置 Agent 和已准入写入）。不要求在途票归零：drain 拒绝重新派工，在途票（例如等待 correction 重新派工的票）可能永远不归零；重启后执行器从 checkpoint 恢复。等待超时（建议 1 小时）时先运行 `maintenance resume`，放弃本次部署。
-3. 替换二进制并重启服务。
-4. 运行 `orca-factory-driver maintenance resume`。
+3. 备份旧二进制，构建到 `.new` 文件，再替换二进制并重启 driver 与飞书 gateway 服务。
+4. 等待 5 秒，用 `systemctl --user is-active` 检查两个服务存活，再运行 `orca-factory-driver maintenance resume`。
+
+drain 后任一步失败，脚本通过退出 trap 恢复：二进制尚未替换时直接 resume；已经替换时先从备份目录恢复旧二进制并重启两个服务，再用恢复后的旧程序 resume。恢复文件或重启失败时停止，不继续 resume。恢复成功仍保留本次部署的非零退出码。
 
 drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继续收敛。drain 与 resume 只等待已准入的认领与派工结束，不等待普通外部写入；默认最多等 2 分钟，用 `--wait 30s` 等时长调整。等待期间新认领与派工被拒绝；超时报错且状态不变。保留 driver.toml、凭据、账本和在途执行器；失败时恢复旧二进制，不删除数据库、不清空 checkpoint。验证服务存活、旧 Automation 关闭和连续调度周期；单次 `status` 成功不代表端到端验收通过。
 

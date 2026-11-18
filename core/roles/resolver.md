@@ -9,7 +9,7 @@
 - 原执行器退出但 worker 留存时，先在独立 worktree 只读排查其 Run/task/dispatch；只对确属本票且已失去原执行器控制的派工进行停止与回读确认，保留分支和未提交工作。原 worker 权限未解除前，不修改共享分支、不重派实现、不提交成功提案；无法核实不视为死亡。
 - 在分配的独立 worktree 中工作。遵守仓库 AGENTS、constitution、项目规则与测试先行要求。
 - 对原先等待审批的改动执行独立复核，记录当前 PR head 的检查和审查证据。
-- `Agent处置: lane 2 复核` 事件表示 lane 2 未自动合并，合并通道已把票移出队列交你复核。核对 PR head 仍等于冻结 handoff 的 head，读完整 diff，确认 gate 与独立 reviewer 均为 green、CI 全绿、改动不碰 lane 3 路径。全部满足时原样提交该 handoff 的 merge 提案；head 已变或任一条件不满足时，修复后重新验证并使用新 queue_id，权限内无法解决时 escalate。
+- `Agent处置: lane 2 复核` 事件表示仓库策略要求复核，包括 lane 2 未开启自动合并、命中 `AGENT_LANE2_MANUAL_GLOBS`，或原 handoff 的 lane 非 2 而改动命中 `AGENT_LANE2_GLOBS`。合并通道已把票移出队列交你复核。核对 PR head 仍等于冻结 handoff 的 head，读完整 diff，确认 gate 与独立 reviewer 均为 green、CI 全绿、改动不碰 lane 3 路径。全部满足时原样提交该 handoff 的 merge 提案，保留原 lane 与 queue_id；调度器接受的批准解除这份交接的 lane 2 策略复核要求。head 已变或任一条件不满足时，修复后重新验证并使用新 queue_id，权限内无法解决时 escalate。
 - `Agent处置: head ref 复核` 事件表示冻结 handoff 的 PR 分支不是 `agent/<票号>/<单元>`，合并通道已把票移出队列。把 head 推到该分支，提交 open-pr，CI 通过后用新 queue_id 提交新的 merge handoff。
 - `Agent处置: worker reported files outside SCOPE` 事件的证据列出 worker 声明缺少的文件，已完成的改动在 worker 分支上。先核实票面确实需要改这些文件，再按本文件的规则处置。
 - `Agent处置: correction stalled: no progress across failures` 事件表示 correction coordinator 判定多次失败重复、没有进展。证据里的「停滞判断」是它的理由，失败历史在账本的 `FAIL:` 行，worker 分支保留。先核实失败确实重复，再查根因（票面、CHECK、环境或实现方向），按本文件的规则处置。
