@@ -261,7 +261,22 @@ func (o *resolverTierProbe) TaskList(context.Context, string) ([]orca.Task, erro
 	return nil, o.stop
 }
 
+// OF-555, 2026-11-18: attempt 7 waited on the frozen Fable tier after the
+// operator switched AGENT_ROLE_RESOLVER_TOP; attempt 8 was the running round.
+// spec and top_reason are redacted.
 func TestTopResolverFollowsChangedConfig(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-top-resolver-tier.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	waiting, running := recording.Comments[0].Body, recording.Comments[1].Body
+	var recordedWaiting, recordedRunning resolver.Record
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(waiting, resolver.Prefix)), &recordedWaiting); err != nil || recordedWaiting.Phase != "waiting" {
+		t.Fatalf("recorded waiting round: %+v, %v", recordedWaiting, err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(running, resolver.Prefix)), &recordedRunning); err != nil || recordedRunning.Phase != "running" {
+		t.Fatalf("recorded running round: %+v, %v", recordedRunning, err)
+	}
 	for _, tc := range []struct {
 		name, tier, agent, model, effort string
 	}{
@@ -277,7 +292,7 @@ func TestTopResolverFollowsChangedConfig(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"waiting","outcome":"failed","top":true,"top_used":true,"agent":"claude","model":"claude-fable-5-2","effort":"xhigh"}`)}
+			store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", waiting)}
 			probe := &resolverTierProbe{stop: errors.New("stop after worker start")}
 			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": tc.tier}}}, Orca: probe}
 			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
@@ -298,7 +313,7 @@ func TestTopResolverFollowsChangedConfig(t *testing.T) {
 			if after.Agent != tc.agent || after.Model != tc.model || after.Effort != tc.effort {
 				t.Errorf("persisted tier = %s:%s:%s, want %s", after.Agent, after.Model, after.Effort, tc.tier)
 			}
-			if after.Attempt != 4 || !after.Top || !after.TopUsed || after.Failures != 1 {
+			if after.Attempt != recordedWaiting.Attempt+1 || !after.Top || !after.TopUsed || after.Failures != 1 {
 				t.Errorf("retry state changed: %+v", after)
 			}
 		})
@@ -312,11 +327,11 @@ func TestTopResolverFollowsChangedConfig(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"running","top":true,"top_used":true,"top_launch_accepted":true,"creator":"controller","run":"run_top","task":"task_top","dispatch":"ctx_top","agent":"claude","model":"claude-fable-5-2","effort":"xhigh"}`)}
+		store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", running)}
 		probe := &resolverTierProbe{stop: errors.New("stop during running recovery")}
 		r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": ""}}}, Orca: probe}
 		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
-		if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); !errors.Is(err, probe.stop) {
+		if err := r.ResolveTicket(context.Background(), ticket, nil, recordedRunning.Creator, nil); !errors.Is(err, probe.stop) {
 			t.Errorf("expected running recovery probe stop, got %v", err)
 		}
 		after := fromEvidence(t, ticket, store.issueComments).Resolution
