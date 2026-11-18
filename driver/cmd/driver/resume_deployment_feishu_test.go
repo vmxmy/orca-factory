@@ -287,7 +287,7 @@ func TestResumeDeploymentFindsBarrierRegardlessOfProjectEligibility(t *testing.T
 	progressPending := merge.Progress{
 		Version: 1, QueueID: queueID, TicketID: ticketCanonical, Repository: "o/r", PR: 1, Head: head,
 		Main: mainSHA, MergeSHA: mergeSHA, Phase: "merged",
-		Deployment: &merge.DeploymentProgress{State: "pending", Smoke: "smoke-test"},
+		Deployment: &merge.DeploymentProgress{State: "pending", Smoke: "smoke-test", Self: true},
 	}
 	progressPendingJSON, err := json.Marshal(progressPending)
 	if err != nil {
@@ -387,6 +387,9 @@ func TestResumeDeploymentFindsBarrierRegardlessOfProjectEligibility(t *testing.T
 		"--issue", ticketIdentifier, "--queue", queueID, "--sha", mergeSHA,
 		"--action", "confirm-passed", "--operator", "operator", "--reason", "checked production", "--dry-run",
 	}
+	installed := version
+	version = mergeSHA
+	t.Cleanup(func() { version = installed })
 	var code int
 	stderr := captureStderr(t, func() { code = resumeDeployment(args) })
 	if code != 0 || !strings.Contains(string(stderr), "Recovery validated; no changes made") {
