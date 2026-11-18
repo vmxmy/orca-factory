@@ -42,6 +42,12 @@ var selfDeployIdleWait, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 1
 
 var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
 
+var errSelfDeployFrozen = errors.New("维护模式为 frozen，暂不部署")
+
+// selfDeployMaintenanceRead lets tests act as an operator between the mode
+// read and the mode write.
+var selfDeployMaintenanceRead = maintenance.Read
+
 // errSelfDeployIdleWaiting ends this repository's deployment step for the
 // tick while sessions remain; the next tick checks again.
 var errSelfDeployIdleWaiting = errors.New("等待会话空闲")
@@ -188,6 +194,10 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
 	if r.runningContains(ctx, t.Repo, sha) {
 		if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -209,12 +219,11 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		}
 	}
 	// deploy.lock is released between ticks, so a manual deploy.sh may have
-	// resumed in the meantime. Drain again, keeping the original wait start.
-	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
-		var state maintenance.State
-		if state, err = maintenance.Read(); err == nil && (!waiting || state.Mode == "running") {
-			err = maintenance.SetWithin("draining", maintenanceWait)
-		}
+	// resumed in the meantime. drainSelf drains again from running, keeping
+	// the original wait start.
+	if err = r.drainSelf(sha); errors.Is(err, errSelfDeployFrozen) {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
 	}
 	if err == nil && !waiting {
 		err = writeIdleWait(idleWait, now, -1)
@@ -249,6 +258,10 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
 	if err = os.Remove(idleWait); err != nil {
 		return err
 	}
@@ -268,6 +281,59 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment failed before restart"), r.rollbackSelf(ctx, p, "self deployment failed before restart"))
 	}
 	return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
+}
+
+// drainSelf drains only from running and then owns the resume through the
+// drained marker. A drain already in place is left as is: one the operator set
+// stays after the deployment, and one this deployment set keeps its marker.
+// The drain writes only while the mode is still running, so an operator
+// drain or freeze landing after the read is kept.
+func (r *Runtime) drainSelf(sha string) error {
+	state, err := selfDeployMaintenanceRead()
+	if err != nil {
+		return err
+	}
+	if state.Mode == "frozen" {
+		return r.yieldToFreeze(sha)
+	}
+	if state.Mode != "running" {
+		return nil
+	}
+	marker := r.selfMarker(sha, markerDrained)
+	if err = touch(marker); err != nil {
+		return err
+	}
+	if err = maintenance.SetFromWithin("running", "draining", maintenanceWait); !errors.Is(err, maintenance.ErrModeChanged) {
+		return err
+	}
+	if err = os.Remove(marker); err != nil {
+		return err
+	}
+	return r.drainSelf(sha)
+}
+
+// refuseFrozen keeps the deployment pending under an operator freeze.
+func (r *Runtime) refuseFrozen(sha string) error {
+	state, err := maintenance.Read()
+	if err != nil {
+		return err
+	}
+	if state.Mode != "frozen" {
+		return nil
+	}
+	return r.yieldToFreeze(sha)
+}
+
+// yieldToFreeze hands the maintenance state to the operator's freeze: the
+// drained marker is dropped so their later mode is never overwritten, and the
+// idle wait is dropped so a later deployment waits afresh.
+func (r *Runtime) yieldToFreeze(sha string) error {
+	for _, kind := range []string{markerDrained, markerIdleWait} {
+		if err := os.Remove(r.selfMarker(sha, kind)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return errSelfDeployFrozen
 }
 
 // runningContains reports whether this serve's version is the squash SHA or
@@ -356,6 +422,9 @@ func (r *Runtime) awaitIdle(marker string, now time.Time, report func(elapsed ti
 }
 
 func writeIdleWait(path string, started time.Time, reported time.Duration) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(started.UTC().Format(time.RFC3339Nano)+" "+reported.String()), 0600)
 }
 
@@ -417,17 +486,24 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 }
 
 // settleSelf resumes the drain this deployment started and clears its idle
-// wait and rollback markers, so a later retry is judged afresh. The installing
-// marker stays through a pause: only passed or a new install from pending
-// clears it.
+// wait and rollback markers, so a later retry is judged afresh. A mode the
+// operator changed after the drain, such as a freeze during the build, is
+// theirs and stays. The installing marker stays through a pause: only passed
+// or a new install from pending clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
 		return err
 	}
 	if drained {
-		if err = maintenance.SetWithin("running", maintenanceWait); err != nil {
+		state, err := selfDeployMaintenanceRead()
+		if err != nil {
 			return err
+		}
+		if state.Mode == "draining" {
+			if err = maintenance.SetFromWithin("draining", "running", maintenanceWait); err != nil && !errors.Is(err, maintenance.ErrModeChanged) {
+				return err
+			}
 		}
 		if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil {
 			return err
