@@ -153,9 +153,10 @@ func (r *Runtime) ReapDead(ctx context.Context, t Ticket) error {
 		return errors.New("heartbeat no longer dead")
 	}
 	// The snapshot may predate a takeover; fence only what the ledger still
-	// assigns. A resolver ticket passes the held and managed checks of Resolve.
+	// assigns. Failed executors and resolvers pass the held and managed checks
+	// of Resolve instead of the execution checks that reject failed tickets.
 	action := Resume
-	if t.Owner == machine.OwnerResolver {
+	if t.Owner == machine.OwnerResolver || t.AutoFailed {
 		action = Resolve
 	}
 	if err := r.verifyFreshDecision(ctx, t, action); err != nil {
