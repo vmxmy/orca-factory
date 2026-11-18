@@ -279,6 +279,13 @@ func (b *statusBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error
 	return errors.New("backend has no Orca runtime probe")
 }
 
+func (b *statusBackend) OrcaTerminalCreateFailures() int {
+	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
+		return source.OrcaTerminalCreateFailures()
+	}
+	return 0
+}
+
 func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
 	if source, ok := b.Backend.(interface {
 		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error

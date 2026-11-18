@@ -551,6 +551,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 			}
 		}
+		// A merge correction that succeeds returns no error; read the count back.
+		if counter, ok := s.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok && !s.orcaRuntime.Paused {
+			s.orcaRuntime.Failures = counter.OrcaTerminalCreateFailures()
+		}
 	}
 	lap("merge")
 	if reviews, ok := s.Backend.(interface {

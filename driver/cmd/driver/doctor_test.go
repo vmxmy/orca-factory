@@ -541,4 +541,7 @@ func TestOrcaRuntimeCapabilitiesSurviveStatusBackend(t *testing.T) {
 	}); !ok {
 		t.Error("serve statusBackend hides Orca runtime failure notification")
 	}
+	if _, ok := any(backend).(interface{ OrcaTerminalCreateFailures() int }); !ok {
+		t.Error("serve statusBackend hides the Orca terminal create failure count")
+	}
 }

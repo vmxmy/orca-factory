@@ -775,6 +775,10 @@ func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
 }
 
+// OrcaTerminalCreateFailures is the consecutive terminal create runtime_error
+// count, including launches the scheduler only sees through the merge lane.
+func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
+
 var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
 
 // terminalCreateRuntimeError is a launch that created no terminal: Orca refused

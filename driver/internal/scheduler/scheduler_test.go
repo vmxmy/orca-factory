@@ -602,6 +602,9 @@ func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error
 	b.notices++
 	return nil
 }
+func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
+	return b.runtime.OrcaTerminalCreateFailures()
+}
 func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	b.merges++
 	if b.merge == nil {
@@ -841,21 +844,32 @@ func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
 // Any terminal create success ends the consecutive run, including one from a
 // merge correction the scheduler never sees succeed.
 func TestOrcaRuntimeMergeCorrectionSuccessClearsCount(t *testing.T) {
-	x := newRuntimeFailureFixture(t, 0)
-	s, b := x.s, x.b
-	s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
-	tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
-	b.merge = func(ctx context.Context) error {
-		var problems []error
-		for i, ticket := range tickets {
-			x.oc.failing = i != 2
-			problems = append(problems, b.runtime.Launch(ctx, ticket))
-		}
-		return errors.Join(problems...)
-	}
-	_ = s.Tick(context.Background())
-	if got := s.OrcaRuntime(); got.Paused || got.Failures != 1 {
-		t.Fatalf("success between failures did not restart the count: %+v", got)
+	for _, tc := range []struct {
+		name     string
+		failing  []bool
+		failures int
+	}{
+		{"failure after success", []bool{true, true, false, true}, 1},
+		{"batch ends in success", []bool{true, true, false}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, 0)
+			s, b := x.s, x.b
+			s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+			tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")[:len(tc.failing)]
+			b.merge = func(ctx context.Context) error {
+				var problems []error
+				for i, ticket := range tickets {
+					x.oc.failing = tc.failing[i]
+					problems = append(problems, b.runtime.Launch(ctx, ticket))
+				}
+				return errors.Join(problems...)
+			}
+			_ = s.Tick(context.Background())
+			if got := s.OrcaRuntime(); got.Paused || got.Failures != tc.failures {
+				t.Fatalf("terminal create success did not restart the count: %+v", got)
+			}
+		})
 	}
 }
 
