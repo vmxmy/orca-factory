@@ -328,6 +328,9 @@ func (r *Runtime) loadDeployBatch(ctx context.Context, rows []Ticket, binding *m
 }
 
 func (r *Runtime) recoverDeployBatch(ctx context.Context, t Ticket, p *merge.Progress, body string, dry bool) error {
+	if p.Deployment.Recovery.Action == "confirm-passed" && !r.runningContains(ctx, t.Repo, p.Deployment.Batch.SHA) {
+		return rejectDeploymentProposal("installed driver does not contain the batch deployment SHA")
+	}
 	batch, err := r.loadDeployBatch(ctx, []Ticket{t}, p.Deployment.Batch)
 	if err != nil {
 		return err

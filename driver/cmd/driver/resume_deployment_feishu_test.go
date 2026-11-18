@@ -208,6 +208,15 @@ func captureStderr(t *testing.T, run func()) []byte {
 // declaring a Feishu ledger, so it finds the ticket and, in --dry-run mode,
 // reports the recovery as validated without writing anything.
 func TestResumeDeploymentFindsBarrierRegardlessOfProjectEligibility(t *testing.T) {
+	testResumeDeploymentFindsBarrier(t, false)
+}
+
+func TestResumeDeploymentSelfConfirmPassedChecksVersion(t *testing.T) {
+	testResumeDeploymentFindsBarrier(t, true)
+}
+
+func testResumeDeploymentFindsBarrier(t *testing.T, self bool) {
+	t.Helper()
 	const canonicalKey = "github.com/example/of44-driver-test"
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -287,7 +296,7 @@ func TestResumeDeploymentFindsBarrierRegardlessOfProjectEligibility(t *testing.T
 	progressPending := merge.Progress{
 		Version: 1, QueueID: queueID, TicketID: ticketCanonical, Repository: "o/r", PR: 1, Head: head,
 		Main: mainSHA, MergeSHA: mergeSHA, Phase: "merged",
-		Deployment: &merge.DeploymentProgress{State: "pending", Smoke: "smoke-test"},
+		Deployment: &merge.DeploymentProgress{State: "pending", Smoke: "smoke-test", Self: self},
 	}
 	progressPendingJSON, err := json.Marshal(progressPending)
 	if err != nil {
@@ -386,6 +395,17 @@ func TestResumeDeploymentFindsBarrierRegardlessOfProjectEligibility(t *testing.T
 	args := []string{
 		"--issue", ticketIdentifier, "--queue", queueID, "--sha", mergeSHA,
 		"--action", "confirm-passed", "--operator", "operator", "--reason", "checked production", "--dry-run",
+	}
+	if self {
+		previous := version
+		t.Cleanup(func() { version = previous })
+		version = "old"
+		var rejected int
+		stderr := captureStderr(t, func() { rejected = resumeDeployment(args) })
+		if rejected != 1 || !strings.Contains(string(stderr), "installed driver does not contain") {
+			t.Fatalf("self recovery accepted old version: code=%d stderr=%s", rejected, stderr)
+		}
+		version = mergeSHA
 	}
 	var code int
 	stderr := captureStderr(t, func() { code = resumeDeployment(args) })

@@ -17,6 +17,7 @@
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
 - 对已合并但票据尚未收尾的票，只有在 GitHub 回读 PR 为 MERGED 且 `merge_commit_sha` 等于提案 `sha`、该 SHA 是 `origin/main` 的祖先、票据没有未完成合并交接或冻结队列身份、不是 lane 3，并且涉及 `driver/` 时已安装版本包含该 SHA 后，才提交 `landed-done` 提案；调度器会重新核对这些条件、写入核对评论并置 Done。
+- 版本包含指当前 driver 进程的 `main.version` 等于目标完整 SHA，或在仓库检出里执行 `git merge-base --is-ancestor <目标 SHA> <main.version>` 成功；短 SHA 解析到目标提交或其后代也接受。空版本、无法解析的版本或查询错误均不能作为放行证据。
 
 ## Does Not Own
 
@@ -38,6 +39,7 @@
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。新 queue_id 的 catchup_rounds 由调度器按合并通道已记的轮数写入；把 main 合入分支是修复已计的那一轮，不另计。
 - 未改动且仅补充审批时可原样返回已有 handoff；任何字段或 head 改动都须重新验证并使用新 queue_id。
 - 部署恢复先核对副作用：确认成功用 confirm-passed；workflow 需重试用 retry-workflow；自部署在 smoke 开始前暂停时用 retry-workflow 表示重新安装（上次恢复是 retry-smoke 时拒绝）；已执行 smoke 确认可安全重试才用 retry-smoke。原因为「no deployment run」时，核对该 SHA 相对上一次已部署 SHA 的改动是否全在部署 workflow 的路径过滤之外，是则 confirm-passed，否则 retry-workflow 并通知人手动触发。
+- 自部署提交 confirm-passed 前，核对当前 driver 版本包含部署 SHA；批部署必须包含 `batch.sha`，同时保持所选票原 queue 与 squash SHA 不变。调度器在普通恢复、dry-run 和中断恢复重放时都会核对，失败不写回执。回滚后的旧版本不能凭 smoke 记录放行；人工部署并验证成功后，用已安装的 driver 执行恢复命令。
 
 ## Handoff
 

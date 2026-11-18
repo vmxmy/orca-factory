@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -169,7 +170,9 @@ func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 			tracker.issue.Labels.Nodes = []task.NamedID{{Name: "auto-impl"}}
 			if tc.name == "driver not installed" {
 				runtime.Version = strings.Repeat("c", 40)
-				runtime.Run = func(context.Context, runx.Spec) ([]byte, error) { return []byte("orca-factory-driver other"), nil }
+				runtime.Run = func(context.Context, runx.Spec) ([]byte, error) {
+					return nil, errors.New("installed version is not an ancestor")
+				}
 			}
 			if err := runtime.applyResolution(context.Background(), ticket); err != nil {
 				t.Fatal(err)
@@ -181,5 +184,37 @@ func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 				t.Fatalf("unsafe proposal must only record a resolver retry: %q", tracker.bodies)
 			}
 		})
+	}
+}
+
+func TestLandedDoneAcceptsShortInstalledVersion(t *testing.T) {
+	testLandedDoneInstalledVersion(t, false)
+}
+
+func TestLandedDoneAcceptsDescendantInstalledVersion(t *testing.T) {
+	testLandedDoneInstalledVersion(t, true)
+}
+
+func testLandedDoneInstalledVersion(t *testing.T, descendant bool) {
+	t.Helper()
+	f := newMergeFixture(t)
+	repo := f.repos[0].Path
+	sha := f.main
+	running := sha[:7]
+	if descendant {
+		tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+		running = gitMergeTest(t, repo, "commit-tree", tree, "-p", sha, "-m", "manual deployment")
+	}
+	proposal := resolver.Resolution{Action: "landed-done", PR: 133, SHA: sha, Reason: "verified"}
+	runtime, tracker, ticket := landedDoneRuntime(t, proposal, "ok", nil)
+	runtime.Version = running
+	runtime.Clients[repo] = tracker
+	runtime.Repositories[repo] = runtime.Repositories[ticket.Repo]
+	ticket.Repo = repo
+	if err := runtime.applyResolution(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if tracker.issue.State.Name != "Done" || len(tracker.bodies) != 2 || !strings.Contains(tracker.bodies[0], "driver=contains sha") {
+		t.Fatalf("contained commit not completed: state=%s comments=%q", tracker.issue.State.Name, tracker.bodies)
 	}
 }
