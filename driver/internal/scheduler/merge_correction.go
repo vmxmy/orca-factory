@@ -12,7 +12,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 )
 
-// Persist the decision atomically with ownership before starting a terminal.
+// Persist the decision and ownership in one comment before labels can block retries.
 // An uncertain launch is recovered by the ordinary scheduler inspection path.
 func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, result merge.Result) error {
 	h := t.Handoff
@@ -40,9 +40,6 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 		return r.parkTicket(ctx, t, p.Reason, "merge policy", body)
 	}
 	if human || review || direct {
-		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
-			return errors.New("merge escalation unconfirmed")
-		}
 		if direct {
 			body = "转人: " + p.Reason + "\n证据: merge policy\n阶段: " + string(machine.PhaseHuman) + "\n归属: " + string(machine.OwnerHuman) + "\n" + body
 		} else {
@@ -59,6 +56,11 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	}
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
+	}
+	if human || review || direct {
+		if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "In Progress", []string{"auto-impl", "auto-failed"}, []string{"ready-for-agent"}); err != nil {
+			return errors.New("merge escalation unconfirmed")
+		}
 	}
 	switch {
 	case direct:
