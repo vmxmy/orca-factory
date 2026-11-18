@@ -24,6 +24,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -50,7 +51,7 @@ const (
 const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
-var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "credentials"}
+var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials"}
 
 var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
@@ -185,6 +186,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"maintenance":  p.checkMaintenance(state, stateErr),
 		"credentials":  p.checkCredentials(ctx, env, envErr),
 		"launches":     p.checkLaunches(),
+		"orca_runtime": p.checkOrcaRuntime(),
 	}
 	if projectsErr != nil {
 		for _, name := range []string{"checkouts", "sync_prs", "ledger"} {
@@ -742,4 +744,15 @@ func httpReachable(ctx context.Context, url string) error {
 		return err
 	}
 	return resp.Body.Close()
+}
+
+func (p doctorProbe) checkOrcaRuntime() healthCheck {
+	view := status.Read(p.now, 0)
+	detail := map[string]any{"failures": view.OrcaRuntime.Failures, "snapshot_state": view.State}
+	if view.OrcaRuntime.Paused {
+		fix := "重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。"
+		detail["recovery"] = fix
+		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
+	}
+	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
 }

@@ -115,12 +115,14 @@ func outcome(err error) string {
 	}
 }
 
-func (s *Scheduler) launch(ctx context.Context, t Ticket) error {
+// launchOutcome also returns the logged result, so a deferred launch, reported
+// as nil, stays distinguishable from a success.
+func (s *Scheduler) launchOutcome(ctx context.Context, t Ticket) (string, error) {
 	err := s.Backend.Launch(ctx, t)
 	result := outcome(err)
 	s.decision(t, "launch", "", "attempt", t.Attempt, "result", result, "err", err)
 	if result == "deferred" {
-		return nil
+		return result, nil
 	}
-	return err
+	return result, err
 }

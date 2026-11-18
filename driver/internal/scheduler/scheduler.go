@@ -132,11 +132,18 @@ type Scheduler struct {
 	// why the next one runs.
 	tickStarted, tickEnded time.Time
 	wakeReason             string
+	orcaRuntime            status.OrcaRuntime
+	runtimePending         map[string]Ticket
+	// relaunchedAt restarts the registration grace of a reservation whose
+	// launch succeeded only after an Orca outage; its claim time is older.
+	relaunchedAt map[string]time.Time
 }
 
 // fullSyncEvery is how many rounds pass between full ledger reads, besides the
 // first round and the first round after maintenance returns to running.
 const fullSyncEvery = 10
+
+const orcaRuntimeFailureThreshold = 3
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
@@ -318,6 +325,29 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	s.plan(now, busy)
+	if s.orcaRuntime.Paused {
+		probe, ok := s.Backend.(interface {
+			ProbeOrcaRuntime(context.Context, string) error
+		})
+		if !ok {
+			return errOrcaRuntimePaused
+		}
+		repo := ""
+		for _, ticket := range tickets {
+			if allowed[ticket.Repo] {
+				repo = ticket.Repo
+				break
+			}
+		}
+		if repo == "" {
+			return errors.New("orca runtime fault: no repository available for recovery probe")
+		}
+		if err := probe.ProbeOrcaRuntime(ctx, repo); err != nil {
+			return fmt.Errorf("orca runtime recovery probe: %w", err)
+		}
+		s.orcaRuntime = status.OrcaRuntime{}
+	}
+
 	s.MergeQueue = nil
 	count := map[string]int{}
 	total := 0
@@ -343,6 +373,24 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	for _, t := range recovery {
 		if !allowed[t.Repo] {
 			continue
+		}
+		if s.orcaRuntime.Paused {
+			continue
+		}
+		if !unregistered(t) {
+			delete(s.relaunchedAt, t.ID)
+		}
+		if pending, ok := s.runtimePending[t.ID]; ok {
+			// Reuse only the reservation that failed before a terminal existed.
+			if t.Owner == pending.Owner && t.Attempt == pending.Attempt && t.Phase == pending.Phase && unregistered(t) {
+				if s.token(now) {
+					if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
+						problems = append(problems, err)
+					}
+				}
+				continue
+			}
+			delete(s.runtimePending, t.ID)
 		}
 		r := repos[t.Repo]
 		action := Action{}
@@ -372,7 +420,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					}
 				}
 			}
-			if beat == beatLegacy && (t.Resolution == nil || t.Resolution.Phase != "result") && unregistered(t) && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+			if beat == beatLegacy && (t.Resolution == nil || t.Resolution.Phase != "result") && unregistered(t) && now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 				continue
 			}
 			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
@@ -399,11 +447,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					continue
 				case beatLegacy:
 					result := "dead"
-					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+					if now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 						result = "uncertain"
 					}
 					s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
-					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+					if now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 						continue
 					}
 				}
@@ -487,7 +535,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			s.MergeQueue = append(s.MergeQueue, t)
 		case Resolve:
 			t.Owner, t.Phase = machine.OwnerResolver, machine.PhaseResolver
-			if err := s.launch(ctx, t); err != nil {
+			if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("resolver launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		case Resume:
@@ -495,17 +543,26 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
 			t.Terminal, t.Run = "-", ""
-			if err := s.launch(ctx, t); err != nil {
+			if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		}
 	}
 	lap("dispatch")
+	// A merge correction launches an executor terminal, so a paused runtime
+	// holds the merge lane too.
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
-	}); ok {
+	}); ok && !s.orcaRuntime.Paused {
 		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
 			problems = append(problems, err)
+			for _, runtimeErr := range terminalCreateRuntimeErrors(err) {
+				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
+			}
+		}
+		// A merge correction that succeeds returns no error; read the count back.
+		if counter, ok := s.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok && !s.orcaRuntime.Paused {
+			s.orcaRuntime.Failures = counter.OrcaTerminalCreateFailures()
 		}
 	}
 	lap("merge")
@@ -541,6 +598,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
+		if s.orcaRuntime.Paused {
+			break
+		}
 		if !t.Candidate || t.resumesResolution() {
 			continue
 		}
@@ -596,7 +656,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		t.Attempt = state.Attempt
 		t.Phase = state.Phase
 		t.Owner = state.Owner
-		if err = s.launch(ctx, t); err != nil {
+		if err = s.launchWithRuntimeCheck(ctx, t); err != nil {
 			problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 		}
 	}
@@ -654,6 +714,14 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 }
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
+
+// claimedAt is when the unregistered grace of t started.
+func (s *Scheduler) claimedAt(t Ticket) time.Time {
+	if at, ok := s.relaunchedAt[t.ID]; ok && at.After(t.UpdatedAt) {
+		return at
+	}
+	return t.UpdatedAt
+}
 
 // applyReason is the safety-error handling OF-99 introduced, reused for an
 // Apply failure (OF-100): a single line, truncated, with the same redaction
@@ -716,3 +784,69 @@ type snapshotError struct {
 
 func (e *snapshotError) Error() string { return "scheduler snapshot failed: " + e.reason }
 func (e *snapshotError) Unwrap() error { return e.err }
+
+// launchWithRuntimeCheck keeps a reservation whose launch never reached a
+// terminal create answer, and clears the fault only on a real success.
+func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error {
+	result, err := s.launchOutcome(ctx, t)
+	var runtimeErr *terminalCreateRuntimeError
+	var uncertain *terminalCreateUncertainError
+	switch {
+	case errors.As(err, &runtimeErr):
+		s.recordOrcaRuntimeFailure(ctx, runtimeErr)
+	case result == "success":
+		if _, retried := s.runtimePending[t.ID]; retried {
+			if s.relaunchedAt == nil {
+				s.relaunchedAt = map[string]time.Time{}
+			}
+			s.relaunchedAt[t.ID] = s.clock()
+		}
+		delete(s.runtimePending, t.ID)
+		s.orcaRuntime = status.OrcaRuntime{}
+	case errors.As(err, &uncertain):
+		delete(s.runtimePending, t.ID)
+	}
+	return err
+}
+
+// recordOrcaRuntimeFailure keeps the reservation for retry and mirrors the
+// Runtime's consecutive count, which also sees merge-correction launches.
+func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *terminalCreateRuntimeError) {
+	t := runtimeErr.ticket
+	if s.runtimePending == nil {
+		s.runtimePending = map[string]Ticket{}
+	}
+	s.runtimePending[t.ID] = t
+	s.orcaRuntime.Failures = runtimeErr.failures
+	if s.orcaRuntime.Failures < orcaRuntimeFailureThreshold || s.orcaRuntime.Paused {
+		return
+	}
+	s.orcaRuntime.Paused = true
+	if notifier, ok := s.Backend.(interface {
+		NotifyOrcaRuntime(context.Context, Ticket) error
+	}); ok {
+		if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
+			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
+		}
+	}
+}
+
+// OrcaRuntime is the terminal-create fault state serve publishes in its status.
+func (s *Scheduler) OrcaRuntime() status.OrcaRuntime { return s.orcaRuntime }
+
+// terminalCreateRuntimeErrors finds every rejection in a joined merge-lane error.
+func terminalCreateRuntimeErrors(err error) []*terminalCreateRuntimeError {
+	switch e := err.(type) {
+	case *terminalCreateRuntimeError:
+		return []*terminalCreateRuntimeError{e}
+	case interface{ Unwrap() []error }:
+		var found []*terminalCreateRuntimeError
+		for _, inner := range e.Unwrap() {
+			found = append(found, terminalCreateRuntimeErrors(inner)...)
+		}
+		return found
+	case interface{ Unwrap() error }:
+		return terminalCreateRuntimeErrors(e.Unwrap())
+	}
+	return nil
+}

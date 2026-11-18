@@ -111,6 +111,14 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 
 生成首轮或纠正派工提示词时，执行器写 `worker skills` 日志，字段 `worker_skills` 保留逗号分隔列表，空配置为空字符串，`correction` 记录纠正次数。`executor.TestWorkerSkillsPrompt` 覆盖缺省输出和插入位置，`TestWorkerSkillsInitialAndCorrectionDispatch` 覆盖两处派工与日志，`TestWorkerSkillsRejectInvalidNames` 和 `TestWorkerSkillsInheritedAndRepositoryOverride` 覆盖启动校验与配置来源。
 
+## Orca 终端创建边界（OF-576）
+
+仅 `Runtime.Launch` 的 `terminal create` 返回 `runtime_error` 进入运行时故障计数，其他 Orca 命令和错误码保持原处理。认领、恢复、处置和合并通道的纠正派工都经过 `Runtime.Launch`，连续失败计数也在 `Runtime.Launch` 里累计：任一路径的 `terminal create` 成功（含合并纠正与恢复探测）清零，达到命名阈值 `orcaRuntimeFailureThreshold=3` 后 `Runtime.Launch` 不再调用 `terminal create`，直接返回暂停错误并保留该票的重试记录。调度器读取每个失败（合并通道合并返回的错误逐个读取）同步计数，合并通道结束后再从 `Runtime` 回读计数，以反映没有返回错误的合并纠正成功；达到阈值后暂停认领、派工、合并通道与执行器死亡判定，单次故障通知一次；同一轮内达到阈值后，本轮剩余的派工与合并通道也停止。已失败的认领在原 attempt 上重试，不因本次终端创建失败转处置。重试在 `terminal create` 之前失败或被延后时保留重试记录，也不改变计数；`terminal create` 返回其他错误时终端可能已存在，丢弃重试记录，按常规存活判定处理。票据归属、阶段或 attempt 改变后也丢弃重试记录。只有 `terminal create` 成功才清零计数。计数和重试记录在 serve 进程内保存，不改变账本身份、checkpoint 或预算。只有 serve 把故障状态写进 status 快照（`DRIVER_STATUS_FILE` 快照与推送视图都写），`serve --dry-run` 等独立调度器不覆盖它。
+
+暂停期间每轮使用一个可调度仓库创建 `--command true` 的探测终端，读取 `result.terminal.handle` 并关闭；探测成功后恢复原认领与新票派工。doctor 不做该探测，只读 status 的 `orcaRuntime.failures`、`orcaRuntime.paused`；暂停时报 `orca_runtime=fail`，detail 提示重启 `orca-serve` 并查看 profile 写入超时。无故障字段的旧快照仍可读，检查只表示快照未记录此故障。driver 不自动重启服务。
+
+`TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts` 用假 Orca 重复失败。失败回放 `driver-journal-orca-terminal-create-runtime-error.jsonl`：这是 2026-11-18 00:24:25 故障现场 driver 日志（`journalctl --user -u orca-factory-driver`）的两行原文，`Orca call` 行记录 `command=terminal create`、`result=runtime_error` 与 `request_id`，紧随的 `scheduler decision` 行记录 ZCP-554 的 `launch uncertain`。driver 日志不保存 Orca 错误信封的 message，测试只用录制的错误码与 request id 组成信封，经 `orca.Client` 解析；driver 只按错误码分类。恢复回放 `orca-terminal-create-probe.json`，这是 2026-11-18 在 OF-576 单元 worktree 执行 `orca terminal create --command true --json` 的完整成功回执，创建的终端已关闭，未脱敏且无凭据。测试断言关闭其真实 handle、attempt 不增长、不转处置、通知一次及恢复认领。`TestOrcaRuntimeRetryKeepsReservationUntilTerminalCreateAnswers`、`TestOrcaRuntimeErrorFromMergeCorrectionCounts`（同轮多仓库合并纠正失败逐个计数，阈值后不再创建终端）、`TestOrcaRuntimeMergeCorrectionSuccessClearsCount`、`TestOrcaRuntimePauseHoldsMergeLaneInSameRound` 与 `TestSchedulerTickLeavesPublishedOrcaRuntime` 分别覆盖重试记录、合并纠正计数、合并纠正成功清零、同轮暂停合并通道与独立调度器不覆盖快照。`TestDoctorReportsOrcaTerminalCreateFailure` 用推送视图和 `DRIVER_STATUS_FILE` 快照两条读取路径验证故障与恢复办法。
+
 ## 调度器
 
 恢复与处置按仓库轮转，保留仓库内的快照顺序。下一轮从上一轮最后获得恢复或处置令牌的仓库之后开始；没有获得令牌时保留游标，重启或该仓库退出发现清单后从清单首仓库开始。认领仍按优先级、创建时间、票 ID 排序。

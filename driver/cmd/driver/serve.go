@@ -270,6 +270,31 @@ func (b *statusBackend) NotifyFeishu(ctx context.Context, ticket scheduler.Ticke
 	return nil
 }
 
+func (b *statusBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error {
+	if source, ok := b.Backend.(interface {
+		ProbeOrcaRuntime(context.Context, string) error
+	}); ok {
+		return source.ProbeOrcaRuntime(ctx, repo)
+	}
+	return errors.New("backend has no Orca runtime probe")
+}
+
+func (b *statusBackend) OrcaTerminalCreateFailures() int {
+	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
+		return source.OrcaTerminalCreateFailures()
+	}
+	return 0
+}
+
+func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error
+	}); ok {
+		return source.NotifyOrcaRuntime(ctx, ticket)
+	}
+	return nil
+}
+
 // Liveness and ReapDead keep the Runtime's heartbeat evidence visible through
 // the wrapper; a backend without it leaves terminal and dispatch evidence.
 func (b *statusBackend) Liveness(ctx context.Context, ticket scheduler.Ticket) (orca.Liveness, error) {
@@ -314,6 +339,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 			status.Push(now, func(view *status.View) {
 				view.GitHub = snapshot.GitHub
 				view.NextScanAt = snapshot.NextScanAt
+				view.OrcaRuntime = snapshot.OrcaRuntime
 			})
 		}
 		return wait(ctx)
@@ -324,6 +350,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
 	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
 	snapshot.Today = backend.TodayOutput(now)
+	snapshot.OrcaRuntime = s.OrcaRuntime()
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {
