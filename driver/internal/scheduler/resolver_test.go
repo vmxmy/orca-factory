@@ -658,14 +658,12 @@ func TestResolverSupervisorRetriesTransientOrcaFailureRecordedReceipt(t *testing
 			done := make(chan error, 1)
 			go func() { done <- r.ResolveTicket(context.Background(), ticket, nil, "controller", nil) }()
 			synctest.Wait()
-			time.Sleep(15 * time.Second)
+			time.Sleep(5*time.Minute + 15*time.Second)
 			synctest.Wait()
+			err := <-done
 			if len(oc.calls) == 0 {
 				t.Fatal("recorded worker-start receipt never reached task polling")
 			}
-			time.Sleep(5 * time.Minute)
-			synctest.Wait()
-			err := <-done
 			if !errors.Is(err, transient) {
 				t.Fatalf("exit error = %v, want original transient error", err)
 			}
