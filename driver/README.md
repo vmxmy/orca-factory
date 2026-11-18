@@ -246,7 +246,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。
 6. 写 `self-deploy/<sha>.installing` 标记，用 `systemd-run --user --on-active=600` 起看守单元 `orca-factory-self-deploy-guard-<sha前12位>`，再用 rename 原子替换二进制。
 7. 运行 `systemctl --user --no-block restart orca-factory-feishu-gateway orca-factory-driver`。两个单元同时重启，不保证先后；driver 单元停止时结束当前 serve。
-8. 新 serve 读到 `deploy-intent` 后重新取锁，确认自身 `main.version` 等于 squash SHA，写 `smoke-intent`，跑 smoke（超时 5 分钟）。smoke 只判定版本、serve 已就绪（systemd 的 MainPID 是本进程）、doctor 能输出报告（配置能加载）、Orca 可达；doctor 的其他 fail 只记 WARN。通过后写 `smoke-passed` 标记，停掉看守单元，`maintenance resume`，写 `passed`，写 Done，放行下一 PR。
+8. 新 serve 读到 `deploy-intent` 后重新取锁，确认自身 `main.version` 等于 squash SHA，写 `smoke-intent`，跑 smoke（超时 5 分钟）。smoke 只判定版本、serve 已就绪（systemd 的 MainPID 是本进程）、已安装的 `orca-factory-feishu-gateway` 单元为 active（没有安装该单元时不判定）、doctor 能输出报告（配置能加载）、Orca 可达；doctor 的其他 fail 只记 WARN。通过后写 `smoke-passed` 标记，停掉看守单元，`maintenance resume`，写 `passed`，写 Done，放行下一 PR。
 
 失败与崩溃：
 
@@ -499,6 +499,8 @@ orca-factory-driver prune-workspaces
 
 lane 2 只在 `AGENT_LANE2_AUTOMERGE=1` 时自动合并；未设置与 `0` 同义。未自动合并且未经处置 Agent 批准的 lane 2 交接到达合并通道队首时，调度器写一条 `Agent处置: lane 2 复核` 事件与 `waiting` 的 merge-progress，把票转给处置 Agent（`阶段: Agent处置`、`归属: 处置Agent`），并移出合并队列，同仓库后续票继续合并。处置 Agent 复核通过后原样提交该 handoff 的 `merge` 提案，票回到合并通道按批准路径合并；head 改变须重新验证并使用新 queue_id。
 
+交接后 PR 的 head SHA、head 仓库、base 分支或 base 仓库变化，调度器写 `Agent处置: PR identity changed`；PR 未合并但已关闭，写 `Agent处置: PR closed without merge`。两种情况都转处置 Agent 并移出合并队列，下一轮继续处理同仓库后一张票。处置 Agent 核对变化或关闭原因后决定后续处理；继续合并须重新验证有效 open PR 的 gate/review，提交新 handoff 与 queue_id，不能直接批准旧交接。调度器不自动重开或重建 PR。GitHub 读取失败或 `Mergeable` 为空时仍保留队首等待，不允许后续票超车。
+
 PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作未经批准，同样写 `Agent处置: lane 2 复核` 并转处置 Agent），而不是无限等待；处置 Agent 权限内无法放行时按 OF-93 的 `escalateResolution` 转人工。交接 lane 非 2 而 PR 改动命中 `AGENT_LANE2_GLOBS`（改动命中 lane 2 路径但票未按 lane 2 验证）同样走这条复核路径，不再无限等待（OF-104）。PR 改动命中 `AGENT_LANE3_GLOBS`（密钥、部署文件等）不经处置 Agent，调度器直接写一条 `转人: ` 事件（`阶段: 转人`、`归属: 人`）并移出合并队列，因为 lane 3 排除在处置 Agent 和自动合并授权之外（OF-103）。三条路径都不阻塞同仓库后续票；至此合并策略不再有导致合并队列 Waiting 的分支。
 
 尚无 PR 时，处置 Agent 返回 `open-pr`，调度器核对远端 head、按分支复用或创建 PR，再开启下一次处置等待 CI 并提交 `merge`；分支或 PR 操作失败写证据并转人，不自动重试。
@@ -677,7 +679,11 @@ flush_interval = "10m"
 由网关在沙箱外完成。
 
 Agent 回复带 `intake-draft-v1` 草稿时（OF-15），网关先校验：必填字段、SCOPE 每个
-glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环。不通过时把原因
+glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环（OF-555）。
+正文的现状、断言、依赖说明和每条要做是用户自由文本，其中任何一行不能是 `#` 标题、
+`CHECK` / `SCOPE` / `要做` / `CHECK_*` 字段行、`阶段` / `归属` 协议行，也不能以
+`intake-chat-v1`、`merge-handoff-v1`、`merge-progress-v1` 开头；夹带这类行的草稿被拒绝，
+原因写明哪个字段。不通过时把原因
 作为 `[网关]` 前缀的下一轮输入交还 Agent（每条消息最多 2 次），需求人看不到。通过后
 网关按该项目 `AGENT_LANE2_GLOBS` / `AGENT_LANE3_GLOBS` 计算 lane（不采信草稿），发票面
 摘要，会话进入“待确认”。只有需求人发“确认提交”才建票：已纳管、Todo、不打
@@ -689,8 +695,9 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 `驳回 OF-N <理由>` 时按审批命令处理。群里顶层须 @ 机器人；网关开过会话的话题内
 无需 @。只有 `AGENT_FEISHU_APPROVERS` 中的发送者生效，其他人只得到“无审批权限”。
 网关按票号前缀找到项目账本，读取票后核对：正文带 `intake-chat-v1` 标记、状态 Todo、
-未打 `ready-for-agent`；批准还要求票面“LANE 预判”不是 3（否则回复“lane 3 需人工
-实现，不放行”）。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带
+未打 `ready-for-agent`；批准时按票面 SCOPE 与项目 lane glob 在检出上重新计算 lane，
+不读票面“LANE 预判”文本，结果为 3 时回复“lane 3 需人工实现，不放行”，票面没有 SCOPE
+也不放行。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带压成一行的
 `理由：`），再加 `ready-for-agent` 或把状态改为 Canceled，回复审批人，并在票的
 原话题里 @ 需求人告知结果。已放行的票再批准、已取消的票再驳回只回复现状，不再写账本；
 事件已存在时不重复写，所以两次写之间崩溃后重发命令也只补上标签或状态。
@@ -701,8 +708,8 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 消息处理。这两条命令不要求票据带需求入口标记或处于 Todo，执行前按票号重读账本与
 评论，核对最新 `resolver-state` 的 phase 为 human。放行追加同一条包含操作者、
 时间和保留最新 attempt 的 waiting 记录的评论，由调度器下一轮重新派处置 Agent；
-不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面或最新
-`merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
+不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面任一 `LANE 预判`
+或最新 `merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
 merge-progress-v1 解析失败均拒绝；部署屏障 paused 时回复走 `resume-deployment`。
 没有 resolver-state 或 phase 不是 human 时回复当前状态。取消先写操作者、时间、
 理由事件，再改为 Canceled；事件已存在时不重复写，崩溃后重发只补状态，已是

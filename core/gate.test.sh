@@ -47,11 +47,90 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u2' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 
 grep -q 'other.txt' <<< "$out"
 [[ "$(field "$out" LANE)" == 1 ]]
 
+# Moving an out-of-scope file into SCOPE must still report its source path.
+for state in staged committed; do
+  R="$(mkrepo "rename-$state")"
+  git -C "$R" config diff.renames true
+  echo 'outside scope' > "$R/other.txt"
+  git -C "$R" add other.txt
+  git -C "$R" -c commit.gpgsign=false commit -qm outside
+  git -C "$R" update-ref refs/remotes/origin/main HEAD
+  git -C "$R" mv other.txt src/other.txt
+  if [[ "$state" == committed ]]; then
+    git -C "$R" -c commit.gpgsign=false commit -qm rename
+  fi
+  out="$("$GATE" "$R" "$(spec 'UNIT: rename' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
+  [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == scope ]] || { printf 'ASSERT: rename into scope (%s) rc=%s\n%s\n' "$state" "$rc" "$out"; exit 1; }
+  grep -q '^EVIDENCE  other.txt$' <<< "$out"
+  printf 'rename into scope (%s): PASS\n' "$state"
+done
+
 # Added line with @ts-ignore -> red suppression
 R="$(mkrepo supp)"; printf '// @ts-ignore\nx\n' >> "$R/src/a.js"
 out="$("$GATE" "$R" "$(spec 'UNIT: u3' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
 [[ $rc == 1 && "$(field "$out" STEP)" == suppression ]]
 [[ "$(field "$out" LANE)" == 1 ]]
+
+for state in untracked staged committed; do
+  for marker in skip skipf skipnow nolint nolint-rule; do
+    R="$(mkrepo "go-$state-$marker")"
+    case "$marker" in
+      skip) line='t.Skip("later")' ;;
+      skipf) line='t.Skipf("later: %s", reason)' ;;
+      skipnow) line='t.SkipNow()' ;;
+      nolint) line='//nolint' ;;
+      nolint-rule) line='//nolint:errcheck' ;;
+    esac
+    printf '%s\n' "$line" > "$R/src/a_test.go"
+    if [[ "$state" != untracked ]]; then git -C "$R" add src/a_test.go; fi
+    if [[ "$state" == committed ]]; then git -C "$R" -c commit.gpgsign=false commit -qm suppression; fi
+    out="$("$GATE" "$R" "$(spec 'UNIT: go-marker' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
+    [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == suppression ]] || { printf 'ASSERT: go suppression %s %s must be rejected, got rc=%s\n%s\n' "$state" "$marker" "$rc" "$out"; exit 1; }
+  done
+done
+
+for config in .golangci.yml src/.golangci.yaml src/.golangci.toml src/.golangci.json 'src/中文/.golangci.yml'; do
+  for state in untracked modified committed; do
+    R="$(mkrepo "go-config-${config//[^a-z]/-}-$state")"
+    mkdir -p "$R/$(dirname "$config")"
+    if [[ "$state" == modified ]]; then
+      printf 'version: "2"\n' > "$R/$config"
+      git -C "$R" add "$config"
+      git -C "$R" -c commit.gpgsign=false commit -qm config
+      git -C "$R" update-ref refs/remotes/origin/main HEAD
+    fi
+    printf 'linters: {}\n' >> "$R/$config"
+    if [[ "$state" == committed ]]; then
+      git -C "$R" add "$config"
+      git -C "$R" -c commit.gpgsign=false commit -qm config
+    fi
+    out="$("$GATE" "$R" "$(spec 'UNIT: go-config' 'SCOPE: *' 'CHECK: true')")" && rc=0 || rc=$?
+    [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == suppression ]] || { printf 'ASSERT: go suppression %s config %s must be rejected, got rc=%s\n%s\n' "$state" "$config" "$rc" "$out"; exit 1; }
+  done
+done
+
+for state in untracked committed; do
+  R="$(mkrepo "go-non-ascii-$state")"
+  mkdir -p "$R/src/中文"
+  printf 't.Skip("later")\n' > "$R/src/中文/a_test.go"
+  if [[ "$state" == committed ]]; then
+    git -C "$R" add -A
+    git -C "$R" -c commit.gpgsign=false commit -qm suppression
+  fi
+  out="$("$GATE" "$R" "$(spec 'UNIT: go-non-ascii' 'SCOPE: *' 'CHECK: true')")" && rc=0 || rc=$?
+  [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == suppression ]] || { printf 'ASSERT: go suppression %s non-ASCII path must be rejected, got rc=%s\n%s\n' "$state" "$rc" "$out"; exit 1; }
+done
+
+R="$(mkrepo go-existing)"
+printf 't.Skip("existing")\n//nolint:errcheck\n' > "$R/src/a_test.go"
+printf 'version: "2"\n' > "$R/.golangci.yml"
+git -C "$R" add -A
+git -C "$R" -c commit.gpgsign=false commit -qm existing
+git -C "$R" update-ref refs/remotes/origin/main HEAD
+printf 't.Log("new assertion")\n' >> "$R/src/a_test.go"
+out="$("$GATE" "$R" "$(spec 'UNIT: go-existing' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
+[[ $rc == 0 && "$(field "$out" VERDICT)" == green ]] || { printf 'ASSERT: go suppression must allow unchanged markers and config, got rc=%s\n%s\n' "$rc" "$out"; exit 1; }
+printf 'go suppression markers, configs and unchanged baseline: PASS\n'
 
 R="$(mkrepo missing-helper)"
 printf 'source src/helper.sh\nprintf "1\\n"\n' > "$R/src/probe.sh"
