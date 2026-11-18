@@ -625,25 +625,62 @@ func TestResolverProgressEvidence(t *testing.T) {
 	}
 }
 
+func recordedProgress(t *testing.T) (orca.Receipt, []orca.Terminal) {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-resolver-progress-worker-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile("../../testdata/recorded/orca-resolver-progress-terminal-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat <<'RECORDED'\n"+string(raw)+"\nRECORDED\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	client := &orca.Client{Path: path}
+	terminals, err := client.TerminalList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Result, terminals
+}
+
 func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
+	const (
+		run      = "run_8e97bfed638e"
+		task     = "task_5379745a42bf"
+		dispatch = "ctx_89446d008d30"
+		terminal = "term_540930fb-3f80-4e35-ae0d-68080b6abad8"
+		output   = 1794988230860
+	)
+	workers, terminals := recordedProgress(t)
 	for _, top := range []bool{false, true} {
 		for _, external := range []bool{false, true} {
 			t.Run(fmt.Sprintf("top=%v/external-stop=%v", top, external), func(t *testing.T) {
 				c, s, o := setupController()
-				now := c.Now()
+				now := time.UnixMilli(output)
 				c.Now = func() time.Time { return now }
-				if _, err := c.Step(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				s.record.Top, s.record.TopLaunchAccepted = top, top
-				o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker","projection":{"stage":{"detail":"input_accepted"}}}]`)
-				o.stopped = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed","workerState":"stopped"}]`)
-				o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+				s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
+				o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
+				o.workers, o.terminals = workers, terminals
+				// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
+				o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
 				for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
 					now = now.Add(elapsed)
 					p, err := c.Step(context.Background())
 					if err != nil || p.Phase != "running" || o.stops != 0 {
 						t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+					}
+					if s.record.LastOutputAt != output {
+						t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
 					}
 				}
 				if external {
@@ -661,7 +698,7 @@ func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
 				if external {
 					wantStops = 0
 				}
-				if o.stops != wantStops || o.startCalls != 1 {
+				if o.stops != wantStops || o.startCalls != 0 {
 					t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
 				}
 				if top {
