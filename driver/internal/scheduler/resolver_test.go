@@ -237,6 +237,65 @@ func TestRejectedDeploymentProposalReturnsToResolver(t *testing.T) {
 
 type resolverStartupProbe struct{ fakeOrca }
 
+type resolverTierProbe struct {
+	resolverStartupProbe
+	starts []orca.StartOptions
+	stop   error
+}
+
+func (o *resolverTierProbe) RunCreate(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{"runId": json.RawMessage(`"run_top"`)}, nil
+}
+
+func (o *resolverTierProbe) WorkerStart(_ context.Context, _ string, opts orca.StartOptions) (orca.Receipt, error) {
+	o.starts = append(o.starts, opts)
+	return nil, o.stop
+}
+
+func TestTopResolverFollowsChangedConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, tier, agent, model, effort string
+	}{
+		{"changed", "codex:gpt-6-astra:max", "codex", "gpt-6-astra", "max"},
+		{"unchanged", "claude:claude-fable-5-2:xhigh", "claude", "claude-fable-5-2", "xhigh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+			if err := os.MkdirAll(roles, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"waiting","outcome":"failed","top":true,"top_used":true,"agent":"claude","model":"claude-fable-5-2","effort":"xhigh"}`)}
+			probe := &resolverTierProbe{stop: errors.New("stop after worker start")}
+			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": tc.tier}}}, Orca: probe}
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
+			if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); !errors.Is(err, probe.stop) {
+				t.Fatalf("expected worker start probe stop, got %v", err)
+			}
+			if len(probe.starts) != 1 {
+				t.Fatalf("worker starts = %d, want 1", len(probe.starts))
+			}
+			start := probe.starts[0]
+			if start.Agent != tc.agent || start.Model != tc.model || start.Effort != tc.effort {
+				t.Errorf("worker tier = %s:%s:%s, want %s", start.Agent, start.Model, start.Effort, tc.tier)
+			}
+			after := fromEvidence(t, ticket, store.issueComments).Resolution
+			if after == nil {
+				t.Fatal("no resolver record persisted")
+			}
+			if after.Agent != tc.agent || after.Model != tc.model || after.Effort != tc.effort {
+				t.Errorf("persisted tier = %s:%s:%s, want %s", after.Agent, after.Model, after.Effort, tc.tier)
+			}
+			if after.Attempt != 4 || !after.Top || !after.TopUsed || after.Failures != 1 {
+				t.Errorf("retry state changed: %+v", after)
+			}
+		})
+	}
+}
+
 func (o *resolverStartupProbe) RunCreate(context.Context, string, string) (orca.Receipt, error) {
 	return nil, errors.New("stop after durable registration")
 }

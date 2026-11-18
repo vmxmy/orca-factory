@@ -20,6 +20,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -202,7 +203,10 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if t.Resolution != nil && t.Resolution.Top {
 		tier = env["AGENT_ROLE_RESOLVER_TOP"]
 		if t.Resolution.Agent != "" {
-			tier = strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+			previous := strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+			if previous != tier {
+				runx.LoggerFrom(ctx).Info("top resolver tier follows changed configuration", "ticket", t.Identifier, "previous", previous, "configured", tier)
+			}
 		}
 		role = append(role, []byte("\n\n"+topResolverPrompt)...)
 	}

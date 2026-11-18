@@ -514,7 +514,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 
 1. 普通处置 escalate 先进入一次终审。
-2. 终审失败或 escalate 按 `resolverFailureLimit`（3 次）在同一档位重试。
+2. 终审失败或 escalate 按 `resolverFailureLimit`（3 次）重试；配置未变时保持同一档位，运维修改终审配置后下一轮跟随新配置。
 3. 终审重试用尽，或命中必须由人决定的情形，票进入搁置。必须由人决定的情形不进终审，直接搁置：escalate 的 `class` 属于六类禁止阻塞（`intake.TopMustHuman`，与终审共用），或票带 lane 3 handoff、票面 `## LANE 预判` 为 3、部署 `paused`、证据冲突。lane 3 的合并通道转人同样改为搁置。
 
 切换前已转人的历史票保持手动流程：飞书通知前的自动扩 SCOPE 与放行只认 `AGENT_AUTO_REVIEW` 的显式开关。
@@ -527,7 +527,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 仓库 `scripts/agent-gates/agent-graph.env` 的 `AGENT_AUTO_REVIEW` 是逗号分隔的开关列表，缺省为空，保持原人工卡片流程；未知项不启用任何行为。
 
-`top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-11 要求使用 `claude:claude-fable-5-2:xhigh`。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
+`top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-18 要求使用 `codex:gpt-6-astra:max`。运维修改该配置后，已进入终审的票在下一轮派工时使用当前配置并写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。driver 不因模型不可用而自行换模型，重试与搁置次数不变。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
 
 终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 2 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
 
