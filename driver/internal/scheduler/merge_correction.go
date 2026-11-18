@@ -117,17 +117,17 @@ func mergeRounds(t Ticket) (int, error) {
 	return max(h.CatchupRounds, p.CatchupRounds), nil
 }
 
-// Catch-up rounds are lane events. A resolver merging main fixes a round the
-// lane already counted, so its new queue carries the lane's count, not its own.
+// Resolver revalidation gives a new queue another attempt while retaining at
+// most one lane round. The resolver's own merge of main is not another round.
 func laneCatchupRounds(t Ticket) (int, error) {
 	if t.Handoff == nil {
 		return 0, nil
 	}
 	if t.Progress == nil || t.Progress.QueueID != t.Handoff.QueueID {
-		return t.Handoff.CatchupRounds, nil
+		return min(t.Handoff.CatchupRounds, 1), nil
 	}
 	if !mergechannel.ProgressMatchesHandoff(t.Progress, t.Handoff) {
 		return 0, errors.New("conflicting merge decision")
 	}
-	return max(t.Handoff.CatchupRounds, t.Progress.CatchupRounds), nil
+	return min(max(t.Handoff.CatchupRounds, t.Progress.CatchupRounds), 1), nil
 }
