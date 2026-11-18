@@ -3,6 +3,7 @@ package merge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -43,16 +44,32 @@ const (
 
 var ErrValidationsClosed = errors.New("merge validations closed")
 
+const MaxGateInfrastructureFailures = 3
+
+type infrastructureFailure struct {
+	candidate Candidate
+	count     int
+	step      string
+	err       error
+}
+
+func (f *infrastructureFailure) Error() string {
+	return fmt.Sprintf("merged-result gate: %d consecutive infrastructure failures; last step: %s", f.count, f.step)
+}
+
+func (f *infrastructureFailure) Unwrap() error { return f.err }
+
 // Validations runs at most one merged-result gate per repository beside the
 // scheduler's inspections. Verdicts live only in this process: a restarted
 // serve starts empty, so it reruns a gate and never infers green.
 type Validations struct {
-	mu     sync.Mutex
-	runs   map[string]*validation
-	base   context.Context
-	stop   context.CancelFunc
-	wg     sync.WaitGroup
-	closed bool
+	mu       sync.Mutex
+	runs     map[string]*validation
+	failures map[string]*infrastructureFailure
+	base     context.Context
+	stop     context.CancelFunc
+	wg       sync.WaitGroup
+	closed   bool
 }
 
 type validation struct {
@@ -60,11 +77,12 @@ type validation struct {
 	exited    bool
 	err       error // nil green, ErrGateRed red, otherwise infrastructure
 	cleanup   bool  // ErrWorktreeCleanup not yet reported
+	step      string
 }
 
 func NewValidations() *Validations {
 	base, stop := context.WithCancel(context.Background())
-	return &Validations{runs: map[string]*validation{}, base: base, stop: stop}
+	return &Validations{runs: map[string]*validation{}, failures: map[string]*infrastructureFailure{}, base: base, stop: stop}
 }
 
 // Validate answers for c without waiting on a gate. A gate still running for
@@ -72,7 +90,8 @@ func NewValidations() *Validations {
 // canceled: a killed gate.sh leaks its heavy lock. An exited gate for another
 // queue entry is discarded and a gate for c starts. Green and red verdicts stay
 // until another candidate replaces them, so a failed squash or correction write
-// replays the same decision; infrastructure failures and Stale are consumed so
+// replays the same decision. Infrastructure failures rerun up to the limit,
+// then retain the failure for ownership-transfer retries. Stale is consumed so
 // the next call reruns the gate. A Red verdict reports the main it validated.
 // ErrWorktreeCleanup accompanies the first Green or Red it is reported with.
 func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate Gate) (Verdict, string, error) {
@@ -82,6 +101,14 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 		v.mu.Unlock()
 		return "", "", ErrValidationsClosed
 	}
+	if failure := v.failures[repo]; failure != nil {
+		if !failure.candidate.sameQueue(c) || failure.candidate.Main != c.Main {
+			delete(v.failures, repo)
+		} else if failure.count >= MaxGateInfrastructureFailures {
+			v.mu.Unlock()
+			return "", c.Main, failure
+		}
+	}
 	if run := v.runs[repo]; run != nil {
 		if !run.exited {
 			v.mu.Unlock()
@@ -89,6 +116,11 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 		}
 		if run.candidate.sameQueue(c) {
 			verdict, main, err := run.verdict(c)
+			if verdict == "" && run.candidate.Main == c.Main {
+				err = v.recordFailure(c, run.step, err)
+			} else {
+				delete(v.failures, repo)
+			}
 			if verdict != VerdictGreen && verdict != VerdictRed {
 				delete(v.runs, repo)
 			}
@@ -100,6 +132,9 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 	v.mu.Unlock()
 	prepared, err := gate.Prepare(ctx, c)
 	if err != nil {
+		v.mu.Lock()
+		err = v.recordFailure(c, "prepare", err)
+		v.mu.Unlock()
 		return "", "", err
 	}
 	v.mu.Lock()
@@ -112,6 +147,18 @@ func (v *Validations) Validate(ctx context.Context, c Candidate, git Git, gate G
 	v.wg.Add(1)
 	go v.run(runx.WithLogger(v.base, runx.LoggerFrom(ctx)), run, git, prepared)
 	return VerdictRunning, "", nil
+}
+
+// recordFailure requires v.mu and never exposes the underlying error in receipts.
+func (v *Validations) recordFailure(c Candidate, step string, err error) error {
+	failure := v.failures[c.Request.Repository]
+	if failure == nil {
+		failure = &infrastructureFailure{candidate: c}
+		v.failures[c.Request.Repository] = failure
+	}
+	failure.count++
+	failure.step, failure.err = step, err
+	return failure
 }
 
 // verdict reads an exited run for the same queue entry.
@@ -138,6 +185,9 @@ func (run *validation) verdict(c Candidate) (Verdict, string, error) {
 func (v *Validations) Idle(c Candidate) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if failure := v.failures[c.Request.Repository]; failure != nil && !failure.candidate.sameQueue(c) {
+		delete(v.failures, c.Request.Repository)
+	}
 	run := v.runs[c.Request.Repository]
 	if run == nil {
 		return true
@@ -165,7 +215,7 @@ func (v *Validations) Forget(c Candidate) {
 func (v *Validations) run(ctx context.Context, run *validation, git Git, gate GateRun) {
 	defer v.wg.Done()
 	started := time.Now()
-	cleanup, err := validateMergedResult(ctx, git, run.candidate, gate)
+	cleanup, step, err := validateMergedResult(ctx, git, run.candidate, gate)
 	result := "green"
 	switch {
 	case errors.Is(err, ErrGateRed):
@@ -182,27 +232,30 @@ func (v *Validations) run(ctx context.Context, run *validation, git Git, gate Ga
 	runx.LoggerFrom(ctx).Info("merge gate finished", attrs...)
 	v.mu.Lock()
 	run.exited, run.err, run.cleanup = true, err, cleanup
+	run.step = step
 	v.mu.Unlock()
 }
 
 // validateMergedResult runs gate in a worktree holding exactly c's merged
 // tree. A canceled context or a worktree that never existed is infrastructure.
-func validateMergedResult(ctx context.Context, git Git, c Candidate, gate GateRun) (cleanup bool, err error) {
+func validateMergedResult(ctx context.Context, git Git, c Candidate, gate GateRun) (cleanup bool, step string, err error) {
 	gateRan := false
+	step = "worktree"
 	var gateErr error
 	err = git.WithWorktree(ctx, c.Request, c.Tree, c.Head, c.Main, func(ctx context.Context, path string) error {
 		gateRan = true
+		step = "gate"
 		gateErr = gate(ctx, path)
 		return gateErr
 	})
 	cleanup = errors.Is(err, ErrWorktreeCleanup)
 	if ctx.Err() != nil {
-		return cleanup, ctx.Err()
+		return cleanup, step, ctx.Err()
 	}
 	if !gateRan {
-		return cleanup, errors.New("validation worktree unavailable")
+		return cleanup, step, errors.New("validation worktree unavailable")
 	}
-	return cleanup, gateErr
+	return cleanup, step, gateErr
 }
 
 // Close cancels every gate (runx kills each process group), waits up to wait

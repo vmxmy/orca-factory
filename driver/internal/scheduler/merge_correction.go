@@ -51,6 +51,10 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 			} else if review {
 				event, evidence, demand = "lane 2 复核", "merge policy", "独立复核 PR 当前 head，通过后提交原 handoff 的 merge 提案"
 			}
+			if result.InfrastructureFailures > 0 {
+				evidence = fmt.Sprintf("merge validation\n失败次数: %d\n最后失败步骤: %s", result.InfrastructureFailures, result.InfrastructureStep)
+				demand = "修复合并验证基础设施后重新排队"
+			}
 			body = "Agent处置: " + event + "\n证据: " + evidence + "\n处置要求: " + demand + "\n阶段: " + string(machine.PhaseResolver) + "\n归属: " + string(machine.OwnerResolver) + "\n" + body
 		}
 	} else if result.Status == merge.Correction {
