@@ -30,6 +30,16 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u1' 'SCOPE: src/*' 'CHECK: true')")"
 [[ -f "$R/$GATE_LOG_DIR/u1/gate.log" ]]
 grep -q 'no gate.project.sh at origin/main, skipped' "$R/$GATE_LOG_DIR/u1/gate.log"
 
+R="$(mkrepo nested-verdict)"
+cat > "$R/src/check.sh" <<'CHECK'
+printf '%s\n' 'UNIT      inner' 'VERDICT   green' 'STEP      all' 'REASON    inner passed' 'EVIDENCE  inner evidence' 'SCOPE     src/*' 'LANE      1'
+exit 1
+CHECK
+out="$("$GATE" "$R" "$(spec 'UNIT: nested-verdict' 'SCOPE: src/*' 'CHECK: bash src/check.sh')")" && rc=0 || rc=$?
+verdict_lines="$(printf '%s\n' "$out" | grep -cE '^(UNIT|VERDICT|STEP|REASON|EVIDENCE|SCOPE|LANE)[[:space:]]')"
+[[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == check && "$verdict_lines" -eq 7 ]] || { printf 'ASSERT: nested verdict lines must leave exactly seven outer fields, got rc=%s lines=%s\n%s\n' "$rc" "$verdict_lines" "$out"; exit 1; }
+printf 'nested verdict lines: PASS\n'
+
 # File outside SCOPE -> red scope
 R="$(mkrepo scope)"; echo 'x' > "$R/other.txt"
 out="$("$GATE" "$R" "$(spec 'UNIT: u2' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
