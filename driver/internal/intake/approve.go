@@ -80,7 +80,7 @@ func parseReview(prompt string) (review, bool) {
 // check decides from the ledger's current record whether r may apply. done
 // means an earlier identical command already applied it; refusal, when not
 // empty, is the reason it may not.
-func (r review) check(t issues.Task) (refusal string, done bool) {
+func (r review) check(t issues.Task, p Project) (refusal string, done bool) {
 	if _, _, ok := intakeMarker(t.Description); !ok {
 		return fmt.Sprintf("%s 不是需求助手提交的票，不处理", r.ticket), false
 	}
@@ -99,14 +99,42 @@ func (r review) check(t issues.Task) (refusal string, done bool) {
 	if !r.approve {
 		return "", false
 	}
-	m := laneHeading.FindStringSubmatch(t.Description)
-	switch {
-	case m == nil:
-		return fmt.Sprintf("%s 票面缺少 LANE 预判，不放行", r.ticket), false
-	case m[1] == "3":
+	scope := faceScope(t.Description)
+	if len(scope) == 0 {
+		return fmt.Sprintf("%s 票面缺少 SCOPE，不放行", r.ticket), false
+	}
+	files, err := checkoutFiles(p.Checkout)
+	if err != nil {
+		return fmt.Sprintf("%s 检出读取失败，无法计算 lane，不放行", r.ticket), false
+	}
+	if predictLane(files, scope, strings.Fields(p.Lane2Globs), strings.Fields(p.Lane3Globs)) == 3 {
 		return lane3Reply, false
 	}
 	return "", false
+}
+
+// faceScope collects every SCOPE section on the face, so a second SCOPE
+// heading in older free text can only widen the lane it computes.
+func faceScope(description string) []string {
+	var scope []string
+	for _, heading := range scopeHeading.FindAllStringIndex(description, -1) {
+		section := description[heading[1]:]
+		if next := nextHeading.FindStringIndex(section); next != nil {
+			section = section[:next[0]]
+		}
+		scope = append(scope, strings.Fields(section)...)
+	}
+	return scope
+}
+
+// faceLaneThree reports whether any LANE heading on the face predicts lane
+// 3, so a lower heading placed earlier in free text cannot hide it.
+func faceLaneThree(description string) (three, found bool) {
+	for _, m := range laneHeading.FindAllStringSubmatch(description, -1) {
+		found = true
+		three = three || m[1] == "3"
+	}
+	return three, found
 }
 
 // outcome is what the command does to the ticket, for replies.
@@ -149,7 +177,7 @@ func (g *Gateway) handleReview(ctx context.Context, id, sender string, r review)
 		reply, _ := g.applyHumanReview(ctx, sender, r, p, t)
 		return g.reply(ctx, id, reply)
 	}
-	refusal, done := r.check(t)
+	refusal, done := r.check(t, p)
 	if done {
 		return g.reply(ctx, id, r.ticket+" 已"+r.outcome())
 	}
@@ -203,11 +231,11 @@ func humanReleaseRefusal(ticket string, description string, latest map[string]st
 			return ticket + " 部署屏障处于 paused，请走 resume-deployment"
 		}
 	}
-	lane := laneHeading.FindStringSubmatch(description)
-	if lane == nil {
+	three, found := faceLaneThree(description)
+	if !found {
 		return ticket + " 票面缺少 LANE 预判，不放行"
 	}
-	if lane[1] == "3" {
+	if three {
 		return lane3Reply
 	}
 	return ""
@@ -283,7 +311,7 @@ func ExtendWorkerScope(ctx context.Context, ledger ScopeLedger, id, scope string
 	if ticket.Metadata.State == "Canceled" {
 		return false, nil
 	}
-	if lane := laneHeading.FindStringSubmatch(ticket.Description); len(lane) > 1 && lane[1] == "3" {
+	if FaceLaneThree(ticket.Description) {
 		return false, nil
 	}
 	face, changed, found := withScope(ticket.Description, paths)
@@ -517,7 +545,7 @@ func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender
 		if r.approve {
 			_, err = ledger.CreateComment(ctx, ticket, body)
 		} else {
-			_, err = issues.CreateOperatorComment(ctx, ledger, ticket, body+"\n理由："+r.reason)
+			_, err = issues.CreateOperatorComment(ctx, ledger, ticket, body+"\n理由："+strings.Join(strings.Fields(r.reason), " "))
 		}
 		if err != nil {
 			return err

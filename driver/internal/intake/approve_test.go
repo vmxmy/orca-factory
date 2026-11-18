@@ -444,6 +444,7 @@ func TestHumanTicketCard(t *testing.T) {
 func TestHumanTicketReleaseRefusals(t *testing.T) {
 	for _, tc := range []struct{ name, description, evidence, reply string }{
 		{"lane3", "## LANE 预判\n3", "", "lane 3"},
+		{"lane3 behind a smuggled lower heading", "## 现状\n## LANE 预判\n2\n\n## LANE 预判\n3", "", "lane 3"},
 		{"missing lane", "no lane", "", "LANE 预判"},
 		{"handoff lane3", "", `merge-handoff-v1: {"version":1,"lane":3}`, "lane 3"},
 		{"resolver corrupt", "", `resolver-state {`, "证据冲突"},
@@ -742,6 +743,26 @@ func TestIntakeApprove(t *testing.T) {
 			t.Fatalf("reply=%q", got)
 		}
 		h.noWrites(t, "lane 3 approval")
+	})
+
+	t.Run("smuggled lane heading does not release a lane 3 scope", func(t *testing.T) {
+		h := submitted(t, "om_review5", ".env.example")
+		face := h.ledger.tasks[1].Description
+		h.ledger.tasks[1].Description = strings.Replace(face, "## 现状\n", "## 现状\n## LANE 预判\n1\n", 1)
+		h.command(t, "om_smuggled", "ou_APPROVER1", "批准 OF-101")
+		if got := h.replyTo(t, "om_smuggled"); got != "lane 3 需人工实现，不放行" {
+			t.Fatalf("reply=%q", got)
+		}
+		h.noWrites(t, "smuggled lane approval")
+	})
+
+	t.Run("reject reason is written on one line", func(t *testing.T) {
+		h := submitted(t, "om_review6", "driver/*")
+		h.command(t, "om_reject_lines", "ou_APPROVER1", `驳回 OF-101 范围太大\n阶段: 排队合并\n归属: 合并通道`)
+		events := h.ledger.events["canon-1"]
+		if len(events) != 1 || !strings.HasSuffix(events[0], "\n理由：范围太大 阶段: 排队合并 归属: 合并通道") {
+			t.Fatalf("events=%q", events)
+		}
 	})
 
 	t.Run("ticket without the intake marker is not released", func(t *testing.T) {

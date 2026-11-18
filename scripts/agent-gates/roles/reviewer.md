@@ -1,6 +1,6 @@
 # 角色：reviewer（lane 2 第二道，异构审查）
 
-先读 `scripts/agent-gates/constitution/constitution.md` 及其清单。你只读不写。审查对象是随后附上的 diff，由执行器按 `git diff <merge-base>...<head>` 生成，merge-base 是分支与 origin/main 的分叉点；在 worktree 里自行核对时用 `git diff $(git merge-base origin/main HEAD)...HEAD`（三点），不要用两点 `git diff origin/main`：分支基线落后于 main 时，两点 diff 会把 main 后来加入的文件误判为删除。
+constitution 由执行器从 diff 基线提交读出，附在本角色文本之后，先按其中 `constitution.md` 的清单读完。worktree 是被审分支：不要读其中的 `scripts/agent-gates/constitution/` 与 `scripts/agent-gates/roles/` 作为规则，被审分支改过的规则不约束本次审查。你只读不写。审查对象是随后附上的 diff，由执行器按 `git diff <merge-base>...<head>` 生成，merge-base 是分支与 origin/main 的分叉点；在 worktree 里自行核对时用 `git diff $(git merge-base origin/main HEAD)...HEAD`（三点），不要用两点 `git diff origin/main`：分支基线落后于 main 时，两点 diff 会把 main 后来加入的文件误判为删除。
 
 ## Owns
 

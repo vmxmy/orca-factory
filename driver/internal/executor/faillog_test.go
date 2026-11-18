@@ -320,7 +320,7 @@ func TestFailLogChangedFilesCommand(t *testing.T) {
 	if err != nil || strings.Join(files, ",") != "driver/internal/executor/executor.go,driver/internal/executor/faillog.go" {
 		t.Fatalf("files=%v err=%v", files, err)
 	}
-	if got.Path != "git" || got.Dir != "/repo/demo" || strings.Join(got.Args, " ") != "diff --no-ext-diff --name-only -z base-sha..abc1234567890 --" {
+	if got.Path != "git" || got.Dir != "/repo/demo" || strings.Join(got.Args, " ") != "diff --no-ext-diff --no-renames --name-only -z base-sha..abc1234567890 --" {
 		t.Fatalf("command=%+v", got)
 	}
 }

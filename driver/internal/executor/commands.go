@@ -13,6 +13,11 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
+const (
+	gateTimeout  = 60 * time.Minute
+	gateLockWait = 30 * time.Minute
+)
+
 // Commands runs all subprocesses through runx. ReviewerCommand is trusted local
 // configuration, never ticket text. Run may be replaced by a fake in tests.
 type Commands struct {
@@ -84,7 +89,7 @@ func (c *Commands) MergeBase(ctx context.Context, repo, head string) (string, er
 	return base, nil
 }
 func (c *Commands) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
-	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--name-only", "-z", base+".."+head, "--")
+	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base+".."+head, "--")
 	if err != nil {
 		return nil, errors.New("failed revision diff failed")
 	}
@@ -119,7 +124,13 @@ func (c *Commands) Gate(ctx context.Context, repo, head, spec string) (out strin
 			return "", &infra.Ticket{Err: errors.New("verification install failed")}
 		}
 	}
-	b, err := c.run(ctx, repo, filepath.Join(repo, "scripts", "agent-gates", "gate.sh"), dir, spec)
+	b, err := c.runSpec(ctx, runx.Spec{
+		Path:    filepath.Join(repo, "scripts", "agent-gates", "gate.sh"),
+		Args:    []string{dir, spec},
+		Dir:     repo,
+		Env:     append(os.Environ(), fmt.Sprintf("GATE_LOCK_WAIT=%d", gateLockWait/time.Second)),
+		Timeout: gateTimeout,
+	})
 	return string(b), err
 }
 func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate *float64) (out, tier string, err error) {
@@ -174,11 +185,11 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 			err = errors.Join(err, errors.New("review checkout cleanup failed"))
 		}
 	}()
-	role, err := readRole(dir, "reviewer.md")
+	rules, err := c.reviewRules(ctx, repo, base)
 	if err != nil {
 		return "", tier, err
 	}
-	input = role + "\n\n" + input
+	input = rules + "\n\n" + input
 	// runx intentionally has no stdin field. A private file outside the checkout
 	// supplies stdin through a fixed shell wrapper; no diff bytes become shell source.
 	name := filepath.Join(parent, "input")
@@ -191,6 +202,48 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	}
 	b, err := c.runSpec(ctx, spec)
 	return string(b), tier, err
+}
+
+const (
+	reviewerRolePath = "scripts/agent-gates/roles/reviewer.md"
+	constitutionDir  = "scripts/agent-gates/constitution/"
+	constitutionPath = constitutionDir + "constitution.md"
+)
+
+// reviewRules is reviewer.md followed by every constitution file, all read from
+// base. The merge decision rests on this review, so the reviewed head, whose
+// checkout is the reviewer's working directory, must not supply its own rules.
+func (c *Commands) reviewRules(ctx context.Context, repo, base string) (string, error) {
+	show := func(path string) (string, error) {
+		b, err := c.run(ctx, repo, "git", "show", base+":"+path)
+		if err != nil || strings.TrimSpace(string(b)) == "" {
+			return "", fmt.Errorf("baseline %s missing", path)
+		}
+		return strings.TrimRight(string(b), "\n"), nil
+	}
+	role, err := show(reviewerRolePath)
+	if err != nil {
+		return "", err
+	}
+	listing, err := c.run(ctx, repo, "git", "ls-tree", "--name-only", base, constitutionDir)
+	if err != nil {
+		return "", errors.New("baseline constitution listing failed")
+	}
+	paths := []string{constitutionPath}
+	for _, path := range strings.Split(string(listing), "\n") {
+		if strings.HasSuffix(path, ".md") && path != constitutionPath {
+			paths = append(paths, path)
+		}
+	}
+	parts := []string{role}
+	for _, path := range paths {
+		text, err := show(path)
+		if err != nil {
+			return "", err
+		}
+		parts = append(parts, "## 基线 constitution：`"+path+"`\n\n"+text)
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 // ReviewBrief is the ticket brief the reviewer judges the diff against, plus the

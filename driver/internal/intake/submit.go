@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -140,6 +141,7 @@ func validateDraft(ctx context.Context, p Project, thread, requester, answer str
 			problems = append(problems, "单票草稿不写 key 与 depends_on；多张票请用 tickets 数组")
 		}
 		problems = append(problems, missingFields(name, d)...)
+		problems = append(problems, smuggledLines(name, d)...)
 		scope := strings.Fields(d.Scope)
 		for _, glob := range scope {
 			if _, err := path.Match(glob, ""); err != nil || !slices.ContainsFunc(files, func(f string) bool { return globMatch(glob, f) }) {
@@ -194,6 +196,67 @@ func missingFields(name string, d draftTicketWire) []string {
 	}
 	slices.Sort(missing)
 	return []string{fmt.Sprintf("%s：缺少或不合格的字段 %s", name, strings.Join(missing, "、"))}
+}
+
+// smuggledLines refuses free text whose lines a ledger reader would take as
+// a ticket field, a heading or a protocol line: ParseTicket, the lane
+// heading, intakeMarker and the scheduler's comment parsers all read lines.
+func smuggledLines(name string, d draftTicketWire) []string {
+	fields := []struct{ field, text string }{{"正文.现状", d.Body.Now}, {"正文.断言", d.Body.Assert}, {"正文.依赖说明", d.Body.Deps}}
+	for _, item := range d.Todo {
+		fields = append(fields, struct{ field, text string }{"要做", item})
+	}
+	var problems []string
+	if strings.ContainsAny(strings.TrimSpace(d.Check), "\r\n") {
+		problems = append(problems, fmt.Sprintf("%s：CHECK 必须写在一行里，换行后的内容会被当成票面字段", name))
+	}
+	for _, f := range fields {
+		for line := range strings.Lines(f.text) {
+			if kind := protocolLine(line); kind != "" {
+				problems = append(problems, fmt.Sprintf("%s：%s 夹带了%s行 %q，自由文本里不能有这类行", name, f.field, kind, strings.TrimSpace(line)))
+			}
+		}
+	}
+	return problems
+}
+
+func protocolLine(line string) string {
+	text := strings.TrimSpace(line)
+	if strings.HasPrefix(text, "#") {
+		return "标题"
+	}
+	text = strings.Trim(text, "`* ")
+	for _, prefix := range []string{submitMarker, merge.HandoffPrefix, merge.ProgressPrefix} {
+		if strings.HasPrefix(text, strings.TrimSuffix(prefix, ": ")) {
+			return "协议"
+		}
+	}
+	key, _, ok := strings.Cut(text, ":")
+	if !ok {
+		key, _, ok = strings.Cut(text, "：")
+	}
+	key = strings.Trim(key, "`* ")
+	switch {
+	case !ok && ticketFieldName(key):
+		// ParseTicket opens a field section on a bare keyword line and appends the following lines to it.
+		return "票面字段"
+	case !ok:
+		return ""
+	case key == "阶段" || key == "归属":
+		return "协议"
+	case key == "CHECK" || key == "SCOPE" || key == "要做" || strings.HasPrefix(key, "CHECK_"):
+		return "票面字段"
+	}
+	return ""
+}
+
+// ticketFieldName lists the keywords executor.ParseTicket reads as field starts.
+func ticketFieldName(s string) bool {
+	switch s {
+	case "要做", "CHECK", "SCOPE", "CHECK_TEST_FILES", "CHECK_IS_NEW_TEST", "CHECK_ASSERTION":
+		return true
+	}
+	return false
 }
 
 func nonEmpty(v []string) []string {

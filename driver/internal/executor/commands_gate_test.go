@@ -4,12 +4,38 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
+
+func TestChangedFilesDisablesRenames(t *testing.T) {
+	var calls []runx.Spec
+	c := &Commands{Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		calls = append(calls, s)
+		return []byte("other.txt\x00src/other.txt\x00"), nil
+	}}
+	files, err := c.ChangedFiles(context.Background(), "/repo/demo", "base-sha", "head-sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("calls=%+v, want one git diff", calls)
+	}
+	s := calls[0]
+	want := []string{"diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", "base-sha..head-sha", "--"}
+	if s.Path != "git" || s.Dir != "/repo/demo" || !slices.Equal(s.Args, want) {
+		t.Fatalf("diff spec=%+v, want git %v in /repo/demo", s, want)
+	}
+	if !slices.Equal(files, []string{"other.txt", "src/other.txt"}) {
+		t.Fatalf("files=%v, want source and destination", files)
+	}
+}
 
 func gateRecorder(installErr error) (*Commands, *[]runx.Spec) {
 	var calls []runx.Spec
@@ -21,6 +47,45 @@ func gateRecorder(installErr error) (*Commands, *[]runx.Spec) {
 		return []byte("VERDICT green\n"), nil
 	}}
 	return c, &calls
+}
+
+func TestGateTimeLimitCoversLockWait(t *testing.T) {
+	t.Setenv("GATE_LOCK_WAIT", "7200")
+	c, calls := gateRecorder(nil)
+	spec := filepath.Join(t.TempDir(), "gate.spec")
+	if _, err := c.Gate(context.Background(), "/repo/demo", "abc123", spec); err != nil {
+		t.Fatal(err)
+	}
+	var gate *runx.Spec
+	for i, s := range *calls {
+		if strings.HasSuffix(s.Path, "gate.sh") {
+			gate = &(*calls)[i]
+		} else if s.Timeout != 10*time.Minute {
+			t.Errorf("%s timeout = %v, want 10m", s.Path, s.Timeout)
+		}
+	}
+	if gate == nil {
+		t.Fatal("gate.sh was not called")
+	}
+	if !slices.Contains(gate.Env, "GATE_LOCK_WAIT=1800") {
+		t.Errorf("gate must explicitly set GATE_LOCK_WAIT=1800")
+	}
+	var lockWait string
+	for _, env := range gate.Env {
+		if value, ok := strings.CutPrefix(env, "GATE_LOCK_WAIT="); ok {
+			lockWait = value
+		}
+	}
+	seconds, err := strconv.Atoi(lockWait)
+	if err != nil || seconds <= 0 {
+		t.Fatalf("invalid gate lock wait %q", lockWait)
+	}
+	if gate.Timeout <= time.Duration(seconds)*time.Second {
+		t.Errorf("gate timeout %v must exceed lock wait %ds", gate.Timeout, seconds)
+	}
+	if gate.Timeout != 60*time.Minute {
+		t.Errorf("gate timeout = %v, want 60m", gate.Timeout)
+	}
 }
 
 func TestGateRunsInstallCommandInVerifyCheckout(t *testing.T) {

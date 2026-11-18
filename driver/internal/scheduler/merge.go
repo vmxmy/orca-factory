@@ -184,7 +184,7 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 		return progressErr
 	}
 	pr, err := a.readPR(ctx)
-	if errors.Is(err, errHeadRef) {
+	if errors.Is(err, errHeadRef) || errors.Is(err, errPRIdentity) || errors.Is(err, errPRClosed) {
 		return r.mergeDecision(ctx, t, "", merge.Result{Status: merge.Review, Reason: err.Error(), Rounds: rounds})
 	}
 	if err != nil {
@@ -325,6 +325,9 @@ func (r *Runtime) mergeComment(ctx context.Context, t Ticket, body string) error
 // only the resolver can move the head, so the queue hands it over for review.
 var errHeadRef = errors.New("head ref 复核")
 
+var errPRIdentity = errors.New("PR identity changed")
+var errPRClosed = errors.New("PR closed without merge")
+
 type mergeAdapter struct {
 	runtime           *Runtime
 	ticket            Ticket
@@ -370,10 +373,13 @@ func (a *mergeAdapter) readPR(ctx context.Context) (github.PullRequest, error) {
 		return p, err
 	}
 	if p.Number != h.PR || p.Head.SHA != h.Head || p.Head.Repo.FullName != h.Repository || p.Base.Ref != "main" || p.Base.Repo.FullName != h.Repository {
-		return p, errors.New("PR identity changed")
+		return p, errPRIdentity
 	}
 	if want := mergechannel.HandoffBranch(h); p.Head.Ref != want {
 		return p, fmt.Errorf("%w: head ref %s, want %s", errHeadRef, p.Head.Ref, want)
+	}
+	if !p.Merged && p.State == "closed" {
+		return p, errPRClosed
 	}
 	return p, nil
 }

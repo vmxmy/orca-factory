@@ -310,6 +310,29 @@ func TestRuntimeSnapshotAllProjects(t *testing.T) {
 	}
 }
 
+func TestHalfClaimAfterOwnerNoneStaysVisible(t *testing.T) {
+	lc := &fakeIssues{
+		issues: []task.Issue{{
+			ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"},
+			State:  task.NamedID{Name: "In Progress"},
+			Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}},
+		}},
+		issueComments: evidenceComments("阶段: 未领取\n归属: 无"),
+	}
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+	repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1", "AGENT_SCOPE_AVOID": "0"}}}
+	tickets, err := r.Snapshot(context.Background(), repos)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tickets) != 1 {
+		t.Fatalf("half-claimed ticket disappeared from snapshot: %+v", tickets)
+	}
+	if tickets[0].ID != "id" || tickets[0].Owner != machine.OwnerNone || !tickets[0].Legacy || tickets[0].Candidate {
+		t.Fatalf("half-claimed ticket must remain visible as legacy: %+v", tickets[0])
+	}
+}
+
 type batchIssues struct {
 	fakeIssues
 	batches   [][]string
