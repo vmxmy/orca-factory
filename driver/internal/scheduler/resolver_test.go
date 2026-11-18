@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -300,6 +301,42 @@ func TestRecordedResolverGateSpec(t *testing.T) {
 				t.Fatalf("recorded face spec accepted=%v: bodies=%s", accepted, bodies)
 			}
 		})
+	}
+}
+
+// A real resolver merge proposal (OF-572) carries the executor-rendered
+// gate_spec for its ticket face; whitespace-only drift must still be refused.
+func TestRecordedResolverMergeProposal(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-merge-proposal-OF-572.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample struct {
+		Ticket struct{ ID, Identifier, Title, Description string } `json:"ticket"`
+		Result string                                              `json:"result"`
+	}
+	if err = json.Unmarshal(raw, &sample); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := resolver.ParseResult(sample.Result)
+	if err != nil || proposal.Action != "merge" || proposal.Handoff == nil {
+		t.Fatalf("recorded proposal: action=%q err=%v", proposal.Action, err)
+	}
+	face, err := executor.ParseTicket(sample.Ticket.ID, sample.Ticket.Identifier, sample.Ticket.Title, sample.Ticket.Description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := proposal.Handoff.GateSpec
+	if problem := resolverGateSpecProblem(spec, proposal.Handoff.Unit, face); problem != "" {
+		t.Fatalf("recorded gate_spec refused: %s", problem)
+	}
+	for _, drift := range []string{strings.Replace(spec, "\nCHECK: ", "\n CHECK: ", 1), strings.Replace(spec, "driver/CONTRACTS.md\n", "driver/CONTRACTS.md \n", 1), strings.Replace(spec, "LANE: 2", "LANE:2", 1)} {
+		if drift == spec {
+			t.Fatal("drift did not change the recorded spec")
+		}
+		if resolverGateSpecProblem(drift, proposal.Handoff.Unit, face) == "" {
+			t.Fatalf("whitespace drift accepted: %q", drift)
+		}
 	}
 }
 
