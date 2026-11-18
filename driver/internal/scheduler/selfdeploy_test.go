@@ -34,6 +34,7 @@ type selfDeployHost struct {
 	smokeErr                 error
 	kill                     string
 	cancel                   context.CancelFunc
+	build                    func() error
 }
 
 func (h *selfDeployHost) killed(step string) bool {
@@ -52,6 +53,11 @@ func (h *selfDeployHost) run(ctx context.Context, s runx.Spec) ([]byte, error) {
 			return nil, context.Canceled
 		}
 		h.builds++
+		if h.build != nil {
+			if err := h.build(); err != nil {
+				return nil, err
+			}
+		}
 		out := s.Args[slices.Index(s.Args, "-o")+1]
 		ldflags := s.Args[slices.Index(s.Args, "-ldflags")+1]
 		return nil, os.WriteFile(out, fakeDriver(strings.TrimPrefix(ldflags, "-X main.version=")), 0700)
@@ -656,5 +662,19 @@ func TestSelfDeployKeepsOperatorFreeze(t *testing.T) {
 	}
 	if !strings.Contains(f.tracker.bodies[len(f.tracker.bodies)-1], "frozen") {
 		t.Errorf("pending receipt does not name the freeze: %s", f.tracker.bodies[len(f.tracker.bodies)-1])
+	}
+}
+
+func TestSelfDeployKeepsOperatorFreezeDuringFailedBuild(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error {
+		if err := maintenance.Set("frozen"); err != nil {
+			t.Error(err)
+		}
+		return errors.New("build failed")
+	}
+	_ = serveAs(f, h, "old")
+	if mode := maintenanceMode(t); h.builds != 1 || mode != "frozen" || markerExists(f, selfSHA, "drained") {
+		t.Fatalf("operator freeze during a failed build: builds=%d mode=%s drained=%t state=%s", h.builds, mode, markerExists(f, selfSHA, "drained"), lastState(f))
 	}
 }

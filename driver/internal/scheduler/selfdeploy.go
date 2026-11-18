@@ -402,17 +402,24 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 }
 
 // settleSelf resumes the drain this deployment started and clears its
-// rollback marker, so a later retry-smoke is judged afresh. The installing
-// marker stays through a pause: only passed or a new install from pending
-// clears it.
+// rollback marker, so a later retry-smoke is judged afresh. A mode the
+// operator changed after the drain, such as a freeze during the build, is
+// theirs and stays. The installing marker stays through a pause: only passed
+// or a new install from pending clears it.
 func (r *Runtime) settleSelf(sha string) error {
 	drained, err := fileExists(r.selfMarker(sha, markerDrained))
 	if err != nil {
 		return err
 	}
 	if drained {
-		if err = maintenance.SetWithin("running", maintenanceWait); err != nil {
+		state, err := maintenance.Read()
+		if err != nil {
 			return err
+		}
+		if state.Mode == "draining" {
+			if err = maintenance.SetWithin("running", maintenanceWait); err != nil {
+				return err
+			}
 		}
 		if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil {
 			return err
