@@ -677,7 +677,11 @@ flush_interval = "10m"
 由网关在沙箱外完成。
 
 Agent 回复带 `intake-draft-v1` 草稿时（OF-15），网关先校验：必填字段、SCOPE 每个
-glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环。不通过时把原因
+glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环（OF-555）。
+正文的现状、断言、依赖说明和每条要做是用户自由文本，其中任何一行不能是 `#` 标题、
+`CHECK` / `SCOPE` / `要做` / `CHECK_*` 字段行、`阶段` / `归属` 协议行，也不能以
+`intake-chat-v1`、`merge-handoff-v1`、`merge-progress-v1` 开头；夹带这类行的草稿被拒绝，
+原因写明哪个字段。不通过时把原因
 作为 `[网关]` 前缀的下一轮输入交还 Agent（每条消息最多 2 次），需求人看不到。通过后
 网关按该项目 `AGENT_LANE2_GLOBS` / `AGENT_LANE3_GLOBS` 计算 lane（不采信草稿），发票面
 摘要，会话进入“待确认”。只有需求人发“确认提交”才建票：已纳管、Todo、不打
@@ -689,8 +693,9 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 `驳回 OF-N <理由>` 时按审批命令处理。群里顶层须 @ 机器人；网关开过会话的话题内
 无需 @。只有 `AGENT_FEISHU_APPROVERS` 中的发送者生效，其他人只得到“无审批权限”。
 网关按票号前缀找到项目账本，读取票后核对：正文带 `intake-chat-v1` 标记、状态 Todo、
-未打 `ready-for-agent`；批准还要求票面“LANE 预判”不是 3（否则回复“lane 3 需人工
-实现，不放行”）。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带
+未打 `ready-for-agent`；批准时按票面 SCOPE 与项目 lane glob 在检出上重新计算 lane，
+不读票面“LANE 预判”文本，结果为 3 时回复“lane 3 需人工实现，不放行”，票面没有 SCOPE
+也不放行。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带压成一行的
 `理由：`），再加 `ready-for-agent` 或把状态改为 Canceled，回复审批人，并在票的
 原话题里 @ 需求人告知结果。已放行的票再批准、已取消的票再驳回只回复现状，不再写账本；
 事件已存在时不重复写，所以两次写之间崩溃后重发命令也只补上标签或状态。
@@ -701,8 +706,8 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 消息处理。这两条命令不要求票据带需求入口标记或处于 Todo，执行前按票号重读账本与
 评论，核对最新 `resolver-state` 的 phase 为 human。放行追加同一条包含操作者、
 时间和保留最新 attempt 的 waiting 记录的评论，由调度器下一轮重新派处置 Agent；
-不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面或最新
-`merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
+不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面任一 `LANE 预判`
+或最新 `merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
 merge-progress-v1 解析失败均拒绝；部署屏障 paused 时回复走 `resume-deployment`。
 没有 resolver-state 或 phase 不是 human 时回复当前状态。取消先写操作者、时间、
 理由事件，再改为 Canceled；事件已存在时不重复写，崩溃后重发只补状态，已是
