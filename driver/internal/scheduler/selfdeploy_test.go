@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
-	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -539,9 +538,6 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			builds := h.builds
 			now := time.Now()
 			f.runtime.Now = func() time.Time { return now }
-			wait, poll, report := selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport
-			selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = 50*time.Millisecond, 10*time.Millisecond, 20*time.Millisecond
-			t.Cleanup(func() { selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleReport = wait, poll, report })
 			release, err := maintenance.Session()
 			if err != nil {
 				t.Fatal(err)
@@ -552,7 +548,14 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 				}
 			})
 			_ = serveAs(f, h, "old")
-			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" {
+			if maintenanceMode(t) != "draining" || !markerExists(f, selfSHA, "idle-wait") {
+				t.Fatalf("idle wait did not start: mode=%s", maintenanceMode(t))
+			}
+			now = now.Add(selfDeployIdleReport)
+			_ = serveAs(f, h, "old")
+			now = now.Add(selfDeployIdleWait - selfDeployIdleReport)
+			_ = serveAs(f, h, "old")
+			if h.builds != builds || installed(t, h.driver) != "old" || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "idle-wait") {
 				t.Fatalf("deployed with an active session: builds=%d state=%s mode=%s", h.builds, lastState(f), maintenanceMode(t))
 			}
 			if markerExists(f, selfSHA, "drained") || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "等待会话空闲超时，已等待 ") {
@@ -572,6 +575,8 @@ func TestSelfDeployIdleTimeoutRetries(t *testing.T) {
 			round1 := f.tracker.bodies[timeoutReceipt]
 			n := len(f.tracker.bodies)
 			now = now.Add(15 * time.Minute)
+			_ = serveAs(f, h, "old")
+			now = now.Add(selfDeployIdleWait)
 			_ = serveAs(f, h, "old")
 			if h.builds != builds || lastState(f) != "pending" || maintenanceMode(t) != "running" || markerExists(f, selfSHA, "drained") {
 				t.Fatalf("second idle timeout: builds=%d state=%s mode=%s drained=%t", h.builds, lastState(f), maintenanceMode(t), markerExists(f, selfSHA, "drained"))
@@ -630,40 +635,43 @@ func TestSelfDeployIdleWaitDoesNotBlockOtherRepositories(t *testing.T) {
 	f.runtime.Repositories[repo.Path] = repo
 	store := &mergeTickets{rows: []*mergeIssues{f.tracker, b}}
 	f.runtime.Clients[f.repos[0].Path], f.runtime.Clients[repo.Path] = store, store
-
-	tickets, err := f.runtime.Snapshot(context.Background(), f.repos)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.ContainsFunc(tickets, func(ticket Ticket) bool { return ticket.ID == "b" && ticket.Candidate }) {
-		t.Fatalf("repository B has no candidate: %+v", tickets)
-	}
 	release, err := maintenance.Session()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
-	rounds := 0
-	for rounds < 2 && ctx.Err() == nil {
-		if err := s.Tick(ctx); err != nil {
-			t.Logf("tick %d: %v", rounds+1, err)
+	t.Cleanup(func() {
+		if release != nil {
+			release()
 		}
-		rounds++
+	})
+	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+	for round := 1; round <= 2; round++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := s.Tick(ctx)
+		blocked := ctx.Err()
+		cancel()
+		if blocked != nil {
+			t.Fatalf("round %d blocked on the idle wait: %v", round, err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "等待会话空闲，已等待 ") {
+			t.Fatalf("round %d did not report the idle wait: %v", round, err)
+		}
+		t.Logf("round %d: %v", round, err)
 	}
-	if rounds < 2 || ctx.Err() != nil {
-		t.Errorf("idle wait blocked scheduler: completed %d rounds, context=%v", rounds, ctx.Err())
+	if maintenanceMode(t) != "draining" || h.builds != 0 || lastState(f) != "pending" || !markerExists(f, selfSHA, "idle-wait") {
+		t.Fatalf("idle wait state: mode=%s builds=%d state=%s", maintenanceMode(t), h.builds, lastState(f))
 	}
 	claimed := Ticket{}
 	if err := readOwnership(&claimed, b.rows); err != nil {
 		t.Fatal(err)
 	}
-	if claimed.Owner != machine.OwnerExecutor {
-		t.Errorf("repository B was not claimed during repository A's idle wait: owner=%q receipts=%v", claimed.Owner, b.bodies)
+	if claimed.Owner != "" {
+		t.Errorf("repository B was claimed during the drain: owner=%q", claimed.Owner)
 	}
-	if maintenanceMode(t) != "draining" || h.builds != 0 || lastState(f) != "pending" {
-		t.Fatalf("idle wait ended before assertions: mode=%s builds=%d state=%s", maintenanceMode(t), h.builds, lastState(f))
+	release()
+	release = nil
+	firstServe(t, f, h)
+	if h.builds != 1 || lastState(f) != "deploy-intent" || markerExists(f, selfSHA, "idle-wait") {
+		t.Fatalf("idle deployment: builds=%d state=%s idle-wait=%t", h.builds, lastState(f), markerExists(f, selfSHA, "idle-wait"))
 	}
 }

@@ -38,9 +38,13 @@ const (
 )
 
 // Variables so tests can shorten the idle wait, retry and report intervals.
-var selfDeployIdleWait, selfDeployIdlePoll, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Second, 15 * time.Minute, 10 * time.Minute
+var selfDeployIdleWait, selfDeployIdleRetry, selfDeployIdleReport = time.Hour, 15 * time.Minute, 10 * time.Minute
 
 var errSelfDeployIdleTimeout = errors.New("等待会话空闲超时")
+
+// errSelfDeployIdleWaiting ends this repository's deployment step for the
+// tick while sessions remain; the next tick checks again.
+var errSelfDeployIdleWaiting = errors.New("等待会话空闲")
 
 // One restart command queues both jobs; systemd does not order them.
 // Restarting the driver unit stops this serve.
@@ -53,12 +57,15 @@ var selfDeployServices = []string{"orca-factory-feishu-gateway", "orca-factory-d
 // rolled-back tells the restored serve to pause and resume, and holds the
 // reason when serve itself rolled back. idle-timeout records the last timeout
 // time and timeout count; no new drain starts until selfDeployIdleRetry has elapsed.
+// idle-wait holds when the current idle wait began and the last reported
+// elapsed step, so the wait spans ticks.
 const (
 	markerDrained     = "drained"
 	markerInstalling  = "installing"
 	markerSmokePassed = "smoke-passed"
 	markerRolledBack  = "rolled-back"
 	markerIdleTimeout = "idle-timeout"
+	markerIdleWait    = "idle-wait"
 )
 
 // selfDeployGuardScript runs in its own transient unit, so it outlives the
@@ -148,9 +155,15 @@ func guardUnit(sha string) string {
 // deploySelf waits in pending, then records deploy-intent before installing.
 // Keeping the idle wait in pending also permits retries after retry-workflow,
 // whose deploy-intent cannot return to pending without a new recovery decision.
+// Each tick checks idleness once and returns, so other repositories keep
+// being scheduled while this deployment waits.
 func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	d := p.Deployment
 	sha := deploymentSHA(p)
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
 	idleTimeout := r.selfMarker(sha, markerIdleTimeout)
 	timeouts := 0
 	if data, err := os.ReadFile(idleTimeout); err == nil {
@@ -162,10 +175,6 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		timeouts, err = strconv.Atoi(count)
 		if err != nil {
 			return err
-		}
-		now := time.Now()
-		if r.Now != nil {
-			now = r.Now()
 		}
 		if remaining := timedOut.Add(selfDeployIdleRetry).Sub(now); remaining > 0 {
 			return fmt.Errorf("%w，%s 后重试", errSelfDeployIdleTimeout, remaining)
@@ -179,14 +188,24 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
-	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	idleWait := r.selfMarker(sha, markerIdleWait)
+	waiting, err := fileExists(idleWait)
+	if err != nil {
 		return err
 	}
-	if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
-		err = maintenance.SetWithin("draining", maintenanceWait)
+	if !waiting {
+		if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err = touch(r.selfMarker(sha, markerDrained)); err == nil {
+			err = maintenance.SetWithin("draining", maintenanceWait)
+		}
+		if err == nil {
+			err = writeIdleWait(idleWait, now, -1)
+		}
 	}
 	if err == nil {
-		err = r.awaitIdle(ctx, func(elapsed time.Duration) {
+		err = r.awaitIdle(idleWait, now, func(elapsed time.Duration) {
 			d.Reason = fmt.Sprintf("等待会话空闲，已等待 %s（第 %d 轮）", elapsed, round)
 			if err := r.deploymentReceipt(ctx, t, p); err != nil {
 				runx.LoggerFrom(ctx).Warn("self deployment idle progress receipt failed", "err", err)
@@ -194,16 +213,12 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		})
 	}
 	if err != nil {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || errors.Is(err, errSelfDeployIdleWaiting) {
 			return err
 		}
 		if errors.Is(err, errSelfDeployIdleTimeout) {
 			if resumeErr := r.settleSelf(sha); resumeErr != nil {
 				return errors.Join(err, resumeErr, r.pauseSelf(ctx, t, p, "idle wait timed out but maintenance resume failed"))
-			}
-			now := time.Now()
-			if r.Now != nil {
-				now = r.Now()
 			}
 			if markerErr := os.MkdirAll(filepath.Dir(idleTimeout), 0700); markerErr != nil {
 				return errors.Join(err, markerErr)
@@ -217,6 +232,9 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment failed before restart"))
 	}
 	if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err = os.Remove(idleWait); err != nil {
 		return err
 	}
 	d.State, d.Reason = "deploy-intent", ""
@@ -264,36 +282,46 @@ func (r *Runtime) installSelf(ctx context.Context, repo, sha string) (replaced b
 	return true, r.restartServices(ctx)
 }
 
-// awaitIdle waits until no executor, resolver or admitted write remains, as
-// deploy.sh does, for at most one hour. Before timing out, it reports elapsed
-// time at selfDeployIdleReport intervals.
-func (r *Runtime) awaitIdle(ctx context.Context, report func(elapsed time.Duration)) error {
-	started := time.Now()
-	deadline := started.Add(selfDeployIdleWait)
-	reported := time.Duration(-1)
-	for {
-		state, err := maintenance.Status()
-		if err != nil {
+// awaitIdle checks once whether no executor, resolver or admitted write
+// remains, as deploy.sh does. Measured from the idle-wait marker, it reports
+// elapsed time at selfDeployIdleReport intervals and times out after
+// selfDeployIdleWait; otherwise it returns errSelfDeployIdleWaiting.
+func (r *Runtime) awaitIdle(marker string, now time.Time, report func(elapsed time.Duration)) error {
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		return err
+	}
+	startText, reportedText, _ := strings.Cut(string(data), " ")
+	started, err := time.Parse(time.RFC3339Nano, startText)
+	if err != nil {
+		return err
+	}
+	reported, err := time.ParseDuration(reportedText)
+	if err != nil {
+		return err
+	}
+	state, err := maintenance.Status()
+	if err != nil {
+		return err
+	}
+	if !state.WritersActive && !state.SessionsActive {
+		return nil
+	}
+	elapsed := now.Sub(started)
+	if step := elapsed.Truncate(selfDeployIdleReport); step > reported {
+		report(step)
+		if err = writeIdleWait(marker, started, step); err != nil {
 			return err
 		}
-		if !state.WritersActive && !state.SessionsActive {
-			return nil
-		}
-		if step := time.Since(started).Truncate(selfDeployIdleReport); step > reported {
-			report(step)
-			reported = step
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, time.Since(started).Round(time.Millisecond))
-		}
-		timer := time.NewTimer(selfDeployIdlePoll)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
 	}
+	if elapsed >= selfDeployIdleWait {
+		return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleTimeout, elapsed.Round(time.Millisecond))
+	}
+	return fmt.Errorf("%w，已等待 %s", errSelfDeployIdleWaiting, elapsed.Round(time.Second))
+}
+
+func writeIdleWait(path string, started time.Time, reported time.Duration) error {
+	return os.WriteFile(path, []byte(started.UTC().Format(time.RFC3339Nano)+" "+reported.String()), 0600)
 }
 
 // buildSelf builds the exact squash SHA in a throwaway worktree under the
@@ -353,8 +381,8 @@ func (r *Runtime) stopGuard(ctx context.Context, sha string) error {
 	return nil
 }
 
-// settleSelf resumes the drain this deployment started and clears its
-// rollback marker, so a later retry-smoke is judged afresh. The installing
+// settleSelf resumes the drain this deployment started and clears its idle
+// wait and rollback markers, so a later retry is judged afresh. The installing
 // marker stays through a pause: only passed or a new install from pending
 // clears it.
 func (r *Runtime) settleSelf(sha string) error {
@@ -369,6 +397,9 @@ func (r *Runtime) settleSelf(sha string) error {
 		if err = os.Remove(r.selfMarker(sha, markerDrained)); err != nil {
 			return err
 		}
+	}
+	if err = os.Remove(r.selfMarker(sha, markerIdleWait)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if err = os.Remove(r.selfMarker(sha, markerRolledBack)); errors.Is(err, os.ErrNotExist) {
 		return nil
