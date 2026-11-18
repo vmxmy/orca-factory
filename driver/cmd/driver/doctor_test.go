@@ -506,7 +506,18 @@ func TestDoctorReportsOrcaTerminalCreateFailure(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
 	writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"orcaRuntime":{"paused":true,"failures":3},"tickets":[]}`, f.now.Format(time.RFC3339Nano)), 0600)
-	result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
+	assertDoctorReportsOrcaRuntimeFault(t, runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))))
+
+	// An explicit DRIVER_STATUS_FILE selects the snapshot serve writes, not the pushed view.
+	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
+	if err := status.Write(status.Snapshot{GeneratedAt: f.now, OrcaRuntime: status.OrcaRuntime{Paused: true, Failures: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	assertDoctorReportsOrcaRuntimeFault(t, runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))))
+}
+
+func assertDoctorReportsOrcaRuntimeFault(t *testing.T, result doctorResult) {
+	t.Helper()
 	if result.statuses["orca_runtime"] != "fail" {
 		t.Fatalf("runtime failure not reported: %s", result.out)
 	}

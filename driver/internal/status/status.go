@@ -18,6 +18,7 @@ type TodayOutput struct {
 }
 
 type Snapshot struct {
+	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	GeneratedAt time.Time    `json:"generatedAt"`
 	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
@@ -206,6 +207,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 	}
 	view.GitHub = snapshot.GitHub
 	view.Today = snapshot.Today
+	view.OrcaRuntime = snapshot.OrcaRuntime
 	normalize(&view, now)
 	dropNextScanUnlessOK(&view)
 	return view

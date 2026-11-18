@@ -578,12 +578,18 @@ func (o *runtimeFailureOrca) TerminalClose(_ context.Context, handle string) err
 
 type runtimeFailureBackend struct {
 	*fakeBackend
-	runtime *Runtime
-	notices int
+	runtime   *Runtime
+	notices   int
+	launchErr error
+	merges    int
+	merge     func(context.Context) error
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
 	b.launched = append(b.launched, ticket)
+	if b.launchErr != nil {
+		return b.launchErr
+	}
 	return b.runtime.Launch(ctx, ticket)
 }
 func (b *runtimeFailureBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error {
@@ -593,18 +599,67 @@ func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error
 	b.notices++
 	return nil
 }
+func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
+	b.merges++
+	if b.merge == nil {
+		return nil
+	}
+	return b.merge(ctx)
+}
 
-func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	t.Setenv("DRIVER_STATUS_FILE", "")
-	fixture, err := filepath.Abs("../../testdata/recorded/orca-worktree-rm-dirty.json")
+// recordedTerminalCreateRuntimeErrorCLI replays the rejection the driver journal
+// recorded for `terminal create` during the 2026-11-18 Orca outage.
+func recordedTerminalCreateRuntimeErrorCLI(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/driver-journal-orca-terminal-create-runtime-error.jsonl")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cli := filepath.Join(t.TempDir(), "orca")
-	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat '"+fixture+"'\nexit 1\n"), 0700); err != nil {
+	var call struct {
+		Msg     string `json:"msg"`
+		Command string `json:"command"`
+		Result  string `json:"result"`
+		Request string `json:"request_id"`
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if err := json.Unmarshal([]byte(line), &call); err != nil {
+			t.Fatal(err)
+		}
+		if call.Msg == "Orca call" && call.Command == "terminal create" {
+			break
+		}
+	}
+	if call.Command != "terminal create" || call.Result != "runtime_error" || call.Request == "" {
+		t.Fatalf("recorded terminal create rejection missing: %+v", call)
+	}
+	envelope, err := json.Marshal(map[string]any{"id": call.Request, "ok": false, "error": map[string]string{"code": call.Result}})
+	if err != nil {
 		t.Fatal(err)
 	}
+	reply := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(reply, envelope, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat '"+reply+"'\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	return cli
+}
+
+type runtimeFailureFixture struct {
+	s   *Scheduler
+	f   *fakeBackend
+	b   *runtimeFailureBackend
+	r   *Runtime
+	oc  *runtimeFailureOrca
+	now *time.Time
+}
+
+func newRuntimeFailureFixture(t *testing.T, tickets int) runtimeFailureFixture {
+	t.Helper()
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
 	rawSuccess, err := os.ReadFile("../../testdata/recorded/orca-terminal-create-probe.json")
 	if err != nil {
 		t.Fatal(err)
@@ -615,7 +670,7 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 	if err := json.Unmarshal(rawSuccess, &success); err != nil {
 		t.Fatal(err)
 	}
-	oc := &runtimeFailureOrca{failing: true, failureClient: &orca.Client{Path: cli, Timeout: time.Second}, success: success.Result}
+	oc := &runtimeFailureOrca{failing: true, failureClient: &orca.Client{Path: recordedTerminalCreateRuntimeErrorCLI(t), Timeout: time.Second}, success: success.Result}
 	f := &fakeBackend{absent: true, inactive: true}
 	r := &Runtime{Orca: oc, DriverPath: "/opt/driver", Clients: map[string]issues.Store{}, Repositories: map[string]config.Repository{}}
 	b := &runtimeFailureBackend{fakeBackend: f, runtime: r}
@@ -625,7 +680,7 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 	s.Repositories = nil
 	now := s.Now()
 	s.Now = func() time.Time { return now }
-	for i := 0; i < 5; i++ {
+	for i := 0; i < tickets; i++ {
 		repo := fmt.Sprintf("/repo%d", i)
 		id := fmt.Sprintf("OF-%d", i+1)
 		s.Repositories = append(s.Repositories, config.Repository{Path: repo, MaxInFlight: 2, StaleHours: 8})
@@ -648,6 +703,12 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 			}
 		}
 	}
+	return runtimeFailureFixture{s: s, f: f, b: b, r: r, oc: oc, now: &now}
+}
+
+func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 5)
+	s, f, b, oc := x.s, x.f, x.b, x.oc
 	if err := s.Tick(context.Background()); err == nil {
 		t.Fatal("expected runtime failure")
 	}
@@ -655,7 +716,7 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 		t.Fatalf("threshold must stop claims and launches: actions=%v launches=%d", f.actions, len(f.launched))
 	}
 	for i := 0; i < 3; i++ {
-		now = now.Add(time.Hour)
+		*x.now = x.now.Add(time.Hour)
 		_ = s.Tick(context.Background())
 	}
 	if len(f.actions) != 3 || len(f.launched) != 3 || b.notices != 1 || oc.probes != 3 {
@@ -666,24 +727,11 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 			t.Fatalf("burned attempt or escalated: %+v", ticket)
 		}
 	}
-	raw, err := os.ReadFile(status.PushPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var view struct {
-		OrcaRuntime struct {
-			Paused   bool
-			Failures int
-		} `json:"orcaRuntime"`
-	}
-	if err := json.Unmarshal(raw, &view); err != nil {
-		t.Fatal(err)
-	}
-	if !view.OrcaRuntime.Paused || view.OrcaRuntime.Failures < 3 {
-		t.Fatalf("missing runtime fault: %s", raw)
+	if got := s.OrcaRuntime(); !got.Paused || got.Failures < 3 {
+		t.Fatalf("missing runtime fault: %+v", got)
 	}
 	oc.failing = false
-	now = now.Add(time.Minute)
+	*x.now = x.now.Add(time.Minute)
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -693,12 +741,101 @@ func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
 	if !reflect.DeepEqual(oc.closed, []string{"term_4aa07a88-df90-4866-aa2e-dcefaf47537c"}) {
 		t.Fatalf("probe terminal not closed: %v", oc.closed)
 	}
-	if got := status.Read(now, 0).OrcaRuntime; got.Paused || got.Failures != 0 {
+	if got := s.OrcaRuntime(); got.Paused || got.Failures != 0 {
 		t.Fatalf("recovery state not cleared: %+v", got)
 	}
 	for _, ticket := range f.launched {
 		if ticket.Attempt != 1 {
 			t.Fatalf("attempt changed during recovery: %+v", ticket)
 		}
+	}
+}
+
+// A retry that fails before terminal create, or is deferred, neither drops the
+// reservation nor counts as Orca having recovered.
+func TestOrcaRuntimeRetryKeepsReservationUntilTerminalCreateAnswers(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 1)
+	s, f, b, oc := x.s, x.f, x.b, x.oc
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); got.Failures != 1 || len(f.launched) != 1 {
+		t.Fatalf("first runtime failure not counted: %+v launches=%d", got, len(f.launched))
+	}
+	for _, launchErr := range []error{errors.New("claim issue unavailable"), maintenance.ErrRefused} {
+		*x.now = x.now.Add(time.Hour)
+		b.launchErr = launchErr
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Failures != 1 {
+			t.Fatalf("launch without terminal create changed the failure count after %v: %+v", launchErr, got)
+		}
+	}
+	b.launchErr = nil
+	oc.failing = false
+	*x.now = x.now.Add(time.Hour)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.OrcaRuntime(); got.Failures != 0 {
+		t.Fatalf("terminal create success did not clear the count: %+v", got)
+	}
+	if len(f.actions) != 1 || len(f.launched) != 4 {
+		t.Fatalf("reservation dropped and reclaimed: actions=%v launches=%v", f.actions, f.launched)
+	}
+	for _, ticket := range f.launched {
+		if ticket.Attempt != 1 {
+			t.Fatalf("attempt burned while Orca was failing: %+v", ticket)
+		}
+	}
+}
+
+// A merge correction launches through the merge lane, outside the claim loop;
+// its terminal create rejection still counts toward the pause.
+func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 0)
+	s, b := x.s, x.b
+	s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+	store := &fakeIssues{issues: []task.Issue{{ID: "OF-9", Identifier: "OF-9", State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+	body := fmt.Sprintf("阶段: %s\n归属: 执行器 term=- run=- attempt=1 scheduler-attempt=1 since=%s", machine.PhaseCorrection, x.now.Format(time.RFC3339))
+	if _, err := store.CreateComment(context.Background(), "OF-9", body); err != nil {
+		t.Fatal(err)
+	}
+	x.r.Clients["/repo"] = store
+	x.r.Repositories["/repo"] = config.Repository{Path: "/repo"}
+	ticket := fromEvidence(t, Ticket{ID: "OF-9", Identifier: "OF-9", Repo: "/repo"}, store.issueComments)
+	b.merge = func(ctx context.Context) error {
+		return fmt.Errorf("merge waiting %s: %w", ticket.Identifier, b.runtime.Launch(ctx, ticket))
+	}
+	for i := 0; i < orcaRuntimeFailureThreshold; i++ {
+		_ = s.Tick(context.Background())
+	}
+	if got := s.OrcaRuntime(); !got.Paused || b.notices != 1 {
+		t.Fatalf("merge correction runtime errors not counted: %+v notices=%d", got, b.notices)
+	}
+}
+
+// A pause reached while retrying reservations holds the merge lane in the same
+// round: a merge correction would create an executor terminal.
+func TestOrcaRuntimePauseHoldsMergeLaneInSameRound(t *testing.T) {
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold-1)
+	_ = x.s.Tick(context.Background())
+	if got := x.s.OrcaRuntime(); got.Paused || got.Failures != orcaRuntimeFailureThreshold-1 || x.b.merges != 1 {
+		t.Fatalf("claims below the threshold: %+v merges=%d", got, x.b.merges)
+	}
+	*x.now = x.now.Add(time.Hour)
+	_ = x.s.Tick(context.Background())
+	if got := x.s.OrcaRuntime(); !got.Paused || x.b.merges != 1 {
+		t.Fatalf("merge lane advanced after the pause: %+v merges=%d", got, x.b.merges)
+	}
+}
+
+// Only serve publishes the fault; a separate Scheduler such as `serve --dry-run`
+// starts at zero and must not clear the running service's paused state.
+func TestSchedulerTickLeavesPublishedOrcaRuntime(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	s := setup(&fakeBackend{})
+	status.Push(s.Now(), func(view *status.View) { view.OrcaRuntime = status.OrcaRuntime{Paused: true, Failures: 3} })
+	_ = s.Tick(context.Background())
+	if got := status.Read(s.Now(), 0).OrcaRuntime; !got.Paused {
+		t.Fatalf("scheduler tick overwrote the published Orca runtime fault: %+v", got)
 	}
 }

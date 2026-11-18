@@ -210,7 +210,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		mark = time.Now()
 	}
 	defer func() { s.summary(started, tickets, snapshot, full, timing, tickErr) }()
-	defer func() { status.Push(s.clock(), func(view *status.View) { view.OrcaRuntime = s.orcaRuntime }) }()
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
@@ -541,11 +540,17 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	lap("dispatch")
+	// A merge correction launches an executor terminal, so a paused runtime
+	// holds the merge lane too.
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
-	}); ok {
+	}); ok && !s.orcaRuntime.Paused {
 		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
 			problems = append(problems, err)
+			var runtimeErr *terminalCreateRuntimeError
+			if errors.As(err, &runtimeErr) {
+				s.recordOrcaRuntimeFailure(ctx, runtimeErr.ticket)
+			}
 		}
 	}
 	lap("merge")
@@ -760,30 +765,42 @@ type snapshotError struct {
 func (e *snapshotError) Error() string { return "scheduler snapshot failed: " + e.reason }
 func (e *snapshotError) Unwrap() error { return e.err }
 
+// launchWithRuntimeCheck keeps a reservation whose launch never reached a
+// terminal create answer, and clears the fault only on a real success.
 func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error {
-	err := s.launch(ctx, t)
+	result, err := s.launchOutcome(ctx, t)
 	var runtimeErr *terminalCreateRuntimeError
-	if errors.As(err, &runtimeErr) {
-		if s.runtimePending == nil {
-			s.runtimePending = map[string]Ticket{}
-		}
-		s.runtimePending[t.ID] = t
-		s.orcaRuntime.Failures++
-		if s.orcaRuntime.Failures >= orcaRuntimeFailureThreshold && !s.orcaRuntime.Paused {
-			s.orcaRuntime.Paused = true
-			if notifier, ok := s.Backend.(interface {
-				NotifyOrcaRuntime(context.Context, Ticket) error
-			}); ok {
-				if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
-					s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
-				}
-			}
-		}
-	} else {
+	var uncertain *terminalCreateUncertainError
+	switch {
+	case errors.As(err, &runtimeErr):
+		s.recordOrcaRuntimeFailure(ctx, t)
+	case result == "success":
 		delete(s.runtimePending, t.ID)
-		if err == nil {
-			s.orcaRuntime = status.OrcaRuntime{}
-		}
+		s.orcaRuntime = status.OrcaRuntime{}
+	case errors.As(err, &uncertain):
+		delete(s.runtimePending, t.ID)
 	}
 	return err
 }
+
+func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, t Ticket) {
+	if s.runtimePending == nil {
+		s.runtimePending = map[string]Ticket{}
+	}
+	s.runtimePending[t.ID] = t
+	s.orcaRuntime.Failures++
+	if s.orcaRuntime.Failures < orcaRuntimeFailureThreshold || s.orcaRuntime.Paused {
+		return
+	}
+	s.orcaRuntime.Paused = true
+	if notifier, ok := s.Backend.(interface {
+		NotifyOrcaRuntime(context.Context, Ticket) error
+	}); ok {
+		if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
+			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
+		}
+	}
+}
+
+// OrcaRuntime is the terminal-create fault state serve publishes in its status.
+func (s *Scheduler) OrcaRuntime() status.OrcaRuntime { return s.orcaRuntime }

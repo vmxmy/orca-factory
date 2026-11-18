@@ -657,9 +657,9 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	if err != nil {
 		var rejected *orca.RejectedError
 		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
-			return &terminalCreateRuntimeError{err}
+			return &terminalCreateRuntimeError{err: err, ticket: t}
 		}
-		return fmt.Errorf("executor launch uncertain: %w", err)
+		return &terminalCreateUncertainError{fmt.Errorf("executor launch uncertain: %w", err)}
 	}
 	return nil
 }
@@ -767,7 +767,22 @@ func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
 }
 
-type terminalCreateRuntimeError struct{ error }
+// terminalCreateRuntimeError is Orca refusing terminal create with runtime_error:
+// no terminal exists, so the launch counts toward the Orca runtime fault.
+type terminalCreateRuntimeError struct {
+	err    error
+	ticket Ticket
+}
+
+func (e *terminalCreateRuntimeError) Error() string { return e.err.Error() }
+func (e *terminalCreateRuntimeError) Unwrap() error { return e.err }
+
+// terminalCreateUncertainError is any other terminal create failure; the
+// terminal may exist, so ordinary liveness judgement applies.
+type terminalCreateUncertainError struct{ err error }
+
+func (e *terminalCreateUncertainError) Error() string { return e.err.Error() }
+func (e *terminalCreateUncertainError) Unwrap() error { return e.err }
 
 // ProbeOrcaRuntime exercises terminal creation without starting an executor.
 func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {

@@ -332,6 +332,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 			status.Push(now, func(view *status.View) {
 				view.GitHub = snapshot.GitHub
 				view.NextScanAt = snapshot.NextScanAt
+				view.OrcaRuntime = snapshot.OrcaRuntime
 			})
 		}
 		return wait(ctx)
@@ -342,6 +343,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot := status.Snapshot{GeneratedAt: now, Tickets: []status.Ticket{}}
 	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
 	snapshot.Today = backend.TodayOutput(now)
+	snapshot.OrcaRuntime = s.OrcaRuntime()
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {
