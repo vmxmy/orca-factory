@@ -104,6 +104,8 @@ func TestRuntimeMergeLane2ResolverApprovalMerges(t *testing.T) {
 	for _, setting := range []string{"unset", "0"} {
 		t.Run(setting, func(t *testing.T) {
 			f := newMergeFixture(t)
+			f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
+			closeMergeGates(t, f.runtime)
 			lane2Automerge(t, f, setting)
 			rewriteHandoff(t, f, lane2Handoff)
 			var h merge.Handoff
@@ -133,7 +135,9 @@ func TestRuntimeMergeLane2ResolverApprovalMerges(t *testing.T) {
 			}
 			f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "result", CreatedAt: time.Now(), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
 			for i := 0; i < 3 && f.tracker.issue.State.Name != "Done"; i++ {
-				_ = s.Tick(context.Background())
+				if err := tickPastMergeGate(t, s, f.runtime, f); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
 				t.Fatalf("resolver approval did not merge: puts=%d state=%s bodies=%q", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)

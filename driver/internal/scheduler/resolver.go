@@ -367,7 +367,7 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 		seen[key] = true
 	}
 	for key, value := range expected {
-		if !seen[key] && value != "" && !(key == "CHECK_IS_NEW_TEST" && value == "no") {
+		if !seen[key] && value != "" && (key != "CHECK_IS_NEW_TEST" || value != "no") {
 			return r.retryResolution(ctx, t, p, "gate_spec missing driver-parsed ticket field: "+key)
 		}
 	}
