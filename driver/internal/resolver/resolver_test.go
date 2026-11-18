@@ -55,7 +55,10 @@ type fakeOrca struct {
 	settled []orca.Task
 	stops   int
 	// stopped replaces workers once WorkerStop is called.
-	stopped orca.Receipt
+	stopped                    orca.Receipt
+	terminals                  []orca.Terminal
+	terminalErr                error
+	terminalReport, stopReport *orca.WorkerReport
 	// legacyTasks and uncountedTasks shape the metadata TaskListing reports.
 	legacyTasks, uncountedTasks bool
 }
@@ -524,6 +527,9 @@ func TestSettledReleaseUnknownAdvancesToResult(t *testing.T) {
 
 func (o *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, error) {
 	o.stops++
+	if o.stopReport != nil {
+		o.report = o.stopReport
+	}
 	if o.stopped != nil {
 		o.workers = o.stopped
 	}
@@ -532,6 +538,178 @@ func (o *fakeOrca) WorkerStop(context.Context, string, string) (orca.Receipt, er
 
 func workerRows(run, rows string) orca.Receipt {
 	return orca.Receipt{"scope": json.RawMessage(`{"run":"` + run + `"}`), "page": json.RawMessage(`{"hasMore":false}`), "workers": json.RawMessage(rows)}
+}
+
+func (o *fakeOrca) Workers(ctx context.Context, opts orca.ListOptions) ([]orca.Worker, error) {
+	receipt, err := o.WorkerList(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	var rows []orca.Worker
+	err = json.Unmarshal(receipt["workers"], &rows)
+	return rows, err
+}
+
+func (o *fakeOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
+	if o.terminalReport != nil {
+		o.report = o.terminalReport
+	}
+	return o.terminals, o.terminalErr
+}
+
+func TestResolverProgressEvidence(t *testing.T) {
+	for _, scenario := range []string{"output advances", "unknown output", "read error", "unconfirmed stop", "report before stop", "report during stop"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, s, o := setupController()
+			now := c.Now()
+			c.Now = func() time.Time { return now }
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker"}]`)
+			o.stopped = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+			o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(15 * time.Minute)
+			report := &orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: "finished"}
+			switch scenario {
+			case "output advances":
+				o.terminals[0].LastOutputAt = now.UnixMilli()
+			case "unknown output":
+				o.terminals[0].LastOutputAt = 0
+			case "read error":
+				o.terminalErr = errors.New("read unavailable")
+			case "unconfirmed stop":
+				o.stopped = nil
+			case "report before stop":
+				o.terminalReport = report
+			case "report during stop":
+				o.stopReport = report
+			}
+			p, err := c.Step(context.Background())
+			wantError := scenario == "read error" || scenario == "unconfirmed stop"
+			if (err != nil) != wantError {
+				t.Fatalf("err=%v wantError=%v", err, wantError)
+			}
+			if strings.HasPrefix(scenario, "report") {
+				if p.Phase != "result" || p.Outcome != "succeeded" || p.Result != "finished" || o.releases != 1 {
+					t.Fatalf("late report lost: p=%+v releases=%d", p, o.releases)
+				}
+			} else if s.record.Phase != "running" || o.releases != 0 {
+				t.Fatalf("unproven failure settled: p=%+v releases=%d", s.record, o.releases)
+			}
+			wantStops := 0
+			if scenario == "unconfirmed stop" || scenario == "report during stop" {
+				wantStops = 1
+			}
+			if o.stops != wantStops {
+				t.Fatalf("stops=%d want=%d", o.stops, wantStops)
+			}
+			if scenario == "output advances" || scenario == "unknown output" {
+				o.terminals[0].LastOutputAt = now.UnixMilli()
+				if _, err := c.Step(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				now = now.Add(15*time.Minute - time.Second)
+				if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" || o.stops != 0 {
+					t.Fatalf("fresh output window not respected: p=%+v stops=%d err=%v", p, o.stops, err)
+				}
+				now = now.Add(time.Second)
+				if p, err := c.Step(context.Background()); err != nil || p.Phase != "result" || p.Outcome != "failed" || o.stops != 1 {
+					t.Fatalf("fresh window did not expire: p=%+v stops=%d err=%v", p, o.stops, err)
+				}
+			}
+		})
+	}
+}
+
+func recordedProgress(t *testing.T) (orca.Receipt, []orca.Terminal) {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-resolver-progress-worker-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	raw, err = os.ReadFile("../../testdata/recorded/orca-resolver-progress-terminal-list.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\ncat <<'RECORDED'\n"+string(raw)+"\nRECORDED\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	client := &orca.Client{Path: path}
+	terminals, err := client.TerminalList(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Result, terminals
+}
+
+func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
+	const (
+		run      = "run_8e97bfed638e"
+		task     = "task_5379745a42bf"
+		dispatch = "ctx_89446d008d30"
+		terminal = "term_540930fb-3f80-4e35-ae0d-68080b6abad8"
+		output   = 1794988230860
+	)
+	workers, terminals := recordedProgress(t)
+	for _, top := range []bool{false, true} {
+		for _, external := range []bool{false, true} {
+			t.Run(fmt.Sprintf("top=%v/external-stop=%v", top, external), func(t *testing.T) {
+				c, s, o := setupController()
+				now := time.UnixMilli(output)
+				c.Now = func() time.Time { return now }
+				s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
+				o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
+				o.workers, o.terminals = workers, terminals
+				// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
+				o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
+				for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
+					now = now.Add(elapsed)
+					p, err := c.Step(context.Background())
+					if err != nil || p.Phase != "running" || o.stops != 0 {
+						t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+					}
+					if s.record.LastOutputAt != output {
+						t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
+					}
+				}
+				if external {
+					o.workers = o.stopped
+				} else {
+					now = now.Add(2 * time.Second)
+				}
+				// Recreate the controller to exercise the persisted observation window.
+				restarted := *c
+				p, err := restarted.Step(context.Background())
+				if err != nil || p.Phase != "result" || p.Outcome != "failed" || s.record.Phase != "result" || o.releases != 1 {
+					t.Fatalf("round did not fail: p=%+v releases=%d err=%v", p, o.releases, err)
+				}
+				wantStops := 1
+				if external {
+					wantStops = 0
+				}
+				if o.stops != wantStops || o.startCalls != 0 {
+					t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
+				}
+				if top {
+					var result Resolution
+					if err := json.Unmarshal([]byte(p.Result), &result); err != nil || result.Action != "escalate" || result.Reason != "终审模型未获响应，不更换模型" || p.TopModelAccepted {
+						t.Fatalf("missing top-model failure: result=%s accepted=%v err=%v", p.Result, p.TopModelAccepted, err)
+					}
+				}
+			})
+		}
+	}
 }
 
 // ZCP-142: the brief stayed in the agent's input box, so Orca never saw the

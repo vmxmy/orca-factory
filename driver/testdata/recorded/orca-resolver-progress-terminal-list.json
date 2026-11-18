@@ -1,0 +1,196 @@
+{
+  "ok": true,
+  "result": {
+    "terminals": [
+      {
+        "handle": "term_feac0a7f-8dfe-4f5d-94bd-a5d2715b96e5",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-media",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-media",
+        "lastOutputAt": 1794935852516
+      },
+      {
+        "handle": "term_ad1f9e20-c3c8-402d-a50a-30759bd4aabe",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-ingress",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-ingress",
+        "lastOutputAt": 1794935854264
+      },
+      {
+        "handle": "term_17f1a9df-1498-43f7-a50d-96c49de09972",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-pi",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-pi",
+        "lastOutputAt": 1794935855549
+      },
+      {
+        "handle": "term_4f4f0c55-9fa2-46b4-a066-319b7c2442f8",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-bounds",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-bounds",
+        "lastOutputAt": 1794938135709
+      },
+      {
+        "handle": "term_35d79623-ba5a-4f29-b9a9-8a7045b6344a",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-docs",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-docs",
+        "lastOutputAt": 1794938138415
+      },
+      {
+        "handle": "term_ed3db49d-d4e8-4832-9c7d-9f54e733bf5e",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-source-guard",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-source-guard",
+        "lastOutputAt": 1794938601423
+      },
+      {
+        "handle": "term_1f81fca8-956a-4de8-b210-57f104d33468",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-http",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-http",
+        "lastOutputAt": 1794939050403
+      },
+      {
+        "handle": "term_2e708f27-b713-4456-92f3-a4b5132a7c85",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-comments",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-comments",
+        "lastOutputAt": 1794939327700
+      },
+      {
+        "handle": "term_6f0b2b52-3399-4686-a63b-c8e4534c94b3",
+        "worktreeId": "e35a2ce4-663c-4f43-8e98-aa28098eac4b::/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-review",
+        "worktreePath": "/home/laoxu/orca/workspaces/wecom-agent-workbench/wecom-archive-review",
+        "lastOutputAt": 1794939827656
+      },
+      {
+        "handle": "term_7ba7c700-0466-43a7-b701-c34e551162bc",
+        "worktreeId": "2db637f0-fbad-4511-9836-1a79e2527adb::/home/laoxu/github/ziikoo-control-plane",
+        "worktreePath": "/home/laoxu/github/ziikoo-control-plane",
+        "lastOutputAt": 1794975225110
+      },
+      {
+        "handle": "term_0df9c06d-ca0c-44b0-8e6e-d1fe4694ec52",
+        "worktreeId": "2db637f0-fbad-4511-9836-1a79e2527adb::/home/laoxu/github/ziikoo-control-plane",
+        "worktreePath": "/home/laoxu/github/ziikoo-control-plane",
+        "lastOutputAt": 1794975225117
+      },
+      {
+        "handle": "term_98410c23-d9c8-45f8-8d8a-ed022a899041",
+        "worktreeId": "2db637f0-fbad-4511-9836-1a79e2527adb::/home/laoxu/github/ziikoo-control-plane",
+        "worktreePath": "/home/laoxu/github/ziikoo-control-plane",
+        "lastOutputAt": 1794988123938,
+        "agentIdentity": "claude"
+      },
+      {
+        "handle": "term_1be0eb7e-f9de-4ebd-a528-91d3c1df6c16",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-557-resolver-8",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-557-resolver-8",
+        "lastOutputAt": 1794981397561
+      },
+      {
+        "handle": "term_19cc2fc0-3881-40ab-a1b9-e101dfda05f3",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-558-resolver-7",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-558-resolver-7",
+        "lastOutputAt": 1794981397410
+      },
+      {
+        "handle": "term_031ed9fd-986a-41f5-a317-e983a1ab30ee",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-565-resolver-7",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-565-resolver-7",
+        "lastOutputAt": 1794981397721
+      },
+      {
+        "handle": "term_50b50328-a2a8-4bca-922f-010cfddc5c70",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-566-resolver-6",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-566-resolver-6",
+        "lastOutputAt": 1794981397612
+      },
+      {
+        "handle": "term_1c68bc92-d9df-4389-831e-f22eec69e90f",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-571-resolver-3",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-571-resolver-3",
+        "lastOutputAt": 1794981397602
+      },
+      {
+        "handle": "term_67051964-e60b-49b4-b9d1-8e90159b2f3a",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-569-resolver-5",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-569-resolver-5",
+        "lastOutputAt": 1794981397426
+      },
+      {
+        "handle": "term_6e154bba-df65-4280-851d-6949370c5172",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794986994386
+      },
+      {
+        "handle": "term_d7d3c48b-62e7-42c1-88d2-a17d3f68f014",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794987043380
+      },
+      {
+        "handle": "term_0797f912-042d-49ae-ad85-f4fc44207246",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-577-resolver-4",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-577-resolver-4",
+        "lastOutputAt": 1794988222694,
+        "agentIdentity": "claude"
+      },
+      {
+        "handle": "term_32bcf3d5-7ea3-4ead-8428-283147b86d2d",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794987061564
+      },
+      {
+        "handle": "term_278a70b4-aced-4847-a315-e6c1c1f54766",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794987557783
+      },
+      {
+        "handle": "term_98b650f5-f1a6-4c08-ba62-7a40f9a59693",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-581-resolver-1",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-581-resolver-1",
+        "lastOutputAt": 1794988230809,
+        "agentIdentity": "claude"
+      },
+      {
+        "handle": "term_35b72aa1-e85b-4a94-9cf0-9582f0cf9136",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794987729101
+      },
+      {
+        "handle": "term_8a1367ca-5996-4a45-a761-0d8e6bebdde4",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-580-resolver-4",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-580-resolver-4",
+        "lastOutputAt": 1794988230799,
+        "agentIdentity": "claude"
+      },
+      {
+        "handle": "term_357d6b5a-26db-402a-9f1e-47b671d55fa5",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-583-executor",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-583-executor",
+        "lastOutputAt": 1794988230872,
+        "agentIdentity": "codex"
+      },
+      {
+        "handle": "term_a4272037-ea0d-45bf-b92e-14d276ea8548",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/github/orca-factory",
+        "worktreePath": "/home/laoxu/github/orca-factory",
+        "lastOutputAt": 1794987918841
+      },
+      {
+        "handle": "term_7c4fb26a-7730-43a2-a2a1-5ff5b0739b68",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-563-resolver-6",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-563-resolver-6",
+        "lastOutputAt": 1794988230856,
+        "agentIdentity": "claude"
+      },
+      {
+        "handle": "term_540930fb-3f80-4e35-ae0d-68080b6abad8",
+        "worktreeId": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-582-executor",
+        "worktreePath": "/home/laoxu/orca/workspaces/orca-factory/OF-582-executor",
+        "lastOutputAt": 1794988230860,
+        "agentIdentity": "codex"
+      }
+    ],
+    "totalCount": 30,
+    "truncated": false
+  }
+}

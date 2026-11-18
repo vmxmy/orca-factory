@@ -1,0 +1,64 @@
+{
+  "ok": true,
+  "result": {
+    "workers": [
+      {
+        "runId": "run_8e97bfed638e",
+        "taskId": "task_5379745a42bf",
+        "dispatchId": "ctx_89446d008d30",
+        "dispatchStatus": "dispatched",
+        "workerState": "ready",
+        "agentTerminalHandle": "term_540930fb-3f80-4e35-ae0d-68080b6abad8",
+        "resource": {
+          "releaseState": "not_requested"
+        },
+        "projection": {
+          "stage": {
+            "worker": "ready",
+            "dispatch": "dispatched",
+            "detail": "input_accepted",
+            "activity": "working"
+          },
+          "liveness": {
+            "verdict": "live",
+            "observedAt": 1794988230523,
+            "source": "agent_status"
+          }
+        }
+      },
+      {
+        "runId": "run_8e97bfed638e",
+        "taskId": "task_2251575989a9",
+        "dispatchId": "ctx_f40d0d5645e0",
+        "dispatchStatus": "completed",
+        "workerState": "succeeded",
+        "agentTerminalHandle": "term_daf7656c-57ce-412d-a530-610464a963e3",
+        "resource": {
+          "releaseState": "released"
+        },
+        "projection": {
+          "stage": {
+            "worker": "succeeded",
+            "dispatch": "completed",
+            "detail": "settled",
+            "activity": "unknown"
+          },
+          "liveness": {
+            "verdict": "exited",
+            "source": "resource_release"
+          }
+        }
+      }
+    ],
+    "page": {
+      "limit": 100,
+      "total": 2,
+      "hasMore": false,
+      "nextCursor": null
+    },
+    "scope": {
+      "run": "run_8e97bfed638e",
+      "source": "flag"
+    }
+  }
+}

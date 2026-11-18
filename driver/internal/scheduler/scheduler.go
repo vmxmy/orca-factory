@@ -53,6 +53,7 @@ type Ticket struct {
 	Phase                               machine.Phase
 	Attempt                             int
 	Candidate, Legacy, Blocked, Held    bool
+	AutoFailed                          bool
 	// MaintenanceRefused marks an executor that exited on a maintenance
 	// refusal after its latest ownership line; it resumes without a failure.
 	MaintenanceRefused bool
@@ -419,7 +420,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					}
 				}
 			}
-			if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
+			if t.AutoFailed {
+				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "failed executor requires agent resolution"}
+			} else if !t.UpdatedAt.IsZero() && now.Sub(t.UpdatedAt) > time.Duration(r.StaleHours)*time.Hour {
 				action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "in-flight ticket exceeded stale limit"}
 			} else if t.MaintenanceRefused || t.GateSpecRefresh {
 				action = Action{Kind: Resume, Attempt: t.Attempt, Phase: t.Phase}

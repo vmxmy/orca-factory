@@ -89,7 +89,7 @@ func (c *Commands) MergeBase(ctx context.Context, repo, head string) (string, er
 	return base, nil
 }
 func (c *Commands) ChangedFiles(ctx context.Context, repo, base, head string) ([]string, error) {
-	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--name-only", "-z", base+".."+head, "--")
+	b, err := c.run(ctx, repo, "git", "diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base+".."+head, "--")
 	if err != nil {
 		return nil, errors.New("failed revision diff failed")
 	}

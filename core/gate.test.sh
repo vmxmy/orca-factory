@@ -47,6 +47,24 @@ out="$("$GATE" "$R" "$(spec 'UNIT: u2' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 
 grep -q 'other.txt' <<< "$out"
 [[ "$(field "$out" LANE)" == 1 ]]
 
+# Moving an out-of-scope file into SCOPE must still report its source path.
+for state in staged committed; do
+  R="$(mkrepo "rename-$state")"
+  git -C "$R" config diff.renames true
+  echo 'outside scope' > "$R/other.txt"
+  git -C "$R" add other.txt
+  git -C "$R" -c commit.gpgsign=false commit -qm outside
+  git -C "$R" update-ref refs/remotes/origin/main HEAD
+  git -C "$R" mv other.txt src/other.txt
+  if [[ "$state" == committed ]]; then
+    git -C "$R" -c commit.gpgsign=false commit -qm rename
+  fi
+  out="$("$GATE" "$R" "$(spec 'UNIT: rename' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
+  [[ $rc == 1 && "$(field "$out" VERDICT)" == red && "$(field "$out" STEP)" == scope ]] || { printf 'ASSERT: rename into scope (%s) rc=%s\n%s\n' "$state" "$rc" "$out"; exit 1; }
+  grep -q '^EVIDENCE  other.txt$' <<< "$out"
+  printf 'rename into scope (%s): PASS\n' "$state"
+done
+
 # Added line with @ts-ignore -> red suppression
 R="$(mkrepo supp)"; printf '// @ts-ignore\nx\n' >> "$R/src/a.js"
 out="$("$GATE" "$R" "$(spec 'UNIT: u3' 'SCOPE: src/*' 'CHECK: true')")" && rc=0 || rc=$?
