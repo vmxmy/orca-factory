@@ -18,6 +18,8 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -271,6 +273,69 @@ func TestRuntimeMergeCompletesAndRecoversUncertainSquash(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(f.tracker.bodies, "\n"), "归属: 无") {
 		t.Fatalf("ownership not released: %v", f.tracker.bodies)
+	}
+}
+
+func TestResolverRequeueAfterTwoCatchupRoundsGetsAttempt(t *testing.T) {
+	f := newMergeFixture(t)
+	ctx := context.Background()
+	base := Ticket{ID: "id", Identifier: "ENG-1", Repo: f.repos[0].Path}
+	old := fromEvidence(t, base, f.tracker.rows)
+	progress := merge.Progress{
+		Version: 1, QueueID: old.Handoff.QueueID, TicketID: old.ID,
+		Repository: old.Handoff.Repository, PR: old.Handoff.PR, Head: old.Handoff.Head,
+		Main: f.main, Phase: "human", CatchupRounds: 2, Attempt: 1,
+		Reason: "main advanced for two rounds",
+	}
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, "阶段: Agent处置\n归属: 处置Agent\n"+merge.ProgressPrefix+string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	h := *old.Handoff
+	h.QueueID, h.CatchupRounds = "q2", 2
+	proposal, err := json.Marshal(resolver.Resolution{Action: "merge", Reason: "revalidated", Handoff: &h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, "阶段: Agent处置\n归属: 处置Agent\n"+resolver.Prefix+string(record)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.runtime.applyResolution(ctx, fromEvidence(t, base, f.tracker.rows)); err != nil {
+		t.Fatal(err)
+	}
+	queued := fromEvidence(t, base, f.tracker.rows)
+	if queued.Handoff.QueueID != "q2" || queued.Owner != machine.OwnerMerge {
+		t.Fatalf("resolver did not enqueue new handoff: %+v", queued)
+	}
+	f.rejectPuts = 1
+	err = f.runtime.advanceMerge(ctx, queued)
+	after := fromEvidence(t, base, f.tracker.rows)
+	if after.Progress != nil && after.Progress.Reason == "catch-up budget exhausted" {
+		t.Fatal("new queue's first Next returned catch-up budget exhausted")
+	}
+	if err == nil || err.Error() != "squash merge unconfirmed" || f.puts != 1 {
+		t.Fatalf("new queue's first Next must attempt squash, not exhaust catch-up: puts=%d err=%v", f.puts, err)
+	}
+
+	progress.QueueID, progress.Phase = h.QueueID, "waiting"
+	raw, err = json.Marshal(progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.tracker.CreateComment(ctx, old.ID, merge.ProgressPrefix+string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	err = f.runtime.advanceMerge(ctx, fromEvidence(t, base, f.tracker.rows))
+	after = fromEvidence(t, base, f.tracker.rows)
+	if err != nil || after.Progress == nil || after.Progress.QueueID != h.QueueID || after.Progress.Reason != "catch-up budget exhausted" || after.Owner != machine.OwnerResolver || f.puts != 1 {
+		t.Fatalf("same queue must reject a third catch-up: puts=%d progress=%+v owner=%s err=%v", f.puts, after.Progress, after.Owner, err)
 	}
 }
 
