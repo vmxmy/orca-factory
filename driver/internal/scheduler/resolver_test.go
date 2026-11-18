@@ -1,21 +1,26 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 )
@@ -463,5 +468,132 @@ func TestResolverEmptyRunIsNotUncertainKeepsFailures(t *testing.T) {
 	p, err := readResolution(comments)
 	if err != nil || p == nil || p.Failures != 2 {
 		t.Fatalf("undispatched round changed failures: %+v %v", p, err)
+	}
+}
+
+type resolverSupervisorOrca struct {
+	resolverStartupProbe
+	failures          int
+	failure           error
+	calls             []time.Time
+	stopped, released []string
+	stopErr           error
+}
+
+func (o *resolverSupervisorOrca) TaskList(context.Context, string) ([]orca.Task, error) {
+	o.calls = append(o.calls, time.Now())
+	if o.failures < 0 || len(o.calls) <= o.failures {
+		return nil, o.failure
+	}
+	report, _ := json.Marshal(orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: "resolver proposal"})
+	return []orca.Task{{ID: "task_1", RunID: "run_1", DispatchID: "ctx_1", Status: "completed", Result: report}}, nil
+}
+
+func (o *resolverSupervisorOrca) WorkerStop(_ context.Context, _, dispatch string) (orca.Receipt, error) {
+	o.stopped = append(o.stopped, dispatch)
+	return nil, o.stopErr
+}
+
+func (o *resolverSupervisorOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Receipt, error) {
+	o.released = append(o.released, dispatch)
+	return nil, nil
+}
+
+func TestResolverSupervisorRetriesTransientOrcaFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failures    int
+		stopErr     error
+		permanent   bool
+		cancelAfter time.Duration
+	}{
+		{name: "recovers after two failures", failures: 2},
+		{name: "nontransient exits immediately", failures: -1, permanent: true},
+		{name: "cancellation interrupts backoff", failures: -1, cancelAfter: time.Second},
+		{name: "stops and releases after five minutes", failures: -1},
+		{name: "stop failure is logged before exit", failures: -1, stopErr: errors.New("stop unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+			if err := os.MkdirAll(roles, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "running", Creator: "controller", Run: "run_1", Task: "task_1", Dispatch: "ctx_1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent term=controller", resolver.Prefix+string(record))
+			ledger := &fakeIssues{issueComments: comments}
+			transient := &infra.Transient{Err: errors.New("Orca connection reset")}
+			oc := &resolverSupervisorOrca{failures: tc.failures, failure: fmt.Errorf("task list: %w", transient), stopErr: tc.stopErr}
+			if tc.permanent {
+				oc.failure = errors.New("invalid Orca task response")
+			}
+			r := &Runtime{Clients: map[string]issues.Store{repo: ledger}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: oc, StateRoot: t.TempDir()}
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+			var logs bytes.Buffer
+			ctx := runx.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				if tc.cancelAfter > 0 {
+					go func() { time.Sleep(tc.cancelAfter); cancel() }()
+				}
+				err := r.ResolveTicket(ctx, ticket, nil, "controller", nil)
+				if tc.permanent || tc.cancelAfter > 0 {
+					wantErr := oc.failure
+					if tc.cancelAfter > 0 {
+						wantErr = context.Canceled
+					}
+					if !errors.Is(err, wantErr) || time.Since(start) != tc.cancelAfter || len(oc.calls) != 1 {
+						t.Fatalf("unexpected retry: err=%v elapsed=%s calls=%d", err, time.Since(start), len(oc.calls))
+					}
+					if len(oc.stopped) != 0 || len(oc.released) != 0 {
+						t.Fatalf("unexpected cleanup: stopped=%v released=%v", oc.stopped, oc.released)
+					}
+					return
+				}
+				if tc.failures == 2 {
+					if err != nil {
+						t.Fatalf("supervisor exited during transient failure: %v", err)
+					}
+					if len(oc.calls) != 3 {
+						t.Fatalf("task reads = %d, want 3", len(oc.calls))
+					}
+					first, second := oc.calls[1].Sub(oc.calls[0]), oc.calls[2].Sub(oc.calls[1])
+					if first <= 0 || second <= first {
+						t.Fatalf("retry delays = %s, %s, want increasing backoff", first, second)
+					}
+					p, err := readResolution(ledger.issueComments)
+					if err != nil || p == nil || p.Phase != "result" || p.Outcome != "succeeded" || p.Result != "resolver proposal" {
+						t.Fatalf("result = %+v, err = %v", p, err)
+					}
+					if len(oc.stopped) != 0 || len(oc.released) != 1 {
+						t.Fatalf("recovered worker cleanup: stopped=%v released=%v", oc.stopped, oc.released)
+					}
+					return
+				}
+				if !errors.Is(err, transient) {
+					t.Fatalf("exit error = %v, want original transient error", err)
+				}
+				if elapsed := time.Since(start); elapsed != 5*time.Minute {
+					t.Errorf("retry window = %s, want 5m", elapsed)
+				}
+				if len(oc.stopped) != 1 || oc.stopped[0] != "ctx_1" {
+					t.Errorf("worker not stopped before exit: %v", oc.stopped)
+				}
+				if len(oc.released) != 1 || oc.released[0] != "ctx_1" {
+					t.Errorf("worker not released before exit: %v", oc.released)
+				}
+				if tc.stopErr != nil && !strings.Contains(logs.String(), "stop unavailable") {
+					t.Errorf("stop failure missing from logs: %s", logs.String())
+				}
+			})
+		})
 	}
 }
