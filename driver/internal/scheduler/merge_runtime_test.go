@@ -849,21 +849,20 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 			t.Fatalf("released squash sent to resolver: state=%s %v", f.tracker.issue.State.Name, f.tracker.bodies)
 		}
 	})
-	// In a self deployment batch the moved squash never joins and its paused
-	// deployment stays a barrier; the prefix deploys alone at its own gated SHA.
+	// In a self deployment batch the moved squash never joins, and its paused
+	// deployment also holds the merged prefix until the resolver recovers it.
 	t.Run("batch", func(t *testing.T) {
 		f, host, store, _ := newBatchFixture(t, 2)
-		prefix, movedSquash := fmt.Sprintf("%040x", 1), fmt.Sprintf("%040x", 2)
+		movedSquash := fmt.Sprintf("%040x", 2)
 		f.squashParents = map[string]string{movedSquash: moving}
 		firstServe(t, f, host)
-		if f.puts != 2 || host.builds != 0 {
-			t.Fatalf("moved candidate let the prefix deploy in its tick: merges=%d builds=%d", f.puts, host.builds)
+		comments := len(store.tickets[0].bodies)
+		for range 2 {
+			_ = serveAs(f, host, "old")
 		}
-		firstServe(t, f, host)
-		_ = serveAs(f, host, prefix)
-		deployed := batchProgress(t, store.tickets[0])
-		if store.tickets[0].issue.State.Name != "Done" || deployed.MergeSHA != prefix || deployed.Deployment.Batch != nil || !deployed.Deployment.SmokePassed || host.builds != 1 {
-			t.Fatalf("prefix did not deploy alone at its own SHA: state=%s builds=%d %+v", store.tickets[0].issue.State.Name, host.builds, deployed.Deployment)
+		prefix := batchProgress(t, store.tickets[0])
+		if f.puts != 2 || host.builds != 0 || store.tickets[0].issue.State.Name == "Done" || prefix.Deployment.State != "pending" || len(store.tickets[0].bodies) != comments {
+			t.Fatalf("prefix deployed past the moved squash: merges=%d builds=%d state=%s comments=%d->%d %+v", f.puts, host.builds, store.tickets[0].issue.State.Name, comments, len(store.tickets[0].bodies), prefix.Deployment)
 		}
 		assertMovedSquashHeld(t, store.tickets[1], movedSquash, moving, f.main)
 	})
