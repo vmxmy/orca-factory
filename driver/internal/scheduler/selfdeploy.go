@@ -181,6 +181,16 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	if r.runningContains(ctx, t.Repo, sha) {
+		if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		d.State, d.Reason = "deploy-intent", ""
+		if err = r.deploymentReceipt(ctx, t, p); err != nil {
+			return err
+		}
+		return r.smokeSelf(ctx, t, p)
+	}
 	if err = os.Remove(r.selfMarker(sha, markerInstalling)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -283,6 +293,26 @@ func (r *Runtime) refuseFrozen(sha string) error {
 		return err
 	}
 	return errSelfDeployFrozen
+}
+
+// runningContains reports whether this serve's version is the squash SHA or
+// a descendant of it, by ancestry in the repository checkout: deploy.sh
+// records a short SHA, and a manual deployment may run a later main. A
+// version the checkout cannot resolve counts as not containing it, so the
+// deployment installs as before.
+func (r *Runtime) runningContains(ctx context.Context, repo, sha string) bool {
+	if r.Version == sha {
+		return true
+	}
+	if r.Version == "" {
+		return false
+	}
+	_, err := r.runFor(ctx, time.Minute, repo, "git", "merge-base", "--is-ancestor", sha, r.Version)
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		runx.LoggerFrom(ctx).Warn("self deployment cannot tell whether the running driver contains the squash SHA; installing", "running", r.Version, "sha", sha, "err", err)
+	}
+	return err == nil
 }
 
 // installSelf arms the guard before the rename, so a serve killed between the
@@ -472,6 +502,13 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	return r.smokeSelf(ctx, t, p)
+}
+
+// smokeSelf runs under deploy.lock. A serve that already contains the squash
+// SHA without being it was not installed by this deployment, so a failed
+// smoke pauses instead of restoring the backup over it.
+func (r *Runtime) smokeSelf(ctx context.Context, t Ticket, p *merge.Progress) error {
 	sha := deploymentSHA(p)
 	reason, err := os.ReadFile(r.selfMarker(sha, markerRolledBack))
 	if err == nil {
@@ -487,7 +524,8 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err != nil {
 		return err
 	}
-	if !ok {
+	contained := !ok && r.runningContains(ctx, t.Repo, sha)
+	if !ok && !contained {
 		return r.retryOrPauseSelf(ctx, t, p)
 	}
 	d := p.Deployment
@@ -500,6 +538,9 @@ func (r *Runtime) finishSelf(ctx context.Context, t Ticket, p *merge.Progress) e
 	if err = r.selfSmoke(ctx, observed, p); err != nil {
 		if ctx.Err() != nil {
 			return errors.Join(err, ctx.Err())
+		}
+		if contained {
+			return errors.Join(err, r.pauseSelf(ctx, t, p, "self deployment smoke failed; the running driver already contains the squash SHA, nothing to roll back"))
 		}
 		return errors.Join(err, r.pauseBatchBeforeRollback(ctx, t, p, "self deployment smoke failed; previous driver restored"), r.rollbackSelf(ctx, p, "self deployment smoke failed; previous driver restored"))
 	}

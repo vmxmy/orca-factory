@@ -422,10 +422,10 @@ func draftTicketDescription(session, prompt string, d draftTicketWire, blockers,
 		draftTicketSummary(prompt), todo.String(), strings.TrimSpace(d.Check), strings.Join(strings.Fields(d.Scope), " "), deps, session)
 }
 
-// draftTicketSummary truncates the requester's original words for the
-// provenance comment and the ticket face.
+// draftTicketSummary puts the requester's original words on one truncated
+// line, so a pasted protocol line cannot reach the ledger as its own line.
 func draftTicketSummary(prompt string) string {
-	runes := []rune(strings.TrimSpace(prompt))
+	runes := []rune(strings.Join(strings.Fields(prompt), " "))
 	if len(runes) > 200 {
 		return string(runes[:200]) + "…"
 	}

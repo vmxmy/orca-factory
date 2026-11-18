@@ -211,7 +211,7 @@ drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继
 
 每个文件按内容决定动作：不存在时 `create`；内容相同时 `unchanged`，不写入；内容不同时 `replace`，先把旧文件改名为 `<文件>.bak-<UTC 时间>` 再写入。二进制只做 `create`、`unchanged` 或 `replace`，不留备份，备份由 `deploy.sh` 负责。`install --dry-run` 逐个列出动作和路径，不写文件、不运行命令。写完后运行 `systemctl --user daemon-reload` 和 `systemctl --user enable orca-factory-driver-watch.timer`。连续运行两次，第二次不写任何文件。
 
-`merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，清理 worktree 与分支，再把票标为 Done。检出同样由 `ORCA_FACTORY_REPO` 指定。
+`merge.sh <pr> <ticket> [worktree]` 等 PR 检查结束后 squash 合并，确认 `MERGED`，再把票标为 Done。只有 worktree 的 HEAD 等于 GitHub 返回的 PR head 或是它的祖先，且没有未提交改动时，才清理 worktree 与分支。未跟踪文件也会阻止清理，忽略文件除外。不满足条件或无法确认时保留 worktree 与分支，输出原因并继续后续步骤。置 Done 失败时脚本以非零状态退出。检出同样由 `ORCA_FACTORY_REPO` 指定。
 
 人工合并 PR 后，可在已加载项目 `agent-graph.env` 的终端执行：
 
@@ -239,7 +239,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
-1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。
+1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。取得锁后先核对当前 serve 的 `main.version`：它等于 squash SHA，或在仓库检出里是 squash SHA 的后代（`git merge-base --is-ancestor`，`deploy.sh` 写入的短 SHA 也适用），说明人工部署已上线更新的提交（OF-558）。这时不 drain、不备份、不构建、不替换，账本写 `deploy-intent` 后直接走第 8 步的 smoke。祖先关系查不出来（例如检出里没有该版本）时记 WARN，按不包含处理，照常安装。
 2. 保持 `deployment.state=pending`，先读维护模式。模式是 `running` 时，写 `self-deploy/<sha>.drained` 标记并 drain，部署结束时凭该标记恢复 `running`；结束时模式已不是 `draining`（例如构建期间人工 freeze）则只删标记，不改维护模式。模式是人工设的 `draining` 时，照常部署，不写标记，结束后维护模式仍是 `draining`，由人工恢复。模式是 `frozen` 时，不构建、不重启，部署保持 `pending`，回执 `reason` 写「维护模式为 frozen，暂不部署」，下一轮再读；空闲等待结束后、写 `deploy-intent` 前再核对一次，此时是 `frozen` 同样不部署，并删除本次的 `drained` 标记，维护状态改由人工管理。随后等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
 3. 空闲后，账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
 4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
@@ -258,6 +258,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 - 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
 - `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
 - 第 8 步版本不符（磁盘也不符，例如人工 `deploy.sh` 在重启空档装了别的版本）：有 `installing` 标记，二进制状态不确定。写 `paused` 并 resume，不回滚。`installing` 标记在暂停时保留，`passed` 回执确认后删除，或账本回到 `pending`（`retry-workflow`）后写 `deploy-intent` 前删除，所以暂停回执丢失不会触发重装。有恢复记录（`retry-smoke` 或 `retry-workflow`）的部署版本不符时一律暂停，不看标记。
+- 第 1 步判定当前 serve 已包含 squash SHA 后 smoke 失败：本次部署没有替换二进制，不回滚，写 `paused` 转处置 Agent。第 8 步 serve 版本不等于 squash SHA 但是其后代时同样照常 smoke，失败也只暂停、不回滚。
 - 第 8 步 smoke 失败：停看守，从备份恢复二进制，写 `rolled-back` 标记（含原因），保持 draining 重启。恢复后的 serve 读到标记，写 `paused`、resume，交给处置 Agent，不再部署。失败的二进制在重启前不会认领票。
 - smoke 通过但 resume 失败：写 `paused`（`smoke_passed` 仍为 false），转处置 Agent。
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
@@ -553,6 +554,8 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 reviewer 在被审分支的检出里运行，分支自带的 `CLAUDE.md`、`AGENTS.md` 仍可能影响它。所以路径规则由 driver 判定，不依赖 reviewer。
 
+执行器的 lane 2 reviewer 也在被审分支的检出里运行，但它的角色 `reviewer.md` 与 `constitution/` 下的文件由 driver 从 diff 基线读出，内联进 stdin。被审分支修改这些文件，不改变本次审查的规则（OF-557）。
+
 人工处理完转人工的票后，`AGENT_FEISHU_APPROVERS` 中的审批人可在飞书群发送
 `@机器人 放行 OF-N`，让网关重读票据与评论。只有最新 `resolver-state` 的 phase 为
 `human` 才会生效，网关追加同一条评论，包含 `放行：<审批人 open_id> <时间>` 与
@@ -674,7 +677,11 @@ flush_interval = "10m"
 由网关在沙箱外完成。
 
 Agent 回复带 `intake-draft-v1` 草稿时（OF-15），网关先校验：必填字段、SCOPE 每个
-glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环。不通过时把原因
+glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张票之间不成环（OF-555）。
+正文的现状、断言、依赖说明和每条要做是用户自由文本，其中任何一行不能是 `#` 标题、
+`CHECK` / `SCOPE` / `要做` / `CHECK_*` 字段行、`阶段` / `归属` 协议行，也不能以
+`intake-chat-v1`、`merge-handoff-v1`、`merge-progress-v1` 开头；夹带这类行的草稿被拒绝，
+原因写明哪个字段。不通过时把原因
 作为 `[网关]` 前缀的下一轮输入交还 Agent（每条消息最多 2 次），需求人看不到。通过后
 网关按该项目 `AGENT_LANE2_GLOBS` / `AGENT_LANE3_GLOBS` 计算 lane（不采信草稿），发票面
 摘要，会话进入“待确认”。只有需求人发“确认提交”才建票：已纳管、Todo、不打
@@ -686,8 +693,9 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 `驳回 OF-N <理由>` 时按审批命令处理。群里顶层须 @ 机器人；网关开过会话的话题内
 无需 @。只有 `AGENT_FEISHU_APPROVERS` 中的发送者生效，其他人只得到“无审批权限”。
 网关按票号前缀找到项目账本，读取票后核对：正文带 `intake-chat-v1` 标记、状态 Todo、
-未打 `ready-for-agent`；批准还要求票面“LANE 预判”不是 3（否则回复“lane 3 需人工
-实现，不放行”）。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带
+未打 `ready-for-agent`；批准时按票面 SCOPE 与项目 lane glob 在检出上重新计算 lane，
+不读票面“LANE 预判”文本，结果为 3 时回复“lane 3 需人工实现，不放行”，票面没有 SCOPE
+也不放行。通过后先写一条事件（`批准：<审批人 open_id> <时间>`，驳回另带压成一行的
 `理由：`），再加 `ready-for-agent` 或把状态改为 Canceled，回复审批人，并在票的
 原话题里 @ 需求人告知结果。已放行的票再批准、已取消的票再驳回只回复现状，不再写账本；
 事件已存在时不重复写，所以两次写之间崩溃后重发命令也只补上标签或状态。
@@ -698,8 +706,8 @@ glob 在检出中有匹配、依赖票号在账本中存在且已纳管、多张
 消息处理。这两条命令不要求票据带需求入口标记或处于 Todo，执行前按票号重读账本与
 评论，核对最新 `resolver-state` 的 phase 为 human。放行追加同一条包含操作者、
 时间和保留最新 attempt 的 waiting 记录的评论，由调度器下一轮重新派处置 Agent；
-不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面或最新
-`merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
+不合并、不改标签、不跳过 gate、审查或 CI。票面缺 `LANE 预判`、票面任一 `LANE 预判`
+或最新 `merge-handoff-v1` 的 lane 为 3、最新 resolver-state、merge-handoff-v1 或
 merge-progress-v1 解析失败均拒绝；部署屏障 paused 时回复走 `resume-deployment`。
 没有 resolver-state 或 phase 不是 human 时回复当前状态。取消先写操作者、时间、
 理由事件，再改为 Canceled；事件已存在时不重复写，崩溃后重发只补状态，已是
