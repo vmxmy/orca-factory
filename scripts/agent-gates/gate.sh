@@ -74,7 +74,7 @@ log "=== gate $UNIT $(date -u +%FT%TZ) base=$BASE project_src=$PROJECT_SRC ==="
 verdict() {
   local v="$1" step="$2" reason="$3" evidence="$4"
   printf 'UNIT      %s\nVERDICT   %s\nSTEP      %s\nREASON    %s\n' "$UNIT" "$v" "$step" "$reason"
-  printf 'EVIDENCE  %s\n' "$(printf '%s' "$evidence" | head -n 20)"
+  printf 'EVIDENCE  %s\n' "$(printf '%s' "$evidence" | head -n 20 | sed '2,$s/^/| /')"
   printf 'SCOPE     %s\n' "$SCOPE"
   printf 'LANE      %s\n' "$LANE"
   log "VERDICT $v STEP $step REASON $reason LANE $LANE"
