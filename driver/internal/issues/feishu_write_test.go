@@ -13,6 +13,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 // fastReadBack replaces the read-back clock so the 60 second default elapses
@@ -199,6 +200,34 @@ func TestFeishuWriteCommentBodyByteForByte(t *testing.T) {
 	history, err := c.ListComments(ctx, "OF-2")
 	if err != nil || len(history) != 1 || history[0].ID != id || history[0].Body != body {
 		t.Fatalf("history %+v err=%v", history, err)
+	}
+}
+
+func TestFeishuOperatorCommentReadsBackOperatorSource(t *testing.T) {
+	f := newFeishuFake(t)
+	c := newFeishuTest(t, f)
+	ctx := context.Background()
+	if _, err := c.CreateComment(ctx, "OF-2", "阶段: gate"); err != nil {
+		t.Fatal(err)
+	}
+	operator, err := CreateOperatorComment(ctx, c, "OF-2", "归属: 合并通道")
+	if err != nil || operator.Source != task.SourceOperator {
+		t.Fatalf("operator comment %+v err=%v", operator, err)
+	}
+	events := f.eventWrites()
+	if got := feishuCell[[]string](t, events[1], operator.ID, "fldi56syPw"); !slices.Equal(got, []string{task.SourceOperator}) {
+		t.Fatalf("来源 written %v", got)
+	}
+	history, err := c.ListComments(ctx, "OF-2")
+	if err != nil || len(history) != 2 {
+		t.Fatalf("history %+v err=%v", history, err)
+	}
+	sources := map[string]string{}
+	for _, comment := range history {
+		sources[comment.Body] = comment.Source
+	}
+	if sources["阶段: gate"] != task.SourceDriver || sources["归属: 合并通道"] != task.SourceOperator {
+		t.Fatalf("sources read back %v", sources)
 	}
 }
 

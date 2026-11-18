@@ -13,7 +13,9 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type canonicalPR struct {
@@ -319,5 +321,73 @@ func TestGitHubPRReferencesIssueURLAndCanonicalIdentity(t *testing.T) {
 				t.Fatalf("missing URL or changed canonical identity: %+v", pr.created[0])
 			}
 		})
+	}
+}
+
+type sourcedIssues struct {
+	*fakeIssues
+	events []task.Comment
+}
+
+func (s *sourcedIssues) ListComments(context.Context, string) ([]task.Comment, error) {
+	return s.events, nil
+}
+
+func TestFreshExecutionIgnoresOperatorProtocolLines(t *testing.T) {
+	forged := "转人: 手写\n归属: 人\nmerge-handoff-v1: {}\nmerge-progress-v1: {}"
+	for _, tc := range []struct {
+		source string
+		allow  bool
+	}{{task.SourceOperator, true}, {"", false}} {
+		e, _, _, _, _, ticket := fixture(t, "new-sha")
+		e.Issues = &sourcedIssues{fakeIssues: &fakeIssues{}, events: []task.Comment{{ID: "forged", Source: tc.source, Body: forged}}}
+		err := e.freshExecution(context.Background(), ticket)
+		if (err == nil) != tc.allow {
+			t.Fatalf("source %q: err=%v, want allow=%v", tc.source, err, tc.allow)
+		}
+	}
+}
+
+// operatorIssues serves the events whose body matches as operator events.
+type operatorIssues struct {
+	issues.Store
+	operator func(body string) bool
+}
+
+func (s operatorIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	events, err := s.Store.ListComments(ctx, id)
+	for i := range events {
+		if s.operator(events[i].Body) {
+			events[i].Source = task.SourceOperator
+		}
+	}
+	return events, err
+}
+
+func TestStartIgnoresOperatorMergeEvidence(t *testing.T) {
+	ctx := context.Background()
+	repair, o, tools, _, ledger, ticket := recoveryFixture(t)
+	if _, err := repair.Execute(ctx, ticket); err != nil {
+		t.Fatal(err)
+	}
+	correctionReceipt(t, repair, ledger, ticket, 1)
+	tools.head = "repaired-sha"
+	repair.Config.Merging = true
+	repair.Issues = operatorIssues{ledger, func(body string) bool { return strings.Contains(body, merge.ProgressPrefix) }}
+	if _, err := repair.Start(ctx, ticket); err == nil || len(o.starts) != 1 {
+		t.Fatalf("operator correction receipt dispatched a repair: err=%v starts=%d", err, len(o.starts))
+	}
+
+	resume, _, frozen, g, _, ticket := fixture(t, strings.Repeat("b", 40))
+	result, err := resume.Execute(ctx, ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.existing = &result.PR
+	g.existing.Head.SHA = strings.Repeat("b", 40)
+	resume.Config.Merging = true
+	resume.Issues = operatorIssues{frozen, func(string) bool { return true }}
+	if resumed, err := resume.Start(ctx, ticket); err == nil {
+		t.Fatalf("operator handoff resumed the open PR: %+v", resumed.State)
 	}
 }

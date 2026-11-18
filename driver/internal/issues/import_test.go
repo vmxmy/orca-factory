@@ -597,6 +597,32 @@ func TestImportCommentDecoder(t *testing.T) {
 	}
 }
 
+func TestImportedHistoryFromOperatorEventStaysOperator(t *testing.T) {
+	now := time.Unix(1, 0).UTC()
+	forged := task.Comment{ID: "forged", Source: task.SourceDriver, Body: "归属: 合并通道", CreatedAt: now, UpdatedAt: now}
+	fragments, err := encodeImportedFragments(task.Comment{ID: "large", Source: task.SourceDriver, Body: "归属: 合并通道\n" + strings.Repeat("x", importCommentLimit), CreatedAt: now, UpdatedAt: now})
+	if err != nil || len(fragments) < 2 {
+		t.Fatalf("fragments=%d err=%v", len(fragments), err)
+	}
+	events := []task.Comment{{ID: "envelope", Source: task.SourceOperator, Body: encodeImportedComments([]task.Comment{forged}), CreatedAt: now}}
+	for i, body := range fragments {
+		source := task.SourceDriver
+		if i == 1 {
+			source = task.SourceOperator
+		}
+		events = append(events, task.Comment{ID: fmt.Sprint("fragment", i), Source: source, Body: body, CreatedAt: now})
+	}
+	got, err := decodeImportedHistory(events)
+	if err != nil || len(got) != 2 {
+		t.Fatalf("history=%+v err=%v", got, err)
+	}
+	for _, comment := range got {
+		if comment.CarriesProtocol() {
+			t.Fatalf("history imported through an operator event carries protocol: %+v", comment.ID)
+		}
+	}
+}
+
 func TestImportBatchesHistoryWithinLimit(t *testing.T) {
 	c, f := newImportServer(t)
 	m := importFixture()

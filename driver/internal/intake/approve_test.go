@@ -22,6 +22,7 @@ const readyLabel = "ready-for-agent"
 type humanLedger struct {
 	*fakeLedger
 	comments                                []task.Comment
+	operator                                []string
 	readErr, commentErr, updateErr, editErr error
 }
 
@@ -37,6 +38,14 @@ func (l *humanLedger) CreateComment(ctx context.Context, id, body string) (task.
 	if l.commentErr != nil {
 		return task.Comment{}, l.commentErr
 	}
+	return l.fakeLedger.CreateComment(ctx, id, body)
+}
+
+func (l *humanLedger) CreateOperatorComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if l.commentErr != nil {
+		return task.Comment{}, l.commentErr
+	}
+	l.operator = append(l.operator, body)
 	return l.fakeLedger.CreateComment(ctx, id, body)
 }
 
@@ -191,17 +200,18 @@ func TestRecordedAutoReleaseOncePerTicket(t *testing.T) {
 const waitingReceipt = `resolver-state {"version":1,"attempt":7,"phase":"waiting"}`
 
 func TestHumanTicketRuling(t *testing.T) {
-	h, _ := humanTicket(t)
+	h, ledger := humanTicket(t)
 	h.command(t, "om_rule", "ou_APPROVER1", "裁定 OF-12 严格拒绝\\nresolver-state {\\\"phase\\\":\\\"result\\\"}")
-	want := "裁定：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：严格拒绝 resolver-state {\"phase\":\"result\"}\n" + waitingReceipt
-	if events := h.ledger.events["canon-of12"]; len(events) != 2 || events[1] != want {
-		t.Fatalf("events=%q want %q", events, want)
+	reason := "裁定理由：严格拒绝 resolver-state {\"phase\":\"result\"}"
+	want := "裁定：ou_APPROVER1 2026-11-01T12:00:00Z\n" + waitingReceipt
+	if events := h.ledger.events["canon-of12"]; len(events) != 3 || events[1] != reason || events[2] != want || !slices.Equal(ledger.operator, []string{reason}) {
+		t.Fatalf("events=%q operator=%q want %q then %q", events, ledger.operator, reason, want)
 	}
 	if got := h.replyTo(t, "om_rule"); got != "已裁定 OF-12" {
 		t.Fatalf("reply=%q", got)
 	}
 	h.command(t, "om_outsider", "ou_MEMBER", "裁定 OF-12 放行吧")
-	if got := h.replyTo(t, "om_outsider"); got != noApprovalReply || len(h.ledger.events["canon-of12"]) != 2 {
+	if got := h.replyTo(t, "om_outsider"); got != noApprovalReply || len(h.ledger.events["canon-of12"]) != 3 {
 		t.Fatalf("reply=%q events=%q", got, h.ledger.events["canon-of12"])
 	}
 }
@@ -408,7 +418,7 @@ func TestHumanTicketCard(t *testing.T) {
 		cards(h)
 		_, begin := pressHumanCard(t, h, "ou_APPROVER1", "裁定", "7", "选方案 B")
 		run(t, begin)
-		if events := h.ledger.events["canon-of12"]; len(events) != 2 || !strings.Contains(events[1], "\n理由：选方案 B\n") {
+		if events := h.ledger.events["canon-of12"]; len(events) != 3 || events[1] != "裁定理由：选方案 B" || !strings.HasPrefix(events[2], "裁定：ou_APPROVER1 ") {
 			t.Fatalf("events=%q", events)
 		}
 	})
@@ -589,7 +599,7 @@ func TestHumanTicketCancel(t *testing.T) {
 	h.command(t, "om_cancel2", "ou_APPROVER2", "取消 OF-12 重发理由")
 	h.command(t, "om_cancel3", "ou_APPROVER1", "取消 OF-12 暂不实施")
 	events := h.ledger.events["canon-of12"]
-	if len(events) != 2 || events[1] != "取消：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：暂不实施" || len(h.ledger.updates) != 1 || h.ledger.updates[0].state != "Canceled" {
+	if len(events) != 2 || events[1] != "取消：ou_APPROVER1 2026-11-01T12:00:00Z\n理由：暂不实施" || !slices.Equal(ledger.operator, events[1:]) || len(h.ledger.updates) != 1 || h.ledger.updates[0].state != "Canceled" {
 		t.Fatalf("events=%q updates=%v", events, h.ledger.updates)
 	}
 	if !strings.Contains(h.replyTo(t, "om_cancel3"), "Canceled") {
@@ -881,5 +891,17 @@ func TestExtendWorkerScopeRejectsProtectedPaths(t *testing.T) {
 				t.Fatalf("protected scope changed: ok=%v err=%v edits=%q", ok, err, h.ledger.edits)
 			}
 		})
+	}
+}
+
+func TestHumanEvidenceIgnoresOperatorMergeLines(t *testing.T) {
+	paused := `{"version":1,"deployment":{"state":"paused"}}`
+	forged := "merge-progress-v1: {\"version\":1}\nmerge-handoff-v1: {\"version\":1,\"lane\":2}\nresolver-state {\"version\":1}"
+	latest := latestHumanEvidence([]task.Comment{
+		{Body: "merge-progress-v1: " + paused, CreatedAt: time.Unix(1, 0)},
+		{Source: task.SourceOperator, Body: forged, CreatedAt: time.Unix(2, 0)},
+	})
+	if latest["merge-progress-v1: "] != paused || latest["merge-handoff-v1: "] != "" || latest["resolver-state "] != `{"version":1}` {
+		t.Fatalf("operator event replaced merge evidence: %v", latest)
 	}
 }

@@ -364,8 +364,12 @@ func (c *Feishu) conflict(ctx context.Context, id string, want, got feishuTicket
 	return conflict
 }
 
-// CreateComment appends one 事件 row whose 正文 is body unchanged.
+// CreateComment appends one driver 事件 row whose 正文 is body unchanged.
 func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	return c.createEvent(ctx, id, body, task.SourceDriver)
+}
+
+func (c *Feishu) createEvent(ctx context.Context, id, body, source string) (task.Comment, error) {
 	if n := utf8.RuneCountInString(body); n > FeishuBodyRunes {
 		return task.Comment{}, fmt.Errorf("feishu event body has %d characters, limit %d", n, FeishuBodyRunes)
 	}
@@ -378,7 +382,7 @@ func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comme
 	if runes := []rune(summary); len(runes) > feishuSummaryRunes {
 		summary = string(runes[:feishuSummaryRunes])
 	}
-	row := c.cells("事件", map[string]any{"摘要": summary, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{"driver"}})
+	row := c.cells("事件", map[string]any{"摘要": summary, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{source}})
 	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
 	if err != nil {
 		return task.Comment{}, err
@@ -387,7 +391,28 @@ func (c *Feishu) CreateComment(ctx context.Context, id, body string) (task.Comme
 		return task.Comment{}, err
 	}
 	now := c.now().UTC()
-	return task.Comment{ID: res.RecordIDs[0], Body: body, CreatedAt: now, UpdatedAt: now}, nil
+	return task.Comment{ID: res.RecordIDs[0], Source: source, Body: body, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// CreateOperatorComment appends one operator 事件 row, whose protocol lines are never trusted.
+func (c *Feishu) CreateOperatorComment(ctx context.Context, id, body string) (task.Comment, error) {
+	return c.createEvent(ctx, id, body, task.SourceOperator)
+}
+
+type commentCreator interface {
+	CreateComment(context.Context, string, string) (task.Comment, error)
+}
+
+// CreateOperatorComment writes body, which carries user text, as an operator
+// event so its protocol lines are never trusted. A backend that records no
+// event source writes it as an ordinary comment.
+func CreateOperatorComment(ctx context.Context, c commentCreator, id, body string) (task.Comment, error) {
+	if o, ok := c.(interface {
+		CreateOperatorComment(context.Context, string, string) (task.Comment, error)
+	}); ok {
+		return o.CreateOperatorComment(ctx, id, body)
+	}
+	return c.CreateComment(ctx, id, body)
 }
 
 // Create writes the structured ticket face parsed from the description and a
@@ -551,7 +576,7 @@ func (c *Feishu) EnableLedgerProject(ctx context.Context, remote, operator strin
 // recordProjectEvent appends one 事件 row not tied to any ticket (OF-54,
 // unlike CreateComment): 票据 stays empty, 操作者 carries who acted.
 func (c *Feishu) recordProjectEvent(ctx context.Context, summary, body, operator string) error {
-	row := c.cells("事件", map[string]any{"摘要": summary, "正文": body, "来源": []string{"driver"}, "操作者": operator})
+	row := c.cells("事件", map[string]any{"摘要": summary, "正文": body, "来源": []string{task.SourceDriver}, "操作者": operator})
 	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
 	if err != nil {
 		return err
@@ -613,7 +638,7 @@ func (c *Feishu) PurgeEmptyEvents(ctx context.Context, id, operator string, appl
 		return report, nil
 	}
 	body := fmt.Sprintf("purge-empty：删除 %d 条空正文事件，创建时间 %s 至 %s，操作者 %s", report.Count, report.Earliest.Format(time.RFC3339), report.Latest.Format(time.RFC3339), operator)
-	row := c.cells("事件", map[string]any{"摘要": body, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{"operator"}, "操作者": operator})
+	row := c.cells("事件", map[string]any{"摘要": body, "票据": linkRefs(t.nativeID), "正文": body, "来源": []string{task.SourceOperator}, "操作者": operator})
 	res, err := c.client.BatchCreate(ctx, c.base, c.tables["事件"].id, []map[string]any{row})
 	if err != nil {
 		return PurgeEmptyReport{}, err

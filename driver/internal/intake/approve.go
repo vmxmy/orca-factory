@@ -203,7 +203,7 @@ func latestHumanEvidence(comments []task.Comment) map[string]string {
 	for _, comment := range rows {
 		for _, line := range strings.Split(comment.Body, "\n") {
 			for _, prefix := range []string{resolver.Prefix, merge.HandoffPrefix, merge.ProgressPrefix} {
-				if raw, ok := strings.CutPrefix(line, prefix); ok {
+				if raw, ok := strings.CutPrefix(line, prefix); ok && (prefix == resolver.Prefix || comment.CarriesProtocol()) {
 					latest[prefix] = raw
 				}
 			}
@@ -450,8 +450,12 @@ func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review,
 	if r.verb != feishu.VerbCancel {
 		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
 	}
-	if r.verb != feishu.VerbCancel || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+	if r.verb != feishu.VerbCancel {
 		if _, err := p.Ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {
+			return failedReply, false
+		}
+	} else if !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+		if _, err := issues.CreateOperatorComment(ctx, p.Ledger, ticket.Metadata.ID, body); err != nil {
 			return failedReply, false
 		}
 	}
@@ -542,10 +546,12 @@ func (g *Gateway) applyReview(ctx context.Context, ledger Ledger, ticket, sender
 	}
 	if !slices.ContainsFunc(events, func(c task.Comment) bool { return strings.HasPrefix(c.Body, prefix) }) {
 		body := fmt.Sprintf("%s%s %s", prefix, sender, g.now().Format(time.RFC3339))
-		if !r.approve {
-			body += "\n理由：" + strings.Join(strings.Fields(r.reason), " ")
+		if r.approve {
+			_, err = ledger.CreateComment(ctx, ticket, body)
+		} else {
+			_, err = issues.CreateOperatorComment(ctx, ledger, ticket, body+"\n理由："+strings.Join(strings.Fields(r.reason), " "))
 		}
-		if _, err := ledger.CreateComment(ctx, ticket, body); err != nil {
+		if err != nil {
 			return err
 		}
 	}

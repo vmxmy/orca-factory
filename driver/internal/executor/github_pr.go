@@ -43,11 +43,12 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 	var progress *merge.Progress
 	var resolution *resolver.Record
 	for _, comment := range comments {
-		if strings.HasPrefix(comment.Body, "转人: ") {
+		protocol := comment.CarriesProtocol()
+		if protocol && strings.HasPrefix(comment.Body, "转人: ") {
 			owner = string(machine.OwnerHuman)
 		}
 		for _, line := range strings.Split(comment.Body, "\n") {
-			if raw, ok := strings.CutPrefix(line, merge.HandoffPrefix); ok {
+			if raw, ok := strings.CutPrefix(line, merge.HandoffPrefix); ok && protocol {
 				var value merge.Handoff
 				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Identifier != t.Identifier || value.Repository != repository || value.QueueID == "" {
 					return errors.New("invalid frozen execution handoff")
@@ -58,7 +59,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 				frozen[value.QueueID] = raw
 				handoff = &value
 			}
-			if raw, ok := strings.CutPrefix(line, merge.ProgressPrefix); ok {
+			if raw, ok := strings.CutPrefix(line, merge.ProgressPrefix); ok && protocol {
 				var value merge.Progress
 				if json.Unmarshal([]byte(raw), &value) != nil || value.Version != 1 || value.TicketID != t.ID || value.Repository != repository || value.QueueID == "" {
 					return errors.New("invalid frozen execution progress")
@@ -72,7 +73,7 @@ func (e *Executor) freshExecution(ctx context.Context, t Ticket) error {
 				}
 				resolution = &value
 			}
-			if strings.HasPrefix(line, "归属: ") {
+			if protocol && strings.HasPrefix(line, "归属: ") {
 				fields := strings.Fields(strings.TrimPrefix(line, "归属: "))
 				if len(fields) == 0 {
 					return errors.New("invalid ownership comment")

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -402,7 +403,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		}
 		ticket.Legacy = claimed && (ticket.Owner == "" || ticket.Owner == machine.OwnerNone) && !failed
 		ticket.Candidate = candidate
-		ticket.Parked, ticket.Resumed = parkedState(issue, comments)
+		ticket.Parked, ticket.Resumed = parkedState(issue, protocolComments(comments))
 		ticket.Blocked = issue.Blocked()
 		ticket.Held, ticket.Number = issue.Held, issue.Number
 		ticket.BlockersIncomplete = issue.InverseRelations.PageInfo.HasNextPage
@@ -461,11 +462,17 @@ func issueEligibility(issue task.Issue) (candidate, claimed, failed bool) {
 	return candidate, claimed, failed
 }
 
+// protocolComments drops operator events, whose ownership and phase lines are user text.
+func protocolComments(comments []task.Comment) []task.Comment {
+	return slices.DeleteFunc(slices.Clone(comments), func(c task.Comment) bool { return !c.CarriesProtocol() })
+}
+
 func readOwnership(t *Ticket, comments []task.Comment) error {
 	comments = append([]task.Comment(nil), comments...)
 	sort.SliceStable(comments, func(i, j int) bool { return comments[i].CreatedAt.Before(comments[j].CreatedAt) })
+	protocol := protocolComments(comments)
 	schedulerAttempt := 0
-	for _, comment := range comments {
+	for _, comment := range protocol {
 		// A handoff hands the ticket to a human even when an older executor omitted the ownership line.
 		if strings.HasPrefix(comment.Body, "转人: ") {
 			t.Owner = machine.OwnerHuman
@@ -529,7 +536,7 @@ func readOwnership(t *Ticket, comments []task.Comment) error {
 	t.Attempt = max(t.Attempt, schedulerAttempt)
 	refresh := task.ReadGateSpecRefresh(comments)
 	t.GateSpecRefresh = refresh.Exited && refresh.ExitedAttempt == t.Attempt
-	t.stageTimeline = readStageTimeline(comments)
+	t.stageTimeline = readStageTimeline(protocol)
 	return nil
 }
 
