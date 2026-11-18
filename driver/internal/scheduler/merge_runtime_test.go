@@ -122,10 +122,10 @@ type mergeFixture struct {
 	merged       bool
 	checkState   string
 	prBody       map[string]any
-	// squashParent is the parent GitHub reports for the squash commit; empty
-	// means the current main.
-	squashParent string
-	server       *httptest.Server
+	// squashParents maps a squash commit to the parent GitHub reports for it;
+	// a missing squash reports the current main.
+	squashParents map[string]string
+	server        *httptest.Server
 	// rejectPuts makes that many squash PUTs fail without merging.
 	rejectPuts int
 }
@@ -200,11 +200,12 @@ func newMergeFixture(t *testing.T) *mergeFixture {
 				return
 			}
 		case squashCommitPath.MatchString(r.URL.Path):
-			parent := f.squashParent
-			if parent == "" {
+			squash := path.Base(r.URL.Path)
+			parent, moved := f.squashParents[squash]
+			if !moved {
 				parent = f.main
 			}
-			if _, err := fmt.Fprintf(w, `{"sha":%q,"parents":[{"sha":%q}]}`, path.Base(r.URL.Path), parent); err != nil {
+			if _, err := fmt.Fprintf(w, `{"sha":%q,"parents":[{"sha":%q}]}`, squash, parent); err != nil {
 				t.Error(err)
 				return
 			}
@@ -798,7 +799,7 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 			f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
 			moving := strings.Repeat("c", 40)
 			if moved {
-				f.squashParent = moving
+				f.squashParents = map[string]string{strings.Repeat("a", 40): moving}
 			}
 			smokes := 0
 			f.runtime.Run = func(ctx context.Context, s runx.Spec) ([]byte, error) {
@@ -830,7 +831,7 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 	t.Run("released", func(t *testing.T) {
 		f := newMergeFixture(t)
 		f.merged = true
-		f.squashParent = strings.Repeat("c", 40)
+		f.squashParents = map[string]string{strings.Repeat("a", 40): strings.Repeat("c", 40)}
 		raw := fmt.Sprintf(`{"attempt":1,"version":1,"queue_id":"q1","ticket_id":"id","repository":"o/r","pr":1,"head":%q,"main":%q,"merge_sha":%q,"phase":"merged"}`, f.head, f.main, strings.Repeat("a", 40))
 		f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "release", CreatedAt: time.Now(), Body: "merge-progress-v1: " + raw})
 		if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
@@ -838,6 +839,26 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 		}
 		if bodies := strings.Join(f.tracker.bodies, "\n"); f.tracker.issue.State.Name != "Done" || strings.Contains(bodies, "Agent处置: ") {
 			t.Fatalf("released squash sent to resolver: state=%s %v", f.tracker.issue.State.Name, f.tracker.bodies)
+		}
+	})
+	// In a self deployment batch the moved squash never joins: the merged prefix
+	// deploys alone at its own gated SHA, not at the unvalidated main.
+	t.Run("batch", func(t *testing.T) {
+		f, host, store, _ := newBatchFixture(t, 2)
+		prefix, movedSquash := fmt.Sprintf("%040x", 1), fmt.Sprintf("%040x", 2)
+		f.squashParents = map[string]string{movedSquash: strings.Repeat("c", 40)}
+		firstServe(t, f, host)
+		moved := store.tickets[1]
+		if f.puts != 2 || host.builds != 1 || !strings.Contains(moved.bodies[len(moved.bodies)-1], "Agent处置: squash "+movedSquash) {
+			t.Fatalf("moved candidate not sent to resolver: merges=%d builds=%d %v", f.puts, host.builds, moved.bodies)
+		}
+		_ = serveAs(f, host, prefix)
+		deployed := batchProgress(t, store.tickets[0])
+		if store.tickets[0].issue.State.Name != "Done" || deployed.MergeSHA != prefix || deployed.Deployment.Batch != nil || !deployed.Deployment.SmokePassed {
+			t.Fatalf("prefix did not deploy alone at its own SHA: state=%s %+v", store.tickets[0].issue.State.Name, deployed.Deployment)
+		}
+		if moved.issue.State.Name == "Done" || strings.Contains(strings.Join(moved.bodies, "\n"), `"phase":"merged"`) {
+			t.Fatalf("moved squash completed: state=%s %v", moved.issue.State.Name, moved.bodies)
 		}
 	})
 }
