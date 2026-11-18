@@ -39,7 +39,7 @@ func Policy(env map[string]string, lane int, approved bool, files []string) erro
 					}
 					return merge.ErrReviewRequired
 				default: // AGENT_LANE2_GLOBS
-					if lane != 2 {
+					if lane != 2 && !approved {
 						return merge.ErrReviewRequired
 					}
 				}
