@@ -218,7 +218,80 @@ func TestStaleInflightEscalatesWithoutRetry(t *testing.T) {
 		t.Fatalf("actions=%v", f.actions)
 	}
 }
-func TestClaimsNotStarvedByResumes(t *testing.T) {
+func TestTokenFairnessAcrossRepositories(t *testing.T) {
+	for _, owner := range []machine.Owner{machine.OwnerResolver, machine.OwnerExecutor} {
+		t.Run(string(owner), func(t *testing.T) {
+			f := &fakeBackend{absent: true, inactive: true}
+			s := setup(f)
+			now := s.Now()
+			s.Now = func() time.Time { return now }
+			s.Config.TokenBucket.Capacity = 4
+			for i := 0; i < 8; i++ {
+				f.tickets = append(f.tickets, Ticket{ID: fmt.Sprintf("a-%d", i), Repo: "a", Owner: owner, Attempt: 1, UpdatedAt: now})
+			}
+			f.tickets = append(f.tickets, Ticket{ID: "b-1", Repo: "b", Owner: owner, Attempt: 1, UpdatedAt: now})
+			for round := 0; round < 3; round++ {
+				f.launched = nil
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if len(f.launched) > 4 {
+					t.Fatalf("round launched %d tickets, limit 4", len(f.launched))
+				}
+				for _, ticket := range f.launched {
+					if ticket.ID == "b-1" {
+						return
+					}
+				}
+				now = now.Add(time.Minute)
+			}
+			t.Fatal("repository b received no token within 3 rounds")
+		})
+	}
+}
+
+func TestTokenSkipIsObservable(t *testing.T) {
+	for _, owner := range []machine.Owner{machine.OwnerResolver, machine.OwnerExecutor, machine.OwnerNone} {
+		t.Run(string(owner), func(t *testing.T) {
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			f := &fakeBackend{absent: true, inactive: true}
+			s := setup(f)
+			s.Config.TokenBucket.Capacity = 1
+			for _, id := range []string{"first", "waiting"} {
+				f.tickets = append(f.tickets, Ticket{ID: id, Identifier: id, Repo: "b", Owner: owner, Candidate: owner == machine.OwnerNone, Attempt: 1, UpdatedAt: s.Now()})
+			}
+			decisions := captureDecisions(t, s)
+			skips := 0
+			for _, decision := range decisions {
+				if decision["event"] == "skip" && decision["ticket_id"] == "waiting" && decision["reason"] == "token" {
+					skips++
+				}
+			}
+			if skips != 1 {
+				t.Errorf("token skip records=%d, want 1: %v", skips, decisions)
+			}
+			data, err := os.ReadFile(status.PushPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var view status.View
+			if err := json.Unmarshal(data, &view); err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range view.Tickets {
+				if row.Identifier == "waiting" {
+					if row.BlockedReason != "token" {
+						t.Errorf("waiting reason=%q, want token", row.BlockedReason)
+					}
+					return
+				}
+			}
+			t.Fatal("waiting ticket missing from status")
+		})
+	}
+}
+
+func TestClaimsRespectRoundTokenLimit(t *testing.T) {
 	for _, advanceClock := range []bool{true, false} {
 		name := "clock advances during resumes"
 		if !advanceClock {
@@ -253,14 +326,8 @@ func TestClaimsNotStarvedByResumes(t *testing.T) {
 			if resumes != 4 {
 				t.Fatalf("resumes=%d, want 4", resumes)
 			}
-			if advanceClock {
-				if !reflect.DeepEqual(claims, []string{"candidate"}) {
-					t.Fatalf("claims=%v, want candidate", claims)
-				}
-				return
-			}
 			if len(claims) != 0 {
-				t.Fatalf("claims=%v without time passing", claims)
+				t.Fatalf("claims=%v after all 4 round slots were consumed", claims)
 			}
 			for _, decision := range decisions {
 				if decision["event"] == "skip" && decision["ticket_id"] == "candidate" && decision["reason"] == "token" {
@@ -268,6 +335,35 @@ func TestClaimsNotStarvedByResumes(t *testing.T) {
 				}
 			}
 			t.Fatalf("candidate not skipped for token: %v", decisions)
+		})
+	}
+}
+
+func TestTokenRefillDuringRound(t *testing.T) {
+	for _, owner := range []machine.Owner{machine.OwnerResolver, machine.OwnerExecutor, machine.OwnerNone} {
+		t.Run(string(owner), func(t *testing.T) {
+			f := &fakeBackend{absent: true, inactive: true}
+			s := setup(f)
+			now := s.Now()
+			s.Now = func() time.Time { return now }
+			s.Config.TokenBucket = config.TokenBucket{Capacity: 4, RefillPerSecond: 0.5}
+			for _, id := range []string{"one", "two", "three"} {
+				f.tickets = append(f.tickets, Ticket{ID: id, Identifier: id, Repo: "b", Owner: owner, Candidate: owner == machine.OwnerNone, Attempt: 1, UpdatedAt: now})
+			}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.launched) != 3 {
+				t.Fatalf("initial launches=%d, want 3", len(f.launched))
+			}
+			f.launched = nil
+			f.onApply = func(Ticket, Action) { now = now.Add(2 * time.Second) }
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(f.launched) != 3 {
+				t.Fatalf("launches=%d, want 3 with elapsed-time refill", len(f.launched))
+			}
 		})
 	}
 }

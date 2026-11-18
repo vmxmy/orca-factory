@@ -119,7 +119,13 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 
 ## 调度器
 
-令牌在轮内按认领阶段的时钟和 `refill_per_second` 补充，受 `capacity` 封顶，避免 resume 耗尽轮初令牌后让候选认领整轮饿死；resume/resolve 仍用轮初时钟，与认领共用同一令牌桶。
+恢复与处置按仓库轮转，保留仓库内的快照顺序。下一轮从上一轮最后获得恢复或处置令牌的仓库之后开始；没有获得令牌时保留游标，重启或该仓库退出发现清单后从清单首仓库开始。认领仍按优先级、创建时间、票 ID 排序。
+
+认领、恢复和处置共用令牌桶，每次申请令牌都读取当前时钟，按实际经过的秒数与 `refill_per_second` 补充，桶内最多保留 `capacity` 个令牌。一轮三类动作合计最多申请成功 `capacity` 次，即使轮内有补充也不突破该上限；外部写入失败或启动结果不确定仍消耗这次名额。默认容量、默认补充速率、全局与每仓库在途上限不变。
+
+缺少令牌或达到轮次上限时，决策日志写 `event=skip, reason=token`；恢复和处置还带 `action=resume` 或 `action=resolve`。实时 status 快照对应票的 `blockedReason` 为 `token`，下轮完整观察重新计算，成功推进会清除这项等待原因。只读账本的 `status --fresh` 不预测本轮名额分配。
+
+`TestTokenFairnessAcrossRepositories` 覆盖 A 仓库 8 张票、B 仓库 1 张票、容量 4 时 B 在三轮内获得名额；`TestTokenSkipIsObservable` 覆盖日志和 status 等待原因；`TestTokenRefillDuringRound` 覆盖三类动作的轮内补充；`TestClaimsRespectRoundTokenLimit` 覆盖恢复与认领共用的轮次上限。
 
 ## GitHub Issues（#172 / #173）
 
@@ -145,7 +151,9 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 - `merge-progress-v1: <JSON>` 关联 `version/queue_id/ticket_id/repository/pr/head/main/merge_sha/phase`。`phase=merge-intent` 在 PUT 前持久记录固定 main，写完再核对远端证据；`phase=merged` 只在 GitHub 回读 merged 后记录真实 squash SHA。若恢复时 PR 已合并且没有 intent，`main_unknown=true`、`main=""` 明确表示历史 main 未知，不能用当前 main 伪造；该记录可反复对账并完成票面写回。
 - 人工合并后的 `driver release`（OF-461）回读 PR 的 `merged`、仓库、base、head 与合并 SHA，并读取票据及完整评论后部署、运行 `doctor --json`。成功评论使用上述 `phase=merged` 形态，不带 `deployment`；已有交接时保留冻结 `queue_id` 与预算，已有同队列进度时保留其预算和已知 `main`。没有交接时 `queue_id=""`，不伪造队列身份；没有历史 main 时写 `main=""`、`main_unknown=true`。JSON 后的正文记录 PR、合并提交、doctor 的运行版本及 smoke 通过事实。它还经 compare `<sha>^...<sha>` 读取合并提交改动的文件；文件列表为空或达到 GitHub 的 300 个上限时拒绝，任一路径（含改名前路径）命中 `AGENT_LANE3_GLOBS` 时拒绝。存在 deployment 回执、交接身份不符或缺字段（含 run、task、dispatch）、冻结的 gate/review 证据不能通过 `Handoff.Validated`、交接 lane 不是 1、2、PR head 不是 40 位十六进制，或预算非法（有队列时 attempt 小于 1，任一计数为负）时拒绝，不能用 release 清除部署屏障。doctor 任一检查不是 `ok` 或 `warn`、errors 非空、命令非零或版本缺失时，不写评论或 Done；`--done` 才在评论成功后更新状态。测试见 `cmd/driver.TestRelease`；`cmd/driver.TestReleaseEvidence` 回放录制样本 `github-pr-merged-repo.json`（含 `base.repo.full_name`）、`github-compare-main-files.json`、`ledger-comments-human-release.json`、`ledger-comments-selfdeploy-interrupted.json`；`cmd/driver.TestReleaseSmokeRecorded` 回放真实 `doctor --json` 样本 `doctor-json.json`。
 - FIFO 按冻结 `enqueued_at`、`queue_id` 排序，不依赖 issue UpdatedAt。缺失、冲突或不可解析交接阻塞该仓库；同仓库每 Tick 只处理队首。完成评论或 Done 写入失败保留归属；Done 但仍属合并通道的票继续参与对账。已确认完成后的名额在下一快照释放。
-- 合并前读完整分页 PR 候选、固定 head 的 checks/statuses 与 Git 提交对象。用固定 merge-base 的 `git diff --no-renames -z` 读取全部路径（重命名表现为删除与新增），不使用 GitHub compare 的 300 文件截断列表。空/未知/缺字段 CI 均不绿。lane 2 需显式 `AGENT_LANE2_AUTOMERGE=1`，未设置或命中 `AGENT_LANE2_MANUAL_GLOBS` 都返回 `merge.ErrReviewRequired`，Next 以 Review 状态出队并转处置 Agent 复核（处置 Agent 权限内无法放行时按 OF-93 `escalateResolution` 转人工）；交接 lane 非 2 而 PR 改动命中 `AGENT_LANE2_GLOBS`（需要 lane 2 验证但票未经过）同样返回 `merge.ErrReviewRequired`，走同一条复核路径，不再落入通用 policy `SnapshotError` 无限 Waiting（OF-104）；命中 `AGENT_LANE3_GLOBS` 返回 `merge.ErrHumanRequired`，Next 以 HumanDirect 状态出队并直接转人工（阶段 `转人`、归属 `人`），不经处置 Agent。三条路径都移出合并队列，不阻塞同仓库后续票（OF-102、OF-103、OF-104）；至此 policy 不再有导致合并队列 Waiting 的分支。旧 PR 或旧三行归属不能替代验证证据。
+- 合并前读完整分页 PR 候选、固定 head 的 checks/statuses 与 Git 提交对象。用固定 merge-base 的 `git diff --no-renames -z` 读取全部路径（重命名表现为删除与新增），不使用 GitHub compare 的 300 文件截断列表。空/未知/缺字段 CI 均不绿。未经处置 Agent 批准的 lane 2 需显式 `AGENT_LANE2_AUTOMERGE=1`，未设置或命中 `AGENT_LANE2_MANUAL_GLOBS` 都返回 `merge.ErrReviewRequired`，Next 以 Review 状态出队并转处置 Agent 复核（处置 Agent 权限内无法放行时按 OF-93 `escalateResolution` 转人工）；未经批准的交接 lane 非 2 而 PR 改动命中 `AGENT_LANE2_GLOBS`（需要 lane 2 复核）同样返回 `merge.ErrReviewRequired`，走同一条复核路径，不再落入通用 policy `SnapshotError` 无限 Waiting（OF-104）；命中 `AGENT_LANE3_GLOBS` 返回 `merge.ErrHumanRequired`，Next 以 HumanDirect 状态出队并直接转人工（阶段 `转人`、归属 `人`），不经处置 Agent。三条路径都移出合并队列，不阻塞同仓库后续票（OF-102、OF-103、OF-104）；至此 policy 不再有导致合并队列 Waiting 的分支。旧 PR 或旧三行归属不能替代验证证据。
+- 处置 Agent 对原冻结 handoff 的批准同时满足上述 lane 2 复核要求，包括原 lane 非 2 且命中 `AGENT_LANE2_GLOBS` 的情形；原 lane、queue_id 与其余交接字段保持不变，同一策略不会再次打回。批准仍绑定原 head，不能放行 lane 3，也不能替代 gate、reviewer 与实时 CI 检查。`AGENT_LANE2_MANUAL_GLOBS` 仍要求这份交接获得批准。`scheduler.TestLane2GlobApprovalDoesNotLoop` 覆盖批准后合并及冻结交接不变。
+- 合并通道转交复核或升级时，先用 `mergeComment` 写决策与归属，再更新 `auto-impl`、`auto-failed` 标签并移除 `ready-for-agent`。评论未确认时返回错误且不改标签，下一轮可重算并补写；相同评论按正文去重，标签更新可重放。`scheduler.TestMergeReviewCommentFailureRecovers` 覆盖评论失败后的恢复，评论与 `merge-progress-v1` 格式不变。
 - 合并结果验证由 `Runtime.advanceMerge` 组装真实 `merge.CommandGit` 和冻结 gate adapter（`internal/mergechannel/gate.go`）。#143 部署屏障见下节，读取主账本原始快照/评论后保留 Done/转人票的未完成屏障。
 - `Executor.Start` 对已有 PR 仅复用匹配的完整冻结交接，保留原 FIFO 与预算，不新写旧三行归属。恢复/correction 实现应在该短路前处理待恢复派工；独立 helper 位于 `executor/merge_handoff.go`。
 
@@ -422,6 +430,10 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - 样本 `testdata/recorded/resolver-top-ruling.json`、`resolver-escalate-credentials.json` 为 2026-11-11 真实模型 stdout 原样保存，场景手写，已核对无凭据。输入均含更新后的 `core/roles/resolver.md` 全文；终审另含 `topResolverPrompt` 原文和 lane 2 票面口径二选一场景，普通处置场景为缺少部署凭证。Claude Code 2.1.322 分别使用 `--model claude-fable-5-2 --effort xhigh` 与 `--model claude-opus-5-5 --effort high`，均以 `-p --output-format text --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence` 录制，退出 0、stderr 为空；未配置模型回退。
 - 新样本 `testdata/recorded/resolver-escalate-unclassified.json`、`resolver-escalate-other.json` 为 2026-11-11 真实 stdout，未手改。均用 Claude Code 2.1.322，以 `--model claude-opus-5-5 --effort high -p --output-format text --tools '' --strict-mcp-config --disable-slash-commands --no-session-persistence` 录制，退出 0、stderr 为空。旧样本角色输入来自 `git show "$(git merge-base origin/main HEAD)":scripts/agent-gates/roles/resolver.md`，录制时基线为 `98487ec02be58badacd2073a898faed5bfd3aa42`；场景沿用缺少部署凭证，输出不含 class。新样本角色输入为本次更新后的 `core/roles/resolver.md` 全文；场景为票面两条 Change 对同一列表要求相反的排序方向，CHECK 无法裁定、修复未推送、无 head、无 SCOPE 缺口且不属六类禁止阻塞，输出 `class=other`。两次输入均仅要求离线输出 JSON 提案，不调用工具、不发消息、不改文件。
 
+
+## gate 结论块（OF-572）
+
+`gate.sh` 的结论块按顺序输出 `UNIT`、`VERDICT`、`STEP`、`REASON`、`EVIDENCE`、`SCOPE`、`LANE`，每个键独占行首且只出现一次。`EVIDENCE` 最多保留 20 行，首行跟在键后，第 2 行起统一以 `| ` 开头。CHECK 输出中的内层结论块因此只作为证据，不会让执行器或合并通道把明确的 red 判成基础设施失败。CHECK 输出仍截取末尾 20 行，Go 侧两个解析器的判定规则不变。`core/gate.test.sh` 的 `ASSERT: nested verdict lines` 回归断言用打印完整内层结论块后非零退出的 CHECK，验证外层仍为 red、STEP 为 check，且结论键行总数为 7。
 
 ## 新测试证据
 

@@ -112,6 +112,10 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 
 `driver serve` 持有单实例锁并持续执行调度循环，负责发现、认领、执行器恢复和合并推进。它不需要 Orca Automation 定时启动协调 Agent；同仓库的旧 `agent-linear-scan` 必须保持关闭，开启或无法核实其状态都会阻止驱动器认领，避免两个协调者竞争。
 
+恢复与处置按仓库轮转：下一轮从上一轮最后拿到恢复或处置名额的仓库之后开始，仓库内保留快照顺序。认领仍按优先级、创建时间和票 ID 排序。三类动作共用令牌桶，每次申请按当前时钟与 `refill_per_second` 补充；桶容量和每轮成功申请的总次数都以 `capacity` 为上限。写入失败或启动结果不确定也占用已申请的名额，默认容量、补充速率与在途上限保持不变。
+
+名额不足时，决策日志记录 `event=skip, reason=token`，恢复与处置另记 `action`。实时 status 快照在该票的 `blockedReason` 写入 `token`，下轮观察或成功推进后更新；`status --fresh` 只读账本，不预测名额分配。
+
 每轮结束后，serve 等到计划的下一次巡检时间 `NextTickAt` 或工作区回收到期时间，两者取较早者。等待期间每秒检查状态根目录的 `scheduler-wake.json`，发现新请求便结束等待，交由调度器判断是否提前巡检；取消时立即返回。wake 仍保留上轮巡检结束后至少 30 秒的最小间隔，但等待循环不再额外按 30 秒取整。工作区回收仍每 10 分钟触发，状态快照仍只在执行巡检后写入。
 
 排查停止推进时，先区分服务进程、调度周期和任务状态：
@@ -130,7 +134,7 @@ orca-factory-driver status --json
 
 票行可带 `dependencies`，每项是未完成根依赖的 `identifier`、`title`、`state`、`labels`、`owner`、`candidate`、`status`、`reason`、从本票到根的 `chain` 以及去重的受影响可见票 `affected`。`candidate` 只表示标签与 Todo/Backlog 状态资格，不代表容量、维护、scope 或 fresh 动作检查已经通过。`status=waiting` 表示已有归属或等待领取检查；`stalled` 表示无归属且状态、标签或 held 阻止推进；`unknown` 表示缺票、未知状态、分页不完整或遍历上限；`cycle` 表示依赖环。每条路径最多 64 层，每票最多访问 1000 个依赖。`executionState=unregistered` 表示执行器归属已预约，但 terminal 或 run 尚未登记；`term=- run=-` 的派发回执不能证明执行器已经启动。该票的 `blockedReason` 显示启动待确认，作为依赖根时 `status=unknown`，不触发自动重发。登记 terminal/run 后该标记省略；这只证明登记完成，不另行证明进程存活。根票即使没有 ready、归属或工作区也可在依赖诊断中出现，不会加入领取列表。正常完成的父票从依赖中移除。文本 `status` 输出每票 `blockedReason`，其中包含根状态、原因、路径与受影响票。
 
-`status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期。票行的 `backend` 是所在仓库选定的账本；`title` 是票的标题；`since` 是观察缓存第一次看到这张票处于当前归属、阶段与 stage 的时间，归属、阶段或 stage 变化后重新计时，只有实时观察缓存提供；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整、未完成的 blocker 或 SCOPE 冲突），只是观察，不授权任何动作。部署屏障中的票有 `deployment`，取自持久化部署进度，包含 `queueId`、`sha`、`workflow`、`state` 与 `reason`，smoke 命令不输出；没有部署进度时省略。`queuePosition` 是同仓库排队合并票的位次，从 1 起，按 `Handoff.EnqueuedAt` 先后、相同时按 `QueueID` 排序；没有 `Handoff`、有合并证据问题或不在排队合并阶段时省略。`lane` 取合并交接冻结的 lane；`corrections` 是 `{"count":n,"limit":m}`，`count` 是合并交接记下的打回次数（同一队列身份的合并进度记得更多时取进度的数），`limit` 是打回上限。这两项只在票有合并交接时出现，没有交接时省略；交接里的 lane 不在 1–3、打回次数为负数时省略对应字段；`count` 为 0 表示确认没有打回。它们只是观察，不是合并或恢复授权。以上字段在实时观察缓存与快照文件中一致。`stage=human` 的票行还有可选的 `humanKind` 与 `humanReason`。`humanKind` 优先取 `scope`，表示处置结果的 `ScopeRequest` 非空；其次取 `deploy`，表示已有合并 SHA 且部署未通过；其余为 `takeover`。`humanReason` 复用通知原因，将换行等空白折叠为空格，按 Unicode 字符截取前 120 个，空原因省略。其他 stage 省略这两个字段；旧快照也保留转人票。这些字段只是观察数据，不是放行或批准的授权，不触发通知或新评论。顶层 `nextScanAt` 是 serve 计划的下一次巡检时间，只在 `state` 为 `ok` 时出现，契约见 [CONTRACTS.md](CONTRACTS.md)。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成主账本没有任务。
+`status` 读取观察缓存，`ok` 不能单独证明服务进程存活；`stale` 表示上次完整观察已过期。票行的 `backend` 是所在仓库选定的账本；`title` 是票的标题；`since` 是观察缓存第一次看到这张票处于当前归属、阶段与 stage 的时间，归属、阶段或 stage 变化后重新计时，只有实时观察缓存提供；`url` 与 `held` 只由 GitHub 后端提供；`blockedReason` 说明票为何不能推进（导入保留、合并证据问题、依赖证据不完整、未完成的 blocker 或 SCOPE 冲突），只是观察，不授权任何动作。部署屏障中的票有 `deployment`，取自持久化部署进度，包含 `queueId`、`sha`、`workflow`、`state` 与 `reason`，smoke 命令不输出；没有部署进度时省略。`queuePosition` 是同仓库排队合并票的位次，从 1 起，按 `Handoff.EnqueuedAt` 先后、相同时按 `QueueID` 排序；没有 `Handoff`、有合并证据问题或不在排队合并阶段时省略。`lane` 取合并交接冻结的 lane；`corrections` 是 `{"count":n,"limit":m}`，`count` 是合并交接记下的打回次数（同一队列身份的合并进度记得更多时取进度的数），`limit` 是打回上限。这两项只在票有合并交接时出现，没有交接时省略；交接里的 lane 不在 1–3、打回次数为负数时省略对应字段；`count` 为 0 表示确认没有打回。它们只是观察，不是合并或恢复授权。除本轮调度产生的 `blockedReason=token` 仅在实时观察缓存提供外，以上字段在实时观察缓存与快照文件中一致。`stage=human` 的票行还有可选的 `humanKind` 与 `humanReason`。`humanKind` 优先取 `scope`，表示处置结果的 `ScopeRequest` 非空；其次取 `deploy`，表示已有合并 SHA 且部署未通过；其余为 `takeover`。`humanReason` 复用通知原因，将换行等空白折叠为空格，按 Unicode 字符截取前 120 个，空原因省略。其他 stage 省略这两个字段；旧快照也保留转人票。这些字段只是观察数据，不是放行或批准的授权，不触发通知或新评论。顶层 `nextScanAt` 是 serve 计划的下一次巡检时间，只在 `state` 为 `ok` 时出现，契约见 [CONTRACTS.md](CONTRACTS.md)。日志中的 `snapshot_available=false` 表示本轮没有完整快照，不能把同时显示的 `candidates=0` 当成主账本没有任务。
 
 顶层可选 `today`，例如 `{"merged":3,"escalated":1,"medianMinutes":12.5}`，汇总本轮已读 ledger 评论中、服务本地时区当天零点起至观察时刻结束的运行。跨午夜的运行按 `finished_at` 归属，合并与转人数来自 `merged`、`escalated`，不计 `no_ticket`。同仓库的 `(ticket, started_at)` 去重；每个已读取的账本中，有 ledger 票时读取其评论，否则读取任务评论；飞书沿用 O5 的来源优先级，不增加请求。周期中位数取这些运行有效的非负 `minutes`，偶数样本取中间两项的平均值；没有时长证据时省略 `medianMinutes`。当天没有有效完成记录时省略整个 `today`，不写全零占位。实时缓存和快照文件都保留该字段；读取跨日旧缓存时省略昨日汇总，等待下一轮观察。它不影响调度行为。
 
@@ -163,6 +167,8 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 依赖暂停期间两道看守都不触发。两种转处置都不释放、不停止 worker。
 
+执行器验证已推送提交时，gate 子进程的总时限为 60 分钟，显式传入 `GATE_LOCK_WAIT=1800`，允许最多等待重锁 30 分钟。安装命令等通用调用和 reviewer 仍限时 10 分钟。worker 看守只在等待 worker 结果时运行；进入 gate 阶段后，执行器的独立心跳仍每 30 秒更新，等锁不会停止心跳。
+
 无候选票、仍有在途归属或合并屏障时，服务在线但不新派发可以是正常状态。
 
 ### 守护进程被杀后的恢复
@@ -183,10 +189,12 @@ worker 运行期有两道看守，都由 `driver exec` 读取环境变量，缺�
 
 在 drain 前，脚本先运行 `git fetch -q origin`，仅在非零退出时重试，最多尝试 3 次，两次等待分别为 5 秒、15 秒。三次均失败时输出「尚未 drain，未改动任何状态」并以非零状态退出，不进入排空、备份或重启。重试仅覆盖 drain 前的 fetch；随后的 `git merge --ff-only` 和 drain 之后的步骤均不重试。
 
-1. 运行 `orca-factory-driver maintenance drain`。
+1. 运行 `orca-factory-driver maintenance drain`，成功后注册退出 trap，负责失败时恢复派工。
 2. 运行 `orca-factory-driver maintenance status`，等 `writersActive` 与 `sessionsActive` 都为 false（没有正在运行的执行器、处置 Agent 和已准入写入）。不要求在途票归零：drain 拒绝重新派工，在途票（例如等待 correction 重新派工的票）可能永远不归零；重启后执行器从 checkpoint 恢复。等待超时（建议 1 小时）时先运行 `maintenance resume`，放弃本次部署。
-3. 替换二进制并重启服务。
-4. 运行 `orca-factory-driver maintenance resume`。
+3. 备份旧二进制，构建到 `.new` 文件，再替换二进制并重启 driver 与飞书 gateway 服务。
+4. 等待 5 秒，用 `systemctl --user is-active` 检查两个服务存活，再运行 `orca-factory-driver maintenance resume`。
+
+drain 后任一步失败，脚本通过退出 trap 恢复：二进制尚未替换时直接 resume；已经替换时先从备份目录恢复旧二进制并重启两个服务，再用恢复后的旧程序 resume。恢复文件或重启失败时停止，不继续 resume。恢复成功仍保留本次部署的非零退出码。
 
 drain 成功后 serve 不再认领或派工，已有执行器与处置 Agent 继续收敛。drain 与 resume 只等待已准入的认领与派工结束，不等待普通外部写入；默认最多等 2 分钟，用 `--wait 30s` 等时长调整。等待期间新认领与派工被拒绝；超时报错且状态不变。保留 driver.toml、凭据、账本和在途执行器；失败时恢复旧二进制，不删除数据库、不清空 checkpoint。验证服务存活、旧 Automation 关闭和连续调度周期；单次 `status` 成功不代表端到端验收通过。
 
