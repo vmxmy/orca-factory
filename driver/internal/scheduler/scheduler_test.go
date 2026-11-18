@@ -793,6 +793,30 @@ func TestOrcaRuntimeRetryKeepsReservationUntilTerminalCreateAnswers(t *testing.T
 	}
 }
 
+// A reservation relaunched after a long outage has the same claim time as
+// before the outage, so its executor gets a fresh grace to register.
+func TestOrcaRuntimeRecoveredLaunchGetsFreshRegistrationGrace(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 1)
+	s, f, oc := x.s, x.f, x.oc
+	_ = s.Tick(context.Background())
+	if len(f.actions) != 1 || len(f.launched) != 1 {
+		t.Fatalf("claim not attempted: actions=%v launches=%d", f.actions, len(f.launched))
+	}
+	oc.failing = false
+	*x.now = x.now.Add(time.Hour)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 2 {
+		t.Fatalf("recovery did not relaunch the reservation: launches=%d", len(f.launched))
+	}
+	*x.now = x.now.Add(s.unregisteredGrace() / 2)
+	_ = s.Tick(context.Background())
+	if len(f.actions) != 1 || len(f.launched) != 2 || f.tickets[0].Attempt != 1 {
+		t.Fatalf("recovered executor judged dead within its grace: actions=%v launches=%d ticket=%+v", f.actions, len(f.launched), f.tickets[0])
+	}
+}
+
 // correctionTickets records executor-owned correction reservations, as the merge
 // lane leaves them before it launches the correction executor.
 func correctionTickets(t *testing.T, x runtimeFailureFixture, ids ...string) []Ticket {

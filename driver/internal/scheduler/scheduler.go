@@ -134,6 +134,9 @@ type Scheduler struct {
 	wakeReason             string
 	orcaRuntime            status.OrcaRuntime
 	runtimePending         map[string]Ticket
+	// relaunchedAt restarts the registration grace of a reservation whose
+	// launch succeeded only after an Orca outage; its claim time is older.
+	relaunchedAt map[string]time.Time
 }
 
 // fullSyncEvery is how many rounds pass between full ledger reads, besides the
@@ -374,6 +377,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		if s.orcaRuntime.Paused {
 			continue
 		}
+		if !unregistered(t) {
+			delete(s.relaunchedAt, t.ID)
+		}
 		if pending, ok := s.runtimePending[t.ID]; ok {
 			// Reuse only the reservation that failed before a terminal existed.
 			if t.Owner == pending.Owner && t.Attempt == pending.Attempt && t.Phase == pending.Phase && unregistered(t) {
@@ -414,7 +420,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					}
 				}
 			}
-			if beat == beatLegacy && (t.Resolution == nil || t.Resolution.Phase != "result") && unregistered(t) && now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+			if beat == beatLegacy && (t.Resolution == nil || t.Resolution.Phase != "result") && unregistered(t) && now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 				continue
 			}
 			action = Action{Kind: Resolve, Attempt: t.Attempt, Phase: machine.PhaseResolver, Reason: "continue agent resolution"}
@@ -441,11 +447,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 					continue
 				case beatLegacy:
 					result := "dead"
-					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+					if now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 						result = "uncertain"
 					}
 					s.decision(t, "ownership", "unregistered", "terminal", t.Terminal, "run", t.Run, "terminal_exists", false, "active_dispatch", nil, "result", result)
-					if now.Sub(t.UpdatedAt) < s.unregisteredGrace() {
+					if now.Sub(s.claimedAt(t)) < s.unregisteredGrace() {
 						continue
 					}
 				}
@@ -709,6 +715,14 @@ func (s *Scheduler) unregisteredGrace() time.Duration {
 
 func unregistered(t Ticket) bool { return t.Terminal == "-" }
 
+// claimedAt is when the unregistered grace of t started.
+func (s *Scheduler) claimedAt(t Ticket) time.Time {
+	if at, ok := s.relaunchedAt[t.ID]; ok && at.After(t.UpdatedAt) {
+		return at
+	}
+	return t.UpdatedAt
+}
+
 // applyReason is the safety-error handling OF-99 introduced, reused for an
 // Apply failure (OF-100): a single line, truncated, with the same redaction
 // snapshotReason applies, so a Backend implementation's raw error text can
@@ -781,6 +795,12 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 	case errors.As(err, &runtimeErr):
 		s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 	case result == "success":
+		if _, retried := s.runtimePending[t.ID]; retried {
+			if s.relaunchedAt == nil {
+				s.relaunchedAt = map[string]time.Time{}
+			}
+			s.relaunchedAt[t.ID] = s.clock()
+		}
 		delete(s.runtimePending, t.ID)
 		s.orcaRuntime = status.OrcaRuntime{}
 	case errors.As(err, &uncertain):
