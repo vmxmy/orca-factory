@@ -49,6 +49,7 @@ func resumeDeployment(args []string) int {
 		if err != nil {
 			return err
 		}
+		runtime.Version = version
 		return runtime.ResumeDeployment(ctx, issue, queue, sha, action, operator, reason, dry)
 	})
 }

@@ -519,11 +519,7 @@ func (r *Runtime) applyLandedDone(ctx context.Context, t Ticket, p *resolver.Rec
 	}
 	installed := "not involved"
 	if driverChange {
-		ok, err := r.verifyInstalled(ctx, proposal.SHA)
-		if err != nil {
-			return reject("installed driver version could not be verified")
-		}
-		if !ok {
+		if !r.runningContains(ctx, t.Repo, proposal.SHA) {
 			return reject("installed driver does not contain the merge SHA")
 		}
 		installed = "contains sha"

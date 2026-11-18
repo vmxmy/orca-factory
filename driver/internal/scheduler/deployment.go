@@ -262,6 +262,9 @@ func (r *Runtime) ResumeDeployment(ctx context.Context, identifier, queue, sha, 
 	}
 	switch action {
 	case "confirm-passed":
+		if d.Self && d.Batch == nil && !r.runningContains(ctx, t.Repo, sha) {
+			return rejectDeploymentProposal("installed driver does not contain the deployment SHA")
+		}
 		d.State = "passed"
 		if d.Batch != nil {
 			d.SmokeStarted = true

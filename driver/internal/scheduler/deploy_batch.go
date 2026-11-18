@@ -340,6 +340,9 @@ func (r *Runtime) recoverDeployBatch(ctx context.Context, t Ticket, p *merge.Pro
 	if err != nil {
 		return err
 	}
+	if p.Deployment.Recovery.Action == "confirm-passed" && !r.runningContains(ctx, t.Repo, p.Deployment.Batch.SHA) {
+		return rejectDeploymentProposal("installed driver does not contain the batch SHA")
+	}
 	if p.Deployment.Recovery.Action == "retry-smoke" {
 		reserved := false
 		for _, member := range batch.tickets {
