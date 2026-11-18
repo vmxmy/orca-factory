@@ -111,6 +111,7 @@ base 已相等时是 `VERDICT red STEP check-red-on-base`；head 不相等时是
 
 旧 `CHECK_IS_NEW_TEST: yes` 缺少 manifest 时明确拒绝；不把任意失败当红，也不自动改成 `no`。
 票的完整正文承载 `CHECK_IS_NEW_TEST`、`CHECK_TEST_FILES` 和 `CHECK_ASSERTION`；飞书保留在正文，不新增表字段。
+票面全文里 `CHECK`、`SCOPE`、`CHECK_IS_NEW_TEST`、`CHECK_TEST_FILES` 和 `CHECK_ASSERTION` 的字段行（`字段:` 行或同名标题）各只能出现一次。driver 读到第二处时拒绝该票，不派工，也不把两处合并。
 intake 的通用 CHECK 仍可使用；声明新测试时，在完整正文补齐这三个字段。
 
 尚未交接的票由负责人补充 manifest 与字段，再用既有 `gate-spec-refresh: <原因>` 指令刷新当前 gate spec。
