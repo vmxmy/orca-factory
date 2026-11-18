@@ -207,6 +207,9 @@ func smuggledLines(name string, d draftTicketWire) []string {
 		fields = append(fields, struct{ field, text string }{"要做", item})
 	}
 	var problems []string
+	if strings.ContainsAny(strings.TrimSpace(d.Check), "\r\n") {
+		problems = append(problems, fmt.Sprintf("%s：CHECK 必须写在一行里，换行后的内容会被当成票面字段", name))
+	}
 	for _, f := range fields {
 		for line := range strings.Lines(f.text) {
 			if kind := protocolLine(line); kind != "" {
@@ -234,6 +237,9 @@ func protocolLine(line string) string {
 	}
 	key = strings.Trim(key, "`* ")
 	switch {
+	case !ok && ticketFieldName(key):
+		// ParseTicket opens a field section on a bare keyword line and appends the following lines to it.
+		return "票面字段"
 	case !ok:
 		return ""
 	case key == "阶段" || key == "归属":
@@ -242,6 +248,15 @@ func protocolLine(line string) string {
 		return "票面字段"
 	}
 	return ""
+}
+
+// ticketFieldName lists the keywords executor.ParseTicket reads as field starts.
+func ticketFieldName(s string) bool {
+	switch s {
+	case "要做", "CHECK", "SCOPE", "CHECK_TEST_FILES", "CHECK_IS_NEW_TEST", "CHECK_ASSERTION":
+		return true
+	}
+	return false
 }
 
 func nonEmpty(v []string) []string {

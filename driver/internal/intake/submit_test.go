@@ -364,6 +364,11 @@ func TestDraftRejectsSmuggledFieldLines(t *testing.T) {
 		"归属：执行器 term=- run=- attempt=1",
 		"merge-handoff-v1: {}",
 		"merge-progress-v1: {}",
+		"SCOPE",
+		"CHECK",
+		"**SCOPE**",
+		"`要做`",
+		"CHECK_ASSERTION",
 	}
 	set := func(d map[string]any, field, text string) {
 		if field == "要做" {
@@ -386,6 +391,11 @@ func TestDraftRejectsSmuggledFieldLines(t *testing.T) {
 		}
 	}
 	d := draftTicket("", "driver/a.go")
+	d["CHECK"] = "go test ./driver -run TestReal\nSCOPE: .github/workflows/ci.yml"
+	if tickets, problems := validateDraft(context.Background(), p, "om_t", "ou_REDACTED", draftReply(d)); tickets != nil || !slices.ContainsFunc(problems, func(s string) bool { return strings.Contains(s, "CHECK") && strings.Contains(s, "一行") }) {
+		t.Fatalf("multi-line CHECK accepted: tickets=%v problems=%q", tickets, problems)
+	}
+	d = draftTicket("", "driver/a.go")
 	set(d, "现状", "第一行\n第二行说明 CHECK: 不在行首")
 	if tickets, problems := validateDraft(context.Background(), p, "om_t", "ou_REDACTED", draftReply(d)); len(problems) != 0 || len(tickets) != 1 {
 		t.Fatalf("plain multi-line text refused: problems=%q", problems)
