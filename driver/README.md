@@ -237,7 +237,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 部署或 smoke 失败归属整批，所有成员进入部署暂停、不写 Done，二进制已替换时仍由 `rollbackSelf` 恢复批前版本。smoke 失败先尽力写全批 paused，再回滚并保持 draining 重启；恢复进程完成本批维护排空的收尾。看守回滚后也按批成员暂停。评论写入不完整时保留仓库屏障：执行状态分歧转处置 Agent；某票已确认 passed 而其他票仍为同一 smoke-intent 时，补齐同一次成功结果，不重复 smoke。
 
-批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
+批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 先核对当前运行版本包含 `batch.sha`，再把操作员核实的通过结果记给全批；dry-run 与中断后的恢复重放也做该核对。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。取得锁后先核对当前 serve 的 `main.version`：它等于 squash SHA，或在仓库检出里是 squash SHA 的后代（`git merge-base --is-ancestor`，`deploy.sh` 写入的短 SHA 也适用），说明人工部署已上线更新的提交（OF-558）。这时不 drain、不备份、不构建、不替换，账本写 `deploy-intent` 后直接走第 8 步的 smoke。祖先关系查不出来（例如检出里没有该版本）时记 WARN，按不包含处理，照常安装。
 2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，再写 `self-deploy/<sha>.idle-wait` 标记（`<RFC3339Nano 开始时刻> <已回报的等待时长>`）记下等待起点。之后每轮巡检取锁，维护状态已变回 `running`（例如两轮之间人工 `deploy.sh` 退出时恢复）就重新 drain，不重设等待起点；再检查一次 `writersActive` 与 `sessionsActive`，都为 false 才继续；否则本轮放锁返回等待，下一轮再查，最多 1 小时（OF-580）。等待不占用调度循环：同一 serve 的其他仓库照常合并、部署、回收已有执行器与处置结果，status 快照照常刷新；drain 是全局维护状态，所有仓库的新认领与派工照旧被拒，本仓库合并队列仍等这次部署完成。
@@ -264,7 +264,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 - smoke 中 serve 被杀（账本停在 `smoke-intent`）：新 serve 重新 smoke。
 - 新二进制启动即崩或 10 分钟内没通过 smoke：看守单元最多等 7 分钟取得 `deploy.lock`，等不到只记日志退出。取得锁后确认仍无 `smoke-passed` 标记、且已安装二进制的 `version` 仍是 squash SHA，才换回备份、写 `self-deploy/<sha>.rolled-back`、重启两个单元。恢复后的 serve 读到标记，停看守、写 `paused`、resume 并删除标记。serve 的 smoke 与标记写入都在锁内，看守不会在 smoke 进行中换回旧二进制；人工 `deploy.sh` 装的版本不是 squash SHA，看守不会把它换掉。
 
-处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前二进制不是 squash SHA 时会再次暂停。smoke 开始前暂停的（构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。重装写入 `deploy-intent` 后、安装前再次被打断时暂停，可再次 `retry-workflow`。smoke 开始过、或上次恢复是 `retry-smoke` 的部署拒绝 `retry-workflow`（`retry-smoke` 会清除 smoke 开始标志，恢复记录仍保留）。人工已用 `deploy.sh` 部署时，用 `confirm-passed` 放行。
+处置 Agent 或人工按 `resume-deployment` 的既有动作处理暂停的部署。self 部署的 `retry-smoke` 回到 `deploy-intent`，只重跑第 8 步，不重新构建或安装；当前运行版本不包含 squash SHA 时会再次暂停。smoke 开始前暂停的（构建失败、版本不符）用 `retry-workflow` 重新安装：账本回到 `pending`，下一轮从第 1 步重做，保留第一次的备份。重装写入 `deploy-intent` 后、安装前再次被打断时暂停，可再次 `retry-workflow`。smoke 开始过、或上次恢复是 `retry-smoke` 的部署拒绝 `retry-workflow`（`retry-smoke` 会清除 smoke 开始标志，恢复记录仍保留）。人工已用 `deploy.sh` 部署并核对 smoke 通过后，可用 `confirm-passed` 放行；当前运行版本必须包含 squash SHA，批部署则必须包含 `batch.sha`，回滚后的旧版本不能放行。
 
 ## 调度范围（项目发现）
 
@@ -589,9 +589,11 @@ driver resume-deployment --issue ENG-1 --queue 'QUEUE_ID' \
 
 去掉 `--dry-run` 写入人工决定，然后重启 `driver serve`。命令只追加带操作者、理由、时间、动作的主账本 Progress 证据，不直接运行 smoke、合并或标记 Done；调度器在后续 tick 对账并推进。
 
-- `confirm-passed`：人工确认该 squash 的所有部署与 smoke 验证都已通过；适用于 smoke 已执行但结果未持久确认。不会重跑 smoke。
+- `confirm-passed`：人工确认该 squash 的所有部署与 smoke 验证都已通过；适用于 smoke 已执行但结果未持久确认。不会重跑 smoke。自部署还要求当前执行进程的 `main.version` 包含 squash SHA，批恢复改核对 `batch.sha`；dry-run 和恢复重放也核对，失败时不写恢复回执。
 - `retry-workflow`：人工处理部署失败后，重新查询同一 squash 的 workflow；自部署没有 workflow，此动作表示重新安装，上次恢复是 `retry-smoke` 时拒绝。若 smoke 可能执行过则拒绝此动作。
 - `retry-smoke`：完成副作用对账、确认可安全重新执行后，明确授权再执行一次 smoke；配置了 workflow 时仍先检查它。
+
+这里的「包含」也适用于涉及 `driver/` 的 `landed-done` 核对：当前执行进程的 `main.version` 与目标 SHA 相等，或在该仓库检出中执行 `git merge-base --is-ancestor <目标 SHA> <main.version>` 成功。可解析的短 SHA 和后代提交均接受；版本为空、无法解析或祖先关系查询失败时拒绝，不能只凭磁盘上的二进制已经替换来放行。
 
 缺少操作者/理由、错误 queue/SHA、非待人工恢复状态或冲突证据均拒绝。响应丢失时先用 dry-run/票评论核对已保存的决定，不将命令退出失败当成尚未写入。原始矛盾/损坏证据需要人工核对，恢复命令不会覆写历史。
 

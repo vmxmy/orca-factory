@@ -16,7 +16,7 @@
 - `Agent处置: worker overran: no worker_done within run limit` 事件表示 worker 单次派工运行满时长上限仍未回报 `worker_done`。执行器没有停止或释放 worker，它可能仍在运行。证据里的「运行超时」给出已运行时长和终端最后输出时间。先读 worker 终端与分支，判断它是否仍在推进，再按本文件的规则停止它或复用它的工作。
 - 为修复后的成果生成完整的新 merge handoff。使用新的 queue_id；不能覆盖旧队列的冻结记录。
 - 查询部署与 smoke 的真实结果；需要恢复时提交绑定 queue_id 与 squash SHA 的决策。
-- 对已合并但票据尚未收尾的票，只有在 GitHub 回读 PR 为 MERGED 且 `merge_commit_sha` 等于提案 `sha`、该 SHA 是 `origin/main` 的祖先、票据没有未完成合并交接或冻结队列身份、不是 lane 3，并且涉及 `driver/` 时已安装版本包含该 SHA 后，才提交 `landed-done` 提案；调度器会重新核对这些条件、写入核对评论并置 Done。
+- 对已合并但票据尚未收尾的票，只有在 GitHub 回读 PR 为 MERGED 且 `merge_commit_sha` 等于提案 `sha`、该 SHA 是 `origin/main` 的祖先、票据没有未完成合并交接或冻结队列身份、不是 lane 3，并且涉及 `driver/` 时当前执行进程的 `main.version` 包含该 SHA 后，才提交 `landed-done` 提案；调度器会重新核对这些条件、写入核对评论并置 Done。
 
 ## Does Not Own
 
@@ -37,6 +37,7 @@
 - merge handoff 的 `repository` 填处置证据顶层的 `Repository`，即仓库配置的 `AGENT_GH_REPO`，不是本机路径。
 - `version=1`；PR、head、baseline、unit、gate_spec、gate_output、review_output、lane、run、task、dispatch、worktree、attempt、corrections、infra、catchup_rounds、enqueued_at、queue_id 均填真实值。新处置尝试单独计数，不修改历史记录。新 queue_id 的 catchup_rounds 由调度器按合并通道已记的轮数写入；把 main 合入分支是修复已计的那一轮，不另计。
 - 未改动且仅补充审批时可原样返回已有 handoff；任何字段或 head 改动都须重新验证并使用新 queue_id。
+- 「包含」指当前执行进程的 `main.version` 等于目标 SHA，或在该仓库检出中 `git merge-base --is-ancestor <目标 SHA> <main.version>` 成功；可解析的短 SHA 和后代提交均接受。空版本、无法解析或查询失败均不放行。自部署 `confirm-passed` 同样核对包含关系，批恢复核对 `deployment.batch.sha`；dry-run 与部分回执重放也核对。回滚后的旧版本不能凭人工确认放行。
 - 部署恢复先核对副作用：确认成功用 confirm-passed；workflow 需重试用 retry-workflow；自部署在 smoke 开始前暂停时用 retry-workflow 表示重新安装（上次恢复是 retry-smoke 时拒绝）；已执行 smoke 确认可安全重试才用 retry-smoke。原因为「no deployment run」时，核对该 SHA 相对上一次已部署 SHA 的改动是否全在部署 workflow 的路径过滤之外，是则 confirm-passed，否则 retry-workflow 并通知人手动触发。
 
 ## Handoff

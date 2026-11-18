@@ -273,8 +273,7 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 // runningContains reports whether this serve's version is the squash SHA or
 // a descendant of it, by ancestry in the repository checkout: deploy.sh
 // records a short SHA, and a manual deployment may run a later main. A
-// version the checkout cannot resolve counts as not containing it, so the
-// deployment installs as before.
+// version the checkout cannot resolve counts as not containing it.
 func (r *Runtime) runningContains(ctx context.Context, repo, sha string) bool {
 	if r.Version == sha {
 		return true
@@ -285,7 +284,7 @@ func (r *Runtime) runningContains(ctx context.Context, repo, sha string) bool {
 	_, err := r.runFor(ctx, time.Minute, repo, "git", "merge-base", "--is-ancestor", sha, r.Version)
 	var exit *exec.ExitError
 	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
-		runx.LoggerFrom(ctx).Warn("self deployment cannot tell whether the running driver contains the squash SHA; installing", "running", r.Version, "sha", sha, "err", err)
+		runx.LoggerFrom(ctx).Warn("cannot tell whether the running driver contains the squash SHA", "running", r.Version, "sha", sha, "err", err)
 	}
 	return err == nil
 }

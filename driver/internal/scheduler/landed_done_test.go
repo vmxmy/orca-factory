@@ -169,7 +169,9 @@ func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 			tracker.issue.Labels.Nodes = []task.NamedID{{Name: "auto-impl"}}
 			if tc.name == "driver not installed" {
 				runtime.Version = strings.Repeat("c", 40)
-				runtime.Run = func(context.Context, runx.Spec) ([]byte, error) { return []byte("orca-factory-driver other"), nil }
+				runtime.Run = func(context.Context, runx.Spec) ([]byte, error) {
+					return nil, fmt.Errorf("installed version unavailable")
+				}
 			}
 			if err := runtime.applyResolution(context.Background(), ticket); err != nil {
 				t.Fatal(err)
@@ -181,5 +183,39 @@ func TestLandedDoneRejectsUnsafeEvidenceWithoutChangingState(t *testing.T) {
 				t.Fatalf("unsafe proposal must only record a resolver retry: %q", tracker.bodies)
 			}
 		})
+	}
+}
+
+func TestLandedDoneAcceptsShortInstalledVersion(t *testing.T) {
+	assertLandedDoneAcceptsInstalledVersion(t, false)
+}
+
+func TestLandedDoneAcceptsDescendantInstalledVersion(t *testing.T) {
+	assertLandedDoneAcceptsInstalledVersion(t, true)
+}
+
+func assertLandedDoneAcceptsInstalledVersion(t *testing.T, descendant bool) {
+	t.Helper()
+	f, host := newSelfDeployFixture(t)
+	repo := f.repos[0].Path
+	sha := f.main
+	version := sha[:7]
+	if descendant {
+		tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+		version = gitMergeTest(t, repo, "commit-tree", tree, "-p", sha, "-m", "later deployment")
+	}
+	proposal := resolver.Resolution{Action: "landed-done", PR: 133, SHA: sha, Reason: "verified"}
+	runtime, tracker, ticket := landedDoneRuntime(t, proposal, "ok", nil)
+	ticket.Repo = repo
+	runtime.Repositories[repo] = runtime.Repositories["/repo"]
+	runtime.Clients[repo] = tracker
+	runtime.Version = version
+	runtime.DriverPath = host.driver
+	runtime.Run = host.run
+	if err := runtime.applyResolution(context.Background(), ticket); err != nil {
+		t.Fatal(err)
+	}
+	if tracker.issue.State.Name != "Done" || len(tracker.bodies) != 2 || !strings.Contains(tracker.bodies[0], "driver=contains sha") || !strings.Contains(tracker.bodies[1], "归属: 无") {
+		t.Fatalf("contained version did not complete ticket: state=%s receipts=%q", tracker.issue.State.Name, tracker.bodies)
 	}
 }
