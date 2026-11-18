@@ -396,7 +396,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 			closed[path][ticket.Identifier] = closedTicket{State: issue.State.Name, Head: head}
 			continue
 		}
-		ticket.Legacy = claimed && ticket.Owner == "" && !failed
+		ticket.Legacy = claimed && (ticket.Owner == "" || ticket.Owner == machine.OwnerNone) && !failed
 		ticket.Candidate = candidate
 		ticket.Parked, ticket.Resumed = parkedState(issue, comments)
 		ticket.Blocked = issue.Blocked()
