@@ -24,13 +24,29 @@ git merge --ff-only -q origin/main
 D="$HOME/.local/bin/orca-factory-driver"
 SHA=$(git rev-parse --short HEAD)
 "$D" maintenance drain --wait 2m | grep -o '"mode":"[a-z]*"'
+replaced=false
+restore_on_failure() {
+  exit_code=$?
+  trap - EXIT
+  if [ "$exit_code" -ne 0 ]; then
+    if [ "$replaced" = true ]; then
+      cp -p "$B/orca-factory-driver" "$D.new"
+      mv "$D.new" "$D"
+      systemctl --user restart orca-factory-driver orca-factory-feishu-gateway
+    fi
+    "$D" maintenance resume --wait 2m
+  fi
+  exit "$exit_code"
+}
+trap restore_on_failure EXIT
 idle='until "$0" maintenance status | grep -qF "\"writersActive\":false,\"sessionsActive\":false"; do sleep 15; done'
-timeout 3600 bash -c "$idle" "$D" || { echo "sessions still active; resuming"; "$D" maintenance resume --wait 2m; exit 1; }
+timeout 3600 bash -c "$idle" "$D" || { echo "sessions still active; resuming"; exit 1; }
 B="$STATE/deploy-backups/$(date -u +%Y%m%dT%H%M%SZ)-$SHA"
 mkdir -p "$B"
 cp -p "$D" "$B/"
 (cd driver && go build -trimpath -ldflags "-X main.version=$SHA" -o "$D.new" ./cmd/driver)
 mv "$D.new" "$D"
+replaced=true
 systemctl --user restart orca-factory-driver orca-factory-feishu-gateway
 sleep 5
 systemctl --user is-active orca-factory-driver orca-factory-feishu-gateway
