@@ -498,4 +498,32 @@ func TestReclaimAfterParkGetsFreshCorrectionBudget(t *testing.T) {
 			t.Fatalf("restart dropped checkpoint: result=%+v err=%v starts=%d used=%v", result, err, len(o.starts), o.used)
 		}
 	})
+	t.Run("operator release line", func(t *testing.T) {
+		e, o, _, _, _, ticket := recoveryFixture(t)
+		e.Now = func() time.Time { return release.CreatedAt.Add(time.Hour) }
+		l := &operatorReleaseIssues{clockedIssues{now: e.Now}}
+		e.Issues = l
+		l.park(release)
+		started := release.CreatedAt.Add(-time.Minute).Format(time.RFC3339)
+		if err := saveCheckpoint(e.Config, ticket, checkpoint{Run: "run_one", Task: "task_one", Dispatch: "ctx_one", Corrections: 2, StartedAt: started}); err != nil {
+			t.Fatal(err)
+		}
+		result, err := e.Start(ctx, ticket)
+		if err != nil || result.State.Corrections != 2 || len(o.starts) != 0 || !reflect.DeepEqual(o.used, []string{"run_one"}) {
+			t.Fatalf("operator 归属: 无 archived checkpoint: result=%+v err=%v starts=%d used=%v", result, err, len(o.starts), o.used)
+		}
+	})
+}
+
+// operatorReleaseIssues marks the park comment as operator-written.
+type operatorReleaseIssues struct{ clockedIssues }
+
+func (l *operatorReleaseIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	comments, err := l.clockedIssues.ListComments(ctx, id)
+	for i := range comments {
+		if strings.Contains(comments[i].Body, "\n归属: 无\n") {
+			comments[i].Source = task.SourceOperator
+		}
+	}
+	return comments, err
 }

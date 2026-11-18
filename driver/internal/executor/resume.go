@@ -354,6 +354,9 @@ func (e *Executor) reservedCheckpoint(ctx context.Context, c Config, t Ticket, c
 	}
 	released := false
 	for _, comment := range comments {
+		if !comment.CarriesProtocol() {
+			continue
+		}
 		for _, line := range strings.Split(comment.Body, "\n") {
 			owner, ok := strings.CutPrefix(line, "归属: ")
 			fields := strings.Fields(owner)
