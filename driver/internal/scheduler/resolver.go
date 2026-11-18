@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -22,8 +23,11 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
+
+const resolverTransientRetryWindow = 5 * time.Minute
 
 type resolutionStore struct {
 	runtime *Runtime
@@ -204,7 +208,12 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if t.Resolution != nil && t.Resolution.Top {
 		tier = env["AGENT_ROLE_RESOLVER_TOP"]
 		if t.Resolution.Agent != "" {
-			tier = strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+			recorded := strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+			if t.Resolution.Phase != "waiting" {
+				tier = recorded
+			} else if recorded != tier {
+				runx.LoggerFrom(ctx).Info("top resolver tier follows changed configuration", "ticket", t.Identifier, "previous", recorded, "configured", tier)
+			}
 		}
 		role = append(role, []byte("\n\n"+topResolverPrompt)...)
 	}
@@ -237,22 +246,88 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if err = r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
+	var retryUntil time.Time
+	var lastTransient error
+	backoff := 2 * time.Second
 	for {
-		p, err := c.Step(ctx)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if p.Phase == "result" || p.Phase == "waiting" || p.Phase == "applied" {
-			r.wakeFor(ctx, t, *p)
-			return nil
+		if !retryUntil.IsZero() && !time.Now().Before(retryUntil) {
+			stopResolverAfterTransientFailure(ctx, &c)
+			return fmt.Errorf("resolver transient retry window exhausted: %w", lastTransient)
 		}
-		timer := time.NewTimer(15 * time.Second)
+		stepCtx := ctx
+		cancel := func() {}
+		if !retryUntil.IsZero() {
+			stepCtx, cancel = context.WithDeadline(ctx, retryUntil)
+		}
+		p, err := c.Step(stepCtx)
+		cancel()
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		delay := 15 * time.Second
+		if err != nil {
+			if !retryUntil.IsZero() && !time.Now().Before(retryUntil) {
+				stopResolverAfterTransientFailure(ctx, &c)
+				return fmt.Errorf("resolver transient retry window exhausted: %w", lastTransient)
+			}
+			var transient *infra.Transient
+			if !errors.As(err, &transient) {
+				return err
+			}
+			lastTransient = err
+			if retryUntil.IsZero() {
+				retryUntil = time.Now().Add(resolverTransientRetryWindow)
+			}
+			delay = min(backoff, time.Until(retryUntil))
+			backoff = min(backoff*2, 30*time.Second)
+			runx.LoggerFrom(ctx).Warn("resolver transient failure; retrying", "ticket", t.Identifier, "err", err, "delay", delay)
+		} else {
+			retryUntil = time.Time{}
+			backoff = 2 * time.Second
+			if p.Phase == "result" || p.Phase == "waiting" || p.Phase == "applied" {
+				r.wakeFor(ctx, t, *p)
+				return nil
+			}
+		}
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
 		}
+	}
+}
+
+func stopResolverAfterTransientFailure(ctx context.Context, c *resolver.Controller) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	logger := runx.LoggerFrom(ctx)
+	p, err := c.Store.Load(ctx)
+	if err != nil {
+		logger.Warn("resolver cleanup receipt read failed", "ticket", c.Ticket, "err", err)
+		return
+	}
+	// Only an active round still owns the dispatch; later records already released it or belong to a prior round.
+	if p == nil || p.Dispatch == "" {
+		return
+	}
+	switch p.Phase {
+	case "pending", "running", "settled":
+	default:
+		return
+	}
+	request := func(step string) string {
+		return orca.RequestID(c.Repo+"/"+c.Ticket, "resolver", step+"-"+c.Terminal, p.Attempt)
+	}
+	if _, err := c.Orca.WorkerStop(ctx, request("stop"), p.Dispatch); err != nil {
+		logger.Warn("resolver worker stop failed after transient retry exhaustion", "dispatch", p.Dispatch, "err", err)
+	}
+	if _, err := c.Orca.WorkerRelease(ctx, request("release"), p.Dispatch); err != nil {
+		logger.Warn("resolver worker release failed after transient retry exhaustion", "dispatch", p.Dispatch, "err", err)
 	}
 }
 

@@ -124,7 +124,9 @@ type Result struct {
 	Corrections, Rounds int // correction delta and accumulated catch-up rounds
 	// Main is the main a red merged-result gate validated; the snapshot of
 	// the round that reports it may already see a newer main.
-	Main string
+	Main                   string
+	InfrastructureFailures int
+	InfrastructureStep     string
 }
 
 type entry struct {
@@ -336,6 +338,12 @@ func (c *Channel) Next(ctx context.Context, repo string) (result Result, resultE
 		}
 		verdict, validated, err := c.validations.Validate(ctx, Candidate{Request: e.request, Head: s.Head, Main: s.Main, Tree: tree}, c.git, c.gate)
 		if verdict == "" {
+			var failure *infrastructureFailure
+			if errors.As(err, &failure) && failure.count >= MaxGateInfrastructureFailures {
+				r.InfrastructureFailures, r.InfrastructureStep = failure.count, failure.step
+				r.Main = s.Main
+				return finish(Human, failure.Error())
+			}
 			return r, err
 		}
 		// A cleanup failure is reported beside the verdict without spending a correction.

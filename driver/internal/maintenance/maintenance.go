@@ -96,10 +96,21 @@ func Status() (Observation, error) {
 
 func Set(mode string) error { return SetWithin(mode, 0) }
 
+// ErrModeChanged reports that SetFromWithin found a mode other than the one
+// the caller expected; nothing was written.
+var ErrModeChanged = errors.New("maintenance mode changed")
+
 // SetWithin holds the intent lock while it waits, so a new Admission is
 // refused and in-flight admissions cannot starve the change. Plain external
 // writes never delay drain or resume; only freeze excludes them.
-func SetWithin(mode string, wait time.Duration) (err error) {
+func SetWithin(mode string, wait time.Duration) error { return set("", mode, wait) }
+
+// SetFromWithin is SetWithin that writes only while the mode is still from,
+// checked under the same locks, so a change another actor made after the
+// caller read the mode survives.
+func SetFromWithin(from, mode string, wait time.Duration) error { return set(from, mode, wait) }
+
+func set(from, mode string, wait time.Duration) (err error) {
 	if mode != "running" && mode != "draining" && mode != "frozen" {
 		return errors.New("invalid maintenance mode")
 	}
@@ -117,6 +128,9 @@ func SetWithin(mode string, wait time.Duration) (err error) {
 	old, err := Read()
 	if err != nil {
 		return err
+	}
+	if from != "" && old.Mode != from {
+		return fmt.Errorf("%w: %s", ErrModeChanged, old.Mode)
 	}
 	if mode == "frozen" && old.Mode != "draining" {
 		return errors.New("drain required before freeze")

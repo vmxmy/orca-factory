@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -23,12 +24,21 @@ func writeRole(t *testing.T, repo, name, text string) {
 	}
 }
 
-// withReviewerRole makes a faked `git worktree add` produce a checkout that
-// carries reviewer.md, as the real head checkout does.
+// withReviewerRole answers the baseline reads of reviewer.md and the
+// constitution, as a real base commit does.
 func withReviewerRole(t *testing.T, run func(context.Context, runx.Spec) ([]byte, error)) func(context.Context, runx.Spec) ([]byte, error) {
+	t.Helper()
 	return func(ctx context.Context, s runx.Spec) ([]byte, error) {
-		if s.Path == "git" && len(s.Args) >= 4 && s.Args[0] == "worktree" && s.Args[1] == "add" {
-			writeRole(t, s.Args[3], "reviewer.md", "REVIEWER ROLE\n")
+		if s.Path == "git" && len(s.Args) == 2 && s.Args[0] == "show" {
+			switch _, path, _ := strings.Cut(s.Args[1], ":"); path {
+			case reviewerRolePath:
+				return []byte("REVIEWER ROLE\n"), nil
+			case constitutionPath:
+				return []byte("CONSTITUTION\n"), nil
+			}
+		}
+		if s.Path == "git" && len(s.Args) > 0 && s.Args[0] == "ls-tree" {
+			return []byte(constitutionPath + "\n"), nil
 		}
 		return run(ctx, s)
 	}
@@ -86,10 +96,63 @@ func TestRolePromptReviewerRequired(t *testing.T) {
 		if s.Path != "git" {
 			t.Fatal("reviewer must not start without reviewer.md")
 		}
-		return []byte("diff --git a/x b/x\n+added\n"), nil
+		if s.Args[0] == "diff" {
+			return []byte("diff --git a/x b/x\n+added\n"), nil
+		}
+		return nil, nil
 	}}
 	if _, _, err := c.Review(context.Background(), t.TempDir(), "base", "head", nil); err == nil {
 		t.Fatal("missing reviewer.md must fail the review")
+	}
+}
+
+// The merge decision rests on this review, so a branch must not rewrite the rules
+// it is reviewed by: the role and the constitution come from the baseline commit.
+func TestReviewRoleComesFromBaseline(t *testing.T) {
+	repo := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		b, err := runx.Run(context.Background(), runx.Spec{Path: "git", Args: append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...), Dir: repo, Timeout: time.Minute})
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, b)
+		}
+		return strings.TrimSpace(string(b))
+	}
+	commit := func(role, constitution string) string {
+		t.Helper()
+		writeRole(t, repo, "reviewer.md", role)
+		dir := filepath.Join(repo, "scripts", "agent-gates", "constitution")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "constitution.md"), []byte(constitution), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		git("add", "-A")
+		git("commit", "-q", "-m", role)
+		return git("rev-parse", "HEAD")
+	}
+	git("init", "-q")
+	base := commit("BASELINE ROLE\n", "BASELINE CONSTITUTION\n")
+	head := commit("HEAD ROLE\n", "HEAD CONSTITUTION\n")
+	var stdin string
+	c := &Commands{ReviewerCommand: "review", Run: func(ctx context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path == "git" {
+			return runx.Run(ctx, s)
+		}
+		b, err := os.ReadFile(s.Args[len(s.Args)-1])
+		stdin = string(b)
+		return []byte(`{"verdict":"green","step":"review"}`), err
+	}}
+	if _, _, err := c.Review(context.Background(), repo, base, head, nil); err != nil {
+		t.Fatal(err)
+	}
+	rules, _, _ := strings.Cut(stdin, "```diff\n")
+	if !strings.HasPrefix(rules, "BASELINE ROLE\n") || !strings.Contains(rules, "BASELINE CONSTITUTION") {
+		t.Fatalf("reviewer must receive the baseline role and constitution:\n%s", stdin)
+	}
+	if strings.Contains(rules, "HEAD ROLE") || strings.Contains(rules, "HEAD CONSTITUTION") {
+		t.Fatalf("reviewed head must not supply its own review rules:\n%s", stdin)
 	}
 }
 

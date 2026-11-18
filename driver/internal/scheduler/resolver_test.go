@@ -1,12 +1,14 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
@@ -14,11 +16,13 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 	"unicode/utf8"
 )
@@ -490,6 +494,116 @@ func TestRejectedDeploymentProposalReturnsToResolver(t *testing.T) {
 
 type resolverStartupProbe struct{ fakeOrca }
 
+type resolverTierProbe struct {
+	resolverStartupProbe
+	starts []orca.StartOptions
+	stop   error
+}
+
+func (o *resolverTierProbe) RunCreate(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{"runId": json.RawMessage(`"run_top"`)}, nil
+}
+
+func (o *resolverTierProbe) WorkerStart(_ context.Context, _ string, opts orca.StartOptions) (orca.Receipt, error) {
+	o.starts = append(o.starts, opts)
+	return nil, o.stop
+}
+
+func (o *resolverTierProbe) TaskList(context.Context, string) ([]orca.Task, error) {
+	return nil, o.stop
+}
+
+// OF-555, 2026-11-18: attempt 7 waited on the frozen Fable tier after the
+// operator switched AGENT_ROLE_RESOLVER_TOP; attempt 8 was the running round.
+// spec and top_reason are redacted.
+func TestTopResolverFollowsChangedConfig(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-top-resolver-tier.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	waiting, running := recording.Comments[0].Body, recording.Comments[1].Body
+	var recordedWaiting, recordedRunning resolver.Record
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(waiting, resolver.Prefix)), &recordedWaiting); err != nil || recordedWaiting.Phase != "waiting" {
+		t.Fatalf("recorded waiting round: %+v, %v", recordedWaiting, err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(running, resolver.Prefix)), &recordedRunning); err != nil || recordedRunning.Phase != "running" {
+		t.Fatalf("recorded running round: %+v, %v", recordedRunning, err)
+	}
+	for _, tc := range []struct {
+		name, tier, agent, model, effort string
+	}{
+		{"changed", "codex:gpt-6-astra:max", "codex", "gpt-6-astra", "max"},
+		{"unchanged", "claude:claude-fable-5-2:xhigh", "claude", "claude-fable-5-2", "xhigh"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+			if err := os.MkdirAll(roles, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", waiting)}
+			probe := &resolverTierProbe{stop: errors.New("stop after worker start")}
+			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": tc.tier}}}, Orca: probe}
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
+			if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); !errors.Is(err, probe.stop) {
+				t.Fatalf("expected worker start probe stop, got %v", err)
+			}
+			if len(probe.starts) != 1 {
+				t.Fatalf("worker starts = %d, want 1", len(probe.starts))
+			}
+			start := probe.starts[0]
+			if start.Agent != tc.agent || start.Model != tc.model || start.Effort != tc.effort {
+				t.Errorf("worker tier = %s:%s:%s, want %s", start.Agent, start.Model, start.Effort, tc.tier)
+			}
+			after := fromEvidence(t, ticket, store.issueComments).Resolution
+			if after == nil {
+				t.Fatal("no resolver record persisted")
+			}
+			if after.Agent != tc.agent || after.Model != tc.model || after.Effort != tc.effort {
+				t.Errorf("persisted tier = %s:%s:%s, want %s", after.Agent, after.Model, after.Effort, tc.tier)
+			}
+			if after.Attempt != recordedWaiting.Attempt+1 || !after.Top || !after.TopUsed || after.Failures != 1 {
+				t.Errorf("retry state changed: %+v", after)
+			}
+		})
+	}
+	t.Run("running round keeps frozen tier when config cleared", func(t *testing.T) {
+		repo := t.TempDir()
+		roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+		if err := os.MkdirAll(roles, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", running)}
+		probe := &resolverTierProbe{stop: errors.New("stop during running recovery")}
+		r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": ""}}}, Orca: probe}
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
+		if err := r.ResolveTicket(context.Background(), ticket, nil, recordedRunning.Creator, nil); !errors.Is(err, probe.stop) {
+			t.Errorf("expected running recovery probe stop, got %v", err)
+		}
+		after := fromEvidence(t, ticket, store.issueComments).Resolution
+		if after == nil {
+			t.Fatal("no resolver record persisted")
+		}
+		if after.Phase != "running" || after.Agent != "claude" || after.Model != "claude-fable-5-2" || after.Effort != "xhigh" {
+			t.Errorf("running record changed: %+v", after)
+		}
+		if len(probe.starts) != 0 {
+			t.Errorf("worker starts = %d, want 0", len(probe.starts))
+		}
+		for _, comment := range store.comments {
+			if strings.Contains(comment, "Agent处置:") || strings.Contains(comment, `"phase":"human"`) {
+				t.Errorf("running round escalated: %s", comment)
+			}
+		}
+	})
+}
+
 func (o *resolverStartupProbe) RunCreate(context.Context, string, string) (orca.Receipt, error) {
 	return nil, errors.New("stop after durable registration")
 }
@@ -717,4 +831,235 @@ func TestResolverEmptyRunIsNotUncertainKeepsFailures(t *testing.T) {
 	if err != nil || p == nil || p.Failures != 2 {
 		t.Fatalf("undispatched round changed failures: %+v %v", p, err)
 	}
+}
+
+type resolverSupervisorOrca struct {
+	resolverStartupProbe
+	failures          int
+	failure           error
+	calls             []time.Time
+	stopped, released []string
+	stopErr           error
+}
+
+func (o *resolverSupervisorOrca) TaskList(context.Context, string) ([]orca.Task, error) {
+	o.calls = append(o.calls, time.Now())
+	if o.failures < 0 || len(o.calls) <= o.failures {
+		return nil, o.failure
+	}
+	report, _ := json.Marshal(orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: "resolver proposal"})
+	return []orca.Task{{ID: "task_1", RunID: "run_1", DispatchID: "ctx_1", Status: "completed", Result: report}}, nil
+}
+
+func (o *resolverSupervisorOrca) WorkerStop(_ context.Context, _, dispatch string) (orca.Receipt, error) {
+	o.stopped = append(o.stopped, dispatch)
+	return nil, o.stopErr
+}
+
+func (o *resolverSupervisorOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Receipt, error) {
+	o.released = append(o.released, dispatch)
+	return nil, nil
+}
+
+type recordedResolverSupervisorOrca struct {
+	resolverSupervisorOrca
+	runID         json.RawMessage
+	workerReceipt orca.Receipt
+}
+
+func (o *recordedResolverSupervisorOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{"runId": o.runID}, nil
+}
+
+func (o *recordedResolverSupervisorOrca) WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error) {
+	return o.workerReceipt, nil
+}
+
+func TestResolverSupervisorRetriesTransientOrcaFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		failures    int
+		stopErr     error
+		permanent   bool
+		cancelAfter time.Duration
+	}{
+		{name: "recovers after two failures", failures: 2},
+		{name: "nontransient exits immediately", failures: -1, permanent: true},
+		{name: "cancellation interrupts backoff", failures: -1, cancelAfter: time.Second},
+		{name: "stops and releases after five minutes", failures: -1},
+		{name: "stop failure is logged before exit", failures: -1, stopErr: errors.New("stop unavailable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo := t.TempDir()
+			roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+			if err := os.MkdirAll(roles, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "running", Creator: "controller", Run: "run_1", Task: "task_1", Dispatch: "ctx_1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent term=controller", resolver.Prefix+string(record))
+			ledger := &fakeIssues{issueComments: comments}
+			transient := &infra.Transient{Err: errors.New("Orca connection reset")}
+			oc := &resolverSupervisorOrca{failures: tc.failures, failure: fmt.Errorf("task list: %w", transient), stopErr: tc.stopErr}
+			if tc.permanent {
+				oc.failure = errors.New("invalid Orca task response")
+			}
+			r := &Runtime{Clients: map[string]issues.Store{repo: ledger}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: oc, StateRoot: t.TempDir()}
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+			var logs bytes.Buffer
+			ctx := runx.WithLogger(context.Background(), slog.New(slog.NewTextHandler(&logs, nil)))
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				ctx, cancel := context.WithCancel(ctx)
+				defer cancel()
+				if tc.cancelAfter > 0 {
+					go func() { time.Sleep(tc.cancelAfter); cancel() }()
+				}
+				err := r.ResolveTicket(ctx, ticket, nil, "controller", nil)
+				if tc.permanent || tc.cancelAfter > 0 {
+					wantErr := oc.failure
+					if tc.cancelAfter > 0 {
+						wantErr = context.Canceled
+					}
+					if !errors.Is(err, wantErr) || time.Since(start) != tc.cancelAfter || len(oc.calls) != 1 {
+						t.Fatalf("unexpected retry: err=%v elapsed=%s calls=%d", err, time.Since(start), len(oc.calls))
+					}
+					if len(oc.stopped) != 0 || len(oc.released) != 0 {
+						t.Fatalf("unexpected cleanup: stopped=%v released=%v", oc.stopped, oc.released)
+					}
+					return
+				}
+				if tc.failures == 2 {
+					if err != nil {
+						t.Fatalf("supervisor exited during transient failure: %v", err)
+					}
+					if len(oc.calls) != 3 {
+						t.Fatalf("task reads = %d, want 3", len(oc.calls))
+					}
+					first, second := oc.calls[1].Sub(oc.calls[0]), oc.calls[2].Sub(oc.calls[1])
+					if first <= 0 || second <= first {
+						t.Fatalf("retry delays = %s, %s, want increasing backoff", first, second)
+					}
+					p, err := readResolution(ledger.issueComments)
+					if err != nil || p == nil || p.Phase != "result" || p.Outcome != "succeeded" || p.Result != "resolver proposal" {
+						t.Fatalf("result = %+v, err = %v", p, err)
+					}
+					if len(oc.stopped) != 0 || len(oc.released) != 1 {
+						t.Fatalf("recovered worker cleanup: stopped=%v released=%v", oc.stopped, oc.released)
+					}
+					return
+				}
+				if !errors.Is(err, transient) {
+					t.Fatalf("exit error = %v, want original transient error", err)
+				}
+				if elapsed := time.Since(start); elapsed != 5*time.Minute {
+					t.Errorf("retry window = %s, want 5m", elapsed)
+				}
+				if len(oc.stopped) != 1 || oc.stopped[0] != "ctx_1" {
+					t.Errorf("worker not stopped before exit: %v", oc.stopped)
+				}
+				if len(oc.released) != 1 || oc.released[0] != "ctx_1" {
+					t.Errorf("worker not released before exit: %v", oc.released)
+				}
+				if tc.stopErr != nil && !strings.Contains(logs.String(), "stop unavailable") {
+					t.Errorf("stop failure missing from logs: %s", logs.String())
+				}
+			})
+		})
+	}
+}
+
+func TestResolverSupervisorRetriesTransientOrcaFailureRecordedReceipt(t *testing.T) {
+	var workerEnvelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &workerEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var runEnvelope struct {
+		Result struct {
+			RunID json.RawMessage `json:"runId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &runEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(runEnvelope.Result.RunID) == 0 {
+		t.Fatal("recorded worker-start receipt has no result.runId")
+	}
+
+	t.Run("running recorded receipt cleanup", func(t *testing.T) {
+		repo := t.TempDir()
+		roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+		if err := os.MkdirAll(roles, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent term=controller")
+		ledger := &fakeIssues{issueComments: comments}
+		transient := &infra.Transient{Err: errors.New("Orca connection reset")}
+		oc := &recordedResolverSupervisorOrca{
+			resolverSupervisorOrca: resolverSupervisorOrca{
+				failures: -1,
+				failure:  fmt.Errorf("task list: %w", transient),
+			},
+			runID:         runEnvelope.Result.RunID,
+			workerReceipt: workerEnvelope.Result,
+		}
+		r := &Runtime{Clients: map[string]issues.Store{repo: ledger}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: oc, StateRoot: t.TempDir()}
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+
+		synctest.Test(t, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- r.ResolveTicket(context.Background(), ticket, nil, "controller", nil) }()
+			synctest.Wait()
+			time.Sleep(5*time.Minute + 15*time.Second)
+			synctest.Wait()
+			err := <-done
+			if len(oc.calls) == 0 {
+				t.Fatal("recorded worker-start receipt never reached task polling")
+			}
+			if !errors.Is(err, transient) {
+				t.Fatalf("exit error = %v, want original transient error", err)
+			}
+			if len(oc.stopped) != 1 || oc.stopped[0] != "ctx_6ad0f5744b10" {
+				t.Fatalf("worker not stopped before exit: %v", oc.stopped)
+			}
+			if len(oc.released) != 1 || oc.released[0] != "ctx_6ad0f5744b10" {
+				t.Fatalf("worker not released before exit: %v", oc.released)
+			}
+			p, err := readResolution(ledger.issueComments)
+			if err != nil || p == nil || p.Phase != "running" || p.Dispatch != "ctx_6ad0f5744b10" {
+				t.Fatalf("latest recorded resolution = %+v, err = %v", p, err)
+			}
+		})
+	})
+
+	t.Run("ended recorded receipt is not cleaned up", func(t *testing.T) {
+		var recording struct{ Comments []task.Comment }
+		if err := json.Unmarshal(recorded(t, "ledger-comments-resolver-requeue.json"), &recording); err != nil {
+			t.Fatal(err)
+		}
+		ledger := &fakeIssues{issueComments: recording.Comments}
+		repo := t.TempDir()
+		r := &Runtime{Clients: map[string]issues.Store{repo: ledger}}
+		ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}
+		p, err := readResolution(ledger.issueComments)
+		if err != nil || p == nil || p.Phase != "result" || p.Dispatch != "ctx_ce8b1432b8a0" {
+			t.Fatalf("recorded resolution = %+v, err = %v", p, err)
+		}
+		oc := &resolverSupervisorOrca{}
+		c := resolver.Controller{Store: resolutionStore{r, ticket}, Orca: oc, Ticket: ticket.Identifier, Repo: repo, Terminal: "controller"}
+		stopResolverAfterTransientFailure(context.Background(), &c)
+		if len(oc.stopped) != 0 || len(oc.released) != 0 {
+			t.Fatalf("ended resolver round was cleaned up: stopped=%v released=%v", oc.stopped, oc.released)
+		}
+	})
 }

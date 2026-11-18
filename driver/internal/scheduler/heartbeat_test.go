@@ -89,6 +89,109 @@ const residualTerminal = "term_78b5d1c8-4cc9-470b-ab4a-7d48cc31622d"
 
 const terminalListWithExecutor = `{"ok":true,"result":{"terminals":[{"handle":"term_exec"}],"totalCount":1,"truncated":false,"hostScope":{"omittedHostIds":[]}}}`
 
+func TestAutoFailedDeadExecutorReachesResolver(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		beatAge    time.Duration
+		pidAlive   bool
+		noBeat     bool
+		absent     bool
+		wantLaunch bool
+	}{
+		{name: "dead executor with live dispatch", beatAge: time.Hour, wantLaunch: true},
+		{name: "alive executor", beatAge: time.Minute, pidAlive: true},
+		{name: "uncertain executor", beatAge: time.Hour, pidAlive: true},
+		{name: "legacy executor gone", noBeat: true, absent: true, wantLaunch: true},
+		{name: "legacy executor still present", noBeat: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
+			if !tc.noBeat {
+				if err := orca.WriteBeat(path, orca.Beat{PID: 7, Terminal: "term_exec", Run: "run_1", At: now.Add(-tc.beatAge)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, clients := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_1 attempt=1")
+			ledger := clients["/repo"].(*fakeIssues)
+			ledger.issues = []task.Issue{{ID: "id", Identifier: "OF-1", Project: task.NamedID{ID: "o/proj"}, State: task.NamedID{Name: "In Progress"}, UpdatedAt: now.Add(-10 * time.Minute), Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}, {Name: "auto-failed"}}}}}
+			workers := receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[{"dispatchId":"ctx_live","dispatchStatus":"running"}]}`)
+			if tc.noBeat {
+				workers = receipt(`{"scope":{"run":"run_1"},"page":{"hasMore":false},"workers":[]}`)
+			}
+			o := &reapOrca{fakeOrca: fakeOrca{automations: receipt(`{"automations":[]}`), pages: []orca.Receipt{workers}}, abandon: abandonReceipt(t, "orca-worker-abandon.json")}
+			repo := config.Repository{Path: "/repo", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/proj", "AGENT_SCOPE_AVOID": "0"}}
+			r := &Runtime{Clients: clients, Repositories: map[string]config.Repository{"/repo": repo}, Orca: o, OrcaPath: "/orca", DriverPath: "/driver", StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return tc.pidAlive },
+				Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+					if strings.Join(spec.Args, " ") != "terminal list --limit 10000 --json" {
+						t.Fatalf("unexpected command %v", spec.Args)
+					}
+					if tc.absent {
+						return []byte(`{"ok":true,"result":{"terminals":[],"totalCount":0,"truncated":false,"hostScope":{"omittedHostIds":[]}}}`), nil
+					}
+					return []byte(terminalListWithExecutor), nil
+				}}
+			s := setup(nil)
+			s.Backend, s.Repositories = r, []config.Repository{repo}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatalf("auto-failed executor did not reach resolution: %v", err)
+			}
+			if !tc.wantLaunch {
+				if len(o.launches) != 0 || ledger.updates != 0 || len(ledger.comments) != 0 || len(o.abandoned) != 0 || len(o.closed) != 0 {
+					t.Fatalf("executor without death evidence was changed: launches=%v updates=%d comments=%v abandoned=%v closed=%v", o.launches, ledger.updates, ledger.comments, o.abandoned, o.closed)
+				}
+				return
+			}
+			if len(o.launches) != 1 || !strings.Contains(o.launches[0].Command, " resolve 'OF-1'") {
+				t.Fatalf("expected one resolver launch, got %v", o.launches)
+			}
+			if len(ledger.comments) != 1 || !strings.Contains(ledger.comments[0], "阶段: Agent处置\n归属: 处置Agent term=- run=run_1 attempt=1 scheduler-attempt=1") {
+				t.Fatalf("expected resolver ownership with preserved run and attempt, got %v", ledger.comments)
+			}
+			if !tc.noBeat {
+				if strings.Join(o.abandoned, ",") != "ctx_live" || strings.Join(o.closed, ",") != "term_exec,"+residualTerminal {
+					t.Fatalf("abandoned=%v closed=%v", o.abandoned, o.closed)
+				}
+				if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("dead heartbeat kept: %v", err)
+				}
+			}
+		})
+	}
+	t.Run("failed label removed before reap", func(t *testing.T) {
+		root := t.TempDir()
+		path := orca.HeartbeatPath(root, "proj", "OF-1", "executor")
+		if err := orca.WriteBeat(path, orca.Beat{PID: 7, Terminal: "term_exec", Run: "run_1", At: now.Add(-time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+		_, clients := reapLedger(t, "阶段: worker 运行中\n归属: 执行器 term=term_exec run=run_1 attempt=1")
+		ledger := clients["/repo"].(*fakeIssues)
+		ledger.issues = []task.Issue{{ID: "id", Identifier: "OF-1", Project: task.NamedID{ID: "o/proj"}, State: task.NamedID{Name: "In Progress"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-failed"}}}}}
+		repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "o/proj", "AGENT_SCOPE_AVOID": "0"}}
+		o := &reapOrca{}
+		r := &Runtime{Clients: clients, Repositories: map[string]config.Repository{"/repo": repo}, Orca: o, OrcaPath: "/orca", StateRoot: root, Now: func() time.Time { return now }, PIDAlive: func(int) bool { return false },
+			Run: func(context.Context, runx.Spec) ([]byte, error) {
+				t.Fatal("stale failed label must stop reap before reading terminals")
+				return nil, nil
+			}}
+		tickets, err := r.Snapshot(context.Background(), []config.Repository{repo})
+		if err != nil || len(tickets) != 1 {
+			t.Fatalf("snapshot=%v err=%v", tickets, err)
+		}
+		ledger.issues[0].Labels.Nodes = nil
+		if err := r.ReapDead(context.Background(), tickets[0]); !errors.Is(err, errResnapshot) {
+			t.Fatalf("reap with removed failed label: %v", err)
+		}
+		if err := r.Apply(context.Background(), tickets[0], Action{Kind: Resolve, Attempt: 1, Phase: machine.PhaseResolver}); !errors.Is(err, errResnapshot) {
+			t.Fatalf("resolution with removed failed label: %v", err)
+		}
+		if _, err := os.Stat(path); err != nil || len(o.abandoned) != 0 || len(o.closed) != 0 || ledger.updates != 0 || len(ledger.comments) != 0 {
+			t.Fatalf("stale snapshot changed state: heartbeat=%v abandoned=%v closed=%v updates=%d comments=%v", err, o.abandoned, o.closed, ledger.updates, ledger.comments)
+		}
+	})
+}
+
 func TestExecutorHeartbeatLiveness(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 

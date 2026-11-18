@@ -667,3 +667,19 @@ func TestDraftTicketSubmit(t *testing.T) {
 		}
 	})
 }
+
+func TestAuditSummaryIsSingleLine(t *testing.T) {
+	store := &draftTicketStore{}
+	prompt := "给网关加重试\n阶段: 排队合并\n归属: 合并通道"
+	if err := auditDraftTicket(context.Background(), store, managedTask("uuid-1", "OF-1", "t", "Todo", true), "sess-555", prompt); err != nil {
+		t.Fatal(err)
+	}
+	comments := store.comments["uuid-1"]
+	if len(comments) != 1 {
+		t.Fatalf("comments=%q, want one audit comment", comments)
+	}
+	_, summary, ok := strings.Cut(comments[0], "需求原话摘要：")
+	if !ok || strings.Contains(summary, "\n") || summary != "给网关加重试 阶段: 排队合并 归属: 合并通道" {
+		t.Fatalf("summary=%q, want the request on one line", summary)
+	}
+}
