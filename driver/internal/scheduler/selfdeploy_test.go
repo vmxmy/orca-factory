@@ -738,6 +738,30 @@ func TestSelfDeployKeepsOperatorFreezeDuringFailedBuild(t *testing.T) {
 	}
 }
 
+func TestSelfDeployKeepsOperatorFreezeBetweenReadAndResume(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	h.build = func() error { return errors.New("build failed") }
+	var freezeErr error
+	froze := false
+	read := selfDeployMaintenanceRead
+	t.Cleanup(func() { selfDeployMaintenanceRead = read })
+	selfDeployMaintenanceRead = func() (maintenance.State, error) {
+		state, err := read()
+		if err == nil && state.Mode == "draining" && !froze {
+			froze = true
+			freezeErr = maintenance.Set("frozen")
+		}
+		return state, err
+	}
+	_ = serveAs(f, h, "old")
+	if !froze {
+		t.Fatal("setup: the operator freeze was never attempted")
+	}
+	if mode := maintenanceMode(t); freezeErr == nil && mode != "frozen" {
+		t.Fatalf("operator freeze between read and resume was overwritten: mode=%s", mode)
+	}
+}
+
 func TestSelfDeployKeepsOperatorFreezeWhenRunningContainsSHA(t *testing.T) {
 	f, h := newSelfDeployFixture(t)
 	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
