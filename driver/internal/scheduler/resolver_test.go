@@ -499,6 +499,20 @@ func (o *resolverSupervisorOrca) WorkerRelease(_ context.Context, _, dispatch st
 	return nil, nil
 }
 
+type recordedResolverSupervisorOrca struct {
+	resolverSupervisorOrca
+	runID         json.RawMessage
+	workerReceipt orca.Receipt
+}
+
+func (o *recordedResolverSupervisorOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
+	return orca.Receipt{"runId": o.runID}, nil
+}
+
+func (o *recordedResolverSupervisorOrca) WorkerStart(context.Context, string, orca.StartOptions) (orca.Receipt, error) {
+	return o.workerReceipt, nil
+}
+
 func TestResolverSupervisorRetriesTransientOrcaFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
@@ -596,4 +610,96 @@ func TestResolverSupervisorRetriesTransientOrcaFailure(t *testing.T) {
 			})
 		})
 	}
+}
+
+func TestResolverSupervisorRetriesTransientOrcaFailureRecordedReceipt(t *testing.T) {
+	var workerEnvelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &workerEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var runEnvelope struct {
+		Result struct {
+			RunID json.RawMessage `json:"runId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &runEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	if len(runEnvelope.Result.RunID) == 0 {
+		t.Fatal("recorded worker-start receipt has no result.runId")
+	}
+
+	t.Run("running recorded receipt cleanup", func(t *testing.T) {
+		repo := t.TempDir()
+		roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+		if err := os.MkdirAll(roles, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve the ticket"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		comments := evidenceComments("阶段: Agent处置\n归属: 处置Agent term=controller")
+		ledger := &fakeIssues{issueComments: comments}
+		transient := &infra.Transient{Err: errors.New("Orca connection reset")}
+		oc := &recordedResolverSupervisorOrca{
+			resolverSupervisorOrca: resolverSupervisorOrca{
+				failures: -1,
+				failure:  fmt.Errorf("task list: %w", transient),
+			},
+			runID:         runEnvelope.Result.RunID,
+			workerReceipt: workerEnvelope.Result,
+		}
+		r := &Runtime{Clients: map[string]issues.Store{repo: ledger}, Repositories: map[string]config.Repository{repo: {Path: repo}}, Orca: oc, StateRoot: t.TempDir()}
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}, comments)
+
+		synctest.Test(t, func(t *testing.T) {
+			done := make(chan error, 1)
+			go func() { done <- r.ResolveTicket(context.Background(), ticket, nil, "controller", nil) }()
+			synctest.Wait()
+			time.Sleep(15 * time.Second)
+			synctest.Wait()
+			if len(oc.calls) == 0 {
+				t.Fatal("recorded worker-start receipt never reached task polling")
+			}
+			time.Sleep(5 * time.Minute)
+			synctest.Wait()
+			err := <-done
+			if !errors.Is(err, transient) {
+				t.Fatalf("exit error = %v, want original transient error", err)
+			}
+			if len(oc.stopped) != 1 || oc.stopped[0] != "ctx_6ad0f5744b10" {
+				t.Fatalf("worker not stopped before exit: %v", oc.stopped)
+			}
+			if len(oc.released) != 1 || oc.released[0] != "ctx_6ad0f5744b10" {
+				t.Fatalf("worker not released before exit: %v", oc.released)
+			}
+			p, err := readResolution(ledger.issueComments)
+			if err != nil || p == nil || p.Phase != "running" || p.Dispatch != "ctx_6ad0f5744b10" {
+				t.Fatalf("latest recorded resolution = %+v, err = %v", p, err)
+			}
+		})
+	})
+
+	t.Run("ended recorded receipt is not cleaned up", func(t *testing.T) {
+		var recording struct{ Comments []task.Comment }
+		if err := json.Unmarshal(recorded(t, "ledger-comments-resolver-requeue.json"), &recording); err != nil {
+			t.Fatal(err)
+		}
+		ledger := &fakeIssues{issueComments: recording.Comments}
+		repo := t.TempDir()
+		r := &Runtime{Clients: map[string]issues.Store{repo: ledger}}
+		ticket := Ticket{ID: "id", Identifier: "ENG-1", Repo: repo}
+		p, err := readResolution(ledger.issueComments)
+		if err != nil || p == nil || p.Phase != "result" || p.Dispatch != "ctx_ce8b1432b8a0" {
+			t.Fatalf("recorded resolution = %+v, err = %v", p, err)
+		}
+		oc := &resolverSupervisorOrca{}
+		c := resolver.Controller{Store: resolutionStore{r, ticket}, Orca: oc, Ticket: ticket.Identifier, Repo: repo, Terminal: "controller"}
+		stopResolverAfterTransientFailure(context.Background(), &c)
+		if len(oc.stopped) != 0 || len(oc.released) != 0 {
+			t.Fatalf("ended resolver round was cleaned up: stopped=%v released=%v", oc.stopped, oc.released)
+		}
+	})
 }

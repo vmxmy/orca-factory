@@ -304,7 +304,13 @@ func stopResolverAfterTransientFailure(ctx context.Context, c *resolver.Controll
 		logger.Warn("resolver cleanup receipt read failed", "ticket", c.Ticket, "err", err)
 		return
 	}
+	// Only an active round still owns the dispatch; later records already released it or belong to a prior round.
 	if p == nil || p.Dispatch == "" {
+		return
+	}
+	switch p.Phase {
+	case "pending", "running", "settled":
+	default:
 		return
 	}
 	request := func(step string) string {
