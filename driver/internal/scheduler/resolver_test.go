@@ -252,6 +252,10 @@ func (o *resolverTierProbe) WorkerStart(_ context.Context, _ string, opts orca.S
 	return nil, o.stop
 }
 
+func (o *resolverTierProbe) TaskList(context.Context, string) ([]orca.Task, error) {
+	return nil, o.stop
+}
+
 func TestTopResolverFollowsChangedConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name, tier, agent, model, effort string
@@ -294,6 +298,38 @@ func TestTopResolverFollowsChangedConfig(t *testing.T) {
 			}
 		})
 	}
+	t.Run("running round keeps frozen tier when config cleared", func(t *testing.T) {
+		repo := t.TempDir()
+		roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+		if err := os.MkdirAll(roles, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", resolver.Prefix+`{"version":1,"attempt":3,"phase":"running","top":true,"top_used":true,"top_launch_accepted":true,"creator":"controller","run":"run_top","task":"task_top","dispatch":"ctx_top","agent":"claude","model":"claude-fable-5-2","effort":"xhigh"}`)}
+		probe := &resolverTierProbe{stop: errors.New("stop during running recovery")}
+		r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: map[string]string{"AGENT_ROLE_RESOLVER_TOP": ""}}}, Orca: probe}
+		ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-583", Repo: repo}, store.issueComments)
+		if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); !errors.Is(err, probe.stop) {
+			t.Errorf("expected running recovery probe stop, got %v", err)
+		}
+		after := fromEvidence(t, ticket, store.issueComments).Resolution
+		if after == nil {
+			t.Fatal("no resolver record persisted")
+		}
+		if after.Phase != "running" || after.Agent != "claude" || after.Model != "claude-fable-5-2" || after.Effort != "xhigh" {
+			t.Errorf("running record changed: %+v", after)
+		}
+		if len(probe.starts) != 0 {
+			t.Errorf("worker starts = %d, want 0", len(probe.starts))
+		}
+		for _, comment := range store.comments {
+			if strings.Contains(comment, "Agent处置:") || strings.Contains(comment, `"phase":"human"`) {
+				t.Errorf("running round escalated: %s", comment)
+			}
+		}
+	})
 }
 
 func (o *resolverStartupProbe) RunCreate(context.Context, string, string) (orca.Receipt, error) {

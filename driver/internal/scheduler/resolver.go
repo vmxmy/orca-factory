@@ -203,9 +203,11 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if t.Resolution != nil && t.Resolution.Top {
 		tier = env["AGENT_ROLE_RESOLVER_TOP"]
 		if t.Resolution.Agent != "" {
-			previous := strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
-			if previous != tier {
-				runx.LoggerFrom(ctx).Info("top resolver tier follows changed configuration", "ticket", t.Identifier, "previous", previous, "configured", tier)
+			recorded := strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+			if t.Resolution.Phase != "waiting" {
+				tier = recorded
+			} else if recorded != tier {
+				runx.LoggerFrom(ctx).Info("top resolver tier follows changed configuration", "ticket", t.Identifier, "previous", recorded, "configured", tier)
 			}
 		}
 		role = append(role, []byte("\n\n"+topResolverPrompt)...)
