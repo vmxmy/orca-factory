@@ -29,7 +29,7 @@ func TestTopRulingIgnoresBoundaryWords(t *testing.T) {
 	ledger.events["canon-of12"] = []string{resolver.Prefix + string(raw)}
 	refusal, err := ApplyTopReview(context.Background(), ledger, "canon-of12", 7, "", time.Now())
 	events := ledger.events["canon-of12"]
-	if err != nil || refusal != "" || len(events) != 2 || !strings.HasPrefix(events[1], "裁定：top-resolver ") {
+	if err != nil || refusal != "" || len(events) != 3 || len(ledger.operator) != 1 || ledger.operator[0] != events[1] || !strings.HasPrefix(events[1], "裁定理由：") || !strings.HasPrefix(events[2], "裁定：top-resolver ") {
 		t.Fatalf("boundary words blocked ruling: refusal=%q err=%v events=%q", refusal, err, events)
 	}
 }

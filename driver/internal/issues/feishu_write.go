@@ -394,6 +394,11 @@ func (c *Feishu) createEvent(ctx context.Context, id, body, source string) (task
 	return task.Comment{ID: res.RecordIDs[0], Source: source, Body: body, CreatedAt: now, UpdatedAt: now}, nil
 }
 
+// CreateOperatorComment appends one operator 事件 row, whose protocol lines are never trusted.
+func (c *Feishu) CreateOperatorComment(ctx context.Context, id, body string) (task.Comment, error) {
+	return c.createEvent(ctx, id, body, task.SourceOperator)
+}
+
 type commentCreator interface {
 	CreateComment(context.Context, string, string) (task.Comment, error)
 }
@@ -402,8 +407,10 @@ type commentCreator interface {
 // event so its protocol lines are never trusted. A backend that records no
 // event source writes it as an ordinary comment.
 func CreateOperatorComment(ctx context.Context, c commentCreator, id, body string) (task.Comment, error) {
-	if f, ok := c.(*Feishu); ok {
-		return f.createEvent(ctx, id, body, task.SourceOperator)
+	if o, ok := c.(interface {
+		CreateOperatorComment(context.Context, string, string) (task.Comment, error)
+	}); ok {
+		return o.CreateOperatorComment(ctx, id, body)
 	}
 	return c.CreateComment(ctx, id, body)
 }

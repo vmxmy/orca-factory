@@ -450,8 +450,12 @@ func (g *Gateway) applyHumanReview(ctx context.Context, sender string, r review,
 	if r.verb != feishu.VerbCancel {
 		body += fmt.Sprintf("\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", resolver.Prefix, record.Attempt)
 	}
-	if r.verb != feishu.VerbCancel || !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+	if r.verb != feishu.VerbCancel {
 		if _, err := p.Ledger.CreateComment(ctx, ticket.Metadata.ID, body); err != nil {
+			return failedReply, false
+		}
+	} else if !slices.ContainsFunc(comments, func(comment task.Comment) bool { return strings.HasPrefix(comment.Body, "取消：") }) {
+		if _, err := issues.CreateOperatorComment(ctx, p.Ledger, ticket.Metadata.ID, body); err != nil {
 			return failedReply, false
 		}
 	}

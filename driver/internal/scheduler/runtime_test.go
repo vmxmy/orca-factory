@@ -297,6 +297,24 @@ func TestProtocolLinesIgnoredFromOperatorEvents(t *testing.T) {
 		t.Fatalf("event without source no longer parsed: %+v", legacy)
 	}
 }
+func TestOperatorOwnershipLineKeepsParkResume(t *testing.T) {
+	lc := &fakeIssues{
+		issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Project: task.NamedID{ID: "p1"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}},
+		issueComments: []task.Comment{
+			{ID: "park", Source: task.SourceDriver, CreatedAt: time.Unix(1, 0), Body: "搁置：处置连续失败\n阶段: 待领\n归属: 无"},
+			{ID: "operator", Source: task.SourceOperator, CreatedAt: time.Unix(2, 0), Body: "归属: 无"},
+		},
+	}
+	lc.description = "## SCOPE\nsrc/*"
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+	tickets, err := r.Snapshot(context.Background(), []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p1", "AGENT_SCOPE_AVOID": "0"}}})
+	if err != nil || len(tickets) != 1 {
+		t.Fatalf("tickets=%+v err=%v", tickets, err)
+	}
+	if !tickets[0].Resumed {
+		t.Fatalf("operator ownership line cancelled the park resume: %+v", tickets[0])
+	}
+}
 func TestRuntimeSnapshotAllProjects(t *testing.T) {
 	lc := &fakeIssues{issues: []task.Issue{{ID: "id", Identifier: "ENG-1", Priority: 2, CreatedAt: time.Unix(1, 0), Project: task.NamedID{ID: "p2"}, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
 	lc.description = "## SCOPE\nsrc/*"

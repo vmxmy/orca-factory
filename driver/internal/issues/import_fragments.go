@@ -74,8 +74,8 @@ func decodeImportedHistory(comments []task.Comment) ([]task.Comment, error) {
 					return nil, errors.New("duplicate logical comment identity")
 				}
 				seen[comment.ID] = true
+				rows = append(rows, carriedBy(comment, comments[index:index+1]))
 			}
-			rows = append(rows, decoded...)
 			index++
 			continue
 		}
@@ -87,10 +87,21 @@ func decodeImportedHistory(comments []task.Comment) ([]task.Comment, error) {
 			return nil, errors.New("duplicate logical comment identity")
 		}
 		seen[comment.ID] = true
-		rows = append(rows, comment)
+		rows = append(rows, carriedBy(comment, comments[index:index+count]))
 		index += count
 	}
 	return rows, nil
+}
+
+// carriedBy keeps an imported record untrusted when any event carrying it is an
+// operator event: the embedded source is user text like the rest of the body.
+func carriedBy(comment task.Comment, carriers []task.Comment) task.Comment {
+	for _, carrier := range carriers {
+		if !carrier.CarriesProtocol() {
+			comment.Source = task.SourceOperator
+		}
+	}
+	return comment
 }
 
 func decodeFragmentGroup(comments []task.Comment) (task.Comment, int, error) {

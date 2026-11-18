@@ -95,7 +95,10 @@ func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt 
 }
 
 func applyRuling(ctx context.Context, ledger ScopeLedger, ticket issues.Task, record resolver.Record, sender, reason string, now time.Time) error {
-	body := fmt.Sprintf("裁定：%s %s\n理由：%s\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", sender, now.Format(time.RFC3339), strings.Join(strings.Fields(reason), " "), resolver.Prefix, record.Attempt)
+	if _, err := issues.CreateOperatorComment(ctx, ledger, ticket.Metadata.ID, "裁定理由："+strings.Join(strings.Fields(reason), " ")); err != nil {
+		return err
+	}
+	body := fmt.Sprintf("裁定：%s %s\n%s{\"version\":1,\"attempt\":%d,\"phase\":\"waiting\"}", sender, now.Format(time.RFC3339), resolver.Prefix, record.Attempt)
 	_, err := ledger.CreateComment(ctx, ticket.Metadata.ID, body)
 	return err
 }
