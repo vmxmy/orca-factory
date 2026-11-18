@@ -130,11 +130,15 @@ type Scheduler struct {
 	// why the next one runs.
 	tickStarted, tickEnded time.Time
 	wakeReason             string
+	orcaRuntime            status.OrcaRuntime
+	runtimePending         map[string]Ticket
 }
 
 // fullSyncEvery is how many rounds pass between full ledger reads, besides the
 // first round and the first round after maintenance returns to running.
 const fullSyncEvery = 10
+
+const orcaRuntimeFailureThreshold = 3
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
@@ -205,6 +209,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		mark = time.Now()
 	}
 	defer func() { s.summary(started, tickets, snapshot, full, timing, tickErr) }()
+	defer func() { status.Push(s.clock(), func(view *status.View) { view.OrcaRuntime = s.orcaRuntime }) }()
 	if s.Backend == nil || s.Config.MaxInFlight < 1 || s.Config.TokenBucket.Capacity < 1 || s.Config.TokenBucket.RefillPerSecond <= 0 {
 		return errors.New("invalid scheduler configuration")
 	}
@@ -296,6 +301,29 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	s.plan(now, busy)
+	if s.orcaRuntime.Paused {
+		probe, ok := s.Backend.(interface {
+			ProbeOrcaRuntime(context.Context, string) error
+		})
+		if !ok {
+			return errors.New("orca runtime fault: terminal creation paused")
+		}
+		repo := ""
+		for _, ticket := range tickets {
+			if allowed[ticket.Repo] {
+				repo = ticket.Repo
+				break
+			}
+		}
+		if repo == "" {
+			return errors.New("orca runtime fault: no repository available for recovery probe")
+		}
+		if err := probe.ProbeOrcaRuntime(ctx, repo); err != nil {
+			return fmt.Errorf("orca runtime recovery probe: %w", err)
+		}
+		s.orcaRuntime = status.OrcaRuntime{}
+	}
+
 	s.MergeQueue = nil
 	count := map[string]int{}
 	total := 0
@@ -308,6 +336,21 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	for _, t := range tickets {
 		if !allowed[t.Repo] {
 			continue
+		}
+		if s.orcaRuntime.Paused {
+			continue
+		}
+		if pending, ok := s.runtimePending[t.ID]; ok {
+			// Reuse only the reservation that failed before a terminal existed.
+			if t.Owner == pending.Owner && t.Attempt == pending.Attempt && t.Phase == pending.Phase && unregistered(t) {
+				if s.token(now) {
+					if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
+						problems = append(problems, err)
+					}
+				}
+				continue
+			}
+			delete(s.runtimePending, t.ID)
 		}
 		r := repos[t.Repo]
 		action := Action{}
@@ -445,7 +488,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			s.MergeQueue = append(s.MergeQueue, t)
 		case Resolve:
 			t.Owner, t.Phase = machine.OwnerResolver, machine.PhaseResolver
-			if err := s.launch(ctx, t); err != nil {
+			if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("resolver launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		case Resume:
@@ -453,7 +496,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			t.Phase = action.Phase
 			t.Owner = machine.OwnerExecutor
 			t.Terminal, t.Run = "-", ""
-			if err := s.launch(ctx, t); err != nil {
+			if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
 				problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 			}
 		}
@@ -500,6 +543,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return a.ID < b.ID
 	})
 	for _, t := range tickets {
+		if s.orcaRuntime.Paused {
+			break
+		}
 		if !t.Candidate || t.resumesResolution() {
 			continue
 		}
@@ -552,7 +598,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		t.Attempt = state.Attempt
 		t.Phase = state.Phase
 		t.Owner = state.Owner
-		if err = s.launch(ctx, t); err != nil {
+		if err = s.launchWithRuntimeCheck(ctx, t); err != nil {
 			problems = append(problems, fmt.Errorf("executor launch uncertain; ownership retained: %s: %s", t.Identifier, applyReason(err)))
 		}
 	}
@@ -672,3 +718,31 @@ type snapshotError struct {
 
 func (e *snapshotError) Error() string { return "scheduler snapshot failed: " + e.reason }
 func (e *snapshotError) Unwrap() error { return e.err }
+
+func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error {
+	err := s.launch(ctx, t)
+	var runtimeErr *terminalCreateRuntimeError
+	if errors.As(err, &runtimeErr) {
+		if s.runtimePending == nil {
+			s.runtimePending = map[string]Ticket{}
+		}
+		s.runtimePending[t.ID] = t
+		s.orcaRuntime.Failures++
+		if s.orcaRuntime.Failures >= orcaRuntimeFailureThreshold && !s.orcaRuntime.Paused {
+			s.orcaRuntime.Paused = true
+			if notifier, ok := s.Backend.(interface {
+				NotifyOrcaRuntime(context.Context, Ticket) error
+			}); ok {
+				if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
+					s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
+				}
+			}
+		}
+	} else {
+		delete(s.runtimePending, t.ID)
+		if err == nil {
+			s.orcaRuntime = status.OrcaRuntime{}
+		}
+	}
+	return err
+}

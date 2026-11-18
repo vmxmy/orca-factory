@@ -109,6 +109,14 @@ worker 失败且报告来源为 `worker_report` 时（OF-346），`CorrectionReq
 
 生成首轮或纠正派工提示词时，执行器写 `worker skills` 日志，字段 `worker_skills` 保留逗号分隔列表，空配置为空字符串，`correction` 记录纠正次数。`executor.TestWorkerSkillsPrompt` 覆盖缺省输出和插入位置，`TestWorkerSkillsInitialAndCorrectionDispatch` 覆盖两处派工与日志，`TestWorkerSkillsRejectInvalidNames` 和 `TestWorkerSkillsInheritedAndRepositoryOverride` 覆盖启动校验与配置来源。
 
+## Orca 终端创建边界（OF-576）
+
+仅 `Runtime.Launch` 的 `terminal create` 返回 `runtime_error` 进入运行时故障计数，其他 Orca 命令和错误码保持原处理。调度器跨票、跨巡检累计到命名阈值 `orcaRuntimeFailureThreshold=3` 后暂停认领、派工与执行器死亡判定，单次故障通知一次。已失败的认领在原 attempt 上重试，不因本次终端创建失败转处置；票据归属、阶段或 attempt 改变后丢弃对应重试记录。计数和重试记录在 serve 进程内保存，不改变账本身份、checkpoint 或预算。
+
+暂停期间每轮使用一个可调度仓库创建 `--command true` 的探测终端，读取 `result.terminal.handle` 并关闭；探测成功后恢复原认领与新票派工。doctor 不做该探测，只读 status 的 `orcaRuntime.failures`、`orcaRuntime.paused`；暂停时报 `orca_runtime=fail`，detail 提示重启 `orca-serve` 并查看 profile 写入超时。无故障字段的旧快照仍可读，检查只表示快照未记录此故障。driver 不自动重启服务。
+
+`TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts` 用假 Orca 重复失败，回放已有 `orca-worktree-rm-dirty.json` 的真实 `runtime_error` 信封验证 CLI 错误分类，不把它声明为 terminal create 的现场故障录制；终端创建故障由票面场景驱动。恢复回放 `orca-terminal-create-probe.json`，这是 2026-11-18 在 OF-576 单元 worktree 执行 `orca terminal create --command true --json` 的完整成功回执，创建的终端已关闭，未脱敏且无凭据。测试断言关闭其真实 handle、attempt 不增长、不转处置、通知一次及恢复认领。`TestDoctorReportsOrcaTerminalCreateFailure` 验证快照故障与恢复办法。
+
 ## 调度器
 
 令牌在轮内按认领阶段的时钟和 `refill_per_second` 补充，受 `capacity` 封顶，避免 resume 耗尽轮初令牌后让候选认领整轮饿死；resume/resolve 仍用轮初时钟，与认领共用同一令牌桶。

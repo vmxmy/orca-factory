@@ -2,7 +2,10 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +16,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
+	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
 type fakeBackend struct {
@@ -447,5 +453,156 @@ func TestMaintenanceRefusedCorrectionResumeLaunches(t *testing.T) {
 	}
 	if len(f.actions) != 1 || f.actions[0].Kind != Resume || f.actions[0].Attempt != 1 || f.actions[0].Phase != machine.PhaseCorrection || len(oc.launches) != 1 {
 		t.Fatalf("refused correction not relaunched at its attempt: actions=%+v launches=%d ledger=%q", f.actions, len(oc.launches), lc.comments)
+	}
+}
+
+type runtimeFailureOrca struct {
+	fakeOrca
+	failing       bool
+	probes        int
+	failureClient *orca.Client
+	success       orca.Receipt
+	closed        []string
+}
+
+func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
+	if opts.Command == "true" {
+		o.probes++
+	}
+	if o.failing {
+		return o.failureClient.TerminalCreate(ctx, opts)
+	}
+	return o.success, nil
+}
+
+func (o *runtimeFailureOrca) TerminalClose(_ context.Context, handle string) error {
+	o.closed = append(o.closed, handle)
+	return nil
+}
+
+type runtimeFailureBackend struct {
+	*fakeBackend
+	runtime *Runtime
+	notices int
+}
+
+func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
+	b.launched = append(b.launched, ticket)
+	return b.runtime.Launch(ctx, ticket)
+}
+func (b *runtimeFailureBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error {
+	return b.runtime.ProbeOrcaRuntime(ctx, repo)
+}
+func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error {
+	b.notices++
+	return nil
+}
+
+func TestOrcaRuntimeErrorPausesLaunchWithoutBurningAttempts(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	fixture, err := filepath.Abs("../../testdata/recorded/orca-worktree-rm-dirty.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(t.TempDir(), "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat '"+fixture+"'\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	rawSuccess, err := os.ReadFile("../../testdata/recorded/orca-terminal-create-probe.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var success struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(rawSuccess, &success); err != nil {
+		t.Fatal(err)
+	}
+	oc := &runtimeFailureOrca{failing: true, failureClient: &orca.Client{Path: cli, Timeout: time.Second}, success: success.Result}
+	f := &fakeBackend{absent: true, inactive: true}
+	r := &Runtime{Orca: oc, DriverPath: "/opt/driver", Clients: map[string]issues.Store{}, Repositories: map[string]config.Repository{}}
+	b := &runtimeFailureBackend{fakeBackend: f, runtime: r}
+	s := setup(f)
+	s.Backend = b
+	s.Config.MaxInFlight = 10
+	s.Repositories = nil
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	for i := 0; i < 5; i++ {
+		repo := fmt.Sprintf("/repo%d", i)
+		id := fmt.Sprintf("OF-%d", i+1)
+		s.Repositories = append(s.Repositories, config.Repository{Path: repo, MaxInFlight: 2, StaleHours: 8})
+		r.Repositories[repo] = config.Repository{Path: repo}
+		r.Clients[repo] = &fakeIssues{issues: []task.Issue{{ID: id, Identifier: id, State: task.NamedID{Name: "Todo"}, Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "ready-for-agent"}}}}}}
+		f.tickets = append(f.tickets, Ticket{ID: id, Identifier: id, Repo: repo, Candidate: true})
+	}
+	f.onApply = func(ticket Ticket, action Action) {
+		store := r.Clients[ticket.Repo].(*fakeIssues)
+		body := fmt.Sprintf("阶段: %s\n归属: 执行器 term=- run=- attempt=%d scheduler-attempt=%d since=%s", action.Phase, action.Attempt, action.Attempt, now.Format(time.RFC3339))
+		if action.Kind == Resolve {
+			body = strings.Replace(body, "执行器", "处置Agent", 1)
+		}
+		if _, err := store.CreateComment(context.Background(), ticket.ID, body); err != nil {
+			t.Fatal(err)
+		}
+		for i := range f.tickets {
+			if f.tickets[i].ID == ticket.ID {
+				f.tickets[i] = fromEvidence(t, Ticket{ID: ticket.ID, Identifier: ticket.Identifier, Repo: ticket.Repo}, r.Clients[ticket.Repo].(*fakeIssues).issueComments)
+			}
+		}
+	}
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("expected runtime failure")
+	}
+	if len(f.actions) != 3 || len(f.launched) != 3 {
+		t.Fatalf("threshold must stop claims and launches: actions=%v launches=%d", f.actions, len(f.launched))
+	}
+	for i := 0; i < 3; i++ {
+		now = now.Add(time.Hour)
+		_ = s.Tick(context.Background())
+	}
+	if len(f.actions) != 3 || len(f.launched) != 3 || b.notices != 1 || oc.probes != 3 {
+		t.Fatalf("paused runtime changed ownership or dispatched: actions=%v launches=%d notices=%d probes=%d", f.actions, len(f.launched), b.notices, oc.probes)
+	}
+	for _, ticket := range f.tickets[:3] {
+		if ticket.Attempt != 1 || ticket.Owner != machine.OwnerExecutor {
+			t.Fatalf("burned attempt or escalated: %+v", ticket)
+		}
+	}
+	raw, err := os.ReadFile(status.PushPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view struct {
+		OrcaRuntime struct {
+			Paused   bool
+			Failures int
+		} `json:"orcaRuntime"`
+	}
+	if err := json.Unmarshal(raw, &view); err != nil {
+		t.Fatal(err)
+	}
+	if !view.OrcaRuntime.Paused || view.OrcaRuntime.Failures < 3 {
+		t.Fatalf("missing runtime fault: %s", raw)
+	}
+	oc.failing = false
+	now = now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 8 || len(f.actions) != 5 {
+		t.Fatalf("recovery must retry same reservations then claim: actions=%v launches=%v", f.actions, f.launched)
+	}
+	if !reflect.DeepEqual(oc.closed, []string{"term_4aa07a88-df90-4866-aa2e-dcefaf47537c"}) {
+		t.Fatalf("probe terminal not closed: %v", oc.closed)
+	}
+	if got := status.Read(now, 0).OrcaRuntime; got.Paused || got.Failures != 0 {
+		t.Fatalf("recovery state not cleared: %+v", got)
+	}
+	for _, ticket := range f.launched {
+		if ticket.Attempt != 1 {
+			t.Fatalf("attempt changed during recovery: %+v", ticket)
+		}
 	}
 }

@@ -148,10 +148,16 @@ func Write(snapshot Snapshot) error {
 // DefaultStaleAfter tolerates ten missed 30-second serve snapshots.
 const DefaultStaleAfter = 5 * time.Minute
 
+type OrcaRuntime struct {
+	Failures int  `json:"failures"`
+	Paused   bool `json:"paused"`
+}
+
 // View.GeneratedAt records the last successful full scheduler observation.
 // Partial writes retain it; zero means no scheduler observation is available.
 // View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
+	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	State       string       `json:"state"`
 	GeneratedAt time.Time    `json:"generatedAt"`

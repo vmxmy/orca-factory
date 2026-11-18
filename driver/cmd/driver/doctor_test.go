@@ -20,6 +20,8 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
+	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -496,5 +498,36 @@ func TestDriverDoctorReportsUnknownCredentialsWhenGitHubUnreachable(t *testing.T
 	result.want(t, 0, map[string]string{"credentials": "unknown"})
 	if len(result.errors) != 1 || !strings.HasPrefix(result.errors[0], "credentials: ") {
 		t.Fatalf("errors = %v, want the unreadable credentials probe", result.errors)
+	}
+}
+
+func TestDoctorReportsOrcaTerminalCreateFailure(t *testing.T) {
+	f := newDoctorFixture(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"orcaRuntime":{"paused":true,"failures":3},"tickets":[]}`, f.now.Format(time.RFC3339Nano)), 0600)
+	result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
+	if result.statuses["orca_runtime"] != "fail" {
+		t.Fatalf("runtime failure not reported: %s", result.out)
+	}
+	detail := string(result.details["orca_runtime"])
+	for _, want := range []string{"orca-serve", "profile", "超时"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("missing recovery advice %q: %s", want, detail)
+		}
+	}
+}
+
+func TestOrcaRuntimeCapabilitiesSurviveStatusBackend(t *testing.T) {
+	backend := &statusBackend{Backend: &scheduler.Runtime{}}
+	if _, ok := any(backend).(interface {
+		ProbeOrcaRuntime(context.Context, string) error
+	}); !ok {
+		t.Error("serve statusBackend hides Orca runtime recovery probe")
+	}
+	if _, ok := any(backend).(interface {
+		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error
+	}); !ok {
+		t.Error("serve statusBackend hides Orca runtime failure notification")
 	}
 }

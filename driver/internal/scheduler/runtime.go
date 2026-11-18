@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -654,6 +655,10 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 	}
 	_, err = r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + t.Repo, Title: "driver" + verb + t.Identifier, Command: "exec " + quote(r.DriverPath) + verb + quote(t.Identifier) + launchLog(t.Identifier)})
 	if err != nil {
+		var rejected *orca.RejectedError
+		if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
+			return &terminalCreateRuntimeError{err}
+		}
 		return fmt.Errorf("executor launch uncertain: %w", err)
 	}
 	return nil
@@ -760,4 +765,21 @@ func (r *Runtime) ActualChanges(ctx context.Context, t Ticket) ([]string, bool, 
 // start leaves evidence. The identifier is validated before it reaches the shell.
 func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
+}
+
+type terminalCreateRuntimeError struct{ error }
+
+// ProbeOrcaRuntime exercises terminal creation without starting an executor.
+func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
+	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + repo, Title: "driver Orca runtime probe", Command: "true"})
+	if err != nil {
+		return err
+	}
+	var terminal struct {
+		Handle string `json:"handle"`
+	}
+	if err := json.Unmarshal(receipt["terminal"], &terminal); err != nil || terminal.Handle == "" {
+		return errors.New("orca probe terminal handle missing")
+	}
+	return r.Orca.TerminalClose(ctx, terminal.Handle)
 }
