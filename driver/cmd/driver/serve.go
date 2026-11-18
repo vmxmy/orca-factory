@@ -270,6 +270,24 @@ func (b *statusBackend) NotifyFeishu(ctx context.Context, ticket scheduler.Ticke
 	return nil
 }
 
+func (b *statusBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error {
+	if source, ok := b.Backend.(interface {
+		ProbeOrcaRuntime(context.Context, string) error
+	}); ok {
+		return source.ProbeOrcaRuntime(ctx, repo)
+	}
+	return errors.New("backend has no Orca runtime probe")
+}
+
+func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error
+	}); ok {
+		return source.NotifyOrcaRuntime(ctx, ticket)
+	}
+	return nil
+}
+
 // Liveness and ReapDead keep the Runtime's heartbeat evidence visible through
 // the wrapper; a backend without it leaves terminal and dispatch evidence.
 func (b *statusBackend) Liveness(ctx context.Context, ticket scheduler.Ticket) (orca.Liveness, error) {
