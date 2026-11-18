@@ -240,7 +240,7 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 批恢复命令仍绑定所选票原来的 queue 和 squash SHA，同时核对所有成员，再给全批写同一恢复决定。任一成员不允许该转换便拒绝，dry-run 核验全批且不写入。恢复写入中断会保留屏障，使用相同动作、操作者和理由可续写已持久化的决定；如果巡检已将成员再次暂停，则需新的恢复决定。部分 smoke-intent 写入留下不同执行标志时，整批 retry-smoke 根据任一成员的 smoke 预留或已持久化的 retry-smoke 决定恢复；confirm-passed 则把操作员核实的通过结果记给全批。不能修改批成员或冻结 handoff 来绕过。
 
 1. 取得状态目录下的 `deploy.lock`。它与人工 `deploy.sh` 是同一把 flock；锁被占用时本轮跳过，下一轮重试。取得锁后先核对当前 serve 的 `main.version`：它等于 squash SHA，或在仓库检出里是 squash SHA 的后代（`git merge-base --is-ancestor`，`deploy.sh` 写入的短 SHA 也适用），说明人工部署已上线更新的提交（OF-558）。这时不 drain、不备份、不构建、不替换，账本写 `deploy-intent` 后直接走第 8 步的 smoke。祖先关系查不出来（例如检出里没有该版本）时记 WARN，按不包含处理，照常安装。
-2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，等 `writersActive` 与 `sessionsActive` 都为 false，最多 1 小时。
+2. 保持 `deployment.state=pending`，写 `self-deploy/<sha>.drained` 标记并 drain，再写 `self-deploy/<sha>.idle-wait` 标记（`<RFC3339Nano 开始时刻> <已回报的等待时长>`）记下等待起点。之后每轮巡检取锁，维护状态已变回 `running`（例如两轮之间人工 `deploy.sh` 退出时恢复）就重新 drain，不重设等待起点；再检查一次 `writersActive` 与 `sessionsActive`，都为 false 才继续；否则本轮放锁返回等待，下一轮再查，最多 1 小时（OF-580）。等待不占用调度循环：同一 serve 的其他仓库照常合并、部署、回收已有执行器与处置结果，status 快照照常刷新；drain 是全局维护状态，所有仓库的新认领与派工照旧被拒，本仓库合并队列仍等这次部署完成。
 3. 空闲后，账本写 `deployment.state=deploy-intent`。安装开始（第 6 步）后，serve 不会再次安装这个 SHA。
 4. 把当前二进制备份到 `deploy-backups/self-<sha>/`。备份已存在时不覆盖。
 5. 在 `self-deploy/<sha>` 建临时 worktree，检出 squash SHA，用 `go build -ldflags "-X main.version=<sha>"` 构建到 `<二进制>.new`。
@@ -250,10 +250,10 @@ orca-factory-driver release OF-461 --pr 123 --sha <完整合并提交SHA>
 
 失败与崩溃：
 
-- 第 2 步等待空闲超时：释放本次 `drained` 标记对应的 drain，恢复 `running`，回执保持 `pending`，不修改 `reruns` 或 `started_at`。把「超时时刻 + 已超时次数」写入本机 `<state root>/self-deploy/<sha>.idle-timeout`，格式为 `<RFC3339Nano 超时时刻> <已超时次数>`，时刻为 UTC，字段以一个空格分隔；重试以该 marker 计时，`selfDeployIdleRetry` 默认 15 分钟，到期前不重新 drain 或构建，serve 重启后仍有效。空闲等待成功后删除 marker。等待期间每 `selfDeployIdleReport`（默认 10 分钟）在既有 `reason` 字段回报「等待会话空闲，已等待 …（第 N 轮）」，超时写「等待会话空闲超时，已等待 …（第 N 轮）」；轮次使连续多轮的回执不会被去重。`reason` 仅供展示，不参与重试判定。等待中的进度回执写入失败只记 WARN，不中断等待。等待期间不构建、不暂停合并通道，也不转处置 Agent；原 FIFO 部署屏障仍保留。`retry-workflow` 授权的重装也遵守此规则。
+- 第 2 步等待空闲超时：释放本次 `drained` 标记对应的 drain，恢复 `running`，回执保持 `pending`，不修改 `reruns` 或 `started_at`。把「超时时刻 + 已超时次数」写入本机 `<state root>/self-deploy/<sha>.idle-timeout`，格式为 `<RFC3339Nano 超时时刻> <已超时次数>`，时刻为 UTC，字段以一个空格分隔；重试以该 marker 计时，`selfDeployIdleRetry` 默认 15 分钟，到期前不重新 drain 或构建，serve 重启后仍有效。空闲等待成功后删除 marker。超时、`paused` 与 `passed` 都删除 `idle-wait` 标记，下一次等待重新计时。等待期间每 `selfDeployIdleReport`（默认 10 分钟）在既有 `reason` 字段回报「等待会话空闲，已等待 …（第 N 轮）」，超时写「等待会话空闲超时，已等待 …（第 N 轮）」；轮次使连续多轮的回执不会被去重。`reason` 仅供展示，不参与重试判定。等待中的进度回执写入失败只记 WARN，不中断等待。等待期间不构建、不暂停合并通道，也不转处置 Agent；原 FIFO 部署屏障仍保留。`retry-workflow` 授权的重装也遵守此规则。
 - 排空的其他错误、第 4 到 6 步失败或超时后恢复维护模式失败：写 `paused`，resume，转处置 Agent。二进制未被替换，不重启。
 - 第 7 步失败：从备份恢复二进制，写 `rolled-back` 标记，重启。恢复后的 serve 读到标记，写 `paused` 并 resume。
-- 第 2 步中 serve 被杀：回执仍为 `pending`，下一轮重新等待空闲。
+- 第 2 步中 serve 被杀：回执仍为 `pending`，新 serve 按 `idle-wait` 标记的起点继续等待，不重新计时。
 - 第 3 到 5 步中 serve 被杀（含关机）：没有 `installing` 标记，说明安装从未开始。部署没有恢复记录时，新 serve 把账本写回 `pending`（`reruns` 加 1），下一轮从第 1 步重新排空、构建、安装、重启。车道不暂停。
 - 第 6、7 步之间 serve 被杀：systemd 用新二进制重启 serve，照第 8 步继续。
 - `--no-block` 返回后旧 serve 还在跑：它的版本不是 squash SHA 而磁盘是，只等待，不 smoke、不暂停。
@@ -507,7 +507,11 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 默认由 `driver resolve` 派发处置 Agent，提交绑定 queue/SHA 的结果后，常驻调度器在单实例锁内应用，无需人工重启。`AGENT_ROLE_RESOLVER` 可覆盖 strong 档；角色规范见 `scripts/agent-gates/roles/resolver.md`。
 
+监管循环遇到 `internal/infra.Transient` 瞬时错误时，保留当前派工并按 2、4、8、16 秒退避，之后每次最多等待 30 秒；连续失败的重试窗口为 5 分钟，成功推进一次后重置窗口。其他错误直接返回。窗口耗尽时，只清理最新处置回执仍处于 `pending`、`running`、`settled` 阶段的 dispatch；`result`、`applied`、`waiting` 回执的派工已释放或属于上一轮，不再停止或释放。监管进程尽力停止并释放已派出的 Agent，清理最多等待 30 秒；读取回执、停止或释放失败都会记录日志，随后带原瞬时错误退出。正常轮询仍为 15 秒，心跳间隔、调度器死亡判定和 Orca 客户端超时保持原值。
+
 处置 Agent 在权限内无法解决时提交 `escalate`，调度器把票转人工（`阶段: 转人`、`归属: 人`），写一条 `转人:` 事件并通知一次，不再派处置 Agent。可重试的失败（outcome=failed、无效或被拒提案）退避 5 分钟后重派；同一票连续 3 次失败同样转人工。
+
+已开始但没有报告的处置轮，监管进程按派工的 agent 终端 `lastOutputAt` 观察进展。首次取得有效输出时间后，连续 15 分钟没有新输出，就停止该派工；回读确认派工已结束且仍无报告后，把本轮记为失败并交给调度器。新输出重开窗口，窗口起点写入 `resolver-state`，监管进程重启后沿用。输出时间未知时不计静默时长，读取失败或停止未确认时不结束本轮。外部已停止的派工在下一次观察时同样结束本轮；停止前后到达的报告优先。终审无报告时记录“终审模型未获响应，不更换模型”，后续按下述 manual/auto 规则处理。
 
 #### 手动与自动模式（OF-479）
 

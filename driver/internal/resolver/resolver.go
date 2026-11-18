@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -21,6 +20,9 @@ const Prefix = "resolver-state "
 // when the brief stays in the agent's input box: polling it without end held
 // the maintenance session and blocked deploys (OF-160).
 const StartUnobservedWindow = 10 * time.Minute
+
+// NoProgressWindow bounds a started resolver round with no terminal output.
+const NoProgressWindow = 15 * time.Minute
 
 type Record struct {
 	TopLaunchAccepted bool      `json:"top_launch_accepted,omitempty"`
@@ -48,6 +50,8 @@ type Record struct {
 	// UnobservedSince is when this dispatch was first seen pending without a
 	// started turn; the ledger keeps it so a restart does not reopen the window.
 	UnobservedSince time.Time `json:"unobserved_since,omitzero"`
+	ProgressSince   time.Time `json:"progress_since,omitzero"`
+	LastOutputAt    int64     `json:"last_output_at,omitempty"`
 	// Failures counts consecutive failed attempts before this one. It is derived
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
@@ -222,76 +226,63 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		}
 	}
 	if p.Phase == "running" {
-		tasks, err := c.Orca.TaskList(ctx, p.Run)
+		task, err := c.readTask(ctx, p)
 		if err != nil {
 			return nil, err
 		}
-		listed, status := false, ""
-		if slices.ContainsFunc(tasks, func(t orca.Task) bool { return t.ID == p.Task && AwaitsDispatch(t) }) {
-			row, err := c.dispatchRow(ctx, p)
+		report, err := task.WorkerReport()
+		if err != nil {
+			return nil, err
+		}
+		var row *workerIdentity
+		if report == nil {
+			row, err = c.dispatchRow(ctx, p)
 			if err != nil {
 				return nil, err
 			}
-			if listed = row != nil; listed {
-				status = row.Status
-			}
-			// The dispatch may report between the two reads; only a task read
-			// after the worker read can confirm loss.
-			if tasks, err = c.Orca.TaskList(ctx, p.Run); err != nil {
-				return nil, err
-			}
-		}
-		found := false
-		for _, task := range tasks {
-			if task.ID != p.Task {
-				continue
-			}
-			if found || (task.RunID != "" && task.RunID != p.Run) || (task.DispatchID != "" && task.DispatchID != p.Dispatch) {
-				return nil, errors.New("resolver task identity mismatch")
-			}
-			found = true
-			report, err := task.WorkerReport()
+			// A report can arrive during the worker read; read the task afterwards.
+			task, err = c.readTask(ctx, p)
 			if err != nil {
 				return nil, err
 			}
-			if report == nil && AwaitsDispatch(task) {
-				if reason, lost := LostDispatch(task, p.Dispatch, listed, status); lost {
-					// Nothing of this round remains to release; the scheduler's
-					// failure rules open the next round with a fresh request.
-					p.Result, p.Outcome, p.Phase = reason, "failed", "result"
-				}
-				continue
-			}
-			if report == nil {
-				switch task.Status {
-				case "failed", "cancelled", "canceled":
-					p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
-				case "blocked":
-					// An abandoned worker returns its task to blocked without a
-					// dispatch or report (orca-task-list-abandoned.json).
-					worker, err := c.worker(ctx, p)
-					if err != nil {
-						return nil, err
-					}
-					if worker.State == "abandoned" {
-						p.Result, p.Outcome, p.Phase = "worker abandoned without a worker report", "failed", "settled"
-					}
-				}
-				continue
-			}
-			if (task.Status != "completed" && task.Status != "failed") || (report.Outcome != "succeeded" && report.Outcome != "failed") {
-				return nil, errors.New("resolver report is not settled")
-			}
-			p.Result, p.Outcome, p.Phase = report.Body, report.Outcome, "settled"
-			if p.Top && p.TopLaunchAccepted {
-				p.TopModelAccepted = true
+			report, err = task.WorkerReport()
+			if err != nil {
+				return nil, err
 			}
 		}
-		if !found {
-			return nil, errors.New("resolver task absent from complete read")
+		status := ""
+		if row != nil {
+			status = row.Status
+		}
+		switch {
+		case report != nil:
+			if err := p.acceptReport(*task, report); err != nil {
+				return nil, err
+			}
+		case AwaitsDispatch(*task):
+			if reason, lost := LostDispatch(*task, p.Dispatch, row != nil, status); lost {
+				p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+			}
+		case DispatchEnded(status):
+			p.Result, p.Outcome, p.Phase = "dispatch ended without a worker report", "failed", "settled"
+		case task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled":
+			p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
+		case task.Status == "blocked":
+			worker, err := c.worker(ctx, p)
+			if err != nil {
+				return nil, err
+			}
+			if worker.State == "abandoned" {
+				p.Result, p.Outcome, p.Phase = "worker abandoned without a worker report", "failed", "settled"
+			}
 		}
 		if p.Phase == "running" {
-			return p, c.awaitTurnStart(ctx, p, now, request("stop"))
+			if err := c.awaitTurnStart(ctx, p, now, request("stop")); err != nil || p.Phase == "waiting" {
+				return p, err
+			}
+			if err := c.awaitProgress(ctx, p, now, request("stop")); err != nil || p.Phase == "running" {
+				return p, err
+			}
 		}
 		if p.Top && !p.TopModelAccepted {
 			result, _ := json.Marshal(Resolution{Action: "escalate", Reason: "终审模型未获响应，不更换模型", Body: p.Result})
@@ -326,6 +317,114 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		}
 	}
 	return p, nil
+}
+
+func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time, stopRequest string) error {
+	observer, ok := c.Orca.(interface {
+		Workers(context.Context, orca.ListOptions) ([]orca.Worker, error)
+		TerminalList(context.Context) ([]orca.Terminal, error)
+	})
+	if !ok {
+		return errors.New("resolver progress observation unavailable")
+	}
+	workers, err := observer.Workers(ctx, orca.ListOptions{Run: p.Run, IncludeRemote: true})
+	if err != nil {
+		return err
+	}
+	terminal := ""
+	for _, worker := range workers {
+		if worker.DispatchID == p.Dispatch && worker.TaskID == p.Task && worker.DispatchStatus == "dispatched" {
+			terminal = worker.AgentTerminalHandle
+		}
+	}
+	if terminal == "" {
+		return nil
+	}
+	terminals, err := observer.TerminalList(ctx)
+	if err != nil {
+		return err
+	}
+	var output int64
+	for _, row := range terminals {
+		if row.Handle == terminal {
+			output = row.LastOutputAt
+		}
+	}
+	if output <= 0 || time.UnixMilli(output).After(now) {
+		if p.ProgressSince.IsZero() {
+			return nil
+		}
+		p.ProgressSince, p.LastOutputAt = time.Time{}, 0
+		return c.Store.Save(ctx, *p)
+	}
+	if p.ProgressSince.IsZero() || output != p.LastOutputAt {
+		p.ProgressSince, p.LastOutputAt = now, output
+		return c.Store.Save(ctx, *p)
+	}
+	if now.Sub(p.ProgressSince) < NoProgressWindow {
+		return nil
+	}
+	if reported, err := c.readReport(ctx, p); err != nil || reported {
+		return err
+	}
+	_, stopErr := c.Orca.WorkerStop(ctx, stopRequest, p.Dispatch)
+	row, err := c.dispatchRow(ctx, p)
+	if err != nil {
+		return errors.Join(stopErr, err)
+	}
+	if row == nil || !DispatchEnded(row.Status) {
+		return errors.Join(stopErr, errors.New("resolver stop of stalled dispatch unconfirmed"))
+	}
+	if reported, err := c.readReport(ctx, p); err != nil || reported {
+		return err
+	}
+	p.Result = fmt.Sprintf("worker made no progress for %s; dispatch %s stopped; last output %s", NoProgressWindow, p.Dispatch, time.UnixMilli(output).UTC().Format(time.RFC3339))
+	p.Outcome, p.Phase = "failed", "settled"
+	return nil
+}
+
+func (p *Record) acceptReport(task orca.Task, report *orca.WorkerReport) error {
+	if (task.Status != "completed" && task.Status != "failed") || (report.Outcome != "succeeded" && report.Outcome != "failed") {
+		return errors.New("resolver report is not settled")
+	}
+	p.Result, p.Outcome, p.Phase = report.Body, report.Outcome, "settled"
+	if p.Top && p.TopLaunchAccepted {
+		p.TopModelAccepted = true
+	}
+	return nil
+}
+
+func (c *Controller) readReport(ctx context.Context, p *Record) (bool, error) {
+	task, err := c.readTask(ctx, p)
+	if err != nil {
+		return false, err
+	}
+	report, err := task.WorkerReport()
+	if err != nil || report == nil {
+		return false, err
+	}
+	return true, p.acceptReport(*task, report)
+}
+
+func (c *Controller) readTask(ctx context.Context, p *Record) (*orca.Task, error) {
+	tasks, err := c.Orca.TaskList(ctx, p.Run)
+	if err != nil {
+		return nil, err
+	}
+	var found *orca.Task
+	for _, task := range tasks {
+		if task.ID != p.Task {
+			continue
+		}
+		if found != nil || (task.RunID != "" && task.RunID != p.Run) || (task.DispatchID != "" && task.DispatchID != p.Dispatch) {
+			return nil, errors.New("resolver task identity mismatch")
+		}
+		found = &task
+	}
+	if found == nil {
+		return nil, errors.New("resolver task absent from complete read")
+	}
+	return found, nil
 }
 
 // awaitTurnStart stops a dispatch whose turn stayed unobserved for the whole
