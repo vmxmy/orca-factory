@@ -165,6 +165,66 @@ func TestCurrentDirectSquash(t *testing.T) {
 	}
 }
 
+func TestInfrastructureFailuresResetAndReplay(t *testing.T) {
+	for _, reset := range []string{"queue", "head", "main", "green", "red"} {
+		t.Run(reset, func(t *testing.T) {
+			c, h, _, gate, _ := fixture(t, ready())
+			r := req(1)
+			r.QueueID = "q1"
+			attempt := func(want Status) {
+				t.Helper()
+				c = New(h, c.git, gate, c.validations, nil)
+				if err := c.Enqueue(r); err != nil {
+					t.Fatal(err)
+				}
+				validating(t, c, r.Repository)
+				settle(t, c, Candidate{Request: r, Head: h.snapshots[0].Head})
+				got, err := c.Next(context.Background(), r.Repository)
+				if got.Status != want || (want == "" && err == nil) || (want != "" && err != nil) || got.Corrections != 0 && want != Correction {
+					t.Fatalf("want %s, result=%+v err=%v", want, got, err)
+				}
+			}
+			gate.err = errors.New("gate launch failed")
+			attempt("")
+			attempt("")
+			switch reset {
+			case "queue":
+				r.QueueID = "q2"
+			case "head":
+				h.snapshots[0].Head, h.snapshots[0].CIHead = "new-head", "new-head"
+			case "main":
+				h.snapshots[0].Main = "new-main"
+			case "green":
+				gate.err = nil
+				attempt(Merged)
+				c.validations.Forget(Candidate{Request: r, Head: "head"})
+			case "red":
+				gate.err = ErrGateRed
+				attempt(Correction)
+				c.validations.Forget(Candidate{Request: r, Head: "head"})
+			}
+			gate.err = errors.New("gate launch failed")
+			attempt("")
+			attempt("")
+			attempt(Human)
+			if got := next(t, c, r.Repository); got.Status != Empty {
+				t.Fatalf("exhausted infrastructure retained queue head: %+v", got)
+			}
+			prepared := len(gate.prepared)
+			for i := 0; i < 2; i++ {
+				c = New(h, c.git, gate, c.validations, nil)
+				if err := c.Enqueue(r); err != nil {
+					t.Fatal(err)
+				}
+				got := next(t, c, r.Repository)
+				if got.Status != Human || got.Corrections != 0 || !strings.Contains(got.Reason, "3 consecutive infrastructure failures") || len(gate.prepared) != prepared {
+					t.Fatalf("exhausted decision not replayed: %+v gates=%d want=%d", got, len(gate.prepared), prepared)
+				}
+			}
+		})
+	}
+}
+
 // Disjoint paths can still break together, so any behind head is validated
 // as the merged result.
 func TestBehindGatesMergedTree(t *testing.T) {
