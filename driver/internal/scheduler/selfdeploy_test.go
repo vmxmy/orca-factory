@@ -675,3 +675,35 @@ func TestSelfDeployIdleWaitDoesNotBlockOtherRepositories(t *testing.T) {
 		t.Fatalf("idle deployment: builds=%d state=%s idle-wait=%t", h.builds, lastState(f), markerExists(f, selfSHA, "idle-wait"))
 	}
 }
+
+// A manual deploy.sh while the deployment waited in pending may already run a
+// descendant of the squash SHA, recorded as a full or a short SHA; installing
+// the squash build would roll production back.
+func TestSelfDeployDoesNotDowngradeInstalledDriver(t *testing.T) {
+	for _, short := range []bool{false, true} {
+		t.Run(fmt.Sprintf("short=%t", short), func(t *testing.T) {
+			f, h := newSelfDeployFixture(t)
+			repo := f.repos[0].Path
+			tree := gitMergeTest(t, repo, "rev-parse", "HEAD^{tree}")
+			squash := gitMergeTest(t, repo, "commit-tree", tree, "-p", f.main, "-m", "squash")
+			newer := gitMergeTest(t, repo, "commit-tree", tree, "-p", squash, "-m", "manual deploy")
+			gitMergeTest(t, repo, "update-ref", "refs/heads/main", newer)
+			f.prBody["merge_commit_sha"] = squash
+			running := newer
+			if short {
+				running = newer[:7]
+			}
+			if err := os.WriteFile(h.driver, fakeDriver(running), 0700); err != nil {
+				t.Fatal(err)
+			}
+			f.runtime.Version = running
+			if err := (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			receipts := strings.Join(f.tracker.bodies, "\n")
+			if h.builds != 0 || h.restarts != 0 || h.guard != nil || installed(t, h.driver) != running || h.smokes != 1 || !strings.Contains(receipts, `"state":"smoke-intent"`) || lastState(f) != "passed" || f.tracker.issue.State.Name != "Done" || maintenanceMode(t) != "running" {
+				t.Fatalf("downgraded or skipped smoke: builds=%d restarts=%d guard=%v installed=%q smokes=%d state=%s ledger=%s mode=%s", h.builds, h.restarts, h.guard, installed(t, h.driver), h.smokes, lastState(f), f.tracker.issue.State.Name, maintenanceMode(t))
+			}
+		})
+	}
+}
