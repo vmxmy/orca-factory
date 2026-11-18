@@ -181,6 +181,10 @@ func (r *Runtime) deploySelf(ctx context.Context, t Ticket, p *merge.Progress) e
 		return err
 	}
 	defer unlock()
+	if err = r.refuseFrozen(sha); err != nil {
+		d.Reason = err.Error()
+		return errors.Join(err, r.deploymentReceipt(ctx, t, p))
+	}
 	if r.runningContains(ctx, t.Repo, sha) {
 		if err = os.Remove(idleTimeout); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err

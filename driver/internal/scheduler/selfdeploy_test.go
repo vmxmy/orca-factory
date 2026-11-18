@@ -679,6 +679,34 @@ func TestSelfDeployKeepsOperatorFreezeDuringFailedBuild(t *testing.T) {
 	}
 }
 
+func TestSelfDeployKeepsOperatorFreezeWhenRunningContainsSHA(t *testing.T) {
+	f, h := newSelfDeployFixture(t)
+	held, err := os.OpenFile(filepath.Join(f.runtime.StateRoot, "deploy.lock"), os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, "old")
+	if lastState(f) != "pending" {
+		t.Fatalf("setup: state=%s", lastState(f))
+	}
+	if err = maintenance.Set("draining"); err != nil {
+		t.Fatal(err)
+	}
+	if err = maintenance.Set("frozen"); err != nil {
+		t.Fatal(err)
+	}
+	if err = held.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = serveAs(f, h, selfSHA)
+	if mode := maintenanceMode(t); mode != "frozen" || h.builds != 0 || h.restarts != 0 || h.smokes != 0 || lastState(f) != "pending" || f.tracker.issue.State.Name == "Done" {
+		t.Fatalf("operator freeze with the squash SHA already running: mode=%s builds=%d restarts=%d smokes=%d state=%s ledger=%s", mode, h.builds, h.restarts, h.smokes, lastState(f), f.tracker.issue.State.Name)
+	}
+}
+
 // A manual deploy.sh while the deployment waited in pending may already run a
 // descendant of the squash SHA, recorded as a full or a short SHA; installing
 // the squash build would roll production back.
