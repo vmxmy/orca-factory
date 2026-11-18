@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
@@ -409,6 +411,17 @@ func (r *Runtime) applyResolution(ctx context.Context, t Ticket) error {
 	if !mergechannel.PRMatchesHandoff(pr, h) {
 		return r.retryResolution(ctx, t, p, fmt.Sprintf("PR #%d does not match the handoff: the merge lane accepts only an open PR from branch %s at head %s into main of %s; push that head to that branch and open a new PR", h.PR, mergechannel.HandoffBranch(h), h.Head, h.Repository))
 	}
+	description, err := r.Clients[t.Repo].Description(ctx, t.ID)
+	if err != nil {
+		return fmt.Errorf("read ticket face for resolver gate_spec: %w", err)
+	}
+	face, err := executor.ParseTicket(t.ID, t.Identifier, t.Title, description)
+	if err != nil {
+		return r.retryResolution(ctx, t, p, "cannot validate gate_spec: ticket requires 要做, CHECK and SCOPE")
+	}
+	if problem := resolverGateSpecProblem(h.GateSpec, h.Unit, face); problem != "" {
+		return r.retryResolution(ctx, t, p, problem)
+	}
 	if t.Handoff != nil && h.QueueID == t.Handoff.QueueID {
 		if t.Progress != nil && (t.Progress.Phase == "human" || t.Progress.Phase == "correction") {
 			return r.retryResolution(ctx, t, p, "exhausted queue requires a new validated handoff")
@@ -689,6 +702,41 @@ func ledgerLine(s string) string {
 	}
 	return string(runes)
 }
+
+// resolverGateSpecProblem explains why a resolver gate_spec is not the one the
+// executor renders from the ticket face, or returns "" when it is.
+func resolverGateSpecProblem(spec, unit string, face executor.Ticket) string {
+	newTest := "no"
+	if face.NewTest {
+		newTest = "yes"
+	}
+	expected := map[string]string{
+		"UNIT": unit, "SCOPE": face.Scope, "CHECK": face.Check,
+		"CHECK_IS_NEW_TEST": newTest, "CHECK_TEST_FILES": face.TestFiles,
+		"CHECK_ASSERTION": face.Assertion, "LANE": strconv.Itoa(face.Lane),
+	}
+	seen := map[string]bool{}
+	for _, line := range strings.Split(spec, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		// gate.sh reads `KEY:` only at line start and compares values exactly, so
+		// lines must match the executor rendering byte for byte, not after trimming.
+		key, value, ok := strings.Cut(line, ":")
+		want, known := expected[key]
+		if !ok || !known || seen[key] || value != " "+want && (want != "" || value != "") {
+			return "gate_spec differs from driver-parsed ticket fields; use the ticket's gate spec"
+		}
+		seen[key] = true
+	}
+	for key, value := range expected {
+		if !seen[key] && value != "" && (key != "CHECK_IS_NEW_TEST" || value != "no") {
+			return "gate_spec missing driver-parsed ticket field: " + key
+		}
+	}
+	return ""
+}
+
 func resolverApproved(t Ticket) bool {
 	if t.Resolution == nil || t.Resolution.Phase != "applied" || t.Handoff == nil {
 		return false

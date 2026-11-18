@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
@@ -18,6 +19,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
@@ -105,6 +107,243 @@ func TestResolverApprovalBoundToFrozenHead(t *testing.T) {
 func validHandoffForResolver() merge.Handoff {
 	return merge.Handoff{Version: 1, TicketID: "id", Identifier: "ENG-1", Repository: "o/r", PR: 1, Head: strings.Repeat("a", 40), Baseline: strings.Repeat("b", 40), Unit: "fix", QueueID: "new-q", Lane: 2, Attempt: 1, EnqueuedAt: time.Now(), Run: "run", Task: "task", Worktree: "/repo/wt", GateSpec: "UNIT: fix\nSCOPE: driver/**\nCHECK: make test", GateOutput: "UNIT fix\nVERDICT green\nSTEP all\nREASON passed\nEVIDENCE test\nSCOPE driver/**\nLANE 2", ReviewOutput: `{"verdict":"green","step":"review"}`}
 }
+
+type resolverMergeIssues struct{ *mergeIssues }
+
+func (m resolverMergeIssues) Description(context.Context, string) (string, error) {
+	return "要做: implement feature\nSCOPE: feature\nCHECK: true", nil
+}
+
+type resolverFaceIssues struct {
+	*mergeIssues
+	face string
+}
+
+func (m resolverFaceIssues) Description(context.Context, string) (string, error) {
+	return m.face, nil
+}
+
+func resolverMergeProposal(t *testing.T, f *mergeFixture, edit func(*merge.Handoff)) {
+	t.Helper()
+	f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
+	resolverFrozenProposal(t, f, "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n", edit)
+}
+
+func resolverFrozenProposal(t *testing.T, f *mergeFixture, spec string, edit func(*merge.Handoff)) {
+	t.Helper()
+	rewriteHandoff(t, f, func(h map[string]any) { h["gate_spec"] = spec })
+	var h merge.Handoff
+	if err := json.Unmarshal([]byte(strings.Split(f.tracker.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
+		t.Fatal(err)
+	}
+	frozen, err := json.Marshal(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.rows[0].Body = "阶段: 排队合并\n归属: 合并通道\n" + merge.HandoffPrefix + string(frozen)
+	if edit != nil {
+		edit(&h)
+	}
+	proposal, err := json.Marshal(resolver.Resolution{Action: "merge", Reason: "reviewed", Handoff: &h})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record, err := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "succeeded", Result: string(proposal)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "result", CreatedAt: time.Now(), Body: "阶段: Agent处置\n归属: 处置Agent\n" + resolver.Prefix + string(record)})
+}
+
+func TestResolverHandoffIsGatedByDriverBeforeSquash(t *testing.T) {
+	for _, verdict := range []string{"green", "red"} {
+		t.Run(verdict, func(t *testing.T) {
+			f := newMergeFixture(t)
+			resolverMergeProposal(t, f, nil)
+			closeMergeGates(t, f.runtime)
+			started, release := make(chan struct{}, 1), make(chan struct{})
+			f.runtime.DriverPath = "/test/driver"
+			f.runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+				if spec.Path != "bash" || len(spec.Args) != 3 {
+					return runx.Run(ctx, spec)
+				}
+				if !slices.Contains(spec.Env, "GATE_BASE="+f.main) || !slices.Contains(spec.Env, "GATE_PROJECT_SRC="+f.main) {
+					t.Error("gate must use the pinned main")
+				}
+				parents := gitMergeTest(t, spec.Args[1], "show", "-s", "--format=%P", "HEAD")
+				if parents != f.head+" "+f.main {
+					t.Errorf("gate must validate the merged result: parents=%s", parents)
+				}
+				started <- struct{}{}
+				select {
+				case <-release:
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				out := []byte("UNIT executor\nVERDICT " + verdict + "\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature\nLANE 1")
+				if verdict == "red" {
+					return out, gateExit{}
+				}
+				return out, nil
+			}
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			for range 2 {
+				if err := tickAlone(t, s); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if f.puts != 0 {
+				t.Fatalf("resolver evidence squashed before driver gate: puts=%d", f.puts)
+			}
+			select {
+			case <-started:
+			case <-time.After(10 * time.Second):
+				t.Fatal("driver gate did not start for an up-to-date resolver head")
+			}
+			close(release)
+			awaitMergeGate(t, f.runtime, f)
+			if err := tickAlone(t, s); err != nil {
+				t.Fatal(err)
+			}
+			if verdict == "green" {
+				if f.puts != 1 || f.tracker.issue.State.Name != "Done" {
+					t.Fatalf("green gate did not permit squash: puts=%d state=%s", f.puts, f.tracker.issue.State.Name)
+				}
+			} else {
+				progress := mergeProgress(t, f.tracker.bodies)
+				if f.puts != 0 || len(progress) == 0 || progress[len(progress)-1].Phase != "correction" {
+					t.Fatalf("red driver gate did not prevent squash: puts=%d progress=%+v", f.puts, progress)
+				}
+			}
+		})
+	}
+}
+
+func TestResolverCannotReplaceGateSpec(t *testing.T) {
+	for _, field := range []string{"CHECK", "SCOPE", "CHECK_IS_NEW_TEST", "CHECK_TEST_FILES", "CHECK_ASSERTION", "LANE"} {
+		t.Run(field, func(t *testing.T) {
+			f := newMergeFixture(t)
+			resolverMergeProposal(t, f, func(h *merge.Handoff) {
+				h.QueueID = "replacement"
+				if field == "SCOPE" {
+					h.GateOutput = strings.Replace(h.GateOutput, "SCOPE feature", "SCOPE changed", 1)
+				}
+				lines := strings.Split(h.GateSpec, "\n")
+				for i, line := range lines {
+					if strings.HasPrefix(line, field+":") {
+						lines[i] = field + ": changed"
+					}
+				}
+				h.GateSpec = strings.Join(lines, "\n")
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if !strings.Contains(bodies, "gate_spec") || !strings.Contains(bodies, `"phase":"waiting"`) || strings.Contains(bodies, "归属: 合并通道") || f.puts != 0 {
+				t.Fatalf("replacement gate spec accepted: puts=%d bodies=%s", f.puts, bodies)
+			}
+		})
+	}
+}
+
+// gate.sh reads only `KEY: value` lines that start at column 0 and compares
+// values exactly, so a spec line differing only in whitespace would pass a
+// trimmed comparison yet change what the gate executes.
+func TestResolverGateSpecLinesMatchDriverRendering(t *testing.T) {
+	face := "要做: implement feature\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: feature_test.go\nCHECK_ASSERTION: feature_test.go"
+	spec := "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: yes\nCHECK_TEST_FILES: feature_test.go\nCHECK_ASSERTION: feature_test.go\nLANE: 2\n"
+	for name, line := range map[string]string{"leading space": " CHECK_IS_NEW_TEST: yes", "trailing space": "CHECK_IS_NEW_TEST: yes ", "no separator space": "CHECK_IS_NEW_TEST:yes"} {
+		t.Run(name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			f.runtime.Clients[f.repos[0].Path] = resolverFaceIssues{f.tracker, face}
+			resolverFrozenProposal(t, f, spec, func(h *merge.Handoff) {
+				h.QueueID = "replacement"
+				h.GateSpec = strings.Replace(h.GateSpec, "CHECK_IS_NEW_TEST: yes", line, 1)
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if !strings.Contains(bodies, "gate_spec differs") || strings.Contains(bodies, "归属: 合并通道") || f.puts != 0 {
+				t.Fatalf("gate_spec line %q accepted: puts=%d bodies=%s", line, f.puts, bodies)
+			}
+		})
+	}
+}
+
+// The recorded face keeps Markdown escapes in CHECK; the executor renders them
+// verbatim (OF-377), so a resolver spec must too.
+func TestRecordedResolverGateSpec(t *testing.T) {
+	face, err := os.ReadFile("../../testdata/recorded/linear-description-escaped.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := `set -a; . scripts/agent-gates/agent-graph.env; set +a; \[\[ $AGENT_ROLE_REVIEWER_CMD == claude\\ -p\* \]\] && ! grep -q 'AGENT_ROLE_REVIEWER_CMD -"' core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md && bin/orca-factory check . >/dev/null`
+	scope := "core/COORDINATOR.md scripts/agent-gates/COORDINATOR.md scripts/agent-gates/agent-graph.env"
+	spec := "UNIT: executor\nSCOPE: " + scope + "\nCHECK: " + check + "\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n"
+	for name, accepted := range map[string]bool{"rendered": true, "unescaped": false} {
+		t.Run(name, func(t *testing.T) {
+			f := newMergeFixture(t)
+			closeMergeGates(t, f.runtime)
+			f.runtime.Clients[f.repos[0].Path] = resolverFaceIssues{f.tracker, string(face)}
+			resolverFrozenProposal(t, f, spec, func(h *merge.Handoff) {
+				h.QueueID = "recorded"
+				h.GateOutput = strings.Replace(h.GateOutput, "SCOPE feature", "SCOPE "+scope, 1)
+				if !accepted {
+					h.GateSpec = strings.Replace(h.GateSpec, `\[\[`, "[[", 1)
+				}
+			})
+			s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
+			if err := s.Tick(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			bodies := strings.Join(f.tracker.bodies, "\n")
+			if strings.Contains(bodies, "gate_spec differs") == accepted || strings.Contains(bodies, `"queue_id":"recorded"`) != accepted {
+				t.Fatalf("recorded face spec accepted=%v: bodies=%s", accepted, bodies)
+			}
+		})
+	}
+}
+
+// A real resolver merge proposal (OF-572) carries the executor-rendered
+// gate_spec for its ticket face; whitespace-only drift must still be refused.
+func TestRecordedResolverMergeProposal(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/resolver-merge-proposal-OF-572.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sample struct {
+		Ticket struct{ ID, Identifier, Title, Description string } `json:"ticket"`
+		Result string                                              `json:"result"`
+	}
+	if err = json.Unmarshal(raw, &sample); err != nil {
+		t.Fatal(err)
+	}
+	proposal, err := resolver.ParseResult(sample.Result)
+	if err != nil || proposal.Action != "merge" || proposal.Handoff == nil {
+		t.Fatalf("recorded proposal: action=%q err=%v", proposal.Action, err)
+	}
+	face, err := executor.ParseTicket(sample.Ticket.ID, sample.Ticket.Identifier, sample.Ticket.Title, sample.Ticket.Description)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := proposal.Handoff.GateSpec
+	if problem := resolverGateSpecProblem(spec, proposal.Handoff.Unit, face); problem != "" {
+		t.Fatalf("recorded gate_spec refused: %s", problem)
+	}
+	for _, drift := range []string{strings.Replace(spec, "\nCHECK: ", "\n CHECK: ", 1), strings.Replace(spec, "driver/CONTRACTS.md\n", "driver/CONTRACTS.md \n", 1), strings.Replace(spec, "LANE: 2", "LANE:2", 1)} {
+		if drift == spec {
+			t.Fatal("drift did not change the recorded spec")
+		}
+		if resolverGateSpecProblem(drift, proposal.Handoff.Unit, face) == "" {
+			t.Fatalf("whitespace drift accepted: %q", drift)
+		}
+	}
+}
+
 func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 	for _, barrier := range []bool{false, true} {
 		h := validHandoffForResolver()
@@ -149,12 +388,15 @@ func TestResolverRejectsWrongTicketAndDeploymentReplacement(t *testing.T) {
 // a second round, so the new queue must not leave the lane exhausted.
 func TestResolverRequeueKeepsLaneCatchupRounds(t *testing.T) {
 	f := newMergeFixture(t)
+	f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
+	closeMergeGates(t, f.runtime)
 	var h merge.Handoff
 	if err := json.Unmarshal([]byte(strings.Split(f.tracker.rows[0].Body, merge.HandoffPrefix)[1]), &h); err != nil {
 		t.Fatal(err)
 	}
 	conflict, _ := json.Marshal(merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: h.TicketID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: f.main, Phase: "correction", Corrections: 1, CatchupRounds: 1, Attempt: 1, Reason: "return to scheduler to start a new executor for conflict"})
 	h.QueueID, h.CatchupRounds = "q2", 2
+	h.GateSpec = strings.Replace(h.GateSpec, "LANE: 1", "LANE: 2", 1)
 	proposal, _ := json.Marshal(resolver.Resolution{Action: "merge", Reason: "conflict resolved", Handoff: &h})
 	record, _ := json.Marshal(resolver.Record{Version: 1, Attempt: 1, Phase: "result", Outcome: "success", Result: string(proposal)})
 	enqueued := f.tracker.rows[0].CreatedAt
@@ -163,7 +405,17 @@ func TestResolverRequeueKeepsLaneCatchupRounds(t *testing.T) {
 		task.Comment{ID: "result", CreatedAt: enqueued.Add(2 * time.Nanosecond), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
 	s := &Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}
 	for i := 0; i < 3 && f.tracker.issue.State.Name != "Done"; i++ {
-		_ = s.Tick(context.Background())
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		c := merge.Candidate{Request: merge.Request{Repository: h.Repository, QueueID: h.QueueID}, Head: h.Head}
+		deadline := time.Now().Add(10 * time.Second)
+		for !f.runtime.mergeValidations().Idle(c) {
+			if time.Now().After(deadline) {
+				t.Fatal("resolver gate still running")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	if f.puts != 1 || f.tracker.issue.State.Name != "Done" || !strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"catchup_rounds":1,"enqueued_at"`) {
 		t.Fatalf("resolver requeue did not keep one catch-up round: puts=%d state=%s bodies=%q", f.puts, f.tracker.issue.State.Name, f.tracker.bodies)

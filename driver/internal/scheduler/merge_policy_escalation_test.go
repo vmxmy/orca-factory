@@ -19,8 +19,13 @@ import (
 
 func TestLane2GlobApprovalDoesNotLoop(t *testing.T) {
 	f := newMergeFixture(t)
+	f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
+	closeMergeGates(t, f.runtime)
 	f.tracker.labels = true
 	f.repos[0].Env["AGENT_LANE2_GLOBS"] = "feature"
+	rewriteHandoff(t, f, func(h map[string]any) {
+		h["gate_spec"] = strings.ReplaceAll(h["gate_spec"].(string), "LANE: 1", "LANE: 2")
+	})
 	var frozen Ticket
 	readMergeHandoff(&frozen, f.tracker.rows)
 	handoff, err := json.Marshal(frozen.Handoff)
@@ -46,7 +51,7 @@ func TestLane2GlobApprovalDoesNotLoop(t *testing.T) {
 	}
 	f.tracker.rows = append(f.tracker.rows, task.Comment{ID: "result", CreatedAt: time.Now(), Body: "阶段: Agent处置\n归属: 处置Agent term=controller\n" + resolver.Prefix + string(record)})
 	for range 3 {
-		if err := s.Tick(context.Background()); err != nil {
+		if err := tickPastMergeGate(t, s, f.runtime, f); err != nil {
 			t.Fatal(err)
 		}
 		if f.tracker.issue.State.Name == "Done" {

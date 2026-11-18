@@ -488,6 +488,8 @@ orca-factory-driver prune-workspaces
 
 ## 部署屏障与 Agent 处置
 
+处置 Agent 的 merge 提案须使用 driver 从当前票面解析的 gate_spec；Agent 不能自行替换 CHECK、SCOPE 或新测试断言字段，不一致时调度器拒绝提案并说明原因。交接回到合并通道后，driver 在固定 PR head 与当前 main 的合并结果上重跑 gate，即使分支未落后 main 也一样。只有 driver gate 为 green，且既有 head、CI 与合并策略检查通过，才执行 squash。
+
 合并预检：`AGENT_MERGE_PRECHECK_CMD` 非空时，队首 PR 在每次合并尝试前运行这条命令，工作目录是仓库检出，`AGENT_MERGE_HEAD` 是冻结的 PR head（已 fetch，用 `git show "$AGENT_MERGE_HEAD:<路径>"` 读该提交的文件）。退出 0 继续合并。退出 1 表示这张票现在不能合：写 `转人`，移出队列，后面的票继续合。其他退出码或超时（1 分钟）只说明命令坏了，票留在队首等待。人处理完后推新 head，处置 Agent 用新 queue ID 重新排队。
 
 部署自动重跑：`AGENT_DEPLOY_AUTO_RERUN=1` 且配置了 `AGENT_DEPLOY_WORKFLOW` 时，部署 workflow 失败后自动重跑一次失败的 job，再失败才转处置 Agent。开关随队列冻结。`reruns` 在发出请求前写入账本，所以崩溃后不会重跑第二次。main 已前进时不重跑，因为旧 SHA 重新部署会回滚生产。

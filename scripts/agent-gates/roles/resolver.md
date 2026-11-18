@@ -33,6 +33,8 @@
 
 - 先读 `scripts/agent-gates/roles/worker.md` 的检查约束；安装依赖，针对行为修改先运行失败断言，再实现并跑绿。
 - 在真实 PR head 上运行 gate；lane 2 使用仓库配置的独立 reviewer。保留原始完整输出，不伪造 green。
+- merge 提案的 gate_spec 必须与 driver 从当前票面解析的字段一致，每行按执行器格式 `KEY: value` 逐字节书写，不增删空白；CHECK、SCOPE 和新测试断言字段由票面决定，Agent 不得替换。driver 接受提案前核对这些字段，不一致就退回处置并说明原因。
+- 处置交接进入合并通道后，driver 在固定 PR head 与当前 main 的合并结果上重跑 gate；即使分支未落后 main，也须等 driver gate 为 green 才能 squash。
 - 推送目标必须是 `agent/<票号>/<单元>`（Orca 本地分支如 `vmxmy/<票号>-resolver-2` 不能直接作为 PR 分支）；open-pr 的 branch 和 merge handoff 的 unit 必须与之一致。确认推送成功、head 与提交一致。没有 PR 时可先提交 open-pr；调度器创建或复用 PR 后会开启下一次处置，届时核对票据关联、等待 CI，再提交 merge handoff。已有 PR 的检查未通过就修复，不能提交 merge 决策。
 - 新 handoff 按 `driver/internal/merge/evidence.go` 的字段和 `validation.go` 的证据格式填写，ticket_id、identifier、repository 必须与输入一致。
 - merge handoff 的 `repository` 填处置证据顶层的 `Repository`，即仓库配置的 `AGENT_GH_REPO`，不是本机路径。

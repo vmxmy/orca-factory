@@ -212,7 +212,7 @@ func (r *Runtime) mergeTicket(ctx context.Context, t Ticket, merged func(*merge.
 			return r.mergeDecision(ctx, t, "", merge.Result{Status: merge.HumanDirect, Reason: "merge precheck failed at PR head; resolve it and push a new head", Rounds: rounds})
 		}
 		channel := merge.New(a, merge.CommandGit{Run: r.Run}, a, r.mergeValidations(), nil)
-		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, Ticket: t.Identifier, QueueID: h.QueueID, CatchupRounds: rounds}
+		req := merge.Request{Repository: h.Repository, Path: t.Repo, Number: h.PR, Ticket: t.Identifier, QueueID: h.QueueID, CatchupRounds: rounds, ExternalEvidence: resolverApproved(t)}
 		if err = channel.Enqueue(req); err != nil {
 			return err
 		}

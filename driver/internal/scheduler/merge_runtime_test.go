@@ -313,6 +313,8 @@ func TestResolverRequeueAfterTwoCatchupRoundsGetsAttempt(t *testing.T) {
 	}
 	h := *old.Handoff
 	h.QueueID, h.CatchupRounds = "q2", 2
+	h.GateSpec = "UNIT: executor\nSCOPE: feature\nCHECK: true\nCHECK_IS_NEW_TEST: no\nCHECK_TEST_FILES: \nCHECK_ASSERTION: \nLANE: 2\n"
+	f.runtime.Clients[f.repos[0].Path] = resolverMergeIssues{f.tracker}
 	proposal, err := json.Marshal(resolver.Resolution{Action: "merge", Reason: "revalidated", Handoff: &h})
 	if err != nil {
 		t.Fatal(err)
@@ -331,8 +333,24 @@ func TestResolverRequeueAfterTwoCatchupRoundsGetsAttempt(t *testing.T) {
 	if queued.Handoff.QueueID != "q2" || queued.Owner != machine.OwnerMerge {
 		t.Fatalf("resolver did not enqueue new handoff: %+v", queued)
 	}
+	closeMergeGates(t, f.runtime)
+	f.runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path != "bash" || len(spec.Args) != 3 {
+			return runx.Run(ctx, spec)
+		}
+		return []byte("UNIT executor\nVERDICT green\nSTEP all\nREASON checked\nEVIDENCE test\nSCOPE feature\nLANE 1"), nil
+	}
+	if err := f.runtime.advanceMerge(ctx, queued); err != nil || f.puts != 0 {
+		t.Fatalf("resolver handoff must start the driver gate before squash: puts=%d err=%v", f.puts, err)
+	}
+	gated := merge.Candidate{Request: merge.Request{Repository: "o/r", QueueID: h.QueueID}, Head: f.head}
+	for deadline := time.Now().Add(10 * time.Second); !f.runtime.mergeValidations().Idle(gated); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("merged-result gate still running")
+		}
+	}
 	f.rejectPuts = 1
-	err = f.runtime.advanceMerge(ctx, queued)
+	err = f.runtime.advanceMerge(ctx, fromEvidence(t, base, f.tracker.rows))
 	after := fromEvidence(t, base, f.tracker.rows)
 	if after.Progress != nil && after.Progress.Reason == "catch-up budget exhausted" {
 		t.Fatal("new queue's first Next returned catch-up budget exhausted")
