@@ -48,14 +48,14 @@
 - 部署提案：`{"action":"confirm-passed|retry-workflow|retry-smoke","reason":"核对的证据与安全重试理由","queue":"原 queue_id","sha":"原 squash SHA"}`。
 - reason 使用单行。成功仅表示提案就绪；调度器仍会重读 head、CI、队列与部署证据。
 - 受阻需人（重试同样无法解决）：`{"action":"escalate","reason":"单行阻塞原因","body":"根因、证据、已保留分支、需要人做的事"}`，outcome 用 failed。默认调度器把票转人工、通知一次。仓库启用 `AGENT_AUTO_REVIEW=top` 时，新转人请求先进入一次终审；已有历史转人票不补派。修复已推送、只差人裁定时按以下类别填写 `class`，并带 `head`（40 位已推送 SHA）：`scope-extension` 表示只差把 SCOPE 外文件纳入，`brief-interpretation` 表示只差裁定票面口径。凭证、环境、授权、不可逆操作、生产 DDL、生产数据阻塞必须分别填 `class=credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data`；其余阻塞填 `class=other`；每个 escalate 都必须带 class，不带 class 按未分类处理。`other` 表示不属于六类禁止阻塞，也不符合已推送修复的 `scope-extension` 或 `brief-interpretation` 条件，不要求 head。普通转人时 `scope-extension`、`brief-interpretation` 与 head 触发交叉复审并记录结果；终审的 scope-extension 可由调度器按自动扩 SCOPE 限制批准。`scope-extension` 再带 `scope`（仓库内字面路径数组）时，审批人可在飞书卡片一键同意；只列确实需要的文件。
-- 仓库 `AGENT_MODE=auto` 时调度器不转人：escalate 先进终审，终审的 escalate 与失败在同一档位最多重试 3 次；重试用尽，或 `class` 属于六类禁止阻塞、票带 lane 3 handoff、票面 LANE 预判为 3、部署 paused、证据冲突时，票被搁置（`搁置：` 评论、`parked` 标签、释放归属）。人重新加 `ready-for-agent` 并去掉 `parked` 后，票重新领取；带冻结合并证据的票回到 Agent处置。escalate 的写法与 class 规则不变；搁置不是批准。
+- 仓库 `AGENT_MODE=auto` 时调度器不转人：escalate 先进终审，终审的 escalate 与失败最多重试 3 次，配置未变时保持同一档位；重试用尽，或 `class` 属于六类禁止阻塞、票带 lane 3 handoff、票面 LANE 预判为 3、部署 paused、证据冲突时，票被搁置（`搁置：` 评论、`parked` 标签、释放归属）。人重新加 `ready-for-agent` 并去掉 `parked` 后，票重新领取；带冻结合并证据的票回到 Agent处置。escalate 的写法与 class 规则不变；搁置不是批准。
 - 可重试的暂时失败用 outcome=failed，body 写根因、证据、已保留分支、下一次可执行的处置；驱动器退避重试，连续 3 次失败转人工。
 - 报告后停止操作，等待控制器释放 worker。
 - 已开始的派工持续 15 分钟没有终端新输出且没有报告时，控制器会停止派工，回读确认结束后按失败结算；新输出重开窗口，控制器重启沿用已记录的窗口。输出时间未知或读取失败不作为停滞证据。派工被外部停止后，控制器下一次观察结束本轮；停止前后到达的报告优先。终审没有报告时按“终审模型未获响应，不更换模型”处理，后续仍遵循仓库 manual/auto 的重试、转人或搁置规则。
 
 ## 终审处置
 
-仅当调度器明确标记 `Ticket.Resolution.top=true` 时适用。档位取仓库 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，普通处置仍用原档位。你是该票的最终决策者，只有下列情形才转人：lane 3；凭证、环境或授权类阻塞；不可逆操作；生产 DDL 与数据；部署 paused；证据冲突；终审自己的第二次失败。调度器按原转人提案的阻塞类别及 lane、部署、回执解析等结构化证据拒绝这些情形的 ruling，不按票面、理由或正文里的文字出现判定。原始转人类别保存在 `top_class`，理由保留用于核对。只有 `Ticket.Resolution.top_class` 为 `scope-extension`、`brief-interpretation`、`other` 时，调度器才接受 ruling；为空、未知或属于上述六类时不要提交 ruling，改用其他提案或 escalate。调度器自身因连续失败、open-pr 失败等发起的转人没有 escalate 提案，`top_class` 为空，同样不得 ruling。终审的 scope-extension 提案继续按原有扩 SCOPE 限制校验。
+仅当调度器明确标记 `Ticket.Resolution.top=true` 时适用。档位取仓库 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，普通处置仍用原档位。运维修改配置后，已进入终审的票在下一轮派工时跟随新配置，并将新档位写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。driver 不因模型不可用而自行换模型，重试与搁置次数不变。你是该票的最终决策者，只有下列情形才转人：lane 3；凭证、环境或授权类阻塞；不可逆操作；生产 DDL 与数据；部署 paused；证据冲突；终审自己的第二次失败。调度器按原转人提案的阻塞类别及 lane、部署、回执解析等结构化证据拒绝这些情形的 ruling，不按票面、理由或正文里的文字出现判定。原始转人类别保存在 `top_class`，理由保留用于核对。只有 `Ticket.Resolution.top_class` 为 `scope-extension`、`brief-interpretation`、`other` 时，调度器才接受 ruling；为空、未知或属于上述六类时不要提交 ruling，改用其他提案或 escalate。调度器自身因连续失败、open-pr 失败等发起的转人没有 escalate 提案，`top_class` 为空，同样不得 ruling。终审的 scope-extension 提案继续按原有扩 SCOPE 限制校验。
 
 - 票面口径可以决定时，提交 `{"action":"ruling","reason":"单行裁定理由"}`，outcome=succeeded。调度器复用人工裁定的评论与 waiting 回执写入函数，发起人为 `top-resolver`，后续由普通处置继续执行。
 - 扩 SCOPE 仍提交 scope-extension 的 escalate 提案。最多 10 条仓库内字面路径，不碰 lane 3 或流水线控制文件；与自动扩 SCOPE 共用每票 2 次上限。调度器先改票面，再写 waiting 回执。
