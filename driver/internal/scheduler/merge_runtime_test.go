@@ -791,13 +791,14 @@ func TestRuntimeMergeCanceledTicketIsNotAdvanced(t *testing.T) {
 }
 
 // A squash whose parent is not the pinned main was merged onto an unvalidated
-// main: the ticket goes to the resolver with both commits, never Done or deployed.
+// main: the ticket goes to the resolver with both commits, never Done or deployed,
+// and its paused deployment holds the repository's merge queue until recovery.
 func TestSquashRejectsMovedBase(t *testing.T) {
+	moving := strings.Repeat("c", 40)
 	for _, moved := range []bool{true, false} {
 		t.Run(fmt.Sprint("moved=", moved), func(t *testing.T) {
 			f := newMergeFixture(t)
 			f.repos[0].Env["AGENT_SMOKE_CMD"] = "smoke-test"
-			moving := strings.Repeat("c", 40)
 			if moved {
 				f.squashParents = map[string]string{strings.Repeat("a", 40): moving}
 			}
@@ -809,23 +810,30 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 				}
 				return runx.Run(ctx, s)
 			}
-			_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
-			bodies := strings.Join(f.tracker.bodies, "\n")
+			for range 2 {
+				_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+			}
 			if !moved {
 				if f.tracker.issue.State.Name != "Done" || smokes != 1 {
 					t.Fatalf("equal parent changed flow: state=%s smokes=%d %v", f.tracker.issue.State.Name, smokes, f.tracker.bodies)
 				}
 				return
 			}
-			if f.puts != 1 || f.tracker.issue.State.Name == "Done" || smokes != 0 || strings.Contains(bodies, `"phase":"merged"`) {
+			if f.puts != 1 || f.tracker.issue.State.Name == "Done" || smokes != 0 {
 				t.Fatalf("moved base completed: puts=%d state=%s smokes=%d %v", f.puts, f.tracker.issue.State.Name, smokes, f.tracker.bodies)
 			}
-			last := f.tracker.bodies[len(f.tracker.bodies)-1]
-			if !strings.Contains(last, "Agent处置: ") || !strings.Contains(last, "归属: 处置Agent") || !strings.Contains(last, f.main) || !strings.Contains(last, "parent "+moving) {
-				t.Fatalf("resolver event lacks pinned main and actual parent: %s", last)
-			}
+			assertMovedSquashHeld(t, f.tracker, strings.Repeat("a", 40), moving, f.main)
 		})
 	}
+	t.Run("no deployment", func(t *testing.T) {
+		f := newMergeFixture(t)
+		f.squashParents = map[string]string{strings.Repeat("a", 40): moving}
+		_ = (&Scheduler{Config: f.config, Repositories: f.repos, Backend: f.runtime}).Tick(context.Background())
+		last := f.tracker.bodies[len(f.tracker.bodies)-1]
+		if f.tracker.issue.State.Name == "Done" || strings.Contains(strings.Join(f.tracker.bodies, "\n"), `"phase":"merged"`) || !strings.Contains(last, "Agent处置: squash "+strings.Repeat("a", 40)+" landed on parent "+moving+", not pinned main "+f.main) {
+			t.Fatalf("moved squash without deployment completed: state=%s %v", f.tracker.issue.State.Name, f.tracker.bodies)
+		}
+	})
 	// driver release keeps a historical main in its merged receipt; the person
 	// who released that squash already answered for its base.
 	t.Run("released", func(t *testing.T) {
@@ -841,24 +849,38 @@ func TestSquashRejectsMovedBase(t *testing.T) {
 			t.Fatalf("released squash sent to resolver: state=%s %v", f.tracker.issue.State.Name, f.tracker.bodies)
 		}
 	})
-	// In a self deployment batch the moved squash never joins: the merged prefix
-	// deploys alone at its own gated SHA, not at the unvalidated main.
+	// In a self deployment batch the moved squash never joins and its paused
+	// deployment stays a barrier; the prefix deploys alone at its own gated SHA.
 	t.Run("batch", func(t *testing.T) {
 		f, host, store, _ := newBatchFixture(t, 2)
 		prefix, movedSquash := fmt.Sprintf("%040x", 1), fmt.Sprintf("%040x", 2)
-		f.squashParents = map[string]string{movedSquash: strings.Repeat("c", 40)}
+		f.squashParents = map[string]string{movedSquash: moving}
 		firstServe(t, f, host)
-		moved := store.tickets[1]
-		if f.puts != 2 || host.builds != 1 || !strings.Contains(moved.bodies[len(moved.bodies)-1], "Agent处置: squash "+movedSquash) {
-			t.Fatalf("moved candidate not sent to resolver: merges=%d builds=%d %v", f.puts, host.builds, moved.bodies)
+		if f.puts != 2 || host.builds != 0 {
+			t.Fatalf("moved candidate let the prefix deploy in its tick: merges=%d builds=%d", f.puts, host.builds)
 		}
+		firstServe(t, f, host)
 		_ = serveAs(f, host, prefix)
 		deployed := batchProgress(t, store.tickets[0])
-		if store.tickets[0].issue.State.Name != "Done" || deployed.MergeSHA != prefix || deployed.Deployment.Batch != nil || !deployed.Deployment.SmokePassed {
-			t.Fatalf("prefix did not deploy alone at its own SHA: state=%s %+v", store.tickets[0].issue.State.Name, deployed.Deployment)
+		if store.tickets[0].issue.State.Name != "Done" || deployed.MergeSHA != prefix || deployed.Deployment.Batch != nil || !deployed.Deployment.SmokePassed || host.builds != 1 {
+			t.Fatalf("prefix did not deploy alone at its own SHA: state=%s builds=%d %+v", store.tickets[0].issue.State.Name, host.builds, deployed.Deployment)
 		}
-		if moved.issue.State.Name == "Done" || strings.Contains(strings.Join(moved.bodies, "\n"), `"phase":"merged"`) {
-			t.Fatalf("moved squash completed: state=%s %v", moved.issue.State.Name, moved.bodies)
-		}
+		assertMovedSquashHeld(t, store.tickets[1], movedSquash, moving, f.main)
 	})
+}
+
+// assertMovedSquashHeld requires a merged receipt whose deployment is paused
+// with the squash, its actual parent and the pinned main, owned by the resolver.
+func assertMovedSquashHeld(t *testing.T, store *mergeIssues, squash, parent, main string) {
+	t.Helper()
+	event := slices.IndexFunc(store.bodies, func(b string) bool {
+		return strings.Contains(b, "Agent处置: squash "+squash+" landed on parent "+parent+", not pinned main "+main) && strings.Contains(b, "归属: 处置Agent")
+	})
+	p := batchProgress(t, store)
+	if store.issue.State.Name == "Done" || event < 0 {
+		t.Fatalf("moved squash not sent to resolver: state=%s %v", store.issue.State.Name, store.bodies)
+	}
+	if p.Phase != "merged" || p.MergeSHA != squash || p.Main != main || p.Deployment == nil || p.Deployment.State != "paused" || !DeploymentBarrier(Ticket{Progress: p}) {
+		t.Fatalf("moved squash does not hold the merge queue: %+v %+v", p, p.Deployment)
+	}
 }
