@@ -594,30 +594,6 @@ func TestDoctorReportsOrcaUnreachableAfterGrace(t *testing.T) {
 	}
 }
 
-func TestServePublishesOrcaRuntimeToSelectedStatus(t *testing.T) {
-	for _, source := range []string{"push", "snapshot"} {
-		t.Run(source, func(t *testing.T) {
-			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-			t.Setenv("DRIVER_STATUS_FILE", "")
-			now := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
-			if source == "snapshot" {
-				path := filepath.Join(t.TempDir(), "status.json")
-				t.Setenv("DRIVER_STATUS_FILE", path)
-				writeDoctorFile(t, path, fmt.Sprintf(`{"generatedAt":%q,"tickets":[{"repo":"/repo","identifier":"OF-1"}]}`, now.Format(time.RFC3339Nano)), 0600)
-			}
-			since := now.Add(-time.Hour)
-			publishOrcaRuntime(status.OrcaRuntime{UnreachableSince: since, Restarts: 2})
-			view := status.Read(now, 0)
-			if !view.OrcaRuntime.UnreachableSince.Equal(since) || view.OrcaRuntime.Restarts != 2 {
-				t.Fatalf("published Orca runtime=%+v", view.OrcaRuntime)
-			}
-			if source == "snapshot" && len(view.Tickets) != 1 {
-				t.Fatalf("publishing replaced snapshot tickets: %+v", view.Tickets)
-			}
-		})
-	}
-}
-
 func assertDoctorReportsOrcaRuntimeFault(t *testing.T, result doctorResult) {
 	t.Helper()
 	if result.statuses["orca_runtime"] != "fail" {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -331,6 +332,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
+	if s.retired[s.orcaNotificationRepo] || !slices.ContainsFunc(s.Repositories, func(r config.Repository) bool { return r.Path == s.orcaNotificationRepo }) {
+		s.orcaNotificationRepo = ""
+	}
 	if answered {
 		s.orcaNotificationRepo = ""
 		for _, r := range s.Repositories {
@@ -623,10 +627,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 		// A merge correction that succeeds returns no error; read the counts back.
-		if counted && !s.orcaRuntime.Paused {
+		// A created terminal ends the earlier fault; a pause the same batch
+		// reached afterwards is a new fault and keeps its own start.
+		if counted {
 			failures, created := counter.OrcaTerminalCreates()
 			if created != createdBefore {
+				paused, pausedAt := s.orcaRuntime.Paused, s.orcaRuntime.PausedAt
 				s.clearOrcaRuntime()
+				s.orcaRuntime.Paused, s.orcaRuntime.PausedAt = paused, pausedAt
 			}
 			s.orcaRuntime.Failures = failures
 		}
@@ -925,25 +933,6 @@ func (s *Scheduler) observeOrcaReads(ctx context.Context, answered, unreachable 
 	}
 	if s.clock().Sub(s.orcaRuntime.UnreachableSince) >= OrcaRestartGrace {
 		s.restartOrcaService(ctx)
-	}
-}
-
-// ObserveOrcaDiscovery wraps serve's project discovery. While no repository
-// is tracked, no automation read runs (serve's first discovery, or no eligible
-// project), so discovery stands in for it. Only Orca's own runtime_unavailable
-// counts: a discovery timeout may come from the ledger. publish receives the
-// fault state after every observed attempt.
-func (s *Scheduler) ObserveOrcaDiscovery(discover func(context.Context) (projects.Result, error), publish func(status.OrcaRuntime)) func(context.Context) (projects.Result, error) {
-	return func(ctx context.Context) (projects.Result, error) {
-		result, err := discover(ctx)
-		if len(s.Repositories) > 0 {
-			return result, err
-		}
-		var global *infra.Global
-		unavailable := errors.As(err, &global) && global.Dep == infra.Orca && global.Reason == infra.RuntimeUnavailable
-		s.observeOrcaReads(ctx, err == nil, unavailable)
-		publish(s.orcaRuntime)
-		return result, err
 	}
 }
 

@@ -22,7 +22,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
-	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -1277,35 +1276,6 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 			}
 		})
 	}
-	t.Run("cold start discovery", func(t *testing.T) {
-		x := newRuntimeFailureFixture(t, 0)
-		s, b := x.s, x.b
-		start := *x.now
-		var published []status.OrcaRuntime
-		s.Discover = s.ObserveOrcaDiscovery(func(context.Context) (projects.Result, error) {
-			return projects.Result{}, unavailable
-		}, func(runtime status.OrcaRuntime) { published = append(published, runtime) })
-		stop := errors.New("stop waiting")
-		err := s.AwaitProjects(context.Background(), func(_ context.Context, delay time.Duration) error {
-			if x.now.Sub(start) >= 45*time.Minute {
-				return stop
-			}
-			*x.now = x.now.Add(delay)
-			return nil
-		})
-		if !errors.Is(err, stop) {
-			t.Fatalf("AwaitProjects returned %v", err)
-		}
-		if b.restarts != 2 || len(b.restartNotices) != 0 || b.exhaustedNotices != 0 {
-			t.Fatalf("cold start restarts=%d notices=%v human=%d, want two restarts without notices", b.restarts, b.restartNotices, b.exhaustedNotices)
-		}
-		if len(published) == 0 {
-			t.Fatal("cold start published no Orca runtime state")
-		}
-		if last := published[len(published)-1]; !last.UnreachableSince.Equal(start) || last.Restarts != 2 {
-			t.Fatalf("published=%+v, want unreachable since %v with two restarts", last, start)
-		}
-	})
 	t.Run("maintenance freeze refuses restart", func(t *testing.T) {
 		t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
 		for _, mode := range []string{"draining", "frozen"} {
@@ -1321,8 +1291,34 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 		if ran || !errors.Is(err, errOrcaRestartRefused) {
 			t.Fatalf("frozen maintenance: ran=%v err=%v", ran, err)
 		}
-		if noticeErr := (&Runtime{}).NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errOrcaNoticeNotSent) {
-			t.Fatalf("frozen maintenance sent the human notice: %v", noticeErr)
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+				_, _ = w.Write([]byte(feishuTokenIssued))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("AGENT_FEISHU_ENDPOINT", srv.URL)
+		t.Setenv("AGENT_FEISHU_APP_ID", "app")
+		t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+		notifier := &Runtime{Repositories: map[string]config.Repository{"/repo0": {Path: "/repo0", Env: map[string]string{"AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}}}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errOrcaNoticeNotSent) || requests != 0 {
+			t.Fatalf("frozen maintenance sent the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		if err := maintenance.Set("running"); err != nil {
+			t.Fatal(err)
+		}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); noticeErr != nil || requests == 0 {
+			t.Fatalf("running maintenance did not send the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		for _, mode := range []string{"draining", "frozen"} {
+			if err := maintenance.Set(mode); err != nil {
+				t.Fatal(err)
+			}
 		}
 		x := newRuntimeFailureFixture(t, 3)
 		s, b := x.s, x.b
@@ -1388,43 +1384,6 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 			t.Fatalf("restarts=%d human repos=%v, want one human notice in /repo0", b.restarts, b.exhaustedRepos)
 		}
 	})
-	t.Run("discovery counts only Orca unavailable without tracked repositories", func(t *testing.T) {
-		x := newRuntimeFailureFixture(t, 0)
-		s, b := x.s, x.b
-		var discoverErr error
-		var published []status.OrcaRuntime
-		observed := s.ObserveOrcaDiscovery(func(context.Context) (projects.Result, error) {
-			return projects.Result{}, discoverErr
-		}, func(runtime status.OrcaRuntime) { published = append(published, runtime) })
-		start := *x.now
-		discoverAt := func(offset time.Duration) {
-			*x.now = start.Add(offset)
-			_, _ = observed(context.Background())
-		}
-		discoverErr = fmt.Errorf("feishu project table: %w", context.DeadlineExceeded)
-		discoverAt(0)
-		discoverAt(OrcaRestartGrace)
-		if got := s.OrcaRuntime(); b.restarts != 0 || !got.UnreachableSince.IsZero() {
-			t.Fatalf("non-Orca discovery timeout counted: restarts=%d status=%+v", b.restarts, got)
-		}
-		discoverErr = unavailable
-		s.Repositories = []config.Repository{{Path: "/repo0", MaxInFlight: 2, StaleHours: 8}}
-		published = nil
-		discoverAt(OrcaRestartGrace + time.Minute)
-		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || len(published) != 0 {
-			t.Fatalf("discovery observed while automation reads govern: status=%+v published=%d", got, len(published))
-		}
-		s.Repositories = nil
-		s.Discover = observed
-		s.DiscoverEvery = time.Minute
-		for _, offset := range []time.Duration{20 * time.Minute, 30 * time.Minute} {
-			*x.now = start.Add(offset)
-			_ = s.Tick(context.Background())
-		}
-		if got := s.OrcaRuntime(); b.restarts != 1 || !got.UnreachableSince.Equal(start.Add(20*time.Minute)) {
-			t.Fatalf("no-repository rediscovery: restarts=%d status=%+v, want one restart", b.restarts, got)
-		}
-	})
 	t.Run("earlier claim does not clear a new outage", func(t *testing.T) {
 		x := newRuntimeFailureFixture(t, 1)
 		s, b := x.s, x.b
@@ -1471,6 +1430,49 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 		_ = s.Tick(context.Background())
 		if got := s.OrcaRuntime(); got.Restarts != 0 || !got.LastRestartAt.IsZero() || got.Failures != 1 || s.orcaRestartsExhausted {
 			t.Fatalf("batch success kept the restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("merge batch success then pause keeps no old restart budget", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, 10 * time.Minute, 40 * time.Minute, 70 * time.Minute} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
+		b.merge = func(ctx context.Context) error {
+			x.oc.failing = false
+			problems := []error{b.runtime.Launch(ctx, tickets[0])}
+			x.oc.failing = true
+			for _, ticket := range tickets[1:] {
+				problems = append(problems, b.runtime.Launch(ctx, ticket))
+			}
+			return errors.Join(problems...)
+		}
+		*x.now = start.Add(71 * time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.Paused || got.Restarts != 0 || !got.LastRestartAt.IsZero() || s.orcaRestartsExhausted {
+			t.Fatalf("new pause inherited the old restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("retired notification repository is not reused", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		b.automationErr = unavailable
+		s.retired = map[string]bool{"/repo0": true}
+		start := *x.now
+		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if b.restarts != 1 || len(b.restartNotices) != 0 {
+			t.Fatalf("restarts=%d notices=%v, want a restart without a notice to the retired repository", b.restarts, b.restartNotices)
 		}
 	})
 	t.Run("merge correction terminal create clears restart budget", func(t *testing.T) {
