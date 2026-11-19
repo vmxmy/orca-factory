@@ -3,6 +3,7 @@ package hostmem
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,6 +34,34 @@ func TestParseRecordedProcSamples(t *testing.T) {
 	want := Reading{Available: 33843404 * 1024, SomeAvg60: 0}
 	if got != want {
 		t.Fatalf("Read = %+v, want %+v", got, want)
+	}
+}
+
+// The recorded host was idle, so every PSI value is 0.00. Give each line and
+// window a distinct value in the recorded format so only some avg60 matches.
+func TestParseSomeAvg60FromRecordedPressureFormat(t *testing.T) {
+	data, err := os.ReadFile("../../testdata/recorded/proc-pressure-memory.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	values := map[string]string{"some avg10": "11.11", "some avg60": "22.22", "some avg300": "33.33", "full avg10": "44.44", "full avg60": "55.55", "full avg300": "66.66"}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		fields := strings.Fields(line)
+		for j, field := range fields[min(1, len(fields)):] {
+			key, _, ok := strings.Cut(field, "=")
+			if value, known := values[fields[0]+" "+key]; ok && known {
+				fields[j+1] = key + "=" + value
+			}
+		}
+		lines[i] = strings.Join(fields, " ")
+	}
+	got, err := someAvg60([]byte(strings.Join(lines, "\n")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 22.22 {
+		t.Fatalf("someAvg60 = %v, want 22.22 from %q", got, strings.Join(lines, "\n"))
 	}
 }
 

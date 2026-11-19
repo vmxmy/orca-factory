@@ -140,9 +140,13 @@ type Scheduler struct {
 	orcaRuntime            status.OrcaRuntime
 	// HostMemory, when set, is read once per Tick; a hold stops every new
 	// terminal launch until the reading recovers (OF-603).
-	HostMemory     func() (hostmem.Reading, error)
-	hostMemory     status.HostMemory
-	runtimePending map[string]Ticket
+	HostMemory func() (hostmem.Reading, error)
+	hostMemory status.HostMemory
+	// memoryHeld and memoryHeldSince carry the hysteresis across unreadable
+	// rounds, which never hold but must not reset the next decision.
+	memoryHeld      bool
+	memoryHeldSince time.Time
+	runtimePending  map[string]Ticket
 	// relaunchedAt restarts the registration grace of a reservation whose
 	// launch succeeded only after an Orca outage; its claim time is older.
 	relaunchedAt map[string]time.Time
@@ -520,7 +524,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			continue
 		}
 		if action.Kind == Resume || action.Kind == Resolve {
-			if memoryHeld {
+			// A reported resolver result is applied without a new terminal.
+			if memoryHeld && (action.Kind == Resume || t.Resolution == nil || t.Resolution.Phase != "result") {
 				s.decision(t, "skip", "memory", "action", action.Kind)
 				continue
 			}
@@ -861,21 +866,21 @@ func (s *Scheduler) checkHostMemory(now time.Time) {
 		if s.hostMemory.Error == "" {
 			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
 		}
-		s.hostMemory = status.HostMemory{Error: err.Error()}
+		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error()}
 		return
 	}
 	if s.hostMemory.Error != "" {
 		s.logger().Warn("host memory readable again", "available", reading.Available, "some_avg60", reading.SomeAvg60)
 	}
-	held := hostmem.Decide(s.hostMemory.Paused, reading)
-	since := s.hostMemory.Since
+	held := hostmem.Decide(s.memoryHeld, reading)
 	switch {
 	case !held:
-		since = time.Time{}
-	case !s.hostMemory.Paused:
-		since = now
+		s.memoryHeldSince = time.Time{}
+	case !s.memoryHeld:
+		s.memoryHeldSince = now
 	}
-	s.hostMemory = status.HostMemory{Paused: held, Since: since, Reading: reading}
+	s.memoryHeld = held
+	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading}
 }
 
 // HostMemoryStatus is the host memory hold serve publishes in its status.

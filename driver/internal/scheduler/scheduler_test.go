@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -957,8 +958,17 @@ func TestHostMemoryHoldSkipsNewLaunchesWithoutBurningAttempts(t *testing.T) {
 		}
 	}
 	reading = hostmem.Reading{Available: 30 << 30}
+	claimed := []string{}
+	f.onApply = func(ticket Ticket, a Action) {
+		if a.Kind == Claim {
+			claimed = append(claimed, ticket.ID)
+		}
+	}
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(claimed, []string{"candidate"}) {
+		t.Fatalf("released round claims=%v, want candidate", claimed)
 	}
 	launched := map[string]int{}
 	for _, ticket := range f.launched {
@@ -969,5 +979,43 @@ func TestHostMemoryHoldSkipsNewLaunchesWithoutBurningAttempts(t *testing.T) {
 	}
 	if got := s.HostMemoryStatus(); got.Paused {
 		t.Fatalf("host memory still paused after release: %+v", got)
+	}
+}
+
+func TestHostMemoryHoldStillAppliesReadyResolverResult(t *testing.T) {
+	f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "ENG-1", Repo: "a", Owner: machine.OwnerResolver, Terminal: "controller", Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result"}}}}
+	s := setup(f)
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 5 << 30}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
+		t.Fatalf("held host memory must still apply a reported resolver result: actions=%+v", f.actions)
+	}
+}
+
+func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
+	s := setup(&fakeBackend{})
+	steps := []struct {
+		reading hostmem.Reading
+		err     error
+		paused  bool
+	}{
+		{hostmem.Reading{Available: 5 << 30}, nil, true},
+		{hostmem.Reading{}, errors.New("read /proc/meminfo: gone"), false},
+		{hostmem.Reading{Available: 8 << 30}, nil, true},
+	}
+	for i, step := range steps {
+		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := s.HostMemoryStatus()
+		if got.Paused != step.paused {
+			t.Fatalf("step %d: status=%+v, want paused=%v", i, got, step.paused)
+		}
+		if step.paused && !got.Since.Equal(s.Now()) {
+			t.Fatalf("step %d: hold start lost across a read error: %+v", i, got)
+		}
 	}
 }
