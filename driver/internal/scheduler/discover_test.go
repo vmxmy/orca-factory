@@ -191,6 +191,32 @@ func TestRefreshProjectsHotReloadsConfigButFreezesLedgerIdentity(t *testing.T) {
 	}
 }
 
+// A gear set to the repository's own value changes only AGENT_MODE's source.
+// The tracked source must follow, or clearing the override after the project
+// is retired cannot be told apart from an unchanged repository profile.
+func TestRefreshProjectsTracksGearOverrideSource(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(source string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8,
+			Env: map[string]string{"AGENT_MODE": "auto"}, Sources: map[string]string{"AGENT_MODE": source}}
+	}
+	result := projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("repository")}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Eligible[0].Repository = repo("override")
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].Sources["AGENT_MODE"]; got != "override" {
+		t.Fatalf("tracked AGENT_MODE source=%q, want override after a same-value gear set", got)
+	}
+}
+
 func TestDiscoverFailureKeepsPreviousProjects(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	fail := false

@@ -212,6 +212,9 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 	if current.StaleHours != fresh.StaleHours {
 		changed = append(changed, "StaleHours")
 	}
+	if current.Sources["AGENT_MODE"] != fresh.Sources["AGENT_MODE"] {
+		changed = append(changed, "AGENT_MODE source")
+	}
 	if len(changed) == 0 {
 		return current
 	}

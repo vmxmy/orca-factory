@@ -103,10 +103,20 @@ func runGear(args []string) int {
 		for _, p := range result.Eligible {
 			add(p.Remote, p.Prefix, p.Path, p.Repository)
 		}
-		// A rejected repository with a readable profile may still hold in-flight
-		// tickets that the scheduler keeps driving under this gear.
+		// A rejected repository may still hold in-flight tickets. The scheduler
+		// applies only its gear override to them and otherwise keeps the mode it
+		// tracked, which this process cannot read, so only overrides are listed.
 		for _, r := range result.Rejected {
 			if r.Repository == nil {
+				if _, err := config.LoadRepository(r.Path); err == nil {
+					if _, err := config.LoadRegisteredRepository(r.Remote, r.Path); err != nil {
+						fmt.Fprintf(os.Stderr, "gear: %s: %v\n", r.Path, err)
+						return 1
+					}
+				}
+				continue
+			}
+			if r.Repository.Sources["AGENT_MODE"] != "override" {
 				continue
 			}
 			prefix := ""

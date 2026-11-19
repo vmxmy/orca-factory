@@ -115,6 +115,10 @@ func TestGearCommands(t *testing.T) {
 	}
 	other := fmt.Sprintf(`{ "path":%q, "mode":null, "note":"<leave intact>" }`, f.factory)
 	bad := fmt.Sprintf(`{"mode":"bogus","path":%q}`, f.factory)
+	writeTestFile(t, file, fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s}`, bad))
+	if code := run([]string{"gear", "status", "--json"}); code != 1 {
+		t.Fatalf("status with a malformed gear entry exit=%d, want 1", code)
+	}
 	t.Chdir(f.factory)
 	for _, tc := range []struct{ selector, entries string }{
 		{"OF", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"other/repo":%s}`, bad, other)},
@@ -136,6 +140,9 @@ func TestGearCommands(t *testing.T) {
 	invokeGear(t, "set", f.factory, "auto", "--operator", "tester", "--reason", "disabled project with in-flight tickets")
 	status("auto", "override")
 	invokeGear(t, "clear", f.factory)
+	if out := strings.TrimSpace(string(invokeGear(t, "status", "--json"))); out != "[]" {
+		t.Fatalf("status of a rejected repository without gear=%s, want it omitted: the scheduler keeps its tracked mode", out)
+	}
 	ledger.rows[0].cells["启用"] = true
 	server.Close()
 	invokeGear(t, "set", f.factory, "manual", "--operator", "t", "--reason", "r")

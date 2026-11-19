@@ -531,7 +531,7 @@ orca-factory-driver gear set /path/to/repo auto --operator laoxu --reason '恢�
 orca-factory-driver gear clear OF
 ```
 
-`status` 列出接管仓库，以及被拒但配置可读、可能仍有在途票的仓库的生效档位及来源 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
+`status` 列出接管仓库的生效档位及来源；被拒但可能仍有在途票的仓库只在有本机覆盖时列出（没有覆盖时调度器沿用跟踪时的档位），本仓库的覆盖条目损坏时报错退出。来源为 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
 
 本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
 
