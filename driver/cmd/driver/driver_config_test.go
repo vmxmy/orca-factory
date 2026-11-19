@@ -2,8 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,12 +90,8 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	if withProfile {
 		writeTestFile(t, filepath.Join(f.home, ".config/orca-factory/profiles.toml"),
 			"default='daily'\n[profile.daily]\nAGENT_TIER_DEFAULT='codex:profile:high'\nAGENT_ROLE_RESOLVER='codex:resolver:high'\nAGENT_TIER_ESCALATE='1'\n")
-		for _, args := range [][]string{{"init", f.factory}, {"-C", f.factory, "remote", "add", "origin", "git@github.com:vmxmy/orca-factory.git"}} {
-			if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-				t.Fatalf("git: %s %v", out, err)
-			}
-		}
-		writeTestFile(t, filepath.Join(f.state, "gear.json"), `{"github.com/vmxmy/orca-factory":{"mode":"manual","operator":"tester","reason":"pause","updatedAt":"2026-11-19T00:00:00Z"}}`)
+		writeTestFile(t, filepath.Join(f.state, "gear.json"), fmt.Sprintf(
+			`{"github.com/vmxmy/orca-factory":{"path":%q,"mode":"manual","operator":"tester","reason":"pause","updatedAt":"2026-11-19T00:00:00Z"}}`, f.factory))
 	}
 
 	var code int
