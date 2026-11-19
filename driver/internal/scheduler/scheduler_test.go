@@ -2,12 +2,15 @@ package scheduler
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1845,6 +1848,44 @@ func TestNoticeMessageWrittenOnlyAfterBytesReachSocket(t *testing.T) {
 				t.Fatalf("written=%v, want %v", got, tc.written)
 			}
 		})
+	}
+}
+
+// After a reused connection fails, a reconnect whose TLS handshake fails has
+// written handshake bytes only; message bytes count only on the connection a
+// message request got, past its TLS layer.
+func TestNoticeReconnectHandshakeIsNotAMessageWrite(t *testing.T) {
+	m, err := newMessageAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.dial = func(context.Context, string, string) (net.Conn, error) {
+		client, peer := net.Pipe()
+		go func() { _, _ = io.Copy(io.Discard, peer) }()
+		return client, nil
+	}
+	reused, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reused.Close() })
+	m.gotConn(httptrace.GotConnInfo{Conn: tls.Client(reused, &tls.Config{ServerName: "feishu.invalid"}), Reused: true})
+	reconnect, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reconnect.Close() })
+	if _, err := reconnect.Write([]byte("client hello")); err != nil {
+		t.Fatal(err)
+	}
+	if m.written() {
+		t.Fatal("a failed reconnect handshake counted as a message write")
+	}
+	if _, err := reused.Write([]byte("POST")); err != nil {
+		t.Fatal(err)
+	}
+	if !m.written() {
+		t.Fatal("bytes on the connection the message request got did not count")
 	}
 }
 

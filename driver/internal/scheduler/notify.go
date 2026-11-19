@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -11,6 +12,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -237,14 +239,13 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 
 // messageAttempts reports whether any byte of a message request reached a
 // socket, so a failure before that, such as a tenant token timeout, a refused
-// connection or a first write that sent nothing, is known undelivered.
+// connection, a first write that sent nothing or a failed reconnect handshake,
+// is known undelivered.
 type messageAttempts struct {
 	transport *http.Transport
 	dial      func(context.Context, string, string) (net.Conn, error)
-	sent      atomic.Int64
-	// mark is sent when the first message request got its connection, after
-	// any TLS handshake or proxy CONNECT; -1 before that.
-	mark atomic.Int64
+	mu        sync.Mutex
+	conns     []*countingConn
 }
 
 func newMessageAttempts() (*messageAttempts, error) {
@@ -253,33 +254,57 @@ func newMessageAttempts() (*messageAttempts, error) {
 		return nil, errors.New("feishu transport is not an http.Transport")
 	}
 	m := &messageAttempts{transport: base.Clone(), dial: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
-	m.mark.Store(-1)
 	m.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := m.dial(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		return &countingConn{Conn: conn, sent: &m.sent}, nil
+		counted := &countingConn{Conn: conn}
+		counted.base.Store(-1)
+		m.mu.Lock()
+		m.conns = append(m.conns, counted)
+		m.mu.Unlock()
+		return counted, nil
 	}
 	return m, nil
 }
 
 func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(req.URL.Path, "/open-apis/im/v1/messages") {
-		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { m.mark.CompareAndSwap(-1, m.sent.Load()) }}
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: m.gotConn}))
 	}
 	return m.transport.RoundTrip(req)
 }
 
-func (m *messageAttempts) written() bool {
-	mark := m.mark.Load()
-	return mark >= 0 && m.sent.Load() > mark
+// gotConn starts counting on the connection a message request will write to,
+// after its TLS handshake or proxy CONNECT.
+func (m *messageAttempts) gotConn(info httptrace.GotConnInfo) {
+	conn := info.Conn
+	if secure, ok := conn.(*tls.Conn); ok {
+		conn = secure.NetConn()
+	}
+	if counted, ok := conn.(*countingConn); ok {
+		counted.base.CompareAndSwap(-1, counted.sent.Load())
+	}
 }
 
+func (m *messageAttempts) written() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, conn := range m.conns {
+		if base := conn.base.Load(); base >= 0 && conn.sent.Load() > base {
+			return true
+		}
+	}
+	return false
+}
+
+// countingConn counts bytes written to the socket; base is the count when a
+// message request got this connection, -1 before that.
 type countingConn struct {
 	net.Conn
-	sent *atomic.Int64
+	sent atomic.Int64
+	base atomic.Int64
 }
 
 func (c *countingConn) Write(b []byte) (int, error) {
