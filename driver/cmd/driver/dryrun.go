@@ -63,7 +63,8 @@ func dryRunTick(ctx context.Context, cfg config.Config, repos []config.Repositor
 	s := &scheduler.Scheduler{Config: cfg, Repositories: repos, Backend: &dryBackend{Backend: backend, out: out}, HostMemory: readHostMemory, Now: now}
 	// This shell may sit outside serve's cgroup and starts without serve's
 	// hysteresis, so a hold a running serve still publishes stands.
-	if served := status.Read(now(), 0).HostMemory; served.Paused && now().Sub(served.ObservedAt) <= status.DefaultStaleAfter {
+	served := status.Read(now(), 0).HostMemory
+	if age := now().Sub(served.ObservedAt); served.Paused && age >= 0 && age <= status.DefaultStaleAfter {
 		s.SeedHostMemory(served)
 		s.HostMemory = func() (hostmem.Reading, error) { return served.Reading, nil }
 	}
