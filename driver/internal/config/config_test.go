@@ -14,7 +14,9 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	const upstream = "github.com/dujiao-next/dujiao-next"
 	const fork = "github.com/vmxmy/dujiao-next"
 	repo := t.TempDir()
-	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_FEISHU_PROJECT="+upstream+"\n")
+	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT="+upstream+"\n")
+	githubBackend := t.TempDir()
+	writeProfileTestFile(t, filepath.Join(githubBackend, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_ISSUE_BACKEND=github\nAGENT_FEISHU_PROJECT="+upstream+"\n")
 	file := filepath.Join(state, "gear.json")
 	for _, tc := range []struct {
 		name, gears, remote   string
@@ -48,8 +50,14 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	if err := SetGearOverride(fork, repo, "manual", "t", "r"); err == nil || !strings.Contains(err.Error(), "ledger project") {
 		t.Fatalf("set under a remote other than the ledger project: err=%v", err)
 	}
+	if err := SetGearOverride(upstream, githubBackend, "manual", "t", "r"); err == nil || !strings.Contains(err.Error(), "feishu") {
+		t.Fatalf("set on a GitHub-backend checkout: err=%v", err)
+	}
 	if err := SetGearOverride(upstream, repo, "manual", "t", "r"); err != nil {
 		t.Fatal(err)
+	}
+	if got, err := LoadRegisteredRepository(upstream, githubBackend); err != nil || got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "repository" {
+		t.Fatalf("GitHub-backend checkout under the same ledger key: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
 	if got, err := LoadRegisteredRepository(upstream, repo); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
 		t.Fatalf("after set: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)

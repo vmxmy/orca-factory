@@ -107,14 +107,15 @@ func Load(home string) (Config, error) {
 
 // LoadRegisteredRepository resolves the profile of the Orca repository
 // registered under remote and applies its machine-local gear override. The
-// override applies only when remote is the profile's ledger project, so a
-// registration that drifted from the tickets this checkout serves has none.
+// override applies only when remote is the profile's Feishu ledger project, so
+// a registration that drifted from the tickets this checkout serves, or a
+// checkout on another ticket backend, has none.
 func LoadRegisteredRepository(remote, path string) (Repository, error) {
 	repo, err := LoadRepository(path)
 	if err != nil {
 		return Repository{}, err
 	}
-	if remote == "" || remote != repo.Env["AGENT_FEISHU_PROJECT"] {
+	if remote == "" || repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" || remote != repo.Env["AGENT_FEISHU_PROJECT"] {
 		return repo, nil
 	}
 	if err := applyGear(&repo, remote); err != nil {
@@ -259,6 +260,9 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		repo, err := LoadRepository(path)
 		if err != nil {
 			return err
+		}
+		if repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
+			return fmt.Errorf("gear: %s does not use the feishu ticket backend", path)
 		}
 		if repo.Env["AGENT_FEISHU_PROJECT"] != remote {
 			return fmt.Errorf("gear: %s is not the ledger project AGENT_FEISHU_PROJECT of %s", remote, path)
