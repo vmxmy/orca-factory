@@ -148,7 +148,10 @@ def resolve_intent(path, lease, owner):
     page = 1
     matches = []
     while True:
-        runners = api("GET", f"?per_page=100&page={page}")["runners"]
+        response = api("GET", f"?per_page=100&page={page}")
+        runners = response.get("runners") if isinstance(response, dict) else None
+        if not isinstance(runners, list):
+            raise RuntimeError("malformed GitHub runner list; registration intent retained")
         matches.extend(runner for runner in runners if runner["name"] == lease["name"])
         if len(runners) < 100:
             break

@@ -97,6 +97,39 @@ class SupervisorTests(unittest.TestCase):
             archives=list((path.parent/"maintenance").iterdir())
             self.assertEqual(len(archives),1)
             self.assertEqual(archives[0].read_bytes(),original)
+    def test_malformed_runner_list_retains_stale_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot-1.json"
+            m.save(path, {"active": True, "phase": "registering", "name": "ours"})
+            original = path.read_bytes()
+            modified = time.time() - 11 * 60
+            os.utime(path, (modified, modified))
+            with patch.object(m, "api", return_value={"runners": {}}), \
+                 patch.object(m, "inspect_container", return_value=None), \
+                 patch.object(m, "event") as event:
+                with self.assertRaisesRegex(RuntimeError, "malformed GitHub runner list"):
+                    m.recover(path, "owner")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse((path.parent / "maintenance").exists())
+            event.assert_not_called()
+    def test_stale_unresolved_intent_with_container_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot-1.json"
+            m.save(path, {"active": True, "phase": "registering", "name": "ours"})
+            original = path.read_bytes()
+            modified = time.time() - 11 * 60
+            os.utime(path, (modified, modified))
+            original_mtime = path.stat().st_mtime
+            with patch.object(m, "api", return_value={"runners": []}), \
+                 patch.object(m, "inspect_container", return_value={"State": {"Running": False}}) as inspect, \
+                 patch.object(m, "event") as event:
+                with self.assertRaisesRegex(RuntimeError, "unresolved registration intent"):
+                    m.recover(path, "owner")
+            inspect.assert_called_once_with("ours", "owner")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(path.stat().st_mtime, original_mtime)
+            self.assertFalse((path.parent / "maintenance").exists())
+            event.assert_not_called()
     def test_fresh_unresolved_intent_is_retained(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"slot-1.json"
