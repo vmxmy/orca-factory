@@ -469,7 +469,7 @@ func TestUnconfirmedAlertRetriesAfterCooldown(t *testing.T) {
 				if err := m.Poll(context.Background(), now); err == nil {
 					t.Fatal("failed create must surface")
 				}
-				if rec := readRecord(t, m); len(tickets.created) != 1 || !rec.Unconfirmed || rec.Ticket != "" || !rec.UnconfirmedAt.Equal(now) {
+				if rec := readRecord(t, m); len(tickets.created) != 1 || !rec.Unconfirmed || rec.Ticket != "" {
 					t.Fatalf("failed create: calls=%d record=%+v", len(tickets.created), rec)
 				}
 				if err := m.Poll(context.Background(), now.Add(5*time.Hour+59*time.Minute)); err != nil {
@@ -485,8 +485,15 @@ func TestUnconfirmedAlertRetriesAfterCooldown(t *testing.T) {
 				t.Fatal(err)
 			}
 			rec := readRecord(t, m)
-			if len(tickets.created) != wantCreates || rec.Ticket != "uuid-"+strconv.Itoa(wantCreates) || rec.Identifier != "GH-900" || rec.Unconfirmed || !rec.UnconfirmedAt.IsZero() {
+			if len(tickets.created) != wantCreates || rec.Ticket != "uuid-"+strconv.Itoa(wantCreates) || rec.Identifier != "GH-900" || rec.Unconfirmed {
 				t.Fatalf("retry: calls=%d want=%d record=%+v", len(tickets.created), wantCreates, rec)
+			}
+			data, err := os.ReadFile(m.Record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), `"unconfirmed_at"`) {
+				t.Fatalf("confirmed ticket retained failure time: %s", data)
 			}
 		})
 	}
