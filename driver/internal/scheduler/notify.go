@@ -3,23 +3,15 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
-	"net/http/httptrace"
 	"os/exec"
-	"slices"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
-	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -220,155 +212,11 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 	if chat == "" {
 		return nil
 	}
-	attempts, err := newMessageAttempts()
+	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
-	defer attempts.transport.CloseIdleConnections()
-	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"], HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: attempts}})
-	if err != nil {
-		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
-	}
-	if err := sender.SendText(ctx, chat, text); err != nil {
-		if !attempts.written() {
-			return fmt.Errorf("%w: %w", errNoticeNotSent, err)
-		}
-		return err
-	}
-	return nil
-}
-
-// messageAttempts reports whether any byte of a message request reached a
-// socket, so a failure before that, such as a tenant token timeout, a refused
-// connection, a first write that sent nothing or a failed reconnect handshake,
-// is known undelivered. It speaks HTTP/1.1 only, so after GotConn the
-// connection carries nothing but the request until it closes.
-type messageAttempts struct {
-	transport *http.Transport
-	dial      func(context.Context, string, string) (net.Conn, error)
-
-	mu      sync.Mutex
-	conns   []*countingConn
-	unknown bool // a message got a connection this type did not dial
-}
-
-// messageWriteWait bounds the wait for a failed message connection to close;
-// past it the attempt counts as possibly delivered.
-const messageWriteWait = 5 * time.Second
-
-func newMessageAttempts() (*messageAttempts, error) {
-	base, ok := infra.HTTPTransport.(*http.Transport)
-	if !ok {
-		return nil, errors.New("feishu transport is not an http.Transport")
-	}
-	m := &messageAttempts{transport: base.Clone(), dial: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
-	var http1 http.Protocols
-	http1.SetHTTP1(true)
-	m.transport.Protocols = &http1
-	// Protocols leaves ALPN alone; a cloned config may still offer h2.
-	if m.transport.TLSClientConfig == nil {
-		m.transport.TLSClientConfig = &tls.Config{}
-	}
-	m.transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
-	m.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		conn, err := m.dial(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		counted := &countingConn{Conn: conn, closed: make(chan struct{})}
-		counted.base.Store(-1)
-		m.mu.Lock()
-		m.conns = append(m.conns, counted)
-		m.mu.Unlock()
-		return counted, nil
-	}
-	return m, nil
-}
-
-func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
-	if strings.HasSuffix(req.URL.Path, "/open-apis/im/v1/messages") {
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{GotConn: m.gotConn}))
-	}
-	return m.transport.RoundTrip(req)
-}
-
-// gotConn starts counting on the socket under every TLS layer, after any TLS
-// handshake or proxy CONNECT.
-func (m *messageAttempts) gotConn(info httptrace.GotConnInfo) {
-	conn := info.Conn
-	for {
-		secure, ok := conn.(*tls.Conn)
-		if !ok {
-			break
-		}
-		conn = secure.NetConn()
-	}
-	if counted, ok := conn.(*countingConn); ok {
-		counted.base.CompareAndSwap(-1, counted.sent.Load())
-		return
-	}
-	m.mu.Lock()
-	m.unknown = true
-	m.mu.Unlock()
-}
-
-// written reports whether a message request may have reached Feishu. A failed
-// request's connection closes, and an idle one is closed here, so it waits for
-// that before trusting a zero count.
-func (m *messageAttempts) written() bool {
-	m.transport.CloseIdleConnections()
-	m.mu.Lock()
-	conns, unknown := slices.Clone(m.conns), m.unknown
-	m.mu.Unlock()
-	if unknown {
-		return true
-	}
-	for _, conn := range conns {
-		if conn.base.Load() < 0 {
-			continue
-		}
-		select {
-		case <-conn.closed:
-		case <-time.After(messageWriteWait):
-			return true
-		}
-		if conn.sent.Load() > conn.base.Load() {
-			return true
-		}
-	}
-	return false
-}
-
-// countingConn counts bytes the socket took; base is the count when a message
-// request got this connection, -1 before that. The HTTP/1 transport sets no
-// write deadline, but TLS close sets one before writing close_notify, so
-// counting stops there.
-type countingConn struct {
-	net.Conn
-	sent      atomic.Int64
-	base      atomic.Int64
-	closing   atomic.Bool
-	closed    chan struct{}
-	closeOnce sync.Once
-}
-
-func (c *countingConn) Write(b []byte) (int, error) {
-	n, err := c.Conn.Write(b)
-	if !c.closing.Load() {
-		c.sent.Add(int64(n))
-	}
-	return n, err
-}
-
-func (c *countingConn) SetWriteDeadline(t time.Time) error {
-	c.closing.Store(true)
-	return c.Conn.SetWriteDeadline(t)
-}
-
-func (c *countingConn) Close() error {
-	err := c.Conn.Close()
-	c.closeOnce.Do(func() { close(c.closed) })
-	return err
+	return sender.SendText(ctx, chat, text)
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.

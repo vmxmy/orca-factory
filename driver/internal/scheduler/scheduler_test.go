@@ -2,15 +2,11 @@ package scheduler
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1730,239 +1726,6 @@ func TestHostMemoryHoldNotifiesOnceAfterFifteenMinutes(t *testing.T) {
 		t.Fatalf("hold starts: %+v", b.notices)
 	}
 }
-
-func TestHostMemoryNoticeResentOnlyWhenUndelivered(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		err     func(*testing.T) error
-		notices int
-	}{
-		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent) }, 2},
-		{"feishu business error", func(t *testing.T) error {
-			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`)
-		}, 2},
-		{"truncated response", func(t *testing.T) error {
-			return feishuSendTextErr(t, feishuTokenIssued, http.StatusOK, `{"code":0,"data":{"message_id":"om_`)
-		}, 1},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			b := &hostMemoryNotifyBackend{err: tc.err(t)}
-			s := setup(&b.fakeBackend)
-			s.Backend = b
-			start := s.Now()
-			s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
-			for _, elapsed := range []time.Duration{0, 15 * time.Minute, 16 * time.Minute, 17 * time.Minute} {
-				s.Now = func() time.Time { return start.Add(elapsed) }
-				if err := s.Tick(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-				if len(b.notices) > 0 {
-					b.err = nil
-				}
-			}
-			if len(b.notices) != tc.notices {
-				t.Fatalf("notices=%d, want %d", len(b.notices), tc.notices)
-			}
-		})
-	}
-}
-
-// A transport failure before the message request, such as a tenant token
-// timeout, cannot have delivered the notice; one on the message request may have.
-func TestHostMemoryNoticeTransportFailureUnsentOnlyBeforeMessage(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		dropOn  string
-		refused bool
-		unsent  bool
-	}{
-		{"token request dropped", "/tenant_access_token/internal", false, true},
-		{"message connection refused", "", true, true},
-		{"message request dropped", "/im/v1/messages", false, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var srv *httptest.Server
-			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if tc.dropOn != "" && strings.HasSuffix(r.URL.Path, tc.dropOn) {
-					conn, _, err := w.(http.Hijacker).Hijack()
-					if err == nil {
-						_ = conn.Close()
-					}
-					return
-				}
-				if tc.refused {
-					w.Header().Set("Connection", "close")
-					_ = srv.Listener.Close()
-				}
-				_, _ = w.Write([]byte(feishuTokenIssued))
-			}))
-			t.Cleanup(srv.Close)
-			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
-			t.Setenv("HOME", t.TempDir())
-			t.Setenv("AGENT_FEISHU_ENDPOINT", srv.URL)
-			t.Setenv("AGENT_FEISHU_APP_ID", "app")
-			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
-			t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
-			err := (&Runtime{}).NotifyHostMemory(context.Background(), status.HostMemory{Paused: true})
-			if err == nil || noticeUndelivered(err) != tc.unsent {
-				t.Fatalf("err=%v undelivered=%v, want error with undelivered=%v", err, noticeUndelivered(err), tc.unsent)
-			}
-		})
-	}
-}
-
-// A connection that took no byte of the message request cannot have delivered it.
-func TestNoticeMessageWrittenOnlyAfterBytesReachSocket(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		peer    func(net.Conn)
-		written bool
-	}{
-		{"first write sends nothing", func(peer net.Conn) { _ = peer.Close() }, false},
-		{"peer reads then resets", func(peer net.Conn) {
-			go func() {
-				_, _ = peer.Read(make([]byte, 16))
-				_ = peer.Close()
-			}()
-		}, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			m, err := newMessageAttempts()
-			if err != nil {
-				t.Fatal(err)
-			}
-			m.dial = func(context.Context, string, string) (net.Conn, error) {
-				client, peer := net.Pipe()
-				tc.peer(peer)
-				return client, nil
-			}
-			req, err := http.NewRequest(http.MethodPost, "http://feishu.invalid/open-apis/im/v1/messages", strings.NewReader("{}"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if resp, err := m.RoundTrip(req); err == nil {
-				_ = resp.Body.Close()
-				t.Fatal("round trip over a reset connection succeeded")
-			}
-			if got := m.written(); got != tc.written {
-				t.Fatalf("written=%v, want %v", got, tc.written)
-			}
-		})
-	}
-}
-
-// Only bytes a socket took after a message request got it count, under every
-// TLS layer of an HTTPS proxy, and a failed connection is read once it closed:
-// a reconnect whose handshake fails has written no message.
-func TestNoticeMessageBytesCountOnlyAfterGotConn(t *testing.T) {
-	m, err := newMessageAttempts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.dial = func(context.Context, string, string) (net.Conn, error) {
-		client, peer := net.Pipe()
-		go func() { _, _ = io.Copy(io.Discard, peer) }()
-		t.Cleanup(func() { _ = client.Close() })
-		return client, nil
-	}
-	dial := func() (net.Conn, net.Conn) {
-		conn, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
-		if err != nil {
-			t.Fatal(err)
-		}
-		proxied := tls.Client(tls.Client(conn, &tls.Config{ServerName: "proxy.invalid"}), &tls.Config{ServerName: "feishu.invalid"})
-		return conn, proxied
-	}
-	reused, proxied := dial()
-	m.gotConn(httptrace.GotConnInfo{Conn: proxied, Reused: true})
-	_ = reused.Close()
-	reconnect, _ := dial()
-	if _, err := reconnect.Write([]byte("client hello")); err != nil {
-		t.Fatal(err)
-	}
-	_ = reconnect.Close()
-	if m.written() {
-		t.Fatal("bytes outside a message request counted as a message write")
-	}
-	retried, proxied := dial()
-	m.gotConn(httptrace.GotConnInfo{Conn: proxied})
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		_, _ = retried.Write([]byte("POST"))
-		_ = retried.Close()
-	}()
-	if !m.written() {
-		t.Fatal("a message write that finished before its connection closed did not count")
-	}
-}
-
-// Closing a TLS connection writes close_notify; it is no message byte.
-func TestNoticeTLSCloseNotifyIsNotAMessageWrite(t *testing.T) {
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	m, err := newMessageAttempts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	m.dial = func(context.Context, string, string) (net.Conn, error) {
-		client, peer := net.Pipe()
-		go func() {
-			server := tls.Server(peer, srv.TLS)
-			if server.Handshake() == nil {
-				_, _ = io.Copy(io.Discard, server)
-			}
-			_ = server.Close()
-		}()
-		return client, nil
-	}
-	conn, err := m.transport.DialContext(context.Background(), "tcp", "example.com:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	secure := tls.Client(conn, &tls.Config{ServerName: "example.com", RootCAs: srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs})
-	if err := secure.Handshake(); err != nil {
-		t.Fatal(err)
-	}
-	m.gotConn(httptrace.GotConnInfo{Conn: secure, Reused: true})
-	if err := secure.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if m.written() {
-		t.Fatal("a TLS close_notify counted as a message write")
-	}
-}
-
-// HTTP/2 lets the read loop write frames such as SETTINGS ACK on the message's
-// connection, so the notice transport speaks HTTP/1.1 only.
-func TestNoticeTransportSpeaksHTTP1(t *testing.T) {
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	srv.EnableHTTP2 = true
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
-	m, err := newMessageAttempts()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if m.transport.TLSClientConfig == nil {
-		m.transport.TLSClientConfig = &tls.Config{}
-	}
-	m.transport.TLSClientConfig.RootCAs = srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
-	t.Cleanup(m.transport.CloseIdleConnections)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+"/open-apis/im/v1/messages", strings.NewReader("{}"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp, err := m.RoundTrip(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = resp.Body.Close()
-	if resp.ProtoMajor != 1 {
-		t.Fatalf("notice transport negotiated %s", resp.Proto)
-	}
-}
-
 func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	b := &hostMemoryNotifyBackend{}
 	s := setup(&b.fakeBackend)
@@ -2005,6 +1768,33 @@ func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	}
 	if got := s.HostMemoryStatus().Since; !got.Equal(start) {
 		t.Errorf("snapshot since = %v, want %v", got, start)
+	}
+}
+
+func TestHostMemoryNotificationRetriesAfterFailure(t *testing.T) {
+	b := &hostMemoryNotifyBackend{err: errors.New("offline")}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(15 * time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b.err = nil
+	now = now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.notices) != 2 {
+		t.Fatalf("notification attempts = %d, want 2", len(b.notices))
 	}
 }
 

@@ -924,16 +924,6 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 	}
 }
 
-// noticeUndelivered reports a notice failure that is safe to send again.
-// Feishu has no idempotency key, so only a notice that never reached it or that
-// it rejected (a business code, or a refused token or permission) qualifies; a
-// lost or unreadable response may mean it was delivered.
-func noticeUndelivered(err error) bool {
-	var rejected *feishu.APIError
-	var refused *infra.Global
-	return errors.Is(err, errNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep
-}
-
 // clearOrcaRuntime ends every Orca fault once a terminal create succeeds.
 func (s *Scheduler) clearOrcaRuntime() {
 	s.orcaRuntime = status.OrcaRuntime{}
@@ -1006,7 +996,13 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		}); ok {
 			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
 				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
-				if noticeUndelivered(err) {
+				// Feishu has no idempotency key, so only a notice that never reached
+				// it or that it rejected (a business code, or a refused token or
+				// permission) is sent again; a lost or unreadable response may mean
+				// it was delivered.
+				var rejected *feishu.APIError
+				var refused *infra.Global
+				if errors.Is(err, errNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep {
 					return
 				}
 			}
@@ -1096,11 +1092,11 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 		}); ok {
 			notice := s.hostMemory
 			notice.Since = s.memoryPausedSince
-			err := notifier.NotifyHostMemory(ctx, notice)
-			if err != nil {
+			if err := notifier.NotifyHostMemory(ctx, notice); err != nil {
 				s.logger().Warn("host memory notification failed", "err", err)
+			} else {
+				s.memoryNotified = true
 			}
-			s.memoryNotified = err == nil || !noticeUndelivered(err)
 		}
 	}
 }
