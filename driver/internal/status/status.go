@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 )
 
 const ExecutorStartUnconfirmed = "executor start unconfirmed: terminal/run not registered"
@@ -19,6 +21,7 @@ type TodayOutput struct {
 
 type Snapshot struct {
 	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
+	HostMemory  HostMemory   `json:"hostMemory,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	GeneratedAt time.Time    `json:"generatedAt"`
 	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
@@ -154,11 +157,21 @@ type OrcaRuntime struct {
 	Paused   bool `json:"paused"`
 }
 
+// HostMemory is the scheduler's host memory hold: while Paused it starts no
+// new terminal. Error is the latest unreadable /proc text, which never holds.
+type HostMemory struct {
+	Paused  bool            `json:"paused"`
+	Since   time.Time       `json:"since,omitzero"`
+	Reading hostmem.Reading `json:"reading,omitzero"`
+	Error   string          `json:"error,omitempty"`
+}
+
 // View.GeneratedAt records the last successful full scheduler observation.
 // Partial writes retain it; zero means no scheduler observation is available.
 // View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
 	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
+	HostMemory  HostMemory   `json:"hostMemory,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	State       string       `json:"state"`
 	GeneratedAt time.Time    `json:"generatedAt"`
@@ -208,6 +221,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 	view.GitHub = snapshot.GitHub
 	view.Today = snapshot.Today
 	view.OrcaRuntime = snapshot.OrcaRuntime
+	view.HostMemory = snapshot.HostMemory
 	normalize(&view, now)
 	dropNextScanUnlessOK(&view)
 	return view

@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -922,5 +924,101 @@ func TestSchedulerTickLeavesPublishedOrcaRuntime(t *testing.T) {
 	_ = s.Tick(context.Background())
 	if got := status.Read(s.Now(), 0).OrcaRuntime; !got.Paused {
 		t.Fatalf("scheduler tick overwrote the published Orca runtime fault: %+v", got)
+	}
+}
+
+func TestHostMemoryHoldSkipsNewLaunchesWithoutBurningAttempts(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	f := &fakeBackend{absent: true, inactive: true}
+	s := setup(f)
+	f.tickets = []Ticket{
+		{ID: "candidate", Identifier: "candidate", Repo: "b", Candidate: true, CreatedAt: s.Now()},
+		{ID: "executor", Identifier: "executor", Repo: "a", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now()},
+	}
+	reading := hostmem.Reading{Available: 5 << 30}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	skipped := map[string]bool{}
+	for _, decision := range captureDecisions(t, s) {
+		if decision["event"] == "skip" && decision["reason"] == "memory" {
+			skipped[decision["ticket_id"].(string)] = true
+		}
+	}
+	if len(f.actions) != 0 || len(f.launched) != 0 {
+		t.Fatalf("held host memory claimed or launched: actions=%v launches=%v", f.actions, f.launched)
+	}
+	if !skipped["candidate"] || !skipped["executor"] {
+		t.Fatalf("memory skips=%v, want candidate and executor", skipped)
+	}
+	if got := s.HostMemoryStatus(); !got.Paused || !got.Since.Equal(s.Now()) || got.Reading != reading {
+		t.Fatalf("host memory status = %+v", got)
+	}
+	for _, ticket := range f.tickets {
+		if ticket.Attempt != map[string]int{"candidate": 0, "executor": 1}[ticket.ID] {
+			t.Fatalf("attempt changed while held: %+v", ticket)
+		}
+	}
+	reading = hostmem.Reading{Available: 30 << 30}
+	claimed := []string{}
+	f.onApply = func(ticket Ticket, a Action) {
+		if a.Kind == Claim {
+			claimed = append(claimed, ticket.ID)
+		}
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(claimed, []string{"candidate"}) {
+		t.Fatalf("released round claims=%v, want candidate", claimed)
+	}
+	launched := map[string]int{}
+	for _, ticket := range f.launched {
+		launched[ticket.ID] = ticket.Attempt
+	}
+	if !reflect.DeepEqual(launched, map[string]int{"candidate": 1, "executor": 2}) {
+		t.Fatalf("released round launches=%v", launched)
+	}
+	if got := s.HostMemoryStatus(); got.Paused {
+		t.Fatalf("host memory still paused after release: %+v", got)
+	}
+}
+
+func TestHostMemoryHoldStillAppliesReadyResolverResult(t *testing.T) {
+	f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "ENG-1", Repo: "a", Owner: machine.OwnerResolver, Terminal: "controller", Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result"}}}}
+	s := setup(f)
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 5 << 30}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
+		t.Fatalf("held host memory must still apply a reported resolver result: actions=%+v", f.actions)
+	}
+}
+
+func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
+	s := setup(&fakeBackend{})
+	steps := []struct {
+		reading hostmem.Reading
+		err     error
+		paused  bool
+	}{
+		{hostmem.Reading{Available: 5 << 30}, nil, true},
+		{hostmem.Reading{}, errors.New("read /proc/meminfo: gone"), false},
+		{hostmem.Reading{Available: 8 << 30}, nil, true},
+	}
+	start := s.Now()
+	for i, step := range steps {
+		now := start.Add(time.Duration(i) * time.Minute)
+		s.Now = func() time.Time { return now }
+		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := s.HostMemoryStatus()
+		if got.Paused != step.paused {
+			t.Fatalf("step %d: status=%+v, want paused=%v", i, got, step.paused)
+		}
+		if step.paused && !got.Since.Equal(start) {
+			t.Fatalf("step %d: hold start %v, want the first hold at %v", i, got.Since, start)
+		}
 	}
 }
