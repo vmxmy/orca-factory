@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net/http"
 	"os/exec"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -212,11 +214,32 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 	if chat == "" {
 		return nil
 	}
-	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
+	attempts := &messageAttempts{next: infra.HTTPTransport}
+	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"], HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: attempts}})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
-	return sender.SendText(ctx, chat, text)
+	if err := sender.SendText(ctx, chat, text); err != nil {
+		if !attempts.started {
+			return fmt.Errorf("%w: %w", errNoticeNotSent, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// messageAttempts records whether a message request reached the transport, so
+// a failure before it, such as a tenant token timeout, is known undelivered.
+type messageAttempts struct {
+	next    http.RoundTripper
+	started bool
+}
+
+func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/open-apis/im/v1/messages") {
+		m.started = true
+	}
+	return m.next.RoundTrip(req)
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.

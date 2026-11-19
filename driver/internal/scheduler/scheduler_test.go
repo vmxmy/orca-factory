@@ -1763,6 +1763,43 @@ func TestHostMemoryNoticeResentOnlyWhenUndelivered(t *testing.T) {
 	}
 }
 
+// A transport failure before the message request, such as a tenant token
+// timeout, cannot have delivered the notice; one on the message request may have.
+func TestHostMemoryNoticeTransportFailureUnsentOnlyBeforeMessage(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		dropOn string
+		unsent bool
+	}{
+		{"token request dropped", "/tenant_access_token/internal", true},
+		{"message request dropped", "/im/v1/messages", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, tc.dropOn) {
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err == nil {
+						_ = conn.Close()
+					}
+					return
+				}
+				_, _ = w.Write([]byte(feishuTokenIssued))
+			}))
+			t.Cleanup(srv.Close)
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+			t.Setenv("HOME", t.TempDir())
+			t.Setenv("AGENT_FEISHU_ENDPOINT", srv.URL)
+			t.Setenv("AGENT_FEISHU_APP_ID", "app")
+			t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+			t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
+			err := (&Runtime{}).NotifyHostMemory(context.Background(), status.HostMemory{Paused: true})
+			if err == nil || noticeUndelivered(err) != tc.unsent {
+				t.Fatalf("err=%v undelivered=%v, want error with undelivered=%v", err, noticeUndelivered(err), tc.unsent)
+			}
+		})
+	}
+}
+
 func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	b := &hostMemoryNotifyBackend{}
 	s := setup(&b.fakeBackend)
