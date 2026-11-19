@@ -289,9 +289,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, errors.New("repository refused: automation enabled or unverifiable"))
 		}
 	}
-	if len(s.Repositories) == 0 {
-		s.orcaRuntime.UnreachableSince = time.Time{}
-	}
 	s.observeOrcaReads(ctx, answered, unreachable)
 	notify := func(t Ticket) {
 		if category, _ := feishuNotification(t); category == "" {
@@ -335,6 +332,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
+	// Without a tracked repository no automation read runs, so no outage is timed.
+	if len(s.Repositories) == 0 {
+		s.orcaRuntime.UnreachableSince = time.Time{}
+	}
 	if answered {
 		s.orcaNotificationRepo = ""
 		for _, r := range s.Repositories {

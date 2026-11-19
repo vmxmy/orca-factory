@@ -1481,16 +1481,16 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 		x.f.tickets = nil
 		_ = s.Tick(context.Background())
 		x.b.automationErr = unavailable
-		s.retired = map[string]bool{"/repo0": true}
 		start := *x.now
 		_ = s.Tick(context.Background())
-		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) || len(s.Repositories) != 0 {
-			t.Fatalf("status=%+v repositories=%v, want timing started and the idle retired repository dropped", got, s.Repositories)
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) {
+			t.Fatalf("status=%+v, want timing started", got)
 		}
-		*x.now = start.Add(time.Minute)
+		s.retired = map[string]bool{"/repo0": true}
+		*x.now = start.Add(OrcaRestartGrace - time.Second)
 		_ = s.Tick(context.Background())
-		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() {
-			t.Fatalf("unreachable timing continued without a tracked repository: %+v", got)
+		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || len(s.Repositories) != 0 {
+			t.Fatalf("status=%+v repositories=%v, want timing cleared in the round the last repository left", got, s.Repositories)
 		}
 	})
 	t.Run("merge correction terminal create clears restart budget", func(t *testing.T) {
