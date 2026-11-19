@@ -267,8 +267,8 @@ let gearSwitching = false
 const switchGear = async ($: Engine, current: Repo): Promise<void> => {
   if (gearSwitching) return
   gearSwitching = true
-  await update($, gearBusy, () => true)
   try {
+    await update($, gearBusy, () => true)
     const operator = (await $.env.get('USER')) || (await $.env.get('LOGNAME'))
     if (!operator) throw new Error('无法读取当前用户名')
     const next = gearMode(current.routing) === 'auto' ? 'manual' : 'auto'
@@ -280,9 +280,12 @@ const switchGear = async ($: Engine, current: Repo): Promise<void> => {
   } catch (error) {
     $.ui.toast(`档位切换失败：${message(error)}`)
   } finally {
-    await fetchConfig($)
-    gearSwitching = false
-    await update($, gearBusy, () => false)
+    try {
+      await fetchConfig($)
+    } finally {
+      gearSwitching = false
+      await update($, gearBusy, () => false)
+    }
   }
 }
 
