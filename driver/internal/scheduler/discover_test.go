@@ -305,13 +305,25 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 		t.Fatalf("in-flight warning logged %d times, want once:\n%s", n, logs.String())
 	}
 
-	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 5, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual", "AGENT_FEISHU_PROJECT": "github.com/example/z"}}
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "repository"}}
 	now = now.Add(time.Hour)
 	if err := s.RefreshProjects(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/z" })
-	if idx < 0 || s.Repositories[idx].Env["AGENT_MODE"] != "manual" || s.Repositories[idx].MaxInFlight != 3 || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
+	if idx < 0 {
+		t.Fatalf("retired /z missing from tracked repositories: %+v", s.Repositories)
+	}
+	if mode, set := s.Repositories[idx].Env["AGENT_MODE"]; set {
+		t.Fatalf("retired /z AGENT_MODE=%q from its repository profile without a gear override, want the tracked configuration kept", mode)
+	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 5, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "override"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.Repositories[idx].Env["AGENT_MODE"] != "manual" || s.Repositories[idx].MaxInFlight != 3 || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
 		t.Fatalf("retired /z repository=%+v, want only its AGENT_MODE refreshed while still retired", s.Repositories)
 	}
 
@@ -332,5 +344,15 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	}
 	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
 		t.Fatalf("retired /z AGENT_MODE=%q after the path was registered under another remote, want the tracked manual kept", got)
+	}
+
+	result.Rejected[0].Remote = "github.com/example/z"
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "repository"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, source := s.Repositories[idx].Env["AGENT_MODE"], s.Repositories[idx].Sources["AGENT_MODE"]; got != "auto" || source != "repository" {
+		t.Fatalf("retired /z AGENT_MODE=%q source=%q after gear clear, want the repository auto", got, source)
 	}
 }

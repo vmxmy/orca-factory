@@ -132,6 +132,11 @@ func TestGearCommands(t *testing.T) {
 			t.Fatalf("after clearing %q: %s, err=%v", tc.selector, data, err)
 		}
 	}
+	ledger.rows[0].cells["启用"] = false
+	invokeGear(t, "set", f.factory, "auto", "--operator", "tester", "--reason", "disabled project with in-flight tickets")
+	status("auto", "override")
+	invokeGear(t, "clear", f.factory)
+	ledger.rows[0].cells["启用"] = true
 	server.Close()
 	invokeGear(t, "set", f.factory, "manual", "--operator", "t", "--reason", "r")
 	entries := readGearEntries(t, file)
@@ -170,8 +175,8 @@ func TestGearCommands(t *testing.T) {
 		t.Fatalf("clear .. with Feishu offline: %+v", entries)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 8 {
-		t.Fatalf("logs=%q, want eight changes", logs.String())
+	if len(lines) != 10 {
+		t.Fatalf("logs=%q, want ten changes", logs.String())
 	}
 	for _, line := range lines {
 		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `remote="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
@@ -293,8 +298,8 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 	if got, err := config.LoadRegisteredRepository(fork, b); err != nil || got.Sources["AGENT_MODE"] == "override" {
 		t.Fatalf("FORK inherited removed DJ checkout: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
-	if got, err := config.LoadRegisteredRepository(upstream, b); err != nil || got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "override" {
-		t.Fatalf("DJ registered at a new path lost its gear: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	if got, err := config.LoadRegisteredRepository(upstream, b); err != nil || got.Sources["AGENT_MODE"] == "override" {
+		t.Fatalf("DJ gear applied to a checkout whose ledger project is FORK: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
 }
 

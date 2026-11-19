@@ -14,7 +14,7 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	const upstream = "github.com/dujiao-next/dujiao-next"
 	const fork = "github.com/vmxmy/dujiao-next"
 	repo := t.TempDir()
-	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\n")
+	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_FEISHU_PROJECT="+upstream+"\n")
 	file := filepath.Join(state, "gear.json")
 	for _, tc := range []struct {
 		name, gears, remote   string
@@ -23,6 +23,7 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		{"manual beside malformed entries", `{"github.com/dujiao-next/dujiao-next":{"mode":"manual","path":"/old/checkout"},"github.com/test/scalar":7,"github.com/test/mode":{"mode":null}}`, upstream, "manual", "override", ""},
 		{"auto", `{"github.com/dujiao-next/dujiao-next":{"mode":"auto"}}`, upstream, "auto", "override", ""},
 		{"another remote at this path", `{"github.com/dujiao-next/dujiao-next":{"mode":"manual"}}`, fork, "auto", "repository", ""},
+		{"registered remote is not the ledger project", `{"github.com/vmxmy/dujiao-next":{"mode":"manual"}}`, fork, "auto", "repository", ""},
 		{"invalid mode", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid"}}`, upstream, "", "", "manual or auto"},
 		{"null mode", `{"github.com/dujiao-next/dujiao-next":{"mode":null}}`, upstream, "", "", "manual or auto"},
 		{"mode key differs in case", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid","MODE":"auto"}}`, upstream, "", "", "manual or auto"},
@@ -43,6 +44,9 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 				t.Fatalf("mode=%q source=%q err=%v, want %q %q", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err, tc.mode, tc.source)
 			}
 		})
+	}
+	if err := SetGearOverride(fork, repo, "manual", "t", "r"); err == nil || !strings.Contains(err.Error(), "ledger project") {
+		t.Fatalf("set under a remote other than the ledger project: err=%v", err)
 	}
 	if err := SetGearOverride(upstream, repo, "manual", "t", "r"); err != nil {
 		t.Fatal(err)

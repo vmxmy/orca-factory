@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -105,14 +106,15 @@ func Load(home string) (Config, error) {
 }
 
 // LoadRegisteredRepository resolves the profile of the Orca repository
-// registered under remote and applies its machine-local gear override. A
-// registration without a remote identity has no override.
+// registered under remote and applies its machine-local gear override. The
+// override applies only when remote is the profile's ledger project, so a
+// registration that drifted from the tickets this checkout serves has none.
 func LoadRegisteredRepository(remote, path string) (Repository, error) {
 	repo, err := LoadRepository(path)
 	if err != nil {
 		return Repository{}, err
 	}
-	if remote == "" {
+	if remote == "" || remote != repo.Env["AGENT_FEISHU_PROJECT"] {
 		return repo, nil
 	}
 	if err := applyGear(&repo, remote); err != nil {
@@ -248,6 +250,15 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		return errors.New("gear change requires remote, path, operator and reason")
 	}
 	path = filepath.Clean(path)
+	if mode != "" {
+		repo, err := LoadRepository(path)
+		if err != nil {
+			return err
+		}
+		if repo.Env["AGENT_FEISHU_PROJECT"] != remote {
+			return fmt.Errorf("gear: %s is not the ledger project AGENT_FEISHU_PROJECT of %s", remote, path)
+		}
+	}
 	file, err := gearPath()
 	if err != nil {
 		return err

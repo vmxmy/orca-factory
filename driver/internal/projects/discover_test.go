@@ -359,7 +359,7 @@ func TestReadableRepositories(t *testing.T) {
 // Feishu base carries none.
 func TestDiscoverRejectionCarriesReadableRepository(t *testing.T) {
 	readable, bare := t.TempDir(), t.TempDir()
-	writeEnv(t, readable, "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=TEST-PLACEHOLDER-CRED\n")
+	writeEnv(t, readable, "AGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_BASE=TEST-PLACEHOLDER-CRED\nAGENT_FEISHU_PROJECT=github.com/example/readable\n")
 	writeEnv(t, bare, "AGENT_ISSUE_BACKEND=feishu\n")
 	state := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)

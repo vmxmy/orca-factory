@@ -227,13 +227,14 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 	return fresh
 }
 
-// refreshMode carries only a retired repository's gear (AGENT_MODE) forward;
-// the rest of its configuration stays as tracked while it is not taken over.
-// A path now registered under a remote other than the tracked ledger project
-// keeps its tracked gear.
+// refreshMode carries only a retired repository's machine-local gear
+// override (AGENT_MODE) forward, including its clearing; the rest of its
+// configuration, and a repository profile's own AGENT_MODE, stays as tracked
+// while it is not taken over. A path now registered under a remote other than
+// the tracked ledger project keeps its tracked gear.
 func (s *Scheduler) refreshMode(current, fresh config.Repository, remote string, updater repositoryUpdater) config.Repository {
 	mode, set := fresh.Env["AGENT_MODE"]
-	if remote != current.Env["AGENT_FEISHU_PROJECT"] || (current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"]) {
+	if (current.Sources["AGENT_MODE"] != "override" && fresh.Sources["AGENT_MODE"] != "override") || remote != current.Env["AGENT_FEISHU_PROJECT"] || (current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"]) {
 		return current
 	}
 	if changed := config.ChangedEnvKeys(current.Env, fresh.Env); slices.ContainsFunc(changed, func(key string) bool { return slices.Contains(config.LedgerIdentityKeys, key) }) {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -83,21 +84,36 @@ func runGear(args []string) int {
 	}
 	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
 	if args[0] == "status" {
-		result, _, err := discoverProjects(ctx, cfg, client)
+		result, ledgerRows, err := discoverProjects(ctx, cfg, client)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
 		}
 		rows := []gearStatus{}
-		for _, p := range result.Eligible {
-			mode, source := p.Repository.Env["AGENT_MODE"], "agent-graph.env"
+		add := func(remote, prefix, path string, repo config.Repository) {
+			mode, source := repo.Env["AGENT_MODE"], "agent-graph.env"
 			if mode == "" {
 				mode, source = "manual", "default"
 			}
-			if p.Repository.Sources["AGENT_MODE"] == "override" {
+			if repo.Sources["AGENT_MODE"] == "override" {
 				source = "override"
 			}
-			rows = append(rows, gearStatus{Remote: p.Remote, Prefix: p.Prefix, Path: p.Path, Mode: mode, Source: source})
+			rows = append(rows, gearStatus{Remote: remote, Prefix: prefix, Path: path, Mode: mode, Source: source})
+		}
+		for _, p := range result.Eligible {
+			add(p.Remote, p.Prefix, p.Path, p.Repository)
+		}
+		// A rejected repository with a readable profile may still hold in-flight
+		// tickets that the scheduler keeps driving under this gear.
+		for _, r := range result.Rejected {
+			if r.Repository == nil {
+				continue
+			}
+			prefix := ""
+			if i := slices.IndexFunc(ledgerRows, func(row issues.LedgerProject) bool { return row.Remote == r.Remote }); i >= 0 {
+				prefix = ledgerRows[i].Prefix
+			}
+			add(r.Remote, prefix, r.Path, *r.Repository)
 		}
 		if len(args) == 2 {
 			if err := json.NewEncoder(os.Stdout).Encode(rows); err != nil {
