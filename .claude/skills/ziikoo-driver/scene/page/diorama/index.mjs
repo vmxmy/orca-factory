@@ -119,17 +119,27 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     overlay.hub(hubText(current, at), current.state)
   }
 
+  const refreshMargins = () => {
+    margins = hud.margins()
+    lens.resize(size.width, size.height, margins)
+  }
+
   const showSelection = () => {
     world.focus(stop, focus)
     const parcel = parcelOf(selected)
     hud.stops(stop, parcel !== undefined, focus)
     hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus])
+    refreshMargins()
     onView(stop === 1 ? { path: null, ticket: null } : { path: archipelago.islands[focus].path, ticket: parcel?.identifier ?? null })
   }
 
+  const showStop = () => {
+    overlay.focus(focus)
+    refreshStatus()
+    showSelection()
+  }
+
   const frameView = () => {
-    margins = hud.margins()
-    lens.resize(size.width, size.height, margins)
     if (stop === 3) lens.frameNeighborhood(world.neighborhood(selected))
     else if (stop === 2) lens.frameIsland(focus)
     else lens.frameAll()
@@ -139,9 +149,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   const setStop = next => {
     const parcel = parcelOf(selected)
     stop = next === 3 && parcel ? 3 : next === 1 && archipelago.global ? 1 : 2
-    showSelection()
-    overlay.focus(focus)
-    refreshStatus()
+    showStop()
     frameView()
   }
 
@@ -178,9 +186,15 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     }
     hud.mode(mode)
     overlay.mode(mode)
-    setStop(stop)
+    showStop()
   }
-  const hud = createHud(stage, { onSelect: select, onStop: setStop, onIsland: enter, onMode: toggleMode, onLayout: frameView, mode })
+  const hud = createHud(stage, {
+    onSelect: select, onStop: setStop, onIsland: enter, onMode: toggleMode, mode,
+    onLayout() {
+      refreshMargins()
+      frameView()
+    },
+  })
   const overlay = createOverlay(stage, world, { onIsland: enter, mode })
   hud.mode(mode)
 
@@ -278,12 +292,8 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       setStop(2)
       return
     }
-    overlay.focus(focus)
-    showSelection()
-    refreshStatus()
+    showStop()
     if (stop === 3 && parcel.station !== held.station) {
-      margins = hud.margins()
-      lens.resize(size.width, size.height, margins)
       lens.frameNeighborhood(world.neighborhood(parcel.key))
       lens.snap()
     }
@@ -298,8 +308,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     link(next) {
       hud.link(next)
       refreshStatus()
-      margins = hud.margins()
-      lens.resize(size.width, size.height, margins)
+      refreshMargins()
     },
     dispose() {
       cancelAnimationFrame(request)

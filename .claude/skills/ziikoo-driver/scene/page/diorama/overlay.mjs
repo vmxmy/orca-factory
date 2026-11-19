@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { ISLAND_STATUS, baselineText, stationNeighborhood, RENDER_MODE, visibleIn, waitsForPerson, parked } from './model.mjs'
+import { ISLAND_STATUS, baselineText, blockedAtPickup, stationNeighborhood, RENDER_MODE, visibleIn, waitsForPerson } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -127,8 +127,11 @@ const humanBadge = kind => {
 }
 
 const cleanTicketText = parcel => {
-  const fact = waitsForPerson(parcel) || parked(parcel) ? '等人' : parcel.overdue ? '超基线' : parcel.alert ? `卡住${parcel.since !== undefined ? ` ${parcel.duration}` : ''}` : ''
-  return [parcel.identifier, ...(fact ? [fact] : [])].join(' · ')
+  let fact
+  if (waitsForPerson(parcel) || blockedAtPickup(parcel)) fact = '等人'
+  else if (parcel.overdue) fact = '超基线'
+  else if (parcel.alert) fact = parcel.since === undefined ? '卡住时长未知' : `卡住 ${parcel.duration}`
+  return fact ? `${parcel.identifier} · ${fact}` : parcel.identifier
 }
 
 const ticketLabel = (parcel, mode) => ({
@@ -219,7 +222,12 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
     return {
       tickets: marked,
       plates: global ? [...plates, ...(hub && visibleIn(mode, 'hub', { state: hubState }) ? [hub] : [])] : [],
-      stations: !global ? stations.filter(item => (viewport.width > LABEL_MIN_WIDTH || hovered?.station === item.station) && (!neighborhood || neighborhood.includes(item.station)) && visibleIn(mode, 'station', { occupied: item.occupied, hovered: hovered?.station === item.station })) : [],
+      stations: global ? [] : stations.filter(item => {
+        const over = hovered?.station === item.station
+        return (!neighborhood || neighborhood.includes(item.station))
+          && (mode === RENDER_MODE.CLEAN || viewport.width > LABEL_MIN_WIDTH || over)
+          && visibleIn(mode, 'station', { occupied: item.occupied, hovered: over })
+      }),
     }
   }
 

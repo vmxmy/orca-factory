@@ -340,7 +340,8 @@ async function checkCleanMode(browser, url) {
       parcel('NORMAL-1', 'work', { since: generatedAt - 60_000 }),
       parcel('LATE-1', 'gate', { since: generatedAt - 120_000 }),
       parcel('STUCK-1', 'repair', { since: generatedAt - 180_000, tone: 'failed', reason: '需要处理' }),
-      parcel('PARKED-1', 'pickup', { since: generatedAt - 60_000, owner: '无', phase: '待领', label: '待领', reason: 'parked: lane 3', blocker: 'parked: lane 3' }),
+      parcel('UNTIMED-1', 'return', { tone: 'failed' }),
+      parcel('PARKED-1', 'pickup', { blocker: '等待上游' }),
       parcel('DEPLOY-1', 'dispatch', { since: generatedAt - 60_000, owner: '人', phase: '等人', label: '部署', humanKind: 'deploy', deployment: 'pending' }),
     ])],
   }
@@ -356,13 +357,14 @@ async function checkCleanMode(browser, url) {
     assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'clean mode hides routine labels: normal tickets')
     assert.equal(await ticketLabel('LATE-1').count(), 1, 'overdue tickets keep labels')
     assert.equal(await ticketLabel('STUCK-1').count(), 1, 'stuck tickets keep labels')
-    assert.equal(await ticketLabel('PARKED-1').count(), 1, 'parked tickets keep labels')
+    assert.deepEqual(await ticketLabel('PARKED-1').allTextContents(), ['PARKED-1 · 等人'], 'blocked pickup tickets keep their waiting label')
+    assert.deepEqual(await ticketLabel('UNTIMED-1').allTextContents(), ['UNTIMED-1 · 卡住时长未知'])
     assert.equal(await ticketLabel('DEPLOY-1').count(), 1, 'tickets waiting for a person keep labels outside the human station')
     assert.equal(await page.locator('.tag-legend').isVisible(), false)
     assert.equal(await page.locator('.event-feed').isVisible(), false)
     assert.equal(await page.locator('.trip').isVisible(), false)
     assert.equal(await page.locator('.status').innerText(), 'driver ok')
-    assert.deepEqual(await stationLabels.evaluateAll(nodes => nodes.map(node => node.dataset.station).sort()), ['dispatch', 'gate', 'pickup', 'repair', 'work'])
+    assert.deepEqual(await stationLabels.evaluateAll(nodes => nodes.map(node => node.dataset.station).sort()), ['dispatch', 'gate', 'pickup', 'repair', 'return', 'work'])
     const moveTo = async point => {
       const pixel = pixelOf((await state(page)).view, point, page.viewportSize())
       await page.mouse.move(pixel.x, pixel.y)
@@ -406,10 +408,39 @@ async function checkCleanMode(browser, url) {
     await page.mouse.move(0, 0)
     await frames(page)
     assert.equal(await stationLabels.filter({ hasText: '审查' }).count(), 0)
+    await resize({ width: 600, height: before.height })
+    assert.equal(await page.locator('.label.station[data-station="work"]').isVisible(), true, 'an occupied station keeps its label at 600px')
+    assert.equal(await page.locator('.label.station[data-station="review"]').isVisible(), false, 'an empty station stays hidden at 600px')
+    await resize(before)
+    await page.locator('canvas').focus()
+    const framed = (await state(page)).goal
+    await page.keyboard.press('ArrowRight')
+    await settled(page)
+    const panned = (await state(page)).goal
+    assert.notDeepEqual(panned, framed, 'the arrow key must move the camera before switching modes')
+    for (const mode of ['full', 'clean']) {
+      await page.keyboard.press('v')
+      await frames(page)
+      assert.equal(await page.locator('.diorama').getAttribute('data-render-mode'), mode)
+      assert.deepEqual((await state(page)).goal, panned, `switching to ${mode} must preserve the panned camera`)
+    }
     assert.equal(await page.locator('.stuck > .list').isVisible(), false)
-    await page.getByRole('button', { name: '卡住 1', exact: true }).click()
+    await page.getByRole('button', { name: '卡住 2', exact: true }).click()
     assert.equal(await page.locator('.stuck > .list').isVisible(), true)
+    await page.locator('canvas').focus()
+    for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowUp')
+    await settled(page)
+    await frames(page)
+    const lowestBeforeSelection = await page.locator('.label.ticket:visible').evaluateAll(nodes => Math.max(...nodes.map(node => node.getBoundingClientRect().bottom)))
     await page.locator('.stuck > .list button[data-ticket="0/STUCK-1"]').click()
+    await frames(page)
+    const trip = await page.locator('.trip').boundingBox()
+    assert.ok(lowestBeforeSelection > trip.y, `before selection a ticket label must extend into the panel area: ${lowestBeforeSelection} vs ${trip.y}`)
+    const labels = await page.locator('.label.ticket:visible').evaluateAll(nodes => nodes.map(node => ({ text: node.textContent, bottom: node.getBoundingClientRect().bottom })))
+    assert.ok(labels.length > 0, 'the selected island must still show ticket labels')
+    for (const label of labels) assert.ok(label.bottom <= trip.y, `${label.text} ends at ${label.bottom}, below the trip panel top at ${trip.y}`)
+    await page.locator('canvas').focus()
+    await page.keyboard.press('Home')
     assert.equal(await page.locator('.trip .track').isVisible(), false)
     assert.equal(await page.locator('.trip .trip-baseline').isVisible(), false)
     await page.locator('.trip summary').click()
@@ -474,6 +505,7 @@ async function checkCleanIslandStatus(browser, url) {
     assert.equal(await page.locator('.status').innerText(), 'driver ok')
     assert.equal(await page.locator('.dock').isVisible(), false)
     await page.evaluate(scene => window.diorama.update({ ...scene, state: 'unknown', rows: scene.rows.map(row => ({ ...row, parcels: [] })) }), scene)
+    await page.setViewportSize({ width: 700, height: 900 })
     await frames(page)
     assert.equal(await page.locator('.plate.hub').isVisible(), true)
     assert.equal(await page.locator('.stuck').isVisible(), false)
@@ -491,8 +523,11 @@ async function checkModeStorage(browser, url) {
       await toggle.click()
       assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'storage failure must not prevent switching')
       await page.getByRole('button', { name: '/ 搜索', exact: true }).click()
-      await page.getByRole('searchbox').fill('v')
+      const search = page.getByRole('searchbox')
+      await search.focus()
+      await page.keyboard.press('v')
       assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'typing v in search must not switch modes')
+      assert.equal(await search.inputValue(), 'v')
       assert.deepEqual(errors, [])
     } finally { await page.close() }
   }
@@ -1546,24 +1581,6 @@ const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket'
   .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
 
 // driver/testdata/recorded/driver-status-json-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
-// driver/testdata/recorded/driver-status-json-parked.json：driver ObservationRow 以 ledger-issue-parked-resume.json 的 parked 票（真实账本录制）
-// 生成的 `status --json` 票行，TestRecordedParkedObservationRow 锁定两者一致。
-async function checkRecordedParked(browser, live) {
-  const parked = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-parked.json'))
-  const snapshot = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
-  live.write({ ...snapshot, tickets: [parked] })
-  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(parked.repo)}`, { renderMode: 'clean' })
-  try {
-    await page.waitForFunction(id => document.querySelector('.labels').textContent.includes(id), parked.identifier)
-    await frames(page)
-    assert.equal(await page.locator('.label.ticket:visible').filter({ hasText: `${parked.identifier} · 等人` }).count(), 1, 'clean mode labels the recorded parked ticket')
-    assert.deepEqual(errors, [])
-    console.log('PASS recorded parked ticket: driver status row keeps its clean-mode label')
-  } finally {
-    await page.close()
-  }
-}
-
 async function checkRecordedHumanWaits(browser, live) {
   const recorded = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
   const repo = '/home/laoxu/github/orca-factory'
@@ -1806,7 +1823,6 @@ async function checkProduction(browser, bun, model) {
     await checkParcelTransitions(browser, live)
     await checkRecordedTicketEvents(browser, live)
     await checkRecordedHumanWaits(browser, live)
-    await checkRecordedParked(browser, live)
     await checkHumanWaits(browser, live)
     live.write(status)
     await checkLiveUpdates(browser, live)

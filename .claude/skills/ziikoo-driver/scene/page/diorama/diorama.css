@@ -777,7 +777,7 @@
     max-width: 160px;
   }
 
-  .diorama .plate.hub {
+  .diorama[data-render-mode="full"] .plate.hub {
     display: none;
   }
 
