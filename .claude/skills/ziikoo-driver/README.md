@@ -50,6 +50,8 @@ Claude Code mod。斜杠命令 `/ziikoo-driver` 打开「Driver」面板，五�
 
 `/live.mjs`、`/diorama/*.mjs` 与 `/diorama/diorama.css` 使用 `Cache-Control: public, max-age=300`，`/vendor/*` 使用 `public, max-age=86400`；`/`、`/snapshot` 与 `/events` 保持 `no-store`。事件流连接数由 `ZIIKOO_SCENE_MAX_CLIENTS` 限制，默认 50，必须是正整数；达到上限时新连接返回 503 并带 `Retry-After: 5`，连接断开后释放名额。
 
+访问模式由 `ZIIKOO_SCENE_ACCESS` 决定，只接受 `token`（缺省）与 `public`，其他值启动失败。`token` 模式要求 `ZIIKOO_SCENE_TOKEN`，请求不带 `?t=` 或 `X-Token` 令牌时返回 404；插件启动的服务使用这一模式。`public` 模式不读令牌，首页把 `__TOKEN__` 替换为空串，启动日志打印不带 `?t=` 的地址；监听地址必须是回环地址（`127.0.0.1`、`::1` 或 `localhost`），否则启动失败，因此公开实例只能经本机 cloudflared 到达。公开模式按 `CF-Connecting-IP` 区分来源，没有这个头的请求统一计为来源 `local`：每个来源最多 2 条事件流，每个来源每 60 秒（固定窗口）最多 120 个请求，超限返回 429 并带 `Retry-After`；事件流总数仍受 `ZIIKOO_SCENE_MAX_CLIENTS` 限制。两种模式的所有响应都带 `X-Content-Type-Options: nosniff` 和 `Content-Security-Policy`，后者含 `frame-ancestors 'none'`，`script-src` 只放行同源脚本与首页 importmap 的 sha256 哈希。
+
 状态条下方显示今日产出，例如「今日：合并 3 · 转人 1 · 周期中位 12.5 分」，空闲时仍显示。插件把 `status.today` 透传为 `Scene.today`，每项缺字段时不画该项，全部缺失时隐藏整行；有证据的 0 照常显示；周期分钟数按一位小数显示。统计按 driver 服务的本地日期计算，跨午夜的运行归到结束当天，周期取 ledger 记录中的分钟数中位数，不另发飞书请求。跨日后 driver 会省略旧汇总，下一轮观察再更新。`scene.test.ts` 与 `diorama.browser.cjs` 读取录制样本 `driver/testdata/recorded/driver-status-json-today.json`（插件内嵌为 `RECORDED_TODAY_STATUS`），断言真实输出的解析与「今日：合并 1 · 转人 0 · 周期中位 37.1 分」。
 
 生产沙盘在新快照到达时让票用 1.2 秒缓动换站，开启减少动态时两帧内到位；进入、离开、移动和告警提示显示在侧栏「最近事件」，最多保留 8 条，重复快照不重复记录；没有项目、沙盘卸载期间产生的离开事件，在沙盘重新挂载后显示到侧栏。

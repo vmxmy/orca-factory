@@ -154,7 +154,7 @@ const openScene = async ($: Engine, surface: RenderSurface, bind: string, port: 
   const child = $.process.spawn({
     argv: ['bun', 'run', `${$.plugin.root}/scene/server.ts`],
     cwd: $.plugin.root,
-    env: { ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: bind, ZIIKOO_SCENE_PORT: port },
+    env: { ZIIKOO_SCENE_ACCESS: 'token', ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: bind, ZIIKOO_SCENE_PORT: port },
   })
   void (async () => {
     let exitCode: number | null = null
