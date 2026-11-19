@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
@@ -973,7 +976,7 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
 	}
 	// A notice that failed for certain is retried; a delivered one is not resent.
-	b.exhaustedErrs = []error{errors.New("feishu settings unreadable"), nil}
+	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent), nil}
 	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
 		tickAt(offset, 3)
 	}
@@ -1034,29 +1037,68 @@ func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
 	}
 }
 
-// A human notice whose transport failed may have been delivered; it is not resent.
-func TestOrcaRestartExhaustedNoticeNotResentAfterUncertainSend(t *testing.T) {
-	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
-	s, b := x.s, x.b
-	s.orcaRuntime = status.OrcaRuntime{Paused: true, Restarts: orcaRestartLimit}
-	b.exhaustedErrs = []error{&infra.Transient{Err: errors.New("feishu transport failed")}}
-	s.restartOrcaService(context.Background())
-	s.restartOrcaService(context.Background())
-	if b.exhaustedNotices != 1 || b.restarts != 0 {
-		t.Fatalf("notices=%d restarts=%d, want one notice and no restart", b.exhaustedNotices, b.restarts)
+// feishuSendTextErr is what the Feishu client returns when the message endpoint
+// answers with status and body.
+func feishuSendTextErr(t *testing.T, status int, body string) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"token","expire":7200}`))
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := feishu.New(feishu.Options{Endpoint: srv.URL, AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client.SendText(context.Background(), "oc_chat", "notice")
+}
+
+// Only a human notice Feishu certainly did not deliver is sent again; a failed
+// transport or a truncated or unreadable response may have delivered it.
+func TestOrcaRestartExhaustedNoticeResentOnlyWhenUndelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     func(*testing.T) error
+		notices int
+	}{
+		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent) }, 2},
+		{"feishu business error", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`) }, 2},
+		{"transport failed", func(*testing.T) error { return &infra.Transient{Err: errors.New("feishu transport failed")} }, 1},
+		{"truncated response", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusOK, `{"code":0,"data":{"message_id":"om_`) }, 1},
+		{"unreadable server error", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusBadGateway, "bad gateway") }, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+			s, b := x.s, x.b
+			s.orcaRuntime = status.OrcaRuntime{Paused: true, Restarts: orcaRestartLimit}
+			b.exhaustedErrs = []error{tc.err(t)}
+			for range 3 {
+				s.restartOrcaService(context.Background())
+			}
+			if b.exhaustedNotices != tc.notices || b.restarts != 0 {
+				t.Fatalf("notices=%d restarts=%d, want %d notices and no restart", b.exhaustedNotices, b.restarts, tc.notices)
+			}
+		})
 	}
 }
 
 // The recorded output of an orca CLI that cannot reach the runtime classifies as
 // an unreachable Orca and keeps the restart schedule when a probe returns it.
 func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
-	sample, err := filepath.Abs("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	cli := filepath.Join(t.TempDir(), "orca")
-	script := "#!/bin/sh\ncat '" + sample + "'\nexit 1\n"
-	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)

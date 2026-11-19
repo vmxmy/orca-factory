@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
@@ -861,7 +862,8 @@ var ErrOrcaRestartUnsupported = errors.New("backend has no Orca service restart"
 // restartOrcaService runs after a recovery probe whose terminal create Orca
 // failed. It restarts orca-serve once the pause has lasted orcaRestartGrace,
 // then at most once per orcaRestartInterval, and after orcaRestartLimit restarts
-// sends one human notice, retrying it until delivered or uncertain.
+// sends one human notice, sending it again only while Feishu certainly has not
+// delivered it.
 func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	now := s.clock()
 	ticket := s.orcaPauseTicket
@@ -874,10 +876,11 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		}); ok {
 			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
 				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
-				// Only a transport failure may have delivered the notice; any other
-				// failure is certain, so the next round sends it again.
-				var uncertain *infra.Transient
-				if !errors.As(err, &uncertain) {
+				// Feishu has no idempotency key, so only a notice that never reached
+				// it or that it rejected with a business code is sent again; a lost
+				// or unreadable response may mean it was delivered.
+				var rejected *feishu.APIError
+				if errors.Is(err, errOrcaNoticeNotSent) || errors.As(err, &rejected) {
 					return
 				}
 			}
