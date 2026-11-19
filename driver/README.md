@@ -412,7 +412,7 @@ flowchart LR
   - `watch.json` 无法解析时改名为 `watch.json.corrupt-<时间>` 留作证据，写一条 WARN 日志，再以空状态继续，巡检不因坏文件停摆。
   - 运行时对状态根目录下的 `watch.lock` 加 flock。手工运行与 timer 重叠时，后到的一次写一条日志后跳过，退出 0，不重复告警。
   - 不建票的理由：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
-  - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，无需配置通知频道。它跳过告警发送和 `watch.json` 写入。当前版本仍会写模型登记，待 `runWatch` 接入只读探测后才会一并跳过。
+  - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，无需配置通知频道。它跳过告警发送、`watch.json` 写入和模型登记写入。
   - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 会 `systemctl --user enable` 这个 timer，但不启动它；需要立即生效时运行 `systemctl --user start orca-factory-driver-watch.timer`。
 
 ## Orca 看板
@@ -652,7 +652,7 @@ doctor 跨仓库按 `agent:model` 和端点覆盖值去重。在首个需要该�
 
 `doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`，否则有成功结果就记为 `ok`，其余记为 `unknown`。报告和登记都省略代理地址。下次检查在冷却期内复用登记，到期后重新探测。
 
-登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读写失败时，检查报告 `unknown` 并加入 `errors`。目前 `watch --dry-run` 仍会写该登记，待 `runWatch` 为 dry-run 关闭模型登记后，探测结果将只用于本轮报告。
+登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读写失败时，检查报告 `unknown` 并加入 `errors`。`watch --dry-run` 不写该登记，探测结果只用于本轮报告。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

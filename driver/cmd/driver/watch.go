@@ -58,8 +58,10 @@ func runWatch(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	dryRun := slices.Equal(args, []string{"--dry-run"})
+	probe.recordModels = !dryRun
 	w := driverWatch{stateRoot: logStateRoot(), now: time.Now, doctor: probe.run}
-	if !slices.Equal(args, []string{"--dry-run"}) {
+	if !dryRun {
 		if w.notify, err = feishuWatchNotifier(); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
