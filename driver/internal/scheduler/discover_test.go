@@ -314,4 +314,13 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	if idx < 0 || s.Repositories[idx].Env["AGENT_MODE"] != "manual" || s.Repositories[idx].MaxInFlight != 3 || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
 		t.Fatalf("retired /z repository=%+v, want only its AGENT_MODE refreshed while still retired", s.Repositories)
 	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/other"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("retired /z AGENT_MODE=%q after its ledger identity changed, want the tracked manual kept", got)
+	}
 }

@@ -135,11 +135,7 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 	var root string
 	var remotes map[string]bool
 	if selector == "." || selector == ".." || strings.Contains(selector, "/") {
-		root, err = filepath.EvalSymlinks(selector)
-		if err != nil {
-			return orca.Repo{}, err
-		}
-		root, err = filepath.Abs(root)
+		root, err = physicalPath(selector)
 		if err != nil {
 			return orca.Repo{}, err
 		}
@@ -164,6 +160,22 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 	default:
 		return orca.Repo{}, errors.New("ambiguous repository prefix or path")
 	}
+}
+
+// physicalPath resolves selector against the physical working directory, so
+// ".." follows the file system rather than the shell's logical PWD.
+func physicalPath(selector string) (string, error) {
+	if !filepath.IsAbs(selector) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", err
+		}
+		if cwd, err = filepath.EvalSymlinks(cwd); err != nil {
+			return "", err
+		}
+		selector = filepath.Join(cwd, selector)
+	}
+	return filepath.EvalSymlinks(selector)
 }
 
 func resolvesTo(path, root string) bool {

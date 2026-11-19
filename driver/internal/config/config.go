@@ -187,6 +187,16 @@ func readGears(file string) (map[string]json.RawMessage, error) {
 	return entries, nil
 }
 
+// HasGearOverrides reports whether the machine-local gear.json holds any override.
+func HasGearOverrides() (bool, error) {
+	file, err := gearPath()
+	if err != nil {
+		return false, err
+	}
+	entries, err := readGears(file)
+	return len(entries) > 0, err
+}
+
 func applyGear(repo *Repository, remote string) error {
 	file, err := gearPath()
 	if err != nil {

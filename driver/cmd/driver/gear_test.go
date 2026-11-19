@@ -156,6 +156,10 @@ func TestGearCommands(t *testing.T) {
 	if code := run([]string{"gear", "clear", filepath.Join(f.factory, "link") + "/.."}); code != 1 {
 		t.Fatalf("clear through a link to an unregistered directory exit=%d, want 1", code)
 	}
+	t.Chdir(filepath.Join(f.factory, "link"))
+	if code := run([]string{"gear", "clear", ".."}); code != 1 {
+		t.Fatalf("clear .. from a logical PWD through a link exit=%d, want 1", code)
+	}
 	t.Chdir(filepath.Join(f.factory, "scripts"))
 	invokeGear(t, "clear", "..")
 	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {

@@ -37,13 +37,22 @@ func resolveTicket(args []string) int {
 		if err != nil {
 			return 1, err
 		}
-		registered, err := gearTarget(ctx, cwd, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, cfg.Tuning)
-		if err != nil && !errors.Is(err, errRepositoryNotRegistered) {
-			return 1, err
-		}
-		repo, err := config.LoadRegisteredRepository(registered.CanonicalKey, cwd)
+		repo, err := config.LoadRepository(cwd)
 		if err != nil {
 			return 1, errors.New("resolver must run at a repository root with an installed pipeline")
+		}
+		if overrides, err := config.HasGearOverrides(); err != nil {
+			return 1, err
+		} else if overrides {
+			registered, err := gearTarget(ctx, cwd, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, cfg.Tuning)
+			switch {
+			case err == nil:
+				if repo, err = config.LoadRegisteredRepository(registered.CanonicalKey, cwd); err != nil {
+					return 1, err
+				}
+			case !errors.Is(err, errRepositoryNotRegistered):
+				return 1, err
+			}
 		}
 		repos := []config.Repository{repo}
 		// Local exclusion is only a controller lock. Ledger receipts own all state.
