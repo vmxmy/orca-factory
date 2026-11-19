@@ -24,12 +24,25 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   intake: '需求助手',
 }
 
-export const SOURCE_LABELS: Record<Source, string> = {
+const FILE_SOURCES = {
   'driver.toml': 'driver.toml',
   default: '默认',
   'driver.env': 'driver.env',
   'agent-graph.env': 'agent-graph.env',
   service: '服务',
+} as const
+
+export const SOURCE_LABELS: Record<Source, string> = { ...FILE_SOURCES, override: '本机覆盖' }
+
+export const sourceLabel = (source: Source): string => SOURCE_LABELS[source] ?? source
+
+const fileSource = (o: Fields, path: string): Source => oneOf(FILE_SOURCES, o, 'source', path)
+
+// Only repository routing can come from a machine profile or a local gear override.
+const routingSource = (o: Fields, path: string): Source => {
+  const source = text(o, 'source', path)
+  if (source.startsWith('profile:')) return `profile:${source.slice(8)}`
+  return oneOf(SOURCE_LABELS, o, 'source', path)
 }
 
 export const SETTING_GROUPS = ['并发与限速', 'GitHub', 'Orca 与执行器', '账本'] as const
@@ -113,12 +126,12 @@ const parseRole = (value: unknown, path: string): Role => {
   }
 }
 
-const parseSetting = (value: unknown, path: string): Setting => {
+const parseSetting = (value: unknown, path: string, source = fileSource): Setting => {
   const o = fields(value, path)
   return {
     key: text(o, 'key', path),
     value: text(o, 'value', path),
-    source: oneOf(SOURCE_LABELS, o, 'source', path),
+    source: source(o, path),
     set: flag(o, 'set', path),
   }
 }
@@ -131,7 +144,7 @@ const parseSchedulerSetting = (value: unknown, path: string): SchedulerSetting =
 const parseEnv = (value: unknown, path: string): EnvEntry => {
   const o = fields(value, path)
   const key = text(o, 'key', path)
-  const source = oneOf(SOURCE_LABELS, o, 'source', path)
+  const source = fileSource(o, path)
   const set = flag(o, 'set', path)
   if (o.secret === true) return { key, source, set, secret: true }
   return o.value === undefined
@@ -147,7 +160,7 @@ const parseRepo = (value: unknown, path: string): Repo => {
     path: text(o, 'path', path),
     prefix: text(o, 'prefix', path),
     roles: list(o.roles, `${path}.roles`).map((one, i) => parseRole(one, `${path}.roles[${i}]`)),
-    routing: list(o.routing, `${path}.routing`).map((one, i) => parseSetting(one, `${path}.routing[${i}]`)),
+    routing: list(o.routing, `${path}.routing`).map((one, i) => parseSetting(one, `${path}.routing[${i}]`, routingSource)),
   }
 }
 
@@ -178,5 +191,8 @@ export const routingSummary = (routing: Setting[]): string => {
   const value = (key: string) => routing.find(one => one.key === key)?.value ?? ''
   const escalate = value('AGENT_TIER_ESCALATE') === '1' ? '开' : '关'
   const small = value('AGENT_REVIEWER_SMALL_MAX_ESTIMATE')
-  return `打回升档 ${escalate} · 小票审查 ≤${small || '-'}`
+  return `档位 ${gearMode(routing) === 'auto' ? '自动挡' : '手动挡'} · 打回升档 ${escalate} · 小票审查 ≤${small || '-'}`
 }
+
+export const gearMode = (routing: Setting[]): 'auto' | 'manual' =>
+  routing.find(one => one.key === 'AGENT_MODE')?.value === 'auto' ? 'auto' : 'manual'

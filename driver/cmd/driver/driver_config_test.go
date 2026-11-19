@@ -232,3 +232,77 @@ func TestRepositoryRolesWithoutSourcesKeepsReviewerCommand(t *testing.T) {
 		t.Fatalf("roles=%+v, want first %+v", roles, want)
 	}
 }
+
+// TestGearRecordingIsEmbeddedInPluginSample keeps the ziikoo-driver plugin's
+// gear samples identical to the recorded `config --json` before and after
+// `gear set <repo> manual`, and after that with a machine profile selected; the
+// plugin test runner cannot read files outside its own directory.
+func TestGearRecordingIsEmbeddedInPluginSample(t *testing.T) {
+	recorded, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "driver-config-json-gear.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sample, err := os.ReadFile(filepath.Join("..", "..", "..", ".claude", "skills", "ziikoo-driver", "test", "sample-config.ts"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
+	wants := []struct {
+		mode, source, constant string
+		profiled               bool
+	}{
+		{"auto", "agent-graph.env", "RECORDED_GEAR_CONFIG", false},
+		{"manual", "override", "RECORDED_GEAR_MANUAL_CONFIG", false},
+		{"manual", "override", "RECORDED_GEAR_PROFILE_CONFIG", true},
+	}
+	if len(lines) != len(wants) {
+		t.Fatalf("recording has %d lines, want %d", len(lines), len(wants))
+	}
+	for i, want := range wants {
+		var snapshot struct {
+			Schema string `json:"schema"`
+			Repos  []struct {
+				Name    string `json:"name"`
+				Roles   []struct{ Role string }
+				Routing []struct {
+					Key    string `json:"key"`
+					Value  string `json:"value"`
+					Source string `json:"source"`
+				} `json:"routing"`
+			} `json:"repos"`
+		}
+		if err := json.Unmarshal([]byte(lines[i]), &snapshot); err != nil {
+			t.Fatalf("line %d: %v", i+1, err)
+		}
+		if snapshot.Schema != "driver-config-v1" || len(snapshot.Repos) == 0 || snapshot.Repos[0].Name != "orca-factory" {
+			t.Fatalf("line %d: schema=%q repos=%d, want driver-config-v1 with orca-factory first", i+1, snapshot.Schema, len(snapshot.Repos))
+		}
+		repo := snapshot.Repos[0]
+		mode := false
+		for _, entry := range repo.Routing {
+			mode = mode || entry.Key == "AGENT_MODE" && entry.Value == want.mode && entry.Source == want.source
+		}
+		if !mode {
+			t.Fatalf("line %d: AGENT_MODE is not %s from %s: %+v", i+1, want.mode, want.source, repo.Routing)
+		}
+		top := false
+		for _, role := range repo.Roles {
+			top = top || role.Role == "resolver_top"
+		}
+		if !top {
+			t.Fatalf("line %d: roles lack resolver_top: %+v", i+1, repo.Roles)
+		}
+		profiled := false
+		for _, other := range snapshot.Repos {
+			for _, entry := range other.Routing {
+				profiled = profiled || strings.HasPrefix(entry.Source, "profile:")
+			}
+		}
+		if profiled != want.profiled {
+			t.Fatalf("line %d: routing has a profile source = %v, want %v", i+1, profiled, want.profiled)
+		}
+		if embedded := "export const " + want.constant + ": string = String.raw`" + lines[i] + "`"; !strings.Contains(string(sample), embedded) {
+			t.Errorf("sample-config.ts does not embed recording line %d as %s", i+1, want.constant)
+		}
+	}
+}
