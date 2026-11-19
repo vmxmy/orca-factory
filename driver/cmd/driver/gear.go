@@ -165,17 +165,18 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 // physicalPath resolves selector against the physical working directory, so
 // ".." follows the file system rather than the shell's logical PWD.
 func physicalPath(selector string) (string, error) {
-	if !filepath.IsAbs(selector) {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
-		}
-		if cwd, err = filepath.EvalSymlinks(cwd); err != nil {
-			return "", err
-		}
-		selector = filepath.Join(cwd, selector)
+	resolved, err := filepath.EvalSymlinks(selector)
+	if err != nil || filepath.IsAbs(resolved) {
+		return resolved, err
 	}
-	return filepath.EvalSymlinks(selector)
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	if cwd, err = filepath.EvalSymlinks(cwd); err != nil {
+		return "", err
+	}
+	return filepath.Join(cwd, resolved), nil
 }
 
 func resolvesTo(path, root string) bool {

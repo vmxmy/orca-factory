@@ -105,11 +105,15 @@ func Load(home string) (Config, error) {
 }
 
 // LoadRegisteredRepository resolves the profile of the Orca repository
-// registered under remote and applies its machine-local gear override.
+// registered under remote and applies its machine-local gear override. A
+// registration without a remote identity has no override.
 func LoadRegisteredRepository(remote, path string) (Repository, error) {
 	repo, err := LoadRepository(path)
 	if err != nil {
 		return Repository{}, err
+	}
+	if remote == "" {
+		return repo, nil
 	}
 	if err := applyGear(&repo, remote); err != nil {
 		return Repository{}, err

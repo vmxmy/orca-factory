@@ -27,6 +27,7 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		{"null mode", `{"github.com/dujiao-next/dujiao-next":{"mode":null}}`, upstream, "", "", "manual or auto"},
 		{"mode key differs in case", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid","MODE":"auto"}}`, upstream, "", "", "manual or auto"},
 		{"entry not an object", `{"github.com/dujiao-next/dujiao-next":"manual"}`, upstream, "", "", "manual or auto"},
+		{"registration without remote identity", `{"":{"mode":"manual"}}`, "", "auto", "repository", ""},
 		{"empty file object", `{}`, upstream, "auto", "repository", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -261,7 +261,7 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	result := eligible("/a")
 	result.Rejected = []projects.Rejection{
-		{Path: "/z", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8}},
+		{Path: "/z", Remote: "github.com/example/z", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_FEISHU_PROJECT": "github.com/example/z"}}},
 		{Path: "/y", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/y", MaxInFlight: 3, StaleHours: 8}},
 		{Path: "/x", Reason: projects.ReasonLedgerNotFeishu},
 	}
@@ -305,7 +305,7 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 		t.Fatalf("in-flight warning logged %d times, want once:\n%s", n, logs.String())
 	}
 
-	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 5, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual"}}
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 5, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual", "AGENT_FEISHU_PROJECT": "github.com/example/z"}}
 	now = now.Add(time.Hour)
 	if err := s.RefreshProjects(context.Background()); err != nil {
 		t.Fatal(err)
@@ -322,5 +322,15 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	}
 	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
 		t.Fatalf("retired /z AGENT_MODE=%q after its ledger identity changed, want the tracked manual kept", got)
+	}
+
+	result.Rejected[0].Remote = "github.com/example/b"
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("retired /z AGENT_MODE=%q after the path was registered under another remote, want the tracked manual kept", got)
 	}
 }

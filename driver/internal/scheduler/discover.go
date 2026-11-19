@@ -145,7 +145,7 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 			continue
 		}
 		if idx := slices.IndexFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }); idx >= 0 {
-			repositories[idx] = s.refreshMode(repositories[idx], *r.Repository, updater)
+			repositories[idx] = s.refreshMode(repositories[idx], *r.Repository, r.Remote, updater)
 			continue
 		}
 		held, err := s.heldTickets(ctx, *r.Repository, tracker)
@@ -229,9 +229,11 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 
 // refreshMode carries only a retired repository's gear (AGENT_MODE) forward;
 // the rest of its configuration stays as tracked while it is not taken over.
-func (s *Scheduler) refreshMode(current, fresh config.Repository, updater repositoryUpdater) config.Repository {
+// A path now registered under a remote other than the tracked ledger project
+// keeps its tracked gear.
+func (s *Scheduler) refreshMode(current, fresh config.Repository, remote string, updater repositoryUpdater) config.Repository {
 	mode, set := fresh.Env["AGENT_MODE"]
-	if current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"] {
+	if remote != current.Env["AGENT_FEISHU_PROJECT"] || (current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"]) {
 		return current
 	}
 	if changed := config.ChangedEnvKeys(current.Env, fresh.Env); slices.ContainsFunc(changed, func(key string) bool { return slices.Contains(config.LedgerIdentityKeys, key) }) {
