@@ -230,8 +230,12 @@ const serve = () => {
 const frames = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
 const state = page => page.evaluate(() => window.diorama.state())
 
-async function launchPage(browser, url, { webgl = true, controlledFrames = false, ...options } = {}) {
+async function launchPage(browser, url, { webgl = true, controlledFrames = false, renderMode = 'full', storageDenied = false, ...options } = {}) {
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, ...options })
+  if (renderMode !== null) await page.addInitScript(mode => localStorage.setItem('diorama.renderMode', mode), renderMode)
+  if (storageDenied) await page.addInitScript(() => {
+    Object.defineProperty(window, 'localStorage', { get() { throw new DOMException('Storage blocked', 'SecurityError') } })
+  })
   await page.addInitScript(enabled => {
     const getContext = HTMLCanvasElement.prototype.getContext
     const requestFrame = window.requestAnimationFrame
@@ -327,6 +331,109 @@ const settled = page =>
     return ['half', 'x', 'z'].every(key => Math.abs(view[key] - goal[key]) < 0.005)
   })
 
+async function checkCleanMode(browser, url) {
+  const { page, errors } = await open(browser, url, { reducedMotion: 'reduce', renderMode: null })
+  const generatedAt = readJSON(path.join(preview, 'diorama-scene.json')).generatedAt
+  const fixture = {
+    generatedAt, state: 'ok', maintenance: 'running',
+    rows: [row([
+      parcel('NORMAL-1', 'work', { since: generatedAt - 60_000 }),
+      parcel('LATE-1', 'gate', { since: generatedAt - 120_000 }),
+      parcel('STUCK-1', 'repair', { since: generatedAt - 180_000, tone: 'failed', reason: '需要处理' }),
+    ])],
+  }
+  try {
+    await page.evaluate(scene => {
+      window.diorama.update(scene)
+      window.diorama.notify([{ type: 'move', text: 'STUCK-1 移动', path: '/fixture' }])
+    }, fixture)
+    await frames(page)
+    const stationLabels = page.locator('.labels .label:not(.ticket):not(.tag-marker):visible')
+    const ticketLabel = id => page.locator('.label.ticket:visible').filter({ hasText: id })
+    assert.equal(await stationLabels.filter({ hasText: /均 .* 分/ }).count(), 0, 'clean mode hides routine labels: station baselines')
+    assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'clean mode hides routine labels: normal tickets')
+    assert.equal(await ticketLabel('LATE-1').count(), 1, 'overdue tickets keep labels')
+    assert.equal(await ticketLabel('STUCK-1').count(), 1, 'stuck tickets keep labels')
+    assert.equal(await page.locator('.tag-legend').isVisible(), false)
+    assert.equal(await page.locator('.event-feed').isVisible(), false)
+    assert.equal(await page.locator('.trip').isVisible(), false)
+    assert.equal(await page.locator('.status').innerText(), 'driver ok')
+    assert.deepEqual(await stationLabels.evaluateAll(nodes => nodes.map(node => node.dataset.station).sort()), ['gate', 'repair', 'work'])
+    const moveTo = async point => {
+      const pixel = pixelOf((await state(page)).view, point, page.viewportSize())
+      await page.mouse.move(pixel.x, pixel.y)
+      await frames(page)
+    }
+    const normal = await page.evaluate(() => window.diorama.archipelago.tickets.find(ticket => ticket.identifier === 'NORMAL-1'))
+    await moveTo({ ...normal.slot, y: normal.slot.y + 0.2 })
+    assert.equal(await ticketLabel('NORMAL-1').count(), 1, 'hovering a normal box reveals its label')
+    await page.mouse.move(0, 0)
+    await frames(page)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 0)
+    await moveTo({ x: 2.5, y: 2, z: 0 })
+    assert.equal(await stationLabels.filter({ hasText: '均 3.4 分' }).count(), 1, 'hovering an empty station reveals its full label')
+    await page.mouse.move(0, 0)
+    await frames(page)
+    assert.equal(await stationLabels.filter({ hasText: '审查' }).count(), 0)
+    assert.equal(await page.locator('.stuck > .list').isVisible(), false)
+    await page.getByRole('button', { name: '卡住 1', exact: true }).click()
+    assert.equal(await page.locator('.stuck > .list').isVisible(), true)
+    await page.locator('.stuck > .list button[data-ticket="0/STUCK-1"]').click()
+    assert.equal(await page.locator('.trip .track').isVisible(), false)
+    assert.equal(await page.locator('.trip .trip-baseline').isVisible(), false)
+    await page.locator('.trip summary').click()
+    assert.equal(await page.locator('.trip .track').isVisible(), true)
+    await page.evaluate(scene => window.diorama.update(scene), fixture)
+    assert.equal(await page.locator('.trip .track').isVisible(), true, 'details stay expanded across new snapshots')
+    await page.locator('.trip summary').click()
+    await page.locator('canvas').focus()
+    await page.keyboard.press('v')
+    await frames(page)
+    assert.ok(await stationLabels.filter({ hasText: /均 .* 分/ }).count() > 0)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 1)
+    assert.equal(await page.locator('.event-feed').isVisible(), true)
+    assert.equal(await page.locator('.trip').isVisible(), true)
+    assert.equal(await page.locator('.trip .track').isVisible(), true)
+    await page.evaluate(scene => window.diorama.update(scene), {
+      ...fixture, rows: [row([...fixture.rows[0].parcels, parcel('OVERFLOW-'.repeat(40), 'pack')])],
+    })
+    await frames(page)
+    assert.equal(await page.locator('.tag-legend').isVisible(), true, 'full mode restores the legend for overflow labels')
+    await page.keyboard.press('v')
+    await frames(page)
+    assert.equal(await page.locator('.tag-legend').isVisible(), false)
+    assert.equal(await page.locator('.trip .track').isVisible(), false)
+    await page.keyboard.press('v')
+    assert.equal(await page.evaluate(() => localStorage.getItem('diorama.renderMode')), 'full')
+    await page.reload()
+    await page.waitForFunction(() => window.diorama)
+    assert.equal(await page.getByRole('button', { name: '清爽 / 完整', exact: true }).getAttribute('aria-pressed'), 'false')
+    await page.getByRole('button', { name: '清爽 / 完整', exact: true }).click()
+    assert.equal(await page.evaluate(() => localStorage.getItem('diorama.renderMode')), 'clean')
+    assert.deepEqual(errors, [])
+    await page.evaluate(scene => window.diorama.update(scene), { ...fixture, rows: [row([])] })
+    assert.equal(await page.locator('.stuck').isVisible(), false, 'no stuck tickets means no panel')
+    console.log('PASS clean mode hides routine labels')
+  } finally { await page.close() }
+}
+
+async function checkModeStorage(browser, url) {
+  for (const options of [{ renderMode: 'invalid' }, { renderMode: null, storageDenied: true }]) {
+    const { page, errors } = await open(browser, url, options)
+    try {
+      const toggle = page.getByRole('button', { name: '清爽 / 完整', exact: true })
+      assert.equal(await toggle.getAttribute('aria-pressed'), 'true')
+      await toggle.click()
+      assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'storage failure must not prevent switching')
+      await page.getByRole('button', { name: '/ 搜索', exact: true }).click()
+      await page.getByRole('searchbox').fill('v')
+      assert.equal(await toggle.getAttribute('aria-pressed'), 'false', 'typing v in search must not switch modes')
+      assert.deepEqual(errors, [])
+    } finally { await page.close() }
+  }
+  console.log('PASS render mode storage: invalid and denied storage default to clean, search typing leaves the mode unchanged')
+}
+
 async function checkStationTagsAndNeighborhood(browser, url) {
   const { page, errors } = await open(browser, `${url}?project=${encodeURIComponent(FACTORY)}&ticket=OF-419`, { reducedMotion: 'reduce' })
   try {
@@ -392,7 +499,7 @@ async function checkStationTagsAndNeighborhood(browser, url) {
         island, station, key: `${island}/${station}`, identifier: `LONG-${island}-${station}`, alert: 'warn', since: 0, duration: '等待'.repeat(80),
       })))
       const world = { parcels: new Map(tickets.map(ticket => [ticket.key, { group: { position: new THREE.Vector3(0, -2, 0) } }])) }
-      const overlay = createOverlay(host, world, { onIsland() {} })
+      const overlay = createOverlay(host, world, { onIsland() {}, mode: 'full' })
       try {
         overlay.update({ islands: [], hub: null, tickets })
         const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
@@ -431,7 +538,7 @@ async function checkStationTagsAndNeighborhood(browser, url) {
       const world = { parcels: new Map(tickets.map((ticket, index) => [ticket.key, {
         group: { position: new THREE.Vector3(index === 0 ? -10.588 : -8.824, -2, 0) },
       }])) }
-      const overlay = createOverlay(host, world, { onIsland() {} })
+      const overlay = createOverlay(host, world, { onIsland() {}, mode: 'full' })
       try {
         overlay.update({ islands: [], hub: null, tickets })
         const camera = new THREE.OrthographicCamera(-10, 10, 10, -10, 0.1, 100)
@@ -705,7 +812,7 @@ async function checkBaselines(browser, url, model) {
         const errors = []
         page.on('pageerror', error => errors.push(error.message))
         try {
-          await page.addInitScript(() => { performance.now = () => 0 })
+          await page.addInitScript(() => { performance.now = () => 0; localStorage.setItem('diorama.renderMode', 'full') })
           await page.route('**/diorama-scene.json', route => route.fulfill({ json: fixture.scene }))
           await page.goto(url + fixture.query)
           await page.waitForFunction(() => window.diorama)
@@ -1207,7 +1314,7 @@ async function checkLiveUpdates(browser, live) {
     await page.unroute(refuse)
     await live.start()
 
-    assert.equal(await page.evaluate(() => localStorage.length + sessionStorage.length), 0)
+    assert.deepEqual(await page.evaluate(() => ({ local: { ...localStorage }, session: { ...sessionStorage } })), { local: { 'diorama.renderMode': 'full' }, session: {} }, 'only the display preference may persist; scene data and tokens must not')
     const own = requests.filter(url => url.startsWith(live.origin()))
     for (const file of ['/live.mjs', '/diorama/overlay.mjs', '/diorama/diorama.css', '/vendor/three.core.min.js']) {
       assert.ok(own.some(url => new URL(url).pathname === file), `the page must load ${file}`)
@@ -1641,17 +1748,19 @@ async function main() {
       env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      await checkCleanMode(browser, url)
+      await checkModeStorage(browser, url)
       await checkEventFeedHeight(browser, url)
       await checkStageBaselines(browser, url)
       await checkStationTagsAndNeighborhood(browser, url)
       await checkIslandStatus(browser, url)
       await checkScopeWait(browser,url)
-      await checkBaselines(browser, url, model)
       await checkHumanQueue(browser, url)
       await checkShoreline(browser, url)
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)
       await checkProduction(browser, bun, model)
+      await checkBaselines(browser, url, model)
     } finally {
       await browser.close()
     }
