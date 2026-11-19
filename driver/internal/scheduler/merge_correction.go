@@ -15,9 +15,6 @@ import (
 // Persist the decision and ownership in one comment before labels can block retries.
 // An uncertain launch is recovered by the ordinary scheduler inspection path.
 func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, result merge.Result) error {
-	if result.Status == merge.Correction && r.memoryHeld {
-		return &memoryHeldLaunchError{ticket: t}
-	}
 	h := t.Handoff
 	p := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: main, Phase: "waiting", Corrections: h.Corrections + result.Corrections, CatchupRounds: result.Rounds, Infra: h.Infra, Attempt: max(1, h.Attempt), Reason: result.Reason}
 	if t.Progress != nil && t.Progress.QueueID == h.QueueID {
@@ -28,6 +25,11 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	// Lane 3 never reaches a resolver: automerge authorization excludes it, so
 	// the ticket transfers straight to a human instead of Agent处置.
 	direct := result.Status == merge.HumanDirect && !human
+	// A held correction writes nothing; the merge lane reaches it again.
+	if result.Status == merge.Correction && !human && r.memoryHeld {
+		r.deferredCorrections = append(r.deferredCorrections, t)
+		return nil
+	}
 	if result.Status == merge.Correction {
 		p.Phase = "correction"
 		p.Attempt = max(p.Attempt, t.Attempt)

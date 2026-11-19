@@ -75,27 +75,30 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 
 func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	t.Setenv("DRIVER_STATUS_FILE", "")
 	cfg, repos := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}
 	for _, tc := range []struct {
 		name      string
-		published bool
-		available uint64
+		published *status.HostMemory
+		own       uint64
+		source    string
 	}{
-		{"below hold line", false, 5 << 30},
-		{"serve held, above hold but below release line", true, 8 << 30},
+		{"no running serve, own reading below hold line", nil, 5 << 30, "host"},
+		{"serve held in its slice, this shell has room", &status.HostMemory{Paused: true, Reading: hostmem.Reading{Source: "/orca.slice", Available: 8 << 30}}, 20 << 30, "/orca.slice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			status.Push(now, func(view *status.View) { view.HostMemory = status.HostMemory{Paused: tc.published} })
+			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+			t.Setenv("DRIVER_STATUS_FILE", "")
+			if tc.published != nil {
+				status.PushObservation(now, now, func(view *status.View) { view.HostMemory = *tc.published })
+			}
+			stubHostMemory(t, hostmem.Reading{Source: "host", Available: tc.own})
 			trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now}}}
 			var out bytes.Buffer
-			stubHostMemory(t, hostmem.Reading{Source: "host", Available: tc.available})
 			if err := dryRunTick(context.Background(), cfg, repos, trap, &out, func() time.Time { return now }); err != nil {
 				t.Fatal(err)
 			}
 			got := out.String()
-			if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="host"`) {
+			if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="`+tc.source+`"`) {
 				t.Fatalf("dry run under a memory hold:\n%s", got)
 			}
 		})

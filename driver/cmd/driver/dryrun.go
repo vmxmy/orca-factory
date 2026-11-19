@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -60,8 +61,17 @@ func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string,
 // it neither competes with the running service nor writes probes or alerts.
 func dryRunTick(ctx context.Context, cfg config.Config, repos []config.Repository, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Repositories: repos, Backend: &dryBackend{Backend: backend, out: out}, HostMemory: readHostMemory, Now: now}
-	if published := status.Read(now(), 0); published.State == "ok" {
-		s.SeedHostMemory(published.HostMemory)
+	// A running serve judged its own cgroup chain and hysteresis; mirror its
+	// published hold instead of this shell's cgroup.
+	if published := status.Read(now(), 0); published.State == "ok" && (published.HostMemory.Reading.Source != "" || published.HostMemory.Error != "") {
+		served := published.HostMemory
+		s.SeedHostMemory(served)
+		s.HostMemory = func() (hostmem.Reading, error) {
+			if served.Error != "" {
+				return hostmem.Reading{}, errors.New(served.Error)
+			}
+			return served.Reading, nil
+		}
 	}
 	err := s.Tick(ctx)
 	if held := s.HostMemoryStatus(); held.Paused {

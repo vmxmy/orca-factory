@@ -910,6 +910,9 @@ type mergeHoldBackend struct {
 }
 
 func (b *mergeHoldBackend) HoldLaunches(held bool) { b.runtime.HoldLaunches(held) }
+func (b *mergeHoldBackend) TakeDeferredCorrections() []Ticket {
+	return b.runtime.TakeDeferredCorrections()
+}
 func (b *mergeHoldBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	return b.runtime.mergeDecision(ctx, b.ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "merged-result gate failed; return to scheduler"})
 }
@@ -941,6 +944,15 @@ func TestMergeCorrectionWaitsWhileHostMemoryHeld(t *testing.T) {
 	after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, client.issueComments)
 	if after.Progress == nil || after.Progress.Corrections != 2 || after.Progress.Attempt != 1 || after.Progress.QueueID != "original_queue" {
 		t.Fatalf("correction budget, attempt or queue changed: %+v", after.Progress)
+	}
+	// An exhausted correction budget needs no terminal and still transfers.
+	exhausted, ticket, client, oc := mergeCorrectionFixture(t, 1)
+	exhausted.HoldLaunches(true)
+	if err := exhausted.mergeDecision(context.Background(), ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: machine.DefaultLimits.Corrections, Reason: "gate failed"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(oc.launches) != 0 || len(client.comments) != 1 || !strings.Contains(client.comments[0], "Agent处置") || len(exhausted.TakeDeferredCorrections()) != 0 {
+		t.Fatalf("held exhausted correction: launches=%d comments=%v", len(oc.launches), client.comments)
 	}
 }
 

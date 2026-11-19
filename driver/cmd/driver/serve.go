@@ -332,6 +332,13 @@ func (b *statusBackend) HoldLaunches(held bool) {
 	}
 }
 
+func (b *statusBackend) TakeDeferredCorrections() []scheduler.Ticket {
+	if source, ok := b.Backend.(interface{ TakeDeferredCorrections() []scheduler.Ticket }); ok {
+		return source.TakeDeferredCorrections()
+	}
+	return nil
+}
+
 func (b *statusBackend) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
 	if source, ok := b.Backend.(interface {
 		NotifyHostMemory(context.Context, status.HostMemory) error

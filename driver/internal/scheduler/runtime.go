@@ -77,7 +77,8 @@ type Runtime struct {
 	orcaFailures int
 	// memoryHeld mirrors the scheduler's host memory hold for the merge
 	// lane, whose corrections launch outside the scheduler's admission checks.
-	memoryHeld bool
+	memoryHeld          bool
+	deferredCorrections []Ticket
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -790,15 +791,15 @@ func launchLog(identifier string) string {
 // count, including launches the scheduler only sees through the merge lane.
 func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
 
-// HoldLaunches applies the scheduler's host memory hold to merge-lane launches.
+// HoldLaunches applies the scheduler's host memory hold to merge corrections.
 func (r *Runtime) HoldLaunches(held bool) { r.memoryHeld = held }
 
-// memoryHeldLaunchError is a merge correction deferred before anything is
-// written; the merge lane reaches the same decision again after release.
-type memoryHeldLaunchError struct{ ticket Ticket }
-
-func (e *memoryHeldLaunchError) Error() string {
-	return "host memory held: merge correction deferred " + e.ticket.Identifier
+// TakeDeferredCorrections returns and clears the merge corrections the hold
+// deferred, including those inside a self-deployment batch.
+func (r *Runtime) TakeDeferredCorrections() []Ticket {
+	deferred := r.deferredCorrections
+	r.deferredCorrections = nil
+	return deferred
 }
 
 var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
