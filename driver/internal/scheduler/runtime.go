@@ -807,6 +807,20 @@ type terminalCreateUncertainError struct{ err error }
 func (e *terminalCreateUncertainError) Error() string { return e.err.Error() }
 func (e *terminalCreateUncertainError) Unwrap() error { return e.err }
 
+// orcaServiceUnit matches After= in deploy/systemd/orca-factory-driver.service.
+const orcaServiceUnit = "orca-serve.service"
+
+// RestartOrcaService restarts only the orca-serve user unit, not the Orca
+// desktop instance or the orca-daemon scope that holds agent terminals.
+func (r *Runtime) RestartOrcaService(ctx context.Context) error {
+	run := r.Run
+	if run == nil {
+		run = runx.Run
+	}
+	_, err := run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "restart", orcaServiceUnit}, Timeout: 60 * time.Second})
+	return err
+}
+
 // ProbeOrcaRuntime exercises terminal creation without starting an executor.
 func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
 	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + repo, Title: "driver Orca runtime probe", Command: "true"})

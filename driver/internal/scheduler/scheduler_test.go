@@ -586,6 +586,11 @@ type runtimeFailureBackend struct {
 	launchErr error
 	merges    int
 	merge     func(context.Context) error
+	// restarts counts RestartOrcaService calls; restartErr is what each returns.
+	restarts         int
+	restartErr       error
+	restartNotices   []string
+	exhaustedNotices int
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -600,6 +605,18 @@ func (b *runtimeFailureBackend) ProbeOrcaRuntime(ctx context.Context, repo strin
 }
 func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error {
 	b.notices++
+	return nil
+}
+func (b *runtimeFailureBackend) RestartOrcaService(context.Context) error {
+	b.restarts++
+	return b.restartErr
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, _ Ticket, restart int, restartErr error) error {
+	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%d:%v", restart, restartErr))
+	return nil
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Ticket) error {
+	b.exhaustedNotices++
 	return nil
 }
 func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
@@ -909,6 +926,62 @@ func TestOrcaRuntimePauseHoldsMergeLaneInSameRound(t *testing.T) {
 	_ = x.s.Tick(context.Background())
 	if got := x.s.OrcaRuntime(); !got.Paused || x.b.merges != 1 {
 		t.Fatalf("merge lane advanced after the pause: %+v merges=%d", got, x.b.merges)
+	}
+}
+
+// A pause whose probes keep failing restarts orca-serve after the grace, then at
+// most once per interval, and stops at the limit with one call for a human.
+func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, f, b, oc := x.s, x.f, x.b, x.oc
+	pausedAt := *x.now
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); !got.Paused || !got.PausedAt.Equal(pausedAt) || got.Restarts != 0 {
+		t.Fatalf("pause start not recorded: %+v", got)
+	}
+	tickAt := func(offset time.Duration, wantRestarts int) {
+		t.Helper()
+		*x.now = pausedAt.Add(offset)
+		_ = s.Tick(context.Background())
+		if b.restarts != wantRestarts || s.OrcaRuntime().Restarts != wantRestarts {
+			t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), wantRestarts)
+		}
+	}
+	tickAt(10*time.Minute-time.Second, 0)
+	b.restartErr = errors.New("systemctl failed")
+	tickAt(10*time.Minute, 1)
+	b.restartErr = nil
+	tickAt(39*time.Minute, 1)
+	tickAt(40*time.Minute, 2)
+	tickAt(69*time.Minute, 2)
+	tickAt(70*time.Minute, 3)
+	if b.exhaustedNotices != 0 {
+		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
+	}
+	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
+		tickAt(offset, 3)
+	}
+	if b.exhaustedNotices != 1 {
+		t.Fatalf("human notice after the restart limit sent %d times, want 1", b.exhaustedNotices)
+	}
+	if want := []string{"1:systemctl failed", "2:<nil>", "3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
+		t.Fatalf("restart result notices %v, want %v", b.restartNotices, want)
+	}
+	if got := s.OrcaRuntime(); !got.LastRestartAt.Equal(pausedAt.Add(70 * time.Minute)) {
+		t.Fatalf("last restart time not recorded: %+v", got)
+	}
+	oc.failing = false
+	*x.now = x.now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.OrcaRuntime(); got != (status.OrcaRuntime{}) {
+		t.Fatalf("recovery left Orca runtime state: %+v", got)
+	}
+	for _, ticket := range f.tickets {
+		if ticket.Attempt != 1 {
+			t.Fatalf("restart changed attempt: %+v", ticket)
+		}
 	}
 }
 

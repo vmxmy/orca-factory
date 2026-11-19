@@ -150,8 +150,11 @@ func Write(snapshot Snapshot) error {
 const DefaultStaleAfter = 5 * time.Minute
 
 type OrcaRuntime struct {
-	Failures int  `json:"failures"`
-	Paused   bool `json:"paused"`
+	Failures      int       `json:"failures"`
+	Paused        bool      `json:"paused"`
+	PausedAt      time.Time `json:"pausedAt,omitzero"`
+	Restarts      int       `json:"restarts,omitzero"`
+	LastRestartAt time.Time `json:"lastRestartAt,omitzero"`
 }
 
 // View.GeneratedAt records the last successful full scheduler observation.

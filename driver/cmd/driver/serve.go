@@ -279,6 +279,33 @@ func (b *statusBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error
 	return errors.New("backend has no Orca runtime probe")
 }
 
+func (b *statusBackend) RestartOrcaService(ctx context.Context) error {
+	if source, ok := b.Backend.(interface {
+		RestartOrcaService(context.Context) error
+	}); ok {
+		return source.RestartOrcaService(ctx)
+	}
+	return errors.New("backend has no Orca service restart")
+}
+
+func (b *statusBackend) NotifyOrcaRestart(ctx context.Context, ticket scheduler.Ticket, restart int, restartErr error) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRestart(context.Context, scheduler.Ticket, int, error) error
+	}); ok {
+		return source.NotifyOrcaRestart(ctx, ticket, restart, restartErr)
+	}
+	return nil
+}
+
+func (b *statusBackend) NotifyOrcaRestartExhausted(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRestartExhausted(context.Context, scheduler.Ticket) error
+	}); ok {
+		return source.NotifyOrcaRestartExhausted(ctx, ticket)
+	}
+	return nil
+}
+
 func (b *statusBackend) OrcaTerminalCreateFailures() int {
 	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
 		return source.OrcaTerminalCreateFailures()

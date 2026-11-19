@@ -137,7 +137,10 @@ type Scheduler struct {
 	tickStarted, tickEnded time.Time
 	wakeReason             string
 	orcaRuntime            status.OrcaRuntime
-	runtimePending         map[string]Ticket
+	// orcaRestartsExhausted is set once the human notice after the last
+	// automatic orca-serve restart is sent; recovery clears it.
+	orcaRestartsExhausted bool
+	runtimePending        map[string]Ticket
 	// relaunchedAt restarts the registration grace of a reservation whose
 	// launch succeeded only after an Orca outage; its claim time is older.
 	relaunchedAt map[string]time.Time
@@ -147,7 +150,12 @@ type Scheduler struct {
 // first round and the first round after maintenance returns to running.
 const fullSyncEvery = 10
 
-const orcaRuntimeFailureThreshold = 3
+const (
+	orcaRuntimeFailureThreshold = 3
+	orcaRestartGrace            = 10 * time.Minute
+	orcaRestartInterval         = 30 * time.Minute
+	orcaRestartLimit            = 3
+)
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
@@ -347,9 +355,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			return errors.New("orca runtime fault: no repository available for recovery probe")
 		}
 		if err := probe.ProbeOrcaRuntime(ctx, repo); err != nil {
+			s.restartOrcaService(ctx, Ticket{Repo: repo})
 			return fmt.Errorf("orca runtime recovery probe: %w", err)
 		}
 		s.orcaRuntime = status.OrcaRuntime{}
+		s.orcaRestartsExhausted = false
 	}
 
 	s.MergeQueue = nil
@@ -807,6 +817,7 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 		}
 		delete(s.runtimePending, t.ID)
 		s.orcaRuntime = status.OrcaRuntime{}
+		s.orcaRestartsExhausted = false
 	case errors.As(err, &uncertain):
 		delete(s.runtimePending, t.ID)
 	}
@@ -826,11 +837,58 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 		return
 	}
 	s.orcaRuntime.Paused = true
+	s.orcaRuntime.PausedAt = s.clock()
 	if notifier, ok := s.Backend.(interface {
 		NotifyOrcaRuntime(context.Context, Ticket) error
 	}); ok {
 		if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
 			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
+		}
+	}
+}
+
+// restartOrcaService runs after a failed recovery probe. It restarts orca-serve
+// once the pause has lasted orcaRestartGrace, then at most once per
+// orcaRestartInterval, and after orcaRestartLimit restarts only asks for a human
+// once. The repository of ticket picks the notification chat.
+func (s *Scheduler) restartOrcaService(ctx context.Context, ticket Ticket) {
+	now := s.clock()
+	if s.orcaRuntime.Restarts >= orcaRestartLimit {
+		if s.orcaRestartsExhausted {
+			return
+		}
+		s.orcaRestartsExhausted = true
+		if notifier, ok := s.Backend.(interface {
+			NotifyOrcaRestartExhausted(context.Context, Ticket) error
+		}); ok {
+			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
+				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
+			}
+		}
+		return
+	}
+	if now.Sub(s.orcaRuntime.PausedAt) < orcaRestartGrace {
+		return
+	}
+	if !s.orcaRuntime.LastRestartAt.IsZero() && now.Sub(s.orcaRuntime.LastRestartAt) < orcaRestartInterval {
+		return
+	}
+	restarter, ok := s.Backend.(interface {
+		RestartOrcaService(context.Context) error
+	})
+	if !ok {
+		return
+	}
+	restartErr := restarter.RestartOrcaService(ctx)
+	s.orcaRuntime.Restarts++
+	s.orcaRuntime.LastRestartAt = now
+	s.logger().Warn("Orca service restarted after runtime pause", "restart", s.orcaRuntime.Restarts,
+		"limit", orcaRestartLimit, "paused_at", s.orcaRuntime.PausedAt, "error", restartErr)
+	if notifier, ok := s.Backend.(interface {
+		NotifyOrcaRestart(context.Context, Ticket, int, error) error
+	}); ok {
+		if err := notifier.NotifyOrcaRestart(ctx, ticket, s.orcaRuntime.Restarts, restartErr); err != nil {
+			s.logger().Warn("Orca restart notification failed", "error", err)
 		}
 	}
 }

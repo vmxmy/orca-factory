@@ -790,7 +790,9 @@ func (p doctorProbe) checkOrcaRuntime() healthCheck {
 	view := status.Read(p.now, 0)
 	detail := map[string]any{"failures": view.OrcaRuntime.Failures, "snapshot_state": view.State}
 	if view.OrcaRuntime.Paused {
-		fix := "重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。"
+		detail["paused_at"] = view.OrcaRuntime.PausedAt
+		detail["restarts"] = view.OrcaRuntime.Restarts
+		fix := "driver 在暂停满 10 分钟后自动重启 orca-serve 服务，之后每 30 分钟最多一次；3 次后仍失败需人工重启 orca-serve，并查看其日志里的 profile 写入超时。调度器探测成功后自动恢复。"
 		detail["recovery"] = fix
 		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
 	}
