@@ -885,7 +885,8 @@
   white-space: nowrap;
 }
 
-.diorama[data-render-mode="full"] .trip-details {
+.diorama[data-render-mode="full"] .trip-details,
+.diorama[data-render-mode="full"] .trip-details::details-content {
   display: contents;
 }
 
