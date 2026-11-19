@@ -3,24 +3,31 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -51,7 +58,7 @@ const (
 const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
-var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials"}
+var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials", "models"}
 
 var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
@@ -86,13 +93,18 @@ type doctorLedger interface {
 
 // doctorProbe is every input doctor reads. git and gh run from PATH.
 type doctorProbe struct {
-	now             time.Time
-	stateRoot       string
-	factoryRoot     string
-	serviceEnv      func(context.Context) (map[string]string, error)
-	projects        func(context.Context) ([]projects.Project, error)
+	now         time.Time
+	stateRoot   string
+	factoryRoot string
+	serviceEnv  func(context.Context) (map[string]string, error)
+	// projects returns the eligible repositories, and as Rejected only the
+	// unloadedRepositories.
+	projects        func(context.Context) (projects.Result, error)
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
+	modelSettings   func() doctorModelSettings
+	modelProbe      func(ctx context.Context, ref modelhealth.Ref, dir string, endpoint modelhealth.Endpoint) modelhealth.Status
+	recordModels    bool
 }
 
 // unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
@@ -142,13 +154,32 @@ func newDoctorProbe() (doctorProbe, error) {
 	}
 	ledgers := issues.NewFactory(cfg.Tuning)
 	return doctorProbe{
-		now:         time.Now(),
-		stateRoot:   logStateRoot(),
+		now:          time.Now(),
+		stateRoot:    logStateRoot(),
+		modelProbe:   modelhealth.Probe,
+		recordModels: true,
+		modelSettings: func() doctorModelSettings {
+			proxy, proxyErr := config.ModelProxyURL(home)
+			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr}
+			// As loadGatewaySettings: driver.env always parses, then a non-empty
+			// process value replaces the file value before trimming.
+			file, err := (bootstrapProbe{home: home}).driverEnv()
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				settings.driverEnvErr = err
+			}
+			gateway := func(key string) string { return strings.TrimSpace(cmp.Or(os.Getenv(key), file[key])) }
+			settings.intakePi = gateway("AGENT_INTAKE_PI")
+			// The gateway resolves an empty value to claude on PATH, as an unset Binary does.
+			settings.intakeClaude = gateway("AGENT_INTAKE_CLAUDE")
+			_, settings.intakeClaudeErr = resolveClaude(settings.intakeClaude)
+			return settings
+		},
 		factoryRoot: cfg.FactoryRoot,
 		serviceEnv:  serviceEnviron,
-		projects: func(ctx context.Context) ([]projects.Project, error) {
-			result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-			return result.Eligible, err
+		projects: func(ctx context.Context) (projects.Result, error) {
+			result, ledger, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+			result.Rejected = unloadedRepositories(result.Rejected, ledger)
+			return result, err
 		},
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
 			return ledgers.New(ctx, p.Repository.Env)
@@ -178,7 +209,8 @@ func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int
 
 func (p doctorProbe) run(ctx context.Context) healthReport {
 	env, envErr := p.serviceEnv(ctx)
-	eligible, projectsErr := p.projects(ctx)
+	discovered, projectsErr := p.projects(ctx)
+	eligible := discovered.Eligible
 	state, stateErr := maintenance.Read()
 	checks := map[string]healthCheck{
 		"service_path": checkServicePath(env, envErr),
@@ -189,13 +221,14 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"orca_runtime": p.checkOrcaRuntime(),
 	}
 	if projectsErr != nil {
-		for _, name := range []string{"checkouts", "sync_prs", "ledger"} {
+		for _, name := range []string{"checkouts", "sync_prs", "ledger", "models"} {
 			checks[name] = unprobed("项目发现失败，无法列出已接管项目")
 		}
 	} else {
 		checks["checkouts"] = p.checkCheckouts(ctx, eligible)
 		checks["sync_prs"] = p.checkSyncPRs(ctx, eligible)
 		checks["ledger"] = p.checkLedger(ctx, eligible)
+		checks["models"] = p.checkModels(ctx, eligible, discovered.Rejected)
 	}
 	report := healthReport{Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
@@ -215,6 +248,13 @@ func writeHealth(out io.Writer, report healthReport, asJSON bool, names []string
 	for _, name := range names {
 		check := report.Checks[name]
 		fmt.Fprintf(&b, "%-13s %-8s %s\n", name, check.Status, check.Reason)
+		if name == "models" {
+			if rows, ok := check.Details.([]doctorModelStatus); ok {
+				for _, row := range rows {
+					fmt.Fprintf(&b, "  %s %s %s %s %s\n", row.Repository, row.Role, row.Status.Ref.String(), row.Status.State, row.Status.Reason)
+				}
+			}
+		}
 		if check.Fix != "" {
 			fmt.Fprintf(&b, "%-13s %-8s 修法: %s\n", "", "", check.Fix)
 		}
@@ -755,4 +795,329 @@ func (p doctorProbe) checkOrcaRuntime() healthCheck {
 		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
 	}
 	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
+}
+
+// doctorModelStatus reports configured identities without changing dispatch selection.
+type doctorModelStatus struct {
+	Repository string             `json:"repository"`
+	Role       string             `json:"role"`
+	Status     modelhealth.Status `json:"status"`
+}
+
+type doctorModelSettings struct {
+	proxyURL     string
+	proxyErr     error
+	intakePi     string
+	intakeClaude string
+	// intakeClaudeErr is why the intake gateway would refuse AGENT_INTAKE_CLAUDE.
+	intakeClaudeErr error
+	driverEnvErr    error
+}
+
+type doctorModelRole struct {
+	name     string
+	ref      modelhealth.Ref
+	endpoint modelhealth.Endpoint
+	reason   string
+}
+
+// probeKey resolves an unset Binary on PATH, so the PATH agent and its absolute
+// path share one probe.
+func (r doctorModelRole) probeKey() string {
+	binary := r.endpoint.Binary
+	if binary == "" {
+		binary, _ = exec.LookPath(r.ref.Agent)
+	}
+	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+}
+
+func invalidModelRole(name, raw string) doctorModelRole {
+	agent, model, effort := splitTier(raw)
+	return doctorModelRole{name: name, ref: modelhealth.Ref{Agent: agent, Model: model, Effort: effort}, reason: "config_invalid"}
+}
+
+func workerModelRoles(env map[string]string) []doctorModelRole {
+	chain, err := config.TierChain(env["AGENT_TIER_CHAIN"])
+	if err != nil {
+		return []doctorModelRole{invalidModelRole("worker_default", "")}
+	}
+	if env["AGENT_TIER_ESCALATE"] != "1" {
+		chain = []string{"default"}
+	}
+	start := slices.Index(chain, "default")
+	if start < 0 {
+		return []doctorModelRole{invalidModelRole("worker_default", "")}
+	}
+
+	end := min(len(chain), start+1+machine.DefaultLimits.Corrections)
+	roles := make([]doctorModelRole, 0, end-start)
+	for _, tier := range chain[start:end] {
+		raw := env["AGENT_TIER_"+strings.ToUpper(tier)]
+		name := "worker_" + tier
+		ref, err := modelhealth.Parse(raw)
+		switch {
+		case tier == "default" && raw == "":
+			roles = append(roles, doctorModelRole{name: name, reason: "not_configured"})
+		case err != nil:
+			roles = append(roles, invalidModelRole(name, raw))
+		default:
+			if ref.Model == "" {
+				ref.Effort = ""
+			}
+			roles = append(roles, doctorModelRole{name: name, ref: ref})
+		}
+	}
+	// The executor validates the entire chain at startup when escalation is enabled.
+	for _, tier := range slices.Concat(chain[:start], chain[end:]) {
+		raw := env["AGENT_TIER_"+strings.ToUpper(tier)]
+		if _, err := modelhealth.Parse(raw); err != nil {
+			roles = append(roles, invalidModelRole("worker_"+tier, raw))
+		}
+	}
+	return roles
+}
+
+func supportedModelAgent(agent string) bool {
+	return agent == "codex" || agent == "claude"
+}
+
+func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi string) doctorModelRole {
+	if claudeTier == "" {
+		return doctorModelRole{name: "intake", reason: "not_configured"}
+	}
+	model, effort, err := tierParts(env)
+	if err != nil || s.driverEnvErr != nil || s.intakeClaudeErr != nil {
+		return invalidModelRole("intake", claudeTier)
+	}
+	if pi == "" {
+		return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "claude", Model: model, Effort: effort},
+			endpoint: modelhealth.Endpoint{Binary: s.intakeClaude, Isolated: true}}
+	}
+	provider, model, thinking, err := intake.ParsePiTier(pi)
+	if err != nil {
+		return invalidModelRole("intake", pi)
+	}
+	return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "pi", Model: provider + "/" + model, Effort: thinking}}
+}
+
+func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelRole {
+	env := project.Repository.Env
+	roles := workerModelRoles(env)
+	hasReviewer, hasSecondReviewer := false, false
+	var reviewer doctorModelRole
+	var intakeTier string
+	for _, role := range repositoryRoles(env, project.Repository.Sources) {
+		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
+		modelRole := doctorModelRole{name: role.Role, ref: ref}
+		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
+			command := strings.TrimSpace(role.Raw)
+			if command == "" {
+				// The executor trims the command and refuses an empty one.
+				continue
+			}
+			// A legacy command is arbitrary shell: /bin/sh decides its program, model
+			// and endpoint. Only a command the structured value generates verbatim,
+			// with words the shell leaves unchanged, is probed; any other is neither
+			// probed nor reported word by word.
+			generated, err := config.GenerateReviewerCommand(ref.String())
+			literal := shellLiteral.MatchString(ref.Agent) && shellLiteral.MatchString(ref.Model) && shellLiteral.MatchString(ref.Effort)
+			if err != nil || generated != command || !literal {
+				ref = modelhealth.Ref{}
+				modelRole = doctorModelRole{name: role.Role, reason: "legacy_command"}
+			}
+		}
+		switch role.Role {
+		case "reviewer", "reviewer_small":
+			if role.Role == "reviewer" {
+				hasReviewer, reviewer = true, modelRole
+			}
+			if ref.Agent == "claude" {
+				modelRole.endpoint.BaseURL = s.proxyURL
+				if s.proxyErr != nil {
+					modelRole.reason = "model_proxy_invalid"
+				}
+			}
+		case "second_reviewer":
+			// Cross review runs both reviewers with only HOME and PATH (scheduler/crossreview.go).
+			modelRole.endpoint.Isolated = true
+			hasSecondReviewer = true
+		case "resolver":
+			if !supportedModelAgent(ref.Agent) || strings.Count(role.Raw, ":") > 2 {
+				modelRole = invalidModelRole(role.Role, role.Raw)
+			}
+		case "intake":
+			intakeTier = role.Raw
+			continue
+		case "worker_default", "worker_strong":
+			continue
+		}
+		roles = append(roles, modelRole)
+	}
+	if !hasReviewer {
+		roles = append(roles, doctorModelRole{name: "reviewer", reason: "not_configured"})
+	}
+	if hasReviewer && hasSecondReviewer {
+		cross := reviewer
+		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Binary: reviewer.endpoint.Binary, Isolated: true}
+		roles = append(roles, cross)
+	}
+	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
+		ref, err := modelhealth.Parse(raw)
+		role := doctorModelRole{name: "resolver_top", ref: ref}
+		if err != nil || !supportedModelAgent(ref.Agent) || ref.Model == "" || ref.Effort == "" {
+			role = invalidModelRole("resolver_top", raw)
+		}
+		roles = append(roles, role)
+	}
+	pi := strings.TrimSpace(env["AGENT_INTAKE_PI"])
+	if pi == "" {
+		pi = s.intakePi
+	}
+	roles = append(roles, s.intakeRole(env, intakeTier, pi))
+	for i, role := range roles {
+		if role.reason == "" && !supportedModelAgent(role.ref.Agent) {
+			roles[i].reason = "unsupported_agent"
+		}
+	}
+	return roles
+}
+
+// unloadedRepositories keeps the repositories discovery rejected because their
+// pipeline check or profile failed. With a readable ledger only those whose
+// last row is enabled are kept, as projects.Discover reads it; a nil ledger
+// means no profile could read it.
+func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerProject) []projects.Rejection {
+	enabled := map[string]bool{}
+	for _, row := range ledger {
+		enabled[row.Remote] = row.Enabled
+	}
+	return slices.DeleteFunc(slices.Clone(rejected), func(r projects.Rejection) bool {
+		return r.Reason != projects.ReasonCheckFailed || ledger != nil && !enabled[r.Remote]
+	})
+}
+
+// shellLiteral matches a word /bin/sh passes through unchanged.
+var shellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
+
+// checkModels also lists each enabled repository whose profile could not be
+// loaded, since the driver runs none of its roles.
+func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Project, unloaded []projects.Rejection) healthCheck {
+	settings := p.modelSettings()
+	registry, err := modelhealth.Open(p.stateRoot)
+	if err != nil {
+		return unprobed("模型可用性登记无法读取")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
+	defer cancel()
+	var probes sync.WaitGroup
+	pending := map[string]*modelhealth.Status{}
+	projectRoles := make([][]doctorModelRole, len(eligible))
+	// Keys are computed once: probeKey reads PATH, which may change mid-run.
+	projectKeys := make([][]string, len(eligible))
+	for i, project := range eligible {
+		roles := settings.modelRoles(project)
+		projectRoles[i] = roles
+		projectKeys[i] = make([]string, len(roles))
+		for j, role := range roles {
+			if role.reason != "" {
+				continue
+			}
+			key := role.probeKey()
+			projectKeys[i][j] = key
+			if pending[key] != nil {
+				continue
+			}
+			result := new(modelhealth.Status)
+			pending[key] = result
+			probes.Go(func() { *result = p.modelProbe(probeCtx, role.ref, project.Path, role.endpoint) })
+		}
+	}
+	probes.Wait()
+
+	rows := []doctorModelStatus{}
+	var unavailable, unknown, exhausted, invalid bool
+	for i, roles := range projectRoles {
+		retryable := map[string]bool{}
+		for j, role := range roles {
+			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
+			if role.reason == "" {
+				state = *pending[projectKeys[i][j]]
+				state.Ref = role.ref
+				// An inconclusive probe keeps the model's unexpired cooldown.
+				if recorded := registry.Status(role.ref, p.now); state.State == modelhealth.Unknown && recorded.State == modelhealth.Unavailable {
+					state = recorded
+				}
+			}
+			rows = append(rows, doctorModelStatus{Repository: eligible[i].Name, Role: role.name, Status: state})
+			unavailable = unavailable || state.State == modelhealth.Unavailable
+			unknown = unknown || state.State == modelhealth.Unknown
+			switch role.reason {
+			case "config_invalid":
+				invalid = true
+			case "not_configured":
+				exhausted = true
+			default:
+				group := role.name
+				if strings.HasPrefix(group, "worker_") {
+					group = "worker"
+				}
+				retryable[group] = retryable[group] || state.State != modelhealth.Unavailable
+			}
+		}
+		for _, canRetry := range retryable {
+			exhausted = exhausted || !canRetry
+		}
+	}
+	for _, r := range unloaded {
+		rows = append(rows, doctorModelStatus{Repository: r.Remote, Role: "profile", Status: modelhealth.Status{State: modelhealth.Unknown, Reason: "config_invalid", CheckedAt: p.now}})
+		unknown, invalid = true, true
+	}
+	// Recording after the rows keeps watch and watch --dry-run on the same verdict.
+	var recordErr error
+	if p.recordModels {
+		recordErr = recordModelProbes(registry, pending)
+	}
+	check := healthCheck{Status: healthOK, Reason: "各角色均有可重试候选", Details: rows, unprobed: unknown}
+	switch {
+	case settings.proxyErr != nil:
+		check.Status, check.Reason = healthFail, "模型代理配置无效，执行器无法启动"
+	case invalid:
+		check.Status, check.Reason = healthFail, "仓库角色的模型档位配置无效"
+	case exhausted:
+		check.Status, check.Reason = healthFail, "缺少必需角色配置，或有角色的全部模型候选仍处于不可用期"
+	case unavailable:
+		check.Status, check.Reason = healthWarn, "有模型不可用，角色仍有可重试候选"
+	case unknown:
+		check.Status, check.Reason = healthUnknown, "有模型未能确认可用性"
+	}
+	if recordErr != nil {
+		check.unprobed = true
+		check.Reason += "；模型可用性登记无法写入"
+		if check.Status == healthOK {
+			check.Status = healthUnknown
+		}
+	}
+	return check
+}
+
+func recordModelProbes(registry *modelhealth.Registry, probes map[string]*modelhealth.Status) error {
+	selected := map[string]*modelhealth.Status{}
+	// An inconclusive endpoint outranks ok, so one endpoint's success cannot end
+	// a cooldown another endpoint of the same model has not confirmed over.
+	priority := map[string]int{modelhealth.OK: 0, modelhealth.Unknown: 1, modelhealth.Unavailable: 2}
+	// A stable endpoint order breaks ties between statuses of equal priority.
+	for _, key := range slices.Sorted(maps.Keys(probes)) {
+		result := probes[key]
+		model := result.Ref.Key()
+		// Among unavailable endpoints the latest Until keeps the model out of selection longest.
+		if prev := selected[model]; prev == nil || priority[result.State] > priority[prev.State] ||
+			result.State == modelhealth.Unavailable && prev.State == modelhealth.Unavailable && result.Until.After(prev.Until) {
+			selected[model] = result
+		}
+	}
+	var err error
+	for _, result := range selected {
+		err = errors.Join(err, registry.Record(*result))
+	}
+	return err
 }
