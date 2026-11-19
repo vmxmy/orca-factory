@@ -138,14 +138,22 @@ func TestGearCommands(t *testing.T) {
 	if got := entries["github.com/vmxmy/orca-factory"]; len(entries) != 2 || got.Mode != "manual" || got.Path != f.factory {
 		t.Fatalf("set by path with Feishu offline: %+v", entries)
 	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(f.factory, alias); err != nil {
+		t.Fatal(err)
+	}
+	invokeGear(t, "set", alias, "auto", "--operator", "t", "--reason", "r")
+	if got := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]; got.Mode != "auto" || got.Path != f.factory {
+		t.Fatalf("set through symlink alias: %+v", got)
+	}
 	t.Chdir(filepath.Join(f.factory, "scripts"))
 	invokeGear(t, "clear", "..")
 	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {
 		t.Fatalf("clear .. with Feishu offline: %+v", entries)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 7 {
-		t.Fatalf("logs=%q, want seven changes", logs.String())
+	if len(lines) != 8 {
+		t.Fatalf("logs=%q, want eight changes", logs.String())
 	}
 	for _, line := range lines {
 		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `remote="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {

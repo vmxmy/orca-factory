@@ -140,7 +140,11 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 	}
 	s.syncCore(ctx, result.Eligible, eligible)
 	for _, r := range result.Rejected {
-		if r.Repository == nil || slices.ContainsFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }) {
+		if r.Repository == nil {
+			continue
+		}
+		if idx := slices.IndexFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }); idx >= 0 {
+			repositories[idx] = s.reconcileRepository(repositories[idx], *r.Repository, updater)
 			continue
 		}
 		held, err := s.heldTickets(ctx, *r.Repository, tracker)

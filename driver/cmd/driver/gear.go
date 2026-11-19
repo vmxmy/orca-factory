@@ -137,7 +137,10 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 		if err != nil {
 			return orca.Repo{}, err
 		}
-		root = filepath.Clean(root)
+		root, err = filepath.EvalSymlinks(root)
+		if err != nil {
+			return orca.Repo{}, err
+		}
 	} else {
 		remotes, err = gearPrefixRemotes(ctx, selector, repos, tuning)
 		if err != nil {
@@ -147,7 +150,7 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 
 	var matches []orca.Repo
 	for _, repo := range repos {
-		if filepath.Clean(repo.Path) == root || remotes[repo.CanonicalKey] {
+		if remotes[repo.CanonicalKey] || (root != "" && resolvesTo(repo.Path, root)) {
 			matches = append(matches, repo)
 		}
 	}
@@ -159,6 +162,11 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 	default:
 		return orca.Repo{}, errors.New("ambiguous repository prefix or path")
 	}
+}
+
+func resolvesTo(path, root string) bool {
+	resolved, err := filepath.EvalSymlinks(path)
+	return err == nil && resolved == root
 }
 
 func gearPrefixRemotes(ctx context.Context, selector string, repos []orca.Repo, tuning config.Tuning) (map[string]bool, error) {

@@ -304,4 +304,14 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	if n := strings.Count(logs.String(), want); n != 1 {
 		t.Fatalf("in-flight warning logged %d times, want once:\n%s", n, logs.String())
 	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/z" })
+	if idx < 0 || s.Repositories[idx].Env["AGENT_MODE"] != "manual" || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
+		t.Fatalf("retired /z repository=%+v, want its configuration refreshed while still retired", s.Repositories)
+	}
 }
