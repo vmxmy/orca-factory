@@ -1039,8 +1039,10 @@ async function checkMainPath(browser, url) {
     assert.deepEqual([entered.stop, entered.focus, entered.selected], [2, '/home/laoxu/github/orca-factory', 'OF-415'], 'a stuck ticket must open its island and select it')
     assert.equal(await page.locator('.dock').isVisible(), true, 'the project dock must show at the workshop stop')
     await settled(page)
+    const resting = await page.locator('canvas').boundingBox()
+    await page.mouse.move(resting.x + resting.width / 2, resting.y + resting.height / 2)
     const reads = await layoutReadsOver20Frames(page)
-    assert.ok(reads <= 20, `label placement must not read layout more than once per frame (${reads} reads in 20 frames)`)
+    assert.ok(reads <= 20, `label placement and hover picking under a resting pointer must not read layout more than once per frame (${reads} reads in 20 frames)`)
     const trip = await page.locator('.trip').innerText()
     for (const text of ['OF-415', '归属 处置Agent', '处置塔前', '二线处理中']) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
 

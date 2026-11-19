@@ -251,7 +251,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   const frame = time => {
     lens.step(reduced)
     world.animate(time, reduced)
-    overlay.hover(hoverAt, lens.camera, hoverAt ? world.pick({ x: hoverAt.x / canvas.clientWidth * 2 - 1, y: 1 - hoverAt.y / canvas.clientHeight * 2 }, lens.camera) : null)
+    overlay.hover(hoverAt, lens.camera, hoverAt ? world.pick({ x: hoverAt.x / size.width * 2 - 1, y: 1 - hoverAt.y / size.height * 2 }, lens.camera) : null)
     overlay.place(lens.camera, { stop, selected, margins, size })
     world.render(lens.camera)
     request = requestAnimationFrame(frame)
