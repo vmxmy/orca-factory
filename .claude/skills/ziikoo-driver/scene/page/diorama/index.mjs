@@ -342,8 +342,11 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       hud.events(changes)
       const target = presentation.frame(now()).follow.target
       if (target) {
-        presentation.acknowledgeFollow()
-        select(target.key)
+        const parcel = archipelago.tickets.find(one => one.path === target.path && one.identifier === target.ticket)
+        if (parcel) {
+          presentation.acknowledgeFollow()
+          select(parcel.key)
+        }
       }
       refreshStatus()
     },
