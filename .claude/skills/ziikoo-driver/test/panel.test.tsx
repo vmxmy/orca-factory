@@ -3,7 +3,7 @@ import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 
 import { GENERATED_SCOPE_STATUS } from './sample-recorded'
-import { RECORDED_GEAR_CONFIG, SAMPLE_CONFIG } from './sample-config'
+import { RECORDED_GEAR_CONFIG, RECORDED_GEAR_MANUAL_CONFIG, SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_NO_TOKEN, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
@@ -130,12 +130,8 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
 
 test('models page shows and switches gear', async ($, on) => {
-  const manual = JSON.parse(RECORDED_GEAR_CONFIG)
-  const mode = manual.repos[0].routing.find((one: { key: string }) => one.key === 'AGENT_MODE')
-  mode.value = 'manual'
-  mode.source = 'override'
   const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
-    config: nth => ran({ stdout: nth === 1 ? RECORDED_GEAR_CONFIG : JSON.stringify(manual) }),
+    config: nth => ran({ stdout: nth === 1 ? RECORDED_GEAR_CONFIG : RECORDED_GEAR_MANUAL_CONFIG }),
     gear: ran({}),
   }, { gear: 1000 })
   mock.env(on, { USER: 'test-operator' })
