@@ -154,11 +154,13 @@ type Scheduler struct {
 	// terminal launch until the reading recovers (OF-603).
 	HostMemory func() (hostmem.Reading, error)
 	hostMemory status.HostMemory
-	// memoryHeld and memoryHeldSince carry the hysteresis across unreadable
-	// rounds, which never hold but must not reset the next decision.
+	// The hold decision and its start survive unreadable rounds for hysteresis.
 	memoryHeld      bool
 	memoryHeldSince time.Time
-	runtimePending  map[string]Ticket
+	// Each continuous pause can trigger one successful notification.
+	memoryPausedSince time.Time
+	memoryNotified    bool
+	runtimePending    map[string]Ticket
 	// relaunchedAt restarts the registration grace of a reservation whose
 	// launch succeeded only after an Orca outage; its claim time is older.
 	relaunchedAt map[string]time.Time
@@ -250,7 +252,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("invalid scheduler configuration")
 	}
 	now := s.clock()
-	s.checkHostMemory(now)
+	s.checkHostMemory(ctx, now)
 	memoryHeld := s.hostMemory.Paused
 	admitted := 0
 	takeToken := func() bool {
@@ -988,7 +990,7 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 				// it was delivered.
 				var rejected *feishu.APIError
 				var refused *infra.Global
-				if errors.Is(err, errOrcaNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep {
+				if errors.Is(err, errNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep {
 					return
 				}
 			}
@@ -1032,14 +1034,15 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	}
 }
 
-// checkHostMemory reads host memory once; an unreadable reading never holds,
-// and only its first failure and its recovery are logged.
-func (s *Scheduler) checkHostMemory(now time.Time) {
+const hostMemoryNotifyAfter = 15 * time.Minute
+
+// checkHostMemory applies the host and all readable cgroup limits each round.
+func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 	if s.HostMemory == nil {
 		return
 	}
 	reading, err := s.HostMemory()
-	if err != nil {
+	if err != nil && reading.Source == "" {
 		if s.hostMemory.Error == "" {
 			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
 		}
@@ -1049,6 +1052,15 @@ func (s *Scheduler) checkHostMemory(now time.Time) {
 	if s.hostMemory.Error != "" {
 		s.logger().Warn("host memory readable again", "available", reading.Available, "some_avg60", reading.SomeAvg60)
 	}
+	var cgroupError string
+	if err != nil {
+		cgroupError = err.Error()
+		if s.hostMemory.CgroupError == "" {
+			s.logger().Warn("cgroup memory read failed, using readable levels", "source", reading.Source, "err", err)
+		}
+	} else if s.hostMemory.CgroupError != "" {
+		s.logger().Warn("cgroup memory readable again")
+	}
 	held := hostmem.Decide(s.memoryHeld, reading)
 	switch {
 	case !held:
@@ -1057,7 +1069,24 @@ func (s *Scheduler) checkHostMemory(now time.Time) {
 		s.memoryHeldSince = now
 	}
 	s.memoryHeld = held
-	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading}
+	if held && !s.hostMemory.Paused {
+		s.memoryPausedSince = now
+		s.memoryNotified = false
+	}
+	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError}
+	if held && !s.memoryNotified && now.Sub(s.memoryPausedSince) >= hostMemoryNotifyAfter {
+		if notifier, ok := s.Backend.(interface {
+			NotifyHostMemory(context.Context, status.HostMemory) error
+		}); ok {
+			notice := s.hostMemory
+			notice.Since = s.memoryPausedSince
+			if err := notifier.NotifyHostMemory(ctx, notice); err != nil {
+				s.logger().Warn("host memory notification failed", "err", err)
+			} else {
+				s.memoryNotified = true
+			}
+		}
+	}
 }
 
 // HostMemoryStatus is the host memory hold serve publishes in its status.

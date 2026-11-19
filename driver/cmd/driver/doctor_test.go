@@ -21,6 +21,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
@@ -1597,23 +1598,98 @@ func TestDoctorWarnsOnHostMemoryHold(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
 	for _, tc := range []struct {
-		hostMemory, status string
-		want               []string
+		hostMemory, status, reason, source string
+		want                               []string
 	}{
-		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":5368709120,"someAvg60":3}}`, "warn", []string{"5368709120", "2026-11-19T10:00:00Z", "memory.peak"}},
-		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", []string{"/proc/pressure/memory"}},
-		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", nil},
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":5368709120,"someAvg60":3,"source":"/orca.slice"}}`, "warn", "已暂停认领", "/orca.slice", []string{"5368709120", "2026-11-19T10:00:00Z", "memory.peak"}},
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z"}`, "warn", "已暂停认领", "host", []string{"2026-11-19T10:00:00Z"}},
+		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", "读不到主机内存读数，调度器不按内存暂停：read /proc/pressure/memory: no such file", "", []string{"/proc/pressure/memory"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", "未记录主机内存暂停", "host", nil},
+		{`{"paused":false,"reading":{"available":3221225472,"someAvg60":30,"source":"host"},"error":"read /proc/meminfo: denied"}`, "warn", "读不到主机内存读数，调度器不按内存暂停：read /proc/meminfo: denied", "host", []string{"3221225472", `"error"`, "/proc/meminfo"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "cgroup 读取失败，按主机与本轮读到的层级判断：read memory.stat: denied", "host", []string{`"cgroup_error"`, "memory.stat"}},
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":3221225472,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "主机内存吃紧，已暂停认领与新建终端；读不到 cgroup 内存读数：read memory.stat: denied", "host", []string{"2026-11-19T10:00:00Z", `"cgroup_error"`, "memory.stat"}},
 	} {
 		writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"hostMemory":%s,"tickets":[]}`, f.now.Format(time.RFC3339Nano), tc.hostMemory), 0600)
 		result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
 		if result.statuses["host_memory"] != tc.status {
-			t.Fatalf("host_memory = %q, want %q for %s: %s", result.statuses["host_memory"], tc.status, tc.hostMemory, result.out)
+			t.Errorf("host_memory = %q, want %q for %s", result.statuses["host_memory"], tc.status, tc.hostMemory)
 		}
-		detail := string(result.details["host_memory"])
+		if got := result.reasons["host_memory"]; !strings.Contains(got, tc.reason) {
+			t.Errorf("host_memory reason = %q, want %q for %s", got, tc.reason, tc.hostMemory)
+		}
+		detail := result.details["host_memory"]
+		var fields struct{ Source string }
+		if err := json.Unmarshal(detail, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields.Source != tc.source {
+			t.Errorf("host_memory source = %q, want %q for %s", fields.Source, tc.source, tc.hostMemory)
+		}
 		for _, want := range tc.want {
-			if !strings.Contains(detail, want) {
-				t.Fatalf("host_memory detail lacks %q: %s", want, detail)
+			if !bytes.Contains(detail, []byte(want)) {
+				t.Errorf("host_memory detail lacks %q: %s", want, detail)
 			}
 		}
+	}
+}
+
+func TestHostMemoryNotificationThroughStatusBackend(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/feishu/bot-message-send.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct {
+		Request struct {
+			Method, Path string
+			Body         struct {
+				ReceiveID string `json:"receive_id"`
+				MsgType   string `json:"msg_type"`
+			}
+		}
+		Response struct{ Data json.RawMessage }
+	}
+	if err := json.Unmarshal(raw, &recording); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "test", "expire": 7200})
+			return
+		}
+		calls++
+		var body struct {
+			ReceiveID string `json:"receive_id"`
+			MsgType   string `json:"msg_type"`
+			Content   string `json:"content"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			return
+		}
+		if r.Method != recording.Request.Method || r.URL.Path != recording.Request.Path || r.URL.Query().Get("receive_id_type") != "chat_id" || body.ReceiveID != recording.Request.Body.ReceiveID || body.MsgType != recording.Request.Body.MsgType {
+			t.Errorf("notification request = %s %s %+v", r.Method, r.URL, body)
+		}
+		for _, want := range []string{"15m0s", "3221225472", "30.00", "/orca.slice"} {
+			if !strings.Contains(body.Content, want) {
+				t.Errorf("message lacks %q: %s", want, body.Content)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": recording.Response.Data})
+	}))
+	defer server.Close()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	t.Setenv("AGENT_FEISHU_APP_ID", "test-app")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "test-secret")
+	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", recording.Request.Body.ReceiveID)
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	backend := &statusBackend{Backend: &scheduler.Runtime{Now: func() time.Time { return now }}}
+	memory := status.HostMemory{Paused: true, Since: now.Add(-15 * time.Minute), Reading: hostmem.Reading{Available: 3 << 30, SomeAvg60: 30, Source: "/orca.slice"}}
+	if err := backend.NotifyHostMemory(context.Background(), memory); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("notification requests = %d, want 1", calls)
 	}
 }
