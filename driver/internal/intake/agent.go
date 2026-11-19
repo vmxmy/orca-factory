@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -43,6 +45,10 @@ const agentSettings = `{"permissions":{"deny":["Read(~/.claude/**)","Read(~/.con
 // claude path, and the zero value selects it exactly as before.
 type Runner struct {
 	Claude, Repo, Checkout, Model, Effort string
+	// Fallback lists the claude models each turn tries in order when the
+	// model registry under StateRoot marks Model unavailable.
+	Fallback  []modelhealth.Ref
+	StateRoot string
 	// Bwrap overrides the sandbox executable, found on PATH when empty.
 	Bwrap   string
 	Timeout time.Duration
@@ -70,6 +76,20 @@ type Runner struct {
 	piStop        chan struct{}
 }
 
+// turnModel is Model and Effort unless the model registry marks Model
+// unavailable; then it is the first available Fallback candidate.
+func (r *Runner) turnModel(ctx context.Context) modelhealth.Ref {
+	primary := modelhealth.Ref{Agent: "claude", Model: r.Model, Effort: r.Effort}
+	selected, err := config.SelectModel(r.StateRoot, primary, r.Fallback, time.Now())
+	if err != nil {
+		runx.LoggerFrom(ctx).Warn("intake model fallback unavailable; keeping configured model", "err", err)
+	}
+	if selected != primary {
+		runx.LoggerFrom(ctx).Info("intake model falls back", "configured", primary.String(), "selected", selected.String())
+	}
+	return selected
+}
+
 func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	if r.piEnabled() {
 		return r.piTurn(ctx, t)
@@ -83,11 +103,12 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	}
 	r.writeTicketContext(ctx)
 	args := []string{"-p", "--output-format", "json", flag, t.Session}
-	if r.Model != "" {
-		args = append(args, "--model", r.Model)
+	model := r.turnModel(ctx)
+	if model.Model != "" {
+		args = append(args, "--model", model.Model)
 	}
-	if r.Effort != "" {
-		args = append(args, "--effort", r.Effort)
+	if model.Effort != "" {
+		args = append(args, "--effort", model.Effort)
 	}
 	args = append(args, "--append-system-prompt-file", filepath.Join(r.Checkout, "scripts/agent-gates/roles/intake-chat.md"),
 		"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--settings", agentSettings)

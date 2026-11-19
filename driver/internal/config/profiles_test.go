@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
 func TestRepositoryProfiles(t *testing.T) {
@@ -119,5 +121,41 @@ func TestAssignedKeysMatchParseEnv(t *testing.T) {
 	}
 	if got := AssignedKeys([]byte(data)); !reflect.DeepEqual(got, parsed) {
 		t.Fatalf("assigned=%v, ParseEnv keys=%v", got, parsed)
+	}
+}
+
+func TestFallbackKeysParse(t *testing.T) {
+	got, err := ParseFallback(" claude:claude-opus-5-5:max  codex:gpt-6-astra:xhigh ")
+	want := []modelhealth.Ref{{Agent: "claude", Model: "claude-opus-5-5", Effort: "max"}, {Agent: "codex", Model: "gpt-6-astra", Effort: "xhigh"}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseFallback = %+v, %v; want %+v", got, err, want)
+	}
+	if got, err := ParseFallback(""); err != nil || got != nil {
+		t.Fatalf("empty fallback = %+v, %v", got, err)
+	}
+	if _, err := ParseFallback("codex:gpt-6-astra"); err == nil {
+		t.Fatal("candidate without effort accepted")
+	}
+	if FallbackKey("AGENT_ROLE_RESOLVER_TOP") != "AGENT_ROLE_RESOLVER_TOP_FALLBACK" {
+		t.Fatal("fallback key name changed")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".config", "orca-factory")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	profiles := "[profile.daily]\nAGENT_TIER_DEFAULT_FALLBACK = \"codex:gpt-6.1-sol:high claude:claude-opus-5-5:high\"\nAGENT_ROLE_REVIEWER_FALLBACK = \"codex:gpt-6-astra:high\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "profiles.toml"), []byte(profiles), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProfiles(filepath.Join(dir, "profiles.toml")); err != nil {
+		t.Fatalf("profile fallback keys rejected: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "profiles.toml"), []byte("[profile.daily]\nAGENT_ROLE_INTAKE_FALLBACK = \"codex:gpt-6-astra:high\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readProfiles(filepath.Join(dir, "profiles.toml")); err == nil {
+		t.Fatal("non-claude intake fallback accepted")
 	}
 }

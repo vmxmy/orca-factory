@@ -14,6 +14,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -286,12 +287,12 @@ func correctionTier(c Config, n int) (tier, agent, model, effort string, err err
 			if value == "" {
 				value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tier))
 			}
-			parts := strings.Split(value, ":")
-			if len(parts) != 3 || parts[0] == "" {
+			ref, parseErr := modelhealth.Parse(value)
+			if parseErr != nil {
 				err = errors.New("escalated tier requires agent:model:effort configuration")
 				return
 			}
-			agent, model, effort = parts[0], parts[1], parts[2]
+			agent, model, effort = ref.Agent, ref.Model, ref.Effort
 		}
 	}
 	if model == "" {

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -78,6 +80,7 @@ func (e *Executor) external(step string) func(error, ...any) {
 }
 
 func (e *Executor) workerStart(ctx context.Context, request string, opts orca.StartOptions) (orca.Receipt, error) {
+	opts = e.workerModel(opts)
 	done := e.external("worker-start")
 	receipt, err := e.Orca.WorkerStart(ctx, request, opts)
 	validationErr := err
@@ -90,6 +93,42 @@ func (e *Executor) workerStart(ctx context.Context, request string, opts orca.St
 	}
 	done(validationErr)
 	return receipt, err
+}
+
+// workerModel swaps a worker tier's model for its first available
+// AGENT_TIER_<NAME>_FALLBACK candidate when the model registry marks the
+// configured model unavailable. A start that matches no tier is unchanged.
+func (e *Executor) workerModel(opts orca.StartOptions) orca.StartOptions {
+	if opts.Agent == "" {
+		return opts
+	}
+	start := modelhealth.Ref{Agent: opts.Agent, Model: opts.Model, Effort: opts.Effort}
+	for _, tier := range append(append([]string{}, e.Config.TierChain...), "default", "strong") {
+		configured, err := modelhealth.Parse(e.Config.TierSettings[tier])
+		if err != nil {
+			continue
+		}
+		if configured.Model == "" {
+			configured.Effort = ""
+		}
+		if configured != start {
+			continue
+		}
+		now := time.Now
+		if e.Now != nil {
+			now = e.Now
+		}
+		selected, err := config.SelectConfigured(e.Config.TierSettings, "AGENT_TIER_"+strings.ToUpper(tier), e.Config.Root, start, now())
+		if err != nil {
+			e.logger().Warn("worker model fallback unavailable; keeping configured model", "tier", tier, "error", logErrorSummary(err))
+		}
+		if selected != start {
+			e.logger().Info("worker model falls back", "tier", tier, "configured", start.String(), "selected", selected.String())
+			opts.Agent, opts.Model, opts.Effort = selected.Agent, selected.Model, selected.Effort
+		}
+		return opts
+	}
+	return opts
 }
 
 func (e *Executor) taskList(ctx context.Context, run string) ([]orca.Task, error) {

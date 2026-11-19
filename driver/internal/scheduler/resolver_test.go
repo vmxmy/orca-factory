@@ -12,6 +12,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -1062,4 +1063,63 @@ func TestResolverSupervisorRetriesTransientOrcaFailureRecordedReceipt(t *testing
 			t.Fatalf("ended resolver round was cleaned up: stopped=%v released=%v", oc.stopped, oc.released)
 		}
 	})
+}
+
+func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-top-resolver-tier.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	waiting := recording.Comments[0].Body
+	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "max"}
+	for _, tc := range []struct {
+		name        string
+		unavailable bool
+		want        modelhealth.Ref
+	}{
+		{"primary unavailable", true, modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "max"}},
+		{"primary available", false, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repo, state := t.TempDir(), t.TempDir()
+			roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+			if err := os.MkdirAll(roles, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.unavailable {
+				registry, err := modelhealth.Open(state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				now := time.Now()
+				if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store := &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", waiting)}
+			probe := &resolverTierProbe{stop: errors.New("stop after worker start")}
+			env := map[string]string{"AGENT_ROLE_RESOLVER_TOP": primary.String(), "AGENT_ROLE_RESOLVER_TOP_FALLBACK": "claude:claude-opus-5-5:max codex:gpt-6-astra:xhigh"}
+			r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: env}}, Orca: probe, StateRoot: state}
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-593", Repo: repo}, store.issueComments)
+			if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); !errors.Is(err, probe.stop) {
+				t.Fatalf("expected worker start probe stop, got %v", err)
+			}
+			if len(probe.starts) != 1 {
+				t.Fatalf("worker starts = %d, want 1", len(probe.starts))
+			}
+			if got := (modelhealth.Ref{Agent: probe.starts[0].Agent, Model: probe.starts[0].Model, Effort: probe.starts[0].Effort}); got != tc.want {
+				t.Errorf("worker tier = %s, want %s", got, tc.want)
+			}
+			after := fromEvidence(t, ticket, store.issueComments).Resolution
+			if after == nil {
+				t.Fatal("no resolver record persisted")
+			}
+			if got := (modelhealth.Ref{Agent: after.Agent, Model: after.Model, Effort: after.Effort}); got != tc.want {
+				t.Errorf("recorded tier = %s, want %s", got, tc.want)
+			}
+		})
+	}
 }

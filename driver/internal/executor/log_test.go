@@ -14,6 +14,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -267,5 +269,35 @@ func TestExecutorContextLog(t *testing.T) {
 				t.Errorf("context logs bypassed sink: %s", &fallback)
 			}
 		})
+	}
+}
+
+func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
+	root := t.TempDir()
+	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	registry, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	for _, tc := range []struct {
+		name     string
+		settings map[string]string
+		want     orca.StartOptions
+	}{
+		{"fallback", map[string]string{"default": primary.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}, orca.StartOptions{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}},
+		{"no fallback", map[string]string{"default": primary.String()}, orca.StartOptions{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}},
+	} {
+		e := &Executor{Config: Config{Root: root, TierSettings: tc.settings}, Stderr: &logs}
+		if got := e.workerModel(orca.StartOptions{Agent: primary.Agent, Model: primary.Model, Effort: primary.Effort}); got != tc.want {
+			t.Errorf("%s: worker start = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+	if !strings.Contains(logs.String(), `"selected":"codex:gpt-6.1-sol:high"`) {
+		t.Errorf("fallback not recorded in executor log: %s", logs.String())
 	}
 }

@@ -72,6 +72,8 @@ type configRole struct {
 	Key    string `json:"key"`
 	Raw    string `json:"raw"`
 	Source string `json:"source"`
+	// Fallback is the role key's <key>_FALLBACK candidate list, in order.
+	Fallback string `json:"fallback,omitempty"`
 }
 
 // configEntry carries no Value for a secret or an unset service key.
@@ -339,6 +341,7 @@ func repositoryRoles(env, sources map[string]string) []configRole {
 			}
 			if key == structuredKey {
 				role.Agent, role.Model, role.Effort = splitTier(role.Raw)
+				role.Fallback = strings.TrimSpace(env[config.FallbackKey(key)])
 			} else {
 				role.Agent, role.Model, role.Effort = def.parse(role.Raw)
 			}
@@ -356,6 +359,9 @@ func repositoryRoles(env, sources map[string]string) []configRole {
 			continue
 		}
 		role.Agent, role.Model, role.Effort = def.parse(role.Raw)
+		if role.Key != "" {
+			role.Fallback = strings.TrimSpace(env[config.FallbackKey(role.Key)])
+		}
 		roles = append(roles, role)
 	}
 	return roles
@@ -464,6 +470,9 @@ func writeConfigText(out io.Writer, s configSnapshot) error {
 				source = "内置回退"
 			}
 			fmt.Fprintf(&b, "  %-15s %s / %s / %s  [%s]\n", r.Role, r.Agent, model, r.Effort, r.Source+" / "+source)
+			if r.Fallback != "" {
+				fmt.Fprintf(&b, "  %-15s 兜底 %s\n", "", strings.Join(strings.Fields(r.Fallback), " → "))
+			}
 		}
 		b.WriteString("  路由\n")
 		writeConfigEntries(&b, "    ", repo.Routing)

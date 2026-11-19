@@ -385,6 +385,16 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 	if first == "" || second == "" {
 		return nil
 	}
+	now := r.Now
+	if now == nil {
+		now = time.Now
+	}
+	if first, err = r.crossReviewCommand(ctx, repository, first, "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_CMD", now()); err != nil {
+		return err
+	}
+	if second, err = r.crossReviewCommand(ctx, repository, second, "AGENT_ROLE_SECOND_REVIEWER", "AGENT_ROLE_SECOND_REVIEWER_CMD", now()); err != nil {
+		return err
+	}
 	if r.reviews == nil {
 		r.reviews = newCrossReviews()
 	}
@@ -400,10 +410,6 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 	if run == nil {
 		run = runx.Run
 	}
-	now := r.Now
-	if now == nil {
-		now = time.Now
-	}
 	forbidden := append(append([]string{}, crossReviewForbidden...), strings.Fields(env["AGENT_LANE3_GLOBS"]+" "+env["AGENT_LANE2_MANUAL_GLOBS"]+" "+env["AGENT_CROSS_REVIEW_FORBIDDEN_GLOBS"])...)
 	r.reviews.start(crossReviewJob{
 		key: key, ticketID: t.ID, repo: t.Repo, dispatch: t.Resolution.Dispatch, class: decision.Class, head: decision.Head,
@@ -413,6 +419,23 @@ func (r *Runtime) startCrossReview(ctx context.Context, t Ticket) error {
 		run:       run, now: now,
 	})
 	return nil
+}
+
+// crossReviewCommand switches a structured reviewer role to its first
+// available fallback when the model registry marks its model unavailable.
+func (r *Runtime) crossReviewCommand(ctx context.Context, repository config.Repository, command, structuredKey, commandKey string, now time.Time) (string, error) {
+	candidates, err := config.ReviewerCandidates(repository.Env, repository.Sources, structuredKey, commandKey)
+	if err != nil {
+		return "", err
+	}
+	selected, used, err := config.SelectReviewerCommand(command, candidates, r.StateRoot, now)
+	if err != nil {
+		runx.LoggerFrom(ctx).Warn("cross review model fallback unavailable; keeping configured model", "key", structuredKey, "err", err)
+	}
+	if len(candidates) > 0 && used != candidates[0] {
+		runx.LoggerFrom(ctx).Info("cross review model falls back", "key", structuredKey, "configured", candidates[0].String(), "selected", used.String())
+	}
+	return selected, nil
 }
 
 // readCrossReviews records which resolver dispatches already have a record.

@@ -539,7 +539,7 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 仓库 `scripts/agent-gates/agent-graph.env` 的 `AGENT_AUTO_REVIEW` 是逗号分隔的开关列表，缺省为空，保持原人工卡片流程；未知项不启用任何行为。
 
-`top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-18 要求使用 `codex:gpt-6.2-astra:max`。运维修改该配置后，已进入终审的票在下一轮派工时使用当前配置并写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。driver 不因模型不可用而自行换模型，重试与搁置次数不变。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
+`top` 在新的处置转人请求上先派一轮终审，使用 `AGENT_ROLE_RESOLVER_TOP=agent:model:effort`，不改变普通处置档位。两项缺省均为空；开启 top 后须显式配置完整档位。本仓库按用户 2026-11-18 要求使用 `codex:gpt-6.2-astra:max`。运维修改该配置后，已进入终审的票在下一轮派工时使用当前配置并写入处置记录；配置未变时沿用记录档位。已派工轮次的恢复仍使用该轮冻结记录。模型不可用时按兜底候选切换（用户 2026-11-19）：派工前查模型可用性登记，主选在冷却中就用 `<键名>_FALLBACK` 中第一个未冷却的候选，并把实际档位写入处置记录；没有配置兜底时保持现状，重试与搁置次数不变。启动回执的 `launch.effective` 与配置一致且 worker 实际回报后，在票据评论记录接受证据；缺失或不一致时停止并核实该派工，再转人，不换模型。
 
 终审可提交 `{"action":"ruling","reason":"单行理由"}`。调度器复用人工裁定写入 operator 来源的 `裁定理由：`，再写 `裁定：top-resolver` 与 waiting 回执，交普通处置继续；扩 SCOPE 复用原路径校验、每次 10 条与每票 2 次上限。必须转人、不得 ruling 的情形是 lane 3、凭证/环境/授权阻塞、不可逆操作、生产 DDL 与数据、部署 paused、证据冲突、终审自己的第二次失败。调度器按结构化证据判定：lane、部署状态及 handoff/progress 解析结果沿用 `humanReleaseRefusal`；证据冲突检查 `MergeProblem` 与 resolver-state；失败次数使用 `topFailureLimit`。原转人提案的 `class` 必须以 `credentials`、`environment`、`authorization`、`irreversible`、`production-ddl`、`production-data` 标明这六类阻塞，进入终审时保存到 `top_class` 并随回执传递。每个新 escalate 必须带 class，其余阻塞用 `other`，表示不属于六类禁止阻塞，也不是 `scope-extension` 或 `brief-interpretation`，不要求 head。成功 ruling 只接受原 `top_class` 为 `scope-extension`、`brief-interpretation`、`other` 的提案；为空或未知一律拒绝并转人。旧无 class 的 escalate 仍合法，可进入终审，但不得 ruling；调度器因连续失败、open-pr 失败等自行转人也没有类别，同样拒绝 ruling。终审仍可用 merge、open-pr、扩 SCOPE 等其他提案处置，扩 SCOPE 沿用 OF-467 限制。裁定只决定票面口径，不授予上述权限；票面和理由里的文字出现不构成拒绝依据。
 
@@ -628,7 +628,7 @@ AGENT_TIER_ESCALATE = "0"
 
 仓库在 `scripts/agent-gates/agent-graph.env` 中设置 `AGENT_PROFILE=focused` 选择方案；未设置时取文件的 `default`。每个键分别取值：仓库显式赋值优先，其次是所选方案，再走原有角色回退链。仓库显式空值也阻止方案补值，但不取消原有角色回退。没有文件或找不到所选方案时，保持原有仓库配置行为。
 
-方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 与其他 `AGENT_TIER_<大写档名>`。角色值与档值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
+方案允许 `AGENT_TIER_DEFAULT`、`AGENT_TIER_STRONG`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN`、其他 `AGENT_TIER_<大写档名>`，以及这些角色键、档键和 `AGENT_ROLE_RESOLVER_TOP` 的 `_FALLBACK` 兜底键。角色值与档值为 `agent:model:effort`，审查角色的 agent 只支持 `codex` 与 `claude`，model 可空；`AGENT_TIER_ESCALATE` 沿用仓库格式，为字符串 `"0"` 或 `"1"`。未知键会使整份文件报错，包括未选中的方案；语法、类型或值格式错误也报错。审查命令的优先级仍先看仓库结构化键，再看仓库 `_CMD` 键，最后才使用方案结构化键。
 
 升档链 `AGENT_TIER_CHAIN` 是空格分隔的小写档名，默认 `default strong`；每个档名由 `AGENT_TIER_<大写名>` 配置，例如链 `default strong max` 需要 `AGENT_TIER_MAX`。仓库 env 与方案都可提供这些键。`AGENT_TIER_ESCALATE=1` 时，第 n 次 correction 从入口档（默认 default）升 n 级，到链尾保持；链里有未配置的档或缺少 default 时，`driver exec` 启动即报错。`AGENT_TIER_ESCALATE=0` 时不升档，也不检查链中各档是否已配置；链本身的格式错误仍在启动时报错。升档评论写成 `correction <n> → 升至 <档>（<旧 agent:model:effort> → <新 agent:model:effort>）`。
 
@@ -653,6 +653,23 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离�
 `doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`（多个端点不可用时取最晚的冷却截止时间），否则有端点未确认就记为 `unknown`，全部成功才记为 `ok`。`unknown` 不覆盖未到期的 `unavailable`，新的 `unavailable` 不缩短未到期的冷却，`ok` 会结束冷却。报告和登记都省略代理地址。冷却期供派工选择使用。
 
 登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读取失败时，检查报告 `unknown` 并加入 `errors`。写入失败时保留本轮各行与判定（`ok` 降为 `unknown`），原因追加写入失败并加入 `errors`。`watch --dry-run` 不写该登记，探测结果只用于本轮报告。
+
+
+### 模型兜底（OF-593）
+
+每个角色键与档键都可配 `<键名>_FALLBACK`，值为空格分隔的有序 `agent:model:effort` 列表，仓库 env 与方案文件都可以写。适用的键：`AGENT_TIER_<档名>`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_RESOLVER_TOP`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`。需求助手的候选必须是 claude；审查角色的候选只支持 `codex` 与 `claude`，且只在角色由结构化键配置时生效，`_CMD` 命令不参与兜底。
+
+启动点在派工前读一次模型可用性登记：主选可用、缺记录或冷却已到期时用主选；主选仍在冷却时用第一个未冷却的候选；候选全部冷却时仍用主选。没有配置兜底时不读登记，行为与原来相同。各启动点的记录位置：
+
+| 角色 | 选择位置 | 实际模型记录 |
+| --- | --- | --- |
+| worker 各档 | `executor.workerStart`（含首轮、打回与恢复派工） | executor 日志 `worker model falls back`，以及 `worker-start` 回执 |
+| 处置 Agent、终审 | `scheduler.ResolveTicket` | 处置记录 `resolver-state` 的 agent/model/effort 与 resolver 日志 |
+| 主审查、小票审查 | `executor.Commands.Review` | executor 日志 `reviewer model falls back` |
+| 交叉复审 | `scheduler.startCrossReview` | scheduler 日志 `cross review model falls back` |
+| 需求助手 | `intake.Runner.Turn`（每轮） | 网关日志 `intake model falls back` |
+
+终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。运行中识别模型错误并重派不在本节范围内。`orca-factory-driver config` 在各角色下列出兜底候选；终审档位不是 config 角色，其兜底只在仓库 env 中查看。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 
