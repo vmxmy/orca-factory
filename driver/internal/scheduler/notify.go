@@ -6,9 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptrace"
 	"os/exec"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
@@ -220,7 +222,7 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	if err := sender.SendText(ctx, chat, text); err != nil {
-		if !attempts.started {
+		if !attempts.written.Load() {
 			return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 		}
 		return err
@@ -228,16 +230,18 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 	return nil
 }
 
-// messageAttempts records whether a message request reached the transport, so
-// a failure before it, such as a tenant token timeout, is known undelivered.
+// messageAttempts records whether a message request's headers were written,
+// so a failure before that, such as a tenant token timeout or a refused
+// connection, is known undelivered.
 type messageAttempts struct {
 	next    http.RoundTripper
-	started bool
+	written atomic.Bool
 }
 
 func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(req.URL.Path, "/open-apis/im/v1/messages") {
-		m.started = true
+		trace := &httptrace.ClientTrace{WroteHeaders: func() { m.written.Store(true) }}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	}
 	return m.next.RoundTrip(req)
 }

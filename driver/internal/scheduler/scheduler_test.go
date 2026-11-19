@@ -1767,21 +1767,28 @@ func TestHostMemoryNoticeResentOnlyWhenUndelivered(t *testing.T) {
 // timeout, cannot have delivered the notice; one on the message request may have.
 func TestHostMemoryNoticeTransportFailureUnsentOnlyBeforeMessage(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		dropOn string
-		unsent bool
+		name    string
+		dropOn  string
+		refused bool
+		unsent  bool
 	}{
-		{"token request dropped", "/tenant_access_token/internal", true},
-		{"message request dropped", "/im/v1/messages", false},
+		{"token request dropped", "/tenant_access_token/internal", false, true},
+		{"message connection refused", "", true, true},
+		{"message request dropped", "/im/v1/messages", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if strings.HasSuffix(r.URL.Path, tc.dropOn) {
+			var srv *httptest.Server
+			srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.dropOn != "" && strings.HasSuffix(r.URL.Path, tc.dropOn) {
 					conn, _, err := w.(http.Hijacker).Hijack()
 					if err == nil {
 						_ = conn.Close()
 					}
 					return
+				}
+				if tc.refused {
+					w.Header().Set("Connection", "close")
+					_ = srv.Listener.Close()
 				}
 				_, _ = w.Write([]byte(feishuTokenIssued))
 			}))
