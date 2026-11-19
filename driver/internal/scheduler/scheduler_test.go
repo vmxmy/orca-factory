@@ -560,6 +560,7 @@ type runtimeFailureOrca struct {
 	failureClient *orca.Client
 	success       orca.Receipt
 	closed        []string
+	closeErr      error
 }
 
 func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
@@ -576,7 +577,7 @@ func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.Termi
 
 func (o *runtimeFailureOrca) TerminalClose(_ context.Context, handle string) error {
 	o.closed = append(o.closed, handle)
-	return nil
+	return o.closeErr
 }
 
 type runtimeFailureBackend struct {
@@ -591,6 +592,7 @@ type runtimeFailureBackend struct {
 	restartErr       error
 	restartNotices   []string
 	exhaustedNotices int
+	exhaustedErr     error
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -611,13 +613,13 @@ func (b *runtimeFailureBackend) RestartOrcaService(context.Context) error {
 	b.restarts++
 	return b.restartErr
 }
-func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, _ Ticket, restart int, restartErr error) error {
-	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%d:%v", restart, restartErr))
+func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, ticket Ticket, restart int, restartErr error) error {
+	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%s %d:%v", ticket.Repo, restart, restartErr))
 	return nil
 }
 func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Ticket) error {
 	b.exhaustedNotices++
-	return nil
+	return b.exhaustedErr
 }
 func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
 	return b.runtime.OrcaTerminalCreateFailures()
@@ -958,13 +960,17 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 	if b.exhaustedNotices != 0 {
 		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
 	}
-	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
+	b.exhaustedErr = errors.New("feishu unavailable")
+	tickAt(85*time.Minute, 3)
+	b.exhaustedErr = nil
+	for offset := 100 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
 		tickAt(offset, 3)
 	}
-	if b.exhaustedNotices != 1 {
-		t.Fatalf("human notice after the restart limit sent %d times, want 1", b.exhaustedNotices)
+	if b.exhaustedNotices != 2 {
+		t.Fatalf("human notice attempts %d, want one failed send then exactly one delivered", b.exhaustedNotices)
 	}
-	if want := []string{"1:systemctl failed", "2:<nil>", "3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
+	// The pause started on the third ticket's repository; its chat gets every result.
+	if want := []string{"/repo2 1:systemctl failed", "/repo2 2:<nil>", "/repo2 3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
 		t.Fatalf("restart result notices %v, want %v", b.restartNotices, want)
 	}
 	if got := s.OrcaRuntime(); !got.LastRestartAt.Equal(pausedAt.Add(70 * time.Minute)) {
@@ -982,6 +988,23 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 		if ticket.Attempt != 1 {
 			t.Fatalf("restart changed attempt: %+v", ticket)
 		}
+	}
+}
+
+// Only a probe whose terminal create Orca refused with runtime_error shows the
+// fault persists; a created probe terminal that fails to close does not.
+func TestOrcaRuntimeProbeCloseFailureDoesNotRestartOrcaService(t *testing.T) {
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, b, oc := x.s, x.b, x.oc
+	_ = s.Tick(context.Background())
+	oc.failing = false
+	oc.closeErr = errors.New("terminal close failed")
+	*x.now = x.now.Add(time.Hour)
+	if err := s.Tick(context.Background()); err == nil {
+		t.Fatal("probe close failure must keep the pause")
+	}
+	if b.restarts != 0 || s.OrcaRuntime().Restarts != 0 {
+		t.Fatalf("probe close failure restarted orca-serve: restarts=%d status=%+v", b.restarts, s.OrcaRuntime())
 	}
 }
 

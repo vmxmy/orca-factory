@@ -285,7 +285,7 @@ func (b *statusBackend) RestartOrcaService(ctx context.Context) error {
 	}); ok {
 		return source.RestartOrcaService(ctx)
 	}
-	return errors.New("backend has no Orca service restart")
+	return scheduler.ErrOrcaRestartUnsupported
 }
 
 func (b *statusBackend) NotifyOrcaRestart(ctx context.Context, ticket scheduler.Ticket, restart int, restartErr error) error {

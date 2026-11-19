@@ -788,8 +788,9 @@ func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
 
 var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
 
-// terminalCreateRuntimeError is a launch that created no terminal: Orca refused
-// terminal create with runtime_error, or the fault had already paused creation.
+// terminalCreateRuntimeError is a launch or recovery probe that created no
+// terminal: Orca refused terminal create with runtime_error, or the fault had
+// already paused creation.
 // failures is the consecutive count after this launch.
 type terminalCreateRuntimeError struct {
 	err      error
@@ -824,6 +825,10 @@ func (r *Runtime) RestartOrcaService(ctx context.Context) error {
 // ProbeOrcaRuntime exercises terminal creation without starting an executor.
 func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
 	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + repo, Title: "driver Orca runtime probe", Command: "true"})
+	var rejected *orca.RejectedError
+	if errors.As(err, &rejected) && rejected.Code == "runtime_error" {
+		return &terminalCreateRuntimeError{err: err, failures: r.orcaFailures}
+	}
 	if err != nil {
 		return err
 	}

@@ -167,15 +167,19 @@ func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
 
 // NotifyOrcaRestart reports one automatic orca-serve restart and its exit code.
 func (r *Runtime) NotifyOrcaRestart(ctx context.Context, ticket Ticket, restart int, restartErr error) error {
-	code := 0
-	if restartErr != nil {
-		code = -1
-		var exit *exec.ExitError
-		if errors.As(restartErr, &exit) {
-			code = exit.ExitCode()
-		}
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；下一轮探测成功即恢复派工。", restart, orcaRestartLimit, restartExitCode(restartErr)))
+}
+
+// restartExitCode is systemctl's exit code, or -1 when it did not exit on its own.
+func restartExitCode(restartErr error) int {
+	if restartErr == nil {
+		return 0
 	}
-	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；下一轮探测成功即恢复派工。", restart, orcaRestartLimit, code))
+	var exit *exec.ExitError
+	if errors.As(restartErr, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
 }
 
 func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket) error {
