@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,7 +98,6 @@ var configRoles = []struct {
 	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
 	{"second_reviewer", []string{"AGENT_ROLE_SECOND_REVIEWER", "AGENT_ROLE_SECOND_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
-	{"resolver_top", []string{"AGENT_ROLE_RESOLVER_TOP"}, "", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
 
@@ -197,6 +197,16 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 	}
 	for _, p := range result.Eligible {
 		roles := repositoryRoles(p.Repository.Env, p.Repository.Sources)
+		if raw := p.Repository.Env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
+			// doctor builds its own resolver_top row, so only config lists it here.
+			top := configRole{Role: "resolver_top", Key: "AGENT_ROLE_RESOLVER_TOP", Raw: raw, Source: "repository"}
+			top.Agent, top.Model, top.Effort = dispatchTier(raw)
+			at := slices.IndexFunc(roles, func(role configRole) bool { return role.Role == "intake" })
+			if at < 0 {
+				at = len(roles)
+			}
+			roles = slices.Insert(roles, at, top)
+		}
 		for i := range roles {
 			if source, ok := p.Repository.Sources[roles[i].Key]; ok {
 				roles[i].Source = source
