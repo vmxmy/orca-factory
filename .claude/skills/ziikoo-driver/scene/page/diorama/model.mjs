@@ -1,14 +1,14 @@
 export const RENDER_MODE = Object.freeze({ CLEAN: 'clean', FULL: 'full' })
 
 export const waitsForPerson = parcel => parcel.station === 'human' || parcel.humanKind !== undefined
-export const blockedAtPickup = parcel => parcel.station === 'pickup' && parcel.blocker
+export const isParked = parcel => parcel.blocker?.startsWith('parked: ') ?? false
 
 export const CLEAN_RULES = Object.freeze({
   islandDetails: () => false,
   hub: ({ state }) => state !== 'ok',
   station: ({ occupied, hovered }) => occupied || hovered,
   stationDetails: ({ hovered }) => hovered,
-  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || waitsForPerson(parcel) || blockedAtPickup(parcel) || hovered || selected),
+  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || waitsForPerson(parcel) || isParked(parcel) || hovered || selected),
   dock: () => false,
   legend: () => false,
   events: () => false,
@@ -250,7 +250,7 @@ export const islandOf = (row, now) => {
   )
   const working = stations.get('work')?.length ?? 0
   const inFlight = row.parcels.length - (stations.get('pickup')?.length ?? 0)
-  const blocked = row.parcels.filter(blockedAtPickup).length
+  const blocked = row.parcels.filter(parcel => parcel.station === 'pickup' && parcel.blocker).length
   const scheduling = row.parcels.filter(parcel => parcel.station === 'pickup' && parcel.schedulingWait).length
   const stalled = row.parcels.some(parcel => parcel.dependencyStatus === 'stalled' || parcel.dependencyStatus === 'unknown')
   const waitLabel = [

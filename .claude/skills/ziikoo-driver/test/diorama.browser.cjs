@@ -341,7 +341,7 @@ async function checkCleanMode(browser, url) {
       parcel('LATE-1', 'gate', { since: generatedAt - 120_000 }),
       parcel('STUCK-1', 'repair', { since: generatedAt - 180_000, tone: 'failed', reason: '需要处理' }),
       parcel('UNTIMED-1', 'return', { tone: 'failed' }),
-      parcel('PARKED-1', 'pickup', { blocker: '等待上游' }),
+      parcel('DEPEND-1', 'pickup', { blocker: '等待上游', tone: 'attention' }),
       parcel('DEPLOY-1', 'dispatch', { since: generatedAt - 60_000, owner: '人', phase: '等人', label: '部署', humanKind: 'deploy', deployment: 'pending' }),
     ])],
   }
@@ -357,7 +357,7 @@ async function checkCleanMode(browser, url) {
     assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'clean mode hides routine labels: normal tickets')
     assert.equal(await ticketLabel('LATE-1').count(), 1, 'overdue tickets keep labels')
     assert.equal(await ticketLabel('STUCK-1').count(), 1, 'stuck tickets keep labels')
-    assert.deepEqual(await ticketLabel('PARKED-1').allTextContents(), ['PARKED-1 · 等人'], 'blocked pickup tickets keep their waiting label')
+    assert.deepEqual(await ticketLabel('DEPEND-1').allTextContents(), ['DEPEND-1 · 卡住时长未知'])
     assert.deepEqual(await ticketLabel('UNTIMED-1').allTextContents(), ['UNTIMED-1 · 卡住时长未知'])
     assert.equal(await ticketLabel('DEPLOY-1').count(), 1, 'tickets waiting for a person keep labels outside the human station')
     assert.equal(await page.locator('.tag-legend').isVisible(), false)
@@ -425,7 +425,7 @@ async function checkCleanMode(browser, url) {
       assert.deepEqual((await state(page)).goal, panned, `switching to ${mode} must preserve the panned camera`)
     }
     assert.equal(await page.locator('.stuck > .list').isVisible(), false)
-    await page.getByRole('button', { name: '卡住 2', exact: true }).click()
+    await page.getByRole('button', { name: '卡住 3', exact: true }).click()
     assert.equal(await page.locator('.stuck > .list').isVisible(), true)
     await page.locator('canvas').focus()
     for (let step = 0; step < 4; step++) await page.keyboard.press('ArrowUp')
@@ -866,12 +866,21 @@ async function checkIslandStatus(browser, url) {
 }
 
 async function checkScopeWait(browser, url) {
- const {page,errors}=await open(browser,url)
+ const { page, errors } = await open(browser, url, { renderMode: null, reducedMotion: 'reduce' })
  try {
   const scope=readJSON(path.join(preview,'diorama-scene-scope.json'))
   await page.evaluate(scene=>window.diorama.update(scene),scope)
   await frames(page)
   const plate=page.locator('button.plate:visible').filter({has:page.locator('b',{hasText:/^\/fixture\/wecom-agent-workbench$/})})
+  await plate.click()
+  await frames(page)
+  // WAW-532 has no since in the recording. WAW-533 folds into its label at pickup.
+  const label = page.locator('.label.ticket:visible').filter({ hasText: 'WAW-532' })
+  assert.deepEqual(await label.allTextContents(), ['WAW-532 · 卡住时长未知 +1'])
+  await page.locator('canvas').focus()
+  await page.keyboard.press('1')
+  await page.keyboard.press('v')
+  await frames(page)
   assert.ok((await plate.innerText()).includes('调度等待 2'),'scope waits must have their own plate count')
   assert.ok(!(await plate.innerText()).includes('依赖等待'),'scope waits must not be labelled dependency waits')
   const waiting=page.locator('.stuck > .list button[data-ticket]').filter({hasText:'WAW-532'})
@@ -1606,6 +1615,42 @@ async function checkRecordedHumanWaits(browser, live) {
   }
 }
 
+// driver/testdata/recorded/driver-status-json-parked.json：2026-11-19 本机生产 `orca-factory-driver status --json` 原文，含搁置票 OF-595。
+async function checkRecordedParkedTicket(browser, live, previewUrl) {
+  const recorded = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-parked.json'))
+  const parked = recorded.tickets.find(ticket => ticket.identifier === 'OF-595')
+  assert.match(parked.blockedReason, /^parked: /)
+  // 只回放这张票，避免同工位的标签折叠。
+  live.write({ ...recorded, tickets: [parked] })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(parked.repo)}`, { renderMode: null, reducedMotion: 'reduce' })
+  try {
+    const label = page.locator('.label.ticket:visible').filter({ hasText: 'OF-595' })
+    await label.waitFor()
+    assert.deepEqual(await label.allTextContents(), ['OF-595 · 等人'])
+
+    // 部署屏障这一行由录制派生，只增加 pending 部署。
+    const deployment = { queueId: 'parked-deploy', sha: 'abcd1234', state: 'pending' }
+    live.write({ ...recorded, tickets: [{ ...parked, deployment }] })
+    await page.locator('.label.station[data-station="dispatch"]').waitFor({ state: 'visible' })
+    await frames(page)
+    assert.deepEqual(await label.allTextContents(), ['OF-595 · 等人'])
+
+    // 生产页只公开 state()，在预览页用同一份服务端快照读取沙盘中的工位。
+    const snapshot = await waitForSnapshot(live.origin(), live.token)
+    await page.goto(previewUrl)
+    await page.waitForFunction(() => window.diorama)
+    const station = await page.evaluate(scene => {
+      window.diorama.update(scene)
+      return window.diorama.archipelago.tickets.find(ticket => ticket.identifier === 'OF-595').station
+    }, snapshot)
+    assert.equal(station, 'dispatch')
+    assert.deepEqual(errors, [])
+    console.log('PASS recorded parked ticket: OF-595 keeps its clean waiting label at pickup and pending deployment')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkHumanWaits(browser, live) {
   const recorded = readJSON(path.join(plugin, 'test/recorded/live-status.json'))
   const template = recorded.tickets.find(ticket => ticket.identifier === 'OF-415')
@@ -1793,7 +1838,7 @@ async function checkRecordedTicketEvents(browser, live) {
   }
 }
 
-async function checkProduction(browser, bun, model) {
+async function checkProduction(browser, bun, model, previewUrl) {
   const tempRoot = path.join(process.cwd(), '.omc/tmp')
   fs.mkdirSync(tempRoot, { recursive: true })
   const temp = fs.mkdtempSync(path.join(tempRoot, 'diorama-'))
@@ -1823,6 +1868,7 @@ async function checkProduction(browser, bun, model) {
     await checkParcelTransitions(browser, live)
     await checkRecordedTicketEvents(browser, live)
     await checkRecordedHumanWaits(browser, live)
+    await checkRecordedParkedTicket(browser, live, previewUrl)
     await checkHumanWaits(browser, live)
     live.write(status)
     await checkLiveUpdates(browser, live)
@@ -1862,7 +1908,7 @@ async function main() {
       await checkShoreline(browser, url)
       await checkMainPath(browser, url)
       await checkReducedMotion(browser, url)
-      await checkProduction(browser, bun, model)
+      await checkProduction(browser, bun, model, url)
       await checkBaselines(browser, url, model)
     } finally {
       await browser.close()

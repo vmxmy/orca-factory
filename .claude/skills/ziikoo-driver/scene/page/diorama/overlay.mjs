@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { ISLAND_STATUS, baselineText, blockedAtPickup, stationNeighborhood, RENDER_MODE, visibleIn, waitsForPerson } from './model.mjs'
+import { ISLAND_STATUS, baselineText, isParked, stationNeighborhood, RENDER_MODE, visibleIn, waitsForPerson } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -128,7 +128,7 @@ const humanBadge = kind => {
 
 const cleanTicketText = parcel => {
   let fact
-  if (waitsForPerson(parcel) || blockedAtPickup(parcel)) fact = '等人'
+  if (waitsForPerson(parcel) || isParked(parcel)) fact = '等人'
   else if (parcel.overdue) fact = '超基线'
   else if (parcel.alert) fact = parcel.since === undefined ? '卡住时长未知' : `卡住 ${parcel.duration}`
   return fact ? `${parcel.identifier} · ${fact}` : parcel.identifier
