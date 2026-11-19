@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { ISLAND_STATUS, baselineText, stationNeighborhood, RENDER_MODE, visibleIn } from './model.mjs'
+import { ISLAND_STATUS, baselineText, stationNeighborhood, RENDER_MODE, visibleIn, waitsForPerson, parked } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -127,7 +127,7 @@ const humanBadge = kind => {
 }
 
 const cleanTicketText = parcel => {
-  const fact = parcel.station === 'human' ? '等人' : parcel.overdue ? '超基线' : parcel.alert ? `卡住${parcel.since !== undefined ? ` ${parcel.duration}` : ''}` : parcel.label === '搁置' ? '等人' : ''
+  const fact = waitsForPerson(parcel) || parked(parcel) ? '等人' : parcel.overdue ? '超基线' : parcel.alert ? `卡住${parcel.since !== undefined ? ` ${parcel.duration}` : ''}` : ''
   return [parcel.identifier, ...(fact ? [fact] : [])].join(' · ')
 }
 
@@ -262,24 +262,29 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
         }
       }
     }
-    reveal(legend, visibleIn(mode, 'legend') && overflow.length > 0)
-    if (overflow.length === 0 || !visibleIn(mode, 'legend')) return
-    const legendRect = { left: area.left, right: Math.min(area.left + 220, area.right), top: Math.max(area.top, area.bottom - 100), bottom: area.bottom }
-    legend.style.left = `${legendRect.left}px`
-    legend.style.top = `${legendRect.top}px`
-    legend.style.width = `${legendRect.right - legendRect.left}px`
-    legend.style.height = `${legendRect.bottom - legendRect.top}px`
-    for (const tag of tags) {
-      if (!tag.rect || !overlaps(tag.rect, legendRect)) continue
-      reveal(tag.item.node, false)
-      taken.splice(taken.indexOf(tag.rect), 1)
-      overflow.push(tag)
+    const legendShown = visibleIn(mode, 'legend')
+    reveal(legend, legendShown && overflow.length > 0)
+    if (overflow.length === 0) return
+    if (legendShown) {
+      const legendRect = { left: area.left, right: Math.min(area.left + 220, area.right), top: Math.max(area.top, area.bottom - 100), bottom: area.bottom }
+      legend.style.left = `${legendRect.left}px`
+      legend.style.top = `${legendRect.top}px`
+      legend.style.width = `${legendRect.right - legendRect.left}px`
+      legend.style.height = `${legendRect.bottom - legendRect.top}px`
+      for (const tag of tags) {
+        if (!tag.rect || !overlaps(tag.rect, legendRect)) continue
+        reveal(tag.item.node, false)
+        taken.splice(taken.indexOf(tag.rect), 1)
+        overflow.push(tag)
+      }
+      taken.push(legendRect)
     }
-    taken.push(legendRect)
     const lines = []
-    overflow.forEach(({ item, point, members }, index) => {
+    overflow.filter(tag => legendShown || tag.members).forEach(({ item, point, members }, index) => {
       const number = String(index + 1)
+      const line = members ? members.map(member => member.item.node.textContent.replace(/ \+\d+$/, '')).join('；') : item.node.textContent
       item.marker.textContent = number
+      if (!legendShown) item.marker.title = line
       item.marker.dataset.tickets = item.node.dataset.tickets ?? '[]'
       const size = { width: 24, height: 24 }
       let rect = fitTag(point, size, taken, area)
@@ -292,16 +297,15 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
         positionTag(item.marker, rect)
         taken.push(rect)
       }
-      lines.push(`${number} · ${members ? members.map(member => member.item.node.textContent.replace(/ \+\d+$/, '')).join('；') : item.node.textContent}`)
+      lines.push(`${number} · ${line}`)
     })
     const text = lines.join('\n')
-    if (legend.textContent !== text) legend.textContent = text
+    if (legendShown && legend.textContent !== text) legend.textContent = text
   }
 
   return {
     update(archipelago) {
       lastScene = archipelago
-      hovered = null
       refocus ??= heldOf(anchored)
       islands = archipelago.islands
       plates = islands.map(island => itemOf(plateOf(island, mode), anchorOf(island)))

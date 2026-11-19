@@ -340,6 +340,8 @@ async function checkCleanMode(browser, url) {
       parcel('NORMAL-1', 'work', { since: generatedAt - 60_000 }),
       parcel('LATE-1', 'gate', { since: generatedAt - 120_000 }),
       parcel('STUCK-1', 'repair', { since: generatedAt - 180_000, tone: 'failed', reason: '需要处理' }),
+      parcel('PARKED-1', 'pickup', { since: generatedAt - 60_000, owner: '无', phase: '待领', label: '待领', reason: 'parked: lane 3', blocker: 'parked: lane 3' }),
+      parcel('DEPLOY-1', 'dispatch', { since: generatedAt - 60_000, owner: '人', phase: '等人', label: '部署', humanKind: 'deploy', deployment: 'pending' }),
     ])],
   }
   try {
@@ -354,11 +356,13 @@ async function checkCleanMode(browser, url) {
     assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'clean mode hides routine labels: normal tickets')
     assert.equal(await ticketLabel('LATE-1').count(), 1, 'overdue tickets keep labels')
     assert.equal(await ticketLabel('STUCK-1').count(), 1, 'stuck tickets keep labels')
+    assert.equal(await ticketLabel('PARKED-1').count(), 1, 'parked tickets keep labels')
+    assert.equal(await ticketLabel('DEPLOY-1').count(), 1, 'tickets waiting for a person keep labels outside the human station')
     assert.equal(await page.locator('.tag-legend').isVisible(), false)
     assert.equal(await page.locator('.event-feed').isVisible(), false)
     assert.equal(await page.locator('.trip').isVisible(), false)
     assert.equal(await page.locator('.status').innerText(), 'driver ok')
-    assert.deepEqual(await stationLabels.evaluateAll(nodes => nodes.map(node => node.dataset.station).sort()), ['gate', 'repair', 'work'])
+    assert.deepEqual(await stationLabels.evaluateAll(nodes => nodes.map(node => node.dataset.station).sort()), ['dispatch', 'gate', 'pickup', 'repair', 'work'])
     const moveTo = async point => {
       const pixel = pixelOf((await state(page)).view, point, page.viewportSize())
       await page.mouse.move(pixel.x, pixel.y)
@@ -367,6 +371,9 @@ async function checkCleanMode(browser, url) {
     const normal = await page.evaluate(() => window.diorama.archipelago.tickets.find(ticket => ticket.identifier === 'NORMAL-1'))
     await moveTo({ ...normal.slot, y: normal.slot.y + 0.2 })
     assert.equal(await ticketLabel('NORMAL-1').count(), 1, 'hovering a normal box reveals its label')
+    await page.evaluate(scene => window.diorama.update(scene), fixture)
+    await frames(page)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 1, 'a new snapshot keeps the hovered label')
     await page.mouse.move(0, 0)
     await frames(page)
     assert.equal(await ticketLabel('NORMAL-1').count(), 0)
@@ -395,20 +402,23 @@ async function checkCleanMode(browser, url) {
     assert.equal(await page.locator('.trip').isVisible(), true)
     assert.equal(await page.locator('.trip .track').isVisible(), true)
     await page.evaluate(scene => window.diorama.update(scene), {
-      ...fixture, rows: [row([...fixture.rows[0].parcels, parcel('OVERFLOW-'.repeat(40), 'pack')])],
+      ...fixture, rows: [row([...fixture.rows[0].parcels, parcel('OVERFLOW-'.repeat(40), 'pack', { tone: 'failed' })])],
     })
     await frames(page)
     assert.equal(await page.locator('.tag-legend').isVisible(), true, 'full mode restores the legend for overflow labels')
     await page.keyboard.press('v')
     await frames(page)
     assert.equal(await page.locator('.tag-legend').isVisible(), false)
+    assert.equal(await page.locator('.tag-marker:not([hidden])').evaluateAll(nodes => nodes.some(node => (node.dataset.tickets ?? '').includes('OVERFLOW-'))), true, 'clean mode keeps a marker for alert tickets whose label cannot fit')
     assert.equal(await page.locator('.trip .track').isVisible(), false)
     await page.keyboard.press('v')
     assert.equal(await page.evaluate(() => localStorage.getItem('diorama.renderMode')), 'full')
     await page.reload()
     await page.waitForFunction(() => window.diorama)
     assert.equal(await page.getByRole('button', { name: '清爽 / 完整', exact: true }).getAttribute('aria-pressed'), 'false')
-    await page.getByRole('button', { name: '清爽 / 完整', exact: true }).click()
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true)
+    await page.keyboard.press('v')
+    assert.equal(await page.getByRole('button', { name: '清爽 / 完整', exact: true }).getAttribute('aria-pressed'), 'true', 'v switches modes before anything has focus')
     assert.equal(await page.evaluate(() => localStorage.getItem('diorama.renderMode')), 'clean')
     assert.deepEqual(errors, [])
     await page.evaluate(scene => window.diorama.update(scene), { ...fixture, rows: [row([])] })

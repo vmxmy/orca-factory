@@ -1,11 +1,14 @@
 export const RENDER_MODE = Object.freeze({ CLEAN: 'clean', FULL: 'full' })
 
+export const waitsForPerson = parcel => parcel.station === 'human' || parcel.humanKind !== undefined
+export const parked = parcel => parcel.reason?.startsWith('parked:') ?? false
+
 export const CLEAN_RULES = Object.freeze({
   islandDetails: () => false,
   hub: ({ state }) => state !== 'ok',
   station: ({ occupied, hovered }) => occupied || hovered,
   stationDetails: ({ hovered }) => hovered,
-  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || parcel.station === 'human' || parcel.label === '搁置' || hovered || selected),
+  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || waitsForPerson(parcel) || parked(parcel) || hovered || selected),
   dock: () => false,
   legend: () => false,
   events: () => false,

@@ -229,6 +229,11 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else return
     event.preventDefault()
   }, { signal: lifetime.signal })
+  document.addEventListener('keydown', event => {
+    if (event.target !== document.body || event.key.toLowerCase() !== 'v' || event.ctrlKey || event.metaKey || event.altKey) return
+    toggleMode()
+    event.preventDefault()
+  }, { signal: lifetime.signal })
 
   show(archipelago)
   world.select(selected)
