@@ -277,6 +277,8 @@
 
 .diorama .tools {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -824,4 +826,41 @@
 .diorama .baseline-legend i {
   width: 10px;
   height: 8px;
+}
+
+
+.diorama .render-mode[aria-pressed="true"] {
+  color: var(--w-ink);
+}
+
+.diorama[data-render-mode="clean"] .trip-head .why {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diorama .trip-details[open] {
+  display: grid;
+  gap: 10px;
+}
+
+.diorama .island-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--o-exec);
+}
+
+.diorama .idle .island-dot {
+  background: var(--w-muted);
+}
+
+.diorama .blocked .island-dot {
+  background: var(--o-agent);
+}
+
+.diorama .warn .island-dot,
+.diorama .bad .island-dot {
+  background: var(--o-human);
 }

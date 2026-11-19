@@ -1,3 +1,24 @@
+export const RENDER_MODE = Object.freeze({ CLEAN: 'clean', FULL: 'full' })
+
+export const CLEAN_RULES = Object.freeze({
+  station: ({ occupied, hovered }) => occupied || hovered,
+  stationDetails: ({ hovered }) => hovered,
+  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || parcel.station === 'human' || parcel.label === '搁置' || hovered || selected),
+  islandDetails: () => false,
+  hub: ({ state }) => state !== 'ok',
+  statusDetails: ({ abnormal }) => abnormal,
+  stuckPanel: ({ count, expanded }) => count > 0 && expanded,
+  stuckToggle: ({ count }) => count > 0,
+  dock: () => false,
+  legend: () => false,
+  events: () => false,
+  today: () => false,
+  hint: () => false,
+  tripDetails: ({ expanded }) => expanded,
+})
+
+export const visibleIn = (mode, kind, context = {}) => mode === RENDER_MODE.FULL || CLEAN_RULES[kind](context)
+
 export const OWNER_COLORS = {
   无: '#9d98a8',
   执行器: '#3f6fd8',

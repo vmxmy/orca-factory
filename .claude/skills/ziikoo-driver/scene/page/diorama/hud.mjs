@@ -1,4 +1,4 @@
-import { BASELINE_COLORS, baselineColor, baselineText, TRACK } from './model.mjs'
+import { BASELINE_COLORS, baselineColor, baselineText, TRACK, RENDER_MODE, visibleIn } from './model.mjs'
 
 export const element = (tag, attributes = {}, children = []) => {
   const node = document.createElement(tag)
@@ -77,13 +77,13 @@ const islandButton = island =>
     ...(island.plate.stuck > 0 ? [element('em', { class: island.plate.alert, text: `${island.plate.stuck} 卡住` })] : []),
   ])
 
-const tripHead = parcel =>
+const tripHead = (parcel, mode) =>
   element('div', { class: 'trip-head' }, [
     element('b', { text: parcel.identifier }),
     element('span', { class: 'title', text: parcel.title }),
-    element('span', { class: 'own' }, [swatch(parcel.color), `归属 ${parcel.owner}`]),
-    element('span', { text: `${parcel.stationName} · ${parcel.label} · 已停留 ${parcel.duration}` }),
-    ...(parcel.reason ? [element('span', { class: 'why', text: parcel.reason })] : []),
+    ...(visibleIn(mode, 'tripDetails', { expanded: false }) ? [element('span', { class: 'own' }, [swatch(parcel.color), `归属 ${parcel.owner}`])] : []),
+    element('span', { text: `${parcel.stationName}${visibleIn(mode, 'tripDetails', { expanded: false }) ? ` · ${parcel.label}` : ''} · 已停留 ${parcel.duration}` }),
+    ...(parcel.reason && (mode === RENDER_MODE.FULL || !parcel.humanReason) ? [element('span', { class: 'why', text: parcel.reason })] : []),
     ...(parcel.humanReason ? [element('span', { class: 'why human-reason', text: parcel.humanReason })] : []),
   ])
 
@@ -261,9 +261,14 @@ const createSearch = (source, pick) => {
   return { form, toggle, open, refresh: () => keepFocus(results, refresh) }
 }
 
-export const createHud = (stage, { onSelect, onStop, onIsland }) => {
+export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout }) => {
   let archipelago = { islands: [], tickets: [], stuck: [], global: false }
   let connection = null
+  let mode = RENDER_MODE.CLEAN
+  let expanded = false
+  let detailsOpen = false
+  let tripKey = null
+  let currentStop = 1
   const pick = button => {
     if (button.dataset.ticket) onSelect(button.dataset.ticket)
     else if (button.dataset.island) onIsland(Number(button.dataset.island))
@@ -274,6 +279,9 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
   const dock = element('nav', { class: 'dock', 'aria-label': '项目坞', hidden: '' })
   const stops = element('div', { class: 'stops', role: 'group', 'aria-label': '机位' }, stopButtons())
   const search = createSearch(() => archipelago, pick)
+  const modeButton = element('button', { type: 'button', class: 'render-mode find', text: '清爽 / 完整', title: 'v 切换清爽 / 完整', 'aria-pressed': 'false' })
+  modeButton.addEventListener('click', onMode)
+  const stuckToggle = element('button', { type: 'button', class: 'stuck-toggle find', 'aria-expanded': 'false', hidden: '' })
   const heading = element('span')
   const count = element('span')
   const stuckList = element('div', { class: 'list' })
@@ -287,10 +295,25 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
   const eventList = element('ol', { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions', 'aria-label': '票据变化' })
   const feed = element('section', { class: 'event-feed', hidden: '', 'aria-label': '最近事件' }, [element('h2', { text: '最近事件' }), eventList])
   const lead = element('div', { class: 'lead' }, [status, today, alarm, dock])
-  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle]), search.form, panel, feed])
+  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle, modeButton]), search.form, stuckToggle, panel, feed])
   const trip = element('div', { class: 'trip', 'aria-live': 'polite' })
   const hud = element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip])
   stage.append(hud)
+
+  const visibility = () => {
+    const count = archipelago.stuck.length
+    panel.hidden = !visibleIn(mode, 'stuckPanel', { count, expanded })
+    stuckToggle.hidden = mode === RENDER_MODE.FULL || !visibleIn(mode, 'stuckToggle', { count })
+    stuckToggle.textContent = `卡住 ${count}`
+    stuckToggle.setAttribute('aria-expanded', String(expanded))
+    dock.hidden = !archipelago.global || currentStop === 1 || !visibleIn(mode, 'dock')
+    feed.hidden = eventList.children.length === 0 || !visibleIn(mode, 'events')
+  }
+  stuckToggle.addEventListener('click', () => {
+    expanded = !expanded
+    visibility()
+    onLayout()
+  })
 
   stops.addEventListener('click', event => {
     const button = event.target.closest('button[data-stop]')
@@ -315,13 +338,19 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
   })
 
   return {
+    mode(next) {
+      mode = next
+      stage.dataset.renderMode = mode
+      modeButton.setAttribute('aria-pressed', String(mode === RENDER_MODE.FULL))
+      visibility()
+    },
     openSearch: search.open,
     events(changes) {
       for (const change of changes) {
         eventList.prepend(element('li', { 'data-event': change.type, text: change.text, title: change.path }))
       }
       while (eventList.children.length > EVENT_FEED) eventList.lastElementChild.remove()
-      feed.hidden = eventList.children.length === 0
+      visibility()
     },
     update(next) {
       archipelago = next
@@ -334,6 +363,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       keepFocus(stuckList, () => stuckList.replaceChildren(...stuck.map(stuckButton)))
       keepFocus(allList, () => allList.replaceChildren(...tickets.map(listButton)))
       search.refresh()
+      visibility()
     },
     link(next) {
       connection = next
@@ -352,7 +382,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       return {
         top: topEdge - frame.top + 12,
         right: docked ? frame.right - sideBox.left + 12 : 16,
-        bottom: frame.bottom - trip.getBoundingClientRect().top + 12,
+        bottom: trip.hidden ? 16 : frame.bottom - trip.getBoundingClientRect().top + 12,
         left: docked && !dock.hidden ? dock.getBoundingClientRect().right - frame.left + 12 : 16,
       }
     },
@@ -373,9 +403,10 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
         ...(output?.escalated === undefined ? [] : [`转人 ${output.escalated}`]),
         ...(output?.medianMinutes === undefined ? [] : [`周期中位 ${Number(output.medianMinutes.toFixed(1))} 分`]),
       ]
-      today.hidden = metrics.length === 0
+      today.hidden = metrics.length === 0 || !visibleIn(mode, 'today')
       today.textContent = metrics.length === 0 ? '' : `今日：${metrics.join(' · ')}`
-      status.textContent = parts.join(' · ')
+      const abnormal = scene.state !== 'ok' || stale || Boolean(SKY_NOTES[sky]) || Boolean(connection && (!connection.online || connection.failures.length))
+      status.textContent = visibleIn(mode, 'statusDetails', { abnormal }) ? parts.join(' · ') : `driver ${scene.state}`
       status.title = island?.path ?? ''
       status.dataset.sky = sky
       if (connection) status.dataset.online = String(connection.online)
@@ -386,7 +417,8 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       }
       stops.querySelector('[data-stop="1"]').hidden = !archipelago.global
       stops.querySelector('[data-stop="3"]').disabled = !selectable
-      dock.hidden = !archipelago.global || current === 1
+      currentStop = current
+      visibility()
       for (const button of dock.querySelectorAll('button')) {
         button.setAttribute('aria-current', String(Number(button.dataset.island) === focus))
       }
@@ -395,11 +427,24 @@ export const createHud = (stage, { onSelect, onStop, onIsland }) => {
       for (const button of panel.querySelectorAll('button[data-ticket]')) {
         button.setAttribute('aria-pressed', String(button.dataset.ticket === parcel?.key))
       }
+      trip.hidden = !parcel && !visibleIn(mode, 'hint')
       if (!parcel) {
+        tripKey = null
         trip.replaceChildren(element('div', { class: 'trip-head' }, [element('span', { class: 'why', text: tripHint(island) })]))
         return
       }
-      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel), tripBaseline(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel), tripActions(parcel)))
+      if (tripKey !== parcel.key) detailsOpen = false
+      tripKey = parcel.key
+      keepFocus(trip, () => {
+        const contents = [tripBaseline(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel)]
+        const details = element('details', { class: 'trip-details' }, [element('summary', { text: '详情' }), ...contents])
+        details.open = visibleIn(mode, 'tripDetails', { expanded: detailsOpen })
+        details.addEventListener('toggle', () => {
+          detailsOpen = details.open
+          onLayout()
+        })
+        trip.replaceChildren(tripHead(parcel, mode), ...(visibleIn(mode, 'tripDetails', { expanded: false }) ? contents : [details]), tripActions(parcel))
+      })
     },
     remove() {
       hud.remove()

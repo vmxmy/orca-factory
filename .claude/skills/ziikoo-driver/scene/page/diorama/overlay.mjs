@@ -1,7 +1,7 @@
 import { Vector3 } from 'three'
 
 import { element } from './hud.mjs'
-import { ISLAND_STATUS, baselineText, stationNeighborhood } from './model.mjs'
+import { ISLAND_STATUS, baselineText, stationNeighborhood, RENDER_MODE, visibleIn } from './model.mjs'
 
 const LABEL_MIN_WIDTH = 620
 const LABEL_GAP = 2
@@ -24,8 +24,9 @@ const stationLabels = ({ layout, working, workers }) => [
   ['human', '等人批', 3.4, 4.5, -6.2],
 ]
 
-const plateOf = island =>
-  element('button', {
+const plateOf = (island, mode) => {
+  const full = visibleIn(mode, 'islandDetails')
+  return element('button', {
     type: 'button',
     class: ['plate', island.status, island.plate.alert ?? ''].join(' ').trim(),
     'data-island': String(island.index),
@@ -33,11 +34,12 @@ const plateOf = island =>
     hidden: '',
   }, [
     element('b', { text: island.name }),
-    element('span', { text: island.status === ISLAND_STATUS.BLOCKED ? island.waitLabel : island.status === ISLAND_STATUS.IDLE ? '空闲' : `忙碌 · 在途 ${island.plate.inFlight}` }),
-    ...(island.scheduling > 0 && island.status !== ISLAND_STATUS.BLOCKED ? [element('span', {text: `调度等待 ${island.scheduling}`})] : []),
-    ...(island.plate.barrier ? [element('span', { text: '闸关' })] : []),
-    ...(island.plate.stuck > 0 ? [element('em', { text: `${island.plate.stuck} 张卡住` })] : []),
+    ...(full ? [element('span', { text: island.status === ISLAND_STATUS.BLOCKED ? island.waitLabel : island.status === ISLAND_STATUS.IDLE ? '空闲' : `忙碌 · 在途 ${island.plate.inFlight}` })] : [element('i', { class: 'island-dot', 'aria-label': island.plate.stuck > 0 ? '卡住' : island.status === ISLAND_STATUS.BLOCKED ? '阻塞' : island.idle ? '空闲' : '忙碌' })]),
+    ...(full && island.scheduling > 0 && island.status !== ISLAND_STATUS.BLOCKED ? [element('span', {text: `调度等待 ${island.scheduling}`})] : []),
+    ...(island.plate.barrier ? [element('span', { class: 'barrier-badge', 'aria-label': '部署屏障关闭', text: full ? '闸关' : '🔒' })] : []),
+    ...(island.plate.stuck > 0 ? [element('em', { text: `${island.plate.stuck}${full ? ' 张卡住' : ' 卡住'}` })] : []),
   ])
+}
 
 const arrowOf = island =>
   element('button', { type: 'button', class: `arrow ${island.plate.alert}`, 'data-island': String(island.index), hidden: '' }, [
@@ -125,13 +127,17 @@ const humanBadge = kind => {
   return [svg]
 }
 
-const ticketLabel = parcel => ({
+const cleanFact = parcel => parcel.station === 'human' || parcel.label === '搁置'
+  ? '等人'
+  : parcel.alert ? `卡住${parcel.since === undefined ? '' : ` ${parcel.duration}`}` : parcel.overdue ? '超基线' : ''
+
+const ticketLabel = (parcel, mode) => ({
   ...itemOf(
     element('span', {
       class: ['label', 'ticket', parcel.alert === 'bad' ? 'bad' : parcel.overdue ?? parcel.alert ?? ''].join(' ').trim(),
     }, [
       ...humanBadge(parcel.humanKind),
-      [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.overdue ? ['超基线'] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
+      mode === RENDER_MODE.CLEAN ? [parcel.identifier, cleanFact(parcel)].filter(Boolean).join(' · ') : [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.overdue ? ['超基线'] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
     ]),
     new Vector3(),
   ),
@@ -173,6 +179,11 @@ export const createOverlay = (stage, world, { onIsland }) => {
     if (button) onIsland(Number(button.dataset.island))
   })
   const projected = new Vector3()
+  let mode = RENDER_MODE.CLEAN
+  let source = null
+  let driverState = 'ok'
+  let hoveredTicket = null
+  let hoveredStation = null
   let islands = []
   let plates = []
   let hub = null
@@ -205,12 +216,12 @@ export const createOverlay = (stage, world, { onIsland }) => {
     const global = stop === 1
     const neighborhood = stop === 3 ? stationNeighborhood(tickets.find(ticket => ticket.parcel.key === selected).parcel.station) : null
     const marked = tickets
-      .filter(ticket => ticket.parcel.alert !== null || ticket.parcel.overdue || ticket.parcel.key === selected)
-      .sort((left, right) => Number(right.parcel.key === selected) - Number(left.parcel.key === selected))
+      .filter(ticket => visibleIn(mode, 'ticket', { parcel: ticket.parcel, hovered: ticket.parcel.key === hoveredTicket, selected: ticket.parcel.key === selected }))
+      .sort((left, right) => (Number(right.parcel.key === selected) * 2 + Number(right.parcel.key === hoveredTicket)) - (Number(left.parcel.key === selected) * 2 + Number(left.parcel.key === hoveredTicket)))
     return {
       tickets: marked,
-      plates: global ? [...plates, ...(hub ? [hub] : [])] : [],
-      stations: !global && viewport.width > LABEL_MIN_WIDTH ? stations.filter(item => !neighborhood || neighborhood.includes(item.station)) : [],
+      plates: global ? [...plates, ...(hub && visibleIn(mode, 'hub', { state: driverState }) ? [hub] : [])] : [],
+      stations: !global && viewport.width > LABEL_MIN_WIDTH ? stations.filter(item => (!neighborhood || neighborhood.includes(item.station)) && visibleIn(mode, 'station', { occupied: item.occupied, hovered: item.station === hoveredStation })) : [],
     }
   }
 
@@ -253,8 +264,8 @@ export const createOverlay = (stage, world, { onIsland }) => {
         }
       }
     }
-    reveal(legend, overflow.length > 0)
-    if (overflow.length === 0) return
+    reveal(legend, overflow.length > 0 && visibleIn(mode, 'legend'))
+    if (overflow.length === 0 || !visibleIn(mode, 'legend')) return
     const legendRect = { left: area.left, right: Math.min(area.left + 220, area.right), top: Math.max(area.top, area.bottom - 100), bottom: area.bottom }
     legend.style.left = `${legendRect.left}px`
     legend.style.top = `${legendRect.top}px`
@@ -290,15 +301,38 @@ export const createOverlay = (stage, world, { onIsland }) => {
   }
 
   return {
+    mode(next) {
+      mode = next
+      if (!source) return
+      const index = focused
+      this.update(source)
+      if (index !== null) this.focus(index)
+    },
+    hover(point, camera, key = null) {
+      hoveredTicket = key
+      hoveredStation = point ? stations.map(item => {
+        const anchor = screenOf(item.position, camera)
+        return { station: item.station, distance: Math.hypot(anchor.x - point.x, anchor.y - point.y) }
+      }).filter(candidate => candidate.distance < 45).sort((a, b) => a.distance - b.distance)[0]?.station ?? null : null
+      for (const item of stations) {
+        const text = visibleIn(mode, 'stationDetails', { hovered: item.station === hoveredStation }) ? item.fullText : item.shortText
+        if (item.node.textContent === text) continue
+        item.node.textContent = text
+        item.size = null
+      }
+    },
     update(archipelago) {
       refocus ??= heldOf(anchored)
+      source = archipelago
+      hoveredTicket = null
+      hoveredStation = null
       islands = archipelago.islands
-      plates = islands.map(island => itemOf(plateOf(island), anchorOf(island)))
+      plates = islands.map(island => itemOf(plateOf(island, mode), anchorOf(island)))
       hub = archipelago.hub
         ? itemOf(element('span', { class: 'plate hub', hidden: '' }), new Vector3(archipelago.hub.x, HUB_PLATE_Y, archipelago.hub.z))
         : null
       arrows = islands.filter(island => island.plate.alert !== null).map(island => itemOf(arrowOf(island), anchorOf(island)))
-      tickets = archipelago.tickets.map(ticketLabel)
+      tickets = archipelago.tickets.map(parcel => ticketLabel(parcel, mode))
       for (const ticket of tickets) {
         ticket.node.hidden = true
         ticket.node.append(ticket.count)
@@ -316,12 +350,24 @@ export const createOverlay = (stage, world, { onIsland }) => {
         station.marker.remove()
       }
       const island = islands[index]
-      stations = stationLabels(island).map(([station, text, x, y, z]) =>
-        ({ ...itemOf(element('span', { class: 'label', text: `${text} · ${baselineText(station)}`, hidden: '' }), new Vector3(x + island.origin.x, y, z + island.origin.z)), station, marker: markerOf() }),
-      )
+      stations = stationLabels(island).map(([station, text, x, y, z]) => {
+        const shortText = text.split(' · ')[0]
+        const fullText = `${text} · ${baselineText(station)}`
+        const node = element('span', {
+          class: 'label', 'data-station': station, hidden: '',
+          text: visibleIn(mode, 'stationDetails', { hovered: false }) ? fullText : shortText,
+        })
+        return {
+          ...itemOf(node, new Vector3(x + island.origin.x, y, z + island.origin.z)),
+          station, shortText, fullText,
+          occupied: island.parcels.some(parcel => parcel.station === station),
+          marker: markerOf(),
+        }
+      })
       labels.append(...stations.flatMap(station => [station.node, station.marker]))
     },
-    hub(text) {
+    hub(text, state) {
+      driverState = state
       if (!hub || hub.node.textContent === text) return
       hub.node.textContent = text
       hub.size = null

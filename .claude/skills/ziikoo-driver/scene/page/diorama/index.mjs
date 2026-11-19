@@ -1,6 +1,6 @@
 import { createCamera } from './camera.mjs'
 import { createHud, hubText } from './hud.mjs'
-import { archipelagoOf, skyOf, staleOf } from './model.mjs'
+import { archipelagoOf, skyOf, staleOf, RENDER_MODE } from './model.mjs'
 import { createOverlay } from './overlay.mjs'
 import { createWorld } from './world.mjs'
 
@@ -73,6 +73,12 @@ const pointer = (canvas, lens, onClick) => {
 }
 
 export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(), onView = () => {} }) => {
+  let mode = RENDER_MODE.CLEAN
+  try {
+    if (localStorage.getItem('diorama.renderMode') === RENDER_MODE.FULL) mode = RENDER_MODE.FULL
+  } catch {
+    mode = RENDER_MODE.CLEAN
+  }
   let current = scene
   let archipelago = archipelagoOf(current)
   let { focus, stop, selected } = openingOf(archipelago, { path, ticket })
@@ -106,7 +112,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     const sky = skyOf(current, age)
     world.setSky(sky)
     hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky, stale: staleOf(current, age) })
-    overlay.hub(hubText(current, at))
+    overlay.hub(hubText(current, at), current.state)
   }
 
   const showSelection = () => {
@@ -155,8 +161,25 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else if (stop === 2 && archipelago.global) setStop(1)
   }
 
-  const hud = createHud(stage, { onSelect: select, onStop: setStop, onIsland: enter })
+  const toggleMode = () => {
+    mode = mode === RENDER_MODE.CLEAN ? RENDER_MODE.FULL : RENDER_MODE.CLEAN
+    try {
+      localStorage.setItem('diorama.renderMode', mode)
+    } catch {
+      // Storage can be denied; the current page still keeps the selection.
+    }
+    hud.mode(mode)
+    overlay.mode(mode)
+    setStop(stop)
+  }
+  const hud = createHud(stage, { onSelect: select, onStop: setStop, onIsland: enter, onMode: toggleMode, onLayout: () => {
+    margins = hud.margins()
+    lens.resize(size.width, size.height, margins)
+  } })
   const overlay = createOverlay(stage, world, { onIsland: enter })
+
+  hud.mode(mode)
+  overlay.mode(mode)
 
   const show = next => {
     archipelago = next
@@ -173,6 +196,14 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else if (hit && (stop === 1 || hit.island !== focus)) enter(hit.island)
     else select(null)
   })
+  canvas.addEventListener('pointermove', event => {
+    if (event.buttons || stop === 1) return
+    const bounds = canvas.getBoundingClientRect()
+    const point = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+    const hit = world.pick({ x: point.x / bounds.width * 2 - 1, y: 1 - point.y / bounds.height * 2 }, lens.camera)
+    overlay.hover(point, lens.camera, hit?.key)
+  })
+  canvas.addEventListener('pointerleave', () => overlay.hover(null, lens.camera))
   canvas.addEventListener('dblclick', () => {
     if (selected) setStop(3)
   })
@@ -182,6 +213,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     const { islands, global } = archipelago
     if (target.closest('input')) return
     if (key === 'Escape') back()
+    else if (key === 'v') toggleMode()
     else if (key === 'Home') setStop(stop)
     else if (target.closest('.list, .dock')) return
     else if ((global ? ['1', '2', '3'] : ['2', '3']).includes(key)) setStop(Number(key))
@@ -271,6 +303,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     state: () => {
       const parcel = world.parcels.get(selected)
       return {
+        mode,
         stop,
         focus: archipelago.islands[focus].path,
         selected: parcelOf(selected)?.identifier ?? null,
