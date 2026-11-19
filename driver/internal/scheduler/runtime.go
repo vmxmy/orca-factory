@@ -79,6 +79,9 @@ type Runtime struct {
 	// lane, whose corrections launch outside the scheduler's admission checks.
 	memoryHeld          bool
 	deferredCorrections []Ticket
+	// orcaCreated counts executor terminal create successes, so the scheduler
+	// sees merge-lane launches that return no error.
+	orcaCreated int
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -681,6 +684,7 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		return &terminalCreateUncertainError{fmt.Errorf("executor launch uncertain: %w", err)}
 	}
 	r.orcaFailures = 0
+	r.orcaCreated++
 	return nil
 }
 func (r *Runtime) command(ctx context.Context, dir, path string, args ...string) ([]byte, error) {
@@ -787,9 +791,10 @@ func launchLog(identifier string) string {
 	return ` 2>>"$HOME/.local/state/orca-factory/launch-` + identifier + `.log"`
 }
 
-// OrcaTerminalCreateFailures is the consecutive terminal create runtime_error
-// count, including launches the scheduler only sees through the merge lane.
-func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
+// OrcaTerminalCreates is the consecutive terminal create runtime_error count
+// and the executor terminal create success count, including launches the
+// scheduler only sees through the merge lane.
+func (r *Runtime) OrcaTerminalCreates() (failures, created int) { return r.orcaFailures, r.orcaCreated }
 
 // HoldLaunches applies the scheduler's host memory hold to merge corrections.
 func (r *Runtime) HoldLaunches(held bool) { r.memoryHeld = held }
@@ -823,17 +828,26 @@ type terminalCreateUncertainError struct{ err error }
 func (e *terminalCreateUncertainError) Error() string { return e.err.Error() }
 func (e *terminalCreateUncertainError) Unwrap() error { return e.err }
 
+// errOrcaRestartRefused is a restart the maintenance gate refused before
+// systemctl ran; it is neither counted nor notified.
+var errOrcaRestartRefused = errors.New("orca-serve restart refused by maintenance")
+
 // orcaServiceUnit matches After= in deploy/systemd/orca-factory-driver.service.
 const orcaServiceUnit = "orca-serve.service"
 
 // RestartOrcaService restarts only the orca-serve user unit, not the Orca
 // desktop instance or the orca-daemon scope that holds agent terminals.
 func (r *Runtime) RestartOrcaService(ctx context.Context) error {
+	release, err := maintenance.Write()
+	if err != nil {
+		return fmt.Errorf("%w: %w", errOrcaRestartRefused, err)
+	}
+	defer release()
 	run := r.Run
 	if run == nil {
 		run = runx.Run
 	}
-	_, err := run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "restart", orcaServiceUnit}, Timeout: 60 * time.Second})
+	_, err = run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "restart", orcaServiceUnit}, Timeout: 60 * time.Second})
 	return err
 }
 

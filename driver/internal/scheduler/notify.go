@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
@@ -168,7 +169,7 @@ func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
 
 // NotifyOrcaRestart reports one automatic orca-serve restart and its exit code.
 func (r *Runtime) NotifyOrcaRestart(ctx context.Context, ticket Ticket, restart int, restartErr error) error {
-	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；下一轮探测成功即恢复派工。", restart, orcaRestartLimit, restartExitCode(restartErr)))
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；driver 将继续读取自动化状态或探测终端创建，确认恢复后继续调度。", restart, orcaRestartLimit, restartExitCode(restartErr)))
 }
 
 // restartExitCode is systemctl's exit code, or -1 when it did not exit on its own.
@@ -184,7 +185,7 @@ func restartExitCode(restartErr error) int {
 }
 
 func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket) error {
-	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：terminal create 探测仍失败，driver 不再重启 orca-serve，只继续探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：Orca 仍不可达或 terminal create 探测仍失败，driver 不再重启 orca-serve，只继续读取自动化状态或探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
 }
 
 // errOrcaNoticeNotSent marks an Orca runtime notice that failed before any
@@ -192,6 +193,11 @@ func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket)
 var errOrcaNoticeNotSent = errors.New("orca runtime notice not sent")
 
 func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
+	release, err := maintenance.Write()
+	if err != nil {
+		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+	}
+	defer release()
 	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)

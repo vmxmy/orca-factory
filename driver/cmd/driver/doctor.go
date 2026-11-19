@@ -31,6 +31,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -790,14 +791,22 @@ func httpReachable(ctx context.Context, url string) error {
 func (p doctorProbe) checkOrcaRuntime() healthCheck {
 	view := status.Read(p.now, 0)
 	detail := map[string]any{"failures": view.OrcaRuntime.Failures, "snapshot_state": view.State}
-	if view.OrcaRuntime.Paused {
+	unreachable := !view.OrcaRuntime.UnreachableSince.IsZero() && p.now.Sub(view.OrcaRuntime.UnreachableSince) >= scheduler.OrcaRestartGrace
+	if !view.OrcaRuntime.UnreachableSince.IsZero() {
+		detail["unreachable_since"] = view.OrcaRuntime.UnreachableSince
+	}
+	if view.OrcaRuntime.Paused || unreachable {
 		detail["paused_at"] = view.OrcaRuntime.PausedAt
 		detail["restarts"] = view.OrcaRuntime.Restarts
-		fix := "driver 在暂停满 10 分钟后自动重启 orca-serve 服务，之后每 30 分钟最多一次；3 次后仍失败需人工重启 orca-serve，并查看其日志里的 profile 写入超时。调度器探测成功后自动恢复。"
+		fix := "driver 在运行时暂停或 Orca 失联满 10 分钟后自动重启 orca-serve 服务，之后每 30 分钟最多一次；3 次后仍失败需人工重启 orca-serve，并查看其日志里的 profile 写入超时。调度器探测成功后自动恢复。"
 		detail["recovery"] = fix
-		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
+		reason := "Orca terminal create 连续运行时失败，已暂停认领与派工"
+		if unreachable {
+			reason = "Orca 自动化读取失联已满 10 分钟"
+		}
+		return healthCheck{Status: healthFail, Reason: reason, Details: detail, Fix: fix}
 	}
-	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
+	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca 连续运行时故障或满宽限的失联", Details: detail}
 }
 
 func (p doctorProbe) checkHostMemory() healthCheck {

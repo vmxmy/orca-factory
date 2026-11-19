@@ -153,11 +153,12 @@ func Write(snapshot Snapshot) error {
 const DefaultStaleAfter = 5 * time.Minute
 
 type OrcaRuntime struct {
-	Failures      int       `json:"failures"`
-	Paused        bool      `json:"paused"`
-	PausedAt      time.Time `json:"pausedAt,omitzero"`
-	Restarts      int       `json:"restarts,omitzero"`
-	LastRestartAt time.Time `json:"lastRestartAt,omitzero"`
+	UnreachableSince time.Time `json:"unreachableSince,omitzero"`
+	Failures         int       `json:"failures"`
+	Paused           bool      `json:"paused"`
+	PausedAt         time.Time `json:"pausedAt,omitzero"`
+	Restarts         int       `json:"restarts,omitzero"`
+	LastRestartAt    time.Time `json:"lastRestartAt,omitzero"`
 }
 
 // HostMemory reports the memory hold on new terminal launches.

@@ -24,6 +24,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -602,10 +603,27 @@ type runtimeFailureBackend struct {
 	// restarts counts RestartOrcaService calls; restartErr is what each returns.
 	restarts         int
 	restartErr       error
+	automationErr    error
+	snapshotErr      error
 	restartNotices   []string
 	exhaustedNotices int
+	exhaustedRepos   []string
 	// exhaustedErrs answers successive human notices; nil once exhausted.
 	exhaustedErrs []error
+}
+
+func (b *runtimeFailureBackend) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
+	if b.automationErr != nil {
+		return false, b.automationErr
+	}
+	return b.fakeBackend.AutomationDisabled(ctx, repo)
+}
+
+func (b *runtimeFailureBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	if b.snapshotErr != nil {
+		return nil, b.snapshotErr
+	}
+	return b.fakeBackend.Snapshot(ctx, repos)
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -630,8 +648,9 @@ func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, ticket Tick
 	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%s %d:%v", ticket.Repo, restart, restartErr))
 	return nil
 }
-func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Ticket) error {
+func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(_ context.Context, ticket Ticket) error {
 	b.exhaustedNotices++
+	b.exhaustedRepos = append(b.exhaustedRepos, ticket.Repo)
 	if len(b.exhaustedErrs) == 0 {
 		return nil
 	}
@@ -639,8 +658,8 @@ func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Tick
 	b.exhaustedErrs = b.exhaustedErrs[1:]
 	return err
 }
-func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
-	return b.runtime.OrcaTerminalCreateFailures()
+func (b *runtimeFailureBackend) OrcaTerminalCreates() (int, int) {
+	return b.runtime.OrcaTerminalCreates()
 }
 func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	b.merges++
@@ -1178,11 +1197,379 @@ func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
 	}
 	_ = s.Tick(context.Background())
 	oc.failureClient = &orca.Client{Path: cli, Timeout: time.Second}
-	*x.now = x.now.Add(orcaRestartGrace)
+	*x.now = x.now.Add(OrcaRestartGrace)
 	_ = s.Tick(context.Background())
 	if b.restarts != 1 || s.OrcaRuntime().Restarts != 1 {
 		t.Fatalf("restarts=%d status=%+v, want one restart", b.restarts, s.OrcaRuntime())
 	}
+}
+
+func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, unavailable := (&orca.Client{Path: cli, Timeout: time.Second}).AutomationsList(context.Background())
+	var global *infra.Global
+	if !errors.As(unavailable, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded unavailable error classified as %#v", unavailable)
+	}
+	t.Run("runtime preserves unavailable classification", func(t *testing.T) {
+		runtime := &Runtime{Orca: &orca.Client{Path: cli, Timeout: time.Second}}
+		_, err := runtime.AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+		var global *infra.Global
+		if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+			t.Fatalf("runtime automation read lost unavailable classification: %T: %v", err, err)
+		}
+	})
+	slow := filepath.Join(dir, "slow-orca")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nexec sleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, timedOut := (&Runtime{Orca: &orca.Client{Path: slow, Timeout: 100 * time.Millisecond}}).AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+	if timedOut == nil {
+		t.Fatal("slow automation read did not fail")
+	}
+	for _, scenario := range []string{"after successful inspection", "timeout after successful inspection", "before first inspection", "shared restart limit"} {
+		t.Run(scenario, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, 3)
+			s, b := x.s, x.b
+			if scenario == "shared restart limit" {
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(10 * time.Minute)
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(30 * time.Minute)
+				_ = s.Tick(context.Background())
+				if b.restarts != 2 {
+					t.Fatalf("runtime pause restarts=%d, want 2", b.restarts)
+				}
+			} else {
+				x.f.tickets = nil
+				if strings.HasSuffix(scenario, "after successful inspection") {
+					x.f.enabled = map[string]bool{"/repo0": true}
+					_ = s.Tick(context.Background())
+				}
+			}
+			b.automationErr = unavailable
+			if strings.HasPrefix(scenario, "timeout") {
+				b.automationErr = timedOut
+			}
+			start := *x.now
+			baseRestarts := b.restarts
+			baseProbes := x.oc.probes
+			tickAt := func(offset time.Duration, want int) {
+				t.Helper()
+				*x.now = start.Add(offset)
+				_ = s.Tick(context.Background())
+				if x.oc.probes != baseProbes {
+					t.Fatalf("unreachable Orca created a probe: before=%d after=%d", baseProbes, x.oc.probes)
+				}
+				if b.restarts != want || s.OrcaRuntime().Restarts != want {
+					t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), want)
+				}
+			}
+			tickAt(0, baseRestarts)
+			tickAt(10*time.Minute-time.Second, baseRestarts)
+			if scenario == "shared restart limit" {
+				tickAt(10*time.Minute, 2)
+				tickAt(30*time.Minute, 3)
+				tickAt(31*time.Minute, 3)
+				tickAt(90*time.Minute, 3)
+				if b.exhaustedNotices != 1 || !reflect.DeepEqual(b.exhaustedRepos, []string{"/repo0"}) {
+					t.Fatalf("human notices=%d repos=%v, want one notice in /repo0", b.exhaustedNotices, b.exhaustedRepos)
+				}
+				if got := b.restartNotices[2]; got != "/repo0 3:<nil>" {
+					t.Fatalf("unreachable notice=%s", got)
+				}
+			} else {
+				tickAt(10*time.Minute, 1)
+				tickAt(39*time.Minute, 1)
+				if scenario == "before first inspection" {
+					tickAt(40*time.Minute, 2)
+					tickAt(70*time.Minute, 3)
+					tickAt(71*time.Minute, 3)
+					if len(b.restartNotices) != 0 || b.exhaustedNotices != 0 {
+						t.Fatalf("notification before first successful inspection: %+v", b)
+					}
+				} else if !reflect.DeepEqual(b.restartNotices, []string{"/repo1 1:<nil>"}) {
+					t.Fatalf("restart notices=%v", b.restartNotices)
+				}
+			}
+			raw, err := json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runtime struct {
+				UnreachableSince time.Time `json:"unreachableSince"`
+			}
+			if err := json.Unmarshal(raw, &runtime); err != nil {
+				t.Fatal(err)
+			}
+			if !runtime.UnreachableSince.Equal(start) {
+				t.Fatalf("unreachable start=%v, want %v", runtime.UnreachableSince, start)
+			}
+			beforeRecovery := s.OrcaRuntime().Restarts
+			b.automationErr = nil
+			_ = s.Tick(context.Background())
+			if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || got.Restarts != beforeRecovery {
+				t.Fatalf("successful automation read must clear only unreachable time: %+v", got)
+			}
+			raw, err = json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "unreachableSince") {
+				t.Fatalf("successful read left unreachable time: %s", raw)
+			}
+		})
+	}
+	t.Run("maintenance freeze refuses restart", func(t *testing.T) {
+		t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+		for _, mode := range []string{"draining", "frozen"} {
+			if err := maintenance.Set(mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ran := false
+		err := (&Runtime{Run: func(context.Context, runx.Spec) ([]byte, error) {
+			ran = true
+			return nil, nil
+		}}).RestartOrcaService(context.Background())
+		if ran || !errors.Is(err, errOrcaRestartRefused) {
+			t.Fatalf("frozen maintenance: ran=%v err=%v", ran, err)
+		}
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+				_, _ = w.Write([]byte(feishuTokenIssued))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("AGENT_FEISHU_ENDPOINT", srv.URL)
+		t.Setenv("AGENT_FEISHU_APP_ID", "app")
+		t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+		notifier := &Runtime{Repositories: map[string]config.Repository{"/repo0": {Path: "/repo0", Env: map[string]string{"AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}}}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errOrcaNoticeNotSent) || requests != 0 {
+			t.Fatalf("frozen maintenance sent the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		if err := maintenance.Set("running"); err != nil {
+			t.Fatal(err)
+		}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); noticeErr != nil || requests == 0 {
+			t.Fatalf("running maintenance did not send the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		for _, mode := range []string{"draining", "frozen"} {
+			if err := maintenance.Set(mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		b.automationErr = unavailable
+		b.restartErr = err
+		start := *x.now
+		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if got := s.OrcaRuntime(); b.restarts != 1 || got.Restarts != 0 || !got.LastRestartAt.IsZero() || len(b.restartNotices) != 0 {
+			t.Fatalf("refused restart counted: calls=%d status=%+v notices=%v", b.restarts, got, b.restartNotices)
+		}
+		b.restartErr = nil
+		*x.now = start.Add(OrcaRestartGrace + time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 1 {
+			t.Fatalf("restart after maintenance resumes: %+v", got)
+		}
+	})
+	t.Run("notification repository from last successful inspection", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		s.retired = map[string]bool{"/repo0": true}
+		_ = s.Tick(context.Background())
+		x.f.enabled = map[string]bool{"/repo1": true}
+		b.snapshotErr = errors.New("ledger unavailable")
+		_ = s.Tick(context.Background())
+		b.snapshotErr = nil
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if !reflect.DeepEqual(b.restartNotices, []string{"/repo1 1:<nil>"}) {
+			t.Fatalf("restart notices=%v, want the first schedulable repository of the last successful inspection", b.restartNotices)
+		}
+	})
+	t.Run("human notice waits for a notification repository", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		b.automationErr = unavailable
+		start := *x.now
+		tickAt := func(offsets ...time.Duration) {
+			for _, offset := range offsets {
+				*x.now = start.Add(offset)
+				_ = s.Tick(context.Background())
+			}
+		}
+		tickAt(0, 10*time.Minute, 40*time.Minute, 70*time.Minute, 71*time.Minute)
+		if b.restarts != 3 || b.exhaustedNotices != 0 {
+			t.Fatalf("restarts=%d human=%d before any inspection", b.restarts, b.exhaustedNotices)
+		}
+		b.automationErr = nil
+		tickAt(72 * time.Minute)
+		b.automationErr = unavailable
+		tickAt(73*time.Minute, 83*time.Minute, 84*time.Minute)
+		if b.restarts != 3 || !reflect.DeepEqual(b.exhaustedRepos, []string{"/repo0"}) {
+			t.Fatalf("restarts=%d human repos=%v, want one human notice in /repo0", b.restarts, b.exhaustedRepos)
+		}
+	})
+	t.Run("earlier claim does not clear a new outage", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 1)
+		s, b := x.s, x.b
+		x.oc.failing = false
+		_ = s.Tick(context.Background())
+		if len(b.launched) != 1 {
+			t.Fatalf("claim launches=%d, want 1", len(b.launched))
+		}
+		b.automationErr = unavailable
+		start := x.now.Add(time.Minute)
+		*x.now = start
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) {
+			t.Fatalf("unreachable start=%v, want %v", got.UnreachableSince, start)
+		}
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if b.restarts != 1 {
+			t.Fatalf("restarts=%d, want one restart %v after the outage began", b.restarts, OrcaRestartGrace)
+		}
+	})
+	t.Run("merge batch success clears restart budget before a later failure", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, 10 * time.Minute, 40 * time.Minute, 70 * time.Minute} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if got := s.OrcaRuntime(); got.Restarts != orcaRestartLimit {
+			t.Fatalf("restarts=%d, want the limit", got.Restarts)
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9", "OF-10")
+		b.merge = func(ctx context.Context) error {
+			x.oc.failing = false
+			created := b.runtime.Launch(ctx, tickets[0])
+			x.oc.failing = true
+			return errors.Join(created, b.runtime.Launch(ctx, tickets[1]))
+		}
+		*x.now = start.Add(71 * time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 0 || !got.LastRestartAt.IsZero() || got.Failures != 1 || s.orcaRestartsExhausted {
+			t.Fatalf("batch success kept the restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("merge batch success then pause keeps no old restart budget", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, 10 * time.Minute, 40 * time.Minute, 70 * time.Minute} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
+		b.merge = func(ctx context.Context) error {
+			x.oc.failing = false
+			problems := []error{b.runtime.Launch(ctx, tickets[0])}
+			x.oc.failing = true
+			for _, ticket := range tickets[1:] {
+				problems = append(problems, b.runtime.Launch(ctx, ticket))
+			}
+			return errors.Join(problems...)
+		}
+		*x.now = start.Add(71 * time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.Paused || got.Restarts != 0 || !got.LastRestartAt.IsZero() || s.orcaRestartsExhausted {
+			t.Fatalf("new pause inherited the old restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("retired notification repository is not reused", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		s.retired = map[string]bool{"/repo0": true}
+		b.snapshotErr = errors.New("ledger unavailable")
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if b.restarts != 1 || len(b.restartNotices) != 0 {
+			t.Fatalf("restarts=%d notices=%v, want a restart without a notice to the retired repository", b.restarts, b.restartNotices)
+		}
+	})
+	t.Run("no tracked repository stops unreachable timing", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 1)
+		s := x.s
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		x.b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) {
+			t.Fatalf("status=%+v, want timing started", got)
+		}
+		s.retired = map[string]bool{"/repo0": true}
+		*x.now = start.Add(OrcaRestartGrace - time.Second)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || len(s.Repositories) != 0 {
+			t.Fatalf("status=%+v repositories=%v, want timing cleared in the round the last repository left", got, s.Repositories)
+		}
+	})
+	t.Run("merge correction terminal create clears restart budget", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 1 {
+			t.Fatalf("unreachable restart missing: %+v", got)
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9")
+		x.oc.failing = false
+		b.merge = func(ctx context.Context) error { return b.runtime.Launch(ctx, tickets[0]) }
+		*x.now = start.Add(OrcaRestartGrace + time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got != (status.OrcaRuntime{}) {
+			t.Fatalf("merge correction terminal create kept the fault state: %+v", got)
+		}
+	})
 }
 
 // Only serve publishes the fault; a separate Scheduler such as `serve --dry-run`
