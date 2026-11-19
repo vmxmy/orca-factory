@@ -118,6 +118,7 @@ const expectSecurityHeaders = (response: Response) => {
 }
 
 test('沙盘服务公开模式免令牌并按来源限流', async () => {
+  if (typeof globalThis.fetch !== 'function' || !('Bun' in globalThis)) return
   const publicEnv = { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_TOKEN: undefined, ZIIKOO_SCENE_MAX_CLIENTS: '3' }
   try {
     const origin = await launch(publicEnv)

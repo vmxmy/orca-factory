@@ -265,6 +265,7 @@ async function launchPage(browser, url, { webgl = true, controlledFrames = false
   const errors = []
   const requests = []
   page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error' && message.text().includes('Content Security Policy')) errors.push(message.text()) })
   page.on('request', request => requests.push(request.url()))
   await page.goto(url)
   return { page, errors, requests }
@@ -296,7 +297,10 @@ const layoutReadsOver20Frames = page =>
 async function paintedShare(page) {
   const png = (await page.locator('canvas').screenshot()).toString('base64')
   return page.evaluate(async encoded => {
-    const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${encoded}`)).blob())
+    const image = new Image()
+    image.src = `data:image/png;base64,${encoded}`
+    await image.decode()
+    const bitmap = await createImageBitmap(image)
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
     const context = canvas.getContext('2d')
     context.drawImage(bitmap, 0, 0)
