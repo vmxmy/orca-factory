@@ -1509,9 +1509,14 @@ func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	env := map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low"}
-	for _, tc := range []struct{ name, command, ref, state, reason, status string }{
-		{"generated", generated, "claude:legacy:low", "unavailable", "usage_limit", "fail"},
-		{"blank", "   ", "::", "unknown", "not_configured", "fail"},
+	for _, tc := range []struct {
+		name, command, ref, state, reason, status string
+		probes                                    int32
+	}{
+		{"generated", generated, "claude:legacy:low", "unavailable", "usage_limit", "fail", 1},
+		{"blank", "   ", "::", "unknown", "not_configured", "fail", 0},
+		{"quoted model", strings.Replace(generated, "--model legacy", `--model "legacy"`, 1), "::", "unknown", "legacy_command", "unknown", 0},
+		{"variable model", strings.Replace(generated, "--model legacy", "--model $REVIEW_MODEL", 1), "::", "unknown", "legacy_command", "unknown", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := modelFixtureProbe(now.Add(time.Minute), t.TempDir())
@@ -1523,8 +1528,10 @@ func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
 			if err := registry.Record(cooling); err != nil {
 				t.Fatal(err)
 			}
+			var probes atomic.Int32
 			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
-				if ref.Model == "legacy" {
+				if ref.Agent == "claude" && ref.Model != "i" {
+					probes.Add(1)
 					return modelhealth.Classify(ref, "", context.DeadlineExceeded, p.now)
 				}
 				return modelhealth.Classify(ref, "ok", nil, p.now)
@@ -1532,8 +1539,8 @@ func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
 			project := projects.Project{Name: "one", Repository: config.Repository{Env: maps.Clone(env)}}
 			project.Repository.Env["AGENT_ROLE_REVIEWER_CMD"] = tc.command
 			got := p.checkModels(context.Background(), []projects.Project{project}, nil)
-			if got.Status != tc.status {
-				t.Errorf("check = %s, want %s", got.Status, tc.status)
+			if got.Status != tc.status || probes.Load() != tc.probes {
+				t.Errorf("check = %s after %d reviewer probes, want %s after %d", got.Status, probes.Load(), tc.status, tc.probes)
 			}
 			assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", tc.ref, tc.state, tc.reason)
 		})

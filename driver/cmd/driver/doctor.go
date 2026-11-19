@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -915,9 +916,12 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 				continue
 			}
 			// A legacy command is arbitrary shell: /bin/sh decides its program, model
-			// and endpoint. Only a command the structured value generates verbatim is
-			// probed; any other is neither probed nor reported word by word.
-			if generated, err := config.GenerateReviewerCommand(ref.String()); err != nil || generated != command {
+			// and endpoint. Only a command the structured value generates verbatim,
+			// with words the shell leaves unchanged, is probed; any other is neither
+			// probed nor reported word by word.
+			generated, err := config.GenerateReviewerCommand(ref.String())
+			literal := shellLiteral.MatchString(ref.Agent) && shellLiteral.MatchString(ref.Model) && shellLiteral.MatchString(ref.Effort)
+			if err != nil || generated != command || !literal {
 				ref = modelhealth.Ref{}
 				modelRole = doctorModelRole{name: role.Role, reason: "legacy_command"}
 			}
@@ -991,6 +995,9 @@ func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerP
 		return r.Reason != projects.ReasonCheckFailed || ledger != nil && !enabled[r.Remote]
 	})
 }
+
+// shellLiteral matches a word /bin/sh passes through unchanged.
+var shellLiteral = regexp.MustCompile(`^[A-Za-z0-9._/@+-]*$`)
 
 // checkModels also lists each enabled repository whose profile could not be
 // loaded, since the driver runs none of its roles.
