@@ -899,6 +899,11 @@
   overflow: auto;
 }
 
+.diorama[data-render-mode="clean"] .label.tag-marker {
+  pointer-events: auto;
+  cursor: help;
+}
+
 .diorama[data-render-mode="clean"] .stuck[data-expanded="false"] {
   align-self: flex-end;
   padding: 0;

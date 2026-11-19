@@ -283,7 +283,7 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
     overflow.filter(tag => legendShown || tag.members).forEach(({ item, point, members }, index) => {
       const number = String(index + 1)
       const line = members ? members.map(member => member.item.node.textContent.replace(/ \+\d+$/, '')).join('；') : item.node.textContent
-      item.marker.textContent = number
+      item.marker.textContent = legendShown ? number : String(members.length)
       if (!legendShown) item.marker.title = line
       item.marker.dataset.tickets = item.node.dataset.tickets ?? '[]'
       const size = { width: 24, height: 24 }

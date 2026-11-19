@@ -374,6 +374,12 @@ async function checkCleanMode(browser, url) {
     await page.evaluate(scene => window.diorama.update(scene), fixture)
     await frames(page)
     assert.equal(await ticketLabel('NORMAL-1').count(), 1, 'a new snapshot keeps the hovered label')
+    const moved = { ...fixture, rows: [row(fixture.rows[0].parcels.map(one => one.identifier === 'NORMAL-1' ? { ...one, station: 'review' } : one))] }
+    await page.evaluate(scene => window.diorama.update(scene), moved)
+    await frames(page)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'a box that moves away from the resting pointer loses its hover label')
+    await page.evaluate(scene => window.diorama.update(scene), fixture)
+    await frames(page)
     await page.mouse.move(0, 0)
     await frames(page)
     assert.equal(await ticketLabel('NORMAL-1').count(), 0)
@@ -402,14 +408,18 @@ async function checkCleanMode(browser, url) {
     assert.equal(await page.locator('.trip').isVisible(), true)
     assert.equal(await page.locator('.trip .track').isVisible(), true)
     await page.evaluate(scene => window.diorama.update(scene), {
-      ...fixture, rows: [row([...fixture.rows[0].parcels, parcel('OVERFLOW-'.repeat(40), 'pack', { tone: 'failed' })])],
+      ...fixture, rows: [row([...fixture.rows[0].parcels, parcel('OVERFLOW-'.repeat(40), 'pack', { tone: 'failed' }), parcel('OVERFLOW2-'.repeat(40), 'pack', { tone: 'failed' })])],
     })
     await frames(page)
     assert.equal(await page.locator('.tag-legend').isVisible(), true, 'full mode restores the legend for overflow labels')
     await page.keyboard.press('v')
     await frames(page)
     assert.equal(await page.locator('.tag-legend').isVisible(), false)
-    assert.equal(await page.locator('.tag-marker:not([hidden])').evaluateAll(nodes => nodes.some(node => (node.dataset.tickets ?? '').includes('OVERFLOW-'))), true, 'clean mode keeps a marker for alert tickets whose label cannot fit')
+    const overflowMarker = await page.locator('.tag-marker:not([hidden])').evaluateAll(nodes => nodes.filter(node => (node.dataset.tickets ?? '').includes('OVERFLOW')).map(node => ({ text: node.textContent, title: node.title, events: getComputedStyle(node).pointerEvents })))
+    assert.equal(overflowMarker.length, 1, 'clean mode keeps a marker for alert tickets whose label cannot fit')
+    assert.equal(overflowMarker[0].text, '2', 'the clean marker shows how many tickets the folded group holds')
+    assert.ok(overflowMarker[0].title.includes('OVERFLOW-') && overflowMarker[0].title.includes('OVERFLOW2-'), 'the clean marker names every folded ticket')
+    assert.equal(overflowMarker[0].events, 'auto', 'the clean marker must take the pointer so its title can show')
     assert.equal(await page.locator('.trip .track').isVisible(), false)
     await page.keyboard.press('v')
     assert.equal(await page.evaluate(() => localStorage.getItem('diorama.renderMode')), 'full')
@@ -1489,6 +1499,32 @@ const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket'
   .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
 
 // driver/testdata/recorded/driver-status-json-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
+// OFPRK-494：driver 的 ObservationRow 以 driver/testdata/recorded/ledger-issue-parked-resume.json 的 parked 票（真实账本录制）为输入生成的
+// `status --json` 票行原文，2026-11-19 由 OF-597 处置生成；stages 依生成时刻，测试不读取。
+const RECORDED_PARKED_ROW = {
+  stages: [{ name: 'Agent处置', seconds: 24 }, { name: '待领', seconds: 644019 }],
+  repo: '/home/laoxu/github/orca-factory', identifier: 'OFPRK-494', owner: '无', phase: '待领', blockedReason: 'parked: lane 3 路径须人合并',
+}
+
+async function checkRecordedParked(browser, live) {
+  const ledger = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-issue-parked-resume.json'))
+  const parkedComment = ledger.parked.comments.nodes.find(comment => comment.body.startsWith('搁置：')).body
+  assert.equal(RECORDED_PARKED_ROW.identifier, ledger.parked.identifier)
+  assert.equal(RECORDED_PARKED_ROW.blockedReason, `parked: ${parkedComment.split('\n')[0].slice('搁置：'.length)}`, 'the embedded row must carry the recorded 搁置 reason')
+  const snapshot = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
+  live.write({ ...snapshot, tickets: [RECORDED_PARKED_ROW] })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(RECORDED_PARKED_ROW.repo)}`, { renderMode: 'clean' })
+  try {
+    await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('OFPRK-494'))
+    await frames(page)
+    assert.equal(await page.locator('.label.ticket:visible').filter({ hasText: 'OFPRK-494 · 等人' }).count(), 1, 'clean mode labels the recorded parked ticket')
+    assert.deepEqual(errors, [])
+    console.log('PASS recorded parked ticket: production status row keeps its clean-mode label')
+  } finally {
+    await page.close()
+  }
+}
+
 async function checkRecordedHumanWaits(browser, live) {
   const recorded = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
   const repo = '/home/laoxu/github/orca-factory'
@@ -1731,6 +1767,7 @@ async function checkProduction(browser, bun, model) {
     await checkParcelTransitions(browser, live)
     await checkRecordedTicketEvents(browser, live)
     await checkRecordedHumanWaits(browser, live)
+    await checkRecordedParked(browser, live)
     await checkHumanWaits(browser, live)
     live.write(status)
     await checkLiveUpdates(browser, live)
