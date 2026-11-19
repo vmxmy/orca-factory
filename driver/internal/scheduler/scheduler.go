@@ -143,9 +143,15 @@ type Scheduler struct {
 	// automatic orca-serve restart is sent; recovery clears it.
 	orcaRestartsExhausted bool
 	// orcaPauseTicket selects the runtime-pause chat; unreachable notices use
-	// the first schedulable repository from the latest successful automation read.
+	// the first schedulable repository of the latest successful inspection.
 	orcaPauseTicket      Ticket
 	orcaNotificationRepo string
+	// orcaExhaustedLogged keeps the no-repository human-notice warning to one
+	// line until a repository can receive the notice.
+	orcaExhaustedLogged bool
+	// orcaCreated is the Runtime's terminal create success count last read
+	// back; a change proves a merge correction created a terminal.
+	orcaCreated int
 	// HostMemory, when set, is read once per Tick; a hold stops every new
 	// terminal launch until the reading recovers (OF-603).
 	HostMemory func() (hostmem.Reading, error)
@@ -274,37 +280,18 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	repos := map[string]config.Repository{}
 	allowed := map[string]bool{}
 	var problems []error
-	automationRead, unreachable := false, false
-	notificationRepo := ""
+	answered, unreachable := false, false
 	for _, r := range s.Repositories {
 		repos[r.Path] = r
 		ok, err := s.Backend.AutomationDisabled(ctx, r)
 		allowed[r.Path] = err == nil && ok
-		if orcaUnreachable(ctx, err) {
-			unreachable = true
-		}
-		if err == nil {
-			automationRead = true
-			if ok && notificationRepo == "" {
-				notificationRepo = r.Path
-			}
-		}
+		answered = answered || err == nil
+		unreachable = unreachable || orcaUnreachable(ctx, err)
 		if !allowed[r.Path] {
 			problems = append(problems, errors.New("repository refused: automation enabled or unverifiable"))
 		}
 	}
-	if automationRead {
-		s.orcaRuntime.UnreachableSince = time.Time{}
-		s.orcaNotificationRepo = notificationRepo
-	} else if unreachable {
-		if s.orcaRuntime.UnreachableSince.IsZero() {
-			s.orcaRuntime.UnreachableSince = s.clock()
-			s.logger().Warn("Orca automation read unreachable", "unreachable_since", s.orcaRuntime.UnreachableSince)
-		}
-		if s.clock().Sub(s.orcaRuntime.UnreachableSince) >= OrcaRestartGrace {
-			s.restartOrcaService(ctx)
-		}
-	}
+	s.observeOrcaReads(ctx, answered, unreachable)
 	notify := func(t Ticket) {
 		if category, _ := feishuNotification(t); category == "" {
 			return
@@ -347,6 +334,15 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
+	if answered {
+		s.orcaNotificationRepo = ""
+		for _, r := range s.Repositories {
+			if allowed[r.Path] && !s.retired[r.Path] {
+				s.orcaNotificationRepo = r.Path
+				break
+			}
+		}
+	}
 	conflicts := s.scopeConflicts(ctx, tickets, repos)
 	observeScopeWaits(tickets, repos, conflicts)
 	rows := ObservationRows(tickets, s.Repositories, s.clock())
@@ -402,8 +398,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 			return fmt.Errorf("orca runtime recovery probe: %w", err)
 		}
-		s.orcaRuntime = status.OrcaRuntime{}
-		s.orcaRestartsExhausted = false
+		s.clearOrcaRuntime()
 	}
 
 	s.MergeQueue = nil
@@ -625,9 +620,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 			}
 		}
-		// A merge correction that succeeds returns no error; read the count back.
-		if counter, ok := s.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok && !s.orcaRuntime.Paused {
-			s.orcaRuntime.Failures = counter.OrcaTerminalCreateFailures()
+		// A merge correction that succeeds returns no error; read the counts back.
+		if counter, ok := s.Backend.(interface{ OrcaTerminalCreates() (int, int) }); ok && !s.orcaRuntime.Paused {
+			failures, created := counter.OrcaTerminalCreates()
+			if created != s.orcaCreated && failures == 0 {
+				s.clearOrcaRuntime()
+			}
+			s.orcaCreated = created
+			s.orcaRuntime.Failures = failures
 		}
 	}
 	lap("merge")
@@ -869,8 +869,7 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 			s.relaunchedAt[t.ID] = s.clock()
 		}
 		delete(s.runtimePending, t.ID)
-		s.orcaRuntime = status.OrcaRuntime{}
-		s.orcaRestartsExhausted = false
+		s.clearOrcaRuntime()
 	case errors.As(err, &uncertain):
 		delete(s.runtimePending, t.ID)
 	}
@@ -898,6 +897,45 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 		if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
 			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
 		}
+	}
+}
+
+// clearOrcaRuntime ends every Orca fault once a terminal create succeeds.
+func (s *Scheduler) clearOrcaRuntime() {
+	s.orcaRuntime = status.OrcaRuntime{}
+	s.orcaRestartsExhausted = false
+	s.orcaExhaustedLogged = false
+}
+
+// observeOrcaReads records one round of Orca reads: an answered read clears
+// the unreachable start, and a round Orca never answered starts it and
+// restarts orca-serve after the grace.
+func (s *Scheduler) observeOrcaReads(ctx context.Context, answered, unreachable bool) {
+	if answered {
+		s.orcaRuntime.UnreachableSince = time.Time{}
+		return
+	}
+	if !unreachable {
+		return
+	}
+	if s.orcaRuntime.UnreachableSince.IsZero() {
+		s.orcaRuntime.UnreachableSince = s.clock()
+		s.logger().Warn("Orca unreachable", "unreachable_since", s.orcaRuntime.UnreachableSince)
+	}
+	if s.clock().Sub(s.orcaRuntime.UnreachableSince) >= OrcaRestartGrace {
+		s.restartOrcaService(ctx)
+	}
+}
+
+// ObserveOrcaDiscovery wraps serve's first project discovery, which runs
+// before any Tick, so an Orca that never answers still reaches the shared
+// restart path; publish receives the fault state after every attempt.
+func (s *Scheduler) ObserveOrcaDiscovery(discover func(context.Context) (projects.Result, error), publish func(status.OrcaRuntime)) func(context.Context) (projects.Result, error) {
+	return func(ctx context.Context) (projects.Result, error) {
+		result, err := discover(ctx)
+		s.observeOrcaReads(ctx, err == nil, orcaUnreachable(ctx, err))
+		publish(s.orcaRuntime)
+		return result, err
 	}
 }
 
@@ -929,10 +967,12 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		if s.orcaRestartsExhausted {
 			return
 		}
-		s.logger().Warn("Orca restart limit reached; manual intervention required", "restarts", s.orcaRuntime.Restarts,
-			"unreachable_since", s.orcaRuntime.UnreachableSince)
 		if !s.orcaRuntime.UnreachableSince.IsZero() && ticket.Repo == "" {
-			s.orcaRestartsExhausted = true
+			if !s.orcaExhaustedLogged {
+				s.orcaExhaustedLogged = true
+				s.logger().Warn("Orca restart limit reached; manual intervention required, no repository to notify yet",
+					"restarts", s.orcaRuntime.Restarts, "unreachable_since", s.orcaRuntime.UnreachableSince)
+			}
 			return
 		}
 		if notifier, ok := s.Backend.(interface {
@@ -968,6 +1008,10 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	}
 	restartErr := restarter.RestartOrcaService(ctx)
 	if errors.Is(restartErr, ErrOrcaRestartUnsupported) {
+		return
+	}
+	if errors.Is(restartErr, errOrcaRestartRefused) {
+		s.logger().Warn("Orca service restart refused by maintenance", "error", restartErr)
 		return
 	}
 	s.orcaRuntime.Restarts++

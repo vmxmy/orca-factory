@@ -69,7 +69,8 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, err
 		}
 		runtime.Version = version
-		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
+		discover := projectSource(cfg)
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: discover, DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()
 			if err != nil {
@@ -77,9 +78,13 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			}
 			s.SyncCore = (&coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}).sync
 		}
+		s.Discover = s.ObserveOrcaDiscovery(discover, func(orcaRuntime status.OrcaRuntime) {
+			status.Push(time.Now(), func(view *status.View) { view.OrcaRuntime = orcaRuntime })
+		})
 		if err := s.AwaitProjects(ctx, sleepContext); err != nil {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
 		}
+		s.Discover = discover
 		served = runtime
 		wait = newServeWait(s, runtime.StateRoot)
 		return s, runtime, nil
@@ -307,11 +312,11 @@ func (b *statusBackend) NotifyOrcaRestartExhausted(ctx context.Context, ticket s
 	return nil
 }
 
-func (b *statusBackend) OrcaTerminalCreateFailures() int {
-	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
-		return source.OrcaTerminalCreateFailures()
+func (b *statusBackend) OrcaTerminalCreates() (failures, created int) {
+	if source, ok := b.Backend.(interface{ OrcaTerminalCreates() (int, int) }); ok {
+		return source.OrcaTerminalCreates()
 	}
-	return 0
+	return 0, 0
 }
 
 func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
