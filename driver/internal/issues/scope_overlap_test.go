@@ -2,6 +2,7 @@ package issues
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ func TestCreateRejectsOverlappingScope(t *testing.T) {
 		wantError bool
 	}{
 		{name: "same file", existing: "driver/a.go", scope: "driver/a.go", wantError: true},
+		{name: "multiple overlaps for one ticket", existing: "driver/a.go driver/b.go", scope: "driver/*", wantError: true},
 		{name: "existing glob", existing: "driver/*", scope: "driver/internal/a.go", wantError: true},
 		{name: "new glob", existing: "driver/internal/a.go", scope: "driver/*", wantError: true},
 		{name: "glob common directory", existing: "driver/a*.go", scope: "driver/*_test.go", wantError: true},
@@ -65,6 +67,16 @@ func TestCreateRejectsOverlappingScope(t *testing.T) {
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("Create accepted overlapping SCOPE without a declared dependency")
+				}
+				var overlap *ScopeOverlapError
+				if !errors.As(err, &overlap) || !slices.Equal(overlap.IDs, []string{feishuUUIDA}) {
+					t.Fatalf("overlap IDs: %v, error: %v", overlap, err)
+				}
+				if tt.name == "same file" {
+					want := "SCOPE 与未完成票重叠：OF-1 (" + feishuUUIDA + "): \"driver/a.go\" 与 \"driver/a.go\"；请将冲突票 UUID 加入 blockers，或加入 related；确认重复则不建票"
+					if err.Error() != want {
+						t.Fatalf("error = %q, want %q", err, want)
+					}
 				}
 				for _, want := range []string{"OF-1", "SCOPE", "driver/", "blockers", "related", "重复"} {
 					if !strings.Contains(err.Error(), want) {
@@ -120,6 +132,14 @@ func TestRecordedCreateRejectsOverlappingScope(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatal("recorded open tickets did not conflict")
+			}
+			wantIDs := []string{feishuUUIDA, ticketB}
+			if tt.name == "only A declared" {
+				wantIDs = []string{ticketB}
+			}
+			var overlap *ScopeOverlapError
+			if !errors.As(err, &overlap) || !slices.Equal(overlap.IDs, wantIDs) {
+				t.Fatalf("overlap IDs: %v, want %v, error: %v", overlap, wantIDs, err)
 			}
 			for _, want := range tt.conflicts {
 				if !strings.Contains(err.Error(), want) {

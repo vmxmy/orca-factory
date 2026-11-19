@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ type fakeTickets struct {
 	recoveryReads int
 	failNotes     int
 	failCreates   int
+	createErrors  []error
 	readErr       error
 	// unconfirmedUpdates lands the write, then fails like a lost read-back.
 	unconfirmedUpdates int
@@ -36,6 +38,11 @@ type fakeTickets struct {
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
 	f.created = append(f.created, in)
+	if len(f.createErrors) > 0 {
+		err := f.createErrors[0]
+		f.createErrors = f.createErrors[1:]
+		return issues.Task{}, err
+	}
 	if f.failCreates > 0 {
 		f.failCreates--
 		return issues.Task{}, errors.New("create unconfirmed")
@@ -92,6 +99,50 @@ func healthyUnits(_ context.Context, spec runx.Spec) ([]byte, error) {
 		return []byte("1.27.4\n"), nil
 	}
 	return []byte("ActiveState=active\nNRestarts=0\n"), nil
+}
+
+func TestAlertTicketListsOverlappingTicketsAsRelated(t *testing.T) {
+	for _, retryFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("retry fails=%v", retryFails), func(t *testing.T) {
+			ids := []string{"11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"}
+			overlap := fmt.Errorf("create: %w", &issues.ScopeOverlapError{IDs: ids, Conflicts: []string{"OF-1", "OF-2"}})
+			tickets := &fakeTickets{createErrors: []error{overlap}}
+			if retryFails {
+				tickets.createErrors = append(tickets.createErrors, overlap)
+			}
+			start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+			m := &Monitor{StateDir: t.TempDir(), Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+			configureToolchain(t, m)
+			writeLease(t, m.StateDir, "registering", start.Add(-15*time.Minute))
+			if err := m.Poll(context.Background(), start); err != nil {
+				t.Fatal(err)
+			}
+			before := len(tickets.created)
+			err := m.Poll(context.Background(), start.Add(10*time.Minute))
+			if (err != nil) != retryFails {
+				t.Fatalf("Poll error = %v, want failure %v", err, retryFails)
+			}
+			round := tickets.created[before:]
+			if len(round) != 2 {
+				t.Fatalf("Create calls during second Poll = %d, want 2 (before = %d)", len(round), before)
+			}
+			if !slices.Equal(round[1].Related, ids) {
+				t.Fatalf("Related = %v, want %v", round[1].Related, ids)
+			}
+			want := `DEPENDENCIES: {"blockers":[],"related":["11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222"]}`
+			if !slices.Contains(strings.Split(round[1].Description, "\n"), want) {
+				t.Fatalf("description missing %q: %s", want, round[1].Description)
+			}
+			rec := readRecord(t, m)
+			if retryFails {
+				if !rec.Unconfirmed || rec.Ticket != "" || !rec.UnconfirmedAt.Equal(start.Add(10*time.Minute)) {
+					t.Fatalf("failed retry record = %+v", rec)
+				}
+			} else if rec.Ticket != "uuid-2" || rec.Identifier != "GH-900" || rec.Unconfirmed || !rec.UnconfirmedAt.IsZero() {
+				t.Fatalf("confirmed retry record = %+v", rec)
+			}
+		})
+	}
 }
 
 func configureToolchain(t *testing.T, m *Monitor) {
