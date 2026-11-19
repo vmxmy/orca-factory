@@ -13,6 +13,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -173,4 +174,25 @@ func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
 		return err
 	}
 	return sender.SendText(ctx, chat, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。请重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。")
+}
+
+// NotifyHostMemory uses the machine notification chat because the hold spans repositories.
+func (r *Runtime) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
+	settings, err := config.FeishuNotifySettings(nil)
+	if err != nil {
+		return err
+	}
+	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
+	if chat == "" {
+		return nil
+	}
+	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	return sender.SendText(ctx, chat, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
 }

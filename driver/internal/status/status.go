@@ -158,7 +158,8 @@ type OrcaRuntime struct {
 }
 
 // HostMemory is the scheduler's host memory hold: while Paused it starts no
-// new terminal. Error is the latest unreadable /proc text, which never holds.
+// new terminal. Reading.Source identifies the limiting host or cgroup.
+// Error describes failed reads; a valid host reading still drives admission.
 type HostMemory struct {
 	Paused  bool            `json:"paused"`
 	Since   time.Time       `json:"since,omitzero"`

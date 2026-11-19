@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -19,13 +20,16 @@ const (
 	releaseSomeAvg60 = 5
 )
 
-// Reading is MemAvailable in bytes and the PSI memory "some" avg60 percentage.
+// Reading combines available bytes and PSI memory "some" avg60 percentage.
+// Source identifies the limiting host or cgroup path.
 type Reading struct {
+	Source    string  `json:"source"`
 	Available uint64  `json:"available"`
 	SomeAvg60 float64 `json:"someAvg60"`
 }
 
-// Read parses root+"/proc/meminfo" and root+"/proc/pressure/memory"; production passes "".
+// Read combines host memory with finite cgroup ancestor budgets; production passes "".
+// A cgroup error returns a valid host reading alongside the error.
 func Read(root string) (Reading, error) {
 	meminfo, err := os.ReadFile(root + "/proc/meminfo")
 	if err != nil {
@@ -43,7 +47,12 @@ func Read(root string) (Reading, error) {
 	if err != nil {
 		return Reading{}, err
 	}
-	return Reading{Available: available, SomeAvg60: some}, nil
+	host := Reading{Available: available, SomeAvg60: some, Source: "host"}
+	ancestors, err := readCgroupAncestors(root)
+	if err != nil {
+		return host, err
+	}
+	return effectiveReading(host, ancestors), nil
 }
 
 func memAvailable(data []byte) (uint64, error) {
@@ -89,4 +98,118 @@ func Decide(held bool, r Reading) bool {
 		return r.Available < releaseAvailable || r.SomeAvg60 >= releaseSomeAvg60
 	}
 	return r.Available < holdAvailable || r.SomeAvg60 >= holdSomeAvg60
+}
+
+func readCgroupAncestors(root string) ([]Reading, error) {
+	data, err := os.ReadFile(root + "/proc/self/cgroup")
+	if err != nil {
+		return nil, err
+	}
+	var path string
+	for _, line := range strings.Split(string(data), "\n") {
+		if value, ok := strings.CutPrefix(line, "0::"); ok {
+			if !strings.HasPrefix(value, "/") {
+				return nil, fmt.Errorf("invalid cgroup path %q", value)
+			}
+			path = filepath.Clean(value)
+			break
+		}
+	}
+	var readings []Reading
+	for path != "" {
+		dir := root + "/sys/fs/cgroup" + path
+		limit, err := os.ReadFile(filepath.Join(dir, "memory.max"))
+		// The cgroup v2 root has no memory.max controller file.
+		if path == "/" && errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(string(limit)) != "max" {
+			reading, err := readCgroup(dir, limit)
+			if err != nil {
+				return nil, fmt.Errorf("cgroup %s: %w", path, err)
+			}
+			reading.Source = path
+			readings = append(readings, reading)
+		}
+		if path == "/" {
+			break
+		}
+		path = filepath.Dir(path)
+	}
+	return readings, nil
+}
+
+func readCgroup(dir string, limit []byte) (Reading, error) {
+	maximum, err := strconv.ParseUint(strings.TrimSpace(string(limit)), 10, 64)
+	if err != nil {
+		return Reading{}, fmt.Errorf("parse memory.max: %w", err)
+	}
+	currentData, err := os.ReadFile(filepath.Join(dir, "memory.current"))
+	if err != nil {
+		return Reading{}, err
+	}
+	current, err := strconv.ParseUint(strings.TrimSpace(string(currentData)), 10, 64)
+	if err != nil {
+		return Reading{}, fmt.Errorf("parse memory.current: %w", err)
+	}
+	stat, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
+	if err != nil {
+		return Reading{}, err
+	}
+	var fileCache uint64
+	found := map[string]bool{}
+	for _, line := range strings.Split(string(stat), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || (fields[0] != "inactive_file" && fields[0] != "active_file") {
+			continue
+		}
+		value, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			return Reading{}, fmt.Errorf("parse memory.stat %s: %w", fields[0], err)
+		}
+		fileCache += value
+		found[fields[0]] = true
+	}
+	if len(found) != 2 {
+		return Reading{}, errors.New("memory.stat lacks inactive_file or active_file")
+	}
+	pressure, err := os.ReadFile(filepath.Join(dir, "memory.pressure"))
+	if err != nil {
+		return Reading{}, err
+	}
+	some, err := someAvg60(pressure)
+	if err != nil {
+		return Reading{}, err
+	}
+	// A lowered limit may be below current usage; avoid unsigned underflow.
+	var available uint64
+	if current > maximum {
+		excess := current - maximum
+		available = fileCache - min(fileCache, excess)
+	} else {
+		available = maximum - current + fileCache
+	}
+	return Reading{Available: available, SomeAvg60: some}, nil
+}
+
+func effectiveReading(host Reading, ancestors []Reading) Reading {
+	result := host
+	pressureSource := host.Source
+	for _, ancestor := range ancestors {
+		if ancestor.Available < result.Available {
+			result.Available = ancestor.Available
+			result.Source = ancestor.Source
+		}
+		if ancestor.SomeAvg60 > result.SomeAvg60 {
+			result.SomeAvg60 = ancestor.SomeAvg60
+			pressureSource = ancestor.Source
+		}
+	}
+	if result.Available >= holdAvailable && result.SomeAvg60 >= releaseSomeAvg60 {
+		result.Source = pressureSource
+	}
+	return result
 }

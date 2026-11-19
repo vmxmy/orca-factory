@@ -296,6 +296,15 @@ func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.
 	return nil
 }
 
+func (b *statusBackend) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
+	if source, ok := b.Backend.(interface {
+		NotifyHostMemory(context.Context, status.HostMemory) error
+	}); ok {
+		return source.NotifyHostMemory(ctx, memory)
+	}
+	return nil
+}
+
 // Liveness and ReapDead keep the Runtime's heartbeat evidence visible through
 // the wrapper; a backend without it leaves terminal and dispatch evidence.
 func (b *statusBackend) Liveness(ctx context.Context, ticket scheduler.Ticket) (orca.Liveness, error) {

@@ -1022,3 +1022,100 @@ func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
 		}
 	}
 }
+
+type hostMemoryNotifyBackend struct {
+	fakeBackend
+	notices []status.HostMemory
+	err     error
+}
+
+func (b *hostMemoryNotifyBackend) NotifyHostMemory(_ context.Context, memory status.HostMemory) error {
+	b.notices = append(b.notices, memory)
+	return b.err
+}
+
+func TestHostMemoryHoldNotifiesOnceAfterFifteenMinutes(t *testing.T) {
+	b := &hostMemoryNotifyBackend{}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	start := s.Now()
+	reading := hostmem.Reading{Available: 3 << 30}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	for _, step := range []struct {
+		elapsed   time.Duration
+		available uint64
+		notices   int
+	}{
+		{0, 3 << 30, 0}, {14*time.Minute + 59*time.Second, 3 << 30, 0},
+		{15 * time.Minute, 3 << 30, 1}, {75 * time.Minute, 3 << 30, 1},
+		{76 * time.Minute, 20 << 30, 1}, {77 * time.Minute, 3 << 30, 1}, {92 * time.Minute, 3 << 30, 2},
+	} {
+		now := start.Add(step.elapsed)
+		s.Now = func() time.Time { return now }
+		reading.Available = step.available
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(b.notices) != step.notices {
+			t.Fatalf("at %v: notices=%d, want %d", step.elapsed, len(b.notices), step.notices)
+		}
+	}
+	if !b.notices[0].Since.Equal(start) || !b.notices[1].Since.Equal(start.Add(77*time.Minute)) {
+		t.Fatalf("hold starts: %+v", b.notices)
+	}
+}
+
+func TestHostMemoryNotificationRetriesAfterFailure(t *testing.T) {
+	b := &hostMemoryNotifyBackend{err: errors.New("offline")}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	now := s.Now()
+	s.Now = func() time.Time { return now }
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(15 * time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	b.err = nil
+	now = now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.notices) != 2 {
+		t.Fatalf("notification attempts = %d, want 2", len(b.notices))
+	}
+}
+
+func TestHostMemoryCgroupErrorStillUsesHostReading(t *testing.T) {
+	s := setup(&fakeBackend{})
+	reading := hostmem.Reading{Available: 3 << 30, Source: "host"}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, errors.New("read cgroup memory.stat: denied") }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := s.HostMemoryStatus()
+	if !got.Paused || got.Reading != reading || !strings.Contains(got.Error, "memory.stat") {
+		t.Fatalf("fallback status = %+v", got)
+	}
+}
+
+func TestHostMemoryReadFailureDoesNotPublishStaleHostFallback(t *testing.T) {
+	s := setup(&fakeBackend{})
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30, Source: "host"}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{}, errors.New("read /proc/meminfo: denied") }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.HostMemoryStatus(); got.Paused || got.Reading.Source != "" || got.Error == "" {
+		t.Fatalf("unreadable host = %+v", got)
+	}
+}

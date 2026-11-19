@@ -144,6 +144,7 @@ type Scheduler struct {
 	hostMemory status.HostMemory
 	// memoryHeld and memoryHeldSince carry the hysteresis across unreadable
 	// rounds, which never hold but must not reset the next decision.
+	memoryNotified  bool
 	memoryHeld      bool
 	memoryHeldSince time.Time
 	runtimePending  map[string]Ticket
@@ -231,7 +232,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("invalid scheduler configuration")
 	}
 	now := s.clock()
-	s.checkHostMemory(now)
+	s.checkHostMemory(ctx, now)
 	memoryHeld := s.hostMemory.Paused
 	admitted := 0
 	takeToken := func() bool {
@@ -855,32 +856,50 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 	}
 }
 
-// checkHostMemory reads host memory once; an unreadable reading never holds,
-// and only its first failure and its recovery are logged.
-func (s *Scheduler) checkHostMemory(now time.Time) {
+const hostMemoryNotifyAfter = 15 * time.Minute
+
+// checkHostMemory uses a valid host fallback when cgroup files cannot be read.
+func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 	if s.HostMemory == nil {
 		return
 	}
 	reading, err := s.HostMemory()
 	if err != nil {
 		if s.hostMemory.Error == "" {
-			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
+			s.logger().Warn("host memory reading incomplete", "err", err)
 		}
-		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error()}
-		return
+		if reading.Source != "host" {
+			s.hostMemory = status.HostMemory{Error: err.Error()}
+			return
+		}
 	}
-	if s.hostMemory.Error != "" {
+	if err == nil && s.hostMemory.Error != "" {
 		s.logger().Warn("host memory readable again", "available", reading.Available, "some_avg60", reading.SomeAvg60)
 	}
 	held := hostmem.Decide(s.memoryHeld, reading)
 	switch {
 	case !held:
 		s.memoryHeldSince = time.Time{}
+		s.memoryNotified = false
 	case !s.memoryHeld:
 		s.memoryHeldSince = now
 	}
 	s.memoryHeld = held
 	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading}
+	if err != nil {
+		s.hostMemory.Error = err.Error()
+	}
+	if held && !s.memoryNotified && now.Sub(s.memoryHeldSince) >= hostMemoryNotifyAfter {
+		if notifier, ok := s.Backend.(interface {
+			NotifyHostMemory(context.Context, status.HostMemory) error
+		}); ok {
+			if err := notifier.NotifyHostMemory(ctx, s.hostMemory); err != nil {
+				s.logger().Warn("host memory notification failed", "err", err)
+			} else {
+				s.memoryNotified = true
+			}
+		}
+	}
 }
 
 // HostMemoryStatus is the host memory hold serve publishes in its status.

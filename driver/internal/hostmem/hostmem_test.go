@@ -3,6 +3,7 @@ package hostmem
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -21,7 +22,7 @@ func recorded(t *testing.T, sample string) []byte {
 func readProc(t *testing.T, meminfo, pressure []byte) Reading {
 	t.Helper()
 	root := t.TempDir()
-	for dest, data := range map[string][]byte{"proc/meminfo": meminfo, "proc/pressure/memory": pressure} {
+	for dest, data := range map[string][]byte{"proc/self/cgroup": []byte("1:memory:/legacy\n"), "proc/meminfo": meminfo, "proc/pressure/memory": pressure} {
 		path := filepath.Join(root, dest)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -39,7 +40,7 @@ func readProc(t *testing.T, meminfo, pressure []byte) Reading {
 
 func TestParseRecordedProcSamples(t *testing.T) {
 	got := readProc(t, recorded(t, "proc-meminfo.txt"), recorded(t, "proc-pressure-memory.txt"))
-	want := Reading{Available: 33843404 * 1024, SomeAvg60: 0}
+	want := Reading{Source: "host", Available: 33843404 * 1024, SomeAvg60: 0}
 	if got != want {
 		t.Fatalf("Read = %+v, want %+v", got, want)
 	}
@@ -62,7 +63,7 @@ func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
 	}
 	pressure := strings.Join(lines, "\n")
 	got := readProc(t, recorded(t, "proc-meminfo.txt"), []byte(pressure))
-	if want := (Reading{Available: 33843404 * 1024, SomeAvg60: 22.22}); got != want {
+	if want := (Reading{Source: "host", Available: 33843404 * 1024, SomeAvg60: 22.22}); got != want {
 		t.Fatalf("Read = %+v, want %+v from %q", got, want, pressure)
 	}
 }
@@ -94,5 +95,118 @@ func TestDecideHoldsAndReleasesWithHysteresis(t *testing.T) {
 	}
 	if !Decide(true, Reading{Available: 30 * gib, SomeAvg60: 5}) {
 		t.Fatal("some avg60 at the release line must stay held")
+	}
+}
+
+func cgroupFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	write := func(name string, data []byte) {
+		t.Helper()
+		dest := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dest, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	self := recorded(t, "cgroup-memory/proc-self-cgroup.txt")
+	write("proc/self/cgroup", self)
+	write("proc/meminfo", recorded(t, "proc-meminfo.txt"))
+	write("proc/pressure/memory", recorded(t, "proc-pressure-memory.txt"))
+	for path := strings.TrimSpace(strings.TrimPrefix(string(self), "0::")); path != "/"; path = filepath.Dir(path) {
+		prefix := ""
+		switch filepath.Base(path) {
+		case "orca.slice":
+			prefix = "orca"
+		case "orca-workloads.slice":
+			prefix = "workloads"
+		}
+		if prefix == "" {
+			write("sys/fs/cgroup"+path+"/memory.max", recorded(t, "cgroup-memory/unlimited-memory.max.txt"))
+			continue
+		}
+		for _, name := range []string{"memory.max", "memory.current", "memory.stat", "memory.pressure"} {
+			write("sys/fs/cgroup"+path+"/"+name, recorded(t, "cgroup-memory/"+prefix+"-"+name+".txt"))
+		}
+	}
+	return root
+}
+
+func TestReadRecordedCgroupAncestors(t *testing.T) {
+	root := cgroupFixture(t)
+	got, err := readCgroupAncestors(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := "/user.slice/user-1000.slice/user@1000.service/orca.slice"
+	want := []Reading{
+		{Available: 34359738368 - 8672956416 + 3171840000 + 1142583296, SomeAvg60: 0, Source: base + "/orca-workloads.slice"},
+		{Available: 38654705664 - 10319032320 + 3360944128 + 1410326528, SomeAvg60: 0, Source: base},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ancestors = %+v, want %+v", got, want)
+	}
+	merged, err := Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged != want[0] {
+		t.Fatalf("Read = %+v, want %+v", merged, want[0])
+	}
+}
+
+func TestEffectiveReadingTakesTightestSource(t *testing.T) {
+	host := Reading{Available: 20 * gib, SomeAvg60: 2, Source: "host"}
+	ancestor := Reading{Available: 3 * gib, SomeAvg60: 30, Source: "/orca.slice"}
+	got := effectiveReading(host, []Reading{ancestor})
+	if got != ancestor {
+		t.Fatalf("effective reading = %+v, want %+v", got, ancestor)
+	}
+	ancestor.Available = 25 * gib
+	got = effectiveReading(host, []Reading{ancestor})
+	if got.Available != 20*gib || got.SomeAvg60 != 30 || got.Source != ancestor.Source {
+		t.Fatalf("pressure-only constraint = %+v", got)
+	}
+}
+
+func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
+	root := cgroupFixture(t)
+	path := root + "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat"
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(root)
+	if err == nil || !strings.Contains(err.Error(), "memory.stat") {
+		t.Fatalf("error = %v", err)
+	}
+	if got.Source != "host" || got.Available != 33843404*1024 {
+		t.Fatalf("fallback = %+v", got)
+	}
+}
+
+func TestCgroupAvailableAccountsForCacheAndOverLimitUsage(t *testing.T) {
+	for _, tc := range []struct {
+		current, stat string
+		want          uint64
+	}{
+		{"120", "inactive_file 10\nactive_file 30\n", 20},
+		{"150", "inactive_file 10\nactive_file 30\n", 0},
+		{"20", "inactive_file 10\nactive_file 30\n", 120},
+	} {
+		dir := t.TempDir()
+		for name, value := range map[string]string{"memory.current": tc.current, "memory.stat": tc.stat, "memory.pressure": "some avg10=1.00 avg60=30.00 avg300=3.00 total=0\nfull avg10=4.00 avg60=5.00 avg300=6.00 total=0\n"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := readCgroup(dir, []byte("100\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Available != tc.want || got.SomeAvg60 != 30 {
+			t.Fatalf("current=%s: reading=%+v, want available=%d and some avg60=30", tc.current, got, tc.want)
+		}
 	}
 }
