@@ -145,8 +145,7 @@ type Scheduler struct {
 	// The hold decision and its start survive unreadable rounds for hysteresis.
 	memoryHeld      bool
 	memoryHeldSince time.Time
-	// Notifications count only consecutive paused rounds. A successful notice
-	// covers the whole hold until a valid reading releases it.
+	// Each continuous pause can trigger one successful notification.
 	memoryPausedSince time.Time
 	memoryNotified    bool
 	runtimePending    map[string]Ticket
@@ -889,13 +888,13 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 	switch {
 	case !held:
 		s.memoryHeldSince = time.Time{}
-		s.memoryNotified = false
 	case !s.memoryHeld:
 		s.memoryHeldSince = now
 	}
 	s.memoryHeld = held
 	if held && !s.hostMemory.Paused {
 		s.memoryPausedSince = now
+		s.memoryNotified = false
 	}
 	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError}
 	if held && !s.memoryNotified && now.Sub(s.memoryPausedSince) >= hostMemoryNotifyAfter {

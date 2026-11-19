@@ -191,17 +191,26 @@ func TestEffectiveReadingTakesTightestSource(t *testing.T) {
 }
 
 func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
-	root := cgroupFixture(t)
-	path := root + "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat"
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
-	got, err := Read(root)
-	if err == nil || !strings.Contains(err.Error(), "memory.stat") {
-		t.Fatalf("error = %v", err)
-	}
-	if got.Source != "host" || got.Available != 33843404*1024 {
-		t.Fatalf("fallback = %+v", got)
+	for _, tc := range []struct {
+		name, path, wantErr string
+		remove              func(string) error
+	}{
+		{"missing stat file", "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat", "memory.stat", os.Remove},
+		{"missing cgroup tree", "sys", "sys/fs/cgroup", os.RemoveAll},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := cgroupFixture(t)
+			if err := tc.remove(filepath.Join(root, tc.path)); err != nil {
+				t.Fatal(err)
+			}
+			got, err := Read(root)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want error containing %q", err, tc.wantErr)
+			}
+			if got.Source != "host" || got.Available != 33843404*1024 {
+				t.Fatalf("fallback = %+v", got)
+			}
+		})
 	}
 }
 

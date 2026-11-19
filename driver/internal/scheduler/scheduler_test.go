@@ -1085,6 +1085,10 @@ func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 		{16 * time.Minute, low, nil, true, 0},
 		{30*time.Minute + 59*time.Second, low, nil, true, 0},
 		{31 * time.Minute, low, nil, true, 1},
+		{32 * time.Minute, hostmem.Reading{}, unreadable, false, 1},
+		{33 * time.Minute, low, nil, true, 1},
+		{47*time.Minute + 59*time.Second, low, nil, true, 1},
+		{48 * time.Minute, low, nil, true, 2},
 	} {
 		s.Now = func() time.Time { return start.Add(step.elapsed) }
 		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
@@ -1097,6 +1101,9 @@ func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	}
 	if got, want := b.notices[0].Since, start.Add(16*time.Minute); !got.Equal(want) {
 		t.Errorf("notification since = %v, want %v", got, want)
+	}
+	if got, want := b.notices[1].Since, start.Add(33*time.Minute); !got.Equal(want) {
+		t.Errorf("second notification since = %v, want %v", got, want)
 	}
 	if got := s.HostMemoryStatus().Since; !got.Equal(start) {
 		t.Errorf("snapshot since = %v, want %v", got, start)

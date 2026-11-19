@@ -119,11 +119,15 @@ func readCgroupAncestors(root string) ([]Reading, error) {
 	for path != "" {
 		dir := root + "/sys/fs/cgroup" + path
 		limit, err := os.ReadFile(filepath.Join(dir, "memory.max"))
-		// A level without a memory controller can still have a limited ancestor.
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			// A level without a memory controller can still have a limited ancestor.
+			if _, statErr := os.Stat(dir); statErr != nil {
+				return nil, fmt.Errorf("cgroup %s: %w", path, statErr)
+			}
+		case err != nil:
 			return nil, err
-		}
-		if err == nil && strings.TrimSpace(string(limit)) != "max" {
+		case strings.TrimSpace(string(limit)) != "max":
 			reading, err := readCgroup(dir, limit)
 			if err != nil {
 				return nil, fmt.Errorf("cgroup %s: %w", path, err)

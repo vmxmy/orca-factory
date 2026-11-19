@@ -802,26 +802,28 @@ func (p doctorProbe) checkHostMemory() healthCheck {
 	view := status.Read(p.now, 0)
 	memory := view.HostMemory
 	source := memory.Reading.Source
-	if source == "" && (memory.Reading.Available != 0 || memory.Reading.SomeAvg60 != 0) {
+	if source == "" && (memory.Paused || memory.Reading.Available != 0 || memory.Reading.SomeAvg60 != 0) {
 		// Snapshots predating cgroup support only recorded host readings.
 		source = "host"
 	}
 	detail := map[string]any{"available": memory.Reading.Available, "some_avg60": memory.Reading.SomeAvg60, "source": source, "snapshot_state": view.State}
 	if memory.Error != "" {
 		detail["error"] = memory.Error
-		return healthCheck{Status: healthWarn, Reason: "读不到主机内存读数，调度器不按内存暂停", Details: detail}
+		return healthCheck{Status: healthWarn, Reason: "读不到主机内存读数，调度器不按内存暂停：" + memory.Error, Details: detail}
 	}
+	pausedReason := "主机内存吃紧，已暂停认领与新建终端"
 	if memory.CgroupError != "" {
 		detail["cgroup_error"] = memory.CgroupError
 		if !memory.Paused {
-			return healthCheck{Status: healthWarn, Reason: "读不到 cgroup 内存读数，仅按主机读数判断", Details: detail}
+			return healthCheck{Status: healthWarn, Reason: "读不到 cgroup 内存读数，仅按主机读数判断：" + memory.CgroupError, Details: detail}
 		}
+		pausedReason += "；读不到 cgroup 内存读数：" + memory.CgroupError
 	}
 	if memory.Paused {
 		fix := "限制来源是 cgroup 时，用 systemd-cgls 与该切片的 memory.peak 找占用大户；有效可用量不低于 10 GiB 且 some avg60 低于 5 后自动恢复。"
 		detail["since"] = memory.Since
 		detail["recovery"] = fix
-		return healthCheck{Status: healthWarn, Reason: "主机内存吃紧，已暂停认领与新建终端", Details: detail, Fix: fix}
+		return healthCheck{Status: healthWarn, Reason: pausedReason, Details: detail, Fix: fix}
 	}
 	return healthCheck{Status: healthOK, Reason: "状态快照未记录主机内存暂停", Details: detail}
 }
