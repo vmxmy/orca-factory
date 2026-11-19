@@ -358,10 +358,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			return errors.New("orca runtime fault: no repository available for recovery probe")
 		}
 		if err := probe.ProbeOrcaRuntime(ctx, repo); err != nil {
-			// Only Orca refusing the probe's terminal create shows the fault persists;
-			// a maintenance refusal or a probe terminal that fails to close does not.
-			var runtimeErr *terminalCreateRuntimeError
-			if errors.As(err, &runtimeErr) {
+			var createErr *orcaProbeCreateError
+			if errors.As(err, &createErr) {
 				s.restartOrcaService(ctx)
 			}
 			return fmt.Errorf("orca runtime recovery probe: %w", err)
@@ -861,9 +859,9 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 var ErrOrcaRestartUnsupported = errors.New("backend has no Orca service restart")
 
 // restartOrcaService runs after a recovery probe whose terminal create Orca
-// refused. It restarts orca-serve once the pause has lasted orcaRestartGrace,
+// failed. It restarts orca-serve once the pause has lasted orcaRestartGrace,
 // then at most once per orcaRestartInterval, and after orcaRestartLimit restarts
-// asks for a human until one notice is delivered.
+// sends one human notice, retrying only a notice that never left.
 func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	now := s.clock()
 	ticket := s.orcaPauseTicket
@@ -876,7 +874,9 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		}); ok {
 			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
 				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
-				return
+				if errors.Is(err, errOrcaNoticeNotSent) {
+					return
+				}
 			}
 		}
 		s.orcaRestartsExhausted = true
