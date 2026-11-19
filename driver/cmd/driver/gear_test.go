@@ -144,6 +144,11 @@ func TestGearCommands(t *testing.T) {
 		t.Fatalf("status of a rejected repository without gear=%s, want it omitted: the scheduler keeps its tracked mode", out)
 	}
 	ledger.rows[0].cells["启用"] = true
+	t.Chdir(filepath.Dir(f.factory))
+	invokeGear(t, "set", filepath.Base(f.factory), "manual", "--operator", "t", "--reason", "bare relative directory")
+	if got := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]; got.Mode != "manual" || got.Path != f.factory {
+		t.Fatalf("set by a bare relative directory: %+v", got)
+	}
 	server.Close()
 	invokeGear(t, "set", f.factory, "manual", "--operator", "t", "--reason", "r")
 	entries := readGearEntries(t, file)
@@ -180,11 +185,6 @@ func TestGearCommands(t *testing.T) {
 	invokeGear(t, "clear", "..")
 	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {
 		t.Fatalf("clear .. with Feishu offline: %+v", entries)
-	}
-	t.Chdir(filepath.Dir(f.factory))
-	invokeGear(t, "set", filepath.Base(f.factory), "manual", "--operator", "t", "--reason", "bare relative directory")
-	if got := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]; got.Mode != "manual" || got.Path != f.factory {
-		t.Fatalf("set by a bare relative directory with Feishu offline: %+v", got)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
 	if len(lines) != 11 {
@@ -302,6 +302,20 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 	if remaining := readGearEntries(t, file); len(remaining) != 1 || remaining[fork] != beforeFork {
 		t.Fatalf("clear DJ changed FORK: %+v", remaining)
 	}
+	ledger.rows = append(ledger.rows, feishuFakeRow{id: "ALIAS", cells: map[string]any{
+		"名称": "alias", "仓库远端": upstream, "编号前缀": filepath.Base(b), "启用": true,
+	}})
+	t.Chdir(filepath.Dir(b))
+	if before, err = os.ReadFile(file); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"gear", "set", filepath.Base(b), "auto", "--operator", "tester", "--reason", "prefix names another checkout"}); code != 1 {
+		t.Fatalf("set a name that is DJ's prefix and FORK's directory exit=%d, want 1", code)
+	}
+	if after, err := os.ReadFile(file); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("ambiguous set changed gear.json: %s, err=%v", after, err)
+	}
+	ledger.rows = ledger.rows[:len(ledger.rows)-1]
 	invokeGear(t, "clear", "FORK")
 	set("DJ", "auto")
 	if err := os.RemoveAll(a); err != nil {
