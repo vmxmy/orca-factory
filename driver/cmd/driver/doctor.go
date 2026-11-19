@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"os/exec"
@@ -15,12 +16,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
@@ -96,7 +99,8 @@ type doctorProbe struct {
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
 	modelSettings   func() doctorModelSettings
-	modelProbe      func(context.Context, modelhealth.Ref, string) modelhealth.Status
+	modelProbe      func(ctx context.Context, ref modelhealth.Ref, dir, baseURL string) modelhealth.Status
+	recordModels    bool
 }
 
 // unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
@@ -146,9 +150,10 @@ func newDoctorProbe() (doctorProbe, error) {
 	}
 	ledgers := issues.NewFactory(cfg.Tuning)
 	return doctorProbe{
-		now:        time.Now(),
-		stateRoot:  logStateRoot(),
-		modelProbe: modelhealth.Probe,
+		now:          time.Now(),
+		stateRoot:    logStateRoot(),
+		modelProbe:   modelhealth.Probe,
+		recordModels: true,
 		modelSettings: func() doctorModelSettings {
 			proxy, proxyErr := config.ModelProxyURL(home)
 			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr, intakePi: os.Getenv("AGENT_INTAKE_PI")}
@@ -798,10 +803,13 @@ type doctorModelSettings struct {
 }
 
 type doctorModelRole struct {
-	name   string
-	ref    modelhealth.Ref
-	reason string
+	name    string
+	ref     modelhealth.Ref
+	baseURL string
+	reason  string
 }
+
+func (r doctorModelRole) probeKey() string { return r.ref.Key() + "\x00" + r.baseURL }
 
 func invalidModelRole(name, raw string) doctorModelRole {
 	agent, model, effort := splitTier(raw)
@@ -821,8 +829,9 @@ func workerModelRoles(env map[string]string) []doctorModelRole {
 		return []doctorModelRole{invalidModelRole("worker_default", "")}
 	}
 
-	roles := make([]doctorModelRole, 0, len(chain)-start)
-	for _, tier := range chain[start:] {
+	end := min(len(chain), start+1+machine.DefaultLimits.Corrections)
+	roles := make([]doctorModelRole, 0, end-start)
+	for _, tier := range chain[start:end] {
 		raw := env["AGENT_TIER_"+strings.ToUpper(tier)]
 		name := "worker_" + tier
 		ref, err := modelhealth.Parse(raw)
@@ -838,11 +847,11 @@ func workerModelRoles(env map[string]string) []doctorModelRole {
 			roles = append(roles, doctorModelRole{name: name, ref: ref})
 		}
 	}
-	// The executor validates earlier tiers at startup but corrections cannot reach them.
-	for _, tier := range chain[:start] {
+	// The executor validates the entire chain at startup when escalation is enabled.
+	for _, tier := range slices.Concat(chain[:start], chain[end:]) {
 		raw := env["AGENT_TIER_"+strings.ToUpper(tier)]
-		if _, err := modelhealth.Parse(raw); err != nil && roles[0].reason == "" {
-			roles[0] = invalidModelRole("worker_default", raw)
+		if _, err := modelhealth.Parse(raw); err != nil {
+			roles = append(roles, invalidModelRole("worker_"+tier, raw))
 		}
 	}
 	return roles
@@ -853,6 +862,9 @@ func supportedModelAgent(agent string) bool {
 }
 
 func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi string) doctorModelRole {
+	if claudeTier == "" {
+		return doctorModelRole{name: "intake", reason: "not_configured"}
+	}
 	model, effort, err := tierParts(env)
 	if err != nil || s.piErr != nil {
 		return invalidModelRole("intake", claudeTier)
@@ -879,11 +891,9 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		case "reviewer", "reviewer_small":
 			hasReviewer = hasReviewer || role.Role == "reviewer"
 			if ref.Agent == "claude" {
-				switch {
-				case s.proxyErr != nil:
+				modelRole.baseURL = s.proxyURL
+				if s.proxyErr != nil {
 					modelRole.reason = "model_proxy_invalid"
-				case s.proxyURL != "":
-					modelRole.reason = "model_proxy_not_probed"
 				}
 			}
 		case "resolver":
@@ -913,9 +923,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	if pi == "" {
 		pi = s.intakePi
 	}
-	if intakeTier != "" || pi != "" {
-		roles = append(roles, s.intakeRole(env, intakeTier, pi))
-	}
+	roles = append(roles, s.intakeRole(env, intakeTier, pi))
 	for i, role := range roles {
 		if role.reason == "" && !supportedModelAgent(role.ref.Agent) {
 			roles[i].reason = "unsupported_agent"
@@ -930,11 +938,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	if err != nil {
 		return unprobed("模型可用性登记无法读取")
 	}
-	type request struct {
-		ref modelhealth.Ref
-		dir string
-	}
-	pending := map[string]request{}
+	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
+	defer cancel()
+	var probes sync.WaitGroup
+	pending := map[string]*modelhealth.Status{}
 	projectRoles := make([][]doctorModelRole, len(eligible))
 	for i, project := range eligible {
 		roles := settings.modelRoles(project)
@@ -943,27 +950,20 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 			if role.reason != "" {
 				continue
 			}
-			key := role.ref.Key()
-			if _, seen := pending[key]; !seen && registry.Status(role.ref, p.now).State != modelhealth.Unavailable {
-				pending[key] = request{role.ref, project.Path}
+			key := role.probeKey()
+			if pending[key] != nil || registry.Status(role.ref, p.now).State == modelhealth.Unavailable {
+				continue
 			}
+			result := new(modelhealth.Status)
+			pending[key] = result
+			probes.Go(func() { *result = p.modelProbe(probeCtx, role.ref, project.Path, role.baseURL) })
 		}
 	}
-
-	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
-	defer cancel()
-	results := make(chan modelhealth.Status, len(pending))
-	for _, req := range pending {
-		go func() { results <- p.modelProbe(probeCtx, req.ref, req.dir) }()
-	}
-	var writeErr error
-	for range pending {
-		if err := registry.Record(<-results); err != nil {
-			writeErr = err
+	probes.Wait()
+	if p.recordModels {
+		if err := recordModelProbes(registry, pending); err != nil {
+			return unprobed("模型可用性登记无法写入")
 		}
-	}
-	if writeErr != nil {
-		return unprobed("模型可用性登记无法写入")
 	}
 
 	rows := []doctorModelStatus{}
@@ -973,18 +973,28 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		for _, role := range roles {
 			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
 			if role.reason == "" {
-				state = registry.Status(role.ref, p.now)
+				if result := pending[role.probeKey()]; result != nil {
+					state = *result
+					state.Ref = role.ref
+				} else {
+					state = registry.Status(role.ref, p.now)
+				}
 			}
 			rows = append(rows, doctorModelStatus{Repository: eligible[i].Name, Role: role.name, Status: state})
-			group := role.name
-			if strings.HasPrefix(group, "worker_") {
-				group = "worker"
-			}
-			retryable[group] = retryable[group] || state.State != modelhealth.Unavailable
-			invalid = invalid || role.reason == "config_invalid"
-			exhausted = exhausted || role.reason == "not_configured"
 			unavailable = unavailable || state.State == modelhealth.Unavailable
 			unknown = unknown || state.State == modelhealth.Unknown
+			switch role.reason {
+			case "config_invalid":
+				invalid = true
+			case "not_configured":
+				exhausted = true
+			default:
+				group := role.name
+				if strings.HasPrefix(group, "worker_") {
+					group = "worker"
+				}
+				retryable[group] = retryable[group] || state.State != modelhealth.Unavailable
+			}
 		}
 		for _, canRetry := range retryable {
 			exhausted = exhausted || !canRetry
@@ -1004,4 +1014,22 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		check.Status, check.Reason = healthUnknown, "有模型未能确认可用性"
 	}
 	return check
+}
+
+func recordModelProbes(registry *modelhealth.Registry, probes map[string]*modelhealth.Status) error {
+	selected := map[string]*modelhealth.Status{}
+	priority := map[string]int{modelhealth.Unknown: 0, modelhealth.OK: 1, modelhealth.Unavailable: 2}
+	// A stable endpoint order breaks ties between statuses of equal priority.
+	for _, key := range slices.Sorted(maps.Keys(probes)) {
+		result := probes[key]
+		model := result.Ref.Key()
+		if prev := selected[model]; prev == nil || priority[result.State] > priority[prev.State] {
+			selected[model] = result
+		}
+	}
+	var err error
+	for _, result := range selected {
+		err = errors.Join(err, registry.Record(*result))
+	}
+	return err
 }

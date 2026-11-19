@@ -212,7 +212,9 @@ func newDoctorFixture(t *testing.T) doctorFixture {
 		t.Fatal(err)
 	}
 	return doctorFixture{root: root, factory: factory, previous: previous, current: current, now: now,
-		repository: config.Repository{Env: map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high"}},
+		repository: config.Repository{Env: map[string]string{
+			"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high", "AGENT_ROLE_INTAKE": "claude:m:high",
+		}},
 	}
 }
 
@@ -228,9 +230,9 @@ func writeDoctorFile(t *testing.T, path, content string, mode os.FileMode) {
 
 func modelFixtureProbe(now time.Time, stateRoot string) doctorProbe {
 	return doctorProbe{
-		now: now, stateRoot: stateRoot,
+		now: now, stateRoot: stateRoot, recordModels: true,
 		modelSettings: func() doctorModelSettings { return doctorModelSettings{} },
-		modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+		modelProbe: func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 			return modelhealth.Classify(ref, "ok", nil, now)
 		},
 	}
@@ -371,12 +373,16 @@ func TestDriverDoctorReportsHealthyRuntime(t *testing.T) {
 	}
 	roles := map[string]int{}
 	for _, row := range models {
-		if row.Repository != "orca-factory" || row.Status.State != "ok" || row.Status.Ref.Agent != "codex" {
+		wantAgent := "codex"
+		if row.Role == "intake" {
+			wantAgent = "claude"
+		}
+		if row.Repository != "orca-factory" || row.Status.State != "ok" || row.Status.Ref.Agent != wantAgent {
 			t.Fatalf("models main-path row = %+v", row)
 		}
 		roles[row.Role]++
 	}
-	if !reflect.DeepEqual(roles, map[string]int{"worker_default": 1, "reviewer": 1, "resolver": 1}) {
+	if !reflect.DeepEqual(roles, map[string]int{"worker_default": 1, "reviewer": 1, "resolver": 1, "intake": 1}) {
 		t.Fatalf("models main-path roles = %v", roles)
 	}
 	var version struct {
@@ -586,7 +592,7 @@ func TestDoctorModels(t *testing.T) {
 			calls := map[string]int{}
 			var mu sync.Mutex
 			p := modelFixtureProbe(now, t.TempDir())
-			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 				mu.Lock()
 				calls[ref.Key()]++
 				mu.Unlock()
@@ -599,7 +605,7 @@ func TestDoctorModels(t *testing.T) {
 			eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
 				"AGENT_TIER_DEFAULT": "codex:primary:high", "AGENT_TIER_STRONG": "claude:backup:high",
 				"AGENT_ROLE_REVIEWER": "claude:backup:low", "AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": "default strong max", "AGENT_TIER_MAX": "claude:backup:max",
-				"AGENT_ROLE_RESOLVER_TOP": "claude:backup:max",
+				"AGENT_ROLE_RESOLVER_TOP": "claude:backup:max", "AGENT_ROLE_INTAKE": "claude:backup:high",
 			}}}}
 			got := p.checkModels(context.Background(), eligible)
 			if got.Status != tc.want {
@@ -640,28 +646,29 @@ func TestDoctorModelsUnavailableRoleAndCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref := modelhealth.Ref{Agent: "codex", Model: "primary", Effort: "high"}
-	fixture, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	ref := modelhealth.Ref{Agent: "claude", Model: "primary", Effort: "high"}
+	fixture, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Record(modelhealth.Classify(ref, string(fixture), nil, now)); err != nil {
+	limited := modelhealth.Classify(ref, string(fixture), nil, now)
+	if err := r.Record(limited); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
 	p := modelFixtureProbe(now, root)
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 		calls++
-		return modelhealth.Classify(ref, "ok", nil, now.Add(time.Hour))
+		return modelhealth.Classify(ref, "ok", nil, p.now)
 	}
 	eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": ref.String(), "AGENT_ROLE_RESOLVER": ref.String(), "AGENT_ROLE_REVIEWER": ref.String(),
+		"AGENT_TIER_DEFAULT": ref.String(), "AGENT_ROLE_RESOLVER": ref.String(), "AGENT_ROLE_REVIEWER": ref.String(), "AGENT_ROLE_INTAKE": ref.String(),
 	}}}}
 	got := p.checkModels(context.Background(), eligible)
 	if got.Status != "fail" || calls != 0 {
 		t.Fatalf("cooldown = %+v, calls=%d", got, calls)
 	}
-	p.now = now.Add(time.Hour)
+	p.now = limited.Until
 	got = p.checkModels(context.Background(), eligible)
 	if got.Status != "ok" || calls != 1 {
 		t.Fatalf("expired = %+v, calls=%d", got, calls)
@@ -691,7 +698,7 @@ func assertDoctorModel(t *testing.T, rows []doctorModelStatus, repo, role, ref, 
 	}
 }
 
-func TestDoctorModelsSkipsProxiedReviewers(t *testing.T) {
+func TestDoctorModelsProbesReviewerEndpoint(t *testing.T) {
 	const proxy = "https://proxy.invalid/TEST-PLACEHOLDER-CRED"
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_MODEL_PROXY_URL", proxy)
@@ -703,36 +710,62 @@ func TestDoctorModelsSkipsProxiedReviewers(t *testing.T) {
 	p.stateRoot = t.TempDir()
 	var mu sync.Mutex
 	calls := map[string]int{}
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, baseURL string) modelhealth.Status {
 		mu.Lock()
 		defer mu.Unlock()
-		calls[ref.Key()]++
+		if ref.Key() != "claude:m" {
+			t.Errorf("unexpected model %s", ref)
+		}
+		calls[baseURL]++
+		if baseURL == proxy {
+			return modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: p.now, Until: p.now.Add(time.Hour)}
+		}
 		return modelhealth.Classify(ref, "ok", nil, p.now)
 	}
 	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
 		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_RESOLVER": "claude:m:low",
-		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_REVIEWER_SMALL": "claude:m:high",
+		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_REVIEWER_SMALL": "claude:m:high", "AGENT_ROLE_INTAKE": "claude:m:low",
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project})
-	if got.Status != "unknown" || !reflect.DeepEqual(calls, map[string]int{"claude:m": 1}) {
-		t.Errorf("check = %s, calls = %v", got.Status, calls)
+	if got.Status != "fail" || !reflect.DeepEqual(calls, map[string]int{"": 1, proxy: 1}) {
+		t.Errorf("check = %s, calls = %v, want fail with one inherited and one proxy probe", got.Status, calls)
 	}
 	rows := got.Details.([]doctorModelStatus)
 	assertDoctorModel(t, rows, "one", "worker_default", "claude:m:high", "ok", "probe_ok")
 	assertDoctorModel(t, rows, "one", "resolver", "claude:m:low", "ok", "probe_ok")
-	assertDoctorModel(t, rows, "one", "reviewer", "claude:m:low", "unknown", "model_proxy_not_probed")
-	assertDoctorModel(t, rows, "one", "reviewer_small", "claude:m:high", "unknown", "model_proxy_not_probed")
+	assertDoctorModel(t, rows, "one", "reviewer", "claude:m:low", "unavailable", "usage_limit")
+	assertDoctorModel(t, rows, "one", "reviewer_small", "claude:m:high", "unavailable", "usage_limit")
+	assertDoctorModel(t, rows, "one", "intake", "claude:m:low", "ok", "probe_ok")
 	data, err := os.ReadFile(filepath.Join(p.stateRoot, "model-health.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var records map[string]modelhealth.Status
-	if err := json.Unmarshal(data, &records); err != nil || len(records) != 1 || records["claude:m"].State != "ok" {
-		t.Errorf("registry = %s, want just the direct claude:m probe, err = %v", data, err)
+	if err := json.Unmarshal(data, &records); err != nil || len(records) != 1 || records["claude:m"].State != "unavailable" {
+		t.Errorf("registry = %s, want one unavailable claude:m record, err = %v", data, err)
 	}
 	report, err := json.Marshal(got)
 	if err != nil || bytes.Contains(report, []byte(proxy)) || bytes.Contains(data, []byte(proxy)) {
 		t.Fatal("proxy URL in model health report or registry", err)
+	}
+}
+
+func TestDoctorModelsWithoutRecording(t *testing.T) {
+	p := modelFixtureProbe(time.Now(), t.TempDir())
+	p.recordModels = false
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_REVIEWER": "claude:m:low",
+		"AGENT_ROLE_RESOLVER": "claude:m:high", "AGENT_ROLE_INTAKE": "claude:m:low",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project})
+	if got.Status != "ok" {
+		t.Errorf("check = %+v", got)
+	}
+	rows := got.Details.([]doctorModelStatus)
+	assertDoctorModel(t, rows, "one", "worker_default", "claude:m:high", "ok", "probe_ok")
+	assertDoctorModel(t, rows, "one", "reviewer", "claude:m:low", "ok", "probe_ok")
+	if _, err := os.Stat(filepath.Join(p.stateRoot, "model-health.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stat model-health.json = %v, want file absent", err)
 	}
 }
 
@@ -750,8 +783,8 @@ func TestDoctorModelsInvalidProxyReportsAllChecks(t *testing.T) {
 	f.repository.Env["AGENT_ROLE_REVIEWER_SMALL"] = "claude:small:high"
 	probe := f.probe(t, doctorServiceTools, doctorFakeLedger{})
 	probe.modelSettings = machine.modelSettings
-	probe.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
-		if ref.Agent == "claude" {
+	probe.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
+		if ref.Model == "review" || ref.Model == "small" {
 			t.Errorf("probed reviewer with invalid proxy: %s", ref)
 		}
 		return modelhealth.Classify(ref, "ok", nil, f.now)
@@ -773,6 +806,7 @@ func TestDoctorModelsInvalidProxyReportsAllChecks(t *testing.T) {
 	assertDoctorModel(t, rows, "orca-factory", "reviewer", "claude:review:low", "unknown", "model_proxy_invalid")
 	assertDoctorModel(t, rows, "orca-factory", "reviewer_small", "claude:small:high", "unknown", "model_proxy_invalid")
 	assertDoctorModel(t, rows, "orca-factory", "worker_default", "codex:m:high", "ok", "probe_ok")
+	assertDoctorModel(t, rows, "orca-factory", "intake", "claude:m:high", "ok", "probe_ok")
 }
 
 func TestDoctorModelsConcurrent(t *testing.T) {
@@ -782,7 +816,7 @@ func TestDoctorModelsConcurrent(t *testing.T) {
 	var batchDeadline time.Time
 	ready := make(chan struct{})
 	p := modelFixtureProbe(now, t.TempDir())
-	p.modelProbe = func(ctx context.Context, ref modelhealth.Ref, dir string) modelhealth.Status {
+	p.modelProbe = func(ctx context.Context, ref modelhealth.Ref, dir, _ string) modelhealth.Status {
 		if dir != "/first" {
 			t.Errorf("probe directory = %q, want first repository", dir)
 		}
@@ -809,14 +843,14 @@ func TestDoctorModelsConcurrent(t *testing.T) {
 		}
 	}
 	repo := config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "codex:a:high", "AGENT_ROLE_REVIEWER": "claude:b:low", "AGENT_ROLE_RESOLVER": "codex:c:high",
+		"AGENT_TIER_DEFAULT": "codex:a:high", "AGENT_ROLE_REVIEWER": "claude:b:low", "AGENT_ROLE_RESOLVER": "codex:c:high", "AGENT_ROLE_INTAKE": "claude:b:low",
 	}}
 	got := p.checkModels(context.Background(), []projects.Project{{Name: "first", Path: "/first", Repository: repo}, {Name: "second", Path: "/second", Repository: repo}})
 	if got.Status != "ok" || entered != 3 {
 		t.Fatalf("check = %+v, calls = %d", got, entered)
 	}
 	rows := got.Details.([]doctorModelStatus)
-	if len(rows) != 6 {
+	if len(rows) != 8 {
 		t.Fatalf("rows = %+v", rows)
 	}
 	for _, row := range rows {
@@ -828,10 +862,12 @@ func TestDoctorModelsConcurrent(t *testing.T) {
 
 func TestDoctorRunPersistsModelCooldown(t *testing.T) {
 	f := newDoctorFixture(t)
-	f.repository.Env["AGENT_ROLE_RESOLVER"] = "codex:m:low"
+	f.repository.Env["AGENT_TIER_DEFAULT"] = "claude:m:high"
+	f.repository.Env["AGENT_ROLE_REVIEWER"] = "claude:m:high"
+	f.repository.Env["AGENT_ROLE_RESOLVER"] = "claude:m:low"
 	p := f.probe(t, doctorServiceTools, doctorFakeLedger{})
 	calls := 0
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 		calls++
 		return modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: f.now, Until: f.now.Add(time.Hour)}
 	}
@@ -866,7 +902,7 @@ func TestDoctorModelsReachableWorkerTiers(t *testing.T) {
 		t.Run(tc.escalate+"_"+tc.chain, func(t *testing.T) {
 			now := time.Now()
 			p := modelFixtureProbe(now, t.TempDir())
-			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 				if ref.Model == "max" || ref.Model == "default" {
 					t.Errorf("unexpected probe of %s", ref.Model)
 				}
@@ -882,7 +918,7 @@ func TestDoctorModelsReachableWorkerTiers(t *testing.T) {
 			}
 			project := projects.Project{Repository: config.Repository{Env: map[string]string{
 				"AGENT_TIER_ESCALATE": tc.escalate, "AGENT_TIER_CHAIN": tc.chain,
-				"AGENT_TIER_DEFAULT": "codex:default:low", "AGENT_TIER_MAX": "codex:max:high", "AGENT_ROLE_REVIEWER": "claude:m:low",
+				"AGENT_TIER_DEFAULT": "codex:default:low", "AGENT_TIER_MAX": "codex:max:high", "AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_INTAKE": "claude:m:low",
 			}}}
 			got := p.checkModels(context.Background(), []projects.Project{project})
 			if got.Status != "fail" {
@@ -904,11 +940,54 @@ func TestDoctorModelsReachableWorkerTiers(t *testing.T) {
 	}
 }
 
+func TestDoctorModelsWorkerCorrectionLimit(t *testing.T) {
+	now := time.Now()
+	p := modelFixtureProbe(now, t.TempDir())
+	registry, err := modelhealth.Open(p.stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{
+		"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": "default a b c d",
+		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "claude:m:low", "AGENT_ROLE_INTAKE": "claude:m:low",
+	}
+	for _, tier := range []string{"default", "a", "b", "c", "d"} {
+		ref := modelhealth.Ref{Agent: "codex", Model: tier, Effort: "high"}
+		env["AGENT_TIER_"+strings.ToUpper(tier)] = ref.String()
+		state := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}
+		if tier == "d" {
+			state = modelhealth.Classify(ref, "ok", nil, now)
+		}
+		if err := registry.Record(state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
+		if ref.Agent == "codex" {
+			t.Errorf("unexpected worker probe: %s", ref)
+		}
+		return modelhealth.Classify(ref, "ok", nil, now)
+	}
+	got := p.checkModels(context.Background(), []projects.Project{{Name: "one", Repository: config.Repository{Env: env}}})
+	if got.Status != "fail" {
+		t.Errorf("check = %s, want fail with all reachable workers cooling down", got.Status)
+	}
+	rows := got.Details.([]doctorModelStatus)
+	for _, tier := range []string{"default", "a", "b", "c"} {
+		assertDoctorModel(t, rows, "one", "worker_"+tier, "codex:"+tier+":high", "unavailable", "usage_limit")
+	}
+	for _, row := range rows {
+		if row.Role == "worker_d" {
+			t.Error("listed worker_d beyond the last correction")
+		}
+	}
+}
+
 func TestDoctorModelsPiIntake(t *testing.T) {
 	for _, tc := range []struct{ name, repository, process, file, claude, ref, status, reason string }{
 		{"repository wins", " pi:anthropic/m:high ", "pi:other/process:low", "", "claude:x:high", "pi:anthropic/m:high", "unknown", "unsupported_agent"},
 		{"process wins", "", " pi:anthropic/m:high ", "pi:other/file:low", "claude:x:high", "pi:anthropic/m:high", "unknown", "unsupported_agent"},
-		{"machine file only", " ", "", "pi:anthropic/m:high", "", "::", "fail", "config_invalid"},
+		{"machine file only", " ", "", "pi:anthropic/m:high", "", "::", "fail", "not_configured"},
 		{"machine file with claude tier", "", "", "pi:anthropic/m:high", "claude:x:high", "pi:anthropic/m:high", "unknown", "unsupported_agent"},
 		{"invalid repository tier", "pi:missing-provider", "", "", "claude:x:high", "pi:missing-provider:", "fail", "config_invalid"},
 		{"non-claude intake", "", "", "", "codex:x:high", "codex:x:high", "fail", "config_invalid"},
@@ -924,7 +1003,7 @@ func TestDoctorModelsPiIntake(t *testing.T) {
 				t.Fatal(err)
 			}
 			p.stateRoot = t.TempDir()
-			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 				if ref.Agent == "pi" || ref.Model == "x" {
 					t.Errorf("unexpected intake probe %s", ref)
 				}
@@ -957,13 +1036,13 @@ func TestDoctorModelsInvalidResolverTiers(t *testing.T) {
 		t.Run(tc.role+"/"+tc.value, func(t *testing.T) {
 			now := time.Now()
 			p := modelFixtureProbe(now, t.TempDir())
-			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 				if ref.String() == tc.value {
 					t.Errorf("probed invalid %s: %s", tc.role, ref)
 				}
 				return modelhealth.Classify(ref, "ok", nil, now)
 			}
-			env := map[string]string{"AGENT_TIER_DEFAULT": "codex:worker:low", "AGENT_ROLE_REVIEWER": "codex:worker:low", tc.key: tc.value}
+			env := map[string]string{"AGENT_TIER_DEFAULT": "codex:worker:low", "AGENT_ROLE_REVIEWER": "codex:worker:low", "AGENT_ROLE_INTAKE": "claude:intake:low", tc.key: tc.value}
 			got := p.checkModels(context.Background(), []projects.Project{{Name: "A", Repository: config.Repository{Env: env}}})
 			if got.Status != "fail" {
 				t.Errorf("check = %+v", got)
@@ -978,7 +1057,7 @@ func TestDoctorModelsInvalidResolverTiers(t *testing.T) {
 func TestDoctorModelsIsolatesRepositoryConfigErrors(t *testing.T) {
 	now := time.Now()
 	p := modelFixtureProbe(now, t.TempDir())
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 		if ref.Model == "cooling" {
 			t.Error("probed B's reviewer during cooldown")
 		}
@@ -997,7 +1076,7 @@ func TestDoctorModelsIsolatesRepositoryConfigErrors(t *testing.T) {
 			"AGENT_TIER_DEFAULT": "codex:w:low", "AGENT_ROLE_REVIEWER": "codex:w:low",
 			"AGENT_ROLE_INTAKE": "claude:m:high", "AGENT_INTAKE_PI": "pi:broken",
 		}}},
-		{Name: "B", Repository: config.Repository{Env: map[string]string{"AGENT_TIER_DEFAULT": "codex:w:low", "AGENT_ROLE_REVIEWER": ref.String()}}},
+		{Name: "B", Repository: config.Repository{Env: map[string]string{"AGENT_TIER_DEFAULT": "codex:w:low", "AGENT_ROLE_REVIEWER": ref.String(), "AGENT_ROLE_INTAKE": "claude:m:high"}}},
 	})
 	if got.Status != "fail" {
 		t.Errorf("check = %+v", got)
@@ -1021,7 +1100,7 @@ func TestDoctorModelsUnreadablePiSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.stateRoot = t.TempDir()
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 		if ref.Agent != "codex" {
 			t.Errorf("unexpected probe: %s", ref)
 		}
@@ -1045,19 +1124,21 @@ func TestDoctorModelsValidatesWorkerTierValues(t *testing.T) {
 	for _, tc := range []struct{ chain, primary, max, role, ref string }{
 		{"default", "codex:incomplete", "", "worker_default", "codex:incomplete:"},
 		{"default max", "codex:m:low", "codex:incomplete", "worker_max", "codex:incomplete:"},
-		{"max default", "codex:m:low", "codex:incomplete", "worker_default", "codex:incomplete:"},
+		{"max default", "codex:m:low", "codex:incomplete", "worker_max", "codex:incomplete:"},
+		{"default a b c max", "codex:m:low", "codex:incomplete", "worker_max", "codex:incomplete:"},
 	} {
 		t.Run(tc.chain, func(t *testing.T) {
 			now := time.Now()
 			p := modelFixtureProbe(now, t.TempDir())
-			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _, _ string) modelhealth.Status {
 				if ref.Model == "incomplete" {
 					t.Errorf("probed invalid tier: %s", ref)
 				}
 				return modelhealth.Classify(ref, "ok", nil, now)
 			}
 			env := map[string]string{"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": tc.chain,
-				"AGENT_TIER_DEFAULT": tc.primary, "AGENT_TIER_MAX": tc.max, "AGENT_ROLE_REVIEWER": "codex:m:low"}
+				"AGENT_TIER_DEFAULT": tc.primary, "AGENT_TIER_MAX": tc.max, "AGENT_ROLE_REVIEWER": "codex:m:low",
+				"AGENT_TIER_A": "codex:m:low", "AGENT_TIER_B": "codex:m:low", "AGENT_TIER_C": "codex:m:low", "AGENT_ROLE_INTAKE": "claude:m:low"}
 			got := p.checkModels(context.Background(), []projects.Project{{Name: "A", Repository: config.Repository{Env: env}}})
 			if got.Status != "fail" {
 				t.Errorf("check = %+v", got)
@@ -1065,12 +1146,8 @@ func TestDoctorModelsValidatesWorkerTierValues(t *testing.T) {
 			rows, _ := got.Details.([]doctorModelStatus)
 			assertDoctorModel(t, rows, "A", tc.role, tc.ref, "unknown", "config_invalid")
 			assertDoctorModel(t, rows, "A", "reviewer", "codex:m:low", "ok", "probe_ok")
-			if tc.chain == "max default" {
-				for _, row := range rows {
-					if row.Role == "worker_max" {
-						t.Fatal("listed unreachable worker_max")
-					}
-				}
+			if tc.role != "worker_default" {
+				assertDoctorModel(t, rows, "A", "worker_default", "codex:m:low", "ok", "probe_ok")
 			}
 		})
 	}
@@ -1082,9 +1159,10 @@ func TestDoctorModelsMissingRequiredRoles(t *testing.T) {
 		env     map[string]string
 		missing []string
 	}{
-		{"empty", nil, []string{"worker_default", "reviewer"}},
+		{"empty", nil, []string{"worker_default", "reviewer", "intake"}},
 		{"strong without default", map[string]string{"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_STRONG": "claude:backup:high", "AGENT_ROLE_REVIEWER": "codex:m:high"}, []string{"worker_default"}},
-		{"small without reviewer", map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER_SMALL": "claude:small:high"}, []string{"reviewer"}},
+		{"small without reviewer", map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER_SMALL": "claude:small:high"}, []string{"reviewer", "intake"}},
+		{"only intake missing", map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:low"}, []string{"intake"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			now := time.Now()

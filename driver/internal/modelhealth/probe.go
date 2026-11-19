@@ -11,8 +11,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
-// Probe sends one bounded, read-only request. Effort is deliberately kept low.
-func Probe(ctx context.Context, ref Ref, dir string) Status {
+// Probe sends one bounded, read-only request. For Claude, a non-empty baseURL
+// overrides the endpoint inherited from the process.
+func Probe(ctx context.Context, ref Ref, dir, baseURL string) Status {
 	var args []string
 	switch ref.Agent {
 	case "codex":
@@ -35,10 +36,13 @@ func Probe(ctx context.Context, ref Ref, dir string) Status {
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
 		switch key {
-		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "ANTHROPIC_BASE_URL":
+		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
 			continue
 		}
 		env = append(env, value)
+	}
+	if ref.Agent == "claude" && baseURL != "" {
+		env = append(env, "ANTHROPIC_BASE_URL="+baseURL)
 	}
 	output, err := runx.Run(ctx, runx.Spec{Path: ref.Agent, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
 	var exit *exec.ExitError
