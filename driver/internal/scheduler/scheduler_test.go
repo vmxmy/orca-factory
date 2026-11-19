@@ -1465,14 +1465,32 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 		x.f.tickets = nil
 		_ = s.Tick(context.Background())
 		b.automationErr = unavailable
-		s.retired = map[string]bool{"/repo0": true}
 		start := *x.now
-		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
-			*x.now = start.Add(offset)
-			_ = s.Tick(context.Background())
-		}
+		_ = s.Tick(context.Background())
+		s.retired = map[string]bool{"/repo0": true}
+		b.snapshotErr = errors.New("ledger unavailable")
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
 		if b.restarts != 1 || len(b.restartNotices) != 0 {
 			t.Fatalf("restarts=%d notices=%v, want a restart without a notice to the retired repository", b.restarts, b.restartNotices)
+		}
+	})
+	t.Run("no tracked repository stops unreachable timing", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 1)
+		s := x.s
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		x.b.automationErr = unavailable
+		s.retired = map[string]bool{"/repo0": true}
+		start := *x.now
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) || len(s.Repositories) != 0 {
+			t.Fatalf("status=%+v repositories=%v, want timing started and the idle retired repository dropped", got, s.Repositories)
+		}
+		*x.now = start.Add(time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() {
+			t.Fatalf("unreachable timing continued without a tracked repository: %+v", got)
 		}
 	})
 	t.Run("merge correction terminal create clears restart budget", func(t *testing.T) {

@@ -289,6 +289,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			problems = append(problems, errors.New("repository refused: automation enabled or unverifiable"))
 		}
 	}
+	if len(s.Repositories) == 0 {
+		s.orcaRuntime.UnreachableSince = time.Time{}
+	}
 	s.observeOrcaReads(ctx, answered, unreachable)
 	notify := func(t Ticket) {
 		if category, _ := feishuNotification(t); category == "" {
@@ -332,9 +335,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	}
 	snapshot = true
 	s.dropIdleRetired(tickets)
-	if s.retired[s.orcaNotificationRepo] || !slices.ContainsFunc(s.Repositories, func(r config.Repository) bool { return r.Path == s.orcaNotificationRepo }) {
-		s.orcaNotificationRepo = ""
-	}
 	if answered {
 		s.orcaNotificationRepo = ""
 		for _, r := range s.Repositories {
@@ -957,7 +957,11 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	ticket := s.orcaPauseTicket
 	since := s.orcaRuntime.PausedAt
 	if !s.orcaRuntime.UnreachableSince.IsZero() {
-		ticket = Ticket{Repo: s.orcaNotificationRepo}
+		ticket = Ticket{}
+		// The repository may have retired or left since that inspection.
+		if !s.retired[s.orcaNotificationRepo] && slices.ContainsFunc(s.Repositories, func(r config.Repository) bool { return r.Path == s.orcaNotificationRepo }) {
+			ticket.Repo = s.orcaNotificationRepo
+		}
 		since = s.orcaRuntime.UnreachableSince
 	}
 	if s.orcaRuntime.Restarts >= orcaRestartLimit {
