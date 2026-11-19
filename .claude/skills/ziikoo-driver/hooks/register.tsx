@@ -256,7 +256,8 @@ let configReads = 0
 const fetchConfig = async ($: Engine): Promise<void> => {
   const read = ++configReads
   const next = await take($)
-  if (read === configReads) await update($, snapshot, () => next)
+  // update reruns its callback on a version miss, by which time a later read may have written.
+  await update($, snapshot, prev => (read === configReads ? next : prev))
 }
 
 const refresh = async ($: Engine): Promise<void> => {

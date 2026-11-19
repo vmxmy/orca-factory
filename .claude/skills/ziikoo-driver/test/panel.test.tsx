@@ -166,6 +166,39 @@ test('models page shows and switches gear', async ($, on) => {
   await ui.unmount()
 })
 
+test('an older config read retried after a version miss keeps the newer gear snapshot', async ($, on) => {
+  const SNAPSHOT = { plugin: 'ziikoo-driver', key: 'snapshot' } as const
+  let stored: { value: unknown; version: number } = { value: { shape: 'snapshot-3', value: { kind: 'loading' } }, version: 1 }
+  let readySets = 0
+  on('state.get', SNAPSHOT, () => ({ value: stored }))
+  on('state.set', SNAPSHOT, async (_, e) => {
+    const ready = (e.value as { value: { kind: string } }).value.kind === 'ready'
+    if (ready && ++readySets === 2) await clock.sleep(1000)
+    if (e.ifVersion !== undefined && e.ifVersion !== stored.version) return { value: { isSet: false, version: stored.version } }
+    stored = { value: e.value, version: stored.version + 1 }
+    return { value: { isSet: true, version: stored.version } }
+  })
+  const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
+    config: nth => ran({ stdout: nth <= 2 ? RECORDED_GEAR_CONFIG : RECORDED_GEAR_MANUAL_CONFIG }),
+    gear: ran({}),
+  })
+  mock.env(on, { USER: 'test-operator' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+
+  const stale = $.command.run(runCommand)
+  await clock.settle()
+  await ui.press({ key: 'gear-toggle' })
+  await clock.advance(1000)
+  await stale
+  await ui.press({ key: 'page-models' })
+  expect(subcommands(calls).filter(one => one === 'config')).toHaveLength(3)
+  expect(await exactText(ui, '档位 手动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到自动挡')
+  await ui.unmount()
+})
+
 test('routing accepts override and profile sources; scheduler and environment keep their sources', () => {
   const profiled = parseConfig(RECORDED_GEAR_PROFILE_CONFIG)
   const chain = profiled.repos.find(one => one.name === 'ansible')?.routing.find(one => one.key === 'AGENT_TIER_CHAIN')
