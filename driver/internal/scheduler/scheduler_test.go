@@ -1052,7 +1052,7 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
 	}
 	// A notice that failed for certain is retried; a delivered one is not resent.
-	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent), nil}
+	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent), nil}
 	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
 		tickAt(offset, 3)
 	}
@@ -1143,7 +1143,7 @@ func TestOrcaRestartExhaustedNoticeResentOnlyWhenUndelivered(t *testing.T) {
 		err     func(*testing.T) error
 		notices int
 	}{
-		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent) }, 2},
+		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent) }, 2},
 		{"feishu business error", func(t *testing.T) error {
 			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`)
 		}, 2},
@@ -1361,8 +1361,12 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 		t.Setenv("AGENT_FEISHU_APP_ID", "app")
 		t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
 		notifier := &Runtime{Repositories: map[string]config.Repository{"/repo0": {Path: "/repo0", Env: map[string]string{"AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}}}
-		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errOrcaNoticeNotSent) || requests != 0 {
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errNoticeNotSent) || requests != 0 {
 			t.Fatalf("frozen maintenance sent the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
+		if noticeErr := notifier.NotifyHostMemory(context.Background(), status.HostMemory{Paused: true}); !errors.Is(noticeErr, errNoticeNotSent) || requests != 0 {
+			t.Fatalf("frozen maintenance sent the host memory notice: err=%v requests=%d", noticeErr, requests)
 		}
 		if err := maintenance.Set("running"); err != nil {
 			t.Fatal(err)
@@ -1723,6 +1727,42 @@ func TestHostMemoryHoldNotifiesOnceAfterFifteenMinutes(t *testing.T) {
 	}
 }
 
+func TestHostMemoryNoticeResentOnlyWhenUndelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     func(*testing.T) error
+		notices int
+	}{
+		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent) }, 2},
+		{"feishu business error", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`)
+		}, 2},
+		{"truncated response", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusOK, `{"code":0,"data":{"message_id":"om_`)
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := &hostMemoryNotifyBackend{err: tc.err(t)}
+			s := setup(&b.fakeBackend)
+			s.Backend = b
+			start := s.Now()
+			s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
+			for _, elapsed := range []time.Duration{0, 15 * time.Minute, 16 * time.Minute, 17 * time.Minute} {
+				s.Now = func() time.Time { return start.Add(elapsed) }
+				if err := s.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if len(b.notices) > 0 {
+					b.err = nil
+				}
+			}
+			if len(b.notices) != tc.notices {
+				t.Fatalf("notices=%d, want %d", len(b.notices), tc.notices)
+			}
+		})
+	}
+}
+
 func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	b := &hostMemoryNotifyBackend{}
 	s := setup(&b.fakeBackend)
@@ -1765,33 +1805,6 @@ func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 	}
 	if got := s.HostMemoryStatus().Since; !got.Equal(start) {
 		t.Errorf("snapshot since = %v, want %v", got, start)
-	}
-}
-
-func TestHostMemoryNotificationRetriesAfterFailure(t *testing.T) {
-	b := &hostMemoryNotifyBackend{err: errors.New("offline")}
-	s := setup(&b.fakeBackend)
-	s.Backend = b
-	now := s.Now()
-	s.Now = func() time.Time { return now }
-	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(15 * time.Minute)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	b.err = nil
-	now = now.Add(time.Minute)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(b.notices) != 2 {
-		t.Fatalf("notification attempts = %d, want 2", len(b.notices))
 	}
 }
 

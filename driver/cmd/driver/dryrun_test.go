@@ -87,7 +87,8 @@ func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 		{"serve held in its slice, this shell has room", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now}, 20 << 30, "/orca.slice"},
 		{"serve published room, this shell is below hold line", &status.HostMemory{Reading: hostmem.Reading{Source: "host", Available: 20 << 30}, ObservedAt: now}, 3 << 30, "host"},
 		{"hold left by a serve that stopped publishing", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(-time.Hour)}, 20 << 30, ""},
-		{"hold published exactly five minutes ago", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(-status.DefaultStaleAfter)}, 20 << 30, "/orca.slice"},
+		{"hold published exactly five minutes ago", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(-5 * time.Minute)}, 20 << 30, "/orca.slice"},
+		{"hold published just over five minutes ago", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(-5*time.Minute - time.Nanosecond)}, 20 << 30, ""},
 		{"hold stamped in the future", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(time.Hour)}, 20 << 30, ""},
 		{"hold from a snapshot without a timestamp", &status.HostMemory{Paused: true, Reading: slice}, 20 << 30, ""},
 	} {

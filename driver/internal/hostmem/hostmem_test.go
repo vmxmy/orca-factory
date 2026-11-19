@@ -1,6 +1,7 @@
 package hostmem
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -51,11 +52,12 @@ func TestParseRecordedProcSamples(t *testing.T) {
 	}
 }
 
-// The recorded host was idle, so every PSI value is 0.00. Give each line and
-// window a distinct value in the recorded format so only some avg60 matches.
-func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
+// The recorded samples were idle, so every PSI value is 0.00. Give each line
+// and window a distinct value in the recorded format so only some avg60 matches.
+func distinctPressure(t *testing.T, sample string) []byte {
+	t.Helper()
 	values := map[string]string{"some avg10": "11.11", "some avg60": "22.22", "some avg300": "33.33", "full avg10": "44.44", "full avg60": "55.55", "full avg300": "66.66"}
-	lines := strings.Split(string(recorded(t, "proc-pressure-memory.txt")), "\n")
+	lines := strings.Split(string(recorded(t, sample)), "\n")
 	for i, line := range lines {
 		fields := strings.Fields(line)
 		for j, field := range fields[min(1, len(fields)):] {
@@ -66,8 +68,12 @@ func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
 		}
 		lines[i] = strings.Join(fields, " ")
 	}
-	pressure := strings.Join(lines, "\n")
-	got := readProc(t, recorded(t, "proc-meminfo.txt"), []byte(pressure))
+	return []byte(strings.Join(lines, "\n"))
+}
+
+func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
+	pressure := distinctPressure(t, "proc-pressure-memory.txt")
+	got := readProc(t, recorded(t, "proc-meminfo.txt"), pressure)
 	if want := (Reading{Source: "host", Available: 33843404 * 1024, SomeAvg60: 22.22}); got != want {
 		t.Fatalf("Read = %+v, want %+v from %q", got, want, pressure)
 	}
@@ -249,26 +255,30 @@ func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
 }
 
 func TestCgroupAvailableAccountsForCacheAndOverLimitUsage(t *testing.T) {
+	const limit, file = 10_000_000_000, 3171840000 + 1142583296 // file: recorded inactive_file + active_file
 	for _, tc := range []struct {
-		current, stat string
-		want          uint64
+		current, want uint64
 	}{
-		{"120", "inactive_file 10\nactive_file 30\n", 20},
-		{"150", "inactive_file 10\nactive_file 30\n", 0},
-		{"20", "inactive_file 10\nactive_file 30\n", 120},
+		{limit - 100, 100 + file},
+		{limit + 20, file - 20},
+		{limit + file + 50, 0},
 	} {
 		dir := t.TempDir()
-		for name, value := range map[string]string{"memory.current": tc.current, "memory.stat": tc.stat, "memory.pressure": "some avg10=1.00 avg60=30.00 avg300=3.00 total=0\nfull avg10=4.00 avg60=5.00 avg300=6.00 total=0\n"} {
-			if err := os.WriteFile(filepath.Join(dir, name), []byte(value), 0600); err != nil {
+		for name, value := range map[string][]byte{
+			"memory.current":  []byte(fmt.Sprintf("%d\n", tc.current)),
+			"memory.stat":     recorded(t, "cgroup-memory/workloads-memory.stat.txt"),
+			"memory.pressure": distinctPressure(t, "cgroup-memory/workloads-memory.pressure.txt"),
+		} {
+			if err := os.WriteFile(filepath.Join(dir, name), value, 0600); err != nil {
 				t.Fatal(err)
 			}
 		}
-		got, err := readCgroup(dir, []byte("100\n"))
+		got, err := readCgroup(dir, []byte(fmt.Sprintf("%d\n", uint64(limit))))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Available != tc.want || got.SomeAvg60 != 30 {
-			t.Fatalf("current=%s: reading=%+v, want available=%d and some avg60=30", tc.current, got, tc.want)
+		if got.Available != tc.want || got.SomeAvg60 != 22.22 {
+			t.Fatalf("current=%d: reading=%+v, want available=%d and some avg60=22.22", tc.current, got, tc.want)
 		}
 	}
 }

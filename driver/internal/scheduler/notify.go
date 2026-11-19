@@ -188,19 +188,25 @@ func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket)
 	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：Orca 仍不可达或 terminal create 探测仍失败，driver 不再重启 orca-serve，只继续读取自动化状态或探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
 }
 
-// errOrcaNoticeNotSent marks an Orca runtime notice that failed before any
-// request reached Feishu, so sending it again cannot duplicate it.
-var errOrcaNoticeNotSent = errors.New("orca runtime notice not sent")
+// errNoticeNotSent marks a notice that failed before any request reached
+// Feishu, so sending it again cannot duplicate it.
+var errNoticeNotSent = errors.New("notice not sent")
 
 func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
+	return sendNoticeText(ctx, r.Repositories[ticket.Repo].Env, text)
+}
+
+// sendNoticeText holds the maintenance write lock through the send, so a
+// frozen driver sends nothing and a freeze waits for a send in flight.
+func sendNoticeText(ctx context.Context, env map[string]string, text string) error {
 	release, err := maintenance.Write()
 	if err != nil {
-		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	defer release()
-	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
+	settings, err := config.FeishuNotifySettings(env)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
@@ -208,28 +214,16 @@ func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text s
 	}
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
-		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	return sender.SendText(ctx, chat, text)
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.
 func (r *Runtime) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
-	settings, err := config.FeishuNotifySettings(nil)
-	if err != nil {
-		return err
-	}
-	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
-	if chat == "" {
-		return nil
-	}
-	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
-	if err != nil {
-		return err
-	}
 	now := time.Now()
 	if r.Now != nil {
 		now = r.Now()
 	}
-	return sender.SendText(ctx, chat, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
+	return sendNoticeText(ctx, nil, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
 }
