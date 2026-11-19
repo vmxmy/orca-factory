@@ -168,7 +168,18 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 		if err != nil {
 			return orca.Repo{}, err
 		}
-	} else {
+	} else if info, statErr := os.Stat(selector); statErr == nil && info.IsDir() {
+		// A bare name is a path only when it is a registered checkout, so a
+		// subdirectory that happens to share a prefix still selects the prefix.
+		candidate, pathErr := physicalPath(selector)
+		if pathErr != nil {
+			return orca.Repo{}, pathErr
+		}
+		if slices.ContainsFunc(repos, func(repo orca.Repo) bool { return resolvesTo(repo.Path, candidate) }) {
+			root = candidate
+		}
+	}
+	if root == "" {
 		remotes, err = gearPrefixRemotes(ctx, selector, repos, tuning)
 		if err != nil {
 			return orca.Repo{}, err

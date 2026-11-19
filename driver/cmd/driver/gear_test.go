@@ -181,9 +181,14 @@ func TestGearCommands(t *testing.T) {
 	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {
 		t.Fatalf("clear .. with Feishu offline: %+v", entries)
 	}
+	t.Chdir(filepath.Dir(f.factory))
+	invokeGear(t, "set", filepath.Base(f.factory), "manual", "--operator", "t", "--reason", "bare relative directory")
+	if got := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]; got.Mode != "manual" || got.Path != f.factory {
+		t.Fatalf("set by a bare relative directory with Feishu offline: %+v", got)
+	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 10 {
-		t.Fatalf("logs=%q, want ten changes", logs.String())
+	if len(lines) != 11 {
+		t.Fatalf("logs=%q, want eleven changes", logs.String())
 	}
 	for _, line := range lines {
 		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `remote="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
