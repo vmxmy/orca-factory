@@ -193,30 +193,31 @@ func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket)
 var errNoticeNotSent = errors.New("notice not sent")
 
 func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
-	return sendNoticeText(ctx, r.Repositories[ticket.Repo].Env, text)
+	_, err := sendNoticeText(ctx, r.Repositories[ticket.Repo].Env, text)
+	return err
 }
 
-// sendNoticeText holds the maintenance write lock through the send, so a
-// frozen driver sends nothing and a freeze waits for a send in flight.
-func sendNoticeText(ctx context.Context, env map[string]string, text string) error {
+// sendNoticeText reports whether it attempted a send and holds the
+// maintenance write lock until the send completes.
+func sendNoticeText(ctx context.Context, env map[string]string, text string) (bool, error) {
 	release, err := maintenance.Write()
 	if err != nil {
-		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	defer release()
 	settings, err := config.FeishuNotifySettings(env)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
-		return nil
+		return false, nil
 	}
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
-		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
-	return sender.SendText(ctx, chat, text)
+	return true, sender.SendText(ctx, chat, text)
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.
@@ -225,5 +226,9 @@ func (r *Runtime) NotifyHostMemory(ctx context.Context, memory status.HostMemory
 	if r.Now != nil {
 		now = r.Now()
 	}
-	return sendNoticeText(ctx, nil, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
+	sent, err := sendNoticeText(ctx, nil, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
+	if !sent && err == nil {
+		return fmt.Errorf("%w: AGENT_FEISHU_NOTIFY_CHAT is empty", errNoticeNotSent)
+	}
+	return err
 }

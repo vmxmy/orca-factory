@@ -1606,7 +1606,7 @@ func TestDoctorWarnsOnHostMemoryHold(t *testing.T) {
 		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", "读不到主机内存读数，调度器不按内存暂停：read /proc/pressure/memory: no such file", "", []string{"/proc/pressure/memory"}},
 		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", "未记录主机内存暂停", "host", nil},
 		{`{"paused":false,"reading":{"available":3221225472,"someAvg60":30,"source":"host"},"error":"read /proc/meminfo: denied"}`, "warn", "读不到主机内存读数，调度器不按内存暂停：read /proc/meminfo: denied", "host", []string{"3221225472", `"error"`, "/proc/meminfo"}},
-		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "读不到 cgroup 内存读数，仅按主机读数判断：read memory.stat: denied", "host", []string{`"cgroup_error"`, "memory.stat"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "cgroup 读取失败，按主机与本轮读到的层级判断：read memory.stat: denied", "host", []string{`"cgroup_error"`, "memory.stat"}},
 		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":3221225472,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "主机内存吃紧，已暂停认领与新建终端；读不到 cgroup 内存读数：read memory.stat: denied", "host", []string{"2026-11-19T10:00:00Z", `"cgroup_error"`, "memory.stat"}},
 	} {
 		writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"hostMemory":%s,"tickets":[]}`, f.now.Format(time.RFC3339Nano), tc.hostMemory), 0600)

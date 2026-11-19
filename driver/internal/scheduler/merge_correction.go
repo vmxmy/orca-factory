@@ -25,11 +25,6 @@ func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, resu
 	// Lane 3 never reaches a resolver: automerge authorization excludes it, so
 	// the ticket transfers straight to a human instead of Agent处置.
 	direct := result.Status == merge.HumanDirect && !human
-	// A held correction writes nothing; the merge lane reaches it again.
-	if result.Status == merge.Correction && !human && r.memoryHeld {
-		r.deferredCorrections = append(r.deferredCorrections, t)
-		return nil
-	}
 	if result.Status == merge.Correction {
 		p.Phase = "correction"
 		p.Attempt = max(p.Attempt, t.Attempt)

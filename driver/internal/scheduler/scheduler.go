@@ -618,13 +618,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
 	}); ok && !s.orcaRuntime.Paused {
-		holder, holds := s.Backend.(interface {
-			HoldLaunches(bool)
-			TakeDeferredCorrections() []Ticket
-		})
-		if holds {
-			holder.HoldLaunches(memoryHeld)
-		}
 		counter, counted := s.Backend.(interface{ OrcaTerminalCreates() (int, int) })
 		createdBefore := 0
 		if counted {
@@ -647,11 +640,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				s.orcaRuntime.Paused, s.orcaRuntime.PausedAt = paused, pausedAt
 			}
 			s.orcaRuntime.Failures = failures
-		}
-		if holds {
-			for _, t := range holder.TakeDeferredCorrections() {
-				s.decision(t, "skip", "memory", "action", "merge-correction")
-			}
 		}
 	}
 	lap("merge")
@@ -1048,17 +1036,17 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 
 const hostMemoryNotifyAfter = 15 * time.Minute
 
-// checkHostMemory uses a valid host fallback when cgroup files cannot be read.
+// checkHostMemory applies the host and all readable cgroup limits each round.
 func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 	if s.HostMemory == nil {
 		return
 	}
 	reading, err := s.HostMemory()
-	if err != nil && reading.Source != "host" {
+	if err != nil && reading.Source == "" {
 		if s.hostMemory.Error == "" {
 			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
 		}
-		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error(), ObservedAt: now}
+		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error()}
 		return
 	}
 	if s.hostMemory.Error != "" {
@@ -1068,7 +1056,7 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 	if err != nil {
 		cgroupError = err.Error()
 		if s.hostMemory.CgroupError == "" {
-			s.logger().Warn("cgroup memory unreadable, using host reading", "err", err)
+			s.logger().Warn("cgroup memory read failed, using readable levels", "source", reading.Source, "err", err)
 		}
 	} else if s.hostMemory.CgroupError != "" {
 		s.logger().Warn("cgroup memory readable again")
@@ -1085,7 +1073,7 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 		s.memoryPausedSince = now
 		s.memoryNotified = false
 	}
-	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError, ObservedAt: now}
+	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError}
 	if held && !s.memoryNotified && now.Sub(s.memoryPausedSince) >= hostMemoryNotifyAfter {
 		if notifier, ok := s.Backend.(interface {
 			NotifyHostMemory(context.Context, status.HostMemory) error
@@ -1099,12 +1087,6 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 			}
 		}
 	}
-}
-
-// SeedHostMemory starts from a hold another scheduler published, so a dry-run
-// applies the running service's release line instead of its hold line.
-func (s *Scheduler) SeedHostMemory(memory status.HostMemory) {
-	s.memoryHeld, s.memoryHeldSince = memory.Paused, memory.Since
 }
 
 // HostMemoryStatus is the host memory hold serve publishes in its status.

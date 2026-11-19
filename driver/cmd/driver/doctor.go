@@ -826,7 +826,7 @@ func (p doctorProbe) checkHostMemory() healthCheck {
 	if memory.CgroupError != "" {
 		detail["cgroup_error"] = memory.CgroupError
 		if !memory.Paused {
-			return healthCheck{Status: healthWarn, Reason: "读不到 cgroup 内存读数，仅按主机读数判断：" + memory.CgroupError, Details: detail}
+			return healthCheck{Status: healthWarn, Reason: "cgroup 读取失败，按主机与本轮读到的层级判断：" + memory.CgroupError, Details: detail}
 		}
 		pausedReason += "；读不到 cgroup 内存读数：" + memory.CgroupError
 	}

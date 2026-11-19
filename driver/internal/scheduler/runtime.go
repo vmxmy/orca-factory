@@ -75,10 +75,6 @@ type Runtime struct {
 	// orcaFailures counts consecutive terminal create runtime_error answers
 	// across every launch path; any terminal create success resets it.
 	orcaFailures int
-	// memoryHeld mirrors the scheduler's host memory hold for the merge
-	// lane, whose corrections launch outside the scheduler's admission checks.
-	memoryHeld          bool
-	deferredCorrections []Ticket
 	// orcaCreated counts executor terminal create successes, so the scheduler
 	// sees merge-lane launches that return no error.
 	orcaCreated int
@@ -795,17 +791,6 @@ func launchLog(identifier string) string {
 // and the executor terminal create success count, including launches the
 // scheduler only sees through the merge lane.
 func (r *Runtime) OrcaTerminalCreates() (failures, created int) { return r.orcaFailures, r.orcaCreated }
-
-// HoldLaunches applies the scheduler's host memory hold to merge corrections.
-func (r *Runtime) HoldLaunches(held bool) { r.memoryHeld = held }
-
-// TakeDeferredCorrections returns and clears the merge corrections the hold
-// deferred, including those inside a self-deployment batch.
-func (r *Runtime) TakeDeferredCorrections() []Ticket {
-	deferred := r.deferredCorrections
-	r.deferredCorrections = nil
-	return deferred
-}
 
 var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
 

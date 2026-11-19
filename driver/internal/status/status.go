@@ -164,15 +164,13 @@ type OrcaRuntime struct {
 // HostMemory reports the memory hold on new terminal launches.
 // Reading.Source identifies the limiting host or cgroup. On a host read
 // failure, Error is set, Reading keeps its last valid value, and launches
-// proceed. With CgroupError set, the host reading alone determines the hold.
+// proceed. With CgroupError set, Reading combines the host and readable cgroups.
 type HostMemory struct {
 	Paused      bool            `json:"paused"`
 	Since       time.Time       `json:"since,omitzero"`
 	Reading     hostmem.Reading `json:"reading,omitzero"`
 	Error       string          `json:"error,omitempty"`
 	CgroupError string          `json:"cgroupError,omitempty"`
-	// ObservedAt is the scheduler round that produced this state.
-	ObservedAt time.Time `json:"observedAt,omitzero"`
 }
 
 // View.GeneratedAt records the last successful full scheduler observation.

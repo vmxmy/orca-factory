@@ -201,16 +201,46 @@ func TestEffectiveReadingTakesTightestSource(t *testing.T) {
 	}
 }
 
+func TestCgroupReadFailureKeepsReadableLevels(t *testing.T) {
+	base := "/user.slice/user-1000.slice/user@1000.service/orca.slice"
+	workloads := base + "/orca-workloads.slice"
+	leaf := strings.TrimSpace(strings.TrimPrefix(string(recorded(t, "cgroup-memory/proc-self-cgroup.txt")), "0::"))
+	wantWorkloads := Reading{Source: workloads, Available: 34359738368 - 8672956416 + 3171840000 + 1142583296}
+	wantParent := Reading{Source: base, Available: 38654705664 - 10319032320 + 3360944128 + 1410326528}
+	for _, tc := range []struct {
+		name, path string
+		remove     []string
+		wantErr    string
+		want       Reading
+	}{
+		{"missing parent stat", base, []string{"memory.stat"}, "memory.stat", wantWorkloads},
+		{"missing child stat", workloads, []string{"memory.stat"}, "orca-workloads.slice", wantParent},
+		{"non-cgroup leaf", leaf, []string{"memory.max", "cgroup.controllers"}, "cgroup.controllers", wantWorkloads},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := cgroupFixture(t)
+			for _, file := range tc.remove {
+				if err := os.Remove(filepath.Join(root, "sys/fs/cgroup", tc.path, file)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Read(root)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("error = %v, want error containing %q", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Fatalf("Read = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
 	rootCgroup := recorded(t, "cgroup-memory/proc-root-cgroup.txt")
-	leaf := strings.TrimSpace(strings.TrimPrefix(string(recorded(t, "cgroup-memory/proc-self-cgroup.txt")), "0::"))
 	for _, tc := range []struct {
 		name, wantErr string
 		breakFixture  func(root string) error
 	}{
-		{"missing stat file", "memory.stat", func(root string) error {
-			return os.Remove(filepath.Join(root, "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat"))
-		}},
 		{"missing cgroup tree", "sys/fs/cgroup", func(root string) error {
 			return os.RemoveAll(filepath.Join(root, "sys"))
 		}},
@@ -223,13 +253,6 @@ func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
 				return err
 			}
 			return os.MkdirAll(dir, 0o755)
-		}},
-		{"non-cgroup leaf", "cgroup.controllers", func(root string) error {
-			dir := filepath.Join(root, "sys/fs/cgroup", leaf)
-			if err := os.Remove(filepath.Join(dir, "memory.max")); err != nil {
-				return err
-			}
-			return os.Remove(filepath.Join(dir, "cgroup.controllers"))
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

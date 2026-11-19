@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,7 +22,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
-	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -921,60 +921,6 @@ func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
 	}
 }
 
-// mergeHoldBackend runs one real merge correction decision per merge lane round.
-type mergeHoldBackend struct {
-	*fakeBackend
-	runtime *Runtime
-	ticket  Ticket
-}
-
-func (b *mergeHoldBackend) HoldLaunches(held bool) { b.runtime.HoldLaunches(held) }
-func (b *mergeHoldBackend) TakeDeferredCorrections() []Ticket {
-	return b.runtime.TakeDeferredCorrections()
-}
-func (b *mergeHoldBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
-	return b.runtime.mergeDecision(ctx, b.ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "merged-result gate failed; return to scheduler"})
-}
-
-// A merge correction reached while host memory is held writes nothing and
-// creates no terminal; the first round after release records and launches it.
-func TestMergeCorrectionWaitsWhileHostMemoryHeld(t *testing.T) {
-	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
-	rt, ticket, client, oc := mergeCorrectionFixture(t, 1)
-	f := &fakeBackend{absent: true, inactive: true}
-	s := setup(f)
-	s.Backend = &mergeHoldBackend{fakeBackend: f, runtime: rt, ticket: ticket}
-	reading := hostmem.Reading{Source: "host", Available: 5 << 30}
-	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
-	skipped := false
-	for _, decision := range captureDecisions(t, s) {
-		skipped = skipped || (decision["ticket_id"] == ticket.ID && decision["event"] == "skip" && decision["reason"] == "memory")
-	}
-	if len(oc.launches) != 0 || len(client.comments) != 0 || !skipped {
-		t.Fatalf("held merge correction: launches=%d comments=%v memory skip=%v", len(oc.launches), client.comments, skipped)
-	}
-	reading = hostmem.Reading{Source: "host", Available: 30 << 30}
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(oc.launches) != 1 || !strings.HasPrefix(oc.launches[0].Command, "exec '/driver' exec --merging 'ENG-1'") {
-		t.Fatalf("released merge correction launches: %+v", oc.launches)
-	}
-	after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, client.issueComments)
-	if after.Progress == nil || after.Progress.Corrections != 2 || after.Progress.Attempt != 1 || after.Progress.QueueID != "original_queue" {
-		t.Fatalf("correction budget, attempt or queue changed: %+v", after.Progress)
-	}
-	// An exhausted correction budget needs no terminal and still transfers.
-	exhausted, ticket, client, oc := mergeCorrectionFixture(t, 1)
-	exhausted.HoldLaunches(true)
-	if err := exhausted.mergeDecision(context.Background(), ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: machine.DefaultLimits.Corrections, Reason: "gate failed"}); err != nil {
-		t.Fatal(err)
-	}
-	if len(oc.launches) != 0 || len(client.comments) != 1 || !strings.Contains(client.comments[0], "Agent处置") || len(exhausted.TakeDeferredCorrections()) != 0 {
-		t.Fatalf("held exhausted correction: launches=%d comments=%v", len(oc.launches), client.comments)
-	}
-}
-
 // Any terminal create success ends the consecutive run, including one from a
 // merge correction the scheduler never sees succeed.
 func TestOrcaRuntimeMergeCorrectionSuccessClearsCount(t *testing.T) {
@@ -1696,6 +1642,37 @@ func (b *hostMemoryNotifyBackend) NotifyHostMemory(_ context.Context, memory sta
 	return b.err
 }
 
+func TestNotifyHostMemoryWithoutChatIsNotSent(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(feishuTokenIssued))
+			return
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	t.Setenv("AGENT_FEISHU_APP_ID", "app")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "")
+
+	rt := &Runtime{}
+	memory := status.HostMemory{Paused: true, Since: time.Now().Add(-15 * time.Minute)}
+	err := rt.NotifyHostMemory(context.Background(), memory)
+	if !errors.Is(err, errNoticeNotSent) || requests.Load() != 0 {
+		t.Fatalf("without chat: err=%v requests=%d, want errNoticeNotSent and zero requests", err, requests.Load())
+	}
+	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
+	err = rt.NotifyHostMemory(context.Background(), memory)
+	if err != nil || requests.Load() == 0 {
+		t.Fatalf("with chat: err=%v requests=%d, want a successful send", err, requests.Load())
+	}
+}
+
 func TestHostMemoryHoldNotifiesOnceAfterFifteenMinutes(t *testing.T) {
 	b := &hostMemoryNotifyBackend{}
 	s := setup(&b.fakeBackend)
@@ -1772,42 +1749,53 @@ func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
 }
 
 func TestHostMemoryNotificationRetriesAfterFailure(t *testing.T) {
-	b := &hostMemoryNotifyBackend{err: errors.New("offline")}
+	b := &hostMemoryNotifyBackend{}
 	s := setup(&b.fakeBackend)
 	s.Backend = b
-	now := s.Now()
-	s.Now = func() time.Time { return now }
-	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 3 << 30}, nil }
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	now = now.Add(15 * time.Minute)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	b.err = nil
-	now = now.Add(time.Minute)
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(b.notices) != 2 {
-		t.Fatalf("notification attempts = %d, want 2", len(b.notices))
+	start := s.Now()
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Source: "host", Available: 3 << 30}, nil }
+	offline := errors.New("offline")
+	for _, step := range []struct {
+		minute   time.Duration
+		err      error
+		attempts int
+	}{
+		{0, offline, 0},
+		{15, offline, 1},
+		{16, offline, 2},
+		{17, nil, 3},
+		{18, nil, 3},
+		{78, nil, 3},
+	} {
+		s.Now = func() time.Time { return start.Add(step.minute * time.Minute) }
+		b.err = step.err
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(b.notices); got != step.attempts {
+			t.Fatalf("at minute %d: notification attempts = %d, want %d", step.minute, got, step.attempts)
+		}
 	}
 }
 
 func TestHostMemoryCgroupErrorStillUsesHostReading(t *testing.T) {
+	testHostMemoryCgroupError(t, hostmem.Reading{Source: "host", Available: 3 << 30})
+}
+
+func TestHostMemoryCgroupErrorKeepsCgroupReading(t *testing.T) {
+	testHostMemoryCgroupError(t, hostmem.Reading{Source: "/orca.slice", Available: 3 << 30})
+}
+
+func testHostMemoryCgroupError(t *testing.T, reading hostmem.Reading) {
+	t.Helper()
 	s := setup(&fakeBackend{})
-	reading := hostmem.Reading{Available: 3 << 30, Source: "host"}
 	s.HostMemory = func() (hostmem.Reading, error) { return reading, errors.New("read cgroup memory.stat: denied") }
 	if err := s.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	got := s.HostMemoryStatus()
 	if !got.Paused || got.Reading != reading || !strings.Contains(got.CgroupError, "memory.stat") || got.Error != "" {
-		t.Fatalf("fallback status = %+v", got)
+		t.Fatalf("status = %+v, want paused with reading %+v and a cgroup error", got, reading)
 	}
 }
 

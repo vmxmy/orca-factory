@@ -29,7 +29,8 @@ type Reading struct {
 }
 
 // Read combines host memory with finite cgroup ancestor budgets; production passes "".
-// A cgroup error returns a valid host reading alongside the error.
+// On error, a nonempty Source means the reading combines the host and all
+// readable finite cgroups. An empty Source means the host could not be read.
 func Read(root string) (Reading, error) {
 	meminfo, err := os.ReadFile(root + "/proc/meminfo")
 	if err != nil {
@@ -49,10 +50,7 @@ func Read(root string) (Reading, error) {
 	}
 	host := Reading{Available: available, SomeAvg60: some, Source: "host"}
 	ancestors, err := readCgroupAncestors(root)
-	if err != nil {
-		return host, err
-	}
-	return effectiveReading(host, ancestors), nil
+	return effectiveReading(host, ancestors), err
 }
 
 func memAvailable(data []byte) (uint64, error) {
@@ -119,32 +117,31 @@ func readCgroupAncestors(root string) ([]Reading, error) {
 		return nil, nil
 	}
 	var readings []Reading
+	var firstErr error
 	for {
 		dir := root + "/sys/fs/cgroup" + path
 		limit, err := os.ReadFile(filepath.Join(dir, "memory.max"))
-		switch {
-		case errors.Is(err, os.ErrNotExist):
+		if errors.Is(err, os.ErrNotExist) {
 			// Every cgroup v2 directory, including the root, has cgroup.controllers.
 			// An unmounted or non-cgroup directory lacks this file.
-			if _, statErr := os.Stat(filepath.Join(dir, "cgroup.controllers")); statErr != nil {
-				return nil, fmt.Errorf("cgroup %s: %w", path, statErr)
+			_, err = os.Stat(filepath.Join(dir, "cgroup.controllers"))
+		} else if err == nil && strings.TrimSpace(string(limit)) != "max" {
+			var reading Reading
+			reading, err = readCgroup(dir, limit)
+			if err == nil {
+				reading.Source = path
+				readings = append(readings, reading)
 			}
-		case err != nil:
-			return nil, err
-		case strings.TrimSpace(string(limit)) != "max":
-			reading, err := readCgroup(dir, limit)
-			if err != nil {
-				return nil, fmt.Errorf("cgroup %s: %w", path, err)
-			}
-			reading.Source = path
-			readings = append(readings, reading)
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("cgroup %s: %w", path, err)
 		}
 		if path == "/" {
 			break
 		}
 		path = filepath.Dir(path)
 	}
-	return readings, nil
+	return readings, firstErr
 }
 
 func readCgroup(dir string, limit []byte) (Reading, error) {
