@@ -20,6 +20,7 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   reviewer_small: '小票审查',
   second_reviewer: '交叉复审',
   resolver: '二线',
+  resolver_top: '终审',
   intake: '需求助手',
 }
 
