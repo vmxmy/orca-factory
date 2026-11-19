@@ -877,10 +877,12 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
 				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
 				// Feishu has no idempotency key, so only a notice that never reached
-				// it or that it rejected with a business code is sent again; a lost
-				// or unreadable response may mean it was delivered.
+				// it or that it rejected (a business code, or a refused token or
+				// permission) is sent again; a lost or unreadable response may mean
+				// it was delivered.
 				var rejected *feishu.APIError
-				if errors.Is(err, errOrcaNoticeNotSent) || errors.As(err, &rejected) {
+				var refused *infra.Global
+				if errors.Is(err, errOrcaNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep {
 					return
 				}
 			}

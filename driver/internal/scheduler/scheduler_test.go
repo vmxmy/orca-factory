@@ -1037,13 +1037,15 @@ func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
 	}
 }
 
-// feishuSendTextErr is what the Feishu client returns when the message endpoint
-// answers with status and body.
-func feishuSendTextErr(t *testing.T, status int, body string) error {
+const feishuTokenIssued = `{"code":0,"tenant_access_token":"token","expire":7200}`
+
+// feishuSendTextErr is what the Feishu client returns when the token endpoint
+// answers token and the message endpoint answers with status and body.
+func feishuSendTextErr(t *testing.T, token string, status int, body string) error {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
-			_, _ = w.Write([]byte(`{"code":0,"tenant_access_token":"token","expire":7200}`))
+			_, _ = w.Write([]byte(token))
 			return
 		}
 		w.WriteHeader(status)
@@ -1066,10 +1068,11 @@ func TestOrcaRestartExhaustedNoticeResentOnlyWhenUndelivered(t *testing.T) {
 		notices int
 	}{
 		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent) }, 2},
-		{"feishu business error", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`) }, 2},
+		{"feishu business error", func(t *testing.T) error { return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`) }, 2},
+		{"token rejected", func(t *testing.T) error { return feishuSendTextErr(t, `{"code":10003,"msg":"invalid app_id"}`, http.StatusOK, "") }, 2},
 		{"transport failed", func(*testing.T) error { return &infra.Transient{Err: errors.New("feishu transport failed")} }, 1},
-		{"truncated response", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusOK, `{"code":0,"data":{"message_id":"om_`) }, 1},
-		{"unreadable server error", func(t *testing.T) error { return feishuSendTextErr(t, http.StatusBadGateway, "bad gateway") }, 1},
+		{"truncated response", func(t *testing.T) error { return feishuSendTextErr(t, feishuTokenIssued, http.StatusOK, `{"code":0,"data":{"message_id":"om_`) }, 1},
+		{"unreadable server error", func(t *testing.T) error { return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadGateway, "bad gateway") }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
