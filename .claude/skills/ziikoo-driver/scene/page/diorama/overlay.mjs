@@ -216,16 +216,17 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
   const shownOf = (stop, selected) => {
     const global = stop === 1
     const neighborhood = stop === 3 ? stationNeighborhood(tickets.find(ticket => ticket.parcel.key === selected).parcel.station) : null
+    const labelPriority = parcel => parcel.key === selected ? 2 : mode === RENDER_MODE.CLEAN && parcel.key === hovered?.key ? 1 : 0
     const marked = tickets
       .filter(ticket => visibleIn(mode, 'ticket', { parcel: ticket.parcel, hovered: hovered?.key === ticket.parcel.key, selected: ticket.parcel.key === selected }))
-      .sort((left, right) => Number(right.parcel.key === selected || right.parcel.key === hovered?.key) - Number(left.parcel.key === selected || left.parcel.key === hovered?.key))
+      .sort((left, right) => labelPriority(right.parcel) - labelPriority(left.parcel))
     return {
-      tickets: marked,
+      tickets: global && mode === RENDER_MODE.CLEAN ? [] : marked,
       plates: global ? [...plates, ...(hub && visibleIn(mode, 'hub', { state: hubState }) ? [hub] : [])] : [],
       stations: global ? [] : stations.filter(item => {
         const over = hovered?.station === item.station
         return (!neighborhood || neighborhood.includes(item.station))
-          && (mode === RENDER_MODE.CLEAN || viewport.width > LABEL_MIN_WIDTH || over)
+          && (mode === RENDER_MODE.CLEAN || viewport.width > LABEL_MIN_WIDTH)
           && visibleIn(mode, 'station', { occupied: item.occupied, hovered: over })
       }),
     }

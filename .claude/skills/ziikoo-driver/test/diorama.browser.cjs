@@ -411,6 +411,13 @@ async function checkCleanMode(browser, url) {
     await resize({ width: 600, height: before.height })
     assert.equal(await page.locator('.label.station[data-station="work"]').isVisible(), true, 'an occupied station keeps its label at 600px')
     assert.equal(await page.locator('.label.station[data-station="review"]').isVisible(), false, 'an empty station stays hidden at 600px')
+    await page.keyboard.press('v')
+    await frames(page)
+    await moveTo({ x: 2.5, y: 2, z: 0 })
+    assert.equal(await stationLabels.count(), 0, 'full mode keeps the 620px station label threshold while hovering')
+    await page.mouse.move(0, 0)
+    await page.keyboard.press('v')
+    await frames(page)
     await resize(before)
     await page.locator('canvas').focus()
     const framed = (await state(page)).goal
@@ -500,6 +507,7 @@ async function checkCleanIslandStatus(browser, url) {
     await page.getByRole('button', { name: '1 全局', exact: true }).click()
     await frames(page)
     assert.deepEqual(await page.locator('button.plate').allTextContents(), ['idle', 'busy', 'blocked', 'stuck🔒1 卡住'])
+    assert.equal(await page.locator('.label.ticket:visible').count(), 0, 'the clean global view shows plates only, no ticket labels')
     assert.deepEqual(await page.locator('.island-dot').evaluateAll(nodes => nodes.map(node => getComputedStyle(node).backgroundColor)), ['rgb(119, 114, 127)', 'rgb(63, 111, 216)', 'rgb(238, 166, 27)', 'rgb(224, 68, 46)'])
     assert.equal(await page.locator('.plate.hub').isVisible(), false)
     assert.equal(await page.locator('.status').innerText(), 'driver ok')
@@ -583,6 +591,13 @@ async function checkStationTagsAndNeighborhood(browser, url) {
         assert.ok(x >= 0.18 && x <= 0.82 && y >= 0.18 && y <= 0.82, `repair tower must have 18% padding on every side at width ${width}: ${x}, ${y}`)
       }
       assert.ok(result.labels.some(label => label.text.includes('OF-419') && label.text.includes('+1')), 'selected OF-419 must represent overlapping OF-415 with +1')
+      const overlapped = await page.evaluate(() => window.diorama.archipelago.tickets.find(ticket => ticket.identifier === 'OF-415'))
+      const pointer = pixelOf((await state(page)).view, { ...overlapped.slot, y: overlapped.slot.y + 0.2 }, page.viewportSize())
+      await page.mouse.move(pointer.x, pointer.y)
+      await frames(page)
+      assert.ok((await page.locator('.label.ticket:visible').allTextContents()).some(text => text.includes('OF-419') && text.includes('+1')), `hovering OF-415 in full mode must keep selected OF-419 as the folded label at width ${width}`)
+      await page.mouse.move(0, 0)
+      await frames(page)
       for (const [index, label] of result.labels.entries()) {
         for (const other of result.labels.slice(index + 1)) {
           assert.ok(label.right <= other.left || other.right <= label.left || label.bottom <= other.top || other.bottom <= label.top, `${label.text} and ${other.text} must not overlap`)
