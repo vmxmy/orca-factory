@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -101,6 +102,7 @@ var configRoles = []struct {
 }
 
 var configRouting = []struct{ key, fallback string }{
+	{"AGENT_MODE", "manual"},
 	{"AGENT_TIER_ESCALATE", ""},
 	{"AGENT_TIER_CHAIN", config.DefaultTierChain},
 	{"AGENT_REVIEWER_SMALL_MAX_ESTIMATE", "2"},
@@ -195,6 +197,16 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 	}
 	for _, p := range result.Eligible {
 		roles := repositoryRoles(p.Repository.Env, p.Repository.Sources)
+		if raw := p.Repository.Env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
+			// doctor builds its own resolver_top row, so only config lists it here.
+			top := configRole{Role: "resolver_top", Key: "AGENT_ROLE_RESOLVER_TOP", Raw: raw, Source: "repository"}
+			top.Agent, top.Model, top.Effort = dispatchTier(raw)
+			at := slices.IndexFunc(roles, func(role configRole) bool { return role.Role == "intake" })
+			if at < 0 {
+				at = len(roles)
+			}
+			roles = slices.Insert(roles, at, top)
+		}
 		for i := range roles {
 			if source, ok := p.Repository.Sources[roles[i].Key]; ok {
 				roles[i].Source = source
@@ -202,7 +214,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		}
 		routing := repositoryRouting(p.Repository.Env)
 		for i := range routing {
-			if source := p.Repository.Sources[routing[i].Key]; strings.HasPrefix(source, "profile:") {
+			if source := p.Repository.Sources[routing[i].Key]; strings.HasPrefix(source, "profile:") || source == "override" {
 				routing[i].Source = source
 			}
 		}

@@ -369,9 +369,11 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
       "profile": "daily",
       "roles": [
         {"role": "worker_default", "agent": "codex", "model": "gpt-6.1-sol", "effort": "high", "key": "AGENT_TIER_DEFAULT", "raw": "codex:gpt-6.1-sol:high", "source": "profile:daily"},
-        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER", "raw": "codex:gpt-6-astra:high", "source": "repository"}
+        {"role": "reviewer", "agent": "codex", "model": "gpt-6-astra", "effort": "high", "key": "AGENT_ROLE_REVIEWER", "raw": "codex:gpt-6-astra:high", "source": "repository"},
+        {"role": "resolver_top", "agent": "codex", "model": "gpt-6.2-astra", "effort": "max", "key": "AGENT_ROLE_RESOLVER_TOP", "raw": "codex:gpt-6.2-astra:max", "source": "repository"}
       ],
       "routing": [
+        {"key": "AGENT_MODE", "value": "manual", "source": "override", "set": true},
         {"key": "AGENT_TIER_ESCALATE", "value": "1", "source": "agent-graph.env", "set": true},
         {"key": "AGENT_TIER_CHAIN", "value": "default strong", "source": "default", "set": true}
       ]
@@ -400,14 +402,19 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `repos`：项目发现（`discoverProjects`）的 `Eligible`，即 driver 实际接管的仓库，顺序与发现结果一致。`roles` 与 `routing` 都从该仓库的 `Repository.Env` 算出。
 - `repos[].profile`：仓库选择的方案名，未选择时为空串。文件或方案不存在时仍保留显式选择的名字。快照读取当前命令进程的配置，不查询常驻服务缓存。
 - `roles[].source`：实际取值键来自仓库时为 `repository`，来自方案时为 `profile:<名>`，内置 `codex` 回退为 `default`。角色回退到 strong 时沿用 strong 键的来源。
-- `roles[].role` 只有七种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
+- `roles[].role` 只有八种，固定顺序：`worker_default`、`worker_strong`、`reviewer`、`reviewer_small`、`second_reviewer`、`resolver`、`resolver_top`、`intake`。来源值为空的角色整条省略（例如没配小票审查时没有 `reviewer_small`）。
   - `worker_default` / `worker_strong`：`AGENT_TIER_DEFAULT` / `AGENT_TIER_STRONG`，按 `agent:model:effort` 切分。施工首轮总用 default 档（`internal/executor/entry.go`），其后的档只在打回后升档时使用。
   - `resolver`：`AGENT_ROLE_RESOLVER`，空时回退 `AGENT_TIER_STRONG`，再空时为 `codex`（与 `internal/scheduler/resolver.go` 一致）。
+  - `resolver_top`：`AGENT_ROLE_RESOLVER_TOP` 终审档位，按 `agent:model:effort` 切分，没有回退，空时省略。
   - 施工与处置角色的 `model` 为空时 `effort` 也为空，与派工时不传 effort 一致；`intake` 照原样保留 effort。
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
   - `reviewer` / `reviewer_small` / `second_reviewer`：优先读取对应的结构化键 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_REVIEWER_SMALL` / `AGENT_ROLE_SECOND_REVIEWER`（直接给出 `agent`、`model`、`effort`），再读取仓库的 `_CMD` 键，最后读取方案中的结构化键。结构化键只支持 `codex` 与 `claude`；`_CMD` 仍按旧规则解析：跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `routing`：固定顺序的十三个键：`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN`（默认 `default strong`）、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
+- 本机 `gear.json` 是 JSON 对象，以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。该检出仓库配置 `AGENT_ISSUE_BACKEND=feishu` 且登记键等于其 `AGENT_FEISHU_PROJECT` 时覆盖才生效，`gear set` 遇到其他后端或不相等时拒绝写入。条目记录 `path`、`mode`、`operator`、`reason` 和 `updatedAt`；`path` 是写入时登记的仓库根路径，只用于审计。
+- 项目发现（含被拒项目携带的仓库配置与 `ReadableRepositories`）和 `driver resolve` 按 Orca 登记的 `canonicalKey` 读取条目（`config.LoadRegisteredRepository`），不比较路径，不读取 Git；`resolve` 只对飞书后端仓库读取 `gear.json`，仅在其中有本仓库 `AGENT_FEISHU_PROJECT` 键的条目时用当前目录在 Orca 登记中查找仓库取得键，未登记时不叠加覆盖。调度器对已跟踪的被拒仓库每轮只在当前或新配置的来源为 `override` 时刷新 `AGENT_MODE` 及其来源（即覆盖的设置与清除），不热加载仓库 env 自身的 `AGENT_MODE`，其余配置不变；账本身份键变化，或登记键不等于跟踪中的 `AGENT_FEISHU_PROJECT` 时不刷新。`canonicalKey` 为空的登记不叠加覆盖。搬迁后以同一键重新登记的仓库沿用覆盖；同一路径改登记为别的键而仓库配置仍指向原账本项目时，两个键的覆盖都不生效。接管中的仓库只有档位来源变化（如 `gear set` 设成与仓库相同的值）也更新跟踪配置。被拒时探测过在途票的仓库，Runtime 绑定首次探测的配置，仍被拒时的再次探测也沿用该配置；该路径之后被接管或因在途票被跟踪时，以探测配置为起点，分别按接管的热加载规则或被拒仓库的档位刷新规则合入本轮配置。`gear status` 列出 Eligible 仓库，以及来源为 `override` 的被拒仓库，后者的前缀取自账本项目行，没有行时为空；本仓库覆盖条目损坏导致加载失败时退出 1。`status` 反映本机配置，不读取调度器内存；被拒仓库账本身份键变化后，调度器在重启前沿用跟踪档位。按路径读取仓库配置的 `config.LoadRepository` 不叠加覆盖。
+- 文件缺失或本仓库键不存在时，沿用仓库配置。本仓库键的条目必须是对象，`mode` 必须是字符串 `manual` 或 `auto`，来源为 `override`，否则该仓库加载失败。其他键的坏条目不影响本仓库，写入时按原始字节保留。
+- `gear set` 和 `gear clear` 先按文件系统解析 `.`、`..` 和含 `/` 参数中的符号链接与 `..`，仍为相对路径时再基于物理当前目录，只与同样解析后的 Orca 登记仓库根路径比较。其他参数按编号前缀匹配，忽略大小写。driver 读取首个配置了飞书后端和 Base 的仓库自身配置，用它查询项目表，再将命中行的“仓库远端”与 Orca 的 `canonicalKey` 匹配。前缀参数同时是当前目录下的已登记仓库目录时，也按路径匹配；两者命中不同仓库时视为有歧义并退出 1。选择器合计要求恰好命中一个登记仓库。改动在下次加载时生效，手动切到 `auto` 同样不补处理已转人的历史票。
+- `routing`：固定顺序的十四个键：`AGENT_MODE`（默认 `manual`）、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN`（默认 `default strong`）、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_MODE` 来自本机 `gear.json` 时为 `override`，覆盖优先于仓库值，未配置时为 `default` 且值为 `manual`；`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：
   1. `driver.env` 的每个键，按键名排序，`secret: true`，`set` 表示值非空，**不带 `value` 字段**。

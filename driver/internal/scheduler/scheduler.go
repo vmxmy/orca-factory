@@ -113,9 +113,13 @@ type Scheduler struct {
 	// identityDrift remembers the last-logged ledger-identity change per
 	// repository path so RefreshProjects (OF-45) warns once per distinct drift.
 	identityDrift map[string]string
-	Now           func() time.Time
-	MergeQueue    []Ticket
-	NextInterval  time.Duration
+	// probed is the configuration a rejected repository's in-flight probe
+	// first handed the backend, which stays bound to it until the path is
+	// tracked; tracking then starts from it instead of the latest discovery.
+	probed       map[string]config.Repository
+	Now          func() time.Time
+	MergeQueue   []Ticket
+	NextInterval time.Duration
 	// NextTickAt is when Serve runs the next Tick; zero before the first Tick.
 	NextTickAt    time.Time
 	FullReconcile bool

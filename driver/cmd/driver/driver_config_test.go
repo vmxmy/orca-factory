@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,6 +80,8 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 		"AGENT_TIER_DEFAULT='codex::low'",
 		"AGENT_TIER_STRONG='claude:claude-opus-5-5:high'",
 		"AGENT_ROLE_INTAKE='codex:gpt-6.1-sol:high'",
+		"AGENT_ROLE_RESOLVER_TOP='codex:gpt-6.2-astra:max'",
+		"AGENT_MODE=auto",
 		"AGENT_DEPLOY_WORKFLOW='Deploy to Cloudflare'",
 		"AGENT_ROLE_REVIEWER_CMD='env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -'",
 		"",
@@ -87,6 +90,8 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	if withProfile {
 		writeTestFile(t, filepath.Join(f.home, ".config/orca-factory/profiles.toml"),
 			"default='daily'\n[profile.daily]\nAGENT_TIER_DEFAULT='codex:profile:high'\nAGENT_ROLE_RESOLVER='codex:resolver:high'\nAGENT_TIER_ESCALATE='1'\n")
+		writeTestFile(t, filepath.Join(f.state, "gear.json"), fmt.Sprintf(
+			`{"github.com/vmxmy/orca-factory":{"path":%q,"mode":"manual","operator":"tester","reason":"pause","updatedAt":"2026-11-19T00:00:00Z"}}`, f.factory))
 	}
 
 	var code int
@@ -162,6 +167,13 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	for _, e := range snapshot.Repos[0].Routing {
 		routing[e.Key] = e
 	}
+	wantMode, wantSource := "auto", "agent-graph.env"
+	if withProfile {
+		wantMode, wantSource = "manual", "override"
+	}
+	if got := routing["AGENT_MODE"]; got.Value == nil || *got.Value != wantMode || got.Source != wantSource || !got.Set {
+		t.Fatalf("AGENT_MODE=%+v, want %s %s", got, wantMode, wantSource)
+	}
 	for key, want := range map[string]entry{
 		"AGENT_DEPLOY_WORKFLOW": {Key: "AGENT_DEPLOY_WORKFLOW", Value: routing["AGENT_DEPLOY_WORKFLOW"].Value, Source: "agent-graph.env", Set: true},
 		"AGENT_SMOKE_CMD":       {Key: "AGENT_SMOKE_CMD", Value: routing["AGENT_SMOKE_CMD"].Value, Source: "default"},
@@ -189,6 +201,7 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 		{"worker_strong", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high", "repository"},
 		{"reviewer", "codex", "gpt-6-astra", "xhigh", "AGENT_ROLE_REVIEWER_CMD", "env -u ORCA_PANE_KEY AGENT_X=1 /usr/local/bin/codex exec -m gpt-6-astra -c model_reasoning_effort=xhigh --sandbox read-only -", "repository"},
 		{"resolver", "claude", "claude-opus-5-5", "high", "AGENT_TIER_STRONG", "claude:claude-opus-5-5:high", "repository"},
+		{"resolver_top", "codex", "gpt-6.2-astra", "max", "AGENT_ROLE_RESOLVER_TOP", "codex:gpt-6.2-astra:max", "repository"},
 		{"intake", "codex", "gpt-6.1-sol", "high", "AGENT_ROLE_INTAKE", "codex:gpt-6.1-sol:high", "repository"},
 	}
 	if withProfile {

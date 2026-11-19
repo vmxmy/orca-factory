@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -136,20 +137,38 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 			}
 		}
 		eligible[p.Path] = true
-		repositories = append(repositories, p.Repository)
+		repository := p.Repository
+		if probed, ok := s.probed[p.Path]; ok {
+			repository = s.reconcileRepository(probed, p.Repository, updater)
+			delete(s.probed, p.Path)
+		}
+		repositories = append(repositories, repository)
 	}
 	s.syncCore(ctx, result.Eligible, eligible)
 	for _, r := range result.Rejected {
-		if r.Repository == nil || slices.ContainsFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }) {
+		if r.Repository == nil {
 			continue
 		}
-		held, err := s.heldTickets(ctx, *r.Repository, tracker)
+		if idx := slices.IndexFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }); idx >= 0 {
+			repositories[idx] = s.refreshMode(repositories[idx], *r.Repository, r.Remote, updater)
+			continue
+		}
+		probe := *r.Repository
+		if probed, ok := s.probed[r.Path]; ok {
+			probe = probed
+		}
+		held, err := s.heldTickets(ctx, probe, tracker)
 		if err != nil {
 			rejected[r.Path] = string(r.Reason) + "; in-flight probe failed: " + err.Error()
 			continue
 		}
 		if len(held) > 0 {
-			repositories = append(repositories, *r.Repository)
+			repository := *r.Repository
+			if probed, ok := s.probed[r.Path]; ok {
+				repository = s.refreshMode(probed, *r.Repository, r.Remote, updater)
+				delete(s.probed, r.Path)
+			}
+			repositories = append(repositories, repository)
 			s.logger().Warn("project not taken over but has in-flight tickets", "path", r.Path, "reason", string(r.Reason), "tickets", held)
 		}
 	}
@@ -179,6 +198,12 @@ func (s *Scheduler) heldTickets(ctx context.Context, repo config.Repository, tra
 		if err := tracker.Track(ctx, repo); err != nil {
 			return nil, err
 		}
+		if _, ok := s.probed[repo.Path]; !ok {
+			if s.probed == nil {
+				s.probed = map[string]config.Repository{}
+			}
+			s.probed[repo.Path] = repo
+		}
 	}
 	tickets, err := s.Backend.Snapshot(ctx, []config.Repository{repo})
 	if err != nil {
@@ -207,6 +232,9 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 	if current.StaleHours != fresh.StaleHours {
 		changed = append(changed, "StaleHours")
 	}
+	if current.Sources["AGENT_MODE"] != fresh.Sources["AGENT_MODE"] {
+		changed = append(changed, "AGENT_MODE source")
+	}
 	if len(changed) == 0 {
 		return current
 	}
@@ -220,6 +248,43 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 	}
 	s.logger().Info("repository configuration updated", "path", current.Path, "changed", changed)
 	return fresh
+}
+
+// refreshMode carries only a retired repository's machine-local gear
+// override (AGENT_MODE) forward, including its clearing; the rest of its
+// configuration, and a repository profile's own AGENT_MODE, stays as tracked
+// while it is not taken over. A path now registered under a remote other than
+// the tracked ledger project keeps its tracked gear.
+func (s *Scheduler) refreshMode(current, fresh config.Repository, remote string, updater repositoryUpdater) config.Repository {
+	mode, set := fresh.Env["AGENT_MODE"]
+	if (current.Sources["AGENT_MODE"] != "override" && fresh.Sources["AGENT_MODE"] != "override") || remote != current.Env["AGENT_FEISHU_PROJECT"] || (current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"]) {
+		return current
+	}
+	if changed := config.ChangedEnvKeys(current.Env, fresh.Env); slices.ContainsFunc(changed, func(key string) bool { return slices.Contains(config.LedgerIdentityKeys, key) }) {
+		sort.Strings(changed)
+		s.warnIdentityDrift(current.Path, changed)
+		return current
+	}
+	env, sources := maps.Clone(current.Env), maps.Clone(current.Sources)
+	if env == nil {
+		env = map[string]string{}
+	}
+	if sources == nil {
+		sources = map[string]string{}
+	}
+	delete(env, "AGENT_MODE")
+	delete(sources, "AGENT_MODE")
+	if set {
+		env["AGENT_MODE"] = mode
+		if source, ok := fresh.Sources["AGENT_MODE"]; ok {
+			sources["AGENT_MODE"] = source
+		}
+	}
+	current.Env, current.Sources = env, sources
+	if updater != nil {
+		updater.UpdateRepository(current)
+	}
+	return current
 }
 
 // warnIdentityDrift logs once per distinct ledger-identity change a

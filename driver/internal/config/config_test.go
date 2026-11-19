@@ -8,6 +8,93 @@ import (
 	"time"
 )
 
+func TestGearOverrideWinsOverRepository(t *testing.T) {
+	state := t.TempDir()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
+	const upstream = "github.com/dujiao-next/dujiao-next"
+	const fork = "github.com/vmxmy/dujiao-next"
+	repo := t.TempDir()
+	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_ISSUE_BACKEND=feishu\nAGENT_FEISHU_PROJECT="+upstream+"\n")
+	githubBackend := t.TempDir()
+	writeProfileTestFile(t, filepath.Join(githubBackend, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\nAGENT_ISSUE_BACKEND=github\nAGENT_FEISHU_PROJECT="+upstream+"\n")
+	file := filepath.Join(state, "gear.json")
+	for _, tc := range []struct {
+		name, gears, remote   string
+		mode, source, wantErr string
+	}{
+		{"manual beside malformed entries", `{"github.com/dujiao-next/dujiao-next":{"mode":"manual","path":"/old/checkout"},"github.com/test/scalar":7,"github.com/test/mode":{"mode":null}}`, upstream, "manual", "override", ""},
+		{"auto", `{"github.com/dujiao-next/dujiao-next":{"mode":"auto"}}`, upstream, "auto", "override", ""},
+		{"another remote at this path", `{"github.com/dujiao-next/dujiao-next":{"mode":"manual"}}`, fork, "auto", "repository", ""},
+		{"registered remote is not the ledger project", `{"github.com/vmxmy/dujiao-next":{"mode":"manual"}}`, fork, "auto", "repository", ""},
+		{"invalid mode", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid"}}`, upstream, "", "", "manual or auto"},
+		{"null mode", `{"github.com/dujiao-next/dujiao-next":{"mode":null}}`, upstream, "", "", "manual or auto"},
+		{"mode key differs in case", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid","MODE":"auto"}}`, upstream, "", "", "manual or auto"},
+		{"entry not an object", `{"github.com/dujiao-next/dujiao-next":"manual"}`, upstream, "", "", "manual or auto"},
+		{"registration without remote identity", `{"":{"mode":"manual"}}`, "", "auto", "repository", ""},
+		{"empty file object", `{}`, upstream, "auto", "repository", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writeProfileTestFile(t, file, tc.gears)
+			got, err := LoadRegisteredRepository(tc.remote, repo)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("load error = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || got.Env["AGENT_MODE"] != tc.mode || got.Sources["AGENT_MODE"] != tc.source {
+				t.Fatalf("mode=%q source=%q err=%v, want %q %q", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err, tc.mode, tc.source)
+			}
+		})
+	}
+	if err := SetGearOverride(fork, repo, "manual", "t", "r"); err == nil || !strings.Contains(err.Error(), "ledger project") {
+		t.Fatalf("set under a remote other than the ledger project: err=%v", err)
+	}
+	if err := SetGearOverride(upstream, githubBackend, "manual", "t", "r"); err == nil || !strings.Contains(err.Error(), "feishu") {
+		t.Fatalf("set on a GitHub-backend checkout: err=%v", err)
+	}
+	if err := SetGearOverride(upstream, repo, "manual", "t", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadRegisteredRepository(upstream, githubBackend); err != nil || got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "repository" {
+		t.Fatalf("GitHub-backend checkout under the same ledger key: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
+	if got, err := LoadRegisteredRepository(upstream, repo); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
+		t.Fatalf("after set: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
+	for remote, want := range map[string]bool{upstream: true, fork: false, "": false} {
+		profile := Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": remote}}
+		if got, err := HasGearOverride(profile); err != nil || got != want {
+			t.Fatalf("HasGearOverride(%q)=%v err=%v, want %v", remote, got, err, want)
+		}
+	}
+	github := Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_FEISHU_PROJECT": upstream}}
+	if got, err := HasGearOverride(github); err != nil || got {
+		t.Fatalf("HasGearOverride on a GitHub-backend checkout=%v err=%v, want false", got, err)
+	}
+	valid, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProfileTestFile(t, file, `{"github.com/dujiao-next/dujiao-next":"broken"}`)
+	if got, err := HasGearOverride(github); err != nil || got {
+		t.Fatalf("HasGearOverride on a GitHub-backend checkout with a broken gear.json=%v err=%v, want false", got, err)
+	}
+	writeProfileTestFile(t, file, string(valid))
+	if err := SetGearOverride(upstream, repo, "", "t", "r"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadRegisteredRepository(upstream, repo); err != nil || got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "repository" {
+		t.Fatalf("after clear: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := LoadRegisteredRepository(upstream, repo); err != nil || got.Sources["AGENT_MODE"] != "repository" {
+		t.Fatalf("without gear.json: %v err=%v", got.Sources["AGENT_MODE"], err)
+	}
+}
+
 func TestDefaultMachineLimit(t *testing.T) {
 	home := t.TempDir()
 	c, err := Load(home)
