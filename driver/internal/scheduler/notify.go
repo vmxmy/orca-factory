@@ -265,6 +265,11 @@ func newMessageAttempts() (*messageAttempts, error) {
 	var http1 http.Protocols
 	http1.SetHTTP1(true)
 	m.transport.Protocols = &http1
+	// Protocols leaves ALPN alone; a cloned config may still offer h2.
+	if m.transport.TLSClientConfig == nil {
+		m.transport.TLSClientConfig = &tls.Config{}
+	}
+	m.transport.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	m.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := m.dial(ctx, network, addr)
 		if err != nil {
@@ -335,19 +340,29 @@ func (m *messageAttempts) written() bool {
 }
 
 // countingConn counts bytes the socket took; base is the count when a message
-// request got this connection, -1 before that.
+// request got this connection, -1 before that. The HTTP/1 transport sets no
+// write deadline, but TLS close sets one before writing close_notify, so
+// counting stops there.
 type countingConn struct {
 	net.Conn
 	sent      atomic.Int64
 	base      atomic.Int64
+	closing   atomic.Bool
 	closed    chan struct{}
 	closeOnce sync.Once
 }
 
 func (c *countingConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
-	c.sent.Add(int64(n))
+	if !c.closing.Load() {
+		c.sent.Add(int64(n))
+	}
 	return n, err
+}
+
+func (c *countingConn) SetWriteDeadline(t time.Time) error {
+	c.closing.Store(true)
+	return c.Conn.SetWriteDeadline(t)
 }
 
 func (c *countingConn) Close() error {

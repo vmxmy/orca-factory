@@ -1896,6 +1896,43 @@ func TestNoticeMessageBytesCountOnlyAfterGotConn(t *testing.T) {
 	}
 }
 
+// Closing a TLS connection writes close_notify; it is no message byte.
+func TestNoticeTLSCloseNotifyIsNotAMessageWrite(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	m, err := newMessageAttempts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.dial = func(context.Context, string, string) (net.Conn, error) {
+		client, peer := net.Pipe()
+		go func() {
+			server := tls.Server(peer, srv.TLS)
+			if server.Handshake() == nil {
+				_, _ = io.Copy(io.Discard, server)
+			}
+			_ = server.Close()
+		}()
+		return client, nil
+	}
+	conn, err := m.transport.DialContext(context.Background(), "tcp", "example.com:443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secure := tls.Client(conn, &tls.Config{ServerName: "example.com", RootCAs: srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs})
+	if err := secure.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	m.gotConn(httptrace.GotConnInfo{Conn: secure, Reused: true})
+	if err := secure.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if m.written() {
+		t.Fatal("a TLS close_notify counted as a message write")
+	}
+}
+
 // HTTP/2 lets the read loop write frames such as SETTINGS ACK on the message's
 // connection, so the notice transport speaks HTTP/1.1 only.
 func TestNoticeTransportSpeaksHTTP1(t *testing.T) {
@@ -1907,7 +1944,10 @@ func TestNoticeTransportSpeaksHTTP1(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.transport.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+	if m.transport.TLSClientConfig == nil {
+		m.transport.TLSClientConfig = &tls.Config{}
+	}
+	m.transport.TLSClientConfig.RootCAs = srv.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
 	t.Cleanup(m.transport.CloseIdleConnections)
 	req, err := http.NewRequest(http.MethodPost, srv.URL+"/open-apis/im/v1/messages", strings.NewReader("{}"))
 	if err != nil {
