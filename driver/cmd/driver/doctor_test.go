@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1498,5 +1499,43 @@ func TestDoctorModelsLegacyCommandUnprobed(t *testing.T) {
 	}
 	if report, _ := json.Marshal(got); bytes.Contains(report, []byte("TEST-PLACEHOLDER-CRED")) || bytes.Contains(report, []byte("REVIEW_MODEL")) {
 		t.Fatal("command text in report")
+	}
+}
+
+func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	generated, err := config.GenerateReviewerCommand("claude:legacy:low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low"}
+	for _, tc := range []struct{ name, command, ref, state, reason, status string }{
+		{"generated", generated, "claude:legacy:low", "unavailable", "usage_limit", "fail"},
+		{"blank", "   ", "::", "unknown", "not_configured", "fail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := modelFixtureProbe(now.Add(time.Minute), t.TempDir())
+			registry, err := modelhealth.Open(p.stateRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cooling := modelhealth.Status{Ref: modelhealth.Ref{Agent: "claude", Model: "legacy"}, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}
+			if err := registry.Record(cooling); err != nil {
+				t.Fatal(err)
+			}
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+				if ref.Model == "legacy" {
+					return modelhealth.Classify(ref, "", context.DeadlineExceeded, p.now)
+				}
+				return modelhealth.Classify(ref, "ok", nil, p.now)
+			}
+			project := projects.Project{Name: "one", Repository: config.Repository{Env: maps.Clone(env)}}
+			project.Repository.Env["AGENT_ROLE_REVIEWER_CMD"] = tc.command
+			got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+			if got.Status != tc.status {
+				t.Errorf("check = %s, want %s", got.Status, tc.status)
+			}
+			assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", tc.ref, tc.state, tc.reason)
+		})
 	}
 }

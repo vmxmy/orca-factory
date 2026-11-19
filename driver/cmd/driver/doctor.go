@@ -907,15 +907,20 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	var intakeTier string
 	for _, role := range repositoryRoles(env, project.Repository.Sources) {
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
-		// A legacy command is arbitrary shell: /bin/sh decides its program, model
-		// and endpoint, so doctor neither probes it nor reports its words.
-		legacy := strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL")
-		if legacy {
-			ref = modelhealth.Ref{}
-		}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
-		if legacy {
-			modelRole.reason = "legacy_command"
+		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
+			command := strings.TrimSpace(role.Raw)
+			if command == "" {
+				// The executor trims the command and refuses an empty one.
+				continue
+			}
+			// A legacy command is arbitrary shell: /bin/sh decides its program, model
+			// and endpoint. Only a command the structured value generates verbatim is
+			// probed; any other is neither probed nor reported word by word.
+			if generated, err := config.GenerateReviewerCommand(ref.String()); err != nil || generated != command {
+				ref = modelhealth.Ref{}
+				modelRole = doctorModelRole{name: role.Role, reason: "legacy_command"}
+			}
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
