@@ -234,9 +234,9 @@ func TestRepositoryRolesWithoutSourcesKeepsReviewerCommand(t *testing.T) {
 }
 
 // TestGearRecordingIsEmbeddedInPluginSample keeps the ziikoo-driver plugin's
-// gear sample identical to the recorded `config --json` before and after
-// `gear set <repo> manual`; the plugin test runner cannot read files outside
-// its own directory.
+// gear samples identical to the recorded `config --json` before and after
+// `gear set <repo> manual`, and after that with a machine profile selected; the
+// plugin test runner cannot read files outside its own directory.
 func TestGearRecordingIsEmbeddedInPluginSample(t *testing.T) {
 	recorded, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "driver-config-json-gear.jsonl"))
 	if err != nil {
@@ -247,9 +247,13 @@ func TestGearRecordingIsEmbeddedInPluginSample(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSuffix(string(recorded), "\n"), "\n")
-	wants := []struct{ mode, source, constant string }{
-		{"auto", "agent-graph.env", "RECORDED_GEAR_CONFIG"},
-		{"manual", "override", "RECORDED_GEAR_MANUAL_CONFIG"},
+	wants := []struct {
+		mode, source, constant string
+		profiled               bool
+	}{
+		{"auto", "agent-graph.env", "RECORDED_GEAR_CONFIG", false},
+		{"manual", "override", "RECORDED_GEAR_MANUAL_CONFIG", false},
+		{"manual", "override", "RECORDED_GEAR_PROFILE_CONFIG", true},
 	}
 	if len(lines) != len(wants) {
 		t.Fatalf("recording has %d lines, want %d", len(lines), len(wants))
@@ -287,6 +291,15 @@ func TestGearRecordingIsEmbeddedInPluginSample(t *testing.T) {
 		}
 		if !top {
 			t.Fatalf("line %d: roles lack resolver_top: %+v", i+1, repo.Roles)
+		}
+		profiled := false
+		for _, other := range snapshot.Repos {
+			for _, entry := range other.Routing {
+				profiled = profiled || strings.HasPrefix(entry.Source, "profile:")
+			}
+		}
+		if profiled != want.profiled {
+			t.Fatalf("line %d: routing has a profile source = %v, want %v", i+1, profiled, want.profiled)
 		}
 		if embedded := "export const " + want.constant + ": string = String.raw`" + lines[i] + "`"; !strings.Contains(string(sample), embedded) {
 			t.Errorf("sample-config.ts does not embed recording line %d as %s", i+1, want.constant)

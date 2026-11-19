@@ -24,18 +24,22 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   intake: '需求助手',
 }
 
-export const SOURCE_LABELS: Record<Source, string> = {
+const FILE_SOURCES = {
   'driver.toml': 'driver.toml',
   default: '默认',
   'driver.env': 'driver.env',
   'agent-graph.env': 'agent-graph.env',
   service: '服务',
-  override: '本机覆盖',
-}
+} as const
+
+export const SOURCE_LABELS: Record<Source, string> = { ...FILE_SOURCES, override: '本机覆盖' }
 
 export const sourceLabel = (source: Source): string => SOURCE_LABELS[source] ?? source
 
-const parseSource = (o: Fields, path: string): Source => {
+const fileSource = (o: Fields, path: string): Source => oneOf(FILE_SOURCES, o, 'source', path)
+
+// Only repository routing can come from a machine profile or a local gear override.
+const routingSource = (o: Fields, path: string): Source => {
   const source = text(o, 'source', path)
   if (source.startsWith('profile:')) return `profile:${source.slice(8)}`
   return oneOf(SOURCE_LABELS, o, 'source', path)
@@ -122,12 +126,12 @@ const parseRole = (value: unknown, path: string): Role => {
   }
 }
 
-const parseSetting = (value: unknown, path: string): Setting => {
+const parseSetting = (value: unknown, path: string, source = fileSource): Setting => {
   const o = fields(value, path)
   return {
     key: text(o, 'key', path),
     value: text(o, 'value', path),
-    source: parseSource(o, path),
+    source: source(o, path),
     set: flag(o, 'set', path),
   }
 }
@@ -140,7 +144,7 @@ const parseSchedulerSetting = (value: unknown, path: string): SchedulerSetting =
 const parseEnv = (value: unknown, path: string): EnvEntry => {
   const o = fields(value, path)
   const key = text(o, 'key', path)
-  const source = parseSource(o, path)
+  const source = fileSource(o, path)
   const set = flag(o, 'set', path)
   if (o.secret === true) return { key, source, set, secret: true }
   return o.value === undefined
@@ -156,7 +160,7 @@ const parseRepo = (value: unknown, path: string): Repo => {
     path: text(o, 'path', path),
     prefix: text(o, 'prefix', path),
     roles: list(o.roles, `${path}.roles`).map((one, i) => parseRole(one, `${path}.roles[${i}]`)),
-    routing: list(o.routing, `${path}.routing`).map((one, i) => parseSetting(one, `${path}.routing[${i}]`)),
+    routing: list(o.routing, `${path}.routing`).map((one, i) => parseSetting(one, `${path}.routing[${i}]`, routingSource)),
   }
 }
 

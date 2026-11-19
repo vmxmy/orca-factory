@@ -250,9 +250,13 @@ const take = async ($: Engine): Promise<Snapshot> => {
   return next.kind === 'ready' ? { kind: 'ready', config: next.value, fetchedAt: next.fetchedAt } : next
 }
 
+// A config read that a later read overtook carries an older snapshot, e.g. the gear before a switch.
+let configReads = 0
+
 const fetchConfig = async ($: Engine): Promise<void> => {
+  const read = ++configReads
   const next = await take($)
-  await update($, snapshot, () => next)
+  if (read === configReads) await update($, snapshot, () => next)
 }
 
 const refresh = async ($: Engine): Promise<void> => {
