@@ -77,15 +77,16 @@ type Runner struct {
 }
 
 // turnModel is Model and Effort unless the model registry marks Model
-// unavailable; then it is the first available Fallback candidate.
-func (r *Runner) turnModel(ctx context.Context) modelhealth.Ref {
+// unavailable; then it is the first available Fallback candidate. The switch
+// goes to the gateway's stderr log, like the other intake turn records.
+func (r *Runner) turnModel() modelhealth.Ref {
 	primary := modelhealth.Ref{Agent: "claude", Model: r.Model, Effort: r.Effort}
 	selected, err := config.SelectModel(r.StateRoot, primary, r.Fallback, time.Now())
 	if err != nil {
-		runx.LoggerFrom(ctx).Warn("intake model fallback unavailable; keeping configured model", "err", err)
+		fmt.Fprintf(os.Stderr, "intake model fallback unavailable; keeping configured model: %v\n", err)
 	}
 	if selected != primary {
-		runx.LoggerFrom(ctx).Info("intake model falls back", "configured", primary.String(), "selected", selected.String())
+		fmt.Fprintf(os.Stderr, "intake model falls back: configured=%s selected=%s\n", primary, selected)
 	}
 	return selected
 }
@@ -103,7 +104,7 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	}
 	r.writeTicketContext(ctx)
 	args := []string{"-p", "--output-format", "json", flag, t.Session}
-	model := r.turnModel(ctx)
+	model := r.turnModel()
 	if model.Model != "" {
 		args = append(args, "--model", model.Model)
 	}

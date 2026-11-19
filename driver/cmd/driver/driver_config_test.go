@@ -219,3 +219,27 @@ func TestRepositoryRolesWithoutSourcesKeepsReviewerCommand(t *testing.T) {
 		t.Fatalf("roles=%+v, want first %+v", roles, want)
 	}
 }
+
+func TestRepositoryFallbacksListEveryFallbackKey(t *testing.T) {
+	env := map[string]string{
+		"AGENT_TIER_STRONG":                "claude:claude-opus-5-5:high",
+		"AGENT_TIER_STRONG_FALLBACK":       "codex:gpt-6.1-sol:xhigh",
+		"AGENT_TIER_MAX_FALLBACK":          "codex:gpt-6.1-sol:max",
+		"AGENT_ROLE_RESOLVER_TOP_FALLBACK": " claude:claude-opus-5-5:max  codex:gpt-6-astra:xhigh ",
+		"AGENT_ROLE_INTAKE_FALLBACK":       "claude:claude-sonnet-5-5:high",
+	}
+	got := repositoryFallbacks(env, map[string]string{"AGENT_TIER_MAX_FALLBACK": "profile:daily"})
+	want := []string{
+		"AGENT_ROLE_INTAKE_FALLBACK=claude:claude-sonnet-5-5:high@agent-graph.env",
+		"AGENT_ROLE_RESOLVER_TOP_FALLBACK=claude:claude-opus-5-5:max codex:gpt-6-astra:xhigh@agent-graph.env",
+		"AGENT_TIER_MAX_FALLBACK=codex:gpt-6.1-sol:max@profile:daily",
+		"AGENT_TIER_STRONG_FALLBACK=codex:gpt-6.1-sol:xhigh@agent-graph.env",
+	}
+	lines := []string{}
+	for _, entry := range got {
+		lines = append(lines, entry.Key+"="+*entry.Value+"@"+entry.Source)
+	}
+	if strings.Join(lines, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("fallbacks=%q, want %q", lines, want)
+	}
+}

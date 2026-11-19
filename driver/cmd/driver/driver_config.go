@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -62,6 +64,9 @@ type configRepo struct {
 	Profile string        `json:"profile"`
 	Roles   []configRole  `json:"roles"`
 	Routing []configEntry `json:"routing"`
+	// Fallbacks lists every <key>_FALLBACK the repository sets, by key, because
+	// a role reads its own key's list even when it inherits another key's model.
+	Fallbacks []configEntry `json:"fallbacks"`
 }
 
 type configRole struct {
@@ -72,8 +77,6 @@ type configRole struct {
 	Key    string `json:"key"`
 	Raw    string `json:"raw"`
 	Source string `json:"source"`
-	// Fallback is the role key's <key>_FALLBACK candidate list, in order.
-	Fallback string `json:"fallback,omitempty"`
 }
 
 // configEntry carries no Value for a secret or an unset service key.
@@ -209,7 +212,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 			}
 		}
 		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix, Profile: p.Repository.Profile,
-			Roles: roles, Routing: routing})
+			Roles: roles, Routing: routing, Fallbacks: repositoryFallbacks(p.Repository.Env, p.Repository.Sources)})
 		if _, _, err := tierParts(p.Repository.Env); err != nil {
 			s.Problems = append(s.Problems, p.Prefix+" 的需求助手档位不是 claude，需求助手不可用")
 		}
@@ -341,7 +344,6 @@ func repositoryRoles(env, sources map[string]string) []configRole {
 			}
 			if key == structuredKey {
 				role.Agent, role.Model, role.Effort = splitTier(role.Raw)
-				role.Fallback = strings.TrimSpace(env[config.FallbackKey(key)])
 			} else {
 				role.Agent, role.Model, role.Effort = def.parse(role.Raw)
 			}
@@ -359,9 +361,6 @@ func repositoryRoles(env, sources map[string]string) []configRole {
 			continue
 		}
 		role.Agent, role.Model, role.Effort = def.parse(role.Raw)
-		if role.Key != "" {
-			role.Fallback = strings.TrimSpace(env[config.FallbackKey(role.Key)])
-		}
 		roles = append(roles, role)
 	}
 	return roles
@@ -375,6 +374,22 @@ func repositoryRouting(env map[string]string) []configEntry {
 		if !ok {
 			fallback := item.fallback
 			entry.Value, entry.Source, entry.Set = &fallback, sourceDefault, fallback != ""
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func repositoryFallbacks(env, sources map[string]string) []configEntry {
+	entries := []configEntry{}
+	for _, key := range slices.Sorted(maps.Keys(env)) {
+		if !strings.HasSuffix(key, "_FALLBACK") {
+			continue
+		}
+		value := strings.Join(strings.Fields(env[key]), " ")
+		entry := configEntry{Key: key, Value: &value, Source: sourceRepository, Set: value != ""}
+		if source := sources[key]; strings.HasPrefix(source, "profile:") {
+			entry.Source = source
 		}
 		entries = append(entries, entry)
 	}
@@ -470,9 +485,10 @@ func writeConfigText(out io.Writer, s configSnapshot) error {
 				source = "内置回退"
 			}
 			fmt.Fprintf(&b, "  %-15s %s / %s / %s  [%s]\n", r.Role, r.Agent, model, r.Effort, r.Source+" / "+source)
-			if r.Fallback != "" {
-				fmt.Fprintf(&b, "  %-15s 兜底 %s\n", "", strings.Join(strings.Fields(r.Fallback), " → "))
-			}
+		}
+		if len(repo.Fallbacks) > 0 {
+			b.WriteString("  兜底候选\n")
+			writeConfigEntries(&b, "    ", repo.Fallbacks)
 		}
 		b.WriteString("  路由\n")
 		writeConfigEntries(&b, "    ", repo.Routing)

@@ -301,3 +301,26 @@ func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
 		t.Errorf("fallback not recorded in executor log: %s", logs.String())
 	}
 }
+
+func TestWorkerTierModelUsesNamedTierFallback(t *testing.T) {
+	root := t.TempDir()
+	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	registry, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]string{"default": primary.String(), "strong": primary.String(),
+		"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh"}
+	e := &Executor{Config: Config{Root: root, Tier: "default", TierSettings: settings}, Stderr: &bytes.Buffer{}}
+	if got, want := e.tierModel("strong", primary), (modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}); got != want {
+		t.Fatalf("strong correction model = %+v, want %+v", got, want)
+	}
+	strongStart := orca.StartOptions{Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}
+	if got := e.workerModel(strongStart); got != strongStart {
+		t.Fatalf("selected correction start rewritten to %+v", got)
+	}
+}

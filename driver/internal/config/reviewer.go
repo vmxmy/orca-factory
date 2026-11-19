@@ -21,11 +21,11 @@ type ReviewerCommands struct {
 // the corresponding reviewer backend. Only the two supported reviewer agents
 // are accepted.
 func GenerateReviewerCommand(value string) (string, error) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 3 || parts[0] == "" {
+	ref, err := modelhealth.Parse(value)
+	if err != nil {
 		return "", fmt.Errorf("reviewer role requires agent:model:effort")
 	}
-	agent, model, effort := parts[0], parts[1], parts[2]
+	agent, model, effort := ref.Agent, ref.Model, ref.Effort
 	switch agent {
 	case "codex":
 		command := "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec"

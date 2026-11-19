@@ -136,6 +136,15 @@ func TestFallbackKeysParse(t *testing.T) {
 	if _, err := ParseFallback("codex:gpt-6-astra"); err == nil {
 		t.Fatal("candidate without effort accepted")
 	}
+	for _, incomplete := range []string{"codex::low", "claude::", "codex:gpt-secret-model:"} {
+		_, err := ParseFallback(incomplete)
+		if err == nil {
+			t.Fatalf("incomplete candidate %q accepted", incomplete)
+		}
+		if strings.Contains(err.Error(), incomplete) || strings.Contains(err.Error(), "gpt-secret-model") {
+			t.Fatalf("fallback error leaks the configured value: %v", err)
+		}
+	}
 	if FallbackKey("AGENT_ROLE_RESOLVER_TOP") != "AGENT_ROLE_RESOLVER_TOP_FALLBACK" {
 		t.Fatal("fallback key name changed")
 	}

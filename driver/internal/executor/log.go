@@ -95,40 +95,49 @@ func (e *Executor) workerStart(ctx context.Context, request string, opts orca.St
 	return receipt, err
 }
 
-// workerModel swaps a worker tier's model for its first available
-// AGENT_TIER_<NAME>_FALLBACK candidate when the model registry marks the
-// configured model unavailable. A start that matches no tier is unchanged.
+// workerModel applies the executor's own tier fallback to a start that uses
+// that tier's configured model. Corrections select their tier's model before
+// the start (tierModel), so a start with any other model is unchanged.
 func (e *Executor) workerModel(opts orca.StartOptions) orca.StartOptions {
 	if opts.Agent == "" {
 		return opts
 	}
-	start := modelhealth.Ref{Agent: opts.Agent, Model: opts.Model, Effort: opts.Effort}
-	for _, tier := range append(append([]string{}, e.Config.TierChain...), "default", "strong") {
-		configured, err := modelhealth.Parse(e.Config.TierSettings[tier])
-		if err != nil {
-			continue
-		}
-		if configured.Model == "" {
-			configured.Effort = ""
-		}
-		if configured != start {
-			continue
-		}
-		now := time.Now
-		if e.Now != nil {
-			now = e.Now
-		}
-		selected, err := config.SelectConfigured(e.Config.TierSettings, "AGENT_TIER_"+strings.ToUpper(tier), e.Config.Root, start, now())
-		if err != nil {
-			e.logger().Warn("worker model fallback unavailable; keeping configured model", "tier", tier, "error", logErrorSummary(err))
-		}
-		if selected != start {
-			e.logger().Info("worker model falls back", "tier", tier, "configured", start.String(), "selected", selected.String())
-			opts.Agent, opts.Model, opts.Effort = selected.Agent, selected.Model, selected.Effort
-		}
+	tier := e.Config.Tier
+	if tier == "" {
+		tier = "default"
+	}
+	configured, err := modelhealth.Parse(e.Config.TierSettings[tier])
+	if err != nil {
 		return opts
 	}
+	if configured.Model == "" {
+		configured.Effort = ""
+	}
+	start := modelhealth.Ref{Agent: opts.Agent, Model: opts.Model, Effort: opts.Effort}
+	if configured != start {
+		return opts
+	}
+	selected := e.tierModel(tier, start)
+	opts.Agent, opts.Model, opts.Effort = selected.Agent, selected.Model, selected.Effort
 	return opts
+}
+
+// tierModel returns configured unless the model registry marks it unavailable;
+// then it returns the first available AGENT_TIER_<TIER>_FALLBACK candidate of
+// the named tier and logs the switch.
+func (e *Executor) tierModel(tier string, configured modelhealth.Ref) modelhealth.Ref {
+	now := time.Now
+	if e.Now != nil {
+		now = e.Now
+	}
+	selected, err := config.SelectConfigured(e.Config.TierSettings, "AGENT_TIER_"+strings.ToUpper(tier), e.Config.Root, configured, now())
+	if err != nil {
+		e.logger().Warn("worker model fallback unavailable; keeping configured model", "tier", tier, "error", logErrorSummary(err))
+	}
+	if selected != configured {
+		e.logger().Info("worker model falls back", "tier", tier, "configured", configured.String(), "selected", selected.String())
+	}
+	return selected
 }
 
 func (e *Executor) taskList(ctx context.Context, run string) ([]orca.Task, error) {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -12,12 +13,18 @@ import (
 func FallbackKey(key string) string { return key + "_FALLBACK" }
 
 // ParseFallback reads a space-separated, ordered agent:model:effort list.
+// Every candidate names its model and effort, so a start it selects passes the
+// same launch validation as a fully configured primary. Errors name the
+// candidate position only, never the configured value.
 func ParseFallback(value string) ([]modelhealth.Ref, error) {
 	var refs []modelhealth.Ref
-	for _, field := range strings.Fields(value) {
+	for i, field := range strings.Fields(value) {
 		ref, err := modelhealth.Parse(field)
+		if err == nil && (ref.Model == "" || ref.Effort == "") {
+			err = errors.New("fallback candidate requires model and effort")
+		}
 		if err != nil {
-			return nil, fmt.Errorf("fallback candidate %q: %w", field, err)
+			return nil, fmt.Errorf("fallback candidate %d: %w", i+1, err)
 		}
 		refs = append(refs, ref)
 	}
