@@ -199,20 +199,21 @@ func gearFields(raw json.RawMessage) map[string]any {
 	return fields
 }
 
+// gearOrigin returns "" only when git reports no origin remote; other git failures stay errors.
 func gearOrigin(path string) (string, error) {
 	out, err := runx.Run(context.Background(), runx.Spec{Path: "git", Args: []string{"-C", path, "remote", "get-url", "origin"}, Timeout: 10 * time.Second})
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return "", nil
-		}
-		return "", err
-	}
-	origin, err := orca.NormalizeRemote(string(out))
-	if err != nil {
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
 		return "", nil
 	}
-	return origin, nil
+	if err != nil {
+		return "", err
+	}
+	raw := strings.TrimSpace(string(out))
+	if origin, err := orca.NormalizeRemote(raw); err == nil {
+		return origin, nil
+	}
+	return raw, nil
 }
 
 func applyGear(repo *Repository) error {
@@ -221,29 +222,27 @@ func applyGear(repo *Repository) error {
 		return err
 	}
 	entries, err := readGears(file)
-	if err != nil || len(entries) == 0 {
+	if err != nil {
 		return err
 	}
 	path := filepath.Clean(repo.Path)
+	var candidates []map[string]any
+	for _, raw := range entries {
+		if fields := gearFields(raw); fields["path"] == path {
+			candidates = append(candidates, fields)
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
 	origin, err := gearOrigin(path)
-	if err != nil || origin == "" {
+	if err != nil {
 		return err
 	}
 	var match map[string]any
-	for _, raw := range entries {
-		fields := gearFields(raw)
-		recordedPath, ok := fields["path"].(string)
-		if !ok || fields["origin"] != origin {
+	for _, fields := range candidates {
+		if fields["origin"] != origin {
 			continue
-		}
-		if recordedPath != path {
-			current, err := gearOrigin(recordedPath)
-			if err != nil {
-				return err
-			}
-			if current == origin {
-				continue
-			}
 		}
 		if match != nil {
 			return errors.New("ambiguous gear override")
@@ -286,14 +285,9 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		return errors.New("gear change requires remote, path, operator and reason")
 	}
 	path = filepath.Clean(path)
-	origin, err := gearOrigin(path)
-	if mode != "" {
-		if err != nil {
-			return err
-		}
-		if origin == "" {
-			return errors.New("gear set requires a recognizable git origin")
-		}
+	origin, originErr := gearOrigin(path)
+	if mode != "" && originErr != nil {
+		return originErr
 	}
 	file, err := gearPath()
 	if err != nil {
@@ -315,7 +309,7 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		return err
 	}
 	delete(gears, remote)
-	if origin != "" {
+	if originErr == nil {
 		for key, raw := range gears {
 			fields := gearFields(raw)
 			if fields["origin"] == origin && fields["path"] == path {

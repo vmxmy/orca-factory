@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,7 +23,11 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	checkout := func(url string) string {
 		t.Helper()
 		path := t.TempDir()
-		for _, args := range [][]string{{"init", "--quiet"}, {"remote", "add", "origin", url}} {
+		commands := [][]string{{"init", "--quiet"}}
+		if url != "" {
+			commands = append(commands, []string{"remote", "add", "origin", url})
+		}
+		for _, args := range commands {
 			cmd := exec.Command("git", args...)
 			cmd.Dir = path
 			if out, err := cmd.CombinedOutput(); err != nil {
@@ -64,8 +69,8 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 			"github.com/test/origin": map[string]any{"origin": 2, "path": repo},
 		}, "manual", "override", ""},
 		{"auto", map[string]any{upstream: entry(origin, repo, "auto")}, "auto", "override", ""},
-		{"moved", map[string]any{upstream: entry(origin, formerPath, "manual")}, "manual", "override", ""},
-		{"former path reused", map[string]any{upstream: entry(origin, otherRepo, "manual")}, "manual", "override", ""},
+		{"checkout moved away from recorded path", map[string]any{upstream: entry(origin, formerPath, "manual")}, "auto", "repository", ""},
+		{"recorded path now holds another repository", map[string]any{upstream: entry(origin, otherRepo, "manual")}, "auto", "repository", ""},
 		{"different origin at this path", map[string]any{otherOrigin: entry(otherOrigin, repo, "manual")}, "auto", "repository", ""},
 		{"another checkout still owns origin", map[string]any{origin: entry(origin, sameOrigin, "manual")}, "auto", "repository", ""},
 		{"invalid mode", map[string]any{upstream: entry(origin, repo, "invalid")}, "", "", "manual or auto"},
@@ -88,10 +93,26 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 			checkMode(t, tc.mode, tc.source)
 		})
 	}
-	writeProfileTestFile(t, file, `{"github.com/dujiao-next/dujiao-next":{}}`)
+	noOrigin := checkout("")
+	writeProfileTestFile(t, filepath.Join(noOrigin, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\n")
+	writeProfileTestFile(t, file, fmt.Sprintf(`{"local/no-origin":{"origin":"","path":%q,"mode":"manual"}}`, noOrigin))
+	if got, err := LoadRepository(noOrigin); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
+		t.Fatalf("checkout without origin: %+v, err=%v", got.Env, err)
+	}
+	writeProfileTestFile(t, file, fmt.Sprintf(`{%q:{"origin":%q,"path":%q,"mode":"manual"}}`, upstream, origin, repo))
+	unreadable := filepath.Join(repo, ".git", "config")
+	gitConfig, err := os.ReadFile(unreadable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProfileTestFile(t, unreadable, "[[[\n")
+	if _, err := LoadRepository(repo); err == nil {
+		t.Fatal("unreadable git config dropped the manual override")
+	}
+	writeProfileTestFile(t, unreadable, string(gitConfig))
 	t.Setenv("PATH", t.TempDir())
 	if _, err := LoadRepository(repo); !errors.Is(err, exec.ErrNotFound) {
-		t.Fatalf("nonempty gear.json with missing git: got %v, want executable not found", err)
+		t.Fatalf("override for this path with missing git: got %v, want executable not found", err)
 	}
 	writeProfileTestFile(t, file, "{}")
 	checkMode(t, "auto", "repository")
@@ -128,6 +149,25 @@ func TestGearChangeWithoutOrigin(t *testing.T) {
 			}
 		})
 	}
+	t.Run("repository without origin remote", func(t *testing.T) {
+		state := t.TempDir()
+		t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
+		path := t.TempDir()
+		if out, err := exec.Command("git", "-C", path, "init", "--quiet").CombinedOutput(); err != nil {
+			t.Fatalf("git init: %v\n%s", err, out)
+		}
+		if err := SetGearOverride("local/repo", path, "manual", "t", "r"); err != nil {
+			t.Fatal(err)
+		}
+		var gears map[string]gearOverride
+		data, err := os.ReadFile(filepath.Join(state, "gear.json"))
+		if err != nil || json.Unmarshal(data, &gears) != nil {
+			t.Fatalf("gear.json: %s, err=%v", data, err)
+		}
+		if got := gears["local/repo"]; got.Path != filepath.Clean(path) || got.Origin != "" || got.Mode != "manual" {
+			t.Fatalf("set without origin remote: %+v", got)
+		}
+	})
 }
 
 func TestDefaultMachineLimit(t *testing.T) {

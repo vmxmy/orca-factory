@@ -265,6 +265,14 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 	if remaining := readGearEntries(t, file); len(remaining) != 1 || remaining[fork] != beforeFork {
 		t.Fatalf("clear DJ changed FORK: %+v", remaining)
 	}
+	invokeGear(t, "clear", "FORK")
+	set("DJ", "auto")
+	if err := os.RemoveAll(a); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := config.LoadRepository(b); err != nil || got.Sources["AGENT_MODE"] == "override" {
+		t.Fatalf("FORK inherited removed DJ checkout: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
 }
 
 func TestGearSetPrefixRecordedProject(t *testing.T) {
