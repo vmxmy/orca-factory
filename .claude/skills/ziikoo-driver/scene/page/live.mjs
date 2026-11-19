@@ -76,7 +76,7 @@ const receive = scene => {
   failures.delete('snapshot')
   const tickets = new Map(archipelagoOf(scene).tickets.map(ticket => [`${ticket.path}\0${ticket.identifier}`, ticket]))
   const changes = []
-  const add = (type, ticket, detail) => changes.push({ type, text: `${ticket.project} · ${ticket.identifier} · ${detail}`, path: ticket.path })
+  const add = (type, ticket, detail) => changes.push({ type, ticket: ticket.identifier, text: `${ticket.project} · ${ticket.identifier} · ${detail}`, path: ticket.path })
   if (previousTickets) {
     for (const [id, ticket] of tickets) {
       const previous = previousTickets.get(id)

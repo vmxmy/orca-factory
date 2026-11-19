@@ -1,7 +1,8 @@
 import { createCamera } from './camera.mjs'
 import { createHud, hubText } from './hud.mjs'
-import { archipelagoOf, skyOf, staleOf, RENDER_MODE } from './model.mjs'
+import { archipelagoOf, RENDER_MODE } from './model.mjs'
 import { createOverlay } from './overlay.mjs'
+import { createViewState } from './view-state.mjs'
 import { createWorld } from './world.mjs'
 
 const CLICK_TOLERANCE = 6
@@ -88,9 +89,16 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   let { focus, stop, selected } = openingOf(archipelago, { path, ticket })
   const lifetime = new AbortController()
   const motion = matchMedia('(prefers-reduced-motion: reduce)')
+  const contrast = matchMedia('(prefers-contrast: more)')
   let reduced = motion.matches
   motion.addEventListener('change', () => {
     reduced = motion.matches
+  }, { signal: lifetime.signal })
+  let readable = contrast.matches
+  contrast.addEventListener('change', event => {
+    readable = event.matches
+    presentation.readable(readable)
+    refreshStatus()
   }, { signal: lifetime.signal })
 
   const canvas = document.createElement('canvas')
@@ -107,16 +115,20 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   }
   const lens = createCamera(archipelago)
   const parcelOf = key => archipelago.tickets.find(parcel => parcel.key === key)
+  const presentation = createViewState({ scene: current, archipelago, selected, reducedMotion: reduced, readable, now })
   let margins = { top: 0, right: 0, bottom: 0, left: 0 }
   let size = { width: stage.clientWidth, height: stage.clientHeight }
 
   const refreshStatus = () => {
     const at = now()
-    const age = at - current.generatedAt
-    const sky = skyOf(current, age)
-    world.setSky(sky)
-    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky, stale: staleOf(current, age) })
+    presentation.motion(reduced)
+    const frame = presentation.frame(at)
+    world.setSky(frame.freshness.sky)
+    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky: frame.freshness.sky, stale: frame.freshness.mode === 'stale' })
+    hud.frame(frame)
     overlay.hub(hubText(current, at), current.state)
+    overlay.frame(frame)
+    world.frame(frame)
   }
 
   const refreshMargins = () => {
@@ -127,8 +139,9 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   const showSelection = () => {
     world.focus(stop, focus)
     const parcel = parcelOf(selected)
+    presentation.select(selected)
     hud.stops(stop, parcel !== undefined, focus)
-    hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus])
+    hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus], presentation.frame(now()).selected)
     refreshMargins()
     onView(stop === 1 ? { path: null, ticket: null } : { path: archipelago.islands[focus].path, ticket: parcel?.identifier ?? null })
   }
@@ -189,7 +202,24 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     showStop()
   }
   const hud = createHud(stage, {
-    onSelect: select, onStop: setStop, onIsland: enter, onMode: toggleMode, mode,
+    onSelect: select,
+    onStop: setStop,
+    onIsland: enter,
+    onMode: toggleMode,
+    onReadable: enabled => {
+      readable = enabled
+      presentation.readable(enabled)
+      refreshStatus()
+    },
+    onIdleReveal: expanded => {
+      presentation.overview(expanded)
+      refreshStatus()
+    },
+    onFollow: enabled => {
+      presentation.follow(enabled)
+      refreshStatus()
+    },
+    mode,
     onLayout() {
       refreshMargins()
       frameView()
@@ -200,6 +230,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   const show = next => {
     archipelago = next
+    presentation.update({ scene: current, archipelago })
     world.build(archipelago)
     lens.retarget(archipelago)
     hud.update(archipelago)
@@ -250,6 +281,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
 
   show(archipelago)
   world.select(selected)
+  refreshStatus()
   const clock = setInterval(refreshStatus, STATUS_INTERVAL)
 
   const observer = new ResizeObserver(() => {
@@ -281,6 +313,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     const island = archipelago.islands.find(one => one.path === held.path)
     const parcel = island && archipelago.tickets.find(one => one.island === island.index && one.identifier === held.ticket)
     selected = parcel?.key ?? null
+    presentation.update({ scene: current, archipelago, selected })
     world.select(selected)
     if (!island) {
       focus = defaultFocus(archipelago.islands)
@@ -304,8 +337,18 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       return archipelago
     },
     update,
-    notify: hud.events,
+    notify(changes) {
+      presentation.notify(changes, now())
+      hud.events(changes)
+      const target = presentation.frame(now()).follow.target
+      if (target) {
+        presentation.acknowledgeFollow()
+        select(target.key)
+      }
+      refreshStatus()
+    },
     link(next) {
+      presentation.link(next)
       hud.link(next)
       refreshStatus()
       refreshMargins()
