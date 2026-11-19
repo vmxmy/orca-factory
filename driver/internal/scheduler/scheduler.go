@@ -965,7 +965,7 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 		if s.hostMemory.Error == "" {
 			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
 		}
-		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error()}
+		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error(), ObservedAt: now}
 		return
 	}
 	if s.hostMemory.Error != "" {
@@ -992,7 +992,7 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 		s.memoryPausedSince = now
 		s.memoryNotified = false
 	}
-	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError}
+	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading, CgroupError: cgroupError, ObservedAt: now}
 	if held && !s.memoryNotified && now.Sub(s.memoryPausedSince) >= hostMemoryNotifyAfter {
 		if notifier, ok := s.Backend.(interface {
 			NotifyHostMemory(context.Context, status.HostMemory) error

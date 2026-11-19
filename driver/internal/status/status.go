@@ -170,6 +170,8 @@ type HostMemory struct {
 	Reading     hostmem.Reading `json:"reading,omitzero"`
 	Error       string          `json:"error,omitempty"`
 	CgroupError string          `json:"cgroupError,omitempty"`
+	// ObservedAt is the scheduler round that produced this state.
+	ObservedAt time.Time `json:"observedAt,omitzero"`
 }
 
 // View.GeneratedAt records the last successful full scheduler observation.

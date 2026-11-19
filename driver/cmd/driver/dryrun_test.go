@@ -76,22 +76,23 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	cfg, repos := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}
+	slice := hostmem.Reading{Source: "/orca.slice", Available: 8 << 30}
 	for _, tc := range []struct {
 		name      string
 		published *status.HostMemory
 		own       uint64
-		source    string
+		source    string // empty: no hold expected
 	}{
 		{"no running serve, own reading below hold line", nil, 5 << 30, "host"},
-		{"serve held in its slice, this shell has room", &status.HostMemory{Paused: true, Reading: hostmem.Reading{Source: "/orca.slice", Available: 8 << 30}}, 20 << 30, "/orca.slice"},
-		{"serve published room, this shell is below hold line", &status.HostMemory{Reading: hostmem.Reading{Source: "host", Available: 20 << 30}}, 3 << 30, "host"},
-		{"serve without reading source held", &status.HostMemory{Paused: true, Reading: hostmem.Reading{Available: 5 << 30}}, 20 << 30, ""},
+		{"serve held in its slice, this shell has room", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now}, 20 << 30, "/orca.slice"},
+		{"serve published room, this shell is below hold line", &status.HostMemory{Reading: hostmem.Reading{Source: "host", Available: 20 << 30}, ObservedAt: now}, 3 << 30, "host"},
+		{"hold left by a serve that stopped publishing", &status.HostMemory{Paused: true, Reading: slice, ObservedAt: now.Add(-time.Hour)}, 20 << 30, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 			t.Setenv("DRIVER_STATUS_FILE", "")
 			if tc.published != nil {
-				status.PushObservation(now, now, func(view *status.View) { view.HostMemory = *tc.published })
+				status.Push(now, func(view *status.View) { view.HostMemory = *tc.published })
 			}
 			stubHostMemory(t, hostmem.Reading{Source: "host", Available: tc.own})
 			trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now}}}
@@ -100,8 +101,10 @@ func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := out.String()
-			if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="`+tc.source+`"`) {
-				t.Fatalf("dry run under a memory hold:\n%s", got)
+			held := !strings.Contains(got, "would claim ZII-1") && !strings.Contains(got, "would launch ZII-1") && strings.Contains(got, `skip launches reason="memory" source="`+tc.source+`"`)
+			released := strings.Contains(got, "would launch ZII-1") && !strings.Contains(got, "skip launches")
+			if (tc.source != "" && !held) || (tc.source == "" && !released) {
+				t.Fatalf("dry run hold, want source %q:\n%s", tc.source, got)
 			}
 		})
 	}

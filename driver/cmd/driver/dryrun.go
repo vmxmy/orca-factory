@@ -62,9 +62,8 @@ func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string,
 func dryRunTick(ctx context.Context, cfg config.Config, repos []config.Repository, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Repositories: repos, Backend: &dryBackend{Backend: backend, out: out}, HostMemory: readHostMemory, Now: now}
 	// This shell may sit outside serve's cgroup and starts without serve's
-	// hysteresis, so a hold serve published stands until serve lifts it.
-	if published := status.Read(now(), 0); published.State != "unknown" && published.HostMemory.Paused {
-		served := published.HostMemory
+	// hysteresis, so a hold a running serve still publishes stands.
+	if served := status.Read(now(), 0).HostMemory; served.Paused && now().Sub(served.ObservedAt) <= status.DefaultStaleAfter {
 		s.SeedHostMemory(served)
 		s.HostMemory = func() (hostmem.Reading, error) { return served.Reading, nil }
 	}
