@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1379,29 +1378,6 @@ func TestDoctorModelsDryRunMatchesRecordedVerdict(t *testing.T) {
 	assertDoctorModel(t, verdicts[true].Details.([]doctorModelStatus), "one", "reviewer", "claude:m:low", "unknown", "timeout")
 }
 
-func TestDoctorModelsLegacyReviewerBinary(t *testing.T) {
-	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
-	var mu sync.Mutex
-	endpoints := map[string]modelhealth.Endpoint{}
-	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, endpoint modelhealth.Endpoint) modelhealth.Status {
-		mu.Lock()
-		defer mu.Unlock()
-		endpoints[ref.Model+"|"+strconv.FormatBool(endpoint.Isolated)] = endpoint
-		return modelhealth.Classify(ref, "ok", nil, p.now)
-	}
-	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "codex:w:low",
-		"AGENT_ROLE_REVIEWER_CMD":    "/opt/custom/claude -p --model legacy --tools Read",
-		"AGENT_ROLE_SECOND_REVIEWER": "codex:second:high",
-	}}}
-	p.checkModels(context.Background(), []projects.Project{project}, nil)
-	for _, key := range []string{"legacy|false", "legacy|true"} {
-		if endpoints[key].Binary != "/opt/custom/claude" {
-			t.Errorf("%s endpoint = %+v, want the command's own binary", key, endpoints[key])
-		}
-	}
-}
-
 func TestDoctorModelsInvalidDriverEnvWithProcessIntake(t *testing.T) {
 	home := t.TempDir()
 	writeDoctorFile(t, filepath.Join(home, ".config/orca-factory/driver.env"), "AGENT_INTAKE_PI='unterminated\n", 0600)
@@ -1422,69 +1398,6 @@ func TestDoctorModelsInvalidDriverEnvWithProcessIntake(t *testing.T) {
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
 	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "intake", "claude:i:low", "unknown", "config_invalid")
-}
-
-func TestDoctorModelsCommandBinary(t *testing.T) {
-	for command, want := range map[string]string{
-		"claude -p --model m --add-dir /srv/reviews/claude":       "",
-		"/opt/custom/claude -p --model m":                         "/opt/custom/claude",
-		"env -u ORCA_PANE_KEY /opt/custom/codex exec -m m -":      "/opt/custom/codex",
-		"env -u ORCA_PANE_KEY codex exec -m m --cd /work/codex -": "",
-	} {
-		if _, got, reason := legacyReviewerCommand(command); got != want || reason != "" {
-			t.Errorf("legacyReviewerCommand(%q) binary = %q %q, want %q", command, got, reason, want)
-		}
-	}
-	for _, command := range []string{"./tools/claude -p --model m", "../head/tools/claude -p"} {
-		if _, _, reason := legacyReviewerCommand(command); reason != "relative_command" {
-			t.Errorf("legacyReviewerCommand(%q) resolved a path the temporary review checkout decides", command)
-		}
-	}
-	project := projects.Project{Name: "one", Path: "/repo", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:provider/model:high",
-		"AGENT_ROLE_SECOND_REVIEWER_CMD": "env TOKEN=TEST-PLACEHOLDER-CRED ../tools/claude -p --model m",
-		"AGENT_ROLE_REVIEWER_CMD_SMALL":  "env AUTH='Bearer TEST-PLACEHOLDER-CRED' ../tools/claude -p --model m",
-	}}}
-	legacy := project
-	legacy.Repository.Env = map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER_CMD": "../tools/claude -p --model m"}
-	names := []string{}
-	for _, role := range (doctorModelSettings{}).modelRoles(legacy) {
-		if strings.HasPrefix(role.name, "reviewer") {
-			names = append(names, role.name+"/"+role.reason)
-		}
-	}
-	if !slices.Equal(names, []string{"reviewer/relative_command"}) {
-		t.Errorf("main reviewer with a relative command = %v, want one relative_command row", names)
-	}
-	seen := map[string]bool{}
-	for _, role := range (doctorModelSettings{}).modelRoles(project) {
-		seen[role.name] = true
-		if strings.Contains(fmt.Sprint(role), "TEST-PLACEHOLDER-CRED") {
-			t.Errorf("%s row carries command text: %+v", role.name, role)
-		}
-		switch role.name {
-		case "reviewer":
-			if role.endpoint.Binary != "" || role.reason != "" {
-				t.Errorf("structured reviewer = %+v, want claude on PATH", role)
-			}
-		case "second_reviewer":
-			if role.reason != "relative_command" || role.ref.String() != "claude:m:" {
-				t.Errorf("second reviewer with a relative command = %+v, want relative_command with only the parsed model", role)
-			}
-		}
-	}
-	if !seen["second_reviewer"] || !seen["reviewer_small"] {
-		t.Errorf("roles = %v, want the legacy second_reviewer and reviewer_small rows", seen)
-	}
-	bin := t.TempDir()
-	writeDoctorFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\n", 0o755)
-	t.Setenv("PATH", bin)
-	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
-	onPath := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Isolated: true}}
-	explicit := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Binary: filepath.Join(bin, "claude"), Isolated: true}}
-	if onPath.probeKey() != explicit.probeKey() {
-		t.Error("the PATH claude and its absolute path probe the same endpoint twice")
-	}
 }
 
 func TestDoctorModelsPathChangeDuringProbe(t *testing.T) {
@@ -1547,72 +1460,43 @@ func TestDoctorModelsUnloadedRecordedLedger(t *testing.T) {
 	}
 }
 
-func TestDoctorModelsRelativeCommandKeepsCooldown(t *testing.T) {
-	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
-	p := modelFixtureProbe(now, t.TempDir())
-	registry, err := modelhealth.Open(p.stateRoot)
-	if err != nil {
-		t.Fatal(err)
+func TestDoctorModelsProbeKeyResolvesPath(t *testing.T) {
+	bin := t.TempDir()
+	writeDoctorFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\n", 0o755)
+	t.Setenv("PATH", bin)
+	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
+	onPath := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Isolated: true}}
+	explicit := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Binary: filepath.Join(bin, "claude"), Isolated: true}}
+	if onPath.probeKey() != explicit.probeKey() {
+		t.Error("the PATH claude and its absolute path probe the same endpoint twice")
 	}
-	ref := modelhealth.Ref{Agent: "claude", Model: "legacy"}
-	if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
+}
+
+// Legacy *_CMD reviewers are arbitrary shell; doctor reports them without
+// guessing the program, model or endpoint the shell would choose.
+func TestDoctorModelsLegacyCommandUnprobed(t *testing.T) {
+	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+		if ref.Model != "w" && ref.Model != "i" {
+			t.Errorf("probed %s from a legacy command", ref)
+		}
+		return modelhealth.Classify(ref, "ok", nil, p.now)
 	}
 	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
 		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low",
-		"AGENT_ROLE_REVIEWER_CMD": "./tools/claude -p --model legacy",
+		"AGENT_ROLE_REVIEWER_CMD":        "env AUTH='Bearer TEST-PLACEHOLDER-CRED' /opt/custom/claude -p --model m",
+		"AGENT_ROLE_REVIEWER_CMD_SMALL":  "claude -p --model \"${REVIEW_MODEL:-sonnet}\"",
+		"AGENT_ROLE_SECOND_REVIEWER_CMD": "./tools/claude -p --model m",
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
-	if got.Status != "fail" {
-		t.Errorf("check = %s, want fail: the reviewer's only model is cooling down", got.Status)
+	if got.Status != "unknown" {
+		t.Errorf("check = %s, want unknown", got.Status)
 	}
-	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:legacy:", "unavailable", "usage_limit")
-}
-
-func TestDoctorModelsLegacyCommandWords(t *testing.T) {
-	for command, want := range map[string]struct{ ref, binary, reason string }{
-		"/opt/custom/claude -p --model m":                                     {"claude:m:", "/opt/custom/claude", ""},
-		"claude -p --model real 'use --model display-name here'":              {"claude:real:", "", ""},
-		"env AUTH='Bearer TEST-PLACEHOLDER-CRED' /opt/custom/claude -p -m m":  {"claude:m:", "/opt/custom/claude", "command_env"},
-		"env -u ORCA_PANE_KEY codex exec -m m -c model_reasoning_effort=high": {"codex:m:high", "", ""},
-		"env -u ANTHROPIC_BASE_URL claude -p --model m":                       {"claude:m:", "", "command_env"},
-		"./tools/claude -p --model m":                                         {"claude:m:", "", "relative_command"},
-		"claude -p --model 'unterminated":                                     {"::", "", "config_invalid"},
-		"env AUTH='Bearer TEST-PLACEHOLDER-CRED x":                            {"::", "", "config_invalid"},
-	} {
-		ref, binary, reason := legacyReviewerCommand(command)
-		if ref.String() != want.ref || binary != want.binary || reason != want.reason {
-			t.Errorf("legacyReviewerCommand(%q) = %s %q %q, want %+v", command, ref, binary, reason, want)
-		}
+	rows := got.Details.([]doctorModelStatus)
+	for _, role := range []string{"reviewer", "reviewer_small", "second_reviewer", "cross_reviewer"} {
+		assertDoctorModel(t, rows, "one", role, "::", "unknown", "legacy_command")
 	}
-}
-
-func TestDoctorModelsUnprobedCommandKeepsSharedCooldown(t *testing.T) {
-	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
-	p := modelFixtureProbe(now, t.TempDir())
-	registry, err := modelhealth.Open(p.stateRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
-	if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low",
-		"AGENT_ROLE_REVIEWER_CMD": "env AUTH='Bearer TEST-PLACEHOLDER-CRED' /opt/custom/claude -p --model m",
-	}}}
-	for run := 1; run <= 2; run++ {
-		p.now = now.Add(time.Duration(run) * time.Minute)
-		got := p.checkModels(context.Background(), []projects.Project{project}, nil)
-		if got.Status != "fail" {
-			t.Errorf("run %d = %s, want fail: the reviewer's only model is cooling down", run, got.Status)
-		}
-		rows := got.Details.([]doctorModelStatus)
-		assertDoctorModel(t, rows, "one", "reviewer", "claude:m:", "unavailable", "usage_limit")
-		assertDoctorModel(t, rows, "one", "worker_default", "claude:m:high", "ok", "probe_ok")
-		if report, _ := json.Marshal(got); bytes.Contains(report, []byte("TEST-PLACEHOLDER-CRED")) {
-			t.Fatal("command text in report")
-		}
+	if report, _ := json.Marshal(got); bytes.Contains(report, []byte("TEST-PLACEHOLDER-CRED")) || bytes.Contains(report, []byte("REVIEW_MODEL")) {
+		t.Fatal("command text in report")
 	}
 }
