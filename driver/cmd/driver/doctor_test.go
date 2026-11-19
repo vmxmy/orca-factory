@@ -559,6 +559,41 @@ func TestDoctorReportsOrcaTerminalCreateFailure(t *testing.T) {
 	assertDoctorReportsOrcaRuntimeFault(t, runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))))
 }
 
+func TestDoctorReportsOrcaUnreachableAfterGrace(t *testing.T) {
+	for _, source := range []string{"push", "snapshot"} {
+		for _, age := range []time.Duration{10*time.Minute - time.Second, 10 * time.Minute} {
+			t.Run(fmt.Sprintf("%s/%s", source, age), func(t *testing.T) {
+				f := newDoctorFixture(t)
+				t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+				t.Setenv("DRIVER_STATUS_FILE", "")
+				path := status.PushPath()
+				if source == "snapshot" {
+					path = filepath.Join(t.TempDir(), "status.json")
+					t.Setenv("DRIVER_STATUS_FILE", path)
+				}
+				since := f.now.Add(-age)
+				writeDoctorFile(t, path, fmt.Sprintf(`{"generatedAt":%q,"orcaRuntime":{"unreachableSince":%q,"restarts":1},"tickets":[]}`, f.now.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano)), 0600)
+				result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
+				want := "ok"
+				if age == 10*time.Minute {
+					want = "fail"
+				}
+				if result.statuses["orca_runtime"] != want {
+					t.Fatalf("orca_runtime=%s, want %s: %s", result.statuses["orca_runtime"], want, result.out)
+				}
+				if want == "fail" {
+					detail := string(result.details["orca_runtime"])
+					for _, value := range []string{`"unreachable_since":"` + since.Format(time.RFC3339Nano) + `"`, "自动重启", "orca-serve"} {
+						if !strings.Contains(detail, value) {
+							t.Fatalf("detail missing %q: %s", value, detail)
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func assertDoctorReportsOrcaRuntimeFault(t *testing.T, result doctorResult) {
 	t.Helper()
 	if result.statuses["orca_runtime"] != "fail" {
@@ -591,8 +626,8 @@ func TestOrcaRuntimeCapabilitiesSurviveStatusBackend(t *testing.T) {
 	}); !ok {
 		t.Error("serve statusBackend hides the Orca service restart or its notifications")
 	}
-	if _, ok := any(backend).(interface{ OrcaTerminalCreateFailures() int }); !ok {
-		t.Error("serve statusBackend hides the Orca terminal create failure count")
+	if _, ok := any(backend).(interface{ OrcaTerminalCreates() (int, int) }); !ok {
+		t.Error("serve statusBackend hides the Orca terminal create counts")
 	}
 }
 

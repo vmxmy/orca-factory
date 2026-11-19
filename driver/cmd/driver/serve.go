@@ -307,11 +307,11 @@ func (b *statusBackend) NotifyOrcaRestartExhausted(ctx context.Context, ticket s
 	return nil
 }
 
-func (b *statusBackend) OrcaTerminalCreateFailures() int {
-	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
-		return source.OrcaTerminalCreateFailures()
+func (b *statusBackend) OrcaTerminalCreates() (failures, created int) {
+	if source, ok := b.Backend.(interface{ OrcaTerminalCreates() (int, int) }); ok {
+		return source.OrcaTerminalCreates()
 	}
-	return 0
+	return 0, 0
 }
 
 func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
