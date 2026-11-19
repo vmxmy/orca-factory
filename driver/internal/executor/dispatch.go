@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -64,6 +65,9 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	}
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
+	}
+	if launched, ok := effectiveLaunch(receipt); ok && opts.Agent != "" {
+		cp.Launch = launched.String()
 	}
 	cp.Dispatch = receiptID(receipt, "dispatch")
 	if path := orca.ReceiptWorktree(receipt); path != "" {
@@ -233,3 +237,15 @@ func (*unconfirmedDispatchError) Error() string {
 	return "worker start uncertain; reconcile dispatch before retry"
 }
 func (e *unconfirmedDispatchError) Unwrap() error { return e.cause }
+
+// effectiveLaunch reads the agent tier Orca reports it started, which can
+// differ from the requested one.
+func effectiveLaunch(receipt orca.Receipt) (modelhealth.Ref, bool) {
+	var launch struct {
+		Effective struct{ Agent, Model, Effort string }
+	}
+	if json.Unmarshal(receipt["launch"], &launch) != nil || launch.Effective.Agent == "" {
+		return modelhealth.Ref{}, false
+	}
+	return modelhealth.Ref{Agent: launch.Effective.Agent, Model: launch.Effective.Model, Effort: launch.Effective.Effort}, true
+}

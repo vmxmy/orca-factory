@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -185,11 +186,13 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort &&
 			agent == prevAgent && model == prevModel && effort == prevEffort
 		// The old terminal is reused only while it runs the model this correction
-		// selects; a checkpoint without Launch predates fallback selection.
+		// selects; a checkpoint without Launch predates fallback selection and
+		// ran the configured model.
 		configured := modelhealth.Ref{Agent: agent, Model: model, Effort: effort}
 		selected := e.tierModel(tier, configured)
 		agent, model, effort = selected.Agent, selected.Model, selected.Effort
-		reusable := sameTier && selected == configured && (cp.Launch == "" || cp.Launch == selected.String())
+		launched := cmp.Or(cp.Launch, configured.String())
+		reusable := sameTier && launched == selected.String()
 		handle := cp.Terminal
 		if reusable && handle == "" && result.DispatchID != "" {
 			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})

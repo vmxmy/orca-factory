@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -329,5 +331,20 @@ func TestWorkerTierModelUsesNamedTierFallback(t *testing.T) {
 		if got := e.tierModel(tier, primary); got != want {
 			t.Errorf("%s correction model = %+v, want %+v", tier, got, want)
 		}
+	}
+}
+
+func TestEffectiveLaunchReadsRecordedReceipt(t *testing.T) {
+	var envelope struct{ Result orca.Receipt }
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := effectiveLaunch(envelope.Result); ok {
+		t.Fatalf("null effective identity read as %s", got)
+	}
+	started := maps.Clone(envelope.Result)
+	started["launch"] = json.RawMessage(`{"requested":{"agent":"codex","model":"gpt-6-astra","effort":"high"},"effective":{"agent":"codex","model":"gpt-6.1-sol","effort":"high"}}`)
+	if got, ok := effectiveLaunch(started); !ok || got != (modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}) {
+		t.Fatalf("effective launch = %s, %v", got, ok)
 	}
 }

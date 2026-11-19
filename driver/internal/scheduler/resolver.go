@@ -231,8 +231,8 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		return errors.New("invalid resolver agent tier")
 	}
-	// A dispatched top round keeps its frozen tier; only a new round selects.
-	frozen := top && t.Resolution.Agent != "" && t.Resolution.Phase != "waiting"
+	// A dispatched round keeps its frozen record; only a new round selects.
+	frozen := t.Resolution != nil && t.Resolution.Phase != "" && t.Resolution.Phase != "waiting"
 	if tierKey != "" && !frozen {
 		now := time.Now
 		if r.Now != nil {

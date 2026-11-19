@@ -58,6 +58,9 @@ type onboardPlan struct {
 	Worktree string            `json:"worktree"`
 	Model    string            `json:"model"`
 	Effort   string            `json:"effort"`
+	// Fallback is AGENT_ROLE_INTAKE_FALLBACK; the agent start selects among
+	// Model and these when it launches, after any wizard wait.
+	Fallback []modelhealth.Ref `json:"fallback,omitempty"`
 	Env      map[string]string `json:"env"`
 	// RowExists is set when an earlier attempt already wrote this remote's
 	// project-table row; the retry reuses its prefix and writes no new row.
@@ -182,15 +185,6 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 	if err != nil {
 		return onboardPlan{}, err
 	}
-	primary := modelhealth.Ref{Agent: "claude", Model: model, Effort: effort}
-	selected, err := config.SelectModel(o.stateRoot, primary, fallback, time.Now())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "onboard model fallback unavailable; keeping configured model: %v\n", err)
-	}
-	if selected != primary {
-		fmt.Fprintf(os.Stderr, "onboard model falls back: configured=%s selected=%s\n", primary, selected)
-	}
-	model, effort = selected.Model, selected.Effort
 	env := map[string]string{"AGENT_FEISHU_PROJECT": target.Remote, "AGENT_GH_REPO": m[1]}
 	for _, key := range onboardDefaultKeys {
 		if v := factory.Env[key]; v != "" {
@@ -224,7 +218,7 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 		fmt.Sprintf("接入 Agent 推送 %s 并在 %s 开接入 PR（不合并）", onboardBranch, m[1]),
 	}
 	return onboardPlan{Repo: repo, Remote: target.Remote, Name: name, Prefix: prefix, Branch: onboardBranch, Worktree: worktree,
-		Model: model, Effort: effort, Env: env, RowExists: existing != "", Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
+		Model: model, Effort: effort, Fallback: fallback, Env: env, RowExists: existing != "", Pending: slices.Clone(onboardPendingKeys), Steps: steps}, nil
 }
 
 // run is the picker card's 接入 path: it onboards req.Repo through session
@@ -665,6 +659,21 @@ func truncateOnboardResult(s string) string {
 // both modes (OF-201). The prompt comes before every option because
 // --add-dir, --tools and --allowedTools take variadic values that would
 // swallow a trailing positional prompt.
+// onboardModel selects the onboarding agent's model when it launches: Model
+// unless the model registry marks it unavailable, then the first available
+// Fallback candidate. The switch goes to stderr like the intake turns.
+func onboardModel(plan onboardPlan) modelhealth.Ref {
+	primary := modelhealth.Ref{Agent: "claude", Model: plan.Model, Effort: plan.Effort}
+	selected, err := config.SelectModel(logStateRoot(), primary, plan.Fallback, time.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "onboard model fallback unavailable; keeping configured model: %v\n", err)
+	}
+	if selected != primary {
+		fmt.Fprintf(os.Stderr, "onboard model falls back: configured=%s selected=%s\n", primary, selected)
+	}
+	return selected
+}
+
 func onboardAgentArgs(plan onboardPlan, root string, attended bool) []string {
 	prompt := onboardPrompt(plan, root, attended)
 	args, tools, mode := []string{"-p", prompt, "--output-format", "json"}, onboardTools, "dontAsk"
@@ -672,11 +681,12 @@ func onboardAgentArgs(plan onboardPlan, root string, attended bool) []string {
 		// dontAsk denies AskUserQuestion; default lets the person answer it.
 		args, tools, mode = []string{prompt}, onboardTools+",AskUserQuestion", "default"
 	}
-	if plan.Model != "" {
-		args = append(args, "--model", plan.Model)
+	model := onboardModel(plan)
+	if model.Model != "" {
+		args = append(args, "--model", model.Model)
 	}
-	if plan.Effort != "" {
-		args = append(args, "--effort", plan.Effort)
+	if model.Effort != "" {
+		args = append(args, "--effort", model.Effort)
 	}
 	return append(args, "--append-system-prompt-file", filepath.Join(root, "scripts/agent-gates/roles/onboard.md"), "--add-dir", root,
 		"--tools", tools, "--allowedTools", tools, "--permission-mode", mode, "--restricted", "--strict-mcp-config", "--settings", onboardSettings)

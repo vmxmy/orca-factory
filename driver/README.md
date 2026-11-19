@@ -663,12 +663,12 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离�
 
 | 角色 | 选择位置 | 实际模型记录 |
 | --- | --- | --- |
-| worker 各档 | `Executor.tierModel`：首轮按执行器自身档，打回与恢复按所在档；旧终端只在运行本轮选中模型时复用 | executor 日志 `worker model falls back`，以及 `worker-start` 回执 |
+| worker 各档 | `Executor.tierModel`：首轮按执行器自身档，打回与恢复按所在档；旧终端只在 checkpoint `Launch` 等于本轮选中模型时复用 | executor 日志 `worker model falls back`，以及 `worker-start` 回执 |
 | 处置 Agent、终审 | `scheduler.ResolveTicket` | 处置记录 `resolver-state` 的 agent/model/effort 与 resolver 日志 |
 | 主审查、小票审查 | `executor.Commands.Review` | executor 日志 `reviewer model falls back` |
 | 交叉复审 | `scheduler.startCrossReview` | scheduler 日志 `cross review model falls back` |
 | 需求助手 | `intake.Runner.Turn`（每轮） | 网关 stderr `intake model falls back: configured=… selected=…` |
-| 接入 Agent | `onboarder.plan`（生成计划时） | 网关 stderr `onboard model falls back: configured=… selected=…`，以及计划的 model/effort |
+| 接入 Agent | `onboardAgentArgs`（启动接入 Agent 时） | stderr `onboard model falls back: configured=… selected=…` |
 
 终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。运行中识别模型错误并重派不在本节范围内。`orca-factory-driver config` 在每个仓库下的「兜底候选」中按键列出角色与档的全部 `_FALLBACK`，包括终审与 max 等升档档。施工与处置选中 model 为空的候选时不传 effort；终审候选必须写出 model 与 effort。
 
