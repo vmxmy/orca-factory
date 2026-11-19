@@ -801,15 +801,20 @@ func (p doctorProbe) checkOrcaRuntime() healthCheck {
 func (p doctorProbe) checkHostMemory() healthCheck {
 	view := status.Read(p.now, 0)
 	memory := view.HostMemory
-	detail := map[string]any{"available": memory.Reading.Available, "some_avg60": memory.Reading.SomeAvg60, "source": memory.Reading.Source, "snapshot_state": view.State}
+	source := memory.Reading.Source
+	if source == "" && (memory.Reading.Available != 0 || memory.Reading.SomeAvg60 != 0) {
+		// Snapshots predating cgroup support only recorded host readings.
+		source = "host"
+	}
+	detail := map[string]any{"available": memory.Reading.Available, "some_avg60": memory.Reading.SomeAvg60, "source": source, "snapshot_state": view.State}
 	if memory.Error != "" {
 		detail["error"] = memory.Error
-		if memory.Reading.Source != "host" || !memory.Paused {
-			reason := "读不到主机内存读数，调度器不按内存暂停："
-			if memory.Reading.Source == "host" {
-				reason = "读不到 cgroup 内存读数，仅按主机读数判断："
-			}
-			return healthCheck{Status: healthWarn, Reason: reason + memory.Error, Details: detail}
+		return healthCheck{Status: healthWarn, Reason: "读不到主机内存读数，调度器不按内存暂停", Details: detail}
+	}
+	if memory.CgroupError != "" {
+		detail["cgroup_error"] = memory.CgroupError
+		if !memory.Paused {
+			return healthCheck{Status: healthWarn, Reason: "读不到 cgroup 内存读数，仅按主机读数判断", Details: detail}
 		}
 	}
 	if memory.Paused {

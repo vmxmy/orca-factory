@@ -1556,22 +1556,35 @@ func TestDoctorWarnsOnHostMemoryHold(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
 	for _, tc := range []struct {
-		hostMemory, status string
-		want               []string
+		hostMemory, status, reason, source string
+		want                               []string
 	}{
-		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":5368709120,"someAvg60":3,"source":"/orca.slice"}}`, "warn", []string{"5368709120", "2026-11-19T10:00:00Z", "memory.peak", "/orca.slice"}},
-		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", []string{"/proc/pressure/memory"}},
-		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", nil},
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":5368709120,"someAvg60":3,"source":"/orca.slice"}}`, "warn", "已暂停认领", "/orca.slice", []string{"5368709120", "2026-11-19T10:00:00Z", "memory.peak"}},
+		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", "读不到主机内存读数", "", []string{"/proc/pressure/memory"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", "未记录主机内存暂停", "host", nil},
+		{`{"paused":false,"reading":{"available":3221225472,"someAvg60":30,"source":"host"},"error":"read /proc/meminfo: denied"}`, "warn", "读不到主机内存读数", "host", []string{"3221225472", `"error"`, "/proc/meminfo"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "读不到 cgroup 内存读数", "host", []string{`"cgroup_error"`, "memory.stat"}},
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":3221225472,"source":"host"},"cgroupError":"read memory.stat: denied"}`, "warn", "已暂停认领", "host", []string{"2026-11-19T10:00:00Z", `"cgroup_error"`, "memory.stat"}},
 	} {
 		writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"hostMemory":%s,"tickets":[]}`, f.now.Format(time.RFC3339Nano), tc.hostMemory), 0600)
 		result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
 		if result.statuses["host_memory"] != tc.status {
-			t.Fatalf("host_memory = %q, want %q for %s: %s", result.statuses["host_memory"], tc.status, tc.hostMemory, result.out)
+			t.Errorf("host_memory = %q, want %q for %s", result.statuses["host_memory"], tc.status, tc.hostMemory)
 		}
-		detail := string(result.details["host_memory"])
+		if got := result.reasons["host_memory"]; !strings.Contains(got, tc.reason) {
+			t.Errorf("host_memory reason = %q, want %q for %s", got, tc.reason, tc.hostMemory)
+		}
+		detail := result.details["host_memory"]
+		var fields struct{ Source string }
+		if err := json.Unmarshal(detail, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if fields.Source != tc.source {
+			t.Errorf("host_memory source = %q, want %q for %s", fields.Source, tc.source, tc.hostMemory)
+		}
 		for _, want := range tc.want {
-			if !strings.Contains(detail, want) {
-				t.Fatalf("host_memory detail lacks %q: %s", want, detail)
+			if !bytes.Contains(detail, []byte(want)) {
+				t.Errorf("host_memory detail lacks %q: %s", want, detail)
 			}
 		}
 	}

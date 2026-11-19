@@ -157,6 +157,25 @@ func TestReadRecordedCgroupAncestors(t *testing.T) {
 	}
 }
 
+func TestReadSkipsCgroupLevelsWithoutMemoryMax(t *testing.T) {
+	root := cgroupFixture(t)
+	leaf := strings.TrimSpace(strings.TrimPrefix(string(recorded(t, "cgroup-memory/proc-self-cgroup.txt")), "0::"))
+	if err := os.Remove(filepath.Join(root, "sys/fs/cgroup", leaf, "memory.max")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Read(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Reading{
+		Source:    "/user.slice/user-1000.slice/user@1000.service/orca.slice/orca-workloads.slice",
+		Available: 34359738368 - 8672956416 + 3171840000 + 1142583296,
+	}
+	if got != want {
+		t.Fatalf("Read = %+v, want %+v", got, want)
+	}
+}
+
 func TestEffectiveReadingTakesTightestSource(t *testing.T) {
 	host := Reading{Available: 20 * gib, SomeAvg60: 2, Source: "host"}
 	ancestor := Reading{Available: 3 * gib, SomeAvg60: 30, Source: "/orca.slice"}

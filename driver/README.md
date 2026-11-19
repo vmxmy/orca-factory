@@ -98,7 +98,9 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 | 现象 | 原因与处理 |
 | --- | --- |
 | `doctor` 的 `orca_runtime` 为 `fail`，`terminal create` 连续返回 `runtime_error` | 调度器跨票累计 3 次后暂停认领、派工、合并通道和执行器死亡判定，并通过已配置的飞书通知通道通知一次。失败的认领保留 attempt，不转处置。重启 `orca-serve` 服务，并查看其日志里的 profile 写入超时。调度器每轮创建一个只运行 `true` 的探测终端并关闭它，成功后恢复派工；doctor 只读状态快照，不创建终端。driver 不自动重启 Orca |
-| `doctor` 的 `host_memory` 为 `warn`，详情有 `since` | 内存吃紧：主机与 driver 自身及祖先 cgroup 中有限 `memory.max` 的层级一起判断。cgroup 可用量为 `memory.max - memory.current + inactive_file + active_file`，不足零按零计；有效可用量取各来源最小值，`some avg60` 取最大值。可用量低于 6 GiB 或压力不低于 20 时，调度器不认领新票，也不新建执行器或处置 Agent 终端，决策日志原因为 `memory`，不耗令牌、不加 attempt。已在跑的终端、心跳、所有权检查和合并通道照常。有效可用量不低于 10 GiB 且压力低于 5 后自动恢复。`hostMemory.reading.source` 与 doctor 的 `source` 显示限制来源，值为 `host` 或 cgroup 路径；限制来源是 cgroup 时，用 `systemd-cgls` 与该切片的 `memory.peak` 找占用大户。暂停满 15 分钟向机器配置的飞书通知群发送一次读数、来源及暂停时长；失败下一轮重试，同次暂停成功后不重复，恢复后重新计时。详情有 `error` 时，cgroup 读取失败仍按主机读数判断，主机读取失败则不按内存暂停 |
+| `doctor` 的 `host_memory` 为 `warn`，详情有 `since` | 调度器从 driver 所在 cgroup 逐级向上读取到根。缺少 `memory.max` 或其值为 `max` 时跳过本层，继续向上读取。每个有限层级的可用量为 `memory.max - memory.current + inactive_file + active_file`，最低按零计。调度器取主机与这些层级的最小可用量和最大 `some avg60`。可用量低于 6 GiB 或压力不低于 20 时，调度器暂停认领新票和新建执行器或处置 Agent 终端，决策日志原因为 `memory`，不耗令牌、不加 attempt。已在跑的终端、心跳、所有权检查和合并通道照常。有效可用量不低于 10 GiB 且压力低于 5 后自动恢复。快照的 `hostMemory.reading.source` 与 doctor 的 `source` 显示限制来源，值为 `host` 或 cgroup 路径。来源是 cgroup 时，用 `systemd-cgls` 与该切片的 `memory.peak` 找占用大户。连续暂停满 15 分钟后，调度器向机器配置的飞书通知群发送读数、来源及连续暂停时长。发送失败则下一轮重试，同一次内存吃紧期间只成功通知一次。 |
+| `host_memory` 详情有 `error` | 本轮主机内存读取失败，调度器不按内存暂停。快照中的读数保留最后一次有效值。再次暂停时，15 分钟通知从该轮重新计时。 |
+| `host_memory` 详情有 `cgroup_error`（快照字段 `hostMemory.cgroupError`） | 本轮 cgroup 读取失败，调度器仅按本轮主机读数判断是否暂停。错误信息指出读取失败的位置。 |
 | `feishu API code 91403` | 应用未加为 Base 协作者，或权限低于 edit。按“应用权限与协作者”第 2 步添加。该错误不重试 |
 | `feishu API code 99991672: missing scopes ...` | 应用缺 scope。按错误列出的 scope 申请并发布。该错误按全局故障处理，不重试 |
 | `feishu table <表> schema mismatch: ...` | 字段缺失、类型不符或缺选项。按错误逐项修正 Base，再重启 driver |

@@ -157,14 +157,16 @@ type OrcaRuntime struct {
 	Paused   bool `json:"paused"`
 }
 
-// HostMemory is the scheduler's host memory hold: while Paused it starts no
-// new terminal. Reading.Source identifies the limiting host or cgroup.
-// Error describes failed reads; a valid host reading still drives admission.
+// HostMemory reports the memory hold on new terminal launches.
+// Reading.Source identifies the limiting host or cgroup. On a host read
+// failure, Error is set, Reading keeps its last valid value, and launches
+// proceed. With CgroupError set, the host reading alone determines the hold.
 type HostMemory struct {
-	Paused  bool            `json:"paused"`
-	Since   time.Time       `json:"since,omitzero"`
-	Reading hostmem.Reading `json:"reading,omitzero"`
-	Error   string          `json:"error,omitempty"`
+	Paused      bool            `json:"paused"`
+	Since       time.Time       `json:"since,omitzero"`
+	Reading     hostmem.Reading `json:"reading,omitzero"`
+	Error       string          `json:"error,omitempty"`
+	CgroupError string          `json:"cgroupError,omitempty"`
 }
 
 // View.GeneratedAt records the last successful full scheduler observation.
