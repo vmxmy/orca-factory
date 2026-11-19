@@ -50,14 +50,14 @@ var (
 // onboardPlan is everything one onboarding will do, decided before it runs:
 // `onboard --dry-run` prints it, and the real run executes it.
 type onboardPlan struct {
-	Repo     string            `json:"repo"`
-	Remote   string            `json:"remote"`
-	Name     string            `json:"name"`
-	Prefix   string            `json:"prefix"`
-	Branch   string            `json:"branch"`
-	Worktree string            `json:"worktree"`
-	Model    string            `json:"model"`
-	Effort   string            `json:"effort"`
+	Repo     string `json:"repo"`
+	Remote   string `json:"remote"`
+	Name     string `json:"name"`
+	Prefix   string `json:"prefix"`
+	Branch   string `json:"branch"`
+	Worktree string `json:"worktree"`
+	Model    string `json:"model"`
+	Effort   string `json:"effort"`
 	// Fallback is AGENT_ROLE_INTAKE_FALLBACK; the agent start selects among
 	// Model and these when it launches, after any wizard wait.
 	Fallback []modelhealth.Ref `json:"fallback,omitempty"`

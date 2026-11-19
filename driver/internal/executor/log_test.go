@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -342,9 +341,11 @@ func TestEffectiveLaunchReadsRecordedReceipt(t *testing.T) {
 	if got, ok := effectiveLaunch(envelope.Result); ok {
 		t.Fatalf("null effective identity read as %s", got)
 	}
-	started := maps.Clone(envelope.Result)
-	started["launch"] = json.RawMessage(`{"requested":{"agent":"codex","model":"gpt-6-astra","effort":"high"},"effective":{"agent":"codex","model":"gpt-6.1-sol","effort":"high"}}`)
-	if got, ok := effectiveLaunch(started); !ok || got != (modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}) {
+	var fresh struct{ Result orca.Receipt }
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-fresh-agent.json"), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := effectiveLaunch(fresh.Result); !ok || got != (modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}) {
 		t.Fatalf("effective launch = %s, %v", got, ok)
 	}
 }
