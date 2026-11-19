@@ -3,7 +3,7 @@ import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 
 import { GENERATED_SCOPE_STATUS } from './sample-recorded'
-import { SAMPLE_CONFIG } from './sample-config'
+import { RECORDED_GEAR_CONFIG, SAMPLE_CONFIG } from './sample-config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_NO_TOKEN, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
@@ -130,12 +130,12 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
 
 test('models page shows and switches gear', async ($, on) => {
-  const manual = structuredClone(SAMPLE_CONFIG)
-  const mode = manual.repos[0]!.routing.find(one => one.key === 'AGENT_MODE')!
+  const manual = JSON.parse(RECORDED_GEAR_CONFIG)
+  const mode = manual.repos[0].routing.find((one: { key: string }) => one.key === 'AGENT_MODE')
   mode.value = 'manual'
   mode.source = 'override'
   const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
-    config: nth => ran({ stdout: nth === 1 ? sampleStdout : JSON.stringify(manual) }),
+    config: nth => ran({ stdout: nth === 1 ? RECORDED_GEAR_CONFIG : JSON.stringify(manual) }),
     gear: ran({}),
   }, { gear: 1000 })
   mock.env(on, { USER: 'test-operator' })
@@ -144,12 +144,13 @@ test('models page shows and switches gear', async ($, on) => {
   await ui.press({ key: 'page-models' })
   expect(await exactText(ui, '档位 自动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
   expect(await exactText(ui, '终审')).toHaveLength(1)
+  expect(await exactText(ui, '档位来源：agent-graph.env')).toHaveLength(1)
   expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到手动挡')
 
   const switching = ui.press({ key: 'gear-toggle' })
   await clock.settle()
-  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('档位切换中…')
-  await ui.press({ key: 'gear-toggle' })
+  expect(await ui.find({ key: 'gear-toggle' })).toBeUndefined()
+  expect(await exactText(ui, '档位切换中…')).toHaveLength(1)
   expect(subcommands(calls).filter(one => one === 'gear')).toHaveLength(1)
   expect(calls).toContainEqual([
     'orca-factory-driver', 'gear', 'set', '/home/laoxu/github/orca-factory', 'manual',

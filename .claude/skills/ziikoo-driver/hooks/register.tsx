@@ -260,13 +260,14 @@ const refresh = async ($: Engine): Promise<void> => {
   await fetchConfig($)
 }
 
+// gearBusy only redraws the pane: plugin state survives a hot reload that may drop the finally below,
+// while this module flag starts false in the reloaded module, so a stale true cannot lock the switch.
+let gearSwitching = false
+
 const switchGear = async ($: Engine, current: Repo): Promise<void> => {
-  let started = false
-  await update($, gearBusy, prev => {
-    started = !prev
-    return true
-  })
-  if (!started) return
+  if (gearSwitching) return
+  gearSwitching = true
+  await update($, gearBusy, () => true)
   try {
     const operator = (await $.env.get('USER')) || (await $.env.get('LOGNAME'))
     if (!operator) throw new Error('无法读取当前用户名')
@@ -280,6 +281,7 @@ const switchGear = async ($: Engine, current: Repo): Promise<void> => {
     $.ui.toast(`档位切换失败：${message(error)}`)
   } finally {
     await fetchConfig($)
+    gearSwitching = false
     await update($, gearBusy, () => false)
   }
 }
@@ -714,7 +716,7 @@ export const register: Register = (on, options) => {
     const runtimeState = await read($, runtime)
     const healthState = await read($, health)
     const loading = (await read($, busy)).length > 0
-    const switchingGear = await read($, gearBusy)
+    const switchingGear = (await read($, gearBusy)) && gearSwitching
     const samples = await read($, trend)
     const opened = current === 'pipeline' ? await read($, detail) : ''
     const timelineState = await read($, timeline)
@@ -777,11 +779,15 @@ export const register: Register = (on, options) => {
             ) : (
               <ui.Text>{selected.name}</ui.Text>
             )}
-            <ui.Button
-              key="gear-toggle"
-              label={switchingGear ? '档位切换中…' : gearMode(selected.routing) === 'auto' ? '切换到手动挡' : '切换到自动挡'}
-              onPress={() => switchGear($, selected)}
-            />
+            {switchingGear ? (
+              <ui.Text key="gear-toggle" dimColor>档位切换中…</ui.Text>
+            ) : (
+              <ui.Button
+                key="gear-toggle"
+                label={gearMode(selected.routing) === 'auto' ? '切换到手动挡' : '切换到自动挡'}
+                onPress={() => switchGear($, selected)}
+              />
+            )}
           </ui.Box>
         )}
         <ui.Box marginTop={1} flexDirection="column">
