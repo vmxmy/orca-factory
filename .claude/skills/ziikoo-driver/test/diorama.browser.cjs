@@ -1140,9 +1140,9 @@ async function checkPublicSceneServer(bun, temp) {
   const publicEnv = { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_TOKEN: undefined, ZIIKOO_SCENE_MAX_CLIENTS: '3' }
   const server = launchServer(bun, temp, '', 0, publicEnv)
   try {
+    const origin = await server.origin
     const listening = await server.listening
     assert.ok(!listening.includes('?t='), `public mode must print an address without a token: ${listening}`)
-    const origin = await server.origin
     const request = async (route, source, init = {}) => {
       const response = await fetch(origin + route, { ...init, headers: source ? { 'CF-Connecting-IP': source } : {} })
       assertSecurityHeaders(response, route)
