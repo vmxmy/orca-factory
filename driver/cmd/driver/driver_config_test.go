@@ -227,6 +227,7 @@ func TestRepositoryFallbacksListEveryFallbackKey(t *testing.T) {
 		"AGENT_TIER_MAX_FALLBACK":          "codex:gpt-6.1-sol:max",
 		"AGENT_ROLE_RESOLVER_TOP_FALLBACK": " claude:claude-opus-5-5:max  codex:gpt-6-astra:xhigh ",
 		"AGENT_ROLE_INTAKE_FALLBACK":       "claude:claude-sonnet-5-5:high",
+		"GITHUB_TOKEN_FALLBACK":            "fake-token-not-a-model",
 	}
 	got := repositoryFallbacks(env, map[string]string{"AGENT_TIER_MAX_FALLBACK": "profile:daily"})
 	want := []string{

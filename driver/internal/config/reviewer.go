@@ -119,10 +119,8 @@ func ReviewerCandidates(env, sources map[string]string, structuredKey, commandKe
 	if err != nil {
 		return nil, wrapKey(structuredKey, err)
 	}
-	for _, ref := range fallback {
-		if _, err := GenerateReviewerCommand(ref.String()); err != nil {
-			return nil, wrapKey(FallbackKey(structuredKey), err)
-		}
+	if err := validFallback(structuredKey, env[FallbackKey(structuredKey)]); err != nil {
+		return nil, wrapKey(FallbackKey(structuredKey), err)
 	}
 	return append([]modelhealth.Ref{primary}, fallback...), nil
 }

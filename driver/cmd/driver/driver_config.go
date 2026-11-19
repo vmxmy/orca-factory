@@ -64,8 +64,8 @@ type configRepo struct {
 	Profile string        `json:"profile"`
 	Roles   []configRole  `json:"roles"`
 	Routing []configEntry `json:"routing"`
-	// Fallbacks lists every <key>_FALLBACK the repository sets, by key, because
-	// a role reads its own key's list even when it inherits another key's model.
+	// Fallbacks lists every role and tier <key>_FALLBACK the repository sets,
+	// by key, so tiers and the top resolver outside Roles are listed too.
 	Fallbacks []configEntry `json:"fallbacks"`
 }
 
@@ -383,7 +383,7 @@ func repositoryRouting(env map[string]string) []configEntry {
 func repositoryFallbacks(env, sources map[string]string) []configEntry {
 	entries := []configEntry{}
 	for _, key := range slices.Sorted(maps.Keys(env)) {
-		if !strings.HasSuffix(key, "_FALLBACK") {
+		if !config.IsFallbackKey(key) {
 			continue
 		}
 		value := strings.Join(strings.Fields(env[key]), " ")

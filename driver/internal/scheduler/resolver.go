@@ -243,6 +243,12 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		if !resolverAgent(selected) {
 			return errors.New("invalid resolver fallback tier")
 		}
+		if top && (selected.Model == "" || selected.Effort == "") {
+			return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP_FALLBACK 候选无效，不更换模型", "终审兜底候选需要写出 model 与 effort")
+		}
+		if selected.Model == "" {
+			selected.Effort = ""
+		}
 		if selected != ref {
 			runx.LoggerFrom(ctx).Info("resolver model falls back", "ticket", t.Identifier, "configured", ref.String(), "selected", selected.String())
 			ref = selected

@@ -184,12 +184,17 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		// correction's tier, so a chain returning to the entry model starts fresh.
 		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort &&
 			agent == prevAgent && model == prevModel && effort == prevEffort
-		// The old terminal runs the configured model, so a correction that falls
-		// back to another model starts a fresh agent instead of reusing it.
+		// The old terminal is reused only while it runs the configured model: a
+		// correction that falls back starts a fresh agent, and so does one whose
+		// configured model was cooling when the previous dispatch started.
 		configured := modelhealth.Ref{Agent: agent, Model: model, Effort: effort}
 		selected := e.tierModel(tier, configured)
 		agent, model, effort = selected.Agent, selected.Model, selected.Effort
 		reusable := sameTier && selected == configured
+		if reusable && !cp.DispatchStartedAt.IsZero() {
+			previous, err := e.selectTier(tier, configured, cp.DispatchStartedAt)
+			reusable = err == nil && previous == configured
+		}
 		handle := cp.Terminal
 		if reusable && handle == "" && result.DispatchID != "" {
 			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})

@@ -136,13 +136,25 @@ func TestFallbackKeysParse(t *testing.T) {
 	if _, err := ParseFallback("codex:gpt-6-astra"); err == nil {
 		t.Fatal("candidate without effort accepted")
 	}
-	for _, incomplete := range []string{"codex::low", "claude::", "codex:gpt-secret-model:"} {
-		_, err := ParseFallback(incomplete)
-		if err == nil {
-			t.Fatalf("incomplete candidate %q accepted", incomplete)
+	if got, err := ParseFallback("codex::low"); err != nil || len(got) != 1 {
+		t.Fatalf("default-model candidate = %+v, %v", got, err)
+	}
+	for _, invalid := range []string{"gpt-secret-model", "nosuch:gpt-secret-model:high"} {
+		value := "codex:gpt-6-astra:high " + invalid
+		_, err := ParseFallback(value)
+		if invalid == "gpt-secret-model" && err == nil {
+			t.Fatalf("invalid candidate %q accepted", invalid)
 		}
-		if strings.Contains(err.Error(), incomplete) || strings.Contains(err.Error(), "gpt-secret-model") {
-			t.Fatalf("fallback error leaks the configured value: %v", err)
+		if err == nil {
+			err = validFallback("AGENT_ROLE_REVIEWER", value)
+		}
+		if err == nil || strings.Contains(err.Error(), "gpt-secret-model") || strings.Contains(err.Error(), "nosuch") {
+			t.Fatalf("fallback error for %q = %v, want an error without the configured value", invalid, err)
+		}
+	}
+	for key, want := range map[string]bool{"AGENT_TIER_MAX_FALLBACK": true, "AGENT_ROLE_RESOLVER_TOP_FALLBACK": true, "AGENT_ROLE_INTAKE_FALLBACK": true, "GITHUB_TOKEN_FALLBACK": false, "AGENT_TIER_CHAIN_FALLBACK": false, "AGENT_TIER_MAX": false} {
+		if IsFallbackKey(key) != want {
+			t.Errorf("IsFallbackKey(%q) = %v, want %v", key, !want, want)
 		}
 	}
 	if FallbackKey("AGENT_ROLE_RESOLVER_TOP") != "AGENT_ROLE_RESOLVER_TOP_FALLBACK" {

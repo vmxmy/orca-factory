@@ -324,3 +324,33 @@ func TestWorkerTierModelUsesNamedTierFallback(t *testing.T) {
 		t.Fatalf("selected correction start rewritten to %+v", got)
 	}
 }
+
+func TestWorkerStartMatchesOneTierBeforeFallback(t *testing.T) {
+	root := t.TempDir()
+	strong := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	shared := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	registry, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	for _, ref := range []modelhealth.Ref{strong, shared} {
+		if err = registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name     string
+		settings map[string]string
+		start    modelhealth.Ref
+		want     orca.StartOptions
+	}{
+		{"recovered strong correction", map[string]string{"default": "codex:gpt-6.1-sol:high", "strong": strong.String(), "AGENT_TIER_STRONG_FALLBACK": "codex::low"}, strong, orca.StartOptions{Task: "task_child", Agent: "codex"}},
+		{"tiers share a model", map[string]string{"default": shared.String(), "strong": shared.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh"}, shared, orca.StartOptions{Task: "task_child", Agent: shared.Agent, Model: shared.Model, Effort: shared.Effort}},
+	} {
+		e := &Executor{Config: Config{Root: root, Tier: "default", TierChain: []string{"default", "strong"}, TierSettings: tc.settings}, Stderr: &bytes.Buffer{}}
+		if got := e.workerModel(orca.StartOptions{Task: "task_child", Agent: tc.start.Agent, Model: tc.start.Model, Effort: tc.start.Effort}); got != tc.want {
+			t.Errorf("%s: worker start = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
