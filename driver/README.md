@@ -97,7 +97,7 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `doctor` 的 `orca_runtime` 为 `fail`，`terminal create` 连续返回 `runtime_error` | 调度器跨票累计 3 次后暂停认领、派工、合并通道和执行器死亡判定，并通过已配置的飞书通知通道通知一次。失败的认领保留 attempt，不转处置。重启 `orca-serve` 服务，并查看其日志里的 profile 写入超时。调度器每轮创建一个只运行 `true` 的探测终端并关闭它，成功后恢复派工；doctor 只读状态快照，不创建终端。driver 不自动重启 Orca |
+| `doctor` 的 `orca_runtime` 为 `fail`，`terminal create` 连续返回 `runtime_error` | 调度器跨票累计 3 次后暂停认领、派工、合并通道和执行器死亡判定，并通过已配置的飞书通知通道通知一次。失败的认领保留 attempt，不转处置。调度器每轮创建一个只运行 `true` 的探测终端并关闭它，成功后恢复派工；doctor 只读状态快照，不创建终端，detail 显示 `paused_at` 与 `restarts`。暂停满 10 分钟仍失败时 driver 执行 `systemctl --user restart orca-serve.service`，之后每 30 分钟最多一次，每次结果都发飞书通知。3 次后仍失败只再发一次「需人工」通知：手动重启 `orca-serve` 服务，并查看其日志里的 profile 写入超时 |
 | `doctor` 的 `host_memory` 为 `warn`，详情有 `since` | 主机内存吃紧：`MemAvailable` 低于 6 GiB 或 `/proc/pressure/memory` 的 `some avg60` 不低于 20 时，调度器不认领新票，也不新建执行器或处置 Agent 终端，决策日志原因为 `memory`，不耗令牌、不加 attempt。已在跑的终端、心跳、所有权检查和合并通道照常。`MemAvailable` 不低于 10 GiB 且 `some avg60` 低于 5 后自动恢复。用 `memory.peak` 与 `systemd-cgls` 找占用大户。详情有 `error` 时是读不到 `/proc` 文件，调度器不按内存暂停 |
 | `feishu API code 91403` | 应用未加为 Base 协作者，或权限低于 edit。按“应用权限与协作者”第 2 步添加。该错误不重试 |
 | `feishu API code 99991672: missing scopes ...` | 应用缺 scope。按错误列出的 scope 申请并发布。该错误按全局故障处理，不重试 |

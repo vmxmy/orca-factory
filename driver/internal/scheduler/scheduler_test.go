@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,7 +15,9 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -562,11 +566,17 @@ type runtimeFailureOrca struct {
 	failureClient *orca.Client
 	success       orca.Receipt
 	closed        []string
+	closeErr      error
+	// probeErr, when set, is what a probe's terminal create returns.
+	probeErr error
 }
 
 func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
 	if opts.Command == "true" {
 		o.probes++
+		if o.probeErr != nil {
+			return nil, o.probeErr
+		}
 	} else {
 		o.creates++
 	}
@@ -578,7 +588,7 @@ func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.Termi
 
 func (o *runtimeFailureOrca) TerminalClose(_ context.Context, handle string) error {
 	o.closed = append(o.closed, handle)
-	return nil
+	return o.closeErr
 }
 
 type runtimeFailureBackend struct {
@@ -588,6 +598,13 @@ type runtimeFailureBackend struct {
 	launchErr error
 	merges    int
 	merge     func(context.Context) error
+	// restarts counts RestartOrcaService calls; restartErr is what each returns.
+	restarts         int
+	restartErr       error
+	restartNotices   []string
+	exhaustedNotices int
+	// exhaustedErrs answers successive human notices; nil once exhausted.
+	exhaustedErrs []error
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -603,6 +620,23 @@ func (b *runtimeFailureBackend) ProbeOrcaRuntime(ctx context.Context, repo strin
 func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error {
 	b.notices++
 	return nil
+}
+func (b *runtimeFailureBackend) RestartOrcaService(context.Context) error {
+	b.restarts++
+	return b.restartErr
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, ticket Ticket, restart int, restartErr error) error {
+	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%s %d:%v", ticket.Repo, restart, restartErr))
+	return nil
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Ticket) error {
+	b.exhaustedNotices++
+	if len(b.exhaustedErrs) == 0 {
+		return nil
+	}
+	err := b.exhaustedErrs[0]
+	b.exhaustedErrs = b.exhaustedErrs[1:]
+	return err
 }
 func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
 	return b.runtime.OrcaTerminalCreateFailures()
@@ -911,6 +945,188 @@ func TestOrcaRuntimePauseHoldsMergeLaneInSameRound(t *testing.T) {
 	_ = x.s.Tick(context.Background())
 	if got := x.s.OrcaRuntime(); !got.Paused || x.b.merges != 1 {
 		t.Fatalf("merge lane advanced after the pause: %+v merges=%d", got, x.b.merges)
+	}
+}
+
+// A pause whose probes keep failing restarts orca-serve after the grace, then at
+// most once per interval, and stops at the limit with one call for a human.
+func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, f, b, oc := x.s, x.f, x.b, x.oc
+	pausedAt := *x.now
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); !got.Paused || !got.PausedAt.Equal(pausedAt) || got.Restarts != 0 {
+		t.Fatalf("pause start not recorded: %+v", got)
+	}
+	tickAt := func(offset time.Duration, wantRestarts int) {
+		t.Helper()
+		*x.now = pausedAt.Add(offset)
+		_ = s.Tick(context.Background())
+		if b.restarts != wantRestarts || s.OrcaRuntime().Restarts != wantRestarts {
+			t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), wantRestarts)
+		}
+	}
+	tickAt(10*time.Minute-time.Second, 0)
+	b.restartErr = errors.New("systemctl failed")
+	tickAt(10*time.Minute, 1)
+	b.restartErr = nil
+	tickAt(39*time.Minute, 1)
+	tickAt(40*time.Minute, 2)
+	tickAt(69*time.Minute, 2)
+	tickAt(70*time.Minute, 3)
+	if b.exhaustedNotices != 0 {
+		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
+	}
+	// A notice that failed for certain is retried; a delivered one is not resent.
+	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent), nil}
+	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
+		tickAt(offset, 3)
+	}
+	if b.exhaustedNotices != 2 {
+		t.Fatalf("human notice attempts %d, want one retry after a certain failure then no resend after delivery", b.exhaustedNotices)
+	}
+	// The pause started on the third ticket's repository; its chat gets every result.
+	if want := []string{"/repo2 1:systemctl failed", "/repo2 2:<nil>", "/repo2 3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
+		t.Fatalf("restart result notices %v, want %v", b.restartNotices, want)
+	}
+	if got := s.OrcaRuntime(); !got.LastRestartAt.Equal(pausedAt.Add(70 * time.Minute)) {
+		t.Fatalf("last restart time not recorded: %+v", got)
+	}
+	oc.failing = false
+	*x.now = x.now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.OrcaRuntime(); got != (status.OrcaRuntime{}) {
+		t.Fatalf("recovery left Orca runtime state: %+v", got)
+	}
+	for _, ticket := range f.tickets {
+		if ticket.Attempt != 1 {
+			t.Fatalf("restart changed attempt: %+v", ticket)
+		}
+	}
+}
+
+// Orca failing the probe's terminal create, refused or unreachable, keeps the
+// restart schedule; a maintenance refusal never reached Orca, and a created probe
+// terminal that fails to close means Orca has recovered.
+func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		probeErr, closeErr error
+		restarts           int
+		recovered          bool
+	}{
+		{name: "orca call timed out", probeErr: &infra.Transient{Err: errors.New("orca call timed out")}, restarts: 1},
+		{name: "maintenance refusal", probeErr: fmt.Errorf("%w: maintenance blocks new claim or dispatch", maintenance.ErrRefused)},
+		{name: "probe close failure", closeErr: errors.New("terminal close failed"), recovered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+			s, b, oc := x.s, x.b, x.oc
+			_ = s.Tick(context.Background())
+			oc.failing = tc.probeErr != nil
+			oc.probeErr, oc.closeErr = tc.probeErr, tc.closeErr
+			*x.now = x.now.Add(time.Hour)
+			_ = s.Tick(context.Background())
+			if b.restarts != tc.restarts || s.OrcaRuntime().Restarts != tc.restarts {
+				t.Fatalf("restarts=%d status=%+v, want %d", b.restarts, s.OrcaRuntime(), tc.restarts)
+			}
+			if got := s.OrcaRuntime(); tc.recovered != (got == status.OrcaRuntime{}) {
+				t.Fatalf("recovered=%v, want %v: %+v", got == status.OrcaRuntime{}, tc.recovered, got)
+			}
+		})
+	}
+}
+
+const feishuTokenIssued = `{"code":0,"tenant_access_token":"token","expire":7200}`
+
+// feishuSendTextErr is what the Feishu client returns when the token endpoint
+// answers token and the message endpoint answers with status and body.
+func feishuSendTextErr(t *testing.T, token string, status int, body string) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(token))
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := feishu.New(feishu.Options{Endpoint: srv.URL, AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client.SendText(context.Background(), "oc_chat", "notice")
+}
+
+// Only a human notice Feishu certainly did not deliver is sent again; a failed
+// transport or a truncated or unreadable response may have delivered it.
+func TestOrcaRestartExhaustedNoticeResentOnlyWhenUndelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     func(*testing.T) error
+		notices int
+	}{
+		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent) }, 2},
+		{"feishu business error", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`)
+		}, 2},
+		{"token rejected", func(t *testing.T) error {
+			return feishuSendTextErr(t, `{"code":10003,"msg":"invalid app_id"}`, http.StatusOK, "")
+		}, 2},
+		{"transport failed", func(*testing.T) error { return &infra.Transient{Err: errors.New("feishu transport failed")} }, 1},
+		{"truncated response", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusOK, `{"code":0,"data":{"message_id":"om_`)
+		}, 1},
+		{"unreadable server error", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadGateway, "bad gateway")
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+			s, b := x.s, x.b
+			s.orcaRuntime = status.OrcaRuntime{Paused: true, Restarts: orcaRestartLimit}
+			b.exhaustedErrs = []error{tc.err(t)}
+			for range 3 {
+				s.restartOrcaService(context.Background())
+			}
+			if b.exhaustedNotices != tc.notices || b.restarts != 0 {
+				t.Fatalf("notices=%d restarts=%d, want %d notices and no restart", b.exhaustedNotices, b.restarts, tc.notices)
+			}
+		})
+	}
+}
+
+// The recorded output of an orca CLI that cannot reach the runtime classifies as
+// an unreachable Orca and keeps the restart schedule when a probe returns it.
+func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, b, oc := x.s, x.b, x.oc
+	_, err = (&orca.Client{Path: cli, Timeout: time.Second}).TerminalCreate(context.Background(), orca.TerminalOptions{Worktree: "path:/repo0", Title: "probe", Command: "true"})
+	var global *infra.Global
+	if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded runtime_unavailable classified as %#v", err)
+	}
+	_ = s.Tick(context.Background())
+	oc.failureClient = &orca.Client{Path: cli, Timeout: time.Second}
+	*x.now = x.now.Add(orcaRestartGrace)
+	_ = s.Tick(context.Background())
+	if b.restarts != 1 || s.OrcaRuntime().Restarts != 1 {
+		t.Fatalf("restarts=%d status=%+v, want one restart", b.restarts, s.OrcaRuntime())
 	}
 }
 
