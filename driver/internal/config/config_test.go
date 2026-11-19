@@ -1,8 +1,10 @@
 package config
 
 import (
-	"fmt"
+	"encoding/json"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,18 +15,33 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	state := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
-	repo := t.TempDir()
-	dir := filepath.Join(repo, "scripts", "agent-gates")
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	recording, err := os.ReadFile("../../testdata/recorded/git-remote-get-url-dujiao-next.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "agent-graph.env"), []byte("AGENT_MODE=auto\n"), 0600); err != nil {
-		t.Fatal(err)
+	checkout := func(url string) string {
+		t.Helper()
+		path := t.TempDir()
+		for _, args := range [][]string{{"init", "--quiet"}, {"remote", "add", "origin", url}} {
+			cmd := exec.Command("git", args...)
+			cmd.Dir = path
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+		}
+		return path
 	}
+	const origin = "github.com/vmxmy/dujiao-next"
+	const upstream = "github.com/dujiao-next/dujiao-next"
+	const otherOrigin = "github.com/vmxmy/orca-factory"
+	repo := checkout(strings.TrimSpace(string(recording)))
+	sameOrigin := checkout(strings.TrimSpace(string(recording)))
+	otherRepo := checkout("https://github.com/vmxmy/orca-factory.git")
+	formerPath := filepath.Join(t.TempDir(), "former")
+	writeProfileTestFile(t, filepath.Join(repo, "scripts/agent-gates/agent-graph.env"), "AGENT_MODE=auto\n")
 	file := filepath.Join(state, "gear.json")
-	other := fmt.Sprintf(`"another/remote":{"mode":"bogus","path":%q}`, t.TempDir())
-	entry := func(mode string) string {
-		return fmt.Sprintf(`"example.com/team/project":{"mode":%q,"path":%q,"operator":"tester","reason":"maintenance","updatedAt":"2026-11-19T00:00:00Z"}`, mode, repo)
+	entry := func(origin, path string, mode any) map[string]any {
+		return map[string]any{"origin": origin, "path": path, "mode": mode}
 	}
 	checkMode := func(t *testing.T, wantMode, wantSource string) {
 		t.Helper()
@@ -37,32 +54,80 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name, entries, mode, source string
+		name                  string
+		entries               map[string]any
+		mode, source, wantErr string
 	}{
-		{"other path", other, "auto", "repository"},
-		{"manual with unrelated invalid override", entry("manual") + "," + other, "manual", "override"},
-		{"auto", entry("auto"), "auto", "override"},
-		{"invalid", entry("invalid"), "", ""},
-		{"empty", entry(""), "", ""},
-		{"duplicate path", entry("auto") + fmt.Sprintf(`,"stale/remote":{"mode":"manual","path":%q}`, repo), "", ""},
+		{"manual with unrelated malformed entries", map[string]any{
+			upstream: entry(origin, repo, "manual"), otherOrigin: entry(otherOrigin, repo, nil),
+			"github.com/test/scalar": 7, "github.com/test/path": map[string]any{"origin": origin, "path": 1},
+			"github.com/test/origin": map[string]any{"origin": 2, "path": repo},
+		}, "manual", "override", ""},
+		{"auto", map[string]any{upstream: entry(origin, repo, "auto")}, "auto", "override", ""},
+		{"moved", map[string]any{upstream: entry(origin, formerPath, "manual")}, "manual", "override", ""},
+		{"former path reused", map[string]any{upstream: entry(origin, otherRepo, "manual")}, "manual", "override", ""},
+		{"different origin at this path", map[string]any{otherOrigin: entry(otherOrigin, repo, "manual")}, "auto", "repository", ""},
+		{"another checkout still owns origin", map[string]any{origin: entry(origin, sameOrigin, "manual")}, "auto", "repository", ""},
+		{"invalid mode", map[string]any{upstream: entry(origin, repo, "invalid")}, "", "", "manual or auto"},
+		{"empty mode", map[string]any{upstream: entry(origin, repo, "")}, "", "", "manual or auto"},
+		{"null mode", map[string]any{upstream: entry(origin, repo, nil)}, "", "", "manual or auto"},
+		{"duplicate", map[string]any{upstream: entry(origin, repo, "manual"), origin: entry(origin, repo, "auto")}, "", "", "ambiguous gear override"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := os.WriteFile(file, []byte("{"+tc.entries+"}"), 0600); err != nil {
+			data, err := json.Marshal(tc.entries)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if tc.mode == "" {
-				if _, err := LoadRepository(repo); err == nil {
-					t.Fatal("accepted invalid override")
+			writeProfileTestFile(t, file, string(data))
+			if tc.wantErr != "" {
+				if _, err := LoadRepository(repo); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("load error = %v, want %q", err, tc.wantErr)
 				}
 				return
 			}
 			checkMode(t, tc.mode, tc.source)
 		})
 	}
+	writeProfileTestFile(t, file, `{"github.com/dujiao-next/dujiao-next":{}}`)
+	t.Setenv("PATH", t.TempDir())
+	if _, err := LoadRepository(repo); !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("nonempty gear.json with missing git: got %v, want executable not found", err)
+	}
+	writeProfileTestFile(t, file, "{}")
+	checkMode(t, "auto", "repository")
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
 	checkMode(t, "auto", "repository")
+}
+
+func TestGearChangeWithoutOrigin(t *testing.T) {
+	for _, cause := range []string{"no repository", "git unavailable"} {
+		t.Run(cause, func(t *testing.T) {
+			state := t.TempDir()
+			t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
+			if cause == "git unavailable" {
+				t.Setenv("PATH", t.TempDir())
+			}
+			path := t.TempDir()
+			file := filepath.Join(state, "gear.json")
+			const original = `{"DJ":{"mode":"bogus"},"other":[1, 2]}`
+			writeProfileTestFile(t, file, original)
+			if err := SetGearOverride("DJ", path, "manual", "t", "r"); err == nil {
+				t.Fatal("gear set accepted a checkout without an origin")
+			}
+			if got, err := os.ReadFile(file); err != nil || string(got) != original {
+				t.Fatalf("failed set changed gear.json: %s, err=%v", got, err)
+			}
+			if err := SetGearOverride("DJ", path, "", "t", "r"); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(file)
+			if err != nil || strings.TrimSpace(string(got)) != `{"other":[1, 2]}` {
+				t.Fatalf("clear without origin: %s, err=%v", got, err)
+			}
+		})
+	}
 }
 
 func TestDefaultMachineLimit(t *testing.T) {

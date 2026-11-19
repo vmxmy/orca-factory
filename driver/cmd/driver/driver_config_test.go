@@ -55,7 +55,7 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	const appSecret = "fake-app-secret-7f3a"
 	const envSecret = "fake-driverenv-token-91c2"
 	const proxyPassword = "fake-proxy-pass-55d0"
-	f := newOnboardFixture(t)
+	f := newGearFixture(t)
 	ledger, server := newWizardFeishuServer(t)
 	ledger.rows = []feishuFakeRow{{id: "rec1", cells: map[string]any{
 		"名称": "orca-factory", "仓库远端": "github.com/vmxmy/orca-factory", "编号前缀": "OF", "启用": true,
@@ -63,7 +63,6 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
 	t.Setenv("AGENT_FEISHU_APP_ID", "test-app")
 	t.Setenv("AGENT_FEISHU_APP_SECRET", appSecret)
-	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, f.factory, "github.com/vmxmy/orca-factory"))
 	writeExecutable(t, filepath.Join(f.factory, "bin", "orca-factory"), "#!/bin/sh\nexit 0\n")
 	bin := t.TempDir()
 	writeExecutable(t, filepath.Join(bin, "systemctl"), "#!/bin/sh\nexit 1\n")
@@ -91,7 +90,7 @@ func testConfigSnapshot(t *testing.T, withProfile bool) {
 		writeTestFile(t, filepath.Join(f.home, ".config/orca-factory/profiles.toml"),
 			"default='daily'\n[profile.daily]\nAGENT_TIER_DEFAULT='codex:profile:high'\nAGENT_ROLE_RESOLVER='codex:resolver:high'\nAGENT_TIER_ESCALATE='1'\n")
 		writeTestFile(t, filepath.Join(f.state, "gear.json"), fmt.Sprintf(
-			`{"github.com/vmxmy/orca-factory":{"path":%q,"mode":"manual","operator":"tester","reason":"pause","updatedAt":"2026-11-19T00:00:00Z"}}`, f.factory))
+			`{"github.com/vmxmy/orca-factory":{"path":%q,"origin":"github.com/vmxmy/orca-factory","mode":"manual","operator":"tester","reason":"pause","updatedAt":"2026-11-19T00:00:00Z"}}`, f.factory))
 	}
 
 	var code int

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -27,8 +29,17 @@ func invokeGear(t *testing.T, args ...string) []byte {
 }
 
 type persistedGear struct {
-	Path, Mode, Operator, Reason string
-	UpdatedAt                    time.Time
+	Path, Origin, Mode, Operator, Reason string
+	UpdatedAt                            time.Time
+}
+
+func newGearFixture(t *testing.T) onboardFixture {
+	t.Helper()
+	f := newOnboardFixture(t)
+	gitIn(t, f.factory, "init", "--quiet")
+	gitIn(t, f.factory, "remote", "add", "origin", "https://github.com/vmxmy/orca-factory.git")
+	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, f.factory, "github.com/vmxmy/orca-factory"))
+	return f
 }
 
 func readGearEntries(t *testing.T, file string) map[string]persistedGear {
@@ -45,7 +56,7 @@ func readGearEntries(t *testing.T, file string) map[string]persistedGear {
 }
 
 func TestGearCommands(t *testing.T) {
-	f := newOnboardFixture(t)
+	f := newGearFixture(t)
 	ledger, server := newWizardFeishuServer(t)
 	ledger.rows = []feishuFakeRow{{id: "rec1", cells: map[string]any{
 		"名称": "orca-factory", "仓库远端": "github.com/vmxmy/orca-factory", "编号前缀": "OF", "启用": true,
@@ -53,7 +64,6 @@ func TestGearCommands(t *testing.T) {
 	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
 	t.Setenv("AGENT_FEISHU_APP_ID", "test-app")
 	t.Setenv("AGENT_FEISHU_APP_SECRET", "test-secret")
-	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, f.factory, "github.com/vmxmy/orca-factory"))
 	writeExecutable(t, filepath.Join(f.factory, "bin", "orca-factory"), "#!/bin/sh\nexit 0\n")
 	profile := filepath.Join(f.factory, "scripts/agent-gates/agent-graph.env")
 	original, err := os.ReadFile(profile)
@@ -80,7 +90,7 @@ func TestGearCommands(t *testing.T) {
 	status("auto", "override")
 	file := filepath.Join(f.state, "gear.json")
 	gear := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]
-	if gear.Mode != "auto" || gear.Operator != "tester" || gear.Reason != "resume queue" || gear.UpdatedAt.IsZero() {
+	if gear.Path != f.factory || gear.Origin != "github.com/vmxmy/orca-factory" || gear.Mode != "auto" || gear.Operator != "tester" || gear.Reason != "resume queue" || gear.UpdatedAt.IsZero() {
 		t.Fatalf("persisted gear=%+v", gear)
 	}
 	invokeGear(t, "set", f.factory, "manual", "--operator", "tester", "--reason", "pause queue")
@@ -105,25 +115,42 @@ func TestGearCommands(t *testing.T) {
 	if err != nil || !bytes.Equal(original, after) {
 		t.Fatalf("repository profile changed: %v", err)
 	}
-	other := `{"mode":"bogus","path":"/unregistered","note":"leave intact"}`
-	bad := fmt.Sprintf(`{"mode":"bogus","path":%q}`, f.factory)
-	writeTestFile(t, file, fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"old/remote":%s,"other/repo":%s}`, bad, bad, other))
-	invokeGear(t, "clear", f.factory)
-	status("manual", "default")
-	data, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
+	other := fmt.Sprintf(`{ "origin":"github.com/other/repo", "path":%q, "mode":null, "note":"<leave intact>" }`, f.factory)
+	bad := fmt.Sprintf(`{"mode":"bogus","origin":"github.com/vmxmy/orca-factory","path":%q}`, f.factory)
+	t.Chdir(f.factory)
+	for _, tc := range []struct{ selector, entries string }{
+		{"OF", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"other/repo":%s}`, bad, other)},
+		{".", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"old/remote":%s,"other/repo":%s}`, bad, bad, other)},
+	} {
+		writeTestFile(t, file, tc.entries)
+		invokeGear(t, "clear", tc.selector)
+		status("manual", "default")
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var remaining map[string]json.RawMessage
+		if err := json.Unmarshal(data, &remaining); err != nil || len(remaining) != 1 || string(remaining["other/repo"]) != other {
+			t.Fatalf("after clearing %q: %s, err=%v", tc.selector, data, err)
+		}
 	}
-	var remaining map[string]json.RawMessage
-	if err := json.Unmarshal(data, &remaining); err != nil || len(remaining) != 1 || string(remaining["other/repo"]) != other {
-		t.Fatalf("after clearing invalid override: %s, err=%v", data, err)
+	server.Close()
+	invokeGear(t, "set", f.factory, "manual", "--operator", "t", "--reason", "r")
+	entries := readGearEntries(t, file)
+	if got := entries["github.com/vmxmy/orca-factory"]; len(entries) != 2 || got.Mode != "manual" || got.Path != f.factory || got.Origin != "github.com/vmxmy/orca-factory" {
+		t.Fatalf("set by path with Feishu offline: %+v", entries)
+	}
+	t.Chdir(filepath.Join(f.factory, "scripts"))
+	invokeGear(t, "clear", "..")
+	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Origin != "github.com/other/repo" {
+		t.Fatalf("clear .. with Feishu offline: %+v", entries)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if len(lines) != 4 {
-		t.Fatalf("logs=%q, want four changes", logs.String())
+	if len(lines) != 7 {
+		t.Fatalf("logs=%q, want seven changes", logs.String())
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
+		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `origin="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
 			t.Fatalf("audit fields missing: %s", line)
 		}
 	}
@@ -189,6 +216,10 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 		t.Fatalf("set upstream: %+v", entries)
 	}
 	set("FORK", "manual")
+	entries = readGearEntries(t, file)
+	if entries[upstream].Origin != "github.com/vmxmy/dujiao-next" || entries[fork].Origin != "github.com/vmxmy/dujiao-next" {
+		t.Fatalf("recorded live origins: %+v", entries)
+	}
 	want := []gearStatus{
 		{Remote: upstream, Prefix: "DJ", Path: a, Mode: "auto", Source: "override"},
 		{Remote: fork, Prefix: "FORK", Path: b, Mode: "manual", Source: "override"},
@@ -226,5 +257,50 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 	after, err := os.ReadFile(file)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("subdirectory set changed gear.json: %s, err=%v", after, err)
+	}
+	invokeGear(t, "clear", "DJ")
+	if got, err := config.LoadRepository(a); err != nil || got.Sources["AGENT_MODE"] == "override" {
+		t.Fatalf("cleared DJ inherited FORK: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
+	if remaining := readGearEntries(t, file); len(remaining) != 1 || remaining[fork] != beforeFork {
+		t.Fatalf("clear DJ changed FORK: %+v", remaining)
+	}
+}
+
+func TestGearSetPrefixRecordedProject(t *testing.T) {
+	f := newGearFixture(t)
+	writeTestFile(t, filepath.Join(f.home, ".config/orca-factory/driver.toml"), "")
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /open-apis/auth/v3/tenant_access_token/internal", func(w http.ResponseWriter, r *http.Request) {
+		if _, err := fmt.Fprint(w, `{"code":0,"tenant_access_token":"test-token","expire":7200}`); err != nil {
+			t.Error(err)
+		}
+	})
+	for _, name := range []string{"bot-tables-list.json", "bot-project-fields.json", "bot-project-records.json", "fields-list.json", "bot-fields-list-events.json"} {
+		raw, err := os.ReadFile(recordedPath(t, filepath.Join("feishu", name)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var recording struct {
+			Request  struct{ Method, Path string }
+			Response struct{ Data json.RawMessage }
+		}
+		if err := json.Unmarshal(raw, &recording); err != nil {
+			t.Fatal(err)
+		}
+		mux.HandleFunc(recording.Request.Method+" "+recording.Request.Path, func(w http.ResponseWriter, r *http.Request) {
+			feishuEnvelope(t, w, recording.Response.Data)
+		})
+	}
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	t.Setenv("AGENT_FEISHU_APP_ID", "test-app")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "test-secret")
+
+	invokeGear(t, "set", "OF", "auto", "--operator", "t", "--reason", "r")
+	entries := readGearEntries(t, filepath.Join(f.state, "gear.json"))
+	if gear := entries["github.com/vmxmy/orca-factory"]; len(entries) != 1 || gear.Mode != "auto" || gear.Path != f.factory {
+		t.Fatalf("recorded OF project: %+v", entries)
 	}
 }

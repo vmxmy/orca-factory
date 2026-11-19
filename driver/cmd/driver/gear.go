@@ -15,7 +15,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
-	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
 
 func init() { Register("gear", runGear) }
@@ -72,8 +71,19 @@ func runGear(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	cfg, err := config.Load(home)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	client := &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}
 	if args[0] == "status" {
-		result, _, err := gearProjects(ctx)
+		result, _, err := discoverProjects(ctx, cfg, client)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -104,9 +114,9 @@ func runGear(args []string) int {
 		}
 		return 0
 	}
-	remote, path, err := gearTarget(ctx, args[1])
+	repo, err := gearTarget(ctx, args[1], client, cfg.Tuning)
 	if err == nil {
-		err = config.SetGearOverride(remote, path, mode, operator, reason)
+		err = config.SetGearOverride(repo.CanonicalKey, repo.Path, mode, operator, reason)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -115,58 +125,67 @@ func runGear(args []string) int {
 	return 0
 }
 
-func gearProjects(ctx context.Context) (projects.Result, []issues.LedgerProject, error) {
-	home, err := os.UserHomeDir()
+func gearTarget(ctx context.Context, selector string, client *orca.Client, tuning config.Tuning) (orca.Repo, error) {
+	repos, err := client.RepoList(ctx)
 	if err != nil {
-		return projects.Result{}, nil, err
-	}
-	cfg, err := config.Load(home)
-	if err != nil {
-		return projects.Result{}, nil, err
-	}
-	return discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-}
-
-func gearTarget(ctx context.Context, selector string) (remote, path string, err error) {
-	result, rows, err := gearProjects(ctx)
-	if err != nil {
-		return "", "", err
+		return orca.Repo{}, err
 	}
 	var root string
-	remotes := make(map[string]bool)
-	if filepath.IsAbs(selector) || strings.Contains(selector, "/") {
+	var remotes map[string]bool
+	if selector == "." || selector == ".." || strings.Contains(selector, "/") {
 		root, err = filepath.Abs(selector)
 		if err != nil {
-			return "", "", err
+			return orca.Repo{}, err
 		}
 		root = filepath.Clean(root)
 	} else {
+		remotes, err = gearPrefixRemotes(ctx, selector, repos, tuning)
+		if err != nil {
+			return orca.Repo{}, err
+		}
+	}
+
+	var matches []orca.Repo
+	for _, repo := range repos {
+		if filepath.Clean(repo.Path) == root || remotes[repo.CanonicalKey] {
+			matches = append(matches, repo)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return orca.Repo{}, errors.New("repository prefix or path not found")
+	case 1:
+		return matches[0], nil
+	default:
+		return orca.Repo{}, errors.New("ambiguous repository prefix or path")
+	}
+}
+
+func gearPrefixRemotes(ctx context.Context, selector string, repos []orca.Repo, tuning config.Tuning) (map[string]bool, error) {
+	for _, repo := range repos {
+		profile, err := config.LoadRepositoryProfile(repo.Path)
+		if err != nil || profile.Env["AGENT_ISSUE_BACKEND"] != "feishu" || profile.Env["AGENT_FEISHU_BASE"] == "" {
+			continue
+		}
+		store, err := issues.New(ctx, profile.Env, tuning)
+		if err != nil {
+			return nil, err
+		}
+		ledger, ok := store.(*issues.Feishu)
+		if !ok {
+			return nil, errors.New("gear: feishu backend expected")
+		}
+		rows, err := ledger.LedgerProjects(ctx)
+		if err != nil {
+			return nil, err
+		}
+		remotes := make(map[string]bool)
 		for _, row := range rows {
 			if strings.EqualFold(selector, row.Prefix) {
 				remotes[row.Remote] = true
 			}
 		}
+		return remotes, nil
 	}
-
-	var count int
-	match := func(candidateRemote, candidatePath string) {
-		if candidatePath == root || remotes[candidateRemote] {
-			remote, path = candidateRemote, candidatePath
-			count++
-		}
-	}
-	for _, p := range result.Eligible {
-		match(p.Remote, p.Path)
-	}
-	for _, p := range result.Rejected {
-		match(p.Remote, p.Path)
-	}
-	switch count {
-	case 0:
-		return "", "", errors.New("repository prefix or path not found")
-	case 1:
-		return remote, path, nil
-	default:
-		return "", "", errors.New("ambiguous repository prefix or path")
-	}
+	return nil, nil
 }

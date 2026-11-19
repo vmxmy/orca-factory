@@ -535,12 +535,13 @@ orca-factory-driver gear clear OF
 
 本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
 
-- 条目的键是 Orca 登记的仓库远端（`canonicalKey`），与飞书项目表的“仓库远端”一致。
-- 条目的 `path` 是 Orca 登记的仓库根路径。加载时只按这个路径应用覆盖，不读取 Git origin。
-- 每个根路径只保留一条覆盖。`set` 会替换该路径的旧条目，`clear` 会清除它们。
-- `set` 和 `clear` 将不含 `/` 的参数当作项目表的编号前缀，匹配时忽略大小写。绝对路径或含 `/` 的参数按路径解析，转为绝对路径并清理后必须恰好匹配一个已登记的仓库根路径。
+- 每条覆盖以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。`set` 同时记录仓库根路径 `path` 和当时从 Git 读取并规范化的 `origin`。
+- 加载时，当前 Git origin 必须与记录的 `origin` 相同。当前根路径也相同时，覆盖生效。根路径不同时，只有旧路径已消失或已不再持有该 origin，覆盖才随仓库搬到新路径。两个仍在原位的同源检出各用自己的档位。原路径换成不同 origin 的仓库后，新仓库不会继承旧覆盖。
+- `gear set` 和 `gear clear` 把 `.`、`..` 和含 `/` 的参数转为绝对路径并清理，只查 Orca 登记的仓库根路径。其余参数是编号前缀。driver 读取未叠加覆盖的仓库配置建立飞书客户端，用前缀查询项目表，忽略大小写，再按“仓库远端”匹配 Orca 登记。两种方式都要求恰好命中一个仓库。
 
-条目的 mode 非法或多条覆盖指向同一路径时，只有该仓库加载失败。用 `gear set` 重设档位或用 `gear clear` 清除覆盖即可修复。写入时原子替换文件，下次加载仓库配置时生效。每次写入记录仓库路径、操作者与理由。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
+其他仓库的坏条目不影响本仓库。恰好匹配一条时，`mode` 必须是 `manual` 或 `auto`。匹配多条或匹配条目的档位非法，都会使该仓库加载失败。有覆盖记录时，仓库没有可识别的 origin 就沿用仓库配置。Git 无法启动或读取超时则使该仓库加载失败。
+
+`set` 需要能读取并规范化当前 origin。`clear` 即使读不到 origin 也能删除该键。两条命令在取得 origin 时都会清理同一 `path` 和 `origin` 的重复条目。每次写入都原子替换文件，记录路径、origin、操作者与理由，下次加载即生效。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
