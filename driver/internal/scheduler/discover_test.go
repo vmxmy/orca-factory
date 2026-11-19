@@ -279,6 +279,59 @@ func TestRetiredProbedRepositoryCarriesLaterGear(t *testing.T) {
 	}
 }
 
+// boundBackend binds a path to its first tracked ledger base and refuses a
+// snapshot under another base, as the Feishu runtime client does.
+type boundBackend struct {
+	discoveryBackend
+	bound map[string]string
+}
+
+func (f *boundBackend) Track(ctx context.Context, repo config.Repository) error {
+	if f.bound == nil {
+		f.bound = map[string]string{}
+	}
+	if _, ok := f.bound[repo.Path]; !ok {
+		f.bound[repo.Path] = repo.Env["AGENT_FEISHU_BASE"]
+	}
+	return f.discoveryBackend.Track(ctx, repo)
+}
+
+func (f *boundBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	for _, r := range repos {
+		if base, ok := f.bound[r.Path]; ok && base != r.Env["AGENT_FEISHU_BASE"] {
+			return nil, errors.New("snapshot repository mismatch")
+		}
+	}
+	return f.discoveryBackend.Snapshot(ctx, repos)
+}
+
+// A rejected repository probed with nothing in flight and later reported under
+// another ledger identity is probed again with the identity the backend is
+// bound to, so its in-flight tickets are still found and tracked.
+func TestRetiredReprobeKeepsProbedLedgerIdentity(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(base string) *config.Repository {
+		return &config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": base}}
+	}
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: repo("https://base1.feishu.cn/base/tok1")}}}
+	f := &boundBackend{discoveryBackend: discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Rejected[0].Repository = repo("https://base2.feishu.cn/base/tok2")
+	f.tickets = []Ticket{{ID: "a-running", Identifier: "A-1", Repo: "/a", Owner: machine.OwnerResolver, UpdatedAt: now}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/a" })
+	if idx < 0 || s.Repositories[idx].Env["AGENT_FEISHU_BASE"] != "https://base1.feishu.cn/base/tok1" {
+		t.Fatalf("repositories=%+v logs=%s, want /a tracked under the probed base", s.Repositories, logs.String())
+	}
+}
+
 // Taking over a repository probed under another ledger identity keeps the
 // probed configuration the backend is bound to, as reconcileRepository does.
 func TestTakeOverKeepsProbedLedgerIdentity(t *testing.T) {

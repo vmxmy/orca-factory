@@ -153,7 +153,11 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 			repositories[idx] = s.refreshMode(repositories[idx], *r.Repository, r.Remote, updater)
 			continue
 		}
-		held, err := s.heldTickets(ctx, *r.Repository, tracker)
+		probe := *r.Repository
+		if probed, ok := s.probed[r.Path]; ok {
+			probe = probed
+		}
+		held, err := s.heldTickets(ctx, probe, tracker)
 		if err != nil {
 			rejected[r.Path] = string(r.Reason) + "; in-flight probe failed: " + err.Error()
 			continue

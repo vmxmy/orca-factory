@@ -195,9 +195,11 @@ func readGears(file string) (map[string]json.RawMessage, error) {
 }
 
 // HasGearOverride reports whether the machine-local gear.json holds an entry
-// for remote, the only key an override of that ledger project can use.
-func HasGearOverride(remote string) (bool, error) {
-	if remote == "" {
+// for repo's Feishu ledger project, the only key an override can use. A
+// checkout on another ticket backend has none and does not read the file.
+func HasGearOverride(repo Repository) (bool, error) {
+	remote := repo.Env["AGENT_FEISHU_PROJECT"]
+	if remote == "" || repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
 		return false, nil
 	}
 	file, err := gearPath()

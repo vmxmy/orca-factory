@@ -63,10 +63,24 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		t.Fatalf("after set: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
 	for remote, want := range map[string]bool{upstream: true, fork: false, "": false} {
-		if got, err := HasGearOverride(remote); err != nil || got != want {
+		profile := Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_PROJECT": remote}}
+		if got, err := HasGearOverride(profile); err != nil || got != want {
 			t.Fatalf("HasGearOverride(%q)=%v err=%v, want %v", remote, got, err, want)
 		}
 	}
+	github := Repository{Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_FEISHU_PROJECT": upstream}}
+	if got, err := HasGearOverride(github); err != nil || got {
+		t.Fatalf("HasGearOverride on a GitHub-backend checkout=%v err=%v, want false", got, err)
+	}
+	valid, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeProfileTestFile(t, file, `{"github.com/dujiao-next/dujiao-next":"broken"}`)
+	if got, err := HasGearOverride(github); err != nil || got {
+		t.Fatalf("HasGearOverride on a GitHub-backend checkout with a broken gear.json=%v err=%v, want false", got, err)
+	}
+	writeProfileTestFile(t, file, string(valid))
 	if err := SetGearOverride(upstream, repo, "", "t", "r"); err != nil {
 		t.Fatal(err)
 	}
