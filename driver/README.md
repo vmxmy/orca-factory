@@ -367,7 +367,7 @@ flowchart LR
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
 - `~/.local/bin/orca-factory-driver config [--json]`（OF-204）：只读，列出各接管仓库的角色模型与路由、`driver.toml` 调度参数、服务环境与工具路径，每项标来源；`driver.toml` 中不生效的键记在 `problems`。`driver.env` 只列键名，不输出值。JSON 形状见 [CONTRACTS.md](CONTRACTS.md) 的「driver config 快照」。
-- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：运行态健康自检；模型探测会写本地可用性登记，不改模型配置或派工选择。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟调用一次，所以只有现在需要人或 Agent 处理的问题才报 `fail`。
+- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：运行态健康自检；模型探测会写本地可用性登记，不改模型配置或派工选择。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟执行相同的检查，只读模型登记。
 
   | 状态 | 含义 | 退出码 |
   | --- | --- | --- |
@@ -385,7 +385,7 @@ flowchart LR
   | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
   | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
   | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
-  | `models` | 各仓库角色与档位配置、`model-health.json`、最小模型请求 | 有不可用模型但角色仍有可重试候选：warn；某角色全部候选处于不可用期：fail；探测超时或结果无法识别：unknown |
+  | `models` | 各仓库角色、可达 worker 档位和模型端点的并发探测 | 缺默认 worker 或主 reviewer、某角色全部候选冷却时为 fail。部分候选冷却时为 warn。仅有探测超时或结果无法识别时为 unknown。Pi 的 `unsupported_agent` 只标在角色行。 |
   | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 的结果；gh 报 token invalid 时对 `api.github.com` 的无认证请求 | 缺变量：fail；gh 报 token invalid 且 GitHub 可达（任何 HTTP 响应，含 403 限流）：fail，原因为凭证不可读（keyring 可能未解锁）；gh 其他失败或 GitHub 不可达：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出包含仓库、角色、模型引用、固定原因码，以及变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
@@ -638,13 +638,17 @@ AGENT_TIER_ESCALATE = "0"
 
 ## 模型可用性（OF-592）
 
-`doctor` 的 `models` 检查按仓库列出角色、档位、模型引用、状态与原因。JSON 位于 `checks.models.details`，每行含 `repository`、`role` 和 `status`；后者包含 `ref`、`state`、`reason`、`until`、`checkedAt`。文本输出也列出各行。worker 的各档位作为同一角色的候选判断是否全部不可用；其余角色按当前配置的单个模型判断。未配置的可选角色不列出。
+`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。worker 默认只用 `default` 档位。`AGENT_TIER_ESCALATE=1` 时，检查按 `AGENT_TIER_CHAIN` 列出 worker 候选，空链使用 `default strong`。缺少默认 worker 或主 reviewer 时，对应行显示 `unknown/not_configured`，整项为 `fail`。
 
-每次检查对不同的 `agent:model` 至多各发一次 `Reply with exactly: ok`，单次上限 120 秒，受 doctor 总计 5 分钟的期限约束。Codex 使用 `exec`、`model_reasoning_effort=low` 和 `--sandbox read-only`；Claude 使用 `-p`，禁用工具、斜杠命令、MCP 配置自动加载与会话持久化。空模型名使用对应 CLI 的默认模型。不会修改角色配置或切换正在运行的模型。
+intake 优先使用仓库的 `AGENT_INTAKE_PI`，其次取进程环境，再取机器的 `driver.env`。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>`。Pi 等暂不支持探测的 agent 显示 `unknown/unsupported_agent`，该候选可重试，单凭这条记录不会降低检查状态。
 
-成功退出且回复恰为 `ok` 时记 `ok`。Claude 的额度耗尽提示和 Codex 的 `model_not_found` / ChatGPT 账号不支持提示记 `unavailable`；超时、其他命令失败或无法识别的回复记 `unknown`。原因使用固定代码，不保存供应方原始输出。Claude 的 `resets Nov 21, 1am (Asia/Shanghai)` 按提示时区与当前年份解析，跨年一月归下一年；无有效未来重置时间时冷却 30 分钟。
+检查跨仓库按端点去重，并发探测已配置的 Codex 和 Claude 模型。每个键在首个使用它的项目中最多发送一次 `Reply with exactly: ok`，整批探测共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low` 和 `--sandbox read-only`。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
-登记位于状态根目录的 `model-health.json`，默认 `~/.local/state/orca-factory/model-health.json`，可通过 `AGENT_DRIVER_STATE_ROOT` 覆盖状态根目录。按 `agent:model` 共用状态，不区分 effort；写入使用文件锁与临时文件原子替换，重启后读回。不可用期内 doctor 复用登记，到期后重新探测；登记损坏或无法写入时报告 `unknown` 并加入 `errors`。未知状态允许后续重试，不能据此认定模型已可用。本票只提供候选选择接口，派工与审查仍沿用现有选择逻辑。
+直连登记的键为 `agent:model`。配置 `AGENT_MODEL_PROXY_URL` 后，Claude 的 `reviewer` 和 `reviewer_small` 使用该代理，登记为 `claude:model@model_proxy`。不同 effort 共用同一端点的状态。登记和报告只使用路由名。
+
+成功退出且回复恰为 `ok` 时记为 `ok`。Claude 额度耗尽提示和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
+
+只有 `driver doctor` 写入状态根目录的 `model-health.json`。默认路径为 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。`watch`（含 `--dry-run`）只读登记，本轮探测结果用于当次报告。冷却期内复用不可用记录，到期后重新探测。登记读写失败时，检查报告 `unknown` 并加入 `errors`。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

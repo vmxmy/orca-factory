@@ -180,6 +180,7 @@ func (l doctorFakeLedger) ListComments(_ context.Context, id string) ([]task.Com
 }
 
 type doctorFixture struct {
+	repository                       config.Repository
 	root, factory, previous, current string
 	now                              time.Time
 }
@@ -210,7 +211,9 @@ func newDoctorFixture(t *testing.T) doctorFixture {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return doctorFixture{root: root, factory: factory, previous: previous, current: current, now: now}
+	return doctorFixture{root: root, factory: factory, previous: previous, current: current, now: now,
+		repository: config.Repository{Env: map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high"}},
+	}
 }
 
 func writeDoctorFile(t *testing.T, path, content string, mode os.FileMode) {
@@ -233,14 +236,14 @@ func (f doctorFixture) probe(t *testing.T, serviceTools []string, ledger doctorF
 		now:         f.now,
 		stateRoot:   filepath.Join(f.root, "state"),
 		factoryRoot: f.factory,
-		modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+		modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
 			return modelhealth.Classify(ref, "ok", nil, f.now)
 		},
 		serviceEnv: func(context.Context) (map[string]string, error) {
 			return map[string]string{"PATH": serviceBin, "AGENT_FEISHU_APP_ID": "TEST-PLACEHOLDER-CRED", "AGENT_FEISHU_APP_SECRET": "TEST-PLACEHOLDER-CRED"}, nil
 		},
 		projects: func(context.Context) ([]projects.Project, error) {
-			return []projects.Project{{Path: f.factory, Prefix: "OF", Name: "orca-factory"}}, nil
+			return []projects.Project{{Path: f.factory, Prefix: "OF", Name: "orca-factory", Repository: f.repository}}, nil
 		},
 		ledger:          func(context.Context, projects.Project) (doctorLedger, error) { return ledger, nil },
 		githubReachable: func(context.Context) error { return nil },
@@ -352,12 +355,22 @@ func TestDriverDoctorReportsHealthyRuntime(t *testing.T) {
 	if len(result.errors) != 0 {
 		t.Fatalf("errors = %v, want none", result.errors)
 	}
+	if _, err := os.Stat(filepath.Join(f.root, "state", "model-health.json")); err != nil {
+		t.Fatalf("doctor --json must record model status: %v", err)
+	}
 	var models []doctorModelStatus
 	if err := json.Unmarshal(result.details["models"], &models); err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].Repository != "orca-factory" || models[0].Role != "resolver" || models[0].Status.Ref.Agent != "codex" || models[0].Status.State != "ok" {
-		t.Fatalf("models main-path details = %+v", models)
+	roles := map[string]int{}
+	for _, row := range models {
+		if row.Repository != "orca-factory" || row.Status.State != "ok" || row.Status.Ref.Agent != "codex" {
+			t.Fatalf("models main-path row = %+v", row)
+		}
+		roles[row.Role]++
+	}
+	if !reflect.DeepEqual(roles, map[string]int{"worker_default": 1, "reviewer": 1, "resolver": 1}) {
+		t.Fatalf("models main-path roles = %v", roles)
 	}
 	var version struct {
 		MainCommittedAt string `json:"factory_main_committed_at"`
@@ -438,7 +451,7 @@ func TestDriverDoctorWarnsOnTransientRuntime(t *testing.T) {
 	}
 	probe := f.probe(t, []string{"go", "gh", "git", "orca", "codex"}, inFlightLedger("OF-2", "", "", "进度"))
 	probe.projects = func(context.Context) ([]projects.Project, error) {
-		return []projects.Project{{Path: f.factory, Prefix: "OF", Name: "orca-factory"}, {Path: feature, Prefix: "FX", Name: "feature"}}, nil
+		return []projects.Project{{Path: f.factory, Prefix: "OF", Name: "orca-factory", Repository: f.repository}, {Path: feature, Prefix: "FX", Name: "feature", Repository: f.repository}}, nil
 	}
 
 	draining := runDoctorProbe(t, probe)
@@ -564,8 +577,11 @@ func TestDoctorModels(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := map[string]int{}
-			p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			var mu sync.Mutex
+			p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
+				mu.Lock()
 				calls[ref.Key()]++
+				mu.Unlock()
 				state := modelhealth.OK
 				if ref.Model == "primary" {
 					state = tc.state
@@ -574,7 +590,7 @@ func TestDoctorModels(t *testing.T) {
 			}}
 			eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
 				"AGENT_TIER_DEFAULT": "codex:primary:high", "AGENT_TIER_STRONG": "claude:backup:high",
-				"AGENT_ROLE_REVIEWER": "claude:backup:low", "AGENT_TIER_CHAIN": "default strong max", "AGENT_TIER_MAX": "claude:backup:max",
+				"AGENT_ROLE_REVIEWER": "claude:backup:low", "AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": "default strong max", "AGENT_TIER_MAX": "claude:backup:max",
 				"AGENT_ROLE_RESOLVER_TOP": "claude:backup:max",
 			}}}}
 			got := p.checkModels(context.Background(), eligible)
@@ -617,16 +633,20 @@ func TestDoctorModelsUnavailableRoleAndCooldown(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := modelhealth.Ref{Agent: "codex", Model: "primary", Effort: "high"}
-	if err := r.Record(modelhealth.Classify(ref, "model_not_found", nil, now)); err != nil {
+	fixture, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Record(modelhealth.Classify(ref, string(fixture), nil, now)); err != nil {
 		t.Fatal(err)
 	}
 	calls := 0
-	p := doctorProbe{now: now, stateRoot: root, modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+	p := doctorProbe{now: now, stateRoot: root, modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
 		calls++
 		return modelhealth.Classify(ref, "ok", nil, now.Add(time.Hour))
 	}}
 	eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": ref.String(), "AGENT_ROLE_RESOLVER": ref.String(),
+		"AGENT_TIER_DEFAULT": ref.String(), "AGENT_ROLE_RESOLVER": ref.String(), "AGENT_ROLE_REVIEWER": ref.String(),
 	}}}}
 	got := p.checkModels(context.Background(), eligible)
 	if got.Status != "fail" || calls != 0 {
@@ -643,5 +663,259 @@ func TestDoctorModelsUnavailableRoleAndCooldown(t *testing.T) {
 	got = p.checkModels(context.Background(), eligible)
 	if got.Status != "unknown" || !got.unprobed || calls != 1 {
 		t.Fatalf("corrupt registry = %+v", got)
+	}
+}
+
+func TestDoctorModelsReviewerProxy(t *testing.T) {
+	const proxy = "https://proxy.invalid/TEST-PLACEHOLDER-CRED"
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_MODEL_PROXY_URL", proxy)
+	t.Setenv("AGENT_INTAKE_PI", "")
+	p, err := newDoctorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.stateRoot = t.TempDir()
+	p.recordModels = true
+	var mu sync.Mutex
+	calls := map[string]int{}
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, env []string) modelhealth.Status {
+		mu.Lock()
+		defer mu.Unlock()
+		calls[ref.Key()]++
+		if ref.Key() == "claude:m@model_proxy" {
+			if !reflect.DeepEqual(env, []string{"ANTHROPIC_BASE_URL=" + proxy}) {
+				t.Error("reviewer probe missing proxy environment")
+			}
+			return modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: p.now.Add(time.Hour), CheckedAt: p.now}
+		}
+		if len(env) != 0 {
+			t.Error("direct probe received a proxy override")
+		}
+		return modelhealth.Classify(ref, "ok", nil, p.now)
+	}
+	project := projects.Project{Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_RESOLVER": "claude:m:low",
+		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_REVIEWER_SMALL": "claude:m:high",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project})
+	if !reflect.DeepEqual(calls, map[string]int{"claude:m@model_proxy": 1, "claude:m": 1}) {
+		t.Fatalf("calls = %v", calls)
+	}
+	states := map[string]string{}
+	for _, row := range got.Details.([]doctorModelStatus) {
+		states[row.Role] = row.Status.State
+	}
+	if !reflect.DeepEqual(states, map[string]string{"worker_default": "ok", "resolver": "ok", "reviewer": "unavailable", "reviewer_small": "unavailable"}) {
+		t.Fatalf("role states = %v", states)
+	}
+	data, err := os.ReadFile(filepath.Join(p.stateRoot, "model-health.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records map[string]modelhealth.Status
+	if err := json.Unmarshal(data, &records); err != nil || len(records) != 2 || records["claude:m"].State != "ok" || records["claude:m@model_proxy"].State != "unavailable" {
+		t.Fatal("registry did not persist separate endpoint states", err)
+	}
+	report, err := json.Marshal(got)
+	if err != nil || bytes.Contains(report, []byte(proxy)) || bytes.Contains(data, []byte(proxy)) {
+		t.Fatal("proxy URL in model health report or registry", err)
+	}
+}
+
+func TestDoctorModelsConcurrent(t *testing.T) {
+	now := time.Now()
+	var mu sync.Mutex
+	entered := 0
+	var batchDeadline time.Time
+	ready := make(chan struct{})
+	p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(ctx context.Context, ref modelhealth.Ref, dir string, _ []string) modelhealth.Status {
+		if dir != "/first" {
+			t.Errorf("probe directory = %q, want first repository", dir)
+		}
+		mu.Lock()
+		deadline, bounded := ctx.Deadline()
+		if !bounded || time.Until(deadline) > modelhealth.ProbeTimeout {
+			t.Error("probe batch missing its time limit")
+		}
+		if entered == 0 {
+			batchDeadline = deadline
+		} else if deadline != batchDeadline {
+			t.Error("probes in a batch must share a deadline")
+		}
+		entered++
+		if entered == 3 {
+			close(ready)
+		}
+		mu.Unlock()
+		select {
+		case <-ready:
+			return modelhealth.Classify(ref, "ok", nil, now)
+		case <-time.After(2 * time.Second):
+			return modelhealth.Status{Ref: ref, State: modelhealth.Unknown, Reason: "serial", CheckedAt: now}
+		}
+	}}
+	repo := config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:a:high", "AGENT_ROLE_REVIEWER": "claude:b:low", "AGENT_ROLE_RESOLVER": "codex:c:high",
+	}}
+	got := p.checkModels(context.Background(), []projects.Project{{Name: "first", Path: "/first", Repository: repo}, {Name: "second", Path: "/second", Repository: repo}})
+	if got.Status != "ok" || entered != 3 {
+		t.Fatalf("check = %+v, calls = %d", got, entered)
+	}
+	rows := got.Details.([]doctorModelStatus)
+	if len(rows) != 6 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	for _, row := range rows {
+		if row.Status.State != "ok" {
+			t.Fatalf("row = %+v", row)
+		}
+	}
+}
+
+func TestDoctorModelsReadOnly(t *testing.T) {
+	now := time.Now()
+	p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
+		return modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}
+	}}
+	project := projects.Project{Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:low", "AGENT_ROLE_RESOLVER": "codex:m:high",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project})
+	if got.Status != "fail" {
+		t.Fatalf("unavailable candidates = %+v", got)
+	}
+	for _, row := range got.Details.([]doctorModelStatus) {
+		if row.Status.State != "unavailable" {
+			t.Fatalf("fresh probe missing from row: %+v", row)
+		}
+	}
+	for _, name := range []string{"model-health.json", "model-health.json.lock"} {
+		if _, err := os.Stat(filepath.Join(p.stateRoot, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("read-only mode: stat %s = %v", name, err)
+		}
+	}
+}
+
+func TestDoctorModelsReachableWorkerTiers(t *testing.T) {
+	for _, tc := range []struct{ escalate, chain, want string }{{"1", "default", "fail"}, {"0", "default max", "fail"}, {"1", "default default", "unknown"}} {
+		t.Run(tc.escalate+"_"+tc.chain, func(t *testing.T) {
+			now := time.Now()
+			p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
+				if ref.Model == "max" || ref.Model == "default" {
+					t.Errorf("unexpected probe of %s", ref.Model)
+				}
+				return modelhealth.Classify(ref, "ok", nil, now)
+			}}
+			registry, err := modelhealth.Open(p.stateRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := modelhealth.Ref{Agent: "codex", Model: "default"}
+			if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			project := projects.Project{Repository: config.Repository{Env: map[string]string{
+				"AGENT_TIER_ESCALATE": tc.escalate, "AGENT_TIER_CHAIN": tc.chain,
+				"AGENT_TIER_DEFAULT": "codex:default:low", "AGENT_TIER_MAX": "codex:max:high", "AGENT_ROLE_REVIEWER": "claude:m:low",
+			}}}
+			got := p.checkModels(context.Background(), []projects.Project{project})
+			if got.Status != tc.want || got.unprobed != (tc.want == "unknown") {
+				t.Fatalf("check = %+v", got)
+			}
+			if rows, ok := got.Details.([]doctorModelStatus); ok {
+				for _, row := range rows {
+					if row.Role == "worker_max" {
+						t.Fatal("listed unreachable worker_max")
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorModelsPiIntake(t *testing.T) {
+	for _, tc := range []struct{ name, repository, process, file, claude string }{
+		{"repository wins", " pi:anthropic/m:high ", "pi:other/process:low", "", "claude:x:high"},
+		{"process wins", "", " pi:anthropic/m:high ", "pi:other/file:low", "claude:x:high"},
+		{"machine file only", " ", "", "pi:anthropic/m:high", ""},
+		{"invalid repository tier", "pi:missing-provider", "", "", "claude:x:high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("AGENT_MODEL_PROXY_URL", "")
+			t.Setenv("AGENT_INTAKE_PI", tc.process)
+			writeDoctorFile(t, filepath.Join(home, ".config/orca-factory/driver.env"), "AGENT_INTAKE_PI="+tc.file+"\n", 0600)
+			p, err := newDoctorProbe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.stateRoot = t.TempDir()
+			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
+				if ref.Agent == "pi" || ref.Model == "x" {
+					t.Errorf("unexpected intake probe %s", ref)
+				}
+				return modelhealth.Classify(ref, "ok", nil, p.now)
+			}
+			project := projects.Project{Repository: config.Repository{Env: map[string]string{
+				"AGENT_INTAKE_PI": tc.repository, "AGENT_ROLE_INTAKE": tc.claude,
+				"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER": "codex:m:high",
+			}}}
+			got := p.checkModels(context.Background(), []projects.Project{project})
+			if tc.name == "invalid repository tier" {
+				if got.Status != "unknown" || !got.unprobed {
+					t.Fatalf("invalid Pi tier = %+v", got)
+				}
+				return
+			}
+			if got.Status != "ok" || got.unprobed {
+				t.Fatalf("check = %+v", got)
+			}
+			var intakeRows []modelhealth.Status
+			for _, row := range got.Details.([]doctorModelStatus) {
+				if row.Role == "intake" {
+					intakeRows = append(intakeRows, row.Status)
+				}
+			}
+			if len(intakeRows) != 1 || intakeRows[0].Ref.String() != "pi:anthropic/m:high" || intakeRows[0].State != "unknown" || intakeRows[0].Reason != "unsupported_agent" {
+				t.Fatalf("intake = %+v", intakeRows)
+			}
+		})
+	}
+}
+
+func TestDoctorModelsMissingRequiredRoles(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		env     map[string]string
+		missing []string
+	}{
+		{"empty", nil, []string{"worker_default", "reviewer"}},
+		{"strong without default", map[string]string{"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_STRONG": "claude:backup:high", "AGENT_ROLE_REVIEWER": "codex:m:high"}, []string{"worker_default"}},
+		{"small without reviewer", map[string]string{"AGENT_TIER_DEFAULT": "codex:m:high", "AGENT_ROLE_REVIEWER_SMALL": "claude:small:high"}, []string{"reviewer"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := time.Now()
+			p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string, _ []string) modelhealth.Status {
+				return modelhealth.Classify(ref, "ok", nil, now)
+			}}
+			got := p.checkModels(context.Background(), []projects.Project{{Name: "project", Repository: config.Repository{Env: tc.env}}})
+			if got.Status != "fail" {
+				t.Fatalf("check = %+v", got)
+			}
+			var missing []string
+			for _, row := range got.Details.([]doctorModelStatus) {
+				if row.Status.Reason == "not_configured" {
+					if row.Repository != "project" || row.Status.Ref != (modelhealth.Ref{}) || row.Status.State != "unknown" {
+						t.Fatalf("missing role row = %+v", row)
+					}
+					missing = append(missing, row.Role)
+				}
+			}
+			if !reflect.DeepEqual(missing, tc.missing) {
+				t.Fatalf("missing = %v, want %v", missing, tc.missing)
+			}
+		})
 	}
 }

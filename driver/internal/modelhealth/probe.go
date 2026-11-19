@@ -12,7 +12,7 @@ import (
 )
 
 // Probe sends one bounded, read-only request. Effort is deliberately kept low.
-func Probe(ctx context.Context, ref Ref, dir string) Status {
+func Probe(ctx context.Context, ref Ref, dir string, extraEnv []string) Status {
 	var args []string
 	switch ref.Agent {
 	case "codex":
@@ -26,7 +26,7 @@ func Probe(ctx context.Context, ref Ref, dir string) Status {
 		if ref.Model != "" {
 			args = append(args, "--model", ref.Model)
 		}
-		args = append(args, "--tools", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence")
+		args = append(args, "--tools", "", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence")
 	default:
 		return Status{Ref: ref, State: Unknown, Reason: "unsupported_agent", CheckedAt: time.Now()}
 	}
@@ -40,7 +40,7 @@ func Probe(ctx context.Context, ref Ref, dir string) Status {
 		}
 		env = append(env, value)
 	}
-	output, err := runx.Run(ctx, runx.Spec{Path: ref.Agent, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
+	output, err := runx.Run(ctx, runx.Spec{Path: ref.Agent, Args: args, Dir: dir, Env: append(env, extraEnv...), Timeout: ProbeTimeout})
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		output = append(append(output, '\n'), exit.Stderr...)

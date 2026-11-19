@@ -26,6 +26,7 @@ func TestClassifyModelOutputs(t *testing.T) {
 		{name: "normal", output: "ok\n", state: "ok", reason: "probe_ok"},
 		{name: "timeout", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
 		{name: "network error", err: errors.New("network"), state: "unknown", reason: "probe_failed"},
+		{name: "bare error code", output: "model_not_found", err: errors.New("exit 1"), state: "unknown", reason: "probe_failed"},
 		{name: "unexpected", output: "hello", state: "unknown", reason: "unexpected_output"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -122,6 +123,40 @@ func TestRefRoundTrip(t *testing.T) {
 	for _, value := range []string{"", ":model:low", "codex:model:low:extra", "codex"} {
 		if _, err := modelhealth.Parse(value); err == nil {
 			t.Fatalf("accepted %q", value)
+		}
+	}
+}
+
+func TestRegistryRetainsNewerProbe(t *testing.T) {
+	root := t.TempDir()
+	stale, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
+	now := time.Now().UTC()
+	newer := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now.Add(time.Second), Until: now.Add(time.Hour)}
+	if err := current.Record(newer); err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Record(modelhealth.Classify(ref, "ok", nil, now)); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened.Observe(modelhealth.Classify(ref, "ok", nil, now))
+	for _, r := range []*modelhealth.Registry{stale, reopened} {
+		if got := r.Status(ref, newer.CheckedAt); got != newer {
+			t.Fatalf("status = %+v, want %+v", got, newer)
+		}
+		if _, ok := r.Select([]modelhealth.Ref{ref}, newer.CheckedAt); ok {
+			t.Fatal("selected a model in cooldown")
 		}
 	}
 }

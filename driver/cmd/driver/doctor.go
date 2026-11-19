@@ -15,10 +15,12 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
@@ -94,7 +96,10 @@ type doctorProbe struct {
 	projects        func(context.Context) ([]projects.Project, error)
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
-	modelProbe      func(context.Context, modelhealth.Ref, string) modelhealth.Status
+	intakePi        string
+	recordModels    bool
+	modelProxyURL   string
+	modelProbe      func(context.Context, modelhealth.Ref, string, []string) modelhealth.Status
 }
 
 // unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
@@ -142,13 +147,27 @@ func newDoctorProbe() (doctorProbe, error) {
 	if err != nil {
 		return doctorProbe{}, err
 	}
+	proxyURL, err := config.ModelProxyURL(home)
+	if err != nil {
+		return doctorProbe{}, err
+	}
+	pi := os.Getenv("AGENT_INTAKE_PI")
+	if pi == "" {
+		fileEnv, err := (bootstrapProbe{home: home}).driverEnv()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return doctorProbe{}, errors.New("driver.env could not be read or parsed")
+		}
+		pi = fileEnv["AGENT_INTAKE_PI"]
+	}
 	ledgers := issues.NewFactory(cfg.Tuning)
 	return doctorProbe{
-		now:         time.Now(),
-		stateRoot:   logStateRoot(),
-		modelProbe:  modelhealth.Probe,
-		factoryRoot: cfg.FactoryRoot,
-		serviceEnv:  serviceEnviron,
+		now:           time.Now(),
+		stateRoot:     logStateRoot(),
+		modelProbe:    modelhealth.Probe,
+		modelProxyURL: proxyURL,
+		intakePi:      strings.TrimSpace(pi),
+		factoryRoot:   cfg.FactoryRoot,
+		serviceEnv:    serviceEnviron,
 		projects: func(ctx context.Context) ([]projects.Project, error) {
 			result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 			return result.Eligible, err
@@ -166,6 +185,7 @@ func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int
 		fmt.Fprintln(os.Stderr, doctorUsage)
 		return 2
 	}
+	p.recordModels = true
 	report := p.run(ctx)
 	if err := writeHealth(out, report, asJSON, doctorChecks); err != nil {
 		fmt.Fprintln(os.Stderr, "cannot output doctor report")
@@ -775,60 +795,142 @@ type doctorModelStatus struct {
 	Status     modelhealth.Status `json:"status"`
 }
 
+func (p doctorProbe) modelRoles(project projects.Project) ([]configRole, error) {
+	env := project.Repository.Env
+	tiers := []string{"default"}
+	if env["AGENT_TIER_ESCALATE"] == "1" {
+		var err error
+		tiers, err = config.TierChain(env["AGENT_TIER_CHAIN"])
+		if err != nil {
+			return nil, err
+		}
+	}
+	pi := strings.TrimSpace(env["AGENT_INTAKE_PI"])
+	if pi == "" {
+		pi = p.intakePi
+	}
+	roles := repositoryRoles(env, project.Repository.Sources)
+	roles = slices.DeleteFunc(roles, func(role configRole) bool {
+		return strings.HasPrefix(role.Role, "worker_") || (pi != "" && role.Role == "intake")
+	})
+	if pi != "" {
+		provider, model, thinking, err := intake.ParsePiTier(pi)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, configRole{Role: "intake", Agent: "pi", Model: provider + "/" + model, Effort: thinking})
+	}
+	for _, tier := range tiers {
+		value := env["AGENT_TIER_"+strings.ToUpper(tier)]
+		if tier == "default" && value == "" {
+			continue
+		}
+		ref, err := modelhealth.Parse(value)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, configRole{Role: "worker_" + tier, Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort})
+	}
+	if value := env["AGENT_ROLE_RESOLVER_TOP"]; value != "" {
+		ref, err := modelhealth.Parse(value)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, configRole{Role: "resolver_top", Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort})
+	}
+	return roles, nil
+}
+
 func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Project) healthCheck {
 	registry, err := modelhealth.Open(p.stateRoot)
 	if err != nil {
 		return unprobed("模型可用性登记无法读取")
 	}
-	rows := []doctorModelStatus{}
-	checked := map[string]modelhealth.Status{}
-	unavailable, unknown, exhausted := false, false, false
-	for _, project := range eligible {
-		roles := repositoryRoles(project.Repository.Env, project.Repository.Sources)
-		names := []string{}
-		for key, value := range project.Repository.Env {
-			if strings.HasPrefix(key, "AGENT_TIER_") && key != "AGENT_TIER_CHAIN" && key != "AGENT_TIER_ESCALATE" && key != "AGENT_TIER_DEFAULT" && key != "AGENT_TIER_STRONG" && value != "" {
-				names = append(names, key)
-			}
+	type request struct {
+		ref      modelhealth.Ref
+		dir      string
+		extraEnv []string
+	}
+	pending := map[string]request{}
+	results := map[string]modelhealth.Status{}
+	projectRows := make([][]doctorModelStatus, len(eligible))
+	for i, project := range eligible {
+		roles, err := p.modelRoles(project)
+		if err != nil {
+			return unprobed("模型档位配置无法解析")
 		}
-		slices.Sort(names)
-		if project.Repository.Env["AGENT_ROLE_RESOLVER_TOP"] != "" {
-			names = append(names, "AGENT_ROLE_RESOLVER_TOP")
-		}
-		for _, key := range names {
-			roleName := "worker_" + strings.ToLower(strings.TrimPrefix(key, "AGENT_TIER_"))
-			if key == "AGENT_ROLE_RESOLVER_TOP" {
-				roleName = "resolver_top"
-			}
-			ref, parseErr := modelhealth.Parse(project.Repository.Env[key])
-			if parseErr != nil {
-				return unprobed("模型档位配置无法解析")
-			}
-			roles = append(roles, configRole{Role: roleName, Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort})
-		}
-		candidates := map[string][]modelhealth.Ref{}
 		for _, role := range roles {
 			ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
-			state, ok := checked[ref.Key()]
-			if !ok {
-				state = registry.Status(ref, p.now)
-				if state.State != modelhealth.Unavailable {
-					state = p.modelProbe(ctx, ref, project.Path)
-					if err := registry.Record(state); err != nil {
-						return unprobed("模型可用性登记无法写入")
-					}
-				}
-				checked[ref.Key()] = state
+			var extraEnv []string
+			if (role.Role == "reviewer" || role.Role == "reviewer_small") && ref.Agent == "claude" && p.modelProxyURL != "" {
+				ref.Route = modelhealth.RouteModelProxy
+				extraEnv = []string{"ANTHROPIC_BASE_URL=" + p.modelProxyURL}
 			}
-			state.Ref = ref
-			rows = append(rows, doctorModelStatus{Repository: project.Name, Role: role.Role, Status: state})
-			group := role.Role
+			state := registry.Status(ref, p.now)
+			projectRows[i] = append(projectRows[i], doctorModelStatus{Repository: project.Name, Role: role.Role, Status: state})
+			key := ref.Key()
+			if ref.Agent != "claude" && ref.Agent != "codex" {
+				results[key] = modelhealth.Status{Ref: ref, State: modelhealth.Unknown, Reason: "unsupported_agent", CheckedAt: p.now}
+				continue
+			}
+			if _, seen := pending[key]; !seen && state.State != modelhealth.Unavailable {
+				pending[key] = request{ref: ref, dir: project.Path, extraEnv: extraEnv}
+			}
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, modelhealth.ProbeTimeout)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for key, req := range pending {
+		wg.Go(func() {
+			state := p.modelProbe(probeCtx, req.ref, req.dir, req.extraEnv)
+			mu.Lock()
+			results[key] = state
+			mu.Unlock()
+		})
+	}
+	wg.Wait()
+	cancel()
+	for _, state := range results {
+		if !p.recordModels {
+			registry.Observe(state)
+			continue
+		}
+		if err := registry.Record(state); err != nil {
+			return unprobed("模型可用性登记无法写入")
+		}
+	}
+
+	rows := []doctorModelStatus{}
+	unavailable, unknown, exhausted := false, false, false
+	for i, project := range projectRows {
+		candidates := map[string][]modelhealth.Ref{"worker": nil, "reviewer": nil}
+		for _, row := range project {
+			ref := row.Status.Ref
+			state := registry.Status(ref, p.now)
+			row.Status = state
+			rows = append(rows, row)
+			group := row.Role
 			if strings.HasPrefix(group, "worker_") {
 				group = "worker"
 			}
 			candidates[group] = append(candidates[group], ref)
 			unavailable = unavailable || state.State == modelhealth.Unavailable
-			unknown = unknown || state.State == modelhealth.Unknown
+			unknown = unknown || (state.State == modelhealth.Unknown && state.Reason != "unsupported_agent")
+		}
+		if eligible[i].Repository.Env["AGENT_TIER_DEFAULT"] == "" {
+			candidates["worker"] = nil
+		}
+		for _, group := range []string{"worker", "reviewer"} {
+			if len(candidates[group]) == 0 {
+				role := group
+				if group == "worker" {
+					role = "worker_default"
+				}
+				rows = append(rows, doctorModelStatus{Repository: eligible[i].Name, Role: role,
+					Status: modelhealth.Status{State: modelhealth.Unknown, Reason: "not_configured"}})
+			}
 		}
 		for _, refs := range candidates {
 			if _, ok := registry.Select(refs, p.now); !ok {
@@ -836,10 +938,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 			}
 		}
 	}
-	check := healthCheck{Status: healthOK, Reason: "各角色模型可用", Details: rows, unprobed: unknown}
+	check := healthCheck{Status: healthOK, Reason: "各角色均有可重试候选", Details: rows, unprobed: unknown}
 	switch {
 	case exhausted:
-		check.Status, check.Reason = healthFail, "有角色的全部模型候选仍处于不可用期"
+		check.Status, check.Reason = healthFail, "缺少必需角色配置，或有角色的全部模型候选仍处于不可用期"
 	case unavailable:
 		check.Status, check.Reason = healthWarn, "有模型不可用，角色仍有可重试候选"
 	case unknown:
