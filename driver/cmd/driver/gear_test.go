@@ -104,6 +104,9 @@ func TestGearCommands(t *testing.T) {
 		{"set", "OF", "auto", "--operator", " ", "--reason", "bad"},
 		{"status", "--bad"},
 		{"clear"},
+		{"set", "", "auto", "--operator", "tester", "--reason", "empty selector"},
+		{"set", " ", "auto", "--operator", "tester", "--reason", "blank selector"},
+		{"clear", ""},
 	} {
 		if code := run(append([]string{"gear"}, args...)); code != 2 {
 			t.Fatalf("gear %v exit=%d, want 2", args, code)

@@ -43,7 +43,7 @@ func runGear(args []string) int {
 			return 2
 		}
 	case "set":
-		if len(args) < 3 || (args[2] != "auto" && args[2] != "manual") {
+		if len(args) < 3 || strings.TrimSpace(args[1]) == "" || (args[2] != "auto" && args[2] != "manual") {
 			fmt.Fprintln(os.Stderr, gearUsage)
 			return 2
 		}
@@ -56,7 +56,7 @@ func runGear(args []string) int {
 			return 2
 		}
 	case "clear":
-		if len(args) != 2 {
+		if len(args) != 2 || strings.TrimSpace(args[1]) == "" {
 			fmt.Fprintln(os.Stderr, gearUsage)
 			return 2
 		}
