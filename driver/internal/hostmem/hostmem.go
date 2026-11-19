@@ -115,14 +115,18 @@ func readCgroupAncestors(root string) ([]Reading, error) {
 			break
 		}
 	}
+	if path == "" {
+		return nil, errors.New("/proc/self/cgroup has no cgroup v2 (0::) entry")
+	}
 	var readings []Reading
-	for path != "" {
+	for {
 		dir := root + "/sys/fs/cgroup" + path
 		limit, err := os.ReadFile(filepath.Join(dir, "memory.max"))
 		switch {
 		case errors.Is(err, os.ErrNotExist):
-			// A level without a memory controller can still have a limited ancestor.
-			if _, statErr := os.Stat(dir); statErr != nil {
+			// Every cgroup v2 directory, including the root, has cgroup.controllers.
+			// An unmounted or non-cgroup directory lacks this file.
+			if _, statErr := os.Stat(filepath.Join(dir, "cgroup.controllers")); statErr != nil {
 				return nil, fmt.Errorf("cgroup %s: %w", path, statErr)
 			}
 		case err != nil:

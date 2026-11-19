@@ -22,7 +22,12 @@ func recorded(t *testing.T, sample string) []byte {
 func readProc(t *testing.T, meminfo, pressure []byte) Reading {
 	t.Helper()
 	root := t.TempDir()
-	for dest, data := range map[string][]byte{"proc/self/cgroup": []byte("1:memory:/legacy\n"), "proc/meminfo": meminfo, "proc/pressure/memory": pressure} {
+	for dest, data := range map[string][]byte{
+		"proc/self/cgroup":                 recorded(t, "cgroup-memory/proc-root-cgroup.txt"),
+		"sys/fs/cgroup/cgroup.controllers": recorded(t, "cgroup-memory/cgroup.controllers.txt"),
+		"proc/meminfo":                     meminfo,
+		"proc/pressure/memory":             pressure,
+	} {
 		path := filepath.Join(root, dest)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -115,7 +120,13 @@ func cgroupFixture(t *testing.T) string {
 	write("proc/self/cgroup", self)
 	write("proc/meminfo", recorded(t, "proc-meminfo.txt"))
 	write("proc/pressure/memory", recorded(t, "proc-pressure-memory.txt"))
-	for path := strings.TrimSpace(strings.TrimPrefix(string(self), "0::")); path != "/"; path = filepath.Dir(path) {
+	controllers := recorded(t, "cgroup-memory/cgroup.controllers.txt")
+	for path := strings.TrimSpace(strings.TrimPrefix(string(self), "0::")); ; path = filepath.Dir(path) {
+		dir := filepath.Join("sys/fs/cgroup", path)
+		write(filepath.Join(dir, "cgroup.controllers"), controllers)
+		if path == "/" {
+			break
+		}
 		prefix := ""
 		switch filepath.Base(path) {
 		case "orca.slice":
@@ -124,11 +135,11 @@ func cgroupFixture(t *testing.T) string {
 			prefix = "workloads"
 		}
 		if prefix == "" {
-			write("sys/fs/cgroup"+path+"/memory.max", recorded(t, "cgroup-memory/unlimited-memory.max.txt"))
+			write(filepath.Join(dir, "memory.max"), recorded(t, "cgroup-memory/unlimited-memory.max.txt"))
 			continue
 		}
 		for _, name := range []string{"memory.max", "memory.current", "memory.stat", "memory.pressure"} {
-			write("sys/fs/cgroup"+path+"/"+name, recorded(t, "cgroup-memory/"+prefix+"-"+name+".txt"))
+			write(filepath.Join(dir, name), recorded(t, "cgroup-memory/"+prefix+"-"+name+".txt"))
 		}
 	}
 	return root
@@ -191,16 +202,42 @@ func TestEffectiveReadingTakesTightestSource(t *testing.T) {
 }
 
 func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
+	rootCgroup := recorded(t, "cgroup-memory/proc-root-cgroup.txt")
+	leaf := strings.TrimSpace(strings.TrimPrefix(string(recorded(t, "cgroup-memory/proc-self-cgroup.txt")), "0::"))
 	for _, tc := range []struct {
-		name, path, wantErr string
-		remove              func(string) error
+		name, wantErr string
+		breakFixture  func(root string) error
 	}{
-		{"missing stat file", "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat", "memory.stat", os.Remove},
-		{"missing cgroup tree", "sys", "sys/fs/cgroup", os.RemoveAll},
+		{"missing stat file", "memory.stat", func(root string) error {
+			return os.Remove(filepath.Join(root, "sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice/memory.stat"))
+		}},
+		{"missing cgroup tree", "sys/fs/cgroup", func(root string) error {
+			return os.RemoveAll(filepath.Join(root, "sys"))
+		}},
+		{"unmounted cgroup root", "cgroup.controllers", func(root string) error {
+			if err := os.WriteFile(filepath.Join(root, "proc/self/cgroup"), rootCgroup, 0o600); err != nil {
+				return err
+			}
+			dir := filepath.Join(root, "sys/fs/cgroup")
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+			return os.MkdirAll(dir, 0o755)
+		}},
+		{"non-cgroup leaf", "cgroup.controllers", func(root string) error {
+			dir := filepath.Join(root, "sys/fs/cgroup", leaf)
+			if err := os.Remove(filepath.Join(dir, "memory.max")); err != nil {
+				return err
+			}
+			return os.Remove(filepath.Join(dir, "cgroup.controllers"))
+		}},
+		{"no cgroup v2 entry", "0::", func(root string) error {
+			return os.WriteFile(filepath.Join(root, "proc/self/cgroup"), []byte("1:memory:/legacy\n"), 0o600)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := cgroupFixture(t)
-			if err := tc.remove(filepath.Join(root, tc.path)); err != nil {
+			if err := tc.breakFixture(root); err != nil {
 				t.Fatal(err)
 			}
 			got, err := Read(root)
