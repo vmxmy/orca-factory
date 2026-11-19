@@ -250,6 +250,63 @@ func TestTakeOverUpdatesProbedRepository(t *testing.T) {
 	}
 }
 
+// A rejected repository probed with nothing in flight keeps the backend
+// bound to that probe. Once it holds in-flight tickets, the tracked copy
+// starts from the probed configuration, so a gear override changed in between
+// still reaches the backend.
+func TestRetiredProbedRepositoryCarriesLaterGear(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(mode, source string) *config.Repository {
+		return &config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8,
+			Env: map[string]string{"AGENT_MODE": mode, "AGENT_FEISHU_PROJECT": "github.com/example/a"}, Sources: map[string]string{"AGENT_MODE": source}}
+	}
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Remote: "github.com/example/a", Reason: projects.ReasonProjectDisabled, Repository: repo("auto", "repository")}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Rejected[0].Repository = repo("manual", "override")
+	f.tickets = []Ticket{{ID: "a-running", Identifier: "A-1", Repo: "/a", Owner: machine.OwnerResolver, UpdatedAt: now}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/a" })
+	if idx < 0 || s.Repositories[idx].Env["AGENT_MODE"] != "manual" || f.updated["/a"].Env["AGENT_MODE"] != "manual" {
+		t.Fatalf("repositories=%+v backend=%+v, want manual in both", s.Repositories, f.updated["/a"])
+	}
+}
+
+// Taking over a repository probed under another ledger identity keeps the
+// probed configuration the backend is bound to, as reconcileRepository does.
+func TestTakeOverKeepsProbedLedgerIdentity(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(base string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": base}}
+	}
+	probed := repo("https://base1.feishu.cn/base/tok1")
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: &probed}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result = projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("https://base2.feishu.cn/base/tok2")}}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].Env["AGENT_FEISHU_BASE"]; got != probed.Env["AGENT_FEISHU_BASE"] {
+		t.Fatalf("tracked AGENT_FEISHU_BASE=%q, want the probed base", got)
+	}
+	if updated, ok := f.updated["/a"]; ok && updated.Env["AGENT_FEISHU_BASE"] != probed.Env["AGENT_FEISHU_BASE"] {
+		t.Fatalf("backend AGENT_FEISHU_BASE=%q, want the probed base", updated.Env["AGENT_FEISHU_BASE"])
+	}
+}
+
 func TestDiscoverFailureKeepsPreviousProjects(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	fail := false

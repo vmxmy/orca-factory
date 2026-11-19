@@ -136,13 +136,13 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 				continue
 			}
 		}
-		// Track keeps the configuration of a repository it already probed while
-		// rejected; the taken-over repository runs on the one discovered now.
-		if updater != nil {
-			updater.UpdateRepository(p.Repository)
-		}
 		eligible[p.Path] = true
-		repositories = append(repositories, p.Repository)
+		repository := p.Repository
+		if probed, ok := s.probed[p.Path]; ok {
+			repository = s.reconcileRepository(probed, p.Repository, updater)
+			delete(s.probed, p.Path)
+		}
+		repositories = append(repositories, repository)
 	}
 	s.syncCore(ctx, result.Eligible, eligible)
 	for _, r := range result.Rejected {
@@ -159,7 +159,12 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 			continue
 		}
 		if len(held) > 0 {
-			repositories = append(repositories, *r.Repository)
+			repository := *r.Repository
+			if probed, ok := s.probed[r.Path]; ok {
+				repository = s.refreshMode(probed, *r.Repository, r.Remote, updater)
+				delete(s.probed, r.Path)
+			}
+			repositories = append(repositories, repository)
 			s.logger().Warn("project not taken over but has in-flight tickets", "path", r.Path, "reason", string(r.Reason), "tickets", held)
 		}
 	}
@@ -188,6 +193,12 @@ func (s *Scheduler) heldTickets(ctx context.Context, repo config.Repository, tra
 	if tracker != nil {
 		if err := tracker.Track(ctx, repo); err != nil {
 			return nil, err
+		}
+		if _, ok := s.probed[repo.Path]; !ok {
+			if s.probed == nil {
+				s.probed = map[string]config.Repository{}
+			}
+			s.probed[repo.Path] = repo
 		}
 	}
 	tickets, err := s.Backend.Snapshot(ctx, []config.Repository{repo})
