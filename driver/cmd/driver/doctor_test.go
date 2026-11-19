@@ -846,7 +846,7 @@ func TestDoctorModelsReportsUnloadedEnabledRepository(t *testing.T) {
 		{Path: "/repos/off", Remote: "github.com/o/off", Reason: projects.ReasonCheckFailed},
 		{Path: "/repos/stray", Remote: "github.com/o/stray", Reason: projects.ReasonCheckFailed},
 	}
-	ledger := []issues.LedgerProject{{Remote: "github.com/o/broken", Enabled: true}, {Remote: "github.com/o/off"}}
+	ledger := []issues.LedgerProject{{Remote: "github.com/o/broken", Enabled: true}, {Remote: "github.com/o/off", Enabled: true}, {Remote: "github.com/o/off"}}
 	if got := unloadedRepositories(rejected, ledger); len(got) != 1 || got[0].Remote != "github.com/o/broken" {
 		t.Errorf("with a readable ledger = %+v, want only the enabled broken repository", got)
 	}
@@ -1428,10 +1428,11 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	for command, want := range map[string]string{
 		"claude -p --model m --add-dir /srv/reviews/claude":       "",
 		"/opt/custom/claude -p --model m":                         "/opt/custom/claude",
+		"./tools/claude -p --model m":                             "/repo/tools/claude",
 		"env -u ORCA_PANE_KEY A=1 /opt/custom/codex exec -m m -":  "/opt/custom/codex",
 		"env -u ORCA_PANE_KEY codex exec -m m --cd /work/codex -": "",
 	} {
-		if got := commandBinary(command); got != want {
+		if got := commandBinary(command, "/repo"); got != want {
 			t.Errorf("commandBinary(%q) = %q, want %q", command, got, want)
 		}
 	}
@@ -1443,5 +1444,39 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	explicit := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Binary: filepath.Join(bin, "claude"), Isolated: true}}
 	if onPath.probeKey() != explicit.probeKey() {
 		t.Error("the PATH claude and its absolute path probe the same endpoint twice")
+	}
+}
+
+// TestDoctorModelsUnloadedRecordedLedger replays the recorded 项目 table row
+// (feishu/bot-project-records.json) through unloadedRepositories.
+func TestDoctorModelsUnloadedRecordedLedger(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "testdata", "recorded", "feishu", "bot-project-records.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recording struct {
+		Response struct {
+			Data struct {
+				Fields []string `json:"fields"`
+				Data   [][]any  `json:"data"`
+			} `json:"data"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(b, &recording); err != nil {
+		t.Fatal(err)
+	}
+	var ledger []issues.LedgerProject
+	for _, row := range recording.Response.Data.Data {
+		at := func(name string) any { return row[slices.Index(recording.Response.Data.Fields, name)] }
+		ledger = append(ledger, issues.LedgerProject{Name: at("名称").(string), Enabled: at("启用").(bool), Remote: at("仓库远端").(string)})
+	}
+	const remote = "github.com/vmxmy/orca-factory"
+	rejected := []projects.Rejection{{Path: "/repos/orca-factory", Remote: remote, Reason: projects.ReasonCheckFailed}}
+	if got := unloadedRepositories(rejected, ledger); len(got) != 1 || got[0].Remote != remote {
+		t.Errorf("recorded enabled row = %+v, want the repository reported", got)
+	}
+	disabled := append(slices.Clone(ledger), issues.LedgerProject{Name: "orca-factory", Remote: remote})
+	if got := unloadedRepositories(rejected, disabled); len(got) != 0 {
+		t.Errorf("a later disabled row = %+v, want it to win as in projects.Discover", got)
 	}
 }

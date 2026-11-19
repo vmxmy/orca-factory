@@ -910,7 +910,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		switch role.Role {
 		case "reviewer", "reviewer_small", "second_reviewer":
-			modelRole.endpoint.Binary = commandBinary(role.Raw)
+			modelRole.endpoint.Binary = commandBinary(role.Raw, project.Path)
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -969,21 +969,23 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 }
 
 // unloadedRepositories keeps the repositories discovery rejected because their
-// pipeline check or profile failed. With a readable ledger only those an enabled
-// row claims are kept; a nil ledger means no profile could read it.
+// pipeline check or profile failed. With a readable ledger only those whose
+// last row is enabled are kept, as projects.Discover reads it; a nil ledger
+// means no profile could read it.
 func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerProject) []projects.Rejection {
 	enabled := map[string]bool{}
 	for _, row := range ledger {
-		enabled[row.Remote] = enabled[row.Remote] || row.Enabled
+		enabled[row.Remote] = row.Enabled
 	}
 	return slices.DeleteFunc(slices.Clone(rejected), func(r projects.Rejection) bool {
 		return r.Reason != projects.ReasonCheckFailed || ledger != nil && !enabled[r.Remote]
 	})
 }
 
-// commandBinary is the absolute executable a legacy reviewer command runs, after
-// the env prefix parseReviewerCommand also skips, or "" when it is found on PATH.
-func commandBinary(command string) string {
+// commandBinary is the executable a legacy reviewer command runs, after the env
+// prefix parseReviewerCommand also skips. A relative path resolves against dir,
+// the checkout the command runs in; "" means the command is found on PATH.
+func commandBinary(command, dir string) string {
 	words := strings.Fields(command)
 	i := 0
 	if len(words) > 0 && words[0] == "env" {
@@ -995,10 +997,13 @@ func commandBinary(command string) string {
 			}
 		}
 	}
-	if i < len(words) && filepath.IsAbs(words[i]) {
+	switch {
+	case i >= len(words) || !strings.Contains(words[i], "/"):
+		return ""
+	case filepath.IsAbs(words[i]):
 		return words[i]
 	}
-	return ""
+	return filepath.Join(dir, words[i])
 }
 
 // checkModels also lists each enabled repository whose profile could not be
@@ -1014,14 +1019,18 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	var probes sync.WaitGroup
 	pending := map[string]*modelhealth.Status{}
 	projectRoles := make([][]doctorModelRole, len(eligible))
+	// Keys are computed once: probeKey reads PATH, which may change mid-run.
+	projectKeys := make([][]string, len(eligible))
 	for i, project := range eligible {
 		roles := settings.modelRoles(project)
 		projectRoles[i] = roles
-		for _, role := range roles {
+		projectKeys[i] = make([]string, len(roles))
+		for j, role := range roles {
 			if role.reason != "" {
 				continue
 			}
 			key := role.probeKey()
+			projectKeys[i][j] = key
 			if pending[key] != nil {
 				continue
 			}
@@ -1036,10 +1045,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	var unavailable, unknown, exhausted, invalid bool
 	for i, roles := range projectRoles {
 		retryable := map[string]bool{}
-		for _, role := range roles {
+		for j, role := range roles {
 			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
 			if role.reason == "" {
-				state = *pending[role.probeKey()]
+				state = *pending[projectKeys[i][j]]
 				state.Ref = role.ref
 				// An inconclusive probe keeps the model's unexpired cooldown.
 				if recorded := registry.Status(role.ref, p.now); state.State == modelhealth.Unknown && recorded.State == modelhealth.Unavailable {

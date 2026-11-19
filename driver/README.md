@@ -638,13 +638,13 @@ AGENT_TIER_ESCALATE = "0"
 
 ## 模型可用性（OF-592）
 
-`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
+`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。缺少默认 worker、主 reviewer 或 intake 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。pipeline 检查或仓库配置加载失败而未被接管的仓库（账本项目表可读时仅限按最后一行启用的仓库），以远端列一行 `profile`，显示 `unknown/config_invalid`。这些情况都使整项为 `fail`。
 
 worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须合法，空值使用 `default strong`。启用 `AGENT_TIER_ESCALATE=1` 时，链必须含 `default`，每个档位都须配置合法的模型引用。候选包括 `default` 和最多 3 次 correction 能到达的后续档位。窗口外格式错误的档位单独报错，合法的档位省略。关闭升档时只有 `default` 是候选。
 
 每个已接管仓库都有 intake 行。doctor 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
-Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测只传 `HOME` 和 `PATH`。交叉审查以 `HOME` 和 `PATH` 运行主 reviewer 与 `second_reviewer`，配置 `second_reviewer` 时另列 `cross_reviewer` 行探测该端点。旧式 reviewer 命令的可执行词为绝对路径时，探测使用该二进制；PATH 上的 agent 与其绝对路径只探测一次。未配置代理的 reviewer、worker 和 resolver 继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
+Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致：总是解析机器 `driver.env`（解析失败时 intake 行为 `unknown/config_invalid`），`AGENT_INTAKE_CLAUDE`、`AGENT_INTAKE_PI` 的非空进程环境值再覆盖文件值并去空白；`AGENT_INTAKE_CLAUDE` 须为绝对路径（为空时取 PATH 上的 `claude`），否则 intake 行显示 `unknown/config_invalid`；探测只传 `HOME` 和 `PATH`。交叉审查以 `HOME` 和 `PATH` 运行主 reviewer 与 `second_reviewer`，配置 `second_reviewer` 时另列 `cross_reviewer` 行探测该端点。旧式 reviewer 命令的可执行词含路径时，探测使用该二进制（相对路径按仓库检出目录解析）；PATH 上的 agent 与其绝对路径只探测一次。未配置代理的 reviewer、worker 和 resolver 继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
 doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果；本轮未能确认（`unknown`）而该模型仍在冷却时，显示登记的不可用状态。各行按本轮开始时的登记判定，之后才写入登记，`watch --dry-run` 与实际巡检判定一致。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
