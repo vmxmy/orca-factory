@@ -1,20 +1,23 @@
 export const RENDER_MODE = Object.freeze({ CLEAN: 'clean', FULL: 'full' })
 
+export const waitsForPerson = parcel => parcel.station === 'human' || parcel.humanKind !== undefined
+export const parked = parcel => parcel.reason?.startsWith('parked:') ?? false
+
 export const CLEAN_RULES = Object.freeze({
-  station: ({ occupied, hovered }) => occupied || hovered,
-  stationDetails: ({ hovered }) => hovered,
-  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || parcel.station === 'human' || parcel.label === '搁置' || hovered || selected),
   islandDetails: () => false,
   hub: ({ state }) => state !== 'ok',
-  statusDetails: ({ abnormal }) => abnormal,
-  stuckPanel: ({ count, expanded }) => count > 0 && expanded,
-  stuckToggle: ({ count }) => count > 0,
+  station: ({ occupied, hovered }) => occupied || hovered,
+  stationDetails: ({ hovered }) => hovered,
+  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || waitsForPerson(parcel) || parked(parcel) || hovered || selected),
   dock: () => false,
   legend: () => false,
   events: () => false,
-  today: () => false,
   hint: () => false,
+  statusDetails: ({ abnormal }) => abnormal,
+  stuckPanel: ({ count }) => count > 0,
+  stuckList: ({ expanded }) => expanded,
   tripDetails: ({ expanded }) => expanded,
+  tripHeaderDetails: () => false,
 })
 
 export const visibleIn = (mode, kind, context = {}) => mode === RENDER_MODE.FULL || CLEAN_RULES[kind](context)

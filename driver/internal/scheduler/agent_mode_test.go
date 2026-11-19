@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -320,6 +321,29 @@ func recordedPark(t *testing.T) (parked, resumed recordedParkIssue) {
 		t.Fatal(err)
 	}
 	return recording.Parked, recording.Resumed
+}
+
+// driver-status-json-parked.json is the status row ObservationRow renders for
+// the recorded parked ticket; the diorama's clean mode reads its blockedReason.
+func TestRecordedParkedObservationRow(t *testing.T) {
+	parked, _ := recordedPark(t)
+	comments := protocolComments(parked.Comments.Nodes)
+	ticket := fromEvidence(t, Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "/home/laoxu/github/orca-factory"}, comments)
+	ticket.Parked, ticket.Resumed = parkedState(parked.Issue, comments)
+	got, err := json.Marshal(ObservationRow(ticket, nil, parked.UpdatedAt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var have, want any
+	if err := json.Unmarshal(got, &have); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(recorded(t, "driver-status-json-parked.json"), &want); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(have, want) {
+		t.Fatalf("parked observation row = %s", got)
+	}
 }
 
 func TestRecordedParkedStateReadsLedger(t *testing.T) {

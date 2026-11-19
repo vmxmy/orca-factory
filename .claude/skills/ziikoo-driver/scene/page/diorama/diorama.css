@@ -277,8 +277,6 @@
 
 .diorama .tools {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -828,39 +826,85 @@
   height: 8px;
 }
 
+.diorama .render-mode,
+.diorama .stuck-toggle {
+  padding: 8px 10px;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.diorama .render-mode {
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+}
 
 .diorama .render-mode[aria-pressed="true"] {
+  background: var(--w-ink);
+  color: #fff;
+}
+
+.diorama .tools {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.diorama .island-dot {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--w-muted);
+}
+
+.diorama[data-render-mode="clean"] .island-dot {
+  display: block;
+}
+
+.diorama .island-dot[data-status="busy"] {
+  background: var(--o-exec);
+}
+
+.diorama .island-dot[data-status="blocked"] {
+  background: var(--o-agent);
+}
+
+.diorama .island-dot[data-status="stuck"] {
+  background: var(--o-human);
+}
+
+.diorama[data-render-mode="clean"] .plate:not(.hub) {
+  background: var(--w-paper);
+  border-color: var(--w-line);
   color: var(--w-ink);
 }
 
 .diorama[data-render-mode="clean"] .trip-head .why {
-  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.diorama .trip-details[open] {
-  display: grid;
-  gap: 10px;
+.diorama[data-render-mode="full"] .trip-details,
+.diorama[data-render-mode="full"] .trip-details::details-content {
+  display: contents;
 }
 
-.diorama .island-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--o-exec);
+.diorama[data-render-mode="full"] .trip-details > summary {
+  display: none;
 }
 
-.diorama .idle .island-dot {
-  background: var(--w-muted);
+.diorama[data-render-mode="clean"] .trip-details[open] {
+  max-height: 35vh;
+  overflow: auto;
 }
 
-.diorama .blocked .island-dot {
-  background: var(--o-agent);
+.diorama[data-render-mode="clean"] .label.tag-marker {
+  pointer-events: auto;
+  cursor: help;
 }
 
-.diorama .warn .island-dot,
-.diorama .bad .island-dot {
-  background: var(--o-human);
+.diorama[data-render-mode="clean"] .stuck[data-expanded="false"] {
+  align-self: flex-end;
+  padding: 0;
 }
