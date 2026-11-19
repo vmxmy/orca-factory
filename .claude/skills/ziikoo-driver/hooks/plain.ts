@@ -13,7 +13,7 @@ import type {
   Snapshot,
   Timeline,
 } from '../types'
-import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, routingSummary } from './config'
+import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, routingSummary, sourceLabel } from './config'
 import { barriersOf, blockedOf, schedulingOf, inFlightOf } from './runtime'
 import { NO_MATCH, clockTime, failureTitle, matches, reasonOf } from './view'
 import { duration, position } from './ticket'
@@ -202,13 +202,13 @@ const modelBlocks = (current: Repo | undefined) => {
         [ROLE_LABELS[one.role], one.agent || '-', one.model || '默认', one.effort || '-', one.key || '内置'].join(' · '),
       ),
     ],
-    [routingSummary(current.routing)],
+    [routingSummary(current.routing), `档位来源：${sourceLabel(current.routing.find(one => one.key === 'AGENT_MODE')?.source ?? 'default')}`],
   ]
 }
 
 const settingLine = (one: SchedulerSetting) => {
   const view = SETTINGS[one.key]
-  return [view.label, view.show(one.value), SOURCE_LABELS[one.source], one.key].join(' · ')
+  return [view.label, view.show(one.value), sourceLabel(one.source), one.key].join(' · ')
 }
 
 const schedulerBlocks = (settings: SchedulerSetting[]) => [

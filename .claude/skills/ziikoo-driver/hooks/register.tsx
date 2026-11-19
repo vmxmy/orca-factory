@@ -16,7 +16,7 @@ import type {
   Timeline,
   TrendSample,
 } from '../types'
-import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, SOURCE_LABELS, deploys, parseConfig, routingSummary } from './config'
+import { ROLE_LABELS, SETTINGS, SETTING_GROUPS, deploys, gearMode, parseConfig, routingSummary, sourceLabel } from './config'
 import {
   CHECK_LABELS,
   ENV_GROUPS,
@@ -115,6 +115,7 @@ const detail = atom({ plugin: 'ziikoo-driver', key: 'detail' } as const, '', { s
 const timeline = atom({ plugin: 'ziikoo-driver', key: 'timeline' } as const, { kind: 'loading' }, { shape: 'timeline-2' })
 const filter = atom({ plugin: 'ziikoo-driver', key: 'filter' } as const, '', { shape: 'filter-1' })
 const seen = atom({ plugin: 'ziikoo-driver', key: 'seen' } as const, null, { shape: 'seen-1' })
+const gearBusy = atom({ plugin: 'ziikoo-driver', key: 'gearBusy' } as const, false, { shape: 'gear-busy-1' })
 
 type Engine = Pick<EngineInterface, 'state' | 'process' | 'clock' | 'ui' | 'plugin' | 'env'>
 
@@ -154,7 +155,7 @@ const openScene = async ($: Engine, surface: RenderSurface, bind: string, port: 
   const child = $.process.spawn({
     argv: ['bun', 'run', `${$.plugin.root}/scene/server.ts`],
     cwd: $.plugin.root,
-    env: { ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: bind, ZIIKOO_SCENE_PORT: port },
+    env: { ZIIKOO_SCENE_ACCESS: 'token', ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: bind, ZIIKOO_SCENE_PORT: port },
   })
   void (async () => {
     let exitCode: number | null = null
@@ -249,14 +250,48 @@ const take = async ($: Engine): Promise<Snapshot> => {
   return next.kind === 'ready' ? { kind: 'ready', config: next.value, fetchedAt: next.fetchedAt } : next
 }
 
+// A config read that a later read overtook carries an older snapshot, e.g. the gear before a switch.
+let configReads = 0
+
 const fetchConfig = async ($: Engine): Promise<void> => {
+  const read = ++configReads
   const next = await take($)
-  await update($, snapshot, () => next)
+  // update reruns its callback on a version miss, by which time a later read may have written.
+  await update($, snapshot, prev => (read === configReads ? next : prev))
 }
 
 const refresh = async ($: Engine): Promise<void> => {
   await update($, snapshot, () => ({ kind: 'loading' }))
   await fetchConfig($)
+}
+
+// gearBusy only redraws the pane: plugin state survives a hot reload that may drop the finally below,
+// while this module flag starts false in the reloaded module, so a stale true cannot lock the switch.
+let gearSwitching = false
+
+const switchGear = async ($: Engine, current: Repo): Promise<void> => {
+  if (gearSwitching) return
+  gearSwitching = true
+  try {
+    await update($, gearBusy, () => true)
+    const operator = (await $.env.get('USER')) || (await $.env.get('LOGNAME'))
+    if (!operator) throw new Error('无法读取当前用户名')
+    const next = gearMode(current.routing) === 'auto' ? 'manual' : 'auto'
+    const result = await $.process.run([
+      'orca-factory-driver', 'gear', 'set', current.path, next,
+      '--operator', operator, '--reason', 'ziikoo-driver 模型页切换',
+    ])
+    if (result.exitCode !== 0) throw new Error(result.stderr.trim() || `退出码 ${result.exitCode}`)
+  } catch (error) {
+    $.ui.toast(`档位切换失败：${message(error)}`)
+  } finally {
+    try {
+      await fetchConfig($)
+    } finally {
+      gearSwitching = false
+      await update($, gearBusy, () => false)
+    }
+  }
 }
 
 // update reruns its callback on a version miss: only the last run's prev is the list this read replaced, so the toast waits until update returns.
@@ -495,6 +530,7 @@ const modelsPage = (ui: Kit, current: Repo | undefined, cols: number) => {
         ),
       ])}
       <ui.Text wrap="truncate">{routingSummary(current.routing)}</ui.Text>
+      <ui.Text dimColor>{`档位来源：${sourceLabel(current.routing.find(one => one.key === 'AGENT_MODE')?.source ?? 'default')}`}</ui.Text>
     </ui.Box>
   )
 }
@@ -506,7 +542,7 @@ const settingRow = (ui: Kit, one: SchedulerSetting, keyWidth: number | null) => 
     <ui.Box key={`setting-${one.key}`} flexDirection="row">
       {cell(ui, 18, view.label)}
       {cell(ui, 14, view.show(one.value))}
-      {cell(ui, 13, SOURCE_LABELS[one.source], !changed, changed ? 'suggestion' : undefined)}
+      {cell(ui, 13, sourceLabel(one.source), !changed, changed ? 'suggestion' : undefined)}
       {keyWidth !== null && cell(ui, keyWidth, one.key, true)}
     </ui.Box>
   )
@@ -688,6 +724,7 @@ export const register: Register = (on, options) => {
     const runtimeState = await read($, runtime)
     const healthState = await read($, health)
     const loading = (await read($, busy)).length > 0
+    const switchingGear = (await read($, gearBusy)) && gearSwitching
     const samples = await read($, trend)
     const opened = current === 'pipeline' ? await read($, detail) : ''
     const timelineState = await read($, timeline)
@@ -749,6 +786,15 @@ export const register: Register = (on, options) => {
               />
             ) : (
               <ui.Text>{selected.name}</ui.Text>
+            )}
+            {switchingGear ? (
+              <ui.Text key="gear-toggle" dimColor>档位切换中…</ui.Text>
+            ) : (
+              <ui.Button
+                key="gear-toggle"
+                label={gearMode(selected.routing) === 'auto' ? '切换到手动挡' : '切换到自动挡'}
+                onPress={() => switchGear($, selected)}
+              />
             )}
           </ui.Box>
         )}

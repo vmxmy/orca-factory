@@ -30,6 +30,12 @@ Commands:
   config [--json]
       [只读] 输出生效配置及来源：各仓库角色模型与路由、driver.toml 调度参数、服务环境与工具路径。
       driver.env 只列键名，不输出任何凭证值。读失败的来源记在 problems，仍以 0 退出。
+  gear status [--json]
+      [只读] 列出各接管仓库生效的 manual/auto 档位与来源。
+  gear set <仓库前缀或路径> <auto|manual> --operator <名字> --reason <理由>
+      [写入] 在本机 gear.json 按仓库 remote 覆盖 AGENT_MODE，记录操作者与理由。
+  gear clear <仓库前缀或路径>
+      [写入] 清除本机覆盖，恢复仓库档位；未配置时为 manual。记录本机用户与清除理由。
   watch [--dry-run]
       [写入] 跑一次 doctor，同一检查项连续 2 次 fail 时向飞书告警一次，恢复 ok 后可再告警。
       只写本机 watch.json 与发告警，不修复、不建票。由 orca-factory-driver-watch.timer 每 30 分钟运行。

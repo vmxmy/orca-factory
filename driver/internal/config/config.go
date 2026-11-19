@@ -3,15 +3,20 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -100,6 +105,25 @@ func Load(home string) (Config, error) {
 	return result, nil
 }
 
+// LoadRegisteredRepository resolves the profile of the Orca repository
+// registered under remote and applies its machine-local gear override. The
+// override applies only when remote is the profile's Feishu ledger project, so
+// a registration that drifted from the tickets this checkout serves, or a
+// checkout on another ticket backend, has none.
+func LoadRegisteredRepository(remote, path string) (Repository, error) {
+	repo, err := LoadRepository(path)
+	if err != nil {
+		return Repository{}, err
+	}
+	if remote == "" || repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" || remote != repo.Env["AGENT_FEISHU_PROJECT"] {
+		return repo, nil
+	}
+	if err := applyGear(&repo, remote); err != nil {
+		return Repository{}, err
+	}
+	return repo, nil
+}
+
 // LoadRepository reads one repository's own pipeline profile
 // (scripts/agent-gates/agent-graph.env) at the given absolute, cleaned path,
 // returning its resolved limits and full environment. Used by the projects
@@ -131,6 +155,170 @@ func LoadRepository(path string) (Repository, error) {
 	}
 	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env, Profile: profile, Sources: sources}, nil
 }
+
+type gearOverride struct {
+	Path      string    `json:"path"`
+	Mode      string    `json:"mode"`
+	Operator  string    `json:"operator"`
+	Reason    string    `json:"reason"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func gearPath() (string, error) {
+	root := os.Getenv("AGENT_DRIVER_STATE_ROOT")
+	if root == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		root = filepath.Join(home, ".local", "state", "orca-factory")
+	}
+	return filepath.Join(root, "gear.json"), nil
+}
+
+func readGears(file string) (map[string]json.RawMessage, error) {
+	entries := make(map[string]json.RawMessage)
+	data, err := os.ReadFile(file)
+	if errors.Is(err, os.ErrNotExist) {
+		return entries, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		return nil, errors.New("gear.json must contain an object")
+	}
+	return entries, nil
+}
+
+// HasGearOverride reports whether the machine-local gear.json holds an entry
+// for repo's Feishu ledger project, the only key an override can use. A
+// checkout on another ticket backend has none and does not read the file.
+func HasGearOverride(repo Repository) (bool, error) {
+	remote := repo.Env["AGENT_FEISHU_PROJECT"]
+	if remote == "" || repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
+		return false, nil
+	}
+	file, err := gearPath()
+	if err != nil {
+		return false, err
+	}
+	entries, err := readGears(file)
+	_, ok := entries[remote]
+	return ok, err
+}
+
+func applyGear(repo *Repository, remote string) error {
+	file, err := gearPath()
+	if err != nil {
+		return err
+	}
+	entries, err := readGears(file)
+	if err != nil {
+		return err
+	}
+	raw, ok := entries[remote]
+	if !ok {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	var mode string
+	if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(fields["mode"], &mode) != nil || (mode != "auto" && mode != "manual") {
+		return errors.New("gear.json AGENT_MODE must be manual or auto")
+	}
+	repo.Env["AGENT_MODE"] = mode
+	repo.Sources["AGENT_MODE"] = "override"
+	return nil
+}
+
+// json.Encoder reformats RawMessage values. Keep other repositories' entries byte-for-byte.
+func writeGears(w io.Writer, gears map[string]json.RawMessage) error {
+	members := make([]string, 0, len(gears))
+	for remote, raw := range gears {
+		key, err := json.Marshal(remote)
+		if err != nil {
+			return err
+		}
+		members = append(members, string(key)+":"+string(raw))
+	}
+	slices.Sort(members)
+	_, err := io.WriteString(w, "{"+strings.Join(members, ",")+"}\n")
+	return err
+}
+
+// SetGearOverride sets a machine-local mode; an empty mode clears the override.
+func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
+	if mode != "" && mode != "manual" && mode != "auto" {
+		return errors.New("AGENT_MODE must be manual or auto")
+	}
+	if strings.TrimSpace(remote) == "" || path == "" || strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" {
+		return errors.New("gear change requires remote, path, operator and reason")
+	}
+	path = filepath.Clean(path)
+	if mode != "" {
+		repo, err := LoadRepository(path)
+		if err != nil {
+			return err
+		}
+		if repo.Env["AGENT_ISSUE_BACKEND"] != "feishu" {
+			return fmt.Errorf("gear: %s does not use the feishu ticket backend", path)
+		}
+		if repo.Env["AGENT_FEISHU_PROJECT"] != remote {
+			return fmt.Errorf("gear: %s is not the ledger project AGENT_FEISHU_PROJECT of %s", remote, path)
+		}
+	}
+	file, err := gearPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(file+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return err
+	}
+	gears, err := readGears(file)
+	if err != nil {
+		return err
+	}
+	delete(gears, remote)
+	if mode != "" {
+		gears[remote], err = json.Marshal(gearOverride{Path: path, Mode: mode, Operator: operator, Reason: reason, UpdatedAt: time.Now().UTC()})
+		if err != nil {
+			return err
+		}
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(file), ".gear-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if removeErr := os.Remove(tmp.Name()); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			err = errors.Join(err, removeErr)
+		}
+	}()
+	writeErr := writeGears(tmp, gears)
+	if writeErr == nil {
+		writeErr = tmp.Sync()
+	}
+	if err := errors.Join(writeErr, tmp.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), file); err != nil {
+		return err
+	}
+	log.Printf("gear remote=%q path=%q mode=%q operator=%q reason=%q", remote, path, mode, operator, reason)
+	return nil
+}
+
 func positive(env map[string]string, key string, fallback int) (int, error) {
 	value, ok := env[key]
 	if !ok {

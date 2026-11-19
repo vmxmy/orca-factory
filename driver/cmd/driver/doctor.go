@@ -31,6 +31,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
+	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -58,7 +59,7 @@ const (
 const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
-var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials", "models"}
+var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "host_memory", "credentials", "models"}
 
 var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
@@ -219,6 +220,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"credentials":  p.checkCredentials(ctx, env, envErr),
 		"launches":     p.checkLaunches(),
 		"orca_runtime": p.checkOrcaRuntime(),
+		"host_memory":  p.checkHostMemory(),
 	}
 	if projectsErr != nil {
 		for _, name := range []string{"checkouts", "sync_prs", "ledger", "models"} {
@@ -789,12 +791,52 @@ func httpReachable(ctx context.Context, url string) error {
 func (p doctorProbe) checkOrcaRuntime() healthCheck {
 	view := status.Read(p.now, 0)
 	detail := map[string]any{"failures": view.OrcaRuntime.Failures, "snapshot_state": view.State}
-	if view.OrcaRuntime.Paused {
-		fix := "重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。"
-		detail["recovery"] = fix
-		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
+	unreachable := !view.OrcaRuntime.UnreachableSince.IsZero() && p.now.Sub(view.OrcaRuntime.UnreachableSince) >= scheduler.OrcaRestartGrace
+	if !view.OrcaRuntime.UnreachableSince.IsZero() {
+		detail["unreachable_since"] = view.OrcaRuntime.UnreachableSince
 	}
-	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
+	if view.OrcaRuntime.Paused || unreachable {
+		detail["paused_at"] = view.OrcaRuntime.PausedAt
+		detail["restarts"] = view.OrcaRuntime.Restarts
+		fix := "driver 在运行时暂停或 Orca 失联满 10 分钟后自动重启 orca-serve 服务，之后每 30 分钟最多一次；3 次后仍失败需人工重启 orca-serve，并查看其日志里的 profile 写入超时。调度器探测成功后自动恢复。"
+		detail["recovery"] = fix
+		reason := "Orca terminal create 连续运行时失败，已暂停认领与派工"
+		if unreachable {
+			reason = "Orca 自动化读取失联已满 10 分钟"
+		}
+		return healthCheck{Status: healthFail, Reason: reason, Details: detail, Fix: fix}
+	}
+	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca 连续运行时故障或满宽限的失联", Details: detail}
+}
+
+func (p doctorProbe) checkHostMemory() healthCheck {
+	view := status.Read(p.now, 0)
+	memory := view.HostMemory
+	source := memory.Reading.Source
+	if source == "" && (memory.Paused || memory.Reading.Available != 0 || memory.Reading.SomeAvg60 != 0) {
+		// Snapshots predating cgroup support only recorded host readings.
+		source = "host"
+	}
+	detail := map[string]any{"available": memory.Reading.Available, "some_avg60": memory.Reading.SomeAvg60, "source": source, "snapshot_state": view.State}
+	if memory.Error != "" {
+		detail["error"] = memory.Error
+		return healthCheck{Status: healthWarn, Reason: "读不到主机内存读数，调度器不按内存暂停：" + memory.Error, Details: detail}
+	}
+	pausedReason := "主机内存吃紧，已暂停认领与新建终端"
+	if memory.CgroupError != "" {
+		detail["cgroup_error"] = memory.CgroupError
+		if !memory.Paused {
+			return healthCheck{Status: healthWarn, Reason: "cgroup 读取失败，按主机与本轮读到的层级判断：" + memory.CgroupError, Details: detail}
+		}
+		pausedReason += "；读不到 cgroup 内存读数：" + memory.CgroupError
+	}
+	if memory.Paused {
+		fix := "限制来源是 cgroup 时，用 systemd-cgls 与该切片的 memory.peak 找占用大户；有效可用量不低于 10 GiB 且 some avg60 低于 5 后自动恢复。"
+		detail["since"] = memory.Since
+		detail["recovery"] = fix
+		return healthCheck{Status: healthWarn, Reason: pausedReason, Details: detail, Fix: fix}
+	}
+	return healthCheck{Status: healthOK, Reason: "状态快照未记录主机内存暂停", Details: detail}
 }
 
 // doctorModelStatus reports configured identities without changing dispatch selection.

@@ -1,3 +1,27 @@
+export const RENDER_MODE = Object.freeze({ CLEAN: 'clean', FULL: 'full' })
+
+export const waitsForPerson = parcel => parcel.station === 'human' || parcel.humanKind !== undefined
+export const isParked = parcel => parcel.blocker?.startsWith('parked: ') ?? false
+
+export const CLEAN_RULES = Object.freeze({
+  islandDetails: () => false,
+  hub: ({ state }) => state !== 'ok',
+  station: ({ occupied, hovered }) => occupied || hovered,
+  stationDetails: ({ hovered }) => hovered,
+  ticket: ({ parcel, hovered, selected }) => Boolean(parcel.alert || parcel.overdue || waitsForPerson(parcel) || isParked(parcel) || hovered || selected),
+  dock: () => false,
+  legend: () => false,
+  events: () => false,
+  hint: () => false,
+  statusDetails: ({ abnormal }) => abnormal,
+  stuckPanel: ({ count }) => count > 0,
+  stuckList: ({ expanded }) => expanded,
+  tripDetails: ({ expanded }) => expanded,
+  tripHeaderDetails: () => false,
+})
+
+export const visibleIn = (mode, kind, context = {}) => mode === RENDER_MODE.FULL || CLEAN_RULES[kind](context)
+
 export const OWNER_COLORS = {
   无: '#9d98a8',
   执行器: '#3f6fd8',
@@ -204,6 +228,7 @@ const viewOf = (parcel, station, slot, deploy, now) => {
     elapsedMinutes,
     overdue,
     since: parcel.since,
+    blocker: parcel.blocker,
     reason: parcel.reason || parcel.blocker,
     humanKind: parcel.humanKind,
     humanReason: parcel.humanReason,

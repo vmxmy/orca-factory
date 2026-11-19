@@ -150,7 +150,12 @@
 .diorama .alarm,
 .diorama .dock,
 .diorama .side,
-.diorama .trip {
+.diorama .trip,
+.diorama .overview,
+.diorama .freshness,
+.diorama .idle-reveal,
+.diorama .follow-toggle,
+.diorama .readable-toggle {
   pointer-events: auto;
 }
 
@@ -185,6 +190,39 @@
   padding: 7px 10px;
   font-size: 12px;
   line-height: 1.4;
+}
+
+.diorama .overview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 48rem;
+}
+
+.diorama .overview span,
+.diorama .freshness,
+.diorama .idle-reveal,
+.diorama .follow-toggle,
+.diorama .readable-toggle {
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+  padding: 6px 9px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+.diorama .freshness {
+  border-left: 4px solid var(--o-agent);
+  max-width: 36rem;
+}
+
+.diorama .freshness[data-mode="disconnected"],
+.diorama .freshness[data-mode="unknown"] {
+  border-left-color: var(--o-human);
+}
+
+.diorama .idle-reveal {
+  color: var(--w-muted);
 }
 
 .diorama .status {
@@ -277,6 +315,8 @@
 
 .diorama .tools {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
 }
 
@@ -314,6 +354,8 @@
 }
 
 .diorama .find[aria-expanded="true"],
+.diorama .follow-toggle[aria-pressed="true"],
+.diorama .readable-toggle[aria-pressed="true"],
 .diorama .stops button[aria-pressed="true"] {
   background: var(--w-ink);
   color: #fff;
@@ -668,6 +710,86 @@
   color: #fff;
 }
 
+.diorama .track span.next {
+  outline: 2px dashed var(--o-agent);
+  outline-offset: -2px;
+}
+
+.diorama .label.route-current {
+  box-shadow: inset 0 -3px 0 var(--o-exec);
+}
+
+.diorama .label.route-next {
+  box-shadow: inset 0 -3px 0 var(--o-agent);
+}
+
+.diorama .label.ticket.pulse {
+  box-shadow: 0 0 0 3px var(--o-agent);
+}
+
+.diorama .plate[data-freshness="stale"],
+.diorama .plate[data-freshness="disconnected"],
+.diorama .plate[data-freshness="unknown"] {
+  border-left: 4px solid var(--o-agent);
+}
+
+.diorama .plate[data-freshness="disconnected"],
+.diorama .plate[data-freshness="unknown"] {
+  border-left-color: var(--o-human);
+}
+
+.diorama.readable .label {
+  font-size: 14px;
+  padding: 6px 8px;
+}
+
+.diorama.readable .label.ticket {
+  letter-spacing: 0.03em;
+}
+
+.diorama.readable .label.ticket::before {
+  content: "";
+  margin-right: 4px;
+}
+
+.diorama.readable .label.ticket[data-owner="执行器"]::before { content: "◆"; }
+.diorama.readable .label.ticket[data-owner="合并通道"]::before { content: "▣"; }
+.diorama.readable .label.ticket[data-owner="处置Agent"]::before { content: "▲"; }
+.diorama.readable .label.ticket[data-owner="人"]::before { content: "●"; }
+.diorama.readable .label.ticket[data-owner="无"]::before { content: "○"; }
+
+.diorama.readable .list button i,
+.diorama.readable .trip-head .own i {
+  background-image: repeating-linear-gradient(135deg, rgba(255,255,255,.75) 0 2px, transparent 2px 4px);
+}
+
+@media (prefers-contrast: more) {
+  .diorama {
+    --w-line: #5c5662;
+    --w-muted: #403b46;
+  }
+
+  .diorama .status,
+  .diorama .freshness,
+  .diorama .overview span,
+  .diorama .follow-toggle,
+  .diorama button,
+  .diorama .trip {
+    border-width: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .diorama .label.ticket.pulse {
+    animation: diorama-pulse 900ms ease-out 2;
+  }
+}
+
+@keyframes diorama-pulse {
+  0%, 100% { transform: translate(-50%, -100%) scale(1); }
+  45% { transform: translate(-50%, -100%) scale(1.1); }
+}
+
 .diorama .track.timed {
   grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
 }
@@ -777,7 +899,7 @@
     max-width: 160px;
   }
 
-  .diorama .plate.hub {
+  .diorama[data-render-mode="full"] .plate.hub {
     display: none;
   }
 
@@ -824,4 +946,87 @@
 .diorama .baseline-legend i {
   width: 10px;
   height: 8px;
+}
+
+.diorama .render-mode,
+.diorama .stuck-toggle {
+  padding: 8px 10px;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.diorama .render-mode {
+  background: var(--w-paper);
+  border: 1px solid var(--w-line);
+}
+
+.diorama .render-mode[aria-pressed="true"] {
+  background: var(--w-ink);
+  color: #fff;
+}
+
+.diorama .tools {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.diorama .island-dot {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--w-muted);
+}
+
+.diorama[data-render-mode="clean"] .island-dot {
+  display: block;
+}
+
+.diorama .island-dot[data-status="busy"] {
+  background: var(--o-exec);
+}
+
+.diorama .island-dot[data-status="blocked"] {
+  background: var(--o-agent);
+}
+
+.diorama .island-dot[data-status="stuck"] {
+  background: var(--o-human);
+}
+
+.diorama[data-render-mode="clean"] .plate:not(.hub) {
+  background: var(--w-paper);
+  border-color: var(--w-line);
+  color: var(--w-ink);
+}
+
+.diorama[data-render-mode="clean"] .trip-head .why {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diorama[data-render-mode="full"] .trip-details,
+.diorama[data-render-mode="full"] .trip-details::details-content {
+  display: contents;
+}
+
+.diorama[data-render-mode="full"] .trip-details > summary {
+  display: none;
+}
+
+.diorama[data-render-mode="clean"] .trip-details[open] {
+  max-height: 35vh;
+  overflow: auto;
+}
+
+.diorama[data-render-mode="clean"] .label.tag-marker {
+  pointer-events: auto;
+  cursor: help;
+}
+
+.diorama[data-render-mode="clean"] .stuck[data-expanded="false"] {
+  align-self: flex-end;
+  padding: 0;
 }

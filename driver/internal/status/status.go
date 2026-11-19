@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 )
 
 const ExecutorStartUnconfirmed = "executor start unconfirmed: terminal/run not registered"
@@ -19,6 +21,7 @@ type TodayOutput struct {
 
 type Snapshot struct {
 	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
+	HostMemory  HostMemory   `json:"hostMemory,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	GeneratedAt time.Time    `json:"generatedAt"`
 	NextScanAt  time.Time    `json:"nextScanAt,omitzero"`
@@ -150,8 +153,24 @@ func Write(snapshot Snapshot) error {
 const DefaultStaleAfter = 5 * time.Minute
 
 type OrcaRuntime struct {
-	Failures int  `json:"failures"`
-	Paused   bool `json:"paused"`
+	UnreachableSince time.Time `json:"unreachableSince,omitzero"`
+	Failures         int       `json:"failures"`
+	Paused           bool      `json:"paused"`
+	PausedAt         time.Time `json:"pausedAt,omitzero"`
+	Restarts         int       `json:"restarts,omitzero"`
+	LastRestartAt    time.Time `json:"lastRestartAt,omitzero"`
+}
+
+// HostMemory reports the memory hold on new terminal launches.
+// Reading.Source identifies the limiting host or cgroup. On a host read
+// failure, Error is set, Reading keeps its last valid value, and launches
+// proceed. With CgroupError set, Reading combines the host and readable cgroups.
+type HostMemory struct {
+	Paused      bool            `json:"paused"`
+	Since       time.Time       `json:"since,omitzero"`
+	Reading     hostmem.Reading `json:"reading,omitzero"`
+	Error       string          `json:"error,omitempty"`
+	CgroupError string          `json:"cgroupError,omitempty"`
 }
 
 // View.GeneratedAt records the last successful full scheduler observation.
@@ -159,6 +178,7 @@ type OrcaRuntime struct {
 // View.NextScanAt is when serve plans its next scheduler Tick; only an ok view keeps it.
 type View struct {
 	OrcaRuntime OrcaRuntime  `json:"orcaRuntime,omitzero"`
+	HostMemory  HostMemory   `json:"hostMemory,omitzero"`
 	Today       *TodayOutput `json:"today,omitempty"`
 	State       string       `json:"state"`
 	GeneratedAt time.Time    `json:"generatedAt"`
@@ -208,6 +228,7 @@ func Read(now time.Time, staleAfter time.Duration) View {
 	view.GitHub = snapshot.GitHub
 	view.Today = snapshot.Today
 	view.OrcaRuntime = snapshot.OrcaRuntime
+	view.HostMemory = snapshot.HostMemory
 	normalize(&view, now)
 	dropNextScanUnlessOK(&view)
 	return view

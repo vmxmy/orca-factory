@@ -21,6 +21,7 @@ import (
 type discoveryBackend struct {
 	fakeBackend
 	tracked []string
+	updated map[string]config.Repository
 }
 
 func (f *discoveryBackend) Snapshot(_ context.Context, repos []config.Repository) ([]Ticket, error) {
@@ -56,6 +57,13 @@ func discoveryScheduler(f Backend, logs *bytes.Buffer, now *time.Time, discover 
 		Discover:      discover,
 		DiscoverEvery: time.Minute,
 	}
+}
+
+func (f *discoveryBackend) UpdateRepository(repo config.Repository) {
+	if f.updated == nil {
+		f.updated = map[string]config.Repository{}
+	}
+	f.updated[repo.Path] = repo
 }
 
 func launchedIDs(f *discoveryBackend) []string {
@@ -191,6 +199,167 @@ func TestRefreshProjectsHotReloadsConfigButFreezesLedgerIdentity(t *testing.T) {
 	}
 }
 
+// A gear set to the repository's own value changes only AGENT_MODE's source.
+// The tracked source must follow, or clearing the override after the project
+// is retired cannot be told apart from an unchanged repository profile.
+func TestRefreshProjectsTracksGearOverrideSource(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(source string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8,
+			Env: map[string]string{"AGENT_MODE": "auto"}, Sources: map[string]string{"AGENT_MODE": source}}
+	}
+	result := projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("repository")}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Eligible[0].Repository = repo("override")
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].Sources["AGENT_MODE"]; got != "override" {
+		t.Fatalf("tracked AGENT_MODE source=%q, want override after a same-value gear set", got)
+	}
+}
+
+// A repository probed while rejected is already tracked by the backend, so
+// taking it over later must hand the backend its current configuration.
+func TestTakeOverUpdatesProbedRepository(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(mode string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_MODE": mode}}
+	}
+	auto := repo("auto")
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: &auto}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result = projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("manual")}}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.updated["/a"].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("backend AGENT_MODE=%q after take-over, want manual", got)
+	}
+}
+
+// A rejected repository probed with nothing in flight keeps the backend
+// bound to that probe. Once it holds in-flight tickets, the tracked copy
+// starts from the probed configuration, so a gear override changed in between
+// still reaches the backend.
+func TestRetiredProbedRepositoryCarriesLaterGear(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(mode, source string) *config.Repository {
+		return &config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8,
+			Env: map[string]string{"AGENT_MODE": mode, "AGENT_FEISHU_PROJECT": "github.com/example/a"}, Sources: map[string]string{"AGENT_MODE": source}}
+	}
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Remote: "github.com/example/a", Reason: projects.ReasonProjectDisabled, Repository: repo("auto", "repository")}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Rejected[0].Repository = repo("manual", "override")
+	f.tickets = []Ticket{{ID: "a-running", Identifier: "A-1", Repo: "/a", Owner: machine.OwnerResolver, UpdatedAt: now}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/a" })
+	if idx < 0 || s.Repositories[idx].Env["AGENT_MODE"] != "manual" || f.updated["/a"].Env["AGENT_MODE"] != "manual" {
+		t.Fatalf("repositories=%+v backend=%+v, want manual in both", s.Repositories, f.updated["/a"])
+	}
+}
+
+// boundBackend binds a path to its first tracked ledger base and refuses a
+// snapshot under another base, as the Feishu runtime client does.
+type boundBackend struct {
+	discoveryBackend
+	bound map[string]string
+}
+
+func (f *boundBackend) Track(ctx context.Context, repo config.Repository) error {
+	if f.bound == nil {
+		f.bound = map[string]string{}
+	}
+	if _, ok := f.bound[repo.Path]; !ok {
+		f.bound[repo.Path] = repo.Env["AGENT_FEISHU_BASE"]
+	}
+	return f.discoveryBackend.Track(ctx, repo)
+}
+
+func (f *boundBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	for _, r := range repos {
+		if base, ok := f.bound[r.Path]; ok && base != r.Env["AGENT_FEISHU_BASE"] {
+			return nil, errors.New("snapshot repository mismatch")
+		}
+	}
+	return f.discoveryBackend.Snapshot(ctx, repos)
+}
+
+// A rejected repository probed with nothing in flight and later reported under
+// another ledger identity is probed again with the identity the backend is
+// bound to, so its in-flight tickets are still found and tracked.
+func TestRetiredReprobeKeepsProbedLedgerIdentity(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(base string) *config.Repository {
+		return &config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": base}}
+	}
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: repo("https://base1.feishu.cn/base/tok1")}}}
+	f := &boundBackend{discoveryBackend: discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result.Rejected[0].Repository = repo("https://base2.feishu.cn/base/tok2")
+	f.tickets = []Ticket{{ID: "a-running", Identifier: "A-1", Repo: "/a", Owner: machine.OwnerResolver, UpdatedAt: now}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/a" })
+	if idx < 0 || s.Repositories[idx].Env["AGENT_FEISHU_BASE"] != "https://base1.feishu.cn/base/tok1" {
+		t.Fatalf("repositories=%+v logs=%s, want /a tracked under the probed base", s.Repositories, logs.String())
+	}
+}
+
+// Taking over a repository probed under another ledger identity keeps the
+// probed configuration the backend is bound to, as reconcileRepository does.
+func TestTakeOverKeepsProbedLedgerIdentity(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(base string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_ISSUE_BACKEND": "feishu", "AGENT_FEISHU_BASE": base}}
+	}
+	probed := repo("https://base1.feishu.cn/base/tok1")
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: &probed}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result = projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("https://base2.feishu.cn/base/tok2")}}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[0].Env["AGENT_FEISHU_BASE"]; got != probed.Env["AGENT_FEISHU_BASE"] {
+		t.Fatalf("tracked AGENT_FEISHU_BASE=%q, want the probed base", got)
+	}
+	if updated, ok := f.updated["/a"]; ok && updated.Env["AGENT_FEISHU_BASE"] != probed.Env["AGENT_FEISHU_BASE"] {
+		t.Fatalf("backend AGENT_FEISHU_BASE=%q, want the probed base", updated.Env["AGENT_FEISHU_BASE"])
+	}
+}
+
 func TestDiscoverFailureKeepsPreviousProjects(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	fail := false
@@ -261,7 +430,7 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
 	result := eligible("/a")
 	result.Rejected = []projects.Rejection{
-		{Path: "/z", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8}},
+		{Path: "/z", Remote: "github.com/example/z", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_FEISHU_PROJECT": "github.com/example/z"}}},
 		{Path: "/y", Reason: projects.ReasonCheckFailed, Repository: &config.Repository{Path: "/y", MaxInFlight: 3, StaleHours: 8}},
 		{Path: "/x", Reason: projects.ReasonLedgerNotFeishu},
 	}
@@ -303,5 +472,56 @@ func TestStartupRetiresUntakeableProjectWithInFlightTickets(t *testing.T) {
 	want := `msg="project not taken over but has in-flight tickets" path=/z reason="check 失败" tickets="[ZCP-1 ZCP-2]"`
 	if n := strings.Count(logs.String(), want); n != 1 {
 		t.Fatalf("in-flight warning logged %d times, want once:\n%s", n, logs.String())
+	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "repository"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	idx := slices.IndexFunc(s.Repositories, func(r config.Repository) bool { return r.Path == "/z" })
+	if idx < 0 {
+		t.Fatalf("retired /z missing from tracked repositories: %+v", s.Repositories)
+	}
+	if mode, set := s.Repositories[idx].Env["AGENT_MODE"]; set {
+		t.Fatalf("retired /z AGENT_MODE=%q from its repository profile without a gear override, want the tracked configuration kept", mode)
+	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 5, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "manual", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "override"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.Repositories[idx].Env["AGENT_MODE"] != "manual" || s.Repositories[idx].MaxInFlight != 3 || !reflect.DeepEqual(s.retiredPaths(), []string{"/z"}) {
+		t.Fatalf("retired /z repository=%+v, want only its AGENT_MODE refreshed while still retired", s.Repositories)
+	}
+
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/other"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("retired /z AGENT_MODE=%q after its ledger identity changed, want the tracked manual kept", got)
+	}
+
+	result.Rejected[0].Remote = "github.com/example/b"
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Repositories[idx].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("retired /z AGENT_MODE=%q after the path was registered under another remote, want the tracked manual kept", got)
+	}
+
+	result.Rejected[0].Remote = "github.com/example/z"
+	result.Rejected[0].Repository = &config.Repository{Path: "/z", MaxInFlight: 3, StaleHours: 8, Env: map[string]string{"AGENT_MODE": "auto", "AGENT_FEISHU_PROJECT": "github.com/example/z"}, Sources: map[string]string{"AGENT_MODE": "repository"}}
+	now = now.Add(time.Hour)
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, source := s.Repositories[idx].Env["AGENT_MODE"], s.Repositories[idx].Sources["AGENT_MODE"]; got != "auto" || source != "repository" {
+		t.Fatalf("retired /z AGENT_MODE=%q source=%q after gear clear, want the repository auto", got, source)
 	}
 }

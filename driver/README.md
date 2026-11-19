@@ -97,7 +97,11 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `doctor` 的 `orca_runtime` 为 `fail`，`terminal create` 连续返回 `runtime_error` | 调度器跨票累计 3 次后暂停认领、派工、合并通道和执行器死亡判定，并通过已配置的飞书通知通道通知一次。失败的认领保留 attempt，不转处置。重启 `orca-serve` 服务，并查看其日志里的 profile 写入超时。调度器每轮创建一个只运行 `true` 的探测终端并关闭它，成功后恢复派工；doctor 只读状态快照，不创建终端。driver 不自动重启 Orca |
+| `doctor` 的 `orca_runtime` 为 `fail`，`terminal create` 连续返回 `runtime_error` | 调度器跨票累计 3 次后暂停认领、派工、合并通道和执行器死亡判定，并通过已配置的飞书通知通道通知一次。失败的认领保留 attempt，不转处置。调度器每轮创建一个只运行 `true` 的探测终端并关闭它，成功后恢复派工；doctor 只读状态快照，不创建终端，detail 显示 `paused_at` 与 `restarts`。暂停满 10 分钟仍失败时 driver 执行 `systemctl --user restart orca-serve.service`，之后每 30 分钟最多一次，每次结果都发飞书通知。3 次后仍失败只再发一次「需人工」通知：手动重启 `orca-serve` 服务，并查看其日志里的 profile 写入超时 |
+| `doctor` 的 `orca_runtime` 为 `fail`，Orca 自动化读取完全失联满 10 分钟 | driver 自动重启 `orca-serve.service`，与 terminal create 运行时故障共用 30 分钟间隔和 3 次上限；不会重启桌面实例或 `orca-daemon`。首次不可达记录 `unreachableSince`，成功读取后清零，doctor detail 带 `unreachable_since`。失联只按每轮自动化读取计时：serve 启动时首次项目发现等待 Orca 期间、或没有可接管项目时不计时、不重启，需人工重启 `orca-serve`。维护 `frozen` 时不重启，也不发 Orca 运行时通知。失联期间认领、派工和合并通道沿用原行为，不回退到配置仓库创建探测终端。重启结果与上限后的「需人工」通知发往最近一次成功巡检时首个可调度仓库（不含退役仓库）的通知通道；启动后尚无成功巡检或无可调度仓库时只写 WARN 日志，由 doctor 报告。读取恢复不清零共用重启计数，任一路径终端创建成功后清零 |
+| `doctor` 的 `host_memory` 为 `warn`，详情有 `since` | 调度器从 driver 所在 cgroup 逐级向上读取到根。`memory.max` 的值为 `max` 时跳过本层。缺少 `memory.max` 时，该层目录有 `cgroup.controllers` 才跳过本层。每个 cgroup v2 目录（含根）都有这个文件。该层同时缺少这两个文件，说明 `/sys/fs/cgroup` 未挂载 cgroup v2 或路径已失效。调度器记录该层错误并继续向上读取，详情中的 `cgroup_error` 显示首个错误。`/proc/self/cgroup` 没有 `0::` 行时，driver 不在 cgroup v2 中，调度器只用主机读数。每个有限层级的可用量为 `memory.max - memory.current + inactive_file + active_file`，最低按零计。调度器取主机与这些层级的最小可用量和最大 `some avg60`。可用量低于 6 GiB 或压力不低于 20 时，调度器暂停认领新票和新建执行器或处置 Agent 终端，决策日志原因为 `memory`，不耗令牌、不加 attempt。已在跑的终端、心跳、所有权检查和合并通道照常。有效可用量不低于 10 GiB 且压力低于 5 后自动恢复。快照的 `hostMemory.reading.source` 与 doctor 的 `source` 显示限制来源，值为 `host` 或 cgroup 路径。来源是 cgroup 时，用 `systemd-cgls` 与该切片的 `memory.peak` 找占用大户。连续暂停满 15 分钟后，调度器向机器配置的飞书通知群发送读数、来源及连续暂停时长。维护 `frozen` 时不发送。未配置机器通知群时，调度器每轮写 WARN 并重试，补好配置后可在同一段暂停内发送。发送失败也在下一轮重试，每段连续暂停只成功通知一次。飞书已收到但响应丢失时，重试可能多发一条。 |
+| `host_memory` 详情有 `error` | 本轮主机内存读取失败，调度器不按内存暂停。快照中的读数保留最后一次有效值。再次暂停时，15 分钟通知从该轮重新计时。如果上一段暂停已发过通知，新一段连续暂停满 15 分钟时会再通知一次。 |
+| `host_memory` 详情有 `cgroup_error`（快照字段 `hostMemory.cgroupError`） | 调度器按主机与本轮读到的 cgroup 层级判断是否暂停。读取失败的层级本轮不计入，错误信息指出首个失败位置。 |
 | `feishu API code 91403` | 应用未加为 Base 协作者，或权限低于 edit。按“应用权限与协作者”第 2 步添加。该错误不重试 |
 | `feishu API code 99991672: missing scopes ...` | 应用缺 scope。按错误列出的 scope 申请并发布。该错误按全局故障处理，不重试 |
 | `feishu table <表> schema mismatch: ...` | 字段缺失、类型不符或缺选项。按错误逐项修正 Base，再重启 driver |
@@ -485,7 +489,7 @@ orca-factory-driver prune-workspaces
 
 ## 隔离 CI runner 检测
 
-本机存在 `~/.local/state/orca-go-isolated-runner` 且配置了 `vmxmy/orca-factory` 的 GitHub 主账本时，调度器每轮巡检读取 4 个 `orca-go-isolated-runner@N` 槽位：服务 failed、NRestarts 自上轮增加、租约停在 registering 超过 10 分钟，都算异常。调度器还读取 `~/.local/lib/orca-go-isolated-runner/image-id.txt`，用 `docker image inspect` 将该镜像的 `orca.go-toolchain` 标签与仓库 `driver/go.mod` 的 `toolchain` 行比较。版本不一致、标签为空、镜像 ID 文件不可读或为空、Docker 无法读取镜像时，记录 `toolchain-stale`，写明镜像 Go 版本、所需版本，以及 CI 每次重新下载约耗时 3 分钟，并指向 [Manual image updates](../scripts/local-runner/README.md#manual-image-updates)。任一异常持续 10 分钟，调度器按 intake 模板开一张带 `ready-for-agent` 的纳管票，写明证据和 `scripts/local-runner/README.md` 的维护步骤；同一故障只开一张，全部异常恢复后在该票记录一次恢复评论。恢复评论写入后，若票仍为 Todo、带 `ready-for-agent` 且没有 `auto-impl` 或归属行，检测会移除 `ready-for-agent`、置为 Canceled，并追加「故障已自行恢复，无需施工」评论；已认领的票只评论，状态和标签交给在途流程处理。恢复流程每一步成功后记入 `runner-health.json`，写评论或撤票失败时下一轮只重试未完成的步骤，不重复评论；撤票结果未确认时先读回票据。撤票说明未写成时，即使故障复发也先补写。撤票前故障复发，本次恢复作废；再次恢复是新的恢复事件，重新写恢复评论。建票失败时不重试，直到全部异常恢复，避免重复开票。检测只读 systemd、租约、镜像标签和版本文件，不改 runner，也不自动重建镜像；状态记在 `~/.local/state/orca-factory/runner-health.json`。检测失败只记 warn，不影响票流转；`serve --dry-run` 不检测。
+本机存在 `~/.local/state/orca-go-isolated-runner` 且配置了 `vmxmy/orca-factory` 的 GitHub 主账本时，调度器每轮巡检读取 4 个 `orca-go-isolated-runner@N` 槽位：服务 failed、NRestarts 自上轮增加、租约停在 registering 超过 10 分钟，都算异常。调度器还读取 `~/.local/lib/orca-go-isolated-runner/image-id.txt`，用 `docker image inspect` 将该镜像的 `orca.go-toolchain` 标签与仓库 `driver/go.mod` 的 `toolchain` 行比较。版本不一致、标签为空、镜像 ID 文件不可读或为空、Docker 无法读取镜像时，记录 `toolchain-stale`，写明镜像 Go 版本、所需版本，以及 CI 每次重新下载约耗时 3 分钟，并指向 [Manual image updates](../scripts/local-runner/README.md#manual-image-updates)。任一异常持续 10 分钟，调度器按 intake 模板开一张带 `ready-for-agent` 的纳管票，写明证据和 `scripts/local-runner/README.md` 的维护步骤；成功开票后同一故障不再重复开票，全部异常恢复后在该票记录一次恢复评论。恢复评论写入后，若票仍为 Todo、带 `ready-for-agent` 且没有 `auto-impl` 或归属行，检测会移除 `ready-for-agent`、置为 Canceled，并追加「故障已自行恢复，无需施工」评论；已认领的票只评论，状态和标签交给在途流程处理。恢复流程每一步成功后记入 `runner-health.json`，写评论或撤票失败时下一轮只重试未完成的步骤，不重复评论；撤票结果未确认时先读回票据。撤票说明未写成时，即使故障复发也先补写。撤票前故障复发，本次恢复作废；再次恢复是新的恢复事件，重新写恢复评论。开票因 SCOPE 与未完成票重叠被拒时，告警票会将冲突票列为 related，同步描述中的 DEPENDENCIES，并在同轮巡检中重试一次；再次失败或其他开票失败后记录失败时间，异常持续时每隔 6 小时重试一次；旧记录若没有失败时间，下次到期巡检直接重试。开票请求可能已在服务端成功而响应丢失，因此每次重试都可能多出一张重复票；重复票最多每 6 小时增加一张，直到某次开票得到确认或全部异常恢复。检测只读 systemd、租约、镜像标签和版本文件，不改 runner，也不自动重建镜像；状态记在 `~/.local/state/orca-factory/runner-health.json`。检测失败只记 warn，不影响票流转；`serve --dry-run` 不检测。
 
 ## 部署屏障与 Agent 处置
 
@@ -522,6 +526,27 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 #### 手动与自动模式（OF-479）
 
 仓库 env 键 `AGENT_MODE` 取 `manual` 或 `auto`，缺省 `manual`，行为与原流程相同；其他值（含空值）使仓库配置加载失败。从 `manual` 切到 `auto` 不补处理已转人的历史票。
+
+本机可用 `gear` 覆盖仓库档位，无需修改 env 文件：
+
+```sh
+orca-factory-driver gear status --json
+orca-factory-driver gear set OF manual --operator laoxu --reason '暂停自动处置'
+orca-factory-driver gear set /path/to/repo auto --operator laoxu --reason '恢复自动处置'
+orca-factory-driver gear clear OF
+```
+
+`status` 列出接管仓库的生效档位及来源；被拒但可能仍有在途票的仓库只在有本机覆盖时列出（没有覆盖时调度器沿用跟踪时的档位），本仓库的覆盖条目损坏时报错退出。`status` 读取的是本机配置；被拒仓库的账本身份键在跟踪后变化时，调度器在重启前不刷新其档位，此时 `status` 显示的覆盖尚未作用于在途票。来源为 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
+
+本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
+
+- 每条覆盖以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。只有该检出仓库配置 `AGENT_ISSUE_BACKEND=feishu` 且登记键等于其 `AGENT_FEISHU_PROJECT` 时覆盖才生效；`gear set` 遇到其他后端或不相等时拒绝写入。条目另记仓库根路径 `path`、操作者、理由和时间，`path` 只用于审计。
+- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）和 `resolve` 按 Orca 登记的 `canonicalKey` 读取对应条目，不比较路径，也不读取 Git origin。`resolve` 只对飞书后端仓库读取 `gear.json`，且只在其中有本仓库 `AGENT_FEISHU_PROJECT` 键的条目时查询 Orca：用当前目录（解析符号链接后）匹配登记取得键；未登记时不叠加覆盖，匹配多于一个或 Orca 查询失败时退出。被拒仓库再次探测在途票时沿用首次探测的配置（账本身份）。被拒但仍有在途票的仓库每轮发现时只随本机覆盖的设置或清除刷新 `AGENT_MODE`，不热加载仓库 env 自身的 `AGENT_MODE`，其余配置保持跟踪时的值；账本身份键变化，或该路径的登记键不再等于跟踪中的 `AGENT_FEISHU_PROJECT` 时不刷新。没有远端身份（`canonicalKey` 为空）的登记不叠加覆盖。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey`、而仓库配置仍指向原账本项目时，两个键的覆盖都不生效。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。只读展示的 `status --fresh` 按路径读取仓库配置，不叠加覆盖。
+- `gear set` 和 `gear clear` 先按文件系统解析参数（`.`、`..` 和含 `/` 的参数）中的符号链接与 `..`，结果仍为相对路径时再拼接解析符号链接后的物理当前目录，与同样解析后的 Orca 登记仓库根路径比较。其余参数是编号前缀。driver 用仓库自身配置建立飞书客户端，用前缀查询项目表，忽略大小写，再按“仓库远端”匹配 Orca 登记。不含 `/` 的参数同时是当前目录下的已登记仓库目录时，也按路径匹配；路径与前缀命中不同仓库时视为有歧义，拒绝写入。两种方式合计要求恰好命中一个仓库。
+
+其他键的坏条目不影响本仓库。本仓库键的条目不是对象，或 `mode` 不是 `manual`、`auto`，该仓库加载失败，不静默回到仓库值。每次写入都原子替换文件，其他键的条目原样保留，并记录 remote、路径、操作者与理由，下次加载即生效。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
+
+手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 

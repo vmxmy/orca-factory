@@ -1,12 +1,22 @@
 import { createCamera } from './camera.mjs'
 import { createHud, hubText } from './hud.mjs'
-import { archipelagoOf, skyOf, staleOf } from './model.mjs'
+import { archipelagoOf, RENDER_MODE } from './model.mjs'
 import { createOverlay } from './overlay.mjs'
+import { createViewState } from './view-state.mjs'
 import { createWorld } from './world.mjs'
 
 const CLICK_TOLERANCE = 6
 const WHEEL_STEP = 1.1
 const STATUS_INTERVAL = 1000
+const MODE_KEY = 'diorama.renderMode'
+const readMode = () => {
+  try {
+    return localStorage.getItem(MODE_KEY) === RENDER_MODE.FULL ? RENDER_MODE.FULL : RENDER_MODE.CLEAN
+  } catch {
+    return RENDER_MODE.CLEAN
+  }
+}
+
 const NUDGES = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }
 
 const defaultFocus = islands => (islands.find(one => !one.idle) ?? islands[0]).index
@@ -25,7 +35,7 @@ const canvasHelp = global =>
   [
     '工坊沙盘。拖动平移，滚轮缩放，方向键平移，Home 复位，Esc 退一级。',
     global ? '数字键 1 看全部岛、2 回工坊、3 看这张票，[ 和 ] 切换项目，/ 搜索。' : '数字键 2 回工坊、3 看这张票，/ 搜索。',
-    '票也可以从右侧列表选择。',
+    'V 切换清爽 / 完整模式。票也可以通过搜索选择。',
   ].join('')
 
 const pointer = (canvas, lens, onClick) => {
@@ -73,14 +83,22 @@ const pointer = (canvas, lens, onClick) => {
 }
 
 export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(), onView = () => {} }) => {
+  let mode = readMode()
   let current = scene
   let archipelago = archipelagoOf(current)
   let { focus, stop, selected } = openingOf(archipelago, { path, ticket })
   const lifetime = new AbortController()
   const motion = matchMedia('(prefers-reduced-motion: reduce)')
+  const contrast = matchMedia('(prefers-contrast: more)')
   let reduced = motion.matches
   motion.addEventListener('change', () => {
     reduced = motion.matches
+  }, { signal: lifetime.signal })
+  let readable = contrast.matches
+  contrast.addEventListener('change', event => {
+    readable = event.matches
+    presentation.readable(readable)
+    refreshStatus()
   }, { signal: lifetime.signal })
 
   const canvas = document.createElement('canvas')
@@ -97,38 +115,55 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   }
   const lens = createCamera(archipelago)
   const parcelOf = key => archipelago.tickets.find(parcel => parcel.key === key)
+  const presentation = createViewState({ scene: current, archipelago, selected, reducedMotion: reduced, readable, now })
   let margins = { top: 0, right: 0, bottom: 0, left: 0 }
   let size = { width: stage.clientWidth, height: stage.clientHeight }
 
   const refreshStatus = () => {
     const at = now()
-    const age = at - current.generatedAt
-    const sky = skyOf(current, age)
-    world.setSky(sky)
-    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky, stale: staleOf(current, age) })
-    overlay.hub(hubText(current, at))
+    presentation.motion(reduced)
+    const frame = presentation.frame(at)
+    world.setSky(frame.freshness.sky)
+    hud.status(stop === 1 ? null : archipelago.islands[focus], current, at, { sky: frame.freshness.sky, stale: frame.freshness.mode === 'stale' })
+    hud.frame(frame)
+    overlay.hub(hubText(current, at), current.state)
+    overlay.frame(frame)
+    world.frame(frame)
+  }
+
+  const refreshMargins = () => {
+    margins = hud.margins()
+    lens.resize(size.width, size.height, margins)
   }
 
   const showSelection = () => {
     world.focus(stop, focus)
     const parcel = parcelOf(selected)
+    presentation.select(selected)
     hud.stops(stop, parcel !== undefined, focus)
-    hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus])
+    hud.trip(parcel, stop === 1 ? null : archipelago.islands[focus], presentation.frame(now()).selected)
+    refreshMargins()
     onView(stop === 1 ? { path: null, ticket: null } : { path: archipelago.islands[focus].path, ticket: parcel?.identifier ?? null })
+  }
+
+  const showStop = () => {
+    overlay.focus(focus)
+    refreshStatus()
+    showSelection()
+  }
+
+  const frameView = () => {
+    if (stop === 3) lens.frameNeighborhood(world.neighborhood(selected))
+    else if (stop === 2) lens.frameIsland(focus)
+    else lens.frameAll()
+    if (reduced) lens.snap()
   }
 
   const setStop = next => {
     const parcel = parcelOf(selected)
     stop = next === 3 && parcel ? 3 : next === 1 && archipelago.global ? 1 : 2
-    showSelection()
-    overlay.focus(focus)
-    refreshStatus()
-    margins = hud.margins()
-    lens.resize(size.width, size.height, margins)
-    if (stop === 3) lens.frameNeighborhood(world.neighborhood(parcel.key))
-    else if (stop === 2) lens.frameIsland(focus)
-    else lens.frameAll()
-    if (reduced) lens.snap()
+    showStop()
+    frameView()
   }
 
   const select = key => {
@@ -155,11 +190,47 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else if (stop === 2 && archipelago.global) setStop(1)
   }
 
-  const hud = createHud(stage, { onSelect: select, onStop: setStop, onIsland: enter })
-  const overlay = createOverlay(stage, world, { onIsland: enter })
+  const toggleMode = () => {
+    mode = mode === RENDER_MODE.CLEAN ? RENDER_MODE.FULL : RENDER_MODE.CLEAN
+    try {
+      localStorage.setItem(MODE_KEY, mode)
+    } catch {
+      // Storage may be denied; the current view still follows the chosen mode.
+    }
+    hud.mode(mode)
+    overlay.mode(mode)
+    showStop()
+  }
+  const hud = createHud(stage, {
+    onSelect: select,
+    onStop: setStop,
+    onIsland: enter,
+    onMode: toggleMode,
+    onReadable: enabled => {
+      readable = enabled
+      presentation.readable(enabled)
+      refreshStatus()
+    },
+    onIdleReveal: expanded => {
+      presentation.overview(expanded)
+      refreshStatus()
+    },
+    onFollow: enabled => {
+      presentation.follow(enabled)
+      refreshStatus()
+    },
+    mode,
+    onLayout() {
+      refreshMargins()
+      frameView()
+    },
+  })
+  const overlay = createOverlay(stage, world, { onIsland: enter, mode })
+  hud.mode(mode)
 
   const show = next => {
     archipelago = next
+    presentation.update({ scene: current, archipelago })
     world.build(archipelago)
     lens.retarget(archipelago)
     hud.update(archipelago)
@@ -173,6 +244,16 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else if (hit && (stop === 1 || hit.island !== focus)) enter(hit.island)
     else select(null)
   })
+  let hoverAt = null
+  canvas.addEventListener('pointermove', event => {
+    if (event.buttons) {
+      hoverAt = null
+      return
+    }
+    const bounds = canvas.getBoundingClientRect()
+    hoverAt = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+  })
+  canvas.addEventListener('pointerleave', () => { hoverAt = null })
   canvas.addEventListener('dblclick', () => {
     if (selected) setStop(3)
   })
@@ -180,8 +261,9 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   stage.addEventListener('keydown', event => {
     const { key, target } = event
     const { islands, global } = archipelago
-    if (target.closest('input')) return
+    if (target.closest('input, textarea, [contenteditable]') || event.ctrlKey || event.metaKey || event.altKey) return
     if (key === 'Escape') back()
+    else if (key.toLowerCase() === 'v') toggleMode()
     else if (key === 'Home') setStop(stop)
     else if (target.closest('.list, .dock')) return
     else if ((global ? ['1', '2', '3'] : ['2', '3']).includes(key)) setStop(Number(key))
@@ -191,9 +273,15 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     else return
     event.preventDefault()
   }, { signal: lifetime.signal })
+  document.addEventListener('keydown', event => {
+    if (event.target !== document.body || event.key.toLowerCase() !== 'v' || event.ctrlKey || event.metaKey || event.altKey) return
+    toggleMode()
+    event.preventDefault()
+  }, { signal: lifetime.signal })
 
   show(archipelago)
   world.select(selected)
+  refreshStatus()
   const clock = setInterval(refreshStatus, STATUS_INTERVAL)
 
   const observer = new ResizeObserver(() => {
@@ -209,6 +297,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   const frame = time => {
     lens.step(reduced)
     world.animate(time, reduced)
+    overlay.hover(hoverAt, lens.camera, hoverAt ? world.pick({ x: hoverAt.x / size.width * 2 - 1, y: 1 - hoverAt.y / size.height * 2 }, lens.camera) : null)
     overlay.place(lens.camera, { stop, selected, margins, size })
     world.render(lens.camera)
     request = requestAnimationFrame(frame)
@@ -224,6 +313,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
     const island = archipelago.islands.find(one => one.path === held.path)
     const parcel = island && archipelago.tickets.find(one => one.island === island.index && one.identifier === held.ticket)
     selected = parcel?.key ?? null
+    presentation.update({ scene: current, archipelago, selected })
     world.select(selected)
     if (!island) {
       focus = defaultFocus(archipelago.islands)
@@ -235,12 +325,8 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       setStop(2)
       return
     }
-    overlay.focus(focus)
-    showSelection()
-    refreshStatus()
+    showStop()
     if (stop === 3 && parcel.station !== held.station) {
-      margins = hud.margins()
-      lens.resize(size.width, size.height, margins)
       lens.frameNeighborhood(world.neighborhood(parcel.key))
       lens.snap()
     }
@@ -251,12 +337,24 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       return archipelago
     },
     update,
-    notify: hud.events,
+    notify(changes) {
+      presentation.notify(changes, now())
+      hud.events(changes)
+      const target = presentation.frame(now()).follow.target
+      if (target) {
+        const parcel = archipelago.tickets.find(one => one.path === target.path && one.identifier === target.ticket)
+        if (parcel) {
+          presentation.acknowledgeFollow()
+          select(parcel.key)
+        }
+      }
+      refreshStatus()
+    },
     link(next) {
+      presentation.link(next)
       hud.link(next)
       refreshStatus()
-      margins = hud.margins()
-      lens.resize(size.width, size.height, margins)
+      refreshMargins()
     },
     dispose() {
       cancelAnimationFrame(request)

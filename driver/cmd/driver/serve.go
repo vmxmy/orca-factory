@@ -16,6 +16,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
@@ -68,7 +69,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, err
 		}
 		runtime.Version = version
-		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval}
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()
 			if err != nil {
@@ -279,11 +280,38 @@ func (b *statusBackend) ProbeOrcaRuntime(ctx context.Context, repo string) error
 	return errors.New("backend has no Orca runtime probe")
 }
 
-func (b *statusBackend) OrcaTerminalCreateFailures() int {
-	if source, ok := b.Backend.(interface{ OrcaTerminalCreateFailures() int }); ok {
-		return source.OrcaTerminalCreateFailures()
+func (b *statusBackend) RestartOrcaService(ctx context.Context) error {
+	if source, ok := b.Backend.(interface {
+		RestartOrcaService(context.Context) error
+	}); ok {
+		return source.RestartOrcaService(ctx)
 	}
-	return 0
+	return scheduler.ErrOrcaRestartUnsupported
+}
+
+func (b *statusBackend) NotifyOrcaRestart(ctx context.Context, ticket scheduler.Ticket, restart int, restartErr error) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRestart(context.Context, scheduler.Ticket, int, error) error
+	}); ok {
+		return source.NotifyOrcaRestart(ctx, ticket, restart, restartErr)
+	}
+	return nil
+}
+
+func (b *statusBackend) NotifyOrcaRestartExhausted(ctx context.Context, ticket scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		NotifyOrcaRestartExhausted(context.Context, scheduler.Ticket) error
+	}); ok {
+		return source.NotifyOrcaRestartExhausted(ctx, ticket)
+	}
+	return nil
+}
+
+func (b *statusBackend) OrcaTerminalCreates() (failures, created int) {
+	if source, ok := b.Backend.(interface{ OrcaTerminalCreates() (int, int) }); ok {
+		return source.OrcaTerminalCreates()
+	}
+	return 0, 0
 }
 
 func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.Ticket) error {
@@ -291,6 +319,15 @@ func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.
 		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error
 	}); ok {
 		return source.NotifyOrcaRuntime(ctx, ticket)
+	}
+	return nil
+}
+
+func (b *statusBackend) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
+	if source, ok := b.Backend.(interface {
+		NotifyHostMemory(context.Context, status.HostMemory) error
+	}); ok {
+		return source.NotifyHostMemory(ctx, memory)
 	}
 	return nil
 }
@@ -340,6 +377,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 				view.GitHub = snapshot.GitHub
 				view.NextScanAt = snapshot.NextScanAt
 				view.OrcaRuntime = snapshot.OrcaRuntime
+				view.HostMemory = snapshot.HostMemory
 			})
 		}
 		return wait(ctx)
@@ -351,6 +389,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
 	snapshot.Today = backend.TodayOutput(now)
 	snapshot.OrcaRuntime = s.OrcaRuntime()
+	snapshot.HostMemory = s.HostMemoryStatus()
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {

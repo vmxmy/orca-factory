@@ -3,7 +3,9 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -12,7 +14,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -160,17 +164,71 @@ func notificationScope(t Ticket) []string {
 }
 
 func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
-	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
+	return r.sendOrcaRuntimeText(ctx, ticket, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。暂停满 10 分钟后 driver 自动重启 orca-serve 服务，之后每 30 分钟最多一次、共 3 次；调度器探测成功后自动恢复。请查看 orca-serve 日志里的 profile 写入超时。")
+}
+
+// NotifyOrcaRestart reports one automatic orca-serve restart and its exit code.
+func (r *Runtime) NotifyOrcaRestart(ctx context.Context, ticket Ticket, restart int, restartErr error) error {
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；driver 将继续读取自动化状态或探测终端创建，确认恢复后继续调度。", restart, orcaRestartLimit, restartExitCode(restartErr)))
+}
+
+// restartExitCode is systemctl's exit code, or -1 when it did not exit on its own.
+func restartExitCode(restartErr error) int {
+	if restartErr == nil {
+		return 0
+	}
+	var exit *exec.ExitError
+	if errors.As(restartErr, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket) error {
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：Orca 仍不可达或 terminal create 探测仍失败，driver 不再重启 orca-serve，只继续读取自动化状态或探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
+}
+
+// errNoticeNotSent marks a notice that failed before any request reached
+// Feishu, so sending it again cannot duplicate it.
+var errNoticeNotSent = errors.New("notice not sent")
+
+func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
+	_, err := sendNoticeText(ctx, r.Repositories[ticket.Repo].Env, text)
+	return err
+}
+
+// sendNoticeText reports whether it attempted a send and holds the
+// maintenance write lock until the send completes.
+func sendNoticeText(ctx context.Context, env map[string]string, text string) (bool, error) {
+	release, err := maintenance.Write()
 	if err != nil {
-		return err
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
+	}
+	defer release()
+	settings, err := config.FeishuNotifySettings(env)
+	if err != nil {
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
-		return nil
+		return false, nil
 	}
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
-		return err
+		return false, fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
-	return sender.SendText(ctx, chat, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。请重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。")
+	return true, sender.SendText(ctx, chat, text)
+}
+
+// NotifyHostMemory uses the machine notification chat because the hold spans repositories.
+func (r *Runtime) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	sent, err := sendNoticeText(ctx, nil, fmt.Sprintf("内存吃紧，已暂停认领与新建终端 %s：可用量 %d bytes，some avg60 %.2f，限制来源 %s；用 systemd-cgls 与该切片的 memory.peak 找占用大户，读数恢复后自动放开。", now.Sub(memory.Since).Round(time.Second), memory.Reading.Available, memory.Reading.SomeAvg60, memory.Reading.Source))
+	if !sent && err == nil {
+		return fmt.Errorf("%w: AGENT_FEISHU_NOTIFY_CHAT is empty", errNoticeNotSent)
+	}
+	return err
 }

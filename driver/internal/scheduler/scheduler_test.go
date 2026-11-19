@@ -5,18 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -560,11 +568,17 @@ type runtimeFailureOrca struct {
 	failureClient *orca.Client
 	success       orca.Receipt
 	closed        []string
+	closeErr      error
+	// probeErr, when set, is what a probe's terminal create returns.
+	probeErr error
 }
 
 func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.TerminalOptions) (orca.Receipt, error) {
 	if opts.Command == "true" {
 		o.probes++
+		if o.probeErr != nil {
+			return nil, o.probeErr
+		}
 	} else {
 		o.creates++
 	}
@@ -576,7 +590,7 @@ func (o *runtimeFailureOrca) TerminalCreate(ctx context.Context, opts orca.Termi
 
 func (o *runtimeFailureOrca) TerminalClose(_ context.Context, handle string) error {
 	o.closed = append(o.closed, handle)
-	return nil
+	return o.closeErr
 }
 
 type runtimeFailureBackend struct {
@@ -586,6 +600,30 @@ type runtimeFailureBackend struct {
 	launchErr error
 	merges    int
 	merge     func(context.Context) error
+	// restarts counts RestartOrcaService calls; restartErr is what each returns.
+	restarts         int
+	restartErr       error
+	automationErr    error
+	snapshotErr      error
+	restartNotices   []string
+	exhaustedNotices int
+	exhaustedRepos   []string
+	// exhaustedErrs answers successive human notices; nil once exhausted.
+	exhaustedErrs []error
+}
+
+func (b *runtimeFailureBackend) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
+	if b.automationErr != nil {
+		return false, b.automationErr
+	}
+	return b.fakeBackend.AutomationDisabled(ctx, repo)
+}
+
+func (b *runtimeFailureBackend) Snapshot(ctx context.Context, repos []config.Repository) ([]Ticket, error) {
+	if b.snapshotErr != nil {
+		return nil, b.snapshotErr
+	}
+	return b.fakeBackend.Snapshot(ctx, repos)
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -602,8 +640,26 @@ func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error
 	b.notices++
 	return nil
 }
-func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
-	return b.runtime.OrcaTerminalCreateFailures()
+func (b *runtimeFailureBackend) RestartOrcaService(context.Context) error {
+	b.restarts++
+	return b.restartErr
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, ticket Ticket, restart int, restartErr error) error {
+	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%s %d:%v", ticket.Repo, restart, restartErr))
+	return nil
+}
+func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(_ context.Context, ticket Ticket) error {
+	b.exhaustedNotices++
+	b.exhaustedRepos = append(b.exhaustedRepos, ticket.Repo)
+	if len(b.exhaustedErrs) == 0 {
+		return nil
+	}
+	err := b.exhaustedErrs[0]
+	b.exhaustedErrs = b.exhaustedErrs[1:]
+	return err
+}
+func (b *runtimeFailureBackend) OrcaTerminalCreates() (int, int) {
+	return b.runtime.OrcaTerminalCreates()
 }
 func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	b.merges++
@@ -912,6 +968,560 @@ func TestOrcaRuntimePauseHoldsMergeLaneInSameRound(t *testing.T) {
 	}
 }
 
+// A pause whose probes keep failing restarts orca-serve after the grace, then at
+// most once per interval, and stops at the limit with one call for a human.
+func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, f, b, oc := x.s, x.f, x.b, x.oc
+	pausedAt := *x.now
+	_ = s.Tick(context.Background())
+	if got := s.OrcaRuntime(); !got.Paused || !got.PausedAt.Equal(pausedAt) || got.Restarts != 0 {
+		t.Fatalf("pause start not recorded: %+v", got)
+	}
+	tickAt := func(offset time.Duration, wantRestarts int) {
+		t.Helper()
+		*x.now = pausedAt.Add(offset)
+		_ = s.Tick(context.Background())
+		if b.restarts != wantRestarts || s.OrcaRuntime().Restarts != wantRestarts {
+			t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), wantRestarts)
+		}
+	}
+	tickAt(10*time.Minute-time.Second, 0)
+	b.restartErr = errors.New("systemctl failed")
+	tickAt(10*time.Minute, 1)
+	b.restartErr = nil
+	tickAt(39*time.Minute, 1)
+	tickAt(40*time.Minute, 2)
+	tickAt(69*time.Minute, 2)
+	tickAt(70*time.Minute, 3)
+	if b.exhaustedNotices != 0 {
+		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
+	}
+	// A notice that failed for certain is retried; a delivered one is not resent.
+	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent), nil}
+	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
+		tickAt(offset, 3)
+	}
+	if b.exhaustedNotices != 2 {
+		t.Fatalf("human notice attempts %d, want one retry after a certain failure then no resend after delivery", b.exhaustedNotices)
+	}
+	// The pause started on the third ticket's repository; its chat gets every result.
+	if want := []string{"/repo2 1:systemctl failed", "/repo2 2:<nil>", "/repo2 3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
+		t.Fatalf("restart result notices %v, want %v", b.restartNotices, want)
+	}
+	if got := s.OrcaRuntime(); !got.LastRestartAt.Equal(pausedAt.Add(70 * time.Minute)) {
+		t.Fatalf("last restart time not recorded: %+v", got)
+	}
+	oc.failing = false
+	*x.now = x.now.Add(time.Minute)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.OrcaRuntime(); got != (status.OrcaRuntime{}) {
+		t.Fatalf("recovery left Orca runtime state: %+v", got)
+	}
+	for _, ticket := range f.tickets {
+		if ticket.Attempt != 1 {
+			t.Fatalf("restart changed attempt: %+v", ticket)
+		}
+	}
+}
+
+// Orca failing the probe's terminal create, refused or unreachable, keeps the
+// restart schedule; a maintenance refusal never reached Orca, and a created probe
+// terminal that fails to close means Orca has recovered.
+func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		probeErr, closeErr error
+		restarts           int
+		recovered          bool
+	}{
+		{name: "orca call timed out", probeErr: &infra.Transient{Err: errors.New("orca call timed out")}, restarts: 1},
+		{name: "maintenance refusal", probeErr: fmt.Errorf("%w: maintenance blocks new claim or dispatch", maintenance.ErrRefused)},
+		{name: "probe close failure", closeErr: errors.New("terminal close failed"), recovered: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+			s, b, oc := x.s, x.b, x.oc
+			_ = s.Tick(context.Background())
+			oc.failing = tc.probeErr != nil
+			oc.probeErr, oc.closeErr = tc.probeErr, tc.closeErr
+			*x.now = x.now.Add(time.Hour)
+			_ = s.Tick(context.Background())
+			if b.restarts != tc.restarts || s.OrcaRuntime().Restarts != tc.restarts {
+				t.Fatalf("restarts=%d status=%+v, want %d", b.restarts, s.OrcaRuntime(), tc.restarts)
+			}
+			if got := s.OrcaRuntime(); tc.recovered != (got == status.OrcaRuntime{}) {
+				t.Fatalf("recovered=%v, want %v: %+v", got == status.OrcaRuntime{}, tc.recovered, got)
+			}
+		})
+	}
+}
+
+const feishuTokenIssued = `{"code":0,"tenant_access_token":"token","expire":7200}`
+
+// feishuSendTextErr is what the Feishu client returns when the token endpoint
+// answers token and the message endpoint answers with status and body.
+func feishuSendTextErr(t *testing.T, token string, status int, body string) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(token))
+			return
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := feishu.New(feishu.Options{Endpoint: srv.URL, AppID: "app", AppSecret: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client.SendText(context.Background(), "oc_chat", "notice")
+}
+
+// Only a human notice Feishu certainly did not deliver is sent again; a failed
+// transport or a truncated or unreadable response may have delivered it.
+func TestOrcaRestartExhaustedNoticeResentOnlyWhenUndelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		err     func(*testing.T) error
+		notices int
+	}{
+		{"settings unreadable", func(*testing.T) error { return fmt.Errorf("%w: feishu settings unreadable", errNoticeNotSent) }, 2},
+		{"feishu business error", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadRequest, `{"code":230002,"msg":"bot not in chat"}`)
+		}, 2},
+		{"token rejected", func(t *testing.T) error {
+			return feishuSendTextErr(t, `{"code":10003,"msg":"invalid app_id"}`, http.StatusOK, "")
+		}, 2},
+		{"transport failed", func(*testing.T) error { return &infra.Transient{Err: errors.New("feishu transport failed")} }, 1},
+		{"truncated response", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusOK, `{"code":0,"data":{"message_id":"om_`)
+		}, 1},
+		{"unreadable server error", func(t *testing.T) error {
+			return feishuSendTextErr(t, feishuTokenIssued, http.StatusBadGateway, "bad gateway")
+		}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+			s, b := x.s, x.b
+			s.orcaRuntime = status.OrcaRuntime{Paused: true, Restarts: orcaRestartLimit}
+			b.exhaustedErrs = []error{tc.err(t)}
+			for range 3 {
+				s.restartOrcaService(context.Background())
+			}
+			if b.exhaustedNotices != tc.notices || b.restarts != 0 {
+				t.Fatalf("notices=%d restarts=%d, want %d notices and no restart", b.exhaustedNotices, b.restarts, tc.notices)
+			}
+		})
+	}
+}
+
+// The recorded output of an orca CLI that cannot reach the runtime classifies as
+// an unreachable Orca and keeps the restart schedule when a probe returns it.
+func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, b, oc := x.s, x.b, x.oc
+	_, err = (&orca.Client{Path: cli, Timeout: time.Second}).TerminalCreate(context.Background(), orca.TerminalOptions{Worktree: "path:/repo0", Title: "probe", Command: "true"})
+	var global *infra.Global
+	if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded runtime_unavailable classified as %#v", err)
+	}
+	_ = s.Tick(context.Background())
+	oc.failureClient = &orca.Client{Path: cli, Timeout: time.Second}
+	*x.now = x.now.Add(OrcaRestartGrace)
+	_ = s.Tick(context.Background())
+	if b.restarts != 1 || s.OrcaRuntime().Restarts != 1 {
+		t.Fatalf("restarts=%d status=%+v, want one restart", b.restarts, s.OrcaRuntime())
+	}
+}
+
+func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, unavailable := (&orca.Client{Path: cli, Timeout: time.Second}).AutomationsList(context.Background())
+	var global *infra.Global
+	if !errors.As(unavailable, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded unavailable error classified as %#v", unavailable)
+	}
+	t.Run("runtime preserves unavailable classification", func(t *testing.T) {
+		runtime := &Runtime{Orca: &orca.Client{Path: cli, Timeout: time.Second}}
+		_, err := runtime.AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+		var global *infra.Global
+		if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+			t.Fatalf("runtime automation read lost unavailable classification: %T: %v", err, err)
+		}
+	})
+	slow := filepath.Join(dir, "slow-orca")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nexec sleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, timedOut := (&Runtime{Orca: &orca.Client{Path: slow, Timeout: 100 * time.Millisecond}}).AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+	if timedOut == nil {
+		t.Fatal("slow automation read did not fail")
+	}
+	for _, scenario := range []string{"after successful inspection", "timeout after successful inspection", "before first inspection", "shared restart limit"} {
+		t.Run(scenario, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, 3)
+			s, b := x.s, x.b
+			if scenario == "shared restart limit" {
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(10 * time.Minute)
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(30 * time.Minute)
+				_ = s.Tick(context.Background())
+				if b.restarts != 2 {
+					t.Fatalf("runtime pause restarts=%d, want 2", b.restarts)
+				}
+			} else {
+				x.f.tickets = nil
+				if strings.HasSuffix(scenario, "after successful inspection") {
+					x.f.enabled = map[string]bool{"/repo0": true}
+					_ = s.Tick(context.Background())
+				}
+			}
+			b.automationErr = unavailable
+			if strings.HasPrefix(scenario, "timeout") {
+				b.automationErr = timedOut
+			}
+			start := *x.now
+			baseRestarts := b.restarts
+			baseProbes := x.oc.probes
+			tickAt := func(offset time.Duration, want int) {
+				t.Helper()
+				*x.now = start.Add(offset)
+				_ = s.Tick(context.Background())
+				if x.oc.probes != baseProbes {
+					t.Fatalf("unreachable Orca created a probe: before=%d after=%d", baseProbes, x.oc.probes)
+				}
+				if b.restarts != want || s.OrcaRuntime().Restarts != want {
+					t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), want)
+				}
+			}
+			tickAt(0, baseRestarts)
+			tickAt(10*time.Minute-time.Second, baseRestarts)
+			if scenario == "shared restart limit" {
+				tickAt(10*time.Minute, 2)
+				tickAt(30*time.Minute, 3)
+				tickAt(31*time.Minute, 3)
+				tickAt(90*time.Minute, 3)
+				if b.exhaustedNotices != 1 || !reflect.DeepEqual(b.exhaustedRepos, []string{"/repo0"}) {
+					t.Fatalf("human notices=%d repos=%v, want one notice in /repo0", b.exhaustedNotices, b.exhaustedRepos)
+				}
+				if got := b.restartNotices[2]; got != "/repo0 3:<nil>" {
+					t.Fatalf("unreachable notice=%s", got)
+				}
+			} else {
+				tickAt(10*time.Minute, 1)
+				tickAt(39*time.Minute, 1)
+				if scenario == "before first inspection" {
+					tickAt(40*time.Minute, 2)
+					tickAt(70*time.Minute, 3)
+					tickAt(71*time.Minute, 3)
+					if len(b.restartNotices) != 0 || b.exhaustedNotices != 0 {
+						t.Fatalf("notification before first successful inspection: %+v", b)
+					}
+				} else if !reflect.DeepEqual(b.restartNotices, []string{"/repo1 1:<nil>"}) {
+					t.Fatalf("restart notices=%v", b.restartNotices)
+				}
+			}
+			raw, err := json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runtime struct {
+				UnreachableSince time.Time `json:"unreachableSince"`
+			}
+			if err := json.Unmarshal(raw, &runtime); err != nil {
+				t.Fatal(err)
+			}
+			if !runtime.UnreachableSince.Equal(start) {
+				t.Fatalf("unreachable start=%v, want %v", runtime.UnreachableSince, start)
+			}
+			beforeRecovery := s.OrcaRuntime().Restarts
+			b.automationErr = nil
+			_ = s.Tick(context.Background())
+			if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || got.Restarts != beforeRecovery {
+				t.Fatalf("successful automation read must clear only unreachable time: %+v", got)
+			}
+			raw, err = json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "unreachableSince") {
+				t.Fatalf("successful read left unreachable time: %s", raw)
+			}
+		})
+	}
+	t.Run("maintenance freeze refuses restart", func(t *testing.T) {
+		t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+		for _, mode := range []string{"draining", "frozen"} {
+			if err := maintenance.Set(mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		ran := false
+		err := (&Runtime{Run: func(context.Context, runx.Spec) ([]byte, error) {
+			ran = true
+			return nil, nil
+		}}).RestartOrcaService(context.Background())
+		if ran || !errors.Is(err, errOrcaRestartRefused) {
+			t.Fatalf("frozen maintenance: ran=%v err=%v", ran, err)
+		}
+		requests := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requests++
+			if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+				_, _ = w.Write([]byte(feishuTokenIssued))
+				return
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+		}))
+		t.Cleanup(srv.Close)
+		t.Setenv("HOME", t.TempDir())
+		t.Setenv("AGENT_FEISHU_ENDPOINT", srv.URL)
+		t.Setenv("AGENT_FEISHU_APP_ID", "app")
+		t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+		notifier := &Runtime{Repositories: map[string]config.Repository{"/repo0": {Path: "/repo0", Env: map[string]string{"AGENT_FEISHU_NOTIFY_CHAT": "oc_chat"}}}}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); !errors.Is(noticeErr, errNoticeNotSent) || requests != 0 {
+			t.Fatalf("frozen maintenance sent the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
+		if noticeErr := notifier.NotifyHostMemory(context.Background(), status.HostMemory{Paused: true}); !errors.Is(noticeErr, errNoticeNotSent) || requests != 0 {
+			t.Fatalf("frozen maintenance sent the host memory notice: err=%v requests=%d", noticeErr, requests)
+		}
+		if err := maintenance.Set("running"); err != nil {
+			t.Fatal(err)
+		}
+		if noticeErr := notifier.NotifyOrcaRestartExhausted(context.Background(), Ticket{Repo: "/repo0"}); noticeErr != nil || requests == 0 {
+			t.Fatalf("running maintenance did not send the human notice: err=%v requests=%d", noticeErr, requests)
+		}
+		for _, mode := range []string{"draining", "frozen"} {
+			if err := maintenance.Set(mode); err != nil {
+				t.Fatal(err)
+			}
+		}
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		b.automationErr = unavailable
+		b.restartErr = err
+		start := *x.now
+		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if got := s.OrcaRuntime(); b.restarts != 1 || got.Restarts != 0 || !got.LastRestartAt.IsZero() || len(b.restartNotices) != 0 {
+			t.Fatalf("refused restart counted: calls=%d status=%+v notices=%v", b.restarts, got, b.restartNotices)
+		}
+		b.restartErr = nil
+		*x.now = start.Add(OrcaRestartGrace + time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 1 {
+			t.Fatalf("restart after maintenance resumes: %+v", got)
+		}
+	})
+	t.Run("notification repository from last successful inspection", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		s.retired = map[string]bool{"/repo0": true}
+		_ = s.Tick(context.Background())
+		x.f.enabled = map[string]bool{"/repo1": true}
+		b.snapshotErr = errors.New("ledger unavailable")
+		_ = s.Tick(context.Background())
+		b.snapshotErr = nil
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, OrcaRestartGrace} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if !reflect.DeepEqual(b.restartNotices, []string{"/repo1 1:<nil>"}) {
+			t.Fatalf("restart notices=%v, want the first schedulable repository of the last successful inspection", b.restartNotices)
+		}
+	})
+	t.Run("human notice waits for a notification repository", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		b.automationErr = unavailable
+		start := *x.now
+		tickAt := func(offsets ...time.Duration) {
+			for _, offset := range offsets {
+				*x.now = start.Add(offset)
+				_ = s.Tick(context.Background())
+			}
+		}
+		tickAt(0, 10*time.Minute, 40*time.Minute, 70*time.Minute, 71*time.Minute)
+		if b.restarts != 3 || b.exhaustedNotices != 0 {
+			t.Fatalf("restarts=%d human=%d before any inspection", b.restarts, b.exhaustedNotices)
+		}
+		b.automationErr = nil
+		tickAt(72 * time.Minute)
+		b.automationErr = unavailable
+		tickAt(73*time.Minute, 83*time.Minute, 84*time.Minute)
+		if b.restarts != 3 || !reflect.DeepEqual(b.exhaustedRepos, []string{"/repo0"}) {
+			t.Fatalf("restarts=%d human repos=%v, want one human notice in /repo0", b.restarts, b.exhaustedRepos)
+		}
+	})
+	t.Run("earlier claim does not clear a new outage", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 1)
+		s, b := x.s, x.b
+		x.oc.failing = false
+		_ = s.Tick(context.Background())
+		if len(b.launched) != 1 {
+			t.Fatalf("claim launches=%d, want 1", len(b.launched))
+		}
+		b.automationErr = unavailable
+		start := x.now.Add(time.Minute)
+		*x.now = start
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) {
+			t.Fatalf("unreachable start=%v, want %v", got.UnreachableSince, start)
+		}
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if b.restarts != 1 {
+			t.Fatalf("restarts=%d, want one restart %v after the outage began", b.restarts, OrcaRestartGrace)
+		}
+	})
+	t.Run("merge batch success clears restart budget before a later failure", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, 10 * time.Minute, 40 * time.Minute, 70 * time.Minute} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		if got := s.OrcaRuntime(); got.Restarts != orcaRestartLimit {
+			t.Fatalf("restarts=%d, want the limit", got.Restarts)
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9", "OF-10")
+		b.merge = func(ctx context.Context) error {
+			x.oc.failing = false
+			created := b.runtime.Launch(ctx, tickets[0])
+			x.oc.failing = true
+			return errors.Join(created, b.runtime.Launch(ctx, tickets[1]))
+		}
+		*x.now = start.Add(71 * time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 0 || !got.LastRestartAt.IsZero() || got.Failures != 1 || s.orcaRestartsExhausted {
+			t.Fatalf("batch success kept the restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("merge batch success then pause keeps no old restart budget", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		for _, offset := range []time.Duration{0, 10 * time.Minute, 40 * time.Minute, 70 * time.Minute} {
+			*x.now = start.Add(offset)
+			_ = s.Tick(context.Background())
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9", "OF-10", "OF-11", "OF-12")
+		b.merge = func(ctx context.Context) error {
+			x.oc.failing = false
+			problems := []error{b.runtime.Launch(ctx, tickets[0])}
+			x.oc.failing = true
+			for _, ticket := range tickets[1:] {
+				problems = append(problems, b.runtime.Launch(ctx, ticket))
+			}
+			return errors.Join(problems...)
+		}
+		*x.now = start.Add(71 * time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.Paused || got.Restarts != 0 || !got.LastRestartAt.IsZero() || s.orcaRestartsExhausted {
+			t.Fatalf("new pause inherited the old restart budget: %+v exhausted=%v", got, s.orcaRestartsExhausted)
+		}
+	})
+	t.Run("retired notification repository is not reused", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 3)
+		s, b := x.s, x.b
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		s.retired = map[string]bool{"/repo0": true}
+		b.snapshotErr = errors.New("ledger unavailable")
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if b.restarts != 1 || len(b.restartNotices) != 0 {
+			t.Fatalf("restarts=%d notices=%v, want a restart without a notice to the retired repository", b.restarts, b.restartNotices)
+		}
+	})
+	t.Run("no tracked repository stops unreachable timing", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 1)
+		s := x.s
+		x.f.tickets = nil
+		_ = s.Tick(context.Background())
+		x.b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.Equal(start) {
+			t.Fatalf("status=%+v, want timing started", got)
+		}
+		s.retired = map[string]bool{"/repo0": true}
+		*x.now = start.Add(OrcaRestartGrace - time.Second)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || len(s.Repositories) != 0 {
+			t.Fatalf("status=%+v repositories=%v, want timing cleared in the round the last repository left", got, s.Repositories)
+		}
+	})
+	t.Run("merge correction terminal create clears restart budget", func(t *testing.T) {
+		x := newRuntimeFailureFixture(t, 0)
+		s, b := x.s, x.b
+		s.Repositories = []config.Repository{{Path: "/repo", MaxInFlight: 2, StaleHours: 8}}
+		b.automationErr = unavailable
+		start := *x.now
+		_ = s.Tick(context.Background())
+		*x.now = start.Add(OrcaRestartGrace)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got.Restarts != 1 {
+			t.Fatalf("unreachable restart missing: %+v", got)
+		}
+		b.automationErr = nil
+		tickets := correctionTickets(t, x, "OF-9")
+		x.oc.failing = false
+		b.merge = func(ctx context.Context) error { return b.runtime.Launch(ctx, tickets[0]) }
+		*x.now = start.Add(OrcaRestartGrace + time.Minute)
+		_ = s.Tick(context.Background())
+		if got := s.OrcaRuntime(); got != (status.OrcaRuntime{}) {
+			t.Fatalf("merge correction terminal create kept the fault state: %+v", got)
+		}
+	})
+}
+
 // Only serve publishes the fault; a separate Scheduler such as `serve --dry-run`
 // starts at zero and must not clear the running service's paused state.
 func TestSchedulerTickLeavesPublishedOrcaRuntime(t *testing.T) {
@@ -922,5 +1532,296 @@ func TestSchedulerTickLeavesPublishedOrcaRuntime(t *testing.T) {
 	_ = s.Tick(context.Background())
 	if got := status.Read(s.Now(), 0).OrcaRuntime; !got.Paused {
 		t.Fatalf("scheduler tick overwrote the published Orca runtime fault: %+v", got)
+	}
+}
+
+func TestHostMemoryHoldSkipsNewLaunchesWithoutBurningAttempts(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	f := &fakeBackend{absent: true, inactive: true}
+	s := setup(f)
+	f.tickets = []Ticket{
+		{ID: "candidate", Identifier: "candidate", Repo: "b", Candidate: true, CreatedAt: s.Now()},
+		{ID: "executor", Identifier: "executor", Repo: "a", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now()},
+	}
+	reading := hostmem.Reading{Available: 5 << 30}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	skipped := map[string]bool{}
+	for _, decision := range captureDecisions(t, s) {
+		if decision["event"] == "skip" && decision["reason"] == "memory" {
+			skipped[decision["ticket_id"].(string)] = true
+		}
+	}
+	if len(f.actions) != 0 || len(f.launched) != 0 {
+		t.Fatalf("held host memory claimed or launched: actions=%v launches=%v", f.actions, f.launched)
+	}
+	if !skipped["candidate"] || !skipped["executor"] {
+		t.Fatalf("memory skips=%v, want candidate and executor", skipped)
+	}
+	if got := s.HostMemoryStatus(); !got.Paused || !got.Since.Equal(s.Now()) || got.Reading != reading {
+		t.Fatalf("host memory status = %+v", got)
+	}
+	for _, ticket := range f.tickets {
+		if ticket.Attempt != map[string]int{"candidate": 0, "executor": 1}[ticket.ID] {
+			t.Fatalf("attempt changed while held: %+v", ticket)
+		}
+	}
+	reading = hostmem.Reading{Available: 30 << 30}
+	claimed := []string{}
+	f.onApply = func(ticket Ticket, a Action) {
+		if a.Kind == Claim {
+			claimed = append(claimed, ticket.ID)
+		}
+	}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(claimed, []string{"candidate"}) {
+		t.Fatalf("released round claims=%v, want candidate", claimed)
+	}
+	launched := map[string]int{}
+	for _, ticket := range f.launched {
+		launched[ticket.ID] = ticket.Attempt
+	}
+	if !reflect.DeepEqual(launched, map[string]int{"candidate": 1, "executor": 2}) {
+		t.Fatalf("released round launches=%v", launched)
+	}
+	if got := s.HostMemoryStatus(); got.Paused {
+		t.Fatalf("host memory still paused after release: %+v", got)
+	}
+}
+
+func TestHostMemoryHoldStillAppliesReadyResolverResult(t *testing.T) {
+	f := &fakeBackend{tickets: []Ticket{{ID: "id", Identifier: "ENG-1", Repo: "a", Owner: machine.OwnerResolver, Terminal: "controller", Resolution: &resolver.Record{Version: 1, Attempt: 1, Phase: "result"}}}}
+	s := setup(f)
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Available: 5 << 30}, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.actions) != 1 || f.actions[0].Kind != Resolve {
+		t.Fatalf("held host memory must still apply a reported resolver result: actions=%+v", f.actions)
+	}
+}
+
+func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
+	s := setup(&fakeBackend{})
+	steps := []struct {
+		reading hostmem.Reading
+		err     error
+		paused  bool
+	}{
+		{hostmem.Reading{Available: 5 << 30}, nil, true},
+		{hostmem.Reading{}, errors.New("read /proc/meminfo: gone"), false},
+		{hostmem.Reading{Available: 8 << 30}, nil, true},
+	}
+	start := s.Now()
+	for i, step := range steps {
+		now := start.Add(time.Duration(i) * time.Minute)
+		s.Now = func() time.Time { return now }
+		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		got := s.HostMemoryStatus()
+		if got.Paused != step.paused {
+			t.Fatalf("step %d: status=%+v, want paused=%v", i, got, step.paused)
+		}
+		if step.paused && !got.Since.Equal(start) {
+			t.Fatalf("step %d: hold start %v, want the first hold at %v", i, got.Since, start)
+		}
+	}
+}
+
+type hostMemoryNotifyBackend struct {
+	fakeBackend
+	notices []status.HostMemory
+	err     error
+}
+
+func (b *hostMemoryNotifyBackend) NotifyHostMemory(_ context.Context, memory status.HostMemory) error {
+	b.notices = append(b.notices, memory)
+	return b.err
+}
+
+func TestNotifyHostMemoryWithoutChatIsNotSent(t *testing.T) {
+	var requests atomic.Int32
+	var sends, stray atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
+			_, _ = w.Write([]byte(feishuTokenIssued))
+			return
+		}
+		var body struct {
+			ReceiveID string `json:"receive_id"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if err == nil && r.Method == http.MethodPost && r.URL.Path == "/open-apis/im/v1/messages" &&
+			r.URL.Query().Get("receive_id_type") == "chat_id" && body.ReceiveID == "oc_chat" {
+			sends.Add(1)
+		} else {
+			stray.Add(1)
+		}
+		_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", t.TempDir())
+	t.Setenv("AGENT_FEISHU_ENDPOINT", server.URL)
+	t.Setenv("AGENT_FEISHU_APP_ID", "app")
+	t.Setenv("AGENT_FEISHU_APP_SECRET", "secret")
+	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "")
+
+	rt := &Runtime{}
+	memory := status.HostMemory{Paused: true, Since: time.Now().Add(-15 * time.Minute)}
+	err := rt.NotifyHostMemory(context.Background(), memory)
+	if !errors.Is(err, errNoticeNotSent) || requests.Load() != 0 {
+		t.Fatalf("without chat: err=%v requests=%d, want errNoticeNotSent and zero requests", err, requests.Load())
+	}
+	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
+	err = rt.NotifyHostMemory(context.Background(), memory)
+	if err != nil || sends.Load() != 1 || stray.Load() != 0 {
+		t.Fatalf("with chat: err=%v sends=%d stray=%d, want exactly one message to oc_chat", err, sends.Load(), stray.Load())
+	}
+}
+
+func TestHostMemoryHoldNotifiesOnceAfterFifteenMinutes(t *testing.T) {
+	b := &hostMemoryNotifyBackend{}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	start := s.Now()
+	reading := hostmem.Reading{Available: 3 << 30}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	for _, step := range []struct {
+		elapsed   time.Duration
+		available uint64
+		notices   int
+	}{
+		{0, 3 << 30, 0}, {14*time.Minute + 59*time.Second, 3 << 30, 0},
+		{15 * time.Minute, 3 << 30, 1}, {75 * time.Minute, 3 << 30, 1},
+		{76 * time.Minute, 20 << 30, 1}, {77 * time.Minute, 3 << 30, 1}, {92 * time.Minute, 3 << 30, 2},
+	} {
+		now := start.Add(step.elapsed)
+		s.Now = func() time.Time { return now }
+		reading.Available = step.available
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if len(b.notices) != step.notices {
+			t.Fatalf("at %v: notices=%d, want %d", step.elapsed, len(b.notices), step.notices)
+		}
+	}
+	if !b.notices[0].Since.Equal(start) || !b.notices[1].Since.Equal(start.Add(77*time.Minute)) {
+		t.Fatalf("hold starts: %+v", b.notices)
+	}
+}
+func TestHostMemoryNotifyClockExcludesUnreadableRounds(t *testing.T) {
+	b := &hostMemoryNotifyBackend{}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	start := s.Now()
+	low := hostmem.Reading{Available: 3 << 30}
+	unreadable := errors.New("read /proc/meminfo: denied")
+	for _, step := range []struct {
+		elapsed time.Duration
+		reading hostmem.Reading
+		err     error
+		paused  bool
+		notices int
+	}{
+		{0, low, nil, true, 0},
+		{time.Minute, hostmem.Reading{}, unreadable, false, 0},
+		{15 * time.Minute, hostmem.Reading{}, unreadable, false, 0},
+		{16 * time.Minute, low, nil, true, 0},
+		{30*time.Minute + 59*time.Second, low, nil, true, 0},
+		{31 * time.Minute, low, nil, true, 1},
+		{32 * time.Minute, hostmem.Reading{}, unreadable, false, 1},
+		{33 * time.Minute, low, nil, true, 1},
+		{47*time.Minute + 59*time.Second, low, nil, true, 1},
+		{48 * time.Minute, low, nil, true, 2},
+	} {
+		s.Now = func() time.Time { return start.Add(step.elapsed) }
+		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.HostMemoryStatus(); got.Paused != step.paused || len(b.notices) != step.notices {
+			t.Fatalf("at %v: paused=%v notices=%d, want paused=%v notices=%d", step.elapsed, got.Paused, len(b.notices), step.paused, step.notices)
+		}
+	}
+	if got, want := b.notices[0].Since, start.Add(16*time.Minute); !got.Equal(want) {
+		t.Errorf("notification since = %v, want %v", got, want)
+	}
+	if got, want := b.notices[1].Since, start.Add(33*time.Minute); !got.Equal(want) {
+		t.Errorf("second notification since = %v, want %v", got, want)
+	}
+	if got := s.HostMemoryStatus().Since; !got.Equal(start) {
+		t.Errorf("snapshot since = %v, want %v", got, start)
+	}
+}
+
+func TestHostMemoryNotificationRetriesAfterFailure(t *testing.T) {
+	b := &hostMemoryNotifyBackend{}
+	s := setup(&b.fakeBackend)
+	s.Backend = b
+	start := s.Now()
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{Source: "host", Available: 3 << 30}, nil }
+	offline := errors.New("offline")
+	for _, step := range []struct {
+		minute   time.Duration
+		err      error
+		attempts int
+	}{
+		{0, offline, 0},
+		{15, offline, 1},
+		{16, offline, 2},
+		{17, nil, 3},
+		{18, nil, 3},
+		{78, nil, 3},
+	} {
+		s.Now = func() time.Time { return start.Add(step.minute * time.Minute) }
+		b.err = step.err
+		if err := s.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if got := len(b.notices); got != step.attempts {
+			t.Fatalf("at minute %d: notification attempts = %d, want %d", step.minute, got, step.attempts)
+		}
+	}
+}
+
+func TestHostMemoryCgroupErrorStillUsesHostReading(t *testing.T) {
+	testHostMemoryCgroupError(t, hostmem.Reading{Source: "host", Available: 3 << 30})
+}
+
+func TestHostMemoryCgroupErrorKeepsCgroupReading(t *testing.T) {
+	testHostMemoryCgroupError(t, hostmem.Reading{Source: "/orca.slice", Available: 3 << 30})
+}
+
+func testHostMemoryCgroupError(t *testing.T, reading hostmem.Reading) {
+	t.Helper()
+	s := setup(&fakeBackend{})
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, errors.New("read cgroup memory.stat: denied") }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := s.HostMemoryStatus()
+	if !got.Paused || got.Reading != reading || !strings.Contains(got.CgroupError, "memory.stat") || got.Error != "" {
+		t.Fatalf("status = %+v, want paused with reading %+v and a cgroup error", got, reading)
+	}
+}
+
+func TestHostMemoryReadFailureKeepsLastReading(t *testing.T) {
+	s := setup(&fakeBackend{})
+	reading := hostmem.Reading{Available: 3 << 30, SomeAvg60: 30, Source: "/orca.slice"}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.HostMemory = func() (hostmem.Reading, error) { return hostmem.Reading{}, errors.New("read /proc/meminfo: denied") }
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.HostMemoryStatus(); got.Paused || got.Reading != reading || !strings.Contains(got.Error, "/proc/meminfo") || got.CgroupError != "" {
+		t.Fatalf("unreadable host = %+v", got)
 	}
 }
