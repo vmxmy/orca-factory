@@ -1644,11 +1644,22 @@ func (b *hostMemoryNotifyBackend) NotifyHostMemory(_ context.Context, memory sta
 
 func TestNotifyHostMemoryWithoutChatIsNotSent(t *testing.T) {
 	var requests atomic.Int32
+	var sends, stray atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if strings.HasSuffix(r.URL.Path, "/tenant_access_token/internal") {
 			_, _ = w.Write([]byte(feishuTokenIssued))
 			return
+		}
+		var body struct {
+			ReceiveID string `json:"receive_id"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&body)
+		if err == nil && r.Method == http.MethodPost && r.URL.Path == "/open-apis/im/v1/messages" &&
+			r.URL.Query().Get("receive_id_type") == "chat_id" && body.ReceiveID == "oc_chat" {
+			sends.Add(1)
+		} else {
+			stray.Add(1)
 		}
 		_, _ = w.Write([]byte(`{"code":0,"data":{"message_id":"om_1"}}`))
 	}))
@@ -1668,8 +1679,8 @@ func TestNotifyHostMemoryWithoutChatIsNotSent(t *testing.T) {
 	}
 	t.Setenv("AGENT_FEISHU_NOTIFY_CHAT", "oc_chat")
 	err = rt.NotifyHostMemory(context.Background(), memory)
-	if err != nil || requests.Load() == 0 {
-		t.Fatalf("with chat: err=%v requests=%d, want a successful send", err, requests.Load())
+	if err != nil || sends.Load() != 1 || stray.Load() != 0 {
+		t.Fatalf("with chat: err=%v sends=%d stray=%d, want exactly one message to oc_chat", err, sends.Load(), stray.Load())
 	}
 }
 
