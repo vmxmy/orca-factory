@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -70,7 +71,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 		}
 		runtime.Version = version
 		discover := projectSource(cfg)
-		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: discover, DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()
 			if err != nil {
@@ -78,13 +79,10 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			}
 			s.SyncCore = (&coreSyncer{factoryRoot: cfg.FactoryRoot, cacheDir: cacheDir}).sync
 		}
-		s.Discover = s.ObserveOrcaDiscovery(discover, func(orcaRuntime status.OrcaRuntime) {
-			status.Push(time.Now(), func(view *status.View) { view.OrcaRuntime = orcaRuntime })
-		})
+		s.Discover = s.ObserveOrcaDiscovery(discover, publishOrcaRuntime)
 		if err := s.AwaitProjects(ctx, sleepContext); err != nil {
 			return nil, nil, fmt.Errorf("initial project discovery failed: %w", err)
 		}
-		s.Discover = discover
 		served = runtime
 		wait = newServeWait(s, runtime.StateRoot)
 		return s, runtime, nil
@@ -447,4 +445,25 @@ func (b *statusBackend) CheckRunners(ctx context.Context) error {
 		return source.CheckRunners(ctx)
 	}
 	return nil
+}
+
+// publishOrcaRuntime writes the Orca fault state to the view doctor reads
+// before serve's first inspection has written a full status snapshot.
+func publishOrcaRuntime(orcaRuntime status.OrcaRuntime) {
+	now := time.Now()
+	status.Push(now, func(view *status.View) { view.OrcaRuntime = orcaRuntime })
+	if os.Getenv("DRIVER_STATUS_FILE") == "" {
+		return
+	}
+	snapshot := status.Snapshot{GeneratedAt: now}
+	if data, err := os.ReadFile(status.Path()); err == nil {
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			fmt.Fprintln(os.Stderr, "driver status snapshot unreadable; rewriting Orca runtime only")
+			snapshot = status.Snapshot{GeneratedAt: now}
+		}
+	}
+	snapshot.OrcaRuntime = orcaRuntime
+	if err := status.Write(snapshot); err != nil {
+		fmt.Fprintln(os.Stderr, "cannot write driver status snapshot")
+	}
 }

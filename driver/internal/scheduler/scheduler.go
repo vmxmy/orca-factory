@@ -149,9 +149,6 @@ type Scheduler struct {
 	// orcaExhaustedLogged keeps the no-repository human-notice warning to one
 	// line until a repository can receive the notice.
 	orcaExhaustedLogged bool
-	// orcaCreated is the Runtime's terminal create success count last read
-	// back; a change proves a merge correction created a terminal.
-	orcaCreated int
 	// HostMemory, when set, is read once per Tick; a hold stops every new
 	// terminal launch until the reading recovers (OF-603).
 	HostMemory func() (hostmem.Reading, error)
@@ -614,6 +611,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
 	}); ok && !s.orcaRuntime.Paused {
+		counter, counted := s.Backend.(interface{ OrcaTerminalCreates() (int, int) })
+		createdBefore := 0
+		if counted {
+			_, createdBefore = counter.OrcaTerminalCreates()
+		}
 		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
 			problems = append(problems, err)
 			for _, runtimeErr := range terminalCreateRuntimeErrors(err) {
@@ -621,12 +623,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 		}
 		// A merge correction that succeeds returns no error; read the counts back.
-		if counter, ok := s.Backend.(interface{ OrcaTerminalCreates() (int, int) }); ok && !s.orcaRuntime.Paused {
+		if counted && !s.orcaRuntime.Paused {
 			failures, created := counter.OrcaTerminalCreates()
-			if created != s.orcaCreated && failures == 0 {
+			if created != createdBefore {
 				s.clearOrcaRuntime()
 			}
-			s.orcaCreated = created
 			s.orcaRuntime.Failures = failures
 		}
 	}
@@ -927,13 +928,20 @@ func (s *Scheduler) observeOrcaReads(ctx context.Context, answered, unreachable 
 	}
 }
 
-// ObserveOrcaDiscovery wraps serve's first project discovery, which runs
-// before any Tick, so an Orca that never answers still reaches the shared
-// restart path; publish receives the fault state after every attempt.
+// ObserveOrcaDiscovery wraps serve's project discovery. While no repository
+// is tracked, no automation read runs (serve's first discovery, or no eligible
+// project), so discovery stands in for it. Only Orca's own runtime_unavailable
+// counts: a discovery timeout may come from the ledger. publish receives the
+// fault state after every observed attempt.
 func (s *Scheduler) ObserveOrcaDiscovery(discover func(context.Context) (projects.Result, error), publish func(status.OrcaRuntime)) func(context.Context) (projects.Result, error) {
 	return func(ctx context.Context) (projects.Result, error) {
 		result, err := discover(ctx)
-		s.observeOrcaReads(ctx, err == nil, orcaUnreachable(ctx, err))
+		if len(s.Repositories) > 0 {
+			return result, err
+		}
+		var global *infra.Global
+		unavailable := errors.As(err, &global) && global.Dep == infra.Orca && global.Reason == infra.RuntimeUnavailable
+		s.observeOrcaReads(ctx, err == nil, unavailable)
 		publish(s.orcaRuntime)
 		return result, err
 	}

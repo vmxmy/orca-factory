@@ -14,6 +14,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -191,6 +192,11 @@ func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket)
 var errOrcaNoticeNotSent = errors.New("orca runtime notice not sent")
 
 func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
+	release, err := maintenance.Write()
+	if err != nil {
+		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+	}
+	defer release()
 	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
 	if err != nil {
 		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
