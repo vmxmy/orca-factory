@@ -206,8 +206,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
       return
     }
     const bounds = canvas.getBoundingClientRect()
-    const point = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
-    hoverAt = { point, ndc: { x: point.x / bounds.width * 2 - 1, y: 1 - point.y / bounds.height * 2 } }
+    hoverAt = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
   })
   canvas.addEventListener('pointerleave', () => { hoverAt = null })
   canvas.addEventListener('dblclick', () => {
@@ -252,7 +251,7 @@ export const mountDiorama = (stage, { scene, path, ticket, now = () => Date.now(
   const frame = time => {
     lens.step(reduced)
     world.animate(time, reduced)
-    overlay.hover(hoverAt?.point ?? null, lens.camera, hoverAt ? world.pick(hoverAt.ndc, lens.camera) : null)
+    overlay.hover(hoverAt, lens.camera, hoverAt ? world.pick({ x: hoverAt.x / canvas.clientWidth * 2 - 1, y: 1 - hoverAt.y / canvas.clientHeight * 2 }, lens.camera) : null)
     overlay.place(lens.camera, { stop, selected, margins, size })
     world.render(lens.camera)
     request = requestAnimationFrame(frame)

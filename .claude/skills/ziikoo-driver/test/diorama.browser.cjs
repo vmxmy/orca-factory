@@ -380,6 +380,24 @@ async function checkCleanMode(browser, url) {
     assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'a box that moves away from the resting pointer loses its hover label')
     await page.evaluate(scene => window.diorama.update(scene), fixture)
     await frames(page)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 1, 'the box returning under the resting pointer regains its label')
+    const before = page.viewportSize()
+    const wider = { width: Math.round(before.width * 1.5), height: before.height }
+    const resize = async size => {
+      await page.setViewportSize(size)
+      await settled(page)
+      await frames(page)
+    }
+    await resize(wider)
+    const widened = pixelOf((await state(page)).view, { ...normal.slot, y: normal.slot.y + 0.2 }, wider)
+    await resize(before)
+    const resting = { x: widened.x * before.width / wider.width, y: widened.y }
+    await page.mouse.move(resting.x, resting.y)
+    await frames(page)
+    assert.ok(Math.hypot(widened.x - resting.x, widened.y - resting.y) > 60, 'the resting pointer must be away from the widened box for this check')
+    await resize(wider)
+    assert.equal(await ticketLabel('NORMAL-1').count(), 0, 'after a resize the resting pointer is picked in current canvas pixels, not stretched with the canvas')
+    await resize(before)
     await page.mouse.move(0, 0)
     await frames(page)
     assert.equal(await ticketLabel('NORMAL-1').count(), 0)
@@ -1499,27 +1517,19 @@ const humanBadgePaths = (page, identifier, kind) => page.locator('.label.ticket'
   .evaluateAll(nodes => nodes.map(node => node.getAttribute('d')))
 
 // driver/testdata/recorded/driver-status-json-human.json：2026-11-11 本机生产 `orca-factory-driver status --json` 原文（OF-474 之后，含 humanKind/humanReason）。
-// OFPRK-494：driver 的 ObservationRow 以 driver/testdata/recorded/ledger-issue-parked-resume.json 的 parked 票（真实账本录制）为输入生成的
-// `status --json` 票行原文，2026-11-19 由 OF-597 处置生成；stages 依生成时刻，测试不读取。
-const RECORDED_PARKED_ROW = {
-  stages: [{ name: 'Agent处置', seconds: 24 }, { name: '待领', seconds: 644019 }],
-  repo: '/home/laoxu/github/orca-factory', identifier: 'OFPRK-494', owner: '无', phase: '待领', blockedReason: 'parked: lane 3 路径须人合并',
-}
-
+// driver/testdata/recorded/driver-status-json-parked.json：driver ObservationRow 以 ledger-issue-parked-resume.json 的 parked 票（真实账本录制）
+// 生成的 `status --json` 票行，TestRecordedParkedObservationRow 锁定两者一致。
 async function checkRecordedParked(browser, live) {
-  const ledger = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/ledger-issue-parked-resume.json'))
-  const parkedComment = ledger.parked.comments.nodes.find(comment => comment.body.startsWith('搁置：')).body
-  assert.equal(RECORDED_PARKED_ROW.identifier, ledger.parked.identifier)
-  assert.equal(RECORDED_PARKED_ROW.blockedReason, `parked: ${parkedComment.split('\n')[0].slice('搁置：'.length)}`, 'the embedded row must carry the recorded 搁置 reason')
+  const parked = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-parked.json'))
   const snapshot = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-human.json'))
-  live.write({ ...snapshot, tickets: [RECORDED_PARKED_ROW] })
-  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(RECORDED_PARKED_ROW.repo)}`, { renderMode: 'clean' })
+  live.write({ ...snapshot, tickets: [parked] })
+  const { page, errors } = await open(browser, `${live.origin()}/?t=${live.token}&project=${encodeURIComponent(parked.repo)}`, { renderMode: 'clean' })
   try {
-    await page.waitForFunction(() => document.querySelector('.labels').textContent.includes('OFPRK-494'))
+    await page.waitForFunction(id => document.querySelector('.labels').textContent.includes(id), parked.identifier)
     await frames(page)
-    assert.equal(await page.locator('.label.ticket:visible').filter({ hasText: 'OFPRK-494 · 等人' }).count(), 1, 'clean mode labels the recorded parked ticket')
+    assert.equal(await page.locator('.label.ticket:visible').filter({ hasText: `${parked.identifier} · 等人` }).count(), 1, 'clean mode labels the recorded parked ticket')
     assert.deepEqual(errors, [])
-    console.log('PASS recorded parked ticket: production status row keeps its clean-mode label')
+    console.log('PASS recorded parked ticket: driver status row keeps its clean-mode label')
   } finally {
     await page.close()
   }
