@@ -64,7 +64,10 @@ func (r *Registry) Record(status Status) error {
 		return err
 	}
 	key := status.Ref.Key()
-	if statuses[key].CheckedAt.After(status.CheckedAt) {
+	prev := statuses[key]
+	// An inconclusive probe does not end a cooldown that is still running.
+	cooling := prev.State == Unavailable && prev.Until.After(status.CheckedAt) && status.State == Unknown
+	if prev.CheckedAt.After(status.CheckedAt) || cooling {
 		r.statuses = statuses
 		return nil
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -99,7 +100,7 @@ type doctorProbe struct {
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
 	modelSettings   func() doctorModelSettings
-	modelProbe      func(ctx context.Context, ref modelhealth.Ref, dir, baseURL string) modelhealth.Status
+	modelProbe      func(ctx context.Context, ref modelhealth.Ref, dir string, endpoint modelhealth.Endpoint) modelhealth.Status
 	recordModels    bool
 }
 
@@ -156,15 +157,17 @@ func newDoctorProbe() (doctorProbe, error) {
 		recordModels: true,
 		modelSettings: func() doctorModelSettings {
 			proxy, proxyErr := config.ModelProxyURL(home)
-			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr, intakePi: os.Getenv("AGENT_INTAKE_PI")}
-			if settings.intakePi == "" {
+			// The intake gateway reads these keys from its environment first, then driver.env.
+			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr,
+				intakePi: strings.TrimSpace(os.Getenv("AGENT_INTAKE_PI")), intakeClaude: strings.TrimSpace(os.Getenv("AGENT_INTAKE_CLAUDE"))}
+			if settings.intakePi == "" || settings.intakeClaude == "" {
 				env, err := (bootstrapProbe{home: home}).driverEnv()
 				if err != nil && !errors.Is(err, os.ErrNotExist) {
-					settings.piErr = err
+					settings.driverEnvErr = err
 				}
-				settings.intakePi = env["AGENT_INTAKE_PI"]
+				settings.intakePi = cmp.Or(settings.intakePi, strings.TrimSpace(env["AGENT_INTAKE_PI"]))
+				settings.intakeClaude = cmp.Or(settings.intakeClaude, strings.TrimSpace(env["AGENT_INTAKE_CLAUDE"]))
 			}
-			settings.intakePi = strings.TrimSpace(settings.intakePi)
 			return settings
 		},
 		factoryRoot: cfg.FactoryRoot,
@@ -796,20 +799,23 @@ type doctorModelStatus struct {
 }
 
 type doctorModelSettings struct {
-	proxyURL string
-	proxyErr error
-	intakePi string
-	piErr    error
+	proxyURL     string
+	proxyErr     error
+	intakePi     string
+	intakeClaude string
+	driverEnvErr error
 }
 
 type doctorModelRole struct {
-	name    string
-	ref     modelhealth.Ref
-	baseURL string
-	reason  string
+	name     string
+	ref      modelhealth.Ref
+	endpoint modelhealth.Endpoint
+	reason   string
 }
 
-func (r doctorModelRole) probeKey() string { return r.ref.Key() + "\x00" + r.baseURL }
+func (r doctorModelRole) probeKey() string {
+	return strings.Join([]string{r.ref.Key(), r.endpoint.Binary, r.endpoint.BaseURL, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+}
 
 func invalidModelRole(name, raw string) doctorModelRole {
 	agent, model, effort := splitTier(raw)
@@ -866,11 +872,12 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 		return doctorModelRole{name: "intake", reason: "not_configured"}
 	}
 	model, effort, err := tierParts(env)
-	if err != nil || s.piErr != nil {
+	if err != nil || s.driverEnvErr != nil {
 		return invalidModelRole("intake", claudeTier)
 	}
 	if pi == "" {
-		return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "claude", Model: model, Effort: effort}}
+		return doctorModelRole{name: "intake", ref: modelhealth.Ref{Agent: "claude", Model: model, Effort: effort},
+			endpoint: modelhealth.Endpoint{Binary: s.intakeClaude, Isolated: true}}
 	}
 	provider, model, thinking, err := intake.ParsePiTier(pi)
 	if err != nil {
@@ -891,11 +898,14 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		case "reviewer", "reviewer_small":
 			hasReviewer = hasReviewer || role.Role == "reviewer"
 			if ref.Agent == "claude" {
-				modelRole.baseURL = s.proxyURL
+				modelRole.endpoint.BaseURL = s.proxyURL
 				if s.proxyErr != nil {
 					modelRole.reason = "model_proxy_invalid"
 				}
 			}
+		case "second_reviewer":
+			// Cross review passes only HOME and PATH (scheduler/crossreview.go).
+			modelRole.endpoint.Isolated = true
 		case "resolver":
 			if !supportedModelAgent(ref.Agent) || strings.Count(role.Raw, ":") > 2 {
 				modelRole = invalidModelRole(role.Role, role.Raw)
@@ -951,19 +961,18 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 				continue
 			}
 			key := role.probeKey()
-			if pending[key] != nil || registry.Status(role.ref, p.now).State == modelhealth.Unavailable {
+			if pending[key] != nil {
 				continue
 			}
 			result := new(modelhealth.Status)
 			pending[key] = result
-			probes.Go(func() { *result = p.modelProbe(probeCtx, role.ref, project.Path, role.baseURL) })
+			probes.Go(func() { *result = p.modelProbe(probeCtx, role.ref, project.Path, role.endpoint) })
 		}
 	}
 	probes.Wait()
+	var recordErr error
 	if p.recordModels {
-		if err := recordModelProbes(registry, pending); err != nil {
-			return unprobed("模型可用性登记无法写入")
-		}
+		recordErr = recordModelProbes(registry, pending)
 	}
 
 	rows := []doctorModelStatus{}
@@ -973,12 +982,8 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		for _, role := range roles {
 			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
 			if role.reason == "" {
-				if result := pending[role.probeKey()]; result != nil {
-					state = *result
-					state.Ref = role.ref
-				} else {
-					state = registry.Status(role.ref, p.now)
-				}
+				state = *pending[role.probeKey()]
+				state.Ref = role.ref
 			}
 			rows = append(rows, doctorModelStatus{Repository: eligible[i].Name, Role: role.name, Status: state})
 			unavailable = unavailable || state.State == modelhealth.Unavailable
@@ -1013,6 +1018,13 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	case unknown:
 		check.Status, check.Reason = healthUnknown, "有模型未能确认可用性"
 	}
+	if recordErr != nil {
+		check.unprobed = true
+		check.Reason += "；模型可用性登记无法写入"
+		if check.Status == healthOK {
+			check.Status = healthUnknown
+		}
+	}
 	return check
 }
 
@@ -1023,7 +1035,9 @@ func recordModelProbes(registry *modelhealth.Registry, probes map[string]*modelh
 	for _, key := range slices.Sorted(maps.Keys(probes)) {
 		result := probes[key]
 		model := result.Ref.Key()
-		if prev := selected[model]; prev == nil || priority[result.State] > priority[prev.State] {
+		// Among unavailable endpoints the latest Until keeps the model out of selection longest.
+		if prev := selected[model]; prev == nil || priority[result.State] > priority[prev.State] ||
+			result.State == modelhealth.Unavailable && prev.State == modelhealth.Unavailable && result.Until.After(prev.Until) {
 			selected[model] = result
 		}
 	}

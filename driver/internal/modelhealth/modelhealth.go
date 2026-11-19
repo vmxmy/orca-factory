@@ -43,6 +43,10 @@ type Status struct {
 	CheckedAt time.Time `json:"checkedAt"`
 }
 
+// usageLimit matches Claude's quota notice, which ends at the limit name or
+// continues with "· resets ...", not any sentence that mentions a limit.
+var usageLimit = regexp.MustCompile(`(?im)^\W*you['’]ve hit your [^\n]*\blimit[ \t]*(?:·|$)`)
+
 var resetDate = regexp.MustCompile(`resets ([A-Z][a-z]{2} [0-9]{1,2}), ([0-9]{1,2}(?::[0-9]{2})?[ap]m) \(([^)]+)\)`)
 
 // Classify retains only reason codes, never raw provider output.
@@ -50,7 +54,7 @@ func Classify(ref Ref, output string, err error, now time.Time) Status {
 	s := Status{Ref: ref, State: Unknown, Reason: "unexpected_output", CheckedAt: now}
 	lower := strings.ToLower(output)
 	switch {
-	case strings.Contains(lower, "you've hit your") && strings.Contains(lower, "limit"):
+	case usageLimit.MatchString(output):
 		s.State, s.Reason = Unavailable, "usage_limit"
 		if match := resetDate.FindStringSubmatch(output); match != nil {
 			if loc, e := time.LoadLocation(match[3]); e == nil {

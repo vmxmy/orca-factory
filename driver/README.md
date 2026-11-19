@@ -644,15 +644,15 @@ worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须�
 
 每个已接管仓库都有 intake 行。doctor 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。两者都为空时，即使配置了 Pi，intake 仍显示 `unknown/not_configured`。校验通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
-Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。未配置代理的 reviewer 及其他角色继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
+Claude 的 `reviewer` 和 `reviewer_small` 探测使用执行器启动 reviewer 时的端点。配置有效的 `AGENT_MODEL_PROXY_URL` 时，两类 reviewer 使用该代理。intake 与飞书网关一致，使用 `AGENT_INTAKE_CLAUDE` 指定的二进制（进程环境优先，再取机器 `driver.env`），只传 `HOME` 和 `PATH`。`second_reviewer` 也只传 `HOME` 和 `PATH`。未配置代理的 reviewer、worker 和 resolver 继承 doctor 进程的环境，包括已有的 `ANTHROPIC_BASE_URL`。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
 
-doctor 跨仓库按 `agent:model` 和端点覆盖值去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点和 reviewer 代理各探测一次。各角色显示本轮对应端点的结果。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low` 和 `--sandbox read-only`。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
+doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离）去重。在首个需要该组合的项目中发送一次 `Reply with exactly: ok`，因此同一模型的继承端点、reviewer 代理和 intake 各探测一次。冷却期内也照常探测，各角色显示本轮对应端点的结果。整批探测并发执行，共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low`、`--sandbox read-only` 和 `--ephemeral`，不留会话文件。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
-成功退出且回复恰为 `ok` 时记为 `ok`。Claude 额度耗尽提示和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
+成功退出且回复恰为 `ok` 时记为 `ok`。以 `You've hit your … limit` 开头、在 `limit` 后结束或接 `·` 的 Claude 额度耗尽提示行和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
 
-`doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`，否则有成功结果就记为 `ok`，其余记为 `unknown`。报告和登记都省略代理地址。下次检查在冷却期内复用登记，到期后重新探测。
+`doctor` 和 `watch` 按 `agent:model` 合并本轮端点结果，同一模型的不同 effort 共用记录。任一端点不可用就记为 `unavailable`（多个端点不可用时取最晚的冷却截止时间），否则有成功结果就记为 `ok`，其余记为 `unknown`。`unknown` 不覆盖未到期的 `unavailable`，`ok` 会结束冷却。报告和登记都省略代理地址。冷却期供派工选择使用。
 
-登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读写失败时，检查报告 `unknown` 并加入 `errors`。`watch --dry-run` 不写该登记，探测结果只用于本轮报告。
+登记默认写入 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。登记读取失败时，检查报告 `unknown` 并加入 `errors`。写入失败时保留本轮各行与判定（`ok` 降为 `unknown`），原因追加写入失败并加入 `errors`。`watch --dry-run` 不写该登记，探测结果只用于本轮报告。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

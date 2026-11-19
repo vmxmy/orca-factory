@@ -25,6 +25,7 @@ func TestClassifyModelOutputs(t *testing.T) {
 		{name: "codex unsupported", fixture: "codex-model-unsupported.txt", err: errors.New("exit 1"), state: "unavailable", reason: "model_not_supported", until: "2026-11-19T10:30:00+08:00"},
 		{name: "normal", output: "ok\n", state: "ok", reason: "probe_ok"},
 		{name: "timeout", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
+		{name: "timeout naming another limit", output: "You've hit your time limit waiting for the proxy", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
 		{name: "network error", err: errors.New("network"), state: "unknown", reason: "probe_failed"},
 		{name: "bare error code", output: "model_not_found", err: errors.New("exit 1"), state: "unknown", reason: "probe_failed"},
 		{name: "unexpected", output: "hello", state: "unknown", reason: "unexpected_output"},
@@ -157,5 +158,31 @@ func TestRegistryRetainsNewerProbe(t *testing.T) {
 		if _, ok := r.Select([]modelhealth.Ref{ref}, newer.CheckedAt); ok {
 			t.Fatal("selected a model in cooldown")
 		}
+	}
+}
+
+func TestRegistryKeepsCooldownOverUnknownProbe(t *testing.T) {
+	r, err := modelhealth.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	limited := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}
+	if err := r.Record(limited); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Record(modelhealth.Classify(ref, "", context.DeadlineExceeded, now.Add(time.Minute))); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Status(ref, now.Add(2*time.Minute)); got != limited {
+		t.Fatalf("after timeout = %+v, want cooldown %+v", got, limited)
+	}
+	recovered := modelhealth.Classify(ref, "ok", nil, now.Add(3*time.Minute))
+	if err := r.Record(recovered); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Status(ref, now.Add(4*time.Minute)); got != recovered {
+		t.Fatalf("after ok = %+v, want %+v", got, recovered)
 	}
 }
