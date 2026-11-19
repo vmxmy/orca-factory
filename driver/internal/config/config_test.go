@@ -1,12 +1,65 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestGearOverrideWinsOverRepository(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	state := t.TempDir()
+	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
+	repo := t.TempDir()
+	for _, args := range [][]string{{"init", repo}, {"-C", repo, "remote", "add", "origin", "git@example.com:team/project.git"}} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %s: %v", out, err)
+		}
+	}
+	dir := filepath.Join(repo, "scripts", "agent-gates")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agent-graph.env"), []byte("AGENT_MODE=auto\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(state, "gear.json")
+	for _, mode := range []string{"manual", "auto", "invalid", ""} {
+		t.Run("override/"+mode, func(t *testing.T) {
+			body := fmt.Sprintf(`{"example.com/team/project":{"mode":%q,"operator":"tester","reason":"maintenance","updatedAt":"2026-11-19T00:00:00Z"}}`, mode)
+			if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+				t.Fatal(err)
+			}
+			got, err := LoadRepository(repo)
+			if mode != "manual" && mode != "auto" {
+				if err == nil {
+					t.Fatal("accepted invalid override")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Env["AGENT_MODE"] != mode || got.Sources["AGENT_MODE"] != "override" {
+				t.Fatalf("mode=%q source=%q, want %q override", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], mode)
+			}
+		})
+	}
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadRepository(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "repository" {
+		t.Fatalf("clear: mode=%q source=%q", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"])
+	}
+}
 
 func TestDefaultMachineLimit(t *testing.T) {
 	home := t.TempDir()

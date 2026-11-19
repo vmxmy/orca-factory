@@ -97,10 +97,12 @@ var configRoles = []struct {
 	{"reviewer_small", []string{"AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_REVIEWER_CMD_SMALL"}, "", parseReviewerCommand},
 	{"second_reviewer", []string{"AGENT_ROLE_SECOND_REVIEWER", "AGENT_ROLE_SECOND_REVIEWER_CMD"}, "", parseReviewerCommand},
 	{"resolver", []string{"AGENT_ROLE_RESOLVER", "AGENT_TIER_STRONG"}, "codex", dispatchTier},
+	{"resolver_top", []string{"AGENT_ROLE_RESOLVER_TOP"}, "", dispatchTier},
 	{"intake", []string{"AGENT_ROLE_INTAKE", "AGENT_TIER_STRONG"}, "", splitTier},
 }
 
 var configRouting = []struct{ key, fallback string }{
+	{"AGENT_MODE", "manual"},
 	{"AGENT_TIER_ESCALATE", ""},
 	{"AGENT_TIER_CHAIN", config.DefaultTierChain},
 	{"AGENT_REVIEWER_SMALL_MAX_ESTIMATE", "2"},
@@ -202,7 +204,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 		}
 		routing := repositoryRouting(p.Repository.Env)
 		for i := range routing {
-			if source := p.Repository.Sources[routing[i].Key]; strings.HasPrefix(source, "profile:") {
+			if source := p.Repository.Sources[routing[i].Key]; strings.HasPrefix(source, "profile:") || source == "override" {
 				routing[i].Source = source
 			}
 		}

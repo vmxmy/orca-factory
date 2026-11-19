@@ -522,6 +522,21 @@ PR 改动命中 `AGENT_LANE2_MANUAL_GLOBS` 时走同一条复核路径（视作�
 
 仓库 env 键 `AGENT_MODE` 取 `manual` 或 `auto`，缺省 `manual`，行为与原流程相同；其他值（含空值）使仓库配置加载失败。从 `manual` 切到 `auto` 不补处理已转人的历史票。
 
+本机可用 `gear` 覆盖仓库档位，无需修改 env 文件：
+
+```sh
+orca-factory-driver gear status --json
+orca-factory-driver gear set OF manual --operator laoxu --reason '暂停自动处置'
+orca-factory-driver gear set /path/to/repo auto --operator laoxu --reason '恢复自动处置'
+orca-factory-driver gear clear OF
+```
+
+`status` 列出接管仓库的生效档位及来源 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
+
+覆盖按规范化 origin remote 保存在状态目录的 `gear.json`，同一 remote 的检出共用覆盖。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。文件原子替换，下次加载仓库配置时生效，不需要重启服务。每次写入输出一行日志，含操作者与理由。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
+
+手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
+
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 
 1. 普通处置 escalate 先进入一次终审。
