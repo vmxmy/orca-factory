@@ -1049,29 +1049,162 @@ else console.log(${JSON.stringify(JSON.stringify(status))})
   fs.renameSync(`${file}.next`, file)
 }
 
-const launchServer = (bun, temp, token, port) => {
+const launchServer = (bun, temp, token, port, extraEnv = {}) => {
   const bunDir = path.isAbsolute(bun) ? `${path.dirname(bun)}:` : ''
-  const env = { ...process.env, PATH: `${temp}:${bunDir}${process.env.PATH}`, ZIIKOO_SCENE_TOKEN: token, ZIIKOO_SCENE_BIND: '127.0.0.1', ZIIKOO_SCENE_PORT: String(port) }
+  const env = {
+    ...process.env,
+    PATH: `${temp}:${bunDir}${process.env.PATH}`,
+    ZIIKOO_SCENE_ACCESS: 'token',
+    ZIIKOO_SCENE_TOKEN: token,
+    ZIIKOO_SCENE_BIND: '127.0.0.1',
+    ZIIKOO_SCENE_PORT: String(port),
+    ...extraEnv,
+  }
   const child = spawn(bun, [path.join(plugin, 'scene/server.ts')], { env, stdio: ['ignore', 'pipe', 'inherit'] })
-  const origin = new Promise((resolve, reject) => {
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })))
+  const listening = new Promise((resolve, reject) => {
     let output = ''
     const timer = setTimeout(() => reject(new Error('scene server did not listen')), 15000)
     child.on('exit', code => reject(new Error(`scene server exited ${code}`)))
     child.stdout.on('data', bytes => {
       output += bytes
-      const match = /listening (http:\/\/[^/]+)/.exec(output)
+      const match = /listening (http:\/\/\S+)\r?\n/.exec(output)
       if (match) {
         clearTimeout(timer)
         resolve(match[1])
       }
     })
   })
+  const origin = listening.then(url => new URL(url).origin)
   const halt = () => new Promise(resolve => {
     if (child.exitCode !== null || child.signalCode !== null) return resolve()
     child.once('exit', resolve)
     child.kill('SIGTERM')
   })
-  return { origin, halt }
+  return { origin, listening, exited, halt }
+}
+
+const pause = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function checkSceneServerCaching(bun, temp) {
+  const token = crypto.randomBytes(24).toString('hex')
+  const server = launchServer(bun, temp, token, 0, { ZIIKOO_SCENE_MAX_CLIENTS: '2' })
+  try {
+    const origin = await server.origin
+    const request = (route, init) => fetch(`${origin}${route}?t=${token}`, init)
+    for (const [route, maxAge] of [
+      ['/live.mjs', '300'],
+      ['/diorama/index.mjs', '300'],
+      ['/diorama/diorama.css', '300'],
+      ['/vendor/three.module.min.js', '86400'],
+    ]) {
+      const response = await request(route)
+      assert.equal(response.status, 200, `${route} must serve with the token`)
+      assert.equal(response.headers.get('cache-control'), `public, max-age=${maxAge}`, `${route} cache lifetime`)
+      await response.body?.cancel()
+    }
+    for (const route of ['/', '/snapshot']) {
+      const response = await request(route)
+      assert.equal(response.headers.get('cache-control'), 'no-store', `${route} must not be cached`)
+      await response.body?.cancel()
+    }
+    const controllers = [new AbortController(), new AbortController()]
+    const events = await Promise.all(controllers.map(controller => request('/events', { signal: controller.signal })))
+    assert.deepEqual(events.map(response => response.status), [200, 200], 'two event streams fit the client limit')
+    const rejected = await request('/events')
+    assert.equal(rejected.status, 503, 'the third event stream exceeds ZIIKOO_SCENE_MAX_CLIENTS')
+    assert.equal(rejected.headers.get('retry-after'), '5')
+    await rejected.body?.cancel()
+    controllers[0].abort()
+    await pause(100)
+    const replacement = await request('/events')
+    assert.equal(replacement.status, 200, 'a closed event stream frees its slot')
+    await replacement.body?.cancel()
+    controllers[1].abort()
+  } finally {
+    await server.halt()
+  }
+  console.log('PASS scene server: static files are cached and event streams respect ZIIKOO_SCENE_MAX_CLIENTS')
+}
+
+const assertSecurityHeaders = (response, route) => {
+  assert.equal(response.headers.get('x-content-type-options'), 'nosniff', `${route} must send nosniff`)
+  const csp = response.headers.get('content-security-policy') ?? ''
+  assert.ok(csp.includes("frame-ancestors 'none'"), `${route} CSP must forbid framing: ${csp}`)
+  const scripts = csp.split(';').map(directive => directive.trim()).find(directive => directive.startsWith('script-src')) ?? ''
+  assert.ok(scripts.startsWith("script-src 'self' 'sha256-"), `${route} CSP must pin the importmap hash: ${csp}`)
+  assert.ok(!scripts.includes('unsafe-inline'), `${route} CSP must not allow inline scripts: ${csp}`)
+}
+
+async function checkPublicSceneServer(bun, temp) {
+  const publicEnv = { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_TOKEN: undefined, ZIIKOO_SCENE_MAX_CLIENTS: '3' }
+  const server = launchServer(bun, temp, '', 0, publicEnv)
+  try {
+    const listening = await server.listening
+    assert.ok(!listening.includes('?t='), `public mode must print an address without a token: ${listening}`)
+    const origin = await server.origin
+    const request = async (route, source, init = {}) => {
+      const response = await fetch(origin + route, { ...init, headers: source ? { 'CF-Connecting-IP': source } : {} })
+      assertSecurityHeaders(response, route)
+      return response
+    }
+    const home = await request('/')
+    assert.equal(home.status, 200, 'public mode serves the page without a token')
+    assert.ok(!(await home.text()).includes('__TOKEN__'), 'public mode must replace the token placeholder')
+    assert.equal((await request('/missing')).status, 404)
+    assert.equal((await request('/', undefined, { method: 'POST' })).status, 404)
+
+    const first = new AbortController()
+    const streams = [await request('/events', '192.0.2.1', { signal: first.signal }), await request('/events', '192.0.2.1')]
+    assert.deepEqual(streams.map(response => response.status), [200, 200], 'one source may hold two event streams')
+    const rejected = await request('/events', '192.0.2.1')
+    assert.equal(rejected.status, 429, 'the third event stream from one source must be refused')
+    assert.ok(Number(rejected.headers.get('retry-after')) > 0, 'the refused event stream must carry Retry-After')
+    await rejected.body?.cancel()
+    streams.push(await request('/events', '192.0.2.2'))
+    assert.equal(streams[2].status, 200, 'another source is not limited by the first one')
+    assert.equal((await request('/events', '192.0.2.3')).status, 503, 'ZIIKOO_SCENE_MAX_CLIENTS still caps all streams')
+    first.abort()
+    await pause(100)
+    const replacement = await request('/events', '192.0.2.1')
+    assert.equal(replacement.status, 200, 'a closed stream frees the source slot')
+    await replacement.body?.cancel()
+    await streams[1].body?.cancel()
+    await streams[2].body?.cancel()
+
+    for (let index = 1; index <= 121; index++) {
+      const response = await request('/live.mjs', '192.0.2.4')
+      assert.equal(response.status, index <= 120 ? 200 : 429, `request ${index} from one source within 60 seconds`)
+      if (index === 121) assert.ok(Number(response.headers.get('retry-after')) > 0, 'the refused request must carry Retry-After')
+      await response.body?.cancel()
+    }
+    const other = await request('/live.mjs', '192.0.2.5')
+    assert.equal(other.status, 200, 'another source keeps its own request budget')
+    await other.body?.cancel()
+    // The homepage and the two 404 routes already spent three requests of the local budget.
+    for (let index = 4; index <= 121; index++) {
+      const response = await request('/live.mjs')
+      assert.equal(response.status, index <= 120 ? 200 : 429, `local request ${index} without CF-Connecting-IP`)
+      await response.body?.cancel()
+    }
+  } finally {
+    await server.halt()
+  }
+
+  for (const env of [
+    { ...publicEnv, ZIIKOO_SCENE_BIND: '0.0.0.0' },
+    { ...publicEnv, ZIIKOO_SCENE_ACCESS: 'invalid' },
+    { ZIIKOO_SCENE_TOKEN: undefined },
+  ]) {
+    const refused = launchServer(bun, temp, 'unused', 0, env)
+    refused.origin.catch(() => {})
+    const timer = setTimeout(() => refused.halt(), 2000)
+    const { code, signal } = await refused.exited
+    clearTimeout(timer)
+    assert.equal(signal, null, `${JSON.stringify(env)} must exit on its own`)
+    assert.ok(code > 0, `${JSON.stringify(env)} must fail to start (exit ${code})`)
+  }
+  console.log('PASS public scene server: no token, per-source stream and request limits, security headers, loopback only')
 }
 
 async function waitForSnapshot(origin, token) {
@@ -1613,6 +1746,8 @@ async function checkProduction(browser, bun, model) {
     },
   }
   try {
+    await checkSceneServerCaching(bun, temp)
+    await checkPublicSceneServer(bun, temp)
     await checkTokens(origin, token)
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')

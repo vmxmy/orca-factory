@@ -193,6 +193,7 @@ test('工坊沙盘按钮启动带 token 的 Bun 服务并打开监听 URL', { op
   expect(spawns[0]?.env?.ZIIKOO_SCENE_TOKEN).toMatch(/^[a-f0-9]{64}$/)
   expect(spawns[0]?.env?.ZIIKOO_SCENE_BIND).toBe('127.0.0.1')
   expect(spawns[0]?.env?.ZIIKOO_SCENE_PORT).toBe('0')
+  expect(spawns[0]?.env?.ZIIKOO_SCENE_ACCESS).toBe('token')
   expect(clipboard.texts).toEqual(['http://127.0.0.1:43210/?t=x'])
   expect(clipboard.surfaces).toEqual(['terminal'])
   expect(calls).toContainEqual(['xdg-open', 'http://127.0.0.1:43210/?t=x'])
