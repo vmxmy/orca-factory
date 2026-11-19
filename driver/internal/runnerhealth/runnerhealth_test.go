@@ -117,19 +117,21 @@ func TestAlertTicketListsOverlappingTicketsAsRelated(t *testing.T) {
 			if err := m.Poll(context.Background(), start); err != nil {
 				t.Fatal(err)
 			}
+			before := len(tickets.created)
 			err := m.Poll(context.Background(), start.Add(10*time.Minute))
 			if (err != nil) != retryFails {
 				t.Fatalf("Poll error = %v, want failure %v", err, retryFails)
 			}
-			if len(tickets.created) != 2 {
-				t.Fatalf("Create calls = %d, want 2 in the same poll", len(tickets.created))
+			round := tickets.created[before:]
+			if len(round) != 2 {
+				t.Fatalf("Create calls during second Poll = %d, want 2 (before = %d)", len(round), before)
 			}
-			if !slices.Equal(tickets.created[1].Related, ids) {
-				t.Fatalf("Related = %v, want %v", tickets.created[1].Related, ids)
+			if !slices.Equal(round[1].Related, ids) {
+				t.Fatalf("Related = %v, want %v", round[1].Related, ids)
 			}
 			want := `DEPENDENCIES: {"blockers":[],"related":["11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222"]}`
-			if !slices.Contains(strings.Split(tickets.created[1].Description, "\n"), want) {
-				t.Fatalf("description missing %q: %s", want, tickets.created[1].Description)
+			if !slices.Contains(strings.Split(round[1].Description, "\n"), want) {
+				t.Fatalf("description missing %q: %s", want, round[1].Description)
 			}
 			rec := readRecord(t, m)
 			if retryFails {
