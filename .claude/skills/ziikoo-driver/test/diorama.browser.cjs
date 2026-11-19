@@ -265,7 +265,8 @@ async function launchPage(browser, url, { webgl = true, controlledFrames = false
   const errors = []
   const requests = []
   page.on('pageerror', error => errors.push(error.message))
-  page.on('console', message => { if (message.type() === 'error' && message.text().includes('Content Security Policy')) errors.push(message.text()) })
+  await page.exposeBinding('reportCspViolation', (_, violation) => errors.push(`CSP ${violation}`))
+  await page.addInitScript(() => document.addEventListener('securitypolicyviolation', event => window.reportCspViolation(`${event.violatedDirective} ${event.blockedURI}`)))
   page.on('request', request => requests.push(request.url()))
   await page.goto(url)
   return { page, errors, requests }
