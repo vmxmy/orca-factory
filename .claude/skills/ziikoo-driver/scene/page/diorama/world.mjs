@@ -387,6 +387,7 @@ export const createWorld = canvas => {
   scene.add(sun)
   const raycaster = new THREE.Raycaster()
   let sky = 'clear'
+  let pulses = new Map()
   let built = { content: null, sea: null, parcels: new Map(), targets: [] }
   let islands = []
 
@@ -456,7 +457,24 @@ export const createWorld = canvas => {
         if (parcel.from) parcelTransition(parcel, time, reduced)
         mark.position.y = reduced ? MARK_Y : MARK_Y + Math.sin(time / 500 + group.position.x) * 0.08
         mark.rotation.y = reduced ? 0 : time / 1400
+        const pulse = pulses.get(parcel.id)
+        if (pulse && pulse > time) {
+          mark.visible = true
+          const amount = reduced ? 1.18 : 1 + 0.28 * Math.max(0, 1 - (pulse - time) / 3200)
+          mark.scale.setScalar(amount)
+        } else {
+          mark.visible = parcel.view.alert !== null
+          mark.scale.setScalar(1)
+        }
       }
+    },
+    frame(next) {
+      const animationNow = performance.now()
+      const wallNow = Date.now()
+      pulses = new Map((next?.pulses ?? []).map(pulse => [
+        `${pulse.path ?? ''}\0${pulse.ticket ?? ''}`,
+        animationNow + Math.max(0, pulse.expiresAt - wallNow),
+      ]))
     },
     render(camera) {
       renderer.render(scene, camera)

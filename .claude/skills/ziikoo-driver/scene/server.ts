@@ -138,7 +138,7 @@ const poll = async (kind: 'status' | 'config') => {
 
 const files: Record<string, { path: string; type: string }> = {
   '/live.mjs': { path: 'live.mjs', type: 'text/javascript; charset=utf-8' },
-  ...Object.fromEntries(['index', 'model', 'world', 'camera', 'hud', 'overlay'].map(name => [`/diorama/${name}.mjs`, { path: `diorama/${name}.mjs`, type: 'text/javascript; charset=utf-8' }])),
+  ...Object.fromEntries(['index', 'model', 'world', 'camera', 'hud', 'overlay', 'view-state'].map(name => [`/diorama/${name}.mjs`, { path: `diorama/${name}.mjs`, type: 'text/javascript; charset=utf-8' }])),
   '/diorama/diorama.css': { path: 'diorama/diorama.css', type: 'text/css; charset=utf-8' },
   '/vendor/three.module.min.js': { path: 'vendor/three.module.min.js', type: 'text/javascript; charset=utf-8' },
   '/vendor/three.core.min.js': { path: 'vendor/three.core.min.js', type: 'text/javascript; charset=utf-8' },

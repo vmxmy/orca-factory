@@ -19,6 +19,7 @@ const swatch = color => {
 const SKY_NOTES = { overcast: '维护中', dark: '没有快照' }
 const SEARCH_LIMIT = 8
 const EVENT_FEED = 8
+const OWNER_SYMBOLS = { 执行器: '◆', 合并通道: '▣', 处置Agent: '▲', 人: '●', 无: '○' }
 const deployNote = parcel => {
   if (parcel.unknownDeploy) return ['部署：未知 · driver 未提供 deployment']
   return parcel.undeployed ? ['部署：不适用 · 未配置部署'] : []
@@ -42,7 +43,7 @@ export const hubText = (scene, now) => ['调度岛', `driver ${scene.state}`, ..
 const ticketButton = (parcel, details) =>
   element('button', { type: 'button', 'data-ticket': parcel.key, 'aria-pressed': 'false' }, [
     swatch(parcel.color),
-    element('b', { text: parcel.identifier }),
+    element('b', { text: `${OWNER_SYMBOLS[parcel.owner] ?? '○'} ${parcel.identifier}` }),
     ...details,
   ])
 
@@ -77,17 +78,18 @@ const islandButton = island =>
     ...(island.plate.stuck > 0 ? [element('em', { class: island.plate.alert, text: `${island.plate.stuck} 卡住` })] : []),
   ])
 
-const tripHead = (parcel, mode) =>
+const tripHead = (parcel, mode, route) =>
   element('div', { class: 'trip-head' }, [
     element('b', { text: parcel.identifier }),
     element('span', { class: 'title', text: parcel.title }),
-    ...(visibleIn(mode, 'tripHeaderDetails') ? [element('span', { class: 'own' }, [swatch(parcel.color), `归属 ${parcel.owner}`])] : []),
+    ...(visibleIn(mode, 'tripHeaderDetails') ? [element('span', { class: 'own' }, [swatch(parcel.color), `归属 ${OWNER_SYMBOLS[parcel.owner] ?? '○'} ${parcel.owner}`])] : []),
     element('span', { text: [parcel.stationName, ...(visibleIn(mode, 'tripHeaderDetails') ? [parcel.label] : []), `已停留 ${parcel.duration}`].join(' · ') }),
     ...(parcel.reason && (visibleIn(mode, 'tripHeaderDetails') || !parcel.humanReason) ? [element('span', { class: 'why', text: parcel.reason })] : []),
+    ...(route?.next ? [element('span', { class: 'route-next', text: `下一站：${route.next.name}` })] : []),
     ...(parcel.humanReason ? [element('span', { class: 'why human-reason', text: parcel.humanReason })] : []),
   ])
 
-const tripTrack = parcel => {
+const tripTrack = (parcel, route) => {
   if (parcel.stages?.length) {
     const longest = parcel.stages.reduce((best, stage, index) => stage.seconds > parcel.stages[best].seconds ? index : best, 0)
     return element('div', { class: 'track timed' }, parcel.stages.map((stage, index) =>
@@ -99,7 +101,8 @@ const tripTrack = parcel => {
   }
   return element('div', { class: 'track' }, TRACK.map((step, index) => {
     const state = parcel.track < 0 ? '' : index < parcel.track ? 'done' : index === parcel.track ? 'now' : ''
-    return element('span', { class: state, text: step.name })
+    const next = route?.next?.station === step.station
+    return element('span', { class: `${state}${next ? ' next' : ''}`, text: step.name })
   }))
 }
 
@@ -261,7 +264,17 @@ const createSearch = (source, pick) => {
   return { form, toggle, open, refresh: () => keepFocus(results, refresh) }
 }
 
-export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout, mode = RENDER_MODE.CLEAN }) => {
+export const createHud = (stage, {
+  onSelect,
+  onStop,
+  onIsland,
+  onMode = () => {},
+  onLayout = () => {},
+  onReadable = () => {},
+  onIdleReveal = () => {},
+  onFollow = () => {},
+  mode = RENDER_MODE.CLEAN,
+}) => {
   let archipelago = { islands: [], tickets: [], stuck: [], global: false }
   let connection = null
   let expanded = false
@@ -273,8 +286,11 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
   const today = element('div', { class: 'today', hidden: '' })
   const alarm = element('ul', { class: 'alarm', role: 'alert', hidden: '' })
   const dock = element('nav', { class: 'dock', 'aria-label': '项目坞', hidden: '' })
+  const idleReveal = element('button', { type: 'button', class: 'idle-reveal', hidden: '', 'aria-expanded': 'false', text: '显示空闲项目' })
   const stops = element('div', { class: 'stops', role: 'group', 'aria-label': '机位' }, stopButtons())
   const search = createSearch(() => archipelago, pick)
+  const followToggle = element('button', { type: 'button', class: 'follow-toggle', 'aria-pressed': 'false', text: '跟随变化' })
+  const readableToggle = element('button', { type: 'button', class: 'readable-toggle', 'aria-pressed': 'false', text: '可读模式' })
   const heading = element('span')
   const count = element('span')
   const stuckList = element('div', { class: 'list' })
@@ -289,10 +305,12 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
   ])
   const eventList = element('ol', { role: 'log', 'aria-live': 'polite', 'aria-relevant': 'additions', 'aria-label': '票据变化' })
   const feed = element('section', { class: 'event-feed', hidden: '', 'aria-label': '最近事件' }, [element('h2', { text: '最近事件' }), eventList])
-  const lead = element('div', { class: 'lead' }, [status, today, alarm, dock])
+  const overview = element('div', { class: 'overview', 'aria-label': '项目概览' })
+  const freshness = element('div', { class: 'freshness', role: 'status', hidden: '' })
+  const lead = element('div', { class: 'lead' }, [status, today, overview, freshness, alarm, idleReveal, dock])
   const modeButton = element('button', { type: 'button', class: 'render-mode', text: '清爽 / 完整', title: 'V 切换清爽 / 完整' })
   modeButton.addEventListener('click', onMode)
-  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle, modeButton]), search.form, panel, feed])
+  const side = element('div', { class: 'side' }, [element('div', { class: 'tools' }, [stops, search.toggle, modeButton, followToggle, readableToggle]), search.form, panel, feed])
   const trip = element('div', { class: 'trip', 'aria-live': 'polite' })
   const hud = element('div', { class: 'hud' }, [element('div', { class: 'hud-top' }, [lead, side]), trip])
   stage.append(hud)
@@ -317,6 +335,15 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
     const button = event.target.closest('button[data-stop]')
     if (button) onStop(Number(button.dataset.stop))
   })
+  idleReveal.addEventListener('click', () => {
+    const expanded = idleReveal.getAttribute('aria-expanded') !== 'true'
+    idleReveal.setAttribute('aria-expanded', String(expanded))
+    idleReveal.textContent = expanded ? '隐藏空闲项目' : '显示空闲项目'
+    onIdleReveal(expanded)
+    dock.querySelectorAll('button.idle').forEach(button => { button.hidden = !expanded })
+  })
+  followToggle.addEventListener('click', () => onFollow(followToggle.getAttribute('aria-pressed') !== 'true'))
+  readableToggle.addEventListener('click', () => onReadable(readableToggle.getAttribute('aria-pressed') !== 'true'))
   for (const list of [panel, dock]) {
     list.addEventListener('click', event => {
       const button = event.target.closest('button')
@@ -352,7 +379,8 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
     },
     events(changes) {
       for (const change of changes) {
-        eventList.prepend(element('li', { 'data-event': change.type, text: change.text, title: change.path }))
+        const key = `${change.path ?? ''}\0${change.ticket ?? change.identifier ?? ''}`
+        eventList.prepend(element('li', { 'data-event': change.type, 'data-pulse-key': key, text: change.text, title: change.path }))
       }
       while (eventList.children.length > EVENT_FEED) eventList.lastElementChild.remove()
       feed.hidden = !visibleIn(mode, 'events') || eventList.children.length === 0
@@ -365,6 +393,10 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
       count.textContent = stuck.length === 0 ? '' : `${stuck.length} 张`
       summary.textContent = `全部票 · ${tickets.length} 张`
       keepFocus(dock, () => dock.replaceChildren(...islands.map(islandButton)))
+      const idle = islands.filter(island => island.idle)
+      idleReveal.hidden = !next.global || idle.length === 0
+      if (idleReveal.hidden) idleReveal.setAttribute('aria-expanded', 'false')
+      dock.querySelectorAll('button.idle').forEach(button => { button.hidden = idleReveal.getAttribute('aria-expanded') !== 'true' })
       keepFocus(stuckList, () => stuckList.replaceChildren(...stuck.map(stuckButton)))
       keepFocus(allList, () => allList.replaceChildren(...tickets.map(listButton)))
       panelVisibility()
@@ -427,7 +459,7 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
         button.setAttribute('aria-current', String(Number(button.dataset.island) === focus))
       }
     },
-    trip(parcel, island) {
+    trip(parcel, island, route) {
       for (const button of panel.querySelectorAll('button[data-ticket]')) {
         button.setAttribute('aria-pressed', String(button.dataset.ticket === parcel?.key))
       }
@@ -439,10 +471,25 @@ export const createHud = (stage, { onSelect, onStop, onIsland, onMode, onLayout,
       const held = trip.dataset.ticket === parcel.key && trip.querySelector('.trip-details')?.open
       trip.dataset.ticket = parcel.key
       const details = element('details', { class: 'trip-details' }, [
-        element('summary', { text: '详情', 'data-details': parcel.key }), tripBaseline(parcel), tripTrack(parcel), ...tripBudget(parcel), ...tripFoot(parcel),
+        element('summary', { text: '详情', 'data-details': parcel.key }), tripBaseline(parcel), tripTrack(parcel, route), ...tripBudget(parcel), ...tripFoot(parcel),
       ])
       details.open = visibleIn(mode, 'tripDetails', { expanded: Boolean(held) })
-      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel, mode), details, tripActions(parcel)))
+      keepFocus(trip, () => trip.replaceChildren(tripHead(parcel, mode, route), details, tripActions(parcel)))
+    },
+    frame(frame) {
+      const { overview: counts, freshness: fresh, readable, follow, idleDisclosure } = frame
+      overview.replaceChildren(...Object.entries({ total: '项目', busy: '忙碌', attention: '关注', idle: '空闲' }).map(([key, label]) => element('span', { class: `count-${key}`, text: `${label} ${counts[key]}` })))
+      freshness.hidden = fresh.mode === 'fresh'
+      freshness.dataset.mode = fresh.mode
+      freshness.textContent = fresh.readableAge
+      idleReveal.hidden = !archipelago.global || idleDisclosure.count === 0
+      idleReveal.setAttribute('aria-expanded', String(idleDisclosure.expanded))
+      idleReveal.textContent = idleDisclosure.expanded ? '隐藏空闲项目' : '显示空闲项目'
+      dock.querySelectorAll('button.idle').forEach(button => { button.hidden = idleDisclosure.collapsed })
+      followToggle.setAttribute('aria-pressed', String(follow.enabled))
+      readableToggle.setAttribute('aria-pressed', String(readable.enabled))
+      stage.classList.toggle('readable', readable.enabled)
+      stage.dataset.freshness = fresh.mode
     },
     remove() {
       hud.remove()

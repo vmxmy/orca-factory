@@ -138,6 +138,7 @@ const ticketLabel = (parcel, mode) => ({
   ...itemOf(
     element('span', {
       class: ['label', 'ticket', parcel.alert === 'bad' ? 'bad' : parcel.overdue ?? parcel.alert ?? ''].join(' ').trim(),
+      'data-owner': parcel.owner,
     }, [
       ...humanBadge(parcel.humanKind),
       mode === RENDER_MODE.CLEAN ? cleanTicketText(parcel) : [parcel.identifier, ...(parcel.since !== undefined && parcel.duration ? [parcel.duration] : []), ...(parcel.overdue ? ['超基线'] : []), ...(parcel.unknown ? ['未知'] : [])].join(' · '),
@@ -188,6 +189,10 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
   let arrows = []
   let tickets = []
   let stations = []
+  let pulseKeys = new Set()
+  let freshnessMode = 'fresh'
+  let idleCollapsed = false
+  let routeStations = new Map()
   let focused = null
   let refocus
   let hovered = null
@@ -218,11 +223,14 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
     const neighborhood = stop === 3 ? stationNeighborhood(tickets.find(ticket => ticket.parcel.key === selected).parcel.station) : null
     const labelPriority = parcel => parcel.key === selected ? 2 : mode === RENDER_MODE.CLEAN && parcel.key === hovered?.key ? 1 : 0
     const marked = tickets
-      .filter(ticket => visibleIn(mode, 'ticket', { parcel: ticket.parcel, hovered: hovered?.key === ticket.parcel.key, selected: ticket.parcel.key === selected }))
+      .filter(ticket => visibleIn(mode, 'ticket', { parcel: ticket.parcel, hovered: hovered?.key === ticket.parcel.key, selected: ticket.parcel.key === selected })
+        || pulseKeys.has(`${ticket.parcel.path ?? ''}\0${ticket.parcel.identifier}`))
       .sort((left, right) => labelPriority(right.parcel) - labelPriority(left.parcel))
     return {
-      tickets: global && mode === RENDER_MODE.CLEAN ? [] : marked,
-      plates: global ? [...plates, ...(hub && visibleIn(mode, 'hub', { state: hubState }) ? [hub] : [])] : [],
+      tickets: global && mode === RENDER_MODE.CLEAN ? marked.filter(ticket => pulseKeys.has(`${ticket.parcel.path ?? ''}\0${ticket.parcel.identifier}`)) : marked,
+      plates: global
+        ? [...plates.filter(plate => !idleCollapsed || !plate.island?.idle), ...(hub && visibleIn(mode, 'hub', { state: hubState }) ? [hub] : [])]
+        : [],
       stations: global ? [] : stations.filter(item => {
         const over = hovered?.station === item.station
         return (!neighborhood || neighborhood.includes(item.station))
@@ -252,6 +260,12 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
     const tags = [...groups, ...shown.stations.map(item => ({ item, point: screenOf(item.position, camera) }))]
     const overflow = []
     for (const tag of tags) {
+      if (tag.item.parcel) {
+        tag.item.node.classList.toggle('pulse', pulseKeys.has(`${tag.item.parcel.path ?? ''}\0${tag.item.parcel.identifier}`))
+      } else {
+        tag.item.node.classList.toggle('route-current', routeStations.get(tag.item.station) === 'current')
+        tag.item.node.classList.toggle('route-next', routeStations.get(tag.item.station) === 'next')
+      }
       const points = tag.members ? tag.members.map(member => member.point) : [tag.point]
       let rect
       for (const point of points) {
@@ -317,7 +331,7 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
       lastScene = archipelago
       refocus ??= heldOf(anchored)
       islands = archipelago.islands
-      plates = islands.map(island => itemOf(plateOf(island, mode), anchorOf(island)))
+      plates = islands.map(island => ({ ...itemOf(plateOf(island, mode), anchorOf(island)), island }))
       hub = archipelago.hub
         ? itemOf(element('span', { class: 'plate hub', hidden: '' }), new Vector3(archipelago.hub.x, HUB_PLATE_Y, archipelago.hub.z))
         : null
@@ -350,6 +364,18 @@ export const createOverlay = (stage, world, { onIsland, mode = RENDER_MODE.CLEAN
       if (!hub || hub.node.textContent === text) return
       hub.node.textContent = text
       hub.size = null
+    },
+    frame(next) {
+      pulseKeys = new Set((next?.pulses ?? []).map(pulse => `${pulse.path ?? ''}\0${pulse.ticket ?? ''}`))
+      freshnessMode = next?.freshness?.mode ?? 'fresh'
+      idleCollapsed = next?.idleDisclosure?.collapsed ?? false
+      routeStations = new Map([
+        ...(next?.selected?.current ? [[next.selected.current.station, 'current']] : []),
+        ...(next?.selected?.next ? [[next.selected.next.station, 'next']] : []),
+      ])
+      anchored.dataset.freshness = next?.freshness?.mode ?? 'fresh'
+      for (const plate of plates) plate.node.dataset.freshness = freshnessMode
+      if (hub) hub.node.dataset.freshness = freshnessMode
     },
     place(camera, { stop, selected, margins, size }) {
       viewport = size

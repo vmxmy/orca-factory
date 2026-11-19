@@ -196,6 +196,46 @@ async function checkModel() {
   return model
 }
 
+async function checkViewState(model) {
+  const view = await import(pathToFileURL(path.join(plugin, 'scene/page/diorama/view-state.mjs')))
+  const scene = { generatedAt: 1_000_000, state: 'ok', maintenance: 'running', rows: [
+    row([parcel('A-1', 'work'), parcel('A-2', 'repair', { tone: 'attention' })]),
+    row([parcel('B-1', 'human', { tone: 'failed' })]),
+    row([]),
+  ] }
+  scene.rows[1].name = 'second'
+  scene.rows[1].path = '/second'
+  scene.rows[2].name = 'third'
+  scene.rows[2].path = '/third'
+  const archipelago = model.archipelagoOf(scene)
+  const reducer = view.createViewState({ scene, archipelago, selected: archipelago.tickets[0].key, now: () => 1_000_000 })
+  let frame = reducer.frame(1_000_000)
+  assert.deepEqual(frame.overview, { total: 3, busy: 2, attention: 2, idle: 1 })
+  assert.equal(frame.selected.current.station, 'work')
+  assert.equal(frame.selected.next.station, 'gate')
+  assert.equal(frame.freshness.mode, 'fresh')
+  assert.equal(frame.follow.enabled, false)
+  const repair = archipelago.tickets.find(ticket => ticket.identifier === 'A-2')
+  reducer.select(repair.key)
+  frame = reducer.frame(1_000_000)
+  assert.deepEqual(frame.selected.current, { station: 'repair', name: '处置塔前' })
+  assert.deepEqual(frame.selected.next, { station: 'human', name: '人工台' })
+  reducer.follow(true)
+  reducer.notify([{ type: 'move', path: '/fixture', ticket: 'A-1', text: 'move' }], 1_000_000)
+  frame = reducer.frame(1_000_100)
+  assert.equal(frame.pulses.length, 1)
+  assert.equal(frame.pulses[0].key, '/fixture\0A-1')
+  assert.equal(frame.follow.target.key, '/fixture\0A-1')
+  reducer.acknowledgeFollow()
+  assert.equal(reducer.frame(1_000_100).follow.target, null)
+  reducer.notify([{ type: 'move', path: '/fixture', ticket: 'A-1', text: 'move again' }], 1_000_100)
+  assert.equal(reducer.frame(1_000_200).pulses.length, 1, 'same project and ticket must not duplicate a local pulse')
+  assert.equal(reducer.frame(1_004_000).pulses.length, 0, 'local pulses must expire')
+  reducer.link({ online: false, closed: false, failures: [] })
+  assert.equal(reducer.frame(1_004_000).freshness.mode, 'disconnected')
+  console.log('PASS pure diorama view state: overview, route, freshness, idempotent bounded pulses and opt-in follow')
+}
+
 function dependencies() {
   let playwright
   if (process.env.PLAYWRIGHT_PATH) playwright = require(process.env.PLAYWRIGHT_PATH)
@@ -848,11 +888,15 @@ async function checkIslandStatus(browser, url) {
   const { page, errors } = await open(browser, url)
   try {
     const plates = page.locator('button.plate:visible')
-    assert.equal(await plates.count(), 6, 'the recorded fixture must show all six project plates')
+    assert.equal(await plates.count(), 1, 'global view must initially show only the active project plate')
     const factory = plates.filter({ has: page.locator('b', { hasText: /^orca-factory$/ }) })
     assert.equal(await factory.locator('span').first().innerText(), '忙碌 · 在途 2', 'orca-factory must show its busy status and two in-flight tickets')
-    const idle = plates.filter({ hasNot: page.locator('b', { hasText: /^orca-factory$/ }) })
+    const idle = page.locator('button.plate').filter({ hasNot: page.locator('b', { hasText: /^orca-factory$/ }) })
     assert.equal(await idle.count(), 5)
+    assert.equal(await idle.first().isVisible(), false, 'idle project plates must be folded until explicitly shown')
+    await page.locator('button.idle-reveal').click()
+    await frames(page)
+    assert.equal(await page.locator('button.plate:visible').count(), 6, 'revealing idle projects must show all six plates')
     for (const plate of await idle.all()) {
       assert.equal(await plate.locator('span').first().innerText(), '空闲', 'every other recorded project must be idle')
     }
@@ -861,7 +905,7 @@ async function checkIslandStatus(browser, url) {
     assert.equal(await factory.locator('span').first().isVisible(), true, 'busy status must stay visible on narrow screens')
     for (const plate of await idle.all()) assert.equal(await plate.locator('span').first().isVisible(), true, 'idle status must stay visible on narrow screens')
     assert.deepEqual(errors, [])
-    console.log('PASS island status: six recorded projects, busy factory with two in-flight tickets, five idle islands')
+    console.log('PASS island status: busy factory is visible first, idle projects reveal on demand, narrow status stays readable')
     const blocked = readJSON(path.join(preview, 'diorama-scene-dependencies.json'))
     await page.setViewportSize({ width: 1280, height: 800 })
     await page.evaluate(scene => window.diorama.update(scene), blocked)
@@ -1114,7 +1158,11 @@ async function checkMainPath(browser, url) {
     assert.equal(start.stop, 1, 'several projects must open at the global stop')
     assert.ok(await paintedShare(page) > 0.2, 'the global stop must render islands, not a blank sea')
     const { islands } = await page.evaluate(() => window.diorama.archipelago)
-    assert.equal(await page.locator('button.plate:visible').count(), islands.length, 'every island must show its name plate')
+    assert.ok(await page.locator('button.idle-reveal:visible').count(), 'the global stop must disclose its idle-project control')
+    assert.equal(await page.locator('button.plate:visible').count(), 1, 'the global stop must foreground the active island plate')
+    await page.locator('button.idle-reveal').click()
+    await frames(page)
+    assert.equal(await page.locator('button.plate:visible').count(), islands.length, 'revealing idle projects must show every island plate')
     assert.equal(await page.locator('.dock').isVisible(), false, 'the project dock must hide at the global stop')
     assert.equal(await page.locator('.stuck > .list button[data-ticket]').count(), 2)
 
@@ -1124,7 +1172,7 @@ async function checkMainPath(browser, url) {
       await page.keyboard.press('Tab')
     }
     const focused = await page.evaluate(() => document.activeElement?.querySelector('b').textContent)
-    assert.equal(focused, 'OF-415', 'the stuck list must be reachable with Tab')
+    assert.equal(focused, '▲ OF-415', 'the stuck list must be reachable with Tab and keep the owner cue')
     await page.keyboard.press('Enter')
     const entered = await state(page)
     assert.deepEqual([entered.stop, entered.focus, entered.selected], [2, '/home/laoxu/github/orca-factory', 'OF-415'], 'a stuck ticket must open its island and select it')
@@ -1135,7 +1183,7 @@ async function checkMainPath(browser, url) {
     const reads = await layoutReadsOver20Frames(page)
     assert.ok(reads <= 20, `label placement and hover picking under a resting pointer must not read layout more than once per frame (${reads} reads in 20 frames)`)
     const trip = await page.locator('.trip').innerText()
-    for (const text of ['OF-415', '归属 处置Agent', '处置塔前', '二线处理中']) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
+    for (const text of ['OF-415', '归属 ▲ 处置Agent', '处置塔前', '二线处理中']) assert.ok(trip.includes(text), `trip bar must show ${text}: ${trip}`)
 
     await settled(page)
     const before = await state(page)
@@ -1182,6 +1230,8 @@ async function checkReducedMotion(browser, url) {
     assert.equal(first.reduced, true)
     assert.ok(first.marks.length > 0, 'the recorded attention tickets must show markers')
     for (const mark of first.marks) assert.deepEqual(mark, { y: MARK_REST, rotation: 0 }, 'markers must not float when motion is reduced')
+    await page.locator('button.idle-reveal:visible').click()
+    await frames(page)
     await page.locator('button.plate[data-island="1"]').focus()
     await page.evaluate(async () => {
       const scene = await (await fetch('./diorama-scene.json')).json()
@@ -2041,6 +2091,7 @@ async function main() {
   const { playwright, chrome, bun } = dependencies()
   execFileSync(bun, [path.join(preview, 'diorama-scene.ts')], { stdio: 'inherit' })
   const model = await checkModel()
+  await checkViewState(model)
   const server = await serve()
   const url = `http://127.0.0.1:${server.address().port}/test/design-preview/diorama.html`
   try {
