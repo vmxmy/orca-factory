@@ -97,6 +97,25 @@ class SupervisorTests(unittest.TestCase):
             archives=list((path.parent/"maintenance").iterdir())
             self.assertEqual(len(archives),1)
             self.assertEqual(archives[0].read_bytes(),original)
+    def test_recorded_runner_list_resolves_exact_name(self):
+        sample=Path(__file__).parents[2]/"driver"/"testdata"/"recorded"/"github"/"actions-runners-list.json"
+        runners=json.loads(sample.read_text())
+        recorded=runners["runners"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"slot-1.json"
+            lease={"active":True,"phase":"registering","name":recorded["name"]}
+            m.save(path,lease)
+            with patch.object(m,"api",return_value=runners),patch.object(m,"inspect_container") as inspect:
+                m.resolve_intent(path,lease,"owner")
+            inspect.assert_not_called()
+            self.assertEqual(json.loads(path.read_text()),{**lease,"id":recorded["id"],"phase":"registered"})
+            absent={"active":True,"phase":"registering","name":"orca-go-absent-1-00000000"}
+            m.save(path,absent)
+            modified=time.time()-11*60
+            os.utime(path,(modified,modified))
+            with patch.object(m,"api",return_value=runners),patch.object(m,"inspect_container",return_value=None),patch.object(m,"event"):
+                m.resolve_intent(path,absent,"owner")
+            self.assertEqual(json.loads(path.read_text())["phase"],"registration_abandoned")
     def test_malformed_runner_list_retains_stale_intent(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "slot-1.json"
