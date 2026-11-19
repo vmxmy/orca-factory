@@ -74,6 +74,9 @@ type Runtime struct {
 	// orcaFailures counts consecutive terminal create runtime_error answers
 	// across every launch path; any terminal create success resets it.
 	orcaFailures int
+	// memoryHeld mirrors the scheduler's host memory hold for the merge
+	// lane, whose corrections launch outside the scheduler's admission checks.
+	memoryHeld bool
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -663,6 +666,9 @@ func (r *Runtime) Launch(ctx context.Context, t Ticket) error {
 		// A merge-lane conflict resume runs the executor as a merge resolver.
 		verb = " exec --merging "
 	}
+	if r.memoryHeld {
+		return &memoryHeldLaunchError{ticket: t}
+	}
 	if r.orcaFailures >= orcaRuntimeFailureThreshold {
 		return &terminalCreateRuntimeError{err: errOrcaRuntimePaused, ticket: t, failures: r.orcaFailures}
 	}
@@ -785,6 +791,17 @@ func launchLog(identifier string) string {
 // OrcaTerminalCreateFailures is the consecutive terminal create runtime_error
 // count, including launches the scheduler only sees through the merge lane.
 func (r *Runtime) OrcaTerminalCreateFailures() int { return r.orcaFailures }
+
+// HoldLaunches applies the scheduler's host memory hold to merge-lane launches.
+func (r *Runtime) HoldLaunches(held bool) { r.memoryHeld = held }
+
+// memoryHeldLaunchError is a launch skipped before terminal create while host
+// memory is held; the scheduler keeps the reservation for after release.
+type memoryHeldLaunchError struct{ ticket Ticket }
+
+func (e *memoryHeldLaunchError) Error() string {
+	return "host memory held: launch deferred " + e.ticket.Identifier
+}
 
 var errOrcaRuntimePaused = errors.New("orca runtime fault: terminal creation paused")
 

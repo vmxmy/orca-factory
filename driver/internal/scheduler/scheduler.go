@@ -578,9 +578,21 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 	if merger, ok := s.Backend.(interface {
 		AdvanceMerges(context.Context, []Ticket) error
 	}); ok && !s.orcaRuntime.Paused {
+		if holder, ok := s.Backend.(interface{ HoldLaunches(bool) }); ok {
+			holder.HoldLaunches(memoryHeld)
+		}
 		if err := merger.AdvanceMerges(ctx, s.MergeQueue); err != nil {
-			problems = append(problems, err)
-			for _, runtimeErr := range terminalCreateRuntimeErrors(err) {
+			if !onlyMemoryHeld(err) {
+				problems = append(problems, err)
+			}
+			for _, held := range joinedErrors[*memoryHeldLaunchError](err) {
+				s.decision(held.ticket, "skip", "memory", "action", "merge-correction")
+				if s.runtimePending == nil {
+					s.runtimePending = map[string]Ticket{}
+				}
+				s.runtimePending[held.ticket.ID] = held.ticket
+			}
+			for _, runtimeErr := range joinedErrors[*terminalCreateRuntimeError](err) {
 				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
 			}
 		}
@@ -918,19 +930,40 @@ func (s *Scheduler) HostMemoryStatus() status.HostMemory { return s.hostMemory }
 // OrcaRuntime is the terminal-create fault state serve publishes in its status.
 func (s *Scheduler) OrcaRuntime() status.OrcaRuntime { return s.orcaRuntime }
 
-// terminalCreateRuntimeErrors finds every rejection in a joined merge-lane error.
-func terminalCreateRuntimeErrors(err error) []*terminalCreateRuntimeError {
+// onlyMemoryHeld reports a merge-lane error whose every leaf is a deferred
+// launch, which is a hold and not a tick failure.
+func onlyMemoryHeld(err error) bool {
+	if _, ok := err.(*memoryHeldLaunchError); ok {
+		return true
+	}
 	switch e := err.(type) {
-	case *terminalCreateRuntimeError:
-		return []*terminalCreateRuntimeError{e}
 	case interface{ Unwrap() []error }:
-		var found []*terminalCreateRuntimeError
 		for _, inner := range e.Unwrap() {
-			found = append(found, terminalCreateRuntimeErrors(inner)...)
+			if !onlyMemoryHeld(inner) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return onlyMemoryHeld(e.Unwrap())
+	}
+	return false
+}
+
+// joinedErrors finds every E in a joined merge-lane error.
+func joinedErrors[E error](err error) []E {
+	if target, ok := err.(E); ok {
+		return []E{target}
+	}
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		var found []E
+		for _, inner := range e.Unwrap() {
+			found = append(found, joinedErrors[E](inner)...)
 		}
 		return found
 	case interface{ Unwrap() error }:
-		return terminalCreateRuntimeErrors(e.Unwrap())
+		return joinedErrors[E](e.Unwrap())
 	}
 	return nil
 }

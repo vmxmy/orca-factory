@@ -69,7 +69,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, err
 		}
 		runtime.Version = version
-		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval, HostMemory: readHostMemory}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()
 			if err != nil {
@@ -225,6 +225,9 @@ func serveDryRun(ctx context.Context, home string, out io.Writer) error {
 	return dryRunTick(ctx, cfg, repos, runtime, out, time.Now)
 }
 
+// readHostMemory is shared by serve and its dry-run so both judge the same hold.
+var readHostMemory = func() (hostmem.Reading, error) { return hostmem.Read("") }
+
 // statusBackend observes existing reads without issuing additional requests.
 // Preserve optional scheduler capabilities as well as the required Backend.
 type statusBackend struct {
@@ -294,6 +297,12 @@ func (b *statusBackend) NotifyOrcaRuntime(ctx context.Context, ticket scheduler.
 		return source.NotifyOrcaRuntime(ctx, ticket)
 	}
 	return nil
+}
+
+func (b *statusBackend) HoldLaunches(held bool) {
+	if source, ok := b.Backend.(interface{ HoldLaunches(bool) }); ok {
+		source.HoldLaunches(held)
+	}
 }
 
 func (b *statusBackend) NotifyHostMemory(ctx context.Context, memory status.HostMemory) error {

@@ -607,6 +607,7 @@ func (b *runtimeFailureBackend) NotifyOrcaRuntime(context.Context, Ticket) error
 func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
 	return b.runtime.OrcaTerminalCreateFailures()
 }
+func (b *runtimeFailureBackend) HoldLaunches(held bool) { b.runtime.HoldLaunches(held) }
 func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	b.merges++
 	if b.merge == nil {
@@ -864,6 +865,49 @@ func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
 		if _, ok := s.runtimePending[ticket.ID]; !ok {
 			t.Fatalf("correction reservation %s not kept for retry: %v", ticket.Identifier, s.runtimePending)
 		}
+	}
+}
+
+// A merge correction reached while host memory is held creates no terminal and
+// keeps its reservation; the first tick after release launches it once.
+func TestMergeCorrectionWaitsWhileHostMemoryHeld(t *testing.T) {
+	x := newRuntimeFailureFixture(t, 0)
+	s, b, f := x.s, x.b, x.f
+	x.oc.failing = false
+	ticket := correctionTickets(t, x, "OF-9")[0]
+	s.Repositories = []config.Repository{{Path: ticket.Repo, MaxInFlight: 2, StaleHours: 8}}
+	f.tickets = []Ticket{ticket}
+	b.merge = func(ctx context.Context) error {
+		if b.merges > 1 {
+			return nil
+		}
+		if err := b.runtime.Launch(ctx, ticket); err != nil {
+			return fmt.Errorf("merge waiting %s: %w", ticket.Identifier, err)
+		}
+		return nil
+	}
+	reading := hostmem.Reading{Source: "host", Available: 5 << 30}
+	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	skipped := false
+	for _, decision := range captureDecisions(t, s) {
+		skipped = skipped || (decision["ticket_id"] == ticket.ID && decision["event"] == "skip" && decision["reason"] == "memory")
+	}
+	if x.oc.creates != 0 || !skipped {
+		t.Fatalf("held merge correction: creates=%d memory skip=%v", x.oc.creates, skipped)
+	}
+	if got, ok := s.runtimePending[ticket.ID]; !ok || got.Attempt != 1 || got.Phase != machine.PhaseCorrection {
+		t.Fatalf("held merge correction reservation = %+v, %v", got, ok)
+	}
+	if got := s.OrcaRuntime(); got.Failures != 0 || got.Paused {
+		t.Fatalf("memory hold counted as an Orca fault: %+v", got)
+	}
+	reading = hostmem.Reading{Source: "host", Available: 30 << 30}
+	*x.now = x.now.Add(time.Minute)
+	_ = s.Tick(context.Background())
+	*x.now = x.now.Add(time.Minute)
+	_ = s.Tick(context.Background())
+	if x.oc.creates != 1 {
+		t.Fatalf("released merge correction creates=%d, want 1", x.oc.creates)
 	}
 }
 

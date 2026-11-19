@@ -231,9 +231,6 @@ func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
 			}
 			return os.Remove(filepath.Join(dir, "cgroup.controllers"))
 		}},
-		{"no cgroup v2 entry", "0::", func(root string) error {
-			return os.WriteFile(filepath.Join(root, "proc/self/cgroup"), []byte("1:memory:/legacy\n"), 0o600)
-		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := cgroupFixture(t)

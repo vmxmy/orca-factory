@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 )
@@ -38,8 +39,16 @@ func (b *writeTrapBackend) Apply(context.Context, scheduler.Ticket, scheduler.Ac
 }
 func (b *writeTrapBackend) Launch(context.Context, scheduler.Ticket) error { b.writes++; return nil }
 
+func stubHostMemory(t *testing.T, reading hostmem.Reading) {
+	t.Helper()
+	previous := readHostMemory
+	readHostMemory = func() (hostmem.Reading, error) { return reading, nil }
+	t.Cleanup(func() { readHostMemory = previous })
+}
+
 func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	stubHostMemory(t, hostmem.Reading{Source: "host", Available: 30 << 30})
 	trap := &writeTrapBackend{tickets: []scheduler.Ticket{
 		{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now},
 		{ID: "b", Identifier: "ZII-2", Repo: "r", Candidate: true, Blocked: true, CreatedAt: now},
@@ -57,6 +66,21 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now}}}
+	var out bytes.Buffer
+	cfg, repos := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}
+	stubHostMemory(t, hostmem.Reading{Source: "host", Available: 5 << 30})
+	if err := dryRunTick(context.Background(), cfg, repos, trap, &out, func() time.Time { return now }); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="host"`) {
+		t.Fatalf("dry run under a memory hold:\n%s", got)
 	}
 }
 

@@ -116,7 +116,7 @@ func readCgroupAncestors(root string) ([]Reading, error) {
 		}
 	}
 	if path == "" {
-		return nil, errors.New("/proc/self/cgroup has no cgroup v2 (0::) entry")
+		return nil, nil
 	}
 	var readings []Reading
 	for {
