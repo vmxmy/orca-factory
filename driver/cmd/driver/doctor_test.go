@@ -1432,8 +1432,38 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 		"env -u ORCA_PANE_KEY A=1 /opt/custom/codex exec -m m -":  "/opt/custom/codex",
 		"env -u ORCA_PANE_KEY codex exec -m m --cd /work/codex -": "",
 	} {
-		if got := commandBinary(command, "/repo"); got != want {
-			t.Errorf("commandBinary(%q) = %q, want %q", command, got, want)
+		if got, ok := commandBinary(command, "/repo"); got != want || !ok {
+			t.Errorf("commandBinary(%q) = %q %v, want %q", command, got, ok, want)
+		}
+	}
+	if got, ok := commandBinary("../tools/claude -p --model m", "/repo"); ok {
+		t.Errorf("a path outside the review checkout = %q, want rejected", got)
+	}
+	project := projects.Project{Name: "one", Path: "/repo", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:provider/model:high",
+		"AGENT_ROLE_SECOND_REVIEWER_CMD": "../tools/claude -p --model m",
+	}}}
+	legacy := project
+	legacy.Repository.Env = map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER_CMD": "../tools/claude -p --model m"}
+	names := []string{}
+	for _, role := range (doctorModelSettings{}).modelRoles(legacy) {
+		if strings.HasPrefix(role.name, "reviewer") {
+			names = append(names, role.name+"/"+role.reason)
+		}
+	}
+	if !slices.Equal(names, []string{"reviewer/config_invalid"}) {
+		t.Errorf("main reviewer outside the checkout = %v, want one config_invalid row", names)
+	}
+	for _, role := range (doctorModelSettings{}).modelRoles(project) {
+		switch role.name {
+		case "reviewer":
+			if role.endpoint.Binary != "" || role.reason != "" {
+				t.Errorf("structured reviewer = %+v, want claude on PATH", role)
+			}
+		case "second_reviewer":
+			if role.reason != "config_invalid" {
+				t.Errorf("second reviewer outside the checkout = %+v, want config_invalid", role)
+			}
 		}
 	}
 	bin := t.TempDir()
@@ -1445,6 +1475,31 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	if onPath.probeKey() != explicit.probeKey() {
 		t.Error("the PATH claude and its absolute path probe the same endpoint twice")
 	}
+}
+
+func TestDoctorModelsPathChangeDuringProbe(t *testing.T) {
+	bin := t.TempDir()
+	cli := filepath.Join(bin, "claude")
+	writeDoctorFile(t, cli, "#!/bin/sh\n", 0o755)
+	t.Setenv("PATH", bin)
+	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
+	var once sync.Once
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+		once.Do(func() {
+			if err := os.Remove(cli); err != nil {
+				t.Error(err)
+			}
+		})
+		return modelhealth.Classify(ref, "ok", nil, p.now)
+	}
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "claude:m:high", "AGENT_ROLE_INTAKE": "claude:m:low",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+	if got.Status != "ok" {
+		t.Fatalf("check = %+v", got)
+	}
+	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:m:low", "ok", "probe_ok")
 }
 
 // TestDoctorModelsUnloadedRecordedLedger replays the recorded 项目 table row

@@ -908,9 +908,12 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	for _, role := range repositoryRoles(env, project.Repository.Sources) {
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
-		switch role.Role {
-		case "reviewer", "reviewer_small", "second_reviewer":
-			modelRole.endpoint.Binary = commandBinary(role.Raw, project.Path)
+		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
+			binary, ok := commandBinary(role.Raw, project.Path)
+			modelRole.endpoint.Binary = binary
+			if !ok {
+				modelRole = invalidModelRole(role.Role, role.Raw)
+			}
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -919,7 +922,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 			}
 			if ref.Agent == "claude" {
 				modelRole.endpoint.BaseURL = s.proxyURL
-				if s.proxyErr != nil {
+				if s.proxyErr != nil && modelRole.reason == "" {
 					modelRole.reason = "model_proxy_invalid"
 				}
 			}
@@ -984,8 +987,10 @@ func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerP
 
 // commandBinary is the executable a legacy reviewer command runs, after the env
 // prefix parseReviewerCommand also skips. A relative path resolves against dir,
-// the checkout the command runs in; "" means the command is found on PATH.
-func commandBinary(command, dir string) string {
+// a checkout of the same tree the executor reviews in; a path leaving that tree
+// is not ok, since the executor's checkout is a fresh temporary directory.
+// "" means the command is found on PATH.
+func commandBinary(command, dir string) (string, bool) {
 	words := strings.Fields(command)
 	i := 0
 	if len(words) > 0 && words[0] == "env" {
@@ -999,11 +1004,13 @@ func commandBinary(command, dir string) string {
 	}
 	switch {
 	case i >= len(words) || !strings.Contains(words[i], "/"):
-		return ""
+		return "", true
 	case filepath.IsAbs(words[i]):
-		return words[i]
+		return words[i], true
+	case !filepath.IsLocal(words[i]):
+		return "", false
 	}
-	return filepath.Join(dir, words[i])
+	return filepath.Join(dir, words[i]), true
 }
 
 // checkModels also lists each enabled repository whose profile could not be
