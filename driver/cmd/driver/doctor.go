@@ -909,10 +909,10 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
-			binary, ok := commandBinary(role.Raw, project.Path)
+			binary, relative := commandBinary(role.Raw)
 			modelRole.endpoint.Binary = binary
-			if !ok {
-				modelRole = invalidModelRole(role.Role, role.Raw)
+			if relative {
+				modelRole.reason = "relative_command"
 			}
 		}
 		switch role.Role {
@@ -985,12 +985,11 @@ func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerP
 	})
 }
 
-// commandBinary is the executable a legacy reviewer command runs, after the env
-// prefix parseReviewerCommand also skips. A relative path resolves against dir,
-// a checkout of the same tree the executor reviews in; a path leaving that tree
-// is not ok, since the executor's checkout is a fresh temporary directory.
-// "" means the command is found on PATH.
-func commandBinary(command, dir string) (string, bool) {
+// commandBinary is the absolute executable a legacy reviewer command runs, after
+// the env prefix parseReviewerCommand also skips; "" means it is found on PATH.
+// relative reports a relative path: only the executor's temporary head checkout
+// decides what that runs, so doctor cannot probe it.
+func commandBinary(command string) (binary string, relative bool) {
 	words := strings.Fields(command)
 	i := 0
 	if len(words) > 0 && words[0] == "env" {
@@ -1004,13 +1003,11 @@ func commandBinary(command, dir string) (string, bool) {
 	}
 	switch {
 	case i >= len(words) || !strings.Contains(words[i], "/"):
-		return "", true
-	case filepath.IsAbs(words[i]):
-		return words[i], true
-	case !filepath.IsLocal(words[i]):
 		return "", false
+	case filepath.IsAbs(words[i]):
+		return words[i], false
 	}
-	return filepath.Join(dir, words[i]), true
+	return "", true
 }
 
 // checkModels also lists each enabled repository whose profile could not be

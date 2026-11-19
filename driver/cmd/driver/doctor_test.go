@@ -1428,20 +1428,21 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	for command, want := range map[string]string{
 		"claude -p --model m --add-dir /srv/reviews/claude":       "",
 		"/opt/custom/claude -p --model m":                         "/opt/custom/claude",
-		"./tools/claude -p --model m":                             "/repo/tools/claude",
 		"env -u ORCA_PANE_KEY A=1 /opt/custom/codex exec -m m -":  "/opt/custom/codex",
 		"env -u ORCA_PANE_KEY codex exec -m m --cd /work/codex -": "",
 	} {
-		if got, ok := commandBinary(command, "/repo"); got != want || !ok {
-			t.Errorf("commandBinary(%q) = %q %v, want %q", command, got, ok, want)
+		if got, relative := commandBinary(command); got != want || relative {
+			t.Errorf("commandBinary(%q) = %q %v, want %q", command, got, relative, want)
 		}
 	}
-	if got, ok := commandBinary("../tools/claude -p --model m", "/repo"); ok {
-		t.Errorf("a path outside the review checkout = %q, want rejected", got)
+	for _, command := range []string{"./tools/claude -p --model m", "../head/tools/claude -p"} {
+		if _, relative := commandBinary(command); !relative {
+			t.Errorf("commandBinary(%q) resolved a path the temporary review checkout decides", command)
+		}
 	}
 	project := projects.Project{Name: "one", Path: "/repo", Repository: config.Repository{Env: map[string]string{
 		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:provider/model:high",
-		"AGENT_ROLE_SECOND_REVIEWER_CMD": "../tools/claude -p --model m",
+		"AGENT_ROLE_SECOND_REVIEWER_CMD": "env TOKEN=TEST-PLACEHOLDER-CRED ../tools/claude -p --model m",
 	}}}
 	legacy := project
 	legacy.Repository.Env = map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER_CMD": "../tools/claude -p --model m"}
@@ -1451,8 +1452,8 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 			names = append(names, role.name+"/"+role.reason)
 		}
 	}
-	if !slices.Equal(names, []string{"reviewer/config_invalid"}) {
-		t.Errorf("main reviewer outside the checkout = %v, want one config_invalid row", names)
+	if !slices.Equal(names, []string{"reviewer/relative_command"}) {
+		t.Errorf("main reviewer with a relative command = %v, want one relative_command row", names)
 	}
 	for _, role := range (doctorModelSettings{}).modelRoles(project) {
 		switch role.name {
@@ -1461,8 +1462,8 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 				t.Errorf("structured reviewer = %+v, want claude on PATH", role)
 			}
 		case "second_reviewer":
-			if role.reason != "config_invalid" {
-				t.Errorf("second reviewer outside the checkout = %+v, want config_invalid", role)
+			if role.reason != "relative_command" || role.ref.String() != "claude:m:" || strings.Contains(fmt.Sprint(role), "TEST-PLACEHOLDER-CRED") {
+				t.Errorf("second reviewer with a relative command = %+v, want relative_command with only the parsed model", role)
 			}
 		}
 	}
@@ -1483,23 +1484,21 @@ func TestDoctorModelsPathChangeDuringProbe(t *testing.T) {
 	writeDoctorFile(t, cli, "#!/bin/sh\n", 0o755)
 	t.Setenv("PATH", bin)
 	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
-	var once sync.Once
 	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
-		once.Do(func() {
+		if ref.Model == "solo" {
 			if err := os.Remove(cli); err != nil {
 				t.Error(err)
 			}
-		})
+		}
 		return modelhealth.Classify(ref, "ok", nil, p.now)
 	}
+	// Only the reviewer resolves claude on PATH, so a key recomputed after its
+	// probe misses the one result it recorded.
 	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "claude:m:high", "AGENT_ROLE_INTAKE": "claude:m:low",
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:solo:low", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "codex:i:low",
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
-	if got.Status != "ok" {
-		t.Fatalf("check = %+v", got)
-	}
-	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:m:low", "ok", "probe_ok")
+	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:solo:low", "ok", "probe_ok")
 }
 
 // TestDoctorModelsUnloadedRecordedLedger replays the recorded 项目 table row
