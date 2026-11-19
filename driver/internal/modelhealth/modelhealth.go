@@ -43,9 +43,13 @@ type Status struct {
 	CheckedAt time.Time `json:"checkedAt"`
 }
 
-// usageLimit matches Claude's quota notice, which ends at the limit name or
-// continues with "· resets ...", not any sentence that mentions a limit.
-var usageLimit = regexp.MustCompile(`(?im)^\W*you['’]ve hit your [^\n]*\blimit[ \t]*(?:·|$)`)
+// usageLimit matches Claude's quota notice line, which ends at the limit name
+// or continues with "· resets ...", not any sentence that mentions a limit.
+// A probe that timed out counts as limited only when the line names its reset.
+var (
+	usageLimit      = regexp.MustCompile(`(?im)^\W*you['’]ve hit your [^\n]*\blimit[ \t]*(?:·|$)`)
+	usageLimitReset = regexp.MustCompile(`(?im)^\W*you['’]ve hit your [^\n]*\blimit[ \t]*·[ \t]*resets\b`)
+)
 
 var resetDate = regexp.MustCompile(`resets ([A-Z][a-z]{2} [0-9]{1,2}), ([0-9]{1,2}(?::[0-9]{2})?[ap]m) \(([^)]+)\)`)
 
@@ -54,6 +58,8 @@ func Classify(ref Ref, output string, err error, now time.Time) Status {
 	s := Status{Ref: ref, State: Unknown, Reason: "unexpected_output", CheckedAt: now}
 	lower := strings.ToLower(output)
 	switch {
+	case errors.Is(err, context.DeadlineExceeded) && !usageLimitReset.MatchString(output):
+		s.Reason = "timeout"
 	case usageLimit.MatchString(output):
 		s.State, s.Reason = Unavailable, "usage_limit"
 		if match := resetDate.FindStringSubmatch(output); match != nil {
@@ -70,8 +76,6 @@ func Classify(ref Ref, output string, err error, now time.Time) Status {
 		}
 	case strings.Contains(lower, "not supported when using codex with a chatgpt account"):
 		s.State, s.Reason = Unavailable, "model_not_supported"
-	case errors.Is(err, context.DeadlineExceeded):
-		s.Reason = "timeout"
 	case err != nil:
 		s.Reason = "probe_failed"
 	case strings.TrimSpace(output) == "ok":

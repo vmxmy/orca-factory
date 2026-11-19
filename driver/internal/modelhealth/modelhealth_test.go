@@ -22,10 +22,12 @@ func TestClassifyModelOutputs(t *testing.T) {
 		state, reason, until  string
 	}{
 		{name: "claude quota", fixture: "claude-model-limit.txt", state: "unavailable", reason: "usage_limit", until: "2026-11-21T01:00:00+08:00"},
+		{name: "claude quota then timeout", fixture: "claude-model-limit.txt", err: context.DeadlineExceeded, state: "unavailable", reason: "usage_limit", until: "2026-11-21T01:00:00+08:00"},
 		{name: "codex unsupported", fixture: "codex-model-unsupported.txt", err: errors.New("exit 1"), state: "unavailable", reason: "model_not_supported", until: "2026-11-19T10:30:00+08:00"},
 		{name: "normal", output: "ok\n", state: "ok", reason: "probe_ok"},
 		{name: "timeout", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
 		{name: "timeout naming another limit", output: "You've hit your time limit waiting for the proxy", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
+		{name: "timeout ending in limit", output: "You've hit your time limit", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
 		{name: "network error", err: errors.New("network"), state: "unknown", reason: "probe_failed"},
 		{name: "bare error code", output: "model_not_found", err: errors.New("exit 1"), state: "unknown", reason: "probe_failed"},
 		{name: "unexpected", output: "hello", state: "unknown", reason: "unexpected_output"},

@@ -92,11 +92,13 @@ type doctorLedger interface {
 
 // doctorProbe is every input doctor reads. git and gh run from PATH.
 type doctorProbe struct {
-	now             time.Time
-	stateRoot       string
-	factoryRoot     string
-	serviceEnv      func(context.Context) (map[string]string, error)
-	projects        func(context.Context) ([]projects.Project, error)
+	now         time.Time
+	stateRoot   string
+	factoryRoot string
+	serviceEnv  func(context.Context) (map[string]string, error)
+	// projects returns the eligible repositories, and as Rejected only the ones an
+	// enabled ledger row claims but whose pipeline check or profile failed.
+	projects        func(context.Context) (projects.Result, error)
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
 	modelSettings   func() doctorModelSettings
@@ -157,24 +159,33 @@ func newDoctorProbe() (doctorProbe, error) {
 		recordModels: true,
 		modelSettings: func() doctorModelSettings {
 			proxy, proxyErr := config.ModelProxyURL(home)
-			// The intake gateway reads these keys from its environment first, then driver.env.
-			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr,
-				intakePi: strings.TrimSpace(os.Getenv("AGENT_INTAKE_PI")), intakeClaude: strings.TrimSpace(os.Getenv("AGENT_INTAKE_CLAUDE"))}
-			if settings.intakePi == "" || settings.intakeClaude == "" {
+			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr}
+			// As loadGatewaySettings: a non-empty process value replaces driver.env before trimming.
+			var file map[string]string
+			if os.Getenv("AGENT_INTAKE_PI") == "" || os.Getenv("AGENT_INTAKE_CLAUDE") == "" {
 				env, err := (bootstrapProbe{home: home}).driverEnv()
 				if err != nil && !errors.Is(err, os.ErrNotExist) {
 					settings.driverEnvErr = err
 				}
-				settings.intakePi = cmp.Or(settings.intakePi, strings.TrimSpace(env["AGENT_INTAKE_PI"]))
-				settings.intakeClaude = cmp.Or(settings.intakeClaude, strings.TrimSpace(env["AGENT_INTAKE_CLAUDE"]))
+				file = env
 			}
+			gateway := func(key string) string { return strings.TrimSpace(cmp.Or(os.Getenv(key), file[key])) }
+			settings.intakePi = gateway("AGENT_INTAKE_PI")
+			settings.intakeClaude, settings.intakeClaudeErr = resolveClaude(gateway("AGENT_INTAKE_CLAUDE"))
 			return settings
 		},
 		factoryRoot: cfg.FactoryRoot,
 		serviceEnv:  serviceEnviron,
-		projects: func(ctx context.Context) ([]projects.Project, error) {
-			result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-			return result.Eligible, err
+		projects: func(ctx context.Context) (projects.Result, error) {
+			result, rows, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+			enabled := map[string]bool{}
+			for _, row := range rows {
+				enabled[row.Remote] = enabled[row.Remote] || row.Enabled
+			}
+			result.Rejected = slices.DeleteFunc(result.Rejected, func(r projects.Rejection) bool {
+				return r.Reason != projects.ReasonCheckFailed || !enabled[r.Remote]
+			})
+			return result, err
 		},
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
 			return ledgers.New(ctx, p.Repository.Env)
@@ -204,7 +215,8 @@ func (p doctorProbe) main(ctx context.Context, args []string, out io.Writer) int
 
 func (p doctorProbe) run(ctx context.Context) healthReport {
 	env, envErr := p.serviceEnv(ctx)
-	eligible, projectsErr := p.projects(ctx)
+	discovered, projectsErr := p.projects(ctx)
+	eligible := discovered.Eligible
 	state, stateErr := maintenance.Read()
 	checks := map[string]healthCheck{
 		"service_path": checkServicePath(env, envErr),
@@ -222,7 +234,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		checks["checkouts"] = p.checkCheckouts(ctx, eligible)
 		checks["sync_prs"] = p.checkSyncPRs(ctx, eligible)
 		checks["ledger"] = p.checkLedger(ctx, eligible)
-		checks["models"] = p.checkModels(ctx, eligible)
+		checks["models"] = p.checkModels(ctx, eligible, discovered.Rejected)
 	}
 	report := healthReport{Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
@@ -803,7 +815,9 @@ type doctorModelSettings struct {
 	proxyErr     error
 	intakePi     string
 	intakeClaude string
-	driverEnvErr error
+	// intakeClaudeErr is why the intake gateway would refuse AGENT_INTAKE_CLAUDE.
+	intakeClaudeErr error
+	driverEnvErr    error
 }
 
 type doctorModelRole struct {
@@ -872,7 +886,7 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 		return doctorModelRole{name: "intake", reason: "not_configured"}
 	}
 	model, effort, err := tierParts(env)
-	if err != nil || s.driverEnvErr != nil {
+	if err != nil || s.driverEnvErr != nil || s.intakeClaudeErr != nil {
 		return invalidModelRole("intake", claudeTier)
 	}
 	if pi == "" {
@@ -889,14 +903,17 @@ func (s doctorModelSettings) intakeRole(env map[string]string, claudeTier, pi st
 func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelRole {
 	env := project.Repository.Env
 	roles := workerModelRoles(env)
-	hasReviewer := false
+	hasReviewer, hasSecondReviewer := false, false
+	var reviewer doctorModelRole
 	var intakeTier string
 	for _, role := range repositoryRoles(env, project.Repository.Sources) {
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
-			hasReviewer = hasReviewer || role.Role == "reviewer"
+			if role.Role == "reviewer" {
+				hasReviewer, reviewer = true, modelRole
+			}
 			if ref.Agent == "claude" {
 				modelRole.endpoint.BaseURL = s.proxyURL
 				if s.proxyErr != nil {
@@ -904,8 +921,9 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 				}
 			}
 		case "second_reviewer":
-			// Cross review passes only HOME and PATH (scheduler/crossreview.go).
+			// Cross review runs both reviewers with only HOME and PATH (scheduler/crossreview.go).
 			modelRole.endpoint.Isolated = true
+			hasSecondReviewer = true
 		case "resolver":
 			if !supportedModelAgent(ref.Agent) || strings.Count(role.Raw, ":") > 2 {
 				modelRole = invalidModelRole(role.Role, role.Raw)
@@ -920,6 +938,11 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	if !hasReviewer {
 		roles = append(roles, doctorModelRole{name: "reviewer", reason: "not_configured"})
+	}
+	if hasReviewer && hasSecondReviewer {
+		cross := reviewer
+		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Isolated: true}
+		roles = append(roles, cross)
 	}
 	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
 		ref, err := modelhealth.Parse(raw)
@@ -942,7 +965,9 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	return roles
 }
 
-func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Project) healthCheck {
+// checkModels also lists each enabled repository whose profile could not be
+// loaded, since the driver runs none of its roles.
+func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Project, unloaded []projects.Rejection) healthCheck {
 	settings := p.modelSettings()
 	registry, err := modelhealth.Open(p.stateRoot)
 	if err != nil {
@@ -984,6 +1009,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 			if role.reason == "" {
 				state = *pending[role.probeKey()]
 				state.Ref = role.ref
+				// An inconclusive probe keeps the model's unexpired cooldown.
+				if recorded := registry.Status(role.ref, p.now); state.State == modelhealth.Unknown && recorded.State == modelhealth.Unavailable {
+					state = recorded
+				}
 			}
 			rows = append(rows, doctorModelStatus{Repository: eligible[i].Name, Role: role.name, Status: state})
 			unavailable = unavailable || state.State == modelhealth.Unavailable
@@ -1004,6 +1033,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		for _, canRetry := range retryable {
 			exhausted = exhausted || !canRetry
 		}
+	}
+	for _, r := range unloaded {
+		rows = append(rows, doctorModelStatus{Repository: r.Remote, Role: "profile", Status: modelhealth.Status{State: modelhealth.Unknown, Reason: "config_invalid", CheckedAt: p.now}})
+		unknown, invalid = true, true
 	}
 	check := healthCheck{Status: healthOK, Reason: "各角色均有可重试候选", Details: rows, unprobed: unknown}
 	switch {
@@ -1030,7 +1063,9 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 
 func recordModelProbes(registry *modelhealth.Registry, probes map[string]*modelhealth.Status) error {
 	selected := map[string]*modelhealth.Status{}
-	priority := map[string]int{modelhealth.Unknown: 0, modelhealth.OK: 1, modelhealth.Unavailable: 2}
+	// An inconclusive endpoint outranks ok, so one endpoint's success cannot end
+	// a cooldown another endpoint of the same model has not confirmed over.
+	priority := map[string]int{modelhealth.OK: 0, modelhealth.Unknown: 1, modelhealth.Unavailable: 2}
 	// A stable endpoint order breaks ties between statuses of equal priority.
 	for _, key := range slices.Sorted(maps.Keys(probes)) {
 		result := probes[key]
