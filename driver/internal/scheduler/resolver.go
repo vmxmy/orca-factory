@@ -223,6 +223,11 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		role = append(role, []byte("\n\n"+topResolverPrompt)...)
 	}
+	// A dispatched round keeps its frozen record; only a new round selects.
+	frozen := t.Resolution != nil && t.Resolution.Phase != "" && t.Resolution.Phase != "waiting"
+	if frozen && t.Resolution.Agent != "" {
+		tier = strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+	}
 	// A tier may omit its model and effort; padding keeps "codex" a valid tier.
 	ref, err := modelhealth.Parse(tier + strings.Repeat(":", max(0, 2-strings.Count(tier, ":"))))
 	if err != nil || !resolverAgent(ref) || (top && (ref.Model == "" || ref.Effort == "")) {
@@ -231,8 +236,6 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		return errors.New("invalid resolver agent tier")
 	}
-	// A dispatched round keeps its frozen record; only a new round selects.
-	frozen := t.Resolution != nil && t.Resolution.Phase != "" && t.Resolution.Phase != "waiting"
 	if tierKey != "" && !frozen {
 		now := time.Now
 		if r.Now != nil {
