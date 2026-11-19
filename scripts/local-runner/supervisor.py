@@ -20,6 +20,7 @@ DOCKER = "/usr/bin/docker"
 GH = "/usr/bin/gh"
 STOP = threading.Event()
 SLOTS = (1, 2, 3, 4)
+INTENT_ABANDON_SECONDS = 600
 
 
 def validate_workers(n):
@@ -32,7 +33,7 @@ def container_args(image, name, owner):
         raise ValueError("an immutable local image ID is required")
     return [DOCKER, "run", "--rm", "--init", "-i", "--name", name,
             "--user", "1001:123", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-            "--cpus", "4", "--memory", "8g", "--memory-swap", "8g", "--pids-limit", "512",
+            "--cpus", "4", "--memory", "8g", "--memory-swap", "8g", "--pids-limit", "512", "--oom-score-adj", "500",
             "--network", "bridge", "--log-driver", "none",
             "--tmpfs", "/tmp:rw,nosuid,nodev,exec,size=1g,uid=1001,gid=123",
             "--tmpfs", "/home/runner/_work:rw,nosuid,nodev,exec,size=6g,uid=1001,gid=123",
@@ -142,16 +143,28 @@ def save(path, data):
         os.close(directory)
 
 
-def resolve_intent(path, lease):
+def resolve_intent(path, lease, owner):
     # A lost POST response must never lead to another unknown registration.
     page = 1
     matches = []
     while True:
-        runners = api("GET", f"?per_page=100&page={page}")["runners"]
+        response = api("GET", f"?per_page=100&page={page}")
+        runners = response.get("runners") if isinstance(response, dict) else None
+        if not isinstance(runners, list):
+            raise RuntimeError("malformed GitHub runner list; registration intent retained")
         matches.extend(runner for runner in runners if runner["name"] == lease["name"])
         if len(runners) < 100:
             break
         page += 1
+    if (not matches and time.time() - path.stat().st_mtime >= INTENT_ABANDON_SECONDS
+            and inspect_container(lease["name"], owner) is None):
+        archive = path.parent / "maintenance" / f"{path.stem}-{lease['name']}.json"
+        archive.parent.mkdir(exist_ok=True)
+        save(archive, lease)
+        lease.update(active=False, phase="registration_abandoned")
+        save(path, lease)
+        event("registration_abandoned", name=lease["name"])
+        return
     if len(matches) != 1:
         # A POST may still be in flight or not yet visible. Retain intent and retry.
         raise RuntimeError("unresolved registration intent; retained for next recovery")
@@ -170,7 +183,9 @@ def recover(path, owner):
         event("lease_retained", reason="stop before recovery; next start recovers")
         return
     if "id" not in lease:
-        resolve_intent(path, lease)
+        resolve_intent(path, lease, owner)
+        if not lease["active"]:
+            return
     event("recover_owned_lease", name=lease["name"], runner_id=lease["id"])
     while True:
         if STOP.is_set():
