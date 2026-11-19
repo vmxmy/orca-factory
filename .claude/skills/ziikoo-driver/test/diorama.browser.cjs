@@ -1615,7 +1615,7 @@ async function checkRecordedHumanWaits(browser, live) {
   }
 }
 
-// driver/testdata/recorded/driver-status-json-parked.json：2026-11-19 本机生产 `orca-factory-driver status --json` 原文，含搁置票 OF-595。
+// driver/testdata/recorded/driver-status-json-parked.json：2026-11-19 本机生产 `orca-factory-driver status --json` 录下了搁置票 OF-595。删除每行 `url`（含生产 Base token），其余字段原样。
 async function checkRecordedParkedTicket(browser, live, previewUrl) {
   const recorded = readJSON(path.resolve(plugin, '../../../driver/testdata/recorded/driver-status-json-parked.json'))
   const parked = recorded.tickets.find(ticket => ticket.identifier === 'OF-595')

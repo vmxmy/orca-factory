@@ -142,7 +142,7 @@ token 经 import map 带到每个模块：
 
 - 全局岛牌只写岛名和状态色点（空闲灰、忙碌蓝、阻塞琥珀、卡住红），有卡住票时加「N 卡住」，部署屏障关闭时加锁形徽标；调度岛文字只在 driver 状态不是 `ok` 时显示。
 - 工位标签只给有票的工位，只写工位名，不写平均停留基线；悬停任一工位时显示完整标签。
-- 等人批的票显示「等人」。搁置票（`blocker` 以 `parked: ` 开头）在任何工位都显示「等人」。超基线的票显示「超基线」。调度等待、依赖等待和其余卡住的票显示卡住时长，缺少起始时间时写「卡住时长未知」。其他票在悬停或选中时显示标签，「+n」折叠照旧。2026-11-19 在生产环境运行 `orca-factory-driver status --json` 录下了搁置票 OF-595，见 [driver/testdata/recorded/driver-status-json-parked.json](../../../driver/testdata/recorded/driver-status-json-parked.json)。
+- 等人批的票显示「等人」。搁置票（`blocker` 以 `parked: ` 开头）在任何工位都显示「等人」。超基线的票显示「超基线」。调度等待、依赖等待和其余卡住的票显示卡住时长，缺少起始时间时写「卡住时长未知」。其他票在悬停或选中时显示标签，「+n」折叠照旧。2026-11-19 在生产环境运行 `orca-factory-driver status --json` 录下了搁置票 OF-595。样本删除每行 `url`（含生产 Base token），其余字段原样，见 [driver/testdata/recorded/driver-status-json-parked.json](../../../driver/testdata/recorded/driver-status-json-parked.json)。
 - 顶部状态行只写 driver 状态，异常（非 `ok`、天空不是晴天、快照过期、断线或读取失败）时显示完整细节。「卡住的票」收成「卡住 N」按钮，点开后展开；没有卡住时隐藏。项目坞、标签图例、最近事件和底部提示隐藏。
 - 行程条只显示票号、标题、当前工位与停留时长、一行原因和操作按钮；基线对照、阶段格、打回与部署脚注收进「详情」，展开状态在同一张票的新快照间保持。
 - 两种模式都保留屏外卡住箭头、机位按钮、搜索和模式按钮。切换模式时保留当前镜头的位置和缩放。
