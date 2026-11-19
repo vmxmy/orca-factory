@@ -604,10 +604,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			}
 			for _, held := range joinedErrors[*memoryHeldLaunchError](err) {
 				s.decision(held.ticket, "skip", "memory", "action", "merge-correction")
-				if s.runtimePending == nil {
-					s.runtimePending = map[string]Ticket{}
-				}
-				s.runtimePending[held.ticket.ID] = held.ticket
 			}
 			for _, runtimeErr := range joinedErrors[*terminalCreateRuntimeError](err) {
 				s.recordOrcaRuntimeFailure(ctx, runtimeErr)
@@ -1006,6 +1002,12 @@ func (s *Scheduler) checkHostMemory(ctx context.Context, now time.Time) {
 			}
 		}
 	}
+}
+
+// SeedHostMemory starts from a hold another scheduler published, so a dry-run
+// applies the running service's release line instead of its hold line.
+func (s *Scheduler) SeedHostMemory(memory status.HostMemory) {
+	s.memoryHeld, s.memoryHeldSince = memory.Paused, memory.Since
 }
 
 // HostMemoryStatus is the host memory hold serve publishes in its status.

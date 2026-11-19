@@ -10,7 +10,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 type writeTrapBackend struct {
@@ -48,6 +50,8 @@ func stubHostMemory(t *testing.T, reading hostmem.Reading) {
 
 func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 	now := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
 	stubHostMemory(t, hostmem.Reading{Source: "host", Available: 30 << 30})
 	trap := &writeTrapBackend{tickets: []scheduler.Ticket{
 		{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now},
@@ -71,16 +75,42 @@ func TestDryRunPrintsPlanWithoutWrites(t *testing.T) {
 
 func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now}}}
-	var out bytes.Buffer
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
 	cfg, repos := config.Config{MaxInFlight: 4, TokenBucket: config.TokenBucket{Capacity: 4, RefillPerSecond: 1}}, []config.Repository{{Path: "r", MaxInFlight: 4, StaleHours: 8}}
-	stubHostMemory(t, hostmem.Reading{Source: "host", Available: 5 << 30})
-	if err := dryRunTick(context.Background(), cfg, repos, trap, &out, func() time.Time { return now }); err != nil {
+	for _, tc := range []struct {
+		name      string
+		published bool
+		available uint64
+	}{
+		{"below hold line", false, 5 << 30},
+		{"serve held, above hold but below release line", true, 8 << 30},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status.Push(now, func(view *status.View) { view.HostMemory = status.HostMemory{Paused: tc.published} })
+			trap := &writeTrapBackend{tickets: []scheduler.Ticket{{ID: "a", Identifier: "ZII-1", Repo: "r", Candidate: true, CreatedAt: now}}}
+			var out bytes.Buffer
+			stubHostMemory(t, hostmem.Reading{Source: "host", Available: tc.available})
+			if err := dryRunTick(context.Background(), cfg, repos, trap, &out, func() time.Time { return now }); err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="host"`) {
+				t.Fatalf("dry run under a memory hold:\n%s", got)
+			}
+		})
+	}
+}
+
+// A reported resolver result is applied without a terminal, also under a hold.
+func TestDryRunResolverResultIsNotALaunch(t *testing.T) {
+	var out bytes.Buffer
+	ticket := scheduler.Ticket{Identifier: "ZII-1", Owner: machine.OwnerResolver, Resolution: &resolver.Record{Phase: "result"}}
+	if err := (&dryBackend{out: &out}).Launch(context.Background(), ticket); err != nil {
 		t.Fatal(err)
 	}
-	got := out.String()
-	if strings.Contains(got, "would claim ZII-1") || strings.Contains(got, "would launch ZII-1") || !strings.Contains(got, `skip launches reason="memory" source="host"`) {
-		t.Fatalf("dry run under a memory hold:\n%s", got)
+	if got := out.String(); strings.Contains(got, "would launch") || !strings.Contains(got, "would apply resolver result ZII-1") {
+		t.Fatalf("dry-run resolver result output: %q", got)
 	}
 }
 

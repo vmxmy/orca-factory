@@ -15,6 +15,9 @@ import (
 // Persist the decision and ownership in one comment before labels can block retries.
 // An uncertain launch is recovered by the ordinary scheduler inspection path.
 func (r *Runtime) mergeDecision(ctx context.Context, t Ticket, main string, result merge.Result) error {
+	if result.Status == merge.Correction && r.memoryHeld {
+		return &memoryHeldLaunchError{ticket: t}
+	}
 	h := t.Handoff
 	p := merge.Progress{Version: 1, QueueID: h.QueueID, TicketID: t.ID, Repository: h.Repository, PR: h.PR, Head: h.Head, Main: main, Phase: "waiting", Corrections: h.Corrections + result.Corrections, CatchupRounds: result.Rounds, Infra: h.Infra, Attempt: max(1, h.Attempt), Reason: result.Reason}
 	if t.Progress != nil && t.Progress.QueueID == h.QueueID {

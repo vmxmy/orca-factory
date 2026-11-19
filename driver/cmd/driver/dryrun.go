@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
+	"github.com/vmxmy/orca-factory/driver/internal/status"
 )
 
 // dryBackend performs every read for real and prints, instead of performing,
@@ -41,7 +43,11 @@ func (b *dryBackend) Apply(_ context.Context, t scheduler.Ticket, a scheduler.Ac
 	return err
 }
 func (b *dryBackend) Launch(_ context.Context, t scheduler.Ticket) error {
-	_, err := fmt.Fprintf(b.out, "would launch %s\n", t.Identifier)
+	verb := "launch"
+	if t.Owner == machine.OwnerResolver && t.Resolution != nil && t.Resolution.Phase == "result" {
+		verb = "apply resolver result"
+	}
+	_, err := fmt.Fprintf(b.out, "would %s %s\n", verb, t.Identifier)
 	return err
 }
 
@@ -54,6 +60,9 @@ func (b *dryBackend) ActualChanges(context.Context, scheduler.Ticket) ([]string,
 // it neither competes with the running service nor writes probes or alerts.
 func dryRunTick(ctx context.Context, cfg config.Config, repos []config.Repository, backend scheduler.Backend, out io.Writer, now func() time.Time) error {
 	s := &scheduler.Scheduler{Config: cfg, Repositories: repos, Backend: &dryBackend{Backend: backend, out: out}, HostMemory: readHostMemory, Now: now}
+	if published := status.Read(now(), 0); published.State == "ok" {
+		s.SeedHostMemory(published.HostMemory)
+	}
 	err := s.Tick(ctx)
 	if held := s.HostMemoryStatus(); held.Paused {
 		if _, writeErr := fmt.Fprintf(out, "skip launches reason=%q source=%q available=%d some_avg60=%g\n", "memory", held.Reading.Source, held.Reading.Available, held.Reading.SomeAvg60); writeErr != nil {

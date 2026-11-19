@@ -21,6 +21,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -641,7 +642,6 @@ func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Tick
 func (b *runtimeFailureBackend) OrcaTerminalCreateFailures() int {
 	return b.runtime.OrcaTerminalCreateFailures()
 }
-func (b *runtimeFailureBackend) HoldLaunches(held bool) { b.runtime.HoldLaunches(held) }
 func (b *runtimeFailureBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
 	b.merges++
 	if b.merge == nil {
@@ -902,46 +902,45 @@ func TestOrcaRuntimeErrorFromMergeCorrectionCounts(t *testing.T) {
 	}
 }
 
-// A merge correction reached while host memory is held creates no terminal and
-// keeps its reservation; the first tick after release launches it once.
+// mergeHoldBackend runs one real merge correction decision per merge lane round.
+type mergeHoldBackend struct {
+	*fakeBackend
+	runtime *Runtime
+	ticket  Ticket
+}
+
+func (b *mergeHoldBackend) HoldLaunches(held bool) { b.runtime.HoldLaunches(held) }
+func (b *mergeHoldBackend) AdvanceMerges(ctx context.Context, _ []Ticket) error {
+	return b.runtime.mergeDecision(ctx, b.ticket, strings.Repeat("c", 40), merge.Result{Status: merge.Correction, Corrections: 1, Reason: "merged-result gate failed; return to scheduler"})
+}
+
+// A merge correction reached while host memory is held writes nothing and
+// creates no terminal; the first round after release records and launches it.
 func TestMergeCorrectionWaitsWhileHostMemoryHeld(t *testing.T) {
-	x := newRuntimeFailureFixture(t, 0)
-	s, b, f := x.s, x.b, x.f
-	x.oc.failing = false
-	ticket := correctionTickets(t, x, "OF-9")[0]
-	s.Repositories = []config.Repository{{Path: ticket.Repo, MaxInFlight: 2, StaleHours: 8}}
-	f.tickets = []Ticket{ticket}
-	b.merge = func(ctx context.Context) error {
-		if b.merges > 1 {
-			return nil
-		}
-		if err := b.runtime.Launch(ctx, ticket); err != nil {
-			return fmt.Errorf("merge waiting %s: %w", ticket.Identifier, err)
-		}
-		return nil
-	}
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	rt, ticket, client, oc := mergeCorrectionFixture(t, 1)
+	f := &fakeBackend{absent: true, inactive: true}
+	s := setup(f)
+	s.Backend = &mergeHoldBackend{fakeBackend: f, runtime: rt, ticket: ticket}
 	reading := hostmem.Reading{Source: "host", Available: 5 << 30}
 	s.HostMemory = func() (hostmem.Reading, error) { return reading, nil }
 	skipped := false
 	for _, decision := range captureDecisions(t, s) {
 		skipped = skipped || (decision["ticket_id"] == ticket.ID && decision["event"] == "skip" && decision["reason"] == "memory")
 	}
-	if x.oc.creates != 0 || !skipped {
-		t.Fatalf("held merge correction: creates=%d memory skip=%v", x.oc.creates, skipped)
-	}
-	if got, ok := s.runtimePending[ticket.ID]; !ok || got.Attempt != 1 || got.Phase != machine.PhaseCorrection {
-		t.Fatalf("held merge correction reservation = %+v, %v", got, ok)
-	}
-	if got := s.OrcaRuntime(); got.Failures != 0 || got.Paused {
-		t.Fatalf("memory hold counted as an Orca fault: %+v", got)
+	if len(oc.launches) != 0 || len(client.comments) != 0 || !skipped {
+		t.Fatalf("held merge correction: launches=%d comments=%v memory skip=%v", len(oc.launches), client.comments, skipped)
 	}
 	reading = hostmem.Reading{Source: "host", Available: 30 << 30}
-	*x.now = x.now.Add(time.Minute)
-	_ = s.Tick(context.Background())
-	*x.now = x.now.Add(time.Minute)
-	_ = s.Tick(context.Background())
-	if x.oc.creates != 1 {
-		t.Fatalf("released merge correction creates=%d, want 1", x.oc.creates)
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(oc.launches) != 1 || !strings.HasPrefix(oc.launches[0].Command, "exec '/driver' exec --merging 'ENG-1'") {
+		t.Fatalf("released merge correction launches: %+v", oc.launches)
+	}
+	after := fromEvidence(t, Ticket{ID: "id", Identifier: "ENG-1", Repo: "/repo"}, client.issueComments)
+	if after.Progress == nil || after.Progress.Corrections != 2 || after.Progress.Attempt != 1 || after.Progress.QueueID != "original_queue" {
+		t.Fatalf("correction budget, attempt or queue changed: %+v", after.Progress)
 	}
 }
 
