@@ -1851,10 +1851,10 @@ func TestNoticeMessageWrittenOnlyAfterBytesReachSocket(t *testing.T) {
 	}
 }
 
-// After a reused connection fails, a reconnect whose TLS handshake fails has
-// written handshake bytes only; message bytes count only on the connection a
-// message request got, past its TLS layer.
-func TestNoticeReconnectHandshakeIsNotAMessageWrite(t *testing.T) {
+// Only bytes a socket took after a message request got it count, under every
+// TLS layer of an HTTPS proxy, and a failed connection is read once it closed:
+// a reconnect whose handshake fails has written no message.
+func TestNoticeMessageBytesCountOnlyAfterGotConn(t *testing.T) {
 	m, err := newMessageAttempts()
 	if err != nil {
 		t.Fatal(err)
@@ -1862,30 +1862,64 @@ func TestNoticeReconnectHandshakeIsNotAMessageWrite(t *testing.T) {
 	m.dial = func(context.Context, string, string) (net.Conn, error) {
 		client, peer := net.Pipe()
 		go func() { _, _ = io.Copy(io.Discard, peer) }()
+		t.Cleanup(func() { _ = client.Close() })
 		return client, nil
 	}
-	reused, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
-	if err != nil {
-		t.Fatal(err)
+	dial := func() (net.Conn, net.Conn) {
+		conn, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxied := tls.Client(tls.Client(conn, &tls.Config{ServerName: "proxy.invalid"}), &tls.Config{ServerName: "feishu.invalid"})
+		return conn, proxied
 	}
-	t.Cleanup(func() { _ = reused.Close() })
-	m.gotConn(httptrace.GotConnInfo{Conn: tls.Client(reused, &tls.Config{ServerName: "feishu.invalid"}), Reused: true})
-	reconnect, err := m.transport.DialContext(context.Background(), "tcp", "feishu.invalid:443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = reconnect.Close() })
+	reused, proxied := dial()
+	m.gotConn(httptrace.GotConnInfo{Conn: proxied, Reused: true})
+	_ = reused.Close()
+	reconnect, _ := dial()
 	if _, err := reconnect.Write([]byte("client hello")); err != nil {
 		t.Fatal(err)
 	}
+	_ = reconnect.Close()
 	if m.written() {
-		t.Fatal("a failed reconnect handshake counted as a message write")
+		t.Fatal("bytes outside a message request counted as a message write")
 	}
-	if _, err := reused.Write([]byte("POST")); err != nil {
+	retried, proxied := dial()
+	m.gotConn(httptrace.GotConnInfo{Conn: proxied})
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		_, _ = retried.Write([]byte("POST"))
+		_ = retried.Close()
+	}()
+	if !m.written() {
+		t.Fatal("a message write that finished before its connection closed did not count")
+	}
+}
+
+// HTTP/2 lets the read loop write frames such as SETTINGS ACK on the message's
+// connection, so the notice transport speaks HTTP/1.1 only.
+func TestNoticeTransportSpeaksHTTP1(t *testing.T) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	m, err := newMessageAttempts()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if !m.written() {
-		t.Fatal("bytes on the connection the message request got did not count")
+	m.transport.TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig
+	t.Cleanup(m.transport.CloseIdleConnections)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/open-apis/im/v1/messages", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := m.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.ProtoMajor != 1 {
+		t.Fatalf("notice transport negotiated %s", resp.Proto)
 	}
 }
 

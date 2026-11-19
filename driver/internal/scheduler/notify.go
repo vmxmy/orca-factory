@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"os/exec"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -240,13 +241,20 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 // messageAttempts reports whether any byte of a message request reached a
 // socket, so a failure before that, such as a tenant token timeout, a refused
 // connection, a first write that sent nothing or a failed reconnect handshake,
-// is known undelivered.
+// is known undelivered. It speaks HTTP/1.1 only, so after GotConn the
+// connection carries nothing but the request until it closes.
 type messageAttempts struct {
 	transport *http.Transport
 	dial      func(context.Context, string, string) (net.Conn, error)
-	mu        sync.Mutex
-	conns     []*countingConn
+
+	mu      sync.Mutex
+	conns   []*countingConn
+	unknown bool // a message got a connection this type did not dial
 }
+
+// messageWriteWait bounds the wait for a failed message connection to close;
+// past it the attempt counts as possibly delivered.
+const messageWriteWait = 5 * time.Second
 
 func newMessageAttempts() (*messageAttempts, error) {
 	base, ok := infra.HTTPTransport.(*http.Transport)
@@ -254,12 +262,15 @@ func newMessageAttempts() (*messageAttempts, error) {
 		return nil, errors.New("feishu transport is not an http.Transport")
 	}
 	m := &messageAttempts{transport: base.Clone(), dial: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
+	var http1 http.Protocols
+	http1.SetHTTP1(true)
+	m.transport.Protocols = &http1
 	m.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := m.dial(ctx, network, addr)
 		if err != nil {
 			return nil, err
 		}
-		counted := &countingConn{Conn: conn}
+		counted := &countingConn{Conn: conn, closed: make(chan struct{})}
 		counted.base.Store(-1)
 		m.mu.Lock()
 		m.conns = append(m.conns, counted)
@@ -276,41 +287,73 @@ func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
 	return m.transport.RoundTrip(req)
 }
 
-// gotConn starts counting on the connection a message request will write to,
-// after its TLS handshake or proxy CONNECT.
+// gotConn starts counting on the socket under every TLS layer, after any TLS
+// handshake or proxy CONNECT.
 func (m *messageAttempts) gotConn(info httptrace.GotConnInfo) {
 	conn := info.Conn
-	if secure, ok := conn.(*tls.Conn); ok {
+	for {
+		secure, ok := conn.(*tls.Conn)
+		if !ok {
+			break
+		}
 		conn = secure.NetConn()
 	}
 	if counted, ok := conn.(*countingConn); ok {
 		counted.base.CompareAndSwap(-1, counted.sent.Load())
+		return
 	}
+	m.mu.Lock()
+	m.unknown = true
+	m.mu.Unlock()
 }
 
+// written reports whether a message request may have reached Feishu. A failed
+// request's connection closes, and an idle one is closed here, so it waits for
+// that before trusting a zero count.
 func (m *messageAttempts) written() bool {
+	m.transport.CloseIdleConnections()
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	for _, conn := range m.conns {
-		if base := conn.base.Load(); base >= 0 && conn.sent.Load() > base {
+	conns, unknown := slices.Clone(m.conns), m.unknown
+	m.mu.Unlock()
+	if unknown {
+		return true
+	}
+	for _, conn := range conns {
+		if conn.base.Load() < 0 {
+			continue
+		}
+		select {
+		case <-conn.closed:
+		case <-time.After(messageWriteWait):
+			return true
+		}
+		if conn.sent.Load() > conn.base.Load() {
 			return true
 		}
 	}
 	return false
 }
 
-// countingConn counts bytes written to the socket; base is the count when a
-// message request got this connection, -1 before that.
+// countingConn counts bytes the socket took; base is the count when a message
+// request got this connection, -1 before that.
 type countingConn struct {
 	net.Conn
-	sent atomic.Int64
-	base atomic.Int64
+	sent      atomic.Int64
+	base      atomic.Int64
+	closed    chan struct{}
+	closeOnce sync.Once
 }
 
 func (c *countingConn) Write(b []byte) (int, error) {
 	n, err := c.Conn.Write(b)
 	c.sent.Add(int64(n))
 	return n, err
+}
+
+func (c *countingConn) Close() error {
+	err := c.Conn.Close()
+	c.closeOnce.Do(func() { close(c.closed) })
+	return err
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.
