@@ -909,15 +909,9 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
-			binary, relative := commandBinary(role.Raw)
-			modelRole.endpoint.Binary = binary
-			switch {
-			case !supportedModelAgent(ref.Agent):
-				// A whitespace split of shell quoting can land on any word; never report it.
-				modelRole.ref, modelRole.reason = modelhealth.Ref{}, "unsupported_agent"
-			case relative:
-				modelRole.reason = "relative_command"
-			}
+			// parseReviewerCommand splits on whitespace; shell quoting decides what runs.
+			modelRole.ref, modelRole.endpoint.Binary, modelRole.reason = legacyReviewerCommand(role.Raw)
+			ref = modelRole.ref
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -989,29 +983,115 @@ func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerP
 	})
 }
 
-// commandBinary is the absolute executable a legacy reviewer command runs, after
-// the env prefix parseReviewerCommand also skips; "" means it is found on PATH.
-// relative reports a relative path: only the executor's temporary head checkout
-// decides what that runs, so doctor cannot probe it.
-func commandBinary(command string) (binary string, relative bool) {
-	words := strings.Fields(command)
-	i := 0
+// legacyReviewerCommand reads a legacy reviewer command with shell quoting,
+// skipping the env prefix parseReviewerCommand also skips. reason is set when
+// doctor cannot probe what the command runs: config_invalid for an unclosed
+// quote, unsupported_agent (the reference cleared) for an agent other than
+// Codex or Claude, relative_command for a relative executable that only the
+// executor's temporary head checkout resolves, and command_env when the env
+// prefix changes variables other than the Orca hook ones the probe also drops.
+func legacyReviewerCommand(command string) (ref modelhealth.Ref, binary, reason string) {
+	words, ok := shellWords(command)
+	if !ok {
+		return modelhealth.Ref{}, "", "config_invalid"
+	}
+	i, changedEnv := 0, false
 	if len(words) > 0 && words[0] == "env" {
 		for i = 1; i < len(words); i++ {
-			if words[i] == "-u" {
+			if words[i] == "-u" && i+1 < len(words) {
 				i++
-			} else if !shellAssignment.MatchString(words[i]) {
+				changedEnv = changedEnv || !strings.HasPrefix(words[i], "ORCA_")
+			} else if shellAssignment.MatchString(words[i]) {
+				changedEnv = true
+			} else {
 				break
 			}
 		}
 	}
-	switch {
-	case i >= len(words) || !strings.Contains(words[i], "/"):
-		return "", false
-	case filepath.IsAbs(words[i]):
-		return words[i], false
+	if i >= len(words) {
+		return modelhealth.Ref{}, "", "config_invalid"
 	}
-	return "", true
+	ref.Agent = filepath.Base(words[i])
+	for j := i + 1; j < len(words); j++ {
+		next := ""
+		if j+1 < len(words) {
+			next = words[j+1]
+		}
+		switch word := words[j]; {
+		case word == "-m" || word == "--model":
+			ref.Model = next
+		case strings.HasPrefix(word, "--model="):
+			ref.Model = strings.TrimPrefix(word, "--model=")
+		case strings.HasPrefix(word, "model="):
+			ref.Model = strings.TrimPrefix(word, "model=")
+		case word == "--effort":
+			ref.Effort = next
+		case strings.HasPrefix(word, "model_reasoning_effort="):
+			ref.Effort = strings.TrimPrefix(word, "model_reasoning_effort=")
+		}
+	}
+	switch {
+	case !supportedModelAgent(ref.Agent):
+		return modelhealth.Ref{}, "", "unsupported_agent"
+	case filepath.IsAbs(words[i]):
+		binary = words[i]
+	case strings.Contains(words[i], "/"):
+		reason = "relative_command"
+	}
+	if reason == "" && changedEnv {
+		reason = "command_env"
+	}
+	return ref, binary, reason
+}
+
+// shellWords splits unexpanded words as sh does: quotes group and backslash
+// escapes outside single quotes. ok is false for an unclosed quote or escape.
+func shellWords(command string) (words []string, ok bool) {
+	var word strings.Builder
+	inWord, escaped := false, false
+	var quote rune
+	for _, r := range command {
+		switch {
+		case escaped:
+			word.WriteRune(r)
+			escaped = false
+		case quote == '\'':
+			if r == '\'' {
+				quote = 0
+			} else {
+				word.WriteRune(r)
+			}
+		case quote == '"' && r == '"':
+			quote = 0
+		case r == '\\' && quote != '\'':
+			escaped, inWord = true, true
+		case quote == '"':
+			word.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote, inWord = r, true
+		case r == ' ' || r == '\t' || r == '\n':
+			if inWord {
+				words, inWord = append(words, word.String()), false
+				word.Reset()
+			}
+		default:
+			word.WriteRune(r)
+			inWord = true
+		}
+	}
+	if quote != 0 || escaped {
+		return nil, false
+	}
+	if inWord {
+		words = append(words, word.String())
+	}
+	return words, true
+}
+
+// unprobedCommand reports a legacy reviewer row whose model is known but whose
+// command doctor does not run.
+func unprobedCommand(reason string) bool {
+	return reason == "relative_command" || reason == "command_env"
 }
 
 // checkModels also lists each enabled repository whose profile could not be
@@ -1048,6 +1128,15 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		}
 	}
 	probes.Wait()
+	// An unprobed command's model counts as inconclusive when recording, so another
+	// endpoint's ok cannot end the cooldown that command still observes.
+	for _, roles := range projectRoles {
+		for _, role := range roles {
+			if unprobedCommand(role.reason) {
+				pending["unprobed\x00"+role.ref.Key()] = &modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
+			}
+		}
+	}
 
 	rows := []doctorModelStatus{}
 	var unavailable, unknown, exhausted, invalid bool
@@ -1056,7 +1145,7 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		for j, role := range roles {
 			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
 			// An unprobed command still cannot use a model the registry holds in cooldown.
-			if recorded := registry.Status(role.ref, p.now); role.reason == "relative_command" && recorded.State == modelhealth.Unavailable {
+			if recorded := registry.Status(role.ref, p.now); unprobedCommand(role.reason) && recorded.State == modelhealth.Unavailable {
 				state = recorded
 			}
 			if role.reason == "" {
