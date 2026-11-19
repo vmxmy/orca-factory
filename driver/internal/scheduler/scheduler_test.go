@@ -1166,7 +1166,15 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 			t.Fatalf("runtime automation read lost unavailable classification: %T: %v", err, err)
 		}
 	})
-	for _, scenario := range []string{"after successful inspection", "before first inspection", "shared restart limit"} {
+	slow := filepath.Join(dir, "slow-orca")
+	if err := os.WriteFile(slow, []byte("#!/bin/sh\nexec sleep 5\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, timedOut := (&Runtime{Orca: &orca.Client{Path: slow, Timeout: 100 * time.Millisecond}}).AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+	if timedOut == nil {
+		t.Fatal("slow automation read did not fail")
+	}
+	for _, scenario := range []string{"after successful inspection", "timeout after successful inspection", "before first inspection", "shared restart limit"} {
 		t.Run(scenario, func(t *testing.T) {
 			x := newRuntimeFailureFixture(t, 3)
 			s, b := x.s, x.b
@@ -1181,12 +1189,15 @@ func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
 				}
 			} else {
 				x.f.tickets = nil
-				if scenario == "after successful inspection" {
+				if strings.HasSuffix(scenario, "after successful inspection") {
 					x.f.enabled = map[string]bool{"/repo0": true}
 					_ = s.Tick(context.Background())
 				}
 			}
 			b.automationErr = unavailable
+			if strings.HasPrefix(scenario, "timeout") {
+				b.automationErr = timedOut
+			}
 			start := *x.now
 			baseRestarts := b.restarts
 			baseProbes := x.oc.probes

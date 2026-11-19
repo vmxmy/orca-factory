@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -20,7 +21,7 @@ func (r *Runtime) AutomationDisabled(ctx context.Context, repo config.Repository
 	}
 	receipt, err := r.Orca.AutomationsList(ctx)
 	if err != nil {
-		return false, errors.New("automation read failed")
+		return false, fmt.Errorf("automation read failed: %w", err)
 	}
 	var rows []struct {
 		Enabled    *bool                            `json:"enabled"`

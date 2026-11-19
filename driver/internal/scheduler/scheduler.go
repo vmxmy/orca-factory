@@ -280,8 +280,7 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		repos[r.Path] = r
 		ok, err := s.Backend.AutomationDisabled(ctx, r)
 		allowed[r.Path] = err == nil && ok
-		var global *infra.Global
-		if errors.As(err, &global) && global.Dep == infra.Orca && global.Reason == infra.RuntimeUnavailable {
+		if orcaUnreachable(ctx, err) {
 			unreachable = true
 		}
 		if err == nil {
@@ -900,6 +899,16 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
 		}
 	}
+}
+
+// orcaUnreachable reports an automation read that Orca did not answer: a
+// runtime_unavailable reply or a CLI timeout while the round itself was live.
+func orcaUnreachable(ctx context.Context, err error) bool {
+	var global *infra.Global
+	if errors.As(err, &global) {
+		return global.Dep == infra.Orca && global.Reason == infra.RuntimeUnavailable
+	}
+	return ctx.Err() == nil && errors.Is(err, context.DeadlineExceeded)
 }
 
 // ErrOrcaRestartUnsupported is returned by a backend that cannot restart
