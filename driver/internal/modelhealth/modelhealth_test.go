@@ -23,6 +23,7 @@ func TestClassifyModelOutputs(t *testing.T) {
 	}{
 		{name: "claude quota", fixture: "claude-model-limit.txt", state: "unavailable", reason: "usage_limit", until: "2026-11-21T01:00:00+08:00"},
 		{name: "claude quota then timeout", fixture: "claude-model-limit.txt", err: context.DeadlineExceeded, state: "unavailable", reason: "usage_limit", until: "2026-11-21T01:00:00+08:00"},
+		{name: "codex unsupported then timeout", fixture: "codex-model-unsupported.txt", err: context.DeadlineExceeded, state: "unavailable", reason: "model_not_supported", until: "2026-11-19T10:30:00+08:00"},
 		{name: "codex unsupported", fixture: "codex-model-unsupported.txt", err: errors.New("exit 1"), state: "unavailable", reason: "model_not_supported", until: "2026-11-19T10:30:00+08:00"},
 		{name: "normal", output: "ok\n", state: "ok", reason: "probe_ok"},
 		{name: "timeout", err: context.DeadlineExceeded, state: "unknown", reason: "timeout"},
@@ -186,5 +187,25 @@ func TestRegistryKeepsCooldownOverUnknownProbe(t *testing.T) {
 	}
 	if got := r.Status(ref, now.Add(4*time.Minute)); got != recovered {
 		t.Fatalf("after ok = %+v, want %+v", got, recovered)
+	}
+}
+
+func TestRegistryKeepsLongerCooldown(t *testing.T) {
+	r, err := modelhealth.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	long := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(48 * time.Hour)}
+	if err := r.Record(long); err != nil {
+		t.Fatal(err)
+	}
+	short := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now.Add(time.Minute), Until: now.Add(31 * time.Minute)}
+	if err := r.Record(short); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Status(ref, now.Add(time.Hour)); got.State != modelhealth.Unavailable || !got.Until.Equal(long.Until) {
+		t.Fatalf("status = %+v, want the 48 hour cooldown kept", got)
 	}
 }

@@ -58,6 +58,8 @@ func Classify(ref Ref, output string, err error, now time.Time) Status {
 	s := Status{Ref: ref, State: Unknown, Reason: "unexpected_output", CheckedAt: now}
 	lower := strings.ToLower(output)
 	switch {
+	case strings.Contains(lower, "not supported when using codex with a chatgpt account"):
+		s.State, s.Reason = Unavailable, "model_not_supported"
 	case errors.Is(err, context.DeadlineExceeded) && !usageLimitReset.MatchString(output):
 		s.Reason = "timeout"
 	case usageLimit.MatchString(output):
@@ -74,8 +76,6 @@ func Classify(ref Ref, output string, err error, now time.Time) Status {
 				}
 			}
 		}
-	case strings.Contains(lower, "not supported when using codex with a chatgpt account"):
-		s.State, s.Reason = Unavailable, "model_not_supported"
 	case err != nil:
 		s.Reason = "probe_failed"
 	case strings.TrimSpace(output) == "ok":

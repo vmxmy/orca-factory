@@ -71,6 +71,10 @@ func (r *Registry) Record(status Status) error {
 		r.statuses = statuses
 		return nil
 	}
+	// A later limited probe cannot shorten a cooldown that is still running.
+	if status.State == Unavailable && prev.State == Unavailable && prev.Until.After(status.Until) {
+		status.Until = prev.Until
+	}
 	statuses[key] = status
 	data, err := json.MarshalIndent(statuses, "", "  ")
 	if err != nil {

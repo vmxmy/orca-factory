@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -712,6 +713,7 @@ func TestDoctorModelsProbesReviewerEndpoint(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("AGENT_MODEL_PROXY_URL", proxy)
 	t.Setenv("AGENT_INTAKE_PI", "")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
 	p, err := newDoctorProbe()
 	if err != nil {
 		t.Fatal(err)
@@ -792,8 +794,12 @@ func TestDoctorModelsRoleEndpoints(t *testing.T) {
 		"AGENT_TIER_DEFAULT": "codex:worker:high", "AGENT_ROLE_RESOLVER": "codex:resolver:high",
 		"AGENT_ROLE_REVIEWER": "claude:reviewer:high", "AGENT_ROLE_SECOND_REVIEWER": "claude:second:high", "AGENT_ROLE_INTAKE": "claude:intake:low",
 	}}}
+	bin := t.TempDir()
+	writeDoctorFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\n", 0o755)
+	t.Setenv("PATH", bin)
 	for _, tc := range []struct{ name, intakeClaude, intake, reason string }{
 		{"absolute", "/opt/intake/claude", "intake|/opt/intake/claude|true", "probe_ok"},
+		{"default on PATH", "", "intake||true", "probe_ok"},
 		{"relative", "claude", "", "config_invalid"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -834,7 +840,13 @@ func TestDoctorModelsRoleEndpoints(t *testing.T) {
 
 func TestDoctorModelsReportsUnloadedEnabledRepository(t *testing.T) {
 	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
-	got := p.checkModels(context.Background(), nil, []projects.Rejection{{Path: "/repos/broken", Remote: "github.com/o/broken", Reason: projects.ReasonCheckFailed}})
+	got := p.checkModels(context.Background(), nil, unloadedRepositories([]projects.Rejection{
+		{Path: "/repos/broken", Remote: "github.com/o/broken", Reason: projects.ReasonCheckFailed},
+		{Path: "/repos/plain", Remote: "github.com/o/plain", Reason: projects.ReasonOnboardable},
+	}))
+	if rows := got.Details.([]doctorModelStatus); len(rows) != 1 {
+		t.Fatalf("rows = %+v, want only the repository whose pipeline check failed", rows)
+	}
 	if got.Status != "fail" {
 		t.Errorf("check = %+v, want fail for an enabled repository whose profile does not load", got)
 	}
@@ -914,6 +926,7 @@ func TestDoctorModelsInvalidProxyReportsAllChecks(t *testing.T) {
 	t.Setenv("HOME", f.root)
 	t.Setenv("AGENT_MODEL_PROXY_URL", "")
 	t.Setenv("AGENT_INTAKE_PI", "")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
 	writeDoctorFile(t, filepath.Join(f.root, ".config/orca-factory/driver.env"), "AGENT_MODEL_PROXY_URL=ftp://x\n", 0600)
 	machine, err := newDoctorProbe()
 	if err != nil {
@@ -1140,6 +1153,7 @@ func TestDoctorModelsPiIntake(t *testing.T) {
 			t.Setenv("HOME", home)
 			t.Setenv("AGENT_MODEL_PROXY_URL", "")
 			t.Setenv("AGENT_INTAKE_PI", tc.process)
+			t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
 			writeDoctorFile(t, filepath.Join(home, ".config/orca-factory/driver.env"), "AGENT_INTAKE_PI="+tc.file+"\n", 0600)
 			p, err := newDoctorProbe()
 			if err != nil {
@@ -1321,4 +1335,79 @@ func TestDoctorModelsMissingRequiredRoles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDoctorModelsDryRunMatchesRecordedVerdict(t *testing.T) {
+	const proxy = "https://proxy.invalid"
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": "default strong",
+		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_TIER_STRONG": "codex:backup:high",
+		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "codex:backup:high", "AGENT_ROLE_INTAKE": "codex:backup:low",
+	}}}
+	verdicts := map[bool]healthCheck{}
+	for _, record := range []bool{true, false} {
+		p := modelFixtureProbe(now, t.TempDir())
+		p.recordModels = record
+		p.modelSettings = func() doctorModelSettings { return doctorModelSettings{proxyURL: proxy} }
+		p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, endpoint modelhealth.Endpoint) modelhealth.Status {
+			switch {
+			case ref.Model != "m":
+				return modelhealth.Classify(ref, "ok", nil, now)
+			case endpoint.BaseURL == proxy:
+				return modelhealth.Classify(ref, "", context.DeadlineExceeded, now)
+			}
+			return modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}
+		}
+		verdicts[record] = p.checkModels(context.Background(), []projects.Project{project}, nil)
+	}
+	if !reflect.DeepEqual(verdicts[true].Details, verdicts[false].Details) || verdicts[true].Status != verdicts[false].Status {
+		t.Errorf("watch = %s %+v, dry-run = %s %+v", verdicts[true].Status, verdicts[true].Details, verdicts[false].Status, verdicts[false].Details)
+	}
+	assertDoctorModel(t, verdicts[true].Details.([]doctorModelStatus), "one", "reviewer", "claude:m:low", "unknown", "timeout")
+}
+
+func TestDoctorModelsLegacyReviewerBinary(t *testing.T) {
+	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
+	var mu sync.Mutex
+	endpoints := map[string]modelhealth.Endpoint{}
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, endpoint modelhealth.Endpoint) modelhealth.Status {
+		mu.Lock()
+		defer mu.Unlock()
+		endpoints[ref.Model+"|"+strconv.FormatBool(endpoint.Isolated)] = endpoint
+		return modelhealth.Classify(ref, "ok", nil, p.now)
+	}
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "codex:w:low",
+		"AGENT_ROLE_REVIEWER_CMD":    "/opt/custom/claude -p --model legacy --tools Read",
+		"AGENT_ROLE_SECOND_REVIEWER": "codex:second:high",
+	}}}
+	p.checkModels(context.Background(), []projects.Project{project}, nil)
+	for _, key := range []string{"legacy|false", "legacy|true"} {
+		if endpoints[key].Binary != "/opt/custom/claude" {
+			t.Errorf("%s endpoint = %+v, want the command's own binary", key, endpoints[key])
+		}
+	}
+}
+
+func TestDoctorModelsInvalidDriverEnvWithProcessIntake(t *testing.T) {
+	home := t.TempDir()
+	writeDoctorFile(t, filepath.Join(home, ".config/orca-factory/driver.env"), "AGENT_INTAKE_PI='unterminated\n", 0600)
+	t.Setenv("HOME", home)
+	t.Setenv("AGENT_MODEL_PROXY_URL", "https://proxy.invalid")
+	t.Setenv("AGENT_INTAKE_PI", " ")
+	t.Setenv("AGENT_INTAKE_CLAUDE", "/opt/test/claude")
+	p, err := newDoctorProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.stateRoot = t.TempDir()
+	p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
+		return modelhealth.Classify(ref, "ok", nil, p.now)
+	}
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "codex:w:low", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "intake", "claude:i:low", "unknown", "config_invalid")
 }

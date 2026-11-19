@@ -96,8 +96,8 @@ type doctorProbe struct {
 	stateRoot   string
 	factoryRoot string
 	serviceEnv  func(context.Context) (map[string]string, error)
-	// projects returns the eligible repositories, and as Rejected only the ones an
-	// enabled ledger row claims but whose pipeline check or profile failed.
+	// projects returns the eligible repositories, and as Rejected only the
+	// unloadedRepositories.
 	projects        func(context.Context) (projects.Result, error)
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
@@ -160,31 +160,24 @@ func newDoctorProbe() (doctorProbe, error) {
 		modelSettings: func() doctorModelSettings {
 			proxy, proxyErr := config.ModelProxyURL(home)
 			settings := doctorModelSettings{proxyURL: proxy, proxyErr: proxyErr}
-			// As loadGatewaySettings: a non-empty process value replaces driver.env before trimming.
-			var file map[string]string
-			if os.Getenv("AGENT_INTAKE_PI") == "" || os.Getenv("AGENT_INTAKE_CLAUDE") == "" {
-				env, err := (bootstrapProbe{home: home}).driverEnv()
-				if err != nil && !errors.Is(err, os.ErrNotExist) {
-					settings.driverEnvErr = err
-				}
-				file = env
+			// As loadGatewaySettings: driver.env always parses, then a non-empty
+			// process value replaces the file value before trimming.
+			file, err := (bootstrapProbe{home: home}).driverEnv()
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				settings.driverEnvErr = err
 			}
 			gateway := func(key string) string { return strings.TrimSpace(cmp.Or(os.Getenv(key), file[key])) }
 			settings.intakePi = gateway("AGENT_INTAKE_PI")
-			settings.intakeClaude, settings.intakeClaudeErr = resolveClaude(gateway("AGENT_INTAKE_CLAUDE"))
+			// The gateway resolves an empty value to claude on PATH, as an unset Binary does.
+			settings.intakeClaude = gateway("AGENT_INTAKE_CLAUDE")
+			_, settings.intakeClaudeErr = resolveClaude(settings.intakeClaude)
 			return settings
 		},
 		factoryRoot: cfg.FactoryRoot,
 		serviceEnv:  serviceEnviron,
 		projects: func(ctx context.Context) (projects.Result, error) {
-			result, rows, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-			enabled := map[string]bool{}
-			for _, row := range rows {
-				enabled[row.Remote] = enabled[row.Remote] || row.Enabled
-			}
-			result.Rejected = slices.DeleteFunc(result.Rejected, func(r projects.Rejection) bool {
-				return r.Reason != projects.ReasonCheckFailed || !enabled[r.Remote]
-			})
+			result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+			result.Rejected = unloadedRepositories(result.Rejected)
 			return result, err
 		},
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
@@ -910,6 +903,10 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		switch role.Role {
+		case "reviewer", "reviewer_small", "second_reviewer":
+			modelRole.endpoint.Binary = commandBinary(role.Raw, ref.Agent)
+		}
+		switch role.Role {
 		case "reviewer", "reviewer_small":
 			if role.Role == "reviewer" {
 				hasReviewer, reviewer = true, modelRole
@@ -941,7 +938,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 	}
 	if hasReviewer && hasSecondReviewer {
 		cross := reviewer
-		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Isolated: true}
+		cross.name, cross.endpoint = "cross_reviewer", modelhealth.Endpoint{Binary: reviewer.endpoint.Binary, Isolated: true}
 		roles = append(roles, cross)
 	}
 	if raw := env["AGENT_ROLE_RESOLVER_TOP"]; raw != "" {
@@ -963,6 +960,24 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		}
 	}
 	return roles
+}
+
+// unloadedRepositories keeps the repositories discovery rejected because their
+// pipeline check or profile failed. The ledger rows cannot say whether such a
+// repository is enabled: reading them needs the profile that failed to load.
+func unloadedRepositories(rejected []projects.Rejection) []projects.Rejection {
+	return slices.DeleteFunc(slices.Clone(rejected), func(r projects.Rejection) bool { return r.Reason != projects.ReasonCheckFailed })
+}
+
+// commandBinary is the absolute executable a legacy reviewer command runs,
+// or "" when the command finds agent on PATH.
+func commandBinary(command, agent string) string {
+	for _, word := range strings.Fields(command) {
+		if filepath.IsAbs(word) && filepath.Base(word) == agent {
+			return word
+		}
+	}
+	return ""
 }
 
 // checkModels also lists each enabled repository whose profile could not be
@@ -995,10 +1010,6 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		}
 	}
 	probes.Wait()
-	var recordErr error
-	if p.recordModels {
-		recordErr = recordModelProbes(registry, pending)
-	}
 
 	rows := []doctorModelStatus{}
 	var unavailable, unknown, exhausted, invalid bool
@@ -1037,6 +1048,11 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 	for _, r := range unloaded {
 		rows = append(rows, doctorModelStatus{Repository: r.Remote, Role: "profile", Status: modelhealth.Status{State: modelhealth.Unknown, Reason: "config_invalid", CheckedAt: p.now}})
 		unknown, invalid = true, true
+	}
+	// Recording after the rows keeps watch and watch --dry-run on the same verdict.
+	var recordErr error
+	if p.recordModels {
+		recordErr = recordModelProbes(registry, pending)
 	}
 	check := healthCheck{Status: healthOK, Reason: "各角色均有可重试候选", Details: rows, unprobed: unknown}
 	switch {
