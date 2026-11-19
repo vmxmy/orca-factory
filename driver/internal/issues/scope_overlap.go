@@ -10,6 +10,15 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
+type ScopeOverlapError struct {
+	IDs       []string
+	Conflicts []string
+}
+
+func (e *ScopeOverlapError) Error() string {
+	return fmt.Sprintf("SCOPE 与未完成票重叠：%s；请将冲突票 UUID 加入 blockers，或加入 related；确认重复则不建票", strings.Join(e.Conflicts, "; "))
+}
+
 func (c *Feishu) requireScopeDependencies(ctx context.Context, in CreateInput) error {
 	brief, _, err := parseFeishuDescription(in.Description)
 	if err != nil {
@@ -28,7 +37,7 @@ func (c *Feishu) requireScopeDependencies(ctx context.Context, in CreateInput) e
 	if err != nil {
 		return fmt.Errorf("read tickets for SCOPE overlap: %w", err)
 	}
-	var conflicts []string
+	var ids, conflicts []string
 	for _, record := range records {
 		row, err := c.row(record)
 		if err != nil {
@@ -43,13 +52,16 @@ func (c *Feishu) requireScopeDependencies(ctx context.Context, in CreateInput) e
 		for _, a := range scope {
 			for _, b := range strings.Fields(row.brief.Scope) {
 				if scopeEntriesOverlap(a, b) {
+					if !slices.Contains(ids, row.id()) {
+						ids = append(ids, row.id())
+					}
 					conflicts = append(conflicts, fmt.Sprintf("%s (%s): %q 与 %q", identifier(row, projects), row.id(), a, b))
 				}
 			}
 		}
 	}
 	if len(conflicts) > 0 {
-		return fmt.Errorf("SCOPE 与未完成票重叠：%s；请将冲突票 UUID 加入 blockers，或加入 related；确认重复则不建票", strings.Join(conflicts, "; "))
+		return &ScopeOverlapError{IDs: ids, Conflicts: conflicts}
 	}
 	return nil
 }

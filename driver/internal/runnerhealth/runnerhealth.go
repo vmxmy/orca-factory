@@ -118,7 +118,11 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 	}
 	switch {
 	case due && rec.Ticket == "" && (!rec.Unconfirmed || now.Sub(rec.UnconfirmedAt) >= unconfirmedCooldown):
-		task, err := m.Tickets.Create(ctx, ticket(problems))
+		task, err := m.Tickets.Create(ctx, ticket(problems, []string{}))
+		var overlap *issues.ScopeOverlapError
+		if errors.As(err, &overlap) {
+			task, err = m.Tickets.Create(ctx, ticket(problems, overlap.IDs))
+		}
 		if err != nil {
 			rec.Unconfirmed = true
 			rec.UnconfirmedAt = now
@@ -313,7 +317,11 @@ func readLease(path string) (lease, time.Time, error) {
 	return l, info.ModTime(), nil
 }
 
-func ticket(problems map[string]string) issues.CreateInput {
+func ticket(problems map[string]string, related []string) issues.CreateInput {
+	deps, err := json.Marshal(issues.AdoptInput{Blockers: []string{}, Related: related})
+	if err != nil {
+		panic(err) // string slices always marshal
+	}
 	var evidence []string
 	for _, detail := range problems {
 		evidence = append(evidence, "- "+detail)
@@ -349,7 +357,7 @@ CHECK: for s in 1 2 3 4; do systemctl --user is-active --quiet orca-go-isolated-
 scripts/local-runner/* scripts/local-runner/maintenance/*
 
 ## 依赖
-DEPENDENCIES: {"blockers":[],"related":[]}
+DEPENDENCIES: ` + string(deps) + `
 无阻塞。
 
 ## 来源
@@ -362,7 +370,7 @@ DEPENDENCIES: {"blockers":[],"related":[]}
 		Labels:      []string{"ready-for-agent"},
 		Estimate:    &estimate,
 		Blockers:    []string{},
-		Related:     []string{},
+		Related:     related,
 	}
 }
 
