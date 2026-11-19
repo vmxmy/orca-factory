@@ -459,3 +459,13 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 实际协议与旧票迁移见 [角色与 gate spec](../core/roles/README.md#新测试的确定性证据)。
 本协议的合成回归在 `core/gate.test.sh`、`executor.TestArtifactsKeepTicketFields`、`executor.TestParseTicketAssertionFields`、`executor.TestGateSpecRefreshCarriesAssertion`、`scheduler.TestFrozenHandoffAssertionMigration` 与 `scheduler.TestRuntimeOverlapExecutesOriginalGateScript`，不是生产输出的录制样本。
 历史 `testdata/recorded/` 描述、handoff 与 checkpoint 不重写。飞书正文解析与渲染由 `issues.TestFeishuWriteBriefDescriptionRoundTrip` 和 `issues.TestFeishuReadRenderedBriefParses` 覆盖。
+
+## 模型可用性登记与探测（OF-592）
+
+- `modelhealth.Ref` 解析与格式化 `agent:model:effort`；agent 必填，model、effort 可空。现有配置解析器保持原样。状态结构为 `Status{Ref, State, Reason, Until, CheckedAt}`，JSON 字段为 `ref/state/reason/until/checkedAt`；state 只取 `ok`、`unavailable`、`unknown`。
+- `testdata/recorded/claude-model-limit.txt` 与 `codex-model-unsupported.txt` 来自 OF-592 票面引用的 2026-11-17 至 18 日线上实测原文，2026-11-19 通过票据统一入口回读后提取引号内文本。前者是完整额度提示行，后者是 codex-cli 0.164.0 的 400 `model_not_found` 消息中的账号不支持摘录，不冒充完整 JSON 或本次重新调用的输出。`modelhealth.TestClassifyModelOutputs` 直接读取这两份摘录，分别断言 `usage_limit` 与 `model_not_supported`；固定观察时间下，Claude 重置时刻为 `2026-11-21T01:00:00+08:00`。正常回复与超时用独立合成输入验证。
+- 分类只保存固定原因码：`probe_ok`、`usage_limit`、`model_not_supported`、`timeout`、`probe_failed`、`unexpected_output`；不记录错误全文。不可用且无有效未来重置时间使用 `DefaultCooldown = 30 * time.Minute`。重置文本按显式 IANA 时区解释，月日不带年份时采用观察年份，十二月观察到一月重置时跨年。无法解释的重置文本使用冷却常量。
+- `Probe` 对 codex 执行 `codex exec -m <model> -c model_reasoning_effort=low --sandbox read-only`，对 claude 执行 `claude -p --model <model> --tools '' --permission-mode dontAsk --strict-mcp-config --disable-slash-commands --no-session-persistence`，追加固定提示词 `Reply with exactly: ok`。model 为空时省略模型参数；不传配置 effort。一次请求最多 120 秒，父 context 更早结束时遵循父期限，取消由 `runx` 回收进程组。非零退出的 stderr 也参与分类。`TestProbeCommands` 使用替代 CLI 验证 argv、stderr 和父期限，不调用付费模型。
+- 状态根目录的 `model-health.json` 是按 `agent:model` 索引的对象，effort 不参与索引。`Record` 获取同目录文件锁，重读当前数据后原子替换文件，写入错误向调用方返回；锁竞争也返回错误。`TestRegistrySelectSkipsUnavailable` 覆盖重启、独立登记实例保留其他模型、冷却边界和候选顺序。`Select` 跳过仍在不可用期的模型；缺记录为 `unknown/not_checked`，冷却到期为 `unknown/cooldown_expired`，这两类可重试，不宣称探测成功。
+- `doctorChecks` 新增 `models`，复用已加载仓库配置的角色与档位。每次检查按 `agent:model` 去重探测，未过期的不可用记录不探测。`checks.models.details` 是 `{repository, role, status}` 数组；status 为上述模型状态，文本输出同样列出角色与引用。各 worker 档位归为 worker 候选集合，其余已配置角色各有当前模型一个候选，本票不新增 fallback 配置。任何角色全部候选仍不可用为 `fail`；有不可用候选且各角色仍可重试为 `warn`；只有未确认状态为 `unknown`，同时加入 `errors`。项目发现或登记读写失败为 `unknown`。`TestDoctorModels`、`TestDoctorModelsUnavailableRoleAndCooldown` 覆盖状态、去重、动态档位、终审角色、文本明细与冷却恢复；既有 doctor 测试验证 JSON 主路径接线。
+- doctor 会更新本地登记；bootstrap 不探测模型。没有改派工、审查或运行中回合的选择行为，也不修改模型配置。后续票消费 `Registry.Select`，本票不迁移旧解析入口。

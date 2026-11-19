@@ -21,6 +21,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -51,7 +52,7 @@ const (
 const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
-var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials"}
+var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials", "models"}
 
 var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
@@ -93,6 +94,7 @@ type doctorProbe struct {
 	projects        func(context.Context) ([]projects.Project, error)
 	ledger          func(context.Context, projects.Project) (doctorLedger, error)
 	githubReachable func(context.Context) error
+	modelProbe      func(context.Context, modelhealth.Ref, string) modelhealth.Status
 }
 
 // unprobed is unknown, not fail: doctor runs every 30 minutes under OF-128,
@@ -144,6 +146,7 @@ func newDoctorProbe() (doctorProbe, error) {
 	return doctorProbe{
 		now:         time.Now(),
 		stateRoot:   logStateRoot(),
+		modelProbe:  modelhealth.Probe,
 		factoryRoot: cfg.FactoryRoot,
 		serviceEnv:  serviceEnviron,
 		projects: func(ctx context.Context) ([]projects.Project, error) {
@@ -189,13 +192,14 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"orca_runtime": p.checkOrcaRuntime(),
 	}
 	if projectsErr != nil {
-		for _, name := range []string{"checkouts", "sync_prs", "ledger"} {
+		for _, name := range []string{"checkouts", "sync_prs", "ledger", "models"} {
 			checks[name] = unprobed("项目发现失败，无法列出已接管项目")
 		}
 	} else {
 		checks["checkouts"] = p.checkCheckouts(ctx, eligible)
 		checks["sync_prs"] = p.checkSyncPRs(ctx, eligible)
 		checks["ledger"] = p.checkLedger(ctx, eligible)
+		checks["models"] = p.checkModels(ctx, eligible)
 	}
 	report := healthReport{Checks: checks, Errors: []string{}}
 	for _, name := range doctorChecks {
@@ -215,6 +219,13 @@ func writeHealth(out io.Writer, report healthReport, asJSON bool, names []string
 	for _, name := range names {
 		check := report.Checks[name]
 		fmt.Fprintf(&b, "%-13s %-8s %s\n", name, check.Status, check.Reason)
+		if name == "models" {
+			if rows, ok := check.Details.([]doctorModelStatus); ok {
+				for _, row := range rows {
+					fmt.Fprintf(&b, "  %s %s %s %s %s\n", row.Repository, row.Role, row.Status.Ref.String(), row.Status.State, row.Status.Reason)
+				}
+			}
+		}
 		if check.Fix != "" {
 			fmt.Fprintf(&b, "%-13s %-8s 修法: %s\n", "", "", check.Fix)
 		}
@@ -755,4 +766,84 @@ func (p doctorProbe) checkOrcaRuntime() healthCheck {
 		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
 	}
 	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
+}
+
+// doctorModelStatus reports configured identities without changing dispatch selection.
+type doctorModelStatus struct {
+	Repository string             `json:"repository"`
+	Role       string             `json:"role"`
+	Status     modelhealth.Status `json:"status"`
+}
+
+func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Project) healthCheck {
+	registry, err := modelhealth.Open(p.stateRoot)
+	if err != nil {
+		return unprobed("模型可用性登记无法读取")
+	}
+	rows := []doctorModelStatus{}
+	checked := map[string]modelhealth.Status{}
+	unavailable, unknown, exhausted := false, false, false
+	for _, project := range eligible {
+		roles := repositoryRoles(project.Repository.Env, project.Repository.Sources)
+		names := []string{}
+		for key, value := range project.Repository.Env {
+			if strings.HasPrefix(key, "AGENT_TIER_") && key != "AGENT_TIER_CHAIN" && key != "AGENT_TIER_ESCALATE" && key != "AGENT_TIER_DEFAULT" && key != "AGENT_TIER_STRONG" && value != "" {
+				names = append(names, key)
+			}
+		}
+		slices.Sort(names)
+		if project.Repository.Env["AGENT_ROLE_RESOLVER_TOP"] != "" {
+			names = append(names, "AGENT_ROLE_RESOLVER_TOP")
+		}
+		for _, key := range names {
+			roleName := "worker_" + strings.ToLower(strings.TrimPrefix(key, "AGENT_TIER_"))
+			if key == "AGENT_ROLE_RESOLVER_TOP" {
+				roleName = "resolver_top"
+			}
+			ref, parseErr := modelhealth.Parse(project.Repository.Env[key])
+			if parseErr != nil {
+				return unprobed("模型档位配置无法解析")
+			}
+			roles = append(roles, configRole{Role: roleName, Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort})
+		}
+		candidates := map[string][]modelhealth.Ref{}
+		for _, role := range roles {
+			ref := modelhealth.Ref{Agent: role.Agent, Model: role.Model, Effort: role.Effort}
+			state, ok := checked[ref.Key()]
+			if !ok {
+				state = registry.Status(ref, p.now)
+				if state.State != modelhealth.Unavailable {
+					state = p.modelProbe(ctx, ref, project.Path)
+					if err := registry.Record(state); err != nil {
+						return unprobed("模型可用性登记无法写入")
+					}
+				}
+				checked[ref.Key()] = state
+			}
+			state.Ref = ref
+			rows = append(rows, doctorModelStatus{Repository: project.Name, Role: role.Role, Status: state})
+			group := role.Role
+			if strings.HasPrefix(group, "worker_") {
+				group = "worker"
+			}
+			candidates[group] = append(candidates[group], ref)
+			unavailable = unavailable || state.State == modelhealth.Unavailable
+			unknown = unknown || state.State == modelhealth.Unknown
+		}
+		for _, refs := range candidates {
+			if _, ok := registry.Select(refs, p.now); !ok {
+				exhausted = true
+			}
+		}
+	}
+	check := healthCheck{Status: healthOK, Reason: "各角色模型可用", Details: rows, unprobed: unknown}
+	switch {
+	case exhausted:
+		check.Status, check.Reason = healthFail, "有角色的全部模型候选仍处于不可用期"
+	case unavailable:
+		check.Status, check.Reason = healthWarn, "有模型不可用，角色仍有可重试候选"
+	case unknown:
+		check.Status, check.Reason = healthUnknown, "有模型未能确认可用性"
+	}
+	return check
 }

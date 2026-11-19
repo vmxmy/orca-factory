@@ -19,6 +19,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/scheduler"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -232,6 +233,9 @@ func (f doctorFixture) probe(t *testing.T, serviceTools []string, ledger doctorF
 		now:         f.now,
 		stateRoot:   filepath.Join(f.root, "state"),
 		factoryRoot: f.factory,
+		modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+			return modelhealth.Classify(ref, "ok", nil, f.now)
+		},
 		serviceEnv: func(context.Context) (map[string]string, error) {
 			return map[string]string{"PATH": serviceBin, "AGENT_FEISHU_APP_ID": "TEST-PLACEHOLDER-CRED", "AGENT_FEISHU_APP_SECRET": "TEST-PLACEHOLDER-CRED"}, nil
 		},
@@ -344,9 +348,16 @@ func TestDriverDoctorReportsHealthyRuntime(t *testing.T) {
 
 	result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
 
-	result.want(t, 0, map[string]string{"service_path": "ok", "version": "ok", "maintenance": "ok", "checkouts": "ok", "sync_prs": "ok", "ledger": "ok", "launches": "ok", "credentials": "ok"})
+	result.want(t, 0, map[string]string{"service_path": "ok", "version": "ok", "maintenance": "ok", "checkouts": "ok", "sync_prs": "ok", "ledger": "ok", "launches": "ok", "credentials": "ok", "models": "ok"})
 	if len(result.errors) != 0 {
 		t.Fatalf("errors = %v, want none", result.errors)
+	}
+	var models []doctorModelStatus
+	if err := json.Unmarshal(result.details["models"], &models); err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].Repository != "orca-factory" || models[0].Role != "resolver" || models[0].Status.Ref.Agent != "codex" || models[0].Status.State != "ok" {
+		t.Fatalf("models main-path details = %+v", models)
 	}
 	var version struct {
 		MainCommittedAt string `json:"factory_main_committed_at"`
@@ -543,5 +554,94 @@ func TestOrcaRuntimeCapabilitiesSurviveStatusBackend(t *testing.T) {
 	}
 	if _, ok := any(backend).(interface{ OrcaTerminalCreateFailures() int }); !ok {
 		t.Error("serve statusBackend hides the Orca terminal create failure count")
+	}
+}
+
+func TestDoctorModels(t *testing.T) {
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ name, state, want string }{
+		{"healthy", "ok", "ok"}, {"one worker tier unavailable", "unavailable", "warn"}, {"unknown", "unknown", "unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := map[string]int{}
+			p := doctorProbe{now: now, stateRoot: t.TempDir(), modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+				calls[ref.Key()]++
+				state := modelhealth.OK
+				if ref.Model == "primary" {
+					state = tc.state
+				}
+				return modelhealth.Status{Ref: ref, State: state, Reason: "test", CheckedAt: now, Until: now.Add(time.Hour)}
+			}}
+			eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
+				"AGENT_TIER_DEFAULT": "codex:primary:high", "AGENT_TIER_STRONG": "claude:backup:high",
+				"AGENT_ROLE_REVIEWER": "claude:backup:low", "AGENT_TIER_CHAIN": "default strong max", "AGENT_TIER_MAX": "claude:backup:max",
+				"AGENT_ROLE_RESOLVER_TOP": "claude:backup:max",
+			}}}}
+			got := p.checkModels(context.Background(), eligible)
+			if got.Status != tc.want {
+				t.Fatalf("check = %+v", got)
+			}
+			if calls["codex:primary"] != 1 || calls["claude:backup"] != 1 || len(calls) != 2 {
+				t.Fatalf("probe calls = %v", calls)
+			}
+			rows := got.Details.([]doctorModelStatus)
+			found := map[string]bool{}
+			for _, row := range rows {
+				found[row.Role] = true
+				if row.Repository != "one" {
+					t.Fatalf("row = %+v", row)
+				}
+			}
+			for _, role := range []string{"worker_default", "worker_strong", "worker_max", "reviewer", "resolver", "resolver_top", "intake"} {
+				if !found[role] {
+					t.Fatalf("missing %s: %+v", role, rows)
+				}
+			}
+			var out bytes.Buffer
+			report := healthReport{Checks: map[string]healthCheck{"models": got}}
+			if err := writeHealth(&out, report, false, []string{"models"}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(out.String(), "one") || !strings.Contains(out.String(), "codex:primary:high") {
+				t.Fatalf("text omits models: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestDoctorModelsUnavailableRoleAndCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	r, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "codex", Model: "primary", Effort: "high"}
+	if err := r.Record(modelhealth.Classify(ref, "model_not_found", nil, now)); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	p := doctorProbe{now: now, stateRoot: root, modelProbe: func(_ context.Context, ref modelhealth.Ref, _ string) modelhealth.Status {
+		calls++
+		return modelhealth.Classify(ref, "ok", nil, now.Add(time.Hour))
+	}}
+	eligible := []projects.Project{{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": ref.String(), "AGENT_ROLE_RESOLVER": ref.String(),
+	}}}}
+	got := p.checkModels(context.Background(), eligible)
+	if got.Status != "fail" || calls != 0 {
+		t.Fatalf("cooldown = %+v, calls=%d", got, calls)
+	}
+	p.now = now.Add(time.Hour)
+	got = p.checkModels(context.Background(), eligible)
+	if got.Status != "ok" || calls != 1 {
+		t.Fatalf("expired = %+v, calls=%d", got, calls)
+	}
+	if err := os.WriteFile(filepath.Join(root, "model-health.json"), []byte("invalid"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got = p.checkModels(context.Background(), eligible)
+	if got.Status != "unknown" || !got.unprobed || calls != 1 {
+		t.Fatalf("corrupt registry = %+v", got)
 	}
 }
