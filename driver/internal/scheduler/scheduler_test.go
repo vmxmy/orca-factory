@@ -26,6 +26,7 @@ type fakeBackend struct {
 	tickets                  []Ticket
 	snapshots                int
 	enabled                  map[string]bool
+	automationErr            error
 	absent, inactive         bool
 	terminalErr, dispatchErr error
 	applyErr                 error
@@ -40,6 +41,9 @@ func (f *fakeBackend) Snapshot(context.Context, []config.Repository) ([]Ticket, 
 	return append([]Ticket(nil), f.tickets...), nil
 }
 func (f *fakeBackend) AutomationDisabled(_ context.Context, r config.Repository) (bool, error) {
+	if f.automationErr != nil {
+		return false, f.automationErr
+	}
 	return !f.enabled[r.Path], nil
 }
 func (f *fakeBackend) TerminalAbsent(context.Context, Ticket) (bool, error) {
@@ -972,14 +976,14 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 	if b.exhaustedNotices != 0 {
 		t.Fatalf("human notice before the last restart was probed: %d", b.exhaustedNotices)
 	}
-	// A notice that never left is retried; one whose response was lost may have
-	// been delivered and is not sent again.
-	b.exhaustedErrs = []error{fmt.Errorf("%w: feishu settings unreadable", errOrcaNoticeNotSent), errors.New("feishu response lost")}
+	// A notice that failed for certain is retried; one whose response was lost
+	// may have been delivered and is not sent again.
+	b.exhaustedErrs = []error{errors.New("feishu settings unreadable"), &infra.Transient{Err: errors.New("feishu transport failed")}}
 	for offset := 85 * time.Minute; offset <= 130*time.Minute; offset += 15 * time.Minute {
 		tickAt(offset, 3)
 	}
 	if b.exhaustedNotices != 2 {
-		t.Fatalf("human notice attempts %d, want one unsent retry then no resend after a possible delivery", b.exhaustedNotices)
+		t.Fatalf("human notice attempts %d, want one retry after a certain failure then no resend after a possible delivery", b.exhaustedNotices)
 	}
 	// The pause started on the third ticket's repository; its chat gets every result.
 	if want := []string{"/repo2 1:systemctl failed", "/repo2 2:<nil>", "/repo2 3:<nil>"}; !reflect.DeepEqual(b.restartNotices, want) {
@@ -1005,15 +1009,17 @@ func TestOrcaRuntimePauseRestartsOrcaServiceAfterGrace(t *testing.T) {
 
 // Orca failing the probe's terminal create, refused or unreachable, keeps the
 // restart schedule; a maintenance refusal never reached Orca, and a created probe
-// terminal that fails to close means Orca has recovered.
+// terminal that fails to close means Orca has recovered. An Orca that cannot
+// answer automation reads still gets probed.
 func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
+	unreachable := &infra.Transient{Err: errors.New("orca call timed out")}
 	for _, tc := range []struct {
-		name               string
-		probeErr, closeErr error
-		restarts           int
-		recovered          bool
+		name                              string
+		probeErr, closeErr, automationErr error
+		restarts                          int
+		recovered                         bool
 	}{
-		{name: "orca unavailable", probeErr: &infra.Global{Dep: infra.Orca, Reason: infra.RuntimeUnavailable, Err: errors.New("orca dependency unavailable")}, restarts: 1},
+		{name: "orca unreachable", probeErr: unreachable, automationErr: errors.New("automation read failed"), restarts: 1},
 		{name: "maintenance refusal", probeErr: fmt.Errorf("%w: maintenance blocks new claim or dispatch", maintenance.ErrRefused)},
 		{name: "probe close failure", closeErr: errors.New("terminal close failed"), recovered: true},
 	} {
@@ -1022,7 +1028,7 @@ func TestOrcaRuntimeProbeFailureKindsDecideRestart(t *testing.T) {
 			s, b, oc := x.s, x.b, x.oc
 			_ = s.Tick(context.Background())
 			oc.failing = tc.probeErr != nil
-			oc.probeErr, oc.closeErr = tc.probeErr, tc.closeErr
+			oc.probeErr, oc.closeErr, x.f.automationErr = tc.probeErr, tc.closeErr, tc.automationErr
 			*x.now = x.now.Add(time.Hour)
 			_ = s.Tick(context.Background())
 			if b.restarts != tc.restarts || s.OrcaRuntime().Restarts != tc.restarts {

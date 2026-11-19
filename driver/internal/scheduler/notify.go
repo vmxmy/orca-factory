@@ -186,14 +186,10 @@ func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket)
 	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：terminal create 探测仍失败，driver 不再重启 orca-serve，只继续探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
 }
 
-// errOrcaNoticeNotSent marks a notice that failed before any request left, so
-// retrying it cannot duplicate a delivered message.
-var errOrcaNoticeNotSent = errors.New("orca notice not sent")
-
 func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
 	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
 	if err != nil {
-		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+		return err
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
@@ -201,7 +197,7 @@ func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text s
 	}
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
-		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
+		return err
 	}
 	return sender.SendText(ctx, chat, text)
 }

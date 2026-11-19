@@ -354,6 +354,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				break
 			}
 		}
+		// An Orca that cannot answer automation reads leaves no repository
+		// schedulable; the probe only runs `true`, so any configured one serves.
+		if repo == "" && len(s.Repositories) > 0 {
+			repo = s.Repositories[0].Path
+		}
 		if repo == "" {
 			return errors.New("orca runtime fault: no repository available for recovery probe")
 		}
@@ -861,7 +866,7 @@ var ErrOrcaRestartUnsupported = errors.New("backend has no Orca service restart"
 // restartOrcaService runs after a recovery probe whose terminal create Orca
 // failed. It restarts orca-serve once the pause has lasted orcaRestartGrace,
 // then at most once per orcaRestartInterval, and after orcaRestartLimit restarts
-// sends one human notice, retrying only a notice that never left.
+// sends one human notice, retrying it until delivered or uncertain.
 func (s *Scheduler) restartOrcaService(ctx context.Context) {
 	now := s.clock()
 	ticket := s.orcaPauseTicket
@@ -874,7 +879,10 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		}); ok {
 			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
 				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
-				if errors.Is(err, errOrcaNoticeNotSent) {
+				// Only a transport failure may have delivered the notice; any other
+				// failure is certain, so the next round sends it again.
+				var uncertain *infra.Transient
+				if !errors.As(err, &uncertain) {
 					return
 				}
 			}
