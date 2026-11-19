@@ -1047,6 +1047,34 @@ func TestOrcaRestartExhaustedNoticeNotResentAfterUncertainSend(t *testing.T) {
 	}
 }
 
+// The recorded output of an orca CLI that cannot reach the runtime classifies as
+// an unreachable Orca and keeps the restart schedule when a probe returns it.
+func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
+	sample, err := filepath.Abs("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(t.TempDir(), "orca")
+	script := "#!/bin/sh\ncat '" + sample + "'\nexit 1\n"
+	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	x := newRuntimeFailureFixture(t, orcaRuntimeFailureThreshold)
+	s, b, oc := x.s, x.b, x.oc
+	_, err = (&orca.Client{Path: cli, Timeout: time.Second}).TerminalCreate(context.Background(), orca.TerminalOptions{Worktree: "path:/repo0", Title: "probe", Command: "true"})
+	var global *infra.Global
+	if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded runtime_unavailable classified as %#v", err)
+	}
+	_ = s.Tick(context.Background())
+	oc.failureClient = &orca.Client{Path: cli, Timeout: time.Second}
+	*x.now = x.now.Add(orcaRestartGrace)
+	_ = s.Tick(context.Background())
+	if b.restarts != 1 || s.OrcaRuntime().Restarts != 1 {
+		t.Fatalf("restarts=%d status=%+v, want one restart", b.restarts, s.OrcaRuntime())
+	}
+}
+
 // Only serve publishes the fault; a separate Scheduler such as `serve --dry-run`
 // starts at zero and must not clear the running service's paused state.
 func TestSchedulerTickLeavesPublishedOrcaRuntime(t *testing.T) {
