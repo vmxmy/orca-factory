@@ -26,6 +26,7 @@ const Repository = "vmxmy/orca-factory"
 
 // grace keeps a normal registration or a single crash from opening a ticket.
 const grace = 10 * time.Minute
+const unconfirmedCooldown = 6 * time.Hour
 
 var slots = []int{1, 2, 3, 4}
 
@@ -61,9 +62,10 @@ type record struct {
 	// RecoveryStep is the last recovery write that landed, so a failed write
 	// retries only itself and never repeats a comment.
 	RecoveryStep string `json:"recovery_step,omitempty"`
-	// A failed create may still have opened an issue; never create again until
-	// every slot recovers, so a flaky API cannot flood the tracker.
-	Unconfirmed bool `json:"unconfirmed,omitempty"`
+	// A failed create may still have opened an issue; wait before retrying
+	// so a flaky API cannot flood the tracker.
+	Unconfirmed   bool      `json:"unconfirmed,omitempty"`
+	UnconfirmedAt time.Time `json:"unconfirmed_at,omitzero"`
 }
 
 // Poll opens a ticket once any problem has persisted for the grace period, and
@@ -115,13 +117,15 @@ func (m *Monitor) Poll(ctx context.Context, now time.Time) error {
 		}
 	}
 	switch {
-	case due && rec.Ticket == "" && !rec.Unconfirmed:
+	case due && rec.Ticket == "" && (!rec.Unconfirmed || now.Sub(rec.UnconfirmedAt) >= unconfirmedCooldown):
 		task, err := m.Tickets.Create(ctx, ticket(problems))
 		if err != nil {
 			rec.Unconfirmed = true
+			rec.UnconfirmedAt = now
 			return errors.Join(fmt.Errorf("runner alert ticket unconfirmed: %w", err), m.save(rec))
 		}
 		rec.Ticket, rec.Identifier, rec.Recovered, rec.RecoveryStep = task.ID, task.Identifier, false, ""
+		rec.Unconfirmed, rec.UnconfirmedAt = false, time.Time{}
 	case len(problems) > 0:
 		rec.Recovered, rec.RecoveryStep = false, ""
 	case rec.Unconfirmed:
