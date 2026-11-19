@@ -9,16 +9,19 @@ import (
 
 const gib = 1 << 30
 
-func TestParseRecordedProcSamples(t *testing.T) {
+func recorded(t *testing.T, sample string) []byte {
+	t.Helper()
+	data, err := os.ReadFile("../../testdata/recorded/" + sample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func readProc(t *testing.T, meminfo, pressure []byte) Reading {
+	t.Helper()
 	root := t.TempDir()
-	for sample, dest := range map[string]string{
-		"proc-meminfo.txt":         "proc/meminfo",
-		"proc-pressure-memory.txt": "proc/pressure/memory",
-	} {
-		data, err := os.ReadFile("../../testdata/recorded/" + sample)
-		if err != nil {
-			t.Fatal(err)
-		}
+	for dest, data := range map[string][]byte{"proc/meminfo": meminfo, "proc/pressure/memory": pressure} {
 		path := filepath.Join(root, dest)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -31,6 +34,11 @@ func TestParseRecordedProcSamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return got
+}
+
+func TestParseRecordedProcSamples(t *testing.T) {
+	got := readProc(t, recorded(t, "proc-meminfo.txt"), recorded(t, "proc-pressure-memory.txt"))
 	want := Reading{Available: 33843404 * 1024, SomeAvg60: 0}
 	if got != want {
 		t.Fatalf("Read = %+v, want %+v", got, want)
@@ -39,13 +47,9 @@ func TestParseRecordedProcSamples(t *testing.T) {
 
 // The recorded host was idle, so every PSI value is 0.00. Give each line and
 // window a distinct value in the recorded format so only some avg60 matches.
-func TestParseSomeAvg60FromRecordedPressureFormat(t *testing.T) {
-	data, err := os.ReadFile("../../testdata/recorded/proc-pressure-memory.txt")
-	if err != nil {
-		t.Fatal(err)
-	}
+func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
 	values := map[string]string{"some avg10": "11.11", "some avg60": "22.22", "some avg300": "33.33", "full avg10": "44.44", "full avg60": "55.55", "full avg300": "66.66"}
-	lines := strings.Split(string(data), "\n")
+	lines := strings.Split(string(recorded(t, "proc-pressure-memory.txt")), "\n")
 	for i, line := range lines {
 		fields := strings.Fields(line)
 		for j, field := range fields[min(1, len(fields)):] {
@@ -56,12 +60,10 @@ func TestParseSomeAvg60FromRecordedPressureFormat(t *testing.T) {
 		}
 		lines[i] = strings.Join(fields, " ")
 	}
-	got, err := someAvg60([]byte(strings.Join(lines, "\n")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 22.22 {
-		t.Fatalf("someAvg60 = %v, want 22.22 from %q", got, strings.Join(lines, "\n"))
+	pressure := strings.Join(lines, "\n")
+	got := readProc(t, recorded(t, "proc-meminfo.txt"), []byte(pressure))
+	if want := (Reading{Available: 33843404 * 1024, SomeAvg60: 22.22}); got != want {
+		t.Fatalf("Read = %+v, want %+v from %q", got, want, pressure)
 	}
 }
 

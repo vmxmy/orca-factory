@@ -1005,7 +1005,10 @@ func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
 		{hostmem.Reading{}, errors.New("read /proc/meminfo: gone"), false},
 		{hostmem.Reading{Available: 8 << 30}, nil, true},
 	}
+	start := s.Now()
 	for i, step := range steps {
+		now := start.Add(time.Duration(i) * time.Minute)
+		s.Now = func() time.Time { return now }
 		s.HostMemory = func() (hostmem.Reading, error) { return step.reading, step.err }
 		if err := s.Tick(context.Background()); err != nil {
 			t.Fatal(err)
@@ -1014,8 +1017,8 @@ func TestHostMemoryHysteresisSurvivesReadError(t *testing.T) {
 		if got.Paused != step.paused {
 			t.Fatalf("step %d: status=%+v, want paused=%v", i, got, step.paused)
 		}
-		if step.paused && !got.Since.Equal(s.Now()) {
-			t.Fatalf("step %d: hold start lost across a read error: %+v", i, got)
+		if step.paused && !got.Since.Equal(start) {
+			t.Fatalf("step %d: hold start %v, want the first hold at %v", i, got.Since, start)
 		}
 	}
 }
