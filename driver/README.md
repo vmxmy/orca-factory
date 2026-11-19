@@ -536,7 +536,7 @@ orca-factory-driver gear clear OF
 本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
 
 - 每条覆盖以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。条目另记仓库根路径 `path`、操作者、理由和时间，`path` 只用于审计。
-- 项目发现（`serve` 调度、`gear status`、`config`）按 Orca 登记的 `canonicalKey` 读取对应条目，不比较路径，也不读取 Git origin。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey` 时，不继承原键的覆盖。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。直接按路径读取仓库配置的命令（如 `status`、`resolve`）不叠加覆盖。
+- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）和 `resolve` 按 Orca 登记的 `canonicalKey` 读取对应条目，不比较路径，也不读取 Git origin。`resolve` 用当前目录在 Orca 登记中恰好匹配一个仓库来取得键，匹配不到或多于一个时退出。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey` 时，不继承原键的覆盖。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。只读展示的 `status --fresh` 按路径读取仓库配置，不叠加覆盖。
 - `gear set` 和 `gear clear` 把 `.`、`..` 和含 `/` 的参数转为绝对路径并清理，只查 Orca 登记的仓库根路径。其余参数是编号前缀。driver 用仓库自身配置建立飞书客户端，用前缀查询项目表，忽略大小写，再按“仓库远端”匹配 Orca 登记。两种方式都要求恰好命中一个仓库。
 
 其他键的坏条目不影响本仓库。本仓库键的条目不是对象，或 `mode` 不是 `manual`、`auto`，该仓库加载失败，不静默回到仓库值。每次写入都原子替换文件，其他键的条目原样保留，并记录 remote、路径、操作者与理由，下次加载即生效。`clear` 使用本机用户名和固定理由 `restore repository configuration`。

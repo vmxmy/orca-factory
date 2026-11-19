@@ -37,7 +37,11 @@ func resolveTicket(args []string) int {
 		if err != nil {
 			return 1, err
 		}
-		repo, err := config.LoadRepository(cwd)
+		registered, err := gearTarget(ctx, cwd, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, cfg.Tuning)
+		if err != nil {
+			return 1, err
+		}
+		repo, err := config.LoadRegisteredRepository(registered.CanonicalKey, cwd)
 		if err != nil {
 			return 1, errors.New("resolver must run at a repository root with an installed pipeline")
 		}

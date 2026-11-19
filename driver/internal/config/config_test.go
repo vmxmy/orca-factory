@@ -25,6 +25,7 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		{"another remote at this path", `{"github.com/dujiao-next/dujiao-next":{"mode":"manual"}}`, fork, "auto", "repository", ""},
 		{"invalid mode", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid"}}`, upstream, "", "", "manual or auto"},
 		{"null mode", `{"github.com/dujiao-next/dujiao-next":{"mode":null}}`, upstream, "", "", "manual or auto"},
+		{"mode key differs in case", `{"github.com/dujiao-next/dujiao-next":{"mode":"invalid","MODE":"auto"}}`, upstream, "", "", "manual or auto"},
 		{"entry not an object", `{"github.com/dujiao-next/dujiao-next":"manual"}`, upstream, "", "", "manual or auto"},
 		{"empty file object", `{}`, upstream, "auto", "repository", ""},
 	} {

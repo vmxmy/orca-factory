@@ -200,13 +200,12 @@ func applyGear(repo *Repository, remote string) error {
 	if !ok {
 		return nil
 	}
-	var gear struct {
-		Mode string `json:"mode"`
-	}
-	if err := json.Unmarshal(raw, &gear); err != nil || (gear.Mode != "auto" && gear.Mode != "manual") {
+	var fields map[string]json.RawMessage
+	var mode string
+	if json.Unmarshal(raw, &fields) != nil || json.Unmarshal(fields["mode"], &mode) != nil || (mode != "auto" && mode != "manual") {
 		return errors.New("gear.json AGENT_MODE must be manual or auto")
 	}
-	repo.Env["AGENT_MODE"] = gear.Mode
+	repo.Env["AGENT_MODE"] = mode
 	repo.Sources["AGENT_MODE"] = "override"
 	return nil
 }

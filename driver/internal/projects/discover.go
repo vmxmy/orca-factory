@@ -119,7 +119,7 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 	for _, repo := range repos {
 		reject := func(reason Reason) {
 			rejection := Rejection{Path: repo.Path, Remote: repo.CanonicalKey, Reason: reason, Chat: declaredChat(repo.Path)}
-			if repository, ok := readable(repo.Path); ok {
+			if repository, ok := readable(repo.CanonicalKey, repo.Path); ok {
 				rejection.Repository = &repository
 			}
 			result.Rejected = append(result.Rejected, rejection)
@@ -196,7 +196,7 @@ func remoteMismatch(ctx context.Context, path, canonicalKey string, liveRemote L
 func ReadableRepositories(repos []orca.Repo) []config.Repository {
 	result := make([]config.Repository, 0, len(repos))
 	for _, repo := range repos {
-		if repository, ok := readable(repo.Path); ok {
+		if repository, ok := readable(repo.CanonicalKey, repo.Path); ok {
 			result = append(result, repository)
 		}
 	}
@@ -216,8 +216,8 @@ func declaredChat(path string) string {
 	return env["AGENT_FEISHU_NOTIFY_CHAT"]
 }
 
-func readable(path string) (config.Repository, bool) {
-	repository, err := config.LoadRepository(path)
+func readable(remote, path string) (config.Repository, bool) {
+	repository, err := config.LoadRegisteredRepository(remote, path)
 	if err != nil || repository.Env["AGENT_ISSUE_BACKEND"] != "feishu" || repository.Env["AGENT_FEISHU_BASE"] == "" {
 		return config.Repository{}, false
 	}
