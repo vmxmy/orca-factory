@@ -1530,9 +1530,12 @@ func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
 			}
 			var probes atomic.Int32
 			p.modelProbe = func(_ context.Context, ref modelhealth.Ref, _ string, _ modelhealth.Endpoint) modelhealth.Status {
-				if ref.Agent == "claude" && ref.Model != "i" {
+				switch {
+				case ref.Key() == "claude:legacy":
 					probes.Add(1)
 					return modelhealth.Classify(ref, "", context.DeadlineExceeded, p.now)
+				case ref.Agent == "claude" && ref.Model != "i":
+					t.Errorf("unexpected probe of %s", ref)
 				}
 				return modelhealth.Classify(ref, "ok", nil, p.now)
 			}
