@@ -28,6 +28,7 @@ type fakeTickets struct {
 	updates       int
 	recoveryReads int
 	failNotes     int
+	failCreates   int
 	readErr       error
 	// unconfirmedUpdates lands the write, then fails like a lost read-back.
 	unconfirmedUpdates int
@@ -35,6 +36,10 @@ type fakeTickets struct {
 
 func (f *fakeTickets) Create(_ context.Context, in issues.CreateInput) (issues.Task, error) {
 	f.created = append(f.created, in)
+	if f.failCreates > 0 {
+		f.failCreates--
+		return issues.Task{}, errors.New("create unconfirmed")
+	}
 	f.state = "open"
 	var t issues.Task
 	t.ID, t.Identifier, t.NativeState = "uuid-"+strconv.Itoa(len(f.created)), "GH-900", "open"
@@ -434,6 +439,64 @@ func readRecord(t *testing.T, m *Monitor) record {
 		t.Fatal(err)
 	}
 	return rec
+}
+
+func TestUnconfirmedAlertRetriesAfterCooldown(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		name := "failed create"
+		if legacy {
+			name = "legacy record without failure time"
+		}
+		t.Run(name, func(t *testing.T) {
+			start := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+			tickets := &fakeTickets{}
+			m := &Monitor{StateDir: t.TempDir(), Record: filepath.Join(t.TempDir(), "runner-health.json"), Tickets: tickets, Run: healthyUnits}
+			configureToolchain(t, m)
+			writeLease(t, m.StateDir, "registering", start.Add(-15*time.Minute))
+			if err := m.Poll(context.Background(), start); err != nil {
+				t.Fatal(err)
+			}
+			now := start.Add(10 * time.Minute)
+			wantCreates := 1
+			if legacy {
+				rec := readRecord(t, m)
+				rec.Unconfirmed = true
+				if err := m.save(&rec); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				tickets.failCreates = 1
+				if err := m.Poll(context.Background(), now); err == nil {
+					t.Fatal("failed create must surface")
+				}
+				if rec := readRecord(t, m); len(tickets.created) != 1 || !rec.Unconfirmed || rec.Ticket != "" {
+					t.Fatalf("failed create: calls=%d record=%+v", len(tickets.created), rec)
+				}
+				if err := m.Poll(context.Background(), now.Add(5*time.Hour+59*time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+				if len(tickets.created) != 1 {
+					t.Fatalf("created %d tickets before cooldown, want 1", len(tickets.created))
+				}
+				now = now.Add(6 * time.Hour)
+				wantCreates = 2
+			}
+			if err := m.Poll(context.Background(), now); err != nil {
+				t.Fatal(err)
+			}
+			rec := readRecord(t, m)
+			if len(tickets.created) != wantCreates || rec.Ticket != "uuid-"+strconv.Itoa(wantCreates) || rec.Identifier != "GH-900" || rec.Unconfirmed {
+				t.Fatalf("retry: calls=%d want=%d record=%+v", len(tickets.created), wantCreates, rec)
+			}
+			data, err := os.ReadFile(m.Record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), `"unconfirmed_at"`) {
+				t.Fatalf("confirmed ticket retained failure time: %s", data)
+			}
+		})
+	}
 }
 
 func TestWithdrawalNoteRetriedAfterFailure(t *testing.T) {
