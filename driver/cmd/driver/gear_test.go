@@ -29,15 +29,13 @@ func invokeGear(t *testing.T, args ...string) []byte {
 }
 
 type persistedGear struct {
-	Path, Origin, Mode, Operator, Reason string
-	UpdatedAt                            time.Time
+	Path, Mode, Operator, Reason string
+	UpdatedAt                    time.Time
 }
 
 func newGearFixture(t *testing.T) onboardFixture {
 	t.Helper()
 	f := newOnboardFixture(t)
-	gitIn(t, f.factory, "init", "--quiet")
-	gitIn(t, f.factory, "remote", "add", "origin", "https://github.com/vmxmy/orca-factory.git")
 	t.Setenv("AGENT_ORCA_BIN", fakeOrcaRepoList(t, f.factory, "github.com/vmxmy/orca-factory"))
 	return f
 }
@@ -90,12 +88,12 @@ func TestGearCommands(t *testing.T) {
 	status("auto", "override")
 	file := filepath.Join(f.state, "gear.json")
 	gear := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]
-	if gear.Path != f.factory || gear.Origin != "github.com/vmxmy/orca-factory" || gear.Mode != "auto" || gear.Operator != "tester" || gear.Reason != "resume queue" || gear.UpdatedAt.IsZero() {
+	if gear.Path != f.factory || gear.Mode != "auto" || gear.Operator != "tester" || gear.Reason != "resume queue" || gear.UpdatedAt.IsZero() {
 		t.Fatalf("persisted gear=%+v", gear)
 	}
 	invokeGear(t, "set", f.factory, "manual", "--operator", "tester", "--reason", "pause queue")
 	status("manual", "override")
-	if got, err := config.LoadRepository(f.factory); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
+	if got, err := config.LoadRegisteredRepository("github.com/vmxmy/orca-factory", f.factory); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
 		t.Fatalf("loaded=%+v error=%v", got, err)
 	}
 	invokeGear(t, "clear", "OF")
@@ -115,12 +113,12 @@ func TestGearCommands(t *testing.T) {
 	if err != nil || !bytes.Equal(original, after) {
 		t.Fatalf("repository profile changed: %v", err)
 	}
-	other := fmt.Sprintf(`{ "origin":"github.com/other/repo", "path":%q, "mode":null, "note":"<leave intact>" }`, f.factory)
-	bad := fmt.Sprintf(`{"mode":"bogus","origin":"github.com/vmxmy/orca-factory","path":%q}`, f.factory)
+	other := fmt.Sprintf(`{ "path":%q, "mode":null, "note":"<leave intact>" }`, f.factory)
+	bad := fmt.Sprintf(`{"mode":"bogus","path":%q}`, f.factory)
 	t.Chdir(f.factory)
 	for _, tc := range []struct{ selector, entries string }{
 		{"OF", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"other/repo":%s}`, bad, other)},
-		{".", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"old/remote":%s,"other/repo":%s}`, bad, bad, other)},
+		{".", fmt.Sprintf(`{"github.com/vmxmy/orca-factory":%s,"other/repo":%s}`, bad, other)},
 	} {
 		writeTestFile(t, file, tc.entries)
 		invokeGear(t, "clear", tc.selector)
@@ -137,12 +135,12 @@ func TestGearCommands(t *testing.T) {
 	server.Close()
 	invokeGear(t, "set", f.factory, "manual", "--operator", "t", "--reason", "r")
 	entries := readGearEntries(t, file)
-	if got := entries["github.com/vmxmy/orca-factory"]; len(entries) != 2 || got.Mode != "manual" || got.Path != f.factory || got.Origin != "github.com/vmxmy/orca-factory" {
+	if got := entries["github.com/vmxmy/orca-factory"]; len(entries) != 2 || got.Mode != "manual" || got.Path != f.factory {
 		t.Fatalf("set by path with Feishu offline: %+v", entries)
 	}
 	t.Chdir(filepath.Join(f.factory, "scripts"))
 	invokeGear(t, "clear", "..")
-	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Origin != "github.com/other/repo" {
+	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {
 		t.Fatalf("clear .. with Feishu offline: %+v", entries)
 	}
 	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
@@ -150,7 +148,7 @@ func TestGearCommands(t *testing.T) {
 		t.Fatalf("logs=%q, want seven changes", logs.String())
 	}
 	for _, line := range lines {
-		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `origin="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
+		if !strings.Contains(line, fmt.Sprintf("path=%q", f.factory)) || !strings.Contains(line, `remote="github.com/vmxmy/orca-factory"`) || !strings.Contains(line, "operator=") || !strings.Contains(line, "reason=") {
 			t.Fatalf("audit fields missing: %s", line)
 		}
 	}
@@ -216,16 +214,12 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 		t.Fatalf("set upstream: %+v", entries)
 	}
 	set("FORK", "manual")
-	entries = readGearEntries(t, file)
-	if entries[upstream].Origin != "github.com/vmxmy/dujiao-next" || entries[fork].Origin != "github.com/vmxmy/dujiao-next" {
-		t.Fatalf("recorded live origins: %+v", entries)
-	}
 	want := []gearStatus{
 		{Remote: upstream, Prefix: "DJ", Path: a, Mode: "auto", Source: "override"},
 		{Remote: fork, Prefix: "FORK", Path: b, Mode: "manual", Source: "override"},
 	}
 	for _, row := range want {
-		got, err := config.LoadRepository(row.Path)
+		got, err := config.LoadRegisteredRepository(row.Remote, row.Path)
 		if err != nil || got.Env["AGENT_MODE"] != row.Mode || got.Sources["AGENT_MODE"] != row.Source {
 			t.Fatalf("load %s: got %q %q, err=%v", row.Path, got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 		}
@@ -259,7 +253,7 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 		t.Fatalf("subdirectory set changed gear.json: %s, err=%v", after, err)
 	}
 	invokeGear(t, "clear", "DJ")
-	if got, err := config.LoadRepository(a); err != nil || got.Sources["AGENT_MODE"] == "override" {
+	if got, err := config.LoadRegisteredRepository(upstream, a); err != nil || got.Sources["AGENT_MODE"] == "override" {
 		t.Fatalf("cleared DJ inherited FORK: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
 	if remaining := readGearEntries(t, file); len(remaining) != 1 || remaining[fork] != beforeFork {
@@ -270,8 +264,11 @@ func TestGearRecordedRemoteDrift(t *testing.T) {
 	if err := os.RemoveAll(a); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := config.LoadRepository(b); err != nil || got.Sources["AGENT_MODE"] == "override" {
+	if got, err := config.LoadRegisteredRepository(fork, b); err != nil || got.Sources["AGENT_MODE"] == "override" {
 		t.Fatalf("FORK inherited removed DJ checkout: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
+	}
+	if got, err := config.LoadRegisteredRepository(upstream, b); err != nil || got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "override" {
+		t.Fatalf("DJ registered at a new path lost its gear: mode=%q source=%q err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
 }
 

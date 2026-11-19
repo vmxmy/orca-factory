@@ -142,7 +142,7 @@ func Discover(ctx context.Context, repos []orca.Repo, rows []issues.LedgerProjec
 			reject(ReasonCheckFailed)
 			continue
 		}
-		repository, err := config.LoadRepository(repo.Path)
+		repository, err := config.LoadRegisteredRepository(repo.CanonicalKey, repo.Path)
 		if err != nil {
 			reject(ReasonCheckFailed)
 			continue

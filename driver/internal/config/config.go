@@ -3,8 +3,6 @@ package config
 
 import (
 	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,7 +10,6 @@ import (
 	"math"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -22,8 +19,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/vmxmy/orca-factory/driver/internal/orca"
-	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
 type TokenBucket struct {
@@ -109,20 +104,24 @@ func Load(home string) (Config, error) {
 	return result, nil
 }
 
-// LoadRepository resolves a repository's profile and machine-local gear override.
-func LoadRepository(path string) (Repository, error) {
-	repo, err := LoadRepositoryProfile(path)
+// LoadRegisteredRepository resolves the profile of the Orca repository
+// registered under remote and applies its machine-local gear override.
+func LoadRegisteredRepository(remote, path string) (Repository, error) {
+	repo, err := LoadRepository(path)
 	if err != nil {
 		return Repository{}, err
 	}
-	if err := applyGear(&repo); err != nil {
+	if err := applyGear(&repo, remote); err != nil {
 		return Repository{}, err
 	}
 	return repo, nil
 }
 
-// LoadRepositoryProfile resolves the pipeline environment and limits before local gear overrides.
-func LoadRepositoryProfile(path string) (Repository, error) {
+// LoadRepository reads one repository's own pipeline profile
+// (scripts/agent-gates/agent-graph.env) at the given absolute, cleaned path,
+// returning its resolved limits and full environment. Used by the projects
+// package's discovery (OF-42) and by commands run at a repository root.
+func LoadRepository(path string) (Repository, error) {
 	f, err := os.Open(filepath.Join(path, "scripts", "agent-gates", "agent-graph.env"))
 	if err != nil {
 		return Repository{}, errors.New("cannot read repository profile")
@@ -152,7 +151,6 @@ func LoadRepositoryProfile(path string) (Repository, error) {
 
 type gearOverride struct {
 	Path      string    `json:"path"`
-	Origin    string    `json:"origin"`
 	Mode      string    `json:"mode"`
 	Operator  string    `json:"operator"`
 	Reason    string    `json:"reason"`
@@ -189,34 +187,7 @@ func readGears(file string) (map[string]json.RawMessage, error) {
 	return entries, nil
 }
 
-func gearFields(raw json.RawMessage) map[string]any {
-	var fields map[string]any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err := decoder.Decode(&fields); err != nil {
-		return nil
-	}
-	return fields
-}
-
-// gearOrigin returns "" only when git reports no origin remote; other git failures stay errors.
-func gearOrigin(path string) (string, error) {
-	out, err := runx.Run(context.Background(), runx.Spec{Path: "git", Args: []string{"-C", path, "remote", "get-url", "origin"}, Timeout: 10 * time.Second})
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 2 {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	raw := strings.TrimSpace(string(out))
-	if origin, err := orca.NormalizeRemote(raw); err == nil {
-		return origin, nil
-	}
-	return raw, nil
-}
-
-func applyGear(repo *Repository) error {
+func applyGear(repo *Repository, remote string) error {
 	file, err := gearPath()
 	if err != nil {
 		return err
@@ -225,43 +196,22 @@ func applyGear(repo *Repository) error {
 	if err != nil {
 		return err
 	}
-	path := filepath.Clean(repo.Path)
-	var candidates []map[string]any
-	for _, raw := range entries {
-		if fields := gearFields(raw); fields["path"] == path {
-			candidates = append(candidates, fields)
-		}
-	}
-	if len(candidates) == 0 {
+	raw, ok := entries[remote]
+	if !ok {
 		return nil
 	}
-	origin, err := gearOrigin(path)
-	if err != nil {
-		return err
+	var gear struct {
+		Mode string `json:"mode"`
 	}
-	var match map[string]any
-	for _, fields := range candidates {
-		if fields["origin"] != origin {
-			continue
-		}
-		if match != nil {
-			return errors.New("ambiguous gear override")
-		}
-		match = fields
-	}
-	if match == nil {
-		return nil
-	}
-	mode, _ := match["mode"].(string)
-	if mode != "auto" && mode != "manual" {
+	if err := json.Unmarshal(raw, &gear); err != nil || (gear.Mode != "auto" && gear.Mode != "manual") {
 		return errors.New("gear.json AGENT_MODE must be manual or auto")
 	}
-	repo.Env["AGENT_MODE"] = mode
+	repo.Env["AGENT_MODE"] = gear.Mode
 	repo.Sources["AGENT_MODE"] = "override"
 	return nil
 }
 
-// json.Encoder reformats RawMessage values. Keep other checkouts' entries byte-for-byte.
+// json.Encoder reformats RawMessage values. Keep other repositories' entries byte-for-byte.
 func writeGears(w io.Writer, gears map[string]json.RawMessage) error {
 	members := make([]string, 0, len(gears))
 	for remote, raw := range gears {
@@ -285,10 +235,6 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		return errors.New("gear change requires remote, path, operator and reason")
 	}
 	path = filepath.Clean(path)
-	origin, originErr := gearOrigin(path)
-	if mode != "" && originErr != nil {
-		return originErr
-	}
 	file, err := gearPath()
 	if err != nil {
 		return err
@@ -309,16 +255,8 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 		return err
 	}
 	delete(gears, remote)
-	if originErr == nil {
-		for key, raw := range gears {
-			fields := gearFields(raw)
-			if fields["origin"] == origin && fields["path"] == path {
-				delete(gears, key)
-			}
-		}
-	}
 	if mode != "" {
-		gears[remote], err = json.Marshal(gearOverride{Path: path, Origin: origin, Mode: mode, Operator: operator, Reason: reason, UpdatedAt: time.Now().UTC()})
+		gears[remote], err = json.Marshal(gearOverride{Path: path, Mode: mode, Operator: operator, Reason: reason, UpdatedAt: time.Now().UTC()})
 		if err != nil {
 			return err
 		}
@@ -342,7 +280,7 @@ func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 	if err := os.Rename(tmp.Name(), file); err != nil {
 		return err
 	}
-	log.Printf("gear remote=%q path=%q origin=%q mode=%q operator=%q reason=%q", remote, path, origin, mode, operator, reason)
+	log.Printf("gear remote=%q path=%q mode=%q operator=%q reason=%q", remote, path, mode, operator, reason)
 	return nil
 }
 

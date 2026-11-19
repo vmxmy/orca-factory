@@ -163,7 +163,7 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 
 func gearPrefixRemotes(ctx context.Context, selector string, repos []orca.Repo, tuning config.Tuning) (map[string]bool, error) {
 	for _, repo := range repos {
-		profile, err := config.LoadRepositoryProfile(repo.Path)
+		profile, err := config.LoadRepository(repo.Path)
 		if err != nil || profile.Env["AGENT_ISSUE_BACKEND"] != "feishu" || profile.Env["AGENT_FEISHU_BASE"] == "" {
 			continue
 		}
