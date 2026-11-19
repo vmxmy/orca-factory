@@ -601,10 +601,19 @@ type runtimeFailureBackend struct {
 	// restarts counts RestartOrcaService calls; restartErr is what each returns.
 	restarts         int
 	restartErr       error
+	automationErr    error
 	restartNotices   []string
 	exhaustedNotices int
+	exhaustedRepos   []string
 	// exhaustedErrs answers successive human notices; nil once exhausted.
 	exhaustedErrs []error
+}
+
+func (b *runtimeFailureBackend) AutomationDisabled(ctx context.Context, repo config.Repository) (bool, error) {
+	if b.automationErr != nil {
+		return false, b.automationErr
+	}
+	return b.fakeBackend.AutomationDisabled(ctx, repo)
 }
 
 func (b *runtimeFailureBackend) Launch(ctx context.Context, ticket Ticket) error {
@@ -629,8 +638,9 @@ func (b *runtimeFailureBackend) NotifyOrcaRestart(_ context.Context, ticket Tick
 	b.restartNotices = append(b.restartNotices, fmt.Sprintf("%s %d:%v", ticket.Repo, restart, restartErr))
 	return nil
 }
-func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(context.Context, Ticket) error {
+func (b *runtimeFailureBackend) NotifyOrcaRestartExhausted(_ context.Context, ticket Ticket) error {
 	b.exhaustedNotices++
+	b.exhaustedRepos = append(b.exhaustedRepos, ticket.Repo)
 	if len(b.exhaustedErrs) == 0 {
 		return nil
 	}
@@ -1123,10 +1133,128 @@ func TestOrcaRuntimeUnavailableProbeRestartsOrcaService(t *testing.T) {
 	}
 	_ = s.Tick(context.Background())
 	oc.failureClient = &orca.Client{Path: cli, Timeout: time.Second}
-	*x.now = x.now.Add(orcaRestartGrace)
+	*x.now = x.now.Add(OrcaRestartGrace)
 	_ = s.Tick(context.Background())
 	if b.restarts != 1 || s.OrcaRuntime().Restarts != 1 {
 		t.Fatalf("restarts=%d status=%+v, want one restart", b.restarts, s.OrcaRuntime())
+	}
+}
+
+func TestOrcaUnreachableRestartsOrcaServiceAfterGrace(t *testing.T) {
+	sample, err := os.ReadFile("../../testdata/recorded/orca-cli-runtime-unavailable.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "reply.json"), sample, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cli := filepath.Join(dir, "orca")
+	if err := os.WriteFile(cli, []byte("#!/bin/sh\ncat \"$(dirname \"$0\")/reply.json\"\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, unavailable := (&orca.Client{Path: cli, Timeout: time.Second}).AutomationsList(context.Background())
+	var global *infra.Global
+	if !errors.As(unavailable, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+		t.Fatalf("recorded unavailable error classified as %#v", unavailable)
+	}
+	t.Run("runtime preserves unavailable classification", func(t *testing.T) {
+		runtime := &Runtime{Orca: &orca.Client{Path: cli, Timeout: time.Second}}
+		_, err := runtime.AutomationDisabled(context.Background(), config.Repository{Path: "/repo0"})
+		var global *infra.Global
+		if !errors.As(err, &global) || global.Dep != infra.Orca || global.Reason != infra.RuntimeUnavailable {
+			t.Fatalf("runtime automation read lost unavailable classification: %T: %v", err, err)
+		}
+	})
+	for _, scenario := range []string{"after successful inspection", "before first inspection", "shared restart limit"} {
+		t.Run(scenario, func(t *testing.T) {
+			x := newRuntimeFailureFixture(t, 3)
+			s, b := x.s, x.b
+			if scenario == "shared restart limit" {
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(10 * time.Minute)
+				_ = s.Tick(context.Background())
+				*x.now = x.now.Add(30 * time.Minute)
+				_ = s.Tick(context.Background())
+				if b.restarts != 2 {
+					t.Fatalf("runtime pause restarts=%d, want 2", b.restarts)
+				}
+			} else {
+				x.f.tickets = nil
+				if scenario == "after successful inspection" {
+					x.f.enabled = map[string]bool{"/repo0": true}
+					_ = s.Tick(context.Background())
+				}
+			}
+			b.automationErr = unavailable
+			start := *x.now
+			baseRestarts := b.restarts
+			baseProbes := x.oc.probes
+			tickAt := func(offset time.Duration, want int) {
+				t.Helper()
+				*x.now = start.Add(offset)
+				_ = s.Tick(context.Background())
+				if x.oc.probes != baseProbes {
+					t.Fatalf("unreachable Orca created a probe: before=%d after=%d", baseProbes, x.oc.probes)
+				}
+				if b.restarts != want || s.OrcaRuntime().Restarts != want {
+					t.Fatalf("at %v: restarts=%d status=%+v, want %d", offset, b.restarts, s.OrcaRuntime(), want)
+				}
+			}
+			tickAt(0, baseRestarts)
+			tickAt(10*time.Minute-time.Second, baseRestarts)
+			if scenario == "shared restart limit" {
+				tickAt(10*time.Minute, 2)
+				tickAt(30*time.Minute, 3)
+				tickAt(31*time.Minute, 3)
+				tickAt(90*time.Minute, 3)
+				if b.exhaustedNotices != 1 || !reflect.DeepEqual(b.exhaustedRepos, []string{"/repo0"}) {
+					t.Fatalf("human notices=%d repos=%v, want one notice in /repo0", b.exhaustedNotices, b.exhaustedRepos)
+				}
+				if got := b.restartNotices[2]; got != "/repo0 3:<nil>" {
+					t.Fatalf("unreachable notice=%s", got)
+				}
+			} else {
+				tickAt(10*time.Minute, 1)
+				tickAt(39*time.Minute, 1)
+				if scenario == "before first inspection" {
+					tickAt(40*time.Minute, 2)
+					tickAt(70*time.Minute, 3)
+					tickAt(71*time.Minute, 3)
+					if len(b.restartNotices) != 0 || b.exhaustedNotices != 0 {
+						t.Fatalf("notification before first successful inspection: %+v", b)
+					}
+				} else if !reflect.DeepEqual(b.restartNotices, []string{"/repo1 1:<nil>"}) {
+					t.Fatalf("restart notices=%v", b.restartNotices)
+				}
+			}
+			raw, err := json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var runtime struct {
+				UnreachableSince time.Time `json:"unreachableSince"`
+			}
+			if err := json.Unmarshal(raw, &runtime); err != nil {
+				t.Fatal(err)
+			}
+			if !runtime.UnreachableSince.Equal(start) {
+				t.Fatalf("unreachable start=%v, want %v", runtime.UnreachableSince, start)
+			}
+			beforeRecovery := s.OrcaRuntime().Restarts
+			b.automationErr = nil
+			_ = s.Tick(context.Background())
+			if got := s.OrcaRuntime(); !got.UnreachableSince.IsZero() || got.Restarts != beforeRecovery {
+				t.Fatalf("successful automation read must clear only unreachable time: %+v", got)
+			}
+			raw, err = json.Marshal(s.OrcaRuntime())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(raw), "unreachableSince") {
+				t.Fatalf("successful read left unreachable time: %s", raw)
+			}
+		})
 	}
 }
 
