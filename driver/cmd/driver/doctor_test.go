@@ -840,13 +840,20 @@ func TestDoctorModelsRoleEndpoints(t *testing.T) {
 
 func TestDoctorModelsReportsUnloadedEnabledRepository(t *testing.T) {
 	p := modelFixtureProbe(time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC), t.TempDir())
-	got := p.checkModels(context.Background(), nil, unloadedRepositories([]projects.Rejection{
+	rejected := []projects.Rejection{
 		{Path: "/repos/broken", Remote: "github.com/o/broken", Reason: projects.ReasonCheckFailed},
 		{Path: "/repos/plain", Remote: "github.com/o/plain", Reason: projects.ReasonOnboardable},
-	}))
-	if rows := got.Details.([]doctorModelStatus); len(rows) != 1 {
-		t.Fatalf("rows = %+v, want only the repository whose pipeline check failed", rows)
+		{Path: "/repos/off", Remote: "github.com/o/off", Reason: projects.ReasonCheckFailed},
+		{Path: "/repos/stray", Remote: "github.com/o/stray", Reason: projects.ReasonCheckFailed},
 	}
+	ledger := []issues.LedgerProject{{Remote: "github.com/o/broken", Enabled: true}, {Remote: "github.com/o/off"}}
+	if got := unloadedRepositories(rejected, ledger); len(got) != 1 || got[0].Remote != "github.com/o/broken" {
+		t.Errorf("with a readable ledger = %+v, want only the enabled broken repository", got)
+	}
+	if got := unloadedRepositories(rejected, nil); len(got) != 3 {
+		t.Errorf("without a ledger = %+v, want every failed check", got)
+	}
+	got := p.checkModels(context.Background(), nil, unloadedRepositories(rejected, ledger))
 	if got.Status != "fail" {
 		t.Errorf("check = %+v, want fail for an enabled repository whose profile does not load", got)
 	}
@@ -1343,7 +1350,7 @@ func TestDoctorModelsDryRunMatchesRecordedVerdict(t *testing.T) {
 	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
 		"AGENT_TIER_ESCALATE": "1", "AGENT_TIER_CHAIN": "default strong",
 		"AGENT_TIER_DEFAULT": "claude:m:high", "AGENT_TIER_STRONG": "codex:backup:high",
-		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "codex:backup:high", "AGENT_ROLE_INTAKE": "codex:backup:low",
+		"AGENT_ROLE_REVIEWER": "claude:m:low", "AGENT_ROLE_RESOLVER": "codex:backup:high", "AGENT_ROLE_INTAKE": "claude:intake:low",
 	}}}
 	verdicts := map[bool]healthCheck{}
 	for _, record := range []bool{true, false} {
@@ -1354,6 +1361,8 @@ func TestDoctorModelsDryRunMatchesRecordedVerdict(t *testing.T) {
 			switch {
 			case ref.Model != "m":
 				return modelhealth.Classify(ref, "ok", nil, now)
+			case endpoint.Isolated:
+				t.Errorf("unexpected isolated probe of %s", ref)
 			case endpoint.BaseURL == proxy:
 				return modelhealth.Classify(ref, "", context.DeadlineExceeded, now)
 			}
@@ -1361,7 +1370,10 @@ func TestDoctorModelsDryRunMatchesRecordedVerdict(t *testing.T) {
 		}
 		verdicts[record] = p.checkModels(context.Background(), []projects.Project{project}, nil)
 	}
-	if !reflect.DeepEqual(verdicts[true].Details, verdicts[false].Details) || verdicts[true].Status != verdicts[false].Status {
+	if verdicts[true].Status != "warn" || verdicts[false].Status != "warn" {
+		t.Errorf("watch = %s, dry-run = %s, want warn: the strong worker is still available", verdicts[true].Status, verdicts[false].Status)
+	}
+	if !reflect.DeepEqual(verdicts[true].Details, verdicts[false].Details) {
 		t.Errorf("watch = %s %+v, dry-run = %s %+v", verdicts[true].Status, verdicts[true].Details, verdicts[false].Status, verdicts[false].Details)
 	}
 	assertDoctorModel(t, verdicts[true].Details.([]doctorModelStatus), "one", "reviewer", "claude:m:low", "unknown", "timeout")
@@ -1410,4 +1422,26 @@ func TestDoctorModelsInvalidDriverEnvWithProcessIntake(t *testing.T) {
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
 	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "intake", "claude:i:low", "unknown", "config_invalid")
+}
+
+func TestDoctorModelsCommandBinary(t *testing.T) {
+	for command, want := range map[string]string{
+		"claude -p --model m --add-dir /srv/reviews/claude":       "",
+		"/opt/custom/claude -p --model m":                         "/opt/custom/claude",
+		"env -u ORCA_PANE_KEY A=1 /opt/custom/codex exec -m m -":  "/opt/custom/codex",
+		"env -u ORCA_PANE_KEY codex exec -m m --cd /work/codex -": "",
+	} {
+		if got := commandBinary(command); got != want {
+			t.Errorf("commandBinary(%q) = %q, want %q", command, got, want)
+		}
+	}
+	bin := t.TempDir()
+	writeDoctorFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\n", 0o755)
+	t.Setenv("PATH", bin)
+	ref := modelhealth.Ref{Agent: "claude", Model: "m"}
+	onPath := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Isolated: true}}
+	explicit := doctorModelRole{ref: ref, endpoint: modelhealth.Endpoint{Binary: filepath.Join(bin, "claude"), Isolated: true}}
+	if onPath.probeKey() != explicit.probeKey() {
+		t.Error("the PATH claude and its absolute path probe the same endpoint twice")
+	}
 }

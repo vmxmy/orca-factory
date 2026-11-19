@@ -176,8 +176,8 @@ func newDoctorProbe() (doctorProbe, error) {
 		factoryRoot: cfg.FactoryRoot,
 		serviceEnv:  serviceEnviron,
 		projects: func(ctx context.Context) (projects.Result, error) {
-			result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-			result.Rejected = unloadedRepositories(result.Rejected)
+			result, ledger, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
+			result.Rejected = unloadedRepositories(result.Rejected, ledger)
 			return result, err
 		},
 		ledger: func(ctx context.Context, p projects.Project) (doctorLedger, error) {
@@ -820,8 +820,14 @@ type doctorModelRole struct {
 	reason   string
 }
 
+// probeKey resolves an unset Binary on PATH, so the PATH agent and its absolute
+// path share one probe.
 func (r doctorModelRole) probeKey() string {
-	return strings.Join([]string{r.ref.Key(), r.endpoint.Binary, r.endpoint.BaseURL, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
+	binary := r.endpoint.Binary
+	if binary == "" {
+		binary, _ = exec.LookPath(r.ref.Agent)
+	}
+	return strings.Join([]string{r.ref.Key(), binary, r.endpoint.BaseURL, strconv.FormatBool(r.endpoint.Isolated)}, "\x00")
 }
 
 func invalidModelRole(name, raw string) doctorModelRole {
@@ -904,7 +910,7 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		modelRole := doctorModelRole{name: role.Role, ref: ref}
 		switch role.Role {
 		case "reviewer", "reviewer_small", "second_reviewer":
-			modelRole.endpoint.Binary = commandBinary(role.Raw, ref.Agent)
+			modelRole.endpoint.Binary = commandBinary(role.Raw)
 		}
 		switch role.Role {
 		case "reviewer", "reviewer_small":
@@ -963,19 +969,34 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 }
 
 // unloadedRepositories keeps the repositories discovery rejected because their
-// pipeline check or profile failed. The ledger rows cannot say whether such a
-// repository is enabled: reading them needs the profile that failed to load.
-func unloadedRepositories(rejected []projects.Rejection) []projects.Rejection {
-	return slices.DeleteFunc(slices.Clone(rejected), func(r projects.Rejection) bool { return r.Reason != projects.ReasonCheckFailed })
+// pipeline check or profile failed. With a readable ledger only those an enabled
+// row claims are kept; a nil ledger means no profile could read it.
+func unloadedRepositories(rejected []projects.Rejection, ledger []issues.LedgerProject) []projects.Rejection {
+	enabled := map[string]bool{}
+	for _, row := range ledger {
+		enabled[row.Remote] = enabled[row.Remote] || row.Enabled
+	}
+	return slices.DeleteFunc(slices.Clone(rejected), func(r projects.Rejection) bool {
+		return r.Reason != projects.ReasonCheckFailed || ledger != nil && !enabled[r.Remote]
+	})
 }
 
-// commandBinary is the absolute executable a legacy reviewer command runs,
-// or "" when the command finds agent on PATH.
-func commandBinary(command, agent string) string {
-	for _, word := range strings.Fields(command) {
-		if filepath.IsAbs(word) && filepath.Base(word) == agent {
-			return word
+// commandBinary is the absolute executable a legacy reviewer command runs, after
+// the env prefix parseReviewerCommand also skips, or "" when it is found on PATH.
+func commandBinary(command string) string {
+	words := strings.Fields(command)
+	i := 0
+	if len(words) > 0 && words[0] == "env" {
+		for i = 1; i < len(words); i++ {
+			if words[i] == "-u" {
+				i++
+			} else if !shellAssignment.MatchString(words[i]) {
+				break
+			}
 		}
+	}
+	if i < len(words) && filepath.IsAbs(words[i]) {
+		return words[i]
 	}
 	return ""
 }
