@@ -3,7 +3,9 @@ package scheduler
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -161,9 +163,38 @@ func notificationScope(t Ticket) []string {
 }
 
 func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
+	return r.sendOrcaRuntimeText(ctx, ticket, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。暂停满 10 分钟后 driver 自动重启 orca-serve 服务，之后每 30 分钟最多一次、共 3 次；调度器探测成功后自动恢复。请查看 orca-serve 日志里的 profile 写入超时。")
+}
+
+// NotifyOrcaRestart reports one automatic orca-serve restart and its exit code.
+func (r *Runtime) NotifyOrcaRestart(ctx context.Context, ticket Ticket, restart int, restartErr error) error {
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 运行时故障：driver 第 %d/%d 次自动重启 orca-serve 服务，systemctl 退出码 %d；下一轮探测成功即恢复派工。", restart, orcaRestartLimit, restartExitCode(restartErr)))
+}
+
+// restartExitCode is systemctl's exit code, or -1 when it did not exit on its own.
+func restartExitCode(restartErr error) int {
+	if restartErr == nil {
+		return 0
+	}
+	var exit *exec.ExitError
+	if errors.As(restartErr, &exit) {
+		return exit.ExitCode()
+	}
+	return -1
+}
+
+func (r *Runtime) NotifyOrcaRestartExhausted(ctx context.Context, ticket Ticket) error {
+	return r.sendOrcaRuntimeText(ctx, ticket, fmt.Sprintf("Orca 自动重启 %d 次仍未恢复，需人工处理：terminal create 探测仍失败，driver 不再重启 orca-serve，只继续探测。请查看 orca-serve 日志里的 profile 写入超时。", orcaRestartLimit))
+}
+
+// errOrcaNoticeNotSent marks an Orca runtime notice that failed before any
+// request reached Feishu, so sending it again cannot duplicate it.
+var errOrcaNoticeNotSent = errors.New("orca runtime notice not sent")
+
+func (r *Runtime) sendOrcaRuntimeText(ctx context.Context, ticket Ticket, text string) error {
 	settings, err := config.FeishuNotifySettings(r.Repositories[ticket.Repo].Env)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
 	}
 	chat := strings.TrimSpace(settings["AGENT_FEISHU_NOTIFY_CHAT"])
 	if chat == "" {
@@ -171,9 +202,9 @@ func (r *Runtime) NotifyOrcaRuntime(ctx context.Context, ticket Ticket) error {
 	}
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"]})
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errOrcaNoticeNotSent, err)
 	}
-	return sender.SendText(ctx, chat, "Orca 运行时故障：terminal create 连续返回 runtime_error，已暂停认领与派工，保留票据 attempt。请重启 orca-serve 服务，并查看其日志里的 profile 写入超时；调度器探测成功后自动恢复。")
+	return sender.SendText(ctx, chat, text)
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.

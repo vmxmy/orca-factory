@@ -17,6 +17,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
@@ -824,10 +825,32 @@ type terminalCreateUncertainError struct{ err error }
 func (e *terminalCreateUncertainError) Error() string { return e.err.Error() }
 func (e *terminalCreateUncertainError) Unwrap() error { return e.err }
 
+// orcaServiceUnit matches After= in deploy/systemd/orca-factory-driver.service.
+const orcaServiceUnit = "orca-serve.service"
+
+// RestartOrcaService restarts only the orca-serve user unit, not the Orca
+// desktop instance or the orca-daemon scope that holds agent terminals.
+func (r *Runtime) RestartOrcaService(ctx context.Context) error {
+	run := r.Run
+	if run == nil {
+		run = runx.Run
+	}
+	_, err := run(ctx, runx.Spec{Path: "systemctl", Args: []string{"--user", "restart", orcaServiceUnit}, Timeout: 60 * time.Second})
+	return err
+}
+
 // ProbeOrcaRuntime exercises terminal creation without starting an executor.
 func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
 	receipt, err := r.Orca.TerminalCreate(ctx, orca.TerminalOptions{Worktree: "path:" + repo, Title: "driver Orca runtime probe", Command: "true"})
 	if err != nil {
+		var global *infra.Global
+		var ticket *infra.Ticket
+		var transient *infra.Transient
+		// Every failure of the Orca call is classified by infra; a maintenance
+		// refusal returns before the call and is not.
+		if ctx.Err() == nil && (errors.As(err, &global) || errors.As(err, &ticket) || errors.As(err, &transient)) {
+			return &orcaProbeCreateError{err: err}
+		}
 		return err
 	}
 	var terminal struct {
@@ -837,5 +860,17 @@ func (r *Runtime) ProbeOrcaRuntime(ctx context.Context, repo string) error {
 		return errors.New("orca probe terminal handle missing")
 	}
 	r.orcaFailures = 0
-	return r.Orca.TerminalClose(ctx, terminal.Handle)
+	// A created terminal proves Orca recovered; a failed close only leaves a
+	// probe terminal that runs `true`.
+	if err := r.Orca.TerminalClose(ctx, terminal.Handle); err != nil {
+		runx.LoggerFrom(ctx).Warn("Orca runtime probe terminal close failed", "handle", terminal.Handle, "error", err)
+	}
+	return nil
 }
+
+// orcaProbeCreateError is a recovery probe whose terminal create Orca failed or
+// could not answer, the fault an orca-serve restart may clear.
+type orcaProbeCreateError struct{ err error }
+
+func (e *orcaProbeCreateError) Error() string { return e.err.Error() }
+func (e *orcaProbeCreateError) Unwrap() error { return e.err }

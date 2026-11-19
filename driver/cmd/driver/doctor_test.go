@@ -549,12 +549,12 @@ func TestDoctorReportsOrcaTerminalCreateFailure(t *testing.T) {
 	f := newDoctorFixture(t)
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("DRIVER_STATUS_FILE", "")
-	writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"orcaRuntime":{"paused":true,"failures":3},"tickets":[]}`, f.now.Format(time.RFC3339Nano)), 0600)
+	writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"orcaRuntime":{"paused":true,"failures":3,"pausedAt":"2026-11-19T10:30:00Z","restarts":2},"tickets":[]}`, f.now.Format(time.RFC3339Nano)), 0600)
 	assertDoctorReportsOrcaRuntimeFault(t, runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))))
 
 	// An explicit DRIVER_STATUS_FILE selects the snapshot serve writes, not the pushed view.
 	t.Setenv("DRIVER_STATUS_FILE", filepath.Join(t.TempDir(), "status.json"))
-	if err := status.Write(status.Snapshot{GeneratedAt: f.now, OrcaRuntime: status.OrcaRuntime{Paused: true, Failures: 3}}); err != nil {
+	if err := status.Write(status.Snapshot{GeneratedAt: f.now, OrcaRuntime: status.OrcaRuntime{Paused: true, Failures: 3, PausedAt: time.Date(2026, 11, 19, 10, 30, 0, 0, time.UTC), Restarts: 2}}); err != nil {
 		t.Fatal(err)
 	}
 	assertDoctorReportsOrcaRuntimeFault(t, runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度"))))
@@ -566,7 +566,7 @@ func assertDoctorReportsOrcaRuntimeFault(t *testing.T, result doctorResult) {
 		t.Fatalf("runtime failure not reported: %s", result.out)
 	}
 	detail := string(result.details["orca_runtime"])
-	for _, want := range []string{"orca-serve", "profile", "超时"} {
+	for _, want := range []string{"orca-serve", "profile", "超时", "自动重启", `"paused_at":"2026-11-19T10:30:00Z"`, `"restarts":2`} {
 		if !strings.Contains(detail, want) {
 			t.Fatalf("missing recovery advice %q: %s", want, detail)
 		}
@@ -584,6 +584,13 @@ func TestOrcaRuntimeCapabilitiesSurviveStatusBackend(t *testing.T) {
 		NotifyOrcaRuntime(context.Context, scheduler.Ticket) error
 	}); !ok {
 		t.Error("serve statusBackend hides Orca runtime failure notification")
+	}
+	if _, ok := any(backend).(interface {
+		RestartOrcaService(context.Context) error
+		NotifyOrcaRestart(context.Context, scheduler.Ticket, int, error) error
+		NotifyOrcaRestartExhausted(context.Context, scheduler.Ticket) error
+	}); !ok {
+		t.Error("serve statusBackend hides the Orca service restart or its notifications")
 	}
 	if _, ok := any(backend).(interface{ OrcaTerminalCreateFailures() int }); !ok {
 		t.Error("serve statusBackend hides the Orca terminal create failure count")

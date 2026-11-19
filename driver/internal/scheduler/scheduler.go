@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
@@ -138,6 +139,12 @@ type Scheduler struct {
 	tickStarted, tickEnded time.Time
 	wakeReason             string
 	orcaRuntime            status.OrcaRuntime
+	// orcaRestartsExhausted is set once the human notice after the last
+	// automatic orca-serve restart is sent; recovery clears it.
+	orcaRestartsExhausted bool
+	// orcaPauseTicket picks the notification chat for every restart result, the
+	// same chat that received the pause notice.
+	orcaPauseTicket Ticket
 	// HostMemory, when set, is read once per Tick; a hold stops every new
 	// terminal launch until the reading recovers (OF-603).
 	HostMemory func() (hostmem.Reading, error)
@@ -158,7 +165,12 @@ type Scheduler struct {
 // first round and the first round after maintenance returns to running.
 const fullSyncEvery = 10
 
-const orcaRuntimeFailureThreshold = 3
+const (
+	orcaRuntimeFailureThreshold = 3
+	orcaRestartGrace            = 10 * time.Minute
+	orcaRestartInterval         = 30 * time.Minute
+	orcaRestartLimit            = 3
+)
 
 // fullSync is true when this round reads the ledger in full. An unreadable
 // maintenance state also reads in full, which is never wrong.
@@ -360,9 +372,14 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			return errors.New("orca runtime fault: no repository available for recovery probe")
 		}
 		if err := probe.ProbeOrcaRuntime(ctx, repo); err != nil {
+			var createErr *orcaProbeCreateError
+			if errors.As(err, &createErr) {
+				s.restartOrcaService(ctx)
+			}
 			return fmt.Errorf("orca runtime recovery probe: %w", err)
 		}
 		s.orcaRuntime = status.OrcaRuntime{}
+		s.orcaRestartsExhausted = false
 	}
 
 	s.MergeQueue = nil
@@ -841,6 +858,7 @@ func (s *Scheduler) launchWithRuntimeCheck(ctx context.Context, t Ticket) error 
 		}
 		delete(s.runtimePending, t.ID)
 		s.orcaRuntime = status.OrcaRuntime{}
+		s.orcaRestartsExhausted = false
 	case errors.As(err, &uncertain):
 		delete(s.runtimePending, t.ID)
 	}
@@ -860,11 +878,77 @@ func (s *Scheduler) recordOrcaRuntimeFailure(ctx context.Context, runtimeErr *te
 		return
 	}
 	s.orcaRuntime.Paused = true
+	s.orcaRuntime.PausedAt = s.clock()
+	s.orcaPauseTicket = t
 	if notifier, ok := s.Backend.(interface {
 		NotifyOrcaRuntime(context.Context, Ticket) error
 	}); ok {
 		if notifyErr := notifier.NotifyOrcaRuntime(ctx, t); notifyErr != nil {
 			s.logger().Warn("Orca runtime notification failed", "error", notifyErr)
+		}
+	}
+}
+
+// ErrOrcaRestartUnsupported is returned by a backend that cannot restart
+// orca-serve; the scheduler then neither counts a restart nor notifies.
+var ErrOrcaRestartUnsupported = errors.New("backend has no Orca service restart")
+
+// restartOrcaService runs after a recovery probe whose terminal create Orca
+// failed. It restarts orca-serve once the pause has lasted orcaRestartGrace,
+// then at most once per orcaRestartInterval, and after orcaRestartLimit restarts
+// sends one human notice, sending it again only while Feishu certainly has not
+// delivered it.
+func (s *Scheduler) restartOrcaService(ctx context.Context) {
+	now := s.clock()
+	ticket := s.orcaPauseTicket
+	if s.orcaRuntime.Restarts >= orcaRestartLimit {
+		if s.orcaRestartsExhausted {
+			return
+		}
+		if notifier, ok := s.Backend.(interface {
+			NotifyOrcaRestartExhausted(context.Context, Ticket) error
+		}); ok {
+			if err := notifier.NotifyOrcaRestartExhausted(ctx, ticket); err != nil {
+				s.logger().Warn("Orca restart exhausted notification failed", "error", err)
+				// Feishu has no idempotency key, so only a notice that never reached
+				// it or that it rejected (a business code, or a refused token or
+				// permission) is sent again; a lost or unreadable response may mean
+				// it was delivered.
+				var rejected *feishu.APIError
+				var refused *infra.Global
+				if errors.Is(err, errOrcaNoticeNotSent) || errors.As(err, &rejected) || errors.As(err, &refused) && refused.Dep == feishu.Dep {
+					return
+				}
+			}
+		}
+		s.orcaRestartsExhausted = true
+		return
+	}
+	if now.Sub(s.orcaRuntime.PausedAt) < orcaRestartGrace {
+		return
+	}
+	if !s.orcaRuntime.LastRestartAt.IsZero() && now.Sub(s.orcaRuntime.LastRestartAt) < orcaRestartInterval {
+		return
+	}
+	restarter, ok := s.Backend.(interface {
+		RestartOrcaService(context.Context) error
+	})
+	if !ok {
+		return
+	}
+	restartErr := restarter.RestartOrcaService(ctx)
+	if errors.Is(restartErr, ErrOrcaRestartUnsupported) {
+		return
+	}
+	s.orcaRuntime.Restarts++
+	s.orcaRuntime.LastRestartAt = now
+	s.logger().Warn("Orca service restarted after runtime pause", "restart", s.orcaRuntime.Restarts,
+		"limit", orcaRestartLimit, "exit_code", restartExitCode(restartErr), "paused_at", s.orcaRuntime.PausedAt, "error", restartErr)
+	if notifier, ok := s.Backend.(interface {
+		NotifyOrcaRestart(context.Context, Ticket, int, error) error
+	}); ok {
+		if err := notifier.NotifyOrcaRestart(ctx, ticket, s.orcaRuntime.Restarts, restartErr); err != nil {
+			s.logger().Warn("Orca restart notification failed", "error", err)
 		}
 	}
 }
