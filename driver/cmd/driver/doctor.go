@@ -58,7 +58,7 @@ const (
 const doctorUsage = "Usage: orca-factory-driver doctor [--json] | doctor --bootstrap [--json]"
 
 // doctorChecks fixes the text output order; JSON keys are the same names.
-var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "credentials", "models"}
+var doctorChecks = []string{"service_path", "version", "maintenance", "checkouts", "sync_prs", "ledger", "launches", "orca_runtime", "host_memory", "credentials", "models"}
 
 var doctorServiceTools = []string{"go", "gh", "git", "orca"}
 var doctorAgentTools = []string{"claude", "codex"}
@@ -219,6 +219,7 @@ func (p doctorProbe) run(ctx context.Context) healthReport {
 		"credentials":  p.checkCredentials(ctx, env, envErr),
 		"launches":     p.checkLaunches(),
 		"orca_runtime": p.checkOrcaRuntime(),
+		"host_memory":  p.checkHostMemory(),
 	}
 	if projectsErr != nil {
 		for _, name := range []string{"checkouts", "sync_prs", "ledger", "models"} {
@@ -795,6 +796,23 @@ func (p doctorProbe) checkOrcaRuntime() healthCheck {
 		return healthCheck{Status: healthFail, Reason: "Orca terminal create 连续运行时失败，已暂停认领与派工", Details: detail, Fix: fix}
 	}
 	return healthCheck{Status: healthOK, Reason: "状态快照未记录 Orca terminal create 连续故障", Details: detail}
+}
+
+func (p doctorProbe) checkHostMemory() healthCheck {
+	view := status.Read(p.now, 0)
+	memory := view.HostMemory
+	detail := map[string]any{"available": memory.Reading.Available, "some_avg60": memory.Reading.SomeAvg60, "snapshot_state": view.State}
+	if memory.Error != "" {
+		detail["error"] = memory.Error
+		return healthCheck{Status: healthWarn, Reason: "读不到主机内存读数，调度器不按内存暂停：" + memory.Error, Details: detail}
+	}
+	if memory.Paused {
+		fix := "用 memory.peak 与 systemd-cgls 找占用大户；MemAvailable 不低于 10 GiB 且 some avg60 低于 5 后自动恢复。"
+		detail["since"] = memory.Since
+		detail["recovery"] = fix
+		return healthCheck{Status: healthWarn, Reason: "主机内存吃紧，已暂停认领与新建终端", Details: detail, Fix: fix}
+	}
+	return healthCheck{Status: healthOK, Reason: "状态快照未记录主机内存暂停", Details: detail}
 }
 
 // doctorModelStatus reports configured identities without changing dispatch selection.

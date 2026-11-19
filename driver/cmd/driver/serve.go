@@ -16,6 +16,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/github"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
@@ -68,7 +69,7 @@ func serveLogged(args []string, logger *slog.Logger) (int, error) {
 			return nil, nil, err
 		}
 		runtime.Version = version
-		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval}
+		s := &scheduler.Scheduler{Config: cfg, Backend: runtime, Discover: projectSource(cfg), DiscoverEvery: projectDiscoveryInterval, HostMemory: func() (hostmem.Reading, error) { return hostmem.Read("") }}
 		if cfg.FactoryRoot != "" {
 			cacheDir, err := os.UserCacheDir()
 			if err != nil {
@@ -340,6 +341,7 @@ func serveWithStatus(ctx context.Context, lockPath string, initialize func(conte
 				view.GitHub = snapshot.GitHub
 				view.NextScanAt = snapshot.NextScanAt
 				view.OrcaRuntime = snapshot.OrcaRuntime
+				view.HostMemory = snapshot.HostMemory
 			})
 		}
 		return wait(ctx)
@@ -351,6 +353,7 @@ func collectStatus(s *scheduler.Scheduler, backend *statusBackend, runtime *sche
 	snapshot.Tickets = scheduler.SnapshotRows(backend.tickets, s.Repositories, now)
 	snapshot.Today = backend.TodayOutput(now)
 	snapshot.OrcaRuntime = s.OrcaRuntime()
+	snapshot.HostMemory = s.HostMemoryStatus()
 	if runtime != nil {
 		repos := make([]string, 0, len(runtime.Clients))
 		for repo := range runtime.Clients {
