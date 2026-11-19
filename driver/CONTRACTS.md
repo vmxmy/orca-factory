@@ -410,7 +410,9 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
   - `intake`：`AGENT_ROLE_INTAKE`，空时回退 `AGENT_TIER_STRONG`（与 `tierParts` 一致）。
   - `reviewer` / `reviewer_small` / `second_reviewer`：优先读取对应的结构化键 `AGENT_ROLE_REVIEWER` / `AGENT_ROLE_REVIEWER_SMALL` / `AGENT_ROLE_SECOND_REVIEWER`（直接给出 `agent`、`model`、`effort`），再读取仓库的 `_CMD` 键，最后读取方案中的结构化键。结构化键只支持 `codex` 与 `claude`；`_CMD` 仍按旧规则解析：跳过开头的 `env` 及其 `-u NAME`、`NAME=value` 参数后，第一个词的文件名是 `agent`；`-m` 或 `--model` 后的词、`--model=X`、`model=X`（如 `-c model=X`）给出 `model`；`model_reasoning_effort=X` 或 `--effort X` 给出 `effort`。认不出的部分留空串，`raw` 始终是原值。
   - `key` 是回退后实际取值的那个键，回退到内置 `codex` 时为空串；`model` 为空串表示用该 agent 的默认模型。
-- `gear set` 与 `gear clear` 只改变本机按 remote 保存的仓库覆盖，下一次仓库配置加载时生效；手动切到 `auto` 同样不补处理已转人的历史票。
+- 本机 `gear.json` 的键是 Orca 登记的 `canonicalKey`，对应项目表的“仓库远端”。条目的 `path` 是 Orca 登记的仓库根路径，加载时只按该路径应用覆盖，不读取 Git origin。每个根路径只保留一条覆盖。
+- `gear set` 与 `gear clear` 按项目表编号前缀匹配不含 `/` 的参数，忽略大小写。绝对路径或含 `/` 的参数转为绝对路径并清理后，必须与登记的仓库根路径相等。两种选择器都必须恰好匹配一个仓库。
+- 条目的 mode 非法或同一路径存在多条覆盖时，只有该仓库加载失败。`gear set` 可替换该路径的覆盖，`gear clear` 可清除覆盖。改动在下次加载时生效，手动切到 `auto` 同样不补处理已转人的历史票。
 - `routing`：固定顺序的十四个键：`AGENT_MODE`（默认 `manual`）、`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN`（默认 `default strong`）、`AGENT_REVIEWER_SMALL_MAX_ESTIMATE`（默认 `2`）、`AGENT_MAX_IN_FLIGHT`（默认 `4`）、`AGENT_STALE_HOURS`（默认 `8`）、`AGENT_ISSUE_BACKEND`、`AGENT_LANE2_AUTOMERGE`、`AGENT_LANE3_GLOBS`、`AGENT_DEPLOY_WORKFLOW`、`AGENT_SMOKE_CMD`、`AGENT_SELF_DEPLOY`、`AGENT_DEPLOY_AUTO_RERUN`、`AGENT_MERGE_PRECHECK_CMD`。仓库 env 里有这个键时 `source` 为 `agent-graph.env`；`AGENT_MODE` 来自本机 `gear.json` 时为 `override`，覆盖优先于仓库值，未配置时为 `default` 且值为 `manual`；`AGENT_TIER_ESCALATE`、`AGENT_TIER_CHAIN` 来自方案时为 `profile:<名>`；没有生效值时为 `default`，`value` 是默认值，没有默认值的为空串且 `set` 为 false。
 - `scheduler`：固定顺序的八个键：`max_in_flight`、`token_bucket.capacity`、`token_bucket.refill_per_second`、`scheduler.unregistered_grace`、`github.http_timeout`、`orca.worker_start_wait`、`orca.call_timeout`、`ledger.flush_interval`。`value` 是 `config.Load` 之后的生效值；时长去掉末尾的零单位（`5m`、`30s`、`100ms`）。`driver.toml` 写了这个键时 `source` 为 `driver.toml`，否则为 `default`。
 - `environment` 依次是三组：

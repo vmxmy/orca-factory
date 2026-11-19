@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,11 +14,6 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("AGENT_DRIVER_STATE_ROOT", state)
 	repo := t.TempDir()
-	for _, args := range [][]string{{"init", repo}, {"-C", repo, "remote", "add", "origin", "git@example.com:team/project.git"}} {
-		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
-			t.Fatalf("git: %s: %v", out, err)
-		}
-	}
 	dir := filepath.Join(repo, "scripts", "agent-gates")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -28,37 +22,47 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	file := filepath.Join(state, "gear.json")
-	for _, mode := range []string{"manual", "auto", "invalid", ""} {
-		t.Run("override/"+mode, func(t *testing.T) {
-			body := fmt.Sprintf(`{"example.com/team/project":{"mode":%q,"operator":"tester","reason":"maintenance","updatedAt":"2026-11-19T00:00:00Z"}}`, mode)
-			if err := os.WriteFile(file, []byte(body), 0600); err != nil {
+	other := fmt.Sprintf(`"another/remote":{"mode":"bogus","path":%q}`, t.TempDir())
+	entry := func(mode string) string {
+		return fmt.Sprintf(`"example.com/team/project":{"mode":%q,"path":%q,"operator":"tester","reason":"maintenance","updatedAt":"2026-11-19T00:00:00Z"}`, mode, repo)
+	}
+	checkMode := func(t *testing.T, wantMode, wantSource string) {
+		t.Helper()
+		got, err := LoadRepository(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Env["AGENT_MODE"] != wantMode || got.Sources["AGENT_MODE"] != wantSource {
+			t.Fatalf("mode=%q source=%q, want %q %q", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], wantMode, wantSource)
+		}
+	}
+	for _, tc := range []struct {
+		name, entries, mode, source string
+	}{
+		{"other path", other, "auto", "repository"},
+		{"manual with unrelated invalid override", entry("manual") + "," + other, "manual", "override"},
+		{"auto", entry("auto"), "auto", "override"},
+		{"invalid", entry("invalid"), "", ""},
+		{"empty", entry(""), "", ""},
+		{"duplicate path", entry("auto") + fmt.Sprintf(`,"stale/remote":{"mode":"manual","path":%q}`, repo), "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.WriteFile(file, []byte("{"+tc.entries+"}"), 0600); err != nil {
 				t.Fatal(err)
 			}
-			got, err := LoadRepository(repo)
-			if mode != "manual" && mode != "auto" {
-				if err == nil {
+			if tc.mode == "" {
+				if _, err := LoadRepository(repo); err == nil {
 					t.Fatal("accepted invalid override")
 				}
 				return
 			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Env["AGENT_MODE"] != mode || got.Sources["AGENT_MODE"] != "override" {
-				t.Fatalf("mode=%q source=%q, want %q override", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], mode)
-			}
+			checkMode(t, tc.mode, tc.source)
 		})
 	}
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	got, err := LoadRepository(repo)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Env["AGENT_MODE"] != "auto" || got.Sources["AGENT_MODE"] != "repository" {
-		t.Fatalf("clear: mode=%q source=%q", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"])
-	}
+	checkMode(t, "auto", "repository")
 }
 
 func TestDefaultMachineLimit(t *testing.T) {

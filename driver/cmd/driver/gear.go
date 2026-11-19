@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
@@ -72,7 +73,7 @@ func runGear(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if args[0] == "status" {
-		result, err := gearProjects(ctx)
+		result, _, err := gearProjects(ctx)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 1
@@ -103,9 +104,9 @@ func runGear(args []string) int {
 		}
 		return 0
 	}
-	remote, err := gearRemote(ctx, args[1])
+	remote, path, err := gearTarget(ctx, args[1])
 	if err == nil {
-		err = config.SetGearOverride(remote, mode, operator, reason)
+		err = config.SetGearOverride(remote, path, mode, operator, reason)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -114,49 +115,58 @@ func runGear(args []string) int {
 	return 0
 }
 
-func gearProjects(ctx context.Context) (projects.Result, error) {
+func gearProjects(ctx context.Context) (projects.Result, []issues.LedgerProject, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return projects.Result{}, err
+		return projects.Result{}, nil, err
 	}
 	cfg, err := config.Load(home)
 	if err != nil {
-		return projects.Result{}, err
+		return projects.Result{}, nil, err
 	}
-	result, _, err := discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
-	return result, err
+	return discoverProjects(ctx, cfg, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout})
 }
 
-func gearRemote(ctx context.Context, selector string) (string, error) {
-	if info, err := os.Stat(selector); err == nil && info.IsDir() {
-		path, err := filepath.Abs(selector)
-		if err != nil {
-			return "", err
-		}
-		return config.RepositoryRemote(path)
-	}
-	result, err := gearProjects(ctx)
+func gearTarget(ctx context.Context, selector string) (remote, path string, err error) {
+	result, rows, err := gearProjects(ctx)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	var remote string
-	for _, p := range result.Eligible {
-		if !strings.EqualFold(p.Prefix, selector) {
-			continue
-		}
-		if remote != "" && remote != p.Remote {
-			return "", errors.New("ambiguous repository prefix")
-		}
-		remote, err = config.RepositoryRemote(p.Path)
+	var root string
+	remotes := make(map[string]bool)
+	if filepath.IsAbs(selector) || strings.Contains(selector, "/") {
+		root, err = filepath.Abs(selector)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
-		if remote != p.Remote {
-			return "", errors.New("repository origin differs from project remote")
+		root = filepath.Clean(root)
+	} else {
+		for _, row := range rows {
+			if strings.EqualFold(selector, row.Prefix) {
+				remotes[row.Remote] = true
+			}
 		}
 	}
-	if remote == "" {
-		return "", errors.New("repository prefix or path not found")
+
+	var count int
+	match := func(candidateRemote, candidatePath string) {
+		if candidatePath == root || remotes[candidateRemote] {
+			remote, path = candidateRemote, candidatePath
+			count++
+		}
 	}
-	return remote, nil
+	for _, p := range result.Eligible {
+		match(p.Remote, p.Path)
+	}
+	for _, p := range result.Rejected {
+		match(p.Remote, p.Path)
+	}
+	switch count {
+	case 0:
+		return "", "", errors.New("repository prefix or path not found")
+	case 1:
+		return remote, path, nil
+	default:
+		return "", "", errors.New("ambiguous repository prefix or path")
+	}
 }

@@ -3,7 +3,6 @@ package config
 
 import (
 	"bufio"
-	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,7 +10,6 @@ import (
 	"math"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -20,7 +18,6 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
 type TokenBucket struct {
@@ -135,24 +132,29 @@ func LoadRepository(path string) (Repository, error) {
 	if err != nil {
 		return Repository{}, err
 	}
-	gears, err := readGears()
+	file, err := gearPath()
 	if err != nil {
 		return Repository{}, err
 	}
-	if len(gears) != 0 {
-		remote, err := RepositoryRemote(path)
-		if err != nil {
-			return Repository{}, err
+	_, matches, err := readGears(file, filepath.Clean(path))
+	if err != nil {
+		return Repository{}, err
+	}
+	if len(matches) > 1 {
+		return Repository{}, errors.New("multiple gear overrides for repository path")
+	}
+	for _, mode := range matches {
+		if mode != "manual" && mode != "auto" {
+			return Repository{}, errors.New("gear.json AGENT_MODE must be manual or auto")
 		}
-		if gear, ok := gears[remote]; ok {
-			env["AGENT_MODE"] = gear.Mode
-			sources["AGENT_MODE"] = "override"
-		}
+		env["AGENT_MODE"] = mode
+		sources["AGENT_MODE"] = "override"
 	}
 	return Repository{Path: path, MaxInFlight: limit, StaleHours: stale, Env: env, Profile: profile, Sources: sources}, nil
 }
 
 type gearOverride struct {
+	Path      string    `json:"path"`
 	Mode      string    `json:"mode"`
 	Operator  string    `json:"operator"`
 	Reason    string    `json:"reason"`
@@ -171,49 +173,60 @@ func gearPath() (string, error) {
 	return filepath.Join(root, "gear.json"), nil
 }
 
-func readGears() (map[string]gearOverride, error) {
-	path, err := gearPath()
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
+// readGears returns the original entries for a subsequent write and the modes
+// keyed by remote for the requested Orca checkout.
+func readGears(file, path string) (map[string]json.RawMessage, map[string]string, error) {
+	entries := make(map[string]json.RawMessage)
+	data, err := os.ReadFile(file)
 	if errors.Is(err, os.ErrNotExist) {
-		return map[string]gearOverride{}, nil
+		return entries, nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var gears map[string]gearOverride
-	if err := json.Unmarshal(data, &gears); err != nil {
-		return nil, err
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, nil, err
 	}
-	if gears == nil {
-		return nil, errors.New("gear.json must contain an object")
+	if entries == nil {
+		return nil, nil, errors.New("gear.json must contain an object")
 	}
-	for _, gear := range gears {
-		if gear.Mode != "manual" && gear.Mode != "auto" {
-			return nil, errors.New("gear.json AGENT_MODE must be manual or auto")
+	matches := make(map[string]string)
+	for remote, raw := range entries {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+			return nil, nil, errors.New("gear.json entry must contain an object")
+		}
+		for _, name := range []string{"path", "mode", "operator", "reason", "updatedAt"} {
+			if value, exists := fields[name]; exists {
+				if _, ok := value.(string); !ok {
+					return nil, nil, errors.New("gear.json " + name + " must be a string")
+				}
+			}
+		}
+		if fields["path"] == path {
+			matches[remote], _ = fields["mode"].(string)
 		}
 	}
-	return gears, nil
+	return entries, matches, nil
 }
 
 // SetGearOverride sets a machine-local mode; an empty mode clears the override.
-func SetGearOverride(remote, mode, operator, reason string) (err error) {
+func SetGearOverride(remote, path, mode, operator, reason string) (err error) {
 	if mode != "" && mode != "manual" && mode != "auto" {
 		return errors.New("AGENT_MODE must be manual or auto")
 	}
-	if strings.TrimSpace(remote) == "" || strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" {
-		return errors.New("gear change requires remote, operator and reason")
+	if strings.TrimSpace(remote) == "" || path == "" || strings.TrimSpace(operator) == "" || strings.TrimSpace(reason) == "" {
+		return errors.New("gear change requires remote, path, operator and reason")
 	}
-	path, err := gearPath()
+	path = filepath.Clean(path)
+	file, err := gearPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := os.OpenFile(file+".lock", os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return err
 	}
@@ -221,16 +234,22 @@ func SetGearOverride(remote, mode, operator, reason string) (err error) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		return err
 	}
-	gears, err := readGears()
+	gears, matches, err := readGears(file, path)
 	if err != nil {
 		return err
+	}
+	for key := range matches {
+		delete(gears, key)
 	}
 	if mode == "" {
 		delete(gears, remote)
 	} else {
-		gears[remote] = gearOverride{Mode: mode, Operator: operator, Reason: reason, UpdatedAt: time.Now().UTC()}
+		gears[remote], err = json.Marshal(gearOverride{Path: path, Mode: mode, Operator: operator, Reason: reason, UpdatedAt: time.Now().UTC()})
+		if err != nil {
+			return err
+		}
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gear-*")
+	tmp, err := os.CreateTemp(filepath.Dir(file), ".gear-*")
 	if err != nil {
 		return err
 	}
@@ -246,23 +265,13 @@ func SetGearOverride(remote, mode, operator, reason string) (err error) {
 	if err := errors.Join(writeErr, tmp.Close()); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := os.Rename(tmp.Name(), file); err != nil {
 		return err
 	}
-	log.Printf("gear remote=%q mode=%q operator=%q reason=%q", remote, mode, operator, reason)
+	log.Printf("gear remote=%q path=%q mode=%q operator=%q reason=%q", remote, path, mode, operator, reason)
 	return nil
 }
 
-// RepositoryRemote returns the origin identity used by machine gear overrides.
-func RepositoryRemote(path string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", path, "remote", "get-url", "origin").Output()
-	if err != nil {
-		return "", errors.New("cannot read repository origin for gear override")
-	}
-	return orca.NormalizeRemote(string(out))
-}
 func positive(env map[string]string, key string, fallback int) (int, error) {
 	value, ok := env[key]
 	if !ok {

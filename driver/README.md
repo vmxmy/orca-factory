@@ -533,7 +533,14 @@ orca-factory-driver gear clear OF
 
 `status` 列出接管仓库的生效档位及来源 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
 
-覆盖按规范化 origin remote 保存在状态目录的 `gear.json`，同一 remote 的检出共用覆盖。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。文件原子替换，下次加载仓库配置时生效，不需要重启服务。每次写入输出一行日志，含操作者与理由。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
+本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
+
+- 条目的键是 Orca 登记的仓库远端（`canonicalKey`），与飞书项目表的“仓库远端”一致。
+- 条目的 `path` 是 Orca 登记的仓库根路径。加载时只按这个路径应用覆盖，不读取 Git origin。
+- 每个根路径只保留一条覆盖。`set` 会替换该路径的旧条目，`clear` 会清除它们。
+- `set` 和 `clear` 将不含 `/` 的参数当作项目表的编号前缀，匹配时忽略大小写。绝对路径或含 `/` 的参数按路径解析，转为绝对路径并清理后必须恰好匹配一个已登记的仓库根路径。
+
+条目的 mode 非法或多条覆盖指向同一路径时，只有该仓库加载失败。用 `gear set` 重设档位或用 `gear clear` 清除覆盖即可修复。写入时原子替换文件，下次加载仓库配置时生效。每次写入记录仓库路径、操作者与理由。`clear` 使用本机用户名和固定理由 `restore repository configuration`。
 
 手动用 `gear set` 切到 `auto` 同样不补处理已转人的历史票，也不提供按票切换。`config [--json]` 的 `routing` 显示生效的 `AGENT_MODE` 与来源，`roles` 的 `resolver_top` 显示 `AGENT_ROLE_RESOLVER_TOP` 终审档位，未配置终审档位时省略该角色。
 
