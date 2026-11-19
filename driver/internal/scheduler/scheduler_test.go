@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1802,6 +1803,46 @@ func TestHostMemoryNoticeTransportFailureUnsentOnlyBeforeMessage(t *testing.T) {
 			err := (&Runtime{}).NotifyHostMemory(context.Background(), status.HostMemory{Paused: true})
 			if err == nil || noticeUndelivered(err) != tc.unsent {
 				t.Fatalf("err=%v undelivered=%v, want error with undelivered=%v", err, noticeUndelivered(err), tc.unsent)
+			}
+		})
+	}
+}
+
+// A connection that took no byte of the message request cannot have delivered it.
+func TestNoticeMessageWrittenOnlyAfterBytesReachSocket(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		peer    func(net.Conn)
+		written bool
+	}{
+		{"first write sends nothing", func(peer net.Conn) { _ = peer.Close() }, false},
+		{"peer reads then resets", func(peer net.Conn) {
+			go func() {
+				_, _ = peer.Read(make([]byte, 16))
+				_ = peer.Close()
+			}()
+		}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := newMessageAttempts()
+			if err != nil {
+				t.Fatal(err)
+			}
+			m.dial = func(context.Context, string, string) (net.Conn, error) {
+				client, peer := net.Pipe()
+				tc.peer(peer)
+				return client, nil
+			}
+			req, err := http.NewRequest(http.MethodPost, "http://feishu.invalid/open-apis/im/v1/messages", strings.NewReader("{}"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp, err := m.RoundTrip(req); err == nil {
+				_ = resp.Body.Close()
+				t.Fatal("round trip over a reset connection succeeded")
+			}
+			if got := m.written(); got != tc.written {
+				t.Fatalf("written=%v, want %v", got, tc.written)
 			}
 		})
 	}

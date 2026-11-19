@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptrace"
 	"os/exec"
@@ -216,13 +217,17 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 	if chat == "" {
 		return nil
 	}
-	attempts := &messageAttempts{next: infra.HTTPTransport}
+	attempts, err := newMessageAttempts()
+	if err != nil {
+		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
+	}
+	defer attempts.transport.CloseIdleConnections()
 	sender, err := feishu.New(feishu.Options{Endpoint: settings["AGENT_FEISHU_ENDPOINT"], AppID: settings["AGENT_FEISHU_APP_ID"], AppSecret: settings["AGENT_FEISHU_APP_SECRET"], HTTPClient: &http.Client{Timeout: 30 * time.Second, Transport: attempts}})
 	if err != nil {
 		return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 	}
 	if err := sender.SendText(ctx, chat, text); err != nil {
-		if !attempts.written.Load() {
+		if !attempts.written() {
 			return fmt.Errorf("%w: %w", errNoticeNotSent, err)
 		}
 		return err
@@ -230,20 +235,57 @@ func sendNoticeText(ctx context.Context, env map[string]string, text string) err
 	return nil
 }
 
-// messageAttempts records whether a message request's headers were written,
-// so a failure before that, such as a tenant token timeout or a refused
-// connection, is known undelivered.
+// messageAttempts reports whether any byte of a message request reached a
+// socket, so a failure before that, such as a tenant token timeout, a refused
+// connection or a first write that sent nothing, is known undelivered.
 type messageAttempts struct {
-	next    http.RoundTripper
-	written atomic.Bool
+	transport *http.Transport
+	dial      func(context.Context, string, string) (net.Conn, error)
+	sent      atomic.Int64
+	// mark is sent when the first message request got its connection, after
+	// any TLS handshake or proxy CONNECT; -1 before that.
+	mark atomic.Int64
+}
+
+func newMessageAttempts() (*messageAttempts, error) {
+	base, ok := infra.HTTPTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("feishu transport is not an http.Transport")
+	}
+	m := &messageAttempts{transport: base.Clone(), dial: (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext}
+	m.mark.Store(-1)
+	m.transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, err := m.dial(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &countingConn{Conn: conn, sent: &m.sent}, nil
+	}
+	return m, nil
 }
 
 func (m *messageAttempts) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(req.URL.Path, "/open-apis/im/v1/messages") {
-		trace := &httptrace.ClientTrace{WroteHeaders: func() { m.written.Store(true) }}
+		trace := &httptrace.ClientTrace{GotConn: func(httptrace.GotConnInfo) { m.mark.CompareAndSwap(-1, m.sent.Load()) }}
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), trace))
 	}
-	return m.next.RoundTrip(req)
+	return m.transport.RoundTrip(req)
+}
+
+func (m *messageAttempts) written() bool {
+	mark := m.mark.Load()
+	return mark >= 0 && m.sent.Load() > mark
+}
+
+type countingConn struct {
+	net.Conn
+	sent *atomic.Int64
+}
+
+func (c *countingConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	c.sent.Add(int64(n))
+	return n, err
 }
 
 // NotifyHostMemory uses the machine notification chat because the hold spans repositories.
