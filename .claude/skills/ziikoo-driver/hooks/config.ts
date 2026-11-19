@@ -20,6 +20,7 @@ export const ROLE_LABELS: Record<RoleId, string> = {
   reviewer_small: '小票审查',
   second_reviewer: '交叉复审',
   resolver: '二线',
+  resolver_top: '终审',
   intake: '需求助手',
 }
 
@@ -29,6 +30,15 @@ export const SOURCE_LABELS: Record<Source, string> = {
   'driver.env': 'driver.env',
   'agent-graph.env': 'agent-graph.env',
   service: '服务',
+  override: '本机覆盖',
+}
+
+export const sourceLabel = (source: Source): string => SOURCE_LABELS[source] ?? source
+
+const parseSource = (o: Fields, path: string): Source => {
+  const source = text(o, 'source', path)
+  if (source.startsWith('profile:')) return `profile:${source.slice(8)}`
+  return oneOf(SOURCE_LABELS, o, 'source', path)
 }
 
 export const SETTING_GROUPS = ['并发与限速', 'GitHub', 'Orca 与执行器', '账本'] as const
@@ -117,7 +127,7 @@ const parseSetting = (value: unknown, path: string): Setting => {
   return {
     key: text(o, 'key', path),
     value: text(o, 'value', path),
-    source: oneOf(SOURCE_LABELS, o, 'source', path),
+    source: parseSource(o, path),
     set: flag(o, 'set', path),
   }
 }
@@ -130,7 +140,7 @@ const parseSchedulerSetting = (value: unknown, path: string): SchedulerSetting =
 const parseEnv = (value: unknown, path: string): EnvEntry => {
   const o = fields(value, path)
   const key = text(o, 'key', path)
-  const source = oneOf(SOURCE_LABELS, o, 'source', path)
+  const source = parseSource(o, path)
   const set = flag(o, 'set', path)
   if (o.secret === true) return { key, source, set, secret: true }
   return o.value === undefined
@@ -177,5 +187,8 @@ export const routingSummary = (routing: Setting[]): string => {
   const value = (key: string) => routing.find(one => one.key === key)?.value ?? ''
   const escalate = value('AGENT_TIER_ESCALATE') === '1' ? '开' : '关'
   const small = value('AGENT_REVIEWER_SMALL_MAX_ESTIMATE')
-  return `打回升档 ${escalate} · 小票审查 ≤${small || '-'}`
+  return `档位 ${gearMode(routing) === 'auto' ? '自动挡' : '手动挡'} · 打回升档 ${escalate} · 小票审查 ≤${small || '-'}`
 }
+
+export const gearMode = (routing: Setting[]): 'auto' | 'manual' =>
+  routing.find(one => one.key === 'AGENT_MODE')?.value === 'auto' ? 'auto' : 'manual'

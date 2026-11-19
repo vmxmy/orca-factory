@@ -20,9 +20,11 @@ export const SAMPLE_CONFIG = {
         { role: 'reviewer', agent: 'codex', model: 'gpt-6-astra', effort: 'high', key: 'AGENT_ROLE_REVIEWER_CMD', raw: 'env -u ORCA_PANE_KEY codex exec -m gpt-6-astra -c model_reasoning_effort=high --sandbox read-only -' },
         { role: 'second_reviewer', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_ROLE_SECOND_REVIEWER_CMD', raw: 'claude -p --model claude-fable-5-1 --effort high --tools Read,Grep,Glob' },
         { role: 'resolver', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_TIER_STRONG', raw: 'claude:claude-fable-5-1:high' },
+        { role: 'resolver_top', agent: 'codex', model: 'gpt-6-astra', effort: 'high', key: 'AGENT_ROLE_RESOLVER_TOP', raw: 'codex:gpt-6-astra:high' },
         { role: 'intake', agent: 'claude', model: 'claude-fable-5-1', effort: 'high', key: 'AGENT_TIER_STRONG', raw: 'claude:claude-fable-5-1:high' },
       ],
       routing: [
+        { key: 'AGENT_MODE', value: 'auto', source: 'agent-graph.env', set: true },
         { key: 'AGENT_TIER_ESCALATE', value: '1', source: 'agent-graph.env', set: true },
         { key: 'AGENT_REVIEWER_SMALL_MAX_ESTIMATE', value: '2', source: 'default', set: true },
         { key: 'AGENT_MAX_IN_FLIGHT', value: '4', source: 'default', set: true },
@@ -47,6 +49,7 @@ export const SAMPLE_CONFIG = {
         { role: 'resolver', agent: 'codex', model: '', effort: '', key: 'AGENT_ROLE_RESOLVER', raw: 'codex' },
       ],
       routing: [
+        { key: 'AGENT_MODE', value: 'manual', source: 'default', set: true },
         { key: 'AGENT_TIER_ESCALATE', value: '0', source: 'agent-graph.env', set: true },
         { key: 'AGENT_REVIEWER_SMALL_MAX_ESTIMATE', value: '3', source: 'agent-graph.env', set: true },
         { key: 'AGENT_MAX_IN_FLIGHT', value: '4', source: 'default', set: true },

@@ -129,6 +129,41 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
 
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
 
+test('models page shows and switches gear', async ($, on) => {
+  const manual = structuredClone(SAMPLE_CONFIG)
+  const mode = manual.repos[0]!.routing.find(one => one.key === 'AGENT_MODE')!
+  mode.value = 'manual'
+  mode.source = 'override'
+  const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
+    config: nth => ran({ stdout: nth === 1 ? sampleStdout : JSON.stringify(manual) }),
+    gear: ran({}),
+  }, { gear: 1000 })
+  mock.env(on, { USER: 'test-operator' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+  expect(await exactText(ui, '档位 自动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect(await exactText(ui, '终审')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到手动挡')
+
+  const switching = ui.press({ key: 'gear-toggle' })
+  await clock.settle()
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('档位切换中…')
+  await ui.press({ key: 'gear-toggle' })
+  expect(subcommands(calls).filter(one => one === 'gear')).toHaveLength(1)
+  expect(calls).toContainEqual([
+    'orca-factory-driver', 'gear', 'set', '/home/laoxu/github/orca-factory', 'manual',
+    '--operator', 'test-operator', '--reason', 'ziikoo-driver 模型页切换',
+  ])
+  await clock.advance(1000)
+  await switching
+  expect(subcommands(calls).filter(one => one === 'config')).toHaveLength(2)
+  expect(await exactText(ui, '档位 手动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect(await exactText(ui, '档位来源：本机覆盖')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到自动挡')
+  await ui.unmount()
+})
+
 test('不配置时自动选择绑定地址并复制 URL，非 SSH 会话打开本机浏览器', async ($, on) => {
   const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
   mock.env(on, { SSH_CONNECTION: '', SSH_TTY: '' })
@@ -327,7 +362,7 @@ test('模型页列出施工档位与样本模型名，可切换仓库', async ($
   expect(await exactText(ui, '施工 升档')).toHaveLength(1)
   expect(await exactText(ui, 'gpt-6.1-sol')).toHaveLength(1)
   expect(await exactText(ui, '小票审查')).toHaveLength(0)
-  expect((await ui.find({ type: 'Text', text: /打回升档/ }))?.text).toBe('打回升档 开 · 小票审查 ≤2')
+  expect((await ui.find({ type: 'Text', text: /打回升档/ }))?.text).toBe('档位 自动挡 · 打回升档 开 · 小票审查 ≤2')
 
   await ui.select({ key: 'repo', value: 'ziikoo-web' })
   expect(await exactText(ui, '小票审查')).toHaveLength(1)
