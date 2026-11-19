@@ -96,16 +96,6 @@ func (r *Registry) Record(status Status) error {
 	return nil
 }
 
-// Observe applies a probe to this in-memory snapshot for a read-only check.
-func (r *Registry) Observe(status Status) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	key := status.Ref.Key()
-	if !r.statuses[key].CheckedAt.After(status.CheckedAt) {
-		r.statuses[key] = status
-	}
-}
-
 func (r *Registry) Status(ref Ref, now time.Time) Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()

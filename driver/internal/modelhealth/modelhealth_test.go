@@ -114,10 +114,10 @@ func TestRegistrySelectSkipsUnavailable(t *testing.T) {
 }
 
 func TestRefRoundTrip(t *testing.T) {
-	for _, value := range []string{"codex:gpt-6.2-astra:max", "codex::low", "claude:fable:"} {
+	for value, key := range map[string]string{"codex:gpt-6.2-astra:max": "codex:gpt-6.2-astra", "codex::low": "codex:", "claude:fable:": "claude:fable", "claude:fable:high": "claude:fable"} {
 		ref, err := modelhealth.Parse(value)
-		if err != nil || ref.String() != value {
-			t.Fatalf("parse %q = %+v, %v", value, ref, err)
+		if err != nil || ref.String() != value || ref.Key() != key {
+			t.Fatalf("parse %q = %+v, key %q, err %v", value, ref, ref.Key(), err)
 		}
 	}
 	for _, value := range []string{"", ":model:low", "codex:model:low:extra", "codex"} {
@@ -150,7 +150,6 @@ func TestRegistryRetainsNewerProbe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopened.Observe(modelhealth.Classify(ref, "ok", nil, now))
 	for _, r := range []*modelhealth.Registry{stale, reopened} {
 		if got := r.Status(ref, newer.CheckedAt); got != newer {
 			t.Fatalf("status = %+v, want %+v", got, newer)

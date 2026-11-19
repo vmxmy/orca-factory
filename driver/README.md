@@ -367,7 +367,7 @@ flowchart LR
 - `~/.local/bin/orca-factory-driver status --json`：读取观察缓存并输出调度器状态快照，不修改任何状态；结果只是观察，不证明服务进程存活。
 - `~/.local/bin/orca-factory-driver serve --dry-run`：按真实配置运行一次调度推演，不合并、不写回、不 fetch。
 - `~/.local/bin/orca-factory-driver config [--json]`（OF-204）：只读，列出各接管仓库的角色模型与路由、`driver.toml` 调度参数、服务环境与工具路径，每项标来源；`driver.toml` 中不生效的键记在 `problems`。`driver.env` 只列键名，不输出值。JSON 形状见 [CONTRACTS.md](CONTRACTS.md) 的「driver config 快照」。
-- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：运行态健康自检；模型探测会写本地可用性登记，不改模型配置或派工选择。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟执行相同的检查，只读模型登记。
+- `~/.local/bin/orca-factory-driver doctor [--json]`（OF-127）：运行态健康自检；模型探测会写本地可用性登记，不改模型配置或派工选择。doctor 不做 fetch，`origin/main` 只和最后一次 fetch 一样新；`version` 与 `checkouts` 的 details 给出 `origin/main` 的提交时间和 `FETCH_HEAD` 的修改时间，调用方据此判断数据是否新鲜。driver watch（OF-128）每 30 分钟执行相同的检查，也写入实际探测到的模型状态。
 
   | 状态 | 含义 | 退出码 |
   | --- | --- | --- |
@@ -385,7 +385,7 @@ flowchart LR
   | `sync_prs` | 每个项目 `gh pr list` 中未合并的 core 同步 PR、创建时间、版本落后 factory `origin/main` 的提交数 | 存活超过 24 小时：fail；否则 warn |
   | `ledger` | 在途票（In Progress）的评论数、空正文数、最长正文与 9 万字上限的距离 | 距离不足上限 10%：fail；有空正文（历史遗留）：warn |
   | `launches` | 状态根目录下近 30 分钟有写入的 `launch-*.log` 中的 start 与非零 exit 记录；`err` 含 `maintenance refused`、`deferred`、`recovery evidence changed` 的延后类退出不算失败 | 同票失败 3 次以上：fail；启动 3 次以上或有失败：warn |
-  | `models` | 各仓库角色、可达 worker 档位和模型端点的并发探测 | 缺默认 worker 或主 reviewer、某角色全部候选冷却时为 fail。部分候选冷却时为 warn。仅有探测超时或结果无法识别时为 unknown。Pi 的 `unsupported_agent` 只标在角色行。 |
+  | `models` | 各仓库角色与可达 worker 档位的直连探测和冷却记录 | 档位或代理配置无效、缺默认 worker 或主 reviewer、某角色全部候选冷却，均为 `fail`。各角色仍可重试但有候选冷却时为 `warn`。其余未确认的状态（含 `unsupported_agent` 和 `model_proxy_not_probed`）为 `unknown`。 |
   | `credentials` | 服务环境中 `AGENT_FEISHU_APP_ID`、`AGENT_FEISHU_APP_SECRET` 是否非空；`gh auth status` 的结果；gh 报 token invalid 时对 `api.github.com` 的无认证请求 | 缺变量：fail；gh 报 token invalid 且 GitHub 可达（任何 HTTP 响应，含 403 限流）：fail，原因为凭证不可读（keyring 可能未解锁）；gh 其他失败或 GitHub 不可达：unknown |
 
   `--json` 的形状与 `bin/orca-factory doctor --json` 一致：顶层 `checks` 按检查项名字给出 `{status, reason, details}`，`errors` 是字符串数组，列出无法执行的探针。`status` 取值为 `ok`、`warn`、`unknown`、`fail`，消费方遇到未知取值时应按 `unknown` 处理。飞书接口能否认证由 `ledger` 实际读账本证明。输出包含仓库、角色、模型引用、固定原因码，以及变量名、布尔值、计数、时间和命令退出码，不含凭证值和外部命令的原始输出。driver watch（OF-128）读取这个结构，字段只增不改。
@@ -412,7 +412,7 @@ flowchart LR
   - `watch.json` 无法解析时改名为 `watch.json.corrupt-<时间>` 留作证据，写一条 WARN 日志，再以空状态继续，巡检不因坏文件停摆。
   - 运行时对状态根目录下的 `watch.lock` 加 flock。手工运行与 timer 重叠时，后到的一次写一条日志后跳过，退出 0，不重复告警。
   - 不建票的理由：doctor 的 `fail` 是运行态问题（未部署、维护卡住、检出落后、同步 PR 未合并等），写不出在 main 上因断言失败变红的 `CHECK`，也定不出代码 `SCOPE`；派给 worker 会把运维问题变成代码改动。
-  - `--dry-run` 跑同一遍 doctor 并打印将要发出的告警，不发送、不写 `watch.json`，也不要求通知频道已配置。
+  - `--dry-run` 跑同一遍 doctor，写入模型探测结果并打印将要发出的告警，不发送、不写 `watch.json`，也不要求通知频道已配置。
   - `install` 写入 `orca-factory-driver-watch.service`（oneshot）与 `orca-factory-driver-watch.timer`（`OnCalendar=*:0/30`、`RandomizedDelaySec=5min`、`Persistent=true`），并把 `orca-factory-driver-watch.service.d` 软链到 `orca-factory-driver.service.d`，两者共用同一组 drop-in。该路径已存在且不是指向 serve drop-in 的软链时，安装失败，需人工移开。共享目录 `orca-factory-driver.service.d` 只能放环境类指令，即 `[Service]` 下的 `Environment` / `EnvironmentFile`：`ExecStart`、`Restart` 这类指令会同时作用到 watch。`install`（含 `--dry-run`）检查其中每个 `.conf`，发现其他指令时报错退出，不改动、不删除任何文件；这类指令应放到不共享的 drop-in。`install` 会 `systemctl --user enable` 这个 timer，但不启动它；需要立即生效时运行 `systemctl --user start orca-factory-driver-watch.timer`。
 
 ## Orca 看板
@@ -638,17 +638,19 @@ AGENT_TIER_ESCALATE = "0"
 
 ## 模型可用性（OF-592）
 
-`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。worker 默认只用 `default` 档位。`AGENT_TIER_ESCALATE=1` 时，检查按 `AGENT_TIER_CHAIN` 列出 worker 候选，空链使用 `default strong`。缺少默认 worker 或主 reviewer 时，对应行显示 `unknown/not_configured`，整项为 `fail`。
+`orca-factory-driver doctor --json` 的 `checks.models.details` 按仓库和角色列出模型引用、状态、原因、冷却截止时间和检查时间。文本报告也逐行显示结果。缺少默认 worker 或主 reviewer 时，对应行显示 `unknown/not_configured`。角色档位配置无效时，该行显示 `unknown/config_invalid`，其他角色和仓库继续检查。这两种情况都使整项为 `fail`。
 
-intake 优先使用仓库的 `AGENT_INTAKE_PI`，其次取进程环境，再取机器的 `driver.env`。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>`。Pi 等暂不支持探测的 agent 显示 `unknown/unsupported_agent`，该候选可重试，单凭这条记录不会降低检查状态。
+worker 首轮使用 `default`。无论是否升档，`AGENT_TIER_CHAIN` 都须合法，空值使用 `default strong`。启用 `AGENT_TIER_ESCALATE=1` 时，链必须含 `default`，每个档位都必须有合法的模型配置。只有从 `default` 起向后的各档才是候选。关闭升档时只有 `default` 是候选。
 
-检查跨仓库按端点去重，并发探测已配置的 Codex 和 Claude 模型。每个键在首个使用它的项目中最多发送一次 `Reply with exactly: ok`，整批探测共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low` 和 `--sandbox read-only`。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
+intake 先校验 Claude 档位，取 `AGENT_ROLE_INTAKE`，为空时取 `AGENT_TIER_STRONG`。通过后再看 `AGENT_INTAKE_PI`，依次取仓库、进程环境、机器 `driver.env` 的值。启用 Pi 时，intake 行显示 `pi:<provider>/<model>:<thinking>` 和 `unknown/unsupported_agent`。这类候选仍可重试，计入 `unknown` 汇总。
 
-直连登记的键为 `agent:model`。配置 `AGENT_MODEL_PROXY_URL` 后，Claude 的 `reviewer` 和 `reviewer_small` 使用该代理，登记为 `claude:model@model_proxy`。不同 effort 共用同一端点的状态。登记和报告只使用路由名。
+探测只走直连端点，登记键只有 `agent:model`，同一模型的不同 effort 共用记录。若已配置有效的 `AGENT_MODEL_PROXY_URL`，Claude 的 `reviewer` 和 `reviewer_small` 行均显示 `unknown/model_proxy_not_probed`，仍可重试。同名模型被其他角色直连使用时照常探测，结果仅用于直连角色。代理配置无效时，执行器无法启动，整项为 `fail`，受影响的 reviewer 行显示 `unknown/model_proxy_invalid`。
+
+检查跨仓库按登记键去重，并发探测 Codex 和 Claude。每个键在首个需要直连探测的项目中最多发送一次 `Reply with exactly: ok`。整批探测共用 120 秒期限，并受 doctor 的 5 分钟总期限约束。Codex 使用 `exec`、`model_reasoning_effort=low` 和 `--sandbox read-only`。Claude 使用 `-p` 和 `--restricted`，忽略用户、项目和本地 settings 及其 hooks，并禁用工具、斜杠命令、MCP 配置自动加载和会话持久化。空模型名使用 CLI 默认模型。
 
 成功退出且回复恰为 `ok` 时记为 `ok`。Claude 额度耗尽提示和 Codex 录制样本中的 ChatGPT 账号不支持短句记为 `unavailable`。Claude 的重置提示按指定时区与观察年份解析，十二月收到的一月重置提示使用下一年。缺少有效的未来重置时间时冷却 30 分钟。超时、其他命令失败或无法识别的回复记为 `unknown`。
 
-只有 `driver doctor` 写入状态根目录的 `model-health.json`。默认路径为 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。`watch`（含 `--dry-run`）只读登记，本轮探测结果用于当次报告。冷却期内复用不可用记录，到期后重新探测。登记读写失败时，检查报告 `unknown` 并加入 `errors`。
+`driver doctor`、`watch` 和 `watch --dry-run` 都将每次探测结果写入状态根目录的 `model-health.json`。默认路径为 `~/.local/state/orca-factory/model-health.json`，可用 `AGENT_DRIVER_STATE_ROOT` 指定根目录。写入时在文件锁内重读登记，同键保留较新的 `checkedAt`，再用临时文件原子替换。下次检查在冷却期内复用记录，到期后重新探测。登记读写失败时，检查报告 `unknown` 并加入 `errors`。`watch --dry-run` 不写告警状态文件 `watch.json`。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

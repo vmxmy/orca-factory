@@ -16,7 +16,6 @@ const (
 	Unavailable     = "unavailable"
 	Unknown         = "unknown"
 	DefaultCooldown = 30 * time.Minute
-	RouteModelProxy = "model_proxy"
 	ProbeTimeout    = 120 * time.Second
 )
 
@@ -24,7 +23,6 @@ type Ref struct {
 	Agent  string `json:"agent"`
 	Model  string `json:"model"`
 	Effort string `json:"effort"`
-	Route  string `json:"route,omitempty"`
 }
 
 func Parse(value string) (Ref, error) {
@@ -35,13 +33,7 @@ func Parse(value string) (Ref, error) {
 	return Ref{Agent: parts[0], Model: parts[1], Effort: parts[2]}, nil
 }
 func (r Ref) String() string { return r.Agent + ":" + r.Model + ":" + r.Effort }
-func (r Ref) Key() string {
-	key := r.Agent + ":" + r.Model
-	if r.Route != "" {
-		key += "@" + r.Route
-	}
-	return key
-}
+func (r Ref) Key() string    { return r.Agent + ":" + r.Model }
 
 type Status struct {
 	Ref       Ref       `json:"ref"`

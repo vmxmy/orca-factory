@@ -12,7 +12,7 @@ import (
 )
 
 // Probe sends one bounded, read-only request. Effort is deliberately kept low.
-func Probe(ctx context.Context, ref Ref, dir string, extraEnv []string) Status {
+func Probe(ctx context.Context, ref Ref, dir string) Status {
 	var args []string
 	switch ref.Agent {
 	case "codex":
@@ -35,12 +35,12 @@ func Probe(ctx context.Context, ref Ref, dir string, extraEnv []string) Status {
 	for _, value := range os.Environ() {
 		key, _, _ := strings.Cut(value, "=")
 		switch key {
-		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN":
+		case "ORCA_PANE_KEY", "ORCA_AGENT_HOOK_PORT", "ORCA_AGENT_HOOK_TOKEN", "ANTHROPIC_BASE_URL":
 			continue
 		}
 		env = append(env, value)
 	}
-	output, err := runx.Run(ctx, runx.Spec{Path: ref.Agent, Args: args, Dir: dir, Env: append(env, extraEnv...), Timeout: ProbeTimeout})
+	output, err := runx.Run(ctx, runx.Spec{Path: ref.Agent, Args: args, Dir: dir, Env: env, Timeout: ProbeTimeout})
 	var exit *exec.ExitError
 	if errors.As(err, &exit) {
 		output = append(append(output, '\n'), exit.Stderr...)
