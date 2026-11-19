@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -48,6 +49,9 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	cp.UnobservedSince, cp.DispatchStartedAt = time.Time{}, time.Time{}
 	if cp.StartedAt == "" {
 		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
+	}
+	if opts.Agent != "" {
+		cp.Launch = modelhealth.Ref{Agent: opts.Agent, Model: opts.Model, Effort: opts.Effort}.String()
 	}
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err

@@ -15,7 +15,6 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
-	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -273,32 +272,42 @@ func TestExecutorContextLog(t *testing.T) {
 }
 
 func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
-	root := t.TempDir()
 	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
-	registry, err := modelhealth.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now()
-	if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	var logs bytes.Buffer
 	for _, tc := range []struct {
 		name     string
 		settings map[string]string
-		want     orca.StartOptions
+		want     modelhealth.Ref
 	}{
-		{"fallback", map[string]string{"default": primary.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}, orca.StartOptions{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}},
-		{"no fallback", map[string]string{"default": primary.String()}, orca.StartOptions{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}},
+		{"fallback", map[string]string{"default": primary.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}, modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}},
+		{"no fallback", map[string]string{"default": primary.String()}, primary},
 	} {
-		e := &Executor{Config: Config{Root: root, TierSettings: tc.settings}, Stderr: &logs}
-		if got := e.workerModel(orca.StartOptions{Agent: primary.Agent, Model: primary.Model, Effort: primary.Effort}); got != tc.want {
-			t.Errorf("%s: worker start = %+v, want %+v", tc.name, got, tc.want)
-		}
-	}
-	if !strings.Contains(logs.String(), `"selected":"codex:gpt-6.1-sol:high"`) {
-		t.Errorf("fallback not recorded in executor log: %s", logs.String())
+		t.Run(tc.name, func(t *testing.T) {
+			e, o, _, _, _, ticket := fixture(t, "new-sha")
+			var logs bytes.Buffer
+			e.Stderr = &logs
+			e.Config.Agent, e.Config.Model, e.Config.Effort, e.Config.Tier, e.Config.TierSettings = primary.Agent, primary.Model, primary.Effort, "default", tc.settings
+			registry, err := modelhealth.Open(e.Config.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := e.Now()
+			if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = e.Execute(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			if got := (modelhealth.Ref{Agent: o.start.Agent, Model: o.start.Model, Effort: o.start.Effort}); got != tc.want {
+				t.Fatalf("worker start = %s, want %s", got, tc.want)
+			}
+			cp, err := readCheckpoint(e.Config, ticket)
+			if err != nil || cp.Launch != tc.want.String() {
+				t.Fatalf("checkpoint launch = %q (%v), want %s", cp.Launch, err, tc.want)
+			}
+			if fellBack := strings.Contains(logs.String(), `"selected":"codex:gpt-6.1-sol:high"`); fellBack != (tc.want != primary) {
+				t.Errorf("fallback log = %v: %s", fellBack, logs.String())
+			}
+		})
 	}
 }
 
@@ -313,44 +322,12 @@ func TestWorkerTierModelUsesNamedTierFallback(t *testing.T) {
 	if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	settings := map[string]string{"default": primary.String(), "strong": primary.String(),
-		"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh"}
+	settings := map[string]string{"default": primary.String(), "strong": primary.String(), "max": primary.String(),
+		"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh", "AGENT_TIER_MAX_FALLBACK": "codex::low"}
 	e := &Executor{Config: Config{Root: root, Tier: "default", TierSettings: settings}, Stderr: &bytes.Buffer{}}
-	if got, want := e.tierModel("strong", primary), (modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}); got != want {
-		t.Fatalf("strong correction model = %+v, want %+v", got, want)
-	}
-	strongStart := orca.StartOptions{Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}
-	if got := e.workerModel(strongStart); got != strongStart {
-		t.Fatalf("selected correction start rewritten to %+v", got)
-	}
-}
-
-func TestWorkerStartMatchesOneTierBeforeFallback(t *testing.T) {
-	root := t.TempDir()
-	strong := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
-	shared := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
-	registry, err := modelhealth.Open(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now()
-	for _, ref := range []modelhealth.Ref{strong, shared} {
-		if err = registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, tc := range []struct {
-		name     string
-		settings map[string]string
-		start    modelhealth.Ref
-		want     orca.StartOptions
-	}{
-		{"recovered strong correction", map[string]string{"default": "codex:gpt-6.1-sol:high", "strong": strong.String(), "AGENT_TIER_STRONG_FALLBACK": "codex::low"}, strong, orca.StartOptions{Task: "task_child", Agent: "codex"}},
-		{"tiers share a model", map[string]string{"default": shared.String(), "strong": shared.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh"}, shared, orca.StartOptions{Task: "task_child", Agent: shared.Agent, Model: shared.Model, Effort: shared.Effort}},
-	} {
-		e := &Executor{Config: Config{Root: root, Tier: "default", TierChain: []string{"default", "strong"}, TierSettings: tc.settings}, Stderr: &bytes.Buffer{}}
-		if got := e.workerModel(orca.StartOptions{Task: "task_child", Agent: tc.start.Agent, Model: tc.start.Model, Effort: tc.start.Effort}); got != tc.want {
-			t.Errorf("%s: worker start = %+v, want %+v", tc.name, got, tc.want)
+	for tier, want := range map[string]modelhealth.Ref{"default": {Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}, "strong": {Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}, "max": {Agent: "codex"}} {
+		if got := e.tierModel(tier, primary); got != want {
+			t.Errorf("%s correction model = %+v, want %+v", tier, got, want)
 		}
 	}
 }

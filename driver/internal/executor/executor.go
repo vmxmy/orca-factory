@@ -21,6 +21,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/status"
@@ -369,11 +370,12 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 		cp.Baseline = baseline
 		if restored != nil {
 			if cp.PendingParent != "" {
-				_, agent, model, effort, err := correctionTier(c, cp.Corrections)
+				tier, agent, model, effort, err := correctionTier(c, cp.Corrections)
 				if err != nil {
 					return err
 				}
-				if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Task: cp.Task, Worktree: "path:" + cp.Worktree, Agent: agent, Model: model, Effort: effort}); err != nil {
+				selected := e.tierModel(tier, modelhealth.Ref{Agent: agent, Model: model, Effort: effort})
+				if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Task: cp.Task, Worktree: "path:" + cp.Worktree, Agent: selected.Agent, Model: selected.Model, Effort: selected.Effort}); err != nil {
 					return err
 				}
 			}
@@ -386,7 +388,8 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			return err
 		}
 		e.logger().Info("worker skills", "worker_skills", strings.Join(c.WorkerSkills, ","), "correction", cp.Corrections)
-		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: c.Agent, Model: c.Model, Effort: c.Effort}); err != nil {
+		first := e.tierModel(cmp.Or(c.Tier, "default"), modelhealth.Ref{Agent: c.Agent, Model: c.Model, Effort: c.Effort})
+		if err := e.startDispatch(ctx, c, t, &cp, orca.StartOptions{Run: result.RunID, Spec: workerSpec, Worktree: "new-top-level", Repo: "path:" + c.Repo, BaseBranch: baseline, Name: t.Identifier + "-" + c.Unit, Agent: first.Agent, Model: first.Model, Effort: first.Effort}); err != nil {
 			return err
 		}
 		taskID, result.DispatchID = cp.Task, cp.Dispatch

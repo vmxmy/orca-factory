@@ -18,6 +18,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -177,6 +178,19 @@ func (o onboarder) plan(ctx context.Context, repo string) (onboardPlan, error) {
 	if err != nil {
 		return onboardPlan{}, err
 	}
+	fallback, err := intakeFallback(factory.Env)
+	if err != nil {
+		return onboardPlan{}, err
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: model, Effort: effort}
+	selected, err := config.SelectModel(o.stateRoot, primary, fallback, time.Now())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "onboard model fallback unavailable; keeping configured model: %v\n", err)
+	}
+	if selected != primary {
+		fmt.Fprintf(os.Stderr, "onboard model falls back: configured=%s selected=%s\n", primary, selected)
+	}
+	model, effort = selected.Model, selected.Effort
 	env := map[string]string{"AGENT_FEISHU_PROJECT": target.Remote, "AGENT_GH_REPO": m[1]}
 	for _, key := range onboardDefaultKeys {
 		if v := factory.Env[key]; v != "" {

@@ -26,6 +26,10 @@ type checkpoint struct {
 	Pending                                      bool
 	Completed                                    bool
 	PendingParent                                string `json:",omitempty"`
+	// Launch is the agent:model:effort the current dispatch's agent was started
+	// with; a reused terminal keeps it. A correction reuses the terminal only
+	// while it runs the model the correction selects (OF-593).
+	Launch string `json:",omitempty"`
 	// UnobservedSince is when the current dispatch was first seen pending
 	// without a started turn, kept so a restart resumes the window (OF-161).
 	UnobservedSince time.Time `json:",omitzero"`

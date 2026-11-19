@@ -477,9 +477,9 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 ## 模型兜底选择（OF-593）
 
-- `config.ParseFallback` 解析 `<键名>_FALLBACK`：空格分隔、有序的 `agent:model:effort` 列表，每项按 `modelhealth.Parse` 校验；空值表示没有兜底。错误只给出键名与候选序号，不含配置值（`TestFallbackKeysParse`）。model 为空的候选用 agent 默认模型且不传 effort；终审候选必须写出 model 与 effort，选中不完整的候选时按终审档位无效转人。
+- `config.ParseFallback` 解析 `<键名>_FALLBACK`：空格分隔、有序的 `agent:model:effort` 列表，每项按 `modelhealth.Parse` 校验；空值表示没有兜底。错误只给出键名与候选序号，不含配置值（`TestFallbackKeysParse`）。施工与处置选中 model 为空的候选时用 agent 默认模型且不传 effort，与配置档位相同；需求助手、接入 Agent 与审查按候选原样传参。终审选中不完整的候选时按终审档位无效转人。
 - `config.SelectModel` 在有兜底时打开状态根目录的 `model-health.json`，用 `Registry.Select` 在「主选 + 兜底」中取第一个未在冷却的候选；全部冷却时返回主选。没有兜底时不读登记。登记读取失败时返回主选和错误，调用方记 warn 日志后按主选继续。
-- worker：打回由 `correctionTier` 算出档名后，`Executor.tierModel` 按该档的 `TierSettings["AGENT_TIER_<档名>_FALLBACK"]` 选择。旧终端只在它运行配置模型时复用：本轮选中兜底，或上一派工开始（`DispatchStartedAt`）时配置模型在冷却，都改起新 agent。`executor.workerStart` 处理其余启动：首轮按执行器自身档（`Config.Tier`，空为 `default`）；恢复已建子任务（带 Task）时在自身档与升档链中找主选等于启动参数的档，多个档主选相同而兜底不同时不切换并记 warn（`TestWorkerTierModelUsesNamedTierFallback`、`TestWorkerStartMatchesOneTierBeforeFallback`）。`repositoryExecutor` 从仓库 env 与方案取这些键，值无效时执行器启动失败（`TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable`）。
+- worker：每个起新 agent 的派工点按已知档名调用 `Executor.tierModel`，读取 `TierSettings["AGENT_TIER_<档名>_FALLBACK"]`：首轮用执行器自身档（`Config.Tier`，空为 `default`），打回与恢复已建子任务用 `correctionTier` 算出的档。`startDispatch` 把起新 agent 的实际档位写入 checkpoint 的 `Launch`；打回只在旧终端的 `Launch` 等于本轮选择时复用该终端，没有 `Launch` 的旧 checkpoint 按原规则复用（`TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable`、`TestWorkerTierModelUsesNamedTierFallback`）。`repositoryExecutor` 从仓库 env 与方案取这些键，值无效时执行器启动失败（`TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable`）。
 - 处置与终审：`ResolveTicket` 用当前生效的键（`AGENT_ROLE_RESOLVER`、回退的 `AGENT_TIER_STRONG` 或 `AGENT_ROLE_RESOLVER_TOP`）的兜底；内置 `codex` 回退没有兜底。选中的档位作为新处置记录的 agent/model/effort；已有 `pending`、`running`、`settled` 记录的轮次沿用冻结档位，`launch.effective` 核对不变。候选的 agent 必须是 `codex` 或 `claude`（`TestTopResolverUsesFallbackWhenPrimaryUnavailable`）。
 - 审查与交叉复审：`config.ReviewerCandidates` 只在角色由结构化键配置且有兜底时返回「主选 + 兜底」；`config.SelectReviewerCommand` 在主选冷却时用选中候选重新生成审查命令。
-- 需求助手：网关把 `AGENT_ROLE_INTAKE_FALLBACK`（候选必须是 claude）交给 `intake.Runner`，每轮 `claude -p` 前选择模型。
+- 需求助手：网关把 `AGENT_ROLE_INTAKE_FALLBACK`（候选必须是 claude）交给 `intake.Runner`，每轮 `claude -p` 前选择模型。接入 Agent 使用同一角色，`onboarder.plan` 生成计划时按同一兜底选择，切换写入网关 stderr。

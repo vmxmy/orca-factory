@@ -231,7 +231,9 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		return errors.New("invalid resolver agent tier")
 	}
-	if tierKey != "" {
+	// A dispatched top round keeps its frozen tier; only a new round selects.
+	frozen := top && t.Resolution.Agent != "" && t.Resolution.Phase != "waiting"
+	if tierKey != "" && !frozen {
 		now := time.Now
 		if r.Now != nil {
 			now = r.Now
@@ -243,13 +245,13 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		if !resolverAgent(selected) {
 			return errors.New("invalid resolver fallback tier")
 		}
-		if top && (selected.Model == "" || selected.Effort == "") {
-			return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP_FALLBACK 候选无效，不更换模型", "终审兜底候选需要写出 model 与 effort")
-		}
-		if selected.Model == "" {
-			selected.Effort = ""
-		}
 		if selected != ref {
+			if top && (selected.Model == "" || selected.Effort == "") {
+				return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP_FALLBACK 候选无效，不更换模型", "终审兜底候选需要写出 model 与 effort")
+			}
+			if selected.Model == "" {
+				selected.Effort = ""
+			}
 			runx.LoggerFrom(ctx).Info("resolver model falls back", "ticket", t.Identifier, "configured", ref.String(), "selected", selected.String())
 			ref = selected
 		}
