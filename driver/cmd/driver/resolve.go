@@ -38,7 +38,7 @@ func resolveTicket(args []string) int {
 			return 1, err
 		}
 		registered, err := gearTarget(ctx, cwd, &orca.Client{Timeout: cfg.Tuning.Orca.CallTimeout}, cfg.Tuning)
-		if err != nil {
+		if err != nil && !errors.Is(err, errRepositoryNotRegistered) {
 			return 1, err
 		}
 		repo, err := config.LoadRegisteredRepository(registered.CanonicalKey, cwd)

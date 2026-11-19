@@ -146,6 +146,16 @@ func TestGearCommands(t *testing.T) {
 	if got := readGearEntries(t, file)["github.com/vmxmy/orca-factory"]; got.Mode != "auto" || got.Path != f.factory {
 		t.Fatalf("set through symlink alias: %+v", got)
 	}
+	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
+	if err := os.MkdirAll(filepath.Join(elsewhere, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(elsewhere, "sub"), filepath.Join(f.factory, "link")); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"gear", "clear", filepath.Join(f.factory, "link") + "/.."}); code != 1 {
+		t.Fatalf("clear through a link to an unregistered directory exit=%d, want 1", code)
+	}
 	t.Chdir(filepath.Join(f.factory, "scripts"))
 	invokeGear(t, "clear", "..")
 	if entries := readGearEntries(t, file); len(entries) != 1 || entries["other/repo"].Path != f.factory {

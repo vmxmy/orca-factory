@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -144,7 +145,7 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 			continue
 		}
 		if idx := slices.IndexFunc(repositories, func(known config.Repository) bool { return known.Path == r.Path }); idx >= 0 {
-			repositories[idx] = s.reconcileRepository(repositories[idx], *r.Repository, updater)
+			repositories[idx] = refreshMode(repositories[idx], *r.Repository, updater)
 			continue
 		}
 		held, err := s.heldTickets(ctx, *r.Repository, tracker)
@@ -224,6 +225,35 @@ func (s *Scheduler) reconcileRepository(current, fresh config.Repository, update
 	}
 	s.logger().Info("repository configuration updated", "path", current.Path, "changed", changed)
 	return fresh
+}
+
+// refreshMode carries only a retired repository's gear (AGENT_MODE) forward;
+// the rest of its configuration stays as tracked while it is not taken over.
+func refreshMode(current, fresh config.Repository, updater repositoryUpdater) config.Repository {
+	mode, set := fresh.Env["AGENT_MODE"]
+	if current.Env["AGENT_MODE"] == mode && current.Sources["AGENT_MODE"] == fresh.Sources["AGENT_MODE"] {
+		return current
+	}
+	env, sources := maps.Clone(current.Env), maps.Clone(current.Sources)
+	if env == nil {
+		env = map[string]string{}
+	}
+	if sources == nil {
+		sources = map[string]string{}
+	}
+	delete(env, "AGENT_MODE")
+	delete(sources, "AGENT_MODE")
+	if set {
+		env["AGENT_MODE"] = mode
+		if source, ok := fresh.Sources["AGENT_MODE"]; ok {
+			sources["AGENT_MODE"] = source
+		}
+	}
+	current.Env, current.Sources = env, sources
+	if updater != nil {
+		updater.UpdateRepository(current)
+	}
+	return current
 }
 
 // warnIdentityDrift logs once per distinct ledger-identity change a

@@ -125,6 +125,8 @@ func runGear(args []string) int {
 	return 0
 }
 
+var errRepositoryNotRegistered = errors.New("repository prefix or path not found")
+
 func gearTarget(ctx context.Context, selector string, client *orca.Client, tuning config.Tuning) (orca.Repo, error) {
 	repos, err := client.RepoList(ctx)
 	if err != nil {
@@ -133,11 +135,11 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 	var root string
 	var remotes map[string]bool
 	if selector == "." || selector == ".." || strings.Contains(selector, "/") {
-		root, err = filepath.Abs(selector)
+		root, err = filepath.EvalSymlinks(selector)
 		if err != nil {
 			return orca.Repo{}, err
 		}
-		root, err = filepath.EvalSymlinks(root)
+		root, err = filepath.Abs(root)
 		if err != nil {
 			return orca.Repo{}, err
 		}
@@ -156,7 +158,7 @@ func gearTarget(ctx context.Context, selector string, client *orca.Client, tunin
 	}
 	switch len(matches) {
 	case 0:
-		return orca.Repo{}, errors.New("repository prefix or path not found")
+		return orca.Repo{}, errRepositoryNotRegistered
 	case 1:
 		return matches[0], nil
 	default:
