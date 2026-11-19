@@ -354,11 +354,6 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 				break
 			}
 		}
-		// An Orca that cannot answer automation reads leaves no repository
-		// schedulable; the probe only runs `true`, so any configured one serves.
-		if repo == "" && len(s.Repositories) > 0 {
-			repo = s.Repositories[0].Path
-		}
 		if repo == "" {
 			return errors.New("orca runtime fault: no repository available for recovery probe")
 		}
