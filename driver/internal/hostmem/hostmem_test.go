@@ -1,7 +1,6 @@
 package hostmem
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -52,12 +51,11 @@ func TestParseRecordedProcSamples(t *testing.T) {
 	}
 }
 
-// The recorded samples were idle, so every PSI value is 0.00. Give each line
-// and window a distinct value in the recorded format so only some avg60 matches.
-func distinctPressure(t *testing.T, sample string) []byte {
-	t.Helper()
+// The recorded host was idle, so every PSI value is 0.00. Give each line and
+// window a distinct value in the recorded format so only some avg60 matches.
+func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
 	values := map[string]string{"some avg10": "11.11", "some avg60": "22.22", "some avg300": "33.33", "full avg10": "44.44", "full avg60": "55.55", "full avg300": "66.66"}
-	lines := strings.Split(string(recorded(t, sample)), "\n")
+	lines := strings.Split(string(recorded(t, "proc-pressure-memory.txt")), "\n")
 	for i, line := range lines {
 		fields := strings.Fields(line)
 		for j, field := range fields[min(1, len(fields)):] {
@@ -68,12 +66,8 @@ func distinctPressure(t *testing.T, sample string) []byte {
 		}
 		lines[i] = strings.Join(fields, " ")
 	}
-	return []byte(strings.Join(lines, "\n"))
-}
-
-func TestReadSomeAvg60FromRecordedPressureFormat(t *testing.T) {
-	pressure := distinctPressure(t, "proc-pressure-memory.txt")
-	got := readProc(t, recorded(t, "proc-meminfo.txt"), pressure)
+	pressure := strings.Join(lines, "\n")
+	got := readProc(t, recorded(t, "proc-meminfo.txt"), []byte(pressure))
 	if want := (Reading{Source: "host", Available: 33843404 * 1024, SomeAvg60: 22.22}); got != want {
 		t.Fatalf("Read = %+v, want %+v from %q", got, want, pressure)
 	}
@@ -254,31 +248,28 @@ func TestCgroupReadFailureRetainsHostReading(t *testing.T) {
 	}
 }
 
-func TestCgroupAvailableAccountsForCacheAndOverLimitUsage(t *testing.T) {
-	const limit, file = 10_000_000_000, 3171840000 + 1142583296 // file: recorded inactive_file + active_file
-	for _, tc := range []struct {
-		current, want uint64
-	}{
-		{limit - 100, 100 + file},
-		{limit + 20, file - 20},
-		{limit + file + 50, 0},
-	} {
-		dir := t.TempDir()
-		for name, value := range map[string][]byte{
-			"memory.current":  []byte(fmt.Sprintf("%d\n", tc.current)),
-			"memory.stat":     recorded(t, "cgroup-memory/workloads-memory.stat.txt"),
-			"memory.pressure": distinctPressure(t, "cgroup-memory/workloads-memory.pressure.txt"),
-		} {
-			if err := os.WriteFile(filepath.Join(dir, name), value, 0600); err != nil {
-				t.Fatal(err)
-			}
-		}
-		got, err := readCgroup(dir, []byte(fmt.Sprintf("%d\n", uint64(limit))))
-		if err != nil {
+// Recorded from a transient scope held over memory.high, so every PSI value
+// differs and only some avg60 matches.
+func TestReadRecordedPressuredCgroup(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"memory.current", "memory.stat", "memory.pressure"} {
+		if err := os.WriteFile(filepath.Join(dir, name), recorded(t, "cgroup-memory/pressured-"+name+".txt"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if got.Available != tc.want || got.SomeAvg60 != 22.22 {
-			t.Fatalf("current=%d: reading=%+v, want available=%d and some avg60=22.22", tc.current, got, tc.want)
+	}
+	got, err := readCgroup(dir, recorded(t, "cgroup-memory/pressured-memory.max.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Reading{Available: 268435456 - 75673600 + 0 + 0, SomeAvg60: 17.58}); got != want {
+		t.Fatalf("reading = %+v, want %+v", got, want)
+	}
+}
+
+func TestCgroupAvailableAccountsForCacheAndOverLimitUsage(t *testing.T) {
+	for _, tc := range []struct{ current, want uint64 }{{120, 20}, {150, 0}, {20, 120}} {
+		if got := cgroupAvailable(100, tc.current, 40); got != tc.want {
+			t.Fatalf("current=%d: available=%d, want %d", tc.current, got, tc.want)
 		}
 	}
 }

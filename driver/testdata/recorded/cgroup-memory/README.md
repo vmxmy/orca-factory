@@ -1,3 +1,5 @@
 Recorded on 2026-11-20 from this worker on the Linux host. `proc-self-cgroup.txt` is `/proc/self/cgroup`; `orca-*` and `workloads-*` are the four memory files under `/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/orca.slice` and its `orca-workloads.slice` child. `unlimited-memory.max.txt` comes from `user@1000.service`. The parser fixture uses that unlimited sample for other levels, including the worker scope, to isolate the two shared budgets. The root cgroup has no memory.max.
 
 `proc-root-cgroup.txt` records `cat /proc/2/cgroup` for kthreadd, and the fixture copies the root sample in `cgroup.controllers.txt` (`cat /sys/fs/cgroup/cgroup.controllers`) into every level because the reader checks only for the file's presence.
+
+`pressured-*` were recorded on 2026-11-20 from a transient `systemd-run --user` service (`MemoryHigh=64M`, `MemoryMax=256M`, `MemorySwapMax=0`) whose Python process held 160 MiB of anonymous memory beside a CPU loop. Memory.high throttling stalled it, so the six PSI averages are nonzero and distinct. The host was otherwise idle and swap was full, so the slices above record zero pressure.

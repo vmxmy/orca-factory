@@ -189,15 +189,16 @@ func readCgroup(dir string, limit []byte) (Reading, error) {
 	if err != nil {
 		return Reading{}, err
 	}
-	// A lowered limit may be below current usage; avoid unsigned underflow.
-	var available uint64
+	return Reading{Available: cgroupAvailable(maximum, current, fileCache), SomeAvg60: some}, nil
+}
+
+// cgroupAvailable is memory.max - memory.current + file cache, floored at zero.
+// A lowered limit may be below current usage; avoid unsigned underflow.
+func cgroupAvailable(maximum, current, fileCache uint64) uint64 {
 	if current > maximum {
-		excess := current - maximum
-		available = fileCache - min(fileCache, excess)
-	} else {
-		available = maximum - current + fileCache
+		return fileCache - min(fileCache, current-maximum)
 	}
-	return Reading{Available: available, SomeAvg60: some}, nil
+	return maximum - current + fileCache
 }
 
 func effectiveReading(host Reading, ancestors []Reading) Reading {
