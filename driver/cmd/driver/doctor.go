@@ -911,7 +911,11 @@ func (s doctorModelSettings) modelRoles(project projects.Project) []doctorModelR
 		if strings.HasSuffix(role.Key, "_CMD") || strings.HasSuffix(role.Key, "_CMD_SMALL") {
 			binary, relative := commandBinary(role.Raw)
 			modelRole.endpoint.Binary = binary
-			if relative {
+			switch {
+			case !supportedModelAgent(ref.Agent):
+				// A whitespace split of shell quoting can land on any word; never report it.
+				modelRole.ref, modelRole.reason = modelhealth.Ref{}, "unsupported_agent"
+			case relative:
 				modelRole.reason = "relative_command"
 			}
 		}
@@ -1051,6 +1055,10 @@ func (p doctorProbe) checkModels(ctx context.Context, eligible []projects.Projec
 		retryable := map[string]bool{}
 		for j, role := range roles {
 			state := modelhealth.Status{Ref: role.ref, State: modelhealth.Unknown, Reason: role.reason, CheckedAt: p.now}
+			// An unprobed command still cannot use a model the registry holds in cooldown.
+			if recorded := registry.Status(role.ref, p.now); role.reason == "relative_command" && recorded.State == modelhealth.Unavailable {
+				state = recorded
+			}
 			if role.reason == "" {
 				state = *pending[projectKeys[i][j]]
 				state.Ref = role.ref

@@ -1443,6 +1443,7 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	project := projects.Project{Name: "one", Path: "/repo", Repository: config.Repository{Env: map[string]string{
 		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:provider/model:high",
 		"AGENT_ROLE_SECOND_REVIEWER_CMD": "env TOKEN=TEST-PLACEHOLDER-CRED ../tools/claude -p --model m",
+		"AGENT_ROLE_REVIEWER_CMD_SMALL":  "env AUTH='Bearer TEST-PLACEHOLDER-CRED' ../tools/claude -p --model m",
 	}}}
 	legacy := project
 	legacy.Repository.Env = map[string]string{"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER_CMD": "../tools/claude -p --model m"}
@@ -1455,17 +1456,25 @@ func TestDoctorModelsCommandBinary(t *testing.T) {
 	if !slices.Equal(names, []string{"reviewer/relative_command"}) {
 		t.Errorf("main reviewer with a relative command = %v, want one relative_command row", names)
 	}
+	seen := map[string]bool{}
 	for _, role := range (doctorModelSettings{}).modelRoles(project) {
+		seen[role.name] = true
+		if strings.Contains(fmt.Sprint(role), "TEST-PLACEHOLDER-CRED") {
+			t.Errorf("%s row carries command text: %+v", role.name, role)
+		}
 		switch role.name {
 		case "reviewer":
 			if role.endpoint.Binary != "" || role.reason != "" {
 				t.Errorf("structured reviewer = %+v, want claude on PATH", role)
 			}
 		case "second_reviewer":
-			if role.reason != "relative_command" || role.ref.String() != "claude:m:" || strings.Contains(fmt.Sprint(role), "TEST-PLACEHOLDER-CRED") {
+			if role.reason != "relative_command" || role.ref.String() != "claude:m:" {
 				t.Errorf("second reviewer with a relative command = %+v, want relative_command with only the parsed model", role)
 			}
 		}
+	}
+	if !seen["second_reviewer"] || !seen["reviewer_small"] {
+		t.Errorf("roles = %v, want the legacy second_reviewer and reviewer_small rows", seen)
 	}
 	bin := t.TempDir()
 	writeDoctorFile(t, filepath.Join(bin, "claude"), "#!/bin/sh\n", 0o755)
@@ -1495,9 +1504,12 @@ func TestDoctorModelsPathChangeDuringProbe(t *testing.T) {
 	// Only the reviewer resolves claude on PATH, so a key recomputed after its
 	// probe misses the one result it recorded.
 	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
-		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:solo:low", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "codex:i:low",
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_REVIEWER": "claude:solo:low", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low",
 	}}}
 	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+	if got.Status != "ok" {
+		t.Errorf("check = %+v", got)
+	}
 	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:solo:low", "ok", "probe_ok")
 }
 
@@ -1533,4 +1545,26 @@ func TestDoctorModelsUnloadedRecordedLedger(t *testing.T) {
 	if got := unloadedRepositories(rejected, disabled); len(got) != 0 {
 		t.Errorf("a later disabled row = %+v, want it to win as in projects.Discover", got)
 	}
+}
+
+func TestDoctorModelsRelativeCommandKeepsCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 19, 2, 0, 0, 0, time.UTC)
+	p := modelFixtureProbe(now, t.TempDir())
+	registry, err := modelhealth.Open(p.stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "claude", Model: "legacy"}
+	if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", CheckedAt: now, Until: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	project := projects.Project{Name: "one", Repository: config.Repository{Env: map[string]string{
+		"AGENT_TIER_DEFAULT": "codex:w:high", "AGENT_ROLE_RESOLVER": "codex:w:high", "AGENT_ROLE_INTAKE": "claude:i:low",
+		"AGENT_ROLE_REVIEWER_CMD": "./tools/claude -p --model legacy",
+	}}}
+	got := p.checkModels(context.Background(), []projects.Project{project}, nil)
+	if got.Status != "fail" {
+		t.Errorf("check = %s, want fail: the reviewer's only model is cooling down", got.Status)
+	}
+	assertDoctorModel(t, got.Details.([]doctorModelStatus), "one", "reviewer", "claude:legacy:", "unavailable", "usage_limit")
 }
