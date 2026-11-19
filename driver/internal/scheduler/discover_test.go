@@ -21,6 +21,7 @@ import (
 type discoveryBackend struct {
 	fakeBackend
 	tracked []string
+	updated map[string]config.Repository
 }
 
 func (f *discoveryBackend) Snapshot(_ context.Context, repos []config.Repository) ([]Ticket, error) {
@@ -56,6 +57,13 @@ func discoveryScheduler(f Backend, logs *bytes.Buffer, now *time.Time, discover 
 		Discover:      discover,
 		DiscoverEvery: time.Minute,
 	}
+}
+
+func (f *discoveryBackend) UpdateRepository(repo config.Repository) {
+	if f.updated == nil {
+		f.updated = map[string]config.Repository{}
+	}
+	f.updated[repo.Path] = repo
 }
 
 func launchedIDs(f *discoveryBackend) []string {
@@ -214,6 +222,31 @@ func TestRefreshProjectsTracksGearOverrideSource(t *testing.T) {
 	}
 	if got := s.Repositories[0].Sources["AGENT_MODE"]; got != "override" {
 		t.Fatalf("tracked AGENT_MODE source=%q, want override after a same-value gear set", got)
+	}
+}
+
+// A repository probed while rejected is already tracked by the backend, so
+// taking it over later must hand the backend its current configuration.
+func TestTakeOverUpdatesProbedRepository(t *testing.T) {
+	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	repo := func(mode string) config.Repository {
+		return config.Repository{Path: "/a", MaxInFlight: 1, StaleHours: 8, Env: map[string]string{"AGENT_MODE": mode}}
+	}
+	auto := repo("auto")
+	result := projects.Result{Rejected: []projects.Rejection{{Path: "/a", Reason: projects.ReasonProjectDisabled, Repository: &auto}}}
+	f := &discoveryBackend{fakeBackend: fakeBackend{absent: true, inactive: true}}
+	var logs bytes.Buffer
+	s := discoveryScheduler(f, &logs, &now, func(context.Context) (projects.Result, error) { return result, nil })
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(time.Minute)
+	result = projects.Result{Eligible: []projects.Project{{Path: "/a", Repository: repo("manual")}}}
+	if err := s.RefreshProjects(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.updated["/a"].Env["AGENT_MODE"]; got != "manual" {
+		t.Fatalf("backend AGENT_MODE=%q after take-over, want manual", got)
 	}
 }
 

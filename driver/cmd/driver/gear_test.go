@@ -346,4 +346,8 @@ func TestGearSetPrefixRecordedProject(t *testing.T) {
 	if gear := entries["github.com/vmxmy/orca-factory"]; len(entries) != 1 || gear.Mode != "auto" || gear.Path != f.factory {
 		t.Fatalf("recorded OF project: %+v", entries)
 	}
+	var rows []gearStatus
+	if err := json.Unmarshal(invokeGear(t, "status", "--json"), &rows); err != nil || len(rows) != 1 || rows[0].Mode != "auto" || rows[0].Source != "override" || rows[0].Path != f.factory {
+		t.Fatalf("status without factory_root=%+v err=%v, want the override listed", rows, err)
+	}
 }

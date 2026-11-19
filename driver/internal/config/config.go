@@ -193,14 +193,19 @@ func readGears(file string) (map[string]json.RawMessage, error) {
 	return entries, nil
 }
 
-// HasGearOverrides reports whether the machine-local gear.json holds any override.
-func HasGearOverrides() (bool, error) {
+// HasGearOverride reports whether the machine-local gear.json holds an entry
+// for remote, the only key an override of that ledger project can use.
+func HasGearOverride(remote string) (bool, error) {
+	if remote == "" {
+		return false, nil
+	}
 	file, err := gearPath()
 	if err != nil {
 		return false, err
 	}
 	entries, err := readGears(file)
-	return len(entries) > 0, err
+	_, ok := entries[remote]
+	return ok, err
 }
 
 func applyGear(repo *Repository, remote string) error {

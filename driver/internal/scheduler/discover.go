@@ -136,6 +136,11 @@ func (s *Scheduler) refreshProjects(ctx context.Context) error {
 				continue
 			}
 		}
+		// Track keeps the configuration of a repository it already probed while
+		// rejected; the taken-over repository runs on the one discovered now.
+		if updater != nil {
+			updater.UpdateRepository(p.Repository)
+		}
 		eligible[p.Path] = true
 		repositories = append(repositories, p.Repository)
 	}

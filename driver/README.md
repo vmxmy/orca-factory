@@ -531,12 +531,12 @@ orca-factory-driver gear set /path/to/repo auto --operator laoxu --reason '恢�
 orca-factory-driver gear clear OF
 ```
 
-`status` 列出接管仓库的生效档位及来源；被拒但可能仍有在途票的仓库只在有本机覆盖时列出（没有覆盖时调度器沿用跟踪时的档位），本仓库的覆盖条目损坏时报错退出。来源为 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
+`status` 列出接管仓库的生效档位及来源；被拒但可能仍有在途票的仓库只在有本机覆盖时列出（没有覆盖时调度器沿用跟踪时的档位），本仓库的覆盖条目损坏时报错退出。`status` 读取的是本机配置；被拒仓库的账本身份键在跟踪后变化时，调度器在重启前不刷新其档位，此时 `status` 显示的覆盖尚未作用于在途票。来源为 `agent-graph.env`、`override` 或 `default`，省略 `--json` 输出文本。`set` 要求操作者和理由。`clear` 恢复仓库值，未配置时恢复 `manual`。
 
 本机覆盖保存在状态目录的 `gear.json`。状态目录默认是 `~/.local/state/orca-factory`，可用 `AGENT_DRIVER_STATE_ROOT` 指定。
 
 - 每条覆盖以 Orca 登记的 `canonicalKey` 为键，对应飞书项目表的“仓库远端”。只有登记键等于该检出仓库配置的 `AGENT_FEISHU_PROJECT` 时覆盖才生效；`gear set` 遇到不相等时拒绝写入。条目另记仓库根路径 `path`、操作者、理由和时间，`path` 只用于审计。
-- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）和 `resolve` 按 Orca 登记的 `canonicalKey` 读取对应条目，不比较路径，也不读取 Git origin。`resolve` 只在 `gear.json` 有条目时查询 Orca：用当前目录（解析符号链接后）匹配登记取得键；未登记时不叠加覆盖，匹配多于一个或 Orca 查询失败时退出。被拒但仍有在途票的仓库每轮发现时只随本机覆盖的设置或清除刷新 `AGENT_MODE`，不热加载仓库 env 自身的 `AGENT_MODE`，其余配置保持跟踪时的值；账本身份键变化，或该路径的登记键不再等于跟踪中的 `AGENT_FEISHU_PROJECT` 时不刷新。没有远端身份（`canonicalKey` 为空）的登记不叠加覆盖。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey`、而仓库配置仍指向原账本项目时，两个键的覆盖都不生效。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。只读展示的 `status --fresh` 按路径读取仓库配置，不叠加覆盖。
+- 项目发现（`serve` 调度、被拒项目的在途票恢复、`resume-deployment`、`gear status`、`config`）和 `resolve` 按 Orca 登记的 `canonicalKey` 读取对应条目，不比较路径，也不读取 Git origin。`resolve` 只在 `gear.json` 有本仓库 `AGENT_FEISHU_PROJECT` 键的条目时查询 Orca：用当前目录（解析符号链接后）匹配登记取得键；未登记时不叠加覆盖，匹配多于一个或 Orca 查询失败时退出。被拒但仍有在途票的仓库每轮发现时只随本机覆盖的设置或清除刷新 `AGENT_MODE`，不热加载仓库 env 自身的 `AGENT_MODE`，其余配置保持跟踪时的值；账本身份键变化，或该路径的登记键不再等于跟踪中的 `AGENT_FEISHU_PROJECT` 时不刷新。没有远端身份（`canonicalKey` 为空）的登记不叠加覆盖。仓库搬到新路径并以同一 `canonicalKey` 重新登记后，覆盖继续生效。同一路径改登记为别的 `canonicalKey`、而仓库配置仍指向原账本项目时，两个键的覆盖都不生效。Orca 缓存的 `canonicalKey` 与本机 origin 漂移时，以登记键为准。只读展示的 `status --fresh` 按路径读取仓库配置，不叠加覆盖。
 - `gear set` 和 `gear clear` 先按文件系统解析参数（`.`、`..` 和含 `/` 的参数）中的符号链接与 `..`，结果仍为相对路径时再拼接解析符号链接后的物理当前目录，与同样解析后的 Orca 登记仓库根路径比较。其余参数是编号前缀。driver 用仓库自身配置建立飞书客户端，用前缀查询项目表，忽略大小写，再按“仓库远端”匹配 Orca 登记。两种方式都要求恰好命中一个仓库。
 
 其他键的坏条目不影响本仓库。本仓库键的条目不是对象，或 `mode` 不是 `manual`、`auto`，该仓库加载失败，不静默回到仓库值。每次写入都原子替换文件，其他键的条目原样保留，并记录 remote、路径、操作者与理由，下次加载即生效。`clear` 使用本机用户名和固定理由 `restore repository configuration`。

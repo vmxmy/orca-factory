@@ -107,23 +107,26 @@ func runGear(args []string) int {
 		// applies only its gear override to them and otherwise keeps the mode it
 		// tracked, which this process cannot read, so only overrides are listed.
 		for _, r := range result.Rejected {
-			if r.Repository == nil {
-				if _, err := config.LoadRepository(r.Path); err == nil {
-					if _, err := config.LoadRegisteredRepository(r.Remote, r.Path); err != nil {
-						fmt.Fprintf(os.Stderr, "gear: %s: %v\n", r.Path, err)
-						return 1
-					}
+			repo := r.Repository
+			if repo == nil {
+				if _, err := config.LoadRepository(r.Path); err != nil {
+					continue
 				}
-				continue
+				loaded, err := config.LoadRegisteredRepository(r.Remote, r.Path)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "gear: %s: %v\n", r.Path, err)
+					return 1
+				}
+				repo = &loaded
 			}
-			if r.Repository.Sources["AGENT_MODE"] != "override" {
+			if repo.Sources["AGENT_MODE"] != "override" {
 				continue
 			}
 			prefix := ""
 			if i := slices.IndexFunc(ledgerRows, func(row issues.LedgerProject) bool { return row.Remote == r.Remote }); i >= 0 {
 				prefix = ledgerRows[i].Prefix
 			}
-			add(r.Remote, prefix, r.Path, *r.Repository)
+			add(r.Remote, prefix, r.Path, *repo)
 		}
 		if len(args) == 2 {
 			if err := json.NewEncoder(os.Stdout).Encode(rows); err != nil {

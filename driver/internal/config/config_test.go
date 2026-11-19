@@ -54,6 +54,11 @@ func TestGearOverrideWinsOverRepository(t *testing.T) {
 	if got, err := LoadRegisteredRepository(upstream, repo); err != nil || got.Env["AGENT_MODE"] != "manual" || got.Sources["AGENT_MODE"] != "override" {
 		t.Fatalf("after set: %v %v err=%v", got.Env["AGENT_MODE"], got.Sources["AGENT_MODE"], err)
 	}
+	for remote, want := range map[string]bool{upstream: true, fork: false, "": false} {
+		if got, err := HasGearOverride(remote); err != nil || got != want {
+			t.Fatalf("HasGearOverride(%q)=%v err=%v, want %v", remote, got, err, want)
+		}
+	}
 	if err := SetGearOverride(upstream, repo, "", "t", "r"); err != nil {
 		t.Fatal(err)
 	}
