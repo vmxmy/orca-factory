@@ -199,6 +199,7 @@ const openScene = async ($: Engine, surface: RenderSurface, bind: string, port: 
 let frame = 0
 const pending = new Map<FetchKind, number>()
 let healthRequest = 0
+let currentHealth: Fetched<Health> = { kind: 'loading' }
 
 // A blit is denied once the pane is closed or a hot reload has replaced this module, so the timer stops itself.
 const startSpin = ($: Engine) => {
@@ -293,7 +294,11 @@ const DOCTOR_TIMEOUT_MS = 5 * 60_000 + 30_000
 const fetchHealth = async ($: Engine): Promise<void> => {
   const request = ++healthRequest
   const next = await runJson($, 'doctor', argvOf('doctor'), parseHealth, code => code === 0 || code === 1, { timeoutMs: DOCTOR_TIMEOUT_MS })
-  await update($, health, prev => (request === healthRequest ? next : prev))
+  await update($, health, prev => {
+    if (request !== healthRequest) return prev
+    currentHealth = next
+    return next
+  })
 }
 
 // A read for a ticket the person has since left lands late and would replace the one now open.
@@ -411,7 +416,7 @@ const copyPage = async ($: Engine, surface: RenderSurface): Promise<void> => {
     page: current,
     snapshot: await read($, snapshot),
     runtime: await read($, runtime),
-    health: await read($, health),
+    health: current === 'health' ? await read($, health) : currentHealth,
     timeline: await read($, timeline),
     detail: opened,
     filter: await read($, filter),
@@ -755,7 +760,7 @@ export const register: Register = (on, options) => {
           {state.kind === 'ready' &&
             current === 'pipeline' &&
             (opened === ''
-              ? pipelinePage(ui, state.config, runtimeState, healthState, samples, cols, wanted, bar('票号或标题'), id => openDetail($, id))
+              ? pipelinePage(ui, state.config, runtimeState, currentHealth, samples, cols, wanted, bar('票号或标题'), id => openDetail($, id))
               : detailView(ui, opened, runtimeState, state.config.repos, timelineState, () => closeDetail($, opened)))}
           {state.kind === 'ready' && current === 'health' && healthPage(ui, state.config, healthState)}
           {state.kind === 'ready' && current === 'environment' && environmentPage(ui, state.config, cols, wanted, bar('变量名'))}

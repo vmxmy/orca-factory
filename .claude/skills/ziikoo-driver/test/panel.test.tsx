@@ -888,6 +888,51 @@ test('徽标放得下时画在框线上，放不下时退回框内第一行', as
   })
 })
 
+test('stale health is not shown as current', async ($, on) => {
+  const HEALTH = { plugin: 'ziikoo-driver', key: 'health' } as const
+  let stored: { value: unknown; version: number } = {
+    value: {
+      shape: 'health-2',
+      value: {
+        kind: 'ready',
+        fetchedAt: NOW - 86_400_000,
+        value: {
+          checkouts: [{ path: '/home/laoxu/ansible', branch: 'main', clean: true, behind: 0 }],
+          syncPrs: [{ project: 'ansible', number: 99 }],
+          checks: [{ id: 'sync_prs', status: 'warn', reason: 'ansible #99 待合并' }],
+        },
+      },
+    },
+    version: 1,
+  }
+  on('state.get', HEALTH, () => ({ value: stored }))
+  on('state.set', HEALTH, (_, e) => {
+    if (e.ifVersion !== undefined && e.ifVersion !== stored.version) return { value: { isSet: false, version: stored.version } }
+    stored = { value: e.value, version: stored.version + 1 }
+    return { value: { isSet: true, version: stored.version } }
+  })
+  const { clock, clipboard } = engine(
+    on,
+    ran({ stdout: sampleStdout }),
+    { status: ran({ stdout: JSON.stringify(SAMPLE_STATUS) }), doctor: ran({ exitCode: 1, stdout: JSON.stringify(SAMPLE_DOCTOR) }) },
+    { doctor: 1000 },
+  )
+  on('ui.blit', () => ({ value: {} }))
+  const opened = $.command.run(runCommand)
+  await clock.settle()
+  const ui = await $.ui.mount(PANE)
+  expect((await ui.find({ key: 'badges-ansible' }))?.text).not.toContain('待同步 #99')
+  expect((await ui.find({ key: 'badges-ansible' }))?.text).toBe(' 检查中… ')
+  await ui.press({ key: 'copy' })
+  expect(clipboard.texts[0]).toContain('ansible（AN）：检查中…')
+  expect(clipboard.texts[0]).not.toContain('待同步 #99')
+
+  await clock.advance(1000)
+  await opened
+  expect((await ui.find({ key: 'badges-ansible' }))?.text).toBe(' main ✓  落后 2   未提交改动   core 待同步 #12 ')
+  await ui.unmount()
+})
+
 test('读取中的徽标是框线上的灰字「检查中…」', async ($, on) => {
   const { clock } = engine(
     on,
