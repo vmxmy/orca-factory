@@ -15,6 +15,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/feishu"
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
+	"github.com/vmxmy/orca-factory/driver/internal/hostmem"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
@@ -144,6 +145,14 @@ type Scheduler struct {
 	// orcaPauseTicket picks the notification chat for every restart result, the
 	// same chat that received the pause notice.
 	orcaPauseTicket Ticket
+	// HostMemory, when set, is read once per Tick; a hold stops every new
+	// terminal launch until the reading recovers (OF-603).
+	HostMemory func() (hostmem.Reading, error)
+	hostMemory status.HostMemory
+	// memoryHeld and memoryHeldSince carry the hysteresis across unreadable
+	// rounds, which never hold but must not reset the next decision.
+	memoryHeld      bool
+	memoryHeldSince time.Time
 	runtimePending  map[string]Ticket
 	// relaunchedAt restarts the registration grace of a reservation whose
 	// launch succeeded only after an Orca outage; its claim time is older.
@@ -234,6 +243,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		return errors.New("invalid scheduler configuration")
 	}
 	now := s.clock()
+	s.checkHostMemory(now)
+	memoryHeld := s.hostMemory.Paused
 	admitted := 0
 	takeToken := func() bool {
 		if admitted >= s.Config.TokenBucket.Capacity || !s.token(s.clock()) {
@@ -404,7 +415,9 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		if pending, ok := s.runtimePending[t.ID]; ok {
 			// Reuse only the reservation that failed before a terminal existed.
 			if t.Owner == pending.Owner && t.Attempt == pending.Attempt && t.Phase == pending.Phase && unregistered(t) {
-				if s.token(now) {
+				if memoryHeld {
+					s.decision(t, "skip", "memory", "action", "runtime-retry")
+				} else if s.token(now) {
 					if err := s.launchWithRuntimeCheck(ctx, t); err != nil {
 						problems = append(problems, err)
 					}
@@ -528,6 +541,11 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			continue
 		}
 		if action.Kind == Resume || action.Kind == Resolve {
+			// A reported resolver result is applied without a new terminal.
+			if memoryHeld && (action.Kind == Resume || t.Resolution == nil || t.Resolution.Phase != "result") {
+				s.decision(t, "skip", "memory", "action", action.Kind)
+				continue
+			}
 			if !takeToken() {
 				s.decision(t, "skip", "token", "action", action.Kind)
 				tokenWait(t)
@@ -642,6 +660,8 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 			reason = "capacity"
 		case repos[t.Repo].Env["AGENT_SCOPE_AVOID"] != "0" && len(scopeMatches(scope, conflicts[t.Repo])) > 0:
 			reason = "scope"
+		case memoryHeld:
+			reason = "memory"
 		case !takeToken():
 			reason = "token"
 		}
@@ -918,6 +938,37 @@ func (s *Scheduler) restartOrcaService(ctx context.Context) {
 		}
 	}
 }
+
+// checkHostMemory reads host memory once; an unreadable reading never holds,
+// and only its first failure and its recovery are logged.
+func (s *Scheduler) checkHostMemory(now time.Time) {
+	if s.HostMemory == nil {
+		return
+	}
+	reading, err := s.HostMemory()
+	if err != nil {
+		if s.hostMemory.Error == "" {
+			s.logger().Warn("host memory unreadable; launches are not held", "err", err)
+		}
+		s.hostMemory = status.HostMemory{Reading: s.hostMemory.Reading, Error: err.Error()}
+		return
+	}
+	if s.hostMemory.Error != "" {
+		s.logger().Warn("host memory readable again", "available", reading.Available, "some_avg60", reading.SomeAvg60)
+	}
+	held := hostmem.Decide(s.memoryHeld, reading)
+	switch {
+	case !held:
+		s.memoryHeldSince = time.Time{}
+	case !s.memoryHeld:
+		s.memoryHeldSince = now
+	}
+	s.memoryHeld = held
+	s.hostMemory = status.HostMemory{Paused: held, Since: s.memoryHeldSince, Reading: reading}
+}
+
+// HostMemoryStatus is the host memory hold serve publishes in its status.
+func (s *Scheduler) HostMemoryStatus() status.HostMemory { return s.hostMemory }
 
 // OrcaRuntime is the terminal-create fault state serve publishes in its status.
 func (s *Scheduler) OrcaRuntime() status.OrcaRuntime { return s.orcaRuntime }

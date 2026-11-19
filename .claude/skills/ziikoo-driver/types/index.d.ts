@@ -5,6 +5,7 @@ export type RoleId =
   | 'reviewer_small'
   | 'second_reviewer'
   | 'resolver'
+  | 'resolver_top'
   | 'intake'
 
 export type Source =
@@ -13,6 +14,8 @@ export type Source =
   | 'driver.env'
   | 'agent-graph.env'
   | 'service'
+  | 'override'
+  | `profile:${string}`
 
 export type Role = {
   role: RoleId
@@ -203,6 +206,7 @@ declare module 'claude-code' {
       timeline: Shaped<Fetched<Timeline>>
       filter: Shaped<string>
       seen: Shaped<RuntimeTicket[] | null>
+      gearBusy: Shaped<boolean>
     }
   }
 }

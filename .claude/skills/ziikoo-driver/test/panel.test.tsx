@@ -3,7 +3,8 @@ import type { Engine, FoundElement } from 'claude-code/testing'
 import type { On, ProcessRunInit, ProcessRunResult } from 'claude-code'
 
 import { GENERATED_SCOPE_STATUS } from './sample-recorded'
-import { SAMPLE_CONFIG } from './sample-config'
+import { RECORDED_GEAR_CONFIG, RECORDED_GEAR_MANUAL_CONFIG, RECORDED_GEAR_PROFILE_CONFIG, SAMPLE_CONFIG } from './sample-config'
+import { parseConfig, sourceLabel } from '../hooks/config'
 import { SAMPLE_CONTROL_LOGS, SAMPLE_ISSUE_LOGS, SAMPLE_LOGS, SAMPLE_RECORDED_ANSI_LOGS } from './sample-logs'
 import { NOW, SAMPLE_DOCTOR, SAMPLE_STATUS } from './sample-runtime'
 import { SAMPLE_SCENE_BAD_PORT, SAMPLE_SCENE_LISTENING, SAMPLE_SCENE_NO_INTERFACE, SAMPLE_SCENE_NO_TOKEN, SAMPLE_SCENE_PORT_IN_USE } from './sample-scene'
@@ -128,6 +129,91 @@ const exactText = async (ui: { findAll: (q: { type: string }) => Promise<FoundEl
   (await ui.findAll({ type: 'Text' })).filter(one => one.text === text)
 
 const subcommands = (calls: string[][]) => calls.map(argv => argv[1])
+
+test('models page shows and switches gear', async ($, on) => {
+  const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
+    config: nth => ran({ stdout: nth <= 2 ? RECORDED_GEAR_CONFIG : RECORDED_GEAR_MANUAL_CONFIG }),
+    gear: ran({}),
+  }, { gear: 1000, config: nth => (nth === 2 ? 2000 : undefined) })
+  mock.env(on, { USER: 'test-operator' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+  expect(await exactText(ui, '档位 自动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect(await exactText(ui, '终审')).toHaveLength(1)
+  expect(await exactText(ui, '档位来源：agent-graph.env')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到手动挡')
+
+  const switching = ui.press({ key: 'gear-toggle' })
+  await clock.settle()
+  expect(await ui.find({ key: 'gear-toggle' })).toBeUndefined()
+  expect(await exactText(ui, '档位切换中…')).toHaveLength(1)
+  expect(subcommands(calls).filter(one => one === 'gear')).toHaveLength(1)
+  expect(calls).toContainEqual([
+    'orca-factory-driver', 'gear', 'set', '/home/laoxu/github/orca-factory', 'manual',
+    '--operator', 'test-operator', '--reason', 'ziikoo-driver 模型页切换',
+  ])
+  const stale = ui.press({ key: 'refresh' })
+  await clock.settle()
+  await clock.advance(1000)
+  await switching
+  await clock.advance(1000)
+  await stale
+  expect(subcommands(calls).filter(one => one === 'config')).toHaveLength(3)
+  expect(await exactText(ui, '档位 手动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect(await exactText(ui, '档位来源：本机覆盖')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到自动挡')
+  await ui.unmount()
+})
+
+test('an older config read retried after a version miss keeps the newer gear snapshot', async ($, on) => {
+  const SNAPSHOT = { plugin: 'ziikoo-driver', key: 'snapshot' } as const
+  let stored: { value: unknown; version: number } = { value: { shape: 'snapshot-3', value: { kind: 'loading' } }, version: 1 }
+  let readySets = 0
+  on('state.get', SNAPSHOT, () => ({ value: stored }))
+  on('state.set', SNAPSHOT, async (_, e) => {
+    const ready = (e.value as { value: { kind: string } }).value.kind === 'ready'
+    if (ready && ++readySets === 2) await clock.sleep(1000)
+    if (e.ifVersion !== undefined && e.ifVersion !== stored.version) return { value: { isSet: false, version: stored.version } }
+    stored = { value: e.value, version: stored.version + 1 }
+    return { value: { isSet: true, version: stored.version } }
+  })
+  const { calls, clock } = engine(on, ran({ stdout: sampleStdout }), {
+    config: nth => ran({ stdout: nth <= 2 ? RECORDED_GEAR_CONFIG : RECORDED_GEAR_MANUAL_CONFIG }),
+    gear: ran({}),
+  })
+  mock.env(on, { USER: 'test-operator' })
+  await $.command.run(runCommand)
+  const ui = await $.ui.mount(PANE)
+  await ui.press({ key: 'page-models' })
+
+  const stale = $.command.run(runCommand)
+  await clock.settle()
+  await ui.press({ key: 'gear-toggle' })
+  await clock.advance(1000)
+  await stale
+  await ui.press({ key: 'page-models' })
+  expect(subcommands(calls).filter(one => one === 'config')).toHaveLength(3)
+  expect(await exactText(ui, '档位 手动挡 · 打回升档 开 · 小票审查 ≤2')).toHaveLength(1)
+  expect((await ui.find({ key: 'gear-toggle' }))?.props.label).toBe('切换到自动挡')
+  await ui.unmount()
+})
+
+test('routing accepts override and profile sources; scheduler and environment keep their sources', () => {
+  const profiled = parseConfig(RECORDED_GEAR_PROFILE_CONFIG)
+  const chain = profiled.repos.find(one => one.name === 'ansible')?.routing.find(one => one.key === 'AGENT_TIER_CHAIN')
+  expect(chain?.source).toBe('profile:recording')
+  expect(sourceLabel(chain?.source ?? 'default')).toBe('profile:recording')
+  expect(profiled.repos[0]?.routing.find(one => one.key === 'AGENT_MODE')?.source).toBe('override')
+
+  const withSource = (part: 'scheduler' | 'environment', source: string) => {
+    const config = JSON.parse(RECORDED_GEAR_CONFIG)
+    config[part][0].source = source
+    return () => parseConfig(JSON.stringify(config))
+  }
+  expect(withSource('scheduler', 'override')).toThrow('scheduler[0].source 取值未知：override')
+  expect(withSource('environment', 'profile:recording')).toThrow('environment[0].source 取值未知：profile:recording')
+})
 
 test('不配置时自动选择绑定地址并复制 URL，非 SSH 会话打开本机浏览器', async ($, on) => {
   const { calls, clipboard, spawns, toasts } = engine(on, ran({ stdout: sampleStdout }))
@@ -327,7 +413,7 @@ test('模型页列出施工档位与样本模型名，可切换仓库', async ($
   expect(await exactText(ui, '施工 升档')).toHaveLength(1)
   expect(await exactText(ui, 'gpt-6.1-sol')).toHaveLength(1)
   expect(await exactText(ui, '小票审查')).toHaveLength(0)
-  expect((await ui.find({ type: 'Text', text: /打回升档/ }))?.text).toBe('打回升档 开 · 小票审查 ≤2')
+  expect((await ui.find({ type: 'Text', text: /打回升档/ }))?.text).toBe('档位 自动挡 · 打回升档 开 · 小票审查 ≤2')
 
   await ui.select({ key: 'repo', value: 'ziikoo-web' })
   expect(await exactText(ui, '小票审查')).toHaveLength(1)

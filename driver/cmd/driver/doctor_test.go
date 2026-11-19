@@ -1556,3 +1556,29 @@ func TestDoctorModelsLegacyCommandMatchingStructuredValue(t *testing.T) {
 		})
 	}
 }
+
+func TestDoctorWarnsOnHostMemoryHold(t *testing.T) {
+	f := newDoctorFixture(t)
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	t.Setenv("DRIVER_STATUS_FILE", "")
+	for _, tc := range []struct {
+		hostMemory, status string
+		want               []string
+	}{
+		{`{"paused":true,"since":"2026-11-19T10:00:00Z","reading":{"available":5368709120,"someAvg60":3}}`, "warn", []string{"5368709120", "2026-11-19T10:00:00Z", "memory.peak"}},
+		{`{"paused":false,"error":"read /proc/pressure/memory: no such file"}`, "warn", []string{"/proc/pressure/memory"}},
+		{`{"paused":false,"reading":{"available":32212254720,"someAvg60":0}}`, "ok", nil},
+	} {
+		writeDoctorFile(t, status.PushPath(), fmt.Sprintf(`{"generatedAt":%q,"hostMemory":%s,"tickets":[]}`, f.now.Format(time.RFC3339Nano), tc.hostMemory), 0600)
+		result := runDoctorProbe(t, f.probe(t, []string{"go", "gh", "git", "orca", "claude"}, inFlightLedger("OF-1", "进度")))
+		if result.statuses["host_memory"] != tc.status {
+			t.Fatalf("host_memory = %q, want %q for %s: %s", result.statuses["host_memory"], tc.status, tc.hostMemory, result.out)
+		}
+		detail := string(result.details["host_memory"])
+		for _, want := range tc.want {
+			if !strings.Contains(detail, want) {
+				t.Fatalf("host_memory detail lacks %q: %s", want, detail)
+			}
+		}
+	}
+}

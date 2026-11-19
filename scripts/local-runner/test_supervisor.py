@@ -6,6 +6,7 @@ import tempfile
 import json
 import subprocess
 import os
+import time
 from types import SimpleNamespace
 
 spec=importlib.util.spec_from_file_location("supervisor",Path(__file__).with_name("supervisor.py"))
@@ -79,6 +80,88 @@ class SupervisorTests(unittest.TestCase):
         result=subprocess.CompletedProcess([],1,"[]","error: no such object: ours")
         with patch.object(m,"command",return_value=result):
             self.assertIsNone(m.inspect_container("ours","owner"))
+    def test_stale_unresolved_intent_is_released(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"slot-1.json"
+            lease={"active":True,"phase":"registering","name":"ours"}
+            m.save(path,lease)
+            original=path.read_bytes()
+            modified=time.time()-11*60
+            os.utime(path,(modified,modified))
+            with patch.object(m,"api",return_value={"runners":[]}) as api, patch.object(m,"inspect_container",return_value=None) as inspect, patch.object(m,"event") as event:
+                m.recover(path,"owner")
+                api.assert_called_once_with("GET","?per_page=100&page=1")
+                inspect.assert_called_once_with("ours","owner")
+                event.assert_called_once_with("registration_abandoned",name="ours")
+            self.assertEqual(json.loads(path.read_text()),{**lease,"active":False,"phase":"registration_abandoned"})
+            archives=list((path.parent/"maintenance").iterdir())
+            self.assertEqual(len(archives),1)
+            self.assertEqual(archives[0].read_bytes(),original)
+    def test_recorded_runner_list_resolves_exact_name(self):
+        sample=Path(__file__).parents[2]/"driver"/"testdata"/"recorded"/"github"/"actions-runners-list.json"
+        runners=json.loads(sample.read_text())
+        recorded=runners["runners"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"slot-1.json"
+            lease={"active":True,"phase":"registering","name":recorded["name"]}
+            m.save(path,lease)
+            with patch.object(m,"api",return_value=runners),patch.object(m,"inspect_container") as inspect:
+                m.resolve_intent(path,lease,"owner")
+            inspect.assert_not_called()
+            self.assertEqual(json.loads(path.read_text()),{**lease,"id":recorded["id"],"phase":"registered"})
+            absent={"active":True,"phase":"registering","name":"orca-go-absent-1-00000000"}
+            m.save(path,absent)
+            modified=time.time()-11*60
+            os.utime(path,(modified,modified))
+            with patch.object(m,"api",return_value=runners),patch.object(m,"inspect_container",return_value=None),patch.object(m,"event"):
+                m.resolve_intent(path,absent,"owner")
+            self.assertEqual(json.loads(path.read_text())["phase"],"registration_abandoned")
+    def test_malformed_runner_list_retains_stale_intent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot-1.json"
+            m.save(path, {"active": True, "phase": "registering", "name": "ours"})
+            original = path.read_bytes()
+            modified = time.time() - 11 * 60
+            os.utime(path, (modified, modified))
+            with patch.object(m, "api", return_value={"runners": {}}), \
+                 patch.object(m, "inspect_container", return_value=None), \
+                 patch.object(m, "event") as event:
+                with self.assertRaisesRegex(RuntimeError, "malformed GitHub runner list"):
+                    m.recover(path, "owner")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertFalse((path.parent / "maintenance").exists())
+            event.assert_not_called()
+    def test_stale_unresolved_intent_with_container_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "slot-1.json"
+            m.save(path, {"active": True, "phase": "registering", "name": "ours"})
+            original = path.read_bytes()
+            modified = time.time() - 11 * 60
+            os.utime(path, (modified, modified))
+            original_mtime = path.stat().st_mtime
+            with patch.object(m, "api", return_value={"runners": []}), \
+                 patch.object(m, "inspect_container", return_value={"State": {"Running": False}}) as inspect, \
+                 patch.object(m, "event") as event:
+                with self.assertRaisesRegex(RuntimeError, "unresolved registration intent"):
+                    m.recover(path, "owner")
+            inspect.assert_called_once_with("ours", "owner")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(path.stat().st_mtime, original_mtime)
+            self.assertFalse((path.parent / "maintenance").exists())
+            event.assert_not_called()
+    def test_fresh_unresolved_intent_is_retained(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/"slot-1.json"
+            m.save(path,{"active":True,"phase":"registering","name":"ours"})
+            original=path.read_bytes()
+            modified=time.time()-60
+            os.utime(path,(modified,modified))
+            with patch.object(m,"api",return_value={"runners":[]}), patch.object(m,"inspect_container",return_value=None):
+                with self.assertRaisesRegex(RuntimeError,"unresolved registration intent"):
+                    m.recover(path,"owner")
+            self.assertEqual(path.read_bytes(),original)
+            self.assertEqual(path.stat().st_mtime,modified)
+            self.assertFalse((path.parent/"maintenance").exists())
     def test_recover_stop_retains_busy_lease(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/"lease.json"
@@ -92,7 +175,7 @@ class SupervisorTests(unittest.TestCase):
             finally:m.STOP.clear()
     def test_container_policy(self):
         args=m.container_args("sha256:"+"a"*64,"orca-go-test-1","owner")
-        for pair in [("--user","1001:123"),("--cap-drop","ALL"),("--security-opt","no-new-privileges:true"),("--cpus","4"),("--memory","8g"),("--memory-swap","8g"),("--pids-limit","512"),("--network","bridge")]:
+        for pair in [("--user","1001:123"),("--cap-drop","ALL"),("--security-opt","no-new-privileges:true"),("--cpus","4"),("--memory","8g"),("--memory-swap","8g"),("--pids-limit","512"),("--oom-score-adj","500"),("--network","bridge")]:
             i=args.index(pair[0]);self.assertEqual(args[i+1],pair[1])
         self.assertFalse(any(x in args for x in ["--privileged","--volume","-v","--mount","--env-file"]))
         self.assertNotIn("GH_TOKEN", " ".join(args))

@@ -5,7 +5,7 @@ import { parseConfig } from '../hooks/config'
 import { parseRuntime, statusLine } from '../hooks/runtime'
 import { sceneOf } from '../hooks/scene'
 import { SAMPLE_CONFIG } from './sample-config'
-import { GENERATED_SCOPE_STATUS, GENERATED_DEPENDENCIES_STATUS, RECORDED_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
+import { GENERATED_SCOPE_STATUS, GENERATED_DEPENDENCIES_STATUS, RECORDED_CONFIG, RECORDED_RESOLVER_TOP_CONFIG, RECORDED_DEPLOY_STATUS, RECORDED_LEDGER_DEPLOYMENT, RECORDED_STAGES_STATUS, RECORDED_STATUS, RECORDED_TODAY_STATUS } from './sample-recorded'
 import { SAMPLE_STATUS } from './sample-runtime'
 
 const config = () => parseConfig(JSON.stringify(SAMPLE_CONFIG))
@@ -287,4 +287,15 @@ test('依赖优先于同票SCOPE观察，等待只计一类', () => {
  const parcel=sceneOf(dependencies,config()).rows.flatMap(row=>row.parcels)[0]
  expect(parcel?.label).toBe('依赖停滞')
  expect(parcel?.schedulingWait).toBe(false)
+})
+
+test('sceneOf 消费现网终审角色录制快照', () => {
+  const recordedConfig = parseConfig(RECORDED_RESOLVER_TOP_CONFIG)
+  const factory = recordedConfig.repos.find(repo => repo.name === 'orca-factory')
+  expect(factory?.roles.find(role => role.role === 'resolver_top')).toEqual({
+    role: 'resolver_top', agent: 'codex', model: 'gpt-6.2-astra', effort: 'max',
+    key: 'AGENT_ROLE_RESOLVER_TOP', raw: 'codex:gpt-6.2-astra:max',
+  })
+  const scene = sceneOf(runtime(), recordedConfig)
+  expect(scene.rows.find(row => row.name === 'orca-factory')?.path).toBe('/home/laoxu/github/orca-factory')
 })
