@@ -84,6 +84,8 @@ func TestDryRunSkipsLaunchesWhileHostMemoryHeld(t *testing.T) {
 	}{
 		{"no running serve, own reading below hold line", nil, 5 << 30, "host"},
 		{"serve held in its slice, this shell has room", &status.HostMemory{Paused: true, Reading: hostmem.Reading{Source: "/orca.slice", Available: 8 << 30}}, 20 << 30, "/orca.slice"},
+		{"serve published room, this shell is below hold line", &status.HostMemory{Reading: hostmem.Reading{Source: "host", Available: 20 << 30}}, 3 << 30, "host"},
+		{"serve without reading source held", &status.HostMemory{Paused: true, Reading: hostmem.Reading{Available: 5 << 30}}, 20 << 30, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
