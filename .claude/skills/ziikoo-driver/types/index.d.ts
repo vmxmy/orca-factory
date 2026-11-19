@@ -5,6 +5,7 @@ export type RoleId =
   | 'reviewer_small'
   | 'second_reviewer'
   | 'resolver'
+  | 'resolver_top'
   | 'intake'
 
 export type Source =
