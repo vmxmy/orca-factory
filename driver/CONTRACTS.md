@@ -503,7 +503,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 - `Runtime.ResumeModelParks` 从模型搁置原因中解析候选。任一候选恢复可用或冷却到期时，它先通过 `FreshIssue`、`ListComments` 确认票仍带 `parked`、最新原因仍匹配且模型标记仍生效。快照后又因 lane 3 或部署暂停等原因搁置的票保持搁置（`TestModelUnavailableParkRecoversWhenCandidateAvailable`）。确认后先写「恢复：」评论。写入报错时再调用 `ListComments`：出现首次回读没有的同文恢复评论，视为回执丢失，继续改标签；否则报错，保留标签和原模型标记；回读失败时返回 `manual recovery required`。
 - 恢复评论写入成功后，调度器调用 `UpdateIssue` 加 `ready-for-agent`、去 `parked`，然后再次调用 `ListComments`。无论标签更新是否报错，第二次回读都按 ID 查找首次回读时没有的「搁置：」协议评论。`TestModelParkResumeWritesRecoveryBeforeLabels` 覆盖以下结果。
 
-  - 回读成功且没有新搁置时，标签更新成功即完成恢复。若更新报错，调度器报告原始错误并补写相同的 `搁置：<模型原因>` 标记，以便仍带 `parked` 的票下轮重试。补写失败时返回 `manual recovery required`。第二次回读与补写之间落账的新搁置由 `modelParkMarked` 排除：「恢复：」之后、下一条带 `归属:` 的非搁置协议评论之前，出现原因不同的「搁置：」时，此后的模型标记不生效（`TestModelParkResumeWritesRecoveryBeforeLabels/newer_park_before_marker`、`model_park_after_reclaimed_non-model_park`）。
+  - 回读成功且没有新搁置时，标签更新成功即完成恢复。若更新报错，调度器报告原始错误并补写相同的 `搁置：<模型原因>` 标记，以便仍带 `parked` 的票下轮重试。补写失败时返回 `manual recovery required`。第二次回读与补写之间落账的新搁置由 `liveParkRows` 排除：「恢复：」之后、下一条带 `归属:` 且不是 `归属: 无` 的非搁置协议评论之前，出现多行的协议「搁置：」时，此后只有一行的「搁置：」标记被丢弃。`parkedState` 与 `modelParkMarked` 都经过它，搁置原因保持那条新搁置，也不会按模型搁置自动解除；operator 来源的「搁置：」不参与判断（`TestModelParkResumeWritesRecoveryBeforeLabels/newer_park_before_marker`、`model_park_after_reclaimed_non-model_park`）。
   - 发现新搁置时，调度器只写一次标签更新，加 `parked`、去 `ready-for-agent`，保留新的搁置原因。任一次标签更新报错都返回原始错误，第二次更新失败时还返回 `manual recovery required`。期间新增的「恢复：」评论不会触发这次标签更新。
   - 回读失败时，调度器无法排除新搁置，不补写模型标记，调用 `UpdateIssue` 加 `parked`、去 `ready-for-agent`，返回读取错误和 `manual recovery required`。恢复评论已使模型标记失效，这张票不再自动解除。
 

@@ -1291,8 +1291,22 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 		if !modelParkMarked(comments, reason) {
 			t.Fatal("model park after a reclaim not recognized")
 		}
-		if modelParkMarked(slices.Delete(slices.Clone(comments), 3, 4), reason) {
+		voided := slices.Delete(slices.Clone(comments), 3, 4)
+		if modelParkMarked(voided, reason) {
 			t.Fatal("marker after a newer non-model park recognized as a model park")
+		}
+		labeled := task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+		if current, _ := parkedState(labeled, voided); current != "lane 3 路径须人合并" {
+			t.Fatalf("voided marker replaced the park reason: %q", current)
+		}
+		released := slices.Insert(slices.Clone(voided), 3, task.Comment{ID: "release", Body: "阶段: 待领\n归属: 无", CreatedAt: time.Unix(4, 0)})
+		released[4].CreatedAt = time.Unix(5, 0)
+		if modelParkMarked(released, reason) {
+			t.Fatal("a release receipt revived a voided marker")
+		}
+		operatorPark := append(evidenceComments(marker), task.Comment{ID: "operator-park", Source: task.SourceOperator, Body: "搁置：待确认", CreatedAt: time.Unix(2, 0)})
+		if !modelParkMarked(operatorPark, reason) {
+			t.Fatal("an operator 搁置 comment ended the model park")
 		}
 	})
 	t.Run("operator recovery ends model park", func(t *testing.T) {

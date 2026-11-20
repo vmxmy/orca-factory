@@ -880,36 +880,55 @@ func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt 
 // modelParkMarked reports the reason-only 搁置 comment that only a model park
 // writes before its labels, newer than the last 恢复 that lifted a park: a
 // full 搁置 alone, as an older escalation reason reading like a model park, or
-// a person parking again after a resume, never qualifies. A 搁置 for another
-// reason between a 恢复 and the next protocol 归属 event voids later markers
-// until that claim, so a marker restored after a failed resume cannot hand a
-// concurrent park back to the model.
+// a person parking again after a resume, never qualifies.
 func modelParkMarked(comments []task.Comment, reason string) bool {
-	rows := slices.Clone(comments)
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
-	marked, resumed, voided := false, false, false
-	for _, c := range rows {
-		line, park := strings.CutPrefix(c.Body, "搁置：")
+	marked := false
+	for _, c := range liveParkRows(comments) {
 		switch {
 		case strings.HasPrefix(c.Body, "恢复："):
-			marked, resumed, voided = false, true, false
+			marked = false
 		case c.CarriesProtocol() && c.Body == "搁置："+reason:
-			marked = !voided
-		case park && strings.SplitN(line, "\n", 2)[0] != reason:
-			marked, voided = false, resumed
-		case !park && c.CarriesProtocol() && strings.Contains("\n"+c.Body, "\n归属: "):
-			resumed, voided = false, false
+			marked = true
 		}
 	}
 	return marked
+}
+
+// liveParkRows sorts comments by time and drops reason-only 搁置 markers that
+// follow a full protocol 搁置 written after a 恢复 and before the next active
+// claim. Such a marker was restored after a failed resume and must not hide
+// or hand back a concurrent park.
+func liveParkRows(comments []task.Comment) []task.Comment {
+	rows := slices.Clone(comments)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	live := rows[:0]
+	resumed, voided := false, false
+	for _, c := range rows {
+		body := "\n" + c.Body
+		park := strings.HasPrefix(c.Body, "搁置：")
+		switch {
+		case strings.HasPrefix(c.Body, "恢复："):
+			resumed, voided = true, false
+		case !c.CarriesProtocol():
+		case park && !strings.Contains(c.Body, "\n"):
+			if voided {
+				continue
+			}
+		case park:
+			voided = voided || resumed
+		case strings.Contains(body, "\n归属: ") && !strings.Contains(body, "\n归属: 无"):
+			resumed, voided = false, false
+		}
+		live = append(live, c)
+	}
+	return live
 }
 
 // parkedState returns the latest 搁置 reason of a ticket labeled parked. Without
 // the label, resumed reports that 搁置 is still the latest ownership event: a
 // person restored the ticket.
 func parkedState(issue task.Issue, comments []task.Comment) (reason string, resumed bool) {
-	rows := append([]task.Comment(nil), comments...)
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	rows := liveParkRows(comments)
 	parkedLast := false
 	for _, c := range rows {
 		line, park := strings.CutPrefix(c.Body, "搁置：")
