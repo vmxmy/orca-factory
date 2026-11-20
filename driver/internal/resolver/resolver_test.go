@@ -956,25 +956,34 @@ func TestResolverRoundEndedWithModelErrorIsNoFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, s, o := setupController()
-	models := &modelLog{}
-	c.Models = models
-	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
-	if _, err := c.Step(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	s.record.Top, s.record.TopLaunchAccepted = true, true
-	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
-	o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
-	p, err := c.Step(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p.Phase != "waiting" || p.Outcome != ModelUnavailable || o.releases != 1 || strings.Contains(p.Result, "终审模型未获响应") {
-		t.Fatalf("ended round with model error counted as failure: p=%+v releases=%d", p, o.releases)
-	}
-	if len(models.statuses) != 1 || models.statuses[0].Ref.Key() != "codex:gpt-6.2-astra" {
-		t.Fatalf("registry writes=%+v", models.statuses)
+	for _, lost := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lost=%v", lost), func(t *testing.T) {
+			c, s, o := setupController()
+			models := &modelLog{}
+			c.Models = models
+			c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			s.record.Top, s.record.TopLaunchAccepted = true, true
+			o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+			wantReleases := 1
+			if lost {
+				o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+				wantReleases = 0
+			}
+			o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+			p, err := c.Step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || o.releases != wantReleases || strings.Contains(p.Result, "终审模型未获响应") {
+				t.Fatalf("ended round with model error counted as failure: p=%+v releases=%d", p, o.releases)
+			}
+			if len(models.statuses) != 1 || models.statuses[0].Ref.Key() != "codex:gpt-6.2-astra" {
+				t.Fatalf("registry writes=%+v", models.statuses)
+			}
+		})
 	}
 }
 

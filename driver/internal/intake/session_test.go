@@ -282,7 +282,10 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 	if err := json.Unmarshal(envelope, &failed); err != nil || failed["is_error"] != true {
 		t.Fatalf("recorded error envelope=%v err=%v", failed, err)
 	}
+	// A limit is no missing model: only the message moves into result.
 	failed["result"] = strings.TrimSpace(string(limit))
+	delete(failed, "api_error_status")
+	delete(failed, "api_error_type")
 	limited, err := json.Marshal(failed)
 	if err != nil {
 		t.Fatal(err)
@@ -291,10 +294,15 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"fallback answers", "fallback limited too"} {
+	for _, scenario := range []string{"fallback answers", "fallback limited too", "primary not found"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
-			writeFile(t, filepath.Join(root, "limited.json"), string(limited), 0o600)
+			failure, reason := limited, "usage_limit"
+			if scenario == "primary not found" {
+				// The recorded envelope verbatim: 404 not_found_error for a model that does not exist.
+				failure, reason = envelope, "model_not_found"
+			}
+			writeFile(t, filepath.Join(root, "limited.json"), string(failure), 0o600)
 			answer := "exec cat " + recorded
 			if scenario == "fallback limited too" {
 				answer = "cat " + filepath.Join(root, "limited.json") + "; exit 1"
@@ -315,10 +323,10 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 				t.Fatal(openErr)
 			}
 			now := time.Now()
-			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
+			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != reason {
 				t.Fatalf("primary not recorded: %+v", s)
 			}
-			if scenario == "fallback answers" {
+			if scenario != "fallback limited too" {
 				if err != nil || reply == "" {
 					t.Fatalf("turn not retried on the fallback: reply=%q err=%v", reply, err)
 				}

@@ -773,14 +773,19 @@ func (r *Runtime) parkResolution(ctx context.Context, t Ticket, p *resolver.Reco
 // a ticket must never lose its owner while it can still be claimed. A person
 // resumes it by restoring ready-for-agent and removing parked.
 func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, receipt string) error {
-	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Todo", []string{parkedLabel}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
-		return fmt.Errorf("park labels unconfirmed: %w", err)
-	}
 	line := ledgerLine(reason)
 	if strings.HasPrefix(reason, config.ModelParked+"：") {
 		// ResumeModelParks reads every candidate back from this line, so it is
-		// kept whole; the driver wrote it, and it still fits on one line.
+		// kept whole; the driver wrote it, and it still fits on one line. It
+		// lands before the labels without an owner line, so a parked label is
+		// never left without the model reason.
 		line = strings.Join(strings.Fields(reason), " ")
+		if _, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, "搁置："+line); err != nil {
+			return fmt.Errorf("model park reason: %w", err)
+		}
+	}
+	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Todo", []string{parkedLabel}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
+		return fmt.Errorf("park labels unconfirmed: %w", err)
 	}
 	body := fmt.Sprintf("搁置：%s\n已完成：%s\n阶段: %s\n归属: %s\n%s", line, ledgerLine(evidence), machine.PhaseUnclaimed, machine.OwnerNone, receipt)
 	if err := r.mergeComment(ctx, t, body); err != nil {

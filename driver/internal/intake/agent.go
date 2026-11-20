@@ -109,14 +109,14 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	b, err := r.claude(ctx, flag, t, model)
 	if err != nil {
 		candidates := append([]modelhealth.Ref{{Agent: "claude", Model: r.Model, Effort: r.Effort}}, r.Fallback...)
-		next, retry, modelErr := config.RetryAfterModelError(r.StateRoot, model, candidates, errorText(b), err, time.Now())
+		next, retry, modelErr := config.RetryAfterModelStatus(r.StateRoot, turnStatus(model, b, err, time.Now()), candidates, time.Now())
 		if modelErr != nil {
 			fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
 		}
 		if retry {
 			fmt.Fprintf(os.Stderr, "intake model unavailable; retrying: unavailable=%s selected=%s\n", model, next)
 			if b, err = r.claude(ctx, flag, t, next); err != nil {
-				if _, _, modelErr = config.RetryAfterModelError(r.StateRoot, next, nil, errorText(b), err, time.Now()); modelErr != nil {
+				if _, _, modelErr = config.RetryAfterModelStatus(r.StateRoot, turnStatus(next, b, err, time.Now()), nil, time.Now()); modelErr != nil {
 					fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
 				}
 			}
@@ -133,10 +133,11 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 }
 
 type claudePrintResult struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	IsError bool   `json:"is_error"`
-	Result  string `json:"result"`
+	Type         string `json:"type"`
+	Subtype      string `json:"subtype"`
+	IsError      bool   `json:"is_error"`
+	Result       string `json:"result"`
+	APIErrorType string `json:"api_error_type"`
 }
 
 func printResult(b []byte) (claudePrintResult, bool) {
@@ -144,14 +145,20 @@ func printResult(b []byte) (claudePrintResult, bool) {
 	return result, json.Unmarshal(b, &result) == nil && result.Type == "result"
 }
 
-// errorText is the message a failed claude -p --output-format json run
-// carries in its result field (testdata/recorded/claude-print-json-model-error.json),
-// or the raw output when it printed no result envelope.
-func errorText(b []byte) []byte {
-	if result, ok := printResult(b); ok && result.IsError {
-		return []byte(result.Result)
+// turnStatus classifies a failed claude -p --output-format json turn. The run
+// prints an is_error result object before exiting non-zero: its result field
+// carries the message, and api_error_type not_found_error marks a model that
+// does not exist or is not accessible
+// (testdata/recorded/claude-print-json-model-error.json).
+func turnStatus(model modelhealth.Ref, output []byte, failure error, now time.Time) modelhealth.Status {
+	result, ok := printResult(output)
+	if !ok || !result.IsError {
+		return modelhealth.Classify(model, string(output), failure, now)
 	}
-	return b
+	if result.APIErrorType == "not_found_error" {
+		return modelhealth.Status{Ref: model, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(modelhealth.DefaultCooldown), CheckedAt: now}
+	}
+	return modelhealth.Classify(model, result.Result, failure, now)
 }
 
 // claude runs one sandboxed claude -p turn with model; on failure it returns

@@ -282,13 +282,15 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		case AwaitsDispatch(*task):
 			if reason, lost := LostDispatch(*task, p.Dispatch, row != nil, status); lost {
 				p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+				if model, ok := c.endedModel(ctx, p, now); ok {
+					// A lost dispatch has nothing to release, as on the failed path.
+					p.Outcome, p.Result, p.Phase, p.RetryAt = ModelUnavailable, modelResult(model, p.Dispatch, "lost"), "waiting", now
+				}
 			}
 		case DispatchEnded(status):
 			p.Result, p.Outcome, p.Phase = "dispatch ended without a worker report", "failed", "settled"
-			if c.Models != nil {
-				if model, ok := c.unavailableModel(ctx, p, now); ok {
-					p.Outcome, p.Result = ModelUnavailable, modelResult(model, p.Dispatch, "ended")
-				}
+			if model, ok := c.endedModel(ctx, p, now); ok {
+				p.Outcome, p.Result = ModelUnavailable, modelResult(model, p.Dispatch, "ended")
 			}
 		case task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled":
 			p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
@@ -442,6 +444,14 @@ func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.T
 		runx.LoggerFrom(ctx).Warn("resolver screen model check failed", "dispatch", p.Dispatch, "err", err)
 	}
 	return modelhealth.Status{}, false
+}
+
+// endedModel checks the screen of a dispatch that ended without a report.
+func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
+	if c.Models == nil || p.Dispatch == "" {
+		return modelhealth.Status{}, false
+	}
+	return c.unavailableModel(ctx, p, now)
 }
 
 func modelResult(status modelhealth.Status, dispatch, end string) string {

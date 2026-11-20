@@ -68,8 +68,14 @@ func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []m
 	if errors.As(failure, &exit) {
 		output = append(append(output, '\n'), exit.Stderr...)
 	}
-	status := modelhealth.Classify(used, string(output), failure, now)
-	if status.State != modelhealth.Unavailable {
+	return RetryAfterModelStatus(stateRoot, modelhealth.Classify(used, string(output), failure, now), candidates, now)
+}
+
+// RetryAfterModelStatus is RetryAfterModelError for a caller that classified
+// the failure itself.
+func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidates []modelhealth.Ref, now time.Time) (modelhealth.Ref, bool, error) {
+	used := status.Ref
+	if status.State != modelhealth.Unavailable || used.Agent == "" || used.Model == "" {
 		return modelhealth.Ref{}, false, nil
 	}
 	registry, err := modelhealth.Open(stateRoot)

@@ -1127,10 +1127,13 @@ func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
 type labelIssues struct {
 	*fakeIssues
 	added, removed [][]string
+	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
+	commentsAtUpdate []int
 }
 
 func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	l.added, l.removed = append(l.added, add), append(l.removed, remove)
+	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
 	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
 }
 
@@ -1234,6 +1237,9 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	ticket := Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "repo"}
 	if err := r.parkTicket(context.Background(), ticket, reason, "worker 派工已停止", ""); err != nil {
 		t.Fatal(err)
+	}
+	if len(store.comments) != 2 || store.comments[0] != "搁置："+reason || store.commentsAtUpdate[0] != 1 {
+		t.Fatalf("model reason not written before the labels: comments=%q at update=%v", store.comments, store.commentsAtUpdate)
 	}
 	written := store.comments[len(store.comments)-1]
 	recordedComment := parked.Comments.Nodes[1]

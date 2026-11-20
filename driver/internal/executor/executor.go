@@ -778,8 +778,9 @@ const (
 type workerWatch struct {
 	observe func(orca.Worker) error
 	stop    func(dispatch string) error
-	// ended reports a worker that exited without worker_done after a model
-	// error on its screen; nil leaves it a liveness failure.
+	// ended reports a worker that exited or lost its dispatch without
+	// worker_done after a model error on its screen; nil leaves it a liveness
+	// failure.
 	ended           func() *orca.WorkerReport
 	persist         func(unobservedSince time.Time) error
 	unobservedSince time.Time
@@ -897,6 +898,11 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				status = worker.DispatchStatus
 			}
 			if reason, lost := resolver.LostDispatch(*awaiting, dispatch, listed, status); lost {
+				if watch.ended != nil {
+					if report := watch.ended(); report != nil {
+						return report, nil
+					}
+				}
 				return livenessFailure(reason), nil
 			}
 		}
@@ -1050,16 +1056,21 @@ func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp c
 	status.Push(e.Now(), func(view *status.View) {
 		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
 	})
-	// The 搁置 line goes first: a parked label without it could not be resumed
-	// for the model, while the line without the label parks nothing.
-	body := fmt.Sprintf("搁置：%s\n已完成：worker 派工 %s 已停止，分支保留\n阶段: %s\n归属: %s", reason, result.DispatchID, machine.PhaseUnclaimed, machine.OwnerNone)
-	if err := e.comment(ctx, t.ID, body); err != nil {
-		return errors.New("model park comment failed")
+	// The reason lands before the labels and keeps the owner, so a stop between
+	// the writes leaves either an unparked ticket still owned by the executor or
+	// a parked one whose model reason ResumeModelParks can read; ownership is
+	// released only after the labels, as the scheduler parks.
+	if err := e.comment(ctx, t.ID, "搁置："+reason); err != nil {
+		return errors.New("model park reason failed")
 	}
 	if _, err := e.Issues.UpdateIssue(ctx, t.ID, "Todo", []string{"parked"}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
 		return errors.New("model park labels failed")
 	}
 	result.State.Phase, result.State.Owner, result.State.HumanReason, result.State.ExecAlive = machine.PhaseUnclaimed, machine.OwnerNone, reason, false
+	body := fmt.Sprintf("搁置：%s\n已完成：worker 派工 %s 已停止，分支保留\n阶段: %s\n归属: %s", reason, result.DispatchID, machine.PhaseUnclaimed, machine.OwnerNone)
+	if err := e.comment(ctx, t.ID, body); err != nil {
+		return errors.New("model park comment failed")
+	}
 	e.board(ctx, t, cp.Worktree, machine.PhaseUnclaimed, "搁置："+reason, 0)
 	return nil
 }

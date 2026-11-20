@@ -66,6 +66,8 @@ type fakeIssues struct {
 	issues.Store
 	comments []string
 	updates  []string
+	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
+	commentsAtUpdate []int
 }
 
 func (f *fakeIssues) Repository() string { return "acme/demo" }
@@ -91,6 +93,7 @@ func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (task.Com
 }
 func (f *fakeIssues) UpdateIssue(_ context.Context, _, state string, add, remove []string) (task.Issue, error) {
 	f.updates = append(f.updates, fmt.Sprint(state, add, remove))
+	f.commentsAtUpdate = append(f.commentsAtUpdate, len(f.comments))
 	return task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}}}, nil
 }
 
@@ -435,6 +438,16 @@ type screenOrca struct {
 	starts       []orca.StartOptions
 	cancel       context.CancelFunc
 	reportAtStop bool
+	// lost serves the task back at ready without a dispatch, as Orca does
+	// after losing it (resolver.LostDispatch).
+	lost bool
+}
+
+func (o *screenOrca) TaskList(ctx context.Context, run string) ([]orca.Task, error) {
+	if o.lost && len(o.starts) < 2 {
+		return []orca.Task{{ID: "task_one", RunID: "run_one", Status: "ready"}}, nil
+	}
+	return o.livenessOrca.TaskList(ctx, run)
 }
 
 func (o *screenOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
@@ -502,7 +515,7 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
-	for _, scenario := range []string{"quiet", "exited", "exhausted", "reported"} {
+	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, _, l, _, _, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
@@ -516,6 +529,10 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			stopped := live.worker
 			stopped.DispatchStatus = "failed"
 			live.stopped = &stopped
+			if scenario == "lost" {
+				// The recorded worker-read projection: stage.worker=failed, liveness unverifiable.
+				live.worker.DispatchStatus, live.worker.Projection.Stage.Worker = "failed", "failed"
+			}
 			now := e.Now()
 			e.Now = func() time.Time { return now }
 			registry, err := modelhealth.Open(e.Config.Root)
@@ -530,7 +547,7 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			o := &screenOrca{livenessOrca: live, screen: screen, output: now.UnixMilli(), cancel: cancel, reportAtStop: scenario == "reported"}
+			o := &screenOrca{livenessOrca: live, screen: screen, output: now.UnixMilli(), cancel: cancel, reportAtStop: scenario == "reported", lost: scenario == "lost"}
 			e.Orca = o
 			r := &redoRecovery{}
 			e.Recovery = r
@@ -553,9 +570,9 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 				t.Fatalf("registry status=%+v", s)
 			}
 			switch scenario {
-			case "quiet", "exited":
+			case "quiet", "exited", "lost":
 				wantStops := 1
-				if scenario == "exited" {
+				if scenario != "quiet" {
 					wantStops = 0
 				}
 				if live.stops != wantStops || len(o.starts) != 2 || o.starts[1].Agent != "codex" || o.starts[1].Model != "gpt-6.1-sol" || o.starts[1].Effort != "high" {
@@ -571,6 +588,11 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 				}
 				if got := l.updates[len(l.updates)-1]; got != "Todo[parked] [ready-for-agent auto-impl auto-failed]" {
 					t.Fatalf("park labels=%q", got)
+				}
+				// The reason, without an owner line, precedes the labels; ownership is released after them.
+				before := l.comments[l.commentsAtUpdate[len(l.commentsAtUpdate)-1]-1]
+				if reason, _, _ := strings.Cut(park, "\n"); before != reason || strings.Contains(before, "归属") || l.commentsAtUpdate[len(l.commentsAtUpdate)-1] != len(l.comments)-1 {
+					t.Fatalf("park writes out of order: comments=%q at update=%v", l.comments, l.commentsAtUpdate)
 				}
 			case "reported":
 				if live.stops != 1 || len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
