@@ -8,13 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
+	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
 
@@ -393,5 +396,61 @@ func TestCrossReviewCloseCancelsRunningReviewer(t *testing.T) {
 	worktrees := gitMergeTest(t, f.repo.Path, "worktree", "list", "--porcelain")
 	if strings.Count(worktrees, "worktree ") != 1 {
 		t.Fatalf("worktree left behind:\n%s", worktrees)
+	}
+}
+
+// OF-594: a cross reviewer whose model hit its limit is retried once on its
+// next candidate, and a candidate failing the retry too is recorded as well.
+func TestCrossReviewRetriesNextModelAndRecordsEachFailure(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := newCrossReviewFixture(t, "scope-extension", "src/fix.go")
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}
+	fallback := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "xhigh"}
+	for _, limited := range []bool{false, true} {
+		t.Run(fmt.Sprintf("fallback limited=%v", limited), func(t *testing.T) {
+			state := t.TempDir()
+			var commands []string
+			var mu sync.Mutex
+			run := func(ctx context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path != "/bin/sh" {
+					return runx.Run(ctx, s)
+				}
+				green := []byte(`{"step":"cross-review","verdict":"green","expands_authority":false,"reason":"ok"}`)
+				if s.Args[3] == "true" {
+					return green, nil
+				}
+				mu.Lock()
+				commands = append(commands, s.Args[3])
+				mu.Unlock()
+				if len(commands) == 1 || limited {
+					return limit, errors.New("exit status 1")
+				}
+				return green, nil
+			}
+			reviewer := crossReviewer{name: "reviewer", command: "claude -p --model claude-fable-5-2", used: primary, candidates: []modelhealth.Ref{primary, fallback}}
+			second := crossReviewer{name: "second_reviewer", command: "true", used: fallback}
+			job := crossReviewJob{ticketID: "id", repo: f.repo.Path, head: f.head, scope: []string{"src/*"}, reviewers: [2]crossReviewer{reviewer, second}, stateRoot: state, run: run, now: time.Now}
+			record := job.execute(context.Background())
+			registry, err := modelhealth.Open(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s := registry.Status(primary, time.Now()); s.State != modelhealth.Unavailable {
+				t.Fatalf("primary not recorded: %+v record=%+v", s, record)
+			}
+			want, err := config.GenerateReviewerCommand(fallback.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(commands) != 2 || commands[1] != want {
+				t.Fatalf("not retried on the fallback: %q record=%+v", commands, record)
+			}
+			if got := registry.Status(fallback, time.Now()).State; (got == modelhealth.Unavailable) != limited {
+				t.Fatalf("fallback recorded=%s, limited=%v", got, limited)
+			}
+		})
 	}
 }

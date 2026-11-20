@@ -1123,3 +1123,230 @@ func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
 		})
 	}
 }
+
+type labelIssues struct {
+	*fakeIssues
+	added, removed [][]string
+	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
+	commentsAtUpdate []int
+	// duringUpdate runs inside the next UpdateIssue, as a concurrent writer.
+	duringUpdate func()
+}
+
+func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
+	l.added, l.removed = append(l.added, add), append(l.removed, remove)
+	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
+	if during := l.duringUpdate; during != nil {
+		l.duringUpdate = nil
+		during()
+	}
+	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+}
+
+func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
+	repo, state := t.TempDir(), t.TempDir()
+	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+	if err := os.MkdirAll(roles, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"}
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	registry, err := modelhealth.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ref := range []modelhealth.Ref{primary, fallback} {
+		if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Duration(i+1) * time.Hour), CheckedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := func(r resolver.Record) string {
+		raw, _ := json.Marshal(r)
+		return resolver.Prefix + string(raw)
+	}
+	failed := resolver.Record{Version: 1, Attempt: 1, Phase: "waiting", Outcome: "failed", Result: "worker failed", Spec: "Resolve", Agent: primary.Agent}
+	limited := resolver.Record{Version: 1, Attempt: 2, Phase: "waiting", Outcome: resolver.ModelUnavailable, RetryAt: now, Result: "model unavailable", Spec: "Resolve", Agent: fallback.Agent, Model: fallback.Model, Effort: fallback.Effort}
+	store := &labelIssues{fakeIssues: &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", line(failed), line(limited))}}
+	probe := &resolverTierProbe{stop: errors.New("dispatched while every candidate is unavailable")}
+	env := map[string]string{"AGENT_ROLE_RESOLVER": primary.String(), "AGENT_ROLE_RESOLVER_FALLBACK": fallback.String()}
+	r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: env}}, Orca: probe, StateRoot: state, Now: func() time.Time { return now }}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-594", Repo: repo}, store.issueComments)
+	if ticket.Resolution.Failures != 1 {
+		t.Fatalf("model-unavailable round counted as failure: failures=%d", ticket.Resolution.Failures)
+	}
+	if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(probe.starts) != 0 || len(store.added) != 1 || !slices.Contains(store.added[0], parkedLabel) {
+		t.Fatalf("not parked: starts=%d added=%v", len(probe.starts), store.added)
+	}
+	parked := fromEvidence(t, ticket, store.issueComments)
+	parked.Parked, _ = parkedState(task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}, store.issueComments)
+	if !strings.HasPrefix(parked.Parked, "模型不可用") || !strings.Contains(parked.Parked, primary.String()) || !strings.Contains(parked.Parked, fallback.String()) {
+		t.Fatalf("park reason=%q", parked.Parked)
+	}
+	other := parked
+	other.ID, other.Parked = "other", "处置连续失败 3 次: worker failed"
+	store.issues = []task.Issue{{ID: "id", Identifier: "OF-594", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil || len(store.added) != 1 {
+		t.Fatalf("resumed while every candidate is unavailable: added=%v err=%v", store.added, err)
+	}
+	now = now.Add(time.Hour)
+	// A 搁置 written after the snapshot, for lane 3, still holds the ticket.
+	stale := store.issueComments
+	store.issueComments = append(slices.Clone(stale), task.Comment{ID: "lane3", Body: "搁置：lane 3 path .env\n阶段: 待领\n归属: 无", CreatedAt: time.Now().Add(time.Hour)})
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked}); err != nil || len(store.added) != 1 {
+		t.Fatalf("stale snapshot lifted a newer park: added=%v err=%v", store.added, err)
+	}
+	// A 搁置 landing between the reread and the label write puts the park back.
+	store.issueComments = slices.Clone(stale)
+	store.duringUpdate = func() {
+		store.issueComments = append(store.issueComments, task.Comment{ID: "lane3-late", Body: "搁置：lane 3 path .env\n阶段: 待领\n归属: 无", CreatedAt: time.Now().Add(time.Hour)})
+	}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked}); err != nil || len(store.added) != 3 || !slices.Equal(store.added[2], []string{parkedLabel}) || !slices.Equal(store.removed[2], []string{"ready-for-agent"}) {
+		t.Fatalf("concurrent park not restored: added=%v removed=%v err=%v", store.added, store.removed, err)
+	}
+	store.added, store.removed = store.added[:1], store.removed[:1]
+	store.issueComments = stale
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) || !slices.Equal(store.removed[1], []string{parkedLabel}) {
+		t.Fatalf("not resumed once: added=%v removed=%v", store.added, store.removed)
+	}
+}
+
+// The 搁置 line keeps every candidate of a long fallback list, which the
+// recorded ledger read returns as written and ResumeModelParks reads back
+// (testdata/recorded/ledger-issue-parked-resume.json).
+func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
+	state := t.TempDir()
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	registry, err := modelhealth.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statuses []modelhealth.Status
+	for i := range 8 {
+		ref := modelhealth.Ref{Agent: "codex", Model: fmt.Sprintf("gpt-6.%d-astra-preview", i), Effort: "xhigh"}
+		status := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}
+		if i == 7 {
+			status.Until = now.Add(time.Minute)
+		}
+		if err := registry.Record(status); err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, status)
+	}
+	reason := config.ModelParkReason(statuses)
+	if len([]rune(reason)) <= 300 {
+		t.Fatalf("reason fits the ledger line cap: %d runes", len([]rune(reason)))
+	}
+	parked, _ := recordedPark(t)
+	store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{parked.Issue}, issueComments: parked.Comments.Nodes[:1]}}
+	r := &Runtime{Clients: map[string]issues.Store{"repo": store}, Repositories: map[string]config.Repository{"repo": {}}, StateRoot: state, Now: func() time.Time { return now }}
+	ticket := Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "repo"}
+	// An escalation reason copying the model format parks for a person, never for the model.
+	if err := r.parkTicket(context.Background(), ticket, reason, "处置转人", ""); err != nil {
+		t.Fatal(err)
+	}
+	forged := ticket
+	forged.Parked, _ = parkedState(parked.Issue, protocolComments(store.issueComments))
+	if strings.HasPrefix(forged.Parked, config.ModelParked) || len(store.comments) != 1 {
+		t.Fatalf("agent reason passed for a model park: %q comments=%d", forged.Parked, len(store.comments))
+	}
+	store.comments, store.commentsAtUpdate, store.added, store.removed = nil, nil, nil, nil
+	if err := r.park(context.Background(), ticket, reason, "worker 派工已停止", "", true); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.comments) != 2 || store.comments[0] != "搁置："+reason || store.commentsAtUpdate[0] != 1 {
+		t.Fatalf("model reason not written before the labels: comments=%q at update=%v", store.comments, store.commentsAtUpdate)
+	}
+	marker, full := parked.Comments.Nodes[1], parked.Comments.Nodes[1]
+	marker.ID, marker.Body, full.Body = "marker", store.comments[0], store.comments[1]
+	ticket.Parked, _ = parkedState(parked.Issue, []task.Comment{parked.Comments.Nodes[0], full})
+	if ticket.Parked != reason {
+		t.Fatalf("park line=%q want %q", ticket.Parked, reason)
+	}
+	now = now.Add(2 * time.Minute)
+	// A full 搁置 alone, as an older escalation reason in the model format, is no model park.
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], full}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("unmarked park resumed: added=%v err=%v", store.added, err)
+	}
+	// A park lifted by 恢复 and parked again by a person keeps its old marker only.
+	resumed := task.Comment{ID: "resumed", Body: "恢复：模型候选已恢复可用，自动解除「模型不可用」搁置", CreatedAt: full.CreatedAt.Add(time.Minute)}
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], marker, full, resumed}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("park after a resume lifted: added=%v err=%v", store.added, err)
+	}
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], marker, full}
+	now = now.Add(-2 * time.Minute)
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("resumed before any candidate recovered: added=%v err=%v", store.added, err)
+	}
+	now = now.Add(2 * time.Minute)
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) {
+		t.Fatalf("last candidate's recovery did not resume: added=%v err=%v", store.added, err)
+	}
+}
+
+// The ledger returns a model park marker and its 恢复 as written
+// (testdata/recorded/ledger-comments-model-park.json): the marker names every
+// candidate, and the 恢复 after it ends the marker.
+func TestRecordedLedgerModelParkMarker(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-model-park.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	if len(recording.Comments) != 2 {
+		t.Fatalf("recorded comments=%d", len(recording.Comments))
+	}
+	labeled := task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+	marker := protocolComments(recording.Comments[:1])
+	reason, _ := parkedState(labeled, marker)
+	if !modelParkMarked(marker, reason) {
+		t.Fatalf("recorded marker not a model park: %q", reason)
+	}
+	candidates, err := modelParkCandidates(reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, ref := range candidates {
+		names = append(names, ref.String())
+	}
+	if want := []string{"codex:gpt-6.2-astra:max", "claude:claude-opus-5-5:max", "codex:gpt-6-astra:xhigh"}; !slices.Equal(names, want) {
+		t.Fatalf("candidates=%v want %v", names, want)
+	}
+	if modelParkMarked(protocolComments(recording.Comments), reason) {
+		t.Fatal("recorded 恢复 left the marker in force")
+	}
+}
+
+// A worker parked for its model that stopped before releasing its claim is
+// not restored as a dead executor while the park holds.
+func TestModelParkedExecutorClaimIsNotRestored(t *testing.T) {
+	f := &fakeBackend{absent: true, inactive: true}
+	s := setup(f)
+	parked := Ticket{ID: "ticket", Repo: "a", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now(), Parked: config.ModelParked + "：claude:claude-fable-5-2:xhigh 至 2026-11-21T01:00:00Z"}
+	f.tickets = []Ticket{parked}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 0 || len(f.actions) != 0 {
+		t.Fatalf("model-parked claim restored: launched=%v actions=%v", f.launched, f.actions)
+	}
+	parked.Parked = ""
+	f.tickets = []Ticket{parked}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 1 {
+		t.Fatalf("lifted park not restored: launched=%v", f.launched)
+	}
+}

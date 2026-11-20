@@ -1,0 +1,107 @@
+{
+  "id": "09ebd66d-5fd8-4fcb-8ca9-8bf72eac723c",
+  "ok": true,
+  "result": {
+    "dispatchId": "ctx_397dfaacea96",
+    "source": "terminal",
+    "sourceIdentity": "fpiRkKN0X77cxqKjdsg0RFGR11RBRfCf",
+    "terminal": {
+      "handle": "term_d10ee57b-1ac1-4e45-995b-58b4ae2869ff",
+      "status": "running",
+      "tail": [
+        "          +leases)",
+        "      975 +        }",
+        "      976 +        if len(models.statuses) != 1 || models.statuses[0].Ref.Key() != \"codex:gpt-6.2-astra\" {",
+        "      977 +                t.Fatalf(\"registry writes=%+v\", models.statuses)",
+        "      978 +        }",
+        "      979 +}",
+        "● Resolver 两处（#1 结束未报告、#7 跳过释放）已修复，新断言在旧代码上红、新代码上绿。下一步处理 executor。",
+        "  Running sed -n 375,395p internal/orca/orca.go; S=/tmp/cla… · 2s",
+        "  ⎿  $ sed -n 375,395p internal/orca/orca.go; S=/tmp/claude-1000/-home-laoxu-orca-workspaces-orca-factory-OF-594-resolve",
+        "     r-6/ff9ac57d-78cd-4d7c-8176-f810251a1b24/scratchpad; sleep 3; orca orchestration worker-read --dispatch",
+        "     ctx_397dfaacea96 --source terminal --limit 20 --json > $S/busy-screen.json 2>&1;… (3s · 22 lines)",
+        "     (ctrl+b to run in background)",
+        "✻ Discombobulating… (3m 12s · ↓ 16.9k tokens)",
+        "  ⎿  Tip: Use /btw to ask a side question without interrupting Claude",
+        " ☀  Clear  14% of context  135.7k / 1M   last turns ▇█  ▲ +1.2k last turn                                           [-]",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "❯",
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+        "  ⚠ ziikoo-driver: Driver 在途 3",
+        "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt"
+      ],
+      "truncated": false,
+      "limited": true,
+      "oldestCursor": "0",
+      "nextCursor": "1",
+      "latestCursor": "1",
+      "returnedLineCount": 20,
+      "source": "screen"
+    },
+    "cursor": "owr1_eyJ2IjoxLCJkIjoiY3R4XzM5N2RmYWFjZWE5NiIsInMiOiJ0ZXJtaW5hbCIsImkiOiJmcGlSa0tOMFg3N2N4cUtqZHNnMFJGR1IxMVJCUmZDZiIsInAiOjF9",
+    "status": {
+      "worker": "ready",
+      "terminal": "running",
+      "liveness": "live"
+    },
+    "fallbackReason": null,
+    "warnings": [],
+    "sourceExact": true,
+    "contentComplete": true,
+    "projection": {
+      "id": "ctx_397dfaacea96",
+      "dispatchId": "ctx_397dfaacea96",
+      "taskId": "task_3fb2d732ecaf",
+      "runId": "run_c7dc9afda106",
+      "role": "worker",
+      "parent": null,
+      "provider": {
+        "id": "claude",
+        "model": null
+      },
+      "host": {
+        "kind": "local",
+        "id": "local"
+      },
+      "workspace": {
+        "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-594-resolver-6",
+        "kind": "folder_or_worktree"
+      },
+      "stage": {
+        "worker": "ready",
+        "dispatch": "dispatched",
+        "detail": "input_accepted",
+        "activity": "working"
+      },
+      "outcome": "in_progress",
+      "liveness": {
+        "verdict": "live",
+        "observedAt": 1795147121640,
+        "source": "agent_status"
+      },
+      "evidence": {
+        "durable": true,
+        "liveStatus": "fresh",
+        "lastObservedAt": 1795147121640
+      },
+      "resource": {
+        "state": "owned",
+        "id": "wtr_af7a2e6ccd3e",
+        "ownerDispatchId": "ctx_397dfaacea96",
+        "releaseState": "not_requested",
+        "terminalState": "active"
+      },
+      "nextAction": {
+        "kind": "none",
+        "argv": []
+      },
+      "attention": {
+        "categories": [],
+        "requiresAction": false
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "b32d0c52-baef-4719-96de-001c895eb69e"
+  }
+}

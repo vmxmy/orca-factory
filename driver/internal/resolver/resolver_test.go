@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"log/slog"
@@ -61,6 +62,10 @@ type fakeOrca struct {
 	terminalReport, stopReport *orca.WorkerReport
 	// legacyTasks and uncountedTasks shape the metadata TaskListing reports.
 	legacyTasks, uncountedTasks bool
+	screen                      orca.Receipt
+	screenReads                 int
+	// screenErr fails the next screen read once.
+	screenErr error
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -664,50 +669,63 @@ func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
 	workers, terminals := recordedProgress(t)
 	for _, top := range []bool{false, true} {
 		for _, external := range []bool{false, true} {
-			t.Run(fmt.Sprintf("top=%v/external-stop=%v", top, external), func(t *testing.T) {
-				c, s, o := setupController()
-				now := time.UnixMilli(output)
-				c.Now = func() time.Time { return now }
-				s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
-				o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
-				o.workers, o.terminals = workers, terminals
-				// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
-				o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
-				for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
-					now = now.Add(elapsed)
-					p, err := c.Step(context.Background())
-					if err != nil || p.Phase != "running" || o.stops != 0 {
-						t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+			for _, screened := range []bool{false, true} {
+				t.Run(fmt.Sprintf("top=%v/external-stop=%v/model-screen=%v", top, external, screened), func(t *testing.T) {
+					c, s, o := setupController()
+					now := time.UnixMilli(output)
+					c.Now = func() time.Time { return now }
+					if screened {
+						// OF-594: a screen without a model error keeps the ordinary window.
+						c.Models = &modelLog{}
+						c.Probe = func(context.Context, modelhealth.Ref) modelhealth.Status {
+							panic("probed a screen without a model error")
+						}
+						o.screen = recordedScreen(t, []string{"• Running make test", "", "› "})
 					}
-					if s.record.LastOutputAt != output {
-						t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
+					s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
+					o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
+					o.workers, o.terminals = workers, terminals
+					// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
+					o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
+					for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
+						now = now.Add(elapsed)
+						p, err := c.Step(context.Background())
+						if err != nil || p.Phase != "running" || o.stops != 0 {
+							t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+						}
+						if s.record.LastOutputAt != output {
+							t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
+						}
 					}
-				}
-				if external {
-					o.workers = o.stopped
-				} else {
-					now = now.Add(2 * time.Second)
-				}
-				// Recreate the controller to exercise the persisted observation window.
-				restarted := *c
-				p, err := restarted.Step(context.Background())
-				if err != nil || p.Phase != "result" || p.Outcome != "failed" || s.record.Phase != "result" || o.releases != 1 {
-					t.Fatalf("round did not fail: p=%+v releases=%d err=%v", p, o.releases, err)
-				}
-				wantStops := 1
-				if external {
-					wantStops = 0
-				}
-				if o.stops != wantStops || o.startCalls != 0 {
-					t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
-				}
-				if top {
-					var result Resolution
-					if err := json.Unmarshal([]byte(p.Result), &result); err != nil || result.Action != "escalate" || result.Reason != "终审模型未获响应，不更换模型" || p.TopModelAccepted {
-						t.Fatalf("missing top-model failure: result=%s accepted=%v err=%v", p.Result, p.TopModelAccepted, err)
+					if external {
+						o.workers = o.stopped
+					} else {
+						now = now.Add(2 * time.Second)
 					}
-				}
-			})
+					// Recreate the controller to exercise the persisted observation window.
+					restarted := *c
+					p, err := restarted.Step(context.Background())
+					if err != nil || p.Phase != "result" || p.Outcome != "failed" || s.record.Phase != "result" || o.releases != 1 {
+						t.Fatalf("round did not fail: p=%+v releases=%d err=%v", p, o.releases, err)
+					}
+					wantStops := 1
+					if external {
+						wantStops = 0
+					}
+					if o.stops != wantStops || o.startCalls != 0 {
+						t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
+					}
+					if screened && (o.screenReads == 0 || len(c.Models.(*modelLog).statuses) != 0) {
+						t.Fatalf("screen reads=%d registry writes=%+v", o.screenReads, c.Models)
+					}
+					if top {
+						var result Resolution
+						if err := json.Unmarshal([]byte(p.Result), &result); err != nil || result.Action != "escalate" || result.Reason != "终审模型未获响应，不更换模型" || p.TopModelAccepted {
+							t.Fatalf("missing top-model failure: result=%s accepted=%v err=%v", p.Result, p.TopModelAccepted, err)
+						}
+					}
+				})
+			}
 		}
 	}
 }
@@ -852,5 +870,266 @@ func TestResolverEmptyRunRejectsLegacyOrUncountedTasks(t *testing.T) {
 				t.Fatalf("incomplete task evidence ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
 			}
 		})
+	}
+}
+
+type modelLog struct{ statuses []modelhealth.Status }
+
+func (m *modelLog) Record(s modelhealth.Status) error {
+	m.statuses = append(m.statuses, s)
+	return nil
+}
+
+// recordedScreen returns the recorded worker-read receipt with its rendered
+// screen replaced by lines, as Orca returns while the agent shows them.
+func recordedScreen(t *testing.T, lines []string) orca.Receipt {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var terminal map[string]any
+	if err := json.Unmarshal(envelope.Result["terminal"], &terminal); err != nil || terminal["source"] != "screen" {
+		t.Fatalf("recorded terminal=%v err=%v", terminal, err)
+	}
+	terminal["tail"] = lines
+	envelope.Result["terminal"], _ = json.Marshal(terminal)
+	return envelope.Result
+}
+
+func (o *fakeOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Receipt, error) {
+	o.screenReads++
+	if opts.Dispatch == "" || opts.Source != "terminal" {
+		return nil, errors.New("unexpected worker read")
+	}
+	if err := o.screenErr; err != nil {
+		o.screenErr = nil
+		return nil, err
+	}
+	return o.screen, nil
+}
+
+// OF-555, 2026-11-17: the final resolver sat at Claude's quota menu for 61
+// minutes and the round counted as the ticket's failure.
+func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, top := range []bool{false, true} {
+		t.Run(fmt.Sprintf("top=%v", top), func(t *testing.T) {
+			c, s, o := setupController()
+			models := &modelLog{}
+			c.Models = models
+			c.Agent, c.Model, c.Effort = "claude", "claude-fable-5-2", "xhigh"
+			now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+			c.Now = func() time.Time { return now }
+			// The probe names the limit without its reset; the screen's reset stands.
+			c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				return modelhealth.Classify(ref, "You've hit your Fable limit", errors.New("exit status 1"), now)
+			}
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			s.record.Top, s.record.TopLaunchAccepted = top, top
+			o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker"}]`)
+			o.stopped = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+			o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+			o.screen = recordedScreen(t, []string{"● Reading the ticket", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset"})
+			if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" || o.screenReads != 0 {
+				t.Fatalf("fresh output read the screen: p=%+v reads=%d err=%v", p, o.screenReads, err)
+			}
+			now = now.Add(ModelCheckDelay)
+			p, err := c.Step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || !p.RetryAt.Equal(now) || o.stops != 1 || o.releases != 1 || o.startCalls != 1 {
+				t.Fatalf("round did not end as model-unavailable: p=%+v stops=%d releases=%d starts=%d", p, o.stops, o.releases, o.startCalls)
+			}
+			if strings.Contains(p.Result, "终审模型未获响应") {
+				t.Fatalf("model limit reported as top-model failure: %s", p.Result)
+			}
+			want := time.Date(2026, 11, 21, 1, 0, 0, 0, time.FixedZone("CST", 8*3600))
+			if len(models.statuses) != 1 || models.statuses[0].State != modelhealth.Unavailable || models.statuses[0].Reason != "usage_limit" || models.statuses[0].Ref.Key() != "claude:claude-fable-5-2" || !models.statuses[0].Until.Equal(want) {
+				t.Fatalf("registry writes=%+v", models.statuses)
+			}
+		})
+	}
+}
+
+func TestResolverRoundEndedWithModelErrorIsNoFailure(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lost := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lost=%v", lost), func(t *testing.T) {
+			c, s, o := setupController()
+			models := &modelLog{}
+			c.Models = models
+			c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+			c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				return modelhealth.Classify(ref, string(unsupported), errors.New("exit status 1"), time.Now())
+			}
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			s.record.Top, s.record.TopLaunchAccepted = true, true
+			o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+			wantReleases := 1
+			if lost {
+				o.tasks = []orca.Task{{ID: "task_1", RunID: "run_1", Status: "ready", Spec: "Act as resolver"}}
+				wantReleases = 0
+			}
+			o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+			p, err := c.Step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || o.releases != wantReleases || strings.Contains(p.Result, "终审模型未获响应") {
+				t.Fatalf("ended round with model error counted as failure: p=%+v releases=%d", p, o.releases)
+			}
+			if len(models.statuses) != 1 || models.statuses[0].Ref.Key() != "codex:gpt-6.2-astra" {
+				t.Fatalf("registry writes=%+v", models.statuses)
+			}
+		})
+	}
+}
+
+// A working agent whose screen only quotes a model error, as a ticket about
+// that error does, keeps its round. An ended turn's screen only nominates the
+// model; the caller's probe confirms it (TestResolverQuotedModelErrorNeedsProbe).
+func TestScreenModelIgnoresQuotedErrorWhileTurnRuns(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal-busy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var terminal struct{ Tail []string }
+	if err := json.Unmarshal(envelope.Result["terminal"], &terminal); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := append([]string{strings.TrimSpace(string(limit)), strings.TrimSpace(string(unsupported))}, terminal.Tail[2:]...)
+	now := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
+	for _, ref := range []modelhealth.Ref{{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}, {Agent: "codex", Model: "gpt-6.2-astra", Effort: "max"}} {
+		busy := &fakeOrca{screen: recordedScreen(t, quoted)}
+		status, err := ScreenModel(context.Background(), busy, "ctx_1", ref, now)
+		if err != nil || status.State == modelhealth.Unavailable {
+			t.Fatalf("%s: running turn classified as model error: %+v err=%v", ref, status, err)
+		}
+		idle := &fakeOrca{screen: recordedScreen(t, quoted[:2])}
+		if status, err = ScreenModel(context.Background(), idle, "ctx_1", ref, now); err != nil || status.State != modelhealth.Unavailable {
+			t.Fatalf("%s: ended turn not classified: %+v err=%v", ref, status, err)
+		}
+	}
+}
+
+// A finished turn that only quotes a model error keeps its round: the probe of
+// the model answers, so nothing is stopped or recorded.
+func TestResolverQuotedModelErrorNeedsProbe(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, s, o := setupController()
+	models := &modelLog{}
+	c.Models = models
+	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	probes := 0
+	c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+		probes++
+		return modelhealth.Classify(ref, "ok", nil, now)
+	}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker"}]`)
+	o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+	o.screen = recordedScreen(t, []string{"• 票面现状：codex 返回 " + strings.TrimSpace(string(unsupported)), "", "› "})
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// A failed screen read leaves the screen unchecked for the next step.
+	now = now.Add(ModelCheckDelay)
+	o.screenErr = errors.New("orca unavailable")
+	if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" || p.ModelCheckedOutput != 0 || probes != 0 {
+		t.Fatalf("failed read marked the screen checked: p=%+v probes=%d err=%v", p, probes, err)
+	}
+	for range 3 {
+		now = now.Add(ModelCheckDelay)
+		p, err := c.Step(context.Background())
+		if err != nil || p.Phase != "running" || o.stops != 0 || len(models.statuses) != 0 || probes != 1 || s.record.Outcome != "" {
+			t.Fatalf("quoted error ended the round or was probed again: p=%+v stops=%d records=%+v probes=%d err=%v", p, o.stops, models.statuses, probes, err)
+		}
+	}
+}
+
+// worker_done landing while the model of an ended round is probed settles the
+// round with that report.
+func TestResolverReportDuringModelProbeWins(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, answer := range []string{string(unsupported), "ok"} {
+		c, s, o := setupController()
+		c.Models = &modelLog{}
+		c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+		c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+			o.report = &orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: `{"action":"escalate"}`}
+			return modelhealth.Classify(ref, answer, nil, time.Now())
+		}
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+		o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if s.record.Outcome != "succeeded" || s.record.Result != o.report.Body {
+			t.Fatalf("probe answering %q: worker_done overridden: %+v", answer, s.record)
+		}
+	}
+}
+
+// A reset the screen names outlasts the probe's default cooldown.
+func TestConfirmedStatusKeepsNamedReset(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}
+	now := time.Date(2026, 11, 20, 16, 55, 0, 0, time.UTC)
+	screen := modelhealth.Classify(ref, string(limit), nil, now)
+	probe := modelhealth.Classify(ref, "You've hit your Fable limit", errors.New("exit status 1"), now)
+	want := time.Date(2026, 11, 21, 1, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	if got := ConfirmedStatus(screen, probe); !got.Until.Equal(want) || got.State != modelhealth.Unavailable {
+		t.Fatalf("confirmed=%+v want until %s", got, want)
+	}
+	if got := ConfirmedStatus(modelhealth.Classify(ref, "You've hit your Fable limit", nil, now), probe); !got.Until.Equal(probe.Until) {
+		t.Fatalf("default cooldowns: confirmed=%+v", got)
 	}
 }

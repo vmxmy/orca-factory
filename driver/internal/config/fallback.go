@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -50,4 +52,88 @@ func SelectConfigured(env map[string]string, key, stateRoot string, primary mode
 		return primary, fmt.Errorf("%s: %w", FallbackKey(key), err)
 	}
 	return SelectModel(stateRoot, primary, fallback, now)
+}
+
+// RetryAfterModelError records used unavailable in the registry under
+// stateRoot when its failed command's output shows a model limit or
+// unsupported model, and returns the candidate to retry with. It records even
+// without another candidate, so a retry's own failure is recorded by calling
+// it again without candidates. It reports false for other failures or when no
+// other candidate remains available.
+func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []modelhealth.Ref, output []byte, failure error, now time.Time) (modelhealth.Ref, bool, error) {
+	if used.Agent == "" || used.Model == "" {
+		return modelhealth.Ref{}, false, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(failure, &exit) {
+		output = append(append(output, '\n'), exit.Stderr...)
+	}
+	return RetryAfterModelStatus(stateRoot, modelhealth.Classify(used, string(output), failure, now), candidates, now)
+}
+
+// RetryAfterModelStatus is RetryAfterModelError for a caller that classified
+// the failure itself.
+func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidates []modelhealth.Ref, now time.Time) (modelhealth.Ref, bool, error) {
+	used := status.Ref
+	// Without a state root the registry has no home; a caller such as the live
+	// self-test then records nothing rather than writing into its directory.
+	if stateRoot == "" || status.State != modelhealth.Unavailable || used.Agent == "" || used.Model == "" {
+		return modelhealth.Ref{}, false, nil
+	}
+	registry, err := modelhealth.Open(stateRoot)
+	if err != nil {
+		return modelhealth.Ref{}, false, fmt.Errorf("model health registry: %w", err)
+	}
+	if err = registry.Record(status); err != nil {
+		return modelhealth.Ref{}, false, fmt.Errorf("model health registry: %w", err)
+	}
+	if len(candidates) < 2 {
+		return modelhealth.Ref{}, false, nil
+	}
+	next, ok := registry.Select(candidates, now)
+	return next, ok && next != used, nil
+}
+
+// ReviewerRef recovers the model a reviewer command runs when the command is
+// exactly what GenerateReviewerCommand builds for it, so a reviewer without
+// fallback still records that model's error. Any other command reports false.
+func ReviewerRef(command string) (modelhealth.Ref, bool) {
+	// The shell would strip quoting or expand a value the fields keep verbatim.
+	if strings.ContainsAny(command, "'\"\\$`") {
+		return modelhealth.Ref{}, false
+	}
+	fields := strings.Fields(command)
+	var ref modelhealth.Ref
+	for i, field := range fields {
+		next := ""
+		if i+1 < len(fields) {
+			next = fields[i+1]
+		}
+		switch {
+		case ref.Agent == "" && (field == "codex" || field == "claude"):
+			ref.Agent = field
+		case field == "-m" || field == "--model":
+			ref.Model = next
+		case field == "--effort":
+			ref.Effort = next
+		case strings.HasPrefix(field, "model_reasoning_effort="):
+			ref.Effort = strings.TrimPrefix(field, "model_reasoning_effort=")
+		}
+	}
+	generated, err := GenerateReviewerCommand(ref.String())
+	return ref, err == nil && ref.Model != "" && generated == command
+}
+
+// ModelParked prefixes the 搁置 reason of a ticket parked because every model
+// candidate of its role or tier was unavailable.
+const ModelParked = "模型不可用"
+
+// ModelParkReason names every candidate and when its cooldown ends, so the
+// scheduler can read the candidates back from the 搁置 line.
+func ModelParkReason(statuses []modelhealth.Status) string {
+	parts := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		parts = append(parts, s.Ref.String()+" 至 "+s.Until.UTC().Format(time.RFC3339))
+	}
+	return ModelParked + "：" + strings.Join(parts, "；")
 }

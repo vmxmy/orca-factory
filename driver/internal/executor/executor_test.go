@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -14,7 +15,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -62,6 +65,9 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 type fakeIssues struct {
 	issues.Store
 	comments []string
+	updates  []string
+	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
+	commentsAtUpdate []int
 }
 
 func (f *fakeIssues) Repository() string { return "acme/demo" }
@@ -85,7 +91,9 @@ func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (task.Com
 	f.comments = append(f.comments, body)
 	return task.Comment{}, nil
 }
-func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error) {
+func (f *fakeIssues) UpdateIssue(_ context.Context, _, state string, add, remove []string) (task.Issue, error) {
+	f.updates = append(f.updates, fmt.Sprint(state, add, remove))
+	f.commentsAtUpdate = append(f.commentsAtUpdate, len(f.comments))
 	return task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}}}, nil
 }
 
@@ -416,6 +424,204 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 			}
 			if !strings.Contains(strings.Join(ledger.comments, "\n"), "自动扩 SCOPE："+tc.files+"，依据："+category) {
 				t.Fatalf("missing scope audit: %q", ledger.comments)
+			}
+		})
+	}
+}
+
+// screenOrca shows a quiet worker terminal whose rendered screen is screen.
+// The second worker start, the redo, cancels the run.
+type screenOrca struct {
+	*livenessOrca
+	screen       orca.Receipt
+	output       int64
+	starts       []orca.StartOptions
+	cancel       context.CancelFunc
+	reportAtStop bool
+	// lost serves the task back at ready without a dispatch, as Orca does
+	// after losing it (resolver.LostDispatch).
+	lost bool
+}
+
+func (o *screenOrca) TaskList(ctx context.Context, run string) ([]orca.Task, error) {
+	if o.lost && len(o.starts) < 2 {
+		return []orca.Task{{ID: "task_one", RunID: "run_one", Status: "ready"}}, nil
+	}
+	return o.livenessOrca.TaskList(ctx, run)
+}
+
+func (o *screenOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
+	return []orca.Terminal{{Handle: "term_worker", WorktreePath: o.worker.WorktreePath(), LastOutputAt: o.output}}, nil
+}
+
+func (o *screenOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Receipt, error) {
+	if opts.Dispatch != "ctx_one" || opts.Source != "terminal" {
+		return nil, errors.New("unexpected worker read")
+	}
+	return o.screen, nil
+}
+
+func (o *screenOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
+	if o.starts = append(o.starts, opts); len(o.starts) == 2 {
+		o.cancel()
+	}
+	return o.livenessOrca.WorkerStart(ctx, req, opts)
+}
+
+// WorkerStop lands worker_done with the stop when reportAtStop is set.
+func (o *screenOrca) WorkerStop(ctx context.Context, request, dispatch string) (orca.Receipt, error) {
+	o.report = o.report || o.reportAtStop
+	return o.livenessOrca.WorkerStop(ctx, request, dispatch)
+}
+
+// redoRecovery accepts any child spec and counts correction sessions.
+type redoRecovery struct {
+	recoveryService
+	specs []string
+}
+
+func (r *redoRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	r.specs = append(r.specs, spec)
+	return "child_task", nil
+}
+
+// recordedWorkerScreen is the recorded worker-read receipt showing lines.
+func recordedWorkerScreen(t *testing.T, lines ...string) orca.Receipt {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	var terminal map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil || json.Unmarshal(envelope.Result["terminal"], &terminal) != nil {
+		t.Fatalf("recorded worker read: %v", err)
+	}
+	terminal["tail"] = lines
+	envelope.Result["terminal"], _ = json.Marshal(terminal)
+	return envelope.Result
+}
+
+// OF-594: a worker at its model's quota notice is redone on the tier's next
+// candidate without a correction session and without charging the correction
+// or infra budget, whether it sat at the notice or exited after it. With every
+// candidate unavailable the ticket is parked for the model instead; worker_done
+// landing with the stop wins over the model report.
+func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
+	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "reported while probing", "reported while probing quoted", "quoted"} {
+		t.Run(scenario, func(t *testing.T) {
+			e, _, l, _, _, ticket := fixture(t, "new-sha")
+			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
+			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
+			verdict := "unverifiable"
+			if scenario == "exited" || strings.HasPrefix(scenario, "reported while probing") {
+				verdict = "exited"
+			}
+			live := livenessFixture(t, verdict, "")
+			live.worker.DispatchStatus, live.worker.Projection.Stage.Detail = "dispatched", ""
+			stopped := live.worker
+			stopped.DispatchStatus = "failed"
+			live.stopped = &stopped
+			if scenario == "lost" {
+				// The recorded worker-read projection: stage.worker=failed, liveness unverifiable.
+				live.worker.DispatchStatus, live.worker.Projection.Stage.Worker = "failed", "failed"
+			}
+			now := e.Now()
+			e.Now = func() time.Time { return now }
+			registry, err := modelhealth.Open(e.Config.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}
+			if scenario == "exhausted" {
+				if err := registry.Record(modelhealth.Status{Ref: fallback, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			e.ProbeModel = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				live.report = live.report || strings.HasPrefix(scenario, "reported while probing")
+				if strings.HasSuffix(scenario, "quoted") {
+					return modelhealth.Classify(ref, "ok", nil, now)
+				}
+				return modelhealth.Classify(ref, string(limit), errors.New("exit status 1"), now)
+			}
+			o := &screenOrca{livenessOrca: live, screen: screen, output: now.UnixMilli(), cancel: cancel, reportAtStop: scenario == "reported", lost: scenario == "lost"}
+			e.Orca = o
+			r := &redoRecovery{}
+			e.Recovery = r
+			polls := 0
+			e.Sleep = func(ctx context.Context, _ time.Duration) error {
+				now = now.Add(resolver.ModelCheckDelay)
+				if polls++; polls > 4 {
+					cancel()
+				}
+				return ctx.Err()
+			}
+			result, err := e.Execute(ctx, ticket)
+			if result.State.Infra != 0 || result.State.Corrections != 0 || r.sessions != 0 {
+				t.Fatalf("model limit charged the ticket: err=%v sessions=%d state=%+v", err, r.sessions, result.State)
+			}
+			if registry, err = modelhealth.Open(e.Config.Root); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "reported while probing quoted" {
+				if len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done during an answering probe was overridden: err=%v starts=%d state=%+v", err, len(o.starts), result.State)
+				}
+				return
+			}
+			if scenario == "quoted" {
+				// The probe answers: the screen only quoted the notice.
+				if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); live.stops != 0 || len(o.starts) != 1 || s.State == modelhealth.Unavailable {
+					t.Fatalf("quoted notice stopped the worker: stops=%d starts=%d status=%+v", live.stops, len(o.starts), s)
+				}
+				return
+			}
+			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
+				t.Fatalf("registry status=%+v", s)
+			}
+			switch scenario {
+			case "quiet", "exited", "lost":
+				wantStops := 1
+				if scenario != "quiet" {
+					wantStops = 0
+				}
+				if live.stops != wantStops || len(o.starts) != 2 || o.starts[1].Agent != "codex" || o.starts[1].Model != "gpt-6.1-sol" || o.starts[1].Effort != "high" {
+					t.Fatalf("not redone on the fallback: err=%v stops=%d starts=%+v", err, live.stops, o.starts)
+				}
+				if len(r.specs) != 1 || !strings.Contains(r.specs[0], "model unavailable: claude:claude-fable-5-2:xhigh") {
+					t.Fatalf("redo spec=%q", r.specs)
+				}
+			case "exhausted":
+				park := l.comments[len(l.comments)-1]
+				if err != nil || len(o.starts) != 1 || !strings.HasPrefix(park, "搁置：模型不可用：claude:claude-fable-5-2:xhigh 至 ") || !strings.Contains(park, "；codex:gpt-6.1-sol:high 至 ") || !strings.Contains(park, "\n归属: "+string(machine.OwnerNone)) {
+					t.Fatalf("not parked for the model: err=%v starts=%d comments=%q", err, len(o.starts), l.comments)
+				}
+				if got := l.updates[len(l.updates)-1]; got != "Todo[parked] [ready-for-agent auto-impl auto-failed]" {
+					t.Fatalf("park labels=%q", got)
+				}
+				// The reason, without an owner line, precedes the labels; ownership is released after them.
+				before := l.comments[l.commentsAtUpdate[len(l.commentsAtUpdate)-1]-1]
+				if reason, _, _ := strings.Cut(park, "\n"); before != reason || strings.Contains(before, "归属") || l.commentsAtUpdate[len(l.commentsAtUpdate)-1] != len(l.comments)-1 {
+					t.Fatalf("park writes out of order: comments=%q at update=%v", l.comments, l.commentsAtUpdate)
+				}
+			case "reported while probing":
+				if len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done during the probe was overridden: err=%v starts=%d specs=%d state=%+v", err, len(o.starts), len(r.specs), result.State)
+				}
+			case "reported":
+				if live.stops != 1 || len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done at the stop was overridden: err=%v starts=%d specs=%d state=%+v", err, len(o.starts), len(r.specs), result.State)
+				}
 			}
 		})
 	}

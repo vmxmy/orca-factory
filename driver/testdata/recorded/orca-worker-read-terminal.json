@@ -1,0 +1,112 @@
+{
+  "id": "2f031005-d133-4b07-8634-d612606d9498",
+  "ok": true,
+  "result": {
+    "dispatchId": "ctx_9b85bd4ea87f",
+    "source": "terminal",
+    "sourceIdentity": "t2bkVPatXgq8C5wQvQp3dVbVjhUMlw2Y",
+    "terminal": {
+      "handle": "term_e2f609b8-7d53-4679-b6eb-38722fb6d3c1",
+      "status": "unknown",
+      "tail": [
+        "  >_ OpenAI Codex (v0.170.0)",
+        "     ~/orca/workspaces/orca-factory/OF-594-executor",
+        "                                                       ⣀⣤⣤⣤⣀⣀",
+        "                                                    ⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣦⣤⣤⣤⣤⣤⣤⡀",
+        "                                                  ⢀⣾⣿⣿⠿⠋⠉⠉⢉⣭⣿⣿⣿⣿⣿⠿⣿⣿⣿⣿⣷⣄",
+        "                                                 ⣀⣾⣿⣿⠃ ⣀⣴⣾⣿⣿⡿⠟⠋ ⣀⡀ ⠈⠙⢿⣿⣿⣧",
+        "                                              ⣀⣶⣿⣿⣿⣿⡇ ⢸⣿⣿⡿⠛⠉⢀⣠⣴⣿⣿⣿⣷⣦⣀⠈⢻⣿⣿⡇",
+        "                                             ⣰⣿⣿⡿⢿⣿⣿⡇ ⢸⣿⣿⢀⣤⣶⣿⣿⣿⠟⠛⠻⣿⣿⣿⣿⣮⣿⣿⡷",
+        "                                            ⢰⣿⣿⡟⠁⢸⣿⣿⡇ ⢸⣿⣿⣿⣿⠿⠿⣿⣿⣿⣦⣄⡀⠈⠛⠿⣿⣿⣿⣧⡀",
+        "                                            ⣾⣿⣿⠃ ⢸⣿⣿⡇ ⢸⣿⣿⠋⠁  ⠈⠙⢻⣿⣿⣿⣶⣤⡀ ⠹⢿⣿⣷⡄",
+        "                                            ⢸⣿⣿⣇ ⠸⣿⣿⣷⣦⣼⣿⣿      ⢸⣿⣿⠻⢿⣿⣿⡇ ⠘⣿⣿⣿",
+        "                                            ⠈⢿⣿⣿⣦⡀⠈⠛⠿⣿⣿⣿⣿⣄⡀  ⢀⣠⣼⣿⣿  ⣿⣿⡇  ⣿⣿⣿⠇",
+        "                                              ⢻⣿⣿⣿⣷⣦⣀⠈⠙⠻⣿⣿⣿⣶⣶⣿⣿⣿⣿⣿  ⣿⣿⡇ ⣠⣿⣿⣿",
+        "                                              ⢸⣿⣿⡿⢿⣿⣿⣿⣦⣠⣴⣿⣿⣿⡿⠟⠋⢸⣿⣿  ⣿⣿⣷⣴⣿⣿⣿⠃",
+        "                                              ⠘⣿⣿⣷ ⠈⠛⢿⣿⣿⣿⠿⠋⠉ ⣠⣴⣿⣿⣿  ⣿⣿⣿⣿⣿⠟⠁",
+        "                                               ⠻⣿⣿⣿⣤⣀ ⠈⠉ ⢀⣤⣶⣿⣿⣿⠿⠟⠁ ⣰⣿⣿⡟⠋⠁",
+        "                                                ⠈⠿⣿⣿⣿⣿⣶⣾⣿⣿⣿⣿⠟⠋⠁  ⣠⣼⣿⣿⡟",
+        "                                                   ⠙⠛⠛⠛⠻⠛⢿⣿⣿⣿⣿⣷⣾⣿⣿⣿⡿⠏",
+        "                                                          ⠈⠙⠛⠿⠿⠿⠿⠛⠉",
+        "› Ask Codex to do anything",
+        "  ? for shortcuts"
+      ],
+      "truncated": false,
+      "limited": false,
+      "oldestCursor": "0",
+      "nextCursor": "1",
+      "latestCursor": "1",
+      "returnedLineCount": 21,
+      "source": "screen"
+    },
+    "cursor": "owr1_eyJ2IjoxLCJkIjoiY3R4XzliODViZDRlYTg3ZiIsInMiOiJ0ZXJtaW5hbCIsImkiOiJ0MmJrVlBhdFhncThDNXdRdlFwM2RWYlZqaFVNbHcyWSIsInAiOjF9",
+    "status": {
+      "worker": "failed",
+      "terminal": "unknown",
+      "liveness": "exited"
+    },
+    "fallbackReason": null,
+    "warnings": [],
+    "sourceExact": true,
+    "contentComplete": true,
+    "projection": {
+      "id": "ctx_9b85bd4ea87f",
+      "dispatchId": "ctx_9b85bd4ea87f",
+      "taskId": "task_c33920f1d852",
+      "runId": "run_fafdb0f064de",
+      "role": "worker",
+      "parent": null,
+      "provider": null,
+      "host": {
+        "kind": "local",
+        "id": "local"
+      },
+      "workspace": {
+        "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/OF-594-executor",
+        "kind": "folder_or_worktree"
+      },
+      "stage": {
+        "worker": "failed",
+        "dispatch": "failed",
+        "detail": "dispatch_input",
+        "activity": "unknown"
+      },
+      "outcome": "failed",
+      "liveness": {
+        "verdict": "unverifiable",
+        "reason": "missing_status"
+      },
+      "evidence": {
+        "durable": true,
+        "liveStatus": "unavailable",
+        "lastObservedAt": null
+      },
+      "resource": {
+        "state": "owned",
+        "id": "wtr_4c0025bd1406",
+        "ownerDispatchId": "ctx_9b85bd4ea87f",
+        "releaseState": "not_requested",
+        "terminalState": "reclaimable"
+      },
+      "nextAction": {
+        "kind": "release",
+        "argv": [
+          "orchestration",
+          "worker-release",
+          "--dispatch",
+          "ctx_9b85bd4ea87f"
+        ]
+      },
+      "attention": {
+        "categories": [
+          "failure",
+          "unverifiable"
+        ],
+        "requiresAction": true
+      }
+    }
+  },
+  "_meta": {
+    "runtimeId": "b32d0c52-baef-4719-96de-001c895eb69e"
+  }
+}

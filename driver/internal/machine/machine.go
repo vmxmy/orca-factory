@@ -92,6 +92,12 @@ const (
 	// infra fault, so it is redone through correction without charging it.
 	EvWorkerUnstarted Event = "workerUnstarted"
 
+	// EvWorkerModelUnavailable is a stopped dispatch whose screen showed its
+	// model's limit or an unsupported model while another candidate of the tier
+	// is available. The model, not the ticket, failed: it is redone through
+	// correction without charging any budget.
+	EvWorkerModelUnavailable Event = "workerModelUnavailable"
+
 	// EvWorkerScopeBlocked is a failed report naming files verified to be outside
 	// SCOPE. A worker cannot change them, so a correction would only repeat it.
 	EvWorkerScopeBlocked Event = "workerScopeBlocked"
@@ -248,6 +254,12 @@ func Step(in State, ev Event, lim Limits) (State, []Effect, error) {
 			s.Phase = PhaseCorrection
 			fx = append(fx, "start-coordinator-session-for-correction")
 		}
+	case EvWorkerModelUnavailable:
+		if s.Phase != PhaseWorker || !s.ExecAlive {
+			return reject("没有在运行且有人接收的 worker")
+		}
+		s.Phase = PhaseCorrection
+		fx = append(fx, "start-coordinator-session-for-correction")
 	case EvWorkerStall:
 		if s.Phase != PhaseWorker || !s.ExecAlive {
 			return reject("没有在运行的 worker")

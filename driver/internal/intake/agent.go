@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -103,8 +104,72 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 		}
 	}
 	r.writeTicketContext(ctx)
-	args := []string{"-p", "--output-format", "json", flag, t.Session}
 	model := r.turnModel()
+	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
+	defer cancel()
+	b, err := r.claude(ctx, flag, t, model)
+	if err != nil {
+		candidates := append([]modelhealth.Ref{{Agent: "claude", Model: r.Model, Effort: r.Effort}}, r.Fallback...)
+		next, retry, modelErr := config.RetryAfterModelStatus(r.StateRoot, turnStatus(model, b, err, time.Now()), candidates, time.Now())
+		if modelErr != nil {
+			fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
+		}
+		if retry {
+			fmt.Fprintf(os.Stderr, "intake model unavailable; retrying: unavailable=%s selected=%s\n", model, next)
+			if b, err = r.claude(ctx, flag, t, next); err != nil {
+				if _, _, modelErr = config.RetryAfterModelStatus(r.StateRoot, turnStatus(next, b, err, time.Now()), nil, time.Now()); modelErr != nil {
+					fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
+				}
+			}
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("intake agent failed: %w", errors.Join(err, ctx.Err()))
+	}
+	result, ok := printResult(b)
+	if !ok || result.Subtype != "success" || result.IsError || strings.TrimSpace(result.Result) == "" {
+		return "", errors.New("intake agent returned no result")
+	}
+	return result.Result, nil
+}
+
+type claudePrintResult struct {
+	Type         string `json:"type"`
+	Subtype      string `json:"subtype"`
+	IsError      bool   `json:"is_error"`
+	Result       string `json:"result"`
+	APIErrorType string `json:"api_error_type"`
+}
+
+func printResult(b []byte) (claudePrintResult, bool) {
+	var result claudePrintResult
+	return result, json.Unmarshal(b, &result) == nil && result.Type == "result"
+}
+
+// turnStatus classifies a failed claude -p --output-format json turn. The run
+// prints an is_error result object before exiting non-zero: its result field
+// carries the message, and api_error_type not_found_error marks a model that
+// does not exist or is not accessible
+// (testdata/recorded/claude-print-json-model-error.json).
+func turnStatus(model modelhealth.Ref, output []byte, failure error, now time.Time) modelhealth.Status {
+	result, ok := printResult(output)
+	if !ok || !result.IsError {
+		var exit *exec.ExitError
+		if errors.As(failure, &exit) {
+			output = append(append(slices.Clone(output), '\n'), exit.Stderr...)
+		}
+		return modelhealth.Classify(model, string(output), failure, now)
+	}
+	if result.APIErrorType == "not_found_error" {
+		return modelhealth.Status{Ref: model, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(modelhealth.DefaultCooldown), CheckedAt: now}
+	}
+	return modelhealth.Classify(model, result.Result, failure, now)
+}
+
+// claude runs one sandboxed claude -p turn with model; on failure it returns
+// the output read so far for model error classification.
+func (r *Runner) claude(ctx context.Context, flag string, t Turn, model modelhealth.Ref) ([]byte, error) {
+	args := []string{"-p", "--output-format", "json", flag, t.Session}
 	if model.Model != "" {
 		args = append(args, "--model", model.Model)
 	}
@@ -113,13 +178,11 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	}
 	args = append(args, "--append-system-prompt-file", filepath.Join(r.Checkout, "scripts/agent-gates/roles/intake-chat.md"),
 		"--tools", "Read,Grep,Glob,Skill", "--permission-mode", "dontAsk", "--restricted", "--strict-mcp-config", "--settings", agentSettings)
-	ctx, cancel := context.WithTimeout(ctx, r.Timeout)
-	defer cancel()
 	// The prompt travels on stdin: --tools is variadic, and an untrusted message
 	// starting with "-" must never be parsed as a flag.
 	sandbox, err := r.sandboxArgs()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	bwrap := r.Bwrap
 	if bwrap == "" {
@@ -132,20 +195,7 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = time.Second
-	b, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("intake agent failed: %w", errors.Join(err, ctx.Err()))
-	}
-	var result struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-	}
-	if json.Unmarshal(b, &result) != nil || result.Type != "result" || result.Subtype != "success" || result.IsError || strings.TrimSpace(result.Result) == "" {
-		return "", errors.New("intake agent returned no result")
-	}
-	return result.Result, nil
+	return cmd.Output()
 }
 
 // sandboxArgs confines claude with the operating system, under --restricted:

@@ -7,9 +7,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -23,6 +25,14 @@ const StartUnobservedWindow = 10 * time.Minute
 
 // NoProgressWindow bounds a started resolver round with no terminal output.
 const NoProgressWindow = 15 * time.Minute
+
+// ModelCheckDelay is how long a round's terminal stays quiet before its screen
+// is read for a model limit or unsupported-model error (OF-594).
+const ModelCheckDelay = time.Minute
+
+// modelScreenLines bounds the rendered screen rows read for a model error, so
+// ticket text the agent printed earlier cannot match.
+const modelScreenLines = 20
 
 type Record struct {
 	TopLaunchAccepted bool      `json:"top_launch_accepted,omitempty"`
@@ -52,6 +62,9 @@ type Record struct {
 	UnobservedSince time.Time `json:"unobserved_since,omitzero"`
 	ProgressSince   time.Time `json:"progress_since,omitzero"`
 	LastOutputAt    int64     `json:"last_output_at,omitempty"`
+	// ModelCheckedOutput is the LastOutputAt whose screen was last checked for
+	// a model error without confirming one.
+	ModelCheckedOutput int64 `json:"model_checked_output,omitempty"`
 	// Failures counts consecutive failed attempts before this one. It is derived
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
@@ -60,6 +73,14 @@ type Record struct {
 // Undispatched marks a waiting round that ended before any dispatch reached
 // Orca; it neither counts as a failure nor resets the failure count.
 const Undispatched = "undispatched"
+
+// ModelUnavailable marks a waiting round its agent's model ended: the model is
+// recorded unavailable and the round counts as no failure of the ticket.
+const ModelUnavailable = "model-unavailable"
+
+type ModelRecorder interface {
+	Record(modelhealth.Status) error
+}
 
 type Store interface {
 	Load(context.Context) (*Record, error)
@@ -85,6 +106,11 @@ type Controller struct {
 	Now   func() time.Time
 	// Heartbeat records the resolver's own Run for the scheduler; nil writes none.
 	Heartbeat *orca.Heartbeat
+	// Models receives a model the round's screen shows unavailable; nil skips the screen read.
+	Models ModelRecorder
+	// Probe sends one request to a model the screen shows unavailable; only its
+	// confirmation is recorded. Nil skips the screen read.
+	Probe func(context.Context, modelhealth.Ref) modelhealth.Status
 }
 
 // Step performs one recoverable observation/transition. Mutations reuse frozen
@@ -262,9 +288,20 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		case AwaitsDispatch(*task):
 			if reason, lost := LostDispatch(*task, p.Dispatch, row != nil, status); lost {
 				p.Result, p.Outcome, p.Phase = reason, "failed", "result"
+				if model, ok, err := c.endedModel(ctx, p, now); err != nil {
+					return nil, err
+				} else if ok {
+					// A lost dispatch has nothing to release, as on the failed path.
+					p.Outcome, p.Result, p.Phase, p.RetryAt = ModelUnavailable, modelResult(model, p.Dispatch, "lost"), "waiting", now
+				}
 			}
 		case DispatchEnded(status):
 			p.Result, p.Outcome, p.Phase = "dispatch ended without a worker report", "failed", "settled"
+			if model, ok, err := c.endedModel(ctx, p, now); err != nil {
+				return nil, err
+			} else if ok {
+				p.Outcome, p.Result = ModelUnavailable, modelResult(model, p.Dispatch, "ended")
+			}
 		case task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled":
 			p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
 		case task.Status == "blocked":
@@ -284,7 +321,7 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 				return p, err
 			}
 		}
-		if p.Top && !p.TopModelAccepted {
+		if p.Top && !p.TopModelAccepted && p.Outcome != ModelUnavailable {
 			result, _ := json.Marshal(Resolution{Action: "escalate", Reason: "终审模型未获响应，不更换模型", Body: p.Result})
 			p.Result, p.Outcome = string(result), "failed"
 		}
@@ -312,6 +349,9 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			}
 		}
 		p.Phase = "result"
+		if p.Outcome == ModelUnavailable {
+			p.Phase, p.RetryAt = "waiting", now
+		}
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err
 		}
@@ -361,26 +401,143 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 		p.ProgressSince, p.LastOutputAt = now, output
 		return c.Store.Save(ctx, *p)
 	}
+	if c.Models != nil && c.Probe != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay && p.ModelCheckedOutput != output {
+		status, ok, checked := c.unavailableModel(ctx, p, now)
+		if ok {
+			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
+				return err
+			}
+			p.Phase, p.Outcome, p.Result = "settled", ModelUnavailable, modelResult(status, p.Dispatch, "stopped")
+			return nil
+		}
+		// The same quiet screen is read, and its model probed, once; a failed
+		// read, probe or record is retried on the next step.
+		if checked {
+			p.ModelCheckedOutput = output
+			if err := c.Store.Save(ctx, *p); err != nil {
+				return err
+			}
+		}
+	}
 	if now.Sub(p.ProgressSince) < NoProgressWindow {
 		return nil
 	}
-	if reported, err := c.readReport(ctx, p); err != nil || reported {
-		return err
-	}
-	_, stopErr := c.Orca.WorkerStop(ctx, stopRequest, p.Dispatch)
-	row, err := c.dispatchRow(ctx, p)
-	if err != nil {
-		return errors.Join(stopErr, err)
-	}
-	if row == nil || !DispatchEnded(row.Status) {
-		return errors.Join(stopErr, errors.New("resolver stop of stalled dispatch unconfirmed"))
-	}
-	if reported, err := c.readReport(ctx, p); err != nil || reported {
+	if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
 		return err
 	}
 	p.Result = fmt.Sprintf("worker made no progress for %s; dispatch %s stopped; last output %s", NoProgressWindow, p.Dispatch, time.UnixMilli(output).UTC().Format(time.RFC3339))
 	p.Outcome, p.Phase = "failed", "settled"
 	return nil
+}
+
+// stopQuiet stops a quiet dispatch unless a report settles the round first.
+// It reports true only when a worker read after the stop shows it ended.
+func (c *Controller) stopQuiet(ctx context.Context, p *Record, stopRequest string) (bool, error) {
+	if reported, err := c.readReport(ctx, p); err != nil || reported {
+		return false, err
+	}
+	_, stopErr := c.Orca.WorkerStop(ctx, stopRequest, p.Dispatch)
+	row, err := c.dispatchRow(ctx, p)
+	if err != nil {
+		return false, errors.Join(stopErr, err)
+	}
+	if row == nil || !DispatchEnded(row.Status) {
+		return false, errors.Join(stopErr, errors.New("resolver stop of stalled dispatch unconfirmed"))
+	}
+	reported, err := c.readReport(ctx, p)
+	return !reported && err == nil, err
+}
+
+// unavailableModel reports a model error on the round's screen once it is
+// recorded. An unreadable screen or a failed record leaves the round to the
+// no-progress window.
+func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.Time) (status modelhealth.Status, unavailable, checked bool) {
+	status, err := c.screenModel(ctx, p, now)
+	if err == nil && status.State == modelhealth.Unavailable {
+		// The agent may only quote such an error; a probe of the model decides.
+		confirmed := c.Probe(ctx, status.Ref)
+		if confirmed.State != modelhealth.Unavailable {
+			// A probe answers once per screen: an inconclusive one is not repeated
+			// every step, and the no-progress window still applies.
+			runx.LoggerFrom(ctx).Info("resolver screen model error not confirmed by probe", "dispatch", p.Dispatch, "reason", confirmed.Reason)
+			return modelhealth.Status{}, false, true
+		}
+		status = ConfirmedStatus(status, confirmed)
+		if err = c.Models.Record(status); err == nil {
+			return status, true, true
+		}
+	}
+	if err != nil {
+		runx.LoggerFrom(ctx).Warn("resolver screen model check failed", "dispatch", p.Dispatch, "err", err)
+		return modelhealth.Status{}, false, false
+	}
+	return modelhealth.Status{}, false, true
+}
+
+// endedModel checks the screen of a dispatch that ended without a report. A
+// report arriving during the probe settles the round instead.
+func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool, error) {
+	if c.Models == nil || c.Probe == nil || p.Dispatch == "" {
+		return modelhealth.Status{}, false, nil
+	}
+	status, ok, _ := c.unavailableModel(ctx, p, now)
+	// worker_done may land while the screen is read and the model probed.
+	reported, err := c.readReport(ctx, p)
+	return status, ok && !reported && err == nil, err
+}
+
+func modelResult(status modelhealth.Status, dispatch, end string) string {
+	return fmt.Sprintf("model unavailable: %s %s until %s; dispatch %s %s", status.Ref, status.Reason, status.Until.UTC().Format(time.RFC3339), dispatch, end)
+}
+
+// screenModel classifies the bottom of the round's rendered screen.
+func (c *Controller) screenModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, error) {
+	reader, ok := c.Orca.(ScreenReader)
+	if !ok {
+		return modelhealth.Status{}, errors.New("resolver screen read unavailable")
+	}
+	return ScreenModel(ctx, reader, p.Dispatch, modelhealth.Ref{Agent: p.Agent, Model: p.Model, Effort: p.Effort}, now)
+}
+
+// ConfirmedStatus is the probe's confirmation of a screen's model error. A
+// reset time either one names outlasts the default cooldown, and the later of
+// two named resets wins.
+func ConfirmedStatus(screen, probe modelhealth.Status) modelhealth.Status {
+	named := func(s modelhealth.Status) bool { return !s.Until.Equal(s.CheckedAt.Add(modelhealth.DefaultCooldown)) }
+	if named(screen) && (!named(probe) || screen.Until.After(probe.Until)) {
+		probe.Until = screen.Until
+	}
+	return probe
+}
+
+// ScreenReader reads a dispatch's rendered terminal screen.
+type ScreenReader interface {
+	WorkerRead(context.Context, orca.ReadOptions) (orca.Receipt, error)
+}
+
+// busyMarker is the footer Claude Code and Codex show while a turn runs
+// (testdata/recorded/orca-worker-read-terminal-busy.json). A model error ends
+// the turn, so a screen still showing it is a working agent whose output only
+// quotes such an error.
+const busyMarker = "esc to interrupt"
+
+// ScreenModel classifies the bottom rows of a dispatch's rendered screen for
+// ref's model limit or unsupported model. A screen of a turn still running is
+// never classified as a model error.
+func ScreenModel(ctx context.Context, reader ScreenReader, dispatch string, ref modelhealth.Ref, now time.Time) (modelhealth.Status, error) {
+	receipt, err := reader.WorkerRead(ctx, orca.ReadOptions{Dispatch: dispatch, Source: "terminal", Limit: modelScreenLines})
+	if err != nil {
+		return modelhealth.Status{}, err
+	}
+	var screen struct{ Tail []string }
+	if err = json.Unmarshal(receipt["terminal"], &screen); err != nil {
+		return modelhealth.Status{}, fmt.Errorf("screen read: %w", err)
+	}
+	text := strings.Join(screen.Tail[max(0, len(screen.Tail)-modelScreenLines):], "\n")
+	if strings.Contains(strings.ToLower(text), busyMarker) {
+		return modelhealth.Status{Ref: ref, State: modelhealth.Unknown, Reason: "turn_running", CheckedAt: now}, nil
+	}
+	return modelhealth.Classify(ref, text, nil, now), nil
 }
 
 func (p *Record) acceptReport(task orca.Task, report *orca.WorkerReport) error {
