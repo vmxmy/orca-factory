@@ -737,25 +737,59 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			continue
 		}
 		protocol := protocolComments(comments)
-		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(protocol, t.Parked) {
+		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(comments, t.Parked) {
 			continue
 		}
-		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
-			continue
+		// The ledger has no compare-and-set, so detect concurrent parks by comment ID and
+		// keep the ticket parked whenever a reread cannot rule an unseen park out.
+		knownParkIDs := make(map[string]bool)
+		for _, c := range protocol {
+			if strings.HasPrefix(c.Body, "搁置：") {
+				knownParkIDs[c.ID] = true
+			}
 		}
-		// The ledger has no compare-and-set: a person may park the ticket again
-		// between the reread and the label write. Read once more and put the park
-		// back if a newer 搁置 arrived.
-		if comments, err = client.ListComments(ctx, t.ID); err != nil || latestPark(protocolComments(comments)) != t.Parked || !modelParkMarked(protocolComments(comments), t.Parked) {
-			// An unverified resume is undone too: the next tick sees no park to retry.
+		const recovery = "恢复：模型候选已恢复可用，自动解除「" + config.ModelParked + "」搁置"
+		if _, err := client.CreateComment(ctx, t.ID, recovery); err != nil {
+			// A lost receipt may hide a stored recovery that already ends the marker.
+			after, readErr := client.ListComments(ctx, t.ID)
+			if readErr != nil {
+				problems = append(problems, fmt.Errorf("%s: resume comment unconfirmed, manual recovery required: %w", t.Identifier, errors.Join(err, readErr)))
+				continue
+			}
+			if !slices.ContainsFunc(after, func(c task.Comment) bool {
+				return c.Body == recovery && !slices.ContainsFunc(comments, func(old task.Comment) bool { return old.ID == c.ID })
+			}) {
+				problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
+				continue
+			}
+		}
+		_, labelErr := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel})
+		if labelErr != nil {
+			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, labelErr))
+		}
+		comments, err = client.ListComments(ctx, t.ID)
+		if err != nil {
 			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
-				problems = append(problems, fmt.Errorf("%s: park not restored after unverified resume: %w", t.Identifier, errors.Join(err, restoreErr)))
+				err = errors.Join(err, restoreErr)
+			}
+			problems = append(problems, fmt.Errorf("%s: reread comments after resume, manual recovery required: %w", t.Identifier, err))
+			continue
+		}
+		newPark := slices.ContainsFunc(protocolComments(comments), func(c task.Comment) bool {
+			return strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID]
+		})
+		if !newPark && labelErr != nil {
+			// A park stored between the reread and this marker makes modelParkMarked
+			// ignore the marker, so it cannot hand that park back to the model.
+			if _, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); err != nil {
+				problems = append(problems, fmt.Errorf("%s: restore model park marker, manual recovery required: %w", t.Identifier, err))
 			}
 			continue
 		}
-		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
+		if newPark {
+			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
+				problems = append(problems, fmt.Errorf("%s: apply new park labels, manual recovery required: %w", t.Identifier, err))
+			}
 		}
 	}
 	return errors.Join(problems...)
@@ -848,32 +882,53 @@ func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt 
 // full 搁置 alone, as an older escalation reason reading like a model park, or
 // a person parking again after a resume, never qualifies.
 func modelParkMarked(comments []task.Comment, reason string) bool {
-	rows := slices.Clone(comments)
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
 	marked := false
-	for _, c := range rows {
+	for _, c := range liveParkRows(comments) {
 		switch {
 		case strings.HasPrefix(c.Body, "恢复："):
 			marked = false
-		case c.Body == "搁置："+reason:
+		case c.CarriesProtocol() && c.Body == "搁置："+reason:
 			marked = true
 		}
 	}
 	return marked
 }
 
-// latestPark returns the reason of the newest 搁置 comment.
-func latestPark(comments []task.Comment) string {
-	reason, _ := parkedState(task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}, comments)
-	return reason
+// liveParkRows sorts comments by time and drops reason-only 搁置 markers that
+// follow a full protocol 搁置 written after a 恢复 and before the next active
+// claim. Such a marker was restored after a failed resume and must not hide
+// or hand back a concurrent park.
+func liveParkRows(comments []task.Comment) []task.Comment {
+	rows := slices.Clone(comments)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	live := rows[:0]
+	resumed, voided := false, false
+	for _, c := range rows {
+		body := "\n" + c.Body
+		park := strings.HasPrefix(c.Body, "搁置：")
+		switch {
+		case strings.HasPrefix(c.Body, "恢复："):
+			resumed, voided = true, false
+		case !c.CarriesProtocol():
+		case park && !strings.Contains(c.Body, "\n"):
+			if voided {
+				continue
+			}
+		case park:
+			voided = voided || resumed
+		case strings.Contains(body, "\n归属: ") && !strings.Contains(body, "\n归属: 无"):
+			resumed, voided = false, false
+		}
+		live = append(live, c)
+	}
+	return live
 }
 
 // parkedState returns the latest 搁置 reason of a ticket labeled parked. Without
 // the label, resumed reports that 搁置 is still the latest ownership event: a
 // person restored the ticket.
 func parkedState(issue task.Issue, comments []task.Comment) (reason string, resumed bool) {
-	rows := append([]task.Comment(nil), comments...)
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	rows := liveParkRows(comments)
 	parkedLast := false
 	for _, c := range rows {
 		line, park := strings.CutPrefix(c.Body, "搁置：")

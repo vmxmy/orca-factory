@@ -1126,7 +1126,14 @@ func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
 
 type labelIssues struct {
 	*fakeIssues
-	added, removed [][]string
+	added, removed        [][]string
+	commentErr, updateErr error
+	unconfirmedErr        error
+	rereadErr             error
+	// lostErr stores the next comment, then reports it failed: a lost receipt.
+	lostErr error
+	// beforeComment runs inside the next CreateComment, as a concurrent writer.
+	beforeComment func()
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
 	// duringUpdate runs inside the next UpdateIssue, as a concurrent writer.
@@ -1138,9 +1145,190 @@ func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, re
 	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
 	if during := l.duringUpdate; during != nil {
 		l.duringUpdate = nil
-		during()
+		defer during()
 	}
-	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+	if l.updateErr != nil {
+		return task.Issue{}, l.updateErr
+	}
+	i := slices.IndexFunc(l.issues, func(issue task.Issue) bool { return issue.ID == id })
+	if i < 0 {
+		return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+	}
+	ledger := mergeIssues{issue: l.issues[i], labels: true}
+	issue, err := ledger.UpdateIssue(ctx, id, state, add, remove)
+	if err != nil {
+		return task.Issue{}, err
+	}
+	l.issues[i] = issue
+	if l.unconfirmedErr != nil {
+		err, l.unconfirmedErr = l.unconfirmedErr, nil
+		return task.Issue{}, err
+	}
+	return issue, nil
+}
+
+func (l *labelIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if before := l.beforeComment; before != nil {
+		l.beforeComment = nil
+		before()
+	}
+	if l.commentErr != nil {
+		return task.Comment{}, l.commentErr
+	}
+	c, err := l.fakeIssues.CreateComment(ctx, id, body)
+	if l.lostErr != nil {
+		err, l.lostErr = l.lostErr, nil
+		return task.Comment{}, err
+	}
+	return c, err
+}
+
+func (l *labelIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	if len(l.added) > 0 && l.rereadErr != nil {
+		return nil, l.rereadErr
+	}
+	return l.fakeIssues.ListComments(ctx, id)
+}
+
+func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
+	const reason = "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
+	const marker = "搁置：" + reason
+	const recovery = "恢复：模型候选已恢复可用，自动解除「模型不可用」搁置"
+	const ready = "ready-for-agent"
+	recovered, remarked := []string{recovery}, []string{recovery, marker}
+	failure := errors.New("label update failed")
+	commentFailure := errors.New("recovery comment failed")
+	markerFailure := errors.New("marker write failed")
+	readFailure := errors.New("reread failed")
+	parkFailure := errors.New("new park label update failed")
+	parked, _ := recordedPark(t)
+	lane3 := parked.Comments.Nodes[1]
+	receiptLost := errors.New("recovery comment receipt lost")
+	operatorResume := task.Comment{ID: "operator-resume", Body: "恢复：人工恢复模型搁置", CreatedAt: time.Now()}
+
+	for _, tc := range []struct {
+		name                    string
+		commentErr, updateErr   error
+		unconfirmedErr, readErr error
+		markerErr, parkErr      error
+		lostErr                 error
+		concurrent              task.Comment
+		concurrentAtMarker      task.Comment
+		wantUpdates             int
+		wantComments            []string
+		wantLabel               string
+		wantManual, wantRetry   bool
+	}{
+		{name: "success", wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+		{name: "comment", commentErr: commentFailure, wantLabel: parkedLabel, wantRetry: true},
+		{name: "comment receipt lost", lostErr: receiptLost, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+		{name: "labels", updateErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: parkedLabel, wantRetry: true},
+		{name: "labels unconfirmed", unconfirmedErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: ready},
+		{name: "labels and marker", updateErr: failure, markerErr: markerFailure, wantUpdates: 1, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "newer park", concurrent: lane3, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel},
+		{name: "newer park after label error", updateErr: failure, concurrent: lane3, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel},
+		{name: "newer park label failure", concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: ready, wantManual: true},
+		{name: "newer park and both label writes fail", updateErr: failure, concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "reread", readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "labels and reread", updateErr: failure, readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "newer park before marker", updateErr: failure, concurrentAtMarker: lane3, wantUpdates: 1, wantComments: remarked, wantLabel: parkedLabel},
+		{name: "operator resume during resume", concurrent: operatorResume, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+			store := &labelIssues{
+				fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(lane3.Body, marker)},
+				commentErr: tc.commentErr, updateErr: tc.updateErr, unconfirmedErr: tc.unconfirmedErr, rereadErr: tc.readErr, lostErr: tc.lostErr,
+			}
+			store.duringUpdate = func() {
+				if tc.concurrent.ID != "" {
+					store.issueComments = append(store.issueComments, tc.concurrent)
+				}
+				store.commentErr, store.updateErr = tc.markerErr, tc.parkErr
+				if tc.concurrentAtMarker.ID != "" {
+					store.beforeComment = func() {
+						park := tc.concurrentAtMarker
+						park.CreatedAt = time.Now()
+						store.issueComments = append(store.issueComments, park)
+					}
+				}
+			}
+			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
+			ticket := Ticket{ID: "id", Identifier: "OF-616", Repo: "a", Parked: reason}
+			err := r.ResumeModelParks(context.Background(), []Ticket{ticket})
+			failures := []error{tc.commentErr, tc.updateErr, tc.unconfirmedErr, tc.readErr, tc.markerErr, tc.parkErr}
+			for _, want := range failures {
+				if want != nil && !errors.Is(err, want) {
+					t.Errorf("resume error = %v, want %v", err, want)
+				}
+			}
+			if errors.Join(failures...) == nil && err != nil {
+				t.Errorf("unexpected resume error: %v", err)
+			}
+			if manual := err != nil && strings.Contains(err.Error(), "manual recovery required"); manual != tc.wantManual {
+				t.Errorf("manual recovery required = %t, want %t (err=%v)", manual, tc.wantManual, err)
+			}
+			wantAdded := [][]string{{ready}, {parkedLabel}}[:tc.wantUpdates]
+			wantRemoved := [][]string{{parkedLabel}, {ready}}[:tc.wantUpdates]
+			if !slices.EqualFunc(store.added, wantAdded, slices.Equal[[]string]) || !slices.EqualFunc(store.removed, wantRemoved, slices.Equal[[]string]) {
+				t.Errorf("label updates added=%v removed=%v, want added=%v removed=%v", store.added, store.removed, wantAdded, wantRemoved)
+			}
+			if !slices.Equal(store.comments, tc.wantComments) || len(store.commentsAtUpdate) != tc.wantUpdates || tc.wantUpdates > 0 && store.commentsAtUpdate[0] != 1 {
+				t.Errorf("wrote comments=%q, counts at label updates=%v, want comments=%q with recovery first", store.comments, store.commentsAtUpdate, tc.wantComments)
+			}
+			fresh := store.issues[0]
+			if len(fresh.Labels.Nodes) == 0 || slices.ContainsFunc(fresh.Labels.Nodes, func(l task.NamedID) bool { return l.Name != tc.wantLabel }) {
+				t.Errorf("labels=%v, want only %s", fresh.Labels.Nodes, tc.wantLabel)
+			}
+			current, _ := parkedState(fresh, protocolComments(store.issueComments))
+			if retry := current == reason && modelParkMarked(store.issueComments, reason); retry != tc.wantRetry {
+				t.Errorf("retryable model park=%t, want %t (reason=%q comments=%v)", retry, tc.wantRetry, current, store.issueComments)
+			}
+		})
+	}
+	t.Run("model park after reclaimed non-model park", func(t *testing.T) {
+		comments := evidenceComments(marker, recovery, lane3.Body, "阶段: worker 运行中\n归属: 执行器", marker)
+		if !modelParkMarked(comments, reason) {
+			t.Fatal("model park after a reclaim not recognized")
+		}
+		voided := slices.Delete(slices.Clone(comments), 3, 4)
+		if modelParkMarked(voided, reason) {
+			t.Fatal("marker after a newer non-model park recognized as a model park")
+		}
+		labeled := task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+		if current, _ := parkedState(labeled, voided); current != "lane 3 路径须人合并" {
+			t.Fatalf("voided marker replaced the park reason: %q", current)
+		}
+		released := slices.Insert(slices.Clone(voided), 3, task.Comment{ID: "release", Body: "阶段: 待领\n归属: 无", CreatedAt: time.Unix(4, 0)})
+		released[4].CreatedAt = time.Unix(5, 0)
+		if modelParkMarked(released, reason) {
+			t.Fatal("a release receipt revived a voided marker")
+		}
+		operatorPark := append(evidenceComments(marker), task.Comment{ID: "operator-park", Source: task.SourceOperator, Body: "搁置：待确认", CreatedAt: time.Unix(2, 0)})
+		if !modelParkMarked(operatorPark, reason) {
+			t.Fatal("an operator 搁置 comment ended the model park")
+		}
+	})
+	t.Run("operator recovery ends model park", func(t *testing.T) {
+		reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
+		var recording struct{ Comments []task.Comment }
+		if err := json.Unmarshal(recorded(t, "ledger-comments-model-park-operator-resume.json"), &recording); err != nil {
+			t.Fatal(err)
+		}
+		if len(recording.Comments) != 1 || recording.Comments[0].Source != task.SourceOperator {
+			t.Fatalf("recorded operator resume=%+v", recording.Comments)
+		}
+		comments := append(evidenceComments("搁置："+reason), recording.Comments[0])
+		issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+		store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: comments}}
+		r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
+		if err := r.ResumeModelParks(context.Background(), []Ticket{{ID: "id", Repo: "a", Parked: reason}}); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.added) != 0 || len(store.comments) != 0 {
+			t.Fatalf("operator recovery left old model marker active: labels=%v comments=%q", store.added, store.comments)
+		}
+	})
 }
 
 func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
