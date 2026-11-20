@@ -1263,8 +1263,14 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 	}
 	t.Run("operator recovery ends model park", func(t *testing.T) {
 		reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
-		comments := evidenceComments("搁置："+reason, "恢复：人工恢复模型搁置")
-		comments[1].Source = task.SourceOperator
+		var recording struct{ Comments []task.Comment }
+		if err := json.Unmarshal(recorded(t, "ledger-comments-model-park-operator-resume.json"), &recording); err != nil {
+			t.Fatal(err)
+		}
+		if len(recording.Comments) != 1 || recording.Comments[0].Source != task.SourceOperator {
+			t.Fatalf("recorded operator resume=%+v", recording.Comments)
+		}
+		comments := append(evidenceComments("搁置："+reason), recording.Comments[0])
 		issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
 		store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: comments}}
 		r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
