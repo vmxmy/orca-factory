@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,10 @@ func TestReviewerWithoutFallbackRecordsModelError(t *testing.T) {
 		}
 		if got := registry.Status(primary, time.Now()).State == modelhealth.Unavailable; got != tc.recorded {
 			t.Fatalf("command %q recorded=%v", tc.command, got)
+		}
+		// A record under any other key, such as the quoted model, is a record too.
+		if _, err := os.Stat(filepath.Join(state, "model-health.json")); !tc.recorded && !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("command %q wrote the registry: %v", tc.command, err)
 		}
 	}
 }

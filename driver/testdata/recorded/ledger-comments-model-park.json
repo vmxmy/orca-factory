@@ -1,0 +1,14 @@
+{
+  "comments": [
+    {
+      "id": "reczz28boGFhTtkZ",
+      "body": "搁置：模型不可用：codex:gpt-6.2-astra:max 至 2026-11-21T01:00:00Z；claude:claude-opus-5-5:max 至 2026-11-20T06:30:00Z；codex:gpt-6-astra:xhigh 至 2026-11-20T06:00:00Z",
+      "createdAt": "2026-11-20T13:03:32+08:00"
+    },
+    {
+      "id": "reczz28boGNnab9O",
+      "body": "恢复：模型候选已恢复可用，自动解除「模型不可用」搁置",
+      "createdAt": "2026-11-20T13:03:39+08:00"
+    }
+  ]
+}

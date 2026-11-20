@@ -1295,6 +1295,39 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	}
 }
 
+// The ledger returns a model park marker and its 恢复 as written
+// (testdata/recorded/ledger-comments-model-park.json): the marker names every
+// candidate, and the 恢复 after it ends the marker.
+func TestRecordedLedgerModelParkMarker(t *testing.T) {
+	var recording struct{ Comments []task.Comment }
+	if err := json.Unmarshal(recorded(t, "ledger-comments-model-park.json"), &recording); err != nil {
+		t.Fatal(err)
+	}
+	if len(recording.Comments) != 2 {
+		t.Fatalf("recorded comments=%d", len(recording.Comments))
+	}
+	labeled := task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+	marker := protocolComments(recording.Comments[:1])
+	reason, _ := parkedState(labeled, marker)
+	if !modelParkMarked(marker, reason) {
+		t.Fatalf("recorded marker not a model park: %q", reason)
+	}
+	candidates, err := modelParkCandidates(reason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, ref := range candidates {
+		names = append(names, ref.String())
+	}
+	if want := []string{"codex:gpt-6.2-astra:max", "claude:claude-opus-5-5:max", "codex:gpt-6-astra:xhigh"}; !slices.Equal(names, want) {
+		t.Fatalf("candidates=%v want %v", names, want)
+	}
+	if modelParkMarked(protocolComments(recording.Comments), reason) {
+		t.Fatal("recorded 恢复 left the marker in force")
+	}
+}
+
 // A worker parked for its model that stopped before releasing its claim is
 // not restored as a dead executor while the park holds.
 func TestModelParkedExecutorClaimIsNotRestored(t *testing.T) {

@@ -707,19 +707,10 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 	}
 	var problems []error
 	for _, t := range tickets {
-		listed, ok := strings.CutPrefix(t.Parked, config.ModelParked+"：")
-		if !ok {
+		candidates, err := modelParkCandidates(t.Parked)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: model park candidate: %w", t.Identifier, err))
 			continue
-		}
-		var candidates []modelhealth.Ref
-		for _, part := range strings.Split(listed, "；") {
-			ref, err := modelhealth.Parse(strings.SplitN(part, " ", 2)[0])
-			if err != nil {
-				problems = append(problems, fmt.Errorf("%s: model park candidate: %w", t.Identifier, err))
-				candidates = nil
-				break
-			}
-			candidates = append(candidates, ref)
 		}
 		if len(candidates) == 0 {
 			continue
@@ -768,6 +759,24 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 		}
 	}
 	return errors.Join(problems...)
+}
+
+// modelParkCandidates reads the candidates back from a config.ModelParkReason
+// line; any other 搁置 reason names none.
+func modelParkCandidates(reason string) ([]modelhealth.Ref, error) {
+	listed, ok := strings.CutPrefix(reason, config.ModelParked+"：")
+	if !ok {
+		return nil, nil
+	}
+	var candidates []modelhealth.Ref
+	for _, part := range strings.Split(listed, "；") {
+		ref, err := modelhealth.Parse(strings.SplitN(part, " ", 2)[0])
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, ref)
+	}
+	return candidates, nil
 }
 
 // parkResolution parks with an applied resolver receipt; a later Agent处置
