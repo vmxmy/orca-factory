@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"log/slog"
@@ -61,6 +62,8 @@ type fakeOrca struct {
 	terminalReport, stopReport *orca.WorkerReport
 	// legacyTasks and uncountedTasks shape the metadata TaskListing reports.
 	legacyTasks, uncountedTasks bool
+	screen                      orca.Receipt
+	screenReads                 int
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -850,6 +853,89 @@ func TestResolverEmptyRunRejectsLegacyOrUncountedTasks(t *testing.T) {
 			o.legacyTasks, o.uncountedTasks = scenario == "legacy", scenario == "uncounted"
 			if _, err := c.Step(context.Background()); err == nil || s.record.Phase != "pending" || o.startCalls != 0 {
 				t.Fatalf("incomplete task evidence ended the round: record=%+v starts=%d err=%v", s.record, o.startCalls, err)
+			}
+		})
+	}
+}
+
+type modelLog struct{ statuses []modelhealth.Status }
+
+func (m *modelLog) Record(s modelhealth.Status) error {
+	m.statuses = append(m.statuses, s)
+	return nil
+}
+
+// recordedScreen returns the recorded worker-read receipt with its rendered
+// screen replaced by lines, as Orca returns while the agent shows them.
+func recordedScreen(t *testing.T, lines []string) orca.Receipt {
+	t.Helper()
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var terminal map[string]any
+	if err := json.Unmarshal(envelope.Result["terminal"], &terminal); err != nil || terminal["source"] != "screen" {
+		t.Fatalf("recorded terminal=%v err=%v", terminal, err)
+	}
+	terminal["tail"] = lines
+	envelope.Result["terminal"], _ = json.Marshal(terminal)
+	return envelope.Result
+}
+
+func (o *fakeOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Receipt, error) {
+	o.screenReads++
+	if opts.Dispatch != "ctx_1" || opts.Source != "terminal" {
+		return nil, errors.New("unexpected worker read")
+	}
+	return o.screen, nil
+}
+
+// OF-555, 2026-11-17: the final resolver sat at Claude's quota menu for 61
+// minutes and the round counted as the ticket's failure.
+func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, top := range []bool{false, true} {
+		t.Run(fmt.Sprintf("top=%v", top), func(t *testing.T) {
+			c, s, o := setupController()
+			models := &modelLog{}
+			c.Models = models
+			c.Agent, c.Model, c.Effort = "claude", "claude-fable-5-2", "xhigh"
+			now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
+			c.Now = func() time.Time { return now }
+			if _, err := c.Step(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			s.record.Top, s.record.TopLaunchAccepted = top, top
+			o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker"}]`)
+			o.stopped = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+			o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+			o.screen = recordedScreen(t, []string{"● Reading the ticket", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset"})
+			if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" || o.screenReads != 0 {
+				t.Fatalf("fresh output read the screen: p=%+v reads=%d err=%v", p, o.screenReads, err)
+			}
+			now = now.Add(ModelCheckDelay)
+			p, err := c.Step(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || !p.RetryAt.Equal(now) || o.stops != 1 || o.startCalls != 1 {
+				t.Fatalf("round did not end as model-unavailable: p=%+v stops=%d starts=%d", p, o.stops, o.startCalls)
+			}
+			if strings.Contains(p.Result, "终审模型未获响应") {
+				t.Fatalf("model limit reported as top-model failure: %s", p.Result)
+			}
+			want := time.Date(2026, 11, 21, 1, 0, 0, 0, time.FixedZone("CST", 8*3600))
+			if len(models.statuses) != 1 || models.statuses[0].State != modelhealth.Unavailable || models.statuses[0].Reason != "usage_limit" || models.statuses[0].Ref.Key() != "claude:claude-fable-5-2" || !models.statuses[0].Until.Equal(want) {
+				t.Fatalf("registry writes=%+v", models.statuses)
 			}
 		})
 	}

@@ -62,7 +62,7 @@ func readResolution(comments []task.Comment) (*resolver.Record, error) {
 				if next.Attempt != failedAttempt {
 					failures, failedAttempt = failures+1, next.Attempt
 				}
-			case next.Phase == "waiting" && next.Outcome == resolver.Undispatched:
+			case next.Phase == "waiting" && (next.Outcome == resolver.Undispatched || next.Outcome == resolver.ModelUnavailable):
 			case next.Phase == "waiting" || next.Phase == "applied":
 				failures, failedAttempt = 0, 0
 			}
@@ -236,11 +236,20 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		return errors.New("invalid resolver agent tier")
 	}
-	if tierKey != "" && !frozen {
-		now := time.Now
-		if r.Now != nil {
-			now = r.Now
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
+	}
+	if prev := t.Resolution; prev != nil && prev.Phase == "waiting" && prev.Outcome == resolver.ModelUnavailable {
+		statuses, err := r.unavailableModels(config.FallbackKey(tierKey), env, []modelhealth.Ref{ref}, now())
+		if err != nil {
+			return err
 		}
+		if len(statuses) > 0 {
+			return r.parkResolution(ctx, t, prev, modelParkReason(statuses), prev.Result)
+		}
+	}
+	if tierKey != "" && !frozen {
 		selected, selectErr := config.SelectConfigured(env, tierKey, r.StateRoot, ref, now())
 		if selectErr != nil {
 			runx.LoggerFrom(ctx).Warn("resolver model fallback unavailable; keeping configured model", "ticket", t.Identifier, "key", tierKey, "err", selectErr)
@@ -260,6 +269,13 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 	}
 	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort, Now: r.Now, Heartbeat: heartbeat, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
+	if r.StateRoot != "" {
+		if models, err := modelhealth.Open(r.StateRoot); err != nil {
+			runx.LoggerFrom(ctx).Warn("model health registry unavailable; resolver screen is not checked for model errors", "ticket", t.Identifier, "err", err)
+		} else {
+			c.Models = models
+		}
+	}
 	c.Board = func(ctx context.Context, worktree string, attempt int) {
 		card := orca.TicketCard(worktree, t.Identifier, t.Title, t.Number, machine.PhaseResolver, fmt.Sprintf("第 %d 次处置", attempt))
 		if t.Handoff != nil {
@@ -655,6 +671,89 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 }
 
 const parkedLabel = "parked"
+
+// modelParked prefixes the 搁置 reason of a ticket parked because every model
+// candidate of its role was unavailable; ResumeModelParks restores it.
+const modelParked = "模型不可用"
+
+// unavailableModels returns each candidate's status when the registry marks
+// primary and every candidate under fallbackKey unavailable, else nil.
+func (r *Runtime) unavailableModels(fallbackKey string, env map[string]string, candidates []modelhealth.Ref, now time.Time) ([]modelhealth.Status, error) {
+	fallback, err := config.ParseFallback(env[fallbackKey])
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", fallbackKey, err)
+	}
+	registry, err := modelhealth.Open(r.StateRoot)
+	if err != nil {
+		return nil, fmt.Errorf("model health registry: %w", err)
+	}
+	var statuses []modelhealth.Status
+	for _, ref := range append(candidates, fallback...) {
+		status := registry.Status(ref, now)
+		if status.State != modelhealth.Unavailable {
+			return nil, nil
+		}
+		statuses = append(statuses, status)
+	}
+	return statuses, nil
+}
+
+// modelParkReason names every candidate and when its cooldown ends, so
+// ResumeModelParks can read the candidates back from the 搁置 line.
+func modelParkReason(statuses []modelhealth.Status) string {
+	parts := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		parts = append(parts, s.Ref.String()+" 至 "+s.Until.UTC().Format(time.RFC3339))
+	}
+	return modelParked + "：" + strings.Join(parts, "；")
+}
+
+// ResumeModelParks restores tickets parked for model unavailability once the
+// registry no longer marks every candidate named in the 搁置 line unavailable,
+// as a person does: ready-for-agent returns and parked goes.
+func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error {
+	now := time.Now
+	if r.Now != nil {
+		now = r.Now
+	}
+	var problems []error
+	for _, t := range tickets {
+		listed, ok := strings.CutPrefix(t.Parked, modelParked+"：")
+		if !ok {
+			continue
+		}
+		var candidates []modelhealth.Ref
+		for _, part := range strings.Split(listed, "；") {
+			ref, err := modelhealth.Parse(strings.SplitN(part, " ", 2)[0])
+			if err != nil {
+				problems = append(problems, fmt.Errorf("%s: model park candidate: %w", t.Identifier, err))
+				candidates = nil
+				break
+			}
+			candidates = append(candidates, ref)
+		}
+		if len(candidates) == 0 {
+			continue
+		}
+		statuses, err := r.unavailableModels("", nil, candidates, now())
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", t.Identifier, err))
+			continue
+		}
+		if len(statuses) > 0 {
+			continue
+		}
+		client := r.Clients[t.Repo]
+		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
+			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
+			continue
+		}
+		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+modelParked+"」搁置"); err != nil {
+			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
+		}
+	}
+	return errors.Join(problems...)
+}
 
 // parkResolution parks with an applied resolver receipt; a later Agent处置
 // event reopens it as a new attempt.

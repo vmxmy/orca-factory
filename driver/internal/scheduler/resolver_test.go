@@ -1123,3 +1123,73 @@ func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
 		})
 	}
 }
+
+type labelIssues struct {
+	*fakeIssues
+	added, removed [][]string
+}
+
+func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
+	l.added, l.removed = append(l.added, add), append(l.removed, remove)
+	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+}
+
+func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
+	repo, state := t.TempDir(), t.TempDir()
+	roles := filepath.Join(repo, "scripts", "agent-gates", "roles")
+	if err := os.MkdirAll(roles, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(roles, "resolver.md"), []byte("Resolve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.2-astra", Effort: "high"}
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	registry, err := modelhealth.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ref := range []modelhealth.Ref{primary, fallback} {
+		if err := registry.Record(modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Duration(i+1) * time.Hour), CheckedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	line := func(r resolver.Record) string {
+		raw, _ := json.Marshal(r)
+		return resolver.Prefix + string(raw)
+	}
+	failed := resolver.Record{Version: 1, Attempt: 1, Phase: "waiting", Outcome: "failed", Result: "worker failed", Spec: "Resolve", Agent: primary.Agent}
+	limited := resolver.Record{Version: 1, Attempt: 2, Phase: "waiting", Outcome: resolver.ModelUnavailable, RetryAt: now, Result: "model unavailable", Spec: "Resolve", Agent: fallback.Agent, Model: fallback.Model, Effort: fallback.Effort}
+	store := &labelIssues{fakeIssues: &fakeIssues{issueComments: evidenceComments("阶段: Agent处置\n归属: 处置Agent", line(failed), line(limited))}}
+	probe := &resolverTierProbe{stop: errors.New("dispatched while every candidate is unavailable")}
+	env := map[string]string{"AGENT_ROLE_RESOLVER": primary.String(), "AGENT_ROLE_RESOLVER_FALLBACK": fallback.String()}
+	r := &Runtime{Clients: map[string]issues.Store{repo: store}, Repositories: map[string]config.Repository{repo: {Env: env}}, Orca: probe, StateRoot: state, Now: func() time.Time { return now }}
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-594", Repo: repo}, store.issueComments)
+	if ticket.Resolution.Failures != 1 {
+		t.Fatalf("model-unavailable round counted as failure: failures=%d", ticket.Resolution.Failures)
+	}
+	if err := r.ResolveTicket(context.Background(), ticket, nil, "controller", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(probe.starts) != 0 || len(store.added) != 1 || !slices.Contains(store.added[0], parkedLabel) {
+		t.Fatalf("not parked: starts=%d added=%v", len(probe.starts), store.added)
+	}
+	parked := fromEvidence(t, ticket, store.issueComments)
+	parked.Parked, _ = parkedState(task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}, store.issueComments)
+	if !strings.HasPrefix(parked.Parked, "模型不可用") || !strings.Contains(parked.Parked, primary.String()) || !strings.Contains(parked.Parked, fallback.String()) {
+		t.Fatalf("park reason=%q", parked.Parked)
+	}
+	other := parked
+	other.ID, other.Parked = "other", "处置连续失败 3 次: worker failed"
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil || len(store.added) != 1 {
+		t.Fatalf("resumed while every candidate is unavailable: added=%v err=%v", store.added, err)
+	}
+	now = now.Add(time.Hour)
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) || !slices.Equal(store.removed[1], []string{parkedLabel}) {
+		t.Fatalf("not resumed once: added=%v removed=%v", store.added, store.removed)
+	}
+}
