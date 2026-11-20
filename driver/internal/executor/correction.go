@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -183,8 +185,16 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 		// correction's tier, so a chain returning to the entry model starts fresh.
 		sameTier := agent == c.Agent && model == c.Model && effort == c.Effort &&
 			agent == prevAgent && model == prevModel && effort == prevEffort
+		// The old terminal is reused only while it runs the model this correction
+		// selects; a checkpoint without Launch predates fallback selection and
+		// ran the configured model.
+		configured := modelhealth.Ref{Agent: agent, Model: model, Effort: effort}
+		selected := e.tierModel(tier, configured)
+		agent, model, effort = selected.Agent, selected.Model, selected.Effort
+		launched := cmp.Or(cp.Launch, configured.String())
+		reusable := sameTier && launched == selected.String()
 		handle := cp.Terminal
-		if sameTier && handle == "" && result.DispatchID != "" {
+		if reusable && handle == "" && result.DispatchID != "" {
 			workers, listErr := e.Orca.Workers(ctx, orca.ListOptions{Run: result.RunID})
 			if listErr == nil {
 				for _, w := range workers {
@@ -195,7 +205,7 @@ func (e *Executor) correct(ctx context.Context, c Config, t Ticket, result *Resu
 				}
 			}
 		}
-		canReuse := sameTier && handle != ""
+		canReuse := reusable && handle != ""
 		if tierEscalation(c) && !sameTier {
 			change := fmt.Sprintf("correction %d → 升至 %s（%s:%s:%s → %s:%s:%s）", result.State.Corrections, tier,
 				prevAgent, prevModel, prevEffort, agent, model, effort)
@@ -286,12 +296,12 @@ func correctionTier(c Config, n int) (tier, agent, model, effort string, err err
 			if value == "" {
 				value = os.Getenv("AGENT_TIER_" + strings.ToUpper(tier))
 			}
-			parts := strings.Split(value, ":")
-			if len(parts) != 3 || parts[0] == "" {
+			ref, parseErr := modelhealth.Parse(value)
+			if parseErr != nil {
 				err = errors.New("escalated tier requires agent:model:effort configuration")
 				return
 			}
-			agent, model, effort = parts[0], parts[1], parts[2]
+			agent, model, effort = ref.Agent, ref.Model, ref.Effort
 		}
 	}
 	if model == "" {

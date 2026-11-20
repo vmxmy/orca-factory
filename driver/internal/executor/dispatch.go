@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 )
 
@@ -49,6 +51,11 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	if cp.StartedAt == "" {
 		cp.StartedAt = e.Now().UTC().Format(time.RFC3339)
 	}
+	if opts.Agent != "" {
+		// Until a receipt confirms the started agent, no terminal of this
+		// dispatch counts as running a known model.
+		cp.Launch = launchUnconfirmed
+	}
 	if err := saveCheckpoint(c, t, *cp); err != nil {
 		return err
 	}
@@ -60,6 +67,13 @@ func (e *Executor) startDispatchWithRequest(ctx context.Context, c Config, t Tic
 	}
 	if task := receiptID(receipt, "task"); task != "" {
 		cp.Task = task
+	}
+	if opts.Agent != "" && receipt != nil {
+		launched, ok := effectiveLaunch(receipt)
+		if !ok {
+			launched = modelhealth.Ref{Agent: opts.Agent, Model: opts.Model, Effort: opts.Effort}
+		}
+		cp.Launch = launched.String()
 	}
 	cp.Dispatch = receiptID(receipt, "dispatch")
 	if path := orca.ReceiptWorktree(receipt); path != "" {
@@ -229,3 +243,18 @@ func (*unconfirmedDispatchError) Error() string {
 	return "worker start uncertain; reconcile dispatch before retry"
 }
 func (e *unconfirmedDispatchError) Unwrap() error { return e.cause }
+
+// launchUnconfirmed marks a fresh-agent start whose receipt was not saved.
+const launchUnconfirmed = "unconfirmed"
+
+// effectiveLaunch reads the agent tier Orca reports it started, which can
+// differ from the requested one.
+func effectiveLaunch(receipt orca.Receipt) (modelhealth.Ref, bool) {
+	var launch struct {
+		Effective struct{ Agent, Model, Effort string }
+	}
+	if json.Unmarshal(receipt["launch"], &launch) != nil || launch.Effective.Agent == "" {
+		return modelhealth.Ref{}, false
+	}
+	return modelhealth.Ref{Agent: launch.Effective.Agent, Model: launch.Effective.Model, Effort: launch.Effective.Effort}, true
+}

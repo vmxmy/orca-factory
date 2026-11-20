@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/BurntSushi/toml"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
 type profileFile struct {
@@ -106,10 +107,15 @@ func readProfiles(path string) (profileFile, error) {
 	}
 	for name, profile := range file.Profiles {
 		for key, value := range profile {
+			if base, ok := strings.CutSuffix(key, "_FALLBACK"); ok {
+				if err := validFallback(base, value); err != nil {
+					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s: %w", name, key, err)
+				}
+				continue
+			}
 			switch key {
 			case "AGENT_TIER_DEFAULT", "AGENT_TIER_STRONG", "AGENT_ROLE_RESOLVER", "AGENT_ROLE_INTAKE":
-				parts := strings.Split(value, ":")
-				if len(parts) != 3 || parts[0] == "" {
+				if _, err := modelhealth.Parse(value); err != nil {
 					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires agent:model:effort", name, key)
 				}
 			case "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
@@ -128,12 +134,51 @@ func readProfiles(path string) (profileFile, error) {
 				if !tierKey.MatchString(key) {
 					return profileFile{}, fmt.Errorf("profiles.toml: unknown key profile.%s.%s", name, key)
 				}
-				parts := strings.Split(value, ":")
-				if len(parts) != 3 || parts[0] == "" {
+				if _, err := modelhealth.Parse(value); err != nil {
 					return profileFile{}, fmt.Errorf("profiles.toml: profile %s key %s requires agent:model:effort", name, key)
 				}
 			}
 		}
 	}
 	return file, nil
+}
+
+// IsFallbackKey reports whether key is the <key>_FALLBACK of a role or tier
+// key, the only fallback lists the driver reads.
+func IsFallbackKey(key string) bool {
+	base, ok := strings.CutSuffix(key, "_FALLBACK")
+	if !ok {
+		return false
+	}
+	switch base {
+	case "AGENT_ROLE_RESOLVER", "AGENT_ROLE_RESOLVER_TOP", "AGENT_ROLE_INTAKE", "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
+		return true
+	}
+	return tierKey.MatchString(base) && base != "AGENT_TIER_ESCALATE" && base != "AGENT_TIER_CHAIN"
+}
+
+// validFallback checks a <key>_FALLBACK list against the role its base key
+// configures: reviewer candidates must generate a reviewer command, and
+// intake candidates must be claude. Errors carry candidate positions only.
+func validFallback(base, value string) error {
+	if !IsFallbackKey(FallbackKey(base)) {
+		return errors.New("fallback requires a role or tier key")
+	}
+	refs, err := ParseFallback(value)
+	if err != nil {
+		return err
+	}
+	for i, ref := range refs {
+		switch base {
+		case "AGENT_ROLE_INTAKE":
+			if ref.Agent != "claude" {
+				return fmt.Errorf("fallback candidate %d: intake fallback candidates must be claude", i+1)
+			}
+		case "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_SECOND_REVIEWER":
+			if _, err := GenerateReviewerCommand(ref.String()); err != nil {
+				return fmt.Errorf("fallback candidate %d: reviewer agent must be codex or claude", i+1)
+			}
+		}
+	}
+	return nil
 }

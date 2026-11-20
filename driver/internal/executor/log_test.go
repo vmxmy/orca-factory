@@ -14,6 +14,8 @@ import (
 
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
+	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -267,5 +269,83 @@ func TestExecutorContextLog(t *testing.T) {
 				t.Errorf("context logs bypassed sink: %s", &fallback)
 			}
 		})
+	}
+}
+
+func TestWorkerStartUsesTierFallbackWhenPrimaryUnavailable(t *testing.T) {
+	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	for _, tc := range []struct {
+		name     string
+		settings map[string]string
+		want     modelhealth.Ref
+	}{
+		{"fallback", map[string]string{"default": primary.String(), "AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}, modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}},
+		{"no fallback", map[string]string{"default": primary.String()}, primary},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, o, _, _, _, ticket := fixture(t, "new-sha")
+			var logs bytes.Buffer
+			e.Stderr = &logs
+			e.Config.Agent, e.Config.Model, e.Config.Effort, e.Config.Tier, e.Config.TierSettings = primary.Agent, primary.Model, primary.Effort, "default", tc.settings
+			registry, err := modelhealth.Open(e.Config.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			now := e.Now()
+			if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = e.Execute(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			if got := (modelhealth.Ref{Agent: o.start.Agent, Model: o.start.Model, Effort: o.start.Effort}); got != tc.want {
+				t.Fatalf("worker start = %s, want %s", got, tc.want)
+			}
+			cp, err := readCheckpoint(e.Config, ticket)
+			if err != nil || cp.Launch != tc.want.String() {
+				t.Fatalf("checkpoint launch = %q (%v), want %s", cp.Launch, err, tc.want)
+			}
+			if fellBack := strings.Contains(logs.String(), `"selected":"codex:gpt-6.1-sol:high"`); fellBack != (tc.want != primary) {
+				t.Errorf("fallback log = %v: %s", fellBack, logs.String())
+			}
+		})
+	}
+}
+
+func TestWorkerTierModelUsesNamedTierFallback(t *testing.T) {
+	root := t.TempDir()
+	primary := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	registry, err := modelhealth.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err = registry.Record(modelhealth.Status{Ref: primary, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	settings := map[string]string{"default": primary.String(), "strong": primary.String(), "max": primary.String(),
+		"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high", "AGENT_TIER_STRONG_FALLBACK": "codex:gpt-6.1-sol:xhigh", "AGENT_TIER_MAX_FALLBACK": "codex::low"}
+	e := &Executor{Config: Config{Root: root, Tier: "default", TierSettings: settings}, Stderr: &bytes.Buffer{}}
+	for tier, want := range map[string]modelhealth.Ref{"default": {Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}, "strong": {Agent: "codex", Model: "gpt-6.1-sol", Effort: "xhigh"}, "max": {Agent: "codex"}} {
+		if got := e.tierModel(tier, primary); got != want {
+			t.Errorf("%s correction model = %+v, want %+v", tier, got, want)
+		}
+	}
+}
+
+func TestEffectiveLaunchReadsRecordedReceipt(t *testing.T) {
+	var envelope struct{ Result orca.Receipt }
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-reuse-terminal.json"), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := effectiveLaunch(envelope.Result); ok {
+		t.Fatalf("null effective identity read as %s", got)
+	}
+	var fresh struct{ Result orca.Receipt }
+	if err := json.Unmarshal(recorded(t, "orca-worker-start-fresh-agent.json"), &fresh); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := effectiveLaunch(fresh.Result); !ok || got != (modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}) {
+		t.Fatalf("effective launch = %s, %v", got, ok)
 	}
 }

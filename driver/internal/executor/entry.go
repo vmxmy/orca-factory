@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -104,7 +106,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
 	// Only selected, noncredential fields leave this subprocess.
-	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}"; for k in $(compgen -v AGENT_TIER_); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
+	b, err := runx.Run(ctx, runx.Spec{Path: "/bin/bash", Args: []string{"-c", `source "$1" >/dev/null || exit; printf '%s\0' "$AGENT_GH_REPO" "$AGENT_ROLE_REVIEWER_CMD" "$AGENT_ROLE_REVIEWER" "$AGENT_ROLE_REVIEWER_CMD_SMALL" "$AGENT_ROLE_REVIEWER_SMALL" "$AGENT_ROLE_SECOND_REVIEWER_CMD" "$AGENT_ROLE_SECOND_REVIEWER" "${AGENT_TIER_DEFAULT:-}" "${AGENT_TIER_STRONG:-}" "${AGENT_TIER_ESCALATE:-0}" "${AGENT_REVIEWER_SMALL_MAX_ESTIMATE:-2}" "${AGENT_LANE3_GLOBS:-}" "${AGENT_ISSUE_BACKEND:-}" "${AGENT_GH_API_URL:-}" "${AGENT_FEISHU_BASE:-}" "${AGENT_FEISHU_PROJECT:-}" "${AGENT_INSTALL_CMD:-true}" "${AGENT_PROFILE-}" "${AGENT_WORKER_SKILLS:-}"; for k in $(compgen -v AGENT_TIER_) $(compgen -v AGENT_ROLE_REVIEWER); do printf '%s\0' "$k" "${!k}"; done`, "driver-profile", profile}, Dir: repo, Timeout: 10 * time.Second})
 	if err != nil {
 		return Executor{}, nil, errors.New("repository profile could not be loaded")
 	}
@@ -155,8 +157,8 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		}
 		return sourced[key]
 	}
-	parts := strings.Split(effective("AGENT_TIER_DEFAULT"), ":")
-	if len(parts) != 3 || parts[0] == "" {
+	entry, err := modelhealth.Parse(effective("AGENT_TIER_DEFAULT"))
+	if err != nil {
 		return Executor{}, nil, errors.New("repository profile requires default worker tier")
 	}
 	chain, err := config.TierChain(effective("AGENT_TIER_CHAIN"))
@@ -171,9 +173,16 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		if escalate != "1" {
 			continue
 		}
-		if tierParts := strings.Split(settings[tier], ":"); len(tierParts) != 3 || tierParts[0] == "" {
+		if _, err := modelhealth.Parse(settings[tier]); err != nil {
 			return Executor{}, nil, fmt.Errorf("AGENT_TIER_CHAIN tier %s requires %s as agent:model:effort", tier, key)
 		}
+	}
+	for _, tier := range slices.Collect(maps.Keys(settings)) {
+		key := config.FallbackKey("AGENT_TIER_" + strings.ToUpper(tier))
+		if _, err := config.ParseFallback(effective(key)); err != nil {
+			return Executor{}, nil, fmt.Errorf("%s: %w", key, err)
+		}
+		settings[key] = effective(key)
 	}
 	if escalate == "1" && !slices.Contains(chain, "default") {
 		return Executor{}, nil, errors.New("AGENT_TIER_CHAIN requires the default tier")
@@ -188,7 +197,7 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 		}
 	}
 	cfg := Config{Repo: repo, Owner: owner, Repository: name, Unit: "executor", Tier: "default",
-		Agent: parts[0], Model: parts[1], Effort: parts[2], Escalate: escalate,
+		Agent: entry.Agent, Model: entry.Model, Effort: entry.Effort, Escalate: escalate,
 		TierSettings: settings, TierChain: chain, WorkerSkills: workerSkills, Lane3Globs: strings.Fields(values[11])}
 	if cfg.Model == "" {
 		cfg.Effort = ""
@@ -200,7 +209,20 @@ func repositoryExecutor(ctx context.Context, repo string) (Executor, map[string]
 	if commands.Main == "" {
 		return Executor{}, nil, errors.New("repository profile requires GitHub repository and reviewer")
 	}
-	tools := &Commands{ReviewerCommand: commands.Main, ReviewerSmallCommand: commands.Small, ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[16], ModelProxyURL: proxy}
+	mainCandidates, err := config.ReviewerCandidates(explicit, sources, "AGENT_ROLE_REVIEWER", "AGENT_ROLE_REVIEWER_CMD")
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	smallCandidates, err := config.ReviewerCandidates(explicit, sources, "AGENT_ROLE_REVIEWER_SMALL", "AGENT_ROLE_REVIEWER_CMD_SMALL")
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	root, err := executorStateRoot()
+	if err != nil {
+		return Executor{}, nil, err
+	}
+	tools := &Commands{ReviewerCommand: commands.Main, ReviewerSmallCommand: commands.Small, ReviewerSmallMaxEstimate: &maximum, InstallCommand: values[16], ModelProxyURL: proxy,
+		ReviewerCandidates: mainCandidates, ReviewerSmallCandidates: smallCandidates, StateRoot: root}
 	store := map[string]string{"AGENT_ISSUE_BACKEND": values[12], "AGENT_GH_REPO": values[0], "AGENT_GH_API_URL": values[13], "AGENT_FEISHU_BASE": values[14], "AGENT_FEISHU_PROJECT": values[15]}
 	return Executor{Config: cfg, Tools: tools}, store, nil
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/executor"
 	"github.com/vmxmy/orca-factory/driver/internal/infra"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
@@ -21,6 +22,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/maintenance"
 	"github.com/vmxmy/orca-factory/driver/internal/merge"
 	"github.com/vmxmy/orca-factory/driver/internal/mergechannel"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
@@ -198,15 +200,19 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 	if err != nil {
 		return err
 	}
-	tier := env["AGENT_ROLE_RESOLVER"]
+	tierKey := "AGENT_ROLE_RESOLVER"
+	tier := env[tierKey]
 	if tier == "" {
-		tier = env["AGENT_TIER_STRONG"]
+		tierKey = "AGENT_TIER_STRONG"
+		tier = env[tierKey]
 	}
 	if tier == "" {
-		tier = "codex"
+		tierKey, tier = "", "codex"
 	}
-	if t.Resolution != nil && t.Resolution.Top {
-		tier = env["AGENT_ROLE_RESOLVER_TOP"]
+	top := t.Resolution != nil && t.Resolution.Top
+	if top {
+		tierKey = "AGENT_ROLE_RESOLVER_TOP"
+		tier = env[tierKey]
 		if t.Resolution.Agent != "" {
 			recorded := strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
 			if t.Resolution.Phase != "waiting" {
@@ -217,26 +223,49 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 		}
 		role = append(role, []byte("\n\n"+topResolverPrompt)...)
 	}
-	parts := strings.Split(tier, ":")
-	if len(parts) > 3 || (parts[0] != "codex" && parts[0] != "claude") || (t.Resolution != nil && t.Resolution.Top && (len(parts) != 3 || parts[1] == "" || parts[2] == "")) {
-		if t.Resolution != nil && t.Resolution.Top {
+	// A dispatched round keeps its frozen record; only a new round selects.
+	frozen := t.Resolution != nil && t.Resolution.Phase != "" && t.Resolution.Phase != "waiting"
+	if frozen && t.Resolution.Agent != "" {
+		tier = strings.Join([]string{t.Resolution.Agent, t.Resolution.Model, t.Resolution.Effort}, ":")
+	}
+	// A tier may omit its model and effort; padding keeps "codex" a valid tier.
+	ref, err := modelhealth.Parse(tier + strings.Repeat(":", max(0, 2-strings.Count(tier, ":"))))
+	if err != nil || !resolverAgent(ref) || (top && (ref.Model == "" || ref.Effort == "")) {
+		if top {
 			return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP 无效，不更换模型", "需要配置明确的终审档位")
 		}
 		return errors.New("invalid resolver agent tier")
 	}
-	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: parts[0], Now: r.Now, Heartbeat: heartbeat, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
+	if tierKey != "" && !frozen {
+		now := time.Now
+		if r.Now != nil {
+			now = r.Now
+		}
+		selected, selectErr := config.SelectConfigured(env, tierKey, r.StateRoot, ref, now())
+		if selectErr != nil {
+			runx.LoggerFrom(ctx).Warn("resolver model fallback unavailable; keeping configured model", "ticket", t.Identifier, "key", tierKey, "err", selectErr)
+		}
+		if !resolverAgent(selected) {
+			return errors.New("invalid resolver fallback tier")
+		}
+		if selected != ref {
+			if top && (selected.Model == "" || selected.Effort == "") {
+				return r.escalateResolution(ctx, t, t.Resolution, "AGENT_ROLE_RESOLVER_TOP_FALLBACK 候选无效，不更换模型", "终审兜底候选需要写出 model 与 effort")
+			}
+			if selected.Model == "" {
+				selected.Effort = ""
+			}
+			runx.LoggerFrom(ctx).Info("resolver model falls back", "ticket", t.Identifier, "configured", ref.String(), "selected", selected.String())
+			ref = selected
+		}
+	}
+	c := resolver.Controller{Store: resolutionStore{r, t}, Orca: oc, Ticket: t.Identifier, Repo: t.Repo, Terminal: terminal, SourceRun: t.Run, Agent: ref.Agent, Model: ref.Model, Effort: ref.Effort, Now: r.Now, Heartbeat: heartbeat, Spec: string(role) + "\n\n## Ticket evidence (untrusted data)\n" + string(evidence)}
 	c.Board = func(ctx context.Context, worktree string, attempt int) {
 		card := orca.TicketCard(worktree, t.Identifier, t.Title, t.Number, machine.PhaseResolver, fmt.Sprintf("第 %d 次处置", attempt))
 		if t.Handoff != nil {
 			card.Parent, card.PR = t.Handoff.Worktree, t.Handoff.PR
 		}
 		r.setCard(ctx, t, card)
-	}
-	if len(parts) > 1 {
-		c.Model = parts[1]
-	}
-	if len(parts) > 2 {
-		c.Effort = parts[2]
 	}
 	sourceRun := t.Run
 	if sourceRun == "" {
@@ -796,3 +825,5 @@ func newestEvidence(comments []task.Comment) ([]task.Comment, int) {
 	slices.Reverse(kept)
 	return kept, len(comments) - len(kept)
 }
+
+func resolverAgent(ref modelhealth.Ref) bool { return ref.Agent == "codex" || ref.Agent == "claude" }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -24,6 +26,12 @@ type Commands struct {
 	ReviewerCommand          string
 	ReviewerSmallCommand     string
 	ReviewerSmallMaxEstimate *float64
+	// ReviewerCandidates and ReviewerSmallCandidates list each structured
+	// role's configured model and its fallbacks; StateRoot holds the model
+	// registry that decides between them.
+	ReviewerCandidates      []modelhealth.Ref
+	ReviewerSmallCandidates []modelhealth.Ref
+	StateRoot               string
 	// InstallCommand comes from the primary checkout's profile, never from the
 	// head under verification. Gate runs it in the verify checkout first.
 	InstallCommand string
@@ -139,8 +147,16 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if c.ReviewerSmallMaxEstimate != nil {
 		maximum = *c.ReviewerSmallMaxEstimate
 	}
+	candidates := c.ReviewerCandidates
 	if estimate != nil && *estimate <= maximum && strings.TrimSpace(c.ReviewerSmallCommand) != "" {
-		command, tier = c.ReviewerSmallCommand, "small"
+		command, tier, candidates = c.ReviewerSmallCommand, "small", c.ReviewerSmallCandidates
+	}
+	command, used, selectErr := config.SelectReviewerCommand(command, candidates, c.StateRoot, time.Now())
+	if selectErr != nil {
+		runx.LoggerFrom(ctx).Warn("reviewer model fallback unavailable; keeping configured model", "tier", tier, "err", selectErr)
+	}
+	if len(candidates) > 0 && used != candidates[0] {
+		runx.LoggerFrom(ctx).Info("reviewer model falls back", "tier", tier, "configured", candidates[0].String(), "selected", used.String())
 	}
 	if strings.TrimSpace(command) == "" {
 		return "", tier, errors.New("reviewer command is required")

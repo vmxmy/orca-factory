@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -63,6 +64,9 @@ type configRepo struct {
 	Profile string        `json:"profile"`
 	Roles   []configRole  `json:"roles"`
 	Routing []configEntry `json:"routing"`
+	// Fallbacks lists every role and tier <key>_FALLBACK the repository sets,
+	// by key, so tiers and the top resolver outside Roles are listed too.
+	Fallbacks []configEntry `json:"fallbacks"`
 }
 
 type configRole struct {
@@ -219,7 +223,7 @@ func readConfigSnapshot(ctx context.Context, now time.Time) configSnapshot {
 			}
 		}
 		s.Repos = append(s.Repos, configRepo{Name: p.Name, Remote: p.Remote, Path: p.Path, Prefix: p.Prefix, Profile: p.Repository.Profile,
-			Roles: roles, Routing: routing})
+			Roles: roles, Routing: routing, Fallbacks: repositoryFallbacks(p.Repository.Env, p.Repository.Sources)})
 		if _, _, err := tierParts(p.Repository.Env); err != nil {
 			s.Problems = append(s.Problems, p.Prefix+" 的需求助手档位不是 claude，需求助手不可用")
 		}
@@ -387,6 +391,22 @@ func repositoryRouting(env map[string]string) []configEntry {
 	return entries
 }
 
+func repositoryFallbacks(env, sources map[string]string) []configEntry {
+	entries := []configEntry{}
+	for _, key := range slices.Sorted(maps.Keys(env)) {
+		if !config.IsFallbackKey(key) {
+			continue
+		}
+		value := strings.Join(strings.Fields(env[key]), " ")
+		entry := configEntry{Key: key, Value: &value, Source: sourceRepository, Set: value != ""}
+		if source := sources[key]; strings.HasPrefix(source, "profile:") {
+			entry.Source = source
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
 func splitTier(tier string) (agent, model, effort string) {
 	parts := append(strings.SplitN(tier, ":", 3), "", "")
 	return parts[0], parts[1], parts[2]
@@ -476,6 +496,10 @@ func writeConfigText(out io.Writer, s configSnapshot) error {
 				source = "内置回退"
 			}
 			fmt.Fprintf(&b, "  %-15s %s / %s / %s  [%s]\n", r.Role, r.Agent, model, r.Effort, r.Source+" / "+source)
+		}
+		if len(repo.Fallbacks) > 0 {
+			b.WriteString("  兜底候选\n")
+			writeConfigEntries(&b, "    ", repo.Fallbacks)
 		}
 		b.WriteString("  路由\n")
 		writeConfigEntries(&b, "    ", repo.Routing)

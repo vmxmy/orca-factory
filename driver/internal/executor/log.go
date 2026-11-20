@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
 	"github.com/vmxmy/orca-factory/driver/internal/logx"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
@@ -90,6 +92,28 @@ func (e *Executor) workerStart(ctx context.Context, request string, opts orca.St
 	}
 	done(validationErr)
 	return receipt, err
+}
+
+// tierModel returns configured unless the model registry marks it unavailable;
+// then it returns the first available AGENT_TIER_<TIER>_FALLBACK candidate of
+// the named tier and logs the switch. A candidate without a model starts with
+// the agent's default model and no effort, like a configured tier.
+func (e *Executor) tierModel(tier string, configured modelhealth.Ref) modelhealth.Ref {
+	now := time.Now
+	if e.Now != nil {
+		now = e.Now
+	}
+	selected, err := config.SelectConfigured(e.Config.TierSettings, "AGENT_TIER_"+strings.ToUpper(tier), e.Config.Root, configured, now())
+	if err != nil {
+		e.logger().Warn("worker model fallback unavailable; keeping configured model", "tier", tier, "error", logErrorSummary(err))
+	}
+	if selected != configured {
+		if selected.Model == "" {
+			selected.Effort = ""
+		}
+		e.logger().Info("worker model falls back", "tier", tier, "configured", configured.String(), "selected", selected.String())
+	}
+	return selected
 }
 
 func (e *Executor) taskList(ctx context.Context, run string) ([]orca.Task, error) {

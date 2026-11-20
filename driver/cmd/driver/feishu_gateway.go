@@ -27,6 +27,7 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/flock"
 	"github.com/vmxmy/orca-factory/driver/internal/intake"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
 	"github.com/vmxmy/orca-factory/driver/internal/projects"
 )
@@ -78,12 +79,26 @@ func tierParts(env map[string]string) (model, effort string, err error) {
 	if tier == "" {
 		tier = env["AGENT_TIER_STRONG"]
 	}
-	parts := strings.Split(tier, ":")
-	if parts[0] != "claude" || len(parts) > 3 {
+	// The tier may omit its model and effort.
+	ref, err := modelhealth.Parse(tier + strings.Repeat(":", max(0, 2-strings.Count(tier, ":"))))
+	if err != nil || ref.Agent != "claude" {
 		return "", "", errors.New("需求助手档位不是 claude（AGENT_ROLE_INTAKE）")
 	}
-	parts = append(parts, "", "")
-	return parts[1], parts[2], nil
+	return ref.Model, ref.Effort, nil
+}
+
+// intakeFallback reads AGENT_ROLE_INTAKE_FALLBACK, whose candidates must be claude.
+func intakeFallback(env map[string]string) ([]modelhealth.Ref, error) {
+	refs, err := config.ParseFallback(env[config.FallbackKey("AGENT_ROLE_INTAKE")])
+	if err != nil {
+		return nil, fmt.Errorf("需求助手兜底候选无效（AGENT_ROLE_INTAKE_FALLBACK）：%w", err)
+	}
+	for _, ref := range refs {
+		if ref.Agent != "claude" {
+			return nil, errors.New("需求助手兜底候选不是 claude（AGENT_ROLE_INTAKE_FALLBACK）")
+		}
+	}
+	return refs, nil
 }
 
 func intakeConcurrency(env map[string]string) (int, error) {
@@ -190,6 +205,10 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	if err != nil {
 		return intake.Project{}, err
 	}
+	fallback, err := intakeFallback(p.Repository.Env)
+	if err != nil {
+		return intake.Project{}, err
+	}
 	// A repository's own AGENT_INTAKE_PI opts it into the pi RPC path
 	// (OF-416), falling back to the gateway-wide tier; empty keeps claude.
 	piTier := strings.TrimSpace(p.Repository.Env["AGENT_INTAKE_PI"])
@@ -213,7 +232,7 @@ func (r *projectRuntime) resolve(ctx context.Context, p projects.Project) (intak
 	project := intake.Project{Prefix: p.Prefix, Name: p.Name, Remote: p.Remote, Enabled: true, Repo: p.Path, Checkout: checkout, Ledger: store, Chat: chat}
 	// core/gate.sh always treats scripts/agent-gates/* as lane 2.
 	project.Lane2Globs, project.Lane3Globs = "scripts/agent-gates/* "+p.Repository.Env["AGENT_LANE2_GLOBS"], p.Repository.Env["AGENT_LANE3_GLOBS"]
-	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
+	runner := &intake.Runner{Claude: r.claude, Repo: p.Path, Checkout: checkout, Model: model, Effort: effort, Fallback: fallback, StateRoot: logStateRoot(), Timeout: 5 * time.Minute, Tickets: intakeTickets(store, p.Path, r.readers)}
 	if piTier != "" {
 		runner.PiBinary = r.piBinary
 		runner.PiProvider, runner.PiModel, runner.PiThinking = piProvider, piModel, piThinking

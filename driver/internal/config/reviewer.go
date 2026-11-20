@@ -3,6 +3,9 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
 // ReviewerCommands are the effective shell commands used by the three review
@@ -18,11 +21,11 @@ type ReviewerCommands struct {
 // the corresponding reviewer backend. Only the two supported reviewer agents
 // are accepted.
 func GenerateReviewerCommand(value string) (string, error) {
-	parts := strings.Split(value, ":")
-	if len(parts) != 3 || parts[0] == "" {
+	ref, err := modelhealth.Parse(value)
+	if err != nil {
 		return "", fmt.Errorf("reviewer role requires agent:model:effort")
 	}
-	agent, model, effort := parts[0], parts[1], parts[2]
+	agent, model, effort := ref.Agent, ref.Model, ref.Effort
 	switch agent {
 	case "codex":
 		command := "env -u ORCA_PANE_KEY -u ORCA_AGENT_HOOK_PORT -u ORCA_AGENT_HOOK_TOKEN codex exec"
@@ -99,4 +102,49 @@ func ResolveReviewerCommands(env, sources map[string]string) (ReviewerCommands, 
 		return ReviewerCommands{}, err
 	}
 	return ReviewerCommands{Main: main, Small: small, Second: second}, nil
+}
+
+// ReviewerCandidates returns a structured reviewer role's configured model
+// followed by its FallbackKey candidates. It returns nil when the role is
+// configured by a command key or has no fallback.
+func ReviewerCandidates(env, sources map[string]string, structuredKey, commandKey string) ([]modelhealth.Ref, error) {
+	if ReviewerKey(env, sources, structuredKey, commandKey) != structuredKey {
+		return nil, nil
+	}
+	fallback, err := ParseFallback(env[FallbackKey(structuredKey)])
+	if err != nil || len(fallback) == 0 {
+		return nil, wrapKey(FallbackKey(structuredKey), err)
+	}
+	primary, err := modelhealth.Parse(env[structuredKey])
+	if err != nil {
+		return nil, wrapKey(structuredKey, err)
+	}
+	if err := validFallback(structuredKey, env[FallbackKey(structuredKey)]); err != nil {
+		return nil, wrapKey(FallbackKey(structuredKey), err)
+	}
+	return append([]modelhealth.Ref{primary}, fallback...), nil
+}
+
+// SelectReviewerCommand keeps command unless the registry marks candidates[0]
+// unavailable; then it returns the first available fallback's command and model.
+func SelectReviewerCommand(command string, candidates []modelhealth.Ref, stateRoot string, now time.Time) (string, modelhealth.Ref, error) {
+	if len(candidates) == 0 {
+		return command, modelhealth.Ref{}, nil
+	}
+	ref, err := SelectModel(stateRoot, candidates[0], candidates[1:], now)
+	if ref == candidates[0] {
+		return command, ref, err
+	}
+	generated, err := GenerateReviewerCommand(ref.String())
+	if err != nil {
+		return command, candidates[0], err
+	}
+	return generated, ref, nil
+}
+
+func wrapKey(key string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", key, err)
 }

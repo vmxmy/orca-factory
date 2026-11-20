@@ -1,0 +1,92 @@
+{
+  "id": "8b9be53a-0975-45dc-b7e7-04f57bd48dfa",
+  "ok": true,
+  "result": {
+    "runId": "run_44829074909e",
+    "taskId": "task_b11a2694f5e6",
+    "dispatchId": "ctx_5ccf629fb414",
+    "state": "ready",
+    "stage": "input_accepted",
+    "turnStart": "observed",
+    "setup": {
+      "requested": "run",
+      "effective": "run",
+      "source": "orchestration_default",
+      "hookFound": false,
+      "startupPolicy": "start-immediately",
+      "state": "not_configured"
+    },
+    "launch": {
+      "requested": {
+        "agent": "codex",
+        "model": "gpt-6-astra",
+        "effort": "high"
+      },
+      "effective": {
+        "agent": "codex",
+        "model": "gpt-6-astra",
+        "effort": "high"
+      }
+    },
+    "mode": {
+      "mode": "terminal",
+      "preferred": "terminal",
+      "reason": "user_default",
+      "detail": "Started a terminal agent worker, the default for new agent tabs in your settings."
+    },
+    "timeoutMs": 300000,
+    "effects": [
+      {
+        "kind": "worktree",
+        "action": "created_top_level",
+        "id": "d13a7573-3c71-4a71-b1d5-4b0bb7b7e252::/home/laoxu/orca/workspaces/orca-factory/of593-launch-probe"
+      },
+      {
+        "kind": "terminal",
+        "role": "agent",
+        "action": "created",
+        "id": "term_0bd1c209-87f0-4ed8-a311-dc58ec0a941c",
+        "tabId": "7eff251a-205c-43af-ab75-f49b54409a10",
+        "leafId": "73c2d3f7-655e-4a9e-84c5-6283cd5ed3d1"
+      },
+      {
+        "kind": "setup",
+        "action": "run",
+        "requested": "run",
+        "effective": "run",
+        "source": "orchestration_default",
+        "hookFound": false,
+        "startupPolicy": "start-immediately",
+        "state": "not_configured"
+      },
+      {
+        "kind": "dispatch_input",
+        "role": "agent",
+        "id": "term_0bd1c209-87f0-4ed8-a311-dc58ec0a941c",
+        "state": "accepted"
+      }
+    ],
+    "prompt": {
+      "requestId": "916fefd4-a2c9-4041-a418-108336d16644",
+      "stages": [
+        "input_accepted",
+        "turn_started"
+      ],
+      "provider": "codex",
+      "observation": "supported",
+      "processIncarnation": "363b799e-552f-48d2-bdc5-15c0384725e3",
+      "generation": 103,
+      "baselineWorkingSequence": 1,
+      "baselineExplicitWorkingStartedAt": null,
+      "baselinePermissionSequence": 0
+    },
+    "residualResources": [],
+    "mutation": {
+      "requestId": "916fefd4-a2c9-4041-a418-108336d16644",
+      "replayed": false
+    }
+  },
+  "_meta": {
+    "runtimeId": "b32d0c52-baef-4719-96de-001c895eb69e"
+  }
+}
