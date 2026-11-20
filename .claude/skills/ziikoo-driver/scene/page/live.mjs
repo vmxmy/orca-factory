@@ -15,6 +15,8 @@ let empty = false
 let connected = false
 let closed = false
 let events
+let reconnectTimer
+let reconnectDelay = 5000
 let snapshotRequest
 let previousTickets = null
 let undelivered = []
@@ -40,6 +42,9 @@ const followView = ({ path, ticket }) => {
 }
 
 const disconnect = () => {
+  clearTimeout(reconnectTimer)
+  reconnectTimer = undefined
+  reconnectDelay = 5000
   events?.close()
   events = undefined
   connected = false
@@ -120,26 +125,42 @@ const fetchSnapshot = async () => {
 }
 
 const connect = () => {
-  if (events || broken) return
-  events = new EventSource(resource('/events'))
-  events.onopen = () => {
+  if (events || reconnectTimer || broken) return
+  const source = new EventSource(resource('/events'))
+  events = source
+  source.onopen = () => {
+    if (source !== events) return
+    reconnectDelay = 5000
     connected = true
     closed = false
     failures.clear()
     report()
   }
-  events.addEventListener('scene', event => {
+  source.addEventListener('scene', event => {
+    if (source !== events) return
     snapshotRequest?.abort()
     receive(JSON.parse(event.data))
   })
-  events.addEventListener('error', event => {
+  source.addEventListener('error', event => {
+    if (source !== events) return
     if (event.data) {
       const failure = JSON.parse(event.data)
       if (failure.recovered) failures.delete(failure.command)
       else failures.set(failure.command, failure)
     } else {
       connected = false
-      closed = event.target.readyState === EventSource.CLOSED
+      closed = source.readyState === EventSource.CLOSED
+      if (closed && token === '') {
+        source.close()
+        events = undefined
+        closed = false
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined
+          connect()
+          void fetchSnapshot()
+        }, reconnectDelay)
+        reconnectDelay = Math.min(reconnectDelay * 2, 30_000)
+      }
     }
     report()
   })
