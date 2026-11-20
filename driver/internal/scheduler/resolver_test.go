@@ -1203,7 +1203,6 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 	parkFailure := errors.New("new park label update failed")
 	parked, _ := recordedPark(t)
 	lane3 := parked.Comments.Nodes[1]
-	lane3Line := strings.SplitN(lane3.Body, "\n", 2)[0]
 	receiptLost := errors.New("recovery comment receipt lost")
 	operatorResume := task.Comment{ID: "operator-resume", Body: "恢复：人工恢复模型搁置", CreatedAt: time.Now()}
 
@@ -1232,7 +1231,7 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 		{name: "newer park and both label writes fail", updateErr: failure, concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
 		{name: "reread", readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
 		{name: "labels and reread", updateErr: failure, readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
-		{name: "newer park before marker", updateErr: failure, concurrentAtMarker: lane3, wantUpdates: 2, wantComments: []string{recovery, marker, lane3Line}, wantLabel: parkedLabel},
+		{name: "newer park before marker", updateErr: failure, concurrentAtMarker: lane3, wantUpdates: 1, wantComments: remarked, wantLabel: parkedLabel},
 		{name: "operator resume during resume", concurrent: operatorResume, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1247,7 +1246,11 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 				}
 				store.commentErr, store.updateErr = tc.markerErr, tc.parkErr
 				if tc.concurrentAtMarker.ID != "" {
-					store.beforeComment = func() { store.issueComments = append(store.issueComments, tc.concurrentAtMarker) }
+					store.beforeComment = func() {
+						park := tc.concurrentAtMarker
+						park.CreatedAt = time.Now()
+						store.issueComments = append(store.issueComments, park)
+					}
 				}
 			}
 			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
@@ -1283,6 +1286,15 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 			}
 		})
 	}
+	t.Run("model park after reclaimed non-model park", func(t *testing.T) {
+		comments := evidenceComments(marker, recovery, lane3.Body, "阶段: worker 运行中\n归属: 执行器", marker)
+		if !modelParkMarked(comments, reason) {
+			t.Fatal("model park after a reclaim not recognized")
+		}
+		if modelParkMarked(slices.Delete(slices.Clone(comments), 3, 4), reason) {
+			t.Fatal("marker after a newer non-model park recognized as a model park")
+		}
+	})
 	t.Run("operator recovery ends model park", func(t *testing.T) {
 		reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
 		var recording struct{ Comments []task.Comment }

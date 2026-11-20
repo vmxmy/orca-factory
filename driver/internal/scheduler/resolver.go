@@ -779,32 +779,12 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			return strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID]
 		})
 		if !newPark && labelErr != nil {
-			mark, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked)
-			if err != nil {
+			// A park stored between the reread and this marker makes modelParkMarked
+			// ignore the marker, so it cannot hand that park back to the model.
+			if _, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); err != nil {
 				problems = append(problems, fmt.Errorf("%s: restore model park marker, manual recovery required: %w", t.Identifier, err))
-				continue
 			}
-			knownParkIDs[mark.ID] = true
-			if comments, err = client.ListComments(ctx, t.ID); err != nil {
-				problems = append(problems, fmt.Errorf("%s: reread after model park marker, manual recovery required: %w", t.Identifier, err))
-				continue
-			}
-			// A park stored before the marker would lose its place as the latest
-			// 搁置; repeating its reason line keeps it ahead of the model marker.
-			var foreign []task.Comment
-			for _, c := range protocolComments(comments) {
-				if strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID] {
-					foreign = append(foreign, c)
-				}
-			}
-			if len(foreign) == 0 {
-				continue
-			}
-			sort.SliceStable(foreign, func(i, j int) bool { return foreign[i].CreatedAt.Before(foreign[j].CreatedAt) })
-			if _, err := client.CreateComment(ctx, t.ID, strings.SplitN(foreign[len(foreign)-1].Body, "\n", 2)[0]); err != nil {
-				problems = append(problems, fmt.Errorf("%s: repeat newer park after model park marker, manual recovery required: %w", t.Identifier, err))
-			}
-			newPark = true
+			continue
 		}
 		if newPark {
 			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
@@ -900,17 +880,25 @@ func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt 
 // modelParkMarked reports the reason-only 搁置 comment that only a model park
 // writes before its labels, newer than the last 恢复 that lifted a park: a
 // full 搁置 alone, as an older escalation reason reading like a model park, or
-// a person parking again after a resume, never qualifies.
+// a person parking again after a resume, never qualifies. A 搁置 for another
+// reason between a 恢复 and the next protocol 归属 event voids later markers
+// until that claim, so a marker restored after a failed resume cannot hand a
+// concurrent park back to the model.
 func modelParkMarked(comments []task.Comment, reason string) bool {
 	rows := slices.Clone(comments)
 	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
-	marked := false
+	marked, resumed, voided := false, false, false
 	for _, c := range rows {
+		line, park := strings.CutPrefix(c.Body, "搁置：")
 		switch {
 		case strings.HasPrefix(c.Body, "恢复："):
-			marked = false
+			marked, resumed, voided = false, true, false
 		case c.CarriesProtocol() && c.Body == "搁置："+reason:
-			marked = true
+			marked = !voided
+		case park && strings.SplitN(line, "\n", 2)[0] != reason:
+			marked, voided = false, resumed
+		case !park && c.CarriesProtocol() && strings.Contains("\n"+c.Body, "\n归属: "):
+			resumed, voided = false, false
 		}
 	}
 	return marked
