@@ -740,39 +740,41 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(comments, t.Parked) {
 			continue
 		}
-		recovery, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置")
-		if err != nil {
+		// The ledger has no compare-and-set, so detect concurrent parks by comment ID and
+		// skip the old marker on a failed read to avoid masking an unseen non-model park.
+		knownParkIDs := make(map[string]bool)
+		for _, c := range protocol {
+			if strings.HasPrefix(c.Body, "搁置：") {
+				knownParkIDs[c.ID] = true
+			}
+		}
+		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
 			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
 			continue
 		}
-		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
-			problem := fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err)
-			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
-				problem = errors.Join(problem, fmt.Errorf("park labels not restored; manual recovery required: %w", restoreErr))
-			} else if _, markerErr := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); markerErr != nil {
-				problem = errors.Join(problem, fmt.Errorf("model park marker not restored; manual recovery required: %w", markerErr))
-			}
-			problems = append(problems, problem)
-			continue
+		_, labelErr := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel})
+		if labelErr != nil {
+			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, labelErr))
 		}
-		// The ledger has no compare-and-set: a person may park the ticket again
-		// between the reread and the label write. Read once more and put the park
-		// back if a newer 搁置 arrived.
 		comments, err = client.ListComments(ctx, t.ID)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume verification failed; manual recovery required: %w", t.Identifier, err))
-		}
-		// Our recovery ends the old marker; exclude it only while checking for
-		// another writer's intervening park or recovery.
-		comments = slices.DeleteFunc(slices.Clone(comments), func(c task.Comment) bool {
-			return c.ID == recovery.ID && c.Body == recovery.Body
-		})
-		if err != nil || latestPark(protocolComments(comments)) != t.Parked || !modelParkMarked(comments, t.Parked) {
-			// An unverified resume is undone too: the next tick sees no park to retry.
-			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
-				problems = append(problems, fmt.Errorf("%s: park not restored after unverified resume: %w", t.Identifier, errors.Join(err, restoreErr)))
+			if labelErr != nil {
+				err = fmt.Errorf("manual recovery required: %w", err)
 			}
+			problems = append(problems, fmt.Errorf("%s: reread comments after resume: %w", t.Identifier, err))
 			continue
+		}
+		newPark := slices.ContainsFunc(protocolComments(comments), func(c task.Comment) bool {
+			return strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID]
+		})
+		if newPark {
+			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
+				problems = append(problems, fmt.Errorf("%s: apply new park labels, manual recovery required: %w", t.Identifier, err))
+			}
+		} else if labelErr != nil {
+			if _, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); err != nil {
+				problems = append(problems, fmt.Errorf("%s: restore model park marker, manual recovery required: %w", t.Identifier, err))
+			}
 		}
 	}
 	return errors.Join(problems...)
@@ -877,12 +879,6 @@ func modelParkMarked(comments []task.Comment, reason string) bool {
 		}
 	}
 	return marked
-}
-
-// latestPark returns the reason of the newest 搁置 comment.
-func latestPark(comments []task.Comment) string {
-	reason, _ := parkedState(task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}, comments)
-	return reason
 }
 
 // parkedState returns the latest 搁置 reason of a ticket labeled parked. Without

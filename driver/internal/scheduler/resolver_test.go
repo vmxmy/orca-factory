@@ -20,7 +20,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1140,12 +1139,12 @@ type labelIssues struct {
 func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	l.added, l.removed = append(l.added, add), append(l.removed, remove)
 	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
-	if l.updateErr != nil {
-		return task.Issue{}, l.updateErr
-	}
 	if during := l.duringUpdate; during != nil {
 		l.duringUpdate = nil
-		during()
+		defer during()
+	}
+	if l.updateErr != nil {
+		return task.Issue{}, l.updateErr
 	}
 	i := slices.IndexFunc(l.issues, func(issue task.Issue) bool { return issue.ID == id })
 	if i < 0 {
@@ -1179,78 +1178,86 @@ func (l *labelIssues) ListComments(ctx context.Context, id string) ([]task.Comme
 }
 
 func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
-	for _, fail := range []string{"comment", "labels", "labels and restore", "labels and marker", "reread"} {
-		t.Run(fail, func(t *testing.T) {
-			reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
-			marker := "搁置：" + reason
+	const reason = "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
+	const marker = "搁置：" + reason
+	const recovery = "恢复：模型候选已恢复可用，自动解除「模型不可用」搁置"
+	const ready = "ready-for-agent"
+	recovered, remarked := []string{recovery}, []string{recovery, marker}
+	failure := errors.New("label update failed")
+	commentFailure := errors.New("recovery comment failed")
+	markerFailure := errors.New("marker write failed")
+	readFailure := errors.New("reread failed")
+	parkFailure := errors.New("new park label update failed")
+	parked, _ := recordedPark(t)
+	lane3 := parked.Comments.Nodes[1]
+	operatorResume := task.Comment{ID: "operator-resume", Body: "恢复：人工恢复模型搁置", CreatedAt: time.Now()}
+
+	for _, tc := range []struct {
+		name                    string
+		commentErr, updateErr   error
+		unconfirmedErr, readErr error
+		markerErr, parkErr      error
+		concurrent              task.Comment
+		wantUpdates             int
+		wantComments            []string
+		wantLabel               string
+		wantManual, wantRetry   bool
+	}{
+		{name: "success", wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+		{name: "comment", commentErr: commentFailure, wantLabel: parkedLabel, wantRetry: true},
+		{name: "labels", updateErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: parkedLabel, wantRetry: true},
+		{name: "labels unconfirmed", unconfirmedErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: ready},
+		{name: "labels and marker", updateErr: failure, markerErr: markerFailure, wantUpdates: 1, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "newer park", concurrent: lane3, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel},
+		{name: "newer park after label error", updateErr: failure, concurrent: lane3, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel},
+		{name: "newer park label failure", concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: ready, wantManual: true},
+		{name: "newer park and both label writes fail", updateErr: failure, concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "reread", readErr: readFailure, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+		{name: "labels and reread", updateErr: failure, readErr: readFailure, wantUpdates: 1, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "operator resume during resume", concurrent: operatorResume, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
-			store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(marker)}}
-			failure := errors.New("ledger write failed")
-			markerFailure := errors.New("marker write failed")
-			switch fail {
-			case "comment":
-				store.commentErr = failure
-			case "labels":
-				store.unconfirmedErr = failure
-			case "labels and restore":
-				store.updateErr = failure
-			case "labels and marker":
-				store.unconfirmedErr = failure
-				store.duringUpdate = func() { store.commentErr = markerFailure }
-			case "reread":
-				store.rereadErr = failure
+			store := &labelIssues{
+				fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(lane3.Body, marker)},
+				commentErr: tc.commentErr, updateErr: tc.updateErr, unconfirmedErr: tc.unconfirmedErr, rereadErr: tc.readErr,
+			}
+			store.duringUpdate = func() {
+				if tc.concurrent.ID != "" {
+					store.issueComments = append(store.issueComments, tc.concurrent)
+				}
+				store.commentErr, store.updateErr = tc.markerErr, tc.parkErr
 			}
 			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
 			ticket := Ticket{ID: "id", Identifier: "OF-616", Repo: "a", Parked: reason}
 			err := r.ResumeModelParks(context.Background(), []Ticket{ticket})
-			if !errors.Is(err, failure) {
-				t.Fatalf("resume error=%v, want write failure", err)
+			failures := []error{tc.commentErr, tc.updateErr, tc.unconfirmedErr, tc.readErr, tc.markerErr, tc.parkErr}
+			for _, want := range failures {
+				if want != nil && !errors.Is(err, want) {
+					t.Errorf("resume error = %v, want %v", err, want)
+				}
 			}
-			switch fail {
-			case "comment":
-				if len(store.added) != 0 || len(store.removed) != 0 || len(store.comments) != 0 {
-					t.Errorf("failed recovery comment changed ticket: added=%v removed=%v comments=%q", store.added, store.removed, store.comments)
-				}
-			case "labels":
-				if !reflect.DeepEqual(store.added, [][]string{{"ready-for-agent"}, {parkedLabel}}) || !reflect.DeepEqual(store.removed, [][]string{{parkedLabel}, {"ready-for-agent"}}) {
-					t.Errorf("label updates: added=%v removed=%v", store.added, store.removed)
-				}
-				if len(store.comments) != 2 || !strings.HasPrefix(store.comments[0], "恢复：") || store.comments[1] != marker {
-					t.Errorf("failed label update did not restore original marker: comments=%q", store.comments)
-				}
-				if !slices.Equal(store.commentsAtUpdate, []int{1, 1}) {
-					t.Errorf("comments at label updates=%v, want [1 1]", store.commentsAtUpdate)
-				}
-			case "labels and restore", "labels and marker":
-				if !strings.Contains(err.Error(), "manual recovery required") {
-					t.Errorf("missing manual recovery instruction: %v", err)
-				}
-				if fail == "labels and marker" && !errors.Is(err, markerFailure) {
-					t.Errorf("missing marker failure: %v", err)
-				}
-				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "恢复：") {
-					t.Errorf("want only the recovery comment, got %q", store.comments)
-				}
-				return
-			case "reread":
-				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "恢复：") {
-					t.Errorf("failed reread overwrote an unknown park: comments=%q", store.comments)
-				}
-				if len(store.added) != 2 || !slices.Equal(store.added[1], []string{parkedLabel}) || !slices.Equal(store.removed[1], []string{"ready-for-agent"}) {
-					t.Errorf("failed reread did not restore parked labels: added=%v removed=%v", store.added, store.removed)
-				}
-				return
+			if errors.Join(failures...) == nil && err != nil {
+				t.Errorf("unexpected resume error: %v", err)
 			}
-			fresh, err := store.FreshIssue(context.Background(), ticket.ID)
-			if err != nil {
-				t.Fatal(err)
+			if manual := err != nil && strings.Contains(err.Error(), "manual recovery required"); manual != tc.wantManual {
+				t.Errorf("manual recovery required = %t, want %t (err=%v)", manual, tc.wantManual, err)
 			}
-			if !slices.Equal(fresh.Labels.Nodes, []task.NamedID{{Name: parkedLabel}}) {
-				t.Errorf("labels after failed resume=%v, want only parked", fresh.Labels.Nodes)
+			wantAdded := [][]string{{ready}, {parkedLabel}}[:tc.wantUpdates]
+			wantRemoved := [][]string{{parkedLabel}, {ready}}[:tc.wantUpdates]
+			if !slices.EqualFunc(store.added, wantAdded, slices.Equal[[]string]) || !slices.EqualFunc(store.removed, wantRemoved, slices.Equal[[]string]) {
+				t.Errorf("label updates added=%v removed=%v, want added=%v removed=%v", store.added, store.removed, wantAdded, wantRemoved)
 			}
-			protocol := protocolComments(store.issueComments)
-			if current, _ := parkedState(fresh, protocol); current != reason || !modelParkMarked(protocol, reason) {
-				t.Errorf("failed resume lost model park: reason=%q comments=%v", current, store.issueComments)
+			if !slices.Equal(store.comments, tc.wantComments) || !slices.Equal(store.commentsAtUpdate, []int{1, 1}[:tc.wantUpdates]) {
+				t.Errorf("wrote comments=%q, counts at label updates=%v, want comments=%q with recovery first", store.comments, store.commentsAtUpdate, tc.wantComments)
+			}
+			fresh := store.issues[0]
+			if len(fresh.Labels.Nodes) == 0 || slices.ContainsFunc(fresh.Labels.Nodes, func(l task.NamedID) bool { return l.Name != tc.wantLabel }) {
+				t.Errorf("labels=%v, want only %s", fresh.Labels.Nodes, tc.wantLabel)
+			}
+			current, _ := parkedState(fresh, protocolComments(store.issueComments))
+			if retry := current == reason && modelParkMarked(store.issueComments, reason); retry != tc.wantRetry {
+				t.Errorf("retryable model park=%t, want %t (reason=%q comments=%v)", retry, tc.wantRetry, current, store.issueComments)
 			}
 		})
 	}

@@ -535,16 +535,17 @@ func (b *ledgerBackend) Launch(ctx context.Context, t Ticket) error {
 }
 
 func TestResumeSkipsTicketParkedAfterSnapshot(t *testing.T) {
+	parked, _ := recordedPark(t)
 	comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=dead run=run-old attempt=1")
 	lc := &fakeIssues{
 		issueComments: comments,
-		issues:        []task.Issue{{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}},
+		issues:        []task.Issue{parked.Issue},
 	}
 	oc := &fakeOrca{}
 	f := &ledgerBackend{fakeBackend: fakeBackend{absent: true, inactive: true}, runtime: &Runtime{Clients: map[string]issues.Store{"a": lc}, Orca: oc, DriverPath: "/opt/driver"}}
 	s := setup(&f.fakeBackend)
 	s.Backend = f
-	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-616", Repo: "a", UpdatedAt: s.Now()}, comments)
+	ticket := fromEvidence(t, Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "a", UpdatedAt: s.Now()}, comments)
 	f.tickets = []Ticket{ticket}
 	rows := captureDecisions(t, s)
 	if len(oc.launches) != 0 {
