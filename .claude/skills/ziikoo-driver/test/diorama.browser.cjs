@@ -1341,6 +1341,7 @@ const launchServer = (bun, temp, token, port, extraEnv = {}) => {
     ZIIKOO_SCENE_TOKEN: token,
     ZIIKOO_SCENE_BIND: '127.0.0.1',
     ZIIKOO_SCENE_PORT: String(port),
+    ZIIKOO_SCENE_MAX_CLIENTS_PER_SOURCE: undefined,
     ...extraEnv,
   }
   const child = spawn(bun, [path.join(plugin, 'scene/server.ts')], { env, stdio: ['ignore', 'pipe', 'inherit'] })
@@ -1423,6 +1424,7 @@ async function checkPublicReconnect(browser, bun, temp) {
   for (const [limit, status] of [['3', 429], ['2', 503]]) {
     const server = launchServer(bun, temp, '', 0, { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_MAX_CLIENTS: limit })
     const holders = [new AbortController(), new AbortController()]
+    const streams = []
     const page = await browser.newPage()
     const responses = []
     page.on('response', response => {
@@ -1432,7 +1434,9 @@ async function checkPublicReconnect(browser, bun, temp) {
       const origin = await server.origin
       await waitForSnapshot(origin, '')
       for (const controller of holders) {
-        assert.equal((await fetch(origin + '/events', { signal: controller.signal })).status, 200)
+        const response = await fetch(origin + '/events', { signal: controller.signal })
+        streams.push(response)
+        assert.equal(response.status, 200)
       }
       const refused = page.waitForResponse(response => new URL(response.url()).pathname === '/events')
       await page.goto(origin)
@@ -1443,6 +1447,9 @@ async function checkPublicReconnect(browser, bun, temp) {
       assert.deepEqual(responses, [status, 200], `public HTTP ${status} must recover without a reload`)
       assert.ok(!(await leadText(page)).includes('请从 /ziikoo-driver'), 'a public page must not tell visitors to open a private panel')
     } finally {
+      for (const [index, stream] of streams.entries()) {
+        if (!holders[index].signal.aborted) await stream.body?.cancel()
+      }
       for (const holder of holders) holder.abort()
       await page.close()
       await server.halt()
