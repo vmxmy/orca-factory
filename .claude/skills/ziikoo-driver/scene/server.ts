@@ -15,7 +15,6 @@ const failWith = (reason: unknown) => fail(reason instanceof Error ? reason.mess
 process.on('uncaughtException', failWith)
 process.on('unhandledRejection', failWith)
 
-const SOURCE_STREAM_LIMIT = 2
 const SOURCE_REQUEST_LIMIT = 120
 const SOURCE_WINDOW_MS = 60_000
 const LOOPBACK_BINDS = new Set(['127.0.0.1', '::1', 'localhost'])
@@ -29,6 +28,12 @@ const maxClientsText = process.env.ZIIKOO_SCENE_MAX_CLIENTS ?? '50'
 const maxClients = Number(maxClientsText)
 if (!/^\d+$/.test(maxClientsText) || !Number.isSafeInteger(maxClients) || maxClients <= 0) {
   fail(`工坊沙盘事件流客户端上限必须是正整数，收到 ${maxClientsText}`)
+}
+
+const sourceLimitText = process.env.ZIIKOO_SCENE_MAX_CLIENTS_PER_SOURCE ?? '2'
+const sourceLimit = Number(sourceLimitText)
+if (!/^\d+$/.test(sourceLimitText) || !Number.isSafeInteger(sourceLimit) || sourceLimit <= 0) {
+  fail(`工坊沙盘每来源事件流上限必须是正整数，收到 ${sourceLimitText}`)
 }
 
 const bind = process.env.ZIIKOO_SCENE_BIND ?? 'auto'
@@ -184,7 +189,7 @@ const respond = async (request: Request): Promise<Response> => {
     if (clients.size >= maxClients) {
       return new Response(null, { status: 503, headers: { ...headers, 'Retry-After': '5' } })
     }
-    if (isPublic && (sourceStreams.get(source) ?? 0) >= SOURCE_STREAM_LIMIT) {
+    if (isPublic && (sourceStreams.get(source) ?? 0) >= sourceLimit) {
       return new Response(null, { status: 429, headers: { ...headers, 'Retry-After': '5' } })
     }
     let client: ReadableStreamDefaultController<Uint8Array>

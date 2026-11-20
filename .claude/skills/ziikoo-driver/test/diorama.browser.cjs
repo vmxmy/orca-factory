@@ -1419,6 +1419,98 @@ const assertSecurityHeaders = (response, route) => {
   assert.ok(!scripts.includes('unsafe-inline'), `${route} CSP must not allow inline scripts: ${csp}`)
 }
 
+async function checkPublicReconnect(browser, bun, temp) {
+  for (const [limit, status] of [['3', 429], ['2', 503]]) {
+    const server = launchServer(bun, temp, '', 0, { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_MAX_CLIENTS: limit })
+    const holders = [new AbortController(), new AbortController()]
+    const page = await browser.newPage()
+    const responses = []
+    page.on('response', response => {
+      if (new URL(response.url()).pathname === '/events') responses.push(response.status())
+    })
+    try {
+      const origin = await server.origin
+      await waitForSnapshot(origin, '')
+      for (const controller of holders) {
+        assert.equal((await fetch(origin + '/events', { signal: controller.signal })).status, 200)
+      }
+      const refused = page.waitForResponse(response => new URL(response.url()).pathname === '/events')
+      await page.goto(origin)
+      assert.equal((await refused).status(), status)
+      await waitLead(page, '连接断开')
+      holders[0].abort()
+      await waitLead(page, '已连接')
+      assert.deepEqual(responses, [status, 200], `public HTTP ${status} must recover without a reload`)
+      assert.ok(!(await leadText(page)).includes('请从 /ziikoo-driver'), 'a public page must not tell visitors to open a private panel')
+    } finally {
+      for (const holder of holders) holder.abort()
+      await page.close()
+      await server.halt()
+    }
+  }
+
+  const server = launchServer(bun, temp, '', 0, { ZIIKOO_SCENE_ACCESS: 'public' })
+  const page = await browser.newPage()
+  let attempts = 0
+  const refuse = url => new URL(url).pathname === '/events'
+  try {
+    const origin = await server.origin
+    await waitForSnapshot(origin, '')
+    await page.route(refuse, route => { attempts++; return route.fulfill({ status: 429, headers: { 'Retry-After': '5' } }) })
+    await page.goto(origin)
+    await waitLead(page, '连接断开')
+    await page.waitForTimeout(6000)
+    assert.equal(attempts, 2, 'repeated refusal must retry once after five seconds, without a busy loop')
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })))
+    await page.waitForTimeout(11000)
+    assert.equal(attempts, 2, 'pagehide must cancel the pending public retry')
+    await page.unroute(refuse)
+    await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })))
+    await waitLead(page, '已连接')
+  } finally {
+    await page.close()
+    await server.halt()
+  }
+  console.log('PASS public reconnect: HTTP 429/503 recover, repeated refusal backs off, pagehide cancels and pageshow resumes')
+}
+
+async function checkSourceStreamConfiguration(bun, temp) {
+  const env = { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_MAX_CLIENTS_PER_SOURCE: '3', ZIIKOO_SCENE_MAX_CLIENTS: '4' }
+  const server = launchServer(bun, temp, '', 0, env)
+  const streams = []
+  try {
+    const origin = await server.origin
+    for (let index = 0; index < 3; index++) {
+      const response = await fetch(origin + '/events', { headers: { 'CF-Connecting-IP': '192.0.2.11' } })
+      streams.push(response)
+      assert.equal(response.status, 200, `configured source stream ${index + 1} must fit`)
+    }
+    const refused = await fetch(origin + '/events', { headers: { 'CF-Connecting-IP': '192.0.2.11' } })
+    assert.equal(refused.status, 429)
+    assert.equal(refused.headers.get('retry-after'), '5')
+    await refused.body?.cancel()
+    const other = await fetch(origin + '/events', { headers: { 'CF-Connecting-IP': '192.0.2.12' } })
+    streams.push(other)
+    assert.equal(other.status, 200)
+    const full = await fetch(origin + '/events', { headers: { 'CF-Connecting-IP': '192.0.2.13' } })
+    assert.equal(full.status, 503, 'the global cap must still apply across sources')
+    await full.body?.cancel()
+  } finally {
+    for (const stream of streams) await stream.body?.cancel()
+    await server.halt()
+  }
+  for (const value of ['', '0', '-1', '1.5', '9007199254740992']) {
+    const refused = launchServer(bun, temp, '', 0, { ...env, ZIIKOO_SCENE_MAX_CLIENTS_PER_SOURCE: value })
+    refused.origin.catch(() => {})
+    const timer = setTimeout(() => refused.halt(), 2000)
+    const { code, signal } = await refused.exited
+    clearTimeout(timer)
+    assert.equal(signal, null, `invalid source limit ${JSON.stringify(value)} must exit on its own`)
+    assert.ok(code > 0, 'invalid source limit must fail startup')
+  }
+  console.log('PASS source stream configuration: custom cap, total cap and invalid values')
+}
+
 async function checkPublicSceneServer(bun, temp) {
   const publicEnv = { ZIIKOO_SCENE_ACCESS: 'public', ZIIKOO_SCENE_TOKEN: undefined, ZIIKOO_SCENE_MAX_CLIENTS: '3' }
   const server = launchServer(bun, temp, '', 0, publicEnv)
@@ -2065,11 +2157,14 @@ async function checkProduction(browser, bun, model, previewUrl) {
     },
   }
   try {
+    await checkPublicReconnect(browser, bun, temp)
+    await checkSourceStreamConfiguration(bun, temp)
     await checkSceneServerCaching(bun, temp)
     await checkPublicSceneServer(bun, temp)
     await checkTokens(origin, token)
     await waitForSnapshot(origin, token)
     console.log('PASS production server: every page resource, snapshot and stream refuse requests without the token')
+    if (process.argv.includes('--connections-only')) return
     await checkParcelTransitions(browser, live)
     await checkRecordedTicketEvents(browser, live)
     await checkRecordedHumanWaits(browser, live)
@@ -2102,6 +2197,10 @@ async function main() {
       env: { ...process.env, ...BROWSER_LOCALE_ENV },
     })
     try {
+      if (process.argv.includes('--connections-only')) {
+        await checkProduction(browser, bun, model, url)
+        return
+      }
       await checkCleanMode(browser, url)
       await checkCleanIslandStatus(browser, url)
       await checkModeStorage(browser, url)
