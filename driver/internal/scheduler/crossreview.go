@@ -217,7 +217,11 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 				if retry {
 					if spec.Args[3], runErr = config.GenerateReviewerCommand(next.String()); runErr == nil {
 						runx.LoggerFrom(ctx).Info("cross review model unavailable; retrying with next candidate", "ticket", j.ticketID, "reviewer", reviewer.name, "unavailable", reviewer.used.String(), "selected", next.String())
-						out, runErr = j.run(ctx, spec)
+						if out, runErr = j.run(ctx, spec); runErr != nil {
+							if _, _, modelErr = config.RetryAfterModelError(j.stateRoot, next, nil, out, runErr, j.now()); modelErr != nil {
+								runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
+							}
+						}
 					}
 				}
 			}

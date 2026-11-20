@@ -427,10 +427,14 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 }
 
 // screenOrca shows a quiet worker terminal whose rendered screen is screen.
+// The second worker start, the redo, cancels the run.
 type screenOrca struct {
 	*livenessOrca
-	screen orca.Receipt
-	output int64
+	screen       orca.Receipt
+	output       int64
+	starts       []orca.StartOptions
+	cancel       context.CancelFunc
+	reportAtStop bool
 }
 
 func (o *screenOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
@@ -444,14 +448,33 @@ func (o *screenOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.
 	return o.screen, nil
 }
 
-// OF-594: a worker at its model's quota notice is redone on the tier's next
-// candidate without charging the correction or infra budget. With every
-// candidate unavailable the ticket is parked for the model instead.
-func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
-	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
-	if err != nil {
-		t.Fatal(err)
+func (o *screenOrca) WorkerStart(ctx context.Context, req string, opts orca.StartOptions) (orca.Receipt, error) {
+	if o.starts = append(o.starts, opts); len(o.starts) == 2 {
+		o.cancel()
 	}
+	return o.livenessOrca.WorkerStart(ctx, req, opts)
+}
+
+// WorkerStop lands worker_done with the stop when reportAtStop is set.
+func (o *screenOrca) WorkerStop(ctx context.Context, request, dispatch string) (orca.Receipt, error) {
+	o.report = o.report || o.reportAtStop
+	return o.livenessOrca.WorkerStop(ctx, request, dispatch)
+}
+
+// redoRecovery accepts any child spec and counts correction sessions.
+type redoRecovery struct {
+	recoveryService
+	specs []string
+}
+
+func (r *redoRecovery) ChildTask(_ context.Context, _, _, spec, _ string) (string, error) {
+	r.specs = append(r.specs, spec)
+	return "child_task", nil
+}
+
+// recordedWorkerScreen is the recorded worker-read receipt showing lines.
+func recordedWorkerScreen(t *testing.T, lines ...string) orca.Receipt {
+	t.Helper()
 	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal.json")
 	if err != nil {
 		t.Fatal(err)
@@ -463,15 +486,32 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 	if err := json.Unmarshal(raw, &envelope); err != nil || json.Unmarshal(envelope.Result["terminal"], &terminal) != nil {
 		t.Fatalf("recorded worker read: %v", err)
 	}
-	terminal["tail"] = []string{"● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset"}
+	terminal["tail"] = lines
 	envelope.Result["terminal"], _ = json.Marshal(terminal)
+	return envelope.Result
+}
 
-	for _, exhausted := range []bool{false, true} {
-		t.Run(fmt.Sprintf("exhausted=%v", exhausted), func(t *testing.T) {
+// OF-594: a worker at its model's quota notice is redone on the tier's next
+// candidate without a correction session and without charging the correction
+// or infra budget, whether it sat at the notice or exited after it. With every
+// candidate unavailable the ticket is parked for the model instead; worker_done
+// landing with the stop wins over the model report.
+func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
+	for _, scenario := range []string{"quiet", "exited", "exhausted", "reported"} {
+		t.Run(scenario, func(t *testing.T) {
 			e, _, l, _, _, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
 			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
-			live := livenessFixture(t, "unverifiable", "")
+			verdict := "unverifiable"
+			if scenario == "exited" {
+				verdict = "exited"
+			}
+			live := livenessFixture(t, verdict, "")
 			live.worker.DispatchStatus, live.worker.Projection.Stage.Detail = "dispatched", ""
 			stopped := live.worker
 			stopped.DispatchStatus = "failed"
@@ -483,16 +523,16 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 				t.Fatal(err)
 			}
 			fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}
-			if exhausted {
+			if scenario == "exhausted" {
 				if err := registry.Record(modelhealth.Status{Ref: fallback, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(time.Hour)}); err != nil {
 					t.Fatal(err)
 				}
 			}
-			o := &screenOrca{livenessOrca: live, screen: envelope.Result, output: now.UnixMilli()}
-			e.Orca = o
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			r := &livenessRecovery{cancel: cancel}
+			o := &screenOrca{livenessOrca: live, screen: screen, output: now.UnixMilli(), cancel: cancel, reportAtStop: scenario == "reported"}
+			e.Orca = o
+			r := &redoRecovery{}
 			e.Recovery = r
 			polls := 0
 			e.Sleep = func(ctx context.Context, _ time.Duration) error {
@@ -503,8 +543,8 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 				return ctx.Err()
 			}
 			result, err := e.Execute(ctx, ticket)
-			if live.stops != 1 || result.State.Infra != 0 || result.State.Corrections != 0 {
-				t.Fatalf("model limit not stopped free: err=%v stops=%d state=%+v", err, live.stops, result.State)
+			if result.State.Infra != 0 || result.State.Corrections != 0 || r.sessions != 0 {
+				t.Fatalf("model limit charged the ticket: err=%v sessions=%d state=%+v", err, r.sessions, result.State)
 			}
 			if registry, err = modelhealth.Open(e.Config.Root); err != nil {
 				t.Fatal(err)
@@ -512,18 +552,30 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
 				t.Fatalf("registry status=%+v", s)
 			}
-			if !exhausted {
-				if len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "model unavailable: claude:claude-fable-5-2:xhigh") {
-					t.Fatalf("not redone: err=%v requests=%+v", err, r.requests)
+			switch scenario {
+			case "quiet", "exited":
+				wantStops := 1
+				if scenario == "exited" {
+					wantStops = 0
 				}
-				return
-			}
-			park := l.comments[len(l.comments)-1]
-			if err != nil || len(r.requests) != 0 || !strings.HasPrefix(park, "搁置：模型不可用：claude:claude-fable-5-2:xhigh 至 ") || !strings.Contains(park, "；codex:gpt-6.1-sol:high 至 ") || !strings.Contains(park, "\n归属: "+string(machine.OwnerNone)) {
-				t.Fatalf("not parked for the model: err=%v requests=%+v comments=%q", err, r.requests, l.comments)
-			}
-			if got := l.updates[len(l.updates)-1]; got != "Todo[parked] [ready-for-agent auto-impl auto-failed]" {
-				t.Fatalf("park labels=%q", got)
+				if live.stops != wantStops || len(o.starts) != 2 || o.starts[1].Agent != "codex" || o.starts[1].Model != "gpt-6.1-sol" || o.starts[1].Effort != "high" {
+					t.Fatalf("not redone on the fallback: err=%v stops=%d starts=%+v", err, live.stops, o.starts)
+				}
+				if len(r.specs) != 1 || !strings.Contains(r.specs[0], "model unavailable: claude:claude-fable-5-2:xhigh") {
+					t.Fatalf("redo spec=%q", r.specs)
+				}
+			case "exhausted":
+				park := l.comments[len(l.comments)-1]
+				if err != nil || len(o.starts) != 1 || !strings.HasPrefix(park, "搁置：模型不可用：claude:claude-fable-5-2:xhigh 至 ") || !strings.Contains(park, "；codex:gpt-6.1-sol:high 至 ") || !strings.Contains(park, "\n归属: "+string(machine.OwnerNone)) {
+					t.Fatalf("not parked for the model: err=%v starts=%d comments=%q", err, len(o.starts), l.comments)
+				}
+				if got := l.updates[len(l.updates)-1]; got != "Todo[parked] [ready-for-agent auto-impl auto-failed]" {
+					t.Fatalf("park labels=%q", got)
+				}
+			case "reported":
+				if live.stops != 1 || len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done at the stop was overridden: err=%v starts=%d specs=%d state=%+v", err, len(o.starts), len(r.specs), result.State)
+				}
 			}
 		})
 	}

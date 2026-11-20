@@ -1182,14 +1182,72 @@ func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
 	}
 	other := parked
 	other.ID, other.Parked = "other", "处置连续失败 3 次: worker failed"
+	store.issues = []task.Issue{{ID: "id", Identifier: "OF-594", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}}
 	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil || len(store.added) != 1 {
 		t.Fatalf("resumed while every candidate is unavailable: added=%v err=%v", store.added, err)
 	}
 	now = now.Add(time.Hour)
+	// A 搁置 written after the snapshot, for lane 3, still holds the ticket.
+	stale := store.issueComments
+	store.issueComments = append(slices.Clone(stale), task.Comment{ID: "lane3", Body: "搁置：lane 3 path .env\n阶段: 待领\n归属: 无", CreatedAt: time.Now().Add(time.Hour)})
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked}); err != nil || len(store.added) != 1 {
+		t.Fatalf("stale snapshot lifted a newer park: added=%v err=%v", store.added, err)
+	}
+	store.issueComments = stale
 	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) || !slices.Equal(store.removed[1], []string{parkedLabel}) {
 		t.Fatalf("not resumed once: added=%v removed=%v", store.added, store.removed)
+	}
+}
+
+// The 搁置 line keeps every candidate of a long fallback list, which the
+// recorded ledger read returns as written and ResumeModelParks reads back
+// (testdata/recorded/ledger-issue-parked-resume.json).
+func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
+	state := t.TempDir()
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	registry, err := modelhealth.Open(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statuses []modelhealth.Status
+	for i := range 8 {
+		ref := modelhealth.Ref{Agent: "codex", Model: fmt.Sprintf("gpt-6.%d-astra-preview", i), Effort: "xhigh"}
+		status := modelhealth.Status{Ref: ref, State: modelhealth.Unavailable, Reason: "usage_limit", Until: now.Add(time.Hour), CheckedAt: now}
+		if i == 7 {
+			status.Until = now.Add(time.Minute)
+		}
+		if err := registry.Record(status); err != nil {
+			t.Fatal(err)
+		}
+		statuses = append(statuses, status)
+	}
+	reason := config.ModelParkReason(statuses)
+	if len([]rune(reason)) <= 300 {
+		t.Fatalf("reason fits the ledger line cap: %d runes", len([]rune(reason)))
+	}
+	parked, _ := recordedPark(t)
+	store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{parked.Issue}, issueComments: parked.Comments.Nodes[:1]}}
+	r := &Runtime{Clients: map[string]issues.Store{"repo": store}, Repositories: map[string]config.Repository{"repo": {}}, StateRoot: state, Now: func() time.Time { return now }}
+	ticket := Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "repo"}
+	if err := r.parkTicket(context.Background(), ticket, reason, "worker 派工已停止", ""); err != nil {
+		t.Fatal(err)
+	}
+	written := store.comments[len(store.comments)-1]
+	recordedComment := parked.Comments.Nodes[1]
+	recordedComment.Body = written
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], recordedComment}
+	ticket.Parked, _ = parkedState(parked.Issue, store.issueComments)
+	if ticket.Parked != reason {
+		t.Fatalf("park line=%q want %q", ticket.Parked, reason)
+	}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("resumed before any candidate recovered: added=%v err=%v", store.added, err)
+	}
+	now = now.Add(2 * time.Minute)
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) {
+		t.Fatalf("last candidate's recovery did not resume: added=%v err=%v", store.added, err)
 	}
 }

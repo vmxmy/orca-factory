@@ -730,6 +730,21 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			continue
 		}
 		client := r.Clients[t.Repo]
+		// The snapshot may predate a newer 搁置, such as lane 3 or a paused
+		// deployment; only the ledger read now may lift this one.
+		issue, err := client.FreshIssue(ctx, t.ID)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: model park reread: %w", t.Identifier, err))
+			continue
+		}
+		comments, err := client.ListComments(ctx, t.ID)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: model park reread: %w", t.Identifier, err))
+			continue
+		}
+		if current, _ := parkedState(issue, protocolComments(comments)); current != t.Parked {
+			continue
+		}
 		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
 			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
 			continue
@@ -761,7 +776,13 @@ func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, re
 	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Todo", []string{parkedLabel}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
 		return fmt.Errorf("park labels unconfirmed: %w", err)
 	}
-	body := fmt.Sprintf("搁置：%s\n已完成：%s\n阶段: %s\n归属: %s\n%s", ledgerLine(reason), ledgerLine(evidence), machine.PhaseUnclaimed, machine.OwnerNone, receipt)
+	line := ledgerLine(reason)
+	if strings.HasPrefix(reason, config.ModelParked+"：") {
+		// ResumeModelParks reads every candidate back from this line, so it is
+		// kept whole; the driver wrote it, and it still fits on one line.
+		line = strings.Join(strings.Fields(reason), " ")
+	}
+	body := fmt.Sprintf("搁置：%s\n已完成：%s\n阶段: %s\n归属: %s\n%s", line, ledgerLine(evidence), machine.PhaseUnclaimed, machine.OwnerNone, receipt)
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}

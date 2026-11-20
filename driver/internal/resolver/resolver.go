@@ -285,6 +285,11 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			}
 		case DispatchEnded(status):
 			p.Result, p.Outcome, p.Phase = "dispatch ended without a worker report", "failed", "settled"
+			if c.Models != nil {
+				if model, ok := c.unavailableModel(ctx, p, now); ok {
+					p.Outcome, p.Result = ModelUnavailable, modelResult(model, p.Dispatch, "ended")
+				}
+			}
 		case task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled":
 			p.Result, p.Outcome, p.Phase = "task ended without a successful worker report", "failed", "settled"
 		case task.Status == "blocked":
@@ -300,11 +305,11 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			if err := c.awaitTurnStart(ctx, p, now, request("stop")); err != nil || p.Phase == "waiting" {
 				return p, err
 			}
-			if err := c.awaitProgress(ctx, p, now, request("stop")); err != nil || p.Phase == "running" || p.Phase == "waiting" {
+			if err := c.awaitProgress(ctx, p, now, request("stop")); err != nil || p.Phase == "running" {
 				return p, err
 			}
 		}
-		if p.Top && !p.TopModelAccepted {
+		if p.Top && !p.TopModelAccepted && p.Outcome != ModelUnavailable {
 			result, _ := json.Marshal(Resolution{Action: "escalate", Reason: "终审模型未获响应，不更换模型", Body: p.Result})
 			p.Result, p.Outcome = string(result), "failed"
 		}
@@ -332,6 +337,9 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 			}
 		}
 		p.Phase = "result"
+		if p.Outcome == ModelUnavailable {
+			p.Phase, p.RetryAt = "waiting", now
+		}
 		if err = c.Store.Save(ctx, *p); err != nil {
 			return nil, err
 		}
@@ -386,9 +394,8 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
 				return err
 			}
-			p.Phase, p.Outcome, p.RetryAt = "waiting", ModelUnavailable, now
-			p.Result = fmt.Sprintf("model unavailable: %s %s until %s; dispatch %s stopped", status.Ref, status.Reason, status.Until.UTC().Format(time.RFC3339), p.Dispatch)
-			return c.Store.Save(ctx, *p)
+			p.Phase, p.Outcome, p.Result = "settled", ModelUnavailable, modelResult(status, p.Dispatch, "stopped")
+			return nil
 		}
 	}
 	if now.Sub(p.ProgressSince) < NoProgressWindow {
@@ -437,25 +444,47 @@ func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.T
 	return modelhealth.Status{}, false
 }
 
+func modelResult(status modelhealth.Status, dispatch, end string) string {
+	return fmt.Sprintf("model unavailable: %s %s until %s; dispatch %s %s", status.Ref, status.Reason, status.Until.UTC().Format(time.RFC3339), dispatch, end)
+}
+
 // screenModel classifies the bottom of the round's rendered screen.
 func (c *Controller) screenModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, error) {
-	reader, ok := c.Orca.(interface {
-		WorkerRead(context.Context, orca.ReadOptions) (orca.Receipt, error)
-	})
+	reader, ok := c.Orca.(ScreenReader)
 	if !ok {
 		return modelhealth.Status{}, errors.New("resolver screen read unavailable")
 	}
-	receipt, err := reader.WorkerRead(ctx, orca.ReadOptions{Dispatch: p.Dispatch, Source: "terminal", Limit: modelScreenLines})
+	return ScreenModel(ctx, reader, p.Dispatch, modelhealth.Ref{Agent: p.Agent, Model: p.Model, Effort: p.Effort}, now)
+}
+
+// ScreenReader reads a dispatch's rendered terminal screen.
+type ScreenReader interface {
+	WorkerRead(context.Context, orca.ReadOptions) (orca.Receipt, error)
+}
+
+// busyMarker is the footer Claude Code and Codex show while a turn runs
+// (testdata/recorded/orca-worker-read-terminal-busy.json). A model error ends
+// the turn, so a screen still showing it is a working agent whose output only
+// quotes such an error.
+const busyMarker = "esc to interrupt"
+
+// ScreenModel classifies the bottom rows of a dispatch's rendered screen for
+// ref's model limit or unsupported model. A screen of a turn still running is
+// never classified as a model error.
+func ScreenModel(ctx context.Context, reader ScreenReader, dispatch string, ref modelhealth.Ref, now time.Time) (modelhealth.Status, error) {
+	receipt, err := reader.WorkerRead(ctx, orca.ReadOptions{Dispatch: dispatch, Source: "terminal", Limit: modelScreenLines})
 	if err != nil {
 		return modelhealth.Status{}, err
 	}
 	var screen struct{ Tail []string }
 	if err = json.Unmarshal(receipt["terminal"], &screen); err != nil {
-		return modelhealth.Status{}, fmt.Errorf("resolver screen read: %w", err)
+		return modelhealth.Status{}, fmt.Errorf("screen read: %w", err)
 	}
-	lines := screen.Tail[max(0, len(screen.Tail)-modelScreenLines):]
-	ref := modelhealth.Ref{Agent: p.Agent, Model: p.Model, Effort: p.Effort}
-	return modelhealth.Classify(ref, strings.Join(lines, "\n"), nil, now), nil
+	text := strings.Join(screen.Tail[max(0, len(screen.Tail)-modelScreenLines):], "\n")
+	if strings.Contains(strings.ToLower(text), busyMarker) {
+		return modelhealth.Status{Ref: ref, State: modelhealth.Unknown, Reason: "turn_running", CheckedAt: now}, nil
+	}
+	return modelhealth.Classify(ref, text, nil, now), nil
 }
 
 func (p *Record) acceptReport(task orca.Task, report *orca.WorkerReport) error {

@@ -56,11 +56,12 @@ func SelectConfigured(env map[string]string, key, stateRoot string, primary mode
 
 // RetryAfterModelError records used unavailable in the registry under
 // stateRoot when its failed command's output shows a model limit or
-// unsupported model, and returns the candidate to retry with. It reports
-// false without fallback, for other failures, or when no other candidate
-// remains available.
+// unsupported model, and returns the candidate to retry with. It records even
+// without another candidate, so a retry's own failure is recorded by calling
+// it again without candidates. It reports false for other failures or when no
+// other candidate remains available.
 func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []modelhealth.Ref, output []byte, failure error, now time.Time) (modelhealth.Ref, bool, error) {
-	if len(candidates) < 2 {
+	if used.Agent == "" || used.Model == "" {
 		return modelhealth.Ref{}, false, nil
 	}
 	var exit *exec.ExitError
@@ -77,6 +78,9 @@ func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []m
 	}
 	if err = registry.Record(status); err != nil {
 		return modelhealth.Ref{}, false, fmt.Errorf("model health registry: %w", err)
+	}
+	if len(candidates) < 2 {
+		return modelhealth.Ref{}, false, nil
 	}
 	next, ok := registry.Select(candidates, now)
 	return next, ok && next != used, nil

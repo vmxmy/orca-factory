@@ -109,28 +109,49 @@ func (r *Runner) Turn(ctx context.Context, t Turn) (string, error) {
 	b, err := r.claude(ctx, flag, t, model)
 	if err != nil {
 		candidates := append([]modelhealth.Ref{{Agent: "claude", Model: r.Model, Effort: r.Effort}}, r.Fallback...)
-		next, retry, modelErr := config.RetryAfterModelError(r.StateRoot, model, candidates, b, err, time.Now())
+		next, retry, modelErr := config.RetryAfterModelError(r.StateRoot, model, candidates, errorText(b), err, time.Now())
 		if modelErr != nil {
 			fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
 		}
 		if retry {
 			fmt.Fprintf(os.Stderr, "intake model unavailable; retrying: unavailable=%s selected=%s\n", model, next)
-			b, err = r.claude(ctx, flag, t, next)
+			if b, err = r.claude(ctx, flag, t, next); err != nil {
+				if _, _, modelErr = config.RetryAfterModelError(r.StateRoot, next, nil, errorText(b), err, time.Now()); modelErr != nil {
+					fmt.Fprintf(os.Stderr, "intake model error not recorded: %v\n", modelErr)
+				}
+			}
 		}
 	}
 	if err != nil {
 		return "", fmt.Errorf("intake agent failed: %w", errors.Join(err, ctx.Err()))
 	}
-	var result struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		IsError bool   `json:"is_error"`
-		Result  string `json:"result"`
-	}
-	if json.Unmarshal(b, &result) != nil || result.Type != "result" || result.Subtype != "success" || result.IsError || strings.TrimSpace(result.Result) == "" {
+	result, ok := printResult(b)
+	if !ok || result.Subtype != "success" || result.IsError || strings.TrimSpace(result.Result) == "" {
 		return "", errors.New("intake agent returned no result")
 	}
 	return result.Result, nil
+}
+
+type claudePrintResult struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	IsError bool   `json:"is_error"`
+	Result  string `json:"result"`
+}
+
+func printResult(b []byte) (claudePrintResult, bool) {
+	var result claudePrintResult
+	return result, json.Unmarshal(b, &result) == nil && result.Type == "result"
+}
+
+// errorText is the message a failed claude -p --output-format json run
+// carries in its result field (testdata/recorded/claude-print-json-model-error.json),
+// or the raw output when it printed no result envelope.
+func errorText(b []byte) []byte {
+	if result, ok := printResult(b); ok && result.IsError {
+		return []byte(result.Result)
+	}
+	return b
 }
 
 // claude runs one sandboxed claude -p turn with model; on failure it returns

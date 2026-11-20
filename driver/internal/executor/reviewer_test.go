@@ -137,3 +137,47 @@ func TestReviewerRetriesNextCandidateOnModelError(t *testing.T) {
 		})
 	}
 }
+
+// Every candidate whose run shows a model error is recorded: a lone candidate
+// and a fallback that fails the retry too.
+func TestReviewerRecordsEveryModelErrorRun(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	fallback := modelhealth.Ref{Agent: "claude", Model: "claude-sonnet-5-5", Effort: "high"}
+	for _, tc := range []struct {
+		name       string
+		candidates []modelhealth.Ref
+		runs       int
+	}{
+		{"lone candidate", []modelhealth.Ref{primary}, 1},
+		{"fallback limited too", []modelhealth.Ref{primary, fallback}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := t.TempDir()
+			runs := 0
+			c := &Commands{ReviewerCommand: "claude -p --model claude-opus-5-5", ReviewerCandidates: tc.candidates, StateRoot: state, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path != "/bin/sh" {
+					return nil, nil
+				}
+				runs++
+				return limit, errors.New("exit status 1")
+			}}
+			c.Run = withReviewerRole(t, c.Run)
+			if _, _, err := c.Review(context.Background(), t.TempDir(), "origin/main", "HEAD", nil); err == nil || runs != tc.runs {
+				t.Fatalf("runs=%d err=%v", runs, err)
+			}
+			registry, err := modelhealth.Open(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ref := range tc.candidates {
+				if s := registry.Status(ref, time.Now()); s.State != modelhealth.Unavailable {
+					t.Fatalf("%s not recorded: %+v", ref, s)
+				}
+			}
+		})
+	}
+}

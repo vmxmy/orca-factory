@@ -14,6 +14,8 @@ import (
 	"time"
 
 	im "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 )
 
 func git(t *testing.T, dir string, args ...string) string {
@@ -260,5 +262,71 @@ func TestIntakeSession(t *testing.T) {
 	}
 	if r := taken(); !slices.Equal(r, []string{closedReply}) || session(t, state, thread).State != Closed {
 		t.Fatalf("expired replies %q", r)
+	}
+}
+
+// OF-594: a turn whose model hit its limit is retried once on the next
+// candidate. claude -p --output-format json reports the limit inside the
+// result envelope it prints before exiting non-zero; every failed candidate is
+// recorded unavailable.
+func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
+	envelope, err := os.ReadFile("../../testdata/recorded/claude-print-json-model-error.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failed map[string]any
+	if err := json.Unmarshal(envelope, &failed); err != nil || failed["is_error"] != true {
+		t.Fatalf("recorded error envelope=%v err=%v", failed, err)
+	}
+	failed["result"] = strings.TrimSpace(string(limit))
+	limited, err := json.Marshal(failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := filepath.Abs("../../testdata/recorded/claude-print-json-result.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"fallback answers", "fallback limited too"} {
+		t.Run(scenario, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "limited.json"), string(limited), 0o600)
+			answer := "exec cat " + recorded
+			if scenario == "fallback limited too" {
+				answer = "cat " + filepath.Join(root, "limited.json") + "; exit 1"
+			}
+			script := "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in *claude-fable-5-2*) cat " + filepath.Join(root, "limited.json") + "; exit 1;; esac\n" + answer + "\n"
+			writeFile(t, filepath.Join(root, "claude"), script, 0o755)
+			checkout := filepath.Join(root, "checkout")
+			if err := os.MkdirAll(checkout, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(root, "state")
+			fallback := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+			runner := &Runner{Claude: filepath.Join(root, "claude"), Bwrap: standInBwrap(t), Repo: root, Checkout: checkout, Model: "claude-fable-5-2", Effort: "xhigh",
+				Fallback: []modelhealth.Ref{fallback}, StateRoot: state, Timeout: 10 * time.Second}
+			reply, err := runner.Turn(context.Background(), Turn{Session: "11111111-1111-1111-1111-111111111111", Resume: true, Prompt: "hi"})
+			registry, openErr := modelhealth.Open(state)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			now := time.Now()
+			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
+				t.Fatalf("primary not recorded: %+v", s)
+			}
+			if scenario == "fallback answers" {
+				if err != nil || reply == "" {
+					t.Fatalf("turn not retried on the fallback: reply=%q err=%v", reply, err)
+				}
+				return
+			}
+			if err == nil || registry.Status(fallback, now).State != modelhealth.Unavailable {
+				t.Fatalf("failed fallback not recorded: err=%v status=%+v", err, registry.Status(fallback, now))
+			}
+		})
 	}
 }

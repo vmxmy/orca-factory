@@ -937,8 +937,8 @@ func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || !p.RetryAt.Equal(now) || o.stops != 1 || o.startCalls != 1 {
-				t.Fatalf("round did not end as model-unavailable: p=%+v stops=%d starts=%d", p, o.stops, o.startCalls)
+			if p.Phase != "waiting" || p.Outcome != ModelUnavailable || !p.RetryAt.Equal(now) || o.stops != 1 || o.releases != 1 || o.startCalls != 1 {
+				t.Fatalf("round did not end as model-unavailable: p=%+v stops=%d releases=%d starts=%d", p, o.stops, o.releases, o.startCalls)
 			}
 			if strings.Contains(p.Result, "终审模型未获响应") {
 				t.Fatalf("model limit reported as top-model failure: %s", p.Result)
@@ -948,5 +948,72 @@ func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
 				t.Fatalf("registry writes=%+v", models.statuses)
 			}
 		})
+	}
+}
+
+func TestResolverRoundEndedWithModelErrorIsNoFailure(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, s, o := setupController()
+	models := &modelLog{}
+	c.Models = models
+	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s.record.Top, s.record.TopLaunchAccepted = true, true
+	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+	o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+	p, err := c.Step(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Phase != "waiting" || p.Outcome != ModelUnavailable || o.releases != 1 || strings.Contains(p.Result, "终审模型未获响应") {
+		t.Fatalf("ended round with model error counted as failure: p=%+v releases=%d", p, o.releases)
+	}
+	if len(models.statuses) != 1 || models.statuses[0].Ref.Key() != "codex:gpt-6.2-astra" {
+		t.Fatalf("registry writes=%+v", models.statuses)
+	}
+}
+
+// A working agent whose screen only quotes a model error, as a ticket about
+// that error does, keeps its round.
+func TestScreenModelIgnoresQuotedErrorWhileTurnRuns(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal-busy.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	var terminal struct{ Tail []string }
+	if err := json.Unmarshal(envelope.Result["terminal"], &terminal); err != nil {
+		t.Fatal(err)
+	}
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := append([]string{strings.TrimSpace(string(limit)), strings.TrimSpace(string(unsupported))}, terminal.Tail[2:]...)
+	now := time.Date(2026, 11, 20, 4, 0, 0, 0, time.UTC)
+	for _, ref := range []modelhealth.Ref{{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}, {Agent: "codex", Model: "gpt-6.2-astra", Effort: "max"}} {
+		busy := &fakeOrca{screen: recordedScreen(t, quoted)}
+		status, err := ScreenModel(context.Background(), busy, "ctx_1", ref, now)
+		if err != nil || status.State == modelhealth.Unavailable {
+			t.Fatalf("%s: running turn classified as model error: %+v err=%v", ref, status, err)
+		}
+		idle := &fakeOrca{screen: recordedScreen(t, quoted[:2])}
+		if status, err = ScreenModel(context.Background(), idle, "ctx_1", ref, now); err != nil || status.State != modelhealth.Unavailable {
+			t.Fatalf("%s: ended turn not classified: %+v err=%v", ref, status, err)
+		}
 	}
 }

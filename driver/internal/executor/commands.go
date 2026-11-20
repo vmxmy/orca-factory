@@ -231,7 +231,11 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		return "", tier, errors.New("reviewer fallback command invalid")
 	}
 	runx.LoggerFrom(ctx).Info("reviewer model unavailable; retrying with next candidate", "tier", tier, "unavailable", used.String(), "selected", next.String())
-	b, err = c.runSpec(ctx, spec)
+	if b, err = c.runSpec(ctx, spec); err != nil {
+		if _, _, modelErr = config.RetryAfterModelError(c.StateRoot, next, nil, b, err, time.Now()); modelErr != nil {
+			runx.LoggerFrom(ctx).Warn("reviewer model error not recorded", "tier", tier, "err", modelErr)
+		}
+	}
 	return string(b), tier, err
 }
 
