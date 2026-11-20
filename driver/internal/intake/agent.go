@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -153,6 +154,10 @@ func printResult(b []byte) (claudePrintResult, bool) {
 func turnStatus(model modelhealth.Ref, output []byte, failure error, now time.Time) modelhealth.Status {
 	result, ok := printResult(output)
 	if !ok || !result.IsError {
+		var exit *exec.ExitError
+		if errors.As(failure, &exit) {
+			output = append(append(slices.Clone(output), '\n'), exit.Stderr...)
+		}
 		return modelhealth.Classify(model, string(output), failure, now)
 	}
 	if result.APIErrorType == "not_found_error" {

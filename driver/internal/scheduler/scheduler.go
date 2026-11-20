@@ -496,6 +496,10 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		} else if t.Owner == machine.OwnerMerge || DeploymentBarrier(t) {
 			s.MergeQueue = append(s.MergeQueue, t)
 			continue
+		} else if t.Owner == machine.OwnerExecutor && strings.HasPrefix(t.Parked, config.ModelParked+"：") {
+			// A worker parked for its model kept the executor's claim when it stopped
+			// before releasing it; ResumeModelParks lifts the park first.
+			continue
 		} else if t.Owner == machine.OwnerExecutor {
 			if unregistered(t) {
 				// An executor beats before it registers its terminal, so a heartbeat

@@ -675,6 +675,9 @@ func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
 					if screened {
 						// OF-594: a screen without a model error keeps the ordinary window.
 						c.Models = &modelLog{}
+						c.Probe = func(context.Context, modelhealth.Ref) modelhealth.Status {
+							panic("probed a screen without a model error")
+						}
 						o.screen = recordedScreen(t, []string{"• Running make test", "", "› "})
 					}
 					s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
@@ -921,6 +924,9 @@ func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
 			c.Agent, c.Model, c.Effort = "claude", "claude-fable-5-2", "xhigh"
 			now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 			c.Now = func() time.Time { return now }
+			c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				return modelhealth.Classify(ref, string(limit), errors.New("exit status 1"), now)
+			}
 			if _, err := c.Step(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -962,6 +968,9 @@ func TestResolverRoundEndedWithModelErrorIsNoFailure(t *testing.T) {
 			models := &modelLog{}
 			c.Models = models
 			c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+			c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				return modelhealth.Classify(ref, string(unsupported), errors.New("exit status 1"), time.Now())
+			}
 			if _, err := c.Step(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -988,7 +997,8 @@ func TestResolverRoundEndedWithModelErrorIsNoFailure(t *testing.T) {
 }
 
 // A working agent whose screen only quotes a model error, as a ticket about
-// that error does, keeps its round.
+// that error does, keeps its round. An ended turn's screen only nominates the
+// model; the caller's probe confirms it (TestResolverQuotedModelErrorNeedsProbe).
 func TestScreenModelIgnoresQuotedErrorWhileTurnRuns(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal-busy.json")
 	if err != nil {
@@ -1024,5 +1034,39 @@ func TestScreenModelIgnoresQuotedErrorWhileTurnRuns(t *testing.T) {
 		if status, err = ScreenModel(context.Background(), idle, "ctx_1", ref, now); err != nil || status.State != modelhealth.Unavailable {
 			t.Fatalf("%s: ended turn not classified: %+v err=%v", ref, status, err)
 		}
+	}
+}
+
+// A finished turn that only quotes a model error keeps its round: the probe of
+// the model answers, so nothing is stopped or recorded.
+func TestResolverQuotedModelErrorNeedsProbe(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, s, o := setupController()
+	models := &modelLog{}
+	c.Models = models
+	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+	c.Now = func() time.Time { return now }
+	probes := 0
+	c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+		probes++
+		return modelhealth.Classify(ref, "ok", nil, now)
+	}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"dispatched","agentTerminalHandle":"term_worker"}]`)
+	o.terminals = []orca.Terminal{{Handle: "term_worker", LastOutputAt: now.UnixMilli()}}
+	o.screen = recordedScreen(t, []string{"• 票面现状：codex 返回 " + strings.TrimSpace(string(unsupported)), "", "› "})
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(ModelCheckDelay)
+	p, err := c.Step(context.Background())
+	if err != nil || p.Phase != "running" || o.stops != 0 || len(models.statuses) != 0 || probes != 1 || s.record.Outcome != "" {
+		t.Fatalf("quoted error ended the round: p=%+v stops=%d records=%+v probes=%d err=%v", p, o.stops, models.statuses, probes, err)
 	}
 }

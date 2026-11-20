@@ -105,6 +105,9 @@ type Controller struct {
 	Heartbeat *orca.Heartbeat
 	// Models receives a model the round's screen shows unavailable; nil skips the screen read.
 	Models ModelRecorder
+	// Probe sends one request to a model the screen shows unavailable; only its
+	// confirmation is recorded. Nil skips the screen read.
+	Probe func(context.Context, modelhealth.Ref) modelhealth.Status
 }
 
 // Step performs one recoverable observation/transition. Mutations reuse frozen
@@ -391,7 +394,7 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 		p.ProgressSince, p.LastOutputAt = now, output
 		return c.Store.Save(ctx, *p)
 	}
-	if c.Models != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay {
+	if c.Models != nil && c.Probe != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay {
 		if status, ok := c.unavailableModel(ctx, p, now); ok {
 			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
 				return err
@@ -435,6 +438,11 @@ func (c *Controller) stopQuiet(ctx context.Context, p *Record, stopRequest strin
 func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
 	status, err := c.screenModel(ctx, p, now)
 	if err == nil && status.State == modelhealth.Unavailable {
+		// The agent may only quote such an error; a probe of the model decides.
+		if status = c.Probe(ctx, status.Ref); status.State != modelhealth.Unavailable {
+			runx.LoggerFrom(ctx).Info("resolver screen model error not confirmed by probe", "dispatch", p.Dispatch, "reason", status.Reason)
+			return modelhealth.Status{}, false
+		}
 		err = c.Models.Record(status)
 		if err == nil {
 			return status, true
@@ -448,7 +456,7 @@ func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.T
 
 // endedModel checks the screen of a dispatch that ended without a report.
 func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
-	if c.Models == nil || p.Dispatch == "" {
+	if c.Models == nil || c.Probe == nil || p.Dispatch == "" {
 		return modelhealth.Status{}, false
 	}
 	return c.unavailableModel(ctx, p, now)

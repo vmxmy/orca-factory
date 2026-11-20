@@ -181,3 +181,40 @@ func TestReviewerRecordsEveryModelErrorRun(t *testing.T) {
 		})
 	}
 }
+
+// A structured reviewer role without fallback records its model error; a
+// hand-written command names no model to record.
+func TestReviewerWithoutFallbackRecordsModelError(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	structured, err := config.GenerateReviewerCommand(primary.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		command  string
+		recorded bool
+	}{{structured, true}, {"claude -p --model claude-opus-5-5 --effort high", false}} {
+		state := t.TempDir()
+		c := &Commands{ReviewerCommand: tc.command, StateRoot: state, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+			if s.Path != "/bin/sh" {
+				return nil, nil
+			}
+			return limit, errors.New("exit status 1")
+		}}
+		c.Run = withReviewerRole(t, c.Run)
+		if _, _, err := c.Review(context.Background(), t.TempDir(), "origin/main", "HEAD", nil); err == nil {
+			t.Fatal("failed review reported success")
+		}
+		registry, err := modelhealth.Open(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := registry.Status(primary, time.Now()).State == modelhealth.Unavailable; got != tc.recorded {
+			t.Fatalf("command %q recorded=%v", tc.command, got)
+		}
+	}
+}

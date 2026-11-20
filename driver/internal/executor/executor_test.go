@@ -515,7 +515,7 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
-	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported"} {
+	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "quoted"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, _, l, _, _, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
@@ -547,6 +547,12 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			e.ProbeModel = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				if scenario == "quoted" {
+					return modelhealth.Classify(ref, "ok", nil, now)
+				}
+				return modelhealth.Classify(ref, string(limit), errors.New("exit status 1"), now)
+			}
 			o := &screenOrca{livenessOrca: live, screen: screen, output: now.UnixMilli(), cancel: cancel, reportAtStop: scenario == "reported", lost: scenario == "lost"}
 			e.Orca = o
 			r := &redoRecovery{}
@@ -565,6 +571,13 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			}
 			if registry, err = modelhealth.Open(e.Config.Root); err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "quoted" {
+				// The probe answers: the screen only quoted the notice.
+				if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); live.stops != 0 || len(o.starts) != 1 || s.State == modelhealth.Unavailable {
+					t.Fatalf("quoted notice stopped the worker: stops=%d starts=%d status=%+v", live.stops, len(o.starts), s)
+				}
+				return
 			}
 			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
 				t.Fatalf("registry status=%+v", s)

@@ -92,6 +92,32 @@ func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidat
 	return next, ok && next != used, nil
 }
 
+// ReviewerRef recovers the model of a command GenerateReviewerCommand built,
+// so a structured reviewer role without fallback still records its model
+// error. A hand-written _CMD command reports false.
+func ReviewerRef(command string) (modelhealth.Ref, bool) {
+	fields := strings.Fields(command)
+	var ref modelhealth.Ref
+	for i, field := range fields {
+		next := ""
+		if i+1 < len(fields) {
+			next = fields[i+1]
+		}
+		switch {
+		case ref.Agent == "" && (field == "codex" || field == "claude"):
+			ref.Agent = field
+		case field == "-m" || field == "--model":
+			ref.Model = next
+		case field == "--effort":
+			ref.Effort = next
+		case strings.HasPrefix(field, "model_reasoning_effort="):
+			ref.Effort = strings.TrimPrefix(field, "model_reasoning_effort=")
+		}
+	}
+	generated, err := GenerateReviewerCommand(ref.String())
+	return ref, err == nil && ref.Model != "" && generated == command
+}
+
 // ModelParked prefixes the 搁置 reason of a ticket parked because every model
 // candidate of its role or tier was unavailable.
 const ModelParked = "模型不可用"

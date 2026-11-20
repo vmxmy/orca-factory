@@ -1129,11 +1129,17 @@ type labelIssues struct {
 	added, removed [][]string
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
+	// duringUpdate runs inside the next UpdateIssue, as a concurrent writer.
+	duringUpdate func()
 }
 
 func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	l.added, l.removed = append(l.added, add), append(l.removed, remove)
 	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
+	if during := l.duringUpdate; during != nil {
+		l.duringUpdate = nil
+		during()
+	}
 	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
 }
 
@@ -1196,6 +1202,15 @@ func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
 	if err := r.ResumeModelParks(context.Background(), []Ticket{parked}); err != nil || len(store.added) != 1 {
 		t.Fatalf("stale snapshot lifted a newer park: added=%v err=%v", store.added, err)
 	}
+	// A 搁置 landing between the reread and the label write puts the park back.
+	store.issueComments = slices.Clone(stale)
+	store.duringUpdate = func() {
+		store.issueComments = append(store.issueComments, task.Comment{ID: "lane3-late", Body: "搁置：lane 3 path .env\n阶段: 待领\n归属: 无", CreatedAt: time.Now().Add(time.Hour)})
+	}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{parked}); err != nil || len(store.added) != 3 || !slices.Equal(store.added[2], []string{parkedLabel}) || !slices.Equal(store.removed[2], []string{"ready-for-agent"}) {
+		t.Fatalf("concurrent park not restored: added=%v removed=%v err=%v", store.added, store.removed, err)
+	}
+	store.added, store.removed = store.added[:1], store.removed[:1]
 	store.issueComments = stale
 	if err := r.ResumeModelParks(context.Background(), []Ticket{parked, other}); err != nil {
 		t.Fatal(err)
@@ -1235,7 +1250,17 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{parked.Issue}, issueComments: parked.Comments.Nodes[:1]}}
 	r := &Runtime{Clients: map[string]issues.Store{"repo": store}, Repositories: map[string]config.Repository{"repo": {}}, StateRoot: state, Now: func() time.Time { return now }}
 	ticket := Ticket{ID: parked.ID, Identifier: parked.Identifier, Repo: "repo"}
-	if err := r.parkTicket(context.Background(), ticket, reason, "worker 派工已停止", ""); err != nil {
+	// An escalation reason copying the model format parks for a person, never for the model.
+	if err := r.parkTicket(context.Background(), ticket, reason, "处置转人", ""); err != nil {
+		t.Fatal(err)
+	}
+	forged := ticket
+	forged.Parked, _ = parkedState(parked.Issue, protocolComments(store.issueComments))
+	if strings.HasPrefix(forged.Parked, config.ModelParked) || len(store.comments) != 1 {
+		t.Fatalf("agent reason passed for a model park: %q comments=%d", forged.Parked, len(store.comments))
+	}
+	store.comments, store.commentsAtUpdate, store.added, store.removed = nil, nil, nil, nil
+	if err := r.park(context.Background(), ticket, reason, "worker 派工已停止", "", true); err != nil {
 		t.Fatal(err)
 	}
 	if len(store.comments) != 2 || store.comments[0] != "搁置："+reason || store.commentsAtUpdate[0] != 1 {
@@ -1255,5 +1280,28 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	now = now.Add(2 * time.Minute)
 	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 2 || !slices.Equal(store.added[1], []string{"ready-for-agent"}) {
 		t.Fatalf("last candidate's recovery did not resume: added=%v err=%v", store.added, err)
+	}
+}
+
+// A worker parked for its model that stopped before releasing its claim is
+// not restored as a dead executor while the park holds.
+func TestModelParkedExecutorClaimIsNotRestored(t *testing.T) {
+	f := &fakeBackend{absent: true, inactive: true}
+	s := setup(f)
+	parked := Ticket{ID: "ticket", Repo: "a", Owner: machine.OwnerExecutor, Attempt: 1, UpdatedAt: s.Now(), Parked: config.ModelParked + "：claude:claude-fable-5-2:xhigh 至 2026-11-21T01:00:00Z"}
+	f.tickets = []Ticket{parked}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 0 || len(f.actions) != 0 {
+		t.Fatalf("model-parked claim restored: launched=%v actions=%v", f.launched, f.actions)
+	}
+	parked.Parked = ""
+	f.tickets = []Ticket{parked}
+	if err := s.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.launched) != 1 {
+		t.Fatalf("lifted park not restored: launched=%v", f.launched)
 	}
 }

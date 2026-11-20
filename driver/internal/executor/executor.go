@@ -90,6 +90,9 @@ type Executor struct {
 	Heartbeat *orca.Heartbeat
 	// HeartbeatPath, when set, starts Heartbeat once Start accepts the reservation.
 	HeartbeatPath string
+	// ProbeModel confirms a model error read from a worker's screen with one
+	// request; nil means modelhealth.Probe in the repository checkout.
+	ProbeModel func(context.Context, modelhealth.Ref) modelhealth.Status
 	// Stderr receives best-effort structured logs; nil means os.Stderr.
 	Stderr     io.Writer
 	logContext *slog.Logger
@@ -998,6 +1001,17 @@ func (e *Executor) modelReport(ctx context.Context, c Config, cp checkpoint, dis
 		return nil
 	}
 	if status.State != modelhealth.Unavailable {
+		return nil
+	}
+	// The worker may only quote such an error; a probe of the model decides.
+	probe := e.ProbeModel
+	if probe == nil {
+		probe = func(ctx context.Context, ref modelhealth.Ref) modelhealth.Status {
+			return modelhealth.Probe(ctx, ref, c.Repo, modelhealth.Endpoint{})
+		}
+	}
+	if status = probe(ctx, used); status.State != modelhealth.Unavailable {
+		e.logger().Info("worker screen model error not confirmed by probe", "dispatch", dispatch, "reason", status.Reason)
 		return nil
 	}
 	tier, agent, model, effort, err := correctionTier(c, cp.Corrections)

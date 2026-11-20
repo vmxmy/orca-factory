@@ -294,7 +294,7 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"fallback answers", "fallback limited too", "primary not found"} {
+	for _, scenario := range []string{"fallback answers", "fallback limited too", "primary not found", "limit on stderr"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			failure, reason := limited, "usage_limit"
@@ -307,7 +307,13 @@ func TestIntakeTurnRetriesNextModelAfterLimit(t *testing.T) {
 			if scenario == "fallback limited too" {
 				answer = "cat " + filepath.Join(root, "limited.json") + "; exit 1"
 			}
-			script := "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in *claude-fable-5-2*) cat " + filepath.Join(root, "limited.json") + "; exit 1;; esac\n" + answer + "\n"
+			fail := "cat " + filepath.Join(root, "limited.json")
+			if scenario == "limit on stderr" {
+				// No result object, only the notice on stderr.
+				writeFile(t, filepath.Join(root, "limit.txt"), string(limit), 0o600)
+				fail = "cat " + filepath.Join(root, "limit.txt") + " >&2"
+			}
+			script := "#!/bin/sh\ncat > /dev/null\ncase \"$*\" in *claude-fable-5-2*) " + fail + "; exit 1;; esac\n" + answer + "\n"
 			writeFile(t, filepath.Join(root, "claude"), script, 0o755)
 			checkout := filepath.Join(root, "checkout")
 			if err := os.MkdirAll(checkout, 0o755); err != nil {

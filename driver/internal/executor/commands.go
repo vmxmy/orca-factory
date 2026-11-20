@@ -220,6 +220,9 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 	if err == nil {
 		return string(b), tier, nil
 	}
+	if ref, ok := config.ReviewerRef(command); ok && len(candidates) == 0 {
+		used = ref
+	}
 	next, retry, modelErr := config.RetryAfterModelError(c.StateRoot, used, candidates, b, err, time.Now())
 	if modelErr != nil {
 		runx.LoggerFrom(ctx).Warn("reviewer model error not recorded", "tier", tier, "err", modelErr)

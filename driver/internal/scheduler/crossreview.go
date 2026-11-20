@@ -210,7 +210,11 @@ func (j crossReviewJob) execute(ctx context.Context) crossReviewRecord {
 				Env: []string{"HOME=" + os.Getenv("HOME"), "PATH=" + os.Getenv("PATH")}}
 			out, runErr := j.run(ctx, spec)
 			if runErr != nil {
-				next, retry, modelErr := config.RetryAfterModelError(j.stateRoot, reviewer.used, reviewer.candidates, out, runErr, j.now())
+				used := reviewer.used
+				if ref, ok := config.ReviewerRef(reviewer.command); ok && len(reviewer.candidates) == 0 {
+					used = ref
+				}
+				next, retry, modelErr := config.RetryAfterModelError(j.stateRoot, used, reviewer.candidates, out, runErr, j.now())
 				if modelErr != nil {
 					runx.LoggerFrom(ctx).Warn("cross review model error not recorded", "ticket", j.ticketID, "reviewer", reviewer.name, "err", modelErr)
 				}

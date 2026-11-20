@@ -246,7 +246,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 			return err
 		}
 		if len(statuses) > 0 {
-			return r.parkResolution(ctx, t, prev, config.ModelParkReason(statuses), prev.Result)
+			return r.parkModelResolution(ctx, t, prev, config.ModelParkReason(statuses), prev.Result)
 		}
 	}
 	if tierKey != "" && !frozen {
@@ -274,6 +274,9 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 			runx.LoggerFrom(ctx).Warn("model health registry unavailable; resolver screen is not checked for model errors", "ticket", t.Identifier, "err", err)
 		} else {
 			c.Models = models
+			c.Probe = func(ctx context.Context, ref modelhealth.Ref) modelhealth.Status {
+				return modelhealth.Probe(ctx, ref, t.Repo, modelhealth.Endpoint{})
+			}
 		}
 	}
 	c.Board = func(ctx context.Context, worktree string, attempt int) {
@@ -749,6 +752,19 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
 			continue
 		}
+		// The ledger has no compare-and-set: a person may park the ticket again
+		// between the reread and the label write. Read once more and put the park
+		// back if a newer 搁置 arrived.
+		if comments, err = client.ListComments(ctx, t.ID); err != nil {
+			problems = append(problems, fmt.Errorf("%s: model park resume unverified: %w", t.Identifier, err))
+			continue
+		}
+		if latestPark(protocolComments(comments)) != t.Parked {
+			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
+				problems = append(problems, fmt.Errorf("%s: newer park not restored: %w", t.Identifier, err))
+			}
+			continue
+		}
 		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
 			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
 		}
@@ -759,30 +775,55 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 // parkResolution parks with an applied resolver receipt; a later Agent处置
 // event reopens it as a new attempt.
 func (r *Runtime) parkResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
+	receipt, err := appliedReceipt(p)
+	if err != nil {
+		return err
+	}
+	return r.park(ctx, t, reason, evidence, receipt, false)
+}
+
+// parkModelResolution parks for the driver-built config.ModelParkReason that
+// ResumeModelParks lifts once a candidate recovers.
+func (r *Runtime) parkModelResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
+	receipt, err := appliedReceipt(p)
+	if err != nil {
+		return err
+	}
+	return r.park(ctx, t, reason, evidence, receipt, true)
+}
+
+func appliedReceipt(p *resolver.Record) (string, error) {
 	next := *p
 	next.Phase, next.Outcome = "applied", "failed"
 	next.RetryAt = time.Time{}
 	raw, err := json.Marshal(next)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return r.parkTicket(ctx, t, reason, evidence, resolver.Prefix+string(raw))
+	return resolver.Prefix + string(raw), nil
 }
 
 // parkTicket stops automatic work without a human owner. Labels change first:
 // a ticket must never lose its owner while it can still be claimed. A person
 // resumes it by restoring ready-for-agent and removing parked.
 func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, receipt string) error {
+	return r.park(ctx, t, reason, evidence, receipt, false)
+}
+
+// park writes a 搁置. Only a model park may start its line with the model
+// prefix: other reasons carry agent text, which must never pass for a model
+// park that the driver lifts by itself. A model line is kept whole, since
+// ResumeModelParks reads every candidate back from it, and lands before the
+// labels without an owner line, so a parked label never lacks the reason.
+func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt string, model bool) error {
 	line := ledgerLine(reason)
-	if strings.HasPrefix(reason, config.ModelParked+"：") {
-		// ResumeModelParks reads every candidate back from this line, so it is
-		// kept whole; the driver wrote it, and it still fits on one line. It
-		// lands before the labels without an owner line, so a parked label is
-		// never left without the model reason.
+	if model {
 		line = strings.Join(strings.Fields(reason), " ")
 		if _, err := r.Clients[t.Repo].CreateComment(ctx, t.ID, "搁置："+line); err != nil {
 			return fmt.Errorf("model park reason: %w", err)
 		}
+	} else if strings.HasPrefix(line, config.ModelParked) {
+		line = "处置原因：" + line
 	}
 	if _, err := r.Clients[t.Repo].UpdateIssue(ctx, t.ID, "Todo", []string{parkedLabel}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
 		return fmt.Errorf("park labels unconfirmed: %w", err)
@@ -791,8 +832,14 @@ func (r *Runtime) parkTicket(ctx context.Context, t Ticket, reason, evidence, re
 	if err := r.mergeComment(ctx, t, body); err != nil {
 		return err
 	}
-	r.board(ctx, t, machine.PhaseUnclaimed, "搁置："+ledgerLine(reason))
+	r.board(ctx, t, machine.PhaseUnclaimed, "搁置："+line)
 	return nil
+}
+
+// latestPark returns the reason of the newest 搁置 comment.
+func latestPark(comments []task.Comment) string {
+	reason, _ := parkedState(task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}, comments)
+	return reason
 }
 
 // parkedState returns the latest 搁置 reason of a ticket labeled parked. Without
