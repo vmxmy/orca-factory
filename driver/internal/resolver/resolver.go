@@ -62,6 +62,9 @@ type Record struct {
 	UnobservedSince time.Time `json:"unobserved_since,omitzero"`
 	ProgressSince   time.Time `json:"progress_since,omitzero"`
 	LastOutputAt    int64     `json:"last_output_at,omitempty"`
+	// ModelCheckedOutput is the LastOutputAt whose screen was last checked for
+	// a model error without confirming one.
+	ModelCheckedOutput int64 `json:"model_checked_output,omitempty"`
 	// Failures counts consecutive failed attempts before this one. It is derived
 	// from the ledger history on read so receipts written before it existed count.
 	Failures int `json:"-"`
@@ -285,14 +288,18 @@ func (c *Controller) Step(ctx context.Context) (*Record, error) {
 		case AwaitsDispatch(*task):
 			if reason, lost := LostDispatch(*task, p.Dispatch, row != nil, status); lost {
 				p.Result, p.Outcome, p.Phase = reason, "failed", "result"
-				if model, ok := c.endedModel(ctx, p, now); ok {
+				if model, ok, err := c.endedModel(ctx, p, now); err != nil {
+					return nil, err
+				} else if ok {
 					// A lost dispatch has nothing to release, as on the failed path.
 					p.Outcome, p.Result, p.Phase, p.RetryAt = ModelUnavailable, modelResult(model, p.Dispatch, "lost"), "waiting", now
 				}
 			}
 		case DispatchEnded(status):
 			p.Result, p.Outcome, p.Phase = "dispatch ended without a worker report", "failed", "settled"
-			if model, ok := c.endedModel(ctx, p, now); ok {
+			if model, ok, err := c.endedModel(ctx, p, now); err != nil {
+				return nil, err
+			} else if ok {
 				p.Outcome, p.Result = ModelUnavailable, modelResult(model, p.Dispatch, "ended")
 			}
 		case task.Status == "failed" || task.Status == "cancelled" || task.Status == "canceled":
@@ -394,13 +401,19 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 		p.ProgressSince, p.LastOutputAt = now, output
 		return c.Store.Save(ctx, *p)
 	}
-	if c.Models != nil && c.Probe != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay {
-		if status, ok := c.unavailableModel(ctx, p, now); ok {
+	if c.Models != nil && c.Probe != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay && p.ModelCheckedOutput != output {
+		status, ok := c.unavailableModel(ctx, p, now)
+		if ok {
 			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
 				return err
 			}
 			p.Phase, p.Outcome, p.Result = "settled", ModelUnavailable, modelResult(status, p.Dispatch, "stopped")
 			return nil
+		}
+		// The same quiet screen is read, and its model probed, once.
+		p.ModelCheckedOutput = output
+		if err := c.Store.Save(ctx, *p); err != nil {
+			return err
 		}
 	}
 	if now.Sub(p.ProgressSince) < NoProgressWindow {
@@ -439,10 +452,12 @@ func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.T
 	status, err := c.screenModel(ctx, p, now)
 	if err == nil && status.State == modelhealth.Unavailable {
 		// The agent may only quote such an error; a probe of the model decides.
-		if status = c.Probe(ctx, status.Ref); status.State != modelhealth.Unavailable {
-			runx.LoggerFrom(ctx).Info("resolver screen model error not confirmed by probe", "dispatch", p.Dispatch, "reason", status.Reason)
+		confirmed := c.Probe(ctx, status.Ref)
+		if confirmed.State != modelhealth.Unavailable {
+			runx.LoggerFrom(ctx).Info("resolver screen model error not confirmed by probe", "dispatch", p.Dispatch, "reason", confirmed.Reason)
 			return modelhealth.Status{}, false
 		}
+		status = ConfirmedStatus(status, confirmed)
 		err = c.Models.Record(status)
 		if err == nil {
 			return status, true
@@ -454,12 +469,18 @@ func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.T
 	return modelhealth.Status{}, false
 }
 
-// endedModel checks the screen of a dispatch that ended without a report.
-func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
+// endedModel checks the screen of a dispatch that ended without a report. A
+// report arriving during the probe settles the round instead.
+func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool, error) {
 	if c.Models == nil || c.Probe == nil || p.Dispatch == "" {
-		return modelhealth.Status{}, false
+		return modelhealth.Status{}, false, nil
 	}
-	return c.unavailableModel(ctx, p, now)
+	status, ok := c.unavailableModel(ctx, p, now)
+	if !ok {
+		return status, false, nil
+	}
+	reported, err := c.readReport(ctx, p)
+	return status, !reported && err == nil, err
 }
 
 func modelResult(status modelhealth.Status, dispatch, end string) string {
@@ -473,6 +494,16 @@ func (c *Controller) screenModel(ctx context.Context, p *Record, now time.Time) 
 		return modelhealth.Status{}, errors.New("resolver screen read unavailable")
 	}
 	return ScreenModel(ctx, reader, p.Dispatch, modelhealth.Ref{Agent: p.Agent, Model: p.Model, Effort: p.Effort}, now)
+}
+
+// ConfirmedStatus is the probe's confirmation of a screen's model error,
+// cooling down until the later of their reset times: a probe answering with
+// only the limit sentence must not shorten the reset the screen named.
+func ConfirmedStatus(screen, probe modelhealth.Status) modelhealth.Status {
+	if screen.Until.After(probe.Until) {
+		probe.Until = screen.Until
+	}
+	return probe
 }
 
 // ScreenReader reads a dispatch's rendered terminal screen.

@@ -515,13 +515,13 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
-	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "quoted"} {
+	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "reported while probing", "quoted"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, _, l, _, _, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
 			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
 			verdict := "unverifiable"
-			if scenario == "exited" {
+			if scenario == "exited" || scenario == "reported while probing" {
 				verdict = "exited"
 			}
 			live := livenessFixture(t, verdict, "")
@@ -548,6 +548,7 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			e.ProbeModel = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+				live.report = live.report || scenario == "reported while probing"
 				if scenario == "quoted" {
 					return modelhealth.Classify(ref, "ok", nil, now)
 				}
@@ -606,6 +607,10 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 				before := l.comments[l.commentsAtUpdate[len(l.commentsAtUpdate)-1]-1]
 				if reason, _, _ := strings.Cut(park, "\n"); before != reason || strings.Contains(before, "归属") || l.commentsAtUpdate[len(l.commentsAtUpdate)-1] != len(l.comments)-1 {
 					t.Fatalf("park writes out of order: comments=%q at update=%v", l.comments, l.commentsAtUpdate)
+				}
+			case "reported while probing":
+				if len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done during the probe was overridden: err=%v starts=%d specs=%d state=%+v", err, len(o.starts), len(r.specs), result.State)
 				}
 			case "reported":
 				if live.stops != 1 || len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {

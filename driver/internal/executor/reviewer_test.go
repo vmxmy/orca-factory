@@ -218,3 +218,31 @@ func TestReviewerWithoutFallbackRecordsModelError(t *testing.T) {
 		}
 	}
 }
+
+// A caller without a state root, as the live self-test, records nothing and
+// writes no registry into its working directory.
+func TestReviewerWithoutStateRootRecordsNothing(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := config.GenerateReviewerCommand("claude:claude-opus-5-5:high")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	c := &Commands{ReviewerCommand: command, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+		if s.Path != "/bin/sh" {
+			return nil, nil
+		}
+		return limit, errors.New("exit status 1")
+	}}
+	c.Run = withReviewerRole(t, c.Run)
+	if _, _, err := c.Review(context.Background(), t.TempDir(), "origin/main", "HEAD", nil); err == nil {
+		t.Fatal("failed review reported success")
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+		t.Fatalf("working directory written: %v err=%v", entries, err)
+	}
+}

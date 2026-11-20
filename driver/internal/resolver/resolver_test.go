@@ -924,8 +924,9 @@ func TestResolverRoundEndsOnModelLimitWithoutFailure(t *testing.T) {
 			c.Agent, c.Model, c.Effort = "claude", "claude-fable-5-2", "xhigh"
 			now := time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)
 			c.Now = func() time.Time { return now }
+			// The probe names the limit without its reset; the screen's reset stands.
 			c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
-				return modelhealth.Classify(ref, string(limit), errors.New("exit status 1"), now)
+				return modelhealth.Classify(ref, "You've hit your Fable limit", errors.New("exit status 1"), now)
 			}
 			if _, err := c.Step(context.Background()); err != nil {
 				t.Fatal(err)
@@ -1064,9 +1065,38 @@ func TestResolverQuotedModelErrorNeedsProbe(t *testing.T) {
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	now = now.Add(ModelCheckDelay)
-	p, err := c.Step(context.Background())
-	if err != nil || p.Phase != "running" || o.stops != 0 || len(models.statuses) != 0 || probes != 1 || s.record.Outcome != "" {
-		t.Fatalf("quoted error ended the round: p=%+v stops=%d records=%+v probes=%d err=%v", p, o.stops, models.statuses, probes, err)
+	for range 3 {
+		now = now.Add(ModelCheckDelay)
+		p, err := c.Step(context.Background())
+		if err != nil || p.Phase != "running" || o.stops != 0 || len(models.statuses) != 0 || probes != 1 || s.record.Outcome != "" {
+			t.Fatalf("quoted error ended the round or was probed again: p=%+v stops=%d records=%+v probes=%d err=%v", p, o.stops, models.statuses, probes, err)
+		}
+	}
+}
+
+// worker_done landing while the model of an ended round is probed settles the
+// round with that report.
+func TestResolverReportDuringModelProbeWins(t *testing.T) {
+	unsupported, err := os.ReadFile("../../testdata/recorded/codex-model-unsupported.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, s, o := setupController()
+	c.Models = &modelLog{}
+	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+	c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+		o.report = &orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: `{"action":"escalate"}`}
+		return modelhealth.Classify(ref, string(unsupported), errors.New("exit status 1"), time.Now())
+	}
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+	o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+	if _, err := c.Step(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.record.Outcome != "succeeded" || s.record.Result != o.report.Body {
+		t.Fatalf("model report overrode worker_done: %+v", s.record)
 	}
 }

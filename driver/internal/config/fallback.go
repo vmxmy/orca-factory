@@ -75,7 +75,9 @@ func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []m
 // the failure itself.
 func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidates []modelhealth.Ref, now time.Time) (modelhealth.Ref, bool, error) {
 	used := status.Ref
-	if status.State != modelhealth.Unavailable || used.Agent == "" || used.Model == "" {
+	// Without a state root the registry has no home; a caller such as the live
+	// self-test then records nothing rather than writing into its directory.
+	if stateRoot == "" || status.State != modelhealth.Unavailable || used.Agent == "" || used.Model == "" {
 		return modelhealth.Ref{}, false, nil
 	}
 	registry, err := modelhealth.Open(stateRoot)
@@ -92,9 +94,9 @@ func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidat
 	return next, ok && next != used, nil
 }
 
-// ReviewerRef recovers the model of a command GenerateReviewerCommand built,
-// so a structured reviewer role without fallback still records its model
-// error. A hand-written _CMD command reports false.
+// ReviewerRef recovers the model a reviewer command runs when the command is
+// exactly what GenerateReviewerCommand builds for it, so a reviewer without
+// fallback still records that model's error. Any other command reports false.
 func ReviewerRef(command string) (modelhealth.Ref, bool) {
 	fields := strings.Fields(command)
 	var ref modelhealth.Ref

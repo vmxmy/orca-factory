@@ -1266,14 +1266,20 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	if len(store.comments) != 2 || store.comments[0] != "搁置："+reason || store.commentsAtUpdate[0] != 1 {
 		t.Fatalf("model reason not written before the labels: comments=%q at update=%v", store.comments, store.commentsAtUpdate)
 	}
-	written := store.comments[len(store.comments)-1]
-	recordedComment := parked.Comments.Nodes[1]
-	recordedComment.Body = written
-	store.issueComments = []task.Comment{parked.Comments.Nodes[0], recordedComment}
-	ticket.Parked, _ = parkedState(parked.Issue, store.issueComments)
+	marker, full := parked.Comments.Nodes[1], parked.Comments.Nodes[1]
+	marker.ID, marker.Body, full.Body = "marker", store.comments[0], store.comments[1]
+	ticket.Parked, _ = parkedState(parked.Issue, []task.Comment{parked.Comments.Nodes[0], full})
 	if ticket.Parked != reason {
 		t.Fatalf("park line=%q want %q", ticket.Parked, reason)
 	}
+	now = now.Add(2 * time.Minute)
+	// A full 搁置 alone, as an older escalation reason in the model format, is no model park.
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], full}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("unmarked park resumed: added=%v err=%v", store.added, err)
+	}
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], marker, full}
+	now = now.Add(-2 * time.Minute)
 	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
 		t.Fatalf("resumed before any candidate recovered: added=%v err=%v", store.added, err)
 	}

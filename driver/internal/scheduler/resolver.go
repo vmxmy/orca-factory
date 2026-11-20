@@ -745,7 +745,8 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			problems = append(problems, fmt.Errorf("%s: model park reread: %w", t.Identifier, err))
 			continue
 		}
-		if current, _ := parkedState(issue, protocolComments(comments)); current != t.Parked {
+		protocol := protocolComments(comments)
+		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(protocol, t.Parked) {
 			continue
 		}
 		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
@@ -755,13 +756,10 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 		// The ledger has no compare-and-set: a person may park the ticket again
 		// between the reread and the label write. Read once more and put the park
 		// back if a newer 搁置 arrived.
-		if comments, err = client.ListComments(ctx, t.ID); err != nil {
-			problems = append(problems, fmt.Errorf("%s: model park resume unverified: %w", t.Identifier, err))
-			continue
-		}
-		if latestPark(protocolComments(comments)) != t.Parked {
-			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
-				problems = append(problems, fmt.Errorf("%s: newer park not restored: %w", t.Identifier, err))
+		if comments, err = client.ListComments(ctx, t.ID); err != nil || latestPark(protocolComments(comments)) != t.Parked {
+			// An unverified resume is undone too: the next tick sees no park to retry.
+			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
+				problems = append(problems, fmt.Errorf("%s: park not restored after unverified resume: %w", t.Identifier, errors.Join(err, restoreErr)))
 			}
 			continue
 		}
@@ -834,6 +832,13 @@ func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt 
 	}
 	r.board(ctx, t, machine.PhaseUnclaimed, "搁置："+line)
 	return nil
+}
+
+// modelParkMarked reports the reason-only 搁置 comment that only a model park
+// writes before its labels; a full 搁置 alone, as an older escalation reason
+// that happens to read like a model park, never qualifies.
+func modelParkMarked(comments []task.Comment, reason string) bool {
+	return slices.ContainsFunc(comments, func(c task.Comment) bool { return c.Body == "搁置："+reason })
 }
 
 // latestPark returns the reason of the newest 搁置 comment.

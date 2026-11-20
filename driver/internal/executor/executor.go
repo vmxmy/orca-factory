@@ -876,10 +876,8 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			if report != nil {
 				return report, nil
 			}
-			if watch.ended != nil {
-				if report := watch.ended(); report != nil {
-					return report, nil
-				}
+			if report, err := endedReport(watch, readReport); err != nil || report != nil {
+				return report, err
 			}
 			if worker.Projection.Stage.Worker == "abandoned" {
 				return livenessFailure("worker abandoned without worker_done"), nil
@@ -901,10 +899,8 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 				status = worker.DispatchStatus
 			}
 			if reason, lost := resolver.LostDispatch(*awaiting, dispatch, listed, status); lost {
-				if watch.ended != nil {
-					if report := watch.ended(); report != nil {
-						return report, nil
-					}
+				if report, err := endedReport(watch, readReport); err != nil || report != nil {
+					return report, err
 				}
 				return livenessFailure(reason), nil
 			}
@@ -929,6 +925,23 @@ func (e *Executor) wait(ctx context.Context, run, task, dispatch string, interva
 			return nil, err
 		}
 	}
+}
+
+// endedReport is the model report for a worker that ended without
+// worker_done, unless worker_done arrived while its model was probed.
+func endedReport(watch *workerWatch, readReport func() (*orca.WorkerReport, bool, *orca.Task, error)) (*orca.WorkerReport, error) {
+	if watch.ended == nil {
+		return nil, nil
+	}
+	model := watch.ended()
+	if model == nil {
+		return nil, nil
+	}
+	report, _, _, err := readReport()
+	if err != nil || report != nil {
+		return report, err
+	}
+	return model, nil
 }
 
 // stopUnstarted applies the resolver's window to a dispatch whose turn never
@@ -1010,10 +1023,12 @@ func (e *Executor) modelReport(ctx context.Context, c Config, cp checkpoint, dis
 			return modelhealth.Probe(ctx, ref, c.Repo, modelhealth.Endpoint{})
 		}
 	}
-	if status = probe(ctx, used); status.State != modelhealth.Unavailable {
-		e.logger().Info("worker screen model error not confirmed by probe", "dispatch", dispatch, "reason", status.Reason)
+	confirmed := probe(ctx, used)
+	if confirmed.State != modelhealth.Unavailable {
+		e.logger().Info("worker screen model error not confirmed by probe", "dispatch", dispatch, "reason", confirmed.Reason)
 		return nil
 	}
+	status = resolver.ConfirmedStatus(status, confirmed)
 	tier, agent, model, effort, err := correctionTier(c, cp.Corrections)
 	if err != nil {
 		return nil
