@@ -20,6 +20,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1128,6 +1129,7 @@ type labelIssues struct {
 	*fakeIssues
 	added, removed        [][]string
 	commentErr, updateErr error
+	unconfirmedErr        error
 	rereadErr             error
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
@@ -1145,7 +1147,21 @@ func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, re
 		l.duringUpdate = nil
 		during()
 	}
-	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+	i := slices.IndexFunc(l.issues, func(issue task.Issue) bool { return issue.ID == id })
+	if i < 0 {
+		return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+	}
+	ledger := mergeIssues{issue: l.issues[i], labels: true}
+	issue, err := ledger.UpdateIssue(ctx, id, state, add, remove)
+	if err != nil {
+		return task.Issue{}, err
+	}
+	l.issues[i] = issue
+	if l.unconfirmedErr != nil {
+		err, l.unconfirmedErr = l.unconfirmedErr, nil
+		return task.Issue{}, err
+	}
+	return issue, nil
 }
 
 func (l *labelIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
@@ -1163,24 +1179,31 @@ func (l *labelIssues) ListComments(ctx context.Context, id string) ([]task.Comme
 }
 
 func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
-	for _, fail := range []string{"comment", "labels", "reread"} {
+	for _, fail := range []string{"comment", "labels", "labels and restore", "labels and marker", "reread"} {
 		t.Run(fail, func(t *testing.T) {
 			reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
 			marker := "搁置：" + reason
 			issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
 			store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(marker)}}
 			failure := errors.New("ledger write failed")
+			markerFailure := errors.New("marker write failed")
 			switch fail {
 			case "comment":
 				store.commentErr = failure
 			case "labels":
+				store.unconfirmedErr = failure
+			case "labels and restore":
 				store.updateErr = failure
+			case "labels and marker":
+				store.unconfirmedErr = failure
+				store.duringUpdate = func() { store.commentErr = markerFailure }
 			case "reread":
 				store.rereadErr = failure
 			}
 			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
 			ticket := Ticket{ID: "id", Identifier: "OF-616", Repo: "a", Parked: reason}
-			if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); !errors.Is(err, failure) {
+			err := r.ResumeModelParks(context.Background(), []Ticket{ticket})
+			if !errors.Is(err, failure) {
 				t.Fatalf("resume error=%v, want write failure", err)
 			}
 			switch fail {
@@ -1189,12 +1212,26 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 					t.Errorf("failed recovery comment changed ticket: added=%v removed=%v comments=%q", store.added, store.removed, store.comments)
 				}
 			case "labels":
+				if !reflect.DeepEqual(store.added, [][]string{{"ready-for-agent"}, {parkedLabel}}) || !reflect.DeepEqual(store.removed, [][]string{{parkedLabel}, {"ready-for-agent"}}) {
+					t.Errorf("label updates: added=%v removed=%v", store.added, store.removed)
+				}
 				if len(store.comments) != 2 || !strings.HasPrefix(store.comments[0], "恢复：") || store.comments[1] != marker {
 					t.Errorf("failed label update did not restore original marker: comments=%q", store.comments)
 				}
-				if !slices.Equal(store.commentsAtUpdate, []int{1}) {
-					t.Errorf("recovery comment not written before labels: %v", store.commentsAtUpdate)
+				if !slices.Equal(store.commentsAtUpdate, []int{1, 1}) {
+					t.Errorf("comments at label updates=%v, want [1 1]", store.commentsAtUpdate)
 				}
+			case "labels and restore", "labels and marker":
+				if !strings.Contains(err.Error(), "manual recovery required") {
+					t.Errorf("missing manual recovery instruction: %v", err)
+				}
+				if fail == "labels and marker" && !errors.Is(err, markerFailure) {
+					t.Errorf("missing marker failure: %v", err)
+				}
+				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "恢复：") {
+					t.Errorf("want only the recovery comment, got %q", store.comments)
+				}
+				return
 			case "reread":
 				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "恢复：") {
 					t.Errorf("failed reread overwrote an unknown park: comments=%q", store.comments)
@@ -1204,8 +1241,15 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 				}
 				return
 			}
+			fresh, err := store.FreshIssue(context.Background(), ticket.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(fresh.Labels.Nodes, []task.NamedID{{Name: parkedLabel}}) {
+				t.Errorf("labels after failed resume=%v, want only parked", fresh.Labels.Nodes)
+			}
 			protocol := protocolComments(store.issueComments)
-			if current, _ := parkedState(issue, protocol); current != reason || !modelParkMarked(protocol, reason) {
+			if current, _ := parkedState(fresh, protocol); current != reason || !modelParkMarked(protocol, reason) {
 				t.Errorf("failed resume lost model park: reason=%q comments=%v", current, store.issueComments)
 			}
 		})

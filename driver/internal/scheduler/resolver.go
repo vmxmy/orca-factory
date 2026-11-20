@@ -746,10 +746,13 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			continue
 		}
 		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
-			if _, restoreErr := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); restoreErr != nil {
-				problems = append(problems, fmt.Errorf("%s: model park marker not restored: %w", t.Identifier, restoreErr))
+			problem := fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err)
+			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
+				problem = errors.Join(problem, fmt.Errorf("park labels not restored; manual recovery required: %w", restoreErr))
+			} else if _, markerErr := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); markerErr != nil {
+				problem = errors.Join(problem, fmt.Errorf("model park marker not restored; manual recovery required: %w", markerErr))
 			}
+			problems = append(problems, problem)
 			continue
 		}
 		// The ledger has no compare-and-set: a person may park the ticket again
