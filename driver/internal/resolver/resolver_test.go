@@ -667,50 +667,60 @@ func TestResolverRoundWithoutProgressFailsAfterWindow(t *testing.T) {
 	workers, terminals := recordedProgress(t)
 	for _, top := range []bool{false, true} {
 		for _, external := range []bool{false, true} {
-			t.Run(fmt.Sprintf("top=%v/external-stop=%v", top, external), func(t *testing.T) {
-				c, s, o := setupController()
-				now := time.UnixMilli(output)
-				c.Now = func() time.Time { return now }
-				s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
-				o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
-				o.workers, o.terminals = workers, terminals
-				// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
-				o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
-				for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
-					now = now.Add(elapsed)
-					p, err := c.Step(context.Background())
-					if err != nil || p.Phase != "running" || o.stops != 0 {
-						t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+			for _, screened := range []bool{false, true} {
+				t.Run(fmt.Sprintf("top=%v/external-stop=%v/model-screen=%v", top, external, screened), func(t *testing.T) {
+					c, s, o := setupController()
+					now := time.UnixMilli(output)
+					c.Now = func() time.Time { return now }
+					if screened {
+						// OF-594: a screen without a model error keeps the ordinary window.
+						c.Models = &modelLog{}
+						o.screen = recordedScreen(t, []string{"• Running make test", "", "› "})
 					}
-					if s.record.LastOutputAt != output {
-						t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
+					s.record = &Record{Version: 1, Attempt: 1, Phase: "running", Creator: c.Terminal, Run: run, Task: task, Dispatch: dispatch, Spec: c.Spec, Agent: c.Agent, Top: top, TopLaunchAccepted: top}
+					o.tasks = []orca.Task{{ID: task, RunID: run, DispatchID: dispatch, Status: "dispatched"}}
+					o.workers, o.terminals = workers, terminals
+					// The stopped row is synthetic; its field shape comes from orca-worker-list-liveness.json.
+					o.stopped = workerRows(run, fmt.Sprintf(`[{"runId":%q,"taskId":%q,"dispatchId":%q,"dispatchStatus":"failed","workerState":"stopped"}]`, run, task, dispatch))
+					for _, elapsed := range []time.Duration{0, 15*time.Minute - time.Second} {
+						now = now.Add(elapsed)
+						p, err := c.Step(context.Background())
+						if err != nil || p.Phase != "running" || o.stops != 0 {
+							t.Fatalf("round ended before window: p=%+v stops=%d err=%v", p, o.stops, err)
+						}
+						if s.record.LastOutputAt != output {
+							t.Fatalf("last output=%d, want recorded terminal %s output %d", s.record.LastOutputAt, terminal, output)
+						}
 					}
-				}
-				if external {
-					o.workers = o.stopped
-				} else {
-					now = now.Add(2 * time.Second)
-				}
-				// Recreate the controller to exercise the persisted observation window.
-				restarted := *c
-				p, err := restarted.Step(context.Background())
-				if err != nil || p.Phase != "result" || p.Outcome != "failed" || s.record.Phase != "result" || o.releases != 1 {
-					t.Fatalf("round did not fail: p=%+v releases=%d err=%v", p, o.releases, err)
-				}
-				wantStops := 1
-				if external {
-					wantStops = 0
-				}
-				if o.stops != wantStops || o.startCalls != 0 {
-					t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
-				}
-				if top {
-					var result Resolution
-					if err := json.Unmarshal([]byte(p.Result), &result); err != nil || result.Action != "escalate" || result.Reason != "终审模型未获响应，不更换模型" || p.TopModelAccepted {
-						t.Fatalf("missing top-model failure: result=%s accepted=%v err=%v", p.Result, p.TopModelAccepted, err)
+					if external {
+						o.workers = o.stopped
+					} else {
+						now = now.Add(2 * time.Second)
 					}
-				}
-			})
+					// Recreate the controller to exercise the persisted observation window.
+					restarted := *c
+					p, err := restarted.Step(context.Background())
+					if err != nil || p.Phase != "result" || p.Outcome != "failed" || s.record.Phase != "result" || o.releases != 1 {
+						t.Fatalf("round did not fail: p=%+v releases=%d err=%v", p, o.releases, err)
+					}
+					wantStops := 1
+					if external {
+						wantStops = 0
+					}
+					if o.stops != wantStops || o.startCalls != 0 {
+						t.Fatalf("stops=%d starts=%d", o.stops, o.startCalls)
+					}
+					if screened && (o.screenReads == 0 || len(c.Models.(*modelLog).statuses) != 0) {
+						t.Fatalf("screen reads=%d registry writes=%+v", o.screenReads, c.Models)
+					}
+					if top {
+						var result Resolution
+						if err := json.Unmarshal([]byte(p.Result), &result); err != nil || result.Action != "escalate" || result.Reason != "终审模型未获响应，不更换模型" || p.TopModelAccepted {
+							t.Fatalf("missing top-model failure: result=%s accepted=%v err=%v", p.Result, p.TopModelAccepted, err)
+						}
+					}
+				})
+			}
 		}
 	}
 }
@@ -890,7 +900,7 @@ func recordedScreen(t *testing.T, lines []string) orca.Receipt {
 
 func (o *fakeOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Receipt, error) {
 	o.screenReads++
-	if opts.Dispatch != "ctx_1" || opts.Source != "terminal" {
+	if opts.Dispatch == "" || opts.Source != "terminal" {
 		return nil, errors.New("unexpected worker read")
 	}
 	return o.screen, nil

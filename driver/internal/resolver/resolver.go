@@ -382,19 +382,14 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 		return c.Store.Save(ctx, *p)
 	}
 	if c.Models != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay {
-		status, err := c.screenModel(ctx, p, now)
-		if err != nil || status.State != modelhealth.Unavailable {
-			return err
+		if status, ok := c.unavailableModel(ctx, p, now); ok {
+			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
+				return err
+			}
+			p.Phase, p.Outcome, p.RetryAt = "waiting", ModelUnavailable, now
+			p.Result = fmt.Sprintf("model unavailable: %s %s until %s; dispatch %s stopped", status.Ref, status.Reason, status.Until.UTC().Format(time.RFC3339), p.Dispatch)
+			return c.Store.Save(ctx, *p)
 		}
-		if err = c.Models.Record(status); err != nil {
-			return err
-		}
-		if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
-			return err
-		}
-		p.Phase, p.Outcome, p.RetryAt = "waiting", ModelUnavailable, now
-		p.Result = fmt.Sprintf("model unavailable: %s %s until %s; dispatch %s stopped", status.Ref, status.Reason, status.Until.UTC().Format(time.RFC3339), p.Dispatch)
-		return c.Store.Save(ctx, *p)
 	}
 	if now.Sub(p.ProgressSince) < NoProgressWindow {
 		return nil
@@ -423,6 +418,23 @@ func (c *Controller) stopQuiet(ctx context.Context, p *Record, stopRequest strin
 	}
 	reported, err := c.readReport(ctx, p)
 	return !reported && err == nil, err
+}
+
+// unavailableModel reports a model error on the round's screen once it is
+// recorded. An unreadable screen or a failed record leaves the round to the
+// no-progress window.
+func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
+	status, err := c.screenModel(ctx, p, now)
+	if err == nil && status.State == modelhealth.Unavailable {
+		err = c.Models.Record(status)
+		if err == nil {
+			return status, true
+		}
+	}
+	if err != nil {
+		runx.LoggerFrom(ctx).Warn("resolver screen model check failed", "dispatch", p.Dispatch, "err", err)
+	}
+	return modelhealth.Status{}, false
 }
 
 // screenModel classifies the bottom of the round's rendered screen.

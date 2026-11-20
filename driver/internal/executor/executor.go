@@ -490,6 +490,9 @@ func (e *Executor) execute(ctx context.Context, t Ticket, restored *checkpoint, 
 			if result.State.Owner == machine.OwnerResolver {
 				return result, waitErr
 			}
+			if report.Provenance == provenanceExecutorModelParked {
+				return result, e.parkModel(ctx, t, &result, cp, report.Body)
+			}
 			releaseAllowed = report.Provenance != provenanceExecutorLiveness && report.Provenance != provenanceExecutorUnstarted && report.Provenance != provenanceExecutorModel
 		}
 		if cp.Completed {
@@ -762,6 +765,9 @@ const (
 	provenanceExecutorLiveness  = "executor_liveness"
 	provenanceExecutorUnstarted = "executor_unstarted"
 	provenanceExecutorModel     = "executor_model_unavailable"
+	// provenanceExecutorModelParked stops a worker whose tier has no available
+	// candidate left; the ticket is parked for the model.
+	provenanceExecutorModelParked = "executor_model_parked"
 )
 
 type workerWatch struct {
@@ -924,9 +930,10 @@ func (e *Executor) stopUnstarted(ctx context.Context, run, dispatch string, watc
 }
 
 // stopModelUnavailable reads a quiet worker's screen. When it shows the
-// launched model's limit or an unsupported model and another candidate of the
-// tier is available, it records the model, stops the dispatch and returns the
-// report that redoes it; otherwise nil, and the stall handling goes on.
+// launched model's limit or an unsupported model, it records the model, stops
+// the dispatch and returns the report that redoes it on the tier's next
+// available candidate, or parks the ticket when none remains; otherwise nil,
+// and the stall handling goes on.
 func (e *Executor) stopModelUnavailable(ctx context.Context, c Config, cp checkpoint, run, dispatch string, watch *workerWatch) *orca.WorkerReport {
 	used, err := modelhealth.Parse(cp.Launch)
 	if err != nil {
@@ -947,6 +954,12 @@ func (e *Executor) stopModelUnavailable(ctx context.Context, c Config, cp checkp
 		e.logger().Warn("worker screen unreadable for model check", "dispatch", dispatch, "error", logErrorSummary(err))
 		return nil
 	}
+	lines := screen.Tail[max(0, len(screen.Tail)-modelScreenLines):]
+	now := e.Now()
+	status := modelhealth.Classify(used, strings.Join(lines, "\n"), nil, now)
+	if status.State != modelhealth.Unavailable {
+		return nil
+	}
 	tier, agent, model, effort, err := correctionTier(c, cp.Corrections)
 	if err != nil {
 		return nil
@@ -955,14 +968,24 @@ func (e *Executor) stopModelUnavailable(ctx context.Context, c Config, cp checkp
 	if err != nil {
 		return nil
 	}
-	lines := screen.Tail[max(0, len(screen.Tail)-modelScreenLines):]
-	candidates := append([]modelhealth.Ref{{Agent: agent, Model: model, Effort: effort}}, fallback...)
-	next, retry, err := config.RetryAfterModelError(e.Config.Root, used, candidates, []byte(strings.Join(lines, "\n")), nil, e.Now())
+	registry, err := modelhealth.Open(e.Config.Root)
+	if err == nil {
+		err = registry.Record(status)
+	}
 	if err != nil {
 		e.logger().Warn("worker model error not recorded", "dispatch", dispatch, "error", logErrorSummary(err))
-	}
-	if !retry {
 		return nil
+	}
+	candidates := append([]modelhealth.Ref{{Agent: agent, Model: model, Effort: effort}}, fallback...)
+	report := &orca.WorkerReport{Provenance: provenanceExecutorModel, Outcome: "failed"}
+	if next, ok := registry.Select(candidates, now); ok {
+		report.Body = fmt.Sprintf("model unavailable: %s; dispatch %s stopped; next candidate %s", used, dispatch, next)
+	} else {
+		statuses := make([]modelhealth.Status, 0, len(candidates))
+		for _, ref := range candidates {
+			statuses = append(statuses, registry.Status(ref, now))
+		}
+		report.Provenance, report.Body = provenanceExecutorModelParked, config.ModelParkReason(statuses)
 	}
 	if watch.stop(dispatch) != nil {
 		e.logger().Warn("model-unavailable worker stop not acknowledged", "dispatch", dispatch)
@@ -973,9 +996,28 @@ func (e *Executor) stopModelUnavailable(ctx context.Context, c Config, cp checkp
 	}
 	for _, w := range workers {
 		if w.DispatchID == dispatch && resolver.DispatchEnded(w.DispatchStatus) {
-			return &orca.WorkerReport{Provenance: provenanceExecutorModel, Outcome: "failed", Body: fmt.Sprintf("model unavailable: %s; dispatch %s stopped; next candidate %s", used, dispatch, next)}
+			return report
 		}
 	}
+	return nil
+}
+
+// parkModel parks a ticket whose stopped worker found every candidate of its
+// tier unavailable, as the scheduler parks: labels first, then the 搁置 line
+// that ResumeModelParks reads back once a candidate recovers.
+func (e *Executor) parkModel(ctx context.Context, t Ticket, result *Result, cp checkpoint, reason string) error {
+	status.Push(e.Now(), func(view *status.View) {
+		status.SetTicket(view, status.Ticket{Repo: e.Config.Repo, Identifier: t.Identifier}, false)
+	})
+	if _, err := e.Issues.UpdateIssue(ctx, t.ID, "Todo", []string{"parked"}, []string{"ready-for-agent", "auto-impl", "auto-failed"}); err != nil {
+		return errors.New("model park labels failed")
+	}
+	result.State.Phase, result.State.Owner, result.State.HumanReason, result.State.ExecAlive = machine.PhaseUnclaimed, machine.OwnerNone, reason, false
+	body := fmt.Sprintf("搁置：%s\n已完成：worker 派工 %s 已停止，分支保留\n阶段: %s\n归属: %s", reason, result.DispatchID, machine.PhaseUnclaimed, machine.OwnerNone)
+	if err := e.comment(ctx, t.ID, body); err != nil {
+		return errors.New("model park comment failed")
+	}
+	e.board(ctx, t, cp.Worktree, machine.PhaseUnclaimed, "搁置："+reason, 0)
 	return nil
 }
 

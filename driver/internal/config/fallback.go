@@ -81,3 +81,17 @@ func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []m
 	next, ok := registry.Select(candidates, now)
 	return next, ok && next != used, nil
 }
+
+// ModelParked prefixes the 搁置 reason of a ticket parked because every model
+// candidate of its role or tier was unavailable.
+const ModelParked = "模型不可用"
+
+// ModelParkReason names every candidate and when its cooldown ends, so the
+// scheduler can read the candidates back from the 搁置 line.
+func ModelParkReason(statuses []modelhealth.Status) string {
+	parts := make([]string, 0, len(statuses))
+	for _, s := range statuses {
+		parts = append(parts, s.Ref.String()+" 至 "+s.Until.UTC().Format(time.RFC3339))
+	}
+	return ModelParked + "：" + strings.Join(parts, "；")
+}

@@ -246,7 +246,7 @@ func (r *Runtime) ResolveTicket(ctx context.Context, t Ticket, snapshot []Ticket
 			return err
 		}
 		if len(statuses) > 0 {
-			return r.parkResolution(ctx, t, prev, modelParkReason(statuses), prev.Result)
+			return r.parkResolution(ctx, t, prev, config.ModelParkReason(statuses), prev.Result)
 		}
 	}
 	if tierKey != "" && !frozen {
@@ -672,10 +672,6 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 
 const parkedLabel = "parked"
 
-// modelParked prefixes the 搁置 reason of a ticket parked because every model
-// candidate of its role was unavailable; ResumeModelParks restores it.
-const modelParked = "模型不可用"
-
 // unavailableModels returns each candidate's status when the registry marks
 // primary and every candidate under fallbackKey unavailable, else nil.
 func (r *Runtime) unavailableModels(fallbackKey string, env map[string]string, candidates []modelhealth.Ref, now time.Time) ([]modelhealth.Status, error) {
@@ -698,16 +694,6 @@ func (r *Runtime) unavailableModels(fallbackKey string, env map[string]string, c
 	return statuses, nil
 }
 
-// modelParkReason names every candidate and when its cooldown ends, so
-// ResumeModelParks can read the candidates back from the 搁置 line.
-func modelParkReason(statuses []modelhealth.Status) string {
-	parts := make([]string, 0, len(statuses))
-	for _, s := range statuses {
-		parts = append(parts, s.Ref.String()+" 至 "+s.Until.UTC().Format(time.RFC3339))
-	}
-	return modelParked + "：" + strings.Join(parts, "；")
-}
-
 // ResumeModelParks restores tickets parked for model unavailability once the
 // registry no longer marks every candidate named in the 搁置 line unavailable,
 // as a person does: ready-for-agent returns and parked goes.
@@ -718,7 +704,7 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 	}
 	var problems []error
 	for _, t := range tickets {
-		listed, ok := strings.CutPrefix(t.Parked, modelParked+"：")
+		listed, ok := strings.CutPrefix(t.Parked, config.ModelParked+"：")
 		if !ok {
 			continue
 		}
@@ -748,7 +734,7 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
 			continue
 		}
-		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+modelParked+"」搁置"); err != nil {
+		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
 			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
 		}
 	}

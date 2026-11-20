@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -64,6 +65,7 @@ func (f *fakeOrca) WorkerRelease(_ context.Context, _, dispatch string) (orca.Re
 type fakeIssues struct {
 	issues.Store
 	comments []string
+	updates  []string
 }
 
 func (f *fakeIssues) Repository() string { return "acme/demo" }
@@ -87,7 +89,8 @@ func (f *fakeIssues) CreateComment(_ context.Context, id, body string) (task.Com
 	f.comments = append(f.comments, body)
 	return task.Comment{}, nil
 }
-func (f *fakeIssues) UpdateIssue(context.Context, string, string, []string, []string) (task.Issue, error) {
+func (f *fakeIssues) UpdateIssue(_ context.Context, _, state string, add, remove []string) (task.Issue, error) {
+	f.updates = append(f.updates, fmt.Sprint(state, add, remove))
 	return task.Issue{Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: "auto-impl"}}}}, nil
 }
 
@@ -442,7 +445,8 @@ func (o *screenOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.
 }
 
 // OF-594: a worker at its model's quota notice is redone on the tier's next
-// candidate without charging the correction or infra budget.
+// candidate without charging the correction or infra budget. With every
+// candidate unavailable the ticket is parked for the model instead.
 func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
 	if err != nil {
@@ -462,42 +466,65 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 	terminal["tail"] = []string{"● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset"}
 	envelope.Result["terminal"], _ = json.Marshal(terminal)
 
-	e, _, _, _, _, ticket := fixture(t, "new-sha")
-	e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
-	e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
-	live := livenessFixture(t, "unverifiable", "")
-	live.worker.DispatchStatus, live.worker.Projection.Stage.Detail = "dispatched", ""
-	stopped := live.worker
-	stopped.DispatchStatus = "failed"
-	live.stopped = &stopped
-	now := e.Now()
-	e.Now = func() time.Time { return now }
-	o := &screenOrca{livenessOrca: live, screen: envelope.Result, output: now.UnixMilli()}
-	e.Orca = o
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	r := &livenessRecovery{cancel: cancel}
-	e.Recovery = r
-	polls := 0
-	e.Sleep = func(ctx context.Context, _ time.Duration) error {
-		now = now.Add(resolver.ModelCheckDelay)
-		if polls++; polls > 4 {
-			cancel()
-		}
-		return ctx.Err()
-	}
-	result, err := e.Execute(ctx, ticket)
-	if len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "model unavailable: claude:claude-fable-5-2:xhigh") || live.stops != 1 {
-		t.Fatalf("not redone: err=%v requests=%+v stops=%d", err, r.requests, live.stops)
-	}
-	if result.State.Infra != 0 || result.State.Corrections != 0 {
-		t.Fatalf("model limit charged a budget: %+v", result.State)
-	}
-	registry, err := modelhealth.Open(e.Config.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
-		t.Fatalf("registry status=%+v", s)
+	for _, exhausted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhausted=%v", exhausted), func(t *testing.T) {
+			e, _, l, _, _, ticket := fixture(t, "new-sha")
+			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
+			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
+			live := livenessFixture(t, "unverifiable", "")
+			live.worker.DispatchStatus, live.worker.Projection.Stage.Detail = "dispatched", ""
+			stopped := live.worker
+			stopped.DispatchStatus = "failed"
+			live.stopped = &stopped
+			now := e.Now()
+			e.Now = func() time.Time { return now }
+			registry, err := modelhealth.Open(e.Config.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6.1-sol", Effort: "high"}
+			if exhausted {
+				if err := registry.Record(modelhealth.Status{Ref: fallback, State: modelhealth.Unavailable, Reason: "model_not_found", Until: now.Add(time.Hour)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := &screenOrca{livenessOrca: live, screen: envelope.Result, output: now.UnixMilli()}
+			e.Orca = o
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			r := &livenessRecovery{cancel: cancel}
+			e.Recovery = r
+			polls := 0
+			e.Sleep = func(ctx context.Context, _ time.Duration) error {
+				now = now.Add(resolver.ModelCheckDelay)
+				if polls++; polls > 4 {
+					cancel()
+				}
+				return ctx.Err()
+			}
+			result, err := e.Execute(ctx, ticket)
+			if live.stops != 1 || result.State.Infra != 0 || result.State.Corrections != 0 {
+				t.Fatalf("model limit not stopped free: err=%v stops=%d state=%+v", err, live.stops, result.State)
+			}
+			if registry, err = modelhealth.Open(e.Config.Root); err != nil {
+				t.Fatal(err)
+			}
+			if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
+				t.Fatalf("registry status=%+v", s)
+			}
+			if !exhausted {
+				if len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "model unavailable: claude:claude-fable-5-2:xhigh") {
+					t.Fatalf("not redone: err=%v requests=%+v", err, r.requests)
+				}
+				return
+			}
+			park := l.comments[len(l.comments)-1]
+			if err != nil || len(r.requests) != 0 || !strings.HasPrefix(park, "搁置：模型不可用：claude:claude-fable-5-2:xhigh 至 ") || !strings.Contains(park, "；codex:gpt-6.1-sol:high 至 ") || !strings.Contains(park, "\n归属: "+string(machine.OwnerNone)) {
+				t.Fatalf("not parked for the model: err=%v requests=%+v comments=%q", err, r.requests, l.comments)
+			}
+			if got := l.updates[len(l.updates)-1]; got != "Todo[parked] [ready-for-agent auto-impl auto-failed]" {
+				t.Fatalf("park labels=%q", got)
+			}
+		})
 	}
 }
