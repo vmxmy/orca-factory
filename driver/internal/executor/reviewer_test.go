@@ -2,10 +2,14 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/vmxmy/orca-factory/driver/internal/config"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 )
 
@@ -88,4 +92,48 @@ func TestReviewerByEstimate(t *testing.T) {
 		}
 	})
 
+}
+
+func TestReviewerRetriesNextCandidateOnModelError(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := modelhealth.Ref{Agent: "claude", Model: "claude-opus-5-5", Effort: "high"}
+	fallback := modelhealth.Ref{Agent: "codex", Model: "gpt-6-astra", Effort: "high"}
+	want, err := config.GenerateReviewerCommand(fallback.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		output []byte
+		runs   int
+	}{
+		{"model limit", limit, 2},
+		{"other failure", []byte("reviewer crashed"), 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state := t.TempDir()
+			var commands []string
+			c := &Commands{ReviewerCommand: "claude -p --model claude-opus-5-5", ReviewerCandidates: []modelhealth.Ref{primary, fallback}, StateRoot: state, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
+				if s.Path != "/bin/sh" {
+					return nil, nil
+				}
+				commands = append(commands, s.Args[3])
+				if len(commands) == 1 {
+					return tc.output, errors.New("exit status 1")
+				}
+				return []byte(`{"verdict":"green","step":"review"}`), nil
+			}}
+			c.Run = withReviewerRole(t, c.Run)
+			_, _, err := c.Review(context.Background(), t.TempDir(), "origin/main", "HEAD", nil)
+			if len(commands) != tc.runs || (tc.runs == 1) != (err != nil) {
+				t.Fatalf("runs=%d err=%v commands=%q", len(commands), err, commands)
+			}
+			if tc.runs == 2 && commands[1] != want {
+				t.Fatalf("retry command=%q want %q", commands[1], want)
+			}
+		})
+	}
 }

@@ -431,6 +431,15 @@ func (b *statusBackend) AdvanceCrossReviews(ctx context.Context, tickets []sched
 	return nil
 }
 
+func (b *statusBackend) ResumeModelParks(ctx context.Context, tickets []scheduler.Ticket) error {
+	if source, ok := b.Backend.(interface {
+		ResumeModelParks(context.Context, []scheduler.Ticket) error
+	}); ok {
+		return source.ResumeModelParks(ctx, tickets)
+	}
+	return nil
+}
+
 func (b *statusBackend) UpdateRepository(repo config.Repository) {
 	if source, ok := b.Backend.(interface{ UpdateRepository(config.Repository) }); ok {
 		source.UpdateRepository(repo)

@@ -217,6 +217,21 @@ func (c *Commands) Review(ctx context.Context, repo, base, head string, estimate
 		spec.Env = append(os.Environ(), "ANTHROPIC_BASE_URL="+c.ModelProxyURL)
 	}
 	b, err := c.runSpec(ctx, spec)
+	if err == nil {
+		return string(b), tier, nil
+	}
+	next, retry, modelErr := config.RetryAfterModelError(c.StateRoot, used, candidates, b, err, time.Now())
+	if modelErr != nil {
+		runx.LoggerFrom(ctx).Warn("reviewer model error not recorded", "tier", tier, "err", modelErr)
+	}
+	if !retry {
+		return string(b), tier, err
+	}
+	if spec.Args[3], err = config.GenerateReviewerCommand(next.String()); err != nil {
+		return "", tier, errors.New("reviewer fallback command invalid")
+	}
+	runx.LoggerFrom(ctx).Info("reviewer model unavailable; retrying with next candidate", "tier", tier, "unavailable", used.String(), "selected", next.String())
+	b, err = c.runSpec(ctx, spec)
 	return string(b), tier, err
 }
 

@@ -684,7 +684,7 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离�
 
 每个角色键与档键都可配 `<键名>_FALLBACK`，值为空格分隔的有序 `agent:model:effort` 列表，仓库 env 与方案文件都可以写。适用的键：`AGENT_TIER_<档名>`、`AGENT_ROLE_RESOLVER`、`AGENT_ROLE_RESOLVER_TOP`、`AGENT_ROLE_INTAKE`、`AGENT_ROLE_REVIEWER`、`AGENT_ROLE_REVIEWER_SMALL`、`AGENT_ROLE_SECOND_REVIEWER`。需求助手的候选必须是 claude；审查角色的候选只支持 `codex` 与 `claude`，且只在角色由结构化键配置时生效，`_CMD` 命令不参与兜底。
 
-启动点在派工前读一次模型可用性登记：主选可用、缺记录或冷却已到期时用主选；主选仍在冷却时用第一个未冷却的候选；候选全部冷却时仍用主选，派工照常进行，与没有配置兜底时相同；driver 不新增等待模型恢复的状态，也不因此挂起派工；全部不可用时搁置、候选恢复后自动解除由 OF-594 处理。没有配置兜底时不读登记，行为与原来相同。各启动点的记录位置：
+启动点在派工前读一次模型可用性登记：主选可用、缺记录或冷却已到期时用主选；主选仍在冷却时用第一个未冷却的候选；候选全部冷却时仍用主选，派工照常进行，与没有配置兜底时相同；driver 不新增等待模型恢复的状态，也不因此挂起派工；全部不可用时的搁置与自动解除见下文「运行中的模型错误」。没有配置兜底时不读登记，行为与原来相同。各启动点的记录位置：
 
 | 角色 | 选择位置 | 实际模型记录 |
 | --- | --- | --- |
@@ -695,7 +695,19 @@ doctor 跨仓库按 `agent:model` 和端点（二进制、代理、环境隔离�
 | 需求助手 | `intake.Runner.Turn`（每轮） | 网关 stderr `intake model falls back: configured=… selected=…` |
 | 接入 Agent | `onboardAgentArgs`（启动接入 Agent 时） | stderr `onboard model falls back: configured=… selected=…` |
 
-终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。运行中识别模型错误并重派不在本节范围内。`orca-factory-driver config` 在每个仓库下的「兜底候选」中按键列出角色与档的全部 `_FALLBACK`，包括终审与 max 等升档档。施工与处置选中 model 为空的候选时不传 effort；终审候选必须写出 model 与 effort。
+终审的处置记录固定档位后，新一轮派工仍先按 OF-583 跟随当前配置，再按兜底候选挑选可用模型。已派工轮次的恢复沿用冻结记录，不换模型。`orca-factory-driver config` 在每个仓库下的「兜底候选」中按键列出角色与档的全部 `_FALLBACK`，包括终审与 max 等升档档。施工与处置选中 model 为空的候选时不传 effort；终审候选必须写出 model 与 effort。
+
+### 运行中的模型错误（OF-594）
+
+模型额度用尽或模型不存在是模型的问题，不是票的问题，不消耗票的预算。driver 按下表在运行中识别这两类错误（分类同 `modelhealth.Classify`：Claude 额度提示行、codex `not supported when using Codex with a ChatGPT account`），把该模型登记为不可用，再换候选：
+
+| 角色 | 识别时机 | 处理 |
+| --- | --- | --- |
+| 处置 Agent、终审 | 终端安静满 1 分钟后读屏幕底部 20 行 | 停止派工，本轮记为 `model-unavailable`（不计入 `resolverFailureLimit`，不按「终审模型未获响应」处理），调度器立即用下一个候选重派 |
+| worker | 终端安静满 1 分钟后读屏幕底部 20 行，且该档还有可用候选 | 停止派工，经打回重派到下一个候选，不计 correction 与 infra 预算 |
+| 主审查、小票审查、交叉复审、需求助手 | 命令非零退出后看输出 | 同一步内换下一个候选重试一次 |
+
+处置的候选全部不可用时，票被搁置，原因写成 `模型不可用：<候选> 至 <冷却结束时间>；…`。调度器每轮检查这类搁置，任一候选冷却到期或恢复可用时自动去掉 `parked`、加回 `ready-for-agent`，并写一条「恢复」评论；其后与人手动恢复相同。其他原因的搁置不自动解除。worker 的候选全部不可用时按原停滞处理，最终进入处置，再由处置回合识别。
 
 ## 模型代理（AGENT_MODEL_PROXY_URL）
 

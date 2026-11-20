@@ -643,18 +643,26 @@ func (s *Scheduler) Tick(ctx context.Context) (tickErr error) {
 		}
 	}
 	lap("merge")
+	permitted := make([]Ticket, 0, len(tickets))
+	for _, t := range tickets {
+		if allowed[t.Repo] {
+			permitted = append(permitted, t)
+		}
+	}
 	if reviews, ok := s.Backend.(interface {
 		AdvanceCrossReviews(context.Context, []Ticket) error
 	}); ok {
-		permitted := make([]Ticket, 0, len(tickets))
-		for _, t := range tickets {
-			if allowed[t.Repo] {
-				permitted = append(permitted, t)
-			}
-		}
 		// The shadow record never decides anything, so it never fails a tick.
 		if err := reviews.AdvanceCrossReviews(ctx, permitted); err != nil {
 			s.logger().Warn("cross review record failed", "err", err)
+		}
+	}
+	if parks, ok := s.Backend.(interface {
+		ResumeModelParks(context.Context, []Ticket) error
+	}); ok {
+		// A failed resume leaves the ticket parked until the next tick.
+		if err := parks.ResumeModelParks(ctx, permitted); err != nil {
+			s.logger().Warn("model park resume failed", "err", err)
 		}
 	}
 	if runners, ok := s.Backend.(interface{ CheckRunners(context.Context) error }); ok {

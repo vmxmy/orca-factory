@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -50,4 +52,32 @@ func SelectConfigured(env map[string]string, key, stateRoot string, primary mode
 		return primary, fmt.Errorf("%s: %w", FallbackKey(key), err)
 	}
 	return SelectModel(stateRoot, primary, fallback, now)
+}
+
+// RetryAfterModelError records used unavailable in the registry under
+// stateRoot when its failed command's output shows a model limit or
+// unsupported model, and returns the candidate to retry with. It reports
+// false without fallback, for other failures, or when no other candidate
+// remains available.
+func RetryAfterModelError(stateRoot string, used modelhealth.Ref, candidates []modelhealth.Ref, output []byte, failure error, now time.Time) (modelhealth.Ref, bool, error) {
+	if len(candidates) < 2 {
+		return modelhealth.Ref{}, false, nil
+	}
+	var exit *exec.ExitError
+	if errors.As(failure, &exit) {
+		output = append(append(output, '\n'), exit.Stderr...)
+	}
+	status := modelhealth.Classify(used, string(output), failure, now)
+	if status.State != modelhealth.Unavailable {
+		return modelhealth.Ref{}, false, nil
+	}
+	registry, err := modelhealth.Open(stateRoot)
+	if err != nil {
+		return modelhealth.Ref{}, false, fmt.Errorf("model health registry: %w", err)
+	}
+	if err = registry.Record(status); err != nil {
+		return modelhealth.Ref{}, false, fmt.Errorf("model health registry: %w", err)
+	}
+	next, ok := registry.Select(candidates, now)
+	return next, ok && next != used, nil
 }

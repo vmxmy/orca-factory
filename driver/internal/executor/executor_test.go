@@ -14,7 +14,9 @@ import (
 	"github.com/vmxmy/orca-factory/driver/internal/github"
 	"github.com/vmxmy/orca-factory/driver/internal/issues"
 	"github.com/vmxmy/orca-factory/driver/internal/machine"
+	"github.com/vmxmy/orca-factory/driver/internal/modelhealth"
 	"github.com/vmxmy/orca-factory/driver/internal/orca"
+	"github.com/vmxmy/orca-factory/driver/internal/resolver"
 	"github.com/vmxmy/orca-factory/driver/internal/runx"
 	"github.com/vmxmy/orca-factory/driver/internal/task"
 )
@@ -418,5 +420,84 @@ func TestWorkerScopeBlockedSafeFilesExtendScope(t *testing.T) {
 				t.Fatalf("missing scope audit: %q", ledger.comments)
 			}
 		})
+	}
+}
+
+// screenOrca shows a quiet worker terminal whose rendered screen is screen.
+type screenOrca struct {
+	*livenessOrca
+	screen orca.Receipt
+	output int64
+}
+
+func (o *screenOrca) TerminalList(context.Context) ([]orca.Terminal, error) {
+	return []orca.Terminal{{Handle: "term_worker", WorktreePath: o.worker.WorktreePath(), LastOutputAt: o.output}}, nil
+}
+
+func (o *screenOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Receipt, error) {
+	if opts.Dispatch != "ctx_one" || opts.Source != "terminal" {
+		return nil, errors.New("unexpected worker read")
+	}
+	return o.screen, nil
+}
+
+// OF-594: a worker at its model's quota notice is redone on the tier's next
+// candidate without charging the correction or infra budget.
+func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile("../../testdata/recorded/orca-worker-read-terminal.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope struct {
+		Result orca.Receipt `json:"result"`
+	}
+	var terminal map[string]any
+	if err := json.Unmarshal(raw, &envelope); err != nil || json.Unmarshal(envelope.Result["terminal"], &terminal) != nil {
+		t.Fatalf("recorded worker read: %v", err)
+	}
+	terminal["tail"] = []string{"● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset"}
+	envelope.Result["terminal"], _ = json.Marshal(terminal)
+
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
+	e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
+	live := livenessFixture(t, "unverifiable", "")
+	live.worker.DispatchStatus, live.worker.Projection.Stage.Detail = "dispatched", ""
+	stopped := live.worker
+	stopped.DispatchStatus = "failed"
+	live.stopped = &stopped
+	now := e.Now()
+	e.Now = func() time.Time { return now }
+	o := &screenOrca{livenessOrca: live, screen: envelope.Result, output: now.UnixMilli()}
+	e.Orca = o
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &livenessRecovery{cancel: cancel}
+	e.Recovery = r
+	polls := 0
+	e.Sleep = func(ctx context.Context, _ time.Duration) error {
+		now = now.Add(resolver.ModelCheckDelay)
+		if polls++; polls > 4 {
+			cancel()
+		}
+		return ctx.Err()
+	}
+	result, err := e.Execute(ctx, ticket)
+	if len(r.requests) != 1 || !strings.Contains(r.requests[0].Cause, "model unavailable: claude:claude-fable-5-2:xhigh") || live.stops != 1 {
+		t.Fatalf("not redone: err=%v requests=%+v stops=%d", err, r.requests, live.stops)
+	}
+	if result.State.Infra != 0 || result.State.Corrections != 0 {
+		t.Fatalf("model limit charged a budget: %+v", result.State)
+	}
+	registry, err := modelhealth.Open(e.Config.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := registry.Status(modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2"}, now); s.State != modelhealth.Unavailable || s.Reason != "usage_limit" {
+		t.Fatalf("registry status=%+v", s)
 	}
 }
