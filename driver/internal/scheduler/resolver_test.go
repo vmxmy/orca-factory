@@ -1130,6 +1130,10 @@ type labelIssues struct {
 	commentErr, updateErr error
 	unconfirmedErr        error
 	rereadErr             error
+	// lostErr stores the next comment, then reports it failed: a lost receipt.
+	lostErr error
+	// beforeComment runs inside the next CreateComment, as a concurrent writer.
+	beforeComment func()
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
 	// duringUpdate runs inside the next UpdateIssue, as a concurrent writer.
@@ -1164,10 +1168,19 @@ func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, re
 }
 
 func (l *labelIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if before := l.beforeComment; before != nil {
+		l.beforeComment = nil
+		before()
+	}
 	if l.commentErr != nil {
 		return task.Comment{}, l.commentErr
 	}
-	return l.fakeIssues.CreateComment(ctx, id, body)
+	c, err := l.fakeIssues.CreateComment(ctx, id, body)
+	if l.lostErr != nil {
+		err, l.lostErr = l.lostErr, nil
+		return task.Comment{}, err
+	}
+	return c, err
 }
 
 func (l *labelIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
@@ -1190,6 +1203,8 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 	parkFailure := errors.New("new park label update failed")
 	parked, _ := recordedPark(t)
 	lane3 := parked.Comments.Nodes[1]
+	lane3Line := strings.SplitN(lane3.Body, "\n", 2)[0]
+	receiptLost := errors.New("recovery comment receipt lost")
 	operatorResume := task.Comment{ID: "operator-resume", Body: "恢复：人工恢复模型搁置", CreatedAt: time.Now()}
 
 	for _, tc := range []struct {
@@ -1197,7 +1212,9 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 		commentErr, updateErr   error
 		unconfirmedErr, readErr error
 		markerErr, parkErr      error
+		lostErr                 error
 		concurrent              task.Comment
+		concurrentAtMarker      task.Comment
 		wantUpdates             int
 		wantComments            []string
 		wantLabel               string
@@ -1205,6 +1222,7 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 	}{
 		{name: "success", wantUpdates: 1, wantComments: recovered, wantLabel: ready},
 		{name: "comment", commentErr: commentFailure, wantLabel: parkedLabel, wantRetry: true},
+		{name: "comment receipt lost", lostErr: receiptLost, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
 		{name: "labels", updateErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: parkedLabel, wantRetry: true},
 		{name: "labels unconfirmed", unconfirmedErr: failure, wantUpdates: 1, wantComments: remarked, wantLabel: ready},
 		{name: "labels and marker", updateErr: failure, markerErr: markerFailure, wantUpdates: 1, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
@@ -1212,21 +1230,25 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 		{name: "newer park after label error", updateErr: failure, concurrent: lane3, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel},
 		{name: "newer park label failure", concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: ready, wantManual: true},
 		{name: "newer park and both label writes fail", updateErr: failure, concurrent: lane3, parkErr: parkFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
-		{name: "reread", readErr: readFailure, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
-		{name: "labels and reread", updateErr: failure, readErr: readFailure, wantUpdates: 1, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "reread", readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "labels and reread", updateErr: failure, readErr: readFailure, wantUpdates: 2, wantComments: recovered, wantLabel: parkedLabel, wantManual: true},
+		{name: "newer park before marker", updateErr: failure, concurrentAtMarker: lane3, wantUpdates: 2, wantComments: []string{recovery, marker, lane3Line}, wantLabel: parkedLabel},
 		{name: "operator resume during resume", concurrent: operatorResume, wantUpdates: 1, wantComments: recovered, wantLabel: ready},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
 			store := &labelIssues{
 				fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(lane3.Body, marker)},
-				commentErr: tc.commentErr, updateErr: tc.updateErr, unconfirmedErr: tc.unconfirmedErr, rereadErr: tc.readErr,
+				commentErr: tc.commentErr, updateErr: tc.updateErr, unconfirmedErr: tc.unconfirmedErr, rereadErr: tc.readErr, lostErr: tc.lostErr,
 			}
 			store.duringUpdate = func() {
 				if tc.concurrent.ID != "" {
 					store.issueComments = append(store.issueComments, tc.concurrent)
 				}
 				store.commentErr, store.updateErr = tc.markerErr, tc.parkErr
+				if tc.concurrentAtMarker.ID != "" {
+					store.beforeComment = func() { store.issueComments = append(store.issueComments, tc.concurrentAtMarker) }
+				}
 			}
 			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
 			ticket := Ticket{ID: "id", Identifier: "OF-616", Repo: "a", Parked: reason}
@@ -1248,7 +1270,7 @@ func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
 			if !slices.EqualFunc(store.added, wantAdded, slices.Equal[[]string]) || !slices.EqualFunc(store.removed, wantRemoved, slices.Equal[[]string]) {
 				t.Errorf("label updates added=%v removed=%v, want added=%v removed=%v", store.added, store.removed, wantAdded, wantRemoved)
 			}
-			if !slices.Equal(store.comments, tc.wantComments) || !slices.Equal(store.commentsAtUpdate, []int{1, 1}[:tc.wantUpdates]) {
+			if !slices.Equal(store.comments, tc.wantComments) || len(store.commentsAtUpdate) != tc.wantUpdates || tc.wantUpdates > 0 && store.commentsAtUpdate[0] != 1 {
 				t.Errorf("wrote comments=%q, counts at label updates=%v, want comments=%q with recovery first", store.comments, store.commentsAtUpdate, tc.wantComments)
 			}
 			fresh := store.issues[0]

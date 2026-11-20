@@ -741,16 +741,27 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			continue
 		}
 		// The ledger has no compare-and-set, so detect concurrent parks by comment ID and
-		// skip the old marker on a failed read to avoid masking an unseen non-model park.
+		// keep the ticket parked whenever a reread cannot rule an unseen park out.
 		knownParkIDs := make(map[string]bool)
 		for _, c := range protocol {
 			if strings.HasPrefix(c.Body, "搁置：") {
 				knownParkIDs[c.ID] = true
 			}
 		}
-		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
-			continue
+		const recovery = "恢复：模型候选已恢复可用，自动解除「" + config.ModelParked + "」搁置"
+		if _, err := client.CreateComment(ctx, t.ID, recovery); err != nil {
+			// A lost receipt may hide a stored recovery that already ends the marker.
+			after, readErr := client.ListComments(ctx, t.ID)
+			if readErr != nil {
+				problems = append(problems, fmt.Errorf("%s: resume comment unconfirmed, manual recovery required: %w", t.Identifier, errors.Join(err, readErr)))
+				continue
+			}
+			if !slices.ContainsFunc(after, func(c task.Comment) bool {
+				return c.Body == recovery && !slices.ContainsFunc(comments, func(old task.Comment) bool { return old.ID == c.ID })
+			}) {
+				problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
+				continue
+			}
 		}
 		_, labelErr := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel})
 		if labelErr != nil {
@@ -758,22 +769,46 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 		}
 		comments, err = client.ListComments(ctx, t.ID)
 		if err != nil {
-			if labelErr != nil {
-				err = fmt.Errorf("manual recovery required: %w", err)
+			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
+				err = errors.Join(err, restoreErr)
 			}
-			problems = append(problems, fmt.Errorf("%s: reread comments after resume: %w", t.Identifier, err))
+			problems = append(problems, fmt.Errorf("%s: reread comments after resume, manual recovery required: %w", t.Identifier, err))
 			continue
 		}
 		newPark := slices.ContainsFunc(protocolComments(comments), func(c task.Comment) bool {
 			return strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID]
 		})
+		if !newPark && labelErr != nil {
+			mark, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked)
+			if err != nil {
+				problems = append(problems, fmt.Errorf("%s: restore model park marker, manual recovery required: %w", t.Identifier, err))
+				continue
+			}
+			knownParkIDs[mark.ID] = true
+			if comments, err = client.ListComments(ctx, t.ID); err != nil {
+				problems = append(problems, fmt.Errorf("%s: reread after model park marker, manual recovery required: %w", t.Identifier, err))
+				continue
+			}
+			// A park stored before the marker would lose its place as the latest
+			// 搁置; repeating its reason line keeps it ahead of the model marker.
+			var foreign []task.Comment
+			for _, c := range protocolComments(comments) {
+				if strings.HasPrefix(c.Body, "搁置：") && !knownParkIDs[c.ID] {
+					foreign = append(foreign, c)
+				}
+			}
+			if len(foreign) == 0 {
+				continue
+			}
+			sort.SliceStable(foreign, func(i, j int) bool { return foreign[i].CreatedAt.Before(foreign[j].CreatedAt) })
+			if _, err := client.CreateComment(ctx, t.ID, strings.SplitN(foreign[len(foreign)-1].Body, "\n", 2)[0]); err != nil {
+				problems = append(problems, fmt.Errorf("%s: repeat newer park after model park marker, manual recovery required: %w", t.Identifier, err))
+			}
+			newPark = true
+		}
 		if newPark {
 			if _, err := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); err != nil {
 				problems = append(problems, fmt.Errorf("%s: apply new park labels, manual recovery required: %w", t.Identifier, err))
-			}
-		} else if labelErr != nil {
-			if _, err := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); err != nil {
-				problems = append(problems, fmt.Errorf("%s: restore model park marker, manual recovery required: %w", t.Identifier, err))
 			}
 		}
 	}
