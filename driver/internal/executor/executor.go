@@ -934,9 +934,7 @@ func endedReport(watch *workerWatch, readReport func() (*orca.WorkerReport, bool
 		return nil, nil
 	}
 	model := watch.ended()
-	if model == nil {
-		return nil, nil
-	}
+	// worker_done may land while the screen is read and the model probed.
 	report, _, _, err := readReport()
 	if err != nil || report != nil {
 		return report, err

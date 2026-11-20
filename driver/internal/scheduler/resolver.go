@@ -756,7 +756,7 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 		// The ledger has no compare-and-set: a person may park the ticket again
 		// between the reread and the label write. Read once more and put the park
 		// back if a newer 搁置 arrived.
-		if comments, err = client.ListComments(ctx, t.ID); err != nil || latestPark(protocolComments(comments)) != t.Parked {
+		if comments, err = client.ListComments(ctx, t.ID); err != nil || latestPark(protocolComments(comments)) != t.Parked || !modelParkMarked(protocolComments(comments), t.Parked) {
 			// An unverified resume is undone too: the next tick sees no park to retry.
 			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
 				problems = append(problems, fmt.Errorf("%s: park not restored after unverified resume: %w", t.Identifier, errors.Join(err, restoreErr)))
@@ -835,10 +835,22 @@ func (r *Runtime) park(ctx context.Context, t Ticket, reason, evidence, receipt 
 }
 
 // modelParkMarked reports the reason-only 搁置 comment that only a model park
-// writes before its labels; a full 搁置 alone, as an older escalation reason
-// that happens to read like a model park, never qualifies.
+// writes before its labels, newer than the last 恢复 that lifted a park: a
+// full 搁置 alone, as an older escalation reason reading like a model park, or
+// a person parking again after a resume, never qualifies.
 func modelParkMarked(comments []task.Comment, reason string) bool {
-	return slices.ContainsFunc(comments, func(c task.Comment) bool { return c.Body == "搁置："+reason })
+	rows := slices.Clone(comments)
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreatedAt.Before(rows[j].CreatedAt) })
+	marked := false
+	for _, c := range rows {
+		switch {
+		case strings.HasPrefix(c.Body, "恢复："):
+			marked = false
+		case c.Body == "搁置："+reason:
+			marked = true
+		}
+	}
+	return marked
 }
 
 // latestPark returns the reason of the newest 搁置 comment.

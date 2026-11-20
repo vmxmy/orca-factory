@@ -1278,6 +1278,12 @@ func TestRecordedModelParkKeepsEveryCandidate(t *testing.T) {
 	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
 		t.Fatalf("unmarked park resumed: added=%v err=%v", store.added, err)
 	}
+	// A park lifted by 恢复 and parked again by a person keeps its old marker only.
+	resumed := task.Comment{ID: "resumed", Body: "恢复：模型候选已恢复可用，自动解除「模型不可用」搁置", CreatedAt: full.CreatedAt.Add(time.Minute)}
+	store.issueComments = []task.Comment{parked.Comments.Nodes[0], marker, full, resumed}
+	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {
+		t.Fatalf("park after a resume lifted: added=%v err=%v", store.added, err)
+	}
 	store.issueComments = []task.Comment{parked.Comments.Nodes[0], marker, full}
 	now = now.Add(-2 * time.Minute)
 	if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); err != nil || len(store.added) != 1 {

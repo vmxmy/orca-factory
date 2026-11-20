@@ -98,6 +98,10 @@ func RetryAfterModelStatus(stateRoot string, status modelhealth.Status, candidat
 // exactly what GenerateReviewerCommand builds for it, so a reviewer without
 // fallback still records that model's error. Any other command reports false.
 func ReviewerRef(command string) (modelhealth.Ref, bool) {
+	// The shell would strip quoting or expand a value the fields keep verbatim.
+	if strings.ContainsAny(command, "'\"\\$`") {
+		return modelhealth.Ref{}, false
+	}
 	fields := strings.Fields(command)
 	var ref modelhealth.Ref
 	for i, field := range fields {

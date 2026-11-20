@@ -64,6 +64,8 @@ type fakeOrca struct {
 	legacyTasks, uncountedTasks bool
 	screen                      orca.Receipt
 	screenReads                 int
+	// screenErr fails the next screen read once.
+	screenErr error
 }
 
 func (o *fakeOrca) RunCreate(context.Context, string, string) (orca.Receipt, error) {
@@ -906,6 +908,10 @@ func (o *fakeOrca) WorkerRead(_ context.Context, opts orca.ReadOptions) (orca.Re
 	if opts.Dispatch == "" || opts.Source != "terminal" {
 		return nil, errors.New("unexpected worker read")
 	}
+	if err := o.screenErr; err != nil {
+		o.screenErr = nil
+		return nil, err
+	}
 	return o.screen, nil
 }
 
@@ -1065,6 +1071,12 @@ func TestResolverQuotedModelErrorNeedsProbe(t *testing.T) {
 	if _, err := c.Step(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	// A failed screen read leaves the screen unchecked for the next step.
+	now = now.Add(ModelCheckDelay)
+	o.screenErr = errors.New("orca unavailable")
+	if p, err := c.Step(context.Background()); err != nil || p.Phase != "running" || p.ModelCheckedOutput != 0 || probes != 0 {
+		t.Fatalf("failed read marked the screen checked: p=%+v probes=%d err=%v", p, probes, err)
+	}
 	for range 3 {
 		now = now.Add(ModelCheckDelay)
 		p, err := c.Step(context.Background())
@@ -1081,22 +1093,43 @@ func TestResolverReportDuringModelProbeWins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, s, o := setupController()
-	c.Models = &modelLog{}
-	c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
-	c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
-		o.report = &orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: `{"action":"escalate"}`}
-		return modelhealth.Classify(ref, string(unsupported), errors.New("exit status 1"), time.Now())
+	for _, answer := range []string{string(unsupported), "ok"} {
+		c, s, o := setupController()
+		c.Models = &modelLog{}
+		c.Agent, c.Model, c.Effort = "codex", "gpt-6.2-astra", "max"
+		c.Probe = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
+			o.report = &orca.WorkerReport{Provenance: "worker_report", Outcome: "succeeded", Body: `{"action":"escalate"}`}
+			return modelhealth.Classify(ref, answer, nil, time.Now())
+		}
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
+		o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
+		if _, err := c.Step(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if s.record.Outcome != "succeeded" || s.record.Result != o.report.Body {
+			t.Fatalf("probe answering %q: worker_done overridden: %+v", answer, s.record)
+		}
 	}
-	if _, err := c.Step(context.Background()); err != nil {
+}
+
+// A reset the screen names outlasts the probe's default cooldown.
+func TestConfirmedStatusKeepsNamedReset(t *testing.T) {
+	limit, err := os.ReadFile("../../testdata/recorded/claude-model-limit.txt")
+	if err != nil {
 		t.Fatal(err)
 	}
-	o.workers = workerRows("run_1", `[{"runId":"run_1","taskId":"task_1","dispatchId":"ctx_1","dispatchStatus":"failed"}]`)
-	o.screen = recordedScreen(t, []string{strings.TrimSpace(string(unsupported))})
-	if _, err := c.Step(context.Background()); err != nil {
-		t.Fatal(err)
+	ref := modelhealth.Ref{Agent: "claude", Model: "claude-fable-5-2", Effort: "xhigh"}
+	now := time.Date(2026, 11, 20, 16, 55, 0, 0, time.UTC)
+	screen := modelhealth.Classify(ref, string(limit), nil, now)
+	probe := modelhealth.Classify(ref, "You've hit your Fable limit", errors.New("exit status 1"), now)
+	want := time.Date(2026, 11, 21, 1, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	if got := ConfirmedStatus(screen, probe); !got.Until.Equal(want) || got.State != modelhealth.Unavailable {
+		t.Fatalf("confirmed=%+v want until %s", got, want)
 	}
-	if s.record.Outcome != "succeeded" || s.record.Result != o.report.Body {
-		t.Fatalf("model report overrode worker_done: %+v", s.record)
+	if got := ConfirmedStatus(modelhealth.Classify(ref, "You've hit your Fable limit", nil, now), probe); !got.Until.Equal(probe.Until) {
+		t.Fatalf("default cooldowns: confirmed=%+v", got)
 	}
 }

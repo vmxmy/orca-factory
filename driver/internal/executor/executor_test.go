@@ -515,13 +515,13 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	screen := recordedWorkerScreen(t, "● Implementing", "", strings.TrimSpace(string(limit)), "", "  1. Stop and wait for limit to reset")
-	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "reported while probing", "quoted"} {
+	for _, scenario := range []string{"quiet", "exited", "lost", "exhausted", "reported", "reported while probing", "reported while probing quoted", "quoted"} {
 		t.Run(scenario, func(t *testing.T) {
 			e, _, l, _, _, ticket := fixture(t, "new-sha")
 			e.Config.Agent, e.Config.Model, e.Config.Effort = "claude", "claude-fable-5-2", "xhigh"
 			e.Config.TierSettings = map[string]string{"AGENT_TIER_DEFAULT_FALLBACK": "codex:gpt-6.1-sol:high"}
 			verdict := "unverifiable"
-			if scenario == "exited" || scenario == "reported while probing" {
+			if scenario == "exited" || strings.HasPrefix(scenario, "reported while probing") {
 				verdict = "exited"
 			}
 			live := livenessFixture(t, verdict, "")
@@ -548,8 +548,8 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			e.ProbeModel = func(_ context.Context, ref modelhealth.Ref) modelhealth.Status {
-				live.report = live.report || scenario == "reported while probing"
-				if scenario == "quoted" {
+				live.report = live.report || strings.HasPrefix(scenario, "reported while probing")
+				if strings.HasSuffix(scenario, "quoted") {
 					return modelhealth.Classify(ref, "ok", nil, now)
 				}
 				return modelhealth.Classify(ref, string(limit), errors.New("exit status 1"), now)
@@ -572,6 +572,12 @@ func TestWorkerModelLimitRedispatchesWithoutBudget(t *testing.T) {
 			}
 			if registry, err = modelhealth.Open(e.Config.Root); err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "reported while probing quoted" {
+				if len(o.starts) != 1 || len(r.specs) != 0 || result.State.Phase == machine.PhaseCorrection {
+					t.Fatalf("worker_done during an answering probe was overridden: err=%v starts=%d state=%+v", err, len(o.starts), result.State)
+				}
+				return
 			}
 			if scenario == "quoted" {
 				// The probe answers: the screen only quoted the notice.

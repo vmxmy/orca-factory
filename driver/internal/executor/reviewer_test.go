@@ -194,10 +194,11 @@ func TestReviewerWithoutFallbackRecordsModelError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	quoted := strings.Replace(structured, "claude-opus-5-5", "'claude-opus-5-5'", 1)
 	for _, tc := range []struct {
 		command  string
 		recorded bool
-	}{{structured, true}, {"claude -p --model claude-opus-5-5 --effort high", false}} {
+	}{{structured, true}, {"claude -p --model claude-opus-5-5 --effort high", false}, {quoted, false}} {
 		state := t.TempDir()
 		c := &Commands{ReviewerCommand: tc.command, StateRoot: state, Run: func(_ context.Context, s runx.Spec) ([]byte, error) {
 			if s.Path != "/bin/sh" {

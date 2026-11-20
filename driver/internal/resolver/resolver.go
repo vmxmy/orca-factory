@@ -402,7 +402,7 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 		return c.Store.Save(ctx, *p)
 	}
 	if c.Models != nil && c.Probe != nil && now.Sub(p.ProgressSince) >= ModelCheckDelay && p.ModelCheckedOutput != output {
-		status, ok := c.unavailableModel(ctx, p, now)
+		status, ok, checked := c.unavailableModel(ctx, p, now)
 		if ok {
 			if stopped, err := c.stopQuiet(ctx, p, stopRequest); err != nil || !stopped {
 				return err
@@ -410,10 +410,13 @@ func (c *Controller) awaitProgress(ctx context.Context, p *Record, now time.Time
 			p.Phase, p.Outcome, p.Result = "settled", ModelUnavailable, modelResult(status, p.Dispatch, "stopped")
 			return nil
 		}
-		// The same quiet screen is read, and its model probed, once.
-		p.ModelCheckedOutput = output
-		if err := c.Store.Save(ctx, *p); err != nil {
-			return err
+		// The same quiet screen is read, and its model probed, once; a failed
+		// read, probe or record is retried on the next step.
+		if checked {
+			p.ModelCheckedOutput = output
+			if err := c.Store.Save(ctx, *p); err != nil {
+				return err
+			}
 		}
 	}
 	if now.Sub(p.ProgressSince) < NoProgressWindow {
@@ -448,25 +451,27 @@ func (c *Controller) stopQuiet(ctx context.Context, p *Record, stopRequest strin
 // unavailableModel reports a model error on the round's screen once it is
 // recorded. An unreadable screen or a failed record leaves the round to the
 // no-progress window.
-func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.Time) (modelhealth.Status, bool) {
+func (c *Controller) unavailableModel(ctx context.Context, p *Record, now time.Time) (status modelhealth.Status, unavailable, checked bool) {
 	status, err := c.screenModel(ctx, p, now)
 	if err == nil && status.State == modelhealth.Unavailable {
 		// The agent may only quote such an error; a probe of the model decides.
 		confirmed := c.Probe(ctx, status.Ref)
 		if confirmed.State != modelhealth.Unavailable {
+			// A probe answers once per screen: an inconclusive one is not repeated
+			// every step, and the no-progress window still applies.
 			runx.LoggerFrom(ctx).Info("resolver screen model error not confirmed by probe", "dispatch", p.Dispatch, "reason", confirmed.Reason)
-			return modelhealth.Status{}, false
+			return modelhealth.Status{}, false, true
 		}
 		status = ConfirmedStatus(status, confirmed)
-		err = c.Models.Record(status)
-		if err == nil {
-			return status, true
+		if err = c.Models.Record(status); err == nil {
+			return status, true, true
 		}
 	}
 	if err != nil {
 		runx.LoggerFrom(ctx).Warn("resolver screen model check failed", "dispatch", p.Dispatch, "err", err)
+		return modelhealth.Status{}, false, false
 	}
-	return modelhealth.Status{}, false
+	return modelhealth.Status{}, false, true
 }
 
 // endedModel checks the screen of a dispatch that ended without a report. A
@@ -475,12 +480,10 @@ func (c *Controller) endedModel(ctx context.Context, p *Record, now time.Time) (
 	if c.Models == nil || c.Probe == nil || p.Dispatch == "" {
 		return modelhealth.Status{}, false, nil
 	}
-	status, ok := c.unavailableModel(ctx, p, now)
-	if !ok {
-		return status, false, nil
-	}
+	status, ok, _ := c.unavailableModel(ctx, p, now)
+	// worker_done may land while the screen is read and the model probed.
 	reported, err := c.readReport(ctx, p)
-	return status, !reported && err == nil, err
+	return status, ok && !reported && err == nil, err
 }
 
 func modelResult(status modelhealth.Status, dispatch, end string) string {
@@ -496,11 +499,12 @@ func (c *Controller) screenModel(ctx context.Context, p *Record, now time.Time) 
 	return ScreenModel(ctx, reader, p.Dispatch, modelhealth.Ref{Agent: p.Agent, Model: p.Model, Effort: p.Effort}, now)
 }
 
-// ConfirmedStatus is the probe's confirmation of a screen's model error,
-// cooling down until the later of their reset times: a probe answering with
-// only the limit sentence must not shorten the reset the screen named.
+// ConfirmedStatus is the probe's confirmation of a screen's model error. A
+// reset time either one names outlasts the default cooldown, and the later of
+// two named resets wins.
 func ConfirmedStatus(screen, probe modelhealth.Status) modelhealth.Status {
-	if screen.Until.After(probe.Until) {
+	named := func(s modelhealth.Status) bool { return !s.Until.Equal(s.CheckedAt.Add(modelhealth.DefaultCooldown)) }
+	if named(screen) && (!named(probe) || screen.Until.After(probe.Until)) {
 		probe.Until = screen.Until
 	}
 	return probe
