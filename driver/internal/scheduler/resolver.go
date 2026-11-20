@@ -737,25 +737,39 @@ func (r *Runtime) ResumeModelParks(ctx context.Context, tickets []Ticket) error 
 			continue
 		}
 		protocol := protocolComments(comments)
-		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(protocol, t.Parked) {
+		if current, _ := parkedState(issue, protocol); current != t.Parked || !modelParkMarked(comments, t.Parked) {
+			continue
+		}
+		recovery, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置")
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
 			continue
 		}
 		if _, err := client.UpdateIssue(ctx, t.ID, "", []string{"ready-for-agent"}, []string{parkedLabel}); err != nil {
 			problems = append(problems, fmt.Errorf("%s: resume labels unconfirmed: %w", t.Identifier, err))
+			if _, restoreErr := client.CreateComment(ctx, t.ID, "搁置："+t.Parked); restoreErr != nil {
+				problems = append(problems, fmt.Errorf("%s: model park marker not restored: %w", t.Identifier, restoreErr))
+			}
 			continue
 		}
 		// The ledger has no compare-and-set: a person may park the ticket again
 		// between the reread and the label write. Read once more and put the park
 		// back if a newer 搁置 arrived.
-		if comments, err = client.ListComments(ctx, t.ID); err != nil || latestPark(protocolComments(comments)) != t.Parked || !modelParkMarked(protocolComments(comments), t.Parked) {
+		comments, err = client.ListComments(ctx, t.ID)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: resume verification failed; manual recovery required: %w", t.Identifier, err))
+		}
+		// Our recovery ends the old marker; exclude it only while checking for
+		// another writer's intervening park or recovery.
+		comments = slices.DeleteFunc(slices.Clone(comments), func(c task.Comment) bool {
+			return c.ID == recovery.ID && c.Body == recovery.Body
+		})
+		if err != nil || latestPark(protocolComments(comments)) != t.Parked || !modelParkMarked(comments, t.Parked) {
 			// An unverified resume is undone too: the next tick sees no park to retry.
 			if _, restoreErr := client.UpdateIssue(ctx, t.ID, "", []string{parkedLabel}, []string{"ready-for-agent"}); restoreErr != nil {
 				problems = append(problems, fmt.Errorf("%s: park not restored after unverified resume: %w", t.Identifier, errors.Join(err, restoreErr)))
 			}
 			continue
-		}
-		if _, err := client.CreateComment(ctx, t.ID, "恢复：模型候选已恢复可用，自动解除「"+config.ModelParked+"」搁置"); err != nil {
-			problems = append(problems, fmt.Errorf("%s: resume comment: %w", t.Identifier, err))
 		}
 	}
 	return errors.Join(problems...)
@@ -855,7 +869,7 @@ func modelParkMarked(comments []task.Comment, reason string) bool {
 		switch {
 		case strings.HasPrefix(c.Body, "恢复："):
 			marked = false
-		case c.Body == "搁置："+reason:
+		case c.CarriesProtocol() && c.Body == "搁置："+reason:
 			marked = true
 		}
 	}

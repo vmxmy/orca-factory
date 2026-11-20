@@ -534,6 +534,38 @@ func (b *ledgerBackend) Launch(ctx context.Context, t Ticket) error {
 	return b.runtime.Launch(ctx, t)
 }
 
+func TestResumeSkipsTicketParkedAfterSnapshot(t *testing.T) {
+	comments := evidenceComments("阶段: worker 运行中\n归属: 执行器 term=dead run=run-old attempt=1")
+	lc := &fakeIssues{
+		issueComments: comments,
+		issues:        []task.Issue{{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}},
+	}
+	oc := &fakeOrca{}
+	f := &ledgerBackend{fakeBackend: fakeBackend{absent: true, inactive: true}, runtime: &Runtime{Clients: map[string]issues.Store{"a": lc}, Orca: oc, DriverPath: "/opt/driver"}}
+	s := setup(&f.fakeBackend)
+	s.Backend = f
+	ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-616", Repo: "a", UpdatedAt: s.Now()}, comments)
+	f.tickets = []Ticket{ticket}
+	rows := captureDecisions(t, s)
+	if len(oc.launches) != 0 {
+		t.Errorf("parked ticket launched an executor: %d", len(oc.launches))
+	}
+	after := fromEvidence(t, ticket, lc.issueComments)
+	// Scheduler recovery derives ExecFailures from the persisted attempt.
+	if failures := max(0, after.Attempt-1); failures != 0 {
+		t.Errorf("ExecFailures=%d, want 0; attempt=%d", failures, after.Attempt)
+	}
+	if len(lc.comments) != 0 || lc.updates != 0 {
+		t.Errorf("parked ticket mutated: comments=%q updates=%d", lc.comments, lc.updates)
+	}
+	for _, row := range rows {
+		if row["event"] == "apply" && row["action"] == "resume" && row["result"] == "deferred" && strings.Contains(fmt.Sprint(row["err"]), "parked") {
+			return
+		}
+	}
+	t.Fatalf("missing parked recovery decision: %v", rows)
+}
+
 // OF-458's ledger: a correction executor registered its run, then exited on a
 // maintenance refusal. The Resume reservation is written with run=-, and its
 // launch must accept that reservation: a deferred launch leaves an unregistered

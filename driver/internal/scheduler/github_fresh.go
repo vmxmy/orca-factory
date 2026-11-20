@@ -41,6 +41,13 @@ func (r *Runtime) verifyFreshDecision(ctx context.Context, t Ticket, action Acti
 	if err != nil {
 		return err
 	}
+	if action == Resume {
+		for _, label := range task.Labels.Nodes {
+			if label.Name == parkedLabel {
+				return fmt.Errorf("task is parked: %w", errResnapshot)
+			}
+		}
+	}
 	comments, err := c.ListComments(ctx, t.ID)
 	if err != nil {
 		return err

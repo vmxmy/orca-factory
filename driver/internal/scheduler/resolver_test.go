@@ -1126,7 +1126,9 @@ func TestTopResolverUsesFallbackWhenPrimaryUnavailable(t *testing.T) {
 
 type labelIssues struct {
 	*fakeIssues
-	added, removed [][]string
+	added, removed        [][]string
+	commentErr, updateErr error
+	rereadErr             error
 	// commentsAtUpdate is len(comments) when each UpdateIssue ran.
 	commentsAtUpdate []int
 	// duringUpdate runs inside the next UpdateIssue, as a concurrent writer.
@@ -1136,11 +1138,92 @@ type labelIssues struct {
 func (l *labelIssues) UpdateIssue(ctx context.Context, id, state string, add, remove []string) (task.Issue, error) {
 	l.added, l.removed = append(l.added, add), append(l.removed, remove)
 	l.commentsAtUpdate = append(l.commentsAtUpdate, len(l.comments))
+	if l.updateErr != nil {
+		return task.Issue{}, l.updateErr
+	}
 	if during := l.duringUpdate; during != nil {
 		l.duringUpdate = nil
 		during()
 	}
 	return l.fakeIssues.UpdateIssue(ctx, id, state, add, remove)
+}
+
+func (l *labelIssues) CreateComment(ctx context.Context, id, body string) (task.Comment, error) {
+	if l.commentErr != nil {
+		return task.Comment{}, l.commentErr
+	}
+	return l.fakeIssues.CreateComment(ctx, id, body)
+}
+
+func (l *labelIssues) ListComments(ctx context.Context, id string) ([]task.Comment, error) {
+	if len(l.added) > 0 && l.rereadErr != nil {
+		return nil, l.rereadErr
+	}
+	return l.fakeIssues.ListComments(ctx, id)
+}
+
+func TestModelParkResumeWritesRecoveryBeforeLabels(t *testing.T) {
+	for _, fail := range []string{"comment", "labels", "reread"} {
+		t.Run(fail, func(t *testing.T) {
+			reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
+			marker := "搁置：" + reason
+			issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+			store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: evidenceComments(marker)}}
+			failure := errors.New("ledger write failed")
+			switch fail {
+			case "comment":
+				store.commentErr = failure
+			case "labels":
+				store.updateErr = failure
+			case "reread":
+				store.rereadErr = failure
+			}
+			r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
+			ticket := Ticket{ID: "id", Identifier: "OF-616", Repo: "a", Parked: reason}
+			if err := r.ResumeModelParks(context.Background(), []Ticket{ticket}); !errors.Is(err, failure) {
+				t.Fatalf("resume error=%v, want write failure", err)
+			}
+			switch fail {
+			case "comment":
+				if len(store.added) != 0 || len(store.removed) != 0 || len(store.comments) != 0 {
+					t.Errorf("failed recovery comment changed ticket: added=%v removed=%v comments=%q", store.added, store.removed, store.comments)
+				}
+			case "labels":
+				if len(store.comments) != 2 || !strings.HasPrefix(store.comments[0], "恢复：") || store.comments[1] != marker {
+					t.Errorf("failed label update did not restore original marker: comments=%q", store.comments)
+				}
+				if !slices.Equal(store.commentsAtUpdate, []int{1}) {
+					t.Errorf("recovery comment not written before labels: %v", store.commentsAtUpdate)
+				}
+			case "reread":
+				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "恢复：") {
+					t.Errorf("failed reread overwrote an unknown park: comments=%q", store.comments)
+				}
+				if len(store.added) != 2 || !slices.Equal(store.added[1], []string{parkedLabel}) || !slices.Equal(store.removed[1], []string{"ready-for-agent"}) {
+					t.Errorf("failed reread did not restore parked labels: added=%v removed=%v", store.added, store.removed)
+				}
+				return
+			}
+			protocol := protocolComments(store.issueComments)
+			if current, _ := parkedState(issue, protocol); current != reason || !modelParkMarked(protocol, reason) {
+				t.Errorf("failed resume lost model park: reason=%q comments=%v", current, store.issueComments)
+			}
+		})
+	}
+	t.Run("operator recovery ends model park", func(t *testing.T) {
+		reason := "模型不可用：codex:gpt-6.2-astra:max 至 2026-11-20T09:00:00Z"
+		comments := evidenceComments("搁置："+reason, "恢复：人工恢复模型搁置")
+		comments[1].Source = task.SourceOperator
+		issue := task.Issue{ID: "id", Labels: task.Connection[task.NamedID]{Nodes: []task.NamedID{{Name: parkedLabel}}}}
+		store := &labelIssues{fakeIssues: &fakeIssues{issues: []task.Issue{issue}, issueComments: comments}}
+		r := &Runtime{Clients: map[string]issues.Store{"a": store}, StateRoot: t.TempDir()}
+		if err := r.ResumeModelParks(context.Background(), []Ticket{{ID: "id", Repo: "a", Parked: reason}}); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.added) != 0 || len(store.comments) != 0 {
+			t.Fatalf("operator recovery left old model marker active: labels=%v comments=%q", store.added, store.comments)
+		}
+	})
 }
 
 func TestModelUnavailableParkRecoversWhenCandidateAvailable(t *testing.T) {
