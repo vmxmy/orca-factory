@@ -114,14 +114,12 @@ func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		previous int
-		topUsed  bool
 	}{
 		{name: "approved before top"},
 		{name: "approval limit enters top", previous: 2},
-		{name: "top already used parks", topUsed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision), TopUsed: tc.topUsed})
+			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision)})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -138,9 +136,7 @@ func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
 				t.Fatal(err)
 			}
 			after := fromEvidence(t, ticket, store.issueComments)
-			if tc.topUsed {
-				assertParked(t, &store.labelStore, ticket)
-			} else if tc.previous == 2 {
+			if tc.previous == 2 {
 				if len(store.comments) != 1 || !strings.Contains(store.comments[0], "终审处置") || !after.Resolution.Top || !after.Resolution.TopUsed {
 					t.Fatalf("approval limit did not enter top: comments=%q resolution=%+v", store.comments, after.Resolution)
 				}
@@ -163,6 +159,62 @@ func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
 			}
 			if store.description != face || slices.ContainsFunc(store.comments, func(body string) bool { return strings.HasPrefix(body, "扩SCOPE：auto ") }) {
 				t.Fatalf("ineligible scope approved: face=%q comments=%q", store.description, store.comments)
+			}
+		})
+	}
+}
+
+func TestAutoModeScopeRequestApprovedAfterTopUsed(t *testing.T) {
+	decision := recorded(t, "resolver-escalate-scope.json")
+	for _, tc := range []struct {
+		name     string
+		previous []string
+	}{
+		{name: "approved after top used"},
+		{name: "auto approval limit parks", previous: []string{"auto", "auto"}},
+		{name: "shared approval limit parks", previous: []string{"auto", "top-resolver"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision), TopUsed: true, Top: false})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bodies := []string{"阶段: Agent处置\n归属: 处置Agent"}
+			for i, sender := range tc.previous {
+				bodies = append(bodies, fmt.Sprintf("扩SCOPE：%s 2026-11-01T00:00:00Z\n路径：old%d.go", sender, i))
+			}
+			bodies = append(bodies, resolver.Prefix+string(raw))
+			face := "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"
+			store := &autoModeScopeStore{labelStore: labelStore{fakeIssues: fakeIssues{description: face, issueComments: evidenceComments(bodies...)}}}
+			r := modeRuntime(store, map[string]string{"AGENT_MODE": "auto"})
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+			if err := r.applyResolution(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			after := fromEvidence(t, ticket, store.issueComments)
+			if !after.Resolution.TopUsed || after.Resolution.Top {
+				t.Fatalf("top history changed: %+v", after.Resolution)
+			}
+			if len(tc.previous) == 2 {
+				assertParked(t, &store.labelStore, ticket)
+				if store.description != face || slices.ContainsFunc(store.comments, func(body string) bool { return strings.HasPrefix(body, "扩SCOPE：") }) {
+					t.Fatalf("exhausted scope approved: face=%q comments=%q", store.description, store.comments)
+				}
+				return
+			}
+			if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "扩SCOPE：auto ") {
+				t.Fatalf("scope not approved after top used: %q", store.comments)
+			}
+			for _, want := range []string{"AGENT_AUTO_REVIEW=scope", "路径：scripts/module-size-metric-report.test.mjs", `resolver-state {"version":1,"attempt":3,"phase":"waiting"}`} {
+				if !strings.Contains(store.comments[0], want) {
+					t.Errorf("missing %q in %q", want, store.comments[0])
+				}
+			}
+			if slices.Contains(store.add, "parked") || after.Owner != machine.OwnerResolver || after.Resolution.Phase != "waiting" {
+				t.Fatalf("scope approval changed ownership: labels=%q resolution=%+v owner=%s", store.add, after.Resolution, after.Owner)
+			}
+			if store.description != "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go scripts/module-size-metric-report.test.mjs\n" {
+				t.Fatalf("scope face=%q", store.description)
 			}
 		})
 	}
