@@ -166,7 +166,7 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 			}
 			if !dryRun {
 				if v.Backup || len(v.Blocks) == 0 {
-					v.Blocks = r.removeWorkspace(ctx, repo, v, workspaceTerminals, listings, logger)
+					v.Blocks = r.removeWorkspace(ctx, v, workspaceTerminals, listings, logger)
 				}
 				r.warnKept(logger, v)
 			}
@@ -176,7 +176,7 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 	return verdicts, errors.Join(problems...)
 }
 
-func (r *Runtime) removeWorkspace(ctx context.Context, repo string, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
+func (r *Runtime) removeWorkspace(ctx context.Context, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
 	for _, terminal := range terminals {
 		if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
 			var rejected *orca.RejectedError
@@ -187,7 +187,7 @@ func (r *Runtime) removeWorkspace(ctx context.Context, repo string, v Verdict, t
 		logger.Info("workspace terminal closed", "path", v.Path, "terminal", terminal.Handle)
 	}
 	if v.Backup {
-		backup, err := r.backupWorkspace(ctx, repo, v.Workspace, listings)
+		backup, err := r.backupWorkspace(ctx, v.Workspace, listings)
 		if err != nil {
 			logger.Warn("workspace backup failed", "path", v.Path, "error", err)
 			return []string{"backup-failed"}
@@ -264,7 +264,7 @@ func (r *Runtime) warnKept(logger *slog.Logger, v Verdict) {
 
 // backupWorkspace completes all artifacts outside the workspace before removal.
 // Each attempt gets its own directory, so a retry cannot overwrite a backup.
-func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace, listings []repositoryWorkspaces) (string, error) {
+func (r *Runtime) backupWorkspace(ctx context.Context, w Workspace, listings []repositoryWorkspaces) (string, error) {
 	root := r.StateRoot
 	if root == "" {
 		root = stateRoot()
@@ -272,7 +272,7 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 	if root == "" {
 		return "", errors.New("cannot resolve backup state root")
 	}
-	parent, err := physicalBackupPath(filepath.Join(root, filepath.Base(repo), "workspace-backups"))
+	parent, err := physicalBackupPath(filepath.Join(root, "branch-backups"))
 	if err != nil {
 		return "", err
 	}
@@ -286,8 +286,12 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return "", err
 	}
-	dir, err := os.MkdirTemp(parent, filepath.Base(w.Path)+"-")
-	if err != nil {
+	now := time.Now()
+	if r.Now != nil {
+		now = r.Now()
+	}
+	dir := filepath.Join(parent, now.UTC().Format("20060102T150405Z")+"-"+filepath.Base(w.Path))
+	if err := os.Mkdir(dir, 0700); err != nil {
 		return "", err
 	}
 	if _, err := r.command(ctx, w.Path, "git", "bundle", "create", filepath.Join(dir, "workspace.bundle"), "HEAD"); err != nil {

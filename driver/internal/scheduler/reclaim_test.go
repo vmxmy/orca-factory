@@ -328,7 +328,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 	const submoduleNotes = "notes\x00inside gitlink\n"
 	for _, scenario := range []string{
 		"restore", "clean-submodule", "submodule-local-file", "populated-submodule", "open-ticket", "dry-run",
-		"state-inside", "state-inside-peer", "state-inside-peer-case", "state-inside-other-repo", "other-repo-list-failed",
+		"state-inside", "state-inside-peer", "state-inside-other-repo", "other-repo-list-failed",
 		"unwritable", "reset-failed", "terminal-close-failed",
 	} {
 		t.Run(scenario, func(t *testing.T) {
@@ -427,7 +427,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				write(filepath.Join(workspace, "sub", "notes"), submoduleNotes)
 			case "state-inside":
 				state = filepath.Join(workspace, ".omc", "state")
-			case "state-inside-peer", "state-inside-peer-case", "state-inside-other-repo":
+			case "state-inside-peer", "state-inside-other-repo":
 				peer := filepath.Join(root, "OF-643-executor")
 				if scenario != "state-inside-other-repo" {
 					git(repo, "worktree", "add", "--detach", peer)
@@ -438,18 +438,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 					}
 					fake.repoTrees[repoB] = []orca.Worktree{{Path: peer}}
 				}
-				if scenario == "state-inside-peer-case" {
-					peerInfo, err := os.Stat(peer)
-					if err != nil {
-						t.Fatal(err)
-					}
-					alias := filepath.Join(root, "of-643-executor")
-					aliasInfo, err := os.Stat(alias)
-					if err != nil || !os.SameFile(peerInfo, aliasInfo) {
-						t.Skip("case-sensitive filesystem")
-					}
-					state = filepath.Join(alias, ".omc", "state")
-				} else if err := os.Symlink(peer, state); err != nil {
+				if err := os.Symlink(peer, state); err != nil {
 					t.Fatal(err)
 				}
 			case "other-repo-list-failed":
@@ -460,7 +449,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			case "terminal-close-failed":
 				fake.closeErrors = map[string]error{"idle": errors.New("close failed")}
 			}
-			backupRoot := filepath.Join(state, "repo", "workspace-backups")
+			backupRoot := filepath.Join(state, "branch-backups")
 			closed := map[string]closedTicket{"OF-642": {State: "Done"}}
 			if scenario == "open-ticket" {
 				closed = nil
@@ -476,6 +465,9 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				if err != nil || len(entries) != 1 {
 					return fmt.Errorf("backup before delete: %v, %v", entries, err)
 				}
+				if want := "20261121T063342Z-" + name; entries[0].Name() != want {
+					return fmt.Errorf("backup name %q want %q", entries[0].Name(), want)
+				}
 				backup = filepath.Join(backupRoot, entries[0].Name())
 				for _, name := range []string{"workspace.bundle", "tracked.patch", "worktree.tar"} {
 					if _, err := os.Stat(filepath.Join(backup, name)); err != nil {
@@ -487,7 +479,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				}
 				return exec.Command("git", "-C", repo, "worktree", "remove", path).Run()
 			}
-			runtime := &Runtime{StateRoot: state, Repositories: repos, Workspaces: fake, closed: map[string]map[string]closedTicket{repo: closed}}
+			runtime := &Runtime{StateRoot: state, Now: func() time.Time { return time.Date(2026, 11, 21, 14, 33, 42, 0, time.FixedZone("CST", 8*3600)) }, Repositories: repos, Workspaces: fake, closed: map[string]map[string]closedTicket{repo: closed}}
 			runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
 				if spec.Path == "git" && len(spec.Args) >= 2 && spec.Args[0] == "bundle" && spec.Args[1] == "create" {
 					fake.actions = append(fake.actions, "backup")

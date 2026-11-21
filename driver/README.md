@@ -484,7 +484,7 @@ Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都
 
 Driver 用 `orca terminal close --terminal <handle>` 关闭终端。`terminal_handle_stale` 视为已关闭，其他错误会阻止本轮备份和删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。无需备份的工作区在关闭终端后直接调用 `orca worktree rm --worktree path:<路径>`。Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
 
-备份写入 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。Driver 解析符号链接后，按设备号与 inode 逐级比较备份目录及其上级目录与各工作区目录，大小写不同的拼写也算同一目录。未初始化 gitlink 目录中的文件整体写入 `worktree.tar`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，写入失败可能留下不完整文件。Driver 不清理备份。
+备份写入 `<状态根>/branch-backups/<UTC 时间戳>-<工作区目录名>/`，时间戳格式为 `20060102T150405Z`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。Driver 解析符号链接后，按设备号与 inode 逐级比较备份目录及其上级目录与各工作区目录，大小写不同的拼写也算同一目录。未初始化 gitlink 目录中的文件整体写入 `worktree.tar`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，同名目录已存在时本轮记 `backup-failed`，写入失败可能留下不完整文件。Driver 不清理备份。
 
 备份包含三份文件。
 
