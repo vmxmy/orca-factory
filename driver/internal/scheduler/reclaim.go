@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -152,13 +153,20 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 				}
 			}
 			if v.Backup && !dryRun {
-				backup, err := r.backupWorkspace(ctx, repo, v.Workspace)
+				backup, err := r.backupWorkspace(ctx, repo, v.Workspace, workspaces)
 				if err != nil {
 					v.Blocks = []string{"backup-failed"}
 					logger.Warn("workspace backup failed", "path", v.Path, "error", err)
 				} else {
 					v.Blocks = nil
 					logger.Info("workspace backed up", "path", v.Path, "backup", backup)
+					for _, args := range [][]string{{"reset", "--hard", "--quiet", "HEAD"}, {"clean", "-ffd", "--quiet"}} {
+						if _, err := r.command(ctx, v.Path, "git", args...); err != nil {
+							v.Blocks = []string{"remove-failed"}
+							logger.Warn("workspace cleanup failed", "path", v.Path, "command", args[0], "error", err)
+							break
+						}
+					}
 				}
 			}
 			if len(v.Blocks) == 0 && !dryRun {
@@ -246,7 +254,16 @@ func (r *Runtime) warnKept(logger *slog.Logger, v Verdict) {
 
 // backupWorkspace completes all artifacts outside the workspace before removal.
 // Each attempt gets its own directory, so a retry cannot overwrite a backup.
-func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace) (string, error) {
+func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace, workspaces []Workspace) (string, error) {
+	staged, err := r.command(ctx, w.Path, "git", "ls-files", "--stage", "-z")
+	if err != nil {
+		return "", err
+	}
+	for entry := range bytes.SplitSeq(staged, []byte{0}) {
+		if bytes.HasPrefix(entry, []byte("160000 ")) {
+			return "", errors.New("workspace contains a gitlink")
+		}
+	}
 	root := r.StateRoot
 	if root == "" {
 		root = stateRoot()
@@ -254,7 +271,23 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace)
 	if root == "" {
 		return "", errors.New("cannot resolve backup state root")
 	}
-	parent := filepath.Join(root, filepath.Base(repo), "workspace-backups")
+	parent, err := physicalBackupPath(filepath.Join(root, filepath.Base(repo), "workspace-backups"))
+	if err != nil {
+		return "", err
+	}
+	for _, workspace := range workspaces {
+		path, err := physicalBackupPath(workspace.Path)
+		if err != nil {
+			return "", err
+		}
+		rel, err := filepath.Rel(path, parent)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsLocal(rel) {
+			return "", fmt.Errorf("backup directory is inside workspace %s", path)
+		}
+	}
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return "", err
 	}
@@ -265,22 +298,84 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace)
 	if _, err := r.command(ctx, w.Path, "git", "bundle", "create", filepath.Join(dir, "workspace.bundle"), "HEAD"); err != nil {
 		return "", err
 	}
-	if _, err := r.command(ctx, w.Path, "git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--output="+filepath.Join(dir, "tracked.patch"), "HEAD", "--"); err != nil {
+	if _, err := r.command(ctx, w.Path, "git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", "--output="+filepath.Join(dir, "tracked.patch"), "HEAD", "--"); err != nil {
 		return "", err
 	}
 	files, err := r.command(ctx, w.Path, "git", "ls-files", "--others", "--exclude-standard", "-z")
 	if err != nil {
 		return "", err
 	}
-	list := filepath.Join(dir, "untracked.list")
+	changed, err := r.command(ctx, w.Path, "git", "diff", "--name-only", "--no-renames", "--no-color", "-z", "HEAD", "--")
+	if err != nil {
+		return "", err
+	}
+	untracked := make(map[string]bool)
+	for path := range strings.SplitSeq(string(files), "\x00") {
+		untracked[path] = true
+	}
+	for path := range strings.SplitSeq(string(changed), "\x00") {
+		if path == "" || untracked[path] {
+			continue
+		}
+		present, err := worktreeFilePresent(w.Path, path)
+		if err != nil {
+			return "", err
+		}
+		if present {
+			files = append(files, path...)
+			files = append(files, 0)
+		}
+	}
+	list := filepath.Join(dir, "worktree.list")
 	if err := os.WriteFile(list, files, 0600); err != nil {
 		return "", err
 	}
-	if _, err := r.command(ctx, w.Path, "tar", "-cf", filepath.Join(dir, "untracked.tar"), "--null", "-T", list); err != nil {
+	if _, err := r.command(ctx, w.Path, "tar", "-cf", filepath.Join(dir, "worktree.tar"), "--null", "-T", list); err != nil {
 		return "", err
 	}
 	if err := os.Remove(list); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// A symlink replacing a tracked directory removes its old children from the worktree.
+// Archive the link itself without following it to look up those deleted paths.
+func worktreeFilePresent(root, path string) (bool, error) {
+	isDir := true
+	for component := range strings.SplitSeq(path, "/") {
+		if !isDir {
+			return false, nil
+		}
+		root = filepath.Join(root, component)
+		info, err := os.Lstat(root)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		isDir = info.IsDir()
+	}
+	return !isDir, nil
+}
+
+// Resolve symlinks in the existing prefix before creating any backup directories.
+func physicalBackupPath(path string) (string, error) {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var suffix string
+	for {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err == nil {
+			return filepath.Join(resolved, suffix), nil
+		}
+		if !errors.Is(err, os.ErrNotExist) || path == filepath.Dir(path) {
+			return "", err
+		}
+		suffix = filepath.Join(filepath.Base(path), suffix)
+		path = filepath.Dir(path)
+	}
 }

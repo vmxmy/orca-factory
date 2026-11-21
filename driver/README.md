@@ -474,10 +474,11 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 | `unpushed` | `git rev-list --count HEAD --not --remotes` 非 0；HEAD 等于该票合并交接的冻结 head 时视为已推送 |
 | `terminal-running` | 已结束票的工作区有任一终端不满足空闲条件；未结束票的旧 resolver 有任何终端 |
 | `terminal-unknown` | 终端列表读取失败 |
-| `backup-failed` | 备份目录不可写或任何备份步骤失败，不关闭终端、不删除工作区 |
+| `backup-failed` | 索引含 gitlink（子模块）、备份目录位于本仓库任一 driver 工作区内，或写备份失败。保留工作区和终端 |
 | `terminal-close-failed` | 关闭空闲终端失败，本轮保留工作区，下轮重试 |
 | `pinned` | Orca 置顶（Orca 没有锁定标记，置顶是用户唯一的标记） |
-| `git-status-failed` / `git-rev-list-failed` / `remove-failed` | 检查或删除失败 |
+| `git-status-failed` / `git-rev-list-failed` | 对应的 Git 检查失败 |
+| `remove-failed` | 备份后的工作区清理失败，或 Orca 删除工作区失败 |
 
 Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都空闲时，先关闭终端再删除工作区。空闲须同时满足 `agentIdentity` 为空、`lastOutputAt > 0`，且距上次输出至少 1 小时；输出时间为 null 时不算空闲。exec 终端的 `agentIdentity` 也为 null，但可能仍在运行 `driver exec`，因此必须同时检查静默时间。只要有一个终端不空闲，一个都不关闭。未结束票被取代的旧 resolver 有终端就保留。
 
@@ -485,7 +486,13 @@ Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都
 
 备份写入 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，失败可能留下不完整文件；Driver 不清理备份。
 
-完整备份包含 `workspace.bundle`（HEAD 及其提交历史）、`tracked.patch`（相对 HEAD 的已跟踪文件最终修改，支持二进制）和 `untracked.tar`（未跟踪且未忽略的文件）。忽略文件如 `.omc/` 不备份。补丁恢复文件内容，不单独恢复暂存区状态。三份文件全部写完后才关闭空闲终端并调用删除；备份完成后进程退出、尚未删除工作区时，下轮会重新备份。
+备份包含三份文件。
+
+- `workspace.bundle` 保存 HEAD 及其提交历史。
+- `tracked.patch` 保存相对 HEAD 的修改和删除，支持二进制。Driver 用 `git diff --no-color --unified=3` 生成无颜色、带三行上下文的补丁。
+- `worktree.tar` 保存有改动的已跟踪文件和未跟踪且未忽略文件的原始字节。恢复时最后解开归档，保留工作区里的换行符。备份不包含 `.omc/` 等忽略文件，也不记录哪些修改已暂存。
+
+三份文件写完后，Driver 在工作区依次执行 `git reset --hard --quiet HEAD` 和 `git clean -ffd --quiet`。清理失败时保留工作区和终端，原始内容可从备份还原。清理成功后，Driver 按上述空闲规则关闭终端，再调用不带 `--force` 的 `orca worktree rm`。如果进程在删除前退出，下轮回收可能再写一份备份。
 
 在新的克隆里恢复，先把 `backup` 设置为成功日志中的绝对目录，把 `repo_url` 设置为原仓库地址：
 
@@ -497,7 +504,7 @@ git checkout --detach FETCH_HEAD
 if [ -s "$backup/tracked.patch" ]; then
     git apply --binary "$backup/tracked.patch"
 fi
-tar -xf "$backup/untracked.tar"
+tar -xf "$backup/worktree.tar"
 ```
 
 任一命令非零退出表示还原未完成，应停止后续步骤并检查输出。

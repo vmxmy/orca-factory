@@ -271,9 +271,15 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 `terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。真实录制 `orca-terminal-null-output.json` 保留混合时间戳及全部行数，脱敏方式和原始摘要见同名 provenance；`orca.TestRecordedTerminalUnknownOutput` 通过公开客户端重放。回归覆盖还包括 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。仅 Done/Canceled 票的工作区无其他阻塞且全部终端均无 agent 身份、输出时间已知并静默至少 1 小时时，回收才会先关闭终端；未结束票的旧 resolver 有终端就保留，停滞判定规则不变。`scheduler.TestReclaimClosesIdleTerminals`、`scheduler.TestReclaimKeepsBlockedTerminals`、`scheduler.TestReclaimTerminalCloseFailure` 覆盖关闭顺序、静默边界、阻塞与重试。
 
-已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，先写备份，全部成功后才执行原有关闭终端与删除步骤。备份失败返回 `backup-failed` 并保留工作区，不关闭终端；含其他阻塞以及未结束票的旧处置轮仍保留，不写备份。`unpushed`、置顶、终端空闲和候选归属判定保持不变。
+已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，Driver 先备份。索引含 gitlink（子模块）、备份目录等于或位于本仓库任一 driver 工作区内（按解析符号链接后的路径判断），或备份写入失败，均记为 `backup-failed`，保留工作区和终端。含其他阻塞的工作区及未结束票的旧处置轮继续按原规则保留。
 
-备份目录为 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。目录中 `workspace.bundle` 保存 HEAD 历史，`tracked.patch` 保存相对 HEAD 的已跟踪内容差异，`untracked.tar` 保存未跟踪且未忽略的文件。忽略文件不备份，不恢复暂存区边界，不自动清理备份；失败可留下不完整目录，重试创建新目录。新克隆依次 `git fetch <备份目录>/workspace.bundle HEAD`、`git checkout --detach FETCH_HEAD`、对非空补丁 `git apply --binary <备份目录>/tracked.patch`、`tar -xf <备份目录>/untracked.tar` 恢复内容，具体步骤见 [工作区回收](README.md#工作区回收)。`prune-workspaces --dry-run` 输出 `would-backup-and-remove`，没有写入或删除副作用。`scheduler.TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace` 验证删除前备份完整、三类内容可逐字节还原、不可写目录保留、未结束票保留和 dry-run 不写备份；`TestPruneWorkspacesDryRunBacksUpClosedWorkspace` 验证 CLI 输出。
+备份目录为 `<状态根>/<仓库目录名>/workspace-backups/<工作区目录名>-<随机后缀>/`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。`workspace.bundle` 保存 HEAD 历史。`tracked.patch` 保存相对 HEAD 的二进制和文本差异，生成时指定 `--no-color --unified=3`。`worktree.tar` 保存有改动的已跟踪文件和未跟踪且未忽略文件的原始字节。备份不记录暂存区边界。写入失败可能留下不完整目录，重试使用新目录，Driver 不自动清理备份。
+
+备份完成后，Driver 依次运行 `git reset --hard --quiet HEAD`、`git clean -ffd --quiet`，按空闲规则关闭终端，再调用不带 `--force` 的 `orca worktree rm`。任一清理命令失败都记为 `remove-failed`，保留备份、工作区和终端。
+
+在新克隆中依次执行 `git fetch <备份目录>/workspace.bundle HEAD`、`git checkout --detach FETCH_HEAD`，用 `git apply --binary <备份目录>/tracked.patch` 应用非空补丁，最后用 `tar -xf <备份目录>/worktree.tar` 还原工作区原始字节。[工作区回收](README.md#工作区回收)
+
+`prune-workspaces --dry-run` 对待备份工作区输出 `would-backup-and-remove`。`scheduler.TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace` 验证备份还原、保留条件和 dry-run 的只读行为。`TestPruneWorkspacesDryRunBacksUpClosedWorkspace` 验证 CLI 输出。
 
 
 ## 飞书群通知（OF-9）

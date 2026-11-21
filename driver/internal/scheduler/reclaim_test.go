@@ -316,7 +316,7 @@ func TestReclaimWorkspaces(t *testing.T) {
 }
 
 func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
-	for _, scenario := range []string{"restore", "unwritable", "open-ticket", "dry-run"} {
+	for _, scenario := range []string{"restore", "unwritable", "open-ticket", "dry-run", "submodule", "state-inside", "state-inside-peer", "reset-failed"} {
 		t.Run(scenario, func(t *testing.T) {
 			root := t.TempDir()
 			git := func(dir string, args ...string) string {
@@ -339,7 +339,17 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			git(root, "init", "--initial-branch=main", repo)
 			git(repo, "config", "user.email", "test@example.com")
 			git(repo, "config", "user.name", "Test")
+			git(repo, "config", "core.autocrlf", "input")
+			git(repo, "config", "color.diff", "always")
+			git(repo, "config", "diff.context", "0")
+			write(filepath.Join(repo, "crlf"), "a\nb\nc\n")
 			write(filepath.Join(repo, "tracked"), "original\n")
+			if scenario == "restore" {
+				if err := os.Mkdir(filepath.Join(repo, "old"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				write(filepath.Join(repo, "old", "tracked"), "removed with its directory")
+			}
 			write(filepath.Join(repo, ".gitignore"), ".omc/\n")
 			git(repo, "add", ".")
 			git(repo, "commit", "-m", "base")
@@ -359,6 +369,9 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			write(filepath.Join(workspace, "committed"), committed)
 			git(workspace, "add", "committed")
 			git(workspace, "commit", "-m", "local only")
+			head := git(workspace, "rev-parse", "HEAD")
+			crlf := "a\r\nB\r\nc\r\n"
+			write(filepath.Join(workspace, "crlf"), crlf)
 			write(filepath.Join(workspace, "tracked"), tracked)
 			write(filepath.Join(workspace, "-untracked\nfile"), untracked)
 			if err := os.Mkdir(filepath.Join(workspace, ".omc"), 0700); err != nil {
@@ -366,17 +379,30 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			}
 			write(filepath.Join(workspace, ".omc", "ignored"), "excluded")
 			state := filepath.Join(root, "state")
-			backupRoot := filepath.Join(state, "repo", "workspace-backups")
-			if scenario == "unwritable" {
-				if err := os.MkdirAll(backupRoot, 0700); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Chmod(backupRoot, 0500); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = os.Chmod(backupRoot, 0700) })
-			}
 			fake := &fakeWorkspaces{trees: []orca.Worktree{{Path: workspace}}}
+			switch scenario {
+			case "restore":
+				git(workspace, "rm", "-r", "old")
+				if err := os.Symlink(".", filepath.Join(workspace, "old")); err != nil {
+					t.Fatal(err)
+				}
+			case "unwritable":
+				write(state, "a regular file prevents creating the backup directory")
+			case "submodule":
+				git(workspace, "update-index", "--add", "--cacheinfo", "160000,"+head+",sub")
+			case "state-inside":
+				state = filepath.Join(workspace, ".omc", "state")
+			case "state-inside-peer":
+				peer := filepath.Join(root, "OF-643-executor")
+				git(repo, "worktree", "add", "--detach", peer)
+				fake.trees = append(fake.trees, orca.Worktree{Path: peer})
+				if err := os.Symlink(peer, state); err != nil {
+					t.Fatal(err)
+				}
+			case "reset-failed":
+				write(git(workspace, "rev-parse", "--path-format=absolute", "--git-path", "index.lock"), "")
+			}
+			backupRoot := filepath.Join(state, "repo", "workspace-backups")
 			closed := map[string]closedTicket{"OF-642": {State: "Done"}}
 			if scenario == "open-ticket" {
 				closed = nil
@@ -384,66 +410,86 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 			} else {
 				fake.terminals = []orca.Terminal{{Handle: "idle", WorktreePath: workspace, LastOutputAt: 1}}
 			}
+			removeCalled := false
+			var backup string
 			fake.onRemove = func(path string) error {
+				removeCalled = true
 				entries, err := os.ReadDir(backupRoot)
 				if err != nil || len(entries) != 1 {
-					t.Fatalf("backup before delete: %v %v", entries, err)
+					return fmt.Errorf("backup before delete: %v, %v", entries, err)
 				}
-				backup := filepath.Join(backupRoot, entries[0].Name())
-				for _, name := range []string{"workspace.bundle", "tracked.patch", "untracked.tar"} {
+				backup = filepath.Join(backupRoot, entries[0].Name())
+				for _, name := range []string{"workspace.bundle", "tracked.patch", "worktree.tar"} {
 					if _, err := os.Stat(filepath.Join(backup, name)); err != nil {
-						t.Fatal(err)
+						t.Error(err)
 					}
 				}
-				git(repo, "worktree", "remove", "--force", path)
-				git(repo, "branch", "-D", "local")
-				restored := filepath.Join(root, "restored")
-				git(root, "clone", origin, restored)
-				git(restored, "fetch", filepath.Join(backup, "workspace.bundle"), "HEAD")
-				git(restored, "checkout", "--detach", "FETCH_HEAD")
-				git(restored, "apply", "--binary", filepath.Join(backup, "tracked.patch"))
-				cmd := exec.Command("tar", "-xf", filepath.Join(backup, "untracked.tar"), "-C", restored)
-				if out, err := cmd.CombinedOutput(); err != nil {
-					t.Fatalf("restore tar: %v %s", err, out)
+				if got, err := os.ReadFile(filepath.Join(path, ".omc", "ignored")); err != nil || string(got) != "excluded" {
+					t.Errorf("ignored file before delete: %q, %v", got, err)
 				}
-				for name, want := range map[string]string{"committed": committed, "tracked": tracked, "-untracked\nfile": untracked} {
-					got, err := os.ReadFile(filepath.Join(restored, name))
-					if err != nil || string(got) != want {
-						t.Fatalf("restore %q: %q, %v; want %q", name, got, err, want)
-					}
-				}
-				if _, err := os.Stat(filepath.Join(restored, ".omc")); !os.IsNotExist(err) {
-					t.Fatalf("ignored files restored: %v", err)
-				}
-				return nil
+				return exec.Command("git", "-C", repo, "worktree", "remove", path).Run()
 			}
 			runtime := &Runtime{StateRoot: state, Repositories: map[string]config.Repository{repo: {Path: repo}}, Workspaces: fake, closed: map[string]map[string]closedTicket{repo: closed}}
 			verdicts, err := runtime.ReclaimWorkspaces(context.Background(), scenario == "dry-run", slog.New(slog.DiscardHandler))
 			if err != nil || len(verdicts) != 1 {
 				t.Fatalf("verdicts=%+v err=%v", verdicts, err)
 			}
+			checkFiles := func(dir string) {
+				t.Helper()
+				for name, want := range map[string]string{"committed": committed, "tracked": tracked, "crlf": crlf, "-untracked\nfile": untracked} {
+					got, err := os.ReadFile(filepath.Join(dir, name))
+					if err != nil || string(got) != want {
+						t.Fatalf("%s/%q: %q, %v; want %q", dir, name, got, err, want)
+					}
+				}
+			}
 			if scenario == "restore" {
-				if len(verdicts[0].Blocks) != 0 || !slices.Equal(fake.removed, []string{name}) {
-					t.Fatalf("verdicts=%+v removed=%v", verdicts, fake.removed)
+				if len(verdicts[0].Blocks) != 0 || !slices.Equal(fake.actions, []string{"close idle", "remove " + workspace}) {
+					t.Fatalf("verdicts=%+v actions=%v", verdicts, fake.actions)
+				}
+				git(repo, "branch", "-D", "local")
+				restored := filepath.Join(root, "restored")
+				git(root, "clone", origin, restored)
+				git(restored, "fetch", filepath.Join(backup, "workspace.bundle"), "HEAD")
+				git(restored, "checkout", "--detach", "FETCH_HEAD")
+				git(restored, "apply", "--binary", filepath.Join(backup, "tracked.patch"))
+				cmd := exec.Command("tar", "-xf", filepath.Join(backup, "worktree.tar"), "-C", restored)
+				if out, err := cmd.CombinedOutput(); err != nil {
+					t.Fatalf("restore tar: %v %s", err, out)
+				}
+				checkFiles(restored)
+				if dest, err := os.Readlink(filepath.Join(restored, "old")); err != nil || dest != "." {
+					t.Fatalf("restored link = %q, %v", dest, err)
+				}
+				members, err := exec.Command("tar", "-tf", filepath.Join(backup, "worktree.tar")).Output()
+				if err != nil || slices.Contains(strings.Split(string(members), "\n"), "old/tracked") {
+					t.Fatalf("archive includes a deleted file through its replacement symlink: %q, %v", members, err)
+				}
+				if _, err := os.Stat(filepath.Join(restored, ".omc")); !os.IsNotExist(err) {
+					t.Fatalf("ignored files restored: %v", err)
 				}
 				return
 			}
-			if len(fake.actions) != 0 {
-				t.Fatalf("retained workspace mutated: %v", fake.actions)
+			if removeCalled || len(fake.actions) != 0 {
+				t.Fatalf("retained workspace: remove called=%v actions=%v", removeCalled, fake.actions)
 			}
-			if _, err := os.Stat(workspace); err != nil {
-				t.Fatal(err)
+			if got := git(workspace, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("retained HEAD=%s want %s", got, head)
 			}
-			if scenario == "unwritable" {
-				if !slices.Equal(verdicts[0].Blocks, []string{"backup-failed"}) {
-					t.Fatalf("blocks=%v", verdicts[0].Blocks)
-				}
-			} else {
+			checkFiles(workspace)
+			wantBlocks := []string{"backup-failed"}
+			switch scenario {
+			case "open-ticket", "dry-run":
+				wantBlocks = []string{"dirty", "unpushed"}
+			case "reset-failed":
+				wantBlocks = []string{"remove-failed"}
+			}
+			if !slices.Equal(verdicts[0].Blocks, wantBlocks) {
+				t.Fatalf("blocks=%v want %v", verdicts[0].Blocks, wantBlocks)
+			}
+			if scenario != "unwritable" && scenario != "reset-failed" {
 				if _, err := os.Stat(backupRoot); !os.IsNotExist(err) {
-					t.Fatalf("unexpected backup: %v", err)
-				}
-				if scenario == "open-ticket" && !slices.Equal(verdicts[0].Blocks, []string{"dirty", "unpushed"}) {
-					t.Fatalf("blocks=%v", verdicts[0].Blocks)
+					t.Fatalf("unexpected backup directory: %v", err)
 				}
 			}
 		})
