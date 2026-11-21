@@ -109,7 +109,7 @@ func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if mode == "top" && !record.Top {
 		return "不是终审提案", nil
 	}
-	if mode == "result" && (record.Top || record.TopUsed) {
+	if mode == "result" && record.Top {
 		return "本票已进入过终审", nil
 	}
 	if record.Attempt != attempt || record.Phase != phase {

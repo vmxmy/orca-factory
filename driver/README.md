@@ -552,7 +552,7 @@ orca-factory-driver gear clear OF
 
 `auto` 隐含 `AGENT_AUTO_REVIEW` 的 `scope`、`release`、`top`，与显式开关取并集。`auto` 下票的归属不会变成 `人`，也不发转人卡片：
 
-1. 普通处置 escalate 未命中必须由人决定的情形、且本票尚未进入过终审时，非空扩 SCOPE 申请先按现有确定性规则审批。批准后写 `扩SCOPE：auto` 与 waiting 回执，交普通处置继续，不消耗终审机会；拒绝后才进入一次终审。读写失败返回错误，由下一轮巡检重试。其他 escalate 沿用终审流程，终审已用过则搁置。
+1. 普通处置 escalate 未命中必须由人决定的情形时，不论是否进入过终审，非空扩 SCOPE 申请先按现有确定性规则审批。批准后写 `扩SCOPE：auto` 与 waiting 回执，交普通处置继续，保留既有终审使用记录，不消耗终审机会；拒绝后，未用过终审则进入一次终审，已用过则搁置。读写失败返回错误，由下一轮巡检重试。其他 escalate 沿用终审流程，终审已用过则搁置。
 2. 终审失败或 escalate 按 `resolverFailureLimit`（3 次）重试；配置未变时保持同一档位，运维修改终审配置后下一轮跟随新配置。
 3. 终审重试用尽，或命中必须由人决定的情形，票进入搁置。必须由人决定的情形不进终审，直接搁置：escalate 的 `class` 属于六类禁止阻塞（`intake.TopMustHuman`，与终审共用），或票带 lane 3 handoff、票面 `## LANE 预判` 为 3、部署 `paused`、证据冲突。lane 3 的合并通道转人同样改为搁置。
 
@@ -573,7 +573,7 @@ orca-factory-driver gear clear OF
 终审标记持久化在票据回执中，每票只进入一次，不补派历史转人票。终审明确转人或第二次失败才发卡片，scope/release 不再覆盖该决定；终审结果一经接受就结束当前 `top`：applied 或 waiting + outcome=succeeded 回执在读取时恢复普通处置，`top_used` 仍为 true，再转人直接发卡片。只有失败未达两次的终审重试及尚未派出的入口/undispatched 回执保留 `top`。终审不直接写 Done、合并或自动批准取消，gate、审查、CI 与 lane 3 约束保持不变。
 
 
-本仓库配置为 `AGENT_AUTO_REVIEW=scope,release,top`。在 `auto` 模式，未进入过终审的普通 `phase=result` 扩 SCOPE 申请先走下述 scope 规则，批准后不派终审；该入口的发起人为 `auto`，条件行仍记 `AGENT_AUTO_REVIEW=scope`。以下转人卡片前的 scope/release 自动审批只适用于未进入过终审的转人票，并要求显式开关；`auto` 下这些票都是切换前的历史转人票。含 `release` 时，转人卡片发送前会重读票据和评论，在 `humanReleaseRefusal` 为空、没有既往 `放行：` 评论、且转人原因不含“需要授权”“凭证”“不可逆”“生产 DDL”“数据”时自动写入一次 `放行：auto` 与 waiting 回执，不发卡片。escalate 转人按 resolver 结果中的完整原因判断；其他转人的原因已被截断时不自动放行。lane 3、部署 paused、证据冲突、既有人工或自动放行，以及命中这些禁止字样的原因继续发卡片并写明未自动放行原因。两项都启用时先判扩 SCOPE：批准则不再放行；未批准再判放行，两项都未通过时卡片的“未自动批准”行依次写 `扩SCOPE：<原因>；放行：<原因>`。
+本仓库配置为 `AGENT_AUTO_REVIEW=scope,release,top`。在 `auto` 模式，普通 `phase=result` 扩 SCOPE 申请不论是否进入过终审，都先走下述 scope 规则，批准后不派终审；该入口的发起人为 `auto`，条件行仍记 `AGENT_AUTO_REVIEW=scope`。以下转人卡片前的 scope/release 自动审批只适用于未进入过终审的转人票，并要求显式开关；`auto` 下这些票都是切换前的历史转人票。含 `release` 时，转人卡片发送前会重读票据和评论，在 `humanReleaseRefusal` 为空、没有既往 `放行：` 评论、且转人原因不含“需要授权”“凭证”“不可逆”“生产 DDL”“数据”时自动写入一次 `放行：auto` 与 waiting 回执，不发卡片。escalate 转人按 resolver 结果中的完整原因判断；其他转人的原因已被截断时不自动放行。lane 3、部署 paused、证据冲突、既有人工或自动放行，以及命中这些禁止字样的原因继续发卡片并写明未自动放行原因。两项都启用时先判扩 SCOPE：批准则不再放行；未批准再判放行，两项都未通过时卡片的“未自动批准”行依次写 `扩SCOPE：<原因>；放行：<原因>`。
 
 启用后，调度器在飞书转人卡片发送前重读票据和评论。最新 `resolver-state` 必须仍是本次 `human`，且申请是 `action=escalate`、`class=scope-extension` 的非空 `scope` 数组。自动批准沿用人工扩 SCOPE 的校验：票未取消、有 SCOPE 和 LANE 预判、不属 lane 3、合并证据有效且部署屏障未暂停。另须同时满足：
 

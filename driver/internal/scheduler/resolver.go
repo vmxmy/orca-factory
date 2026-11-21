@@ -647,7 +647,7 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 		if human {
 			return r.parkResolution(ctx, t, p, reason, evidence)
 		}
-		if !p.TopUsed && !p.Top && len(decision.ScopeRequest()) > 0 {
+		if !p.Top && len(decision.ScopeRequest()) > 0 {
 			now := time.Now()
 			if r.Now != nil {
 				now = r.Now()
