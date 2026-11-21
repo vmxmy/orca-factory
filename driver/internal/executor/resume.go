@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,7 +226,17 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			return result, errors.New("invalid existing PR")
 		}
 		e.recoveryPath(cp, "existing-pr")
-		return e.resumeMergeHandoff(ctx, c, t, *pr, head, nil, result)
+		result, err = e.resumeMergeHandoff(ctx, c, t, *pr, head, nil, result)
+		if !errors.Is(err, errMissingMergeHandoff) {
+			return result, err
+		}
+		result.State.Owner, result.State.Phase = machine.OwnerResolver, machine.PhaseResolver
+		result.State.HumanReason = "existing PR has no frozen handoff"
+		result.State.Attempt = machine.DefaultLimits.ExecFailures
+		if err := e.handoff(ctx, t, result.State, fmt.Sprintf("PR #%d head=%s", pr.Number, head), "", nil); err != nil {
+			return result, err
+		}
+		return result, nil
 	}
 	if cp == nil {
 		// Stable run-create is a request reconciliation, not a second Run.
