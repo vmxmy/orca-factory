@@ -79,10 +79,16 @@ func AutoReleaseHuman(ctx context.Context, ledger ScopeLedger, id string, attemp
 // scope write as intake. A nonempty refusal leaves the request for a human.
 // An empty refusal also covers a stale snapshot whose request already settled.
 func AutoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time) (refusal string, err error) {
-	return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, false)
+	return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, "human")
 }
 
-func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time, top bool) (refusal string, err error) {
+// AutoApproveResolverScope rechecks a normal resolver result before final review.
+// It uses the same limits and receipt as automatic human-request approval.
+func AutoApproveResolverScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time) (refusal string, err error) {
+	return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, "result")
+}
+
+func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attempt int, lane3Globs string, now time.Time, mode string) (refusal string, err error) {
 	ticket, err := ledger.Read(ctx, id)
 	if err != nil {
 		return "", err
@@ -96,12 +102,15 @@ func autoApproveScope(ctx context.Context, ledger ScopeLedger, id string, attemp
 	if json.Unmarshal([]byte(latest[resolver.Prefix]), &record) != nil || record.Version != 1 || record.Attempt < 1 || record.Phase == "" {
 		return "resolver-state 证据无效", nil
 	}
-	phase, sender, flag := "human", "auto", "scope"
-	if top {
+	phase, sender, flag := mode, "auto", "scope"
+	if mode == "top" {
 		phase, sender, flag = "result", "top-resolver", "top"
 	}
-	if top && !record.Top {
+	if mode == "top" && !record.Top {
 		return "不是终审提案", nil
+	}
+	if mode == "result" && (record.Top || record.TopUsed) {
+		return "本票已进入过终审", nil
 	}
 	if record.Attempt != attempt || record.Phase != phase {
 		return "", nil

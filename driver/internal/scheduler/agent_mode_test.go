@@ -92,6 +92,82 @@ func TestAutoModeImpliesTopReview(t *testing.T) {
 	}
 }
 
+type autoModeScopeStore struct{ labelStore }
+
+func (s *autoModeScopeStore) Read(_ context.Context, id string) (issues.Task, error) {
+	ticket := openRecord(task.Issue{ID: id})
+	ticket.Description, ticket.Metadata.ID = s.description, id
+	return ticket, nil
+}
+
+func (s *autoModeScopeStore) Edit(_ context.Context, _ string, raw []byte) (issues.Task, error) {
+	var patch struct{ Description string }
+	if err := json.Unmarshal(raw, &patch); err != nil {
+		return issues.Task{}, err
+	}
+	s.description = patch.Description
+	return issues.Task{}, nil
+}
+
+func TestAutoModeScopeRequestApprovedBeforeTop(t *testing.T) {
+	decision := recorded(t, "resolver-escalate-scope.json")
+	for _, tc := range []struct {
+		name     string
+		previous int
+		topUsed  bool
+	}{
+		{name: "approved before top"},
+		{name: "approval limit enters top", previous: 2},
+		{name: "top already used parks", topUsed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(resolver.Record{Version: 1, Attempt: 3, Phase: "result", Outcome: "failed", Result: string(decision), TopUsed: tc.topUsed})
+			if err != nil {
+				t.Fatal(err)
+			}
+			bodies := []string{"阶段: Agent处置\n归属: 处置Agent"}
+			for i := 0; i < tc.previous; i++ {
+				bodies = append(bodies, fmt.Sprintf("扩SCOPE：auto 2026-11-01T00:00:00Z\n路径：old%d.go", i))
+			}
+			bodies = append(bodies, resolver.Prefix+string(raw))
+			face := "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go\n"
+			store := &autoModeScopeStore{labelStore: labelStore{fakeIssues: fakeIssues{description: face, issueComments: evidenceComments(bodies...)}}}
+			r := modeRuntime(store, map[string]string{"AGENT_MODE": "auto"})
+			ticket := fromEvidence(t, Ticket{ID: "id", Identifier: "OF-1", Repo: "/repo"}, store.issueComments)
+			if err := r.applyResolution(context.Background(), ticket); err != nil {
+				t.Fatal(err)
+			}
+			after := fromEvidence(t, ticket, store.issueComments)
+			if tc.topUsed {
+				assertParked(t, &store.labelStore, ticket)
+			} else if tc.previous == 2 {
+				if len(store.comments) != 1 || !strings.Contains(store.comments[0], "终审处置") || !after.Resolution.Top || !after.Resolution.TopUsed {
+					t.Fatalf("approval limit did not enter top: comments=%q resolution=%+v", store.comments, after.Resolution)
+				}
+			} else {
+				if len(store.comments) != 1 || !strings.HasPrefix(store.comments[0], "扩SCOPE：auto ") {
+					t.Fatalf("scope not approved before top: %q", store.comments)
+				}
+				for _, want := range []string{"AGENT_AUTO_REVIEW=scope", "路径：scripts/module-size-metric-report.test.mjs", `resolver-state {"version":1,"attempt":3,"phase":"waiting"}`} {
+					if !strings.Contains(store.comments[0], want) {
+						t.Errorf("missing %q in %q", want, store.comments[0])
+					}
+				}
+				if strings.Contains(store.comments[0], "终审处置") || slices.Contains(store.add, "parked") || after.Owner != machine.OwnerResolver || after.Resolution.Phase != "waiting" || after.Resolution.TopUsed {
+					t.Fatalf("scope approval changed ownership or used top: comments=%q labels=%q resolution=%+v owner=%s", store.comments, store.add, after.Resolution, after.Owner)
+				}
+				if store.description != "## LANE 预判\n2\n\n## SCOPE\nsrc/old.go scripts/module-size-metric-report.test.mjs\n" {
+					t.Fatalf("scope face=%q", store.description)
+				}
+				return
+			}
+			if store.description != face || slices.ContainsFunc(store.comments, func(body string) bool { return strings.HasPrefix(body, "扩SCOPE：auto ") }) {
+				t.Fatalf("ineligible scope approved: face=%q comments=%q", store.description, store.comments)
+			}
+		})
+	}
+}
+
 func TestAutoModeParksMustHumanClassBeforeTop(t *testing.T) {
 	decision, err := os.ReadFile("../../testdata/recorded/resolver-escalate-credentials.json")
 	if err != nil {

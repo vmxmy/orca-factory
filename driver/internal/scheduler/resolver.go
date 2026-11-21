@@ -630,13 +630,13 @@ func (r *Runtime) retryResolution(ctx context.Context, t Ticket, p *resolver.Rec
 	return (resolutionStore{r, t}).Save(ctx, next)
 }
 
-// escalateResolution hands the ticket to a human; the human resolver phase
-// stops automatic dispatch until a person writes a new resolver receipt. Auto
-// mode parks the ticket instead.
+// escalateResolution tries automatic scope approval and final review before
+// handing the ticket to a human. Auto mode parks unresolved tickets instead.
 func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.Record, reason, evidence string) error {
 	env := r.Repositories[t.Repo].Env
 	class := ""
-	if decision, err := resolver.ParseResult(p.Result); err == nil && decision.Action == "escalate" {
+	decision, err := resolver.ParseResult(p.Result)
+	if err == nil && decision.Action == "escalate" {
 		class = decision.Class
 	}
 	if autoMode(env) {
@@ -646,6 +646,16 @@ func (r *Runtime) escalateResolution(ctx context.Context, t Ticket, p *resolver.
 		}
 		if human {
 			return r.parkResolution(ctx, t, p, reason, evidence)
+		}
+		if !p.TopUsed && !p.Top && len(decision.ScopeRequest()) > 0 {
+			now := time.Now()
+			if r.Now != nil {
+				now = r.Now()
+			}
+			refusal, err := intake.AutoApproveResolverScope(ctx, r.Clients[t.Repo], t.ID, p.Attempt, env["AGENT_LANE3_GLOBS"], now)
+			if err != nil || refusal == "" {
+				return err
+			}
 		}
 	}
 	next := *p

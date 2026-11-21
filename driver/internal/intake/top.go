@@ -81,7 +81,7 @@ func ApplyTopReview(ctx context.Context, ledger ScopeLedger, id string, attempt 
 		return "终审提案无效", nil
 	}
 	if decision.Action == "escalate" && len(decision.ScopeRequest()) > 0 {
-		return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, true)
+		return autoApproveScope(ctx, ledger, id, attempt, lane3Globs, now, "top")
 	}
 	if decision.Action != "ruling" || record.Outcome != "succeeded" {
 		return "不是成功的终审 ruling", nil
