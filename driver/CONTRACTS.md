@@ -273,7 +273,7 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 
 已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，Driver 先关闭全部空闲终端，再写备份。关闭失败记为 `terminal-close-failed`，本轮保留工作区并跳过备份。`terminal_handle_stale` 视为已关闭。含其他阻塞的工作区及未结束票的旧处置轮继续按原规则保留。
 
-Driver 在本轮回收前列出全部受管仓库的 driver 工作区。解析符号链接后，Driver 按设备号与 inode 判断备份目录或其任一上级目录是否与某个工作区是同一目录。目录匹配、任一仓库的工作区列表读取失败、待备份工作区含已初始化的子模块，或备份写入失败，均记为 `backup-failed`。此时终端已关闭，工作区保留。未初始化 gitlink 目录中的文件随 `worktree.tar` 备份。
+Driver 在本轮回收前列出全部受管仓库的 driver 工作区。解析符号链接后，Driver 按设备号与 inode 判断备份目录或其任一上级目录是否与某个工作区是同一目录。Driver 再读取 `/proc/self/mountinfo`：每行第 3、4、5 字段是设备号、挂载源根路径、挂载点，路径中的空格、制表符、换行和反斜杠写成三位八进制转义。最长匹配挂载点给出路径所在设备与源路径；同长的挂载点取最后一行。备份目录与某个工作区设备号相同、源路径位于该工作区源路径之内时，备份会随该工作区删除（OF-642 终审裁定的绑定挂载场景）。目录匹配、源路径落入工作区、mountinfo 读取失败、任一仓库的工作区列表读取失败、待备份工作区含已初始化的子模块，或备份写入失败，均记为 `backup-failed`。此时终端已关闭，工作区保留。未初始化 gitlink 目录中的文件随 `worktree.tar` 备份。
 
 备份目录为 `<状态根>/branch-backups/<UTC 时间戳>-<工作区目录名>/`，时间戳格式为 `20060102T150405Z`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。`workspace.bundle` 保存 HEAD 历史。`tracked.patch` 保存相对 HEAD 的二进制和文本差异，生成时指定 `--no-color --unified=3`。`worktree.tar` 保存工作区中仍存在的已跟踪文件、未跟踪且未忽略的文件，以及未初始化 gitlink 目录中的全部文件，均保留原始字节。备份不记录暂存区边界。同名目录已存在时本轮记 `backup-failed`。写入失败可能留下不完整目录，重试使用新目录，Driver 不自动清理备份。
 

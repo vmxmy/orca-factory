@@ -276,7 +276,19 @@ func (r *Runtime) backupWorkspace(ctx context.Context, w Workspace, listings []r
 	if err != nil {
 		return "", err
 	}
-	if err := checkBackupDirectory(parent, listings); err != nil {
+	mountInfo := r.MountInfo
+	if mountInfo == "" {
+		mountInfo = "/proc/self/mountinfo"
+	}
+	table, err := os.ReadFile(mountInfo)
+	if err != nil {
+		return "", err
+	}
+	mounts, err := parseMountInfo(string(table))
+	if err != nil {
+		return "", err
+	}
+	if err := checkBackupDirectory(parent, listings, mounts); err != nil {
 		return "", err
 	}
 	files, err := r.workspaceArchiveFiles(ctx, w.Path)
@@ -313,7 +325,8 @@ func (r *Runtime) backupWorkspace(ctx context.Context, w Workspace, listings []r
 	return dir, nil
 }
 
-func checkBackupDirectory(parent string, listings []repositoryWorkspaces) error {
+func checkBackupDirectory(parent string, listings []repositoryWorkspaces, mounts []mount) error {
+	backupDevice, backupSource := mountSource(mounts, parent)
 	var ancestors []os.FileInfo
 	for {
 		info, err := os.Stat(parent)
@@ -345,9 +358,58 @@ func checkBackupDirectory(parent string, listings []repositoryWorkspaces) error 
 					return fmt.Errorf("backup directory is inside workspace %s", workspace.Path)
 				}
 			}
+			physical, err := filepath.EvalSymlinks(workspace.Path)
+			if err != nil {
+				return err
+			}
+			device, source := mountSource(mounts, physical)
+			if device == backupDevice && pathWithin(backupSource, source) {
+				return fmt.Errorf("backup directory is mounted from inside workspace %s", workspace.Path)
+			}
 		}
 	}
 	return nil
+}
+
+// mount is one /proc/self/mountinfo line: the directory root of device is
+// visible at point. A bind mount of a subdirectory has a root other than "/".
+type mount struct {
+	device, root, point string
+}
+
+func parseMountInfo(table string) ([]mount, error) {
+	var mounts []mount
+	for line := range strings.Lines(table) {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			return nil, fmt.Errorf("mountinfo line %q has fewer than 5 fields", line)
+		}
+		mounts = append(mounts, mount{device: fields[2], root: mountPathEscapes.Replace(fields[3]), point: mountPathEscapes.Replace(fields[4])})
+	}
+	if len(mounts) == 0 {
+		return nil, errors.New("mountinfo lists no mounts")
+	}
+	return mounts, nil
+}
+
+// The kernel writes space, tab, newline and backslash in mountinfo paths as
+// three-digit octal escapes.
+var mountPathEscapes = strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+
+// mountSource names the device and the path on it that hold the physical
+// path. The last mount over the longest matching point is the visible one.
+func mountSource(mounts []mount, path string) (device, source string) {
+	var best mount
+	for _, m := range mounts {
+		if pathWithin(path, m.point) && len(m.point) >= len(best.point) {
+			best = m
+		}
+	}
+	return best.device, filepath.Join(best.root, strings.TrimPrefix(path, best.point))
+}
+
+func pathWithin(path, dir string) bool {
+	return path == dir || dir == "/" || strings.HasPrefix(path, dir+"/")
 }
 
 func (r *Runtime) workspaceArchiveFiles(ctx context.Context, root string) ([]byte, error) {

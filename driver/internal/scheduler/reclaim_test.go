@@ -328,7 +328,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 	const submoduleNotes = "notes\x00inside gitlink\n"
 	for _, scenario := range []string{
 		"restore", "clean-submodule", "submodule-local-file", "populated-submodule", "open-ticket", "dry-run",
-		"state-inside", "state-inside-peer", "state-inside-other-repo", "other-repo-list-failed",
+		"state-inside", "state-inside-peer", "state-inside-other-repo", "state-bind-mount", "other-repo-list-failed",
 		"unwritable", "reset-failed", "terminal-close-failed",
 	} {
 		t.Run(scenario, func(t *testing.T) {
@@ -408,6 +408,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				repos[repoB] = config.Repository{Path: repoB}
 			}
 			var listErr error
+			var mountInfo string
 			switch scenario {
 			case "restore":
 				if err := os.RemoveAll(filepath.Join(workspace, "old")); err != nil {
@@ -441,6 +442,23 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				if err := os.Symlink(peer, state); err != nil {
 					t.Fatal(err)
 				}
+			case "state-bind-mount":
+				peer := filepath.Join(root, "OF-643-executor")
+				git(repo, "worktree", "add", "--detach", peer)
+				fake.repoTrees[repo] = append(fake.repoTrees[repo], orca.Worktree{Path: peer})
+				if err := os.Mkdir(state, 0700); err != nil {
+					t.Fatal(err)
+				}
+				physical, err := filepath.EvalSymlinks(state)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if peer, err = filepath.EvalSymlinks(peer); err != nil {
+					t.Fatal(err)
+				}
+				mountInfo = filepath.Join(root, "mountinfo")
+				write(mountInfo, "22 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n"+
+					"31 22 8:1 "+peer+"/.omc/state "+physical+" rw,relatime shared:1 - ext4 /dev/sda1 rw\n")
 			case "other-repo-list-failed":
 				listErr = errors.New("repo-b worktree list failed")
 				fake.treeErrors = map[string]error{repoB: listErr}
@@ -479,7 +497,7 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				}
 				return exec.Command("git", "-C", repo, "worktree", "remove", path).Run()
 			}
-			runtime := &Runtime{StateRoot: state, Now: func() time.Time { return time.Date(2026, 11, 21, 14, 33, 42, 0, time.FixedZone("CST", 8*3600)) }, Repositories: repos, Workspaces: fake, closed: map[string]map[string]closedTicket{repo: closed}}
+			runtime := &Runtime{StateRoot: state, MountInfo: mountInfo, Now: func() time.Time { return time.Date(2026, 11, 21, 14, 33, 42, 0, time.FixedZone("CST", 8*3600)) }, Repositories: repos, Workspaces: fake, closed: map[string]map[string]closedTicket{repo: closed}}
 			runtime.Run = func(ctx context.Context, spec runx.Spec) ([]byte, error) {
 				if spec.Path == "git" && len(spec.Args) >= 2 && spec.Args[0] == "bundle" && spec.Args[1] == "create" {
 					fake.actions = append(fake.actions, "backup")
