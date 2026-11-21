@@ -68,6 +68,9 @@ type Runtime struct {
 	// Snapshot; ReclaimWorkspaces removes their workspaces (OF-96).
 	closed        map[string]map[string]closedTicket
 	reclaimWarned map[string]string
+	// closedHistories holds only tickets classified closed in the last snapshot,
+	// keyed by repository and issue ID. Full sync always rereads their events.
+	closedHistories map[string]map[string]closedHistory
 	// reviews runs the shadow cross reviews of escalated tickets.
 	reviews *crossReviews
 	// merges runs merged-result gates beside the inspections.
@@ -78,6 +81,12 @@ type Runtime struct {
 	// orcaCreated counts executor terminal create successes, so the scheduler
 	// sees merge-lane launches that return no error.
 	orcaCreated int
+}
+
+type closedHistory struct {
+	state     string
+	updatedAt time.Time
+	comments  []task.Comment
 }
 
 // NewRuntime binds a client for each of repos. Startup exclusion runs before
@@ -325,6 +334,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		scopeEnabled[repo.Path] = repo.Env["AGENT_SCOPE_AVOID"] != "0"
 	}
 	closed := map[string]map[string]closedTicket{}
+	closedHistories := map[string]map[string]closedHistory{}
 	ledgerStart := time.Now()
 	snapshot, err := reader.Snapshot(ctx, projects, time.Time{})
 	phases(ctx).add("ledger", ledgerStart)
@@ -333,6 +343,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 	}
 	// Batch only within each configured client's authorization boundary.
 	commentsByID := map[string][]task.Comment{}
+	reusedComments := map[string][]task.Comment{}
 	groups := map[issues.Store][]task.Issue{}
 	repoOf := map[string]string{}
 	for _, issue := range snapshot {
@@ -343,8 +354,12 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 		if !ok || r.Clients[path] == nil {
 			return nil, errors.New("snapshot project outside configured repositories")
 		}
-		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
 		repoOf[issue.ID] = path
+		if history, ok := r.closedHistories[path][issue.ID]; !issues.IsFullSync(ctx) && ok && history.state == issue.State.Name && history.updatedAt.Equal(issue.UpdatedAt) {
+			reusedComments[issue.ID] = history.comments
+			continue
+		}
+		groups[r.Clients[path]] = append(groups[r.Clients[path]], issue)
 	}
 	eventsStart := time.Now()
 	for client, rows := range groups {
@@ -352,6 +367,7 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 			return nil, err
 		}
 	}
+	maps.Copy(commentsByID, reusedComments)
 	phases(ctx).add("events", eventsStart)
 	r.todayRuns = append(r.todayRuns, readTodayRuns(snapshot, commentsByID, repoOf)...)
 	tickets := []Ticket{}
@@ -403,6 +419,10 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 				head = ticket.Handoff.Head
 			}
 			closed[path][ticket.Identifier] = closedTicket{State: issue.State.Name, Head: head}
+			if closedHistories[path] == nil {
+				closedHistories[path] = map[string]closedHistory{}
+			}
+			closedHistories[path][issue.ID] = closedHistory{state: issue.State.Name, updatedAt: issue.UpdatedAt, comments: comments}
 			continue
 		}
 		ticket.Legacy = claimed && (ticket.Owner == "" || ticket.Owner == machine.OwnerNone) && !failed
@@ -437,8 +457,12 @@ func (r *Runtime) snapshotClient(ctx context.Context, reader issues.Store, repos
 	if r.closed == nil {
 		r.closed = map[string]map[string]closedTicket{}
 	}
+	if r.closedHistories == nil {
+		r.closedHistories = map[string]map[string]closedHistory{}
+	}
 	for _, repo := range paths {
 		r.closed[repo] = closed[repo]
+		r.closedHistories[repo] = closedHistories[repo]
 	}
 	if len(problems) != 0 {
 		return nil, &SnapshotEvidenceError{Tickets: tickets, Err: errors.Join(problems...)}

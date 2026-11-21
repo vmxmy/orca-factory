@@ -356,6 +356,7 @@ type batchIssues struct {
 	batches   [][]string
 	perTicket int
 	fail      string
+	histories map[string][]task.Comment
 }
 
 func (f *batchIssues) ListComments(context.Context, string) ([]task.Comment, error) {
@@ -367,6 +368,13 @@ func (f *batchIssues) SnapshotComments(_ context.Context, ids []string) (map[str
 	f.batches = append(f.batches, ids)
 	if f.fail != "" {
 		return nil, &issues.CommentsError{ID: f.fail, Err: errors.New("feishu event recE evidence conflict: edited after creation")}
+	}
+	if f.histories != nil {
+		comments := map[string][]task.Comment{}
+		for _, id := range ids {
+			comments[id] = f.histories[id]
+		}
+		return comments, nil
 	}
 	return map[string][]task.Comment{"id1": {{CreatedAt: time.Unix(1, 0), Body: "阶段: gate\n归属: 执行器 term=- run=- attempt=1"}}, "id2": {}}, nil
 }
@@ -389,6 +397,129 @@ func TestRuntimeSnapshotBatchesComments(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRuntimeSnapshotReusesSettledClosedHistories(t *testing.T) {
+	open := dependencyIssue("open", true, "done", "canceled")
+	done, merging, canceled := dependencyIssue("done", true), dependencyIssue("merging", true), dependencyIssue("canceled", false)
+	done.State.Name, merging.State.Name, canceled.State.Name = "Done", "Done", "Canceled"
+	lc := &batchIssues{
+		fakeIssues: fakeIssues{issues: []task.Issue{open, done, merging, canceled}},
+		histories: map[string][]task.Comment{
+			"open":     evidenceComments("阶段: 未领取\n归属: 无"),
+			"done":     evidenceComments("阶段: 未领取\n归属: 无", `ledger {"ticket":"WAW-done","outcome":"merged","started_at":"2026-11-21T01:00:00Z","finished_at":"2026-11-21T01:10:00Z","minutes":10}`),
+			"merging":  evidenceComments("阶段: 排队合并\n归属: 合并通道"),
+			"canceled": evidenceComments("阶段: Agent处置\n归属: 处置Agent"),
+		},
+	}
+	repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}}
+	r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+	now := time.Date(2026, 11, 21, 2, 0, 0, 0, time.UTC)
+	for round, wantIDs := range [][]string{
+		{"open", "done", "merging", "canceled"},
+		{"open", "merging"},
+		{"open", "done", "merging"},
+		{"open", "done", "merging", "canceled"},
+	} {
+		ctx := context.Background()
+		if round == 0 || round == 3 {
+			ctx = issues.WithFullSync(ctx)
+		}
+		if round == 2 {
+			lc.issues[1].State.Name = "Todo"
+		}
+		tickets, err := r.Snapshot(ctx, repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(lc.batches) != round+1 || !reflect.DeepEqual(lc.batches[round], wantIDs) || lc.perTicket != 0 {
+			t.Errorf("round %d: batches=%v per-ticket=%d, want IDs=%v", round+1, lc.batches, lc.perTicket, wantIDs)
+		}
+		fullStore := &batchIssues{fakeIssues: fakeIssues{issues: lc.issues}, histories: lc.histories}
+		full := &Runtime{Clients: map[string]issues.Store{"a": fullStore}}
+		wantTickets, err := full.Snapshot(issues.WithFullSync(context.Background()), repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(tickets, wantTickets) || !reflect.DeepEqual(r.closed, full.closed) || !reflect.DeepEqual(r.TodayOutput(now), full.TodayOutput(now)) {
+			t.Fatalf("round %d differs from full read: tickets=%+v want=%+v closed=%v want=%v today=%+v want=%+v", round+1, tickets, wantTickets, r.closed, full.closed, r.TodayOutput(now), full.TodayOutput(now))
+		}
+		if today := r.TodayOutput(now); today == nil || today.Merged != 1 || today.MedianMinutes == nil || *today.MedianMinutes != 10 {
+			t.Fatalf("round %d lost closed ticket run: %+v", round+1, today)
+		}
+		if len(tickets) < 2 || len(tickets[0].Dependencies) != 2 {
+			t.Fatalf("round %d missing dependency observations: %+v", round+1, tickets)
+		}
+	}
+}
+
+func TestRuntimeSnapshotRereadsUnsettledClosedHistories(t *testing.T) {
+	for _, tc := range []struct {
+		name, state, body, wantError string
+	}{
+		{name: "hidden open", state: "Todo"},
+		{name: "merge owner", state: "Done", body: "归属: 合并通道"},
+		{name: "resolver owner", state: "Done", body: "归属: 处置Agent"},
+		{name: "ownership error", state: "Done", body: "归属: invalid", wantError: "unknown ticket owner"},
+		{name: "resolution error", state: "Canceled", body: "resolver-state {}", wantError: "invalid resolver receipt"},
+		{name: "done barrier", state: "Done", body: merge.HandoffPrefix + `{"queue_id":"q1"}` + "\n" + merge.ProgressPrefix + "invalid"},
+		{name: "canceled barrier", state: "Canceled", body: merge.HandoffPrefix + `{"queue_id":"q1"}` + "\n" + merge.ProgressPrefix + "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			issue := dependencyIssue("id", false)
+			issue.State.Name = tc.state
+			lc := &batchIssues{fakeIssues: fakeIssues{issues: []task.Issue{issue}}, histories: map[string][]task.Comment{"id": evidenceComments(tc.body)}}
+			r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+			repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}}
+			for range 2 {
+				_, err := r.Snapshot(context.Background(), repos)
+				if (tc.wantError == "" && err != nil) || (tc.wantError != "" && (err == nil || !strings.Contains(err.Error(), tc.wantError))) {
+					t.Fatalf("err=%v, want %q", err, tc.wantError)
+				}
+				if len(r.closed["a"]) != 0 {
+					t.Fatalf("unsettled ticket classified closed: %v", r.closed)
+				}
+			}
+			if !reflect.DeepEqual(lc.batches, [][]string{{"id"}, {"id"}}) {
+				t.Fatalf("unsettled history reused: %v", lc.batches)
+			}
+		})
+	}
+}
+
+func TestRuntimeSnapshotClosedHistoryInvalidation(t *testing.T) {
+	for _, change := range []string{"updated", "state", "absent"} {
+		t.Run(change, func(t *testing.T) {
+			issue := dependencyIssue("id", false)
+			issue.State.Name, issue.UpdatedAt = "Done", time.Unix(1, 0)
+			lc := &batchIssues{fakeIssues: fakeIssues{issues: []task.Issue{issue}}, histories: map[string][]task.Comment{}}
+			r := &Runtime{Clients: map[string]issues.Store{"a": lc}}
+			repos := []config.Repository{{Path: "a", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p", "AGENT_SCOPE_AVOID": "0"}}}
+			for round := range 3 {
+				if round == 2 {
+					switch change {
+					case "updated":
+						lc.issues[0].UpdatedAt = time.Unix(2, 0)
+					case "state":
+						lc.issues[0].State.Name = "Canceled"
+					case "absent":
+						lc.issues = nil
+						if _, err := r.Snapshot(context.Background(), repos); err != nil {
+							t.Fatal(err)
+						}
+						lc.issues = []task.Issue{issue}
+					}
+				}
+				if _, err := r.Snapshot(context.Background(), repos); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !reflect.DeepEqual(lc.batches, [][]string{{"id"}, {"id"}}) {
+				t.Fatalf("want initial read, reuse, then fresh read: %v", lc.batches)
+			}
+		})
+	}
+}
+
 func TestRuntimeAutomationRequiresExplicitDisabled(t *testing.T) {
 	for _, tc := range []struct {
 		raw  string
