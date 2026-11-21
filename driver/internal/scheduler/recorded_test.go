@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,5 +171,51 @@ func TestRecordedDispatchesWorkerListAbandoned(t *testing.T) {
 	}
 	if want := []dispatchRow{{"ctx_ee6da2ada658", "failed", "abandoned"}}; !reflect.DeepEqual(rows, want) {
 		t.Fatalf("rows=%+v", rows)
+	}
+}
+
+// The samples are real git output for a worktree whose uninitialized gitlink sub/
+// holds a local file: --others never lists sub/notes, so the archive must take
+// sub from the --cached list.
+func TestRecordedGitLsFilesGitlinkArchive(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{".gitignore": ".omc/\n", "tracked": "original\n", "untracked": "u\n", "sub/notes": "notes\n"} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	samples := map[string][]byte{
+		"--cached": recorded(t, "git-ls-files-cached-gitlink.bin"),
+		"--others": recorded(t, "git-ls-files-others-gitlink.bin"),
+	}
+	runtime := &Runtime{Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+		if spec.Path != "git" || len(spec.Args) < 2 || spec.Args[0] != "ls-files" || samples[spec.Args[1]] == nil {
+			t.Fatalf("unexpected command %s %v", spec.Path, spec.Args)
+		}
+		return samples[spec.Args[1]], nil
+	}}
+	files, err := runtime.workspaceArchiveFiles(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := filepath.Join(t.TempDir(), "list")
+	if err := os.WriteFile(list, files, 0600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "worktree.tar")
+	if out, err := runx.Run(context.Background(), runx.Spec{Path: "tar", Args: []string{"-cf", archive, "--null", "-T", list}, Dir: root, Timeout: 30 * time.Second}); err != nil {
+		t.Fatalf("tar: %v %s", err, out)
+	}
+	members, err := runx.Run(context.Background(), runx.Spec{Path: "tar", Args: []string{"-tf", archive}, Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"sub/notes", "tracked", "untracked", ".gitignore"} {
+		if !slices.Contains(strings.Split(string(members), "\n"), want) {
+			t.Fatalf("archive members %q miss %s", members, want)
+		}
 	}
 }
