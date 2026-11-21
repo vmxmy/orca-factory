@@ -328,7 +328,8 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 	const submoduleNotes = "notes\x00inside gitlink\n"
 	for _, scenario := range []string{
 		"restore", "clean-submodule", "submodule-local-file", "populated-submodule", "open-ticket", "dry-run",
-		"state-inside", "state-inside-peer", "state-inside-other-repo", "state-bind-mount", "other-repo-list-failed",
+		"state-inside", "state-inside-peer", "state-inside-other-repo", "state-bind-mount", "state-bind-mount-nbsp",
+		"other-repo-list-failed",
 		"unwritable", "reset-failed", "terminal-close-failed",
 	} {
 		t.Run(scenario, func(t *testing.T) {
@@ -442,7 +443,10 @@ func TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace(t *testing.T) {
 				if err := os.Symlink(peer, state); err != nil {
 					t.Fatal(err)
 				}
-			case "state-bind-mount":
+			case "state-bind-mount", "state-bind-mount-nbsp":
+				if scenario == "state-bind-mount-nbsp" {
+					state = filepath.Join(root, "state\u00a0root")
+				}
 				peer := filepath.Join(root, "OF-643-executor")
 				git(repo, "worktree", "add", "--detach", peer)
 				fake.repoTrees[repo] = append(fake.repoTrees[repo], orca.Worktree{Path: peer})

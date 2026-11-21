@@ -380,7 +380,9 @@ type mount struct {
 func parseMountInfo(table string) ([]mount, error) {
 	var mounts []mount
 	for line := range strings.Lines(table) {
-		fields := strings.Fields(line)
+		// The kernel separates fields with one ASCII space and escapes it inside
+		// paths; other whitespace, such as U+00A0, belongs to the path.
+		fields := strings.Split(strings.TrimSuffix(line, "\n"), " ")
 		if len(fields) < 5 {
 			return nil, fmt.Errorf("mountinfo line %q has fewer than 5 fields", line)
 		}
