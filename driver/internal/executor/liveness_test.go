@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -376,6 +377,31 @@ func TestExecutorHeartbeatRecoversAbandonedPendingWorker(t *testing.T) {
 
 // A start the ledger rejects must not overwrite the beat of the executor that
 // owns the reservation.
+func TestExecutorHeartbeatExitedAfterStartReturns(t *testing.T) {
+	e, _, _, _, _, ticket := fixture(t, "new-sha")
+	e.HeartbeatPath = orca.HeartbeatPath(e.Config.Root, e.Config.Repository, ticket.Identifier, "executor")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.Orca = livenessFixture(t, "exited", "")
+	e.Recovery = &livenessRecovery{cancel: cancel}
+	if _, err := e.Start(ctx, ticket); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start error=%v, want context canceled", err)
+	}
+	raw, err := os.ReadFile(e.HeartbeatPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var beat struct {
+		Exited bool `json:"exited"`
+	}
+	if err := json.Unmarshal(raw, &beat); err != nil {
+		t.Fatal(err)
+	}
+	if !beat.Exited {
+		t.Fatalf("Start returned without exited heartbeat: %s", raw)
+	}
+}
+
 func TestExecutorHeartbeatStartsAfterAcceptedStart(t *testing.T) {
 	e, _, l, _, _, ticket := fixture(t, "new-sha")
 	l.comments = []string{"归属: 执行器 term=term_old run=run_old attempt=1"}

@@ -162,6 +162,11 @@ func (e *Executor) Start(ctx context.Context, t Ticket) (result Result, err erro
 			return result, err
 		}
 	}
+	defer func() {
+		if finishErr := e.Heartbeat.Finish(); finishErr != nil {
+			e.logger().Error("executor heartbeat finish", "err", finishErr)
+		}
+	}()
 	var head string
 	err = e.retryRead(ctx, t, &result, "resume branch lookup", func() error {
 		var readErr error
