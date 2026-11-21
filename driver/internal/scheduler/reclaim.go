@@ -1,7 +1,6 @@
 package scheduler
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,6 +73,13 @@ type resolverRound struct {
 	Round  int
 }
 
+type repositoryWorkspaces struct {
+	repo       string
+	workspaces []Workspace
+	pinned     map[string]bool
+	err        error
+}
+
 // reclaimTargets selects every workspace of a closed ticket and, for any other
 // ticket, the resolver rounds older than its newest round and the Orca
 // duplicates of a round below that round's highest copy.
@@ -112,26 +118,32 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 		repos = append(repos, repo)
 	}
 	sort.Strings(repos)
-	var verdicts []Verdict
 	var problems []error
+	listings := make([]repositoryWorkspaces, len(repos))
+	for i, repo := range repos {
+		list := &listings[i]
+		list.repo = repo
+		trees, err := r.Workspaces.WorktreeList(ctx, repo)
+		if err != nil {
+			list.err = fmt.Errorf("worktree list %s: %w", repo, err)
+			problems = append(problems, list.err)
+			continue
+		}
+		list.pinned = map[string]bool{}
+		for _, tree := range trees {
+			if w, ok := parseWorkspace(tree.Path); ok && !tree.Main {
+				list.workspaces = append(list.workspaces, w)
+				list.pinned[tree.Path] = tree.Pinned
+			}
+		}
+	}
+	var verdicts []Verdict
 	var terminals []orca.Terminal
 	var terminalErr error
 	terminalsRead := false
-	for _, repo := range repos {
-		trees, err := r.Workspaces.WorktreeList(ctx, repo)
-		if err != nil {
-			problems = append(problems, fmt.Errorf("worktree list %s: %w", repo, err))
-			continue
-		}
-		pinned := map[string]bool{}
-		var workspaces []Workspace
-		for _, tree := range trees {
-			if w, ok := parseWorkspace(tree.Path); ok && !tree.Main {
-				workspaces = append(workspaces, w)
-				pinned[tree.Path] = tree.Pinned
-			}
-		}
-		targets := reclaimTargets(workspaces, r.closed[repo])
+	for _, list := range listings {
+		repo := list.repo
+		targets := reclaimTargets(list.workspaces, r.closed[repo])
 		if len(targets) != 0 && !terminalsRead {
 			terminals, terminalErr = r.Workspaces.TerminalList(ctx)
 			terminalsRead = true
@@ -145,56 +157,54 @@ func (r *Runtime) ReclaimWorkspaces(ctx context.Context, dryRun bool, logger *sl
 				}
 			}
 			closed, canClose := r.closed[repo][v.Ticket]
-			v.Blocks = r.reclaimBlocks(ctx, v.Workspace, pinned[v.Path], workspaceTerminals, terminalErr, closed.Head, canClose)
+			v.Blocks = r.reclaimBlocks(ctx, v.Workspace, list.pinned[v.Path], workspaceTerminals, terminalErr, closed.Head, canClose)
 			v.Backup = canClose && len(v.Blocks) > 0
 			for _, block := range v.Blocks {
 				if block != "dirty" && block != "unpushed" {
 					v.Backup = false
 				}
 			}
-			if v.Backup && !dryRun {
-				backup, err := r.backupWorkspace(ctx, repo, v.Workspace, workspaces)
-				if err != nil {
-					v.Blocks = []string{"backup-failed"}
-					logger.Warn("workspace backup failed", "path", v.Path, "error", err)
-				} else {
-					v.Blocks = nil
-					logger.Info("workspace backed up", "path", v.Path, "backup", backup)
-					for _, args := range [][]string{{"reset", "--hard", "--quiet", "HEAD"}, {"clean", "-ffd", "--quiet"}} {
-						if _, err := r.command(ctx, v.Path, "git", args...); err != nil {
-							v.Blocks = []string{"remove-failed"}
-							logger.Warn("workspace cleanup failed", "path", v.Path, "command", args[0], "error", err)
-							break
-						}
-					}
-				}
-			}
-			if len(v.Blocks) == 0 && !dryRun {
-				for _, terminal := range workspaceTerminals {
-					if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
-						var rejected *orca.RejectedError
-						if !errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale" {
-							v.Blocks = []string{"terminal-close-failed"}
-							break
-						}
-					}
-					logger.Info("workspace terminal closed", "path", v.Path, "terminal", terminal.Handle)
-				}
-			}
-			if len(v.Blocks) == 0 && !dryRun {
-				if err := r.Workspaces.WorktreeRemove(ctx, v.Path); err != nil {
-					v.Blocks = []string{"remove-failed"}
-				} else {
-					logger.Info("workspace removed", "path", v.Path, "reason", v.Reason)
-				}
-			}
 			if !dryRun {
+				if v.Backup || len(v.Blocks) == 0 {
+					v.Blocks = r.removeWorkspace(ctx, repo, v, workspaceTerminals, listings, logger)
+				}
 				r.warnKept(logger, v)
 			}
 			verdicts = append(verdicts, v)
 		}
 	}
 	return verdicts, errors.Join(problems...)
+}
+
+func (r *Runtime) removeWorkspace(ctx context.Context, repo string, v Verdict, terminals []orca.Terminal, listings []repositoryWorkspaces, logger *slog.Logger) []string {
+	for _, terminal := range terminals {
+		if err := r.Workspaces.TerminalClose(ctx, terminal.Handle); err != nil {
+			var rejected *orca.RejectedError
+			if !errors.As(err, &rejected) || rejected.Code != "terminal_handle_stale" {
+				return []string{"terminal-close-failed"}
+			}
+		}
+		logger.Info("workspace terminal closed", "path", v.Path, "terminal", terminal.Handle)
+	}
+	if v.Backup {
+		backup, err := r.backupWorkspace(ctx, repo, v.Workspace, listings)
+		if err != nil {
+			logger.Warn("workspace backup failed", "path", v.Path, "error", err)
+			return []string{"backup-failed"}
+		}
+		logger.Info("workspace backed up", "path", v.Path, "backup", backup)
+		for _, args := range [][]string{{"reset", "--hard", "--quiet", "HEAD"}, {"clean", "-ffd", "--quiet"}} {
+			if _, err := r.command(ctx, v.Path, "git", args...); err != nil {
+				logger.Warn("workspace cleanup failed", "path", v.Path, "command", args[0], "error", err)
+				return []string{"remove-failed"}
+			}
+		}
+	}
+	if err := r.Workspaces.WorktreeRemove(ctx, v.Path); err != nil {
+		return []string{"remove-failed"}
+	}
+	logger.Info("workspace removed", "path", v.Path, "reason", v.Reason)
+	return nil
 }
 
 func (r *Runtime) reclaimBlocks(ctx context.Context, w Workspace, pinned bool, terminals []orca.Terminal, terminalErr error, mergedHead string, canClose bool) []string {
@@ -254,16 +264,7 @@ func (r *Runtime) warnKept(logger *slog.Logger, v Verdict) {
 
 // backupWorkspace completes all artifacts outside the workspace before removal.
 // Each attempt gets its own directory, so a retry cannot overwrite a backup.
-func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace, workspaces []Workspace) (string, error) {
-	staged, err := r.command(ctx, w.Path, "git", "ls-files", "--stage", "-z")
-	if err != nil {
-		return "", err
-	}
-	for entry := range bytes.SplitSeq(staged, []byte{0}) {
-		if bytes.HasPrefix(entry, []byte("160000 ")) {
-			return "", errors.New("workspace contains a gitlink")
-		}
-	}
+func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace, listings []repositoryWorkspaces) (string, error) {
 	root := r.StateRoot
 	if root == "" {
 		root = stateRoot()
@@ -275,18 +276,27 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 	if err != nil {
 		return "", err
 	}
-	for _, workspace := range workspaces {
-		path, err := physicalBackupPath(workspace.Path)
-		if err != nil {
-			return "", err
+	for _, list := range listings {
+		if list.err != nil {
+			return "", list.err
 		}
-		rel, err := filepath.Rel(path, parent)
-		if err != nil {
-			return "", err
+		for _, workspace := range list.workspaces {
+			path, err := physicalBackupPath(workspace.Path)
+			if err != nil {
+				return "", err
+			}
+			rel, err := filepath.Rel(path, parent)
+			if err != nil {
+				return "", err
+			}
+			if filepath.IsLocal(rel) {
+				return "", fmt.Errorf("backup directory is inside workspace %s", path)
+			}
 		}
-		if filepath.IsLocal(rel) {
-			return "", fmt.Errorf("backup directory is inside workspace %s", path)
-		}
+	}
+	files, err := r.workspaceArchiveFiles(ctx, w.Path)
+	if err != nil {
+		return "", err
 	}
 	if err := os.MkdirAll(parent, 0700); err != nil {
 		return "", err
@@ -301,31 +311,6 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 	if _, err := r.command(ctx, w.Path, "git", "diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color", "--unified=3", "--src-prefix=a/", "--dst-prefix=b/", "--output="+filepath.Join(dir, "tracked.patch"), "HEAD", "--"); err != nil {
 		return "", err
 	}
-	files, err := r.command(ctx, w.Path, "git", "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return "", err
-	}
-	changed, err := r.command(ctx, w.Path, "git", "diff", "--name-only", "--no-renames", "--no-color", "-z", "HEAD", "--")
-	if err != nil {
-		return "", err
-	}
-	untracked := make(map[string]bool)
-	for path := range strings.SplitSeq(string(files), "\x00") {
-		untracked[path] = true
-	}
-	for path := range strings.SplitSeq(string(changed), "\x00") {
-		if path == "" || untracked[path] {
-			continue
-		}
-		present, err := worktreeFilePresent(w.Path, path)
-		if err != nil {
-			return "", err
-		}
-		if present {
-			files = append(files, path...)
-			files = append(files, 0)
-		}
-	}
 	list := filepath.Join(dir, "worktree.list")
 	if err := os.WriteFile(list, files, 0600); err != nil {
 		return "", err
@@ -337,6 +322,36 @@ func (r *Runtime) backupWorkspace(ctx context.Context, repo string, w Workspace,
 		return "", err
 	}
 	return dir, nil
+}
+
+func (r *Runtime) workspaceArchiveFiles(ctx context.Context, root string) ([]byte, error) {
+	tracked, err := r.command(ctx, root, "git", "ls-files", "--cached", "-z")
+	if err != nil {
+		return nil, err
+	}
+	files, err := r.command(ctx, root, "git", "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+	listed := make(map[string]bool)
+	for path := range strings.SplitSeq(string(files), "\x00") {
+		listed[path] = true
+	}
+	for path := range strings.SplitSeq(string(tracked), "\x00") {
+		if path == "" || listed[path] {
+			continue
+		}
+		listed[path] = true
+		present, err := worktreeFilePresent(root, path)
+		if err != nil {
+			return nil, err
+		}
+		if present {
+			files = append(files, path...)
+			files = append(files, 0)
+		}
+	}
+	return files, nil
 }
 
 // A symlink replacing a tracked directory removes its old children from the worktree.
@@ -357,7 +372,17 @@ func worktreeFilePresent(root, path string) (bool, error) {
 		}
 		isDir = info.IsDir()
 	}
-	return !isDir, nil
+	if !isDir {
+		return true, nil
+	}
+	_, err := os.Lstat(filepath.Join(root, ".git"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return false, errors.New("workspace contains a populated submodule")
 }
 
 // Resolve symlinks in the existing prefix before creating any backup directories.
