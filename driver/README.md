@@ -112,7 +112,9 @@ AGENT_FEISHU_LIVE=1 AGENT_FEISHU_BASE=<测试 Base> AGENT_FEISHU_PROJECT=<仓库
 | `feishu API code 800004006` | 一页响应体超过 10 MiB。driver 已把页大小逐次减半重读同一位置；减到 1 条仍超限才报此错，说明单条记录超过 10 MiB |
 | 读账本或项目发现每轮都在 30 秒处报 `context deadline exceeded`，同时命令行新进程读同一账本正常 | 经 `HTTPS_PROXY` 的 HTTP/2 连接在代理一侧已失效，本机仍显示 ESTAB，之后的请求都复用这条连接（OF-295）。飞书与 GitHub 客户端现在检查 HTTP/2 连接：15 秒没收到帧就发 PING，5 秒内没有回应就关闭连接。这一轮的在途请求按暂时故障失败，下一轮换新连接。修复后仍持续出现，说明是别的原因：用 `ss -tnp` 查 serve 进程的连接，再查代理与网络 |
 
-每轮巡检按客户端读事件：把本项目的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`merge` 不含合并结果 gate 的运行时间；gate 退出时另写一条 INFO `merge gate finished`，带 `ticket`、`repository`、`queue_id`、`duration_ms`、`result`（`green`、`red`、`infrastructure`、`canceled`）与 `worktree_cleanup_failed`，基础设施失败另带 `err`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
+每轮巡检按客户端读事件：非全量轮先复用上一轮已归入 `closed`、且状态与更新时间均未变的票的完整历史，再把本项目其余的票分块（每块至多 10 张），每块用一次「票据」过滤分页读取，再按票分组。请求数约等于块数加上多出的事件页数。块取得小，是因为四个项目共用一张事件表，任何写入都会让进行中的分页读取从头重读；一次读取跨的页越少，被写入打断的机会越小。`scheduler inspection` 摘要的 `duration_ms` 是本轮总耗时，`phase_ms` 按阶段拆分：`projects`（项目发现与 Automation 核对）、`snapshot`（读全部账本）、`dispatch`、`merge`、`runners`、`claim`，各阶段相加约等于 `duration_ms`。`merge` 不含合并结果 gate 的运行时间；gate 退出时另写一条 INFO `merge gate finished`，带 `ticket`、`repository`、`queue_id`、`duration_ms`、`result`（`green`、`red`、`infrastructure`、`canceled`）与 `worktree_cleanup_failed`，基础设施失败另带 `err`。`ledger` 与 `events` 是本轮全部票据列表与事件读取的累计耗时，包括嵌在其他阶段里的快照。
+
+关闭票只有通过归属与处置证据解析并归入 `closed` 才能复用历史。Done 仍归合并通道或处置 Agent、存在部署屏障、证据解析失败的票照常读取；Canceled / Cancelled 沿用原有关闭分类。复用的历史仍参与当日运行统计与依赖判断。两次全量轮之间（最多 10 轮），已结清关闭票上新写的事件若未改变票的状态或更新时间，不会被读到；重新打开或更新时间变化时当轮重读，全量轮仍重读全部票。全量轮开始即丢弃记住的历史。如果某个客户端在全量轮读取失败，下一轮会重读该客户端的全部票。缓存只在当前调度器进程内，启动后的首轮和原有全量频率不变，`driver exec`、`driver resolve` 与 `status --fresh` 的启动读取不变。
 
 ## 内置定时协调与恢复
 

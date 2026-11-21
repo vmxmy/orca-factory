@@ -189,7 +189,8 @@ func WithFullSync(ctx context.Context) context.Context {
 	return context.WithValue(ctx, fullSyncKey{}, true)
 }
 
-func fullSync(ctx context.Context) bool {
+// IsFullSync reports whether ctx requires a full snapshot and event read.
+func IsFullSync(ctx context.Context) bool {
 	full, _ := ctx.Value(fullSyncKey{}).(bool)
 	return full
 }
@@ -785,7 +786,7 @@ func (c *Feishu) Snapshot(ctx context.Context, projects []string, _ time.Time) (
 	}
 	c.snapMu.Lock()
 	defer c.snapMu.Unlock()
-	if !fullSync(ctx) && c.snapshot.valid {
+	if !IsFullSync(ctx) && c.snapshot.valid {
 		projectsRev, err := c.tableRev(ctx, "项目")
 		if err != nil {
 			return nil, err
@@ -876,7 +877,7 @@ func (c *Feishu) SnapshotComments(ctx context.Context, ids []string) (map[string
 	c.snapMu.Lock()
 	defer c.snapMu.Unlock()
 	reused := map[string]feishuHistory{}
-	if !fullSync(ctx) && len(c.histories) > 0 {
+	if !IsFullSync(ctx) && len(c.histories) > 0 {
 		rev, err := c.tableRev(ctx, "事件")
 		if err != nil {
 			return nil, err
