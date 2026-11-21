@@ -466,7 +466,7 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 | Done（部署通过、归属已释放）或 Canceled 的票 | 该票全部 executor、resolver 工作区 |
 | 其他票 | 被更新一轮取代的旧 resolver 工作区；最新一轮与 executor 保留 |
 
-满足下列任一条件的工作区保留，同一组原因只记一次 WARN：
+已结束票只有 `dirty`、`unpushed` 中的一项或两项阻塞时，Driver 先关闭空闲终端，再备份并回收工作区。存在其他阻塞时保留工作区。同一组阻塞原因只记一次 WARN。
 
 | 原因 | 判定 |
 |---|---|
@@ -474,22 +474,49 @@ driver 按目录名识别自己建的工作区：`<票号>-executor` 与 `<票�
 | `unpushed` | `git rev-list --count HEAD --not --remotes` 非 0；HEAD 等于该票合并交接的冻结 head 时视为已推送 |
 | `terminal-running` | 已结束票的工作区有任一终端不满足空闲条件；未结束票的旧 resolver 有任何终端 |
 | `terminal-unknown` | 终端列表读取失败 |
+| `backup-failed` | 工作区含已初始化的子模块，备份目录等于或位于任一受管仓库的 driver 工作区内，本轮任一仓库的工作区列表读取失败，或写备份失败。Driver 保留工作区，此时终端已关闭 |
 | `terminal-close-failed` | 关闭空闲终端失败，本轮保留工作区，下轮重试 |
 | `pinned` | Orca 置顶（Orca 没有锁定标记，置顶是用户唯一的标记） |
-| `git-status-failed` / `git-rev-list-failed` / `remove-failed` | 检查或删除失败 |
+| `git-status-failed` / `git-rev-list-failed` | 对应的 Git 检查失败 |
+| `remove-failed` | 备份后的工作区清理失败，或 Orca 删除工作区失败 |
 
 Done/Canceled 票的工作区没有上述其他阻塞、且其中全部终端都空闲时，先关闭终端再删除工作区。空闲须同时满足 `agentIdentity` 为空、`lastOutputAt > 0`，且距上次输出至少 1 小时；输出时间为 null 时不算空闲。exec 终端的 `agentIdentity` 也为 null，但可能仍在运行 `driver exec`，因此必须同时检查静默时间。只要有一个终端不空闲，一个都不关闭。未结束票被取代的旧 resolver 有终端就保留。
 
-关闭调用 `orca terminal close --terminal <handle>`；`terminal_handle_stale` 视为已关闭，其他错误阻止本轮删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。随后调用 `orca worktree rm --worktree path:<路径>`，不带 `--force`；Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
+Driver 用 `orca terminal close --terminal <handle>` 关闭终端。`terminal_handle_stale` 视为已关闭，其他错误会阻止本轮备份和删除。每关闭一个终端记一条 INFO，包含工作区路径与终端 handle。无需备份的工作区在关闭终端后直接调用 `orca worktree rm --worktree path:<路径>`。Orca 同时删除能证明已合并的本地分支。关闭或删除失败记 WARN，不影响票流转。
 
-存量回收用同一规则，先只读核对再执行：
+备份写入 `<状态根>/branch-backups/<UTC 时间戳>-<工作区目录名>/`，时间戳格式为 `20060102T150405Z`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。Driver 解析符号链接后，按设备号与 inode 逐级比较备份目录及其上级目录与各工作区目录，大小写不同的拼写也算同一目录。Driver 还读取 `/proc/self/mountinfo`，把备份目录与各工作区换算成所在设备上的源路径。状态根是某个工作区子目录的绑定挂载时，备份实际落在该工作区内，本轮记 `backup-failed`，源工作区保留。未初始化 gitlink 目录中的文件整体写入 `worktree.tar`。成功日志 `workspace backed up` 的 `backup` 字段给出完整目录。每次尝试使用新目录，同名目录已存在时本轮记 `backup-failed`，写入失败可能留下不完整文件。Driver 不清理备份。
+
+备份包含三份文件。
+
+- `workspace.bundle` 保存 HEAD 及其提交历史。
+- `tracked.patch` 保存相对 HEAD 的修改和删除，支持二进制。Driver 用 `git diff --no-color --unified=3` 生成无颜色、带三行上下文的补丁。
+- `worktree.tar` 保存工作区中仍存在的已跟踪文件、未跟踪且未忽略的文件，以及未初始化 gitlink 目录中的全部文件，均保留原始字节。恢复时最后解开归档，保留工作区里的换行符。gitlink 目录以外的未跟踪文件遵循 Git 的忽略规则，例如工作区根目录的 `.omc/`。备份不记录哪些修改已暂存。
+
+三份文件写完后，Driver 在工作区依次执行 `git reset --hard --quiet HEAD` 和 `git clean -ffd --quiet`。清理成功后才调用不带 `--force` 的 `orca worktree rm`。清理失败时保留工作区和备份。如果进程在删除前退出，下轮回收可能再写一份备份。
+
+在新的克隆里恢复，先把 `backup` 设置为成功日志中的绝对目录，把 `repo_url` 设置为原仓库地址：
+
+```sh
+git clone "$repo_url" restored
+cd restored
+git fetch "$backup/workspace.bundle" HEAD
+git checkout --detach FETCH_HEAD
+if [ -s "$backup/tracked.patch" ]; then
+    git apply --binary "$backup/tracked.patch"
+fi
+tar -xf "$backup/worktree.tar"
+```
+
+任一命令非零退出表示还原未完成，应停止后续步骤并检查输出。
+
+存量回收用同一规则，先只读核对再执行。`--dry-run` 对待备份的工作区输出 `would-backup-and-remove`，不创建备份、不关闭终端、不删除工作区：
 
 ```sh
 orca-factory-driver prune-workspaces --dry-run
 orca-factory-driver prune-workspaces
 ```
 
-`--dry-run` 使用同一套空闲与保留判定，每行输出 `would-remove` 或 `keep … blocks=<原因>`，不关闭终端或删除工作区；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
+`--dry-run` 使用同一套空闲与保留判定，每行输出 `would-remove`、`would-backup-and-remove` 或 `keep … blocks=<原因>`，不写备份、不关闭终端或删除工作区；执行时输出 `removed` 或 `keep`。命令只处理 `projects` 判为可接管的项目，不需要停止 serve。旧的 `prune-worktrees` 只处理已退役的定时 coordinator 前缀，不覆盖这些工作区。
 
 ## 隔离 CI runner 检测
 

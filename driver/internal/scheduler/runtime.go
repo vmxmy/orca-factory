@@ -48,6 +48,9 @@ type Runtime struct {
 	// Version is this process's main.version; self deployment compares it,
 	// not the file at DriverPath, with the squash SHA.
 	Version string
+	// MountInfo is the mount table that maps the backup directory and the
+	// workspaces to their filesystem sources; empty reads /proc/self/mountinfo.
+	MountInfo string
 	// StateRoot holds the per-ticket heartbeat files; HeartbeatTimeout is how
 	// stale a beat may be; PIDAlive overrides the process check in tests.
 	StateRoot        string

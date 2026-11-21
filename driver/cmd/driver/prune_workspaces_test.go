@@ -108,3 +108,32 @@ func TestPruneWorkspacesDryRun(t *testing.T) {
 		t.Fatalf("out=%q removed=%v", out.String(), fake.removed)
 	}
 }
+
+func TestPruneWorkspacesDryRunBacksUpClosedWorkspace(t *testing.T) {
+	const path = "/ws/OF-642-executor"
+	repo := config.Repository{Path: "/repo", Env: map[string]string{"AGENT_ISSUE_BACKEND": "github", "AGENT_GH_REPO": "p"}}
+	ledger := &serveMergeIssues{issue: task.Issue{ID: "OF-642", Identifier: "OF-642", Project: task.NamedID{ID: "p"}, State: task.NamedID{Name: "Done"}}}
+	fake := &pruneFakeWorkspaces{trees: []orca.Worktree{{Path: path}}}
+	runtime := &scheduler.Runtime{Clients: map[string]issues.Store{"/repo": ledger}, Repositories: map[string]config.Repository{"/repo": repo}, Workspaces: fake,
+		Run: func(_ context.Context, spec runx.Spec) ([]byte, error) {
+			switch spec.Args[0] {
+			case "status":
+				return []byte(" M tracked\n"), nil
+			case "rev-list":
+				return []byte("1\n"), nil
+			default:
+				t.Fatalf("dry-run ran %v", spec.Args)
+				return nil, nil
+			}
+		}}
+	var out bytes.Buffer
+	if err := pruneWorkspaces(context.Background(), runtime, []config.Repository{repo}, true, &out, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatal(err)
+	}
+	if want := "would-backup-and-remove " + path + " ticket=OF-642 reason=\"ticket Done\"\n"; out.String() != want {
+		t.Fatalf("out=%q want %q", out.String(), want)
+	}
+	if len(fake.closed) != 0 || len(fake.removed) != 0 {
+		t.Fatalf("dry-run closed=%v removed=%v", fake.closed, fake.removed)
+	}
+}

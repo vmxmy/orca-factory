@@ -26,6 +26,8 @@
 | 历史执行器转人评论固定三行；调度器仍以「转人:」识别旧归属，并按容量接管为 resolver；新回执含 Agent处置、证据、处置要求、阶段与归属 | `linear-comments-executor-handoff.json` | `scheduler.TestRecordedExecutorHandoff` |
 | git 的网络失败（TLS 握手、超时、解析失败）在 stderr 中报告，可重试；HTTP 403、404 不可重试 | `git-stderr-tls-failure.txt`、`git-stderr-auth-failure.txt` | `infra.TestRecordedGitNetworkFailureIsTransient` |
 | worker worktree 名为 `<票号>-<单元>`，本地分支是 Orca 起的（如 `vmxmy/ZII-893-executor`），`agent/<票号>/<单元>` 只是推送目标 | `git-worktree-list-porcelain.bin` | `executor.TestRecordedWorkerWorktree` |
+| 工作区里未初始化的 gitlink 目录 `sub/` 含本地文件时，`git ls-files --others --exclude-standard -z` 不列出 `sub/notes`，`git ls-files --cached -z` 只列出 `sub`；回收备份据此把 `sub` 整个写入 `worktree.tar`（OF-642） | `git-ls-files-cached-gitlink.bin`、`git-ls-files-others-gitlink.bin`（2026-11-21，git 2.53.0，在临时仓库提交 `.gitignore`、`tracked` 与指向自身提交的 gitlink `sub`，再建 `sub/notes`、`untracked` 和被忽略的 `.omc/ignored` 后分别运行两条命令，stdout 原样） | `scheduler.TestRecordedGitLsFilesGitlinkArchive` |
+| `/proc/self/mountinfo` 每行第 3、4、5 字段是设备号、挂载源根路径、挂载点；子目录绑定挂载的第 4 字段不是 `/`（本机 `/run/snapd/ns` 是 tmpfs `0:27` 上 `/snapd/ns` 的绑定挂载），回收备份据此把备份目录换算到源路径，判断它是否落在某个工作区之内（OF-642） | `proc-self-mountinfo-bind-subdir.txt`（2026-11-21，内核 7.0.0-31-generic，在本机运行 `cat /proc/self/mountinfo`，stdout 原样；已核对只含挂载点与设备，无凭据或用户名，无需脱敏） | `scheduler.TestRecordedMountInfoBindSubdir` |
 | reviewer stdin 依次为 role、constitution、lane 3 行与简报、diff。role 与 `scripts/agent-gates/constitution/` 下全部 `.md` 由 `git show <diff 基线>:<路径>` 读取（`constitution.md` 在前），不读被审 head 的检出（OF-557，`executor.TestReviewRoleComesFromBaseline`）。同一 attempt 内 reviewer 判 red 后，executor 把末尾 verdict JSON 的 `reason` 与 `evidence` 记入 checkpoint（`PriorReview`/`PriorReviewAttempt`，只留最近一次）；下一次复核在 diff 前插入「## 上一轮 reviewer 意见」段，首轮输入不变。新认领覆盖 checkpoint，其他 attempt 的记录不使用（OF-167） | `reviewer-output-fenced.txt` | `executor.TestReviewIncludesPreviousRedOnReReview` |
 | `claude -p` 的 `--allowedTools` 是可变参数，会吞掉后面的位置参数；审查员的说明与 diff 必须一起走 stdin | — | `executor.TestReviewSendsPromptAndDiffOnStdin`，`driver selftest --live` |
 | `claude -p --output-format json` 输出单个对象：`type=result`、`subtype=success`、`is_error=false` 时 `result` 是回复正文，另有 `session_id`、`permission_denials`；`--resume` 未知会话时退出码 1、stdout 为空。需求网关只按这四个字段取回复。2026-10-15 以 claude 2.1.300、haiku 录制，参数与网关相同（角色换成要求结尾写 `ROLE-LOADED` 的探针，证明 `--append-system-prompt-file` 生效） | `claude-print-json-result.json` | `intake.TestIntakeSession` |
@@ -270,6 +272,19 @@ coordinator 为可选归属：调用方同时给出 `--run-worktree <绝对路�
 `terminal list` 的 `agentIdentity` 在 agent 终端上为 agent 名称，例如 `claude`、`codex`，其余终端为 null，驱动器读成空串。exec 终端也为 null，可能仍运行 `driver exec`，不能仅凭这个字段判空闲。`scheduler.TestRecordedTerminalList` 通过公开客户端重放真实 agent 名称；`orca.TestTerminalListAgentIdentity` 覆盖名称与 null 的解析。
 
 `terminal list` 的 `lastOutputAt: null` 表示输出时间未知。驱动器保留该终端，但同一工作区存在未知输出时间时，不依据终端输出执行空闲催促或判定停滞；字段缺失或类型错误仍拒绝解析。真实录制 `orca-terminal-null-output.json` 保留混合时间戳及全部行数，脱敏方式和原始摘要见同名 provenance；`orca.TestRecordedTerminalUnknownOutput` 通过公开客户端重放。回归覆盖还包括 `orca.TestIdleDetectionTerminalList`、`orca.TestTerminalForWorktreeUnknownOutput` 和 `executor.TestIdleUnknownOutputDoesNotNudge`。仅 Done/Canceled 票的工作区无其他阻塞且全部终端均无 agent 身份、输出时间已知并静默至少 1 小时时，回收才会先关闭终端；未结束票的旧 resolver 有终端就保留，停滞判定规则不变。`scheduler.TestReclaimClosesIdleTerminals`、`scheduler.TestReclaimKeepsBlockedTerminals`、`scheduler.TestReclaimTerminalCloseFailure` 覆盖关闭顺序、静默边界、阻塞与重试。
+
+已进入回收候选的 Done/Canceled 工作区，其阻塞为 `dirty`、`unpushed` 的非空子集时，Driver 先关闭全部空闲终端，再写备份。关闭失败记为 `terminal-close-failed`，本轮保留工作区并跳过备份。`terminal_handle_stale` 视为已关闭。含其他阻塞的工作区及未结束票的旧处置轮继续按原规则保留。
+
+Driver 在本轮回收前列出全部受管仓库的 driver 工作区。解析符号链接后，Driver 按设备号与 inode 判断备份目录或其任一上级目录是否与某个工作区是同一目录。Driver 再读取 `/proc/self/mountinfo`：每行第 3、4、5 字段是设备号、挂载源根路径、挂载点，路径中的空格、制表符、换行和反斜杠写成三位八进制转义。最长匹配挂载点给出路径所在设备与源路径；同长的挂载点取最后一行。备份目录与某个工作区设备号相同、源路径位于该工作区源路径之内时，备份会随该工作区删除（OF-642 终审裁定的绑定挂载场景）。目录匹配、源路径落入工作区、mountinfo 读取失败、任一仓库的工作区列表读取失败、待备份工作区含已初始化的子模块，或备份写入失败，均记为 `backup-failed`。此时终端已关闭，工作区保留。未初始化 gitlink 目录中的文件随 `worktree.tar` 备份。
+
+备份目录为 `<状态根>/branch-backups/<UTC 时间戳>-<工作区目录名>/`，时间戳格式为 `20060102T150405Z`，状态根取 `AGENT_DRIVER_STATE_ROOT`，默认 `~/.local/state/orca-factory`。`workspace.bundle` 保存 HEAD 历史。`tracked.patch` 保存相对 HEAD 的二进制和文本差异，生成时指定 `--no-color --unified=3`。`worktree.tar` 保存工作区中仍存在的已跟踪文件、未跟踪且未忽略的文件，以及未初始化 gitlink 目录中的全部文件，均保留原始字节。备份不记录暂存区边界。同名目录已存在时本轮记 `backup-failed`。写入失败可能留下不完整目录，重试使用新目录，Driver 不自动清理备份。
+
+三份备份文件写完后，Driver 依次运行 `git reset --hard --quiet HEAD`、`git clean -ffd --quiet`，再调用不带 `--force` 的 `orca worktree rm`。任一清理命令失败都记为 `remove-failed`，保留备份和工作区。
+
+在新克隆中依次执行 `git fetch <备份目录>/workspace.bundle HEAD`、`git checkout --detach FETCH_HEAD`，用 `git apply --binary <备份目录>/tracked.patch` 应用非空补丁，最后用 `tar -xf <备份目录>/worktree.tar` 还原工作区原始字节。[工作区回收](README.md#工作区回收)
+
+`prune-workspaces --dry-run` 对待备份工作区输出 `would-backup-and-remove`。`scheduler.TestReclaimBacksUpDirtyAndUnpushedClosedWorkspace` 验证备份还原、保留条件和 dry-run 的只读行为。`TestPruneWorkspacesDryRunBacksUpClosedWorkspace` 验证 CLI 输出。
+
 
 ## 飞书群通知（OF-9）
 
